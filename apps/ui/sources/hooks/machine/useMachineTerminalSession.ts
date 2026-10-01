@@ -75,6 +75,9 @@ export function useMachineTerminalSession(params: Readonly<{
     terminalRef: React.MutableRefObject<EmbeddedTerminalRendererHandle | null>;
     initialCommand?: string | null;
     closeOnUnmount?: boolean;
+    /** An existing process owned by another lifecycle. Null waits for that owner;
+     * undefined retains this controller's normal ensure/restart ownership. */
+    attachedTerminalId?: string | null;
 }>) {
     const byteStreamEnabled = useFeatureEnabled(
         'terminal.transport.byteStream',
@@ -89,6 +92,12 @@ export function useMachineTerminalSession(params: Readonly<{
     const [error, setError] = React.useState<string | null>(null);
     const [terminalTitle, setTerminalTitle] = React.useState<string | null>(null);
     const [terminalBell, setTerminalBell] = React.useState<string | null>(null);
+    const mountedRef = React.useRef(false);
+
+    React.useEffect(() => {
+        mountedRef.current = true;
+        return () => { mountedRef.current = false; };
+    }, []);
 
     const [connectionNonce, bumpConnectionNonce] = React.useReducer((x: number) => x + 1, 0);
     const restartRequestedRef = React.useRef(false);
@@ -333,7 +342,7 @@ export function useMachineTerminalSession(params: Readonly<{
                 setError('terminal_machine_unreachable');
                 return;
             }
-            if (!initialTerminalSize) {
+            if (params.attachedTerminalId === null || (params.attachedTerminalId === undefined && !initialTerminalSize)) {
                 setStatus('connecting');
                 return;
             }
@@ -343,23 +352,30 @@ export function useMachineTerminalSession(params: Readonly<{
             const request = params.launch
                 ? {
                     terminalKey: params.terminalKey,
-                    cols: terminalSize.cols,
-                    rows: terminalSize.rows,
+                    cols: terminalSize?.cols,
+                    rows: terminalSize?.rows,
                     launch: params.launch,
                 }
                 : {
                     terminalKey: params.terminalKey,
                     cwd: params.cwd!,
-                    cols: terminalSize.cols,
-                    rows: terminalSize.rows,
+                    cols: terminalSize?.cols,
+                    rows: terminalSize?.rows,
                     initialCommand: params.initialCommand ?? undefined,
                 };
-            const ensured = restartRequestedRef.current
+            const ensured = params.attachedTerminalId
+                ? { ok: true as const, terminalId: params.attachedTerminalId, reused: true }
+                : restartRequestedRef.current
                 ? await machineTerminalRestart(params.machineId, request, { serverId: params.serverId })
                 : await machineTerminalEnsure(params.machineId, request, { serverId: params.serverId });
             restartRequestedRef.current = false;
 
-            if (canceled) return;
+            if (canceled) {
+                if (ensured.ok && !mountedRef.current && params.closeOnUnmount && params.attachedTerminalId === undefined) {
+                    await machineTerminalClose(params.machineId, { terminalId: ensured.terminalId }, { serverId: params.serverId });
+                }
+                return;
+            }
             if (!ensured.ok) {
                 if (isRecoverableTerminalSessionErrorCode(ensured.errorCode) && scheduleAutoRetry()) {
                     return;
@@ -667,6 +683,8 @@ export function useMachineTerminalSession(params: Readonly<{
         params.cwd,
         params.initialCommand,
         params.launch,
+        params.attachedTerminalId,
+        params.closeOnUnmount,
         params.machineId,
         params.serverId,
         params.machineReachable,

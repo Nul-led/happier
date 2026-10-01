@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
-import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
+import { createDeferred, flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
+import type { DaemonTerminalEnsureResponse } from '@happier-dev/protocol';
 import type {
     EmbeddedTerminalRendererHandle,
     EmbeddedTerminalWriteBytesResult,
@@ -69,6 +70,10 @@ vi.mock('@/utils/ui/clipboard', () => ({
     setClipboardStringSafe: clipboardState.setClipboardStringSafe,
 }));
 
+// Resolve the real controller during collection: cold source transforms must
+// not consume the lifecycle test's fake-clock phase.
+await import('./useMachineTerminalSession');
+
 describe('useMachineTerminalSession', () => {
     beforeEach(() => {
         vi.useFakeTimers();
@@ -89,6 +94,28 @@ describe('useMachineTerminalSession', () => {
     afterEach(() => {
         standardCleanup();
         vi.useRealTimers();
+    });
+
+    it('closes a late ensure after unmount when terminal cleanup is requested', async () => {
+        const ensured = createDeferred<DaemonTerminalEnsureResponse>();
+        terminalOps.ensure.mockReturnValue(ensured.promise);
+        terminalOps.close.mockResolvedValue({ ok: true });
+        const terminalRef = { current: { write: vi.fn(), clear: vi.fn() } satisfies EmbeddedTerminalRendererHandle };
+        const launch = { kind: 'agent_login', agentId: 'codex' } as const;
+        const { useMachineTerminalSession } = await import('./useMachineTerminalSession');
+        const hook = await renderHook(() => useMachineTerminalSession({
+            machineId: 'machine-cancel', serverId: 'home-cancel', cwd: null, launch,
+            terminalKey: 'provider-login:machine-cancel:codex', terminalRef, closeOnUnmount: true,
+        }));
+        await act(async () => { hook.getCurrent().onReady(80, 24); });
+        expect(terminalOps.ensure).toHaveBeenCalled();
+        await hook.unmount();
+        await act(async () => {
+            ensured.resolve({ ok: true, terminalId: 'late-cancel-terminal', reused: false });
+        });
+        expect(terminalOps.close).toHaveBeenCalledWith('machine-cancel', { terminalId: 'late-cancel-terminal' }, { serverId: 'home-cancel' });
+        expect(terminalOps.streamReadBytes).not.toHaveBeenCalled();
+        expect(readTerminalSurfaceState('provider-login:machine-cancel:codex')?.terminalId ?? null).toBeNull();
     });
 
     it('keeps the stable terminal key and Home on a typed session-attach request', async () => {
