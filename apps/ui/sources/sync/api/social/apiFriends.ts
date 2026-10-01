@@ -1,6 +1,6 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { backoff } from '@/utils/timing/time';
-import { serverFetch } from '@/sync/http/client';
+import { serverFetch, type ServerFetch } from '@/sync/http/client';
 import { HappyError } from '@/utils/errors/errors';
 import {
     UserProfile,
@@ -12,8 +12,7 @@ import {
 
 type RetryMode = 'default' | 'none';
 type RetryOptions = Readonly<{ retry?: RetryMode }>;
-type FriendsListRequest = (path: string, init?: RequestInit) => Promise<Response>;
-type FriendsListOptions = RetryOptions & Readonly<{ request?: FriendsListRequest }>;
+type FriendsListOptions = RetryOptions & Readonly<{ request?: ServerFetch }>;
 type UserSearchOptions = FriendsListOptions & Readonly<{
     cursor?: string | null;
     purpose?: 'collaboration';
@@ -87,10 +86,11 @@ export async function searchUsersPageByUsername(
 export async function getUserProfile(
     credentials: AuthCredentials,
     userId: string,
-    opts: RetryOptions = {},
+    opts: FriendsListOptions = {},
 ): Promise<UserProfile | null> {
     const run = async () => {
-        const response = await serverFetch(
+        const request = opts.request ?? serverFetch;
+        const response = await request(
             `/v1/user/${userId}`,
             {
                 method: 'GET',
@@ -98,7 +98,7 @@ export async function getUserProfile(
                     'Authorization': `Bearer ${credentials.token}`,
                 },
             },
-            { includeAuth: false },
+            { includeAuth: false, retry: opts.retry },
         );
 
         if (!response.ok) {
@@ -139,13 +139,14 @@ export async function getUserProfile(
  */
 export async function getUserProfiles(
     credentials: AuthCredentials,
-    userIds: string[]
+    userIds: string[],
+    opts: FriendsListOptions = {},
 ): Promise<UserProfile[]> {
     if (userIds.length === 0) return [];
 
     // Fetch profiles individually and filter out nulls
     const profiles = await Promise.all(
-        userIds.map(id => getUserProfile(credentials, id))
+        userIds.map(id => getUserProfile(credentials, id, opts))
     );
     
     return profiles.filter((profile): profile is UserProfile => profile !== null);

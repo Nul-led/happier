@@ -2,6 +2,7 @@ import type { FeedItem } from '@/sync/domains/social/feedTypes';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import type { UserProfile } from '@/sync/domains/social/friendTypes';
 import { fetchFeed as fetchFeedApi } from '@/sync/api/social/apiFeed';
+import type { ServerFetch } from '@/sync/http/client';
 
 export async function handleNewFeedPostUpdate(params: {
     feedUpdate: {
@@ -108,6 +109,7 @@ export async function fetchAndApplyFeed(params: {
     assumeUsers: (userIds: string[]) => Promise<void>;
     getUsers: () => Record<string, UserProfile | null>;
     applyFeedItems: (items: FeedItem[]) => void;
+    request?: ServerFetch;
     shouldContinue?: () => boolean;
     log: { log: (message: string) => void };
 }): Promise<void> {
@@ -132,6 +134,7 @@ export async function fetchAndApplyFeed(params: {
             const response = await fetchFeedApi(credentials, {
                 limit: 100,
                 retry: 'none',
+                request: params.request,
                 ...cursor,
             });
             if (!shouldContinue()) return;
@@ -155,6 +158,7 @@ export async function fetchAndApplyFeed(params: {
             const response = await fetchFeedApi(credentials, {
                 limit: 100,
                 retry: 'none',
+                request: params.request,
             });
             if (!shouldContinue()) return;
             allItems.push(...response.items);

@@ -40,7 +40,7 @@ describe('searchUsersPageByUsername', () => {
     });
 
     it('declares collaboration discovery without changing ordinary username search', async () => {
-        const request = vi.fn(async () => new Response(JSON.stringify({ users: [], nextCursor: null }), {
+        const request = vi.fn(async (_path: string, _init?: RequestInit) => new Response(JSON.stringify({ users: [], nextCursor: null }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
         }));
