@@ -136,4 +136,18 @@ describe('Appearance settings loading indicator', () => {
         });
         expect(shared.settingsState.loadingIndicatorStyle).toBe('radar');
     });
+
+    it('keeps the previews out of the accessibility tree, since the option title already names the style', async () => {
+        const { LoadingIndicatorStylePreview } = await import('@/components/settings/appearance/LoadingIndicatorStylePreview');
+        const screen = await renderSettingsView(React.createElement(LoadingIndicatorStylePreview, { styleId: 'radar' }), {
+            flushOptions: { cycles: 0 },
+        });
+
+        const root = screen.findAllByType('View' as any)[0];
+        expect(root?.props).toEqual(expect.objectContaining({
+            'aria-hidden': true,
+            accessibilityElementsHidden: true,
+            importantForAccessibility: 'no-hide-descendants',
+        }));
+    });
 });

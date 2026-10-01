@@ -22,10 +22,19 @@ export const LOADING_INDICATOR_STYLE_LABEL_KEYS = {
     classicRing: 'settingsAppearance.loadingIndicatorOptions.classicRing',
 } as const satisfies Record<LoadingIndicatorStyleId, LoadingIndicatorLabelKey>;
 
-/** A live preview of one style, sized like the other appearance option icons. */
+/**
+ * A live preview of one style, sized like the other appearance option icons. Decorative: the option
+ * title already names the style, so the sample stays out of the accessibility tree rather than
+ * announcing a progress bar for work that is not happening.
+ */
 export function LoadingIndicatorStylePreview(props: Readonly<{ styleId: LoadingIndicatorStyleId }>) {
     return (
-        <View style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}>
+        <View
+            aria-hidden
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            style={{ width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }}
+        >
             <ActivitySpinner variant={props.styleId} size={22} />
         </View>
     );
