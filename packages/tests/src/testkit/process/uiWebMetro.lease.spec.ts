@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let spawnStdoutText = '';
+let spawnedChild: (EventEmitter & { exitCode: number | null; signalCode: NodeJS.Signals | null }) | null = null;
 let lastSpawnEnv: NodeJS.ProcessEnv | null = null;
 let lastSpawnArgs: string[] | null = null;
 let sourceFingerprint = 'fingerprint-a';
@@ -41,6 +42,7 @@ vi.mock('./spawnProcess', () => ({
         };
         child.exitCode = null;
         child.signalCode = null;
+        spawnedChild = child;
 
         const exitSignal = spawnExitSignalSequence?.[spawnInvocationIndex] ?? null;
         spawnInvocationIndex += 1;
@@ -96,6 +98,7 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+    spawnedChild = null;
     spawnStdoutText = 'http://127.0.0.1:19077\n';
     lastSpawnEnv = null;
     lastSpawnArgs = null;
@@ -144,6 +147,44 @@ function readProcessStartTime(pid: number): string {
 }
 
 describe('startUiWebMetro', () => {
+    it.each(['status', 'script'])('reports Expo death during %s readiness instead of a readiness timeout', async (phase) => {
+        const testDir = await mkdtemp(join(tmpdir(), 'happier-ui-web-metro-exit-'));
+        const readyFetch = fetchResponder!;
+        let statusProbes = 0;
+        fetchResponder = async (input, init) => {
+            const url = String(input);
+            if (url.endsWith('/status')) statusProbes += 1;
+            const shouldExit = phase === 'script'
+                ? url.endsWith('/index.js')
+                : url.endsWith('/status') && statusProbes > 1;
+            if (shouldExit) {
+                if (!spawnedChild) throw new Error('Expo child was not started');
+                spawnedChild.signalCode = 'SIGABRT';
+                spawnedChild.emit('exit', null, 'SIGABRT');
+                throw new TypeError('fetch failed');
+            }
+            if (phase === 'status' && !url.endsWith('/status')) {
+                return { ok: true, text: async () => '<html><body>Metro Bundler</body></html>' };
+            }
+            return readyFetch(input, init);
+        };
+
+        try {
+            await expect(startUiWebMetro({
+                testDir,
+                env: {
+                    HAPPIER_E2E_UI_WEB_METRO_START_ATTEMPTS: '1',
+                    HAPPIER_E2E_UI_WEB_METRO_STATUS_TIMEOUT_MS: '100',
+                    HAPPIER_E2E_UI_WEB_SCRIPT_FETCH_TIMEOUT_MS: '100',
+                    HAPPIER_E2E_UI_WEB_ALLOW_SCRIPT_READY_TIMEOUT: '1',
+                },
+                port: 19077,
+            })).rejects.toThrow(/exited before ready \(signal=SIGABRT\)/);
+        } finally {
+            await rm(testDir, { recursive: true, force: true });
+        }
+    });
+
     it('builds apps/ui workspace packages before launching Expo web', async () => {
         const testDir = await mkdtemp(join(tmpdir(), 'happier-ui-web-metro-prebuild-'));
 

@@ -140,6 +140,13 @@ type SessionMessagesResponse = Readonly<{
     }>>;
 }>;
 
+function requirePollResult<T>(value: T | null, message: string): T {
+    if (value === null) {
+        throw new Error(message);
+    }
+    return value;
+}
+
 async function listPersistedAutomations(params: Readonly<{
     baseUrl: string;
     token: string;
@@ -203,7 +210,7 @@ async function expectPersistedAutomation(params: Readonly<{
             triggers: found.triggers.map((trigger) => ({
                 id: trigger.id,
                 kind: trigger.kind,
-                everyMs: trigger.schedule?.everyMs ?? null,
+                everyMs: trigger.kind === 'schedule' ? trigger.schedule.everyMs : null,
             })),
         };
     }, { timeout: 60_000 }).toEqual({
@@ -306,9 +313,6 @@ test.describe('ui e2e: automations authoring', () => {
             extraEnv: {
                 HAPPIER_BUILD_FEATURES_DENY: 'sharing.contentKeys',
                 HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1',
-                HAPPIER_PRESENCE_SESSION_TIMEOUT_MS: '900000',
-                HAPPIER_PRESENCE_MACHINE_TIMEOUT_MS: '900000',
-                HAPPIER_PRESENCE_TIMEOUT_TICK_MS: '1000',
             },
         });
 
@@ -345,6 +349,7 @@ test.describe('ui e2e: automations authoring', () => {
     test('authors plural V3 Automations and completes one exact-turn lifecycle journey', async ({ page }) => {
         test.setTimeout(900_000);
         if (!server || !uiBaseUrl) throw new Error('missing server/ui fixtures');
+        const serverBaseUrl = server.baseUrl;
 
         await page.setViewportSize({ width: 1440, height: 900 });
         await gotoDomContentLoadedWithRetries(page, uiBaseUrl);
@@ -362,7 +367,7 @@ test.describe('ui e2e: automations authoring', () => {
             page,
             testDir,
             cliHomeDir,
-            serverUrl: server.baseUrl,
+            serverUrl: serverBaseUrl,
             uiBaseUrl,
             createAccount: false,
             extraEnv: {
@@ -424,7 +429,7 @@ test.describe('ui e2e: automations authoring', () => {
             expectedPathname: '/automations',
         });
         const inlineAutomationId = await expectPersistedAutomation({
-            baseUrl: server.baseUrl,
+            baseUrl: serverBaseUrl,
             token: authToken,
             name: inlineAutomationName,
             targetType: 'newSession',
@@ -434,7 +439,7 @@ test.describe('ui e2e: automations authoring', () => {
             ],
         });
         const inlineAutomationsBeforeRename = await listPersistedAutomations({
-            baseUrl: server.baseUrl,
+            baseUrl: serverBaseUrl,
             token: authToken,
         });
         const inlineBeforeRename = inlineAutomationsBeforeRename.find(
@@ -470,7 +475,7 @@ test.describe('ui e2e: automations authoring', () => {
             expectedPathname: `/session/${sessionId}/automations`,
         });
         const existingAutomationId = await expectPersistedAutomation({
-            baseUrl: server.baseUrl,
+            baseUrl: serverBaseUrl,
             token: authToken,
             name: existingSessionAutomationName,
             targetType: 'existingSession',
@@ -501,7 +506,7 @@ test.describe('ui e2e: automations authoring', () => {
         }
         await expect.poll(async () => (
             (await listPersistedAutomationRuns({
-                baseUrl: server.baseUrl,
+                baseUrl: serverBaseUrl,
                 token: authToken,
                 automationId: existingAutomationId,
             })).filter((candidate) => candidate.cause.kind === 'manual').length
@@ -577,7 +582,7 @@ test.describe('ui e2e: automations authoring', () => {
         let savedLifecycleTriggerId: string | null = null;
         await expect.poll(async () => {
             const found = (await listPersistedAutomations({
-                baseUrl: server.baseUrl,
+                baseUrl: serverBaseUrl,
                 token: authToken,
             })).find((automation) => automation.id === existingAutomationId);
             const lifecycle = found?.triggers.find((candidate) => candidate.kind === 'sessionLifecycle') ?? null;
@@ -609,9 +614,10 @@ test.describe('ui e2e: automations authoring', () => {
             existingSessionId: sessionId,
             hasEnabledAssignment: true,
         });
-        if (savedLifecycleTriggerId === null) {
-            throw new Error('Exact-turn trigger was not persisted with a durable identity');
-        }
+        const persistedLifecycleTriggerId = requirePollResult<string>(
+            savedLifecycleTriggerId,
+            'Exact-turn trigger was not persisted with a durable identity',
+        );
 
         // 10.2.2: settling the held parent turn admits exactly one exact-turn Run
         // whose immutable cause names the exact trigger and source facts.
@@ -619,7 +625,7 @@ test.describe('ui e2e: automations authoring', () => {
         let lifecycleRun: PersistedAutomationRunRow | null = null;
         await expect.poll(async () => {
             const runs = await listPersistedAutomationRuns({
-                baseUrl: server.baseUrl,
+                baseUrl: serverBaseUrl,
                 token: authToken,
                 automationId: existingAutomationId,
             });
@@ -631,34 +637,35 @@ test.describe('ui e2e: automations authoring', () => {
             )) ?? null;
             return lifecycleRun?.id ?? null;
         }, { timeout: 180_000 }).not.toBeNull();
-        if (lifecycleRun === null) {
-            throw new Error('Exact-turn Run was not admitted after the parent turn settled');
-        }
-        expect(lifecycleRun.triggerId).toBe(savedLifecycleTriggerId);
-        expect(lifecycleRun.triggerRetired).toBe(false);
+        const persistedLifecycleRun = requirePollResult<PersistedAutomationRunRow>(
+            lifecycleRun,
+            'Exact-turn Run was not admitted after the parent turn settled',
+        );
+        expect(persistedLifecycleRun.triggerId).toBe(persistedLifecycleTriggerId);
+        expect(persistedLifecycleRun.triggerRetired).toBe(false);
 
         // Admission alone is not the composed user outcome. The same loaded
         // daemon must claim the exact-turn Run and deliver its Run-owned input
         // into the selected target Session.
         await expect.poll(async () => {
             const runs = await listPersistedAutomationRuns({
-                baseUrl: server.baseUrl,
+                baseUrl: serverBaseUrl,
                 token: authToken,
                 automationId: existingAutomationId,
             });
-            return runs.find((candidate) => candidate.id === lifecycleRun?.id)?.state ?? null;
+            return runs.find((candidate) => candidate.id === persistedLifecycleRun.id)?.state ?? null;
         }, { timeout: 180_000 }).toBe('succeeded');
-        const expectedLifecycleInputId = `automation:run:${lifecycleRun.id}`;
+        const expectedLifecycleInputId = `automation:run:${persistedLifecycleRun.id}`;
         await expect.poll(async () => {
             const messages = await listSessionMessages({
-                baseUrl: server.baseUrl,
+                baseUrl: serverBaseUrl,
                 token: authToken,
                 sessionId,
             });
             return messages.messages.some((message) => message.localId === expectedLifecycleInputId);
         }, { timeout: 120_000 }).toBe(true);
         const targetMessages = await listSessionMessages({
-            baseUrl: server.baseUrl,
+            baseUrl: serverBaseUrl,
             token: authToken,
             sessionId,
         });
@@ -676,14 +683,14 @@ test.describe('ui e2e: automations authoring', () => {
         // The owning trigger's projected status follows its admitted Run.
         await expect.poll(async () => {
             const found = (await listPersistedAutomations({
-                baseUrl: server.baseUrl,
+                baseUrl: serverBaseUrl,
                 token: authToken,
             })).find((automation) => automation.id === existingAutomationId);
             const lifecycle = found?.triggers.find((candidate) => candidate.kind === 'sessionLifecycle') ?? null;
             return lifecycle ? { state: lifecycle.status?.state ?? null, runId: lifecycle.status?.runId ?? null } : null;
         }, { timeout: 60_000 }).toEqual({
             state: expect.stringMatching(/^(triggered|running|finished)$/u),
-            runId: lifecycleRun.id,
+            runId: persistedLifecycleRun.id,
         });
 
         // 10.1.6: removing the trigger through the loaded editor keeps every
@@ -705,7 +712,7 @@ test.describe('ui e2e: automations authoring', () => {
 
         await expect.poll(async () => {
             const found = (await listPersistedAutomations({
-                baseUrl: server.baseUrl,
+                baseUrl: serverBaseUrl,
                 token: authToken,
             })).find((automation) => automation.id === existingAutomationId);
             if (!found) return null;
@@ -715,7 +722,7 @@ test.describe('ui e2e: automations authoring', () => {
         }, { timeout: 60_000 }).toEqual([]);
         await expect.poll(async () => (
             (await listPersistedAutomationRuns({
-                baseUrl: server.baseUrl,
+                baseUrl: serverBaseUrl,
                 token: authToken,
                 automationId: existingAutomationId,
             })).map((candidate) => ({
@@ -725,13 +732,13 @@ test.describe('ui e2e: automations authoring', () => {
                 triggerRetired: candidate.triggerRetired,
             }))
         ), { timeout: 60_000 }).toContainEqual({
-            id: lifecycleRun.id,
+            id: persistedLifecycleRun.id,
             causeKind: 'trigger',
-            triggerId: savedLifecycleTriggerId,
+            triggerId: persistedLifecycleTriggerId,
             triggerRetired: true,
         });
         const runHistoryAfterRemoval = await listPersistedAutomationRuns({
-            baseUrl: server.baseUrl,
+            baseUrl: serverBaseUrl,
             token: authToken,
             automationId: existingAutomationId,
         }).then((runs) => runs.map((candidate) => ({
@@ -741,9 +748,9 @@ test.describe('ui e2e: automations authoring', () => {
             triggerRetired: candidate.triggerRetired,
         })));
         expect(runHistoryAfterRemoval).toContainEqual({
-            id: lifecycleRun.id,
+            id: persistedLifecycleRun.id,
             causeKind: 'trigger',
-            triggerId: savedLifecycleTriggerId,
+            triggerId: persistedLifecycleTriggerId,
             triggerRetired: true,
         });
         // The manual zero-trigger Run keeps its own cause facts untouched.
@@ -761,11 +768,11 @@ test.describe('ui e2e: automations authoring', () => {
             `${uiBaseUrl}/automations/${existingAutomationId}?happier_hmr=0`,
             180_000,
         );
-        await expect(page.getByTestId(`automation-retired-trigger-${savedLifecycleTriggerId}`))
+        await expect(page.getByTestId(`automation-retired-trigger-${persistedLifecycleTriggerId}`))
             .toHaveCount(1, { timeout: 120_000 });
         await gotoDomContentLoadedWithRetries(
             page,
-            `${uiBaseUrl}/automations/${existingAutomationId}/runs/${lifecycleRun.id}?happier_hmr=0`,
+            `${uiBaseUrl}/automations/${existingAutomationId}/runs/${persistedLifecycleRun.id}?happier_hmr=0`,
             180_000,
         );
         await expect(page.getByTestId('automation-run-trigger-retired')).toHaveCount(1, { timeout: 120_000 });
@@ -812,7 +819,7 @@ test.describe('ui e2e: automations authoring', () => {
 
         await expect.poll(async () => {
             const found = (await listPersistedAutomations({
-                baseUrl: server.baseUrl,
+                baseUrl: serverBaseUrl,
                 token: authToken,
             })).find((automation) => automation.id === inlineAutomationId);
             if (!found) return null;
@@ -831,7 +838,7 @@ test.describe('ui e2e: automations authoring', () => {
             },
         });
         const inlineAfterRename = (await listPersistedAutomations({
-            baseUrl: server.baseUrl,
+            baseUrl: serverBaseUrl,
             token: authToken,
         })).find((automation) => automation.id === inlineAutomationId);
         if (!inlineAfterRename) {

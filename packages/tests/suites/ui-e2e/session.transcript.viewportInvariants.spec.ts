@@ -13,7 +13,7 @@ import {
   reloadCreatedSessionFromNewSessionComposer,
   type CreatedSessionFromNewSessionComposer,
 } from '../../src/testkit/uiE2e/createSessionFromNewSessionComposer';
-import { fakeClaudeFixturePath } from '../../src/testkit/fakeClaude';
+import { fakeClaudeEchoResponseText, fakeClaudeFixturePath } from '../../src/testkit/fakeClaude';
 import { gotoDomContentLoadedWithRetries, normalizeLoopbackBaseUrl } from '../../src/testkit/uiE2e/pageNavigation';
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
@@ -450,11 +450,11 @@ test.describe('ui e2e: transcript viewport invariants', () => {
     return await waitForViewportTelemetryQuiescence(page);
   }
 
-  async function sendSeedPromptAndWaitForOk(page: Page, prompt: string, okNumber: number): Promise<void> {
+  async function sendSeedPromptAndWaitForEcho(page: Page, prompt: string): Promise<void> {
     const composer = page.locator('textarea[data-testid="session-composer-input"]:visible');
     await composer.fill(prompt);
     await composer.press('Enter');
-    await expect(page.getByText(`FAKE_CLAUDE_OK_${okNumber}`).first()).toBeVisible({ timeout: 180_000 });
+    await expect(page.getByText(fakeClaudeEchoResponseText(prompt)).first()).toBeVisible({ timeout: 180_000 });
   }
 
   test.beforeAll(async () => {
@@ -487,9 +487,6 @@ test.describe('ui e2e: transcript viewport invariants', () => {
       extraEnv: {
         HAPPIER_BUILD_FEATURES_DENY: 'sharing.contentKeys',
         HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1',
-        HAPPIER_PRESENCE_SESSION_TIMEOUT_MS: '60000',
-        HAPPIER_PRESENCE_MACHINE_TIMEOUT_MS: '60000',
-        HAPPIER_PRESENCE_TIMEOUT_TICK_MS: '1000',
       },
     });
 
@@ -558,6 +555,7 @@ test.describe('ui e2e: transcript viewport invariants', () => {
         HOME: cliHomeDir,
         HAPPIER_CLAUDE_PATH: fakeClaudePath,
         HAPPIER_E2E_FAKE_CLAUDE_LOG: fakeClaudeLogPath,
+        HAPPIER_E2E_FAKE_CLAUDE_SCENARIO: 'echo-user-text',
         HAPPIER_E2E_FAKE_CLAUDE_SESSION_ID: `fake-claude-session-${run.runId}`,
         HAPPIER_E2E_FAKE_CLAUDE_INVOCATION_ID: `fake-claude-invocation-${run.runId}`,
       },
@@ -575,12 +573,12 @@ test.describe('ui e2e: transcript viewport invariants', () => {
     sessionId = createdSession.sessionId;
 
     await expect(page.getByTestId('transcript-chat-list')).toHaveCount(1, { timeout: 120_000 });
-    await expect(page.getByText('FAKE_CLAUDE_OK_1').first()).toBeVisible({ timeout: 180_000 });
+    await expect(page.getByText(fakeClaudeEchoResponseText(seedMessageText(0, run.runId))).first()).toBeVisible({ timeout: 180_000 });
 
     // Each turn persists roughly five messages, so this leaves multiple six-message older pages
     // after the initial 12-message window without paying for hundreds of serial agent turns.
     for (let i = 1; i <= SEED_TURN_COUNT; i += 1) {
-      await sendSeedPromptAndWaitForOk(page, seedMessageText(i, run.runId), i + 1);
+      await sendSeedPromptAndWaitForEcho(page, seedMessageText(i, run.runId));
     }
 
     // Infrastructure strictness: the dev-gated telemetry buffer must be readable and capturing.

@@ -79,9 +79,9 @@ vi.mock('../waitForRegexInFile', async () => {
 
 import {
     resolveCliTerminalConnectOwnershipLeasesDir,
-    sanitizeCliTerminalConnectEnv,
     startCliAuthLoginForTerminalConnect,
 } from './cliTerminalConnect';
+import { sanitizeCliTestEnv } from '../process/cliTestEnv';
 import { reserveAvailablePort } from '../network/reserveAvailablePort';
 import { spawnDetachedTestProcess } from '../process/testSpawn';
 import { waitFor } from '../timing';
@@ -105,9 +105,9 @@ function readProcessStartTime(pid: number): string {
     return String(res.stdout ?? '').trim();
 }
 
-describe('sanitizeCliTerminalConnectEnv', () => {
+describe('sanitizeCliTestEnv', () => {
     it('strips ambient server-selection overrides while preserving unrelated harness env', () => {
-        expect(sanitizeCliTerminalConnectEnv({
+        expect(sanitizeCliTestEnv({
             PATH: '/usr/bin',
             HAPPIER_ACTIVE_SERVER_ID: 'ambient-server',
             HAPPIER_DAEMON_SERVICE_INSTANCE_ID: 'ambient-instance',

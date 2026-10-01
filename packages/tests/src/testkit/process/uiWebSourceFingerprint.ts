@@ -20,13 +20,20 @@ function shouldIgnoreUiWebSourceDir(name: string): boolean {
     || name === '.project';
 }
 
-function shouldIgnoreUiWebWorkspaceDir(name: string): boolean {
-  return name === '__tests__'
-    || name === '__mocks__'
-    || name === 'dist'
-    || name === 'node_modules'
-    || name === '.git'
-    || name === '.project';
+function shouldIgnoreUiWebWorkspaceDir(name: string, parentDir: string, workspaceDir: string): boolean {
+  if (shouldIgnoreUiWebSourceDir(name)) return true;
+  // iroh-native's build-node-addon and browser WASM build write to this Cargo
+  // workspace output. Keep rust sources/lockfiles and unrelated target directories.
+  if (name === 'target'
+    && parentDir === resolvePath(workspaceDir, 'rust')
+    && existsSync(resolvePath(parentDir, 'Cargo.toml'))) return true;
+  if (parentDir !== workspaceDir) return false;
+
+  // These are dist staging/rollback siblings, not bundle inputs. Their producers are
+  // atomic_dir_swap.mjs, buildTypeScriptPackageDist.mjs and cli-common's packageDistBuildPlan.mjs.
+  return /^\.(?:tmp|backup|dist\.(?:build|backup))\.\d+\.\d+\.[0-9a-f]*(?:\.hstack-backup\.\d+\.\d+)?$/u.test(name)
+    || /^\.dist\.hstack-stage-[a-zA-Z0-9]{6}$/u.test(name)
+    || /^\.dist\.hstack-backup\.\d+\.\d+$/u.test(name);
 }
 
 function shouldIgnoreUiWebSourceFile(name: string): boolean {
@@ -68,7 +75,7 @@ function walkUiWebSourceTree(
   hash: ReturnType<typeof createHash>,
   rootDir: string,
   currentPath: string,
-  options?: Readonly<{ ignoreDir?: (name: string) => boolean }>,
+  options?: Readonly<{ ignoreDir?: (name: string, parentDir: string, rootDir: string) => boolean }>,
 ): void {
   let stats: ReturnType<typeof statSync>;
   try {
@@ -96,7 +103,7 @@ function walkUiWebSourceTree(
 
   for (const entry of sortedEntries) {
     if (entry.isDirectory()) {
-      if (options?.ignoreDir?.(entry.name) ?? shouldIgnoreUiWebSourceDir(entry.name)) continue;
+      if (options?.ignoreDir?.(entry.name, currentPath, rootDir) ?? shouldIgnoreUiWebSourceDir(entry.name)) continue;
       walkUiWebSourceTree(hash, rootDir, resolvePath(currentPath, entry.name), options);
       continue;
     }

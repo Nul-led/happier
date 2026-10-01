@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { spawnDetachedTestProcess } from './testSpawn';
+import { createUiWebTestRepo } from './uiWebTestRepo';
 
 type RunLoggedCommandMockParams = {
     stdoutPath: string;
@@ -15,8 +16,9 @@ type RunLoggedCommandMockParams = {
     timeoutMs?: number;
 };
 
-const { runLoggedCommandMock } = vi.hoisted(() => {
-    return {
+const { runLoggedCommandMock, testRepository } = vi.hoisted(() => {
+  return {
+    testRepository: { rootDir: '' },
         runLoggedCommandMock: vi
             .fn<(params?: RunLoggedCommandMockParams) => Promise<void>>()
             .mockImplementation(async (_params?: RunLoggedCommandMockParams) => {
@@ -24,6 +26,8 @@ const { runLoggedCommandMock } = vi.hoisted(() => {
             }),
     };
 });
+
+vi.mock('../paths', () => ({ repoRootDir: () => testRepository.rootDir }));
 
 vi.mock('./spawnProcess', () => {
   return {
@@ -96,6 +100,7 @@ describe('uiWebExport (cache clearing)', () => {
   });
 
   beforeAll(async () => {
+    testRepository.rootDir = await createUiWebTestRepo();
     namespace = `vitest-ui-web-export-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     exportedRootDir = resolveUiWebExportRootDir({ HAPPIER_E2E_UI_WEB_EXPORT_NAMESPACE: namespace });
     const distDir = resolve(exportedRootDir, 'dist');
@@ -115,7 +120,7 @@ describe('uiWebExport (cache clearing)', () => {
   });
 
   afterAll(async () => {
-    await rm(exportedRootDir, { recursive: true, force: true }).catch(() => {});
+    await rm(testRepository.rootDir, { recursive: true, force: true });
   });
 
   it('fails export startup when expo export stalls after Starting Metro Bundler', async () => {

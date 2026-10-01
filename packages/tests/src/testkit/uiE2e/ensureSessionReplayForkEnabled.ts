@@ -1,5 +1,7 @@
 import { expect, type Page } from '@playwright/test';
 
+import { gotoDomContentLoadedWithPathFallback } from './pageNavigation';
+
 async function ensureSessionSettingsSwitchEnabled(params: Readonly<{
   page: Page;
   route: string;

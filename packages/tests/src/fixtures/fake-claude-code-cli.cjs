@@ -18,6 +18,7 @@ const readline = require('node:readline');
 const { createHash, randomUUID } = require('node:crypto');
 const { resolveClaudeProjectId } = require('../testkit/claudeProjectId.cjs');
 const {
+  fakeClaudeEchoResponseText,
   findArgValue,
   mergeMcpServers,
   parseHookForwarderCommand,
@@ -1168,6 +1169,12 @@ async function runSdkStreamUntilEof() {
         userTextPreview: promptText.slice(0, 800),
       });
       await waitForRuntimeContinuityReleaseFile();
+    }
+
+    if (scenario === 'echo-user-text') {
+      emitSdk(createAssistantMessage([{ type: 'text', text: fakeClaudeEchoResponseText(promptText) }]));
+      emitSdk(createResultSuccess());
+      continue;
     }
 
     const assistant = createAssistantMessage([{ type: 'text', text: `FAKE_CLAUDE_OK_${turn}` }]);

@@ -6,6 +6,7 @@ import {
   resolveCliTestLaunchSpecOrOverride,
   type CliTestLaunchSpec,
 } from '../process/cliLaunchSpec';
+import { sanitizeCliTestEnv } from '../process/cliTestEnv';
 import {
   readLoggedCommandProcessOutcome,
   runLoggedCommandWithOutcome,
@@ -120,7 +121,7 @@ export async function runCliJson(params: Readonly<{
   }>;
 }>): Promise<JsonEnvelope> {
   const launchEnv = {
-    ...params.env,
+    ...sanitizeCliTestEnv(params.env),
     ...(params.launchOptions?.skipSharedDepsBuild
       ? {
           HAPPIER_E2E_PROVIDER_SKIP_CLI_SHARED_DEPS_BUILD: '1',
@@ -140,9 +141,10 @@ export async function runCliJson(params: Readonly<{
   );
   const stdoutPath = resolvePath(join(params.testDir, `cli.${params.label}.stdout.log`));
   const stderrPath = resolvePath(join(params.testDir, `cli.${params.label}.stderr.log`));
-  const env = {
+  const env = sanitizeCliTestEnv({
     ...launchEnv,
-  };
+    ...(cliLaunchSpec.env ?? {}),
+  });
 
   let processOutcome: Readonly<{ exitCode: number | null; signal: string | null }>;
   try {
@@ -152,7 +154,6 @@ export async function runCliJson(params: Readonly<{
       cwd: cliLaunchSpec.cwd ?? repoRootDir(),
       env: {
         ...env,
-        ...(cliLaunchSpec.env ?? {}),
         CI: '1',
         HAPPIER_SESSION_AUTOSTART_DAEMON: '0',
         HAPPIER_HOME_DIR: params.cliHomeDir,

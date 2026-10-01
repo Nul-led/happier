@@ -10,6 +10,8 @@ type HookForwarderCommand =
     };
 
 export function findArgValue(argv: string[], name: string): string | null;
+export function fakeClaudeEchoResponseText(promptText: string): string;
+export function fakeClaudeEchoResponseTextFromSha256(promptSha256: string): string;
 export function parseMcpConfigs(argv: string[]): Array<Record<string, unknown>>;
 export function mergeMcpServers(configs: Array<Record<string, unknown>>): Record<string, unknown>;
 export function parseHookForwarderCommand(

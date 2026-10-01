@@ -5,6 +5,8 @@ import {
   AccountSettingsPersistedObjectSchema,
   AccountSettingsV2GetResponseSchema,
   AccountSettingsV2UpdateResponseSchema,
+  buildAccountStoredContentCompatibilityHttpHeadersV1,
+  CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
   openAccountScopedBlobCiphertext,
   sealAccountScopedBlobCiphertext,
   type AccountSettings,
@@ -104,6 +106,10 @@ export async function upsertPlainAccountSettingsV2(params: Readonly<{
     headers: {
       Authorization: `Bearer ${params.token}`,
       'Content-Type': 'application/json',
+      // The complete supplied settings object is preserved by this writer.
+      ...buildAccountStoredContentCompatibilityHttpHeadersV1(
+        CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
+      ),
     },
     body: JSON.stringify({
       expectedVersion,
@@ -143,6 +149,10 @@ export async function upsertEncryptedAccountSettingsV2(params: Readonly<{
     headers: {
       Authorization: `Bearer ${params.token}`,
       'Content-Type': 'application/json',
+      // Encryption seals the complete supplied settings object without normalization.
+      ...buildAccountStoredContentCompatibilityHttpHeadersV1(
+        CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
+      ),
     },
     body: JSON.stringify({
       expectedVersion,

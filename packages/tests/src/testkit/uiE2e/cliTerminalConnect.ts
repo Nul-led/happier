@@ -6,6 +6,7 @@ import {
   resolveCliTestLaunchSpecOrOverride,
   type CliTestLaunchSpec,
 } from '../process/cliLaunchSpec';
+import { sanitizeCliTestEnv } from '../process/cliTestEnv';
 import {
   inspectOwnedProcess,
   registerProcessOwnershipLease,
@@ -77,14 +78,6 @@ function deriveServerIdFromUrl(url: string): string {
     h = Math.imul(h, 16777619);
   }
   return `env_${(h >>> 0).toString(16)}`;
-}
-
-export function sanitizeCliTerminalConnectEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const sanitized = { ...env };
-  delete sanitized.HAPPIER_ACTIVE_SERVER_ID;
-  delete sanitized.HAPPIER_DAEMON_SERVICE_INSTANCE_ID;
-  delete sanitized.HAPPIER_DAEMON_SERVICE_SERVER_URL;
-  return sanitized;
 }
 
 async function ensureActiveServerSelection(params: Readonly<{
@@ -252,7 +245,7 @@ export async function startCliAuthLoginForTerminalConnect(params: Readonly<{
   env: NodeJS.ProcessEnv;
   cliLaunchSpec?: CliTestLaunchSpec;
 }>): Promise<StartedCliTerminalConnect> {
-  const sanitizedEnv = sanitizeCliTerminalConnectEnv(params.env);
+  const sanitizedEnv = sanitizeCliTestEnv(params.env);
   const currentOwnerInspection = inspectOwnedProcess(process.pid);
   if (currentOwnerInspection.ok) {
     await sweepProcessOwnershipLeases({
@@ -278,7 +271,7 @@ export async function startCliAuthLoginForTerminalConnect(params: Readonly<{
     webappUrl: params.webappUrl,
   });
 
-  const processEnv = sanitizeCliTerminalConnectEnv({
+  const processEnv = sanitizeCliTestEnv({
     ...sanitizedEnv,
     ...(cliLaunchSpec.env ?? {}),
   });

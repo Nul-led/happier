@@ -136,6 +136,32 @@ describe('openNewSessionMachineSelection', () => {
     );
     expect(composerInput.clickSpy).toHaveBeenCalledTimes(0);
   });
+  it('preserves automation authoring intent through the route picker fallback', async () => {
+    let currentUrl = 'http://127.0.0.1:3000/new?automation=1&happier_hmr=0';
+    const machineChip = {
+      count: async (): Promise<number> => 1,
+      click: vi.fn(async () => { throw new Error('not actionable'); }),
+    };
+    const machineOptions = createCountableLocator({ counts: [1] });
+    const gotoSpy = vi.fn(async (url: string) => { currentUrl = url; });
+    const page = {
+      getByTestId: vi.fn(() => machineChip),
+      locator: vi.fn(() => ({ first: () => machineOptions })),
+      goto: gotoSpy,
+      waitForTimeout: vi.fn(async () => {}),
+      url: vi.fn(() => currentUrl),
+    };
+
+    await expect(openNewSessionMachineSelection({
+      page: page as never,
+      uiBaseUrl: 'http://127.0.0.1:3000',
+      popoverWaitMs: 1,
+      routeFallbackWaitMs: 1_000,
+    })).resolves.toBe('picker_open');
+
+    expect(new URL(gotoSpy.mock.calls[0]![0]).searchParams.get('automation')).toBe('1');
+  });
+
 });
 
 describe('openNewSessionPathSelection', () => {

@@ -26,6 +26,13 @@ type SessionMessagesResponse = Readonly<{
   }>>;
 }>;
 
+function requirePollResult<T>(value: T | null, message: string): T {
+  if (value === null) {
+    throw new Error(message);
+  }
+  return value;
+}
+
 async function requestJson<T>(params: {
   baseUrl: string;
   token: string;
@@ -240,7 +247,10 @@ describe('core e2e: schedule trigger fan-out through the loaded server and daemo
     }, { timeoutMs: 180_000, intervalMs: 250, context: 'Both schedule trigger Runs settled in their produced Sessions' });
 
     expect(settled).not.toBeNull();
-    const { fast: fastRun, slow: slowRun } = settled as SettledRuns;
+    const { fast: fastRun, slow: slowRun } = requirePollResult<SettledRuns>(
+      settled,
+      'Schedule trigger Runs did not settle',
+    );
     expect(fastRun.id).not.toBe(slowRun.id);
     for (const [runItem, expectedTriggerId] of [
       [fastRun, fastTriggerId],
@@ -295,7 +305,11 @@ describe('core e2e: schedule trigger fan-out through the loaded server and daemo
         return messages.messages.some((message) => message.localId === localId);
       }, { timeoutMs: 90_000, intervalMs: 100, context: `Automation Session input ${localId} materialized` });
 
-      const automationInput = messages?.messages.find((message) => message.localId === localId);
+      const sessionMessages = requirePollResult<SessionMessagesResponse>(
+        messages,
+        `Missing Automation Session messages for ${localId}`,
+      );
+      const automationInput = sessionMessages.messages.find((message) => message.localId === localId);
       expect(automationInput).toBeDefined();
       if (!automationInput) throw new Error(`Missing Automation Session input ${localId}`);
       expect(automationInput.content).toEqual(

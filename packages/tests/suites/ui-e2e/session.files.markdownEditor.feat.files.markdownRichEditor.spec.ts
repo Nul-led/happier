@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -12,6 +12,7 @@ import {
   type StartedCliTerminalConnect,
 } from '../../src/testkit/uiE2e/cliTerminalConnect';
 import { initGitRepo } from '../../src/testkit/uiE2e/gitRepoFixtures';
+import { focusMonacoEditor } from '../../src/testkit/uiE2e/focusMonacoEditor';
 import {
   createAccountAndReachConnectMachineState,
   gotoDomContentLoadedWithPathFallback,
@@ -35,6 +36,35 @@ const ELIGIBLE_MARKDOWN = '# Rich editor doc\n\nHello **world**.\n\n- one\n- two
 // Ineligible markdown: reference-style link definition -> the layered gate (§5.3)
 // blocks rich editing with reason `reference-links`, so the file edits as raw.
 const INELIGIBLE_MARKDOWN = 'See [the docs][ref].\n\n[ref]: https://example.com\n';
+
+async function positionRichEditorSelection(editor: Locator, word: string, mode: 'text' | 'after'): Promise<void> {
+  await editor.focus();
+  await editor.evaluate((element, target) => {
+    const document = element.ownerDocument;
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const start = node.textContent?.indexOf(target.word) ?? -1;
+      if (start < 0) continue;
+      const end = start + target.word.length;
+      const range = document.createRange();
+      range.setStart(node, target.mode === 'text' ? start : end);
+      if (target.mode === 'text') range.setEnd(node, end);
+      else range.collapse(true);
+      const selection = document.defaultView?.getSelection();
+      if (!selection) throw new Error('Rich editor has no browser selection');
+      selection.removeAllRanges();
+      selection.addRange(range);
+      if (target.mode === 'text' && selection.toString() !== target.word) {
+        throw new Error(`Rich editor did not select ${target.word}`);
+      }
+      if (target.mode === 'after' && (selection.anchorNode !== node || selection.anchorOffset !== end)) {
+        throw new Error(`Rich editor did not position after ${target.word}`);
+      }
+      return;
+    }
+    throw new Error(`Rich editor is missing ${target.word}`);
+  }, { word, mode });
+}
 
 async function ensureSignedInAndConnected(params: Readonly<{
   page: Page;
@@ -129,9 +159,6 @@ test.describe('ui e2e: markdown rich editor (feat.files.markdownRichEditor)', ()
       extraEnv: {
         HAPPIER_BUILD_FEATURES_DENY: 'sharing.contentKeys',
         HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1',
-        HAPPIER_PRESENCE_SESSION_TIMEOUT_MS: '60000',
-        HAPPIER_PRESENCE_MACHINE_TIMEOUT_MS: '60000',
-        HAPPIER_PRESENCE_TIMEOUT_TICK_MS: '1000',
         HAPPIER_E2E_PROVIDER_SKIP_SERVER_SHARED_DEPS_BUILD: '1',
         HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'optional',
         HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
@@ -232,16 +259,10 @@ test.describe('ui e2e: markdown rich editor (feat.files.markdownRichEditor)', ()
 
       // Type an appended line in raw mode (Monaco), the most deterministic way to
       // make a precise on-disk assertion across the rich<->raw round-trip.
-      const monacoRoot = rawEditor.locator('.monaco-editor');
-      await expect(monacoRoot).toHaveCount(1, { timeout: 60_000 });
-      const monacoInput = monacoRoot.locator('textarea');
-      if (await monacoInput.count()) {
-        await monacoInput.first().click({ force: true });
-      } else {
-        await monacoRoot.click({ force: true, position: { x: 60, y: 40 } });
-      }
+      await focusMonacoEditor(rawEditor);
       await page.keyboard.press('Control+End');
       await page.keyboard.type('\nAppended by e2e.');
+      await expect(rawEditor.locator('.view-lines')).toContainText('Appended by e2e.');
 
       // Switch back to Rich; the rich surface must remount with the latest text
       // (no character loss across the toggle).
@@ -371,32 +392,40 @@ test.describe('ui e2e: markdown rich editor (feat.files.markdownRichEditor)', ()
       await page.keyboard.press('Control+End');
       await page.keyboard.press('Enter');
 
-      // 1) Bold: type a word, select it back to the line start, toggle bold via the
-      //    toolbar chip. `@tiptap/markdown` serializes a bold mark as `**...**`.
+      // 1) Bold: select exactly the new word before using the toolbar. Home
+      //    and double-click selection differ across macOS/Linux.
       const boldWord = 'BoldByE2E';
       await page.keyboard.type(boldWord);
-      await page.keyboard.press('Shift+Home');
+      await positionRichEditorSelection(proseMirror, boldWord, 'text');
       await workspaceDetailsPaneLocator(page)
         .getByTestId('file-details-rich-editor-toolbar:bold')
         .click({ force: true });
+      await expect(proseMirror.locator('strong', { hasText: boldWord })).toHaveCount(1);
+      await expect(proseMirror.locator('p').first().locator('strong')).toHaveCount(0);
 
       // 2) List: start a new line, type an item, toggle a bullet list. Serializes
       //    with a `- ` marker.
-      await page.keyboard.press('ArrowRight');
+      await positionRichEditorSelection(proseMirror, boldWord, 'after');
       await page.keyboard.press('Enter');
+      await expect(proseMirror.locator('strong', { hasText: boldWord })).toHaveCount(1);
       const listItem = 'ListItemByE2E';
       await page.keyboard.type(listItem);
       await workspaceDetailsPaneLocator(page)
         .getByTestId('file-details-rich-editor-toolbar:bulletList')
         .click({ force: true });
+      await expect(proseMirror.locator('li')).toContainText(listItem);
+      await expect(proseMirror.locator('strong', { hasText: boldWord })).toHaveCount(1);
 
       // 3) Heading: start a new line, type text, apply H1. Serializes as `# `.
+      await positionRichEditorSelection(proseMirror, listItem, 'after');
+      await page.keyboard.press('Enter');
       await page.keyboard.press('Enter');
       const headingText = 'HeadingByE2E';
       await page.keyboard.type(headingText);
       await workspaceDetailsPaneLocator(page)
         .getByTestId('file-details-rich-editor-toolbar:heading1')
         .click({ force: true });
+      await expect(proseMirror.locator('h1')).toContainText(headingText);
 
       // Save and assert the on-disk markdown reflects the toolbar formatting:
       // a bold span (`**...**`), a bullet-list marker (`- `), and an H1 (`# `).

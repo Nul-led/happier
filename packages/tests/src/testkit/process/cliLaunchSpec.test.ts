@@ -540,7 +540,7 @@ describe('resolveCliTestLaunchSpec', () => {
       '@happier-dev',
       'plugins-pi',
     );
-    const generatedInventoryPath = resolve(
+    const generatedProjectionPath = resolve(
       repoRoot,
       'apps',
       'cli',
@@ -549,7 +549,7 @@ describe('resolveCliTestLaunchSpec', () => {
       'projection',
       'registry',
       'sources',
-      'generatedBundledPluginArtifacts.ts',
+      'generatedBundledPlugins.ts',
     );
     const relativeArtifactPath = 'dist/index.js';
     const changedArtifactBytes = 'export const artifactByte = "b";\n';
@@ -558,7 +558,7 @@ describe('resolveCliTestLaunchSpec', () => {
       mkdirSync(resolve(repoRoot, 'apps', 'cli', 'scripts'), { recursive: true });
       mkdirSync(resolve(workspacePackageDir, 'dist'), { recursive: true });
       mkdirSync(resolve(bundledPackageDir, 'dist'), { recursive: true });
-      mkdirSync(dirname(generatedInventoryPath), { recursive: true });
+      mkdirSync(dirname(generatedProjectionPath), { recursive: true });
       writeFileSync(resolve(repoRoot, 'package.json'), '{"private":true}\n', 'utf8');
       writeFileSync(
         resolve(repoRoot, 'apps', 'cli', 'package.json'),
@@ -589,18 +589,11 @@ describe('resolveCliTestLaunchSpec', () => {
       );
       writeFileSync(resolve(bundledPackageDir, relativeArtifactPath), changedArtifactBytes, 'utf8');
       writeFileSync(
-        generatedInventoryPath,
+        generatedProjectionPath,
         [
-          'export const generatedBundledPluginArtifacts = [',
-          '  {',
-          '    "packageName": "@happier-dev/plugins-pi",',
-          '    "record": {',
-          '      "files": [',
-          `        { "relativePath": "${relativeArtifactPath}", "byteLength": ${changedArtifactBytes.length}, "digest": "sha256:stale" }`,
-          '      ]',
-          '    }',
-          '  }',
-          '] as const;',
+          'export const BUNDLED_FIRST_PARTY_PLUGIN_PACKAGE_NAMES = Object.freeze([',
+          '  "@happier-dev/plugins-pi",',
+          ']);',
           '',
         ].join('\n'),
         'utf8',
@@ -635,10 +628,10 @@ describe('resolveCliTestLaunchSpec', () => {
         expect(readFileSync(resolve(bundledPackageDir, relativeArtifactPath), 'utf8')).toBe(
           changedArtifactBytes,
         );
-        expect(readFileSync(generatedInventoryPath, 'utf8')).toContain(
-          `"relativePath": "${relativeArtifactPath}"`,
+        expect(readFileSync(generatedProjectionPath, 'utf8')).toContain(
+          '"@happier-dev/plugins-pi"',
         );
-        throw new Error(`Generated output differs: ${generatedInventoryPath}`);
+        throw new Error(`Generated output differs: ${generatedProjectionPath}`);
       });
 
       let launchSpec: Awaited<ReturnType<typeof resolveCliTestLaunchSpec>> | undefined;

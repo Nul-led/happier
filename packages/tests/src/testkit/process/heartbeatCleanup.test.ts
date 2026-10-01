@@ -1,8 +1,9 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { chmod, readFile, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -83,8 +84,7 @@ async function createFakeToolchain(
   commandName: string,
   markerPath: string,
   opts?: Readonly<{ exitAfterSpawn?: boolean; signalAfterSpawn?: NodeJS.Signals }>,
-): Promise<void> {
-  const commandPath = join(toolDir, process.platform === 'win32' ? `${commandName}.cmd` : commandName);
+): Promise<string> {
   const sharedScriptPath = join(toolDir, 'fake-yarn.cjs');
   const exitAfterSpawn = opts?.exitAfterSpawn === true;
   const signalAfterSpawn = opts?.signalAfterSpawn;
@@ -97,6 +97,12 @@ async function createFakeToolchain(
       "const { writeFileSync } = require('node:fs');",
       "const markerPath = process.env.HAPPIER_HEARTBEAT_MARKER;",
       "if (!markerPath) throw new Error('Missing HAPPIER_HEARTBEAT_MARKER');",
+      // Collection is a prerequisite, not the long-running process whose lifecycle is under test.
+      "if (process.argv[2] === 'list') {",
+      "  const jsonPath = process.argv[process.argv.indexOf('--json') + 1];",
+      "  writeFileSync(jsonPath, JSON.stringify([{ file: 'fixture.test.ts' }]), 'utf8');",
+      "  process.exit(0);",
+      "}",
       "const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
       "if (!grandchild.pid) throw new Error('Failed to spawn descendant process');",
       "writeFileSync(markerPath, JSON.stringify({ childPid: process.pid, grandchildPid: grandchild.pid }), 'utf8');",
@@ -110,28 +116,46 @@ async function createFakeToolchain(
     'utf8',
   );
 
-  if (process.platform === 'win32') {
-    await writeFile(
-      commandPath,
-      [
-        '@echo off',
-        `node "${sharedScriptPath}" %*`,
-        '',
-      ].join('\r\n'),
-      'utf8',
-    );
-  } else {
-    await writeFile(
-      commandPath,
-      [
-        '#!/usr/bin/env node',
-        "require('./fake-yarn.cjs');",
-        '',
-      ].join('\n'),
-      'utf8',
-    );
-    await chmod(commandPath, 0o755);
+  // Heartbeat wrappers use the canonical Corepack invocation rather than bare Yarn.
+  for (const shim of commandName === 'yarn' ? ['yarn', 'corepack'] : [commandName]) {
+    const commandPath = join(toolDir, process.platform === 'win32' ? `${shim}.cmd` : shim);
+    if (process.platform === 'win32') {
+      await writeFile(commandPath, `@echo off\r\nnode "${sharedScriptPath}" %*\r\n`, 'utf8');
+    } else {
+      await writeFile(commandPath, "#!/usr/bin/env node\nrequire('./fake-yarn.cjs');\n", 'utf8');
+      await chmod(commandPath, 0o755);
+    }
   }
+  return sharedScriptPath;
+}
+
+async function resolveWrapperFixturePath(caseItem: WrapperCase, toolDir: string, toolScriptPath: string): Promise<string> {
+  if (caseItem.name !== 'apps-ui-run-vitest-shards') return resolve(repoRootDir(), caseItem.scriptPath);
+
+  // This wrapper resolves its Vitest executable from its own package, not PATH. Keep its
+  // internal implementation real and replace only the external package in the fixture tree.
+  const fixtureRoot = join(toolDir, 'workspace');
+  const sources = [
+    caseItem.scriptPath,
+    'apps/ui/scripts/withNodeHeapLimit.mjs',
+    'scripts/testing/process/managedChildLifecycle.mjs',
+    'scripts/testing/process/processTree.mjs',
+    'scripts/testing/vitestShardCollection.mjs',
+    'scripts/testing/vitestShardOutcomes.mjs',
+    'scripts/workspaces/execYarnCommand.mjs',
+  ];
+  await Promise.all(sources.map(async (source) => {
+    const destination = join(fixtureRoot, source);
+    await mkdir(dirname(destination), { recursive: true });
+    await copyFile(resolve(repoRootDir(), source), destination);
+  }));
+  const vitestDir = join(fixtureRoot, 'node_modules', 'vitest');
+  await mkdir(vitestDir, { recursive: true });
+  await writeFile(join(vitestDir, 'package.json'), JSON.stringify({
+    name: 'vitest', type: 'module', exports: { './vitest.mjs': './vitest.mjs' },
+  }));
+  await writeFile(join(vitestDir, 'vitest.mjs'), `import ${JSON.stringify(pathToFileURL(toolScriptPath).href)};\n`);
+  return join(fixtureRoot, caseItem.scriptPath);
 }
 
 async function runWrapperCleanupScenario(
@@ -141,8 +165,6 @@ async function runWrapperCleanupScenario(
   exit: { code: number | null; signal: string | null };
   diagnostic: Array<Record<string, unknown>>;
 }> {
-  const wrapperPath = resolve(repoRootDir(), caseItem.scriptPath);
-
   return await withTempPathBin({ prefix: `happier-heartbeat-${caseItem.name}-` }, async (tempPathBin) => {
     const toolDir = tempPathBin.dir;
     const markerPath = join(toolDir, 'process-marker.json');
@@ -159,12 +181,16 @@ async function runWrapperCleanupScenario(
     };
 
     await writeFile(configPath, '// test config\n', 'utf8');
-    await createFakeToolchain(toolDir, caseItem.toolCommandName, markerPath, opts);
+    const toolScriptPath = await createFakeToolchain(toolDir, caseItem.toolCommandName, markerPath, opts);
+    const wrapperPath = await resolveWrapperFixturePath(caseItem, toolDir, toolScriptPath);
 
     const child = spawn(process.execPath, [wrapperPath, ...caseItem.buildArgs(configPath)], {
       env,
-      stdio: ['ignore', 'ignore', 'ignore'],
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
+    let childOutput = '';
+    child.stdout.on('data', (chunk) => { childOutput += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { childOutput += chunk.toString(); });
     const childExitPromise = createChildProcessExitPromise(child);
 
     try {
@@ -174,9 +200,12 @@ async function runWrapperCleanupScenario(
           const parsed = JSON.parse(raw) as { childPid?: unknown; grandchildPid?: unknown };
           return Number.isInteger(parsed.childPid) && Number.isInteger(parsed.grandchildPid);
         } catch {
+          if (child.exitCode !== null || child.signalCode !== null) {
+            throw new Error(`${caseItem.name} exited before fixture startup (code=${child.exitCode}, signal=${child.signalCode}):\n${childOutput}`);
+          }
           return false;
         }
-      }, { timeoutMs: 20_000, intervalMs: 100, context: `${caseItem.name} fake yarn startup` });
+      }, { timeoutMs: 20_000, intervalMs: 100, failFast: true, context: `${caseItem.name} fake yarn startup` });
 
       const raw = await readFile(markerPath, 'utf8');
       const marker = JSON.parse(raw) as { childPid: number; grandchildPid: number };
@@ -234,8 +263,6 @@ async function runWrapperCleanupScenario(
 }
 
 async function runWrapperParentExitCleanupScenario(caseItem: WrapperCase): Promise<void> {
-  const wrapperPath = resolve(repoRootDir(), caseItem.scriptPath);
-
   await withTempPathBin({ prefix: `happier-heartbeat-parent-exit-${caseItem.name}-` }, async (tempPathBin) => {
     const toolDir = tempPathBin.dir;
     const markerPath = join(toolDir, 'process-marker.json');
@@ -251,7 +278,8 @@ async function runWrapperParentExitCleanupScenario(caseItem: WrapperCase): Promi
     };
 
     await writeFile(configPath, '// test config\n', 'utf8');
-    await createFakeToolchain(toolDir, caseItem.toolCommandName, markerPath);
+    const toolScriptPath = await createFakeToolchain(toolDir, caseItem.toolCommandName, markerPath);
+    const wrapperPath = await resolveWrapperFixturePath(caseItem, toolDir, toolScriptPath);
     await writeFile(
       launcherPath,
       [

@@ -250,11 +250,12 @@ function createUiWebEntryPageProbe(params: Readonly<{
   };
 }
 
-async function inspectUiWebEntryPage(url: string, env: NodeJS.ProcessEnv): Promise<UiWebEntryPageProbe> {
+async function inspectUiWebEntryPage(url: string, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<UiWebEntryPageProbe> {
   const startedAtMs = Date.now();
   try {
     const timeoutMs = resolveUiWebEntryProbeTimeoutMs(env);
-    const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(timeoutMs) });
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const res = await fetch(url, { method: 'GET', signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal });
     if (!res.ok) {
       return createUiWebEntryPageProbe({
         startedAtMs,
@@ -289,6 +290,7 @@ async function inspectUiWebEntryPage(url: string, env: NodeJS.ProcessEnv): Promi
       detail: hasScriptTags ? 'entry page exposed a primary app script' : 'entry page had no primary app script',
     });
   } catch (error) {
+    signal?.throwIfAborted();
     return createUiWebEntryPageProbe({
       startedAtMs,
       outcome: classifyUiWebProbeError(error),
@@ -339,6 +341,7 @@ async function resolveExpoWebBaseUrl(params: {
   timeoutMs: number;
   expectedPort?: number;
   env: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
   onEntryProbe?: (diagnostic: UiWebHttpProbeDiagnostic) => void;
   onStatusProbe?: (diagnostic: UiWebHttpProbeDiagnostic) => void;
 }): Promise<ResolvedExpoWebBaseUrl> {
@@ -355,6 +358,7 @@ async function resolveExpoWebBaseUrl(params: {
   let lastOrderedCandidates: string[] = [];
 
   while (Date.now() - startedAt < params.timeoutMs) {
+    params.signal?.throwIfAborted();
     const text = await readFile(params.stdoutPath, 'utf8').catch(() => '');
     const stdoutCandidates = extractHttpUrls(text)
       .flatMap((url) => expandLoopbackBaseUrlCandidates(url))
@@ -378,7 +382,7 @@ async function resolveExpoWebBaseUrl(params: {
 
     let firstEntryPage: ResolvedExpoWebBaseUrl | null = null;
     for (const url of orderedCandidates) {
-      const probe = await inspectUiWebEntryPage(url, params.env);
+      const probe = await inspectUiWebEntryPage(url, params.env, params.signal);
       params.onEntryProbe?.(probe.diagnostic);
       if (probe.isEntryPage) {
         const matchesExpectedPort =
@@ -407,7 +411,7 @@ async function resolveExpoWebBaseUrl(params: {
     }
     if (stdoutAdvertisesExpectedPort && expectedCandidates.length > 0) {
       for (const url of expectedCandidates) {
-        const statusDiagnostic = await probeMetroPackagerStatus(url, params.env);
+        const statusDiagnostic = await probeMetroPackagerStatus(url, params.env, params.signal);
         params.onStatusProbe?.(statusDiagnostic);
         if (statusDiagnostic.outcome === 'ready') {
           return {
@@ -464,13 +468,15 @@ export const __testables = {
 async function probeMetroPackagerStatus(
   baseUrl: string,
   env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<UiWebHttpProbeDiagnostic> {
   const endpoint = `${baseUrl.replace(/\/+$/, '')}/status`;
   const startedAtMs = Date.now();
   try {
+    const timeoutSignal = AbortSignal.timeout(resolveUiWebMetroStatusAttemptTimeoutMs(env));
     const res = await fetch(endpoint, {
       method: 'GET',
-      signal: AbortSignal.timeout(resolveUiWebMetroStatusAttemptTimeoutMs(env)),
+      signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
     });
     const inspection = await inspectMetroPackagerStatusResponse(res);
     if (inspection.outcome === 'http-error') {
@@ -486,6 +492,7 @@ async function probeMetroPackagerStatus(
       detail: inspection.detail,
     });
   } catch (error) {
+    signal?.throwIfAborted();
     return createUiWebProbeDiagnostic({
       outcome: classifyUiWebProbeError(error),
       startedAtMs,
@@ -509,11 +516,12 @@ async function resolvePreferredLiveMetroBaseUrl(params: {
   currentBaseUrl: string;
   metroPort: number;
   env: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
   onEntryProbe?: (diagnostic: UiWebHttpProbeDiagnostic) => void;
 }): Promise<ResolvedExpoWebBaseUrl | null> {
   const currentUrl = new URL(params.currentBaseUrl);
   if (resolveUrlPort(params.currentBaseUrl) === params.metroPort) {
-    const currentProbe = await inspectUiWebEntryPage(params.currentBaseUrl, params.env);
+    const currentProbe = await inspectUiWebEntryPage(params.currentBaseUrl, params.env, params.signal);
     params.onEntryProbe?.(currentProbe.diagnostic);
     if (currentProbe.isEntryPage) {
       return {
@@ -538,7 +546,7 @@ async function resolvePreferredLiveMetroBaseUrl(params: {
   for (const candidate of candidates) {
     if (seen.has(candidate)) continue;
     seen.add(candidate);
-    const probe = await inspectUiWebEntryPage(candidate, params.env);
+    const probe = await inspectUiWebEntryPage(candidate, params.env, params.signal);
     params.onEntryProbe?.(probe.diagnostic);
     if (!probe.isEntryPage) continue;
     return {
@@ -580,25 +588,28 @@ async function fetchWithTimeout<TResult>(
     controller.abort(new DOMException('The operation was aborted.', 'AbortError'));
   }, timeoutMs);
   let handleAbort: (() => void) | null = null;
+  const signal = init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal;
 
   try {
+    signal.throwIfAborted();
     const mergedInit: RequestInit = {
       ...init,
-      signal: controller.signal,
+      signal,
     };
     return await Promise.race([
       fetch(url, mergedInit).then(consumeResponse),
       new Promise<never>((_, reject) => {
         handleAbort = () => {
-          reject(controller.signal.reason instanceof Error ? controller.signal.reason : new DOMException('The operation was aborted.', 'AbortError'));
+          reject(signal.reason instanceof Error ? signal.reason : new DOMException('The operation was aborted.', 'AbortError'));
         };
-        controller.signal.addEventListener('abort', handleAbort, { once: true });
+        signal.addEventListener('abort', handleAbort, { once: true });
+        if (signal.aborted) handleAbort();
       }),
     ]);
   } finally {
     clearTimeout(timeoutId);
     if (handleAbort) {
-      controller.signal.removeEventListener('abort', handleAbort);
+      signal.removeEventListener('abort', handleAbort);
     }
   }
 }
@@ -674,9 +685,9 @@ async function readMetroBundleFailureDetailFromLogs(stdoutPath: string, stderrPa
   return extractMetroBundleFailureDetail(stdoutText) ?? extractMetroBundleFailureDetail(stderrText);
 }
 
-async function probeScriptReady(url: string, timeoutMs: number): Promise<ScriptReadyProbe> {
+async function probeScriptReady(url: string, timeoutMs: number, signal?: AbortSignal): Promise<ScriptReadyProbe> {
   try {
-    return await fetchWithTimeout(url, { method: 'GET' }, timeoutMs, async (res) => {
+    return await fetchWithTimeout(url, { method: 'GET', signal }, timeoutMs, async (res) => {
       const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
 
       if (res.ok && contentType.includes('javascript')) {
@@ -713,6 +724,7 @@ async function probeScriptReady(url: string, timeoutMs: number): Promise<ScriptR
         : 'retry';
     });
   } catch (error) {
+    signal?.throwIfAborted();
     if (error instanceof MetroBundleFailureError) {
       throw error;
     }
@@ -732,20 +744,22 @@ async function resolvePrimaryAppScriptUrl(
   baseUrl: string,
   env: NodeJS.ProcessEnv,
   deadlineAtMs: number,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   const entryTimeoutMs = resolveRemainingTimeoutMs(deadlineAtMs, resolveUiWebEntryProbeTimeoutMs(env));
   const html = await fetchWithTimeout(
     baseUrl,
-    { method: 'GET' },
+    { method: 'GET', signal },
     entryTimeoutMs,
     async (response) => response.ok ? await response.text() : '',
   )
     .catch(() => '');
+  signal?.throwIfAborted();
   const scripts = resolveScriptUrlsFromHtml(html, baseUrl);
   return scripts.length > 0 ? selectPrimaryAppScriptUrl(scripts) : null;
 }
 
-async function waitForPrimaryAppScriptReady(baseUrl: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+async function waitForPrimaryAppScriptReady(baseUrl: string, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<boolean> {
   const totalTimeoutMs = resolveUiWebScriptFetchTotalTimeoutMs(env);
   const htmlRefreshRetryCount = resolveUiWebScriptHtmlRefreshRetryCount(env);
   const deadlineAtMs = Date.now() + totalTimeoutMs;
@@ -756,8 +770,9 @@ async function waitForPrimaryAppScriptReady(baseUrl: string, env: NodeJS.Process
 
   try {
     while (Date.now() < deadlineAtMs) {
+      signal?.throwIfAborted();
       if (!primaryAppScriptUrl) {
-        primaryAppScriptUrl = await resolvePrimaryAppScriptUrl(baseUrl, env, deadlineAtMs);
+        primaryAppScriptUrl = await resolvePrimaryAppScriptUrl(baseUrl, env, deadlineAtMs, signal);
         retryCountForCurrentScript = 0;
       }
       if (!primaryAppScriptUrl) {
@@ -770,6 +785,7 @@ async function waitForPrimaryAppScriptReady(baseUrl: string, env: NodeJS.Process
         const probe = await probeScriptReady(
           primaryAppScriptUrl,
           resolveRemainingTimeoutMs(deadlineAtMs, totalTimeoutMs),
+          signal,
         );
         if (probe === 'ready') {
           return true;
@@ -788,6 +804,7 @@ async function waitForPrimaryAppScriptReady(baseUrl: string, env: NodeJS.Process
           retryCountForCurrentScript = 0;
         }
       } catch (error) {
+        signal?.throwIfAborted();
         lastError = error;
         if (error instanceof MetroBundleFailureError) {
           throw error;
@@ -798,6 +815,7 @@ async function waitForPrimaryAppScriptReady(baseUrl: string, env: NodeJS.Process
       await sleep(Math.min(retryDelayMs, remainingSleepMs));
     }
   } catch (error) {
+    signal?.throwIfAborted();
     if (error instanceof MetroBundleFailureError) {
       throw error;
     }
@@ -915,34 +933,30 @@ async function startUiWebMetroSingleAttempt(params: UiWebMetroStartParams): Prom
   let baseUrl: string;
   let lastStatusDiagnostic: UiWebHttpProbeDiagnostic | null = null;
   let lastEntryDiagnostic: UiWebHttpProbeDiagnostic | null = null;
+  const readiness = new AbortController();
+  const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+    const detail = signal ? `signal=${signal}` : `code=${code ?? 'null'}`;
+    readiness.abort(new Error(`expo web dev server exited before ready (${detail})`));
+  };
+  proc.child.once('exit', onExit);
   try {
-    const exitedEarly = new Promise<never>((_, reject) => {
-      const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-        const detail = signal ? `signal=${signal}` : `code=${code ?? 'null'}`;
-        reject(new Error(`expo web dev server exited before ready (${detail})`));
-      };
-      proc.child.once('exit', onExit);
-      if (proc.child.exitCode !== null || proc.child.signalCode !== null) {
-        proc.child.off('exit', onExit);
-        onExit(proc.child.exitCode, proc.child.signalCode as NodeJS.Signals | null);
-      }
-    });
+    if (proc.child.exitCode !== null || proc.child.signalCode !== null) {
+      onExit(proc.child.exitCode, proc.child.signalCode as NodeJS.Signals | null);
+    }
 
-    const resolved = await Promise.race([
-      resolveExpoWebBaseUrl({
-        stdoutPath,
-        timeoutMs: resolveUiWebBaseUrlTimeoutMs(params.env),
-        expectedPort: metroPort,
-        env: params.env,
-        onEntryProbe: (diagnostic) => {
-          lastEntryDiagnostic = diagnostic;
-        },
-        onStatusProbe: (diagnostic) => {
-          lastStatusDiagnostic = diagnostic;
-        },
-      }),
-      exitedEarly,
-    ]);
+    const resolved = await resolveExpoWebBaseUrl({
+      stdoutPath,
+      timeoutMs: resolveUiWebBaseUrlTimeoutMs(params.env),
+      expectedPort: metroPort,
+      env: params.env,
+      signal: readiness.signal,
+      onEntryProbe: (diagnostic) => {
+        lastEntryDiagnostic = diagnostic;
+      },
+      onStatusProbe: (diagnostic) => {
+        lastStatusDiagnostic = diagnostic;
+      },
+    });
     baseUrl = resolved.baseUrl;
     let hasReadyEntryPage = resolved.hasScriptTags;
     const hasExplicitMetroPort = typeof params.port === 'number' && Number.isFinite(params.port) && params.port > 0;
@@ -950,10 +964,11 @@ async function startUiWebMetroSingleAttempt(params: UiWebMetroStartParams): Prom
     if (requiresLivePortReanchor || !hasReadyEntryPage) {
       await waitFor(
         async () => {
+          readiness.signal.throwIfAborted();
           const metroStatusCandidates = expandLoopbackBaseUrlCandidates(`http://localhost:${metroPort}`);
           let metroStatusReady = false;
           for (const candidate of metroStatusCandidates) {
-            const statusDiagnostic = await probeMetroPackagerStatus(candidate, params.env);
+            const statusDiagnostic = await probeMetroPackagerStatus(candidate, params.env, readiness.signal);
             lastStatusDiagnostic = statusDiagnostic;
             if (statusDiagnostic.outcome === 'ready') {
               metroStatusReady = true;
@@ -967,6 +982,7 @@ async function startUiWebMetroSingleAttempt(params: UiWebMetroStartParams): Prom
                 currentBaseUrl: baseUrl,
                 metroPort,
                 env: params.env,
+                signal: readiness.signal,
                 onEntryProbe: (diagnostic) => {
                   lastEntryDiagnostic = diagnostic;
                 },
@@ -977,7 +993,7 @@ async function startUiWebMetroSingleAttempt(params: UiWebMetroStartParams): Prom
                 return preferredBaseUrl.hasScriptTags;
               }
             } else {
-              const probe = await inspectUiWebEntryPage(baseUrl, params.env);
+              const probe = await inspectUiWebEntryPage(baseUrl, params.env, readiness.signal);
               lastEntryDiagnostic = probe.diagnostic;
               if (probe.isEntryPage && probe.hasScriptTags) {
                 hasReadyEntryPage = probe.hasScriptTags;
@@ -990,7 +1006,7 @@ async function startUiWebMetroSingleAttempt(params: UiWebMetroStartParams): Prom
             return false;
           }
 
-          const probe = await inspectUiWebEntryPage(baseUrl, params.env);
+          const probe = await inspectUiWebEntryPage(baseUrl, params.env, readiness.signal);
           lastEntryDiagnostic = probe.diagnostic;
           if (!(probe.isEntryPage && probe.hasScriptTags)) {
             return false;
@@ -998,12 +1014,12 @@ async function startUiWebMetroSingleAttempt(params: UiWebMetroStartParams): Prom
           hasReadyEntryPage = probe.hasScriptTags;
           return true;
         },
-        { timeoutMs: resolveUiWebMetroStatusTimeoutMs(params.env), intervalMs: 250, context: 'metro /status ready' },
+        { timeoutMs: resolveUiWebMetroStatusTimeoutMs(params.env), intervalMs: 250, context: 'metro /status ready', failFast: true },
       );
     }
 
     if (hasReadyEntryPage) {
-      const primaryScriptReady = await waitForPrimaryAppScriptReady(baseUrl, params.env);
+      const primaryScriptReady = await waitForPrimaryAppScriptReady(baseUrl, params.env, readiness.signal);
       if (!primaryScriptReady) {
         const bundleFailureDetail = await readMetroBundleFailureDetailFromLogs(stdoutPath, stderrPath);
         if (bundleFailureDetail) {
@@ -1011,6 +1027,7 @@ async function startUiWebMetroSingleAttempt(params: UiWebMetroStartParams): Prom
         }
       }
     }
+    readiness.signal.throwIfAborted();
   } catch (e) {
     await proc.stop().catch(() => {});
     const stdoutText = await readFile(stdoutPath, 'utf8').catch(() => '');
@@ -1026,6 +1043,8 @@ async function startUiWebMetroSingleAttempt(params: UiWebMetroStartParams): Prom
       `stderrTail=${JSON.stringify(stderrTail)}`,
     ].join(' | ');
     throw new Error(detail);
+  } finally {
+    proc.child.off('exit', onExit);
   }
 
   return {

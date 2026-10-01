@@ -36,7 +36,9 @@ export async function ensureUiWebWorkspacePrebuild(params: {
   );
 
   try {
-    const stacksPmModuleUrl = pathToFileURL(resolvePath(repoRootDir(), 'apps', 'stack', 'scripts', 'utils', 'proc', 'pm.mjs')).href;
+    const uiWorkspaceBuildModuleUrl = pathToFileURL(
+      resolvePath(repoRootDir(), 'apps', 'ui', 'scripts', 'ensureWorkspacePackagesBuilt.mjs'),
+    ).href;
     const launchEnv: NodeJS.ProcessEnv = {
       ...params.env,
       CI: '1',
@@ -53,12 +55,11 @@ export async function ensureUiWebWorkspacePrebuild(params: {
         '--input-type=module',
         '--eval',
         [
-          "import { resolve } from 'node:path';",
-          `const stacksUrl = ${JSON.stringify(stacksPmModuleUrl)};`,
-          'const { ensureWorkspacePackagesBuiltForComponent } = await import(stacksUrl);',
-          'const workspaceRootDir = process.argv[1];',
-          "if (!workspaceRootDir) throw new Error('missing workspaceRootDir');",
-          'const res = await ensureWorkspacePackagesBuiltForComponent(resolve(workspaceRootDir), { quiet: false, env: process.env });',
+          `const uiWorkspaceBuildModuleUrl = ${JSON.stringify(uiWorkspaceBuildModuleUrl)};`,
+          'const { ensureUiWorkspacePackagesBuilt } = await import(uiWorkspaceBuildModuleUrl);',
+          'const uiPackageDir = process.argv[1];',
+          "if (!uiPackageDir) throw new Error('missing uiPackageDir');",
+          'const res = await ensureUiWorkspacePackagesBuilt({ uiPackageDir, env: process.env });',
           'process.stdout.write(`${JSON.stringify(res)}\\n`);',
         ].join('\n'),
         params.workspaceRootDir,

@@ -10,6 +10,7 @@ const { testState } = vi.hoisted(() => {
       repoRootDir: '',
       transientStatMissingPath: '',
       transientStatMissingTriggered: false,
+      fileReads: [] as { path: string; bytes: number }[],
     },
   };
 });
@@ -19,6 +20,11 @@ vi.mock('node:fs', async () => {
 
   return {
     ...actual,
+    readFileSync: (...args: Parameters<typeof actual.readFileSync>): ReturnType<typeof actual.readFileSync> => {
+      const contents = actual.readFileSync(...args);
+      testState.fileReads.push({ path: String(args[0]), bytes: Buffer.byteLength(contents) });
+      return contents;
+    },
     statSync: (...args: Parameters<typeof actual.statSync>): ReturnType<typeof actual.statSync> => {
       const [pathLike] = args;
       const resolvedPath = typeof pathLike === 'string'
@@ -55,6 +61,7 @@ describe('uiWebSourceFingerprint', () => {
     testState.repoRootDir = '';
     testState.transientStatMissingPath = '';
     testState.transientStatMissingTriggered = false;
+    testState.fileReads = [];
   });
 
   afterAll(() => {
@@ -267,17 +274,36 @@ describe('uiWebSourceFingerprint', () => {
     await rm(rootDir, { recursive: true, force: true }).catch(() => {});
   });
 
-  it('ignores internal workspace dist outputs when computing the fingerprint', async () => {
+  it('does not read published or staged workspace dist outputs while retaining source inputs', async () => {
     const rootDir = await mkdtemp(join(tmpdir(), 'happier-uiweb-fingerprint-ignore-dist-'));
     testState.repoRootDir = rootDir;
 
     const uiDir = join(rootDir, 'apps', 'ui');
     const sourcesDir = join(uiDir, 'sources');
     const cliCommonDir = join(rootDir, 'packages', 'cli-common');
-    const distFile = join(cliCommonDir, 'dist', 'runtime.js');
+    // Names produced by atomic_dir_swap, buildTypeScriptPackageDist and cli-common's dist publisher.
+    const generatedDirs = [
+      'dist',
+      '.tmp.1788686160975.2429811.a72fa98fde7bb',
+      '.tmp.1788686160975.2429811.a72fa98fde7bb.hstack-backup.2429811.1788686160976',
+      '.backup.1788686160975.2429811.a72fa98fde7bb',
+      '.dist.build.1788686160975.2429811.a72fa98fde7bb',
+      '.dist.backup.1788686160975.2429811.a72fa98fde7bb',
+      '.dist.hstack-stage-Ab12cD',
+      '.dist.hstack-backup.2429811.1788686160975',
+    ];
+    const generatedFiles = generatedDirs.map((dir) => join(cliCommonDir, dir, 'runtime.js.map'));
+    // A generic dot-directory or a matching name below src is not a package build-output root.
+    const sourceFiles = [
+      join(cliCommonDir, '.tmp.sources', 'runtime.ts'),
+      join(cliCommonDir, 'src', generatedDirs[1]!, 'runtime.ts'),
+    ];
 
     await mkdir(sourcesDir, { recursive: true });
-    await mkdir(join(cliCommonDir, 'dist'), { recursive: true });
+    for (const file of [...generatedFiles, ...sourceFiles]) {
+      await mkdir(join(file, '..'), { recursive: true });
+      await writeFile(file, 'export const value = "before";\n', 'utf8');
+    }
 
     await writeFile(join(uiDir, 'index.ts'), 'export {};\n', 'utf8');
     await writeFile(join(uiDir, 'metro.config.js'), 'module.exports = {};\n', 'utf8');
@@ -292,16 +318,24 @@ describe('uiWebSourceFingerprint', () => {
       'utf8',
     );
     await writeFile(join(cliCommonDir, 'package.json'), JSON.stringify({ name: '@happier-dev/cli-common' }), 'utf8');
-    await writeFile(distFile, 'console.log("dist-before");\n', 'utf8');
+    const { resolveUiWebSourceFingerprint } = await import('./uiWebSourceFingerprint');
+    const firstFingerprint = resolveUiWebSourceFingerprint();
+    const generatedReads = testState.fileReads.filter(({ path }) => generatedFiles.includes(path));
+    expect({ files: generatedReads.length, bytes: generatedReads.reduce((total, read) => total + read.bytes, 0) })
+      .toEqual({ files: 0, bytes: 0 });
 
-    const firstFingerprint = (await import('./uiWebSourceFingerprint')).resolveUiWebSourceFingerprint();
-    await writeFile(distFile, 'console.log("dist-after ");\n', 'utf8');
+    for (const file of generatedFiles) {
+      await writeFile(file, 'export const value = "after ";\n', 'utf8');
+    }
+    expect(resolveUiWebSourceFingerprint()).toBe(firstFingerprint);
 
-    vi.resetModules();
-    testState.repoRootDir = rootDir;
-    const secondFingerprint = (await import('./uiWebSourceFingerprint')).resolveUiWebSourceFingerprint();
-
-    expect(secondFingerprint).toBe(firstFingerprint);
+    let previousFingerprint = firstFingerprint;
+    for (const file of sourceFiles) {
+      await writeFile(file, 'export const value = "after ";\n', 'utf8');
+      const nextFingerprint = resolveUiWebSourceFingerprint();
+      expect(nextFingerprint).not.toBe(previousFingerprint);
+      previousFingerprint = nextFingerprint;
+    }
 
     await rm(rootDir, { recursive: true, force: true }).catch(() => {});
   });
@@ -347,6 +381,49 @@ describe('uiWebSourceFingerprint', () => {
     expect(secondFingerprint).toBe(firstFingerprint);
 
     await rm(rootDir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('does not read Cargo workspace output while retaining Rust sources and lockfiles', async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'happier-uiweb-fingerprint-cargo-'));
+    testState.repoRootDir = rootDir;
+    const uiDir = join(rootDir, 'apps', 'ui');
+    const packageDir = join(rootDir, 'packages', 'iroh-native');
+    const generatedFile = join(packageDir, 'rust', 'target', 'debug', 'native.o');
+    const sourceFiles = [
+      join(packageDir, 'rust', 'happier-iroh-core', 'src', 'lib.rs'),
+      join(packageDir, 'rust', 'Cargo.toml'),
+      join(packageDir, 'rust', 'Cargo.lock'),
+      join(packageDir, 'src', 'target', 'browser.ts'),
+    ];
+    try {
+      await mkdir(uiDir, { recursive: true });
+      await writeFile(join(uiDir, 'package.json'), JSON.stringify({ dependencies: { '@happier-dev/iroh-native': '*' } }));
+      for (const file of [generatedFile, ...sourceFiles]) {
+        await mkdir(join(file, '..'), { recursive: true });
+        await writeFile(file, 'before');
+      }
+      const { resolveUiWebSourceFingerprint } = await import('./uiWebSourceFingerprint');
+      const firstFingerprint = resolveUiWebSourceFingerprint();
+      const generatedReads = testState.fileReads.filter(({ path }) => path === generatedFile);
+      expect({ files: generatedReads.length, bytes: generatedReads.reduce((total, read) => total + read.bytes, 0) })
+        .toEqual({ files: 0, bytes: 0 });
+      await writeFile(generatedFile, 'after');
+      expect(resolveUiWebSourceFingerprint()).toBe(firstFingerprint);
+
+      let previousFingerprint = firstFingerprint;
+      for (const file of sourceFiles) {
+        await writeFile(file, 'after');
+        const nextFingerprint = resolveUiWebSourceFingerprint();
+        expect(nextFingerprint).not.toBe(previousFingerprint);
+        previousFingerprint = nextFingerprint;
+      }
+      await rm(join(packageDir, 'rust', 'Cargo.toml'));
+      const withoutCargoWorkspace = resolveUiWebSourceFingerprint();
+      await writeFile(generatedFile, 'now a source directory without a Cargo workspace');
+      expect(resolveUiWebSourceFingerprint()).not.toBe(withoutCargoWorkspace);
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
   });
 
   it('ignores transient ENOENT while hashing internal workspace files', async () => {

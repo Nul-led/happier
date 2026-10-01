@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -8,6 +8,10 @@ import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
 import { repoRootDir } from '../paths';
 import { waitFor } from '../timing';
 import { buildUiWebExportCacheKey } from './uiWebExportCacheKey';
+import { createUiWebTestRepo } from './uiWebTestRepo';
+
+const testRepository = vi.hoisted(() => ({ rootDir: '' }));
+vi.mock('../paths', () => ({ repoRootDir: () => testRepository.rootDir }));
 
 let lastSpawnArgs: string[] | null = null;
 let lastSpawnEnv: NodeJS.ProcessEnv | null = null;
@@ -186,6 +190,14 @@ async function removePathWithRetries(path: string, options?: { timeoutMs?: numbe
 }
 
 describe('startUiWeb baseUrl resolution', () => {
+  beforeAll(async () => {
+    testRepository.rootDir = await createUiWebTestRepo();
+  });
+
+  afterAll(async () => {
+    await rm(testRepository.rootDir, { recursive: true, force: true });
+  });
+
   beforeEach(async () => {
     vi.resetModules();
     vi.useRealTimers();
@@ -632,7 +644,7 @@ describe('startUiWeb baseUrl resolution', () => {
 
     try {
       const started = await Promise.race([
-        startUiWeb({ testDir, env: { HAPPIER_E2E_UI_WEB_MODE: 'metro' } }),
+        startUiWeb({ testDir, port: 19006, env: { HAPPIER_E2E_UI_WEB_MODE: 'metro' } }),
         new Promise<never>((_, reject) => {
           setTimeout(() => {
             const calledUrls = fetchMock.mock.calls
@@ -686,7 +698,7 @@ describe('startUiWeb baseUrl resolution', () => {
 
     try {
       const started = await Promise.race([
-        startUiWeb({ testDir, env: { HAPPIER_E2E_UI_WEB_MODE: 'metro' } }),
+        startUiWeb({ testDir, port: 8081, env: { HAPPIER_E2E_UI_WEB_MODE: 'metro' } }),
         new Promise<never>((_, reject) => {
           setTimeout(() => {
             const calledUrls = fetchMock.mock.calls
@@ -740,7 +752,7 @@ describe('startUiWeb baseUrl resolution', () => {
 
     try {
       const started = await Promise.race([
-        startUiWeb({ testDir, env: { HAPPIER_E2E_UI_WEB_MODE: 'metro' } }),
+        startUiWeb({ testDir, port: 8081, env: { HAPPIER_E2E_UI_WEB_MODE: 'metro' } }),
         new Promise<never>((_, reject) => {
           setTimeout(() => {
             reject(new Error('startUiWeb did not finish quickly'));
@@ -848,7 +860,7 @@ describe('startUiWeb baseUrl resolution', () => {
 
     try {
       const started = await Promise.race([
-        startUiWeb({ testDir, env: { HAPPIER_E2E_UI_WEB_MODE: 'metro' } }),
+        startUiWeb({ testDir, port: 8081, env: { HAPPIER_E2E_UI_WEB_MODE: 'metro' } }),
         new Promise<never>((_, reject) => {
           setTimeout(() => {
             reject(new Error('startUiWeb did not finish quickly'));
@@ -899,7 +911,7 @@ describe('startUiWeb baseUrl resolution', () => {
 
     try {
       const started = await Promise.race([
-        startUiWeb({ testDir, env: { HAPPIER_E2E_UI_WEB_MODE: 'metro', HAPPIER_E2E_EXPO_CLEAR: '1' } }),
+        startUiWeb({ testDir, port: 8081, env: { HAPPIER_E2E_UI_WEB_MODE: 'metro', HAPPIER_E2E_EXPO_CLEAR: '1' } }),
         new Promise<never>((_, reject) => {
           setTimeout(() => {
             reject(new Error('startUiWeb did not finish quickly'));
