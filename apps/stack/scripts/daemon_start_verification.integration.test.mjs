@@ -39,6 +39,7 @@ function buildDelayedDaemonStartCliScript({
   childPidPath = '',
 }) {
   const statePath = join(cliHomeDir, 'servers', 'stack_dev__id_default', 'daemon.state.json');
+  const lockPath = `${statePath}.lock`;
   return `
 import { writeFileSync } from 'node:fs';
 import { spawnDaemonLikeProcess } from ${JSON.stringify(DAEMON_TEST_PROCESS_HELPER_PATH)};
@@ -60,6 +61,7 @@ if (sub === 'start') {
     publicServerUrl: String(process.env.HAPPIER_WEBAPP_URL || ''),
     startDelayMs: ${JSON.stringify(startDelayMs)},
   });
+  writeFileSync(${JSON.stringify(lockPath)}, String(child.pid), 'utf-8');
   ${childPidPath ? `writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid), 'utf-8');` : ''}
   process.exit(${JSON.stringify(startExitCode)});
 }
@@ -290,7 +292,7 @@ process.exit(0);
   return join(cliBinDir, 'happier.mjs');
 }
 
-function buildProfileCaptureDaemonCliScript({ cliHomeDir, capturePath }) {
+function buildProfileCaptureDaemonCliScript({ cliHomeDir, capturePath, serverSetDelayMs = 0 }) {
   const activeServerId = 'stack_dev__id_default';
   const statePath = join(cliHomeDir, 'servers', activeServerId, 'daemon.state.json');
   return `
@@ -301,6 +303,11 @@ import { spawnDaemonLikeProcess } from ${JSON.stringify(DAEMON_TEST_PROCESS_HELP
 const args = process.argv.slice(2);
 const home = process.env.HAPPIER_HOME_DIR || process.env.HAPPIER_STACK_CLI_HOME_DIR;
 if (!home) process.exit(2);
+
+if (args[0] === 'server' && args[1] === 'set' && ${JSON.stringify(serverSetDelayMs)} > 0) {
+  const { setTimeout: delay } = await import('node:timers/promises');
+  await delay(${JSON.stringify(serverSetDelayMs)});
+}
 
 ${buildStubHappierServerSetSource()}
 
@@ -436,6 +443,108 @@ test('startLocalDaemonWithAuth treats daemon start exit=0 as failure when daemon
   }
 });
 
+test('startLocalDaemonWithAuth fails promptly after a non-zero start wrapper exits without daemon state', async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'happy-stacks-daemon-nonzero-no-state-'));
+  const cliHomeDir = join(tmp, 'stack', 'cli');
+  const cliBin = join(tmp, 'bin', 'happier');
+  const cliCommandScript = join(tmp, 'cli-command.mjs');
+  const runnerPath = join(tmp, 'runner.mjs');
+
+  try {
+    await mkdir(dirname(cliBin), { recursive: true });
+    await mkdir(cliHomeDir, { recursive: true });
+    await writeFile(join(cliHomeDir, 'access.key'), 'seed-access-key\n', 'utf-8');
+    await writeFile(join(cliHomeDir, 'settings.json'), JSON.stringify({
+      schemaVersion: 5,
+      machineId: 'test-machine',
+      activeServerId: 'stack_dev__id_default',
+      servers: {
+        stack_dev__id_default: {
+          id: 'stack_dev__id_default',
+          serverUrl: 'http://localhost:4301',
+          localServerUrl: 'http://127.0.0.1:4301',
+          webappUrl: 'http://localhost:4301',
+        },
+      },
+    }) + '\n', 'utf-8');
+    await writeFile(cliBin, '#!/bin/sh\nexit 0\n', 'utf-8');
+    await chmod(cliBin, 0o755);
+    await writeFile(
+      cliCommandScript,
+      `
+const [scope, action] = process.argv.slice(2);
+if (scope !== 'daemon') process.exit(0);
+if (action === 'stop' || action === 'status') process.exit(0);
+if (action === 'start') process.exit(1);
+process.exit(0);
+      `.trimStart(),
+      'utf-8',
+    );
+    await writeFile(
+      runnerPath,
+      `
+import { startLocalDaemonWithAuth } from ${JSON.stringify(join(rootDir, 'scripts', 'daemon.mjs'))};
+
+const startedAt = Date.now();
+try {
+  await startLocalDaemonWithAuth({
+    cliBin: ${JSON.stringify(cliBin)},
+    cliCommand: process.execPath,
+    cliCommandArgs: [${JSON.stringify(cliCommandScript)}],
+    cliHomeDir: ${JSON.stringify(cliHomeDir)},
+    internalServerUrl: 'http://127.0.0.1:4301',
+    publicServerUrl: 'http://localhost:4301',
+    isShuttingDown: () => false,
+    forceRestart: true,
+    env: {
+      ...process.env,
+      HAPPIER_STACK_STACK: 'dev',
+      HAPPIER_STACK_AUTO_AUTH_SEED: '0',
+      HAPPIER_STACK_MIGRATE_CREDENTIALS: '0',
+      HAPPIER_STACK_CLI_BUILD: '1',
+      HAPPIER_STACK_CREDENTIAL_VALIDATE_TIMEOUT_MS: '10',
+      HAPPIER_STACK_DAEMON_START_VERIFY_TIMEOUT_MS: '30000',
+      HAPPIER_STACK_DAEMON_START_VERIFY_POLL_MS: '25',
+      HAPPIER_STACK_DAEMON_START_VERIFY_STABLE_MS: '0',
+    },
+    stackName: 'dev',
+    cliIdentity: 'default',
+  });
+  console.error('unexpected daemon start success');
+  process.exitCode = 1;
+} catch (error) {
+  console.log(JSON.stringify({
+    elapsedMs: Date.now() - startedAt,
+    message: error instanceof Error ? error.message : String(error),
+  }));
+}
+      `.trimStart(),
+      'utf-8',
+    );
+
+    const result = await runNodeWithTimeout([runnerPath], {
+      cwd: tmp,
+      env: process.env,
+      timeoutMs: Number(PROCESS_BACKED_DAEMON_FIXTURE_TIMEOUT_MS),
+    });
+
+    assert.equal(
+      result.timedOut,
+      false,
+      `a failed wrapper without daemon state must not wait for the 30s verification deadline\n${result.stdout}\n${result.stderr}`,
+    );
+    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    const observation = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
+    assert.match(observation.message, /Failed to start daemon/);
+    assert.ok(
+      observation.elapsedMs < Number(PROCESS_BACKED_DAEMON_FIXTURE_TIMEOUT_MS),
+      `daemon start failure took ${observation.elapsedMs}ms instead of returning before its 30s verification deadline`,
+    );
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('startLocalDaemonWithAuth reconciles a stale active stack profile before spawning the daemon', async () => {
   const tmp = await mkdtemp(join(tmpdir(), 'happy-stacks-daemon-profile-reconcile-'));
   let daemonPid = null;
@@ -537,6 +646,93 @@ test('startLocalDaemonWithAuth reconciles a stale active stack profile before sp
     if (Number.isFinite(daemonPid) && daemonPid > 1) {
       killDetachedProcessGroup(daemonPid, 'SIGKILL');
     }
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('startLocalDaemonWithAuth bounds profile reconciliation by the daemon startup readiness budget', async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'happy-stacks-daemon-profile-timeout-'));
+  try {
+    const cliHomeDir = join(tmp, 'stack', 'cli');
+    const cliBin = join(tmp, 'bin', 'happier');
+    const cliCommandScript = join(tmp, 'profile-delay-daemon.mjs');
+    const activeServerId = 'stack_dev__id_default';
+    const internalServerUrl = 'http://127.0.0.1:4312';
+    const publicServerUrl = 'http://localhost:4312';
+
+    await mkdir(dirname(cliBin), { recursive: true });
+    await mkdir(cliHomeDir, { recursive: true });
+    await writeFile(cliBin, '#!/bin/sh\nexit 0\n', 'utf-8');
+    await chmod(cliBin, 0o755);
+    await writeFile(
+      cliCommandScript,
+      buildProfileCaptureDaemonCliScript({ cliHomeDir, capturePath: join(tmp, 'unused.json'), serverSetDelayMs: 200 }),
+      'utf-8',
+    );
+    await writeFile(
+      join(cliHomeDir, 'settings.json'),
+      JSON.stringify({
+        schemaVersion: 6,
+        activeServerId,
+        servers: {
+          [activeServerId]: {
+            id: activeServerId,
+            name: 'Delayed profile',
+            serverUrl: 'http://127.0.0.1:3012',
+            localServerUrl: 'http://127.0.0.1:3012',
+            webappUrl: 'http://localhost:3012',
+          },
+        },
+      }) + '\n',
+      'utf-8',
+    );
+
+    const env = {
+      ...createFixtureStackEnv(tmp),
+      HAPPIER_STACK_STORAGE_DIR: join(tmp, 'storage'),
+      HAPPIER_STACK_STACK: 'dev',
+      HAPPIER_STACK_AUTO_AUTH_SEED: '0',
+      HAPPIER_STACK_MIGRATE_CREDENTIALS: '0',
+      HAPPIER_STACK_CLI_BUILD: '1',
+      HAPPIER_STACK_CREDENTIAL_VALIDATE_TIMEOUT_MS: '10',
+      HAPPIER_STACK_DAEMON_START_VERIFY_TIMEOUT_MS: '25',
+      HAPPIER_STACK_DAEMON_START_VERIFY_POLL_MS: '1',
+      HAPPIER_STACK_DAEMON_START_VERIFY_STABLE_MS: '0',
+      HAPPIER_ACTIVE_SERVER_ID: activeServerId,
+    };
+    const credentialPaths = resolveStackCredentialPaths({
+      cliHomeDir,
+      serverUrl: internalServerUrl,
+      env,
+    });
+    await mkdir(dirname(credentialPaths.serverScopedPath), { recursive: true });
+    await writeFile(credentialPaths.serverScopedPath, 'credential-must-remain-unchanged\n', 'utf-8');
+
+    const startedAt = Date.now();
+    await assert.rejects(
+      startLocalDaemonWithAuth({
+        cliBin,
+        cliCommand: process.execPath,
+        cliCommandArgs: [cliCommandScript],
+        cliHomeDir,
+        internalServerUrl,
+        publicServerUrl,
+        isShuttingDown: () => false,
+        forceRestart: true,
+        env,
+        stackName: 'dev',
+        cliIdentity: 'default',
+      }),
+      (error) => {
+        assert.equal(error?.code, 'ETIMEDOUT');
+        assert.equal(error?.timeoutMs, 25);
+        assert.match(error?.message ?? '', /server profile reconciliation/i);
+        assert.match(error?.message ?? '', /25ms/);
+        return true;
+      },
+    );
+    assert.ok(Date.now() - startedAt < 1_000, 'profile preflight must honor the startup budget');
+  } finally {
     await rm(tmp, { recursive: true, force: true });
   }
 });
@@ -2523,7 +2719,19 @@ test('startLocalDaemonWithAuth tolerates transient non-zero direct-executable st
     await mkdir(dirname(cliBin), { recursive: true });
     await mkdir(cliHomeDir, { recursive: true });
     await writeFile(join(cliHomeDir, 'access.key'), 'seed-access-key\n', 'utf-8');
-    await writeFile(join(cliHomeDir, 'settings.json'), JSON.stringify({ machineId: 'test-machine' }) + '\n', 'utf-8');
+    await writeFile(join(cliHomeDir, 'settings.json'), JSON.stringify({
+      schemaVersion: 5,
+      machineId: 'test-machine',
+      activeServerId: 'stack_dev__id_default',
+      servers: {
+        stack_dev__id_default: {
+          id: 'stack_dev__id_default',
+          serverUrl: 'http://localhost:4301',
+          localServerUrl: 'http://127.0.0.1:4301',
+          webappUrl: 'http://localhost:4301',
+        },
+      },
+    }) + '\n', 'utf-8');
     await writeFile(cliBin, '#!/bin/sh\nexit 0\n', 'utf-8');
     await chmod(cliBin, 0o755);
 

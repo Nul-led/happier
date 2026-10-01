@@ -48,7 +48,10 @@ import {
   readStackRuntimeStateFile,
 } from './utils/stack/runtime_state.mjs';
 import { killPidOwnedByStack } from './utils/proc/ownership.mjs';
-import { pingDaemon } from './utils/stack/daemonControlClient.mjs';
+import {
+  pingDaemon,
+  DEFAULT_RESTART_CONFIRM_TIMEOUT_MS as DEFAULT_STACK_DAEMON_START_VERIFY_TIMEOUT_MS,
+} from './utils/stack/daemonControlClient.mjs';
 
 /**
  * Daemon lifecycle helpers for hstack.
@@ -618,7 +621,7 @@ const parseNonNegativeInt = (value, fallback) => {
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
 };
 
-export const DEFAULT_STACK_DAEMON_START_VERIFY_TIMEOUT_MS = 120_000;
+export { DEFAULT_STACK_DAEMON_START_VERIFY_TIMEOUT_MS };
 const PRIOR_DIST_PUBLICATION_RETRY_DELAYS_MS = [25, 50, 100, 200];
 
 function sleepMs(ms) {
@@ -1926,6 +1929,11 @@ export function getDaemonEnv({
   if (hasStackOwnershipContext) {
     scopedEnv.HAPPIER_STACK_PROCESS_KIND = 'daemon';
   }
+  if (!String(scopedEnv.HAPPIER_DAEMON_RESTART_VERIFY_TIMEOUT_MS ?? '').trim()) {
+    scopedEnv.HAPPIER_DAEMON_RESTART_VERIFY_TIMEOUT_MS = String(
+      resolveStackDaemonStartVerifyTimeoutMs(scopedEnv),
+    );
+  }
   return {
     ...scopedEnv,
     HAPPIER_SERVER_URL: internalServerUrl,
@@ -2117,6 +2125,14 @@ export async function startLocalDaemonWithAuth({
     }
     throw error;
   }
+  if (immutableRunnerEntrypoint) {
+    console.warn(
+      `[local] WARNING: happier-cli dist at ${initialDistEntrypoint} is not yet admissible as the current ` +
+        `generation; starting the daemon from the last-green pinned runner ` +
+        `(fingerprint=${distCheck.fallbackFingerprint ?? 'unknown'}) at ${immutableRunnerEntrypoint}. ` +
+        'Source changes activate when the watcher publishes the next generation.'
+    );
+  }
   const guardSourceCliDistRestart = isGuardedSourceCliDistEntrypoint({
     cliBin,
     cliEntrypoint,
@@ -2230,19 +2246,35 @@ export async function startLocalDaemonWithAuth({
   if (existsSync(join(cliHomeDir, 'settings.json'))) {
     const serverId = String(daemonEnv.HAPPIER_ACTIVE_SERVER_ID ?? '').trim();
     if (serverId) {
-      await run(
-        daemonCommand.command,
-        [
-          ...daemonCommand.argsPrefix,
-          ...buildStackServerProfileSetArgs({ serverId, internalServerUrl, publicServerUrl }),
-        ],
-        {
+      const profileSetArgs = [
+        ...daemonCommand.argsPrefix,
+        ...buildStackServerProfileSetArgs({ serverId, internalServerUrl, publicServerUrl }),
+      ];
+      const profileSetTimeoutMs = Math.max(1, startVerifyTimeoutMs);
+      try {
+        // Profile reconciliation is part of daemon startup preflight. Its child-process budget
+        // must share the lifecycle-owned readiness deadline so a guessed shorter timeout cannot
+        // fail a valid startup before the daemon's own readiness signal is observable.
+        await run(daemonCommand.command, profileSetArgs, {
           env: daemonEnv,
           stdio: 'ignore',
-          timeoutMs: 10_000,
+          timeoutMs: profileSetTimeoutMs,
           captureFailureDiagnostic: { env: daemonEnv },
-        },
-      );
+        });
+      } catch (error) {
+        if (error?.code === 'ETIMEDOUT') {
+          const timeoutError = new Error(
+            `[local] daemon startup preflight timed out during server profile reconciliation ` +
+              `after ${profileSetTimeoutMs}ms (command=${daemonCommand.command})`,
+            { cause: error },
+          );
+          timeoutError.code = 'ETIMEDOUT';
+          timeoutError.timeoutMs = profileSetTimeoutMs;
+          timeoutError.command = daemonCommand.command;
+          throw timeoutError;
+        }
+        throw error;
+      }
       assertStackServerProfileReconciled({
         homeDir: cliHomeDir,
         serverId,
@@ -2294,7 +2326,7 @@ export async function startLocalDaemonWithAuth({
     }
   }
 
-  const waitForRunningStable = async ({ shouldStop = null } = {}) => {
+  const waitForRunningStable = async ({ shouldStop = null, shouldFail = null } = {}) => {
     let checkpointDeadline = Date.now() + startVerifyTimeoutMs;
     while (true) {
       if (typeof shouldStop === 'function' && shouldStop()) return false;
@@ -2305,6 +2337,7 @@ export async function startLocalDaemonWithAuth({
         const stableState = await checkDaemonStatePingAware(cliHomeDir, { serverUrl: internalServerUrl, env: daemonEnv });
         if (stableState.status === 'running') return true;
       }
+      if (typeof shouldFail === 'function' && shouldFail(stateNow)) return false;
       if (Date.now() >= checkpointDeadline) {
         if (!shouldContinueAttendedDaemonStartVerification({ isTui, state: stateNow })) return false;
         console.warn(
@@ -2636,6 +2669,11 @@ export async function startLocalDaemonWithAuth({
     proc.on('exit', (code, signal) => {
       resolvedExitCode = code ?? (signal ? 1 : 0);
     });
+    const startWrapperFailed = () => {
+      if (resolvedExitCode !== null) return resolvedExitCode !== 0;
+      if (proc.exitCode !== null && proc.exitCode !== undefined) return proc.exitCode !== 0;
+      return Boolean(proc.signalCode);
+    };
     const outputDrainedPromise = proc.completion;
 
     // Some launch paths keep the start command itself alive after the daemon is already
@@ -2643,6 +2681,7 @@ export async function startLocalDaemonWithAuth({
     // daemon state, not only the wrapper process exiting.
     const runningStable = await waitForRunningStable({
       shouldStop: () => isShuttingDown?.() === true || excerptIndicatesInstalledServiceConflict(startOutput),
+      shouldFail: (state) => startWrapperFailed() && state.status === 'stopped',
     });
     if (runningStable) {
       return { ok: true, exitCode: resolvedExitCode, excerpt: null, logPath: null };

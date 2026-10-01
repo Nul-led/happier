@@ -139,7 +139,13 @@ export async function waitForBackgroundStackReadiness({
     Number.isFinite(Number(preparationTimeoutMs)) && Number(preparationTimeoutMs) > 0
       ? Number(preparationTimeoutMs)
       : DEFAULT_CLI_DIST_BUILD_LOCK_TIMEOUT_MS;
-  await waitForServerReadyImpl(internalServerUrl, {
+  const readinessServerUrl = resolveBackgroundReadinessServerUrl({
+    scriptPath,
+    args,
+    env,
+    localServerUrl: internalServerUrl,
+  });
+  await waitForServerReadyImpl(readinessServerUrl, {
     timeoutMs: readyTimeoutMs,
     intervalMs: 300,
   });
@@ -149,7 +155,7 @@ export async function waitForBackgroundStackReadiness({
     scriptPath,
     args,
     env,
-    internalServerUrl,
+    internalServerUrl: readinessServerUrl,
     runtimeBackedStart,
   })) return;
 
@@ -232,7 +238,7 @@ export async function waitForBackgroundStackReadiness({
         : readyTimeoutMs - (now - daemonReadyStartedAt),
     );
     const daemonState = await checkDaemonStateImpl(cliHomeDir, {
-      serverUrl: internalServerUrl,
+      serverUrl: readinessServerUrl,
       env,
       stackName,
       pingTimeoutMs: Math.min(1_000, remainingMs),

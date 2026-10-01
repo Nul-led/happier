@@ -138,6 +138,41 @@ test('background readiness still awaits an ordinarily requested daemon', async (
   }
 });
 
+test('background dev readiness follows the selected external Home, not its unused allocated port', async () => {
+  const unusedPort = await reserveUnusedPort();
+  const server = await withListeningServer();
+  const externalServerUrl = `http://127.0.0.1:${server.port}`;
+  const temp = await withTempDir();
+  const runtimeStatePath = join(temp.dir, 'stack.runtime.json');
+  const daemonPid = 4321;
+  try {
+    await writeFile(runtimeStatePath, JSON.stringify({ processes: { daemonPid } }), 'utf8');
+    for (const selection of [
+      { args: ['--no-server', `--server-url=${externalServerUrl}`], env: {} },
+      { args: [`--server-url=${externalServerUrl}`], env: {} },
+      { args: ['--no-server'], env: { HAPPIER_SERVER_URL: externalServerUrl } },
+      { args: ['--no-server', `--server-url=${externalServerUrl}`], env: {}, daemonRequested: true },
+    ]) {
+      await waitForBackgroundStackReadiness({
+        stackName: 'external-relay',
+        scriptPath: 'dev.mjs',
+        args: [...selection.args, ...(selection.daemonRequested ? [] : ['--no-daemon'])],
+        env: selection.env,
+        runtimeStatePath,
+        internalServerUrl: `http://127.0.0.1:${unusedPort}`,
+        timeoutMs: 1_000,
+        // Only the external daemon IPC boundary is substituted; endpoint selection and publication stay real.
+        checkDaemonStateImpl: async (_cliHomeDir, { serverUrl }) => serverUrl === externalServerUrl
+          ? { status: 'running', pid: daemonPid }
+          : { status: 'stopped', pid: null },
+      });
+    }
+  } finally {
+    await server.close();
+    await temp.cleanup();
+  }
+});
+
 test('background runtime readiness does not await a daemon without credentials', async () => {
   const temp = await withTempDir();
   let daemonObservations = 0;

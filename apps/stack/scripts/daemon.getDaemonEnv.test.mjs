@@ -135,6 +135,31 @@ test('getDaemonEnv marks service-mode starts as background-service', async () =>
   });
 
   assert.equal(env.HAPPIER_DAEMON_STARTUP_SOURCE, 'background-service');
+  assert.equal(env.HAPPIER_DAEMON_RESTART_VERIFY_TIMEOUT_MS, '120000');
+});
+
+test('getDaemonEnv aligns self-restart confirmation with configured stack readiness', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'happy-stack-daemon-env-readiness-'));
+  const options = {
+    cliHomeDir: dir,
+    internalServerUrl: 'http://127.0.0.1:3009',
+    publicServerUrl: 'http://127.0.0.1:3009',
+    stackName: 'dev',
+  };
+  const inherited = getDaemonEnv({
+    ...options,
+    baseEnv: { HAPPIER_STACK_DAEMON_START_VERIFY_TIMEOUT_MS: '90000' },
+  });
+  assert.equal(inherited.HAPPIER_DAEMON_RESTART_VERIFY_TIMEOUT_MS, '90000');
+
+  const explicit = getDaemonEnv({
+    ...options,
+    baseEnv: {
+      HAPPIER_STACK_DAEMON_START_VERIFY_TIMEOUT_MS: '90000',
+      HAPPIER_DAEMON_RESTART_VERIFY_TIMEOUT_MS: '45000',
+    },
+  });
+  assert.equal(explicit.HAPPIER_DAEMON_RESTART_VERIFY_TIMEOUT_MS, '45000');
 });
 
 test('getDaemonEnv preserves an explicit startup source over service mode', async () => {

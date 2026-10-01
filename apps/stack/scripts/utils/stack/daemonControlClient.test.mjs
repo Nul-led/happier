@@ -337,6 +337,42 @@ test('restartDaemonViaControlServer resolves only after the replacement daemon i
   ]);
 });
 
+test('restartDaemonViaControlServer probes readiness at the confirmation deadline', async () => {
+  let now = 0;
+  let readCount = 0;
+  const result = await restartDaemonViaControlServer({
+    cliHomeDir: '/tmp/hstack-home',
+    internalServerUrl: 'http://127.0.0.1:3009',
+    timeoutMs: 100,
+    pollMs: 100,
+    nowImpl: () => now,
+    delayImpl: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      now += 100;
+    },
+    readDaemonControlStateImpl: async () => {
+      readCount += 1;
+      const pid = readCount < 3 ? 111 : 222;
+      return {
+        ok: true,
+        statePath: '/tmp/daemon.state.json',
+        state: { pid, httpPort: 5000 + readCount, controlToken: 'state-token' },
+        pid,
+        httpPort: 5000 + readCount,
+        controlToken: 'state-token',
+      };
+    },
+    daemonControlPostImpl: async ({ path }) => {
+      if (path === '/restart') return { status: 'restarting' };
+      if (path === '/ping') return { status: 'ok' };
+      throw new Error(`unexpected path ${path}`);
+    },
+  });
+
+  assert.equal(result.pid, 222);
+  assert.equal(now, 100);
+});
+
 test('restartDaemonViaControlServer posts the normalized successor dist fingerprint and confirms it', async () => {
   const observedBodies = [];
   let readCount = 0;
@@ -548,15 +584,16 @@ test('restartDaemonViaControlServer keeps daemon control posts bounded but long 
   ]);
 });
 
-test('resolveDaemonRestartConfirmTimeoutMs shares the daemon restart verification budget', () => {
-  assert.equal(resolveDaemonRestartConfirmTimeoutMs({}), 60_000);
+test('resolveDaemonRestartConfirmTimeoutMs shares the stack daemon readiness budget', () => {
+  assert.equal(resolveDaemonRestartConfirmTimeoutMs({}), 120_000);
+  assert.equal(resolveDaemonRestartConfirmTimeoutMs({ HAPPIER_STACK_DAEMON_START_VERIFY_TIMEOUT_MS: '90000' }), 90_000);
   assert.equal(
     resolveDaemonRestartConfirmTimeoutMs({ HAPPIER_DAEMON_RESTART_VERIFY_TIMEOUT_MS: '45000' }),
     45_000,
   );
   assert.equal(
     resolveDaemonRestartConfirmTimeoutMs({ HAPPIER_DAEMON_RESTART_VERIFY_TIMEOUT_MS: 'not-a-number' }),
-    60_000,
+    120_000,
   );
   assert.equal(
     resolveDaemonRestartConfirmTimeoutMs({}, 250),

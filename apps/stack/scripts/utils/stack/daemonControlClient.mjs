@@ -12,7 +12,7 @@ import {
 } from '@happier-dev/cli-common/processInstance';
 
 const DEFAULT_RESTART_CONFIRM_POLL_MS = 200;
-const DEFAULT_RESTART_CONFIRM_TIMEOUT_MS = 60_000;
+export const DEFAULT_RESTART_CONFIRM_TIMEOUT_MS = 120_000;
 const DEFAULT_DAEMON_CONTROL_POST_TIMEOUT_MS = 10_000;
 
 export class DaemonControlPostError extends Error {
@@ -68,6 +68,12 @@ export function resolveDaemonRestartConfirmTimeoutMs(env = process.env, explicit
   const raw = String(env?.HAPPIER_DAEMON_RESTART_VERIFY_TIMEOUT_MS ?? '').trim();
   if (raw) {
     const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.trunc(parsed);
+  }
+
+  const stackRaw = String(env?.HAPPIER_STACK_DAEMON_START_VERIFY_TIMEOUT_MS ?? '').trim();
+  if (stackRaw) {
+    const parsed = Number(stackRaw);
     if (Number.isFinite(parsed) && parsed > 0) return Math.trunc(parsed);
   }
 
@@ -329,6 +335,7 @@ export async function restartDaemonViaControlServer({
   delayImpl = delay,
   platform = process.platform,
   readProcessInstanceFingerprintImpl = readProcessInstanceFingerprintSync,
+  nowImpl = Date.now,
 }) {
   const normalizedSuccessorDistClosureFingerprint = normalizeSuccessorDistClosureFingerprint(
     successorDistClosureFingerprint,
@@ -383,9 +390,12 @@ export async function restartDaemonViaControlServer({
         daemonControlPostImpl,
         readProcessInstanceFingerprintImpl,
       });
-  const deadline = Date.now() + Math.max(100, confirmTimeoutMs);
+  const deadline = nowImpl() + Math.max(100, confirmTimeoutMs);
   let lastReason = 'state_unchanged';
-  while (Date.now() < deadline) {
+  while (true) {
+    // /ping is the daemon's authenticated readiness signal. Always sample it once
+    // at the deadline: a slow but healthy successor must not be reported failed
+    // merely because the polling sleep crossed the boundary.
     const replacementState = await probeReplacement({
       cliHomeDir,
       serverUrl: serverUrl ?? internalServerUrl ?? '',
@@ -396,30 +406,30 @@ export async function restartDaemonViaControlServer({
     });
     if (!replacementState.ok) {
       lastReason = replacementState.reason ?? 'state_unavailable';
-      await delayImpl(pollMs);
-      continue;
-    }
-    if (replacementState.pid === previousPid) {
+    } else if (replacementState.pid === previousPid) {
       lastReason = 'state_unchanged';
-      await delayImpl(pollMs);
-      continue;
-    }
-    if (
+    } else if (
       normalizedSuccessorDistClosureFingerprint
       && String(replacementState?.distClosureFingerprint ?? '').trim()
         !== normalizedSuccessorDistClosureFingerprint
     ) {
       lastReason = 'successor_fingerprint_mismatch';
-      await delayImpl(pollMs);
-      continue;
     }
-    return {
-      status: restartStatus,
-      previousPid,
-      pid: replacementState.pid,
-      processInstanceFingerprint:
-        replacementState.processInstanceFingerprint ?? null,
-    };
+    if (replacementState.ok
+      && replacementState.pid !== previousPid
+      && (!normalizedSuccessorDistClosureFingerprint
+        || String(replacementState?.distClosureFingerprint ?? '').trim()
+          === normalizedSuccessorDistClosureFingerprint)) {
+      return {
+        status: restartStatus,
+        previousPid,
+        pid: replacementState.pid,
+        processInstanceFingerprint:
+          replacementState.processInstanceFingerprint ?? null,
+      };
+    }
+    if (nowImpl() >= deadline) break;
+    await delayImpl(pollMs);
   }
 
   throw new Error(`daemon control /restart replacement was not confirmed within ${Math.max(100, confirmTimeoutMs)}ms (${lastReason})`);
