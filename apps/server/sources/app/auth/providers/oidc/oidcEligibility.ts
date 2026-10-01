@@ -1,3 +1,4 @@
+import { normalizeVerifiedEmail } from "@happier-dev/protocol";
 import type { OidcAuthProviderInstanceConfig } from "./oidcProviderConfig";
 import type { NormalizedOidcIdentityClaims } from "./normalizeOidcIdentityClaims";
 
@@ -11,8 +12,9 @@ export function evaluateOidcEligibility(
         rules.push({ kind: "users", matched: claims.login !== null && allow.usersAllowlist.includes(claims.login) });
     }
     if (allow.emailDomains.length > 0) {
-        const domain = claims.email?.slice(claims.email.lastIndexOf("@") + 1).trim().toLowerCase();
-        rules.push({ kind: "email_domains", matched: claims.emailVerified && Boolean(domain && allow.emailDomains.includes(domain)) });
+        const mailbox = claims.emailVerified && claims.email ? normalizeVerifiedEmail(claims.email) : null;
+        const domain = mailbox?.normalizedEmail.split("@")[1];
+        rules.push({ kind: "email_domains", matched: Boolean(domain && allow.emailDomains.includes(domain)) });
     }
     const groups = !claims.groupsIncomplete ? claims.groups : null;
     if (allow.groupsAny.length > 0) {

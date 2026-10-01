@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { resolveAuthProviderInstancesFromEnv } from "../oidc/oidcProviderConfig";
+import { normalizeOidcIdentityClaims } from "../oidc/normalizeOidcIdentityClaims";
+import { evaluateOidcIdentityEligibility } from "../oidc/oidcEligibility";
 
 import {
     parseIdentityProviderConfig,
@@ -22,6 +25,44 @@ const oidcConfig = {
 } as const;
 
 describe("managed identity-provider stored documents", () => {
+    it("uses the deployment comparison rules for managed allowlists without changing the opaque subject", () => {
+        const config = {
+            ...oidcConfig,
+            allow: {
+                usersAllowlist: [" ALICE "],
+                emailDomains: [" @Example.Test "],
+                groupsAny: [" Engineering "],
+                groupsAll: [" STAFF "],
+            },
+        };
+        const managed = parseIdentityProviderConfig("oidc", config);
+        const deployment = resolveAuthProviderInstancesFromEnv({
+            AUTH_PROVIDERS_CONFIG_JSON: JSON.stringify([{
+                ...config,
+                id: "deployment",
+                type: "oidc",
+                displayName: "Deployment",
+                clientSecret: "secret",
+                redirectUrl: "https://home.example.test/v1/oauth/deployment/callback",
+            }]),
+        });
+        expect(deployment.errors).toEqual([]);
+        expect(managed.ok).toBe(true);
+        if (!managed.ok || managed.value.kind !== "oidc") throw new Error("Expected managed OIDC config");
+        expect(managed.value.allow).toEqual(deployment.instances[0]!.allow);
+        const claims = normalizeOidcIdentityClaims({
+            idTokenClaims: {
+                sub: " Exact-Subject ", preferred_username: "Alice", email: "alice@example.test",
+                email_verified: true, groups: ["Engineering", "Staff"],
+            },
+            claims: config.claims,
+        });
+        if (!claims.ok) throw new Error("Expected valid claims");
+        expect(claims.value.subject).toBe(" Exact-Subject ");
+        expect(evaluateOidcIdentityEligibility({ allow: managed.value.allow, claims: claims.value }).status)
+            .toBe("eligible");
+    });
+
     it("accepts the exact current OIDC document and rejects unknown or unmanaged kinds", () => {
         expect(parseIdentityProviderConfig("oidc", oidcConfig)).toEqual({ ok: true, value: oidcConfig });
         expect(parseIdentityProviderConfig("oidc", { ...oidcConfig, future: true })).toEqual({

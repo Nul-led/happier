@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { isLoopbackHostname } from "@/utils/network/urlSafety";
+import { isLoopbackHostname } from "@happier-dev/protocol";
 
 export type OidcAuthProviderInstanceConfig = Readonly<{
     id: string;
@@ -159,26 +159,17 @@ function parseStringList(
     return out;
 }
 
-function parseLowercaseIdList(
-    raw: unknown,
-    field: string,
-    providerId: string,
-    errors: string[],
-): string[] | null {
-    return parseStringList(raw, field, providerId, errors)?.map((v) => v.toLowerCase()) ?? null;
-}
-
-function parseEmailDomainList(
-    raw: unknown,
-    providerId: string,
-    errors: string[],
-): string[] | null {
-    const values = parseStringList(raw, "emailDomains", providerId, errors);
-    if (!values) return null;
-    return values
-        .map((v) => v.trim().toLowerCase())
-        .map((v) => (v.startsWith("@") ? v.slice(1) : v))
-        .filter(Boolean);
+/** Comparison keys only: never use this normalization for the opaque OIDC subject. */
+export function normalizeOidcAllowRules(allow: OidcAuthProviderInstanceConfig["allow"]) {
+    const normalizeIds = (values: readonly string[]) => values.map((value) => value.trim().toLowerCase()).filter(Boolean);
+    return {
+        usersAllowlist: normalizeIds(allow.usersAllowlist),
+        emailDomains: normalizeIds(allow.emailDomains)
+            .map((value) => value.startsWith("@") ? value.slice(1) : value)
+            .filter(Boolean),
+        groupsAny: normalizeIds(allow.groupsAny),
+        groupsAll: normalizeIds(allow.groupsAll),
+    };
 }
 
 function parseAllow(
@@ -191,16 +182,17 @@ function parseAllow(
         return null;
     }
     const record = (raw ?? {}) as Record<string, unknown>;
-    const usersAllowlist = parseLowercaseIdList(record.usersAllowlist, "usersAllowlist", providerId, errors);
-    const emailDomains = parseEmailDomainList(record.emailDomains, providerId, errors);
-    const groupsAny = parseLowercaseIdList(record.groupsAny, "groupsAny", providerId, errors);
-    const groupsAll = parseLowercaseIdList(record.groupsAll, "groupsAll", providerId, errors);
+    const usersAllowlist = parseStringList(record.usersAllowlist, "usersAllowlist", providerId, errors);
+    const emailDomains = parseStringList(record.emailDomains, "emailDomains", providerId, errors);
+    const groupsAny = parseStringList(record.groupsAny, "groupsAny", providerId, errors);
+    const groupsAll = parseStringList(record.groupsAll, "groupsAll", providerId, errors);
     if (!usersAllowlist || !emailDomains || !groupsAny || !groupsAll) return null;
+    const normalized = normalizeOidcAllowRules({ usersAllowlist, emailDomains, groupsAny, groupsAll });
     return Object.freeze({
-        usersAllowlist: Object.freeze(usersAllowlist),
-        emailDomains: Object.freeze(emailDomains),
-        groupsAny: Object.freeze(groupsAny),
-        groupsAll: Object.freeze(groupsAll),
+        usersAllowlist: Object.freeze(normalized.usersAllowlist),
+        emailDomains: Object.freeze(normalized.emailDomains),
+        groupsAny: Object.freeze(normalized.groupsAny),
+        groupsAll: Object.freeze(normalized.groupsAll),
     });
 }
 

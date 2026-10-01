@@ -1,4 +1,5 @@
 import type { AuthProviderId } from "@happier-dev/protocol";
+import { normalizeOidcAllowRules } from "@/app/auth/providers/oidc/oidcProviderConfig";
 import { managedGitHubAppUserAuthorizationCallbackUrl } from "@/app/integrations/github/githubManagedAppManifest";
 import type {
     TeamIdentityEligibleProviderV1,
@@ -666,14 +667,12 @@ function projectManagedOidcRuntime(input: Readonly<{
         ? input.connection.settings
         : null;
     const connectionAllow = connectionSettings
-        ? {
-            usersAllowlist: connectionSettings.allowedUsers.map((value) => value.trim().toLowerCase()).filter(Boolean),
-            emailDomains: connectionSettings.allowedEmailDomains
-                .map((value) => value.trim().toLowerCase().replace(/^@/u, ""))
-                .filter(Boolean),
-            groupsAny: connectionSettings.groupsAny.map((value) => value.trim().toLowerCase()).filter(Boolean),
-            groupsAll: connectionSettings.groupsAll.map((value) => value.trim().toLowerCase()).filter(Boolean),
-        }
+        ? normalizeOidcAllowRules({
+            usersAllowlist: connectionSettings.allowedUsers,
+            emailDomains: connectionSettings.allowedEmailDomains,
+            groupsAny: connectionSettings.groupsAny,
+            groupsAll: connectionSettings.groupsAll,
+        })
         : null;
     const network = resolveManagedIdentityNetworkPolicy({
         env: input.env,

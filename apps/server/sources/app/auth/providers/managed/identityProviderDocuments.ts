@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normalizeOidcAllowRules } from "@/app/auth/providers/oidc/oidcProviderConfig";
 import {
     TeamIdentityConnectionExternalReferenceV1Schema,
     TeamIdentityConnectionSettingsV1Schema,
@@ -38,7 +39,7 @@ const OidcProviderConfigSchema = z.object({
         emailDomains: StringListSchema,
         groupsAny: StringListSchema,
         groupsAll: StringListSchema,
-    }).strict(),
+    }).strict().transform(normalizeOidcAllowRules),
     fetchUserInfo: z.boolean(),
     storeRefreshToken: z.boolean(),
     ui: z.object({

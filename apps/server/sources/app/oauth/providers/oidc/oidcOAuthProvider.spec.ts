@@ -102,6 +102,20 @@ describe("oidcOAuthProvider", () => {
                 ],
             },
         });
+
+        for (const mail of ["example.test", "@example.test", "alice@elsewhere@example.test"]) {
+            const malformedEmail = await provider.describeIdentityTest?.({
+                env: process.env,
+                profile: {
+                    sub: "private-subject", upn: "alice", mail, email_verified: true,
+                    roles: ["engineering", "staff"],
+                },
+            });
+            expect(malformedEmail?.eligibility).toMatchObject({
+                status: "ineligible",
+                rules: expect.arrayContaining([{ kind: "email_domains", matched: false }]),
+            });
+        }
     });
 
     it("applies the Team connection's own eligibility rules to the administrator's test", async () => {
