@@ -26,6 +26,8 @@ export type AttachAvailabilityRequestV1 = Readonly<{
 export type AttachRequestV1 = Readonly<{
   sessionId: string;
   metadata: AttachSessionMetadataV1;
+  /** Cancels only the foreground attach client; the provider Session remains alive. */
+  signal?: AbortSignal;
 }>;
 
 export type AttachResultV1 = Readonly<{
