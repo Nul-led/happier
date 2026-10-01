@@ -4053,7 +4053,8 @@ export function createCodexAppServerRuntime(params: Readonly<{
         if (!clientPromise) {
             const retainedThreadId = options.reattachRetainedThread === false ? null : threadId;
             historyBoundary.beginHydration();
-            clientPromise = (params.createClient
+            let allocatedClient: DisposableCodexAppServerClient | null = null;
+            const acquisitionPromise: Promise<DisposableCodexAppServerClient> = (params.createClient
                 ? params.createClient()
                 : createCodexAppServerClient({
                     cwd: params.directory,
@@ -4061,6 +4062,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                     ...(params.configOverrides ? { configOverrides: params.configOverrides } : {}),
                 }))
                 .then((client) => {
+                    allocatedClient = client;
                     const attachedClientGeneration = clientLifecycleGeneration;
                     client.onExit((failure) => {
                         if (attachedClientGeneration !== clientLifecycleGeneration) return;
@@ -4389,10 +4391,17 @@ export function createCodexAppServerRuntime(params: Readonly<{
                     }
                     return client;
                 })
-                .catch((error) => {
-                    clientPromise = null;
+                .catch(async (error: unknown) => {
+                    // Retained reattachment can fail after allocating a live client. Keep
+                    // acquisition custody until physical teardown succeeds; a rejected or
+                    // pending teardown must not authorize a replacement client.
+                    if (allocatedClient) await allocatedClient.dispose();
+                    // Exact provider exit may already have permitted a replacement while
+                    // this old acquisition was still waiting for its own teardown.
+                    if (clientPromise === acquisitionPromise) clientPromise = null;
                     throw error;
                 });
+            clientPromise = acquisitionPromise;
         }
         return await clientPromise;
     };

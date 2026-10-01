@@ -28,6 +28,7 @@ import { createSessionProviderInputConsumer } from '@/agent/runtime/sessionInput
 import { waitForCondition } from '@/testkit/async/waitFor';
 import { createApiSessionClientFixture } from '@/testkit/backends/sessionFixtures';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
+import { isPidAlive } from '@/testkit/process/spawn';
 import { runScmCommand } from '@/scm/runtime';
 import {
     HAPPIER_CONNECTED_SERVICE_MATERIALIZED_ENV_KEYS_ENV_KEY,
@@ -176,6 +177,7 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
     emitHistoricalNotificationOnResume?: boolean;
     resumeResponseDelayMs?: number;
     resumeResponseThreadId?: string;
+    retainedResumeFailure?: 'reject_once' | 'exit_once';
     threadReadResponseDelayMs?: number;
     emitIdleMcpRequestAfterThreadStart?: boolean;
     rejectPermissionsProfileAsStringShape?: boolean;
@@ -258,6 +260,12 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '        continue;',
         '    }',
         '    if (msg.method === "thread/resume") {',
+        `        if (${JSON.stringify(params.retainedResumeFailure ?? null)} && !(await readFile(requestLogPath + ".retained-resume-failed", "utf8").catch(() => ""))) {`,
+        '            await writeFile(requestLogPath + ".retained-resume-failed", String(process.pid));',
+        `            if (${JSON.stringify(params.retainedResumeFailure === 'exit_once')}) process.exit(23);`,
+        '            process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32000, message: "retained resume rejected" } }) + "\\n");',
+        '            continue;',
+        '        }',
         `        if (${JSON.stringify(params.rejectPermissionsProfile === true)} && msg.params?.permissions) {`,
         '            process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32602, message: "invalid params: permissions unsupported" } }) + "\\n");',
         '            continue;',
@@ -1746,6 +1754,7 @@ describe('createCodexAppServerRuntime', () => {
             emitHistoricalNotificationOnResume?: boolean;
             resumeResponseDelayMs?: number;
             resumeResponseThreadId?: string;
+            retainedResumeFailure?: 'reject_once' | 'exit_once';
             threadReadResponseDelayMs?: number;
             emitIdleMcpRequestAfterThreadStart?: boolean;
             rejectPermissionsProfileAsStringShape?: boolean;
@@ -1812,6 +1821,7 @@ describe('createCodexAppServerRuntime', () => {
             emitHistoricalNotificationOnResume: options.emitHistoricalNotificationOnResume,
             resumeResponseDelayMs: options.resumeResponseDelayMs,
             resumeResponseThreadId: options.resumeResponseThreadId,
+            retainedResumeFailure: options.retainedResumeFailure,
             threadReadResponseDelayMs: options.threadReadResponseDelayMs,
             emitIdleMcpRequestAfterThreadStart: options.emitIdleMcpRequestAfterThreadStart,
             rejectPermissionsProfileAsStringShape: options.rejectPermissionsProfileAsStringShape,
@@ -6494,6 +6504,78 @@ describe('createCodexAppServerRuntime', () => {
         expect(resumedThreadIndex).toBeGreaterThan(processExitIndex);
         expect(nextTurnIndex).toBeGreaterThan(resumedThreadIndex);
         expect(requestLog.filter((entry) => entry.method === 'thread/resume')).toHaveLength(1);
+    });
+
+    it('terminates a client whose retained reattachment fails before allowing public prompt recovery', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-retained-resume-failure-', {
+            retainedResumeFailure: 'reject_once',
+        });
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            onThinkingChange: vi.fn(),
+            session: { updateMetadata: vi.fn(), sendCodexMessage: vi.fn(), sendSessionEvent: vi.fn() } as any,
+        });
+        let failedClientPid: number | null = null;
+        try {
+            await runtime.startOrLoad({});
+            await runtime.sendPrompt('nonterminal-error-then-process-exit').catch(() => undefined);
+            await expect(runtime.sendPrompt('prompt whose retained resume fails')).rejects.toThrow('retained resume rejected');
+            failedClientPid = Number(await readFile(requestLogPath + '.retained-resume-failed', 'utf8'));
+            expect(failedClientPid).toBeGreaterThan(1);
+            expect(isPidAlive(failedClientPid)).toBe(false);
+            expect(runtime.hasActiveProviderTurn()).toBe(false);
+            expect(runtime.isTurnInFlight()).toBe(false);
+            await expect(runtime.sendPrompt('prompt after retained resume failure')).resolves.toBeUndefined();
+            const log = await readRequestLog(requestLogPath);
+            expect(log.filter(({ method }) => method === 'initialize')).toHaveLength(3);
+            expect(log.filter(({ method }) => method === 'thread/resume')).toHaveLength(2);
+        } finally {
+            failedClientPid ??= Number(await readFile(requestLogPath + '.retained-resume-failed', 'utf8').catch(() => ''));
+            if (failedClientPid > 1 && isPidAlive(failedClientPid)) {
+                await processTermination.killProcessTree({ pid: failedClientPid }, { graceMs: 250 });
+            }
+        }
+    });
+
+    it('does not let an old failed acquisition clear a replacement client after exact provider exit', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-retained-resume-exit-', {
+            retainedResumeFailure: 'exit_once',
+        });
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            onThinkingChange: vi.fn(),
+            session: { updateMetadata: vi.fn(), sendCodexMessage: vi.fn(), sendSessionEvent: vi.fn() } as any,
+        });
+        await runtime.startOrLoad({});
+        await runtime.sendPrompt('nonterminal-error-then-process-exit').catch(() => undefined);
+        const realKillProcessTree = processTermination.killProcessTree;
+        let releaseTermination!: () => void;
+        const cleanupGate = new Promise<void>((resolve) => { releaseTermination = resolve; });
+        const kill = vi.spyOn(processTermination, 'killProcessTree').mockImplementation(async (child, options) => {
+            await cleanupGate;
+            await realKillProcessTree(child, options);
+        });
+        const failedAcquisition = runtime.sendPrompt('retained resume exits before responding').catch((error) => error);
+        try {
+            await waitForCondition(() => kill.mock.calls.length === 1, {
+                timeoutMs: 1_000,
+                intervalMs: 5,
+                label: 'old exited acquisition awaits its physical cleanup',
+            });
+            const exitedClientPid = Number(await readFile(requestLogPath + '.retained-resume-failed', 'utf8'));
+            expect(isPidAlive(exitedClientPid)).toBe(false);
+            await expect(runtime.sendPrompt('replacement after proven provider exit')).resolves.toBeUndefined();
+            releaseTermination();
+            expect(await failedAcquisition).toBeInstanceOf(Error);
+            await expect(runtime.sendPrompt('reuse replacement after old acquisition rejection')).resolves.toBeUndefined();
+            const log = await readRequestLog(requestLogPath);
+            expect(log.filter(({ method }) => method === 'initialize')).toHaveLength(3);
+            expect(log.filter(({ method }) => method === 'thread/resume')).toHaveLength(2);
+        } finally {
+            releaseTermination();
+            await failedAcquisition;
+            kill.mockRestore();
+        }
     });
 
     it('does not let an unknown terminal id claim a pending turn before its provider id is observed', async () => {
