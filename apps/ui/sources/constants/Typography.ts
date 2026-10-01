@@ -46,7 +46,9 @@ export const FontFamilies = {
     default: {
         regular: 'Inter-Regular',
         italic: 'Inter-Italic',
+        medium: 'Inter-Medium',
         semiBold: 'Inter-SemiBold',
+        bold: 'Inter-SemiBold',
     },
 
     // IBM Plex Mono (default monospace)
@@ -69,15 +71,51 @@ export const FontFamilies = {
 };
 
 // Helper functions for easy access to font families
-export const getDefaultFont = (weight: 'regular' | 'italic' | 'semiBold' = 'regular') => {
-    if (shouldPreferAppleSystemFontOnWeb()) {
-        return APPLE_WEB_SYSTEM_FONT_STACK;
-    }
-    return FontFamilies.default[weight];
+/**
+ * Default-family weights.
+ *
+ * `semiBold` predates the others and is intentionally left as it was (Inter 600 file, but 500 on
+ * Apple, which renders SF noticeably heavier). `medium` is a true 500 everywhere and is the weight of
+ * row titles; `bold` is a true 600 everywhere and is the weight of page and section headings, so the
+ * heading/row hierarchy holds on every platform instead of collapsing to 500/500 on Apple.
+ */
+export type DefaultFontWeight = 'regular' | 'italic' | 'medium' | 'semiBold' | 'bold';
+export type MonoFontWeight = 'regular' | 'italic' | 'semiBold';
+export type ThemeFontKind = 'default' | 'mono';
+
+export const DEFAULT_FONT_WEIGHTS: readonly DefaultFontWeight[] = ['regular', 'italic', 'medium', 'semiBold', 'bold'];
+export const MONO_FONT_WEIGHTS: readonly MonoFontWeight[] = ['regular', 'italic', 'semiBold'];
+
+/**
+ * Web only: the CSS variable that carries a theme-held family (`theme.typography`) for one weight.
+ * The theme owner (`theme/themeFontFamilyVariables.ts`) sets it on the document root; unset, the
+ * `var()` fallback is the Happier family, so the rendered font is unchanged. Every text style reads
+ * through it, so a family change restyles mounted text without recomputing any stylesheet.
+ */
+export function themeFontFamilyVariableName(kind: ThemeFontKind, weight: DefaultFontWeight | MonoFontWeight): string {
+    return `--happier-font-${kind}-${weight}`;
+}
+
+/** The Happier family itself for one weight, before any theme-held family. */
+export function getHappierFontFamily(kind: 'default', weight: DefaultFontWeight): string;
+export function getHappierFontFamily(kind: 'mono', weight: MonoFontWeight): string;
+export function getHappierFontFamily(kind: ThemeFontKind, weight: DefaultFontWeight | MonoFontWeight): string {
+    if (kind === 'mono') return FontFamilies.mono[weight as MonoFontWeight];
+    if (shouldPreferAppleSystemFontOnWeb()) return APPLE_WEB_SYSTEM_FONT_STACK;
+    return FontFamilies.default[weight as DefaultFontWeight];
+}
+
+function readThroughThemeFamily(kind: ThemeFontKind, weight: DefaultFontWeight | MonoFontWeight, family: string): string {
+    if (Platform.OS !== 'web') return family;
+    return `var(${themeFontFamilyVariableName(kind, weight)}, ${family})`;
+}
+
+export const getDefaultFont = (weight: DefaultFontWeight = 'regular') => {
+    return readThroughThemeFamily('default', weight, getHappierFontFamily('default', weight));
 };
 
-export const getMonoFont = (weight: 'regular' | 'italic' | 'semiBold' = 'regular') => {
-    return FontFamilies.mono[weight];
+export const getMonoFont = (weight: MonoFontWeight = 'regular') => {
+    return readThroughThemeFamily('mono', weight, getHappierFontFamily('mono', weight));
 };
 
 export const getLogoFont = () => {
@@ -87,6 +125,7 @@ export const getLogoFont = () => {
 // Font weight mappings for the font families
 export const FontWeights = {
     regular: '400',
+    medium: '500',
     semiBold: '500',
     bold: '600',
 } as const;
@@ -95,28 +134,26 @@ export const FontWeights = {
 function defaultTypography(): Pick<TextStyle, 'fontFamily'>;
 function defaultTypography(weight: 'regular'): Pick<TextStyle, 'fontFamily'>;
 function defaultTypography(weight: 'italic'): Pick<TextStyle, 'fontFamily' | 'fontStyle'>;
-function defaultTypography(weight: 'semiBold'): Pick<TextStyle, 'fontFamily' | 'fontWeight'>;
+function defaultTypography(weight: 'medium' | 'semiBold' | 'bold'): Pick<TextStyle, 'fontFamily' | 'fontWeight'>;
 function defaultTypography(
-    weight?: 'regular' | 'italic' | 'semiBold',
+    weight?: DefaultFontWeight,
 ): Pick<TextStyle, 'fontFamily' | 'fontStyle' | 'fontWeight'>;
 function defaultTypography(
-    weight: 'regular' | 'italic' | 'semiBold' = 'regular',
+    weight: DefaultFontWeight = 'regular',
 ): Pick<TextStyle, 'fontFamily' | 'fontStyle' | 'fontWeight'> {
     // Native iOS: prefer the system font (SF). We omit `fontFamily` so RN uses the platform default.
     if (Platform.OS === 'ios') {
         if (weight === 'italic') {
             return { fontStyle: 'italic' };
         }
-        if (weight === 'semiBold') {
-            return { fontWeight: FontWeights.semiBold };
-        }
-        return {};
+        if (weight === 'regular') return {};
+        return { fontWeight: FontWeights[weight] };
     }
 
     const fontFamily = getDefaultFont(weight);
 
     // Keep existing Inter behavior (family encodes weight/style).
-    if (fontFamily !== APPLE_WEB_SYSTEM_FONT_STACK) {
+    if (!shouldPreferAppleSystemFontOnWeb()) {
         return { fontFamily };
     }
 
@@ -124,10 +161,8 @@ function defaultTypography(
     if (weight === 'italic') {
         return { fontFamily, fontStyle: 'italic' };
     }
-    if (weight === 'semiBold') {
-        return { fontFamily, fontWeight: FontWeights.semiBold };
-    }
-    return { fontFamily };
+    if (weight === 'regular') return { fontFamily };
+    return { fontFamily, fontWeight: FontWeights[weight] };
 }
 
 function tabularTypography(): Pick<TextStyle, 'fontVariant'> {
@@ -194,7 +229,7 @@ export const Typography = {
     default: defaultTypography,
 
     // Monospace font styles (IBM Plex Mono)
-    mono: (weight: 'regular' | 'italic' | 'semiBold' = 'regular') => ({
+    mono: (weight: MonoFontWeight = 'regular') => ({
             fontFamily: getMonoFont(weight),
         }),
 

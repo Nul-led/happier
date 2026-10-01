@@ -158,6 +158,7 @@ describe('theme profile runtime', () => {
             systemTheme: 'light',
             platform: 'web',
             unistylesRuntime: {
+                getTheme: (name) => name === 'light' ? lightTheme : darkTheme,
                 updateTheme,
                 setAdaptiveThemes,
                 setTheme,
@@ -186,6 +187,7 @@ describe('theme profile runtime', () => {
             systemTheme: 'light',
             platform: 'ios',
             unistylesRuntime: {
+                getTheme: (name) => name === 'light' ? lightTheme : darkTheme,
                 updateTheme,
                 setAdaptiveThemes,
                 setTheme,
@@ -219,6 +221,7 @@ describe('theme profile runtime', () => {
             systemTheme: 'light',
             platform: 'ios',
             unistylesRuntime: {
+                getTheme: (name) => name === 'light' ? lightTheme : darkTheme,
                 updateTheme,
                 setAdaptiveThemes,
                 setTheme,
@@ -246,6 +249,7 @@ describe('theme profile runtime', () => {
                 throw new Error('resolver failed');
             },
             unistylesRuntime: {
+                getTheme: (name) => name === 'light' ? darkTheme : lightTheme,
                 updateTheme,
                 setAdaptiveThemes: vi.fn(),
                 setTheme: vi.fn(),
@@ -262,7 +266,10 @@ describe('theme profile runtime', () => {
     });
 
     it('reapplies canonical base themes when runtime theme application fails after custom themes resolve', () => {
-        const updateTheme = vi.fn();
+        const registeredThemes: Record<'light' | 'dark', Theme> = { light: lightTheme, dark: darkTheme };
+        const updateTheme = vi.fn((name: 'light' | 'dark', updater: (theme: Theme) => Theme) => {
+            registeredThemes[name] = updater(registeredThemes[name]);
+        });
         const setRootViewBackgroundColor = vi.fn();
         const setAdaptiveThemes = vi.fn(() => {
             throw new Error('runtime failed');
@@ -273,6 +280,7 @@ describe('theme profile runtime', () => {
             themeProfiles: profileState,
             systemTheme: 'dark',
             unistylesRuntime: {
+                getTheme: (name) => registeredThemes[name],
                 updateTheme,
                 setAdaptiveThemes,
                 setTheme: vi.fn(),
@@ -286,7 +294,7 @@ describe('theme profile runtime', () => {
         expect(updateTheme).toHaveBeenCalledWith('dark', expect.any(Function));
         expect(updateTheme).toHaveBeenCalledTimes(2);
         const finalDarkUpdater = updateTheme.mock.calls.filter(([themeName]) => themeName === 'dark').at(-1)?.[1];
-        expect(finalDarkUpdater?.(profileState)).toBe(darkTheme);
+        expect(finalDarkUpdater?.(registeredThemes.dark)).toBe(darkTheme);
     });
 
     it('activates profiles through the theme transition path with forced animation', async () => {

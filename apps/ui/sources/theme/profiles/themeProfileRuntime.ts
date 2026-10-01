@@ -26,6 +26,8 @@ import {
     setActiveThemeProfileForMode,
 } from './themeProfilePersistence';
 import { resolveThemeProfile } from './resolveThemeProfile';
+import { applyThemeFontFamilyVariables } from '../themeFontFamilyVariables';
+import { applyThemeStyleScales, resolveThemeStyleScales, type ThemeStyleSelection } from '../themeStyleScales';
 import type { ThemeProfileMode, ThemeProfileSelectionByMode, ThemeProfilesLocalStateV1 } from './themeProfileTypes';
 
 type AppThemeName = 'light' | 'dark';
@@ -33,6 +35,7 @@ type AppThemeName = 'light' | 'dark';
 export type ThemeRuntimeThemes = Readonly<Record<AppThemeName, Theme>>;
 
 export type ThemeRuntimeUnistylesAdapter = Readonly<{
+    getTheme: (themeName: AppThemeName) => Theme;
     updateTheme: (themeName: AppThemeName, updater: (theme: Theme) => Theme) => void;
     setAdaptiveThemes: (enabled: boolean) => void;
     setTheme: (themeName: AppThemeName) => void;
@@ -48,6 +51,12 @@ type ApplyThemeRuntimeSelectionInput = Readonly<{
     setSystemBackgroundColor?: (color: string) => Promise<unknown> | void;
     resolveThemes?: (themeProfiles: ThemeProfilesLocalStateV1) => ThemeRuntimeThemes;
     recordBreadcrumb?: (breadcrumb: ThemeRuntimeBreadcrumb) => void;
+    /**
+     * Radius, density, part radii and font families for both themes. Absent or `null` is the
+     * default step of every scale, which is what the full app always renders; the embed passes the
+     * style its host chose (plan 04 §4.7).
+     */
+    style?: ThemeStyleSelection | null;
 }>;
 
 type ThemeRuntimeBreadcrumb = Readonly<{
@@ -93,6 +102,7 @@ const canonicalBaseThemes: ThemeRuntimeThemes = Object.freeze({
 });
 
 const defaultUnistylesRuntimeAdapter: ThemeRuntimeUnistylesAdapter = {
+    getTheme: (themeName) => UnistylesRuntime.getTheme(themeName),
     updateTheme: (themeName, updater) => {
         UnistylesRuntime.updateTheme(themeName, updater);
     },
@@ -216,6 +226,15 @@ const applyThemesToUnistyles = (
     const systemTheme = input.systemTheme ?? getSystemTheme();
     const visualTheme = resolveThemeRuntimeVisualTheme(input.themePreference, systemTheme);
 
+    // updateTheme notifies every theme subscriber and rebuilds the web CSS sheet even when the
+    // resolved tokens are identical. A mode-only flip needs just setTheme's one notification.
+    const updateChangedTheme = (name: AppThemeName): void => {
+        const next = themes[name];
+        const registered = runtime.getTheme(name);
+        if (registered === next || JSON.stringify(registered) === JSON.stringify(next)) return;
+        runtime.updateTheme(name, () => next);
+    };
+
     recordThemeRuntimeBreadcrumb(input, { phase: 'resolved', platform, systemTheme, visualTheme });
 
     if (isNativeRuntimePlatform(platform) && input.themePreference !== 'adaptive') {
@@ -226,11 +245,11 @@ const applyThemesToUnistyles = (
             visualTheme,
             themeName: visualTheme,
         });
-        runtime.updateTheme(visualTheme, () => themes[visualTheme]);
+        updateChangedTheme(visualTheme);
     } else {
         recordThemeRuntimeBreadcrumb(input, { phase: 'update-all-themes', platform, systemTheme, visualTheme });
-        runtime.updateTheme('light', () => themes.light);
-        runtime.updateTheme('dark', () => themes.dark);
+        updateChangedTheme('light');
+        updateChangedTheme('dark');
     }
 
     if (input.themePreference === 'adaptive') {
@@ -262,12 +281,21 @@ const applyThemesToUnistyles = (
 export const applyThemeRuntimeSelection = (input: ApplyThemeRuntimeSelectionInput): ThemeRuntimeThemes => {
     const resolveThemes = input.resolveThemes ?? resolveThemeRuntimeThemes;
 
+    const styleScales = resolveThemeStyleScales(input.style ?? null);
     let themes: ThemeRuntimeThemes;
     try {
-        themes = resolveThemes(input.themeProfiles);
+        const profileThemes = resolveThemes(input.themeProfiles);
+        themes = {
+            light: applyThemeStyleScales(profileThemes.light, styleScales),
+            dark: applyThemeStyleScales(profileThemes.dark, styleScales),
+        };
     } catch (error) {
         warnThemeRuntimeFallback(error);
         themes = canonicalBaseThemes;
+    }
+
+    if (resolveRuntimePlatform(input) === 'web') {
+        applyThemeFontFamilyVariables(styleScales.typography);
     }
 
     try {

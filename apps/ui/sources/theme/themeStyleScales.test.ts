@@ -1,0 +1,78 @@
+import { describe, expect, it } from 'vitest';
+
+import { darkTheme, lightTheme } from '@/theme';
+
+import { applyThemeStyleScales, resolveThemeStyleScales } from './themeStyleScales';
+
+// Today's literal values, written out so a table edit that silently moves the default fails here.
+const TODAY_BORDER_RADIUS = { sm: 4, md: 8, lg: 10, xl: 12, xxl: 16, modalCard: 14 };
+const TODAY_MARGINS = { xs: 4, sm: 8, md: 12, lg: 16, xl: 20, xxl: 24 };
+
+describe('theme style scales', () => {
+    it('keeps every default equal to the values the app renders today', () => {
+        const scales = resolveThemeStyleScales();
+
+        expect(scales.borderRadius).toEqual(TODAY_BORDER_RADIUS);
+        expect(scales.margins).toEqual(TODAY_MARGINS);
+        expect(scales.parts).toEqual({
+            userBubble: { radius: 12 },
+            // The composer stack: 16, 20 on Android (the test platform is not Android).
+            composer: { radius: 16 },
+            toolCard: { radius: 8 },
+            approvalCard: { radius: 12 },
+            codeBlock: { radius: 10 },
+        });
+        expect(scales.transcript).toEqual({ messageGap: 22 });
+        expect(scales.typography).toEqual({ fontFamily: null, monoFontFamily: null });
+
+        for (const theme of [lightTheme, darkTheme]) {
+            expect(theme.borderRadius).toEqual(TODAY_BORDER_RADIUS);
+            expect(theme.margins).toEqual(TODAY_MARGINS);
+            expect(theme.parts).toEqual(scales.parts);
+            expect(theme.transcript).toEqual(scales.transcript);
+            expect(theme.typography).toEqual(scales.typography);
+        }
+    });
+
+    it('changes exactly the radius scale and the part radii derived from it for a sharp style', () => {
+        const defaults = resolveThemeStyleScales();
+        const sharp = resolveThemeStyleScales({ radius: 'sharp' });
+
+        for (const step of Object.keys(TODAY_BORDER_RADIUS) as Array<keyof typeof TODAY_BORDER_RADIUS>) {
+            expect(sharp.borderRadius[step]).toBeLessThan(defaults.borderRadius[step]);
+        }
+        expect(sharp.parts.toolCard.radius).toBe(sharp.borderRadius.md);
+        expect(sharp.parts.userBubble.radius).toBe(sharp.borderRadius.xl);
+        expect(sharp.margins).toEqual(defaults.margins);
+        expect(sharp.transcript).toEqual(defaults.transcript);
+        expect(sharp.typography).toEqual(defaults.typography);
+    });
+
+    it('lets a part pick another step of the active radius scale', () => {
+        const round = resolveThemeStyleScales({ radius: 'round', parts: { toolCard: { radius: 'xxl' } } });
+
+        expect(round.parts.toolCard.radius).toBe(round.borderRadius.xxl);
+        expect(round.parts.codeBlock.radius).toBe(round.borderRadius.lg);
+    });
+
+    it('tightens spacing and the transcript rhythm for a compact density only', () => {
+        const defaults = resolveThemeStyleScales();
+        const compact = resolveThemeStyleScales({ density: 'compact' });
+
+        expect(compact.transcript.messageGap).toBeLessThan(defaults.transcript.messageGap);
+        expect(compact.margins.lg).toBeLessThan(defaults.margins.lg);
+        expect(compact.borderRadius).toEqual(defaults.borderRadius);
+    });
+
+    it('applies scales onto a theme without touching its colours', () => {
+        const styled = applyThemeStyleScales(lightTheme, resolveThemeStyleScales({
+            radius: 'round',
+            fontFamily: 'Acme Sans',
+        }));
+
+        expect(styled.colors).toBe(lightTheme.colors);
+        expect(styled.borderRadius.xl).toBeGreaterThan(lightTheme.borderRadius.xl);
+        expect(styled.typography.fontFamily).toBe('Acme Sans');
+        expect(applyThemeStyleScales(lightTheme, resolveThemeStyleScales())).toEqual(lightTheme);
+    });
+});

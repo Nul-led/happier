@@ -8,6 +8,7 @@ import {
     buildSeamCastShadow,
     buildShadowPopoverArrowBoxShadow,
 } from '../shadowElevation';
+import { DEFAULT_THEME_STYLE_SCALES } from './themeStyleScales';
 import { createVerticalGradient } from './verticalGradient';
 
 // The opt-in glass composer is a large surface, so its top inner-shadow reads a
@@ -16,27 +17,11 @@ import { createVerticalGradient } from './verticalGradient';
 // glass surface keeps the shared `glass.innerShadow` at full strength.
 const COMPOSER_GLASS_INNER_SHADOW_OPACITY_SCALE = 0.7;
 
-// Shared spacing, sizing constants (DRY - used by both themes)
+// Shared spacing, sizing constants (DRY - used by both themes). The radius scale, spacing, the
+// radius of the five session parts, the transcript rhythm and the theme-held font families are the
+// default step of each style scale (`themeStyleScales.ts`); an embed selects other steps at runtime.
 const sharedSpacing = {
-    // Spacing scale (based on actual usage patterns in codebase)
-    margins: {
-        xs: 4,   // Tight spacing, status indicators
-        sm: 8,   // Small gaps, most common gap value
-        md: 12,  // Button gaps, card margins
-        lg: 16,  // Most common padding value
-        xl: 20,  // Large padding
-        xxl: 24, // Section spacing
-    },
-
-    // Border radii (based on actual usage patterns in codebase)
-    borderRadius: {
-        sm: 4,   // Checkboxes (20x20 boxes use 4px corners)
-        md: 8,   // Buttons, items (most common - 31 uses)
-        lg: 10,  // Input fields (matches "new session panel input fields")
-        xl: 12,  // Cards, containers (20 uses)
-        xxl: 16, // Main containers
-        modalCard: 14, // Modal card surfaces (wizard shell, story deck)
-    },
+    ...DEFAULT_THEME_STYLE_SCALES,
 
     // Icon sizes (based on actual usage patterns)
     iconSize: {
