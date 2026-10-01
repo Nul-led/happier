@@ -3,6 +3,15 @@ import { describe, expect, it } from 'vitest';
 import { resolvePreferredPublicReleaseRingIdForApp, resolvePreferredPublicReleaseRingLabelForApp } from './resolvePublicReleaseRing';
 
 describe('resolvePreferredPublicReleaseRingIdForApp', () => {
+    it('uses the public dev identity ring when the baked logical variant is preview', () => {
+        expect(resolvePreferredPublicReleaseRingIdForApp({
+            identityVariant: 'publicdev',
+            variant: 'preview',
+            envAppEnv: 'preview',
+            envExpoPublicAppEnv: 'preview',
+        })).toBe('publicdev');
+    });
+
     it('maps the publicdev variant to the publicdev ring', () => {
         expect(resolvePreferredPublicReleaseRingIdForApp({
             variant: 'publicdev',
