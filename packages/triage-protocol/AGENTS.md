@@ -10,8 +10,10 @@ persistence outside this package.
 
 The only public exports are the explicit root V1 barrel, `/v1`, and
 `/testing/v1`; do not add default, current, latest, legacy, or compatibility
-aliases. `.project/plans/2026-08-12-triage/CONTRACT.md` is the normative source
-contract; this package's declarations are the sole exact field-layout artifact.
+aliases. [Triage source protocol ownership](../../docs/triage-sources.md) is the
+standing architecture reference; this package's declarations are the sole exact
+field-layout artifact. Read an approved Triage plan/contract additionally when
+executing its assigned work, not as a prerequisite for standing package rules.
 
 Only the browser-safe public SDK entry points allowlisted by
 `packages/plugin-sdk/src/featureProtocolPackagePolicy.test.ts` may be imported.
