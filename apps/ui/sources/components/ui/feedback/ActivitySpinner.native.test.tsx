@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import type { LocalSettings } from '@/sync/domains/settings/localSettings';
 
@@ -68,17 +68,37 @@ async function renderClassicSpinner(props: Record<string, unknown>) {
     return nodes[0]!.props as Record<string, unknown>;
 }
 
+type MountedScreen = Awaited<ReturnType<typeof renderScreen>>;
+const mountedScreens: MountedScreen[] = [];
+
+/** The shared clocks live at module level, so every test leaves nothing mounted behind it. */
+async function unmountAll() {
+    for (const screen of mountedScreens.splice(0)) await screen.unmount();
+}
+
+afterEach(unmountAll);
+
+type InterpolationStub = { parent: unknown; config: { inputRange: number[]; outputRange: (number | string)[] } };
+
+function findDots(screen: MountedScreen) {
+    return screen.findAllByType('Animated.View' as never).filter((node) => (node.props as { testID?: string }).testID === 'activity-spinner-dot');
+}
+
+async function runningNativeLoops(): Promise<number> {
+    const { animatedLoops } = await import('@/dev/reactNativeStub');
+    return animatedLoops.size;
+}
+
 async function renderDotSpinner(props: Record<string, unknown>) {
     const { ActivitySpinner } = await import('./ActivitySpinner');
-    const { reanimatedFrameCallbacks } = await import('@/dev/testkit/mocks/reanimated');
     const screen = await renderScreen(<ActivitySpinner testID="spinner" size={18} {...props} />);
-    const dots = screen.findAllByType('Animated.View' as never).filter((node) => (node.props as { testID?: string }).testID === 'activity-spinner-dot');
-    const running = [...reanimatedFrameCallbacks].filter((callback) => callback.isActive).length;
-    return { screen, dots, running, callbacks: reanimatedFrameCallbacks };
+    mountedScreens.push(screen);
+    return { screen, dots: findDots(screen), running: await runningNativeLoops() };
 }
 
 describe('ActivitySpinner (native)', () => {
-    it('draws the H with seven dots and runs one frame clock by default', async () => {
+    it('draws the H with seven dots whose brightness the native driver reads from the frame table', async () => {
+        const { getDotSpinnerFrames, readDotSeries } = await import('./activitySpinner/dotSpinnerFrames');
         const { screen, dots, running } = await renderDotSpinner({});
 
         expect(screen.findAllByType('ActivityIndicator' as never)).toHaveLength(0);
@@ -87,42 +107,57 @@ describe('ActivitySpinner (native)', () => {
         const firstDot = flattenStyle(dots[0]!.props.style);
         expect(firstDot.backgroundColor).toBe('theme-secondary-text');
         expect(firstDot.width).toBe(3);
+
+        const frames = getDotSpinnerFrames('wave');
+        const series = readDotSeries(frames.opacity, 0, frames.frameCount);
+        const opacity = firstDot.opacity as InterpolationStub;
+        expect(opacity.config.outputRange).toEqual([...series, series[0]]);
+        expect(opacity.config.inputRange[0]).toBe(0);
+        expect(opacity.config.inputRange.at(-1)).toBe(1);
     });
 
-    it('stops the frame clock and holds the full H when ambient motion is paused', async () => {
+    it('drives every spinner of a style from one shared native loop and stops it when the last one leaves', async () => {
+        const { ActivitySpinner } = await import('./ActivitySpinner');
+        const screen = await renderScreen(
+            <>
+                <ActivitySpinner size={18} />
+                <ActivitySpinner size={12} />
+            </>,
+        );
+        mountedScreens.push(screen);
+
+        expect(findDots(screen)).toHaveLength(14);
+        expect(await runningNativeLoops()).toBe(1);
+
+        await unmountAll();
+        expect(await runningNativeLoops()).toBe(0);
+    });
+
+    it('runs no loop and holds the full H when ambient motion is paused', async () => {
         const { dots, running } = await renderDotSpinner({ animationEnabled: false });
 
         expect(running).toBe(0);
         expect(dots.map((dot) => flattenStyle(dot.props.style).opacity)).toEqual(Array(7).fill(0.85));
     });
 
-    it('stops the frame clock while the app is in the background and resumes it on return', async () => {
+    it('releases its loop while the app is in the background and takes it back on return', async () => {
         const { AppState } = await import('react-native');
         const { act } = await import('react-test-renderer');
         const { createReactNativeAppStateEmitter } = await import('@/dev/testkit');
         const appState = createReactNativeAppStateEmitter();
         const restoreAppState = appState.install(AppState);
         try {
-            const { callbacks } = await renderDotSpinner({});
-            const runningCount = () => [...callbacks].filter((callback) => callback.isActive).length;
-            expect(runningCount()).toBe(1);
+            await renderDotSpinner({});
+            expect(await runningNativeLoops()).toBe(1);
 
             await act(async () => appState.emit('background'));
-            expect(runningCount()).toBe(0);
+            expect(await runningNativeLoops()).toBe(0);
 
             await act(async () => appState.emit('active'));
-            expect(runningCount()).toBe(1);
+            expect(await runningNativeLoops()).toBe(1);
         } finally {
             restoreAppState();
         }
-    });
-
-    it('releases its frame clock when it unmounts', async () => {
-        const { screen, callbacks } = await renderDotSpinner({});
-        expect(callbacks.size).toBe(1);
-
-        await screen.unmount();
-        expect(callbacks.size).toBe(0);
     });
 
     it('keeps the layout box but draws nothing when stopped and hidden', async () => {
@@ -130,6 +165,28 @@ describe('ActivitySpinner (native)', () => {
 
         expect(dots).toHaveLength(0);
         expect(running).toBe(0);
+    });
+
+    it('animates aurora colour on the native driver too, through the theme accents', async () => {
+        const { dots } = await renderDotSpinner({ variant: 'aurora' });
+
+        const color = flattenStyle(dots[0]!.props.style).backgroundColor as InterpolationStub;
+        // Clock -> unwrapped hue -> accent gradient: both steps are interpolations, so no JS runs per frame.
+        expect((color.parent as InterpolationStub).config.inputRange[0]).toBe(0);
+        expect(color.config.outputRange).toEqual(expect.arrayContaining(['accent-indigo', 'accent-purple', 'accent-orange']));
+    });
+
+    it('breathes the still H from one shared loop under reduced motion', async () => {
+        const { DotSpinnerNative } = await import('./activitySpinner/DotSpinnerNative');
+        const screen = await renderScreen(
+            <DotSpinnerNative styleId="wave" size={18} ink={{ color: 'ink' }} motion="breathe" hidden={false} viewProps={{ testID: 'spinner' }} />,
+        );
+        mountedScreens.push(screen);
+
+        expect(await runningNativeLoops()).toBe(1);
+        expect(findDots(screen).map((dot) => flattenStyle(dot.props.style).opacity)).toEqual(Array(7).fill(0.85));
+        const layer = screen.findAllByType('Animated.View' as never).find((node) => (node.props as { testID?: string }).testID === 'spinner');
+        expect((flattenStyle(layer!.props.style).opacity as InterpolationStub).config.outputRange).toEqual([1, 0.45]);
     });
 
     describe('classic ring', () => {

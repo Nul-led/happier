@@ -7,6 +7,7 @@ import {
     DOT_SPINNER_FRAMES_PER_SECOND,
     getDotSpinnerFrames,
     resolveAuroraBlend,
+    unwrapHueSeries,
 } from './dotSpinnerFrames';
 import { DOT_SPINNER_STYLES, H_DOTS, type DotSpinnerStyleId } from './dotSpinnerStyles';
 
@@ -77,5 +78,21 @@ describe('dot spinner frames', () => {
         expect(svg).toContain('fill="#111111"');
         expect(svg).toContain('fill="rgb(1, 2, 3)"');
         expect(svg).not.toContain('"><x');
+    });
+});
+
+describe('unwrapHueSeries', () => {
+    it('removes wraps so neighbouring frames never interpolate the long way round the accent gradient', () => {
+        const round = (series: number[]) => series.map((value) => Math.round(value * 100) / 100);
+        expect(round(unwrapHueSeries([0.9, 0.98, 0.02, 0.1]))).toEqual([0.9, 0.98, 1.02, 1.1]);
+        expect(round(unwrapHueSeries([0.1, 0.02, 0.98, 0.9]))).toEqual([0.1, 0.02, -0.02, -0.1]);
+    });
+
+    it('keeps every aurora frame step under half a gradient lap', () => {
+        const frames = getDotSpinnerFrames('aurora');
+        for (let dot = 0; dot < H_DOTS.length; dot++) {
+            const series = unwrapHueSeries(Array.from({ length: frames.frameCount }, (_, frame) => frames.hue![frame * H_DOTS.length + dot]!));
+            for (let i = 1; i < series.length; i++) expect(Math.abs(series[i]! - series[i - 1]!)).toBeLessThanOrEqual(0.5);
+        }
     });
 });

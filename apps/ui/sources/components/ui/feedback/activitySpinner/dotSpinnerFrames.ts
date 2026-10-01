@@ -50,6 +50,31 @@ export function getDotSpinnerFrames(styleId: DotSpinnerStyleId): DotSpinnerFrame
     return frames;
 }
 
+/** One dot's values across every frame of a frame-major table. */
+export function readDotSeries(table: readonly number[], dotIndex: number, frameCount: number): number[] {
+    const series: number[] = [];
+    for (let frame = 0; frame < frameCount; frame++) series.push(table[frame * H_DOTS.length + dotIndex]!);
+    return series;
+}
+
+/**
+ * A hue series with its wraps removed, so interpolating between neighbouring frames never sweeps
+ * the long way round the gradient (0.98 → 0.02 would otherwise flash through every accent).
+ */
+export function unwrapHueSeries(series: readonly number[]): number[] {
+    const unwrapped: number[] = [];
+    for (const value of series) {
+        const previous = unwrapped[unwrapped.length - 1];
+        let next = value;
+        if (previous !== undefined) {
+            while (next - previous > 0.5) next -= 1;
+            while (previous - next > 0.5) next += 1;
+        }
+        unwrapped.push(next);
+    }
+    return unwrapped;
+}
+
 /**
  * Where a hue position falls on the looping three-stop accent gradient: the two stop indices and how
  * far to blend from the first to the second. Renderers blend by painting stop `from` opaque and stop

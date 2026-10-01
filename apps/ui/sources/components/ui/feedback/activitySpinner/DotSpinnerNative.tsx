@@ -1,29 +1,75 @@
 import * as React from 'react';
-import type { ViewProps } from 'react-native';
-import Animated, {
-    cancelAnimation,
-    Easing,
-    interpolateColor,
-    useAnimatedStyle,
-    useFrameCallback,
-    useSharedValue,
-    withRepeat,
-    withTiming,
-    type SharedValue,
-} from 'react-native-reanimated';
+import { Animated, type ViewProps } from 'react-native';
 
-import { DOT_SPINNER_STILL_OPACITY, getDotSpinnerFrames, type DotSpinnerInk } from './dotSpinnerFrames';
+import { useDotSpinnerBreathClock, useDotSpinnerCycleClock } from './dotSpinnerClock';
+import {
+    DOT_SPINNER_STILL_OPACITY,
+    getDotSpinnerFrames,
+    readDotSeries,
+    unwrapHueSeries,
+    type DotSpinnerFrames,
+    type DotSpinnerInk,
+} from './dotSpinnerFrames';
 import { H_DOTS, type DotSpinnerStyleId, type HDot } from './dotSpinnerStyles';
 import type { DotSpinnerMotion } from './dotSpinnerMotion';
 
 const BREATH_LOW_OPACITY = 0.45;
-const BREATH_HALF_CYCLE_MS = 1200;
 
 /**
- * The native side reads the same frame table the web strip is drawn from. One frame callback per
- * spinner advances a frame index on the UI thread, and it only writes when the index changes, so
- * the dots update at the table's 30 fps rather than the display rate. The callback runs only while
- * the spinner is animating.
+ * The accent gradient repeated over hue positions −3…3, so an unwrapped hue series (which drifts
+ * past 0 and 1 instead of jumping back) always lands on it. Stop `k` sits at `k / 3`.
+ */
+const HUE_STOPS = Array.from({ length: 19 }, (_, i) => i - 9);
+
+type DotDrive = Readonly<{
+    opacity: Animated.AnimatedInterpolation<number> | number;
+    color: Animated.AnimatedInterpolation<string> | string;
+}>;
+
+function frameInputRange(frameCount: number): number[] {
+    return Array.from({ length: frameCount + 1 }, (_, frame) => frame / frameCount);
+}
+
+function auroraGradient(aurora: readonly [string, string, string]) {
+    return {
+        inputRange: HUE_STOPS.map((k) => k / 3),
+        outputRange: HUE_STOPS.map((k) => aurora[((k % 3) + 3) % 3]!),
+    };
+}
+
+/**
+ * How each dot is driven. Animated dots interpolate the shared cycle clock over the frame table,
+ * closed back onto frame 0 so the loop's wrap is seamless; colour goes clock → unwrapped hue →
+ * accent gradient, all on the native driver (`backgroundColor` is in React Native's native-animated
+ * colour allow-list). Still dots hold the full H and their first frame's colour.
+ */
+function driveDots(frames: DotSpinnerFrames, ink: DotSpinnerInk, clock: Animated.Value, still: boolean): readonly DotDrive[] {
+    const inputRange = frameInputRange(frames.frameCount);
+    return H_DOTS.map((_, index) => {
+        let opacity: DotDrive['opacity'] = DOT_SPINNER_STILL_OPACITY;
+        if (!still) {
+            const series = readDotSeries(frames.opacity, index, frames.frameCount);
+            opacity = clock.interpolate({ inputRange, outputRange: [...series, series[0]!] });
+        }
+        if ('color' in ink || !frames.hue) {
+            return { opacity, color: 'color' in ink ? ink.color : ink.aurora[0] };
+        }
+        const hue = unwrapHueSeries(readDotSeries(frames.hue, index, frames.frameCount));
+        const gradient = auroraGradient(ink.aurora);
+        if (still) {
+            // A one-off JS interpolation blends the two accents exactly without parsing either colour.
+            return { opacity, color: new Animated.Value(hue[0]!).interpolate(gradient) };
+        }
+        const closingHue = hue[0]! - Math.round(hue[0]! - hue[hue.length - 1]!);
+        return { opacity, color: clock.interpolate({ inputRange, outputRange: [...hue, closingHue] }).interpolate(gradient) };
+    });
+}
+
+/**
+ * The native dots. Every dot is an `Animated.View` driven by the style's shared cycle clock, so the
+ * whole animation runs on the native driver with no per-frame JavaScript, and all spinners of a
+ * style step together. Still and breathing poses hold no cycle clock; a breath holds the one shared
+ * breath clock. A hidden spinner keeps its box and draws nothing.
  */
 export function DotSpinnerNative(props: Readonly<{
     styleId: DotSpinnerStyleId;
@@ -35,107 +81,42 @@ export function DotSpinnerNative(props: Readonly<{
 }>) {
     const { styleId, size, ink, motion, hidden, viewProps } = props;
     const frames = getDotSpinnerFrames(styleId);
-    const { cycleMs, frameCount } = frames;
     const animate = motion === 'animate' && !hidden;
-    const frame = useSharedValue(0);
-    const breath = useSharedValue(1);
-    const series = React.useMemo(() => H_DOTS.map((_, index) => ({
-        opacity: seriesFor(frames.opacity, index, frames.frameCount),
-        hue: frames.hue ? seriesFor(frames.hue, index, frames.frameCount) : null,
-    })), [frames]);
-
-    const clock = useFrameCallback((info) => {
-        'worklet';
-        // `timestamp` is the frame time every callback shares, so all spinners step together.
-        const next = Math.floor(((info.timestamp % cycleMs) / cycleMs) * frameCount);
-        if (next !== frame.value) frame.value = next;
-    }, animate);
-
-    React.useEffect(() => {
-        clock.setActive(animate);
-    }, [animate, clock]);
-
-    React.useEffect(() => {
-        if (motion !== 'breathe' || hidden) {
-            cancelAnimation(breath);
-            breath.value = 1;
-            return;
-        }
-        breath.value = withRepeat(
-            withTiming(BREATH_LOW_OPACITY, { duration: BREATH_HALF_CYCLE_MS, easing: Easing.inOut(Easing.ease) }),
-            -1,
-            true,
-        );
-        return () => cancelAnimation(breath);
-    }, [breath, hidden, motion]);
-
-    const breathStyle = useAnimatedStyle(() => ({ opacity: breath.value }));
+    const breathe = motion === 'breathe' && !hidden;
+    const clock = useDotSpinnerCycleClock(frames.cycleMs, animate);
+    const breath = useDotSpinnerBreathClock(breathe);
+    const drives = React.useMemo(() => driveDots(frames, ink, clock, !animate), [animate, clock, frames, ink]);
+    const layerOpacity = React.useMemo(
+        () => (breathe ? breath.interpolate({ inputRange: [0, 1], outputRange: [1, BREATH_LOW_OPACITY] }) : 1),
+        [breath, breathe],
+    );
 
     return (
-        <Animated.View {...viewProps} style={[{ width: size, height: size, alignSelf: 'center' }, breathStyle, viewProps.style]}>
+        <Animated.View {...viewProps} style={[{ width: size, height: size, alignSelf: 'center', opacity: layerOpacity }, viewProps.style]}>
             {hidden ? null : H_DOTS.map((dot, index) => (
-                <NativeDot
-                    key={dot.id}
-                    dot={dot}
-                    size={size}
-                    ink={ink}
-                    still={!animate}
-                    frame={frame}
-                    opacity={series[index]!.opacity}
-                    hue={'aurora' in ink ? series[index]!.hue : null}
-                />
+                <NativeDot key={dot.id} dot={dot} size={size} drive={drives[index]!} />
             ))}
         </Animated.View>
     );
 }
 
-function seriesFor(table: readonly number[], dotIndex: number, frameCount: number): number[] {
-    const series: number[] = [];
-    for (let frame = 0; frame < frameCount; frame++) series.push(table[frame * H_DOTS.length + dotIndex]!);
-    return series;
-}
-
-const NativeDot = React.memo(function NativeDot(props: Readonly<{
-    dot: HDot;
-    size: number;
-    ink: DotSpinnerInk;
-    still: boolean;
-    frame: SharedValue<number>;
-    opacity: readonly number[];
-    hue: readonly number[] | null;
-}>) {
-    const { dot, size, ink, still, frame, opacity, hue } = props;
+const NativeDot = React.memo(function NativeDot(props: Readonly<{ dot: HDot; size: number; drive: DotDrive }>) {
+    const { dot, size, drive } = props;
     const pitch = size / 3;
     const diameter = size / 6;
-    const aurora = 'aurora' in ink ? ink.aurora : null;
-    const color = 'color' in ink ? ink.color : ink.aurora[0];
-
-    const animatedStyle = useAnimatedStyle(() => {
-        const index = frame.value;
-        const style: { opacity: number; backgroundColor?: string } = {
-            opacity: still ? DOT_SPINNER_STILL_OPACITY : (opacity[index] ?? DOT_SPINNER_STILL_OPACITY),
-        };
-        if (aurora && hue) {
-            style.backgroundColor = interpolateColor(hue[still ? 0 : index] ?? 0, [0, 1 / 3, 2 / 3, 1], [aurora[0], aurora[1], aurora[2], aurora[0]]);
-        }
-        return style;
-    });
-
     return (
         <Animated.View
             testID="activity-spinner-dot"
-            style={[
-                {
-                    position: 'absolute',
-                    left: (dot.col + 0.5) * pitch - diameter / 2,
-                    top: (dot.row + 0.5) * pitch - diameter / 2,
-                    width: diameter,
-                    height: diameter,
-                    borderRadius: diameter / 2,
-                    backgroundColor: color,
-                },
-                animatedStyle,
-            ]}
+            style={{
+                position: 'absolute',
+                left: (dot.col + 0.5) * pitch - diameter / 2,
+                top: (dot.row + 0.5) * pitch - diameter / 2,
+                width: diameter,
+                height: diameter,
+                borderRadius: diameter / 2,
+                backgroundColor: drive.color,
+                opacity: drive.opacity,
+            }}
         />
     );
 });
