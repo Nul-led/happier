@@ -35,8 +35,8 @@ impl BrowserStreamKind {
         }
     }
 
-    /// Home traffic is interactive; machine/1 is bulk, matching the profile the
-    /// native machine tunnel requires of itself. Both are owned by the core.
+    /// The profile labels preserve the distinct Home and Machine entry-point
+    /// contracts. Both currently consume the same core transport limits.
     pub const fn cap_profile(self) -> IrohCapProfile {
         match self {
             Self::Home => BROWSER_CAP_PROFILE,

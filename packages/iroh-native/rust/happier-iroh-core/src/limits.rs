@@ -18,6 +18,11 @@ pub enum IrohCapProfile {
 }
 
 impl IrohCapProfile {
+    /// Both profile labels build the same transport config today. They preserve
+    /// the entry-point contract at native/WASM boundaries; a measured need for
+    /// different Home-interactive and machine-bulk windows is the condition for
+    /// making their transport configuration diverge.
+    ///
     /// Builds the QUIC transport config with only the two justified deviations
     /// from the pinned defaults: a finite connection receive-memory window and
     /// no transport idle timeout. Home Socket.IO and Machine/workspace streams
