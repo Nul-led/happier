@@ -1,13 +1,17 @@
 import type { AuthCredentials } from "@/auth/storage/tokenStorage";
-import { serverFetch } from "@/sync/http/client";
+import { serverFetch, type ServerFetch } from "@/sync/http/client";
 
 import {
     AccountPetsListResponseSchema,
     type AccountPetsListResponse,
 } from "@/sync/domains/pets/accountPetLibraryTypes";
 
-export async function listAccountPets(credentials: AuthCredentials): Promise<AccountPetsListResponse> {
-    const response = await serverFetch("/v1/account/pets", {
+export async function listAccountPets(
+    credentials: AuthCredentials,
+    options: Readonly<{ request?: ServerFetch }> = {},
+): Promise<AccountPetsListResponse> {
+    const request = options.request ?? serverFetch;
+    const response = await request("/v1/account/pets", {
         headers: {
             Authorization: `Bearer ${credentials.token}`,
         },

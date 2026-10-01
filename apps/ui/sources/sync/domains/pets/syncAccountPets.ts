@@ -1,6 +1,7 @@
 import type { AuthCredentials } from "@/auth/storage/tokenStorage";
 import { listAccountPets } from "@/sync/api/pets/apiAccountPets";
 import { resolveRuntimeFeatureDecisionOrThrow } from "@/sync/domains/features/featureDecisionInputs";
+import type { ServerFetch } from "@/sync/http/client";
 
 import type {
     AccountPetMetadata,
@@ -27,6 +28,8 @@ export type FetchAndApplyAccountPetsParams = Readonly<{
     serverId?: string;
     timeoutMs?: number;
     shouldContinue?: () => boolean;
+    /** Captured Sync transport for the applied Home; never resolve staged selection here. */
+    request?: ServerFetch;
     resolvePetsSyncEnabled?: (params: AccountPetsSyncDecisionParams) => Promise<boolean>;
     listPets?: (credentials: AuthCredentials) => Promise<AccountPetsListResponse>;
     applyAccountPets: (pets: AccountPetMetadata[]) => void;
@@ -67,12 +70,17 @@ export async function fetchAndApplyAccountPets(
         return { status: "disabled" };
     }
 
-    const admission = await resolveAccountPetReadAdmission(params.credentials);
+    const admission = params.request
+        ? await resolveAccountPetReadAdmission(params.credentials, { request: params.request })
+        : await resolveAccountPetReadAdmission(params.credentials);
     if (!shouldContinue()) return { status: "cancelled" };
     if (admission.status === "unavailable") return admission;
 
-    const listPets = params.listPets ?? listAccountPets;
-    const result = await listPets(params.credentials);
+    const result = params.listPets
+        ? await params.listPets(params.credentials)
+        : params.request
+            ? await listAccountPets(params.credentials, { request: params.request })
+            : await listAccountPets(params.credentials);
     if (!shouldContinue()) return { status: "cancelled" };
 
     if (!result.ok) {
