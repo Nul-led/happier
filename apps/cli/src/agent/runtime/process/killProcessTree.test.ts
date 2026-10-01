@@ -1,5 +1,5 @@
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -24,6 +24,7 @@ import {
   waitForProcessExit,
 } from '@/testkit/process/spawn';
 import { killProcessTree } from './killProcessTree';
+import { bindProcessLogger, Logger } from '@/ui/logger';
 
 afterEach(() => {
   if (psListState.actual) psListState.mock.mockImplementation(psListState.actual);
@@ -45,6 +46,36 @@ async function waitForPidFile(filePath: string, opts: { timeoutMs: number }): Pr
 }
 
 describe('killProcessTree', () => {
+  it('attempts the known root but rejects and records cleanup when neither census nor direct-child discovery is available', async () => {
+    if (process.platform === 'win32') return; // POSIX direct-child utility boundary.
+    const directory = mkdtempSync(join(tmpdir(), 'happier-kill-tree-discovery-'));
+    const logPath = join(directory, 'diagnostic.log');
+    const scopedLogger = new Logger({ logFilePath: logPath, allowDangerousRemoteLogging: false, pruneCurrentProcessLogs: false });
+    const restoreLogger = bindProcessLogger(scopedLogger);
+    const { parent, childPid } = await spawnInlineNodeParentWithChild();
+    const previousPath = process.env.PATH;
+    psListState.mock.mockRejectedValue(new Error('private-native-value'));
+    process.env.PATH = ''; // Real unavailable pgrep/pkill, not an internal fallback mock.
+    try {
+      const failure = await killProcessTree(parent, { graceMs: 250 }).then(() => null, (error: unknown) => error);
+      await expect(waitForProcessExit(parent.pid!, { timeoutMs: 3_000 })).resolves.toBe(true);
+      expect(isPidAlive(childPid)).toBe(true);
+      expect(failure).toMatchObject({ code: 'plugin_exec_termination_incomplete' });
+      scopedLogger.flushSync();
+      const diagnostic = existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
+      expect(diagnostic).toContain('plugin_exec_termination_incomplete');
+      expect(diagnostic).not.toContain('private-native-value');
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      restoreLogger();
+      for (const pid of [parent.pid!, childPid]) {
+        try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+      }
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('rejects Windows termination when the process survives the forced taskkill attempt', async () => {
     const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
     if (!platformDescriptor) throw new Error('Expected process.platform to be configurable');
@@ -70,6 +101,28 @@ describe('killProcessTree', () => {
     }
   });
 
+  it('does not accept direct-root fallback as a Windows tree proof when enumeration and taskkill both fail', async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    if (!platformDescriptor) throw new Error('Expected process.platform to be configurable');
+    const { parent, childPid } = await spawnInlineNodeParentWithChild();
+    psListState.mock.mockRejectedValue(new Error('process listing unavailable'));
+    try {
+      Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' });
+      await expect(killProcessTree(parent, {
+        graceMs: 25,
+        // Genuine Windows OS adapter denial, while direct-root signalling remains usable.
+        terminateWindowsTree: async () => { throw Object.assign(new Error('taskkill denied'), { code: 'EACCES' }); },
+      })).rejects.toMatchObject({ code: 'plugin_exec_termination_incomplete' });
+      await expect(waitForProcessExit(parent.pid!, { timeoutMs: 3_000 })).resolves.toBe(true);
+      expect(isPidAlive(childPid)).toBe(true);
+    } finally {
+      Object.defineProperty(process, 'platform', platformDescriptor);
+      for (const pid of [parent.pid!, childPid]) {
+        try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+      }
+    }
+  });
+
   it('delegates Windows subtree termination to the canonical taskkill boundary', async () => {
     const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
     if (!platformDescriptor) throw new Error('Expected process.platform to be configurable');
@@ -79,6 +132,7 @@ describe('killProcessTree', () => {
     const terminateWindowsTree = vi.fn(async ({ pid }: { pid: number }) => {
       process.kill(-pid, 'SIGKILL');
     });
+    psListState.mock.mockRejectedValue(new Error('process listing unavailable'));
 
     try {
       Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' });
@@ -227,7 +281,7 @@ describe('killProcessTree', () => {
     }
   }, 20_000);
 
-  it('kills late-forked descendants in a detached process group (posix)', async () => {
+  it('verifies an owned detached group even when census and direct-child utilities are unavailable (posix)', async () => {
     if (process.platform === 'win32') return;
 
     const tempDir = mkdtempSync(join(tmpdir(), 'happier-kill-tree-'));
@@ -273,17 +327,23 @@ describe('killProcessTree', () => {
     });
 
     let grandchildPid: number | null = null;
+    const previousPath = process.env.PATH;
     try {
       expect(parent.pid).toBeTruthy();
       expect(isPidAlive(parent.pid!)).toBe(true);
       expect(isPidAlive(childPid)).toBe(true);
       await waitForPidFile(readyFile, { timeoutMs: 2_000 });
 
+      psListState.mock.mockRejectedValue(new Error('process listing unavailable'));
+      process.env.PATH = '';
+
       await killProcessTree(parent, { graceMs: 250 });
 
       grandchildPid = await waitForPidFile(grandchildPidFile, { timeoutMs: 2_000 });
       await expect(waitForProcessExit(grandchildPid, { timeoutMs: 3_000 })).resolves.toBe(true);
     } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
       if (parent.pid) {
         try {
           process.kill(-parent.pid, 'SIGKILL');
