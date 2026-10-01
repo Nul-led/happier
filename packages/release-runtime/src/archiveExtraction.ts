@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
-import { createInflateRaw } from 'node:zlib';
+import { createGunzip, createInflateRaw } from 'node:zlib';
 
 import * as tar from 'tar';
 import type { TarOptionsWithAliasesAsyncNoFile } from 'tar';
@@ -168,33 +168,40 @@ type BoundedTarOptions = TarOptionsWithAliasesAsyncNoFile & Readonly<{
 }>;
 
 type ArchiveAbortContext = Readonly<{
-  abort: (error: Error) => void;
+  abort: (error: unknown) => void;
   dispose: () => void;
   signal: AbortSignal;
   throwIfAborted: () => void;
 }>;
+
+export class ArchiveExtractionTimeoutError extends Error {
+  constructor() {
+    super('[release-runtime] archive extraction timed out');
+    this.name = 'ArchiveExtractionTimeoutError';
+  }
+}
 
 function createArchiveAbortContext(params: Readonly<{
   externalSignal?: AbortSignal;
   timeoutMs: number | null;
 }>): ArchiveAbortContext {
   if (params.externalSignal?.aborted) {
-    throw new Error('[release-runtime] archive extraction was aborted');
+    throw params.externalSignal.reason;
   }
   if (params.timeoutMs === 0) {
-    throw new Error('[release-runtime] archive extraction timed out');
+    throw new ArchiveExtractionTimeoutError();
   }
 
   const controller = new AbortController();
-  const abort = (error: Error) => {
+  const abort = (error: unknown) => {
     if (!controller.signal.aborted) controller.abort(error);
   };
-  const onExternalAbort = () => abort(new Error('[release-runtime] archive extraction was aborted'));
+  const onExternalAbort = () => abort(params.externalSignal?.reason);
   params.externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
   const timeout = params.timeoutMs === null
     ? null
     : setTimeout(
-        () => abort(new Error('[release-runtime] archive extraction timed out')),
+        () => abort(new ArchiveExtractionTimeoutError()),
         params.timeoutMs,
       );
   timeout?.unref?.();
@@ -208,10 +215,7 @@ function createArchiveAbortContext(params: Readonly<{
     signal: controller.signal,
     throwIfAborted: () => {
       if (!controller.signal.aborted) return;
-      const reason = controller.signal.reason;
-      throw reason instanceof Error
-        ? reason
-        : new Error('[release-runtime] archive extraction was aborted');
+      throw controller.signal.reason;
     },
   };
 }
@@ -799,7 +803,7 @@ async function publishStagedExtraction(params: Readonly<{
   await rename(params.stagingDir, params.extractDir);
 }
 
-function createXzDecompressionRatioGuard(params: Readonly<{
+function createDecompressionRatioGuard(params: Readonly<{
   abortContext: ArchiveAbortContext;
   archiveBytes: number;
   limits: ArchiveExtractionLimits;
@@ -865,13 +869,17 @@ async function extractTarArchiveToDirectory(params: Readonly<{
       const decompressedStream = new XzReadableStream(Readable.toWeb(source));
       await pipeline(
         Readable.fromWeb(decompressedStream),
-        createXzDecompressionRatioGuard(params),
+        createDecompressionRatioGuard(params),
         unpack,
         { signal: params.abortContext.signal },
       );
     } else {
+      // Keep gzip teardown inside pipeline: node-tar's internal gunzip can emit
+      // a late stream error after a rejected entry has already settled extraction.
       await pipeline(
         createOpenArchiveRangeStream(params.archiveFile, 0, params.archiveBytes),
+        createGunzip(),
+        createDecompressionRatioGuard(params),
         unpack,
         { signal: params.abortContext.signal },
       );

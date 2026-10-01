@@ -8,6 +8,7 @@ import { deflateRawSync, gzipSync } from 'node:zlib';
 import * as tar from 'tar';
 
 import {
+  ArchiveExtractionTimeoutError,
   extractArchivePayloadToDirectory,
   inspectTarArchiveEntries,
 } from '../dist/archiveExtraction.js';
@@ -1061,16 +1062,25 @@ test('extractArchivePayloadToDirectory honors cancellation and timeout before pu
         extractDir: join(rootDir, 'extract-aborted'),
         signal: controller.signal,
       }),
-      /aborted/iu,
+      (error) => error === controller.signal.reason,
+    );
+    await assert.rejects(
+      extractArchivePayloadToDirectory({
+        archiveName: 'in-flight.tar.gz',
+        archivePath: inFlightArchivePath,
+        extractDir: join(rootDir, 'extract-timeout'),
+        limits: { timeoutMs: 1 },
+      }),
+      ArchiveExtractionTimeoutError,
     );
     await assert.rejects(
       extractArchivePayloadToDirectory({
         archiveName: 'payload.tar.gz',
         archivePath,
-        extractDir: join(rootDir, 'extract-timeout'),
+        extractDir: join(rootDir, 'extract-timed-in-flight'),
         limits: { timeoutMs: 0 },
       }),
-      /timed out/iu,
+      ArchiveExtractionTimeoutError,
     );
     const inFlightController = new AbortController();
     const inFlightExtraction = extractArchivePayloadToDirectory({
@@ -1080,9 +1090,10 @@ test('extractArchivePayloadToDirectory honors cancellation and timeout before pu
       signal: inFlightController.signal,
     });
     setImmediate(() => inFlightController.abort(new Error('caller stopped extraction')));
-    await assert.rejects(inFlightExtraction, /aborted/iu);
+    await assert.rejects(inFlightExtraction, (error) => error === inFlightController.signal.reason);
     await assert.rejects(stat(join(rootDir, 'extract-aborted')), { code: 'ENOENT' });
     await assert.rejects(stat(join(rootDir, 'extract-timeout')), { code: 'ENOENT' });
+    await assert.rejects(stat(join(rootDir, 'extract-timed-in-flight')), { code: 'ENOENT' });
     await assert.rejects(stat(join(rootDir, 'extract-in-flight')), { code: 'ENOENT' });
   } finally {
     await rm(rootDir, { recursive: true, force: true });
@@ -1112,7 +1123,7 @@ test('extractArchivePayloadToDirectory closes ZIP census resources before report
         limits: { maxEntries: 5000 },
         signal: controller.signal,
       }),
-      /aborted/iu,
+      (error) => error === controller.signal.reason,
     );
     await rename(archivePath, renamedArchivePath);
     await assert.rejects(stat(extractDir), { code: 'ENOENT' });
@@ -1169,6 +1180,8 @@ test('extractArchivePayloadToDirectory rejects standalone tar symlinks and hardl
       }),
       /link/iu,
     );
+    assert.deepEqual((await readdir(rootDir)).filter((name) => name.includes('.extract-')), []);
+    await assert.rejects(stat(join(rootDir, 'extract-symlink')), { code: 'ENOENT' });
 
     await link(join(payloadDir, 'target'), join(payloadDir, 'hardlink'));
     const hardlinkArchivePath = join(rootDir, 'hardlink.tar.gz');
@@ -1184,6 +1197,8 @@ test('extractArchivePayloadToDirectory rejects standalone tar symlinks and hardl
       }),
       /link/iu,
     );
+    assert.deepEqual((await readdir(rootDir)).filter((name) => name.includes('.extract-')), []);
+    await assert.rejects(stat(join(rootDir, 'extract-hardlink')), { code: 'ENOENT' });
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
