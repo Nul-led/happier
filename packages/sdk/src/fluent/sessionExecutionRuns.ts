@@ -1,5 +1,5 @@
 import type { PublicActionInputById, PublicActionResultById } from '../actions/generated.js';
-import { HappierActionError } from '../errors.js';
+import { HappierActionError, HappierTransportError } from '../errors.js';
 import type { ActionExecute, ActionExecutionOptions } from '../types.js';
 import { bindPublicActionInput, correspondenceOptions } from './boundActionCall.js';
 
@@ -77,14 +77,25 @@ export function createSessionExecutionRuns<TOptions extends ActionExecutionOptio
         }
         const routing = optionsForSession(options);
         // `execution.run.get` declares a non-empty `sidechainId`, and the SDK
-        // settles every success through that declared output schema, so a run
-        // without a transcript correspondence never reaches this read: it
-        // already failed as `invalid_action_output`.
+        // settles every success through that declared output schema. A read
+        // that succeeds without a valid current correspondence therefore fails
+        // that shared settlement; it is reported as the one typed domain
+        // failure the run-history contract names, and no transcript read follows.
         const { run } = await execute(
           'execution.run.get',
           { sessionId, runId },
           correspondenceOptions(routing),
-        );
+        ).catch((error: unknown) => {
+          if (error instanceof HappierTransportError && error.code === 'invalid_action_output') {
+            throw new HappierActionError(
+              'execution_run_correspondence_unavailable',
+              'The Execution Run has no current transcript correspondence.',
+              undefined,
+              error.requestId,
+            );
+          }
+          throw error;
+        });
         return execute('session.transcript.get', bindPublicActionInput('session.transcript.get', {
           ...input, sessionId, scope: 'sidechain', sidechainId: run.sidechainId,
         }, options?.requestId), routing);
