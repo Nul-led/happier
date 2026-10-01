@@ -7254,19 +7254,19 @@
       "packageName": "@happier-dev/plugins-codex",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-BKYCKNFH.js",
-          "byteLength": 6516916,
-          "digest": "sha256:7e7b546ad2aa60f39969bf5b34ab64425e1d6689046ec5556a7198df51529cdc"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-RZQDVO3X.js",
+          "byteLength": 6770922,
+          "digest": "sha256:b48a8d438becec1681d2dabdc1d6e4463e2bbcfbbf552138a97cd678164a0c54"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/engine.js",
           "byteLength": 197,
-          "digest": "sha256:7ca152bca8cd4085322438a4b6ff15c3baceb8fbceaa47c803fc0105f70da70b"
+          "digest": "sha256:b6d98cd575a45e0952c299f786bc985a0ac165fd0e9c66683e5eb2005f1b3d89"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 165106,
-          "digest": "sha256:f2d573a69ebf843b2151949d6b98591a6b9567fc6a3e8e77cd348d2db4fd7d78"
+          "digest": "sha256:73c1f50e9a8ca510f03256c207d9113a6b73cfad5c318c4ca5e2c4f37b6a83a8"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -7815,23 +7815,23 @@
         },
         {
           "relativePath": "dist/agent/auth/services/runtime/auth/application.d.ts",
-          "byteLength": 2352,
-          "digest": "sha256:9350518d44882ead36cdc023450235d574263f8edb8b61c3e4b348809e4d5f51"
+          "byteLength": 2405,
+          "digest": "sha256:763e9d4c697f2d1ac849374b3bb3ce41786884286328fe1a1bff7041b0ccab96"
         },
         {
           "relativePath": "dist/agent/auth/services/runtime/auth/application.d.ts.map",
-          "byteLength": 9681,
-          "digest": "sha256:f0b19b54a02b09c9ab031cf4a91760bea316b2fa7405ee1d89e7031d4e222b81"
+          "byteLength": 10317,
+          "digest": "sha256:fb0480c50d5743d8db87226f14fc0e3928f7670552b96cafeeed86e6ed32f1d9"
         },
         {
           "relativePath": "dist/agent/auth/services/runtime/auth/application.js",
-          "byteLength": 5250,
-          "digest": "sha256:a94e7c4fb8e01edce8e6db54b61c0e4c6d03c6c7f4908cc0e3b32206cd4271bc"
+          "byteLength": 5860,
+          "digest": "sha256:4f9be7217a4a0a1f4e50eefe1e7892100b798abec694b2b1a25ea31f7be02e5a"
         },
         {
           "relativePath": "dist/agent/auth/services/runtime/auth/application.js.map",
-          "byteLength": 12573,
-          "digest": "sha256:163348d6ca821287c130b0eba9fe594a2c6653b2772a63f121f09c42d3b9e364"
+          "byteLength": 13674,
+          "digest": "sha256:9c29155e7e60abb8ab676f8f007ea97aa99d3bca58e5100cb270f78b359d16bd"
         },
         {
           "relativePath": "dist/agent/auth/services/runtime/auth/failure.d.ts",
@@ -8800,18 +8800,18 @@
         },
         {
           "relativePath": "dist/agent/runtime/appServer/client.d.ts.map",
-          "byteLength": 19186,
-          "digest": "sha256:8fb3cc4434d1df51119b98760d4147896bdde2f790f5ca6b5607bea5531712a4"
+          "byteLength": 19367,
+          "digest": "sha256:34d1c484fa2487fb474b774c1062126e0a715fbb3961736d35a232ff0d95e8d7"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/client.js",
-          "byteLength": 13357,
-          "digest": "sha256:3081894293b5ffb1357bec9c30b12be7e6b1a8fc00443c02073a55d001a9a9fa"
+          "byteLength": 13536,
+          "digest": "sha256:fc8cd948315bc90387ac67ba02fd3a3d0550e1b3aaeaf5012c0e26367a9c2b2e"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/client.js.map",
-          "byteLength": 29537,
-          "digest": "sha256:e3292c3e1711ad1effc205b68987525546b5e192e6694a56e30dea936fe230e1"
+          "byteLength": 29744,
+          "digest": "sha256:aa335379200d6b1b06decedfb0a8d0e3ccb53f3d38c523853f7fe558b26078a7"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/client/timeout.d.ts",
@@ -8835,23 +8835,23 @@
         },
         {
           "relativePath": "dist/agent/runtime/appServer/compatibility.d.ts",
-          "byteLength": 1252,
-          "digest": "sha256:ed26ef0d3db63a1f58433cb48a051c608e84b8888ce4aa95a36f8eeee20b6fa2"
+          "byteLength": 1364,
+          "digest": "sha256:dc8ce3232001a41daf70cc895019e74fa0087ad8149460042b922b16edd124d7"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/compatibility.d.ts.map",
-          "byteLength": 5876,
-          "digest": "sha256:2e9312f80cab5ff6d8205f36de470ab1f08748d725e8e3a12d0d95054c512cae"
+          "byteLength": 6175,
+          "digest": "sha256:134c84d8fb5b8a743361dbeae7e29f59c88a09f303ba361380418268448406c0"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/compatibility.js",
-          "byteLength": 4087,
-          "digest": "sha256:eef8d36e513b7f94448e7b8890c79486fb1470dfed7293fef57f1d7337724478"
+          "byteLength": 4279,
+          "digest": "sha256:6333301d1cab98b629540cdd9f3a4029c1fd8cb8cdec87f61c654bbaefdf9f2f"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/compatibility.js.map",
-          "byteLength": 8841,
-          "digest": "sha256:96e189949840f7e703400b669d3b7079718b8f00467f9faae1ab28a2c523b327"
+          "byteLength": 9207,
+          "digest": "sha256:49909bcd543cc5b7e6fdd95f08e5d060f36a5423728db78e7af82e287ff0657b"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/config/overrides.d.ts",
@@ -9140,18 +9140,18 @@
         },
         {
           "relativePath": "dist/agent/runtime/appServer/runtime.d.ts.map",
-          "byteLength": 134386,
-          "digest": "sha256:186dccbf020bbafca8c22fb3b409f697d5cf0b871181a448a53c3c5892f62f90"
+          "byteLength": 138400,
+          "digest": "sha256:43573705caa604039b8ceb0f3cc7ad8f59e7cb3de635b72a7e2ccd8212c9d5ef"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/runtime.js",
-          "byteLength": 125637,
-          "digest": "sha256:4e986fbb6d2e67e0ad876648e2ac596249cd5f9e42e0b6c25ffd2bd50a9a1a79"
+          "byteLength": 129946,
+          "digest": "sha256:2f3a4556920336235b0af4bd536e173b520d6cecbb6ff13f0ffe89f6c286b740"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/runtime.js.map",
-          "byteLength": 221345,
-          "digest": "sha256:7baaba005583234995df3a33e388d9b7443fde384104a343f9bc687e7c1f41f5"
+          "byteLength": 228191,
+          "digest": "sha256:52b2d4e12fe133674e2e6f8b88ae7f1b399d04b4fdb7dbbbffd717c574ae6273"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/serviceTier.d.ts",
@@ -9255,23 +9255,23 @@
         },
         {
           "relativePath": "dist/agent/runtime/appServer/turns/rollbackPlan.d.ts",
-          "byteLength": 607,
-          "digest": "sha256:c6e188fc08e2ecac1cae5493f6f98d41cc974e98df4a23a3094fe82a134733ec"
+          "byteLength": 640,
+          "digest": "sha256:10cc08a6d5dfcdd3913cc617be69e7a0e6e6c3a5963579073ee31ffc771c478d"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/turns/rollbackPlan.d.ts.map",
-          "byteLength": 3960,
-          "digest": "sha256:91ff5935a249cfea72560a532f8e6b09a92a86be775380e34cd92a5371d232f8"
+          "byteLength": 4555,
+          "digest": "sha256:133d7b68aff0f01be446ab18bd6775b82608347fc5b989101a331440e59c8725"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/turns/rollbackPlan.js",
-          "byteLength": 2527,
-          "digest": "sha256:29e020ba3e7c921ac0821ab2f4058dd24751abaeccb313085d7a83c6458eaa6b"
+          "byteLength": 2997,
+          "digest": "sha256:1cd0062d51bb6a0581fd14727f3b816f596e2c0964aab8b6ae4e1b07eb781f24"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/turns/rollbackPlan.js.map",
-          "byteLength": 5695,
-          "digest": "sha256:a8dda876697115ea7ce65b2fe432edbd436bcc145ce0696e7d851eef449f8bae"
+          "byteLength": 6710,
+          "digest": "sha256:d4c09f462af7d75381d533d7f96cef5687c12b3ac243444c850fd4b0bf8a34a4"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/turns/rollbackTracker.d.ts",

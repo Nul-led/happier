@@ -5888,8 +5888,8 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 6516916,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-BKYCKNFH.js"
+          "byteLength": 6770922,
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-RZQDVO3X.js"
         },
         {
           "byteLength": 197,
@@ -6336,19 +6336,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/auth/services/runtime/auth/accountId.js.map"
         },
         {
-          "byteLength": 2352,
+          "byteLength": 2405,
           "relativePath": "dist/agent/auth/services/runtime/auth/application.d.ts"
         },
         {
-          "byteLength": 9681,
+          "byteLength": 10317,
           "relativePath": "dist/agent/auth/services/runtime/auth/application.d.ts.map"
         },
         {
-          "byteLength": 5250,
+          "byteLength": 5860,
           "relativePath": "dist/agent/auth/services/runtime/auth/application.js"
         },
         {
-          "byteLength": 12573,
+          "byteLength": 13674,
           "relativePath": "dist/agent/auth/services/runtime/auth/application.js.map"
         },
         {
@@ -7124,15 +7124,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/client.d.ts"
         },
         {
-          "byteLength": 19186,
+          "byteLength": 19367,
           "relativePath": "dist/agent/runtime/appServer/client.d.ts.map"
         },
         {
-          "byteLength": 13357,
+          "byteLength": 13536,
           "relativePath": "dist/agent/runtime/appServer/client.js"
         },
         {
-          "byteLength": 29537,
+          "byteLength": 29744,
           "relativePath": "dist/agent/runtime/appServer/client.js.map"
         },
         {
@@ -7152,19 +7152,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/client/timeout.js.map"
         },
         {
-          "byteLength": 1252,
+          "byteLength": 1364,
           "relativePath": "dist/agent/runtime/appServer/compatibility.d.ts"
         },
         {
-          "byteLength": 5876,
+          "byteLength": 6175,
           "relativePath": "dist/agent/runtime/appServer/compatibility.d.ts.map"
         },
         {
-          "byteLength": 4087,
+          "byteLength": 4279,
           "relativePath": "dist/agent/runtime/appServer/compatibility.js"
         },
         {
-          "byteLength": 8841,
+          "byteLength": 9207,
           "relativePath": "dist/agent/runtime/appServer/compatibility.js.map"
         },
         {
@@ -7396,15 +7396,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/runtime.d.ts"
         },
         {
-          "byteLength": 134386,
+          "byteLength": 138400,
           "relativePath": "dist/agent/runtime/appServer/runtime.d.ts.map"
         },
         {
-          "byteLength": 125637,
+          "byteLength": 129946,
           "relativePath": "dist/agent/runtime/appServer/runtime.js"
         },
         {
-          "byteLength": 221345,
+          "byteLength": 228191,
           "relativePath": "dist/agent/runtime/appServer/runtime.js.map"
         },
         {
@@ -7488,19 +7488,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/turns/failure.js.map"
         },
         {
-          "byteLength": 607,
+          "byteLength": 640,
           "relativePath": "dist/agent/runtime/appServer/turns/rollbackPlan.d.ts"
         },
         {
-          "byteLength": 3960,
+          "byteLength": 4555,
           "relativePath": "dist/agent/runtime/appServer/turns/rollbackPlan.d.ts.map"
         },
         {
-          "byteLength": 2527,
+          "byteLength": 2997,
           "relativePath": "dist/agent/runtime/appServer/turns/rollbackPlan.js"
         },
         {
-          "byteLength": 5695,
+          "byteLength": 6710,
           "relativePath": "dist/agent/runtime/appServer/turns/rollbackPlan.js.map"
         },
         {
@@ -8356,7 +8356,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-ba0e2066-55f4-40a1-ba33-410cc89bbe6b",
+      "immutableGenerationId": "bundled-77fc39ac-fa05-4594-b3d3-454813aa3830",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.codex",
       "schemaVersion": 1,
