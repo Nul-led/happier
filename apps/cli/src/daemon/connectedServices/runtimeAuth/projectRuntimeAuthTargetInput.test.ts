@@ -1,9 +1,28 @@
 import { buildConnectedServiceCredentialRecord } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
-import { projectConnectedServiceRuntimeAuthTargetInput } from './projectRuntimeAuthTargetInput';
+import { projectConnectedServiceRuntimeAuthSelection, projectConnectedServiceRuntimeAuthTargetInput } from './projectRuntimeAuthTargetInput';
 
 describe('projectConnectedServiceRuntimeAuthTargetInput', () => {
+  it('keeps explicit selection authority and refuses undeclared or malformed binding kinds', () => {
+    const fields = {
+      serviceId: 'happier.agent.codex/openai-codex', profileId: 'team',
+      groupId: 'pool', activeProfileId: 'team', generation: 2,
+    };
+    const groupBinding = { source: 'connected', selection: 'group', groupId: 'pool' };
+    expect(projectConnectedServiceRuntimeAuthSelection({
+      ...fields, kind: 'profile', binding: groupBinding,
+    }).kind).toBe('profile');
+    for (const selection of [
+      fields,
+      { ...fields, binding: { source: 'native', selection: 'group', groupId: 'pool' } },
+      { ...fields, binding: { source: 'connected', selection: 'group', groupId: '' } },
+      { ...fields, kind: null, binding: groupBinding },
+    ]) {
+      expect(projectConnectedServiceRuntimeAuthSelection(selection)).not.toHaveProperty('kind');
+    }
+  });
+
   it('refuses a superseded generation before invoking its live runtime writer', async () => {
     const credential = buildConnectedServiceCredentialRecord({ now: 1, serviceId: 'openai-codex', profileId: 'team', kind: 'oauth',
       oauth: { accessToken: 'access', refreshToken: 'refresh', idToken: null, scope: null, tokenType: null, providerAccountId: 'team', providerEmail: null } });

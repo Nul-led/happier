@@ -42,6 +42,7 @@ import {
   type CodexConnectedServiceRefreshSelection,
 } from '../../auth/services/runtime/auth/application.js';
 import {
+  isCodexConnectedServiceId,
   normalizeCodexConnectedServiceAuthGenerationRequest,
   resolveCodexAppliedGeneration,
   resolveCodexAppliedGroupId,
@@ -3062,7 +3063,7 @@ export function createCodexAppServerRuntime(
     request: AgentSessionRuntimeAuthIdentityRequest,
   ): Promise<AgentSessionRuntimeAuthIdentityResult> => {
     const record = readRecord(request);
-    if (record?.serviceId !== 'openai-codex') {
+    if (!isCodexConnectedServiceId(record?.serviceId)) {
       return {
         ok: false,
         errorCode: 'runtime_identity_probe_unavailable',

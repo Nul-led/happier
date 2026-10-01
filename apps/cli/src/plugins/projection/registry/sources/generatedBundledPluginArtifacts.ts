@@ -5888,15 +5888,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 6770922,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-RZQDVO3X.js"
+          "byteLength": 6771374,
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-S2TRQ4LN.js"
         },
         {
           "byteLength": 197,
           "relativePath": ".happier-plugin/agent/runtime/engine.js"
         },
         {
-          "byteLength": 165106,
+          "byteLength": 165001,
           "relativePath": ".happier-plugin/daemon.js"
         },
         {
@@ -6368,19 +6368,19 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/auth/services/runtime/auth/failure.js.map"
         },
         {
-          "byteLength": 1683,
+          "byteLength": 1858,
           "relativePath": "dist/agent/auth/services/runtime/auth/generationRequest.d.ts"
         },
         {
-          "byteLength": 6290,
+          "byteLength": 6744,
           "relativePath": "dist/agent/auth/services/runtime/auth/generationRequest.d.ts.map"
         },
         {
-          "byteLength": 3662,
+          "byteLength": 4025,
           "relativePath": "dist/agent/auth/services/runtime/auth/generationRequest.js"
         },
         {
-          "byteLength": 8444,
+          "byteLength": 9023,
           "relativePath": "dist/agent/auth/services/runtime/auth/generationRequest.js.map"
         },
         {
@@ -7396,15 +7396,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/runtime.d.ts"
         },
         {
-          "byteLength": 138400,
+          "byteLength": 138439,
           "relativePath": "dist/agent/runtime/appServer/runtime.d.ts.map"
         },
         {
-          "byteLength": 129946,
+          "byteLength": 129982,
           "relativePath": "dist/agent/runtime/appServer/runtime.js"
         },
         {
-          "byteLength": 228191,
+          "byteLength": 228255,
           "relativePath": "dist/agent/runtime/appServer/runtime.js.map"
         },
         {
@@ -8356,7 +8356,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-77fc39ac-fa05-4594-b3d3-454813aa3830",
+      "immutableGenerationId": "bundled-76a1ec3a-980f-4c22-8983-0b7260fb8245",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.codex",
       "schemaVersion": 1,

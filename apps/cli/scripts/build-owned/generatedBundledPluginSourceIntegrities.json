@@ -7254,19 +7254,19 @@
       "packageName": "@happier-dev/plugins-codex",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-RZQDVO3X.js",
-          "byteLength": 6770922,
-          "digest": "sha256:b48a8d438becec1681d2dabdc1d6e4463e2bbcfbbf552138a97cd678164a0c54"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-S2TRQ4LN.js",
+          "byteLength": 6771374,
+          "digest": "sha256:40856c6384cec88238eee61b98aa84ed491021761154c256eea9d0a12e98b514"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/engine.js",
           "byteLength": 197,
-          "digest": "sha256:b6d98cd575a45e0952c299f786bc985a0ac165fd0e9c66683e5eb2005f1b3d89"
+          "digest": "sha256:e828bea8002110c8e89a9719172f4418c201fc7faf021b2f9aefbe7b268e1a86"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 165106,
-          "digest": "sha256:73c1f50e9a8ca510f03256c207d9113a6b73cfad5c318c4ca5e2c4f37b6a83a8"
+          "byteLength": 165001,
+          "digest": "sha256:ffb75f4b6e772b2462b2a14c58aec4fabc03e8faa4ff8df51ae3791fa7453fb8"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -7855,23 +7855,23 @@
         },
         {
           "relativePath": "dist/agent/auth/services/runtime/auth/generationRequest.d.ts",
-          "byteLength": 1683,
-          "digest": "sha256:3c6b27e0a6f20254d4e0c9207220c119b8736aac227019e8e8d2880a276be1ab"
+          "byteLength": 1858,
+          "digest": "sha256:b33e124f16b99fffd53f42c3042116fca873c95ebb78a499739b0fa4317bf5ce"
         },
         {
           "relativePath": "dist/agent/auth/services/runtime/auth/generationRequest.d.ts.map",
-          "byteLength": 6290,
-          "digest": "sha256:a81599f819a6e61db8d58594597b3bd58ad8af45c910b43dfa0625147f4c52c8"
+          "byteLength": 6744,
+          "digest": "sha256:81ad7c61a4cba009b446f5f31da3f0f1add76d6948e332a5b6e444a4d51556a5"
         },
         {
           "relativePath": "dist/agent/auth/services/runtime/auth/generationRequest.js",
-          "byteLength": 3662,
-          "digest": "sha256:828a6f21444312d6358968fff7dc152a240b852e35df3d8fd0e83ed15a2162a8"
+          "byteLength": 4025,
+          "digest": "sha256:f4cab9e2bb6ce471d995173f9cc2b528d773d4726ece92ba745954c102c13e73"
         },
         {
           "relativePath": "dist/agent/auth/services/runtime/auth/generationRequest.js.map",
-          "byteLength": 8444,
-          "digest": "sha256:f4e0ed477fbbd09b3186c00369e75f7fb0a5faefb42b3aff053994b5c117a572"
+          "byteLength": 9023,
+          "digest": "sha256:796a09fc17a8520e737ee716373abff04040b6b599321f772338e9978e0de30f"
         },
         {
           "relativePath": "dist/agent/auth/services/runtime/auth/legacyFailureSource.d.ts",
@@ -9140,18 +9140,18 @@
         },
         {
           "relativePath": "dist/agent/runtime/appServer/runtime.d.ts.map",
-          "byteLength": 138400,
-          "digest": "sha256:43573705caa604039b8ceb0f3cc7ad8f59e7cb3de635b72a7e2ccd8212c9d5ef"
+          "byteLength": 138439,
+          "digest": "sha256:35f7dbae1208c75c1b2d3eb242067f62c9d95a28fa61211ccf75318344bf7069"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/runtime.js",
-          "byteLength": 129946,
-          "digest": "sha256:2f3a4556920336235b0af4bd536e173b520d6cecbb6ff13f0ffe89f6c286b740"
+          "byteLength": 129982,
+          "digest": "sha256:0dcb0b5f1a6e636e47d72a72af8803eb8f7404633dade873cf57e85e91008203"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/runtime.js.map",
-          "byteLength": 228191,
-          "digest": "sha256:52b2d4e12fe133674e2e6f8b88ae7f1b399d04b4fdb7dbbbffd717c574ae6273"
+          "byteLength": 228255,
+          "digest": "sha256:1a5fc81b5d8ef1f14dd55a2504de9633c9c7c45e025b0fe6bd4eed38960350e4"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/serviceTier.d.ts",

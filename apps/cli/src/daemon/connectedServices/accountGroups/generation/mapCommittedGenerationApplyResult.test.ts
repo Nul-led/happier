@@ -236,6 +236,22 @@ describe('mapCommittedGenerationApplyResult', () => {
 
   it.each([
     ['missing generation application', undefined],
+    ['foreign qualified service', {
+      serviceId: 'other.agent/openai-codex',
+      groupId: 'team',
+      profileId: 'profile-b',
+      generation: 2,
+      credentialRevision: 'csr_bbbbbbbbbbbbbbbbbbbbbb',
+      credentialFingerprint: 'sha256:bbbbbbbb',
+    }],
+    ['unknown scalar service', {
+      serviceId: 'unknown-scalar',
+      groupId: 'team',
+      profileId: 'profile-b',
+      generation: 2,
+      credentialRevision: 'csr_bbbbbbbbbbbbbbbbbbbbbb',
+      credentialFingerprint: 'sha256:bbbbbbbb',
+    }],
     ['mismatched credential revision', {
       serviceId: 'openai-codex',
       groupId: 'team',

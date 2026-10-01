@@ -1,6 +1,7 @@
 import {
   ConnectedServiceCredentialRecordV1Schema,
   ConnectedServiceCredentialRevisionV1Schema,
+  ConnectedServiceBindingSelectionV1Schema,
   readBuiltInLegacyConnectedAccountServiceKeyIngress,
 } from '@happier-dev/protocol';
 
@@ -46,7 +47,14 @@ export function projectConnectedServiceRuntimeAuthSelection(
   const applyReason = readString(value.applyReason);
   const sourceProviderAccountId = readString(value.sourceProviderAccountId);
   const sourceAccountLabel = readString(value.sourceAccountLabel);
-  const kind = value.kind === 'profile' || value.kind === 'group' ? value.kind : null;
+  const binding = !Object.prototype.hasOwnProperty.call(value, 'kind')
+    ? ConnectedServiceBindingSelectionV1Schema.safeParse(value.binding)
+    : null;
+  const kind = value.kind === 'profile' || value.kind === 'group'
+    ? value.kind
+    : binding?.success && binding.data.source === 'connected'
+      ? binding.data.selection
+      : null;
   const generation = typeof value.generation === 'number' && Number.isSafeInteger(value.generation) && value.generation >= 0
     ? value.generation
     : null;

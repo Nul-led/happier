@@ -6,6 +6,7 @@ import type {
   AgentSessionRuntimeAuthIdentityResult,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import { AgentRuntimeJsonValueSchema } from '@happier-dev/plugin-sdk/agents/runtime';
+import { ConnectedAccountServiceKeyIngressSchema } from '@happier-dev/protocol';
 import type {
   SessionConnectedServiceAuthApplyGenerationRequestV1,
   SessionConnectedServiceAuthApplyGenerationResponseV1,
@@ -82,6 +83,10 @@ function projectDurability(
 function projectVerification(
   verification: NonNullable<AgentSessionRuntimeAuthApplyResult['verification']>,
 ) {
+  const generationApplication = verification.generationApplication;
+  const proofService = generationApplication === undefined
+    ? null
+    : ConnectedAccountServiceKeyIngressSchema.safeParse(generationApplication.serviceId);
   return {
     ...(verification.activeAccountId === undefined
       ? {}
@@ -93,20 +98,20 @@ function projectVerification(
       ? {}
       : { proofStrength: verification.proofStrength }),
     ...(verification.source === undefined ? {} : { source: verification.source }),
-    ...(verification.generationApplication === undefined
+    ...(generationApplication === undefined || !proofService?.success
       ? {}
       : {
           generationApplication: {
-            serviceId: verification.generationApplication.serviceId,
-            groupId: verification.generationApplication.groupId,
-            profileId: verification.generationApplication.profileId,
-            generation: verification.generationApplication.generation,
-            ...(verification.generationApplication.credentialRevision === undefined
+            serviceId: proofService.data,
+            groupId: generationApplication.groupId,
+            profileId: generationApplication.profileId,
+            generation: generationApplication.generation,
+            ...(generationApplication.credentialRevision === undefined
               ? {}
-              : { credentialRevision: verification.generationApplication.credentialRevision }),
-            ...(verification.generationApplication.credentialFingerprint === undefined
+              : { credentialRevision: generationApplication.credentialRevision }),
+            ...(generationApplication.credentialFingerprint === undefined
               ? {}
-              : { credentialFingerprint: verification.generationApplication.credentialFingerprint }),
+              : { credentialFingerprint: generationApplication.credentialFingerprint }),
           },
         }),
   };

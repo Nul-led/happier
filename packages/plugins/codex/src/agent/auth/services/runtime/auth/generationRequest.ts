@@ -4,6 +4,12 @@ import type {
 import { parseCredentialRecord } from '@happier-dev/plugin-sdk/connected-accounts';
 
 import type { CodexConnectedServiceRefreshSelection } from './application.js';
+import { CODEX_OPENAI_CONNECTED_ACCOUNT_SERVICE_KEY } from '../../../../../constants.js';
+
+/** Canonical host routing plus the existing scalar Session-auth ingress for this service only. */
+export function isCodexConnectedServiceId(value: unknown): boolean {
+  return value === CODEX_OPENAI_CONNECTED_ACCOUNT_SERVICE_KEY || value === 'openai-codex';
+}
 
 function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -38,7 +44,7 @@ function readCodexOauthCredentialRecord(value: unknown): OauthCredentialRecord |
 
 function readCodexRefreshSelection(value: unknown): CodexConnectedServiceRefreshSelection | null {
   const record = readRecord(value);
-  if (!record || record.serviceId !== 'openai-codex') return null;
+  if (!record || !isCodexConnectedServiceId(record.serviceId)) return null;
   const kind = readString(record.kind);
   if (kind === 'profile') {
     const profileId = readString(record.profileId);
@@ -83,7 +89,7 @@ export function normalizeCodexConnectedServiceAuthGenerationRequest(
   value: unknown,
 ): CodexConnectedServiceAuthGenerationRequest | null {
   const record = readRecord(value);
-  if (record?.serviceId !== 'openai-codex') return null;
+  if (!record || !isCodexConnectedServiceId(record.serviceId)) return null;
   const generation = readRecord(record.authGeneration);
   const credential = readCodexOauthCredentialRecord(generation?.credential);
   if (!generation || !credential) return null;
