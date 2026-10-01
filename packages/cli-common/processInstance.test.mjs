@@ -3,9 +3,52 @@ import assert from 'node:assert/strict';
 
 import {
   parseLinuxProcStartTime,
+  parseLinuxProcStartTimeMs,
+  processGenerationMatches,
+  processGenerationProvesReuse,
+  compareNumericProcessGenerationIdentities,
+  processIdentityMatches,
   processInstanceFingerprintMatches,
+  readProcessHostIdentitySync,
   readProcessInstanceFingerprintSync,
+  readProcessStartTimeMsSync,
 } from './processInstance.mjs';
+
+test('process identity uses the start witness across command drift and fences pid reuse', () => {
+  const recorded = { pid: 42, processStartTimeMs: 190, processCommandHash: 'a'.repeat(64) };
+  assert.equal(processIdentityMatches(recorded, {
+    pid: 42,
+    processStartTimeMs: 190,
+    processCommandHash: 'b'.repeat(64),
+  }), true);
+  assert.equal(processIdentityMatches(recorded, {
+    pid: 42,
+    processStartTimeMs: 200,
+    processCommandHash: 'a'.repeat(64),
+  }), false);
+  assert.equal(processIdentityMatches(recorded, {
+    pid: 43,
+    processStartTimeMs: 190,
+    processCommandHash: 'a'.repeat(64),
+  }), false);
+  assert.equal(processGenerationMatches(190, 190), true);
+  assert.equal(processGenerationProvesReuse(190, 200), true);
+  assert.equal(processIdentityMatches({
+    pid: 42,
+    processCommandHash: 'a'.repeat(64),
+  }, recorded), true);
+  assert.equal(processIdentityMatches({
+    pid: 42,
+    processCommandHash: 'a'.repeat(64),
+  }, { ...recorded, processCommandHash: 'b'.repeat(64) }), false);
+});
+
+test('persisted numeric generations share the marker verdict across platforms', () => {
+  assert.equal(compareNumericProcessGenerationIdentities('41:1754041400000', '41:1754041400000', 'linux'), 'same');
+  assert.equal(compareNumericProcessGenerationIdentities('41:1754041400000', '41:1754041400000', 'darwin'), 'ambiguous');
+  assert.equal(compareNumericProcessGenerationIdentities('41:1754041400000', '41:1754041401000'), 'reused');
+  assert.equal(compareNumericProcessGenerationIdentities('41:1754041400000', '42:1754041400000'), 'ambiguous');
+});
 
 test('parseLinuxProcStartTime reads field 22 even when the command contains spaces and parentheses', () => {
   const fields = Array.from({ length: 30 }, (_, index) => String(index + 3));
@@ -14,6 +57,34 @@ test('parseLinuxProcStartTime reads field 22 even when the command contains spac
     parseLinuxProcStartTime(`42 (worker (blue) pool) ${fields.join(' ')}`),
     '987654',
   );
+});
+
+test('parseLinuxProcStartTimeMs keeps the daemon numeric witness boot-relative', () => {
+  const fields = Array.from({ length: 30 }, (_, index) => String(index + 3));
+  fields[19] = '2221490';
+  assert.equal(parseLinuxProcStartTimeMs(`42 (runner) ${fields.join(' ')}`), 22_214_900);
+  assert.equal(parseLinuxProcStartTimeMs('invalid stat'), null);
+});
+
+test('readProcessStartTimeMsSync produces the same Linux numeric witness as the daemon inventory', () => {
+  const fields = Array.from({ length: 30 }, (_, index) => String(index + 3));
+  fields[19] = '1234';
+  assert.equal(readProcessStartTimeMsSync(42, {
+    platform: 'linux',
+    readFileSyncImpl: () => `42 (worker) ${fields.join(' ')}`,
+  }), 12_340);
+  assert.equal(readProcessStartTimeMsSync(42, {
+    platform: 'darwin',
+    spawnSyncImpl: () => ({ status: 0, signal: null, stdout: 'Mon Jul 20 12:34:56 2026\n' }),
+  }), Date.parse('Mon Jul 20 12:34:56 2026'));
+  assert.equal(readProcessStartTimeMsSync(42, {
+    platform: 'win32',
+    spawnSyncImpl: () => ({ status: 0, signal: null, stdout: 'CreationDate=20260723013456.123456+120\r\n' }),
+  }), Date.parse('2026-07-22T23:34:56.1234560Z'));
+  assert.equal(readProcessStartTimeMsSync(42, {
+    platform: 'linux',
+    readFileSyncImpl: () => { throw new Error('proc unavailable'); },
+  }), null);
 });
 
 test('processInstanceFingerprintMatches preserves the predecessor pure comparison contract', () => {
@@ -195,4 +266,88 @@ test('readProcessInstanceFingerprintSync fails closed when every incarnation sou
     },
   }), null);
   assert.equal(windowsCalls, 2);
+});
+
+test('readProcessHostIdentitySync reads the platform-owned stable host identity', () => {
+  assert.deepEqual(readProcessHostIdentitySync({
+    platform: 'linux',
+    readFileSyncImpl: (path) => ({
+      '/etc/machine-id': 'linux-machine\n',
+      '/proc/sys/kernel/random/boot_id': 'linux-boot\n',
+    })[path],
+    readlinkSyncImpl: () => 'pid:[4026531836]',
+  }), {
+    machineId: 'linux-machine',
+    bootId: 'linux-boot',
+    pidNamespace: 'pid:[4026531836]',
+    pidNamespaced: true,
+  });
+
+  const darwinCalls = [];
+  assert.deepEqual(readProcessHostIdentitySync({
+    platform: 'darwin',
+    spawnSyncImpl: (command, args, options) => {
+      darwinCalls.push({ command, args, timeout: options.timeout });
+      return {
+        status: 0,
+        signal: null,
+        stdout: [
+          '+-o J316sAP  <class IOPlatformExpertDevice, id 0x100000120, registered>',
+          '  {',
+          '    "IOPlatformSerialNumber" = "C02XXXXXXX"',
+          '    "IOPlatformUUID" = "564D1B84-1C2D-4E5F-8A9B-0C1D2E3F4A5B"',
+          '  }',
+        ].join('\n'),
+      };
+    },
+  }), {
+    machineId: 'darwin:564D1B84-1C2D-4E5F-8A9B-0C1D2E3F4A5B',
+    bootId: null,
+    pidNamespace: null,
+    pidNamespaced: false,
+  });
+  assert.deepEqual(darwinCalls, [{
+    command: '/usr/sbin/ioreg',
+    args: ['-rd1', '-c', 'IOPlatformExpertDevice'],
+    timeout: 5_000,
+  }]);
+
+  assert.deepEqual(readProcessHostIdentitySync({
+    platform: 'win32',
+    hostnameImpl: () => 'BUILD-BOX',
+    spawnSyncImpl: (command, args) => {
+      assert.equal(command, 'reg.exe');
+      assert.ok(args.includes('/reg:64'));
+      return {
+        status: 0,
+        signal: null,
+        stdout: '\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography\r\n'
+          + '    MachineGuid    REG_SZ    2B6F1C64-AAAA-4BBB-8CCC-0123456789AB\r\n\r\n',
+      };
+    },
+  }), {
+    machineId: 'win32:2b6f1c64-aaaa-4bbb-8ccc-0123456789ab:build-box',
+    bootId: null,
+    pidNamespace: null,
+    pidNamespaced: false,
+  });
+});
+
+test('readProcessHostIdentitySync fails closed when the host identity source is unavailable', () => {
+  const failedSpawn = () => ({ status: 1, signal: null, stdout: '' });
+  assert.equal(readProcessHostIdentitySync({
+    platform: 'linux',
+    readFileSyncImpl: () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+  }), null);
+  assert.equal(readProcessHostIdentitySync({ platform: 'darwin', spawnSyncImpl: failedSpawn }), null);
+  assert.equal(readProcessHostIdentitySync({
+    platform: 'darwin',
+    spawnSyncImpl: () => ({ status: 0, signal: null, stdout: '"IOPlatformUUID" = ""' }),
+  }), null);
+  assert.equal(readProcessHostIdentitySync({
+    platform: 'win32',
+    hostnameImpl: () => 'BUILD-BOX',
+    spawnSyncImpl: failedSpawn,
+  }), null);
+  assert.equal(readProcessHostIdentitySync({ platform: 'freebsd' }), null);
 });

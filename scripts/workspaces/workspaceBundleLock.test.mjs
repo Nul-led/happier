@@ -16,6 +16,164 @@ test('workspace publishers get a default contention budget sized for concurrent 
   assert.ok(DEFAULT_WORKSPACE_BUNDLE_LOCK_TIMEOUT_MS >= 30 * 60_000);
 });
 
+for (const mode of ['async', 'sync']) {
+  test(`workspace bundle ${mode} restores a live retained priority claimant before admission`, async () => {
+    const root = mkdtempSync(join(tmpdir(), 'workspace-live-priority-history-'));
+    const lockPath = join(root, 'publication.lock');
+    const claimPath = `${lockPath}.priority-claim`;
+    const retainedPath = `${claimPath}.reclaim-race`;
+    const raw = JSON.stringify({
+      pid: 42, token: 'live-claimant', processInstanceFingerprint: 'live-instance',
+      createdAtMs: Date.now(), updatedAtMs: Date.now(),
+    });
+    writeFileSync(retainedPath, raw);
+    let waited = false;
+    try {
+      const options = {
+        lockPath,
+        onWait: () => {
+          assert.equal(readFileSync(claimPath, 'utf8'), raw);
+          assert.equal(existsSync(retainedPath), false);
+          waited = true;
+          // Model the external claimant's release at the real filesystem boundary.
+          rmSync(claimPath);
+        },
+      };
+      const callback = () => {
+        assert.equal(waited, true, 'a retained live claimant must not be bypassed');
+        return 'published';
+      };
+      assert.equal(mode === 'async'
+        ? await withWorkspaceBundleLock(callback, options)
+        : withWorkspaceBundleLockSync(callback, options), 'published');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test(`workspace bundle ${mode} releases its own retained claim without deleting another live claimant`, async () => {
+    const root = mkdtempSync(join(tmpdir(), 'workspace-owned-priority-history-'));
+    const lockPath = join(root, 'publication.lock');
+    const ownHistoryPath = `${lockPath}.priority-claim.reclaim-own`;
+    const otherHistoryPath = `${lockPath}.priority-claim.reclaim-other`;
+    const otherRaw = JSON.stringify({
+      pid: 42, token: 'live-claimant', processInstanceFingerprint: 'live-instance',
+      createdAtMs: Date.now(), updatedAtMs: Date.now(),
+    });
+    try {
+      const callback = () => {
+        writeFileSync(ownHistoryPath, readFileSync(lockPath));
+        writeFileSync(otherHistoryPath, otherRaw);
+      };
+      if (mode === 'async') await withWorkspaceBundleLock(callback, { lockPath });
+      else withWorkspaceBundleLockSync(callback, { lockPath });
+      assert.equal(existsSync(ownHistoryPath), false);
+      assert.equal(readFileSync(otherHistoryPath, 'utf8'), otherRaw);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  for (const phase of ['admission', 'release']) {
+    test(`workspace bundle ${mode} retires dead priority claim history at ${phase}`, async () => {
+      const root = mkdtempSync(join(tmpdir(), 'workspace-priority-history-'));
+      const lockPath = join(root, 'publication.lock');
+      const retainedPath = `${lockPath}.priority-claim.reclaim-old`;
+      const seedHistory = () => writeFileSync(retainedPath, JSON.stringify({
+        pid: 42, token: 'dead-claimant', processInstanceFingerprint: 'dead-instance',
+        processMachineId: 'history-test',
+        createdAtMs: Date.now(), updatedAtMs: Date.now(),
+      }));
+      try {
+        if (phase === 'admission') seedHistory();
+        const callback = () => {
+          if (phase === 'release') seedHistory();
+          else assert.equal(existsSync(retainedPath), false);
+          return 'published';
+        };
+        const options = {
+          lockPath,
+          // Process liveness is an OS boundary; retained-claim recovery remains real.
+          isRunningPidImpl: (pid) => pid === process.pid,
+          readProcessHostIdentityImpl: () => ({ machineId: 'history-test', pidNamespaced: false }),
+        };
+        const result = mode === 'async'
+          ? await withWorkspaceBundleLock(callback, options)
+          : withWorkspaceBundleLockSync(callback, options);
+        assert.equal(result, 'published');
+        assert.equal(existsSync(retainedPath), false);
+        assert.deepEqual(readdirSync(root), []);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+for (const mode of ['async', 'sync']) {
+  for (const waitingOn of ['lock', 'priority-claim']) {
+    test(`workspace bundle ${mode} waits outlive the elapsed budget while ${waitingOn} owners heartbeat`, async (t) => {
+      const tempRoot = mkdtempSync(join(tmpdir(), 'happier-workspace-bundle-lock-healthy-wait-'));
+      try {
+        const lockPath = join(tempRoot, 'workspace-bundling.lock');
+        const ownerPath = waitingOn === 'lock' ? lockPath : `${lockPath}.priority-claim`;
+        let nowMs = Date.now();
+        t.mock.method(Date, 'now', () => nowMs);
+        const writeOwner = (token) => writeFileSync(ownerPath, JSON.stringify({
+          pid: process.pid,
+          token,
+          processInstanceFingerprint: 'healthy-process',
+          createdAtMs: nowMs,
+          updatedAtMs: nowMs,
+        }));
+        writeOwner('first-owner');
+        let observations = 0;
+        let finalWaitedMs = 0;
+        const watchWaits = [];
+        const options = {
+          lockPath,
+          pollIntervalMs: 1,
+          isRunningPidImpl: () => true,
+          readProcessInstanceFingerprintSyncImpl: () => 'healthy-process',
+          // Clock and directory-watch waiting are system boundaries; lock admission stays real.
+          waitForLockChangeImpl: async ({ maxWaitMs }) => {
+            watchWaits.push(maxWaitMs);
+            if (observations < 3) {
+              nowMs += DEFAULT_WORKSPACE_BUNDLE_LOCK_TIMEOUT_MS + 1;
+              writeOwner(`owner-${observations}`);
+            }
+          },
+          onWait: ({ waitedMs }) => {
+            observations += 1;
+            if (observations === 3) {
+              finalWaitedMs = waitedMs;
+              rmSync(ownerPath);
+            } else if (mode === 'sync') {
+              nowMs += DEFAULT_WORKSPACE_BUNDLE_LOCK_TIMEOUT_MS + 1;
+              writeOwner(`owner-${observations}`);
+            }
+          },
+        };
+        const callback = ({ waited }) => {
+          assert.equal(waited, true);
+          return 'acquired-after-healthy-owners';
+        };
+        const result = mode === 'async'
+          ? await withWorkspaceBundleLock(callback, options)
+          : withWorkspaceBundleLockSync(callback, options);
+        assert.equal(result, 'acquired-after-healthy-owners');
+        assert.equal(observations, 3);
+        assert.ok(finalWaitedMs > 2 * DEFAULT_WORKSPACE_BUNDLE_LOCK_TIMEOUT_MS);
+        if (mode === 'async') assert.ok(watchWaits.every((waitMs) => waitMs > 1));
+        assert.equal(existsSync(lockPath), false);
+        assert.equal(existsSync(`${lockPath}.priority-claim`), false);
+      } finally {
+        rmSync(tempRoot, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
 test('workspace bundle lock declarations expose result reuse to production consumers', () => {
   const cliCommonDir = fileURLToPath(new URL('../../packages/cli-common/', import.meta.url));
   const fixtureDir = mkdtempSync(join(cliCommonDir, '.workspace-bundle-lock-types-'));
@@ -62,6 +220,31 @@ async function waitForCondition(predicate, label, timeoutMs = 10_000) {
   while (!predicate()) {
     if (Date.now() - startedAt > timeoutMs) throw new Error(`Timed out waiting for ${label}`);
     await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+}
+
+function assertHealthyWorkspaceLockKeepsWaiting(fn, options) {
+  const originalNow = Date.now;
+  let nowMs = originalNow();
+  let observations = 0;
+  const stop = new Error('observed healthy wait beyond elapsed budget');
+  // Synchronous waits cannot accept cancellation while they block the event loop. End the test at
+  // the clock boundary after observing continued contention, without changing the owner's bytes.
+  Date.now = () => {
+    if (observations === 2) throw stop;
+    return nowMs;
+  };
+  try {
+    assert.throws(() => withWorkspaceBundleLockSync(fn, {
+      ...options,
+      onWait: () => {
+        observations += 1;
+        nowMs += options.timeoutMs + 1;
+      },
+    }), (error) => error === stop);
+    assert.equal(observations, 2);
+  } finally {
+    Date.now = originalNow;
   }
 }
 
@@ -151,7 +334,7 @@ const options = {
   lockPath,
   timeoutMs: 60,
   pollIntervalMs: 5,
-  staleAfterMs: 5_000,
+  staleAfterMs: 100,
 };
 if (${JSON.stringify(mode)} === 'async') {
   await assert.rejects(
@@ -249,7 +432,7 @@ async function runRetainedHistoryCase(mode, { includeInconclusiveOwner }) {
       lockPath,
       timeoutMs: 60,
       pollIntervalMs: 5,
-      staleAfterMs: 5_000,
+      staleAfterMs: 100,
     };
     let entered = false;
     const callback = () => {
@@ -307,7 +490,7 @@ async function runDuplicateRetainedOwnerCase(mode) {
       lockPath,
       timeoutMs: 40,
       pollIntervalMs: 5,
-      staleAfterMs: 5_000,
+      staleAfterMs: 100,
       isRunningPidImpl: () => true,
       readProcessInstanceFingerprintSyncImpl: () => 'same-process-instance',
     };
@@ -431,7 +614,7 @@ for (const testCase of cases.values()) {
     lockPath: testCase.lockPath,
     timeoutMs: 60,
     pollIntervalMs: 5,
-    staleAfterMs: 5_000,
+    staleAfterMs: 100,
   };
   if (${JSON.stringify(mode)} === 'async') {
     await assert.rejects(
@@ -1068,18 +1251,18 @@ test('workspace bundle lock priority claims fence newer contenders while the liv
         },
         {
           lockPath,
+          signal: AbortSignal.timeout(60),
           timeoutMs: 40,
           pollIntervalMs: 5,
           staleAfterMs: 5_000,
         },
       ),
-      (error) => error?.code === 'EWORKSPACEBUNDLELOCKTIMEOUT',
+      (error) => error?.name === 'TimeoutError',
     );
     assert.equal(asyncEntered, false);
 
     let syncEntered = false;
-    assert.throws(
-      () => withWorkspaceBundleLockSync(
+    assertHealthyWorkspaceLockKeepsWaiting(
         () => {
           syncEntered = true;
         },
@@ -1089,8 +1272,6 @@ test('workspace bundle lock priority claims fence newer contenders while the liv
           pollIntervalMs: 5,
           staleAfterMs: 5_000,
         },
-      ),
-      (error) => error?.code === 'EWORKSPACEBUNDLELOCKTIMEOUT',
     );
     assert.equal(syncEntered, false);
     assert.deepEqual(JSON.parse(readFileSync(claimPath, 'utf8')), liveClaim);
@@ -1269,14 +1450,15 @@ test('withWorkspaceBundleLock rejects path-only inheritance while another owner 
             {
               lockPath,
               heldLockPath: lockPath,
+              signal: AbortSignal.timeout(60),
               timeoutMs: 60,
               pollIntervalMs: 10,
               staleAfterMs: 1_000,
             },
           ),
-          /Timed out waiting for workspace bundle lock/,
+          (error) => error?.name === 'TimeoutError',
         );
-        assert.equal(existsSync(`${lockPath}.priority-claim`), false, 'a timed-out claimant must clear its claim');
+        assert.equal(existsSync(`${lockPath}.priority-claim`), false, 'a cancelled claimant must clear its claim');
       },
       {
         lockPath,
@@ -1313,12 +1495,13 @@ test('withWorkspaceBundleLock does not let a released owner lease bypass its suc
             {
               lockPath,
               heldLockPath: releasedOwnerLease,
+              signal: AbortSignal.timeout(60),
               timeoutMs: 60,
               pollIntervalMs: 10,
               staleAfterMs: 1_000,
             },
           ),
-          /Timed out waiting for workspace bundle lock/,
+          (error) => error?.name === 'TimeoutError',
         );
       },
       { lockPath, timeoutMs: 2_000, pollIntervalMs: 10, staleAfterMs: 1_000 },
@@ -1328,31 +1511,22 @@ test('withWorkspaceBundleLock does not let a released owner lease bypass its suc
   }
 });
 
-test('withWorkspaceBundleLock marks contention timeout as a retryable lock outcome', async () => {
+test('withWorkspaceBundleLock marks unknown-owner contention timeout as a retryable lock outcome', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'happier-workspace-bundle-lock-timeout-code-'));
   try {
     const lockPath = join(tempRoot, 'workspace-bundling.lock');
-    await withWorkspaceBundleLock(
-      async () => {
-        await assert.rejects(
-          withWorkspaceBundleLock(
-            async () => {},
-            {
-              lockPath,
-              timeoutMs: 20,
-              pollIntervalMs: 5,
-              staleAfterMs: 1_000,
-            },
-          ),
-          (error) => error?.code === 'EWORKSPACEBUNDLELOCKTIMEOUT',
-        );
-      },
-      {
-        lockPath,
-        timeoutMs: 2_000,
-        pollIntervalMs: 10,
-        staleAfterMs: 1_000,
-      },
+    writeFileSync(lockPath, JSON.stringify({ pid: process.pid, createdAtMs: Date.now() }), 'utf8');
+    await assert.rejects(
+      withWorkspaceBundleLock(
+        async () => {},
+        {
+          lockPath,
+          timeoutMs: 20,
+          pollIntervalMs: 5,
+          staleAfterMs: 1_000,
+        },
+      ),
+      (error) => error?.code === 'EWORKSPACEBUNDLELOCKTIMEOUT',
     );
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
@@ -1374,12 +1548,13 @@ test('withWorkspaceBundleLock does not treat a different inherited lock as owner
               {
                 lockPath,
                 heldLockPath: differentLockPath,
+                signal: AbortSignal.timeout(60),
                 timeoutMs: 60,
                 pollIntervalMs: 10,
                 staleAfterMs: 1_000,
               },
             ),
-          /Timed out waiting for workspace bundle lock/,
+          (error) => error?.name === 'TimeoutError',
         );
       },
       {
@@ -1476,8 +1651,7 @@ test('workspace bundle locks preserve a fresh workspace-visible heartbeat when p
     writeFileSync(lockPath, ownerRaw, 'utf8');
     let entered = false;
 
-    assert.throws(
-      () => withWorkspaceBundleLockSync(
+    assertHealthyWorkspaceLockKeepsWaiting(
         () => { entered = true; },
         {
           lockPath,
@@ -1487,8 +1661,6 @@ test('workspace bundle locks preserve a fresh workspace-visible heartbeat when p
           isRunningPidImpl: () => false,
           readProcessInstanceFingerprintSyncImpl: () => 'different-local-incarnation',
         },
-      ),
-      /Timed out waiting for workspace bundle lock/,
     );
     assert.equal(entered, false);
     assert.equal(readFileSync(lockPath, 'utf8'), ownerRaw);
@@ -1502,6 +1674,7 @@ test('workspace bundle lock heartbeat survives a blocked owner event loop across
   try {
     const lockPath = join(tempRoot, 'workspace-bundling.lock');
     const enteredPath = join(tempRoot, 'owner-entered');
+    const finishedPath = join(tempRoot, 'owner-finished');
     const moduleUrl = new URL('./workspaceBundleLock.mjs', import.meta.url).href;
     const script = `
 import { writeFileSync } from 'node:fs';
@@ -1509,6 +1682,7 @@ import { withWorkspaceBundleLockSync } from ${JSON.stringify(moduleUrl)};
 withWorkspaceBundleLockSync(() => {
   writeFileSync(${JSON.stringify(enteredPath)}, 'ready\\n');
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 700);
+  writeFileSync(${JSON.stringify(finishedPath)}, 'finished\\n');
 }, {
   lockPath: ${JSON.stringify(lockPath)},
   timeoutMs: 1_000,
@@ -1530,9 +1704,11 @@ withWorkspaceBundleLockSync(() => {
     );
     let contenderEntered = false;
 
-    assert.throws(
-      () => withWorkspaceBundleLockSync(
-        () => { contenderEntered = true; },
+    withWorkspaceBundleLockSync(
+        () => {
+          assert.equal(existsSync(finishedPath), true, 'the healthy owner must finish before contender admission');
+          contenderEntered = true;
+        },
         {
           lockPath,
           timeoutMs: 80,
@@ -1541,10 +1717,8 @@ withWorkspaceBundleLockSync(() => {
           isRunningPidImpl: () => true,
           readProcessInstanceFingerprintSyncImpl: () => 'foreign-namespace-incarnation',
         },
-      ),
-      /Timed out waiting for workspace bundle lock/,
     );
-    assert.equal(contenderEntered, false);
+    assert.equal(contenderEntered, true);
     await new Promise((resolve, reject) => {
       child.once('error', reject);
       child.once('exit', (code, signal) => {
@@ -1652,8 +1826,7 @@ test('workspace bundle locks preserve a fresh authenticated owner in another Lin
     writeFileSync(lockPath, ownerRaw, 'utf8');
     let entered = false;
 
-    assert.throws(
-      () => withWorkspaceBundleLockSync(
+    assertHealthyWorkspaceLockKeepsWaiting(
         () => { entered = true; },
         {
           lockPath,
@@ -1662,8 +1835,6 @@ test('workspace bundle locks preserve a fresh authenticated owner in another Lin
           staleAfterMs: 60_000,
           isRunningPidImpl: () => true,
         },
-      ),
-      /Timed out waiting for workspace bundle lock/,
     );
     assert.equal(entered, false);
     assert.equal(readFileSync(lockPath, 'utf8'), ownerRaw);
@@ -1741,6 +1912,125 @@ test('workspace bundle locks reclaim an expired owner from another Linux host ev
 
     assert.equal(result, 'reclaimed');
     assert.equal(existsSync(lockPath), false);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+const DARWIN_HOST_IDENTITY = Object.freeze({
+  machineId: 'darwin:564D1B84-1C2D-4E5F-8A9B-0C1D2E3F4A5B',
+  bootId: null,
+  pidNamespace: null,
+  pidNamespaced: false,
+});
+
+function writeFreshDarwinOwner(lockPath, processMachineId) {
+  const ownerRaw = JSON.stringify({
+    pid: 42,
+    createdAtMs: Date.now(),
+    updatedAtMs: Date.now(),
+    token: 'darwin-owner',
+    processInstanceFingerprint: 'darwin-ps:Sun Sep 27 08:04:31 2026',
+    processMachineId,
+  });
+  writeFileSync(lockPath, ownerRaw, 'utf8');
+  return ownerRaw;
+}
+
+test('workspace bundle locks reclaim a fresh authenticated owner that died on the same non-Linux host', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'happier-workspace-bundle-lock-same-darwin-host-'));
+  try {
+    const lockPath = join(tempRoot, 'workspace-bundling.lock');
+    writeFreshDarwinOwner(lockPath, DARWIN_HOST_IDENTITY.machineId);
+
+    const result = await withWorkspaceBundleLock(
+      async () => 'reclaimed',
+      {
+        lockPath,
+        timeoutMs: 100,
+        pollIntervalMs: 5,
+        staleAfterMs: 60_000,
+        readProcessHostIdentityImpl: () => DARWIN_HOST_IDENTITY,
+        isRunningPidImpl: () => false,
+      },
+    );
+
+    assert.equal(result, 'reclaimed');
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('workspace bundle locks keep a fresh same non-Linux host owner whose live pid fingerprint differs', () => {
+  // darwin `ps lstart` fingerprints vary with TZ/LC_TIME, so a mismatch for a running pid cannot
+  // prove the owner dead while its heartbeat is fresh.
+  const tempRoot = mkdtempSync(join(tmpdir(), 'happier-workspace-bundle-lock-same-darwin-host-live-'));
+  try {
+    const lockPath = join(tempRoot, 'workspace-bundling.lock');
+    const ownerRaw = writeFreshDarwinOwner(lockPath, DARWIN_HOST_IDENTITY.machineId);
+    let entered = false;
+
+    assertHealthyWorkspaceLockKeepsWaiting(
+        () => { entered = true; },
+        {
+          lockPath,
+          timeoutMs: 40,
+          pollIntervalMs: 5,
+          staleAfterMs: 60_000,
+          readProcessHostIdentityImpl: () => DARWIN_HOST_IDENTITY,
+          isRunningPidImpl: () => true,
+          readProcessInstanceFingerprintSyncImpl: () => 'darwin-ps:Sun Sep 27 06:04:31 2026',
+        },
+    );
+    assert.equal(entered, false);
+    assert.equal(readFileSync(lockPath, 'utf8'), ownerRaw);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('workspace bundle locks preserve a fresh owner from another non-Linux host despite dead local pid facts', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'happier-workspace-bundle-lock-other-darwin-host-'));
+  try {
+    const lockPath = join(tempRoot, 'workspace-bundling.lock');
+    const ownerRaw = writeFreshDarwinOwner(lockPath, 'darwin:0F0F0F0F-1C2D-4E5F-8A9B-0C1D2E3F4A5B');
+    let entered = false;
+
+    assertHealthyWorkspaceLockKeepsWaiting(
+        () => { entered = true; },
+        {
+          lockPath,
+          timeoutMs: 40,
+          pollIntervalMs: 5,
+          staleAfterMs: 60_000,
+          readProcessHostIdentityImpl: () => DARWIN_HOST_IDENTITY,
+          isRunningPidImpl: () => false,
+        },
+    );
+    assert.equal(entered, false);
+    assert.equal(readFileSync(lockPath, 'utf8'), ownerRaw);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('workspace bundle lock owners record the portable host identity', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'happier-workspace-bundle-lock-host-identity-'));
+  try {
+    const lockPath = join(tempRoot, 'workspace-bundling.lock');
+    const observedOwner = withWorkspaceBundleLockSync(
+      () => JSON.parse(readFileSync(lockPath, 'utf8')),
+      {
+        lockPath,
+        timeoutMs: 2_000,
+        staleAfterMs: 1_000,
+        readProcessHostIdentityImpl: () => DARWIN_HOST_IDENTITY,
+      },
+    );
+
+    assert.equal(observedOwner.processMachineId, DARWIN_HOST_IDENTITY.machineId);
+    assert.equal('processBootId' in observedOwner, false);
+    assert.equal('processPidNamespace' in observedOwner, false);
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
   }

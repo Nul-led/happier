@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readProcessStartTimeMsSync } from '@happier-dev/cli-common/processInstance';
 
 import { withJsonOwnerFileLock } from './jsonOwnerFileLock.js';
 
@@ -96,5 +98,103 @@ describe('withJsonOwnerFileLock — holder liveness', () => {
 
     expect(error).toBeNull();
     expect(ranEffect).toBe(true);
+  });
+
+  it('records the same process-start witness that contenders read for PID reuse', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-json-owner-lock-witness-'));
+    const lockPath = join(root, 'store.lock');
+    try {
+      await withJsonOwnerFileLock({
+        lockPath,
+        timeoutMs: 300,
+        staleAfterMs: 1,
+        errorCode: 'json_owner_lock_timeout',
+        readProcessStartedAtMs: async () => 123_450,
+      }, async () => {
+        const owner = JSON.parse(await readFile(lockPath, 'utf8')) as Record<string, unknown>;
+        expect(owner.processStartedAtMs).toBe(123_450);
+        // The shipping 0.2 reader accepts exactly these keys and treats
+        // ownerToken as opaque; it must be able to recognize a live holder.
+        expect(Object.keys(owner).sort()).toEqual([
+          'createdAtMs', 'ownerToken', 'pid', 'processStartedAtMs', 'updatedAtMs',
+        ]);
+        expect(owner.ownerToken).toMatch(/^observed:/u);
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('writes an observed witness even when the caller omits the process reader', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-json-owner-lock-default-witness-'));
+    const lockPath = join(root, 'store.lock');
+    try {
+      await withJsonOwnerFileLock({
+        lockPath,
+        timeoutMs: 300,
+        staleAfterMs: 1,
+        errorCode: 'json_owner_lock_timeout',
+      }, async () => {
+        const owner = JSON.parse(await readFile(lockPath, 'utf8')) as Record<string, unknown>;
+        expect(owner.processStartedAtMs).toBe(readProcessStartTimeMsSync(process.pid));
+        expect(owner.ownerToken).toMatch(/^observed:/u);
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not reclaim a live legacy wall-clock owner using a boot-relative observation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-json-owner-lock-legacy-'));
+    const lockPath = join(root, 'store.lock');
+    const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1_000)'], { stdio: 'ignore' });
+    if (!holder.pid) throw new Error('Could not start lock-holder witness');
+    const raw = JSON.stringify({
+      pid: holder.pid,
+      ownerToken: randomUUID(),
+      processStartedAtMs: Date.now() - 60_000,
+      createdAtMs: 1,
+      updatedAtMs: 1,
+    });
+    try {
+      await writeFile(lockPath, raw, 'utf8');
+      await expect(withJsonOwnerFileLock({
+        lockPath,
+        timeoutMs: 100,
+        staleAfterMs: 1,
+        errorCode: 'json_owner_lock_timeout',
+        readProcessStartedAtMs: async () => 123_450,
+      }, async () => 'stolen')).rejects.toThrow('json_owner_lock_timeout');
+      expect(await readFile(lockPath, 'utf8')).toBe(raw);
+    } finally {
+      holder.kill();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reclaims a live PID only when a tagged numeric witness proves reuse', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-json-owner-lock-reuse-'));
+    const lockPath = join(root, 'store.lock');
+    const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1_000)'], { stdio: 'ignore' });
+    if (!holder.pid) throw new Error('Could not start lock-holder witness');
+    try {
+      await writeFile(lockPath, JSON.stringify({
+        pid: holder.pid,
+        ownerToken: `observed:${randomUUID()}`,
+        processStartedAtMs: 123_450,
+        createdAtMs: 1,
+        updatedAtMs: 1,
+      }), 'utf8');
+      await expect(withJsonOwnerFileLock({
+        lockPath,
+        timeoutMs: 300,
+        staleAfterMs: 1,
+        errorCode: 'json_owner_lock_timeout',
+        readProcessStartedAtMs: async (pid) => pid === holder.pid ? 123_460 : 123_450,
+      }, async () => 'reclaimed')).resolves.toBe('reclaimed');
+    } finally {
+      holder.kill();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

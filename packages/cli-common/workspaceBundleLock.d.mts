@@ -14,11 +14,13 @@ export interface WorkspaceBundleLockOptions<T = unknown> {
   lockPath: string;
   heldLockValue?: string;
   heldLockPath?: string;
+  /** Bounds waits without a fresh authenticated owner heartbeat; healthy owners use staleAfterMs. */
   timeoutMs?: number;
   pollIntervalMs?: number;
   staleAfterMs?: number;
   initializationGraceMs?: number;
   readProcessInstanceFingerprintSyncImpl?: (pid: number) => string | null;
+  readProcessHostIdentityImpl?: () => import('./processInstance.mjs').ProcessHostIdentity | null;
   startWorkspaceLockHeartbeatImpl?: (options: {
     lockPath: string;
     ownerToken: string;

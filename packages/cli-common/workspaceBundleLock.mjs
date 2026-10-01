@@ -8,7 +8,6 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
-  readlinkSync,
   readdirSync,
   renameSync,
   statSync,
@@ -25,33 +24,35 @@ import {
   createWorkspaceLockLeaseValue,
   workspaceLockLeaseMatchesOwner,
 } from './workspaceLockLease.mjs';
-import { readProcessInstanceFingerprintSync } from './processInstance.mjs';
+import {
+  readProcessHostIdentitySync,
+  readProcessInstanceFingerprintSync,
+} from './processInstance.mjs';
 
 export const WORKSPACE_BUNDLE_LOCK_TIMEOUT_ERROR_CODE = 'EWORKSPACEBUNDLELOCKTIMEOUT';
 export const WORKSPACE_BUNDLE_LOCK_OWNERSHIP_LOST_ERROR_CODE = 'EWORKSPACEBUNDLELOCKOWNERSHIPLOST';
 export const DEFAULT_WORKSPACE_BUNDLE_LOCK_TIMEOUT_MS = 30 * 60_000;
 
-let cachedLinuxProcessHostIdentity;
+let cachedProcessHostIdentity;
 
-function readLinuxProcessHostIdentity() {
-  if (cachedLinuxProcessHostIdentity !== undefined) return cachedLinuxProcessHostIdentity;
-  cachedLinuxProcessHostIdentity = null;
-  if (process.platform !== 'linux') return cachedLinuxProcessHostIdentity;
-  try {
-    const machineId = readFileSync('/etc/machine-id', 'utf8').trim();
-    const bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
-    let pidNamespace = null;
-    try {
-      pidNamespace = readlinkSync('/proc/self/ns/pid').trim() || null;
-    } catch {
-      // The host/boot identity still permits prior-boot recovery when procfs does not expose the
-      // current PID namespace. Same-boot PID liveness remains lease-timeout based in that case.
-    }
-    if (machineId && bootId) cachedLinuxProcessHostIdentity = { machineId, bootId, pidNamespace };
-  } catch {
-    // Older or restricted Linux environments keep the existing lease-timeout behavior.
+function readCurrentProcessHostIdentity(options = {}) {
+  if (typeof options.readProcessHostIdentityImpl === 'function') {
+    return options.readProcessHostIdentityImpl();
   }
-  return cachedLinuxProcessHostIdentity;
+  if (cachedProcessHostIdentity === undefined) {
+    cachedProcessHostIdentity = readProcessHostIdentitySync();
+  }
+  return cachedProcessHostIdentity;
+}
+
+function lockOwnerObservationOptions(options, initializationGraceMs) {
+  return {
+    initializationGraceMs,
+    priorityClaimStaleAfterMs: options.priorityClaimStaleAfterMs,
+    isRunningPidImpl: options.isRunningPidImpl,
+    readProcessInstanceFingerprintSyncImpl: options.readProcessInstanceFingerprintSyncImpl,
+    readProcessHostIdentityImpl: options.readProcessHostIdentityImpl,
+  };
 }
 
 function sleepSync(ms) {
@@ -219,11 +220,16 @@ async function waitForWorkspaceBundleLockChange({
 
 function resolveWorkspaceBundleLockWaitMs({
   options,
+  snapshot,
+  staleAfterMs,
   startedAt,
   timeoutMs,
   initializationGraceMs,
 }) {
-  const remainingTimeoutMs = Math.max(1, timeoutMs - (Date.now() - startedAt));
+  const nowMs = Date.now();
+  const remainingTimeoutMs = hasFreshAuthenticatedOwnerHeartbeat(snapshot, staleAfterMs, nowMs)
+    ? Infinity
+    : Math.max(1, timeoutMs - (nowMs - startedAt));
   const configuredFallbackMs = Number(options.watchFallbackMs);
   const fallbackMs = Number.isFinite(configuredFallbackMs) && configuredFallbackMs > 0
     ? configuredFallbackMs
@@ -315,6 +321,14 @@ function hasFreshAuthenticatedOwnerHeartbeat(snapshot, staleAfterMs, nowMs) {
     && nowMs - updatedAtMs <= staleAfterMs;
 }
 
+function workspaceBundleLockWaitTimedOut(snapshot, staleAfterMs, startedAt, timeoutMs) {
+  const nowMs = Date.now();
+  // Healthy authenticated owners may publish for longer than the contention budget. The existing
+  // heartbeat/reclamation policy owns their lifetime; other waits retain the elapsed bound.
+  return nowMs - startedAt > timeoutMs
+    && !hasFreshAuthenticatedOwnerHeartbeat(snapshot, staleAfterMs, nowMs);
+}
+
 function reclaimDecisionFromLocalProcess(snapshot, options = {}) {
   const ownerPid = Number(snapshot.owner?.pid);
   if (!Number.isFinite(ownerPid) || ownerPid <= 0) return null;
@@ -333,26 +347,47 @@ function reclaimDecisionFromLocalProcess(snapshot, options = {}) {
 function shouldReclaimLockSnapshot(snapshot, staleAfterMs, nowMs, options = {}) {
   if (!snapshot.exists) return true;
   if (!snapshot.readable) return false;
-  const currentLinuxHost = readLinuxProcessHostIdentity();
+  const currentHost = readCurrentProcessHostIdentity(options);
   const ownerMachineId = String(snapshot.owner?.processMachineId ?? '').trim();
   const ownerBootId = String(snapshot.owner?.processBootId ?? '').trim();
   if (
-    currentLinuxHost
-    && ownerMachineId === currentLinuxHost.machineId
+    currentHost?.bootId
+    && ownerMachineId === currentHost.machineId
     && ownerBootId
-    && ownerBootId !== currentLinuxHost.bootId
+    && ownerBootId !== currentHost.bootId
   ) {
     return true;
   }
   const ownerPidNamespace = String(snapshot.owner?.processPidNamespace ?? '').trim();
-  if (
-    currentLinuxHost?.pidNamespace
-    && ownerMachineId === currentLinuxHost.machineId
-    && ownerBootId === currentLinuxHost.bootId
-    && ownerPidNamespace === currentLinuxHost.pidNamespace
-  ) {
+  // The owner shares this contender's PID space only when the recorded host identity proves it:
+  // Linux also needs the same boot and PID namespace; darwin/win32 have one PID space per host.
+  const ownerSharesLocalPidSpace = Boolean(
+    currentHost
+    && ownerMachineId === currentHost.machineId
+    && (
+      !currentHost.pidNamespaced
+      || (
+        ownerBootId === currentHost.bootId
+        && currentHost.pidNamespace
+        && ownerPidNamespace === currentHost.pidNamespace
+      )
+    )
+  );
+  if (ownerSharesLocalPidSpace && currentHost.pidNamespaced) {
     const localProcessDecision = reclaimDecisionFromLocalProcess(snapshot, options);
     if (localProcessDecision !== null) return localProcessDecision;
+  } else if (ownerSharesLocalPidSpace) {
+    // darwin/win32 incarnation fingerprints can vary with the observer's TZ/locale, so before the
+    // lease expires only a provably absent pid is conclusive; a running pid with a different
+    // fingerprint waits for the post-expiry local-process decision below.
+    const ownerPid = Number(snapshot.owner?.pid);
+    if (
+      Number.isInteger(ownerPid)
+      && ownerPid > 0
+      && !(options.isRunningPidImpl ?? isRunningPid)(ownerPid)
+    ) {
+      return true;
+    }
   }
   // Lock files can be shared across machines or PID namespaces. A contender's
   // process lookup cannot disprove a different namespace's fresh, authenticated
@@ -360,15 +395,16 @@ function shouldReclaimLockSnapshot(snapshot, staleAfterMs, nowMs, options = {}) 
   // after that lease has expired.
   if (hasFreshAuthenticatedOwnerHeartbeat(snapshot, staleAfterMs, nowMs)) return false;
   const ownerIsKnownForeignProcess = Boolean(
-    currentLinuxHost
+    currentHost
     && ownerMachineId
     && (
-      ownerMachineId !== currentLinuxHost.machineId
+      ownerMachineId !== currentHost.machineId
       || (
-        ownerBootId === currentLinuxHost.bootId
-        && currentLinuxHost.pidNamespace
+        currentHost.pidNamespaced
+        && ownerBootId === currentHost.bootId
+        && currentHost.pidNamespace
         && ownerPidNamespace
-        && ownerPidNamespace !== currentLinuxHost.pidNamespace
+        && ownerPidNamespace !== currentHost.pidNamespace
       )
     )
   );
@@ -500,6 +536,8 @@ function classifyRetainedLockSnapshots(
     staleAfterMs,
     initializationGraceMs,
     options,
+    priorityClaim = false,
+    releasedOwner,
   },
 ) {
   const prefix = `${basename(lockPath)}.reclaim-`;
@@ -508,11 +546,11 @@ function classifyRetainedLockSnapshots(
     const retainedPath = join(dirname(lockPath), name);
     const snapshot = readLockOwnerSnapshot(retainedPath);
     if (!snapshot.exists) continue;
-    if (shouldReclaimLockSnapshot(snapshot, staleAfterMs, Date.now(), {
-      initializationGraceMs,
-      isRunningPidImpl: options.isRunningPidImpl,
-      readProcessInstanceFingerprintSyncImpl: options.readProcessInstanceFingerprintSyncImpl,
-    })) {
+    const shouldReclaim = priorityClaim ? shouldReclaimPriorityClaimSnapshot : shouldReclaimLockSnapshot;
+    if (
+      (releasedOwner && ownerSnapshotMatchesCurrentProcess(snapshot, releasedOwner))
+      || shouldReclaim(snapshot, staleAfterMs, Date.now(), lockOwnerObservationOptions(options, initializationGraceMs))
+    ) {
       const retired = reclaimLockSnapshot(retainedPath, snapshot.raw);
       if (!retired) {
         throw new Error(`Workspace bundle lock recovery cleanup failed: ${lockPath}`);
@@ -584,18 +622,18 @@ function recoverRetainedLockSnapshot(lockPath, classificationOptions) {
   return true;
 }
 
-function serializeLockOwner({ createdAtMs, updatedAtMs, ownerToken, processInstanceFingerprint }) {
-  const linuxHost = readLinuxProcessHostIdentity();
+function serializeLockOwner({ createdAtMs, updatedAtMs, ownerToken, processInstanceFingerprint }, options = {}) {
+  const host = readCurrentProcessHostIdentity(options);
   return JSON.stringify({
     pid: process.pid,
     createdAtMs,
     updatedAtMs,
     token: ownerToken,
     processInstanceFingerprint: processInstanceFingerprint ?? null,
-    ...(linuxHost ? {
-      processMachineId: linuxHost.machineId,
-      processBootId: linuxHost.bootId,
-      ...(linuxHost.pidNamespace ? { processPidNamespace: linuxHost.pidNamespace } : {}),
+    ...(host ? {
+      processMachineId: host.machineId,
+      ...(host.bootId ? { processBootId: host.bootId } : {}),
+      ...(host.pidNamespace ? { processPidNamespace: host.pidNamespace } : {}),
     } : {}),
   });
 }
@@ -673,7 +711,7 @@ function tryAcquirePriorityClaim({
       updatedAtMs: nowMs,
       ownerToken,
       processInstanceFingerprint,
-    });
+    }, options);
     fd = openSync(claimPath, 'wx', 0o600);
     try {
       protectLockFile(claimPath, fd, options);
@@ -701,11 +739,7 @@ function tryAcquirePriorityClaim({
     if (ownerSnapshotMatchesCurrentProcess(snapshot, { ownerToken, processInstanceFingerprint })) {
       return { acquired: true, raw: snapshot.raw };
     }
-    if (shouldReclaimPriorityClaimSnapshot(snapshot, staleAfterMs, Date.now(), {
-      initializationGraceMs,
-      priorityClaimStaleAfterMs: options.priorityClaimStaleAfterMs,
-      readProcessInstanceFingerprintSyncImpl: options.readProcessInstanceFingerprintSyncImpl,
-    })) {
+    if (shouldReclaimPriorityClaimSnapshot(snapshot, staleAfterMs, Date.now(), lockOwnerObservationOptions(options, initializationGraceMs))) {
       const reclaimed = reclaimLockSnapshot(claimPath, snapshot.raw);
       return { acquired: false, raw: null, retry: reclaimed };
     }
@@ -718,7 +752,7 @@ function refreshPriorityClaim({
   claimRaw,
   ownerToken,
   processInstanceFingerprint,
-}) {
+}, options = {}) {
   const snapshot = readLockOwnerSnapshot(claimPath);
   if (snapshot.raw !== claimRaw || !ownerSnapshotMatchesCurrentProcess(snapshot, {
     ownerToken,
@@ -731,7 +765,7 @@ function refreshPriorityClaim({
     updatedAtMs: Date.now(),
     ownerToken,
     processInstanceFingerprint,
-  });
+  }, options);
   writeFileSync(claimPath, nextRaw, 'utf8');
   return nextRaw;
 }
@@ -855,6 +889,8 @@ export async function withWorkspaceBundleLock(fn, options = {}) {
   let waited = false;
   let tryResolveWaiterOnNextIteration = false;
   const waitForLockChange = options.waitForLockChangeImpl ?? waitForWorkspaceBundleLockChange;
+  const claimHistoryOptions = { staleAfterMs, initializationGraceMs, options, priorityClaim: true };
+  classifyRetainedLockSnapshots(claimPath, claimHistoryOptions);
 
   try {
     while (true) {
@@ -876,22 +912,19 @@ export async function withWorkspaceBundleLock(fn, options = {}) {
           claimRaw: ownClaimRaw,
           ownerToken,
           processInstanceFingerprint,
-        });
+        }, options);
       }
 
       if (ownClaimRaw === null) {
+        if (!readLockOwnerSnapshot(claimPath).exists && recoverRetainedLockSnapshot(claimPath, claimHistoryOptions)) continue;
         const lockSnapshot = readLockOwnerSnapshot(lockPath);
         const claimSnapshot = readLockOwnerSnapshot(claimPath);
-        if (claimSnapshot.exists && shouldReclaimPriorityClaimSnapshot(claimSnapshot, staleAfterMs, Date.now(), {
-          initializationGraceMs,
-          priorityClaimStaleAfterMs: options.priorityClaimStaleAfterMs,
-          readProcessInstanceFingerprintSyncImpl: options.readProcessInstanceFingerprintSyncImpl,
-        })) {
+        if (claimSnapshot.exists && shouldReclaimPriorityClaimSnapshot(claimSnapshot, staleAfterMs, Date.now(), lockOwnerObservationOptions(options, initializationGraceMs))) {
           if (reclaimLockSnapshot(claimPath, claimSnapshot.raw)) continue;
         }
         if (claimSnapshot.exists) {
           const waitSnapshot = lockSnapshot.exists ? lockSnapshot : claimSnapshot;
-          if (Date.now() - startedAt > timeoutMs) {
+          if (workspaceBundleLockWaitTimedOut(waitSnapshot, staleAfterMs, startedAt, timeoutMs)) {
             const errorLabel = options.errorLabel ?? 'workspace bundle lock';
             throw createWorkspaceBundleLockTimeoutError({
               errorLabel,
@@ -910,6 +943,8 @@ export async function withWorkspaceBundleLock(fn, options = {}) {
             claimSnapshot,
             maxWaitMs: resolveWorkspaceBundleLockWaitMs({
               options,
+              snapshot: waitSnapshot,
+              staleAfterMs,
               startedAt,
               timeoutMs,
               initializationGraceMs,
@@ -937,7 +972,7 @@ export async function withWorkspaceBundleLock(fn, options = {}) {
           updatedAtMs: createdAtMs,
           ownerToken,
           processInstanceFingerprint,
-        });
+        }, options);
         fd = openSync(lockPath, 'wx', 0o600);
         try {
           protectLockFile(lockPath, fd, options);
@@ -982,10 +1017,7 @@ export async function withWorkspaceBundleLock(fn, options = {}) {
         if (error?.code !== 'EEXIST') throw error;
         ownLockRaw = null;
         let snapshot = readLockOwnerSnapshot(lockPath);
-        if (shouldReclaimLockSnapshot(snapshot, staleAfterMs, Date.now(), {
-          initializationGraceMs,
-          readProcessInstanceFingerprintSyncImpl: options.readProcessInstanceFingerprintSyncImpl,
-        })) {
+        if (shouldReclaimLockSnapshot(snapshot, staleAfterMs, Date.now(), lockOwnerObservationOptions(options, initializationGraceMs))) {
           if (reclaimLockSnapshot(lockPath, snapshot.raw)) continue;
           snapshot = readLockOwnerSnapshot(lockPath);
           if (!snapshot.exists) {
@@ -1004,7 +1036,7 @@ export async function withWorkspaceBundleLock(fn, options = {}) {
           if (claim.acquired) ownClaimRaw = claim.raw;
           if (claim.retry) continue;
         }
-        if (Date.now() - startedAt > timeoutMs) {
+        if (workspaceBundleLockWaitTimedOut(snapshot, staleAfterMs, startedAt, timeoutMs)) {
           const errorLabel = options.errorLabel ?? 'workspace bundle lock';
           throw createWorkspaceBundleLockTimeoutError({ errorLabel, lockPath, snapshot });
         }
@@ -1019,6 +1051,8 @@ export async function withWorkspaceBundleLock(fn, options = {}) {
           claimSnapshot: readLockOwnerSnapshot(claimPath),
           maxWaitMs: resolveWorkspaceBundleLockWaitMs({
             options,
+            snapshot,
+            staleAfterMs,
             startedAt,
             timeoutMs,
             initializationGraceMs,
@@ -1031,6 +1065,7 @@ export async function withWorkspaceBundleLock(fn, options = {}) {
     }
   } catch (error) {
     clearPriorityClaimIfOwned(claimPath, ownClaimRaw);
+    classifyRetainedLockSnapshots(claimPath, { ...claimHistoryOptions, releasedOwner: { ownerToken, processInstanceFingerprint } });
     throw error;
   }
 
@@ -1084,6 +1119,7 @@ export async function withWorkspaceBundleLock(fn, options = {}) {
         processInstanceFingerprint,
       })) unlinkSync(lockPath);
     } catch {}
+    classifyRetainedLockSnapshots(claimPath, { ...claimHistoryOptions, releasedOwner: { ownerToken, processInstanceFingerprint } });
   }
 }
 
@@ -1126,6 +1162,8 @@ export function withWorkspaceBundleLockSync(fn, options = {}) {
   let fd = null;
   let waited = false;
   let heartbeatWorker = null;
+  const claimHistoryOptions = { staleAfterMs, initializationGraceMs, options, priorityClaim: true };
+  classifyRetainedLockSnapshots(claimPath, claimHistoryOptions);
 
   try {
     while (true) {
@@ -1135,22 +1173,19 @@ export function withWorkspaceBundleLockSync(fn, options = {}) {
           claimRaw: ownClaimRaw,
           ownerToken,
           processInstanceFingerprint,
-        });
+        }, options);
       }
 
       if (ownClaimRaw === null) {
+        if (!readLockOwnerSnapshot(claimPath).exists && recoverRetainedLockSnapshot(claimPath, claimHistoryOptions)) continue;
         const lockSnapshot = readLockOwnerSnapshot(lockPath);
         const claimSnapshot = readLockOwnerSnapshot(claimPath);
-        if (claimSnapshot.exists && shouldReclaimPriorityClaimSnapshot(claimSnapshot, staleAfterMs, Date.now(), {
-          initializationGraceMs,
-          priorityClaimStaleAfterMs: options.priorityClaimStaleAfterMs,
-          readProcessInstanceFingerprintSyncImpl: options.readProcessInstanceFingerprintSyncImpl,
-        })) {
+        if (claimSnapshot.exists && shouldReclaimPriorityClaimSnapshot(claimSnapshot, staleAfterMs, Date.now(), lockOwnerObservationOptions(options, initializationGraceMs))) {
           if (reclaimLockSnapshot(claimPath, claimSnapshot.raw)) continue;
         }
         if (claimSnapshot.exists) {
           const waitSnapshot = lockSnapshot.exists ? lockSnapshot : claimSnapshot;
-          if (Date.now() - startedAt > timeoutMs) {
+          if (workspaceBundleLockWaitTimedOut(waitSnapshot, staleAfterMs, startedAt, timeoutMs)) {
             const errorLabel = options.errorLabel ?? 'workspace bundle lock';
             throw createWorkspaceBundleLockTimeoutError({
               errorLabel,
@@ -1179,7 +1214,7 @@ export function withWorkspaceBundleLockSync(fn, options = {}) {
           updatedAtMs: Date.now(),
           ownerToken,
           processInstanceFingerprint,
-        });
+        }, options);
         fd = openSync(lockPath, 'wx', 0o600);
         try {
           protectLockFile(lockPath, fd, options);
@@ -1224,10 +1259,7 @@ export function withWorkspaceBundleLockSync(fn, options = {}) {
         if (error?.code !== 'EEXIST') throw error;
         ownLockRaw = null;
         let snapshot = readLockOwnerSnapshot(lockPath);
-        if (shouldReclaimLockSnapshot(snapshot, staleAfterMs, Date.now(), {
-          initializationGraceMs,
-          readProcessInstanceFingerprintSyncImpl: options.readProcessInstanceFingerprintSyncImpl,
-        })) {
+        if (shouldReclaimLockSnapshot(snapshot, staleAfterMs, Date.now(), lockOwnerObservationOptions(options, initializationGraceMs))) {
           if (reclaimLockSnapshot(lockPath, snapshot.raw)) continue;
           snapshot = readLockOwnerSnapshot(lockPath);
           if (!snapshot.exists) {
@@ -1246,7 +1278,7 @@ export function withWorkspaceBundleLockSync(fn, options = {}) {
           if (claim.acquired) ownClaimRaw = claim.raw;
           if (claim.retry) continue;
         }
-        if (Date.now() - startedAt > timeoutMs) {
+        if (workspaceBundleLockWaitTimedOut(snapshot, staleAfterMs, startedAt, timeoutMs)) {
           const errorLabel = options.errorLabel ?? 'workspace bundle lock';
           throw createWorkspaceBundleLockTimeoutError({ errorLabel, lockPath, snapshot });
         }
@@ -1257,6 +1289,7 @@ export function withWorkspaceBundleLockSync(fn, options = {}) {
     }
   } catch (error) {
     clearPriorityClaimIfOwned(claimPath, ownClaimRaw);
+    classifyRetainedLockSnapshots(claimPath, { ...claimHistoryOptions, releasedOwner: { ownerToken, processInstanceFingerprint } });
     throw error;
   }
 
@@ -1298,5 +1331,6 @@ export function withWorkspaceBundleLockSync(fn, options = {}) {
         processInstanceFingerprint,
       })) unlinkSync(lockPath);
     } catch {}
+    classifyRetainedLockSnapshots(claimPath, { ...claimHistoryOptions, releasedOwner: { ownerToken, processInstanceFingerprint } });
   }
 }

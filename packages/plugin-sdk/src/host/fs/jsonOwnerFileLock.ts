@@ -8,6 +8,10 @@ import { link, lstat, mkdir, open, readFile, readdir, rename, rmdir, stat, unlin
 import { basename, dirname, join } from 'node:path';
 
 import { isPidPresent } from '@happier-dev/cli-common/process';
+import {
+  processGenerationProvesReuse,
+  readProcessStartTimeMsSync,
+} from '@happier-dev/cli-common/processInstance';
 
 type JsonOwnerFileLockOptions = Readonly<{
   lockPath: string;
@@ -33,6 +37,8 @@ type JsonOwnerFileLockRecord = Readonly<{
   pid: number;
   ownerToken: string;
   processStartedAtMs: number;
+  /** Read-only support for an interim local 0.3 record; new writes use the opaque ownerToken. */
+  processWitness?: 'observed';
   createdAtMs: number;
   updatedAtMs: number;
 }>;
@@ -72,8 +78,6 @@ type LockArtifact = Readonly<{
   isLegacyDirectory: boolean;
 }>;
 
-const currentProcessStartedAtMs = Math.max(0, Math.trunc(Date.now() - (process.uptime() * 1_000)));
-
 function hasExactKeys(record: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(record).sort();
   const expected = [...keys].sort();
@@ -85,7 +89,8 @@ function parseCurrentOwner(raw: string): JsonOwnerFileLockRecord | null {
     const value = JSON.parse(raw) as unknown;
     if (typeof value !== 'object' || value === null) return null;
     const record = value as Record<string, unknown>;
-    if (!hasExactKeys(record, ['pid', 'ownerToken', 'processStartedAtMs', 'createdAtMs', 'updatedAtMs'])) return null;
+    const keys = ['pid', 'ownerToken', 'processStartedAtMs', 'createdAtMs', 'updatedAtMs'];
+    if (!(hasExactKeys(record, keys) || (hasExactKeys(record, [...keys, 'processWitness']) && record.processWitness === 'observed'))) return null;
     if (!Number.isSafeInteger(record.pid) || (record.pid as number) <= 0) return null;
     if (typeof record.ownerToken !== 'string' || record.ownerToken.length === 0) return null;
     if (!Number.isFinite(record.processStartedAtMs) || !Number.isFinite(record.createdAtMs) || !Number.isFinite(record.updatedAtMs)) return null;
@@ -93,6 +98,9 @@ function parseCurrentOwner(raw: string): JsonOwnerFileLockRecord | null {
       pid: record.pid as number,
       ownerToken: record.ownerToken,
       processStartedAtMs: Math.trunc(record.processStartedAtMs as number),
+      ...(record.processWitness === 'observed' || (record.ownerToken as string).startsWith('observed:')
+        ? { processWitness: 'observed' as const }
+        : {}),
       createdAtMs: Math.trunc(record.createdAtMs as number),
       updatedAtMs: Math.trunc(record.updatedAtMs as number),
     };
@@ -348,7 +356,9 @@ async function quarantineExactFile(
 
 async function publishReclaimGuard(path: string): Promise<{ snapshot: FileSnapshot; privatePath: string } | ReclaimResult> {
   const privatePath = `${path}.reclaim.owner-${process.pid}-${Date.now()}-${randomUUID()}`;
-  const raw = serializeOwner(Date.now());
+  const observedStartMs = readProcessStartTimeMsSync(process.pid);
+  if (observedStartMs === null) return 'ownership_unknown';
+  const raw = serializeOwner(Date.now(), observedStartMs);
   let handle: Awaited<ReturnType<typeof open>> | null = null;
   let snapshot: FileSnapshot | null = null;
   try {
@@ -405,18 +415,18 @@ export async function reclaimJsonOwnerFileLockSnapshot(
 async function shouldReclaimCurrent(
   snapshot: FileSnapshot,
   staleAfterMs: number,
-  readProcessStartedAtMs?: (pid: number) => Promise<number | null>,
+  readProcessStartedAtMs: (pid: number) => Promise<number | null> = async (pid) => readProcessStartTimeMsSync(pid),
 ): Promise<boolean> {
   const owner = parseCurrentOwner(snapshot.raw);
   if (owner) {
     if (!isPidPresent(owner.pid)) return true;
-    if (owner.pid === process.pid) {
-      return Math.abs(owner.processStartedAtMs - currentProcessStartedAtMs) > 1_000;
+    if (owner.processWitness === 'observed') {
+      const observed = await readProcessStartedAtMs(owner.pid).catch(() => null);
+      return processGenerationProvesReuse(owner.processStartedAtMs, observed ?? undefined);
     }
-    if (!readProcessStartedAtMs) return false;
-    const observedProcessStartedAtMs = await readProcessStartedAtMs(owner.pid).catch(() => null);
-    return observedProcessStartedAtMs !== null
-      && Math.abs(owner.processStartedAtMs - observedProcessStartedAtMs) > 1_000;
+    // Untagged ../0.2 records contain wall-clock births. Live owners are
+    // preserved; their W3 field is never compared with a W1 observation.
+    return false;
   }
   return Number.isFinite(snapshot.mtimeMs) && Date.now() - snapshot.mtimeMs > staleAfterMs;
 }
@@ -710,11 +720,13 @@ function throwIfLockAdmissionCancelled(signal: AbortSignal | undefined): void {
   throw error;
 }
 
-function serializeOwner(nowMs: number): string {
+function serializeOwner(nowMs: number, observedStartMs: number): string {
   return JSON.stringify({
     pid: process.pid,
-    ownerToken: randomUUID(),
-    processStartedAtMs: currentProcessStartedAtMs,
+    // The 0.2 reader permits exactly the original five keys and treats this
+    // token as opaque. Mark the numeric witness here so it preserves live locks.
+    ownerToken: `observed:${randomUUID()}`,
+    processStartedAtMs: observedStartMs,
     createdAtMs: nowMs,
     updatedAtMs: nowMs,
   } satisfies JsonOwnerFileLockRecord);
@@ -753,7 +765,14 @@ export async function withJsonOwnerFileLock<TResult>(
     let ownerSnapshot: FileSnapshot | null = null;
     let ownerPublished = false;
     try {
-      ownRaw = serializeOwner(Date.now());
+      const observedStartMs = await (
+        options.readProcessStartedAtMs?.(process.pid)
+        ?? Promise.resolve(readProcessStartTimeMsSync(process.pid))
+      ).catch(() => null);
+      if (observedStartMs === null || !Number.isSafeInteger(observedStartMs) || observedStartMs < 0) {
+        throw new Error(`${options.errorCode}_identity_unavailable`);
+      }
+      ownRaw = serializeOwner(Date.now(), observedStartMs);
       handle = await open(ownerTempPath, 'wx', 0o600);
       await handle.writeFile(ownRaw, 'utf8');
       await handle.sync();
