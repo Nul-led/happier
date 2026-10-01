@@ -71,6 +71,7 @@ function createWebLegendFirstPaintDeps(
         pinThresholdPx: 72,
         platformOS: 'web',
         routeHydrationPending: false,
+        rendererDataKey: 'session-a',
         sessionId: 'session-a',
         sessionOpenLatch: {
             onNativeFirstPaintFallbackDeadline: () => ({ effects: [] }),
