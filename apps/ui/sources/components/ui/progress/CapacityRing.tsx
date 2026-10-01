@@ -1,7 +1,16 @@
 import * as React from 'react';
 import { View, type StyleProp, type ViewStyle } from 'react-native';
+import Animated, {
+    cancelAnimation,
+    useAnimatedProps,
+    useSharedValue,
+    withTiming,
+} from 'react-native-reanimated';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Svg, Circle } from 'react-native-svg';
+
+import { reanimatedMotionTokens } from '@/components/ui/motion/reanimatedMotionTokens';
+import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 
 /**
  * Canonical circular progress ring (gauge). Renders one or more CONCENTRIC arcs
@@ -37,6 +46,7 @@ export type CapacityRingProps = Readonly<{
 
 /** Radial gap between adjacent concentric arcs. */
 const RING_GAP = 2.5;
+const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 function clamp01(value: number): number {
     if (!Number.isFinite(value)) return 0;
@@ -47,6 +57,7 @@ function clamp01(value: number): number {
 
 export function CapacityRing(props: CapacityRingProps) {
     const { theme } = useUnistyles();
+    const reducedMotion = useReducedMotionPreference();
     const size = props.size ?? 40;
     const strokeWidth = props.strokeWidth ?? 3;
     const trackColor = props.trackColor ?? theme.colors.border.default;
@@ -75,7 +86,6 @@ export function CapacityRing(props: CapacityRingProps) {
                     const radius = outerRadius - index * (strokeWidth + RING_GAP);
                     if (radius < strokeWidth) return null;
                     const circumference = 2 * Math.PI * radius;
-                    const dashOffset = circumference * (1 - clamp01(arc.ratio));
                     return (
                         <React.Fragment key={index}>
                             <Circle
@@ -86,17 +96,16 @@ export function CapacityRing(props: CapacityRingProps) {
                                 stroke={trackColor}
                                 strokeWidth={strokeWidth}
                             />
-                            <Circle
+                            <AnimatedCapacityArc
                                 testID={index === 0 ? props.progressTestID : undefined}
                                 cx={size / 2}
                                 cy={size / 2}
                                 r={radius}
-                                fill="none"
-                                stroke={arc.color}
+                                color={arc.color}
                                 strokeWidth={strokeWidth}
-                                strokeLinecap="round"
-                                strokeDasharray={`${circumference} ${circumference}`}
-                                strokeDashoffset={dashOffset}
+                                circumference={circumference}
+                                dashOffset={circumference * (1 - clamp01(arc.ratio))}
+                                reducedMotion={reducedMotion}
                                 transform={`rotate(-90 ${size / 2} ${size / 2})`}
                             />
                         </React.Fragment>
@@ -109,6 +118,66 @@ export function CapacityRing(props: CapacityRingProps) {
                 </View>
             ) : null}
         </View>
+    );
+}
+
+type AnimatedCapacityArcProps = Readonly<{
+    testID?: string;
+    cx: number;
+    cy: number;
+    r: number;
+    color: string;
+    strokeWidth: number;
+    circumference: number;
+    dashOffset: number;
+    reducedMotion: boolean;
+    transform: string;
+}>;
+
+function AnimatedCapacityArc(props: AnimatedCapacityArcProps) {
+    const dashOffset = useSharedValue(props.dashOffset);
+    const previousTargetRef = React.useRef(props.dashOffset);
+    const previousReducedMotionRef = React.useRef(props.reducedMotion);
+
+    React.useEffect(() => {
+        cancelAnimation(dashOffset);
+        const targetChanged = previousTargetRef.current !== props.dashOffset;
+        const motionBecameAvailable = previousReducedMotionRef.current && !props.reducedMotion;
+        previousTargetRef.current = props.dashOffset;
+        previousReducedMotionRef.current = props.reducedMotion;
+
+        if (props.reducedMotion) {
+            dashOffset.value = props.dashOffset;
+        } else if (targetChanged || motionBecameAvailable) {
+            dashOffset.value = withTiming(props.dashOffset, {
+                duration: reanimatedMotionTokens.durationMs.base,
+                easing: reanimatedMotionTokens.easing.standard,
+            });
+        }
+
+        return () => {
+            cancelAnimation(dashOffset);
+        };
+    }, [dashOffset, props.dashOffset, props.reducedMotion]);
+
+    const animatedProps = useAnimatedProps(() => ({
+        strokeDashoffset: dashOffset.value,
+    }));
+
+    return (
+        <AnimatedCircle
+            testID={props.testID}
+            cx={props.cx}
+            cy={props.cy}
+            r={props.r}
+            fill="none"
+            stroke={props.color}
+            strokeWidth={props.strokeWidth}
+            strokeLinecap="round"
+            strokeDasharray={`${props.circumference} ${props.circumference}`}
+            transform={props.transform}
+            animatedProps={animatedProps}
+        />
     );
 }
 

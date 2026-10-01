@@ -1,7 +1,27 @@
 import * as React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
+const motionState = vi.hoisted(() => ({ reduced: false }));
+const withTimingSpy = vi.hoisted(() => vi.fn());
+
+vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
+    useReducedMotionPreference: () => motionState.reduced,
+}));
+
+vi.mock('react-native-reanimated', async () => {
+    const { createReanimatedModuleMock } = await import('@/dev/testkit/mocks/reanimated');
+    const mock = createReanimatedModuleMock();
+    return {
+        ...mock,
+        withTiming: (...args: Parameters<typeof mock.withTiming>) => {
+            withTimingSpy(...args);
+            return mock.withTiming(...args);
+        },
+    };
+});
+
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 import { CapacityRing } from './CapacityRing';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -21,7 +41,25 @@ function renderRing(element: React.ReactElement): ReactTestRenderer {
     return tree;
 }
 
+function readDashOffset(tree: ReactTestRenderer, testID: string): number {
+    const props = tree.root.findByProps({ testID }).props as Readonly<{
+        animatedProps?: Readonly<{ strokeDashoffset?: number }>;
+        dashOffset?: number;
+        strokeDashoffset?: number;
+    }>;
+    const value = props.animatedProps?.strokeDashoffset ?? props.strokeDashoffset ?? props.dashOffset;
+    if (value == null) {
+        throw new Error(`Missing dash offset on ${testID}; props=${JSON.stringify(props)}`);
+    }
+    return Number(value);
+}
+
 describe('CapacityRing', () => {
+    beforeEach(() => {
+        motionState.reduced = false;
+        withTimingSpy.mockClear();
+    });
+
     it('renders the centered content and accessibility label', () => {
         const tree = renderRing(
             <CapacityRing ratio={0.71} color="#0a0" testID="ring" accessibilityLabel="71% capacity">
@@ -36,11 +74,11 @@ describe('CapacityRing', () => {
     it('maps a single ratio to the progress arc dash offset and clamps out-of-range values', () => {
         const full = renderRing(<CapacityRing ratio={2} color="#0a0" progressTestID="p" />);
         // ratio clamped to 1 -> the arc is fully drawn -> zero remaining offset.
-        expect(full.root.findByProps({ testID: 'p' }).props.strokeDashoffset).toBe(0);
+        expect(readDashOffset(full, 'p')).toBe(0);
 
         const empty = renderRing(<CapacityRing ratio={-1} size={40} strokeWidth={4} color="#0a0" progressTestID="q" />);
         const radius = (40 - 4) / 2;
-        expect(empty.root.findByProps({ testID: 'q' }).props.strokeDashoffset).toBeCloseTo(2 * Math.PI * radius, 5);
+        expect(readDashOffset(empty, 'q')).toBeCloseTo(2 * Math.PI * radius, 5);
     });
 
     it('renders one track + one progress arc per concentric ring (outer carries progressTestID)', () => {
@@ -58,7 +96,27 @@ describe('CapacityRing', () => {
 
         // The outer arc (50% filled) carries the progress testID.
         const outerRadius = (44 - 3) / 2;
-        expect(tree.root.findByProps({ testID: 'outer' }).props.strokeDashoffset)
+        expect(readDashOffset(tree, 'outer'))
             .toBeCloseTo(2 * Math.PI * outerRadius * 0.5, 4);
+    });
+
+    it('animates a changed ratio with the shared base timing and skips motion when reduced', () => {
+        const tree = renderRing(<CapacityRing ratio={0.2} color="#0a0" progressTestID="p" />);
+        expect(withTimingSpy).not.toHaveBeenCalled();
+
+        act(() => {
+            tree.update(<CapacityRing ratio={0.8} color="#0a0" progressTestID="p" />);
+        });
+        expect(withTimingSpy).toHaveBeenCalledWith(
+            expect.any(Number),
+            expect.objectContaining({ duration: motionTokens.durationMs.base }),
+        );
+
+        motionState.reduced = true;
+        withTimingSpy.mockClear();
+        act(() => {
+            tree.update(<CapacityRing ratio={0.4} color="#0a0" progressTestID="p" />);
+        });
+        expect(withTimingSpy).not.toHaveBeenCalled();
     });
 });
