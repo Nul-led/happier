@@ -820,6 +820,7 @@ async function main() {
   const borrowedExpoProducerStackName = String(childEnv.HAPPIER_STACK_EXPO_SOURCE_STACK ?? '').trim();
   let borrowedExpoLogFollower = null;
   let borrowedExpoLogPath = '';
+  let borrowedExpoLogInitialSince;
   const runtimeLogFollowers = new Map();
   const refreshRuntimeLogFollowers = (runtimeState) => {
     if (!stackName) return;
@@ -831,7 +832,8 @@ async function main() {
     });
     const attachmentIds = new Set(attachments.map((attachment) => attachment.id));
     for (const [id, current] of runtimeLogFollowers) {
-      if (!attachmentIds.has(id) || attachments.find((attachment) => attachment.id === id)?.path !== current.path) {
+      const attachment = attachments.find((candidate) => candidate.id === id);
+      if (!attachment || attachment.path !== current.path || attachment.initialSince !== current.initialSince) {
         current.follower.close();
         runtimeLogFollowers.delete(id);
       }
@@ -840,12 +842,13 @@ async function main() {
       if (runtimeLogFollowers.has(attachment.id)) continue;
       const follower = followLogFile({
         path: attachment.path,
+        initialSince: attachment.initialSince,
         onLine: (line) => {
           routeLine(attachment.id === 'runner' ? `[stack] ${line}` : line);
           scheduleRender();
         },
       });
-      runtimeLogFollowers.set(attachment.id, { path: attachment.path, follower });
+      runtimeLogFollowers.set(attachment.id, { path: attachment.path, initialSince: attachment.initialSince, follower });
     }
   };
   const closeRuntimeLogFollowers = () => {
@@ -863,20 +866,24 @@ async function main() {
       env: childEnv,
     }).catch(() => null);
     const { baseDir: producerStackBaseDir } = resolveStackBaseDir(borrowedExpoProducerStackName, childEnv);
+    const remoteTarget = borrowedExpo?.remoteTarget ?? null;
     const nextLogPath = resolveBorrowedExpoLogPath({
       producerStackBaseDir,
-      remoteTarget: borrowedExpo?.remoteTarget ?? null,
+      remoteTarget,
     });
-    if (!nextLogPath || nextLogPath === borrowedExpoLogPath) return;
+    const nextInitialSince = remoteTarget ? borrowedExpo?.runtimeStartedAt ?? null : undefined;
+    if (!nextLogPath || (nextLogPath === borrowedExpoLogPath && nextInitialSince === borrowedExpoLogInitialSince)) return;
 
     borrowedExpoLogFollower?.close();
     borrowedExpoLogPath = nextLogPath;
+    borrowedExpoLogInitialSince = nextInitialSince;
     const expoPane = panes[paneIndexById.get('expo')];
     expoPane.visible = true;
     expoPane.title = `expo (borrowed: ${borrowedExpoProducerStackName})`;
     pushLine(expoPane, `[expo] borrowing logs from ${nextLogPath}`);
     borrowedExpoLogFollower = followLogFile({
       path: nextLogPath,
+      initialSince: nextInitialSince,
       onLine: (line) => {
         routeLine(`[expo] [borrowed:${borrowedExpoProducerStackName}] ${line}`);
         scheduleRender();

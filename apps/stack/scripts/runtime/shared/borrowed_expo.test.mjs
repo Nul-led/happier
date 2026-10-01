@@ -20,6 +20,7 @@ async function resolveRemoteBorrowedExpoForTest(t, { metroRunning }) {
   await writeFile(
     join(producerStackDir, 'stack.runtime.json'),
     JSON.stringify({
+      startedAt: '2026-09-20T08:00:00.000Z',
       expo: { webPort: 19364, mobilePort: 19364, devClientEnabled: true },
       placement: { expo: 'mac' },
       remoteTargets: { mac: { status: 'running', services: { expo: true } } },
@@ -105,6 +106,7 @@ test('borrowed Expo projects a verified running remote tunnel as a borrowed cons
     devClientEnabled: true,
     source: 'remote_target',
     remoteTarget: 'mac',
+    runtimeStartedAt: '2026-09-20T08:00:00.000Z',
   });
   assert.deepEqual(probedPorts, [19364]);
 });
@@ -124,6 +126,7 @@ test('borrowed Expo does not report a remote producer running when its forwarded
     devClientEnabled: true,
     source: 'remote_target',
     remoteTarget: 'mac',
+    runtimeStartedAt: '2026-09-20T08:00:00.000Z',
   });
   assert.deepEqual(probedPorts, [19364]);
 });

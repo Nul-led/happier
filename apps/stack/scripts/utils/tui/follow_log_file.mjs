@@ -1,10 +1,24 @@
 import { open, stat } from 'node:fs/promises';
 
+function resolveInitialReplaySince(value) {
+  if (value === undefined) return null;
+  const parsed = Date.parse(String(value ?? '').trim());
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function isInitialReplayLineCurrent(line, initialSince) {
+  if (initialSince === null) return true;
+  const match = String(line ?? '').match(/\[(\d{4}-\d{2}-\d{2}T[^\]]+Z)\]/);
+  const timestamp = match ? Date.parse(match[1]) : Number.NaN;
+  return Number.isFinite(timestamp) && timestamp >= initialSince;
+}
+
 export function followLogFile({
   path,
   onLine,
   intervalMs = 250,
   maxInitialBytes = 64 * 1024,
+  initialSince,
 } = {}) {
   const logPath = String(path ?? '').trim();
   let closed = false;
@@ -13,6 +27,7 @@ export function followLogFile({
   let partial = '';
   let initialized = false;
   let discardInitialPartial = false;
+  const initialReplaySince = resolveInitialReplaySince(initialSince);
 
   const emit = (line) => {
     try {
@@ -22,7 +37,7 @@ export function followLogFile({
     }
   };
 
-  const consume = (text) => {
+  const consume = (text, { initialReplay = false } = {}) => {
     const combined = partial + text;
     const parts = combined.split(/\r?\n/);
     partial = parts.pop() ?? '';
@@ -30,7 +45,9 @@ export function followLogFile({
       parts.shift();
       discardInitialPartial = false;
     }
-    for (const line of parts) emit(line);
+    for (const line of parts) {
+      if (!initialReplay || isInitialReplayLineCurrent(line, initialReplaySince)) emit(line);
+    }
   };
 
   const poll = async () => {
@@ -39,6 +56,7 @@ export function followLogFile({
     try {
       const fileStat = await stat(logPath);
       if (!fileStat.isFile()) return;
+      const initialReplay = !initialized;
       if (!initialized) {
         position = Math.max(0, fileStat.size - Math.max(1, Number(maxInitialBytes) || 1));
         discardInitialPartial = position > 0;
@@ -56,7 +74,7 @@ export function followLogFile({
       try {
         const { bytesRead } = await handle.read(buffer, 0, length, position);
         position += bytesRead;
-        if (bytesRead > 0) consume(buffer.subarray(0, bytesRead).toString('utf8'));
+        if (bytesRead > 0) consume(buffer.subarray(0, bytesRead).toString('utf8'), { initialReplay });
       } finally {
         await handle.close();
       }

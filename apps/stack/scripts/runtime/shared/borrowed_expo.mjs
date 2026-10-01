@@ -9,6 +9,7 @@ import { looksLikeExpoMetro } from '../../utils/expo/expo.mjs';
 import { resolveRuntimeRemoteServiceObservation } from '../../utils/tui/runtime_placement_summary.mjs';
 import { resolveProcessTeeLogPath } from '../../utils/proc/proc.mjs';
 import { assertCanonicalManagedStackName } from '../../utils/stack/names.mjs';
+import { normalizeStackRuntimeOwnerStartedAt } from '../../utils/stack/runtime_owner_incarnation.mjs';
 
 function toPort(value) {
   const port = Number(value);
@@ -50,6 +51,7 @@ export function projectBorrowedExpoRuntime({
   remoteEndpointRunning = false,
 }) {
   const remote = resolveRuntimeRemoteServiceObservation(runtimeState, 'expo');
+  const runtimeStartedAt = normalizeStackRuntimeOwnerStartedAt(runtimeState?.startedAt);
   const expo = runtimeState?.expo && typeof runtimeState.expo === 'object' ? runtimeState.expo : {};
   const runtimePort = toPort(expo.webPort ?? expo.port);
   const mobilePort = toPort(expo.mobilePort ?? runtimePort);
@@ -68,6 +70,7 @@ export function projectBorrowedExpoRuntime({
     devClientEnabled: expo.devClientEnabled === true,
     source: remote.target ? 'remote_target' : (localEndpoint?.source ?? 'local'),
     remoteTarget: remote.target,
+    ...(runtimeStartedAt ? { runtimeStartedAt } : {}),
   };
 }
 

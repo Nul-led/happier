@@ -31,3 +31,49 @@ test('followLogFile streams existing and appended lines and survives truncation'
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('followLogFile replays only current-run timestamped remote lines while retaining local tails', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hstack-follow-log-current-run-'));
+  const remotePath = join(root, 'remote-mac.log');
+  const localPath = join(root, 'expo.log');
+  const remoteLines = [];
+  const localLines = [];
+  try {
+    await writeFile(
+      remotePath,
+      [
+        '[remote:mac] [2026-09-16T09:00:00.000Z] stale Metro crash',
+        '[remote:mac] [2026-09-20T08:00:01.000Z] current remote startup',
+      ].join('\n') + '\n',
+      'utf8',
+    );
+    await writeFile(localPath, '[expo] current local Metro startup\n', 'utf8');
+
+    const remoteFollower = followLogFile({
+      path: remotePath,
+      intervalMs: 10,
+      initialSince: '2026-09-20T08:00:00.000Z',
+      onLine: (line) => remoteLines.push(line),
+    });
+    const localFollower = followLogFile({
+      path: localPath,
+      intervalMs: 10,
+      onLine: (line) => localLines.push(line),
+    });
+    const deadline = Date.now() + 1_000;
+    while ((remoteLines.length < 1 || localLines.length < 1) && Date.now() < deadline) await delay(10);
+    await appendFile(remotePath, '[remote:mac] live remote progress\n', 'utf8');
+    const appendDeadline = Date.now() + 1_000;
+    while (remoteLines.length < 2 && Date.now() < appendDeadline) await delay(10);
+    remoteFollower.close();
+    localFollower.close();
+
+    assert.deepEqual(remoteLines, [
+      '[remote:mac] [2026-09-20T08:00:01.000Z] current remote startup',
+      '[remote:mac] live remote progress',
+    ]);
+    assert.deepEqual(localLines, ['[expo] current local Metro startup']);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
