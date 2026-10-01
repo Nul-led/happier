@@ -59,7 +59,13 @@ Keep the default `main` stack stable and do not commandeer a human-owned develop
 - Its managed database contains retained development data and is not disposable. Never delete, reset, recreate, replace, truncate, clean, or discard it to fix migration drift.
 - When an agent edits a local-only/development-exposed migration already applied to that database, the same task automatically owns in-place reconciliation and canonical migration deployment. No separate confirmation or backup/snapshot/clone is required for this one target.
 - If its writers are running, quiesce only stack-owned processes through `hstack`, record whether the stack was running, reconcile, and restore the prior running state. Never kill by port or stop another stack.
-- Before handoff, verify current migration bytes against the ledger, run the canonical deploy twice, and run provider integrity/foreign-key checks. A later migration edit invalidates that evidence and makes the later editor responsible for reconciliation again.
+- Locate the live database from the stack's current runtime placement (`dev-targets.json` `runtimePlacement.server`, then that target's stack-state `server-light` data dir), not from the local default path; a placed server uses the target's database, and other copies are not authoritative.
+- Reconcile to the canonical schema, never to the ledger alone:
+  1. Build a scratch database by running the canonical deploy (`migrate:sqlite:deploy` with a temporary `HAPPIER_SERVER_LIGHT_DATA_DIR`) from the current migration set.
+  2. Compare scratch and live semantically: tables, columns (type, nullability, default), foreign keys, indexes, CHECK constraints and triggers. Text differences in stored SQL alone are not drift. Tables created at runtime rather than by migrations are not drift.
+  3. Apply the exact delta in one transaction. SQLite constraint or type changes need a table rebuild that copies rows and asserts row counts. Any data conversion (a renamed or retyped column holding data) is defined by the migration's editing owner; never invent one.
+  4. Update only the affected ledger rows, inside the same transaction, after the schema matches.
+- Before handoff, run the canonical deploy twice, verify every current migration checksum against the ledger, rerun the semantic comparison (it must be clean), and run provider integrity/foreign-key checks. A later migration edit invalidates that evidence and makes the later editor responsible for reconciliation again.
 - Fail closed for ambiguous identity, `main`, shared, staging, production, external, another checkout's/named QA stack, or otherwise user-owned databases; their normal approval and backup requirements remain in force.
 
 ## Safety invariants
