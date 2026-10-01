@@ -5,6 +5,10 @@ import {
     PluginUiSurfaceContextV1,
 } from '@happier-dev/protocol/plugins/ui';
 import type { ResourceSubscriptionEvent } from '@happier-dev/plugin-sdk/ui';
+import { createElement } from 'react';
+import renderer, { act } from 'react-test-renderer';
+import { useLivePluginResource, type PluginUiResourceSnapshot } from '@happier-dev/plugin-ui/hostApi';
+import { PluginHostApiProviderInternal } from '../../../../../../packages/plugin-ui/src/hostApi/context';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createCanonicalPluginReactNativeHostApiAdapter } from '@/components/plugins/reactNative/hostApi';
@@ -177,6 +181,47 @@ function createMountedSurface(
 }
 
 describe('mounted plugin surface live resource invalidation (EU-4b)', () => {
+    it('suspends the actual daemon pump for a retained authored Resource and resumes fresh', async () => {
+        const daemon = createFakeDaemon();
+        const mounted = createMountedSurface(daemon);
+        let digest = DIGEST_A;
+        // Only snapshot RPC bytes are supplied at the external host boundary;
+        // subscription admission, registry, store and long-poll pump stay real.
+        const hostApi = { ...mounted.adapter.api, readResource: async () => ({
+            contentType: 'application/json', digest, bytes: new TextEncoder().encode('1'),
+        }) };
+        let snapshot: PluginUiResourceSnapshot | undefined;
+        function Probe() { snapshot = useLivePluginResource('live-status').resource; return null; }
+        const content = (active?: boolean) => createElement(PluginHostApiProviderInternal, {
+            hostApi, mountedPluginId: 'acme.preview',
+            ...(active === undefined ? {} : { surfaceActivity: { active } }),
+        }, createElement(Probe));
+        let tree: renderer.ReactTestRenderer | undefined;
+        try {
+            await act(async () => { tree = renderer.create(content(true)); });
+            await vi.waitFor(() => { expect(daemon.nextSignals).toHaveLength(1); });
+            const value = snapshot?.value;
+            expect(value).toBeDefined();
+            await act(async () => { tree?.update(content(false)); });
+            expect(daemon.nextSignals[0]?.aborted).toBe(true);
+            await vi.waitFor(() => { expect(daemon.closes).toHaveLength(1); });
+            expect(snapshot?.value).toBe(value);
+            digest = DIGEST_B;
+            daemon.setOpenResult({ supported: true, result: { ok: true, subscriptionId: 'replaced', digest } });
+            await act(async () => { tree?.update(content(true)); });
+            await vi.waitFor(() => { expect(daemon.nextSignals).toHaveLength(2); });
+            expect(daemon.nextSignals[1]?.aborted).toBe(false);
+            expect(snapshot?.digest).toBe(DIGEST_B);
+            expect(daemon.opens[1]?.subscriptionId).not.toBe(daemon.opens[0]?.subscriptionId);
+            await act(async () => { tree?.update(content()); });
+            expect(daemon.nextSignals).toHaveLength(2);
+        } finally {
+            await act(async () => { tree?.unmount(); });
+            mounted.unsubscribe();
+            mounted.controller.dispose();
+        }
+    });
+
     it('keeps a Session watch under the exact contextual Resource binding', async () => {
         const daemon = createFakeDaemon();
         const client = createPluginContextualResourceWatchClient({

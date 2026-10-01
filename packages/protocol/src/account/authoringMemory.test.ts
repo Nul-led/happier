@@ -17,10 +17,11 @@ describe('authoring-memory envelopes', () => {
 
   it('requires the persisted Account mode and exact cipher purpose', () => {
     const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(7) };
-    const encrypted = { t: 'encrypted', c: sealAccountScopedBlobCiphertext({ kind: 'authoring_memory', material, payload: { key: 'lastUsedProfile', value: 'profile' } }) };
+    const randomBytes = (length: number) => new Uint8Array(length).fill(8);
+    const encrypted = { t: 'encrypted', c: sealAccountScopedBlobCiphertext({ kind: 'authoring_memory', material, payload: { key: 'lastUsedProfile', value: 'profile' }, randomBytes }) };
     expect(assertAuthoringMemoryContentForModeV1(encrypted, 'e2ee')).toEqual(encrypted);
     expect(() => assertAuthoringMemoryContentForModeV1(encrypted, 'plain')).toThrow();
     expect(() => assertAuthoringMemoryContentForModeV1({ t: 'plain', v: 'profile' }, 'e2ee')).toThrow();
-    expect(() => assertAuthoringMemoryContentForModeV1({ t: 'encrypted', c: sealAccountScopedBlobCiphertext({ kind: 'account_settings', material, payload: {} }) }, 'e2ee')).toThrow();
+    expect(() => assertAuthoringMemoryContentForModeV1({ t: 'encrypted', c: sealAccountScopedBlobCiphertext({ kind: 'account_settings', material, payload: {}, randomBytes }) }, 'e2ee')).toThrow();
   });
 });

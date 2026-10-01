@@ -94,19 +94,23 @@ describe('workspace KV synchronization', () => {
         let unavailable = false;
         const first = { ...tab('first'), target: { kind: singletonKind, params: { subPath: 'first' } } };
         const second = { ...tab('second'), target: { kind: singletonKind, params: { subPath: 'last' } } };
-        const stored: SharedWorkspaceTabs = { v: 1, tabsById: { first, second }, order: ['first', 'second'], pairs: [] };
+        const third = { ...second, id: 'third' };
+        const opaque = { ...tab('opaque'), target: { kind: 'unknown', params: {} } };
+        const stored: SharedWorkspaceTabs = { v: 1, tabsById: { first, second, third, opaque }, order: ['first', 'second', 'third', 'opaque'],
+            pairs: [['first', 'second'], ['third', 'opaque']] };
         const projections: SharedWorkspaceTabs[] = [];
         const controller = createWorkspaceTabsSync({ transport: {
             read: async () => { if (unavailable) throw new Error('KV is unavailable'); return { value: stored, version: 0 }; },
             compareAndSet: async () => { throw new Error('Catalog refresh must not publish'); },
         }, onRecord: value => projections.push(value), normalizeRecord: value => normalizeWorkspaceSingletonTabs(value, catalog) });
         await controller.refresh();
-        expect(projections.at(-1)?.order).toEqual(['first', 'second']);
+        expect(projections.at(-1)?.order).toEqual(stored.order);
         catalog = singletonCatalog;
         unavailable = true;
         await expect(controller.refresh()).rejects.toThrow('KV is unavailable');
-        expect(projections.at(-1)?.order).toEqual(['first']);
+        expect(projections.at(-1)?.order).toEqual(['first', 'opaque']);
         expect(projections.at(-1)?.tabsById.first.target).toEqual(second.target);
+        expect(projections.at(-1)?.pairs).toEqual([['first', 'opaque']]);
         controller.stop();
     });
     it('distinguishes a tombstone from stored JSON null and does not resurrect creation-only enrollment', async () => {

@@ -26,7 +26,7 @@ describe('artifact captured Home transport', () => {
             if (path === '/v1/account/encryption') return json({ mode: 'e2ee', updatedAt: 0 });
             if (path === '/v1/artifacts') {
                 const payload = JSON.parse(String(init?.body)) as ArtifactCreateRequest;
-                stored ??= { ...payload, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
+                stored ??= { ...payload, ownerAccountId: 'owner', access: 'owner', encryptionMode: 'e2ee', headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
                 return json(stored);
             }
             if (init?.method === 'POST') {
@@ -82,7 +82,7 @@ describe('artifact captured Home transport', () => {
             if (target.pathname === '/v1/account/encryption') return json({ mode, updatedAt: 0 });
             if (target.pathname === '/v1/artifacts' && init?.method === 'POST') {
                 const body = JSON.parse(String(init.body)) as ArtifactCreateRequest;
-                stored = { ...body, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
+                stored = { ...body, ownerAccountId: 'owner', access: 'owner', encryptionMode: mode, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
                 return json(stored);
             }
             if (stored && target.pathname === `/v1/artifacts/${stored.id}`) {

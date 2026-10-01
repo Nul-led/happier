@@ -48,7 +48,7 @@ describe('scoped Account workflow Artifact operations', () => {
             }
             if (target.pathname === '/v1/artifacts' && init?.method === 'POST') {
                 const write = JSON.parse(String(init.body)) as ArtifactCreateRequest;
-                stored = { ...write, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
+                stored = { ...write, ownerAccountId: 'profile-account', access: 'owner', encryptionMode: 'plain', headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
                 return json(stored);
             }
             if (target.pathname === '/v1/artifacts') return json(stored ? [stored] : []);
@@ -122,7 +122,7 @@ describe('scoped Account workflow Artifact operations', () => {
             if (target.pathname === '/v1/account/encryption') return json({ mode, updatedAt: 0 });
             if (target.pathname === '/v1/artifacts' && init?.method === 'POST') {
                 const body = JSON.parse(String(init.body)) as ArtifactCreateRequest;
-                stored = { ...body, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 9 };
+                stored = { ...body, ownerAccountId: 'artifact-account', access: 'owner', encryptionMode: 'plain', headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 9 };
                 return json(stored);
             }
             if (target.pathname === '/v1/artifacts') return json(stored ? [stored] : []);

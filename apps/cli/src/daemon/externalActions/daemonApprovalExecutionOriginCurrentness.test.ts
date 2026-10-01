@@ -27,6 +27,32 @@ const origin: ApprovalExecutionOriginV1 = {
 };
 
 describe('daemon approval execution-origin currentness', () => {
+  it('requires the Session caller owner to prove currentness independently of its effect target', async () => {
+    const sessionOrigin = { ...origin, surface: 'agent' as const,
+      caller: { kind: 'session' as const, sessionId: 'caller-session' },
+      accountId: 'account-1', principalId: undefined, credentialId: undefined,
+      callerPermissionMode: 'default' as const,
+    };
+    const shared = {
+      accountId: 'account-1', machineId: 'machine-1', serverId: 'home-1',
+      resolveCurrentMachineExecutionOriginContext: async () => ({ serverIdentityId: 'home-1', machineId: 'machine-1' }),
+      resolveTarget: async () => origin.target ?? null,
+      listAccountApiTokens: async () => ({ tokens: [] }),
+      resolveCurrentPermissionMode: async () => 'default',
+    };
+    const unavailable = createDaemonApprovalExecutionOriginCurrentness(shared);
+    await expect(unavailable({ origin: sessionOrigin })).resolves.toBe(false);
+    let callerIsCurrent = true;
+    const isCurrent = createDaemonApprovalExecutionOriginCurrentness({ ...shared,
+      isSessionCallerCurrent: async ({ caller }: { caller: { kind: 'session'; sessionId: string } }) => {
+        expect(caller).toEqual({ kind: 'session', sessionId: 'caller-session' });
+        return callerIsCurrent;
+      },
+    });
+    await expect(isCurrent({ origin: sessionOrigin })).resolves.toBe(true);
+    callerIsCurrent = false;
+    await expect(isCurrent({ origin: sessionOrigin })).resolves.toBe(false);
+  });
   it('binds an unsigned origin to its current local Home profile without conflating it with the cryptographic Home id', async () => {
     const resolveCurrentMachineExecutionOriginContext = vi.fn(async () => ({
       serverIdentityId: 'srv-cryptographic-home', machineId: 'machine-1',

@@ -245,7 +245,7 @@ export function buildLegacyProfileMigrationContext(input: Readonly<{
       if (!parsed.success || knownSourceIds.has(parsed.data.id)) continue;
       const routingLike = parsed.data.environmentVariables.some((entry) =>
         isLegacyAiLaunchEndpointLikeEnvironmentNameV1(entry.name));
-      if (routingLike && profileReferenceEvidence(input.rawSettings, parsed.data.id)) {
+      if (routingLike && profileReferenceEvidence(input.rawSettings, parsed.data.id, input.authoringMemory.lastUsedProfile)) {
         pendingCustomProfileIds.push(parsed.data.id);
       }
     }

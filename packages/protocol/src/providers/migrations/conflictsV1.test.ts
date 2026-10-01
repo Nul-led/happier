@@ -336,11 +336,12 @@ describe('classifyLegacyProfileMigrationConflictsV1', () => {
     });
     expect(reviewed.ok).toBe(true);
     if (!reviewed.ok) throw new Error('expected reviewed resolution');
-    const migrated = migrateLegacyAiLaunchProfilesV1(rawSettings, reviewed.context, { lastUsedProfile: null });
+    const migrated = migrateLegacyAiLaunchProfilesV1(rawSettings, reviewed.context, { lastUsedProfile: 'deepseek' });
     expect(migrated.ok).toBe(true);
     if (!migrated.ok) throw new Error('expected migration');
     expect(migrated.settings.favoriteProfiles).toEqual([]);
-    expect(migrated.settings.lastUsedProfile).toBeNull();
+    expect(migrated.settings.lastUsedProfile).toBe('deepseek');
+    expect(migrated.lastUsedProfileClear).toEqual({ base: 'deepseek', proposed: null });
     expect(migrated.settings.favoriteModelSelectionsV1).toEqual([expect.objectContaining({
       selection: expect.objectContaining({
         ref: {

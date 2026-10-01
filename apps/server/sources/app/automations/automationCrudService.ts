@@ -2516,22 +2516,13 @@ type AutomationAccountEncryptionMigrationTemplateItem = Extract<
     { action: "migrate" }
 >["templates"][number];
 
-function readAutomationMigrationTriggerDefinitionTargets(
-    item: AutomationAccountEncryptionMigrationTemplateItem,
-): NonNullable<AutomationAccountEncryptionMigrationTemplateItem["triggerDefinitionEnvelopes"]> {
-    // Older signed migration requests predate Event trigger-definition
-    // replacement. Omission means the caller submitted zero replacements; it
-    // must remain byte-distinct from a synthesized member at the Protocol seam.
-    return item.triggerDefinitionEnvelopes ?? [];
-}
-
 function migrationItemMatchesTriggerDefinitionPostState(
     row: AutomationAccountEncryptionMigrationRow,
     item: AutomationAccountEncryptionMigrationTemplateItem,
 ): boolean {
     return pluginJsonValuesEqual(
         transitionInventoryDefinition(row).source.triggerDefinitionEnvelopes,
-        readAutomationMigrationTriggerDefinitionTargets(item),
+        item.triggerDefinitionEnvelopes,
     );
 }
 
@@ -2540,7 +2531,7 @@ function hasCompleteTriggerDefinitionMigrationTarget(
     item: AutomationAccountEncryptionMigrationTemplateItem,
 ): boolean {
     const eventTriggers = row.triggers.filter((trigger) => trigger.kind === "pluginEvent");
-    const targets = readAutomationMigrationTriggerDefinitionTargets(item);
+    const targets = item.triggerDefinitionEnvelopes;
     if (
         targets.length !== eventTriggers.length
         || new Set(targets.map((target) => target.triggerId)).size
@@ -2579,7 +2570,7 @@ function validateAutomationTriggerDefinitionMigrationCandidate(params: Readonly<
             target: {
                 templateCiphertext: params.item.templateCiphertext,
                 triggerDefinitionEnvelopes:
-                    readAutomationMigrationTriggerDefinitionTargets(params.item),
+                    params.item.triggerDefinitionEnvelopes,
             },
         },
         sourceMode: params.sourceMode,
@@ -2607,7 +2598,7 @@ function assertAutomationTriggerDefinitionMigrationPostState(params: Readonly<{
             target: {
                 templateCiphertext: params.item.templateCiphertext,
                 triggerDefinitionEnvelopes:
-                    readAutomationMigrationTriggerDefinitionTargets(params.item),
+                    params.item.triggerDefinitionEnvelopes,
             },
         },
         sourceMode: params.toMode,
@@ -3417,10 +3408,7 @@ export async function migrateAutomationAccountEncryptionInTx(params: Readonly<{
     ) {
         return { status: "migration_too_large" };
     }
-    // Keep the migration owner compatible with existing signed directives
-    // whose wire shape predates the retained-Run inventory and therefore has
-    // no `runs` member.
-    const directiveRuns = directive.runs ?? [];
+    const directiveRuns = directive.runs;
     const inventoryMatch = automationMigrationItemsMatchInventory(
         rows,
         directive.templates,
@@ -3814,9 +3802,7 @@ export async function matchAutomationAccountEncryptionMigrationPostStateInTx(
     ) {
         return { status: "mismatch" };
     }
-    // See the matching migration normalizer above. Existing signed directives
-    // may omit this newly additive inventory.
-    const directiveRuns = directive.runs ?? [];
+    const directiveRuns = directive.runs;
     if (
         automationMigrationRunItemsMatchInventory(
             runRows,

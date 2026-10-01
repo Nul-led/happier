@@ -3,16 +3,16 @@ import {
     WorkBoardMutationErrorV1,
     type WorkBoardIntentV1,
     type WorkBoardsV1,
-    type WorkBoardRecordPortV1,
+    type WorkBoardArtifactPortV1,
 } from '@happier-dev/protocol';
 
 /**
- * The optimistic queue of a Home's dedicated Account KV Board record.
+ * The optimistic queue of a Home's Board Artifacts.
  *
  * Every edit is a `WorkBoardIntentV1` from the protocol owner. It shows at once — the displayed
  * boards are the last acknowledged boards with the pending intents replayed on top — and is then
- * written through the shared Board record port, which replays the same intent against the
- * current KV winner (so two devices editing different boards both land). A refusal drops the intent, so
+ * written through the shared Board Artifact port, which replays the same intent against the
+ * current Artifact winner. A refusal drops the intent, so
  * the last acknowledged board shows again, and leaves an actionable failure with Retry.
  *
  * Writes run one at a time, in order: each replays against the result of the one before.
@@ -53,7 +53,7 @@ export type WorkBoardSaveQueue = Readonly<{
     reset(): void;
 }>;
 
-export function createWorkBoardSaveQueue(deps: Readonly<{ port: WorkBoardRecordPortV1 }>): WorkBoardSaveQueue {
+export function createWorkBoardSaveQueue(deps: Readonly<{ port: Pick<WorkBoardArtifactPortV1, 'read' | 'apply'> }>): WorkBoardSaveQueue {
     let state = INITIAL_STATE;
     let generation = 0;
     let tail: Promise<void> = Promise.resolve();

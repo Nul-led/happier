@@ -142,12 +142,13 @@ export type WorkflowsActionInputById = {
                             label: string;
                             typeLabel: string;
                             description?: string | undefined;
-                            icon?: 'file' | 'error' | 'check' | 'action' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'settings' | 'terminal' | 'warning' | 'add' | 'back' | 'close' | 'external' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                            icon?: 'file' | 'error' | 'check' | 'action' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'settings' | 'terminal' | 'warning' | 'add' | 'back' | 'close' | 'external' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                             tone?: 'success' | 'info' | 'warning' | 'neutral' | 'danger' | undefined;
                         };
                     }[] | undefined;
                 };
                 input?: unknown[] | undefined;
+                renderedText?: string | undefined;
             };
             acknowledgeUncertainPriorEffects?: true | undefined;
         } | {
@@ -183,12 +184,13 @@ export type WorkflowsActionInputById = {
                                 label: string;
                                 typeLabel: string;
                                 description?: string | undefined;
-                                icon?: 'file' | 'error' | 'check' | 'action' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'settings' | 'terminal' | 'warning' | 'add' | 'back' | 'close' | 'external' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                                icon?: 'file' | 'error' | 'check' | 'action' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'settings' | 'terminal' | 'warning' | 'add' | 'back' | 'close' | 'external' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                                 tone?: 'success' | 'info' | 'warning' | 'neutral' | 'danger' | undefined;
                             };
                         }[] | undefined;
                     };
                     input?: unknown[] | undefined;
+                    renderedText?: string | undefined;
                 };
             };
             acknowledgeUncertainPriorEffects?: true | undefined;
@@ -244,12 +246,13 @@ export type WorkflowsActionInputById = {
                             label: string;
                             typeLabel: string;
                             description?: string | undefined;
-                            icon?: 'file' | 'error' | 'check' | 'action' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'settings' | 'terminal' | 'warning' | 'add' | 'back' | 'close' | 'external' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                            icon?: 'file' | 'error' | 'check' | 'action' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'settings' | 'terminal' | 'warning' | 'add' | 'back' | 'close' | 'external' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                             tone?: 'success' | 'info' | 'warning' | 'neutral' | 'danger' | undefined;
                         };
                     }[] | undefined;
                 };
                 input?: unknown[] | undefined;
+                renderedText?: string | undefined;
             };
         };
         acknowledgeUncertainPriorEffects?: true | undefined;
@@ -1048,13 +1051,14 @@ export type WorkflowsActionResultById = {
             severity: 'error' | 'warning';
             blockId?: string | undefined;
         }[];
-        targetValidation: 'not_requested' | 'checked' | 'unavailable';
+        targetValidation: 'unavailable' | 'not_requested' | 'checked';
         normalizedDefinition?: Readonly<{
             version: 1;
             inputs: readonly {
                 name: string;
                 valueType: 'string' | 'number' | 'boolean' | 'json';
                 required: boolean;
+                enum?: string[] | undefined;
                 default?: string | number | boolean | readonly JsonValue[] | {
                     readonly [key: string]: JsonValue;
                 } | null | undefined;
@@ -1316,6 +1320,9 @@ export type WorkflowsActionResultById = {
     };
     readonly "workflow.run.start": {
         run: {
+            sourceArtifactId: string | null;
+            ownerAccountId: string;
+            visibleTeamId: string | null;
             id: string;
             origin: {
                 kind: 'automation';
@@ -1421,24 +1428,21 @@ export type WorkflowsActionResultById = {
                 cancel: boolean;
                 inspectExecution: boolean;
                 disabledReasons: {
-                    operation: 'pause' | 'restore_workspace' | 'retry' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'inspect_execution';
+                    operation: 'pause' | 'restore_workspace' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'retry' | 'inspect_execution';
                     code: string;
                 }[];
-                recoverSameConversation?: boolean | undefined;
-                recoverFreshAgent?: boolean | undefined;
-                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;
             attentionRequired?: boolean | undefined;
-            sourceArtifactId?: string | null | undefined;
-            ownerAccountId?: string | undefined;
-            visibleTeamId?: string | null | undefined;
         };
         admission: 'existing' | 'created';
     };
     readonly "workflow.run.list": {
         runs: {
+            sourceArtifactId: string | null;
+            ownerAccountId: string;
+            visibleTeamId: string | null;
             id: string;
             origin: {
                 kind: 'automation';
@@ -1544,21 +1548,15 @@ export type WorkflowsActionResultById = {
                 cancel: boolean;
                 inspectExecution: boolean;
                 disabledReasons: {
-                    operation: 'pause' | 'restore_workspace' | 'retry' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'inspect_execution';
+                    operation: 'pause' | 'restore_workspace' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'retry' | 'inspect_execution';
                     code: string;
                 }[];
-                recoverSameConversation?: boolean | undefined;
-                recoverFreshAgent?: boolean | undefined;
-                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;
             attentionRequired?: boolean | undefined;
-            sourceArtifactId?: string | null | undefined;
-            ownerAccountId?: string | undefined;
-            visibleTeamId?: string | null | undefined;
         }[];
-        metadataByRunId?: Record<string, {
+        metadataByRunId: Record<string, {
             kind: 'available';
             value: {
                 title: string;
@@ -1566,7 +1564,7 @@ export type WorkflowsActionResultById = {
             };
         } | {
             kind: 'unavailable';
-        }> | undefined;
+        }>;
         nextCursor?: string | undefined;
     };
     readonly "workflow.run.summaries": {
@@ -1589,6 +1587,9 @@ export type WorkflowsActionResultById = {
     };
     readonly "workflow.run.get": {
         run: {
+            sourceArtifactId: string | null;
+            ownerAccountId: string;
+            visibleTeamId: string | null;
             id: string;
             origin: {
                 kind: 'automation';
@@ -1694,19 +1695,13 @@ export type WorkflowsActionResultById = {
                 cancel: boolean;
                 inspectExecution: boolean;
                 disabledReasons: {
-                    operation: 'pause' | 'restore_workspace' | 'retry' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'inspect_execution';
+                    operation: 'pause' | 'restore_workspace' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'retry' | 'inspect_execution';
                     code: string;
                 }[];
-                recoverSameConversation?: boolean | undefined;
-                recoverFreshAgent?: boolean | undefined;
-                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;
             attentionRequired?: boolean | undefined;
-            sourceArtifactId?: string | null | undefined;
-            ownerAccountId?: string | undefined;
-            visibleTeamId?: string | null | undefined;
         };
         definition: Readonly<{
             version: 1;
@@ -1714,6 +1709,7 @@ export type WorkflowsActionResultById = {
                 name: string;
                 valueType: 'string' | 'number' | 'boolean' | 'json';
                 required: boolean;
+                enum?: string[] | undefined;
                 default?: string | number | boolean | readonly JsonValue[] | {
                     readonly [key: string]: JsonValue;
                 } | null | undefined;
@@ -2104,6 +2100,9 @@ export type WorkflowsActionResultById = {
     readonly "workflow.run.wait": {
         observation: 'paused' | 'terminal' | 'needs_attention' | 'timeout';
         run: {
+            sourceArtifactId: string | null;
+            ownerAccountId: string;
+            visibleTeamId: string | null;
             id: string;
             origin: {
                 kind: 'automation';
@@ -2209,19 +2208,13 @@ export type WorkflowsActionResultById = {
                 cancel: boolean;
                 inspectExecution: boolean;
                 disabledReasons: {
-                    operation: 'pause' | 'restore_workspace' | 'retry' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'inspect_execution';
+                    operation: 'pause' | 'restore_workspace' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'retry' | 'inspect_execution';
                     code: string;
                 }[];
-                recoverSameConversation?: boolean | undefined;
-                recoverFreshAgent?: boolean | undefined;
-                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;
             attentionRequired?: boolean | undefined;
-            sourceArtifactId?: string | null | undefined;
-            ownerAccountId?: string | undefined;
-            visibleTeamId?: string | null | undefined;
         };
         result?: string | number | boolean | readonly JsonValue[] | {
             readonly [key: string]: JsonValue;
@@ -2229,6 +2222,9 @@ export type WorkflowsActionResultById = {
     };
     readonly "workflow.run.pause": {
         run: {
+            sourceArtifactId: string | null;
+            ownerAccountId: string;
+            visibleTeamId: string | null;
             id: string;
             origin: {
                 kind: 'automation';
@@ -2334,24 +2330,21 @@ export type WorkflowsActionResultById = {
                 cancel: boolean;
                 inspectExecution: boolean;
                 disabledReasons: {
-                    operation: 'pause' | 'restore_workspace' | 'retry' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'inspect_execution';
+                    operation: 'pause' | 'restore_workspace' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'retry' | 'inspect_execution';
                     code: string;
                 }[];
-                recoverSameConversation?: boolean | undefined;
-                recoverFreshAgent?: boolean | undefined;
-                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;
             attentionRequired?: boolean | undefined;
-            sourceArtifactId?: string | null | undefined;
-            ownerAccountId?: string | undefined;
-            visibleTeamId?: string | null | undefined;
         };
-        intent: 'cancelled' | 'pause_requested' | 'paused' | 'cancel_requested' | 'unavailable' | 'resumed' | 'recovery_required';
+        intent: 'cancelled' | 'pause_requested' | 'paused' | 'unavailable' | 'cancel_requested' | 'resumed' | 'recovery_required';
     };
     readonly "workflow.run.resume": {
         run: {
+            sourceArtifactId: string | null;
+            ownerAccountId: string;
+            visibleTeamId: string | null;
             id: string;
             origin: {
                 kind: 'automation';
@@ -2457,24 +2450,21 @@ export type WorkflowsActionResultById = {
                 cancel: boolean;
                 inspectExecution: boolean;
                 disabledReasons: {
-                    operation: 'pause' | 'restore_workspace' | 'retry' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'inspect_execution';
+                    operation: 'pause' | 'restore_workspace' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'retry' | 'inspect_execution';
                     code: string;
                 }[];
-                recoverSameConversation?: boolean | undefined;
-                recoverFreshAgent?: boolean | undefined;
-                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;
             attentionRequired?: boolean | undefined;
-            sourceArtifactId?: string | null | undefined;
-            ownerAccountId?: string | undefined;
-            visibleTeamId?: string | null | undefined;
         };
-        intent: 'cancelled' | 'pause_requested' | 'paused' | 'cancel_requested' | 'unavailable' | 'resumed' | 'recovery_required';
+        intent: 'cancelled' | 'pause_requested' | 'paused' | 'unavailable' | 'cancel_requested' | 'resumed' | 'recovery_required';
     };
     readonly "workflow.run.cancel": {
         run: {
+            sourceArtifactId: string | null;
+            ownerAccountId: string;
+            visibleTeamId: string | null;
             id: string;
             origin: {
                 kind: 'automation';
@@ -2580,21 +2570,15 @@ export type WorkflowsActionResultById = {
                 cancel: boolean;
                 inspectExecution: boolean;
                 disabledReasons: {
-                    operation: 'pause' | 'restore_workspace' | 'retry' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'inspect_execution';
+                    operation: 'pause' | 'restore_workspace' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'retry' | 'inspect_execution';
                     code: string;
                 }[];
-                recoverSameConversation?: boolean | undefined;
-                recoverFreshAgent?: boolean | undefined;
-                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;
             attentionRequired?: boolean | undefined;
-            sourceArtifactId?: string | null | undefined;
-            ownerAccountId?: string | undefined;
-            visibleTeamId?: string | null | undefined;
         };
-        intent: 'cancelled' | 'pause_requested' | 'paused' | 'cancel_requested' | 'unavailable' | 'resumed' | 'recovery_required';
+        intent: 'cancelled' | 'pause_requested' | 'paused' | 'unavailable' | 'cancel_requested' | 'resumed' | 'recovery_required';
     };
     readonly "workflow.run.invocations.list": {
         invocations: {
@@ -2665,6 +2649,40 @@ export type WorkflowsActionResultById = {
                     frameInputs?: Record<string, string | number | boolean | readonly JsonValue[] | {
                         readonly [key: string]: JsonValue;
                     } | null> | undefined;
+                    frameProjectWorkspace?: {
+                        creationIntent?: {
+                            kind: 'git_worktree';
+                            sourceDirectory: string;
+                            baseRef: string;
+                            displayName: string;
+                            branchMode: 'new';
+                        } | undefined;
+                        descriptor?: {
+                            machineId: string;
+                            directory: string;
+                            checkoutRootPath: string;
+                            workspaceRefId?: string | undefined;
+                            sourceInvocation?: {
+                                producer: {
+                                    blockId: string;
+                                    scope: {
+                                        kind: 'current';
+                                    } | {
+                                        kind: 'previous_iteration';
+                                        loopBlockId: string;
+                                    } | {
+                                        kind: 'outer';
+                                        levels: number;
+                                    };
+                                };
+                                invocationRecordId: string;
+                            } | undefined;
+                            checkout?: {
+                                kind: 'git_worktree';
+                                branchName: string;
+                            } | undefined;
+                        } | undefined;
+                    } | undefined;
                     closing?: {
                         code: string;
                         causeInvocationRecordId?: string | undefined;
@@ -3111,7 +3129,7 @@ export type WorkflowsActionResultById = {
                                         label: string;
                                         typeLabel: string;
                                         description?: string | undefined;
-                                        icon?: 'file' | 'error' | 'check' | 'action' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'settings' | 'terminal' | 'warning' | 'add' | 'back' | 'close' | 'external' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                                        icon?: 'file' | 'error' | 'check' | 'action' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'settings' | 'terminal' | 'warning' | 'add' | 'back' | 'close' | 'external' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                                         tone?: 'success' | 'info' | 'warning' | 'neutral' | 'danger' | undefined;
                                     };
                                 }[];
@@ -3154,17 +3172,20 @@ export type WorkflowsActionResultById = {
                     kind: 'unavailable';
                     reason: 'run_not_interrupted' | 'invocation_not_recoverable' | 'execution_not_admitted' | 'workspace_unavailable' | 'stop_pending' | 'recovery_not_prepared' | 'causal_set_requires_batch_review';
                 };
-                restoreWorkspace?: {
+                restoreWorkspace: {
                     kind: 'available';
                 } | {
                     kind: 'unavailable';
                     reason: 'run_not_interrupted' | 'invocation_not_recoverable' | 'execution_not_admitted' | 'workspace_unavailable' | 'stop_pending' | 'recovery_not_prepared' | 'causal_set_requires_batch_review';
-                } | undefined;
+                };
             } | undefined;
         };
     };
     readonly "workflow.run.invocations.retry": {
         run: {
+            sourceArtifactId: string | null;
+            ownerAccountId: string;
+            visibleTeamId: string | null;
             id: string;
             origin: {
                 kind: 'automation';
@@ -3270,19 +3291,13 @@ export type WorkflowsActionResultById = {
                 cancel: boolean;
                 inspectExecution: boolean;
                 disabledReasons: {
-                    operation: 'pause' | 'restore_workspace' | 'retry' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'inspect_execution';
+                    operation: 'pause' | 'restore_workspace' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'retry' | 'inspect_execution';
                     code: string;
                 }[];
-                recoverSameConversation?: boolean | undefined;
-                recoverFreshAgent?: boolean | undefined;
-                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;
             attentionRequired?: boolean | undefined;
-            sourceArtifactId?: string | null | undefined;
-            ownerAccountId?: string | undefined;
-            visibleTeamId?: string | null | undefined;
         };
         invocation: {
             id: string;
@@ -3355,6 +3370,40 @@ export type WorkflowsActionResultById = {
                     frameInputs?: Record<string, string | number | boolean | readonly JsonValue[] | {
                         readonly [key: string]: JsonValue;
                     } | null> | undefined;
+                    frameProjectWorkspace?: {
+                        creationIntent?: {
+                            kind: 'git_worktree';
+                            sourceDirectory: string;
+                            baseRef: string;
+                            displayName: string;
+                            branchMode: 'new';
+                        } | undefined;
+                        descriptor?: {
+                            machineId: string;
+                            directory: string;
+                            checkoutRootPath: string;
+                            workspaceRefId?: string | undefined;
+                            sourceInvocation?: {
+                                producer: {
+                                    blockId: string;
+                                    scope: {
+                                        kind: 'current';
+                                    } | {
+                                        kind: 'previous_iteration';
+                                        loopBlockId: string;
+                                    } | {
+                                        kind: 'outer';
+                                        levels: number;
+                                    };
+                                };
+                                invocationRecordId: string;
+                            } | undefined;
+                            checkout?: {
+                                kind: 'git_worktree';
+                                branchName: string;
+                            } | undefined;
+                        } | undefined;
+                    } | undefined;
                     closing?: {
                         code: string;
                         causeInvocationRecordId?: string | undefined;
@@ -3801,7 +3850,7 @@ export type WorkflowsActionResultById = {
                                         label: string;
                                         typeLabel: string;
                                         description?: string | undefined;
-                                        icon?: 'file' | 'error' | 'check' | 'action' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'settings' | 'terminal' | 'warning' | 'add' | 'back' | 'close' | 'external' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                                        icon?: 'file' | 'error' | 'check' | 'action' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'settings' | 'terminal' | 'warning' | 'add' | 'back' | 'close' | 'external' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                                         tone?: 'success' | 'info' | 'warning' | 'neutral' | 'danger' | undefined;
                                     };
                                 }[];
@@ -3844,17 +3893,20 @@ export type WorkflowsActionResultById = {
                     kind: 'unavailable';
                     reason: 'run_not_interrupted' | 'invocation_not_recoverable' | 'execution_not_admitted' | 'workspace_unavailable' | 'stop_pending' | 'recovery_not_prepared' | 'causal_set_requires_batch_review';
                 };
-                restoreWorkspace?: {
+                restoreWorkspace: {
                     kind: 'available';
                 } | {
                     kind: 'unavailable';
                     reason: 'run_not_interrupted' | 'invocation_not_recoverable' | 'execution_not_admitted' | 'workspace_unavailable' | 'stop_pending' | 'recovery_not_prepared' | 'causal_set_requires_batch_review';
-                } | undefined;
+                };
             } | undefined;
         };
     };
     readonly "workflow.run.invocations.complete_review": {
         run: {
+            sourceArtifactId: string | null;
+            ownerAccountId: string;
+            visibleTeamId: string | null;
             id: string;
             origin: {
                 kind: 'automation';
@@ -3960,19 +4012,13 @@ export type WorkflowsActionResultById = {
                 cancel: boolean;
                 inspectExecution: boolean;
                 disabledReasons: {
-                    operation: 'pause' | 'restore_workspace' | 'retry' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'inspect_execution';
+                    operation: 'pause' | 'restore_workspace' | 'cancel' | 'resume_boundary' | 'recover_same_conversation' | 'recover_fresh_agent' | 'retry' | 'inspect_execution';
                     code: string;
                 }[];
-                recoverSameConversation?: boolean | undefined;
-                recoverFreshAgent?: boolean | undefined;
-                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;
             attentionRequired?: boolean | undefined;
-            sourceArtifactId?: string | null | undefined;
-            ownerAccountId?: string | undefined;
-            visibleTeamId?: string | null | undefined;
         };
         invocation: {
             id: string;
@@ -4025,6 +4071,7 @@ export type WorkflowsActionResultById = {
                 name: string;
                 valueType: 'string' | 'number' | 'boolean' | 'json';
                 required: boolean;
+                enum?: string[] | undefined;
                 default?: string | number | boolean | readonly JsonValue[] | {
                     readonly [key: string]: JsonValue;
                 } | null | undefined;
@@ -4308,6 +4355,7 @@ export type WorkflowsActionResultById = {
                 name: string;
                 valueType: 'string' | 'number' | 'boolean' | 'json';
                 required: boolean;
+                enum?: string[] | undefined;
                 default?: string | number | boolean | readonly JsonValue[] | {
                     readonly [key: string]: JsonValue;
                 } | null | undefined;
@@ -4591,6 +4639,7 @@ export type WorkflowsActionResultById = {
                 name: string;
                 valueType: 'string' | 'number' | 'boolean' | 'json';
                 required: boolean;
+                enum?: string[] | undefined;
                 default?: string | number | boolean | readonly JsonValue[] | {
                     readonly [key: string]: JsonValue;
                 } | null | undefined;
@@ -4869,6 +4918,7 @@ export type WorkflowsActionResultById = {
                 name: string;
                 valueType: 'string' | 'number' | 'boolean' | 'json';
                 required: boolean;
+                enum?: string[] | undefined;
                 default?: string | number | boolean | readonly JsonValue[] | {
                     readonly [key: string]: JsonValue;
                 } | null | undefined;
@@ -5284,6 +5334,14 @@ export type WorkflowsActionResultById = {
                 kind: 'sessionLifecycle';
                 triggerDefinitionEnvelope: null;
             })[];
+            legacy?: {
+                editable: false;
+                reason: 'created_in_0_2';
+                placements?: {
+                    machineId: string;
+                    directory: string;
+                }[] | undefined;
+            } | undefined;
             target?: {
                 kind: 'workflow';
                 ref: string;
@@ -5295,6 +5353,7 @@ export type WorkflowsActionResultById = {
                         name: string;
                         valueType: 'string' | 'number' | 'boolean' | 'json';
                         required: boolean;
+                        enum?: string[] | undefined;
                         default?: string | number | boolean | readonly JsonValue[] | {
                             readonly [key: string]: JsonValue;
                         } | null | undefined;
@@ -5596,6 +5655,7 @@ export type WorkflowsActionResultById = {
                         name: string;
                         valueType: 'string' | 'number' | 'boolean' | 'json';
                         required: boolean;
+                        enum?: string[] | undefined;
                         default?: string | number | boolean | readonly JsonValue[] | {
                             readonly [key: string]: JsonValue;
                         } | null | undefined;
@@ -6007,6 +6067,14 @@ export type WorkflowsActionResultById = {
                 kind: 'sessionLifecycle';
                 triggerDefinitionEnvelope: null;
             })[];
+            legacy?: {
+                editable: false;
+                reason: 'created_in_0_2';
+                placements?: {
+                    machineId: string;
+                    directory: string;
+                }[] | undefined;
+            } | undefined;
             target?: {
                 kind: 'workflow';
                 ref: string;
@@ -6018,6 +6086,7 @@ export type WorkflowsActionResultById = {
                         name: string;
                         valueType: 'string' | 'number' | 'boolean' | 'json';
                         required: boolean;
+                        enum?: string[] | undefined;
                         default?: string | number | boolean | readonly JsonValue[] | {
                             readonly [key: string]: JsonValue;
                         } | null | undefined;
@@ -6319,6 +6388,7 @@ export type WorkflowsActionResultById = {
                         name: string;
                         valueType: 'string' | 'number' | 'boolean' | 'json';
                         required: boolean;
+                        enum?: string[] | undefined;
                         default?: string | number | boolean | readonly JsonValue[] | {
                             readonly [key: string]: JsonValue;
                         } | null | undefined;
@@ -6732,6 +6802,14 @@ export type WorkflowsActionResultById = {
                 kind: 'sessionLifecycle';
                 triggerDefinitionEnvelope: null;
             })[];
+            legacy?: {
+                editable: false;
+                reason: 'created_in_0_2';
+                placements?: {
+                    machineId: string;
+                    directory: string;
+                }[] | undefined;
+            } | undefined;
             target?: {
                 kind: 'workflow';
                 ref: string;
@@ -6743,6 +6821,7 @@ export type WorkflowsActionResultById = {
                         name: string;
                         valueType: 'string' | 'number' | 'boolean' | 'json';
                         required: boolean;
+                        enum?: string[] | undefined;
                         default?: string | number | boolean | readonly JsonValue[] | {
                             readonly [key: string]: JsonValue;
                         } | null | undefined;
@@ -7044,6 +7123,7 @@ export type WorkflowsActionResultById = {
                         name: string;
                         valueType: 'string' | 'number' | 'boolean' | 'json';
                         required: boolean;
+                        enum?: string[] | undefined;
                         default?: string | number | boolean | readonly JsonValue[] | {
                             readonly [key: string]: JsonValue;
                         } | null | undefined;
@@ -7457,6 +7537,14 @@ export type WorkflowsActionResultById = {
                 kind: 'sessionLifecycle';
                 triggerDefinitionEnvelope: null;
             })[];
+            legacy?: {
+                editable: false;
+                reason: 'created_in_0_2';
+                placements?: {
+                    machineId: string;
+                    directory: string;
+                }[] | undefined;
+            } | undefined;
             target?: {
                 kind: 'workflow';
                 ref: string;
@@ -7468,6 +7556,7 @@ export type WorkflowsActionResultById = {
                         name: string;
                         valueType: 'string' | 'number' | 'boolean' | 'json';
                         required: boolean;
+                        enum?: string[] | undefined;
                         default?: string | number | boolean | readonly JsonValue[] | {
                             readonly [key: string]: JsonValue;
                         } | null | undefined;
@@ -7769,6 +7858,7 @@ export type WorkflowsActionResultById = {
                         name: string;
                         valueType: 'string' | 'number' | 'boolean' | 'json';
                         required: boolean;
+                        enum?: string[] | undefined;
                         default?: string | number | boolean | readonly JsonValue[] | {
                             readonly [key: string]: JsonValue;
                         } | null | undefined;
@@ -8182,6 +8272,14 @@ export type WorkflowsActionResultById = {
                 kind: 'sessionLifecycle';
                 triggerDefinitionEnvelope: null;
             })[];
+            legacy?: {
+                editable: false;
+                reason: 'created_in_0_2';
+                placements?: {
+                    machineId: string;
+                    directory: string;
+                }[] | undefined;
+            } | undefined;
             target?: {
                 kind: 'workflow';
                 ref: string;
@@ -8193,6 +8291,7 @@ export type WorkflowsActionResultById = {
                         name: string;
                         valueType: 'string' | 'number' | 'boolean' | 'json';
                         required: boolean;
+                        enum?: string[] | undefined;
                         default?: string | number | boolean | readonly JsonValue[] | {
                             readonly [key: string]: JsonValue;
                         } | null | undefined;
@@ -8494,6 +8593,7 @@ export type WorkflowsActionResultById = {
                         name: string;
                         valueType: 'string' | 'number' | 'boolean' | 'json';
                         required: boolean;
+                        enum?: string[] | undefined;
                         default?: string | number | boolean | readonly JsonValue[] | {
                             readonly [key: string]: JsonValue;
                         } | null | undefined;
@@ -8910,6 +9010,14 @@ export type WorkflowsActionResultById = {
                 kind: 'sessionLifecycle';
                 triggerDefinitionEnvelope: null;
             })[];
+            legacy?: {
+                editable: false;
+                reason: 'created_in_0_2';
+                placements?: {
+                    machineId: string;
+                    directory: string;
+                }[] | undefined;
+            } | undefined;
             target?: {
                 kind: 'workflow';
                 ref: string;
@@ -8921,6 +9029,7 @@ export type WorkflowsActionResultById = {
                         name: string;
                         valueType: 'string' | 'number' | 'boolean' | 'json';
                         required: boolean;
+                        enum?: string[] | undefined;
                         default?: string | number | boolean | readonly JsonValue[] | {
                             readonly [key: string]: JsonValue;
                         } | null | undefined;
@@ -9222,6 +9331,7 @@ export type WorkflowsActionResultById = {
                         name: string;
                         valueType: 'string' | 'number' | 'boolean' | 'json';
                         required: boolean;
+                        enum?: string[] | undefined;
                         default?: string | number | boolean | readonly JsonValue[] | {
                             readonly [key: string]: JsonValue;
                         } | null | undefined;
@@ -9635,6 +9745,14 @@ export type WorkflowsActionResultById = {
                 kind: 'sessionLifecycle';
                 triggerDefinitionEnvelope: null;
             })[];
+            legacy?: {
+                editable: false;
+                reason: 'created_in_0_2';
+                placements?: {
+                    machineId: string;
+                    directory: string;
+                }[] | undefined;
+            } | undefined;
             target?: {
                 kind: 'workflow';
                 ref: string;
@@ -9646,6 +9764,7 @@ export type WorkflowsActionResultById = {
                         name: string;
                         valueType: 'string' | 'number' | 'boolean' | 'json';
                         required: boolean;
+                        enum?: string[] | undefined;
                         default?: string | number | boolean | readonly JsonValue[] | {
                             readonly [key: string]: JsonValue;
                         } | null | undefined;
@@ -9947,6 +10066,7 @@ export type WorkflowsActionResultById = {
                         name: string;
                         valueType: 'string' | 'number' | 'boolean' | 'json';
                         required: boolean;
+                        enum?: string[] | undefined;
                         default?: string | number | boolean | readonly JsonValue[] | {
                             readonly [key: string]: JsonValue;
                         } | null | undefined;
@@ -10360,6 +10480,14 @@ export type WorkflowsActionResultById = {
                 kind: 'sessionLifecycle';
                 triggerDefinitionEnvelope: null;
             })[];
+            legacy?: {
+                editable: false;
+                reason: 'created_in_0_2';
+                placements?: {
+                    machineId: string;
+                    directory: string;
+                }[] | undefined;
+            } | undefined;
             target?: {
                 kind: 'workflow';
                 ref: string;
@@ -10371,6 +10499,7 @@ export type WorkflowsActionResultById = {
                         name: string;
                         valueType: 'string' | 'number' | 'boolean' | 'json';
                         required: boolean;
+                        enum?: string[] | undefined;
                         default?: string | number | boolean | readonly JsonValue[] | {
                             readonly [key: string]: JsonValue;
                         } | null | undefined;
@@ -10672,6 +10801,7 @@ export type WorkflowsActionResultById = {
                         name: string;
                         valueType: 'string' | 'number' | 'boolean' | 'json';
                         required: boolean;
+                        enum?: string[] | undefined;
                         default?: string | number | boolean | readonly JsonValue[] | {
                             readonly [key: string]: JsonValue;
                         } | null | undefined;

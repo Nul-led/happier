@@ -302,7 +302,6 @@ describe("Artifact document grants (real SQLite)", () => {
         const body = privacyKit.decodeBase64(encodePlainArtifactStoredContent({ value: "edited" }));
         const write = await inTx(tx => updateArtifactTx(tx, {
             actorUserId: editor.id, artifactId: artifact.id, body: { bytes: body, expectedVersion: 1 },
-            supportsCurrentStoredContentProtocol: true,
         }));
         expect(write).toMatchObject({ ok: true, body: { version: 2 } });
         expect((await db.artifact.findUniqueOrThrow({ where: { id: artifact.id } })).body).not.toEqual(body);
@@ -310,23 +309,21 @@ describe("Artifact document grants (real SQLite)", () => {
         expect(notices.map(row => row.accountId).sort()).toEqual([owner.id, editor.id, viewer.id].sort());
         await expect(inTx(tx => updateArtifactTx(tx, {
             actorUserId: editor.id, artifactId: artifact.id, body: { bytes: body, expectedVersion: 1 },
-            supportsCurrentStoredContentProtocol: true,
         }))).resolves.toMatchObject({ ok: false, error: "version-mismatch", current: { bodyVersion: 2, body } });
         await expect(inTx(tx => updateArtifactTx(tx, {
             actorUserId: viewer.id, artifactId: artifact.id, body: { bytes: body, expectedVersion: 2 },
-            supportsCurrentStoredContentProtocol: true,
         }))).resolves.toMatchObject({ ok: false, error: "not-found" });
-        await expect(deleteArtifact({ actorUserId: editor.id, artifactId: artifact.id, supportsCurrentStoredContentProtocol: true }))
+        await expect(deleteArtifact({ actorUserId: editor.id, artifactId: artifact.id }))
             .resolves.toMatchObject({ ok: false, error: "not-found" });
         expect(await db.artifact.count({ where: { id: artifact.id } })).toBe(1);
         const beforeDelete = await db.accountChange.findMany({ where: { entityId: artifact.id },
             select: { accountId: true, cursor: true } });
-        await expect(deleteArtifact({ actorUserId: owner.id, artifactId: artifact.id, supportsCurrentStoredContentProtocol: true,
+        await expect(deleteArtifact({ actorUserId: owner.id, artifactId: artifact.id,
             expectedRevision: { headerVersion: 1, bodyVersion: 1 } }))
             .resolves.toMatchObject({ ok: false, error: "version-mismatch" });
         expect(await db.accountChange.findMany({ where: { entityId: artifact.id },
             select: { accountId: true, cursor: true } })).toEqual(beforeDelete);
-        await expect(deleteArtifact({ actorUserId: owner.id, artifactId: artifact.id, supportsCurrentStoredContentProtocol: true }))
+        await expect(deleteArtifact({ actorUserId: owner.id, artifactId: artifact.id }))
             .resolves.toMatchObject({ ok: true });
         const deletedNotices = await db.accountChange.findMany({ where: { entityId: artifact.id },
             select: { accountId: true, cursor: true } });

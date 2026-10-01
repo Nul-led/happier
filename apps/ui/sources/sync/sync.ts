@@ -393,6 +393,7 @@ import type { PermissionMode } from './domains/permissions/permissionTypes';
 import { ACCOUNT_SETTINGS_QUIET_FLUSH_DELAY_MS, scheduleDebouncedPendingSettingsFlush } from './engine/pending/pendingSettings';
 import {
     applySettingsLocalDelta,
+    retireLegacyAuthoringMemoryKey,
     syncSettings as syncSettingsEngine,
     type OneShotAccountSettingsPreparedCommitResult,
     type OneShotAccountSettingsMutationResult,
@@ -8152,15 +8153,15 @@ class Sync {
                 read: () => readAccountSettingsBaseline({ request, credentials, encryption, accountMode: mode.mode }),
                 remove: async (key, expectedVersion) => {
                     owner.assertCurrent();
-                    const result = await syncSettingsEngine({
-                        credentials, encryption, settingsScope: scope, requestContext,
-                        pendingSettings: {}, clearPendingSettings: () => {},
-                        settingsSecretsKey: this.settingsSecretsKey, settingsSecretsReadKeys: this.settingsSecretsReadKeys,
-                        oneShotServerSettingsMutation: { expectedSettingsVersion: expectedVersion,
-                            mutate: (raw) => { const settings = { ...raw }; delete settings[key]; return { settings, value: undefined }; } },
+                    if (key !== 'recentMachinePaths' && key !== 'lastUsedProfile' && key !== 'lastEngineSelectionsByScopeV1') {
+                        throw new Error('Invalid authoring-memory retirement key');
+                    }
+                    const result = await retireLegacyAuthoringMemoryKey({
+                        credentials, encryption, accountMode: mode.mode, settingsScope: scope,
+                        requestContext: { ...requestContext, request },
+                        key, expectedSettingsVersion: expectedVersion,
                     });
                     owner.assertCurrent();
-                    if (!result) throw new Error('Authoring memory legacy retirement returned no result');
                     return result.status;
                 },
             } });

@@ -42,6 +42,16 @@ export type ApprovalsActionInputById = {
         [x: string]: unknown;
         artifactId: string;
         decision: 'approve' | 'reject';
+        computerTarget?: {
+            kind: 'window';
+            displayId: string;
+            pid: number;
+            windowId: number;
+        } | {
+            kind: 'display';
+            displayId: string;
+        } | undefined;
+        computerAccess?: 'see' | 'use' | undefined;
         originServerId?: string | undefined;
         serverIdentityId?: string | undefined;
     };

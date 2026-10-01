@@ -26,6 +26,7 @@ describe('decryptArtifactListItem (artifact headers)', () => {
     const encryptedHeader = await artifactEncryption.encryptHeader(headerPayload as any);
 
     const artifact: Artifact = {
+      ownerAccountId: 'owner', access: 'owner', encryptionMode: 'e2ee',
       id: 'a1',
       header: encryptedHeader,
       headerVersion: 1,
@@ -50,4 +51,3 @@ describe('decryptArtifactListItem (artifact headers)', () => {
     });
   });
 });
-

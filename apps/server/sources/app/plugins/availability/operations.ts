@@ -2429,8 +2429,6 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                 header: artifact.header,
                 body: artifact.body,
                 dataEncryptionKey: artifact.dataEncryptionKey,
-                supportsCurrentStoredContentProtocol:
-                    params.supportsCurrentStoredContentProtocol,
                 markChanged: async (artifactId) => {
                     await tx.accountPluginUiArtifact.create({
                         data: {
@@ -2449,11 +2447,6 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                 },
             });
             if (!created.ok) {
-                if (created.error === "client-upgrade-required") {
-                    throw new PluginAvailabilityOperationError(
-                        "plugin_ui_artifact_client_upgrade_required",
-                    );
-                }
                 if (created.error === "invalid-params") {
                     throw new PluginAvailabilityOperationError(
                         "plugin_ui_artifact_invalid_content",
@@ -2733,8 +2726,6 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                 header: envelope.header,
                 body: envelope.body,
                 dataEncryptionKey: envelope.dataEncryptionKey,
-                supportsCurrentStoredContentProtocol:
-                    params.supportsCurrentStoredContentProtocol,
                 markChanged: async (artifactId) => {
                     const linked = await tx.accountPluginRelease.updateMany({
                         where: {
@@ -2757,11 +2748,6 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                 },
             });
             if (!created.ok) {
-                if (created.error === "client-upgrade-required") {
-                    throw new PluginAvailabilityOperationError(
-                        "plugin_package_asset_client_upgrade_required",
-                    );
-                }
                 if (created.error === "invalid-params") {
                     throw new PluginAvailabilityOperationError(
                         "plugin_package_asset_invalid_content",

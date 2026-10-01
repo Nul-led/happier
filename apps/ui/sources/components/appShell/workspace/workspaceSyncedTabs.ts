@@ -21,10 +21,23 @@ function same(left: unknown, right: unknown): boolean { return JSON.stringify(le
 function portable(tab: WorkspaceTab): SharedWorkspaceTab { return { id: tab.id, target: tab.target, pinned: tab.pinned }; }
 function intentional(tab: WorkspaceTab): boolean { return !tab.preview && tab.target.kind !== 'newTab'; }
 
+/** Only admitted live pairs reserve IDs; discarded singletons cannot block a later pair. */
+export function pruneWorkspaceTabPairs(pairs: SharedWorkspaceTabs['pairs'], tabsById: SharedWorkspaceTabs['tabsById']): SharedWorkspaceTabs['pairs'] {
+    const used = new Set<string>();
+    const accepted: string[][] = [];
+    for (const pair of pairs) {
+        const members = [...new Set(pair)].filter(id => Boolean(tabsById[id]) && !used.has(id));
+        if (members.length < 2) continue;
+        accepted.push(members);
+        for (const id of members) used.add(id);
+    }
+    return accepted;
+}
+
 export function projectWorkspaceSharedTabs(state: WorkspaceState, pairs: SharedWorkspaceTabs['pairs'] = state.tabPairs): SharedWorkspaceTabs {
     const order = collectSplitCanvasLeaves(state.root).flatMap(leaf => state.groups[leaf.payload.groupId].tabIds).filter(id => intentional(state.tabs[id]));
     const tabsById = Object.fromEntries(order.map(id => [id, portable(state.tabs[id])]));
-    return { v: 1, tabsById, order, pairs: pairs.map(pair => pair.filter(id => Boolean(tabsById[id]))).filter(pair => pair.length >= 2) };
+    return { v: 1, tabsById, order, pairs: pruneWorkspaceTabPairs(pairs, tabsById) };
 }
 
 /** Replay only accepted edits, never infer a remote deletion from an older local snapshot. */
@@ -59,11 +72,7 @@ export function applyWorkspaceTabIntents(record: SharedWorkspaceTabs, intents: r
             case 'pairs': pairs = intent.pairs; break;
         }
     }
-    const used = new Set<string>();
-    pairs = pairs.map(pair => pair.filter(id => {
-        if (!tabsById[id] || used.has(id)) return false;
-        used.add(id); return true;
-    })).filter(pair => pair.length >= 2);
+    pairs = pruneWorkspaceTabPairs(pairs, tabsById);
     const result: SharedWorkspaceTabs = { v: 1, tabsById, order, pairs };
     return same(result, record) ? record : result;
 }

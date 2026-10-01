@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import axios from 'axios';
 
 import { createLegacyProfileMigrationCoordinator } from './coordinator';
 import { migrateProviderSettings } from '../settings/migration';
@@ -41,6 +42,17 @@ async function resolvePlainAccountEncryptionMode(): Promise<'plain'> {
 }
 
 describe('legacy profile migration coordinator', () => {
+  beforeEach(() => {
+    // The real migration helper now reads the canonical Account memory row.
+    vi.spyOn(axios, 'get').mockImplementation(async (url) => {
+      if (String(url).endsWith('/v1/account/encryption')) return { status: 200, data: { mode: 'plain', updatedAt: 1 } };
+      if (String(url).endsWith('/authoring-memory/lastUsedProfile')) return { status: 200, data: { status: 'present', revision: 1, content: { t: 'plain', v: null } } };
+      if (String(url).endsWith('/v2/account/settings')) return { status: 200, data: { content: { t: 'plain', v: {} }, version: 1 } };
+      throw new Error(`Unexpected Account read: ${String(url)}`);
+    });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
   it('fails closed before acquiring registry/settings when providers are disabled', async () => {
     let acquired = 0;
     const coordinator = createLegacyProfileMigrationCoordinator({

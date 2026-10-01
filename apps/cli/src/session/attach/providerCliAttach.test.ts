@@ -1,5 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { createManagedServiceDurabilityOwner } from '@/plugins/runtime/invocation/services/managedServiceDurability';
+import { createDaemonManagedServiceEndpointReadOwner } from '@/plugins/runtime/invocation/services/daemonManagedServiceEndpointReadOwner';
+import { ManagedServiceEndpointReadOpenRequestV1Schema } from '@/agent/runtime/session/process/managedServiceEndpointReadProtocol';
+import {
+    resolveOpenCodeAttachTarget,
+    createOpenCodeAttachArgs,
+    resolveOpenCodeAttachReachability,
+} from '../../../../../packages/plugins/opencode/src/agent/surfaces/sessions/attach/descriptor';
 
 import { createProviderCliAttachSurface, probeLocalSocket } from './providerCliAttach';
 
@@ -7,6 +18,69 @@ type SpawnExitHandler = (code: number | null, signal: NodeJS.Signals | null) => 
 type SpawnErrorHandler = (error: Error) => void;
 
 describe('createProviderCliAttachSurface', () => {
+    it('rejects unavailable exact managed-service access before ambient probing or child launch', async () => {
+        const rootDir = await mkdtemp(join(tmpdir(), 'happier-attach-access-'));
+        const durability = createManagedServiceDurabilityOwner({ rootDir });
+        const baseUrl = 'http://127.0.0.1:4312';
+        await durability.publishEndpointProjection({
+            sessionId: 'session-one', pluginId: 'happier.agent.opencode',
+            contributionId: 'happier.agent.opencode/agents/opencode',
+            serverId: 'opencode-server', instanceId: 'server-one',
+            sourceCustody: { kind: 'managed', immutableGenerationId: 'opencode-occurrence', installSource: 'localPath' },
+            custodyOwner: 'sessionRunner', mode: 'externalAttach',
+            endpoint: { baseUrl, host: '127.0.0.1', port: 4312 },
+            process: null, createdAtMs: 1,
+        });
+        // The runner RPC transport reports a real closed-protocol unavailable outcome.
+        const owner = createDaemonManagedServiceEndpointReadOwner({
+            credentials: { token: 'fixture-token', encryption: { type: 'none' } },
+            resolveProjection: (query) => durability.resolveEndpointProjection(query),
+            resolveRunnerEndpointReadRpc: async (sessionId) => ({
+                sessionId,
+                call: async ({ request }) => {
+                    const parsed = ManagedServiceEndpointReadOpenRequestV1Schema.parse(request);
+                    return { v: 1, requestId: parsed.requestId, status: 'unavailable' };
+                },
+            }),
+        });
+        const fetchFn = vi.fn<typeof fetch>(async () => new Response('{}', { status: 200 }));
+        const spawnProcess = vi.fn(() => ({
+            once: (event: 'exit' | 'error', handler: SpawnExitHandler | SpawnErrorHandler) => {
+                if (event === 'exit') (handler as SpawnExitHandler)(0, null);
+            },
+        }));
+        const surface = createProviderCliAttachSurface({
+            agentId: 'opencode', resolveTarget: resolveOpenCodeAttachTarget,
+            createArgs: createOpenCodeAttachArgs, resolveReachability: resolveOpenCodeAttachReachability,
+            managedServiceTargetBaseUrl: (target) => target.baseUrl,
+            managedServiceCredentialEnvironmentKey: 'OPENCODE_SERVER_PASSWORD',
+            managedServiceCredentialEnvironmentAliases: ['OPENCODE_PASSWORD'],
+            resolveManagedServiceAccess: (input) => owner.resolveSessionClientAccess({
+                ...input, pluginId: 'happier.agent.opencode',
+                contributionId: 'happier.agent.opencode/agents/opencode',
+                environmentKey: 'OPENCODE_SERVER_PASSWORD',
+            }),
+            resolveLaunchSpec: () => ({ source: 'managed', resolvedPath: '/fixture/opencode', command: '/fixture/opencode', args: [] }),
+            env: { OPENCODE_SERVER_PASSWORD: 'ambient-wrong', OPENCODE_PASSWORD: 'ambient-wrong' },
+            fetchFn,
+            spawnProcess: spawnProcess as unknown as Parameters<typeof createProviderCliAttachSurface>[0]['spawnProcess'],
+        });
+        const metadata = {
+            path: '/repo',
+            runtimeDescriptorV1: { v: 1 as const, agentId: 'opencode' as const,
+                agent: { backendMode: 'server', providerSessionId: 'native-one', serverBaseUrl: baseUrl, serverBaseUrlExplicit: true } },
+        };
+        try {
+            expect(await surface.evaluateAvailability?.({ operation: 'attach', sessionId: 'session-one', metadata, depth: 'live' }))
+                .toMatchObject({ available: false, reasonCode: 'agent_unavailable' });
+            expect(await surface.attach({ sessionId: 'session-one', metadata })).toMatchObject({ ok: false, code: 'attach_failed' });
+            expect(fetchFn).not.toHaveBeenCalled();
+            expect(spawnProcess).not.toHaveBeenCalled();
+        } finally {
+            await owner.dispose();
+        }
+    });
+
     it('launches provider-native attach with descriptor args and inherited stdio', async () => {
         const exitHandlers: SpawnExitHandler[] = [];
         const errorHandlers: SpawnErrorHandler[] = [];

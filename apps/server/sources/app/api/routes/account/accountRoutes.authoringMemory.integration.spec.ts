@@ -69,9 +69,9 @@ describe("Account authoring-memory reserved rows", () => {
             const path = "/v1/account/authoring-memory/lastUsedProfile";
             const encryptedContent = { t: "encrypted", c: sealAccountScopedBlobCiphertext({
                 kind: "authoring_memory",
-                material, payload: { key: "lastUsedProfile", value: "profile-1" },
+                material, payload: { key: "lastUsedProfile", value: "profile-1" }, randomBytes: length => new Uint8Array(length).fill(7),
             }) };
-            for (const [accountId, content] of [[plain.id, encryptedContent], [encrypted.id, { t: "plain", v: "profile-1" }], [encrypted.id, { t: "encrypted", c: sealAccountScopedBlobCiphertext({ kind: "account_settings", material, payload: "profile-1" }) }]] as const) {
+            for (const [accountId, content] of [[plain.id, encryptedContent], [encrypted.id, { t: "plain", v: "profile-1" }], [encrypted.id, { t: "encrypted", c: sealAccountScopedBlobCiphertext({ kind: "account_settings", material, payload: "profile-1", randomBytes: length => new Uint8Array(length).fill(8) }) }]] as const) {
                 const refused = await app.inject({ method: "POST", url: path, headers: { "x-test-user-id": accountId }, payload: { expectedRevision: "absent", content } });
                 expect(refused.statusCode).toBe(503);
                 expect(await db.userKVStore.count({ where: { accountId } })).toBe(0);

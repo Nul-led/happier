@@ -1,4 +1,5 @@
 import type { JsonValue } from '@happier-dev/protocol';
+import { StrictJsonValueSchema } from '@happier-dev/protocol';
 import type { WorkflowInputDefinition } from '@happier-dev/protocol/workflows/workflowV1';
 
 /**
@@ -28,7 +29,8 @@ export function parseWorkflowInputTextDraft(definition: WorkflowInputDefinition,
         }
         case 'json':
             try {
-                return { value: JSON.parse(text) as JsonValue, invalid: false };
+                const parsed = StrictJsonValueSchema.safeParse(JSON.parse(text));
+                return parsed.success ? { value: parsed.data, invalid: false } : { value: undefined, invalid: true };
             } catch {
                 return { value: undefined, invalid: true };
             }

@@ -4028,8 +4028,8 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
       }
 
       if (isWorkBoardActionIdV1(actionId)) {
-        if (!deps.workBoardSettings) return { ok: false, errorCode: 'unsupported_action', error: `unsupported_action:${actionId}` };
-        return await executeWorkBoardActionV1(deps.workBoardSettings, actionId, parsed.data, ctx.signal);
+        if (!deps.workBoardArtifacts) return { ok: false, errorCode: 'unsupported_action', error: `unsupported_action:${actionId}` };
+        return await executeWorkBoardActionV1(deps.workBoardArtifacts, actionId, parsed.data, ctx.signal);
       }
 
       if (actionId === 'launch_profiles.publish') {

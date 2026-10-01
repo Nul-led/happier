@@ -15,6 +15,8 @@ describe('workspace synced tab intent owner', () => {
         expect(next.order).toEqual(['c', 'remote', 'local']);
         expect(next.tabsById.b).toBeUndefined();
         expect(Object.keys(next.tabsById).sort()).toEqual(['c', 'local', 'remote']);
+        const paired = applyWorkspaceTabIntents(next, [{ type: 'pairs', pairs: [['c', 'c'], ['c', 'remote']] }]);
+        expect(paired.pairs).toEqual([['c', 'remote']]);
     });
 
     it('preserves focus, geometry, local previews and reference identity for duplicate remote echoes', () => {

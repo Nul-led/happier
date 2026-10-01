@@ -10,10 +10,9 @@ const definition = WorkflowDefinitionV1Schema.parse({ version: 1,
 });
 
 describe('shared workflow definition create', () => {
-  it.each(['edit', 'admin', undefined] as const)('refuses deletion without owner access (%s) before removing personal triggers', async (access) => {
+  it.each(['edit', 'admin'] as const)('refuses deletion by a %s grantee before removing personal triggers', async (access) => {
     const writes: string[] = [];
     const artifactStore: WorkflowDefinitionArtifactOperations = {
-      // Missing access models malformed persisted/network boundary output, not an internal mock.
       read: async () => ({ artifactId: definitionId, access, ownerAccountId: 'owner',
         revision: { headerVersion: 1, bodyVersion: 1 },
         header: { kind: 'workflow-definition.v1', definitionId, revision: { headerVersion: 1, bodyVersion: 1 }, metadata: { title: 'Review' } },
@@ -31,10 +30,10 @@ describe('shared workflow definition create', () => {
     let artifact: Awaited<ReturnType<WorkflowDefinitionArtifactOperations['read']>> = null;
     const store: WorkflowDefinitionArtifactOperations = {
       read: async () => artifact,
-      create: async (input) => { artifact = { ...input, revision: { headerVersion: 1, bodyVersion: 1 } }; },
+      create: async (input) => { artifact = { ...input, ownerAccountId: 'owner', access: 'owner', revision: { headerVersion: 1, bodyVersion: 1 } }; },
       update: async (input) => {
         const revision = { headerVersion: input.expectedRevision.headerVersion + 1, bodyVersion: input.expectedRevision.bodyVersion + 1 };
-        artifact = { ...input, revision };
+        artifact = { ...input, ownerAccountId: 'owner', access: 'owner', revision };
         return { ok: true, revision };
       },
       list: async () => ({ items: [] }),
@@ -72,7 +71,7 @@ describe('shared workflow definition create', () => {
   it.each(['existing', 'conflict', 'response_loss'] as const)('rejoins same semantic content after %s', async (scenario) => {
     let saved = scenario === 'existing';
     const store: WorkflowDefinitionArtifactOperations = {
-      read: async () => saved ? { artifactId: definitionId, revision: { headerVersion: 1, bodyVersion: 1 },
+      read: async () => saved ? { artifactId: definitionId, ownerAccountId: 'owner', access: 'owner', revision: { headerVersion: 1, bodyVersion: 1 },
         header: { kind: 'workflow-definition.v1', definitionId, revision: { headerVersion: 1, bodyVersion: 1 },
           metadata: { title: 'Review', description: 'Same document' } },
         body: JSON.stringify({ kind: 'workflow-definition.v1', definition }) } : null,
@@ -89,7 +88,7 @@ describe('shared workflow definition create', () => {
   it.each(['conflict', 'response_loss'] as const)('refuses different same-id content after %s', async (scenario) => {
     let saved = false;
     const store: WorkflowDefinitionArtifactOperations = {
-      read: async () => saved ? { artifactId: definitionId, revision: { headerVersion: 1, bodyVersion: 1 },
+      read: async () => saved ? { artifactId: definitionId, ownerAccountId: 'owner', access: 'owner', revision: { headerVersion: 1, bodyVersion: 1 },
         header: { kind: 'workflow-definition.v1', definitionId, revision: { headerVersion: 1, bodyVersion: 1 }, metadata: { title: 'Other' } },
         body: JSON.stringify({ kind: 'workflow-definition.v1', definition }) } : null,
       create: async () => { saved = true; throw Object.assign(new Error(scenario), { code: scenario === 'conflict' ? 'conflict' : 'network_error' }); },
@@ -118,7 +117,7 @@ describe('shared workflow definition create', () => {
   it('rejects semantically invalid stored definitions before returning private content', async () => {
     const invalidDefinition = { ...definition, finalOutput: { kind: 'result', producer: { blockId: 'missing', scope: { kind: 'current' } }, path: [] } };
     const store: WorkflowDefinitionArtifactOperations = {
-      read: async () => ({ artifactId: definitionId, revision: { headerVersion: 1, bodyVersion: 1 },
+      read: async () => ({ artifactId: definitionId, ownerAccountId: 'owner', access: 'owner', revision: { headerVersion: 1, bodyVersion: 1 },
         header: { kind: 'workflow-definition.v1', definitionId, revision: { headerVersion: 1, bodyVersion: 1 }, metadata: { title: 'Review' } },
         body: JSON.stringify({ kind: 'workflow-definition.v1', definition: invalidDefinition }) }),
       create: async () => undefined,

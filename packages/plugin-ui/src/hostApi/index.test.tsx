@@ -927,6 +927,44 @@ describe('plugin host API hooks', () => {
     });
   });
 
+  it('suspends retained Resource work and resumes fresh without losing its snapshot', async () => {
+    let revision = 1;
+    const activeWatches = new Set<number>();
+    let watchId = 0;
+    const host = createHostApiStub({
+      readResource: async () => ({
+        contentType: 'application/json',
+        digest: `sha256:${String(revision).repeat(64)}`,
+        bytes: new TextEncoder().encode(JSON.stringify({ revision })),
+      }),
+      watchResource: async () => {
+        const id = ++watchId;
+        activeWatches.add(id);
+        return { dispose: () => { activeWatches.delete(id); } };
+      },
+    });
+    const snapshots: PluginUiResourceSnapshot[] = [];
+    function Probe() {
+      snapshots.push(useLivePluginResource(resourceRef).resource);
+      return null;
+    }
+    const content = (active?: boolean) => <PluginHostApiProviderInternal hostApi={host.api}
+      {...(active === undefined ? {} : { surfaceActivity: { active } })}><Probe /></PluginHostApiProviderInternal>;
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = createRenderer(content(true)); });
+    expect(activeWatches.size).toBe(1);
+    const retained = snapshots.at(-1)?.value;
+    await act(async () => { tree.update(content(false)); });
+    expect(activeWatches.size).toBe(0);
+    expect(snapshots.at(-1)?.value).toBe(retained);
+    revision = 2;
+    await act(async () => { tree.update(content(true)); });
+    expect(activeWatches.size).toBe(1);
+    expect(snapshots.at(-1)?.digest).toBe(`sha256:${'2'.repeat(64)}`);
+    await act(async () => { tree.update(content()); });
+    expect(activeWatches.size).toBe(1);
+  });
+
   it('reuses the same Resource entry when React replaces its subscription mode', async () => {
     const watchResource: PluginUiHostApi['watchResource'] = vi.fn(async () => ({ dispose: vi.fn() }));
     const host = createHostApiStub({

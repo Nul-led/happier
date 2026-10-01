@@ -7,6 +7,7 @@ import { storage } from '@/sync/domains/state/storageStore';
 import { getPersistenceStorage } from '@/sync/domains/state/persistenceStorage';
 import { settingsDefaults, settingsParse } from '@/sync/domains/settings/settings';
 import { Modal } from '@/modal';
+import { clearDeclinedPushPermissionPriming } from './pushPermissionPrimingRecord';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -31,6 +32,7 @@ vi.mock('@/modal', async () => {
 describe('PushNotificationPermissionPrimingRuntime', () => {
     beforeEach(async () => {
         getPersistenceStorage().clearAll();
+        clearDeclinedPushPermissionPriming();
         vi.mocked(Modal.confirm).mockClear();
         await storage.getState().activateSettingsScope({ serverId: 'push-home', accountId: 'push-account' });
         storage.getState().applySettings(settingsDefaults, 1);

@@ -8,12 +8,35 @@ import {
     ArtifactAccessGrantsListResponseV1Schema,
     ArtifactAccessGrantMutationResponseV1Schema,
     ArtifactAccessRecipientCensusResponseV1Schema,
+    isPlainArtifactDataKeyMarker,
     ArtifactRecipientKeyEnvelopeCommitResponseV1Schema,
     type ArtifactAccessGrantsListInputV1,
     type ArtifactAccessGrantSetInputV1,
     type ArtifactAccessGrantRemoveInputV1,
     type ArtifactRecipientKeyEnvelopeCommitInputV1,
 } from '@happier-dev/protocol';
+
+const artifactAuthorityProjectionSchema = ArtifactAccessRecipientCensusResponseV1Schema.pick({
+    ownerAccountId: true, access: true, encryptionMode: true,
+});
+
+function readArtifactResponse(value: unknown): Artifact {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new HappyError('Artifact content is unavailable', false, { code: 'artifact_content_unavailable' });
+    }
+    const projection = artifactAuthorityProjectionSchema.safeParse({
+        ownerAccountId: Reflect.get(value, 'ownerAccountId'),
+        access: Reflect.get(value, 'access'),
+        encryptionMode: Reflect.get(value, 'encryptionMode'),
+    });
+    if (!projection.success) {
+        throw new HappyError('Artifact content is unavailable', false, { code: 'artifact_content_unavailable' });
+    }
+    if ((projection.data.encryptionMode === 'plain') !== isPlainArtifactDataKeyMarker(Reflect.get(value, 'dataEncryptionKey'))) {
+        throw new HappyError('Artifact content does not match its owner Account mode', false, { code: 'artifact_account_mode_mismatch' });
+    }
+    return { ...value as Artifact, ...projection.data };
+}
 
 export type ArtifactApiOptions = Readonly<{
     retry?: 'default' | 'none';
@@ -94,7 +117,11 @@ export async function fetchArtifacts(
             throw new HappyError(`Failed to fetch artifacts: ${response.status}`, true, { status: response.status });
         }
 
-        const data = await response.json() as Artifact[];
+        const value: unknown = await response.json();
+        if (!Array.isArray(value)) {
+            throw new HappyError('Artifact content is unavailable', false, { code: 'artifact_content_unavailable' });
+        }
+        const data = value.map(readArtifactResponse);
         return opts.ownerAccountId === undefined ? data : data.filter(artifact => artifact.ownerAccountId === opts.ownerAccountId);
     };
 
@@ -142,8 +169,7 @@ export async function fetchArtifact(
             throw new HappyError(`Failed to fetch artifact: ${response.status}`, true, { status: response.status });
         }
 
-        const data = await response.json() as Artifact;
-        return data;
+        return readArtifactResponse(await response.json());
     };
 
     if (opts.retry === 'none') {
@@ -188,8 +214,7 @@ export async function createArtifact(
             throw new HappyError(`Failed to create artifact: ${response.status}`, true, { status: response.status });
         }
 
-        const data = await response.json() as Artifact;
-        return data;
+        return readArtifactResponse(await response.json());
     };
 
     if (opts.retry === 'none') {

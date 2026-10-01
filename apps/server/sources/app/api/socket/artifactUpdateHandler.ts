@@ -7,13 +7,6 @@ import { Socket } from "socket.io";
 import * as privacyKit from "privacy-kit";
 import { createArtifact, deleteArtifact, updateArtifact } from "@/app/artifacts/artifactWriteService";
 import { readArtifactForCallerInTx } from "@/app/artifacts/artifactAccessService";
-import {
-    isPlainArtifactDataKeyBytes,
-} from "@/app/artifacts/artifactStoredContent";
-import {
-    buildAccountStoredContentSocketUpgradeError,
-    readAccountStoredContentCompatibilityForSocket,
-} from "@/app/clientCompatibility/accountStoredContentCompatibility";
 import { hasCurrentSocketCredential } from "./socketCredentialCurrentness";
 
 /**
@@ -24,30 +17,6 @@ import { hasCurrentSocketCredential } from "./socketCredentialCurrentness";
 function refuseStaleArtifactOperation(socket: Socket, callback?: (response: any) => void): void {
     callback?.({ result: 'error', message: 'Forbidden' });
     socket.disconnect(true);
-}
-
-function readMarkedArtifactSocketUpgradeRequired(
-    socket: Socket,
-    dataEncryptionKey: Uint8Array,
-) {
-    if (!isPlainArtifactDataKeyBytes(dataEncryptionKey)) {
-        return null;
-    }
-    const compatibility =
-        readAccountStoredContentCompatibilityForSocket(socket);
-    return compatibility.supportsCurrentProtocol
-        ? null
-        : buildAccountStoredContentSocketUpgradeError(compatibility).data;
-}
-
-function readArtifactSocketCompatibility(socket: Socket) {
-    return readAccountStoredContentCompatibilityForSocket(socket);
-}
-
-function buildArtifactSocketUpgradeRequired(socket: Socket) {
-    return buildAccountStoredContentSocketUpgradeError(
-        readArtifactSocketCompatibility(socket),
-    ).data;
 }
 
 export function artifactUpdateHandler(userId: string, socket: Socket) {
@@ -74,14 +43,7 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
                 return;
             }
             const artifact = read.artifact;
-            const upgradeRequired = readMarkedArtifactSocketUpgradeRequired(
-                socket,
-                artifact.dataEncryptionKey,
-            );
-            if (upgradeRequired) {
-                callback?.(upgradeRequired);
-                return;
-            }
+
             // Everything above is read; this is the disclosure. Re-run the
             // socket's own connect-time admission here, after the last await,
             // so a credential that stopped being current mid-read cannot be
@@ -158,7 +120,6 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
                 return;
             }
 
-            const compatibility = readArtifactSocketCompatibility(socket);
             if (!await hasCurrentSocketCredential(userId, socket)) {
                 refuseStaleArtifactOperation(socket, callback);
                 return;
@@ -168,15 +129,10 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
                 artifactId,
                 header: header ? { bytes: privacyKit.decodeBase64(header.data), expectedVersion: header.expectedVersion } : undefined,
                 body: body ? { bytes: privacyKit.decodeBase64(body.data), expectedVersion: body.expectedVersion } : undefined,
-                supportsCurrentStoredContentProtocol:
-                    compatibility.supportsCurrentProtocol,
             });
 
             if (!result.ok) {
-                if (result.error === 'client-upgrade-required') {
-                    callback?.(buildArtifactSocketUpgradeRequired(socket));
-                    return;
-                }
+
                 if (result.error === 'invalid-params') {
                     callback?.({ result: 'error', message: 'Invalid parameters' });
                     return;
@@ -267,7 +223,7 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
             }
 
             // Check if artifact already exists
-            const compatibility = readArtifactSocketCompatibility(socket);
+
             if (!await hasCurrentSocketCredential(userId, socket)) {
                 refuseStaleArtifactOperation(socket, callback);
                 return;
@@ -278,15 +234,10 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
                 header: privacyKit.decodeBase64(header),
                 body: privacyKit.decodeBase64(body),
                 dataEncryptionKey: privacyKit.decodeBase64(dataEncryptionKey),
-                supportsCurrentStoredContentProtocol:
-                    compatibility.supportsCurrentProtocol,
             });
 
             if (!result.ok) {
-                if (result.error === 'client-upgrade-required') {
-                    callback?.(buildArtifactSocketUpgradeRequired(socket));
-                    return;
-                }
+
                 if (result.error === 'invalid-params') {
                     callback?.({ result: 'error', message: 'Invalid parameters' });
                     return;
@@ -355,7 +306,6 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
                 return;
             }
 
-            const compatibility = readArtifactSocketCompatibility(socket);
             if (!await hasCurrentSocketCredential(userId, socket)) {
                 refuseStaleArtifactOperation(socket, callback);
                 return;
@@ -363,14 +313,9 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
             const result = await deleteArtifact({
                 actorUserId: userId,
                 artifactId,
-                supportsCurrentStoredContentProtocol:
-                    compatibility.supportsCurrentProtocol,
             });
             if (!result.ok) {
-                if (result.error === 'client-upgrade-required') {
-                    callback?.(buildArtifactSocketUpgradeRequired(socket));
-                    return;
-                }
+
                 if (result.error === 'not-found') {
                     callback?.({ result: 'error', message: 'Artifact not found' });
                     return;

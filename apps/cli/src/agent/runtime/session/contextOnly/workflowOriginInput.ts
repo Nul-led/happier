@@ -76,7 +76,7 @@ export function createWorkflowOriginContextInputPort(options: WorkflowOriginInpu
       envelope: parseWorkflowStoredContentEnvelopeV1(raw.acceptedEnvelope) });
     if (opened.kind !== 'available') throw new Error('workflow_delivery_content_unavailable');
     if (opened.content.origin?.originSessionId !== options.originSessionId || opened.content.machineId !== run.machineId
-      || (run.ownerAccountId !== undefined && run.ownerAccountId !== options.accountId)) throw new Error('workflow_delivery_binding_mismatch');
+      || run.ownerAccountId !== options.accountId) throw new Error('workflow_delivery_binding_mismatch');
     return { run, accepted: opened.content };
   };
   const rowMatchesOrigin = (run: WorkflowRunSummaryV1, row: OpenRow, localInputId: string) => row.index.runId === run.id

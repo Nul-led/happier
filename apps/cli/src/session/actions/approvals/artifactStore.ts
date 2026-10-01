@@ -22,10 +22,6 @@ import {
 } from '@/api/client/connectedServiceCredentialApi';
 import { createAccountArtifactStore } from '@/api/artifacts/accountArtifactStore';
 
-import {
-  requireCurrentAccountStoredContentServerCompatibility,
-} from '@/api/clientCompatibility/accountStoredContentActivation';
-import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { targetActionApprovalRequestsEqual, targetActionApprovalSubjectsEqual } from './targetActionApprovalSubject';
 import {
   executionRunHostActionApprovalRequestsEqual,
@@ -81,7 +77,6 @@ function readExecutionRunHostActionApprovalArtifact(header: Record<string, unkno
 export function createCliApprovalsArtifactStore(params: Readonly<{
   credentials: StoredCredentials;
   getAccountEncryptionMode?: () => Promise<ConnectedServiceAccountEncryptionMode>;
-  getServerFeaturesSnapshot?: () => Promise<CliServerFeaturesSnapshot | undefined>;
 }>): Readonly<{
   approvalsList: NonNullable<import('@happier-dev/protocol').ActionExecutorDeps['approvalsList']>;
   approvalsCreate: NonNullable<import('@happier-dev/protocol').ActionExecutorDeps['approvalsCreate']>;
@@ -100,17 +95,9 @@ export function createCliApprovalsArtifactStore(params: Readonly<{
     : createConnectedServiceCredentialApi(params.credentials);
   const getAccountEncryptionMode = params.getAccountEncryptionMode
     ?? (() => accountModeApi!.getAccountEncryptionMode());
-  const requirePlainWriteCompatibility = async (): Promise<void> => {
-    await requireCurrentAccountStoredContentServerCompatibility({
-      ...(params.getServerFeaturesSnapshot
-        ? { resolveSnapshot: params.getServerFeaturesSnapshot }
-        : {}),
-    });
-  };
   const accountArtifactStore = createAccountArtifactStore({
     credentials: params.credentials,
     getAccountEncryptionMode,
-    requirePlainWriteCompatibility,
   });
 
   return {

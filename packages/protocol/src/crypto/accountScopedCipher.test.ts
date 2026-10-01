@@ -643,8 +643,12 @@ describe('accountScopedCipher', () => {
   });
 
   it('reports only the versioned-envelope kind byte for owner admission checks', () => {
+    const providerUsage = FROZEN_CANONICAL_ACCOUNT_SCOPED_VECTORS.find(
+      (vector) => vector.kind === 'provider_account_usage_snapshot',
+    );
+    if (!providerUsage) throw new Error('expected the frozen provider-usage vector');
     expect(readAccountScopedCiphertextKindByte(
-      FROZEN_CANONICAL_ACCOUNT_SCOPED_VECTORS[5].ciphertext,
+      providerUsage.ciphertext,
     )).toBe(6);
     expect(readAccountScopedCiphertextKindByte(
       'oQUhIiMkJSYnKCkqKywtLi8wMTIzNDU2NziBJ/3OYHQgvc/8sPig5WoVu1JjU09qFpCDgpr5aG34XQ==',
@@ -829,7 +833,7 @@ describe('accountScopedCipher', () => {
       .sort();
     expect(remoteDevReadableKinds).toEqual(
       FROZEN_CANONICAL_ACCOUNT_SCOPED_VECTORS
-        .slice(0, 8)
+        .filter((vector) => vector.kindByte <= 8)
         .map((vector) => vector.kind)
         .sort(),
     );
@@ -842,15 +846,19 @@ describe('accountScopedCipher', () => {
   releasedReaderTest('executes the immutable released CLI readers against every current canonical vector', () => {
     for (const reader of RELEASED_CLI_ACCOUNT_SCOPED_READER_ARTIFACTS) {
       expect(executeReleasedAccountScopedReaderVectors(reader)).toEqual(
-        FROZEN_CANONICAL_ACCOUNT_SCOPED_VECTORS.map((vector, index) => ({
+        FROZEN_CANONICAL_ACCOUNT_SCOPED_VECTORS.map((vector) => ({
           kind: vector.kind,
-          value: index < 4 ? vector.payload : null,
+          value: vector.kindByte <= 4 ? vector.payload : null,
         })),
       );
     }
   }, 45_000);
 
   it('allows only the narrow compatibility sealer to emit the frozen kind-4 old-reader representation', () => {
+    const quotaSnapshot = FROZEN_CANONICAL_ACCOUNT_SCOPED_VECTORS.find(
+      (vector) => vector.kind === 'connected_service_quota_snapshot',
+    );
+    if (!quotaSnapshot) throw new Error('expected the frozen quota-snapshot vector');
     const material: AccountScopedCryptoMaterial = {
       type: 'dataKey',
       machineKey: FROZEN_ACCOUNT_SCOPED_VECTOR_MACHINE_KEY,
@@ -863,7 +871,7 @@ describe('accountScopedCipher', () => {
       material,
       payload,
       randomBytes,
-    })).toBe(FROZEN_CANONICAL_ACCOUNT_SCOPED_VECTORS[3].ciphertext);
+    })).toBe(quotaSnapshot.ciphertext);
     expect(() => sealAccountScopedBlobCiphertext({
       kind: 'connected_service_quota_snapshot',
       material,
@@ -1051,6 +1059,7 @@ describe('accountScopedCipher', () => {
         30,
         31,
         32,
+        33,
       ],
     );
   });

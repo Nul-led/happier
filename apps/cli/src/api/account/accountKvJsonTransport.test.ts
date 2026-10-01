@@ -45,6 +45,21 @@ describe('CLI Account JSON KV transport', () => {
         expect(post).not.toHaveBeenCalled();
     });
 
+    it('rejects missing or mismatched E2EE material before accessing KV bytes', async () => {
+        const get = vi.spyOn(axios, 'get').mockResolvedValue({ status: 200, data: {
+            ...plainCurrentness, mode: 'e2ee', signingKeyFingerprint: 'signing', contentKeyFingerprint: 'another-key',
+        } });
+        const post = vi.spyOn(axios, 'post');
+        const keyless = createAccountKvJsonTransport({ credentials: { token: 'board-token', encryption: null }, key, serverBaseUrl: baseUrl });
+        await expect(keyless.read()).rejects.toMatchObject({ code: 'encryption_material_unavailable' });
+        const mismatched = createAccountKvJsonTransport({ credentials: { token: 'board-token', encryption: {
+            type: 'legacy', secret: new Uint8Array(32).fill(7),
+        } }, key, serverBaseUrl: baseUrl });
+        await expect(mismatched.compareAndSet({}, -1)).rejects.toMatchObject({ code: 'account_storage_currentness_unavailable' });
+        expect(get.mock.calls.every(call => call[0] === `${baseUrl}/v1/account/encryption/currentness`)).toBe(true);
+        expect(post).not.toHaveBeenCalled();
+    });
+
     it('does not commit after the Account scope retires during currentness resolution', async () => {
         let current = true;
         vi.spyOn(axios, 'get').mockImplementation(async () => { current = false; return { status: 200, data: plainCurrentness }; });

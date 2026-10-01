@@ -106,6 +106,12 @@ export type LocalServicesPreviewActionResultById = {
                 emittedAtMs?: number | undefined;
             }[];
             accessUnavailableReasonCode?: 'preview_private_route_unavailable' | undefined;
+            nativeDirect?: {
+                v: 1;
+                kind: 'iroh_preview';
+                previewId: string;
+                machineId: string;
+            } | undefined;
         };
         snapshot: {
             v: 1;
@@ -244,6 +250,12 @@ export type LocalServicesPreviewActionResultById = {
                     emittedAtMs?: number | undefined;
                 }[];
                 accessUnavailableReasonCode?: 'preview_private_route_unavailable' | undefined;
+                nativeDirect?: {
+                    v: 1;
+                    kind: 'iroh_preview';
+                    previewId: string;
+                    machineId: string;
+                } | undefined;
             }[] | undefined;
         };
     };
@@ -384,6 +396,12 @@ export type LocalServicesPreviewActionResultById = {
                 emittedAtMs?: number | undefined;
             }[];
             accessUnavailableReasonCode?: 'preview_private_route_unavailable' | undefined;
+            nativeDirect?: {
+                v: 1;
+                kind: 'iroh_preview';
+                previewId: string;
+                machineId: string;
+            } | undefined;
         }[] | undefined;
     };
     readonly "localServices.preview.revoke": {
@@ -527,6 +545,12 @@ export type LocalServicesPreviewActionResultById = {
                     emittedAtMs?: number | undefined;
                 }[];
                 accessUnavailableReasonCode?: 'preview_private_route_unavailable' | undefined;
+                nativeDirect?: {
+                    v: 1;
+                    kind: 'iroh_preview';
+                    previewId: string;
+                    machineId: string;
+                } | undefined;
             }[] | undefined;
         };
     };

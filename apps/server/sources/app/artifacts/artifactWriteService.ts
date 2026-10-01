@@ -387,7 +387,6 @@ export type CreateArtifactResult =
         error:
             | "invalid-params"
             | "conflict"
-            | "client-upgrade-required"
             | "internal";
       };
 
@@ -409,7 +408,6 @@ export async function createArtifact(params: {
     header: Uint8Array;
     body: Uint8Array;
     dataEncryptionKey: Uint8Array;
-    supportsCurrentStoredContentProtocol?: boolean;
 }): Promise<CreateArtifactResult> {
     const actorUserId = typeof params.actorUserId === "string" ? params.actorUserId : "";
     const artifactId = typeof params.artifactId === "string" ? params.artifactId : "";
@@ -428,8 +426,6 @@ export async function createArtifact(params: {
             header,
             body,
             dataEncryptionKey,
-            supportsCurrentStoredContentProtocol:
-                params.supportsCurrentStoredContentProtocol === true,
         }));
     } catch {
         return { ok: false, error: "internal" };
@@ -444,7 +440,6 @@ export async function createArtifactTx(
         header: Uint8Array;
         body: Uint8Array;
         dataEncryptionKey: Uint8Array;
-        supportsCurrentStoredContentProtocol?: boolean;
         /**
          * A qualified owner may replace the generic Artifact invalidation only
          * while composing its classification in this same transaction.
@@ -509,15 +504,7 @@ export async function createArtifactTx(
         ) {
             return { ok: false, error: "conflict" };
         }
-        if (
-            isPlainArtifactDataKeyBytes(existing.dataEncryptionKey)
-            && params.supportsCurrentStoredContentProtocol !== true
-        ) {
-            return {
-                ok: false,
-                error: "client-upgrade-required",
-            };
-        }
+
         const opened = openArtifactStoredContentPair({
             accountId: existing.accountId,
             artifactId: existing.id,
@@ -543,16 +530,6 @@ export async function createArtifactTx(
                 header: opened.header,
                 body: opened.body,
             },
-        };
-    }
-
-    if (
-        isPlainArtifactDataKeyBytes(params.dataEncryptionKey)
-        && params.supportsCurrentStoredContentProtocol !== true
-    ) {
-        return {
-            ok: false,
-            error: "client-upgrade-required",
         };
     }
 
@@ -647,7 +624,6 @@ export type UpdateArtifactResult =
             | "invalid-params"
             | "not-found"
             | "version-mismatch"
-            | "client-upgrade-required"
             | "internal";
         current?: {
             headerVersion: number;
@@ -662,7 +638,6 @@ export async function updateArtifact(params: {
     artifactId: string;
     header?: { bytes: Uint8Array; expectedVersion: number };
     body?: { bytes: Uint8Array; expectedVersion: number };
-    supportsCurrentStoredContentProtocol?: boolean;
 }): Promise<UpdateArtifactResult> {
     const actorUserId = typeof params.actorUserId === "string" ? params.actorUserId : "";
     const artifactId = typeof params.artifactId === "string" ? params.artifactId : "";
@@ -688,8 +663,6 @@ export async function updateArtifact(params: {
             artifactId,
             header,
             body,
-            supportsCurrentStoredContentProtocol:
-                params.supportsCurrentStoredContentProtocol === true,
         }));
     } catch {
         return { ok: false, error: "internal" };
@@ -703,7 +676,6 @@ export async function updateArtifactTx(
         artifactId: string;
         header?: { bytes: Uint8Array; expectedVersion: number };
         body?: { bytes: Uint8Array; expectedVersion: number };
-        supportsCurrentStoredContentProtocol?: boolean;
     },
 ): Promise<UpdateArtifactResult> {
     const access = await resolveArtifactAccessInTx(tx, {
@@ -754,15 +726,7 @@ export async function updateArtifactTx(
     if (!current) {
         return { ok: false, error: "not-found" };
     }
-    if (
-        isPlainArtifactDataKeyBytes(current.dataEncryptionKey)
-        && params.supportsCurrentStoredContentProtocol !== true
-    ) {
-        return {
-            ok: false,
-            error: "client-upgrade-required",
-        };
-    }
+
     if (!artifactUpdateMatchesStoredMode({
         dataEncryptionKey: current.dataEncryptionKey,
         ...(params.header ? { header: params.header.bytes } : {}),
@@ -871,15 +835,7 @@ export async function updateArtifactTx(
         if (!fresh) {
             return { ok: false, error: "not-found" };
         }
-        if (
-            isPlainArtifactDataKeyBytes(fresh.dataEncryptionKey)
-            && params.supportsCurrentStoredContentProtocol !== true
-        ) {
-            return {
-                ok: false,
-                error: "client-upgrade-required",
-            };
-        }
+
         const openedFresh = openArtifactStoredContentPair({
             accountId: ownerAccountId,
             artifactId: fresh.id,
@@ -927,7 +883,6 @@ export type DeleteArtifactResult =
         error:
             | "invalid-params"
             | "not-found"
-            | "client-upgrade-required"
             | "version-mismatch"
             | "internal";
       };
@@ -935,13 +890,10 @@ export type DeleteArtifactResult =
 export async function deleteArtifact(params: {
     actorUserId: string;
     artifactId: string;
-    supportsCurrentStoredContentProtocol?: boolean;
     expectedRevision?: Readonly<{ headerVersion: number; bodyVersion: number }>;
 }): Promise<DeleteArtifactResult> {
     const actorUserId = typeof params.actorUserId === "string" ? params.actorUserId : "";
     const artifactId = typeof params.artifactId === "string" ? params.artifactId : "";
-    const supportsCurrentStoredContentProtocol =
-        params.supportsCurrentStoredContentProtocol === true;
 
     if (!actorUserId || !artifactId) {
         return { ok: false, error: "invalid-params" };
@@ -983,15 +935,6 @@ export async function deleteArtifact(params: {
                 })
             ) {
                 return { ok: false, error: "internal" };
-            }
-            if (
-                isPlainArtifactDataKeyBytes(artifact.dataEncryptionKey)
-                && !supportsCurrentStoredContentProtocol
-            ) {
-                return {
-                    ok: false,
-                    error: "client-upgrade-required",
-                };
             }
 
             const audience = await resolveArtifactAudienceInTx(tx, artifactId);

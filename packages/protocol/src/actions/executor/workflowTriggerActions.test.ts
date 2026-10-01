@@ -8,6 +8,8 @@ import { createWorkflowDefinitionActions, type WorkflowDefinitionArtifactOperati
 import { DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1 } from '../../account/settings/sessionAgentSpawnPolicyV1.js';
 import { createWorkflowActionExecutor } from './workflowAccountActions.js';
 import { createActionExecutor } from '../actionExecutor.js';
+import type { ActionExecutorContext } from './types.js';
+import { ApprovalRequestV2Schema, type ApprovalRequest } from '../../approvals/approvalRequestV1.js';
 
 const definition = WorkflowDefinitionV1Schema.parse({ version: 1,
   defaults: { agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } } },
@@ -26,7 +28,7 @@ function fixture() {
   // These operations are the persistent/network Automation boundary; all Action semantics and validation run real.
   const rows = new Map<string, AutomationDefinitionDetail>();
   let nextId = 0;
-  const artifact = { artifactId: workflow,
+  const artifact = { artifactId: workflow, ownerAccountId: 'owner', access: 'owner' as const,
     header: { kind: 'workflow-definition.v1', definitionId: workflow,
       revision: { headerVersion: 1, bodyVersion: 1 }, metadata: { title: 'Review' } },
     body: JSON.stringify({ kind: 'workflow-definition.v1', definition }), revision: { headerVersion: 1, bodyVersion: 1 } };
@@ -87,6 +89,63 @@ function fixture() {
 }
 
 describe('workflow trigger Automation composition', () => {
+  it('keeps a Session caller under agent policy through Account trigger approval and replay', async () => {
+    const { deps, rows } = fixture();
+    const triggers = createWorkflowTriggerActions({ ...deps,
+      resolveSession: async () => ({ project, nativeGoalOwner: false }),
+      resolveMaterializer: async () => ({ effects: { resolveTargetAvailability: async () => true } }) });
+    const definitions = createWorkflowDefinitionActions({ artifactStore: {
+      list: async () => ({ items: [] }), read: async () => null,
+      create: async () => { throw new Error('Unexpected Artifact write'); },
+      update: async () => { throw new Error('Unexpected Artifact write'); }, delete: async () => ({ ok: true }),
+    }, encodeListCursor: (row) => row.artifactId, assertDefinitionWriteAllowed: async () => undefined });
+    let storedRequest: ApprovalRequest | null = null;
+    const observations: ActionExecutorContext[] = [];
+    const executor = createActionExecutor({ workflowAction: createWorkflowActionExecutor({
+      isWorkflowFeatureEnabled: () => true, definitions, triggers,
+      runs: { execute: async () => { throw new Error('Unexpected Run write'); } },
+    }),
+      approvalsCreate: async ({ request }) => {
+        storedRequest = ApprovalRequestV2Schema.parse(JSON.parse(JSON.stringify(request)));
+        return { artifactId: 'session-agent-approval' };
+      },
+      approvalsGet: async () => storedRequest,
+      approvalsUpdate: async ({ request }) => { storedRequest = request; return { ok: true }; },
+      isApprovalExecutionOriginCurrent: async ({ origin }) => origin.caller.kind === 'session'
+        && origin.caller.sessionId === 'session-one',
+      // Account trigger approval is mandatory even when configurable policy waives it.
+      isActionApprovalRequired: () => false,
+      resolveAgentStartContext: async () => ownCaller.agentStartContext,
+      observeActionExecution: async ({ context }) => { observations.push(context); },
+    });
+    const context: ActionExecutorContext = { ...ownCaller, surface: 'cli', authority: 'account_automation',
+      serverId: 'home-one', defaultSessionId: 'untrusted-default', callerPermissionMode: 'default',
+      actionCaller: { kind: 'session', sessionId: 'session-one' } };
+    expect(await executor.execute('workflow.trigger.list', { scope: 'account_inline' }, context)).toMatchObject({ ok: true, result: { sets: [] } });
+    expect(await executor.execute('session.trigger.add', {
+      sessionId: 'foreign-session', target: { kind: 'inline', definition }, trigger,
+    }, context)).toMatchObject({ ok: false });
+    expect(rows.size).toBe(0);
+    expect(await executor.execute('session.trigger.add', {
+      sessionId: 'session-one', target: { kind: 'inline', definition }, trigger,
+    }, context)).toMatchObject({ ok: true, result: { set: { health: 'available' } } });
+    expect(rows.size).toBe(1);
+    expect(observations.at(-1)).toMatchObject({ surface: 'agent', defaultSessionId: 'session-one',
+      actionCaller: { kind: 'session', sessionId: 'session-one' } });
+    expect(await executor.execute('workflow.trigger.add', {
+      target: { kind: 'inline', definition }, project, trigger,
+    }, context)).toMatchObject({ ok: true, result: { kind: 'approval_request_created' } });
+    expect(rows.size).toBe(1);
+    expect(storedRequest).toMatchObject({ executionOriginV1: { surface: 'agent',
+      caller: { kind: 'session', sessionId: 'session-one' } } });
+    expect(await executor.execute('approval.request.decide', {
+      artifactId: 'session-agent-approval', decision: 'approve',
+    }, { surface: 'ui', authority: 'present_user', serverId: 'home-one' })).toMatchObject({ ok: true });
+    expect(rows.size).toBe(2);
+    expect(storedRequest).toMatchObject({ status: 'executed', execution: { ok: true } });
+    expect(observations.findLast((entry) => entry.bypassApprovals)).toMatchObject({ surface: 'agent',
+      defaultSessionId: 'session-one', actionCaller: { kind: 'session', sessionId: 'session-one' } });
+  });
   it('validates and retains the selected Team before add or update', async () => {
     const { deps, rows } = fixture();
     const actions = createWorkflowTriggerActions({ ...deps, resolveWorkflowTeamIds: async () => ['team-one', 'team-two'] });

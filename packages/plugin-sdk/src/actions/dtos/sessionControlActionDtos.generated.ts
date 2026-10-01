@@ -47,6 +47,17 @@ export type SessionControlActionInputById = {
         [x: string]: unknown;
         sessionId: string;
     };
+    readonly "session.delete": {
+        sessionId: string;
+    };
+    readonly "session.folder.set": {
+        folderId: string | null;
+        sessionId: string;
+    };
+    readonly "session.tags.set": {
+        tagIds: string[];
+        sessionId: string;
+    };
     readonly "session.unarchive": {
         [x: string]: unknown;
         sessionId: string;
@@ -68,7 +79,7 @@ export type SessionControlActionInputById = {
         [x: string]: unknown;
         sessionId: string;
         objective?: string | undefined;
-        status?: 'pending' | 'active' | 'paused' | 'blocked' | 'complete' | 'cancelled' | 'unknown' | undefined;
+        status?: 'unknown' | 'pending' | 'active' | 'paused' | 'blocked' | 'complete' | 'cancelled' | undefined;
         tokenBudget?: number | null | undefined;
     };
     readonly "session.goal.clear": {
@@ -86,7 +97,7 @@ export type SessionControlActionInputById = {
         issueFingerprint?: string | undefined;
         remember?: boolean | undefined;
         rememberPreference?: boolean | undefined;
-        resumePromptMode?: 'standard' | 'off' | 'custom' | undefined;
+        resumePromptMode?: 'custom' | 'standard' | 'off' | undefined;
     };
     readonly "session.usageLimit.waitResume.cancel": {
         [x: string]: unknown;
@@ -162,6 +173,17 @@ export type SessionControlActionResultById = {
     readonly "session.archive": string | number | boolean | readonly JsonValue[] | {
         readonly [key: string]: JsonValue;
     } | null;
+    readonly "session.delete": {
+        success: true;
+    };
+    readonly "session.folder.set": {
+        sessionId: string;
+        folderId: string | null;
+    };
+    readonly "session.tags.set": {
+        sessionId: string;
+        tagIds: string[];
+    };
     readonly "session.unarchive": string | number | boolean | readonly JsonValue[] | {
         readonly [key: string]: JsonValue;
     } | null;

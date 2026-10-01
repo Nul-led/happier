@@ -5,9 +5,11 @@ import type { JsonValue } from './strictJsonValue.generated.js';
 
 export type SessionLifecycleActionInputById = {
     readonly "session.open": {
-        [x: string]: unknown;
+        tabId?: string | undefined;
         sessionId?: string | undefined;
         sessionTitle?: string | undefined;
+        serverId?: string | undefined;
+        approvedNewDirectoryCreation?: boolean | undefined;
     };
     readonly "session.fork": {
         [x: string]: unknown;
@@ -547,7 +549,7 @@ export type SessionLifecycleActionInputById = {
                     presentation: {
                         label: string;
                         description?: string | undefined;
-                        icon?: 'error' | 'check' | 'file' | 'preview' | 'terminal' | 'action' | 'browser' | 'copy' | 'globe' | 'info' | 'refresh' | 'settings' | 'warning' | 'add' | 'back' | 'close' | 'external' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                        icon?: 'error' | 'check' | 'file' | 'preview' | 'terminal' | 'action' | 'browser' | 'copy' | 'globe' | 'info' | 'refresh' | 'settings' | 'warning' | 'add' | 'back' | 'close' | 'external' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                         tone?: 'success' | 'info' | 'warning' | 'neutral' | 'danger' | undefined;
                     };
                 };
@@ -595,7 +597,7 @@ export type SessionLifecycleActionInputById = {
                         contextId: string;
                         sourceViewId: string;
                         sourceAdapterKind: 'localPreview' | 'hostedPlugin' | 'externalUrl' | 'chromiumSidecar' | 'streamedBrowserSurface' | 'simulatorPreview';
-                        fidelity: 'cdp' | 'previewProxy' | 'injectedPage' | 'nativeCallback' | 'streamFrame' | 'unavailable';
+                        fidelity: 'unavailable' | 'cdp' | 'previewProxy' | 'injectedPage' | 'nativeCallback' | 'streamFrame';
                         capturedAtMs: number;
                         navigationGeneration: number;
                         lifecycleState: 'available' | 'policyDenied' | 'sensitiveOrigin' | 'sensitiveFieldsPresent' | 'ephemeralOnly' | 'navigationStale' | 'adapterUnavailable' | 'captureFailed';
@@ -620,7 +622,7 @@ export type SessionLifecycleActionInputById = {
                         contextId: string;
                         sourceViewId: string;
                         sourceAdapterKind: 'localPreview' | 'hostedPlugin' | 'externalUrl' | 'chromiumSidecar' | 'streamedBrowserSurface' | 'simulatorPreview';
-                        fidelity: 'cdp' | 'previewProxy' | 'injectedPage' | 'nativeCallback' | 'streamFrame' | 'unavailable';
+                        fidelity: 'unavailable' | 'cdp' | 'previewProxy' | 'injectedPage' | 'nativeCallback' | 'streamFrame';
                         capturedAtMs: number;
                         navigationGeneration: number;
                         lifecycleState: 'available' | 'policyDenied' | 'sensitiveOrigin' | 'sensitiveFieldsPresent' | 'ephemeralOnly' | 'navigationStale' | 'adapterUnavailable' | 'captureFailed';
@@ -646,7 +648,7 @@ export type SessionLifecycleActionInputById = {
                         contextId: string;
                         sourceViewId: string;
                         sourceAdapterKind: 'localPreview' | 'hostedPlugin' | 'externalUrl' | 'chromiumSidecar' | 'streamedBrowserSurface' | 'simulatorPreview';
-                        fidelity: 'cdp' | 'previewProxy' | 'injectedPage' | 'nativeCallback' | 'streamFrame' | 'unavailable';
+                        fidelity: 'unavailable' | 'cdp' | 'previewProxy' | 'injectedPage' | 'nativeCallback' | 'streamFrame';
                         capturedAtMs: number;
                         navigationGeneration: number;
                         lifecycleState: 'available' | 'policyDenied' | 'sensitiveOrigin' | 'sensitiveFieldsPresent' | 'ephemeralOnly' | 'navigationStale' | 'adapterUnavailable' | 'captureFailed';
@@ -660,7 +662,7 @@ export type SessionLifecycleActionInputById = {
                         contextId: string;
                         sourceViewId: string;
                         sourceAdapterKind: 'localPreview' | 'hostedPlugin' | 'externalUrl' | 'chromiumSidecar' | 'streamedBrowserSurface' | 'simulatorPreview';
-                        fidelity: 'cdp' | 'previewProxy' | 'injectedPage' | 'nativeCallback' | 'streamFrame' | 'unavailable';
+                        fidelity: 'unavailable' | 'cdp' | 'previewProxy' | 'injectedPage' | 'nativeCallback' | 'streamFrame';
                         capturedAtMs: number;
                         navigationGeneration: number;
                         lifecycleState: 'available' | 'policyDenied' | 'sensitiveOrigin' | 'sensitiveFieldsPresent' | 'ephemeralOnly' | 'navigationStale' | 'adapterUnavailable' | 'captureFailed';
@@ -674,7 +676,7 @@ export type SessionLifecycleActionInputById = {
                         contextId: string;
                         sourceViewId: string;
                         sourceAdapterKind: 'localPreview' | 'hostedPlugin' | 'externalUrl' | 'chromiumSidecar' | 'streamedBrowserSurface' | 'simulatorPreview';
-                        fidelity: 'cdp' | 'previewProxy' | 'injectedPage' | 'nativeCallback' | 'streamFrame' | 'unavailable';
+                        fidelity: 'unavailable' | 'cdp' | 'previewProxy' | 'injectedPage' | 'nativeCallback' | 'streamFrame';
                         capturedAtMs: number;
                         navigationGeneration: number;
                         lifecycleState: 'available' | 'policyDenied' | 'sensitiveOrigin' | 'sensitiveFieldsPresent' | 'ephemeralOnly' | 'navigationStale' | 'adapterUnavailable' | 'captureFailed';
@@ -694,7 +696,7 @@ export type SessionLifecycleActionInputById = {
                         contextId: string;
                         sourceViewId: string;
                         sourceAdapterKind: 'localPreview' | 'hostedPlugin' | 'externalUrl' | 'chromiumSidecar' | 'streamedBrowserSurface' | 'simulatorPreview';
-                        fidelity: 'cdp' | 'previewProxy' | 'injectedPage' | 'nativeCallback' | 'streamFrame' | 'unavailable';
+                        fidelity: 'unavailable' | 'cdp' | 'previewProxy' | 'injectedPage' | 'nativeCallback' | 'streamFrame';
                         capturedAtMs: number;
                         navigationGeneration: number;
                         lifecycleState: 'available' | 'policyDenied' | 'sensitiveOrigin' | 'sensitiveFieldsPresent' | 'ephemeralOnly' | 'navigationStale' | 'adapterUnavailable' | 'captureFailed';
@@ -760,7 +762,7 @@ export type SessionLifecycleActionInputById = {
                         contextId: string;
                         sourceViewId: string;
                         sourceAdapterKind: 'localPreview' | 'hostedPlugin' | 'externalUrl' | 'chromiumSidecar' | 'streamedBrowserSurface' | 'simulatorPreview';
-                        fidelity: 'cdp' | 'previewProxy' | 'injectedPage' | 'nativeCallback' | 'streamFrame' | 'unavailable';
+                        fidelity: 'unavailable' | 'cdp' | 'previewProxy' | 'injectedPage' | 'nativeCallback' | 'streamFrame';
                         capturedAtMs: number;
                         navigationGeneration: number;
                         lifecycleState: 'available' | 'policyDenied' | 'sensitiveOrigin' | 'sensitiveFieldsPresent' | 'ephemeralOnly' | 'navigationStale' | 'adapterUnavailable' | 'captureFailed';
@@ -881,7 +883,7 @@ export type SessionLifecycleActionInputById = {
                         label: string;
                         typeLabel: string;
                         description?: string | undefined;
-                        icon?: 'error' | 'check' | 'file' | 'preview' | 'terminal' | 'action' | 'browser' | 'copy' | 'globe' | 'info' | 'refresh' | 'settings' | 'warning' | 'add' | 'back' | 'close' | 'external' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                        icon?: 'error' | 'check' | 'file' | 'preview' | 'terminal' | 'action' | 'browser' | 'copy' | 'globe' | 'info' | 'refresh' | 'settings' | 'warning' | 'add' | 'back' | 'close' | 'external' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                         tone?: 'success' | 'info' | 'warning' | 'neutral' | 'danger' | undefined;
                     };
                     content?: {

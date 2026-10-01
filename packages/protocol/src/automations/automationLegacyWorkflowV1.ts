@@ -1,5 +1,4 @@
-import { AutomationRunTemplateV1Schema } from './automationRunExecutionRecipeV1.js';
-import { AgentExecutionTargetV1Schema, type AgentExecutionTargetV1 } from '../agents/executionTargetV1.js';
+import { AgentExecutionTargetV1Schema } from '../agents/executionTargetV1.js';
 import { buildBackendTargetKeyV2, parseBackendTargetKeyV2 } from '../backends/targets/backendTargetRefV2.js';
 import { WorkflowStepExecutionSelectionSchema, type WorkflowDefinitionV1 } from '../workflows/workflowV1.js';
 import { decodeAutomationTemplate, type AutomationTemplatePayloadV1 } from './automationTemplatePayloadV1.js';
@@ -56,8 +55,6 @@ function convertStoredTemplate(params: LegacyStoredTemplate, machineId: string |
   if (params.template.environmentVariables || params.template.sessionEncryptionKeyBase64
     || params.template.sessionEncryptionMode || params.template.sessionEncryptionVariant
     || params.template.executionTarget || params.template.agentTarget || params.template.organizationPlacement) return refuse('spawn_unrepresentable');
-  const program = AutomationRunTemplateV1Schema.safeParse({ v: 1, prompt: params.template.prompt ?? '' });
-  if (!program.success || program.data.prompt.includes('{{') || program.data.prompt.includes('}}')) return refuse('settings_unrepresentable');
   const selection = storedTemplateSelection(params, machineId);
   if (!selection?.success || !selection.data.agentTarget) return refuse(params.template.runtimeDescriptorV1
     ? 'runtime_descriptor_unsupported' : 'settings_unrepresentable');

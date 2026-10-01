@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { validateWorkflowDefinition } from '../../workflows/workflowValidationV1.js';
+import { materializeWorkflowAcceptedSnapshotV1 } from '../../workflows/materializeWorkflowAcceptedSnapshotV1.js';
 import { sealWorkflowAcceptedSnapshotStoredEnvelopeV1, sealWorkflowProgressStoredEnvelopeV1, serializeWorkflowStoredContentEnvelopeV1 } from '../../workflows/workflowStoredContentV1.js';
 import { WorkflowRunSummaryV1Schema } from '../../workflows/workflowProgressV1.js';
 import { openWorkflowAcceptedSnapshotStoredEnvelopeV1, parseWorkflowStoredContentEnvelopeV1 } from '../../workflows/workflowStoredContentV1.js';
@@ -15,7 +16,21 @@ const definition = validateWorkflowDefinition({
   blocks: ['work'],
 }).normalizedDefinition!;
 
+const acceptedSnapshotResult = await materializeWorkflowAcceptedSnapshotV1({
+  definition,
+  context: {
+    source: { kind: 'saved', definitionId: 'def-1', revision: { headerVersion: 1, bodyVersion: 1 }, savedBy: null },
+    inputs: {}, machineId: 'machine-a', executionTarget: { kind: 'session' },
+    workspaceTarget: { project: { machineId: 'machine-a', directory: '/repo', checkoutRootPath: '/repo' } },
+    origin: { kind: 'direct', originSessionId: 'origin-1' },
+    authorization: { principal: { kind: 'host' } },
+  },
+  admission: { kind: 'user' },
+  effects: { resolveTargetAvailability: async () => true },
+});
+
 function runSnapshot() {
+  if (!acceptedSnapshotResult.ok) throw new Error(`snapshot_fixture_failed: ${acceptedSnapshotResult.error.code}`);
   const run = WorkflowRunSummaryV1Schema.parse({ sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null,
     id: runId, origin: { kind: 'direct' }, state: 'queued', revision: 0,
     machineId: 'machine-a', workflowCustodyState: 'pending', originDeliveryAckRevision: null,
@@ -27,13 +42,7 @@ function runSnapshot() {
     run,
     acceptedEnvelope: serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
-      acceptedSnapshot: {
-        definition, metadata: null, source: { kind: 'saved', definitionId: 'def-1', revision: { headerVersion: 1, bodyVersion: 1 }, savedBy: null },
-        inputs: {}, machineId: 'machine-a', executionTarget: { kind: 'session' },
-        workspaceTarget: { project: { machineId: 'machine-a', directory: '/repo', checkoutRootPath: '/repo' } },
-        origin: { kind: 'direct', originSessionId: 'origin-1' },
-        authorization: { admittedPermissionCeiling: 'safe-yolo', principal: { kind: 'host' } },
-      },
+      acceptedSnapshot: acceptedSnapshotResult.snapshot,
     })),
     checkpointEnvelope: null, resultEnvelope: null,
     keyCensus: WorkflowRunRecipientCensusResponseV1Schema.parse({

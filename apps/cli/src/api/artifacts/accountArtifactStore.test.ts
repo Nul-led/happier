@@ -168,6 +168,26 @@ describe('createAccountArtifactStore', () => {
     await expect(store.list()).resolves.toMatchObject({ items: [{ artifactId: 'shared-1', ownerAccountId: 'other-owner', access: 'edit' }] });
   });
 
+  it('opens actual 0.2 Artifact writer bytes through current authenticated read and list projections', async () => {
+    // Produced by the clean sibling at 17ba05df68d4d3d4cad1c1241b58e63805db37ed:
+    // apps/cli/src/api/encryption.ts encryptWithDataKeyAndNonce and Protocol's
+    // serializedJsonValue.ts, boxBundle.ts, encryptedDataKeyEnvelopeV1.ts.
+    const dataEncryptionKey = 'AKwBsiCehjVPuFMje13g9PqxPH/L9DOmHAGTaWF/7PELBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEFp2vL9F4qtFp456Ip/CLBk3sduq0hPJdydpvcpyDvxcC/u5pBQ8RJx6w/6IzrX2B';
+    const row = { id: 'retained-0.2', ownerAccountId: 'owner', access: 'owner', encryptionMode: 'e2ee',
+      header: 'AAEBAQEBAQEBAQEBAQ3D1uj43px+uLGuchVFGVDEkm6RfN1IfDZnIg4T0WCK4Ih8wul2qaIqCzhu40TM8/10hyBxnIk+zjfCKuxZp+HAkzJVLPYUHU1qOQ7EUGS6LvI+dmsnbtYcvYynDW3Ibd9W',
+      body: 'AAICAgICAgICAgICAmGWtlgzisVXczX05IfwpRumehKfFPxZ26hckiVv9O1CoOzi80adELG3z4GDttWiQ8EdZyWk1R/XZ7VZ/aIRpitcie/cum50+I58YJfP2KxJGI0nuiw2TLYejO/u6/bxTVjAoaQIdw==',
+      dataEncryptionKey, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
+    const store = createAccountArtifactStore({ credentials: { token: 'token', encryption: { type: 'dataKey',
+      publicKey: decodeBase64('Xf7dO2vUf2+ijuFdlp1bsOpTd01Ii9r53xxuASSz7yI='), machineKey: new Uint8Array(32).fill(3) } },
+      getAccountEncryptionMode: async () => 'e2ee' });
+    mockGet.mockImplementation(async (url: string) => ({ status: 200, data: url.endsWith('/recipients')
+      ? { artifactId: row.id, ownerAccountId: 'owner', access: 'owner', encryptionMode: 'e2ee',
+        dataEncryptionKey, callerDataEncryptionKey: dataEncryptionKey, recipients: [] }
+      : url.endsWith('/v1/artifacts') ? [row] : row }));
+    await expect(store.read(row.id)).resolves.toMatchObject({ header: { title: '0.2 note' }, body: 'retained note', access: 'owner' });
+    await expect(store.list()).resolves.toMatchObject({ items: [{ header: { title: '0.2 note' }, ownerAccountId: 'owner', access: 'owner' }] });
+  });
+
   it('prepares a late Team recipient on a key-holding editor open through the fenced envelope writer', async () => {
     const viewerSecret = randomBytes(32);
     const viewerPublic = x25519.getPublicKey(viewerSecret);

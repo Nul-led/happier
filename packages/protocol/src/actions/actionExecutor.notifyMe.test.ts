@@ -3,6 +3,17 @@ import { createActionExecutor, type ActionExecutorDeps } from './actionExecutor.
 import { getActionSpec, SignedRootActionIdSchema } from './actionSpecs.js';
 
 describe('Notify me Action', () => {
+  it('binds a Session caller to its own session and agent surface before notification delivery', async () => {
+    const executor = createActionExecutor({ notificationsNotifyMe: async (_input: unknown, context: unknown) => {
+      expect(context).toMatchObject({ surface: 'agent', defaultSessionId: 'session-one',
+        actionCaller: { kind: 'session', sessionId: 'session-one' } });
+      return { attemptedChannels: 1, deliveredChannels: 1 };
+    } } as unknown as ActionExecutorDeps);
+    expect(await executor.execute('notifications.notify_me', { message: 'Finished' }, {
+      surface: 'cli', defaultSessionId: 'foreign-session',
+      actionCaller: { kind: 'session', sessionId: 'session-one' },
+    })).toEqual({ ok: true, result: { attemptedChannels: 1, deliveredChannels: 1 } });
+  });
   it('exposes channel discovery and passes the workflow request identity and default link to its Account host', async () => {
     const deliveries: unknown[] = [];
     // The injected delivery adapter is the external Account/notification boundary.

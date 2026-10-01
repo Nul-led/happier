@@ -221,7 +221,7 @@ describe('migrateProviderSettings', () => {
   it('refuses a changed guided source at its single evaluation without submitting a CAS', async () => {
     const reviewedMapping = guidedReviewedMapping();
     const displayedRaw = guidedRawProfile();
-    const fingerprint = createLegacyProfileMigrationSourceFingerprintV1({ authoringMemory: { lastUsedProfile: null },
+    const fingerprint = createLegacyProfileMigrationSourceFingerprintV1({ authoringMemory: { lastUsedProfile: 'company' },
       rawSettings: displayedRaw, sourceProfileId: 'company', reviewedMapping,
     });
     let updates = 0;

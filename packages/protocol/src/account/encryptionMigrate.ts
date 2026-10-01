@@ -312,11 +312,7 @@ const AutomationsMigrationItemSchema = z
   .object({
     ...AutomationsMigrationItemShape,
     expectedTemplateVersion: NonNegativeSafeIntegerSchema,
-    // Requests signed before multi-trigger Automation migration did not carry
-    // this member. Preserve the exact parsed bytes; the Automation owner treats
-    // omission as no submitted trigger-definition replacements and still
-    // refuses a target that does not cover its current plugin-Event triggers.
-    triggerDefinitionEnvelopes: AutomationTriggerDefinitionEnvelopesMigrationSchema.optional(),
+    triggerDefinitionEnvelopes: AutomationTriggerDefinitionEnvelopesMigrationSchema,
   })
   .strict();
 
@@ -374,33 +370,23 @@ export const AccountEncryptionMigrateAutomationsDirectiveSchema =
         templates: z
           .array(AutomationsMigrationItemSchema)
           .max(ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATIONS_MAX_ITEMS),
-        // This member is intentionally wire-optional: the full directive is
-        // request-bound and older signed schedule-only callers must retain
-        // their exact bytes. The Automation owner normalizes absence to an
-        // empty inventory and rejects any retained Run before activation.
         runs: z
           .array(AutomationRunMigrationItemSchema)
-          .max(ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATIONS_MAX_ITEMS)
-          .optional(),
+          .max(ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATIONS_MAX_ITEMS),
       })
       .strict(),
   ]);
 export type AccountEncryptionMigrateAutomationsDirective = z.infer<
   typeof AccountEncryptionMigrateAutomationsDirectiveSchema
 >;
-/**
- * Accepted Automation-migration input. The schema normalizes an omitted
- * Run inventory to an empty list for current schedule-only callers.
- */
+/** Accepted complete Automation-migration input. */
 export type AccountEncryptionMigrateAutomationsDirectiveInput = z.input<
   typeof AccountEncryptionMigrateAutomationsDirectiveSchema
 >;
 
 /** Complete current owner inventory for the active V4 transition, not V5 staging. */
 export const AccountEncryptionMigrateAutomationsInventoryResponseSchema = z.object({
-  templates: z.array(AutomationsMigrationItemSchema.extend({
-    triggerDefinitionEnvelopes: AutomationTriggerDefinitionEnvelopesMigrationSchema,
-  })).max(ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATIONS_MAX_ITEMS),
+  templates: z.array(AutomationsMigrationItemSchema).max(ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATIONS_MAX_ITEMS),
   runs: z.array(AutomationRunMigrationItemSchema.omit({ workflow: true }).extend({
     automationId: z.string().min(1).nullable(),
     occurrenceKey: z.string().min(1).nullable(),
@@ -725,7 +711,6 @@ function refineAccountEncryptionMigrateRequest(
   context: z.RefinementCtx,
   options: Readonly<{
     requireE2eeKeyProof: boolean;
-    requireCompleteCurrentContentBinding: boolean;
   }>,
 ): void {
     if (
@@ -733,8 +718,7 @@ function refineAccountEncryptionMigrateRequest(
       && (
         (options.requireE2eeKeyProof && !request.keyProof)
         || (
-          options.requireCompleteCurrentContentBinding
-          && request.keyProof
+          request.keyProof
           && (
         !request.keyProof?.contentPublicKey
         || !request.keyProof.contentPublicKeySig
@@ -1575,7 +1559,6 @@ export const AccountEncryptionMigrateUnsignedRequestSchema = z
   .superRefine((request, context) => {
     refineAccountEncryptionMigrateRequest(request, context, {
       requireE2eeKeyProof: true,
-      requireCompleteCurrentContentBinding: true,
     });
   });
 export type AccountEncryptionMigrateUnsignedRequest = z.infer<
@@ -1591,7 +1574,6 @@ export const AccountEncryptionMigrateRequestSchema = z
   .superRefine((request, context) => {
     refineAccountEncryptionMigrateRequest(request, context, {
       requireE2eeKeyProof: false,
-      requireCompleteCurrentContentBinding: true,
     });
   });
 export type AccountEncryptionMigrateRequest = z.infer<

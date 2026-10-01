@@ -35,7 +35,6 @@ import type {
     AutomationTriggerItem,
 } from "./automationTypes";
 import { decodeAutomationSessionLifecycleConfiguration } from "./automationSessionLifecycleConfigurationCodec";
-import { isTerminalAutomationRunState } from "./automationTypes";
 import {
     assertAutomationTemplateEnvelopeForAccountMode,
     AutomationValidationError,

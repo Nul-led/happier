@@ -30,7 +30,6 @@ import {
 } from "./automationRunCauseCodec";
 import { advanceAutomationScheduleCursorAfterTerminalRunTx } from "./automationRunQueueService";
 import { applyAutomationRunSucceededTx, applyAutomationRunTerminalEffectsTx } from "./automationRunSucceeded";
-import { sanitizeAutomationErrorMessage } from "./automationSummaryService";
 import {
     assertAutomationRunFailureDetailEnvelopeOuterForMode,
     readRetainedAutomationRunExecutionTargetV2,

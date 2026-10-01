@@ -27,7 +27,7 @@ export type ExactAutomationWorkerPublisher = Readonly<{
     machineInstallationId: string;
     requestNonce: string;
     proofExpiresAt: Date;
-}>; 
+}>;
 
 /**
  * Binds one worker HTTP request to the exact current machine-installation

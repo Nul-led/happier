@@ -4,11 +4,11 @@ import { SessionListFilterV1Schema, type SessionListFilterV1 } from '../sessions
 
 /**
  * Boards (INT §5.1): a user's own arrangement of live work — sessions, workflow runs, workflows and
- * machines — kept in a dedicated Account KV record of the Home the board was created in.
+ * machines — kept in a Board Artifact of the Home the board was created in.
  *
  * This module is the one owner of the board document: its schema, its normalization (references
  * deduplicated by qualified identity) and every edit (`applyWorkBoardIntentV1`). Writers replay an
- * intent against the current KV winner. Cards and status are projections
+ * intent against the current Artifact winner. Cards and status are projections
  * of their kinds' own owners and are never stored here.
  *
  * Named `WorkBoard` to stay apart from the per-session widget Board (`sessions/board/**`).
@@ -205,7 +205,7 @@ export const WorkBoardV1Schema = z.object({
 }).strict().transform((board): WorkBoardV1 => normalizeWorkBoardV1(board));
 
 /**
- * The dedicated Account KV record: the boards created in this Home, in the user's order.
+ * An in-memory collection of the boards created in this Home.
  *
  * Read per board: one this version cannot read (a newer app's shape, or a damaged one) never breaks
  * the collection. It is kept in `unreadable` exactly as stored — not shown, written back
@@ -290,7 +290,7 @@ export type WorkBoardSettingsPatchV1 = Partial<Pick<WorkBoardV1, 'name' | 'mode'
     source?: Partial<WorkBoardSourceV1>;
 }>;
 
-/** Every edit a board can receive. Writers replay one intent against the current settings winner. */
+/** Every edit a board can receive. Writers replay one intent against the current Artifact winner. */
 export type WorkBoardIntentV1 =
     | Readonly<{ kind: 'create'; board: Readonly<{ id: string; name: string }> }>
     | Readonly<{ kind: 'delete'; boardId: string }>

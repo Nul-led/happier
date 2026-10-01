@@ -8,19 +8,12 @@ import {
     it,
 } from "vitest";
 import {
-    buildAccountStoredContentCompatibilityHttpHeadersV1,
-    AccountStoredContentUpgradeRequiredV1Schema,
-} from "@happier-dev/protocol";
-import {
     serializerCompiler,
     validatorCompiler,
     ZodTypeProvider,
 } from "fastify-type-provider-zod";
 
 import { db } from "@/storage/db";
-import {
-    captureAccountStoredContentCompatibilityForHttpRequest,
-} from "@/app/clientCompatibility/accountStoredContentCompatibility";
 import { enableErrorHandlers } from "@/app/api/utils/enableErrorHandlers";
 import {
     createLightSqliteHarness,
@@ -87,13 +80,14 @@ function createTestApp() {
     const typed = app.withTypeProvider<ZodTypeProvider>() as any;
     typed.decorate(
         "authenticate",
-        async (request: { headers: Record<string, unknown>; userId?: string }, reply: any) => {
+        async (request: { headers: Record<string, unknown>; userId?: string; authAuthority?: "present_user"; authTokenKind?: "account" }, reply: any) => {
             const accountId = request.headers["x-test-user-id"];
             if (typeof accountId !== "string" || accountId.length === 0) {
                 return reply.code(401).send({ error: "Unauthorized" });
             }
             request.userId = accountId;
-            captureAccountStoredContentCompatibilityForHttpRequest(request as any);
+            request.authAuthority = "present_user";
+            request.authTokenKind = "account";
         },
     );
     enableErrorHandlers(typed);
@@ -101,7 +95,7 @@ function createTestApp() {
     return typed;
 }
 
-describe("Account encryption migration V5 transition compatibility", () => {
+describe("Account encryption migration staged transition admission", () => {
     let harness: LightSqliteHarness;
 
     beforeAll(async () => {
@@ -124,123 +118,37 @@ describe("Account encryption migration V5 transition compatibility", () => {
     afterAll(async () => {
         await harness.close();
     });
-
-    it.each([3, 4] as const)(
-        "returns the V5 operation-scoped typed refusal before mutation for V%s clients",
-        async (protocolVersion) => {
-            const account = await db.account.create({
-                data: {
-                    encryptionMode: "plain",
-                    publicKey: null,
-                    contentPublicKey: null,
-                    contentPublicKeySig: null,
-                },
-                select: { id: true, seq: true },
-            });
-            const app = createTestApp();
-            await app.ready();
-
-            try {
-                const compatibilityHeaders =
-                    buildAccountStoredContentCompatibilityHttpHeadersV1({
-                        v: 1,
-                        protocolVersion,
-                    });
-                for (const operation of V5_OPERATION_REQUESTS) {
-                    const response = await app.inject({
-                        method: "POST",
-                        url: operation.path,
-                        headers: {
-                            "content-type": "application/json",
-                            "x-test-user-id": account.id,
-                            ...compatibilityHeaders,
-                        },
-                        payload: operation.payload,
-                    });
-
-                    expect(response.statusCode, `${operation.path}: ${response.body}`)
-                        .toBe(426);
-                    expect(
-                        AccountStoredContentUpgradeRequiredV1Schema.parse(
-                            response.json(),
-                        ),
-                    ).toEqual({
-                        error: "client-upgrade-required",
-                        requirement: {
-                            v: 1,
-                            kind: "account-stored-content",
-                            minimumProtocolVersion: 5,
-                        },
-                    });
-                }
-
-                await expect(db.account.findUniqueOrThrow({
-                    where: { id: account.id },
-                    select: { encryptionMode: true, seq: true },
-                })).resolves.toEqual({ encryptionMode: "plain", seq: account.seq });
-                await expect(db.accountEncryptionTransition.count({
-                    where: { accountId: account.id },
-                })).resolves.toBe(0);
-                await expect(db.accountEncryptionTransitionCollectionStage.count()).resolves.toBe(0);
-                await expect(db.accountChange.count({
-                    where: { accountId: account.id },
-                })).resolves.toBe(0);
-            } finally {
-                await app.close();
-            }
-        },
-    );
-
-    it("keeps every V5 transition operation unreachable while the server declaration remains V3", async () => {
+    it("keeps incomplete staged transitions closed without requiring a client-version declaration", async () => {
         const account = await db.account.create({
-            data: {
-                encryptionMode: "plain",
-                publicKey: null,
-                contentPublicKey: null,
-                contentPublicKeySig: null,
-            },
-            select: { id: true },
+            data: { encryptionMode: "plain" },
+            select: { id: true, seq: true },
         });
         const app = createTestApp();
-        await app.ready();
-        const compatibilityHeaders =
-            buildAccountStoredContentCompatibilityHttpHeadersV1({
-                v: 1,
-                protocolVersion: 5,
-            });
-
         try {
             for (const operation of V5_OPERATION_REQUESTS) {
                 const response = await app.inject({
                     method: "POST",
                     url: operation.path,
-                    headers: {
-                        "content-type": "application/json",
-                        "x-test-user-id": account.id,
-                        ...compatibilityHeaders,
-                    },
+                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
                     payload: operation.payload,
                 });
-                expect(response.statusCode, `${operation.path}: ${response.body}`)
-                    .toBe(426);
-                expect(
-                    AccountStoredContentUpgradeRequiredV1Schema.parse(response.json()),
-                ).toEqual({
-                    error: "client-upgrade-required",
-                    requirement: {
-                        v: 1,
-                        kind: "account-stored-content",
-                        minimumProtocolVersion: 5,
-                    },
-                });
+                if (operation.path.endsWith("/cancel")) {
+                    expect(response.statusCode, response.body).toBe(404);
+                    expect(response.json()).toEqual({ error: "not_found" });
+                } else {
+                    expect(response.statusCode, operation.path + ": " + response.body).toBe(400);
+                    expect(response.json()).toEqual({ error: "migration_too_large" });
+                }
             }
-            await expect(db.accountEncryptionTransition.count({
-                where: { accountId: account.id },
-            })).resolves.toBe(0);
-            await expect(db.accountEncryptionTransitionCollectionStage.count()).resolves.toBe(0);
-            await expect(db.accountChange.count({ where: { accountId: account.id } })).resolves.toBe(0);
+            expect(await db.account.findUniqueOrThrow({
+                where: { id: account.id }, select: { encryptionMode: true, seq: true },
+            })).toEqual({ encryptionMode: "plain", seq: account.seq });
+            expect(await db.accountEncryptionTransition.count({ where: { accountId: account.id } })).toBe(0);
+            expect(await db.accountEncryptionTransitionCollectionStage.count()).toBe(0);
+            expect(await db.accountChange.count({ where: { accountId: account.id } })).toBe(0);
         } finally {
             await app.close();
         }
     });
+
 });

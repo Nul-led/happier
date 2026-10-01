@@ -405,7 +405,7 @@ export type ExecutionRunControlActionInputById = {
                     label: string;
                     typeLabel: string;
                     description?: string | undefined;
-                    icon?: 'error' | 'check' | 'file' | 'external' | 'action' | 'info' | 'warning' | 'browser' | 'copy' | 'globe' | 'preview' | 'refresh' | 'settings' | 'terminal' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                    icon?: 'error' | 'check' | 'file' | 'external' | 'action' | 'unavailable' | 'info' | 'warning' | 'browser' | 'copy' | 'globe' | 'preview' | 'refresh' | 'settings' | 'terminal' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'denied' | undefined;
                     tone?: 'success' | 'neutral' | 'info' | 'warning' | 'danger' | undefined;
                 };
                 content?: {
@@ -988,7 +988,7 @@ export type ExecutionRunControlActionInputById = {
                         label: string;
                         typeLabel: string;
                         description?: string | undefined;
-                        icon?: 'error' | 'check' | 'file' | 'external' | 'action' | 'info' | 'warning' | 'browser' | 'copy' | 'globe' | 'preview' | 'refresh' | 'settings' | 'terminal' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                        icon?: 'error' | 'check' | 'file' | 'external' | 'action' | 'unavailable' | 'info' | 'warning' | 'browser' | 'copy' | 'globe' | 'preview' | 'refresh' | 'settings' | 'terminal' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'search' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'denied' | undefined;
                         tone?: 'success' | 'neutral' | 'info' | 'warning' | 'danger' | undefined;
                     };
                     content?: {
@@ -1139,8 +1139,9 @@ export type ExecutionRunControlActionInputById = {
         runId: string;
         streamId: string;
         cursor: number;
-        sessionId?: string | null | undefined;
         maxEvents?: number | undefined;
+        waitForEvents?: boolean | undefined;
+        sessionId?: string | null | undefined;
     };
     readonly "execution.run.stream.cancel": {
         [x: string]: unknown;
@@ -1151,6 +1152,12 @@ export type ExecutionRunControlActionInputById = {
     readonly "execution.run.stop": {
         [x: string]: unknown;
         runId: string;
+        sessionId?: string | null | undefined;
+    };
+    readonly "execution.run.cancel_turn": {
+        runId: string;
+        occurrenceId: string;
+        turnId: string;
         sessionId?: string | null | undefined;
     };
     readonly "execution.run.action": {
@@ -1849,6 +1856,17 @@ export type ExecutionRunControlActionResultById = {
     readonly "execution.run.stop": {
         [x: string]: unknown;
         ok: true;
+    };
+    readonly "execution.run.cancel_turn": {
+        ok: true;
+        status: 'requested' | 'already_requested';
+        runId: string;
+        occurrenceId: string;
+        turnId: string;
+    } | {
+        ok: false;
+        error: string;
+        errorCode: 'execution_run_not_found' | 'execution_run_not_current' | 'execution_run_turn_not_active' | 'execution_run_cancel_unsupported' | 'execution_run_cancel_failed';
     };
     readonly "execution.run.action": string | number | boolean | readonly JsonValue[] | {
         readonly [key: string]: JsonValue;

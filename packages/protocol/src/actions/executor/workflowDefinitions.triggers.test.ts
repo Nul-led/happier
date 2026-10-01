@@ -7,7 +7,7 @@ describe('workflow deletion trigger custody', () => {
     const effects: string[] = [];
     let retirementFails = true;
     const store: WorkflowDefinitionArtifactOperations = {
-      read: async () => ({ artifactId: definitionId, revision: { headerVersion: 1, bodyVersion: 1 }, body: null,
+      read: async () => ({ artifactId: definitionId, ownerAccountId: 'owner', access: 'owner', revision: { headerVersion: 1, bodyVersion: 1 }, body: null,
         header: { kind: 'workflow-definition.v1', definitionId, revision: { headerVersion: 1, bodyVersion: 1 }, metadata: { title: 'Test' } } }),
       list: async () => ({ items: [] }), create: async () => undefined,
       update: async () => ({ ok: false, errorCode: 'not_found', error: 'not_found' }),

@@ -87,16 +87,7 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
         txDbMocks.db.accountChange.upsert.mockResolvedValue({});
     });
 
-    const currentSocket = () => createFakeSocket({
-        data: {
-            accountStoredContentCompatibility: {
-                supportsCurrentProtocol: true,
-                outcome: "accepted",
-                declaration: null,
-                upgradeRequired: null,
-            },
-        },
-    });
+    const currentSocket = () => createFakeSocket({ data: {} });
 
     it("reads a marked Artifact without a component-version declaration", async () => {
         dbAccountFindUnique.mockResolvedValue({ encryptionMode: "plain" });
@@ -328,72 +319,6 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
         );
     });
 
-    it("returns the typed upgrade requirement before creating a marked artifact for a legacy socket", async () => {
-        txDbMocks.db.artifact.findUnique.mockResolvedValue(null);
-        txDbMocks.db.account.findUnique.mockResolvedValue({
-            encryptionMode: "plain",
-            publicKey: null,
-        });
-
-        const { artifactUpdateHandler } = await import("./artifactUpdateHandler");
-        const socket = createFakeSocket({ data: {} });
-        artifactUpdateHandler("u1", socket as any);
-        const callback = vi.fn();
-
-        await getSocketHandler(socket, "artifact-create")({
-            id: "plain-create",
-            header: encodePlainArtifactStoredContent({ title: "plain" }),
-            body: encodePlainArtifactStoredContent({ body: "plain" }),
-            dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
-        }, callback);
-
-        expect(txDbMocks.db.artifact.create).not.toHaveBeenCalled();
-        expect(txDbMocks.db.accountChange.upsert).not.toHaveBeenCalled();
-        expect(emitUpdate).not.toHaveBeenCalled();
-
-        txDbMocks.db.artifact.create.mockResolvedValue({
-            id: "plain-create",
-            accountId: "u1",
-            header: Buffer.from(
-                encodePlainArtifactStoredContent({ title: "plain" }),
-                "base64",
-            ),
-            headerVersion: 1,
-            body: Buffer.from(
-                encodePlainArtifactStoredContent({ body: "plain" }),
-                "base64",
-            ),
-            bodyVersion: 1,
-            dataEncryptionKey: privacyKit.decodeBase64(
-                ARTIFACT_PLAIN_DATA_KEY_MARKER,
-            ),
-            seq: 0,
-            createdAt: new Date(1),
-            updatedAt: new Date(1),
-        });
-        const current = currentSocket();
-        artifactUpdateHandler("u1", current as any);
-        const currentCallback = vi.fn();
-        await getSocketHandler(current, "artifact-create")({
-            id: "plain-create",
-            header: encodePlainArtifactStoredContent({ title: "plain" }),
-            body: encodePlainArtifactStoredContent({ body: "plain" }),
-            dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
-        }, currentCallback);
-
-        expect(txDbMocks.db.artifact.create).toHaveBeenCalledOnce();
-        expect(txDbMocks.db.accountChange.upsert).toHaveBeenCalledWith(expect.objectContaining({
-            create: expect.objectContaining({ entityId: "plain-create", cursor: 555 }),
-        }));
-        expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({ payload: expect.objectContaining({
-            seq: 555, body: expect.objectContaining({ t: "new-artifact", artifactId: "plain-create" }),
-        }) }));
-        expect(currentCallback).toHaveBeenCalledWith({
-            result: "success",
-            artifact: expect.objectContaining({ id: "plain-create" }),
-        });
-    });
-
     it("marks artifact delete and emits delete-artifact using returned cursor", async () => {
         txDbMocks.db.artifact.findFirst.mockResolvedValue({
             id: "a3",
@@ -443,47 +368,6 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
         expect(txDbMocks.db.artifact.delete).not.toHaveBeenCalled();
         expect(txDbMocks.db.accountChange.upsert).not.toHaveBeenCalled();
         expect(emitUpdate).not.toHaveBeenCalled();
-    });
-
-    it("preserves a marked artifact for a legacy delete and deletes once for a current socket", async () => {
-        txDbMocks.db.account.findUnique.mockResolvedValue({
-            encryptionMode: "plain", publicKey: null, contentPublicKey: null, contentPublicKeySig: null,
-        });
-        txDbMocks.db.artifact.findFirst.mockResolvedValue({
-            id: "plain-delete",
-            dataEncryptionKey: privacyKit.decodeBase64(ARTIFACT_PLAIN_DATA_KEY_MARKER),
-        });
-        txDbMocks.db.artifact.delete.mockResolvedValue({ id: "plain-delete" });
-
-        const { artifactUpdateHandler } = await import("./artifactUpdateHandler");
-        const legacySocket = createFakeSocket({ data: {} });
-        artifactUpdateHandler("u1", legacySocket as any);
-        const legacyCallback = vi.fn();
-        await getSocketHandler(legacySocket, "artifact-delete")(
-            { artifactId: "plain-delete" },
-            legacyCallback,
-        );
-
-        expect(txDbMocks.db.artifact.delete).not.toHaveBeenCalled();
-        expect(txDbMocks.db.accountChange.upsert).not.toHaveBeenCalled();
-        expect(emitUpdate).not.toHaveBeenCalled();
-
-        const socket = currentSocket();
-        artifactUpdateHandler("u1", socket as any);
-        const callback = vi.fn();
-        await getSocketHandler(socket, "artifact-delete")(
-            { artifactId: "plain-delete" },
-            callback,
-        );
-
-        expect(txDbMocks.db.artifact.delete).toHaveBeenCalledOnce();
-        expect(txDbMocks.db.accountChange.upsert).toHaveBeenCalledWith(expect.objectContaining({
-            create: expect.objectContaining({ entityId: "plain-delete", cursor: 555 }),
-        }));
-        expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({ payload: expect.objectContaining({
-            seq: 555, body: { t: "delete-artifact", artifactId: "plain-delete" },
-        }) }));
-        expect(callback).toHaveBeenCalledWith({ result: "success" });
     });
 
     it("does not disclose a classified plugin UI archive through the generic socket read", async () => {

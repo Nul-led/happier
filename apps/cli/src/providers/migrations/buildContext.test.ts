@@ -463,7 +463,7 @@ describe('buildLegacyProfileMigrationContext', () => {
   });
 
   it('marks routing-like custom profiles pending without inferring a protocol or connection', () => {
-    const context = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: null },
+    const context = buildLegacyProfileMigrationContext({ authoringMemory: { lastUsedProfile: 'company' },
       rawSettings: {
         profiles: [{
           id: 'company', name: 'Company',

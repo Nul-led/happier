@@ -1,6 +1,5 @@
 import { isTransientConnectivityError } from '@/sync/runtime/connectivity/transientConnectivityErrors';
 import { getCurrentAuth } from '@/auth/context/AuthContext';
-import { createAccountKvJsonTransport } from '@/sync/ops/account/accountKvJsonTransport';
 import { startAgentSignInRpc, checkAgentSignInRpc } from '@/agents/machineAgents/signIn/api';
 import {
   buildSessionPermissionRespondRpcParamsV1,
@@ -14,8 +13,7 @@ import {
   buildBackendTargetKeyV2,
   createActionExecutor,
   createLaunchProfilePublisherV1,
-  createWorkBoardRecordPortV1,
-  WORK_BOARDS_ACCOUNT_KV_KEY_V1,
+  createWorkBoardArtifactPortV1,
   createArtifactAccessActionsV1,
   workflowDefinitionArtifactSharingAdapterV1,
   roleArtifactSharingAdapterV1,
@@ -499,22 +497,9 @@ async function settleAccountSecurityAction<T>(operation: () => Promise<T>) {
       readLocalSettings: () => storage.getState().localSettings,
       writeLocalSettings: (delta) => storage.getState().applyLocalSettings(delta, { source: 'ui' }),
     }),
-    ...(accountContext ? { workBoardSettings: {
-      read: async (signal) => {
-        const { encryption } = await accountContext.resolveAccountEncryption();
-        return await createWorkBoardRecordPortV1(createAccountKvJsonTransport({ key: WORK_BOARDS_ACCOUNT_KV_KEY_V1,
-          credentials: accountContext.credentials, request: accountContext.request, encryption,
-          shouldContinue: accountContext.accountLifetime.isCurrent,
-        })).read(signal);
-      },
-      apply: async (intent, signal) => {
-        const { encryption } = await accountContext.resolveAccountEncryption();
-        return await createWorkBoardRecordPortV1(createAccountKvJsonTransport({ key: WORK_BOARDS_ACCOUNT_KV_KEY_V1,
-          credentials: accountContext.credentials, request: accountContext.request, encryption,
-          shouldContinue: accountContext.accountLifetime.isCurrent,
-        })).apply(intent, signal);
-      },
-    } } : {}),
+    ...(accountContext ? { workBoardArtifacts: createWorkBoardArtifactPortV1(accountContext.workflowArtifacts, {
+      shouldContinue: accountContext.accountLifetime.isCurrent,
+    }) } : {}),
     ...(accountContext ? { launchProfilePublish: async (input, context) => {
       context?.signal?.throwIfAborted();
       return await createLaunchProfilePublisherV1({

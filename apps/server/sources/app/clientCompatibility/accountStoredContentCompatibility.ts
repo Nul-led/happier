@@ -2,7 +2,6 @@ import {
     CLIENT_UPGRADE_REQUIRED_ERROR_CODE,
     CLIENT_UPGRADE_REQUIRED_HTTP_STATUS,
     ACCOUNT_STORED_CONTENT_PLUGIN_DATA_PROTOCOL_VERSION,
-    ACCOUNT_STORED_CONTENT_ACCOUNT_ENCRYPTION_TRANSITION_PROTOCOL_VERSION,
     ACCOUNT_STORED_CONTENT_SESSION_ACCESS_WITNESS_PROTOCOL_VERSION,
     ACCOUNT_STORED_CONTENT_MACHINE_POOL_CHANGE_PROTOCOL_VERSION,
     ACCOUNT_STORED_CONTENT_SAVED_SECRET_RESOURCE_CHANGE_PROTOCOL_VERSION,
@@ -99,25 +98,6 @@ export function buildProfilePreservingSettingsWriterUpgradeRequired():
             kind: 'account-stored-content',
             minimumProtocolVersion:
                 ACCOUNT_STORED_CONTENT_PROFILE_PRESERVING_SETTINGS_WRITER_PROTOCOL_VERSION,
-        },
-    };
-}
-
-/**
- * V5 is a distinct staged operation. Its readiness is deliberately separate
- * from general stored-content admission: a V3/V4 peer can continue using its
- * established operations while every transition mutation is refused before a
- * transaction is opened.
- */
-export function buildAccountEncryptionTransitionAccountStoredContentUpgradeRequired():
-    AccountStoredContentUpgradeRequiredV1 {
-    return {
-        error: CLIENT_UPGRADE_REQUIRED_ERROR_CODE,
-        requirement: {
-            v: 1,
-            kind: 'account-stored-content',
-            minimumProtocolVersion:
-                ACCOUNT_STORED_CONTENT_ACCOUNT_ENCRYPTION_TRANSITION_PROTOCOL_VERSION,
         },
     };
 }
@@ -237,33 +217,6 @@ export async function enforceProfilePreservingSettingsWriterCompatibilityForHttp
     if (!supportsProfilePreservingWriter) {
         await reply.code(CLIENT_UPGRADE_REQUIRED_HTTP_STATUS).send(
             buildProfilePreservingSettingsWriterUpgradeRequired(),
-        );
-    }
-    return !reply.sent;
-}
-
-/**
- * The staged Account encryption transition becomes reachable only when the
- * canonical server declaration has advanced to V5 and the caller explicitly
- * advertises V5. Keeping both facts at this owner prevents route-local flags
- * or a client-only version check from accidentally activating the operation.
- */
-export async function enforceAccountEncryptionTransitionCompatibilityForHttpRequest(
-    request: FastifyRequest,
-    reply: FastifyReply,
-): Promise<boolean> {
-    const evaluation =
-        readAccountStoredContentCompatibilityForHttpRequest(request);
-    const serverSupportsTransition =
-        CURRENT_ACCOUNT_STORED_CONTENT_REQUIREMENTS.currentProtocolVersion
-        >= ACCOUNT_STORED_CONTENT_ACCOUNT_ENCRYPTION_TRANSITION_PROTOCOL_VERSION;
-    const clientSupportsTransition =
-        evaluation.declaration !== null
-        && evaluation.declaration.protocolVersion
-            >= ACCOUNT_STORED_CONTENT_ACCOUNT_ENCRYPTION_TRANSITION_PROTOCOL_VERSION;
-    if (!serverSupportsTransition || !clientSupportsTransition) {
-        await reply.code(CLIENT_UPGRADE_REQUIRED_HTTP_STATUS).send(
-            buildAccountEncryptionTransitionAccountStoredContentUpgradeRequired(),
         );
     }
     return !reply.sent;

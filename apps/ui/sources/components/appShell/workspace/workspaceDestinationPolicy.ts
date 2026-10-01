@@ -1,5 +1,5 @@
 import type { CompactAppDestination, DestinationRef } from '../destinations/compactAppDestinationCatalog';
-import type { SharedWorkspaceTabs } from './workspaceSyncedTabs';
+import { pruneWorkspaceTabPairs, type SharedWorkspaceTabs } from './workspaceSyncedTabs';
 
 export function workspaceSingletonDestinationIds(catalog: readonly CompactAppDestination[]): readonly string[] {
     return catalog.filter(item => item.kind === 'plugin' && item.container === 'appPage').map(item => item.id);
@@ -32,11 +32,6 @@ export function normalizeWorkspaceSingletonTabs(record: SharedWorkspaceTabs, cat
         }
     }
     if (!changed) return record;
-    const paired = new Set<string>();
-    const pairs = record.pairs.map(pair => pair.map(id => retiredIds.get(id) ?? id).filter(id => {
-        if (!tabsById[id] || paired.has(id)) return false;
-        paired.add(id);
-        return true;
-    })).filter(pair => pair.length >= 2);
+    const pairs = pruneWorkspaceTabPairs(record.pairs.map(pair => pair.map(id => retiredIds.get(id) ?? id)), tabsById);
     return { ...record, tabsById, order, pairs };
 }

@@ -52,6 +52,7 @@ import {
 
 function buildPlainArtifact(): Artifact {
     return {
+        ownerAccountId: 'owner', access: 'owner', encryptionMode: 'plain',
         id: 'artifact-plain-1',
         header: encodePlainArtifactStoredContent({
             v: 1,
@@ -437,6 +438,7 @@ describe('syncArtifacts retained encrypted content', () => {
 
     function buildRetainedEncryptedArtifact(): Artifact {
         return {
+            ownerAccountId: 'owner', access: 'owner', encryptionMode: 'e2ee',
             id: 'artifact-retained-e2ee-1',
             header: 'retained-encrypted-header',
             headerVersion: 3,

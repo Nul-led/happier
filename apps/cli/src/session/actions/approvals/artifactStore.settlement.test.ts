@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   API_TOKEN_FULL_GRANT_V1,
   ApprovalRequestV2Schema,
-  CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
   ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES,
   createActionExecutor,
   createBlockingApprovalCoordinator,
@@ -40,7 +39,7 @@ beforeEach(() => {
   });
   http.post.mockImplementation(async (url: string, body: Record<string, unknown>) => {
     if (url.endsWith('/v1/artifacts')) {
-      rows.set(String(body.id), { ...body, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 });
+      rows.set(String(body.id), { ...body, ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'plain', headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 });
       return { status: 200, data: { id: body.id } };
     }
     const id = url.split('/').at(-1)!;
@@ -73,19 +72,6 @@ function createStore() {
   return createCliApprovalsArtifactStore({
     credentials: { token: 'synthetic-token', encryption: null } as never,
     getAccountEncryptionMode: async () => 'plain',
-    getServerFeaturesSnapshot: async () => ({
-      status: 'ready',
-      features: {
-        capabilities: {
-          accountStoredContentCompatibility: {
-            v: 1,
-            minimumProtocolVersion: 2,
-            currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
-            declarationTransport: 'http-header-and-socket-auth-v1',
-          },
-        },
-      },
-    }) as never,
   });
 }
 

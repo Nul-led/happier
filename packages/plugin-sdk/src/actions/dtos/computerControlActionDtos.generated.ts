@@ -13,7 +13,7 @@ export type ComputerControlActionInputById = {
     };
     readonly "computer.target.select": {
         machineId: string;
-        target: {
+        target?: {
             kind: 'window';
             displayId: string;
             pid: number;
@@ -21,7 +21,9 @@ export type ComputerControlActionInputById = {
         } | {
             kind: 'display';
             displayId: string;
-        };
+        } | undefined;
+        access?: 'see' | 'use' | undefined;
+        requestedTarget?: string | undefined;
     };
     readonly "computer.permissions.openSettings": {
         machineId: string;
@@ -145,17 +147,35 @@ export type ComputerControlActionResultById = {
                 displayId: string;
             };
             title?: string | undefined;
+            appName?: string | undefined;
+            label?: string | undefined;
+            width?: number | undefined;
+            height?: number | undefined;
+            thumbnail?: {
+                mimeType: 'image/png';
+                base64: string;
+                width: number;
+                height: number;
+            } | undefined;
         }[];
         grants: {
             capture: 'unknown' | 'granted' | 'denied';
             input: 'unknown' | 'granted' | 'denied';
         };
+        displays?: {
+            status: 'available';
+        } | {
+            status: 'unavailable';
+            code: string;
+        } | undefined;
         settingsDeepLink?: string | undefined;
     };
     readonly "computer.target.get": {
         approvalDisplay: {
             machineDisplayName: string;
             requiresTargetSelection: boolean;
+            appName?: string | undefined;
+            access?: 'see' | 'use' | undefined;
             target?: {
                 kind: 'window' | 'display';
                 title: string;
@@ -176,6 +196,7 @@ export type ComputerControlActionResultById = {
             } | undefined;
         };
         consentGranted: boolean;
+        access?: 'see' | 'use' | undefined;
         selectedTarget?: {
             kind: 'window';
             displayId: string;
@@ -191,6 +212,8 @@ export type ComputerControlActionResultById = {
         approvalDisplay: {
             machineDisplayName: string;
             requiresTargetSelection: boolean;
+            appName?: string | undefined;
+            access?: 'see' | 'use' | undefined;
             target?: {
                 kind: 'window' | 'display';
                 title: string;
@@ -211,6 +234,7 @@ export type ComputerControlActionResultById = {
             } | undefined;
         };
         consentGranted: boolean;
+        access?: 'see' | 'use' | undefined;
         selectedTarget?: {
             kind: 'window';
             displayId: string;
@@ -233,6 +257,8 @@ export type ComputerControlActionResultById = {
         approvalDisplay: {
             machineDisplayName: string;
             requiresTargetSelection: boolean;
+            appName?: string | undefined;
+            access?: 'see' | 'use' | undefined;
             target?: {
                 kind: 'window' | 'display';
                 title: string;
@@ -314,6 +340,8 @@ export type ComputerControlActionResultById = {
         approvalDisplay: {
             machineDisplayName: string;
             requiresTargetSelection: boolean;
+            appName?: string | undefined;
+            access?: 'see' | 'use' | undefined;
             target?: {
                 kind: 'window' | 'display';
                 title: string;
@@ -349,7 +377,7 @@ export type ComputerControlActionResultById = {
     } | {
         status: 'queried';
         accessibility: {
-            status: 'complete' | 'partial' | 'unavailable';
+            status: 'unavailable' | 'complete' | 'partial';
             nodes: {
                 id: string;
                 role: string;
@@ -380,6 +408,8 @@ export type ComputerControlActionResultById = {
         approvalDisplay: {
             machineDisplayName: string;
             requiresTargetSelection: boolean;
+            appName?: string | undefined;
+            access?: 'see' | 'use' | undefined;
             target?: {
                 kind: 'window' | 'display';
                 title: string;
@@ -400,19 +430,6 @@ export type ComputerControlActionResultById = {
             } | undefined;
         };
     } | {
-        status: 'failed';
-        code: string;
-        target: {
-            kind: 'window';
-            displayId: string;
-            pid: number;
-            windowId: number;
-        } | {
-            kind: 'display';
-            displayId: string;
-        };
-        sourceId: string;
-    } | {
         status: 'dispatched';
         target: {
             kind: 'window';
@@ -424,6 +441,7 @@ export type ComputerControlActionResultById = {
             displayId: string;
         };
         sourceId: string;
+        targetLabel?: string | undefined;
     } | {
         status: 'verified';
         property: string;
@@ -437,6 +455,21 @@ export type ComputerControlActionResultById = {
             displayId: string;
         };
         sourceId: string;
+        targetLabel?: string | undefined;
+    } | {
+        status: 'failed';
+        code: string;
+        target: {
+            kind: 'window';
+            displayId: string;
+            pid: number;
+            windowId: number;
+        } | {
+            kind: 'display';
+            displayId: string;
+        };
+        sourceId: string;
+        targetLabel?: string | undefined;
     } | {
         status: 'interrupted';
         completion: 'unknown' | 'known';
@@ -450,6 +483,7 @@ export type ComputerControlActionResultById = {
             displayId: string;
         };
         sourceId: string;
+        targetLabel?: string | undefined;
     };
     readonly "computer.control.status": {
         controller: 'agent' | 'human' | 'idle';
@@ -466,12 +500,25 @@ export type ComputerControlActionResultById = {
             displayId: string;
         };
         sourceId: string;
+        activity?: {
+            kind: 'type' | 'capture' | 'click' | 'press';
+            targetLabel?: string | undefined;
+        } | undefined;
+        activeTarget?: {
+            x: number;
+            y: number;
+            width: number;
+            height: number;
+            label?: string | undefined;
+        } | undefined;
     };
     readonly "computer.control.interrupt": {
         status: 'target_selection_required';
         approvalDisplay: {
             machineDisplayName: string;
             requiresTargetSelection: boolean;
+            appName?: string | undefined;
+            access?: 'see' | 'use' | undefined;
             target?: {
                 kind: 'window' | 'display';
                 title: string;
@@ -492,19 +539,6 @@ export type ComputerControlActionResultById = {
             } | undefined;
         };
     } | {
-        status: 'failed';
-        code: string;
-        target: {
-            kind: 'window';
-            displayId: string;
-            pid: number;
-            windowId: number;
-        } | {
-            kind: 'display';
-            displayId: string;
-        };
-        sourceId: string;
-    } | {
         status: 'dispatched';
         target: {
             kind: 'window';
@@ -516,6 +550,7 @@ export type ComputerControlActionResultById = {
             displayId: string;
         };
         sourceId: string;
+        targetLabel?: string | undefined;
     } | {
         status: 'verified';
         property: string;
@@ -529,6 +564,21 @@ export type ComputerControlActionResultById = {
             displayId: string;
         };
         sourceId: string;
+        targetLabel?: string | undefined;
+    } | {
+        status: 'failed';
+        code: string;
+        target: {
+            kind: 'window';
+            displayId: string;
+            pid: number;
+            windowId: number;
+        } | {
+            kind: 'display';
+            displayId: string;
+        };
+        sourceId: string;
+        targetLabel?: string | undefined;
     } | {
         status: 'interrupted';
         completion: 'unknown' | 'known';
@@ -542,12 +592,15 @@ export type ComputerControlActionResultById = {
             displayId: string;
         };
         sourceId: string;
+        targetLabel?: string | undefined;
     };
     readonly "computer.control.handBack": {
         status: 'target_selection_required';
         approvalDisplay: {
             machineDisplayName: string;
             requiresTargetSelection: boolean;
+            appName?: string | undefined;
+            access?: 'see' | 'use' | undefined;
             target?: {
                 kind: 'window' | 'display';
                 title: string;
@@ -568,19 +621,6 @@ export type ComputerControlActionResultById = {
             } | undefined;
         };
     } | {
-        status: 'failed';
-        code: string;
-        target: {
-            kind: 'window';
-            displayId: string;
-            pid: number;
-            windowId: number;
-        } | {
-            kind: 'display';
-            displayId: string;
-        };
-        sourceId: string;
-    } | {
         status: 'dispatched';
         target: {
             kind: 'window';
@@ -592,6 +632,7 @@ export type ComputerControlActionResultById = {
             displayId: string;
         };
         sourceId: string;
+        targetLabel?: string | undefined;
     } | {
         status: 'verified';
         property: string;
@@ -605,6 +646,21 @@ export type ComputerControlActionResultById = {
             displayId: string;
         };
         sourceId: string;
+        targetLabel?: string | undefined;
+    } | {
+        status: 'failed';
+        code: string;
+        target: {
+            kind: 'window';
+            displayId: string;
+            pid: number;
+            windowId: number;
+        } | {
+            kind: 'display';
+            displayId: string;
+        };
+        sourceId: string;
+        targetLabel?: string | undefined;
     } | {
         status: 'interrupted';
         completion: 'unknown' | 'known';
@@ -618,12 +674,15 @@ export type ComputerControlActionResultById = {
             displayId: string;
         };
         sourceId: string;
+        targetLabel?: string | undefined;
     };
     readonly "computer.target.close": {
         status: 'target_selection_required';
         approvalDisplay: {
             machineDisplayName: string;
             requiresTargetSelection: boolean;
+            appName?: string | undefined;
+            access?: 'see' | 'use' | undefined;
             target?: {
                 kind: 'window' | 'display';
                 title: string;
@@ -644,19 +703,6 @@ export type ComputerControlActionResultById = {
             } | undefined;
         };
     } | {
-        status: 'failed';
-        code: string;
-        target: {
-            kind: 'window';
-            displayId: string;
-            pid: number;
-            windowId: number;
-        } | {
-            kind: 'display';
-            displayId: string;
-        };
-        sourceId: string;
-    } | {
         status: 'dispatched';
         target: {
             kind: 'window';
@@ -668,6 +714,7 @@ export type ComputerControlActionResultById = {
             displayId: string;
         };
         sourceId: string;
+        targetLabel?: string | undefined;
     } | {
         status: 'verified';
         property: string;
@@ -681,6 +728,21 @@ export type ComputerControlActionResultById = {
             displayId: string;
         };
         sourceId: string;
+        targetLabel?: string | undefined;
+    } | {
+        status: 'failed';
+        code: string;
+        target: {
+            kind: 'window';
+            displayId: string;
+            pid: number;
+            windowId: number;
+        } | {
+            kind: 'display';
+            displayId: string;
+        };
+        sourceId: string;
+        targetLabel?: string | undefined;
     } | {
         status: 'interrupted';
         completion: 'unknown' | 'known';
@@ -694,5 +756,6 @@ export type ComputerControlActionResultById = {
             displayId: string;
         };
         sourceId: string;
+        targetLabel?: string | undefined;
     };
 };

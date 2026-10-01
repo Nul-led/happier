@@ -905,8 +905,10 @@ function buildMigrationRequest(
             }],
         },
         automations: {
+            runs: [],
             action: "migrate" as const,
             templates: [{
+                triggerDefinitionEnvelopes: [],
                 automationId: fixture.automation.id,
                 expectedTemplateVersion:
                     staleFence === "automation"
@@ -1915,6 +1917,7 @@ describe(
                             action: "assert_empty",
                         },
                         automations: {
+                            runs: [],
                             action: "migrate",
                             templates: Array.from(
                                 { length: 40 },
@@ -1923,6 +1926,7 @@ describe(
                                         `oversized-${index}`,
                                     expectedTemplateVersion:
                                         0,
+                                    triggerDefinitionEnvelopes: [],
                                     templateCiphertext,
                                 }),
                             ),

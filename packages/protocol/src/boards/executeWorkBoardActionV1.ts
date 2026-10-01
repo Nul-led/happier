@@ -1,10 +1,10 @@
 import type { ActionExecuteResult } from '../actions/actionExecutionResult.js';
 import { WorkBoardActionInputSchemasV1 } from './actionsV1.js';
 import type { WorkBoardActionIdV1 } from './actionIdsV1.js';
-import { WorkBoardMutationErrorV1, type WorkBoardRecordPortV1 } from './workBoardRecordV1.js';
+import { WorkBoardMutationErrorV1, type WorkBoardArtifactPortV1 } from './workBoardArtifactV1.js';
 
 export async function executeWorkBoardActionV1(
-    port: WorkBoardRecordPortV1,
+    port: Pick<WorkBoardArtifactPortV1, 'read' | 'apply'>,
     actionId: WorkBoardActionIdV1,
     input: unknown,
     signal?: AbortSignal,

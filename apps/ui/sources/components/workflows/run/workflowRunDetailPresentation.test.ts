@@ -255,7 +255,7 @@ describe('managed workflow Run presentation', () => {
     it('offers each retry conversation only when its exact owner decision permits it', () => {
         const unavailable = { kind: 'unavailable' as const, reason: 'recovery_not_prepared' as const };
         const params = {
-            run: createWorkflowRunSummaryFixture({ state: 'interrupted', availability: { retry: true } }),
+            run: createWorkflowRunSummaryFixture({ state: 'interrupted' }),
             invocation: createWorkflowInvocationIndexFixture({ lifecycle: 'failed' }),
             progress: null,
             machineHomeDirectory: null,

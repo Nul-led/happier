@@ -8321,10 +8321,11 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             available: true,
             loadInstalledBundle: vi.fn(async () => () => null),
         });
-        const renderPlacement = (focusEligible = true) => (
+        const renderPlacement = (focusEligible = true, presented = focusEligible) => (
             <PluginSurfaceFocusEligibilityProvider
                 active={focusEligible}
                 currentUiContextActive={focusEligible}
+                presentationActive={presented}
             >
                 <PluginSurfacePlacementHost
                     placement={appPagePlacement}
@@ -8344,6 +8345,12 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             await vi.waitFor(() => expect(publishLabels).toEqual(['Issue A']));
             expect(typeof observedActivities.at(-1)).toBe('boolean');
             expect(publicationClear).not.toHaveBeenCalled();
+
+            await screen.update(renderPlacement(false, true));
+            expect(observedActivities.at(-1)).toBe(true);
+            await screen.update(renderPlacement(false, false));
+            expect(observedActivities.at(-1)).toBe(false);
+            await screen.update(renderPlacement(true, true));
 
             currentUiContextMountLifecycle.active = false;
             await screen.update(renderPlacement(false));

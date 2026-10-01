@@ -11,7 +11,7 @@ import type {
   DaemonAgentInstallCancelRequest, DaemonAgentInstallCancelResponse,
 } from '../../daemon/agentInstallJobs.js';
 import type { RoleActionIdV1 } from '../../prompts/roles/roleActionIdsV1.js';
-import type { WorkBoardRecordPortV1 } from '../../boards/workBoardRecordV1.js';
+import type { WorkBoardArtifactPortV1 } from '../../boards/workBoardArtifactV1.js';
 import type { ArtifactAccessActionIdV1 } from '../../artifacts/artifactAccessV1.js';
 import type { SessionRoleConfigurationV1, SessionRolesV1 } from '../../prompts/roles/sessionRolesSnapshot.js';
 import type { ExecutionRunSendRequest, ExecutionRunCancelTurnRequest } from '../../execution/runs/index.js';
@@ -1645,7 +1645,7 @@ export type ActionExecutorDeps = Readonly<{
     mutate: (current: unknown) => unknown;
     signal?: AbortSignal;
   }>) => Promise<Readonly<{ ok: true }> | Readonly<{ ok: false; errorCode: string; error: string }>>;
-  workBoardSettings?: WorkBoardRecordPortV1;
+  workBoardArtifacts?: Pick<WorkBoardArtifactPortV1, 'read' | 'apply'>;
   promptDocGet?: (args: Readonly<{ artifactId: string; signal?: AbortSignal }>) => Promise<unknown>;
   promptDocUpdate?: (args: Readonly<{
     artifactId: string;

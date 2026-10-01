@@ -933,7 +933,7 @@ export type PluginActionWorkflowStepV1 = {
                 label: string;
                 typeLabel: string;
                 description?: string | undefined;
-                icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                 tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
             };
         }[];
@@ -1182,7 +1182,7 @@ export type PluginActionWorkflowBlockV1 = {
                 label: string;
                 typeLabel: string;
                 description?: string | undefined;
-                icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                 tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
             };
         }[];
@@ -1839,7 +1839,7 @@ export type PluginActionWorkflowBlockV1 = {
                 label: string;
                 typeLabel: string;
                 description?: string | undefined;
-                icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                 tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
             };
         }[];
@@ -2123,7 +2123,7 @@ export type PluginActionWorkflowRepetitionV1 = Readonly<{
                     label: string;
                     typeLabel: string;
                     description?: string | undefined;
-                    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                     tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
                 };
             }[];
@@ -2580,7 +2580,7 @@ export type PluginActionWorkflowIngressBlockV1 = string | {
                 label: string;
                 typeLabel: string;
                 description?: string | undefined;
-                icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                 tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
             };
         }[];
@@ -3237,7 +3237,7 @@ export type PluginActionWorkflowIngressBlockV1 = string | {
                 label: string;
                 typeLabel: string;
                 description?: string | undefined;
-                icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                 tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
             };
         }[];
@@ -3591,6 +3591,29 @@ export type ActionSpec = {
 export type JSONType = string | number | boolean | JSONType[] | {
     [key: string]: JSONType;
 } | null;
+export type SessionTerminalLayoutV1 = {
+    kind: 'leaf';
+    terminalId: string;
+} | {
+    kind: 'split';
+    id: string;
+    ratio: number;
+    first: SessionTerminalLayoutV1;
+    second: SessionTerminalLayoutV1;
+};
+export type QualifiedAudienceSelection = Readonly<{
+    serverId: string;
+}> & SessionAudienceSelectionV1;
+export type SessionAudienceSelectionV1 = Readonly<{
+    kind: 'outside_teams';
+}> | Readonly<{
+    kind: 'team';
+    teamId: string;
+}> | Readonly<{
+    kind: 'group';
+    teamId: string;
+    groupId: string;
+}>;
 export type PluginDeclarativeNodeV2 = Readonly<{
     kind: 'text';
     text: string | {
@@ -3725,7 +3748,7 @@ export type PluginDeclarativeNodeV2 = Readonly<{
                 presentation: {
                     label: string;
                     description?: string | undefined;
-                    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                     tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
                 };
             };
@@ -3757,7 +3780,7 @@ export type PluginDeclarativeNodeV2 = Readonly<{
                 presentation?: {
                     label: string;
                     description?: string | undefined;
-                    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                     tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
                 } | undefined;
             };
@@ -3783,7 +3806,7 @@ export type PluginDeclarativeNodeV2 = Readonly<{
         key: string;
         fallback: string;
     } | undefined;
-    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
     tone?: 'success' | 'default' | 'danger' | 'warning' | 'muted' | undefined;
     action?: string | {
         readonly pluginId: string;
@@ -3801,7 +3824,7 @@ export type PluginDeclarativeNodeV2 = Readonly<{
         key: string;
         fallback: string;
     } | undefined;
-    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
 } | {
     kind: 'section';
     children: ({
@@ -3818,7 +3841,7 @@ export type PluginDeclarativeNodeV2 = Readonly<{
             key: string;
             fallback: string;
         } | undefined;
-        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
         tone?: 'success' | 'default' | 'danger' | 'warning' | 'muted' | undefined;
         action?: string | {
             readonly pluginId: string;
@@ -3836,7 +3859,7 @@ export type PluginDeclarativeNodeV2 = Readonly<{
             key: string;
             fallback: string;
         } | undefined;
-        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
     })[];
     title?: string | {
         key: string;
@@ -3862,7 +3885,7 @@ export type PluginDeclarativeNodeV2 = Readonly<{
             key: string;
             fallback: string;
         } | undefined;
-        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
         tone?: 'success' | 'default' | 'danger' | 'warning' | 'muted' | undefined;
         action?: string | {
             readonly pluginId: string;
@@ -3880,7 +3903,7 @@ export type PluginDeclarativeNodeV2 = Readonly<{
             key: string;
             fallback: string;
         } | undefined;
-        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
     } | {
         kind: 'section';
         children: ({
@@ -3897,7 +3920,7 @@ export type PluginDeclarativeNodeV2 = Readonly<{
                 key: string;
                 fallback: string;
             } | undefined;
-            icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+            icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
             tone?: 'success' | 'default' | 'danger' | 'warning' | 'muted' | undefined;
             action?: string | {
                 readonly pluginId: string;
@@ -3915,7 +3938,7 @@ export type PluginDeclarativeNodeV2 = Readonly<{
                 key: string;
                 fallback: string;
             } | undefined;
-            icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+            icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
         })[];
         title?: string | {
             key: string;
@@ -3959,7 +3982,7 @@ export type PluginDeclarativeNodeV2 = Readonly<{
             key: string;
             fallback: string;
         } | undefined;
-        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
     } | undefined;
 } | {
     kind: 'metadata';
@@ -4041,7 +4064,7 @@ export type PluginDeclarativeNodeV2 = Readonly<{
                     presentation: {
                         label: string;
                         description?: string | undefined;
-                        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                         tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
                     };
                 };
@@ -4073,7 +4096,7 @@ export type PluginDeclarativeNodeV2 = Readonly<{
                     presentation?: {
                         label: string;
                         description?: string | undefined;
-                        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                         tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
                     } | undefined;
                 };
@@ -4151,7 +4174,7 @@ export type PluginDeclarativeNodeV2 = Readonly<{
     })[] | undefined;
 };
 export type PluginUiToneV1 = 'success' | 'danger' | 'info' | 'warning' | 'neutral' | 'accent';
-export type PluginUiIconTokenV1 = 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause';
+export type PluginUiIconTokenV1 = 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied';
 export type PluginDeclarativeControlV2 = {
     kind: 'text';
     settingId: string;
@@ -4239,7 +4262,7 @@ export type PluginDeclarativeComposerApplyEffectV1 = {
             presentation: {
                 label: string;
                 description?: string | undefined;
-                icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                 tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
             };
         };
@@ -4271,7 +4294,7 @@ export type PluginDeclarativeComposerApplyEffectV1 = {
             presentation?: {
                 label: string;
                 description?: string | undefined;
-                icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                 tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
             } | undefined;
         };
@@ -4342,7 +4365,7 @@ export type PluginDeclarativeActionNodeV2 = {
                 presentation: {
                     label: string;
                     description?: string | undefined;
-                    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                     tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
                 };
             };
@@ -4374,7 +4397,7 @@ export type PluginDeclarativeActionNodeV2 = {
                 presentation?: {
                     label: string;
                     description?: string | undefined;
-                    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                     tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
                 } | undefined;
             };
@@ -4401,7 +4424,7 @@ export type PluginDeclarativeRowNodeV2 = {
         key: string;
         fallback: string;
     } | undefined;
-    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
     tone?: 'success' | 'default' | 'danger' | 'warning' | 'muted' | undefined;
     action?: string | {
         readonly pluginId: string;
@@ -4419,7 +4442,7 @@ export type PluginDeclarativeRowNodeV2 = {
         key: string;
         fallback: string;
     } | undefined;
-    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
 };
 export type PluginDeclarativeTargetedSurfaceReferenceV1 = {
     point: {
@@ -4451,7 +4474,7 @@ export type PluginDeclarativeListNodeV2 = {
             key: string;
             fallback: string;
         } | undefined;
-        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
         tone?: 'success' | 'default' | 'danger' | 'warning' | 'muted' | undefined;
         action?: string | {
             readonly pluginId: string;
@@ -4469,7 +4492,7 @@ export type PluginDeclarativeListNodeV2 = {
             key: string;
             fallback: string;
         } | undefined;
-        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
     } | {
         kind: 'section';
         children: ({
@@ -4486,7 +4509,7 @@ export type PluginDeclarativeListNodeV2 = {
                 key: string;
                 fallback: string;
             } | undefined;
-            icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+            icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
             tone?: 'success' | 'default' | 'danger' | 'warning' | 'muted' | undefined;
             action?: string | {
                 readonly pluginId: string;
@@ -4504,7 +4527,7 @@ export type PluginDeclarativeListNodeV2 = {
                 key: string;
                 fallback: string;
             } | undefined;
-            icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+            icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
         })[];
         title?: string | {
             key: string;
@@ -4536,7 +4559,7 @@ export type PluginDeclarativeSectionNodeV2 = {
             key: string;
             fallback: string;
         } | undefined;
-        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
         tone?: 'success' | 'default' | 'danger' | 'warning' | 'muted' | undefined;
         action?: string | {
             readonly pluginId: string;
@@ -4554,7 +4577,7 @@ export type PluginDeclarativeSectionNodeV2 = {
             key: string;
             fallback: string;
         } | undefined;
-        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
     })[];
     title?: string | {
         key: string;
@@ -4579,7 +4602,7 @@ export type PluginDeclarativeItemNodeV2 = {
         key: string;
         fallback: string;
     } | undefined;
-    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
     tone?: 'success' | 'default' | 'danger' | 'warning' | 'muted' | undefined;
     action?: string | {
         readonly pluginId: string;
@@ -4598,7 +4621,7 @@ export type PluginDeclarativeStateNodeV2 = {
         key: string;
         fallback: string;
     } | undefined;
-    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+    icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
 };
 export type PluginDeclarativeTargetedSurfaceNodeV2 = {
     kind: 'targetedSurface';
@@ -4629,7 +4652,7 @@ export type PluginDeclarativeTargetedSurfaceNodeV2 = {
             key: string;
             fallback: string;
         } | undefined;
-        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
     } | undefined;
 };
 export type PluginDeclarativeMetadataNodeV2 = {
@@ -4713,7 +4736,7 @@ export type PluginDeclarativeActionPanelNodeV2 = {
                     presentation: {
                         label: string;
                         description?: string | undefined;
-                        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                         tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
                     };
                 };
@@ -4745,7 +4768,7 @@ export type PluginDeclarativeActionPanelNodeV2 = {
                     presentation?: {
                         label: string;
                         description?: string | undefined;
-                        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+                        icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
                         tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
                     } | undefined;
                 };
@@ -4845,7 +4868,7 @@ export type ComposerContentMimeTypeV1 = 'image/png' | 'image/jpeg' | 'image/webp
 export type ComposerAttachmentAuthorPresentationV1 = {
     readonly label: string;
     readonly description?: string | undefined;
-    readonly icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | undefined;
+    readonly icon?: 'error' | 'check' | 'file' | 'external' | 'settings' | 'action' | 'search' | 'terminal' | 'browser' | 'copy' | 'globe' | 'info' | 'preview' | 'refresh' | 'warning' | 'add' | 'back' | 'close' | 'forward' | 'more' | 'change-open' | 'change-complete' | 'issue' | 'bug' | 'pin' | 'conversations' | 'pause' | 'failure' | 'unavailable' | 'denied' | undefined;
     readonly tone?: 'success' | 'danger' | 'info' | 'warning' | 'neutral' | undefined;
 };
 export type PluginLocalizedStringV2 = string | {

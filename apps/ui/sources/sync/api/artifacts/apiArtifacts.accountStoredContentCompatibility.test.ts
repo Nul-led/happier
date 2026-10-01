@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ARTIFACT_PLAIN_DATA_KEY_MARKER } from '@happier-dev/protocol';
 
 const mocks = vi.hoisted(() => ({
     getServerFeaturesSnapshot: vi.fn(),
@@ -15,7 +16,7 @@ vi.mock('@/sync/http/client', () => ({
 
 import { deleteArtifact, fetchArtifact, fetchArtifacts } from './apiArtifacts';
 
-const authority = { ownerAccountId: 'account-a', access: 'owner', encryptionMode: 'plain' };
+const authority = { ownerAccountId: 'account-a', access: 'owner', encryptionMode: 'plain', dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER };
 
 describe('deleteArtifact stored-content compatibility', () => {
     beforeEach(() => {

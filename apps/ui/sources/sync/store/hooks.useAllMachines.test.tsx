@@ -39,6 +39,12 @@ describe('useAllMachines', () => {
             expect(attached?.localControl?.attached).toBe(true);
             expect(attached?.controlledByUser).toBe(topology === 'exclusive');
             await act(async () => {
+                storage.setState((state) => ({ sessions: { ...state.sessions, [session.id]: {
+                    ...session, updatedAt: session.updatedAt + 1,
+                } } }));
+            });
+            expect(hook.getCurrent()).toBe(attached);
+            await act(async () => {
                 storage.setState((state) => ({ sessions: { ...state.sessions, [session.id]: { ...session, active: false } } }));
             });
             expect(hook.getCurrent()).toMatchObject({ controlledByUser: false, localControl: null });
@@ -55,6 +61,19 @@ describe('useAllMachines', () => {
                 } } }));
             });
             expect(hook.getCurrent()).toMatchObject({ controlledByUser: false, localControl: null });
+            await act(async () => {
+                storage.setState((state) => ({ sessions: { ...state.sessions, [session.id]: {
+                    ...session, metadataLayoutVersion: 1, metadata: null, ownerMetadataView: { ...session.metadata!, terminal: {
+                        mode: 'herdr', controlServiceabilityV1: { v: 1, attachmentId: 'preserved-host', observedAt: 21,
+                            state: 'recoverable_unservable' },
+                    } },
+                } } }));
+            });
+            expect(hook.getCurrent()).toMatchObject({ controlledByUser: false, localControl: null });
+            await act(async () => {
+                storage.setState((state) => ({ sessions: { ...state.sessions, [session.id]: session } }));
+            });
+            expect(hook.getCurrent()).toEqual(attached);
             await hook.unmount();
         } finally {
             storage.setState(previousState);

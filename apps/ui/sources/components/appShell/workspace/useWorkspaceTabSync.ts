@@ -151,6 +151,7 @@ export function useWorkspaceTabSync(input: Readonly<{
         const refresh = () => { if (controller && shouldContinue()) { refreshRequested = true; sharedSync.invalidate(); } };
         const mounted: Runtime = { policyChanged: () => {
             if (!shouldContinue()) return;
+            controller?.reproject();
             refresh();
         }, accept: (intents, projection) => {
             if (!shouldContinue()) return;

@@ -108,7 +108,6 @@ describe("artifactWriteService", () => {
                 header,
                 body,
                 dataEncryptionKey,
-                supportsCurrentStoredContentProtocol: true,
                 markChanged: markQualifiedChange,
             });
 
@@ -147,7 +146,6 @@ describe("artifactWriteService", () => {
                 header,
                 body,
                 dataEncryptionKey,
-                supportsCurrentStoredContentProtocol: true,
             });
 
             expect(res.ok).toBe(true);
@@ -280,54 +278,9 @@ describe("artifactWriteService", () => {
                 header: artifactBytes(encodePlainArtifactStoredContent({ title: "plain" })),
                 body: artifactBytes(encodePlainArtifactStoredContent({ body: "value" })),
                 dataEncryptionKey: artifactBytes(ARTIFACT_PLAIN_DATA_KEY_MARKER),
-                supportsCurrentStoredContentProtocol: true,
             });
             expect(accepted.ok).toBe(true);
             expect(txFixture.artifact.create).toHaveBeenCalledOnce();
-        });
-
-        it("requires current stored-content support before a plain create or marked idempotent response", async () => {
-            const plainHeader = artifactBytes(encodePlainArtifactStoredContent({ title: "plain" }));
-            const plainBody = artifactBytes(encodePlainArtifactStoredContent({ body: "value" }));
-            const marker = artifactBytes(ARTIFACT_PLAIN_DATA_KEY_MARKER);
-
-            txFixture.artifact.findUnique.mockResolvedValueOnce(null);
-            const rejectedCreate = await createArtifact({
-                actorUserId: "u1",
-                artifactId: "plain",
-                header: plainHeader,
-                body: plainBody,
-                dataEncryptionKey: marker,
-                supportsCurrentStoredContentProtocol: false,
-            });
-            expect(rejectedCreate).toEqual({ ok: false, error: "client-upgrade-required" });
-            expect(txFixture.account.findUnique).toHaveBeenCalledOnce();
-            expect(txFixture.artifact.create).not.toHaveBeenCalled();
-            expect(markAccountChanged).not.toHaveBeenCalled();
-
-            txFixture.artifact.findUnique.mockResolvedValueOnce({
-                id: "plain",
-                accountId: "u1",
-                header: plainHeader,
-                headerVersion: 4,
-                body: plainBody,
-                bodyVersion: 7,
-                dataEncryptionKey: marker,
-                seq: 9,
-                createdAt: new Date("2020-01-01T00:00:00.000Z"),
-                updatedAt: new Date("2020-01-01T00:00:00.000Z"),
-            });
-            const rejectedExisting = await createArtifact({
-                actorUserId: "u1",
-                artifactId: "plain",
-                header: plainHeader,
-                body: plainBody,
-                dataEncryptionKey: marker,
-                supportsCurrentStoredContentProtocol: false,
-            });
-            expect(rejectedExisting).toEqual({ ok: false, error: "client-upgrade-required" });
-            expect(txFixture.artifact.create).not.toHaveBeenCalled();
-            expect(markAccountChanged).not.toHaveBeenCalled();
         });
 
         it("rejects an omitted plain Artifact value before persistence", async () => {
@@ -348,7 +301,6 @@ describe("artifactWriteService", () => {
                 header: malformedPlainEnvelope,
                 body: artifactBytes(encodePlainArtifactStoredContent({ body: "valid" })),
                 dataEncryptionKey: artifactBytes(ARTIFACT_PLAIN_DATA_KEY_MARKER),
-                supportsCurrentStoredContentProtocol: true,
             });
 
             expect(result).toEqual({ ok: false, error: "invalid-params" });
@@ -417,7 +369,6 @@ describe("artifactWriteService", () => {
                     bytes: artifactBytes(encodePlainArtifactStoredContent({ body: "updated" })),
                     expectedVersion: 20,
                 },
-                supportsCurrentStoredContentProtocol: true,
             });
 
             expect(res.ok).toBe(true);
@@ -447,7 +398,6 @@ describe("artifactWriteService", () => {
                     bytes: artifactBytes(encodePlainArtifactStoredContent({ title: "updated" })),
                     expectedVersion: 9,
                 },
-                supportsCurrentStoredContentProtocol: true,
             });
 
             expect(res.ok).toBe(false);
@@ -471,7 +421,6 @@ describe("artifactWriteService", () => {
                 actorUserId: "u1",
                 artifactId: "a1",
                 header: { bytes: new Uint8Array([9]), expectedVersion: 10 },
-                supportsCurrentStoredContentProtocol: true,
             });
 
             expect(res).toEqual({ ok: false, error: "invalid-params" });
@@ -500,33 +449,6 @@ describe("artifactWriteService", () => {
 
             expect(res).toEqual({ ok: false, error: "invalid-params" });
             expect(txFixture.artifact.updateMany).not.toHaveBeenCalled();
-        });
-
-        it("requires current stored-content support before marked update or stale current-value exposure", async () => {
-            const current = {
-                id: "a1",
-                seq: 5,
-                header: artifactBytes(encodePlainArtifactStoredContent({ title: "plain" })),
-                headerVersion: 10,
-                body: artifactBytes(encodePlainArtifactStoredContent({ body: "value" })),
-                bodyVersion: 20,
-                dataEncryptionKey: artifactBytes(ARTIFACT_PLAIN_DATA_KEY_MARKER),
-            };
-            txFixture.artifact.findFirst.mockResolvedValue(current);
-
-            const rejected = await updateArtifact({
-                actorUserId: "u1",
-                artifactId: "a1",
-                header: {
-                    bytes: artifactBytes(encodePlainArtifactStoredContent({ title: "updated" })),
-                    expectedVersion: 9,
-                },
-                supportsCurrentStoredContentProtocol: false,
-            });
-
-            expect(rejected).toEqual({ ok: false, error: "client-upgrade-required" });
-            expect(txFixture.artifact.updateMany).not.toHaveBeenCalled();
-            expect(markAccountChanged).not.toHaveBeenCalled();
         });
 
         it("returns the current valid row after an update loses its CAS race", async () => {
@@ -570,7 +492,6 @@ describe("artifactWriteService", () => {
                     ),
                     expectedVersion: 10,
                 },
-                supportsCurrentStoredContentProtocol: true,
             });
 
             expect(rejected).toMatchObject({
@@ -603,7 +524,6 @@ describe("artifactWriteService", () => {
                     bytes: new TextEncoder().encode(JSON.stringify({ t: "plain" })),
                     expectedVersion: 10,
                 },
-                supportsCurrentStoredContentProtocol: true,
             });
 
             expect(result).toEqual({ ok: false, error: "invalid-params" });
@@ -660,7 +580,6 @@ describe("artifactWriteService", () => {
             const result = await deleteArtifact({
                 actorUserId: "u1",
                 artifactId: "a1",
-                supportsCurrentStoredContentProtocol: true,
             });
 
             expect(result).toEqual({ ok: false, error: "internal" });
@@ -678,39 +597,10 @@ describe("artifactWriteService", () => {
             const res = await deleteArtifact({
                 actorUserId: "u1",
                 artifactId: "a1",
-                supportsCurrentStoredContentProtocol: true,
             });
             expect(res).toEqual({ ok: true, cursor: 77 });
             expect(txFixture.artifact.delete).toHaveBeenCalledWith({ where: { id: "a1" } });
         });
 
-        it("requires current stored-content support before deleting a marked Artifact", async () => {
-            txFixture.artifact.findFirst.mockResolvedValue({
-                id: "a1",
-                dataEncryptionKey: artifactBytes(ARTIFACT_PLAIN_DATA_KEY_MARKER),
-            });
-
-            const rejected = await deleteArtifact({
-                actorUserId: "u1",
-                artifactId: "a1",
-                supportsCurrentStoredContentProtocol: false,
-            });
-            expect(rejected).toEqual({
-                ok: false,
-                error: "client-upgrade-required",
-            });
-            expect(markAccountChanged).not.toHaveBeenCalled();
-            expect(txFixture.artifact.delete).not.toHaveBeenCalled();
-
-            markAccountChanged.mockResolvedValueOnce(77);
-            const deleted = await deleteArtifact({
-                actorUserId: "u1",
-                artifactId: "a1",
-                supportsCurrentStoredContentProtocol: true,
-            });
-            expect(deleted).toEqual({ ok: true, cursor: 77 });
-            expect(markAccountChanged).toHaveBeenCalledOnce();
-            expect(txFixture.artifact.delete).toHaveBeenCalledOnce();
-        });
     });
 });

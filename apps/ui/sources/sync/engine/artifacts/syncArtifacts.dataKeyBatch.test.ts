@@ -35,6 +35,7 @@ async function buildArtifact(id: string, envelope: string, dataKey: Uint8Array) 
     const artifactEncryption = new ArtifactEncryption(dataKey);
     return {
         id,
+        ownerAccountId: 'owner', access: 'owner' as const, encryptionMode: 'e2ee' as const,
         header: await artifactEncryption.encryptHeader({ v: 1, kind: 'artifact.legacy', title: `title-${id}` } as never),
         headerVersion: 1,
         body: undefined,

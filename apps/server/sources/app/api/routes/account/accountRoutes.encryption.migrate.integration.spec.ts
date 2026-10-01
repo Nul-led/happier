@@ -1584,8 +1584,10 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
                     },
                     connectedServices: { action: "assert_empty" },
                     automations: {
+                        runs: [],
                         action: "migrate",
                         templates: [{
+                            triggerDefinitionEnvelopes: [],
                             automationId: automation.id,
                             expectedTemplateVersion: 7,
                             templateCiphertext: JSON.stringify({
@@ -1830,6 +1832,7 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
                     automations: {
                         action: "migrate",
                         templates: [{
+                            triggerDefinitionEnvelopes: [],
                             automationId: automation.id,
                             expectedTemplateVersion: automation.templateVersion,
                             templateCiphertext: targetTemplate,
@@ -3289,8 +3292,10 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
                 settingsContent: { t: "plain", v: { schemaVersion: 2 } },
                 connectedServices: { action: "assert_empty" },
                 automations: {
+                    runs: [],
                     action: "migrate",
                     templates: [{
+                        triggerDefinitionEnvelopes: [],
                         automationId: foreignAutomation.id,
                         expectedTemplateVersion:
                             foreignAutomation.templateVersion,
@@ -3416,6 +3421,7 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
                 automations: {
                     action: "migrate",
                     templates: [{
+                        triggerDefinitionEnvelopes: [],
                         automationId: automation.id,
                         expectedTemplateVersion: automation.templateVersion,
                         templateCiphertext: JSON.stringify({
@@ -3508,9 +3514,11 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
                 settingsContent: { t: "plain", v: { schemaVersion: 2 } },
                 connectedServices: { action: "assert_empty" },
                 automations: {
+                    runs: [],
                     action: "migrate",
                     templates: [
                         {
+                            triggerDefinitionEnvelopes: [],
                             automationId: automation.id,
                             expectedTemplateVersion:
                                 automation.templateVersion,
@@ -3518,6 +3526,7 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
                                 plainTemplateOne,
                         },
                         {
+                            triggerDefinitionEnvelopes: [],
                             automationId: automation.id,
                             expectedTemplateVersion:
                                 automation.templateVersion,
@@ -3653,8 +3662,10 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
                     settingsContent: { t: "encrypted", c: "settings-ciphertext" },
                     connectedServices: { action: "assert_empty" },
                     automations: {
+                        runs: [],
                         action: "migrate",
                         templates: [{
+                            triggerDefinitionEnvelopes: [],
                             automationId: automation.id,
                             expectedTemplateVersion:
                                 automation.templateVersion,
@@ -5892,6 +5903,7 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
                         }],
                     },
                     automations: {
+                        runs: [],
                         action: "migrate",
                         templates: [{
                             automationId: automation.id,

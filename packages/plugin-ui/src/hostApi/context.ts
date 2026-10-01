@@ -29,8 +29,7 @@ type PluginHostApiContextValue = Readonly<{
   hostApi: PluginUiHostApi;
   resourceStore: PluginUiResourceStore;
   composerRef: ComposerRefV1 | null;
-  surfaceActive: boolean;
-  resourceActive: boolean;
+  surfaceActive: boolean | undefined;
   ephemeralSharedScope: PluginUiEphemeralSharedScope | null;
 }>;
 
@@ -122,8 +121,7 @@ export function PluginHostApiProviderInternal({
       hostApi,
       resourceStore,
       composerRef,
-      surfaceActive: surfaceActivity?.active ?? false,
-      resourceActive: surfaceActivity?.active ?? true,
+      surfaceActive: surfaceActivity?.active,
       ephemeralSharedScope,
     }),
     [hostApi, resourceStore, composerRef, surfaceActivity, surfaceActivity?.active, ephemeralSharedScope],
@@ -154,7 +152,7 @@ export function usePluginHostApiResourceActive(): boolean {
   if (!context) {
     throw new Error('PluginHostApiProvider is required before using plugin UI host API hooks.');
   }
-  return context.resourceActive;
+  return context.surfaceActive ?? true;
 }
 
 /** Internal carrier for the host-validated Composer mount identity. */
@@ -172,7 +170,7 @@ export function usePluginSurfaceActivity(): Readonly<{ active: boolean }> {
   if (!context) {
     throw new Error('PluginHostApiProvider is required before reading plugin surface activity.');
   }
-  return useMemo(() => Object.freeze({ active: context.surfaceActive }), [context.surfaceActive]);
+  return useMemo(() => Object.freeze({ active: context.surfaceActive ?? false }), [context.surfaceActive]);
 }
 
 /**

@@ -740,7 +740,7 @@ function buildDirective(params: Readonly<{
             }),
             triggerDefinitionEnvelopes: automation.triggerDefinitionEnvelopes ?? [],
         })),
-        ...(params.runs === undefined ? {} : { runs: params.runs }),
+        runs: params.runs ?? [],
     });
     if (directive.action !== "migrate") {
         throw new Error("Expected the migration fixture to parse as a migrate directive");
@@ -1817,6 +1817,7 @@ describe("Automation account-encryption Run migration (integration)", () => {
             mode: "e2ee",
         });
         const missingDefinitionTarget = AccountEncryptionMigrateAutomationsDirectiveSchema.parse({
+            runs: [],
             action: "migrate",
             templates: [{
                 automationId: automation.id,
@@ -1845,35 +1846,8 @@ describe("Automation account-encryption Run migration (integration)", () => {
             templateVersion: automation.templateVersion,
             triggers: [{ definitionEnvelope: sourceEnvelope }],
         });
-        const omittedDefinitionTarget = AccountEncryptionMigrateAutomationsDirectiveSchema.parse({
-            action: "migrate",
-            templates: [{
-                automationId: automation.id,
-                expectedTemplateVersion: automation.templateVersion,
-                templateCiphertext: encryptedTemplate,
-            }],
-        });
-        await expect(inTx(async (tx) =>
-            await migrateAutomationAccountEncryptionInTx({
-                tx,
-                accountId: account.id,
-                toMode: "e2ee",
-                directive: omittedDefinitionTarget,
-            }),
-        )).resolves.toEqual({ status: "migration_incomplete" });
-        await expect(db.automation.findUniqueOrThrow({
-            where: { id: automation.id },
-            select: {
-                templateCiphertext: true,
-                templateVersion: true,
-                triggers: { select: { definitionEnvelope: true } },
-            },
-        })).resolves.toEqual({
-            templateCiphertext: automation.templateCiphertext,
-            templateVersion: automation.templateVersion,
-            triggers: [{ definitionEnvelope: sourceEnvelope }],
-        });
         const invalidTarget = AccountEncryptionMigrateAutomationsDirectiveSchema.parse({
+            runs: [],
             action: "migrate",
             templates: [{
                 automationId: automation.id,
@@ -1911,6 +1885,7 @@ describe("Automation account-encryption Run migration (integration)", () => {
         });
 
         const toEncrypted = AccountEncryptionMigrateAutomationsDirectiveSchema.parse({
+            runs: [],
             action: "migrate",
             templates: [{
                 automationId: automation.id,
@@ -1959,6 +1934,7 @@ describe("Automation account-encryption Run migration (integration)", () => {
             mode: "e2ee",
         });
         const rekey = AccountEncryptionMigrateAutomationsDirectiveSchema.parse({
+            runs: [],
             action: "migrate",
             templates: [{
                 automationId: automation.id,
@@ -1999,6 +1975,7 @@ describe("Automation account-encryption Run migration (integration)", () => {
             mode: "plain",
         });
         const toPlain = AccountEncryptionMigrateAutomationsDirectiveSchema.parse({
+            runs: [],
             action: "migrate",
             templates: [{
                 automationId: automation.id,
@@ -2037,6 +2014,7 @@ describe("Automation account-encryption Run migration (integration)", () => {
             data: { templateVersion: 5 },
         });
         const staleTarget = AccountEncryptionMigrateAutomationsDirectiveSchema.parse({
+            runs: [],
             action: "migrate",
             templates: [{
                 automationId: automation.id,

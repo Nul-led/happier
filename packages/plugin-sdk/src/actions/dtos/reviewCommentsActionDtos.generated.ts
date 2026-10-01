@@ -218,6 +218,7 @@ export type ReviewCommentsActionInputById = {
         includeHistory?: boolean | undefined;
         cursor?: string | undefined;
         limit?: number | undefined;
+        allPages?: true | undefined;
     };
     readonly "reviews.comments.get": {
         commentId: string;

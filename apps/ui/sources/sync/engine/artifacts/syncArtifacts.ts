@@ -5,9 +5,6 @@ import { randomUUID } from '@/platform/randomUUID';
 import { getRandomBytes } from '@/platform/cryptoRandom';
 import { fetchAccountEncryptionMode } from '@/sync/api/account/apiAccountEncryptionMode';
 import {
-    requireCurrentAccountStoredContentServerCompatibility,
-} from '@/sync/api/capabilities/accountStoredContentCompatibility';
-import {
     type ArtifactApiOptions,
     createArtifact as createArtifactApi,
     createArtifactAccessApi,
@@ -31,16 +28,15 @@ import {
     decodePlainArtifactStoredContent,
     encodePlainArtifactStoredContent,
     isPlainArtifactDataKeyMarker,
-    ArtifactCallerAccessV1Schema,
     runArtifactRecipientKeyPreparationV1,
 } from '@happier-dev/protocol';
 
 function artifactAccessProjection(artifact: Artifact) {
-    const access = ArtifactCallerAccessV1Schema.safeParse(Reflect.get(artifact, 'access'));
-    const ownerAccountId = Reflect.get(artifact, 'ownerAccountId');
-    return { ...(access.success ? { access: access.data } : {}),
-        ...(typeof ownerAccountId === 'string' ? { ownerAccountId } : {}) };
+    return { access: artifact.access, ownerAccountId: artifact.ownerAccountId };
 }
+
+type ArtifactContentProjection = Omit<Artifact, 'ownerAccountId' | 'access' | 'encryptionMode'>
+    & Partial<Pick<Artifact, 'ownerAccountId' | 'access'>>;
 
 /**
  * An unwrapped artifact data key together with the exact wrapped envelope it came
@@ -196,12 +192,14 @@ function normalizeArtifactHeaderForDecryptedArtifact(header: ArtifactHeader): Ar
 }
 
 function createLockedArtifactView(params: Readonly<{
-    artifact: Artifact;
+    artifact: ArtifactContentProjection;
     reason: ArtifactLockedReason;
     storageMode?: 'plain' | 'e2ee';
 }>): DecryptedArtifact {
     const { artifact, reason } = params;
     return {
+        ...(artifact.ownerAccountId === undefined ? {} : { ownerAccountId: artifact.ownerAccountId }),
+        ...(artifact.access === undefined ? {} : { access: artifact.access }),
         id: artifact.id,
         header: null,
         title: null,
@@ -587,7 +585,6 @@ export async function createArtifactWithHeaderViaApi(params: {
         let storedBody: string;
 
         if (accountMode === 'plain') {
-            await requireCurrentAccountStoredContentServerCompatibility({ serverId: params.serverId });
             storedDataEncryptionKey = ARTIFACT_PLAIN_DATA_KEY_MARKER;
             storedHeader = encodePlainArtifactStoredContent(header);
             storedBody = encodePlainArtifactStoredContent({ body });
@@ -653,6 +650,7 @@ export async function createArtifactWithHeaderViaApi(params: {
             updatedAt: artifact.updatedAt,
             isDecrypted: true,
             storageMode: accountMode,
+            ...artifactAccessProjection(artifact),
         };
 
         addArtifact(decryptedArtifact);
@@ -835,10 +833,6 @@ export async function updateArtifactWithHeaderViaApi(params: {
         return;
     }
 
-    if (storageMode === 'plain') {
-        await requireCurrentAccountStoredContentServerCompatibility({ serverId: params.serverId });
-    }
-
     // Send update to server
     const response = await updateArtifactApi(credentials, artifactId, updateRequest, { request: params.request });
 
@@ -936,7 +930,7 @@ export async function decryptSocketNewArtifactUpdate(params: {
         }
     }
 
-    const artifact: Artifact = {
+    const artifact: ArtifactContentProjection = {
         id: artifactId,
         dataEncryptionKey,
         header,

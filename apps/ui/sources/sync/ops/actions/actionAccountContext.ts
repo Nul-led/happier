@@ -1,6 +1,6 @@
 import { TokenStorage, subscribeHomeCredentialMutations } from '@/auth/storage/tokenStorage';
 import { readCredentialAuthorityKind } from '@/auth/context/credentialAuthority';
-import { ArtifactCallerAccessV1Schema, loadAiLaunchProfileArtifacts, readAiLaunchProfileCollection, type ArtifactAccessActionTransportV1 } from '@happier-dev/protocol';
+import { ArtifactAccessRecipientCensusResponseV1Schema, loadAiLaunchProfileArtifacts, readAiLaunchProfileCollection, type ArtifactAccessActionTransportV1 } from '@happier-dev/protocol';
 import type { WorkflowDefinitionArtifactOperations } from '@happier-dev/protocol/actions';
 import { createEncryptionFromAuthCredentials } from '@/auth/encryption/createEncryptionFromAuthCredentials';
 import { fetchAccountEncryptionMode } from '@/sync/api/account/apiAccountEncryptionMode';
@@ -43,6 +43,14 @@ function artifactContentUnavailable(): Error & Readonly<{ code: 'content_unavail
 function readableArtifactHeader(artifact: DecryptedArtifact | null): ArtifactHeader {
     if (!artifact?.isDecrypted || !artifact.header) throw artifactContentUnavailable();
     return artifact.header;
+}
+
+const artifactAccessProjectionSchema = ArtifactAccessRecipientCensusResponseV1Schema.pick({ ownerAccountId: true, access: true });
+
+function requireArtifactAccessProjection(artifact: DecryptedArtifact) {
+    const projection = artifactAccessProjectionSchema.safeParse({ ownerAccountId: artifact.ownerAccountId, access: artifact.access });
+    if (!projection.success) throw artifactContentUnavailable();
+    return projection.data;
 }
 
 function headerForArtifactCodec(header: Readonly<Record<string, unknown>>): ArtifactHeader {
@@ -221,7 +229,7 @@ export async function captureLazyActionAccountContext(serverIdRaw: string, signa
                 const header = readableArtifactHeader(artifact);
                 if (artifact.bodyVersion === undefined || artifact.body === undefined) throw artifactContentUnavailable();
                 return { artifactId: artifact.id, header: workflowArtifactHeader(header), body: artifact.body,
-                    ...(artifact.access ? { access: artifact.access } : {}),
+                    ...requireArtifactAccessProjection(artifact),
                     revision: { headerVersion: artifact.headerVersion, bodyVersion: artifact.bodyVersion } };
             },
             list: async (options) => {
@@ -235,13 +243,9 @@ export async function captureLazyActionAccountContext(serverIdRaw: string, signa
                 const items = [];
                 for (const [index, artifact] of artifacts.entries()) {
                     const header = readableArtifactHeader(openedArtifacts[index] ?? null);
-                    // Grant display facts are an additive server response projection.
-                    const projected = artifact as typeof artifact & { ownerAccountId?: unknown; access?: unknown };
-                    const access = ArtifactCallerAccessV1Schema.safeParse(projected.access);
                     items.push({ artifactId: artifact.id, header: workflowArtifactHeader(header),
                         headerVersion: artifact.headerVersion, updatedAt: artifact.updatedAt,
-                        ...(typeof projected.ownerAccountId === 'string' ? { ownerAccountId: projected.ownerAccountId } : {}),
-                        ...(access.success ? { access: access.data } : {}),
+                        ownerAccountId: artifact.ownerAccountId, access: artifact.access,
                     });
                 }
                 const last = artifacts.at(-1);

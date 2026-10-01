@@ -12,8 +12,7 @@ import {
   AGENT_SIGN_IN_PREPARE_RPC_METHOD, AGENT_SIGN_IN_STATUS_RPC_METHOD,
   createArtifactAccessActionsV1,
   createLaunchProfilePublisherV1,
-  createWorkBoardRecordPortV1,
-  WORK_BOARDS_ACCOUNT_KV_KEY_V1,
+  createWorkBoardArtifactPortV1,
   WorkflowRunRecipientCensusResponseV1Schema,
   resolveWorkflowRunDataKeyV1,
   workflowDefinitionArtifactSharingAdapterV1,
@@ -2944,20 +2943,7 @@ export function createCliActionDeps(params: Readonly<{
       request,
       ...(signal ? { signal } : {}),
     }),
-    ...(params.credentials ? { workBoardSettings: {
-      read: async (signal?: AbortSignal) => {
-        return await createWorkBoardRecordPortV1(createAccountKvJsonTransport({ credentials: params.credentials!,
-          key: WORK_BOARDS_ACCOUNT_KV_KEY_V1, ...(params.serverHttpBaseUrl ? { serverBaseUrl: params.serverHttpBaseUrl } : {}),
-          ...(signal ? { signal } : {}),
-        })).read(signal);
-      },
-      apply: async (intent, signal) => {
-        return await createWorkBoardRecordPortV1(createAccountKvJsonTransport({ credentials: params.credentials!,
-          key: WORK_BOARDS_ACCOUNT_KV_KEY_V1, ...(params.serverHttpBaseUrl ? { serverBaseUrl: params.serverHttpBaseUrl } : {}),
-          ...(signal ? { signal } : {}),
-        })).apply(intent, signal);
-      },
-    } } : {}),
+    ...(roleArtifactStore ? { workBoardArtifacts: createWorkBoardArtifactPortV1(roleArtifactStore) } : {}),
     updateAccountAcpCatalogSettings: async ({ mutate, signal }) => {
       if (!params.credentials) return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
       // The Account settings owner fetches the latest document, applies the catalog owner's result

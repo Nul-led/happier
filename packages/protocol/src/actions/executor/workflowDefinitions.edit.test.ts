@@ -14,7 +14,7 @@ function harness() {
     const update = vi.fn<WorkflowDefinitionArtifactOperations['update']>().mockResolvedValue({
       ok: true, revision: { headerVersion: 3, bodyVersion: 4 },
     });
-    const read = vi.fn<WorkflowDefinitionArtifactOperations['read']>(async () => ({ artifactId: definitionId, revision,
+    const read = vi.fn<WorkflowDefinitionArtifactOperations['read']>(async () => ({ artifactId: definitionId, ownerAccountId: 'owner', access: 'owner', revision,
         header: { kind: 'workflow-definition.v1', definitionId, revision, metadata },
         body: JSON.stringify({ kind: 'workflow-definition.v1', definition }) }));
     const artifactStore: WorkflowDefinitionArtifactOperations = {

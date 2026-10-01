@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
+import { buildWorkflowRunListFilter, listWorkflowRuns } from './workflowRunListActions';
+import { WorkflowActionError } from './workflowActionError';
 
 const executeMock = vi.hoisted(() => vi.fn());
 
@@ -14,7 +16,6 @@ describe('workflow Run list Action client', () => {
     });
 
     it('reads a page through the canonical list Action and parses its result', async () => {
-        const { listWorkflowRuns } = await import('./workflowRunListActions');
         executeMock.mockResolvedValueOnce({
             ok: true,
             result: { runs: [createWorkflowRunSummaryFixture({ id: 'run-1' })], metadataByRunId: {}, nextCursor: 'cursor-2' },
@@ -30,7 +31,6 @@ describe('workflow Run list Action client', () => {
     });
 
     it('preserves a readable untitled Run as sparse metadata instead of densifying it into unavailable', async () => {
-        const { listWorkflowRuns } = await import('./workflowRunListActions');
         executeMock.mockResolvedValueOnce({
             ok: true,
             result: {
@@ -57,7 +57,6 @@ describe('workflow Run list Action client', () => {
     });
 
     it('keeps explicit unavailable metadata unavailable', async () => {
-        const { listWorkflowRuns } = await import('./workflowRunListActions');
         executeMock.mockResolvedValueOnce({
             ok: true,
             result: {
@@ -72,7 +71,6 @@ describe('workflow Run list Action client', () => {
     });
 
     it('rejects an incomplete current list response without its metadata map', async () => {
-        const { listWorkflowRuns } = await import('./workflowRunListActions');
         executeMock.mockResolvedValueOnce({
             ok: true,
             result: {
@@ -87,7 +85,6 @@ describe('workflow Run list Action client', () => {
     });
 
     it('asks the server for attention rather than scanning a cached page', async () => {
-        const { buildWorkflowRunListFilter, listWorkflowRuns } = await import('./workflowRunListActions');
         executeMock.mockResolvedValueOnce({ ok: true, result: { runs: [], metadataByRunId: {} } });
 
         await listWorkflowRuns({ filter: buildWorkflowRunListFilter('attention') });
@@ -96,7 +93,6 @@ describe('workflow Run list Action client', () => {
     });
 
     it('lists Triggered history by the run\'s frozen cause, so a deleted trigger\'s runs stay findable', async () => {
-        const { buildWorkflowRunListFilter, listWorkflowRuns } = await import('./workflowRunListActions');
         executeMock.mockResolvedValueOnce({ ok: true, result: { runs: [], metadataByRunId: {} } });
 
         await listWorkflowRuns({ filter: buildWorkflowRunListFilter('triggered') });
@@ -106,8 +102,6 @@ describe('workflow Run list Action client', () => {
     });
 
     it('raises the one canonical workflow error with its closed code, not a generic Error', async () => {
-        const { listWorkflowRuns } = await import('./workflowRunListActions');
-        const { WorkflowActionError } = await import('./workflowActionError');
         executeMock.mockResolvedValueOnce({
             ok: false,
             errorCode: 'run_access_denied',
@@ -122,8 +116,6 @@ describe('workflow Run list Action client', () => {
     });
 
     it('keeps an unrecognized transport failure uncoerced instead of inventing a workflow code', async () => {
-        const { listWorkflowRuns } = await import('./workflowRunListActions');
-        const { WorkflowActionError } = await import('./workflowActionError');
         executeMock.mockResolvedValueOnce({ ok: false, errorCode: 'transport_closed', error: 'Connection lost.' });
 
         const failure = await listWorkflowRuns().then(() => null, (error: unknown) => error);
@@ -134,14 +126,12 @@ describe('workflow Run list Action client', () => {
     });
 
     it('rejects a malformed list response instead of handing it to a screen', async () => {
-        const { listWorkflowRuns } = await import('./workflowRunListActions');
         executeMock.mockResolvedValueOnce({ ok: true, result: { runs: [{ id: 'run-1' }] } });
 
         await expect(listWorkflowRuns()).rejects.toThrow();
     });
 
     it('maps the Active filter onto canonical nonterminal states only', async () => {
-        const { buildWorkflowRunListFilter } = await import('./workflowRunListActions');
         const active = buildWorkflowRunListFilter('active');
         expect(active.states).toBeDefined();
         expect(active.states).not.toContain('succeeded');
@@ -170,7 +160,6 @@ describe('workflow Run list Action client', () => {
 
     it('reports a deleted exact Run as run_not_found so the row is removed', async () => {
         const { getWorkflowRunSummary } = await import('./workflowRunListActions');
-        const { WorkflowActionError } = await import('./workflowActionError');
         executeMock.mockResolvedValueOnce({ ok: true, result: { runs: [] } });
 
         const failure = await getWorkflowRunSummary('run-1').then(() => null, (error: unknown) => error);

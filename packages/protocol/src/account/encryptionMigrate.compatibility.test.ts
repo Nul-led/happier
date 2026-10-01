@@ -86,7 +86,7 @@ describe('account/encryptionMigrate compatibility', () => {
     })).toBe(digest);
   });
 
-  it('does not synthesize a new Run inventory into an existing signed Automation migration', () => {
+  it('requires explicit trigger-definition and Run inventory on the current Automation wire', () => {
     const request = {
       toMode: 'plain',
       expectedAccountVersion: 7,
@@ -101,7 +101,9 @@ describe('account/encryptionMigrate compatibility', () => {
           automationId: 'automation-compatibility-vector',
           expectedTemplateVersion: 3,
           templateCiphertext: 'opaque-target-template',
+          triggerDefinitionEnvelopes: [],
         }],
+        runs: [],
       },
       machines: { action: 'assert_empty' },
       todos: { action: 'assert_empty' },
@@ -112,10 +114,17 @@ describe('account/encryptionMigrate compatibility', () => {
       pets: { action: 'assert_empty' },
     } as const;
 
-    // The request binding serializes this parsed directive. Adding `runs: []`
-    // here would invalidate a supported client signature that predates Run
-    // migration support.
     expect(AccountEncryptionMigrateRequestSchema.parse(request).automations)
       .toEqual(request.automations);
+    const { runs: _runs, ...missingRuns } = request.automations;
+    expect(AccountEncryptionMigrateRequestSchema.safeParse({
+      ...request,
+      automations: missingRuns,
+    }).success).toBe(false);
+    const { triggerDefinitionEnvelopes: _triggers, ...missingTriggers } = request.automations.templates[0];
+    expect(AccountEncryptionMigrateRequestSchema.safeParse({
+      ...request,
+      automations: { ...request.automations, templates: [missingTriggers] },
+    }).success).toBe(false);
   });
 });

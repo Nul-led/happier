@@ -648,6 +648,7 @@ describe('account/encryptionMigrate', () => {
         credentials: [credential],
       },
       automations: {
+        runs: [],
         action: 'migrate',
         templates: [template],
       },
@@ -678,6 +679,7 @@ describe('account/encryptionMigrate', () => {
     expect(AccountEncryptionMigrateRequestSchema.safeParse({
       ...request,
       automations: {
+        runs: [],
         action: 'migrate',
         templates: [templateWithoutVersion],
       },
@@ -759,6 +761,7 @@ describe('account/encryptionMigrate', () => {
 
   it('accepts a bound trigger-definition target only on the current Automation transition item', () => {
     const base = {
+      runs: [],
       action: 'migrate' as const,
       templates: [{
         automationId: 'automation-definition-1',

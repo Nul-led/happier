@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ChildProcess } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -61,6 +62,8 @@ import { buildPluginSessionBindingInput } from '@/plugins/runtime/runtimeCore/pl
 import { createSessionTurnLifecycle } from '@/agent/runtime/session/turn/lifecycle';
 import { classifyPrimarySessionRuntimeIssue } from '@/agent/runtime/session/errors/classifyPrimarySessionRuntimeIssue';
 import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
+import { createProviderCliAttachSurface } from '@/session/attach/providerCliAttach';
+import { createMutableApiSessionClientFixture } from '@/testkit/backends/sessionFixtures';
 import { runTerminalRemoteSessionModeLoop } from '@/agent/runtime/session/loop/runTerminalRemoteSessionModeLoop';
 import { bindProcessLogger, Logger, logger } from '@/ui/logger';
 import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
@@ -668,6 +671,101 @@ function createAgentActivityHeadline() {
 }
 
 describe('native Agent session host adapter', () => {
+    it.each(['attached', 'preparation_failed', 'spawn_failed', 'cancelled'] as const)(
+        'acknowledges managed local restoration only after native process startup (%s)', async (outcome) => {
+        const agentId = 'codex';
+        const external = createExternalContributionFixtures(agentId);
+        const contributions = {
+            backend: { ...external.backend, provenance: 'first_party' as const, source: { kind: 'bundled' as const }, pluginId: 'happier.agent.codex' },
+            agent: { ...external.agent, provenance: 'first_party' as const, source: { kind: 'bundled' as const }, pluginId: 'happier.agent.codex' },
+        };
+        const generation = new AbortController();
+        let releasePreparation!: () => void;
+        let announcePreparation!: () => void;
+        const preparationGate = new Promise<void>((resolve) => { releasePreparation = resolve; });
+        const preparationStarted = new Promise<void>((resolve) => { announcePreparation = resolve; });
+        let child: ChildProcess | null = null;
+        const attach = createProviderCliAttachSurface({
+            agentId,
+            // The external Agent's declaration supplies its native target/argv; host execution stays real.
+            resolveTarget: () => ({ ok: true, value: { threadId: 'thread-restored' } }),
+            createArgs: (target) => ['attach', target.threadId],
+            resolveLaunchSpec: () => ({ source: 'managed', resolvedPath: '/managed/codex', command: '/managed/codex', args: [] }),
+            spawnProcess: (() => {
+                child = new ChildProcess();
+                child.kill = () => {
+                    child?.emit('exit', 0, null);
+                    return true;
+                };
+                return child;
+            }) as typeof import('node:child_process').spawn,
+        });
+        const plan = await createNativeAgentRuntimeSessionPlan({
+            runtime: { sessions: { open: async () => ({
+                send: async () => ({ status: 'admitted' as const }),
+                watch: () => ({ dispose: () => undefined }),
+                dispose: async () => undefined,
+                prepareProviderCliAttach: async () => {
+                    announcePreparation();
+                    await preparationGate;
+                    if (outcome === 'preparation_failed') throw new Error('native preparation failed');
+                    return { path: '/tmp/managed-native-restore' };
+                },
+                runtimeCapabilities: { localControl: { supported: true, topology: 'shared' as const, attachStrategy: 'provider_attach' as const, remoteWritable: true } },
+            }) } },
+            lease: { ...createLease(agentId), pluginId: 'happier.agent.codex' },
+            backend: contributions.backend,
+            agent: contributions.agent,
+            executionSurfaces: { ...createEmptyBackendExecutionSurfaces(), attach },
+            createSessionHostServiceOwners: () => createSessionHostServiceOwners(),
+            generationSignal: generation.signal,
+            sessionInput: buildPluginSessionBindingInput({ credentials, directory: '/tmp/managed-native-restore', startedBy: 'daemon', backendTarget: { kind: 'backend', backendId: agentId } }),
+        });
+        const session = createMutableApiSessionClientFixture({ sessionId: 'session-managed-native-restore' });
+        const created = await plan.config.createSessionRuntime!({
+            directory: '/tmp/managed-native-restore', metadata: {}, machineId: 'machine-1', session,
+            transcriptSession: {}, messageQueue: new MessageQueue2<{ permissionMode: string }, { text: string }>((mode) => mode.permissionMode),
+            messageBuffer: {}, mcpServers: {}, permissionHandler: {}, getPermissionMode: () => 'default',
+            setThinking: () => undefined, memoryRecallGuidanceEnabled: false,
+        } as never);
+        const modeLoop = created.terminalRemoteModeLoop!;
+        let loopFailure: unknown;
+        const loop = runTerminalRemoteSessionModeLoop(modeLoop).catch((error) => { loopFailure = error; });
+        try {
+            await vi.waitFor(() => expect(session.__getAgentState().localControl).toMatchObject({ attached: false, remoteWritable: true }));
+            let acknowledged = false;
+            const restoration = session.rpcHandlerManager.invokeLocal('switch', { to: 'local' }).then((result) => {
+                acknowledged = true;
+                return result;
+            });
+            await preparationStarted;
+            // An accepted mode transition is not a native startup receipt.
+            expect(acknowledged).toBe(false);
+            if (outcome === 'cancelled') generation.abort();
+            releasePreparation();
+            if (outcome === 'attached' || outcome === 'spawn_failed') {
+                await vi.waitFor(() => expect(child).not.toBeNull());
+                expect(acknowledged).toBe(false);
+                child!.emit(outcome === 'attached' ? 'spawn' : 'error', new Error('native spawn failed'));
+            }
+            await expect(restoration).resolves.toBe(outcome === 'attached');
+            if (outcome === 'attached') {
+                expect(session.__getAgentState().localControl).toMatchObject({ attached: true, canDetach: true, remoteWritable: true, topology: 'shared' });
+                await expect(session.rpcHandlerManager.invokeLocal('switch', { to: 'local' })).resolves.toBe(true);
+                await expect(session.rpcHandlerManager.invokeLocal('switch', { to: 'remote' })).resolves.toBe(true);
+                await vi.waitFor(() => expect(session.__getAgentState().localControl).toMatchObject({ attached: false, remoteWritable: true }));
+            } else {
+                await vi.waitFor(() => expect(session.__getAgentState().localControl).toMatchObject({ attached: false, canDetach: false }));
+            }
+        } finally {
+            generation.abort();
+            releasePreparation();
+            child?.emit('exit', 0, null);
+            await loop;
+        }
+        expect(loopFailure).toBeUndefined();
+    });
+
     it.each(['attached', 'preparing', 'retiring'] as const)(
         'keeps provider attach lifecycle coherent when switching while %s', async (phase) => {
         const agentId = 'codex';

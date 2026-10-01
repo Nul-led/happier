@@ -22,6 +22,8 @@ Progress and capacity bars share `HappierProgress` in the same presentation modu
 
 Loading narration and diagnostic disclosure belong to the composition. The card does not own retries, availability, permissions or the underlying request lifecycle. Supply truthful state from that domain's owner, stop live activity at its terminal outcome and keep technical codes behind details. Avoid a second consumer-local spinner/error parser or timer for the same work.
 
+Plugin Resource hooks retain their store snapshot when host mount activity turns inactive, release their read/watch subscription, and refresh through the same owner when activity resumes. Providers without a host activity fact keep their existing live behavior. Imperative `hostApi.watchResource` subscriptions remain caller-owned until disposal; view consumers should use the Resource hooks rather than create another presentation-driven polling lifecycle.
+
 ## Related
 
 [Collection presentation](collection-presentation.md), [Plugin platform](plugin-platform.md), [DESIGN.md](../DESIGN.md), [UI instructions](../apps/ui/AGENTS.md).
