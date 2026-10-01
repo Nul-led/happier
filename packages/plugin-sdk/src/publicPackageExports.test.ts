@@ -12,15 +12,13 @@ import type {
     PluginMachineExecutionOriginV1 as ProtocolPluginMachineExecutionOriginV1,
     PluginMachineMaterializationRefV1 as ProtocolPluginMachineMaterializationRefV1,
 } from '@happier-dev/protocol';
-/* @sdk-negative-type-case:src-publicPackageExports-test-ts-33:LS0gdGhlIGNhbm9uaWNhbCB2YWxpZGF0b3IgaXMgY2hlY2tlZCBKYXZhU2NyaXB0IHdpdGhvdXQgZW1pdHRlZCBkZWNsYXJhdGlvbnMu:aW1wb3J0IHsgcmVhZFZhbGlkYXRlZEFwaVN1cmZhY2VJbnZlbnRvcnlJZlByZXNlbnQgfSBmcm9tICcuLi9zY3JpcHRzL2FwaVN1cmZhY2UubWpzJzs */
-const apiSurfaceValidatorModulePath: string = '../scripts/apiSurface.mjs';
-const readValidatedApiSurfaceInventoryIfPresent = (
-    await import(apiSurfaceValidatorModulePath) as Readonly<{
-        readValidatedApiSurfaceInventoryIfPresent(
-            url: URL,
-        ): Promise<Readonly<{ status: 'available'; inventory: never } | { status: 'missing' }>>;
+/* @sdk-negative-type-case:src-publicPackageExports-test-ts-33:LS0gdGhlIGNhbm9uaWNhbCB2YWxpZGF0b3IgaXMgY2hlY2tlZCBKYXZhU2NyaXB0IHdpdGhvdXQgZW1pdHRlZCBkZWNsYXJhdGlvbnMu:aW1wb3J0IHsgcmVhZEN1cnJlbnRBcGlTdXJmYWNlSW52ZW50b3J5IH0gZnJvbSAnLi4vc2NyaXB0cy9hcGlTdXJmYWNlQ2xpLm1qcyc7 */
+const apiSurfaceSourceModulePath: string = '../scripts/apiSurfaceCli.mjs';
+const readCurrentApiSurfaceInventory = (
+    await import(apiSurfaceSourceModulePath) as Readonly<{
+        readCurrentApiSurfaceInventory(): Promise<unknown>;
     }>
-).readValidatedApiSurfaceInventoryIfPresent; /* @sdk-negative-type-case-end */
+).readCurrentApiSurfaceInventory; /* @sdk-negative-type-case-end */
 
 import type {
     PluginRuntimeRegistration as SourcePluginRuntimeRegistration,
@@ -35,7 +33,6 @@ import * as rootPublicApi from './index.js';
 import * as connectedAccountManifestApi from './manifest/connectedAccountDescriptors.js';
 import {
     projectAuthorSurfaceContract,
-    requireApiSurfaceInventory,
 } from './normalSurfaceContract.js';
 import * as runtimePublicApi from './runtime/index.js';
 import * as testingPublicApi from './testing/index.js';
@@ -78,18 +75,10 @@ type PluginSdkPackageJson = Readonly<{
     }>;
 }>;
 
-const apiSurfaceInventoryRead: Readonly<
-    | { status: 'available'; inventory: ApiSurfaceInventory }
-    | { status: 'missing' }
-> = await readValidatedApiSurfaceInventoryIfPresent(
-    new URL('../api-surface.json', import.meta.url),
-);
-const apiSurfaceInventory = apiSurfaceInventoryRead.status === 'available'
-    ? apiSurfaceInventoryRead.inventory
-    : undefined;
-// Publication inventory is required by every ordinary/package surface run.
-// The explicit nonwriting source lane defers only these generated-currentness
-// assertions to the sole ordered publisher.
+// The inventory is generated on demand from current package source.
+const apiSurfaceInventory = await readCurrentApiSurfaceInventory() as ApiSurfaceInventory;
+// The explicit nonwriting source lane defers the assertions that also read
+// emitted package output to the sole ordered publisher.
 const inventoryIt = process.env.HAPPIER_PLUGIN_SDK_SOURCE_ONLY === '1' ? it.skip : it;
 
 const protocolExports = [
@@ -185,7 +174,7 @@ function readAuthorSurfaceContract() {
 }
 
 function readApiSurfaceInventory(): ApiSurfaceInventory {
-    return requireApiSurfaceInventory(apiSurfaceInventoryRead);
+    return apiSurfaceInventory;
 }
 
 async function readNamedBarrelExports(sourceModule: string): Promise<readonly string[]> {
@@ -209,7 +198,7 @@ async function expectCanonicalInventoryBarrelClosure(
     required: readonly string[],
     forbidden: readonly string[] = [],
 ): Promise<void> {
-    const inventory = requireApiSurfaceInventory(apiSurfaceInventoryRead);
+    const inventory = apiSurfaceInventory;
     const entrypoint = inventory.entrypoints.find((entry) => entry.specifier === specifier);
     if (!entrypoint) throw new Error(`API inventory is missing ${specifier}`);
     const inventoryExports = inventory.symbols
@@ -408,7 +397,7 @@ describe('CORE-A curated package exports', () => {
     });
 
     inventoryIt('keeps root source and declared browser conditions aligned with the inventory', async () => {
-        const inventory = requireApiSurfaceInventory(apiSurfaceInventoryRead);
+        const inventory = apiSurfaceInventory;
         const packageJson = JSON.parse(
             await readFile(new URL('../package.json', import.meta.url), 'utf8'),
         ) as PluginSdkPackageJson;

@@ -260,3 +260,14 @@ _.env.pipeline.production.local
 
 # Rust build output (iroh-native relay crate)
 /packages/iroh-native/rust/target/
+
+# Public SDK API-governance records are generated on demand (W3 ruling c,
+# 2026-09-24). `api-governance --write` writes them locally and `prepack` /
+# release packing materializes them into each published package. The compact
+# exported-name census `API.md` and `capability-matrix.json` stay committed.
+/packages/plugin-sdk/api-declarations.md
+/packages/plugin-sdk/api-surface.json
+/packages/plugin-ui/api-declarations.md
+/packages/plugin-ui/api-surface.json
+/packages/sdk/api-declarations.md
+/packages/sdk/api-surface.json

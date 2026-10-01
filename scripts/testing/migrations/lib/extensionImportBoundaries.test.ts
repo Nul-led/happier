@@ -180,8 +180,8 @@ test('extension import boundary validator rejects package-import aliases without
     'utf8',
   );
   writeFileSync(
-    join(rootDir, 'packages/plugin-sdk/api-surface.json'),
-    JSON.stringify({ schemaVersion: 1, entrypoints: [{ specifier: '.', visibility: 'author' }] }),
+    join(rootDir, 'packages/plugin-sdk/package.json'),
+    JSON.stringify({ name: '@happier-dev/plugin-sdk', exports: { '.': './dist/index.js' } }),
     'utf8',
   );
   writeFileSync(
@@ -380,14 +380,14 @@ test('extension import boundary validator default-denies declared private @happi
   );
   mkdirSync(join(rootDir, 'packages/plugin-sdk'), { recursive: true });
   writeFileSync(
-    join(rootDir, 'packages/plugin-sdk/api-surface.json'),
+    join(rootDir, 'packages/plugin-sdk/package.json'),
     JSON.stringify({
-      schemaVersion: 1,
-      entrypoints: [
-        { specifier: '.', visibility: 'author' },
-        { specifier: './agents/runtime', visibility: 'author' },
-        { specifier: './host/registration', visibility: 'host' },
-      ],
+      name: '@happier-dev/plugin-sdk',
+      exports: {
+        '.': './dist/index.js',
+        './agents/runtime': './dist/agents/runtime/index.js',
+        './host/registration': './dist/host/registration/index.js',
+      },
     }),
     'utf8',
   );
@@ -442,14 +442,14 @@ test('extension import boundary validator admits a public shared package authore
   mkdirSync(join(rootDir, 'packages/plugins/acme/src'), { recursive: true });
   mkdirSync(join(rootDir, 'packages/plugin-sdk'), { recursive: true });
   writeFileSync(
-    join(rootDir, 'packages/plugin-sdk/api-surface.json'),
+    join(rootDir, 'packages/plugin-sdk/package.json'),
     JSON.stringify({
-      schemaVersion: 1,
-      entrypoints: [
-        { specifier: '.', visibility: 'author' },
-        { specifier: './ui', visibility: 'author' },
-        { specifier: './host/registration', visibility: 'host' },
-      ],
+      name: '@happier-dev/plugin-sdk',
+      exports: {
+        '.': './dist/index.js',
+        './ui': './dist/ui/index.js',
+        './host/registration': './dist/host/registration/index.js',
+      },
     }),
     'utf8',
   );
@@ -702,8 +702,8 @@ test('extension import boundary validator classifies declared npm alias targets'
     'utf8',
   );
   writeFileSync(
-    join(rootDir, 'packages/plugin-sdk/api-surface.json'),
-    JSON.stringify({ schemaVersion: 1, entrypoints: [{ specifier: '.', visibility: 'author' }] }),
+    join(rootDir, 'packages/plugin-sdk/package.json'),
+    JSON.stringify({ name: '@happier-dev/plugin-sdk', exports: { '.': './dist/index.js' } }),
     'utf8',
   );
   writeFileSync(

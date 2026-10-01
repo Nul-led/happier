@@ -10,7 +10,25 @@ import { PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1 } from './ui/build/publicToolchai
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const pluginSourceRoot = join(workspaceRoot, 'packages', 'plugins');
 const channelsSourceRoot = join(pluginSourceRoot, 'channels', 'src');
-const apiSurfaceInventoryPath = join(workspaceRoot, 'packages', 'plugin-sdk', 'api-surface.json');
+// The API inventory is generated on demand; read the generator's in-memory
+// projection of current package source.
+const apiSurfaceSourceModulePath: string = '../scripts/apiSurfaceCli.mjs';
+type PublicSdkInventory = Readonly<{
+  symbols: readonly Readonly<{
+    specifier: string;
+    exportName: string;
+    kind: string;
+  }>[];
+}>;
+// Projected once while Vitest collects the suite, not inside an assertion.
+const publicSdkInventory: PublicSdkInventory = await (
+  await import(apiSurfaceSourceModulePath) as Readonly<{
+    readCurrentApiSurfaceInventory(): Promise<PublicSdkInventory>;
+  }>
+).readCurrentApiSurfaceInventory();
+async function readPublicSdkInventory(): Promise<PublicSdkInventory> {
+  return publicSdkInventory;
+}
 const publicAgentRuntimeEntryPath = join(
   workspaceRoot,
   'packages',
@@ -435,13 +453,7 @@ async function readNamedExports(path: string): Promise<readonly string[]> {
 }
 
 async function readPublicSdkOwners(symbols: readonly string[]): Promise<Readonly<Record<string, string>>> {
-  const inventory = JSON.parse(await readFile(apiSurfaceInventoryPath, 'utf8')) as Readonly<{
-    symbols: readonly Readonly<{
-      specifier: string;
-      exportName: string;
-      kind: string;
-    }>[];
-  }>;
+  const inventory = await readPublicSdkInventory();
   return Object.fromEntries(symbols.map((symbol) => {
     const owners = inventory.symbols.filter((entry) => (
       entry.exportName === symbol && entry.kind === 'type'
@@ -454,13 +466,7 @@ async function readPublicSdkOwners(symbols: readonly string[]): Promise<Readonly
 }
 
 async function readPublicSdkValueOwners(symbols: readonly string[]): Promise<Readonly<Record<string, string>>> {
-  const inventory = JSON.parse(await readFile(apiSurfaceInventoryPath, 'utf8')) as Readonly<{
-    symbols: readonly Readonly<{
-      specifier: string;
-      exportName: string;
-      kind: string;
-    }>[];
-  }>;
+  const inventory = await readPublicSdkInventory();
   return Object.fromEntries(symbols.map((symbol) => {
     const owners = inventory.symbols.filter((entry) => (
       entry.exportName === symbol && entry.kind === 'value'

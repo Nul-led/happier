@@ -541,10 +541,8 @@ async function createVendoredDeclarationStalenessFixture() {
 const CURRENT_PACKAGE_GOVERNED_ENTRIES = Object.freeze([
   'package.json',
   'tsconfig.json',
-  'api-surface.json',
   'api-surface.schema.json',
   'API.md',
-  'api-declarations.md',
   'capability-matrix.json',
   'src',
   'dist',
@@ -755,8 +753,7 @@ test('real CLI default output is a concise summary with bounded real-phase progr
     assert.equal(
       result.stdout,
       [
-        'api-surface dry-run: drift (planned=7 changed=5 written=0)',
-        '  drift apiSurfaceInventory api-surface.json',
+        'api-surface dry-run: drift (planned=7 changed=4 written=0)',
         '  drift packageExports package.json',
         '  drift sourceBarrels src/host/registration/index.ts',
         '  drift sourceBarrels src/host/ui/index.ts',
@@ -777,14 +774,15 @@ test('real CLI default output is a concise summary with bounded real-phase progr
         'api-surface: phase=realm-closure',
       ].join('\n').concat('\n'),
     );
-    // One header line plus one line per file the run would rewrite: the
-    // default output stays scannable while naming the whole delta.
-    assert.equal(result.stdout.trimEnd().split('\n').length, 6);
+    // One header line plus one line per committed file that drifted: the
+    // default output stays scannable while naming the whole delta. The
+    // generated inventory is not committed, so it never reports drift.
+    assert.equal(result.stdout.trimEnd().split('\n').length, 5);
     assert.equal(machineReadable.status, result.status, machineReadable.stderr);
     const report = JSON.parse(machineReadable.stdout);
     assert.deepEqual(report.summary, {
       plannedFiles: 7,
-      changedFiles: 5,
+      changedFiles: 4,
       writtenFiles: 0,
     });
     assert.ok(machineReadable.stdout.length > result.stdout.length);
@@ -1254,19 +1252,22 @@ test('real CLI --json is read-only by default and reports the complete source-to
       './actions': ['ActionsService'],
     });
     // The fixture's author barrel carries a legacy marker, so the Preview
-    // projection updates the stale generated barrels along with the three
-    // derived artifacts.
+    // projection updates the stale generated barrels along with the committed
+    // derived artifacts. The inventory is generated on demand, never drift.
     assert.deepEqual(
       report.files.filter((file) => file.changed).map((file) => file.owner).sort(),
       [
-        'apiSurfaceInventory',
         'authorApiMarkdown',
         'packageExports',
         'sourceBarrels',
         'sourceBarrels',
       ],
     );
-    assert.equal(report.summary.changedFiles, 5);
+    assert.equal(
+      report.files.find((file) => file.owner === 'apiSurfaceInventory').generated,
+      true,
+    );
+    assert.equal(report.summary.changedFiles, 4);
     assert.equal(report.summary.writtenFiles, 0);
     assert.equal(report.files.find((file) => file.owner === 'authorApiMarkdown').path, 'API.md');
 
@@ -1760,7 +1761,7 @@ test('explicit check mode reports generated API documentation drift and passes o
     const driftReport = JSON.parse(drift.stdout);
     assert.equal(driftReport.mode, 'check');
     assert.equal(driftReport.status, 'drift');
-    assert.equal(driftReport.summary.changedFiles, 5);
+    assert.equal(driftReport.summary.changedFiles, 4);
     assert.equal(driftReport.files.find((file) => file.path === 'API.md').changed, true);
 
     const write = runJsonCli(root, ['--write']);
@@ -1841,9 +1842,10 @@ test('API documentation staging failure leaves every owned output unchanged', as
     // Staging names a temporary file per CHANGED output, so the index the API
     // documentation stages under is derived from the run's own report rather
     // than restated here.
+    // A write also stages the generated inventory, which this fixture changes.
     const plannedReport = JSON.parse(runJsonCli(root).stdout);
     const stagingIndex = plannedReport.files
-      .filter((file) => file.changed)
+      .filter((file) => file.changed || file.generated)
       .findIndex((file) => file.owner === 'authorApiMarkdown');
     assert.ok(stagingIndex >= 0);
     const blockingTemporaryPath = join(
@@ -2237,6 +2239,50 @@ test('client value closures independently inspect browser and React Native packa
         );
       } finally {
         await rm(workspaceRoot, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test('portable value closures honor an installed package disabled browser builtin without hiding other builtins', async (t) => {
+  for (const realm of ['browser', 'react-native']) {
+    await t.test(realm, async () => {
+      const root = await createPackageFixture();
+      const installedRoot = join(root, 'node_modules/@fixture/portable-installed');
+      try {
+        await addPortableValueFixture(
+          root,
+          realm,
+          "import { installedValue } from '@fixture/portable-installed';\nexport const PortableValue = installedValue;\n",
+        );
+        await writeFixtureFile(installedRoot, 'package.json', `${JSON.stringify({
+          name: '@fixture/portable-installed',
+          main: 'index.js',
+          browser: { crypto: false },
+        }, null, 2)}\n`);
+        await writeFixtureFile(installedRoot, 'index.js', "const crypto = require('crypto');\nexports.installedValue = crypto;\n");
+
+        const accepted = runJsonCli(root);
+        assert.equal(accepted.status, 0, accepted.stderr);
+
+        if (realm === 'react-native') {
+          await writeFixtureFile(installedRoot, 'package.json', `${JSON.stringify({
+            name: '@fixture/portable-installed',
+            main: 'index.js',
+            browser: { crypto: false },
+            'react-native': { crypto: 'crypto' },
+          }, null, 2)}\n`);
+          const nativeOverride = runJsonCli(root);
+          assert.equal(nativeOverride.status, 1);
+          assert.match(nativeOverride.stderr, /reaches Node builtin crypto/u);
+        }
+
+        await writeFixtureFile(installedRoot, 'index.js', "exports.installedValue = require('node:fs');\n");
+        const rejected = runJsonCli(root, ['--write']);
+        assert.equal(rejected.status, 1);
+        assert.match(rejected.stderr, /reaches Node builtin node:fs/u);
+      } finally {
+        await rm(root, { recursive: true, force: true });
       }
     });
   }

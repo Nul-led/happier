@@ -295,7 +295,7 @@ test('plugin package scripts prepare declarations and invoke the shared governan
   assert.equal(
     pluginSdkPackage.scripts['check:api-governance:locked'],
     'yarn -s check:prepare:api-governance:prepared && node ../../scripts/api-governance/cli.mjs --profile plugin-sdk --check',
-    'The locked governance transaction must end with the one full-publisher output plan so capability-matrix.json freshness is proven after declaration preparation',
+    'The locked governance transaction must end with the one full-publisher output plan so capability-matrix.json derivation is validated after declaration preparation',
   );
   assert.equal(
     pluginSdkPackage.scripts['check:api-governance:prepared'],
@@ -353,8 +353,8 @@ test('plugin package scripts prepare declarations and invoke the shared governan
   );
   assert.equal(
     sdkPackage.scripts.prepack,
-    'yarn -s prepare:api-governance && yarn -s check:api-governance:prepared',
-    'SDK prepack must materialize the exact bundled declaration graph before governing it',
+    'yarn -s prepare:api-governance && node ../../scripts/api-governance/cli.mjs --profile sdk --write && yarn -s check:api-governance:prepared',
+    'SDK prepack must materialize the exact bundled declaration graph and its generated records before governing them',
   );
 
   const countCompilerInvocations = (packageJson, entrypoint) => {
@@ -408,7 +408,7 @@ test('the finite public SDK task stages materialization before its mutation guar
   assert.equal(
     pluginSdkPackage.scripts['api:finite:prepared'],
     'node ../../scripts/api-governance/cli.mjs --profile plugin-sdk --check',
-    'The finite governance transaction must verify the one full-publisher output plan, including capability-matrix.json freshness, after declaration preparation',
+    'The finite governance transaction must verify the one full-publisher output plan, including capability-matrix.json derivation, after declaration preparation',
   );
   assert.equal(
     pluginSdkPackage.scripts['test:finite'],
@@ -450,7 +450,7 @@ test('the plugin-sdk prepared-source profile validates emitted declarations with
   }
 });
 
-test('the plugin-ui profile detects a reachable emitted declaration drift even when source is unchanged', async () => {
+test('the plugin-ui profile gates only its committed census and generates declaration records on demand', async () => {
   const root = await createEntrypointFixture();
   try {
     const sourcePath = join(root, 'src/runtime.ts');
@@ -488,6 +488,9 @@ test('the plugin-ui profile detects a reachable emitted declaration drift even w
     assert.equal(current.status, 'current');
     assert.equal(current.summary.changedFiles, 0);
 
+    // The declaration report and inventory are generated on demand, not
+    // committed: a signature-only change never makes the committed census
+    // drift, and a check leaves the generated records untouched.
     const declarationPath = join(root, 'dist/hidden.d.ts');
     const declaration = await readFile(declarationPath, 'utf8');
     await writeFile(
@@ -496,14 +499,49 @@ test('the plugin-ui profile detects a reachable emitted declaration drift even w
       'utf8',
     );
     assert.equal(await readFile(sourcePath, 'utf8'), sourceBeforeDeclarationDrift);
+    const declarationsBefore = await readFile(join(root, 'api-declarations.md'), 'utf8');
 
+    const signatureOnly = spawnSync(
+      process.execPath,
+      [CLI_PATH, '--profile', 'plugin-ui', '--package-root', root, '--check'],
+      { encoding: 'utf8' },
+    );
+    assert.equal(signatureOnly.status, 0, signatureOnly.stdout + signatureOnly.stderr);
+    assert.equal(await readFile(join(root, 'api-declarations.md'), 'utf8'), declarationsBefore);
+
+    // A check may materialize the generated records for a reader in the same
+    // run, still without rewriting a committed record.
+    const materialized = await runApiGovernance({
+      profileId: 'plugin-ui',
+      packageRoot: root,
+      check: true,
+      writeGenerated: true,
+    });
+    assert.equal(materialized.status, 'current');
+    assert.deepEqual(
+      materialized.files.filter((file) => file.written).map((file) => [file.path, file.summary]),
+      [['api-declarations.md', ['dist/hidden.d.ts — Hidden']]],
+    );
+    assert.notEqual(await readFile(join(root, 'api-declarations.md'), 'utf8'), declarationsBefore);
+
+    // The committed exported-name census still gates currentness.
+    await writeFixtureFile(root, 'src/index.public.ts', [
+      "export { added, run } from './runtime.js';",
+      '',
+    ].join('\n'));
+    await writeFile(declarationPath.replace('hidden.d.ts', 'index.d.ts'), [
+      "export declare function run(): import('./hidden.js').Hidden;",
+      'export declare const added: 1;',
+      '',
+    ].join('\n'), 'utf8');
     const drift = spawnSync(
       process.execPath,
       [CLI_PATH, '--profile', 'plugin-ui', '--package-root', root, '--check'],
       { encoding: 'utf8' },
     );
     assert.equal(drift.status, 1, drift.stderr);
-    assert.match(drift.stdout, /drift publicDeclarationReport api-declarations\.md: dist\/hidden\.d\.ts — Hidden/u);
+    assert.match(drift.stdout, /drift authorApiMarkdown API\.md/u);
+    assert.doesNotMatch(drift.stdout, /api-surface\.json|api-declarations\.md/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -650,8 +688,8 @@ test('the shared governance owner resolves complete qualified same-package refer
     assert.match(written, /### `dist\/types\.d\.ts` — `Hidden`/u);
     assert.match(written, /### `dist\/types\.d\.ts` — `value`/u);
 
-    // Adversarial optional-to-required drift inside the qualified member must
-    // turn the no-drift gate red naming that member.
+    // Adversarial optional-to-required change inside the qualified member must
+    // surface in the regenerated declaration report, naming that member.
     await writeFixtureFile(root, 'dist/types.d.ts', [
       'export type Hidden = {',
       '    value: string;',
@@ -660,15 +698,14 @@ test('the shared governance owner resolves complete qualified same-package refer
       '',
     ].join('\n'));
 
-    const drift = await runApiGovernance({
+    const regenerated = await runApiGovernance({
       profileId: 'plugin-ui',
       packageRoot: root,
-      write: false,
       check: true,
+      writeGenerated: true,
     });
-    assert.equal(drift.status, 'drift');
     assert.deepEqual(
-      drift.files.find((file) => file.path === 'api-declarations.md')?.summary,
+      regenerated.files.find((file) => file.path === 'api-declarations.md')?.summary,
       ['dist/types.d.ts — Hidden'],
     );
   } finally {
@@ -950,16 +987,20 @@ test('generic profiles retain structured deprecation facts declared behind an un
       'export declare function legacyRun(): void;',
       '',
     ].join('\n'), 'utf8');
-    const drift = await runApiGovernance({
+    const regenerated = await runApiGovernance({
       profileId: 'plugin-ui',
       packageRoot: root,
-      write: false,
       check: true,
+      writeGenerated: true,
     });
-    assert.equal(drift.status, 'drift');
+    assert.equal(regenerated.status, 'current');
     assert.deepEqual(
-      drift.files.filter((file) => file.changed).map((file) => file.path),
+      regenerated.files.filter((file) => file.written).map((file) => file.path),
       ['api-surface.json'],
+    );
+    assert.equal(
+      JSON.parse(await readFile(join(root, 'api-surface.json'), 'utf8')).symbols[0].replacement,
+      'CurrentRunV2',
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1045,11 +1086,10 @@ test('generic profiles stamp provenance only from the supplied published baselin
       write: false,
       check: true,
     });
-    assert.equal(ordinaryCheck.status, 'drift');
-    assert.deepEqual(
-      ordinaryCheck.files.filter((file) => file.changed).map((file) => file.path),
-      ['api-surface.json'],
-    );
+    // Publication provenance lives only in the generated inventory, so an
+    // ordinary check never treats it as committed drift.
+    assert.equal(ordinaryCheck.status, 'current');
+    assert.equal(ordinaryCheck.summary.changedFiles, 0);
 
     await writeFile(
       declarationPath,

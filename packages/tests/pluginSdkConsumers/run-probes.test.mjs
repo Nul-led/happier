@@ -404,13 +404,13 @@ test('canonical SDK inventory reader preserves author and host fixture rows', as
   }
 });
 
-test('packed consumers read the package graph only from the tracked inventory', async () => {
+test('packed consumers read the package graph only from the canonical SDK inventory generator', async () => {
   const source = await readFile(new URL('./run-probes.mjs', import.meta.url), 'utf8');
 
   assert.match(
     source,
-    /api-surface\.json/u,
-    'the packed probe must consume the tracked SDK inventory',
+    /readCurrentApiSurfaceInventory/u,
+    'the packed probe must consume the generated SDK inventory',
   );
   assert.doesNotMatch(
     source,

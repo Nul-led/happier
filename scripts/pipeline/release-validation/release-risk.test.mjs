@@ -83,7 +83,7 @@ test('release risk classification requests semantic compatibility review without
 
 test('release risk classification separates public plugin package changes from host-plugin runtime compatibility', () => {
   const packageOnly = classifyReleaseValidationRisks([
-    'packages/plugin-ui/api-declarations.md',
+    'packages/plugin-ui/API.md',
     'scripts/api-governance/apiGovernance.mjs',
   ]);
   assert.equal(packageOnly.pluginSdkPackageChanged, true);

@@ -39,10 +39,16 @@ import {
 import type { PluginAccountCollection, PluginAccountCollectionValue } from './collections.js';
 import type { JsonValue } from './identity.js';
 
-// The source-only lane proves the author barrel itself. Generated inventory
-// currentness remains owned by the one ordered publisher and is still required
-// by every ordinary/package run.
-const inventoryIt = process.env.HAPPIER_PLUGIN_SDK_SOURCE_ONLY === '1' ? it.skip : it;
+// The API inventory is generated on demand, so this reads the generator's
+// in-memory projection of current package source. Project it once while
+// Vitest collects the suite so the whole-package read does not consume a
+// single assertion's timeout.
+const apiSurfaceSourceModulePath: string = '../scripts/apiSurfaceCli.mjs';
+const apiSurfaceInventory: unknown = await (
+    await import(apiSurfaceSourceModulePath) as Readonly<{
+        readCurrentApiSurfaceInventory(): Promise<unknown>;
+    }>
+).readCurrentApiSurfaceInventory();
 
 describe('Account Collection declarations', () => {
     it('projects the canonical Protocol Collection bounds through the public author leaf', () => {
@@ -71,10 +77,8 @@ describe('Account Collection declarations', () => {
         });
     });
 
-    inventoryIt('keeps the Collections barrel exactly aligned with its API inventory', async () => {
-        const inventory = JSON.parse(
-            await readFile(new URL('../api-surface.json', import.meta.url), 'utf8'),
-        ) as Readonly<{
+    it('keeps the Collections barrel exactly aligned with its API inventory', async () => {
+        const inventory = apiSurfaceInventory as Readonly<{
             symbols: readonly Readonly<{
                 specifier: string;
                 exportName: string;

@@ -441,11 +441,46 @@ async function preflightOutput(packageRoot, output) {
   const originalContents = existing ? await readFile(output.absolutePath, 'utf8') : null;
   return Object.freeze({
     ...output,
+    generated: output.generated === true,
     originalContents,
     changed: originalContents !== output.contents,
     summary: output.relativePath === 'api-declarations.md'
       ? renderDeclarationDiffSample(summarizeDeclarationDiff(originalContents, output.contents))
       : Object.freeze([]),
+  });
+}
+
+/**
+ * Only the compact exported-name census (`API.md`) is committed. The
+ * declaration report and inventory are generated on demand (gitignored and
+ * published by `prepack`), so they never count as drift: `--write` writes
+ * every output, and a check writes only generated records, and only when a
+ * same-run reader asks for them through `writeGenerated`.
+ */
+export function planGovernanceOutputs(outputs, options) {
+  const written = outputs.filter((output) => output.changed && (
+    options.write === true || (output.generated && options.writeGenerated === true)
+  ));
+  const drift = options.write === true
+    ? []
+    : outputs.filter((output) => output.changed && !output.generated);
+  const writtenPaths = new Set(written.map((output) => output.relativePath));
+  return Object.freeze({
+    written,
+    drift,
+    status: drift.length === 0 ? 'current' : 'drift',
+    changedFiles: options.write === true ? written.length : drift.length,
+    files: Object.freeze(outputs.map((output) => {
+      const isWritten = writtenPaths.has(output.relativePath);
+      return Object.freeze({
+        owner: output.owner,
+        path: output.relativePath,
+        ...(output.generated ? { generated: true } : {}),
+        changed: output.generated ? isWritten : output.changed,
+        written: isWritten,
+        summary: output.generated && !isWritten ? Object.freeze([]) : output.summary,
+      });
+    })),
   });
 }
 
@@ -564,6 +599,10 @@ async function runEntrypointDeclarationProfile(profile, options) {
       createError: provenanceError,
     })
     : emittedInventory;
+  // An extracted final candidate carries the published records themselves, so
+  // there every record is compared; in source every record but the census is
+  // generated on demand.
+  const generated = packageRootKind !== 'extracted-final-candidate';
   const outputs = [
     Object.freeze({
       owner: 'authorApiMarkdown',
@@ -576,21 +615,23 @@ async function runEntrypointDeclarationProfile(profile, options) {
       absolutePath: join(packageRoot, 'api-declarations.md'),
       relativePath: 'api-declarations.md',
       contents: emitted.declarationReport,
+      generated,
     }),
     Object.freeze({
       owner: 'apiSurfaceInventory',
       absolutePath: join(packageRoot, 'api-surface.json'),
       relativePath: 'api-surface.json',
       contents: `${JSON.stringify(inventory, null, 2)}\n`,
+      generated,
     }),
   ];
   const preflightedOutputs = await Promise.all(outputs.map((output) => preflightOutput(packageRoot, output)));
-  const changedOutputs = preflightedOutputs.filter((output) => output.changed);
-  if (options.write) await commitStagedOutputs(await stageChangedOutputs(changedOutputs));
+  const plan = planGovernanceOutputs(preflightedOutputs, options);
+  if (plan.written.length > 0) await commitStagedOutputs(await stageChangedOutputs(plan.written));
   return Object.freeze({
     profileId: profile.id,
     mode: reportMode(options),
-    status: options.write || changedOutputs.length === 0 ? 'current' : 'drift',
+    status: plan.status,
     packageRoot,
     publication: options.publishedVersion === undefined
       ? undefined
@@ -600,16 +641,10 @@ async function runEntrypointDeclarationProfile(profile, options) {
       }),
     summary: Object.freeze({
       plannedFiles: preflightedOutputs.length,
-      changedFiles: changedOutputs.length,
-      writtenFiles: options.write ? changedOutputs.length : 0,
+      changedFiles: plan.changedFiles,
+      writtenFiles: plan.written.length,
     }),
-    files: Object.freeze(preflightedOutputs.map((output) => Object.freeze({
-      owner: output.owner,
-      path: output.relativePath,
-      changed: output.changed,
-      written: options.write && output.changed,
-      summary: output.summary,
-    }))),
+    files: plan.files,
   });
 }
 

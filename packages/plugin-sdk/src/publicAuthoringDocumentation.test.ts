@@ -17,6 +17,13 @@ type DocumentationEntrypointRow = Readonly<{
 }>;
 
 const sdkRoot = fileURLToPath(new URL('..', import.meta.url));
+const apiSurfaceSourceModulePath: string = '../scripts/apiSurfaceCli.mjs';
+// Projected once while Vitest collects the suite, not inside an assertion.
+const apiSurfaceInventory = await (
+    await import(apiSurfaceSourceModulePath) as Readonly<{
+        readCurrentApiSurfaceInventory(): Promise<ApiSurfaceInventory>;
+    }>
+).readCurrentApiSurfaceInventory();
 const repoRoot = resolve(sdkRoot, '../..');
 const pluginDocumentationRoot = join(repoRoot, 'apps', 'docs', 'content', 'docs', 'plugins');
 const documentationRoot = join(repoRoot, 'apps', 'docs', 'content', 'docs', 'plugins', 'api');
@@ -95,9 +102,9 @@ function readEntrypointRows(source: string): readonly DocumentationEntrypointRow
 
 describe('Plugin SDK public authoring documentation', () => {
     it('keeps the exact generated entrypoint inventory discoverable through the docs navigation', () => {
-        const inventory = JSON.parse(
-            readFileSync(join(sdkRoot, 'api-surface.json'), 'utf8'),
-        ) as ApiSurfaceInventory;
+        // The inventory is generated on demand; this is the generator's
+        // in-memory projection of current package source.
+        const inventory = apiSurfaceInventory;
         const navigation = JSON.parse(readFileSync(apiNavigationPath, 'utf8')) as Readonly<{
             pages: readonly string[];
         }>;

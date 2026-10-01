@@ -11,6 +11,13 @@ import { publicSdkExampleDependencyVersions } from '../../../scripts/pipeline/np
 
 const packageRoot = resolve(import.meta.dirname, '..');
 
+test('plugin-ui runtime build keeps public toolchain validation in check lanes', async () => {
+  const pluginUi = JSON.parse(await readFile(resolve(packageRoot, '../plugin-ui/package.json'), 'utf8'));
+  assert.equal(pluginUi.scripts.prebuild, undefined);
+  assert.match(pluginUi.scripts['typecheck:local'], /check:public-toolchain/u);
+  assert.match(pluginUi.scripts['api:finite'], /check:public-toolchain/u);
+});
+
 // Workspace source manifests pin internal workspace dependencies at this
 // placeholder. Publication owns rewriting those bytes, so an example that
 // keeps a placeholder no publication run can rewrite must never reach the
@@ -37,6 +44,11 @@ const PUBLIC_AUTHORING_COMPANION_FILES = [
   'capability-matrix.json',
 ];
 
+// The compact exported-name census (`API.md`) and the capability matrix are
+// committed. The inventory and declaration report are generated on demand: Git ignores them and `prepack` materializes them into
+// every published package.
+const COMMITTED_AUTHORING_COMPANION_FILES = ['README.md', 'API.md', 'capability-matrix.json'];
+
 const PACKAGE_SELECTED_GENERATED_RECORDS = Object.freeze([
   Object.freeze({
     packageRelativePath: 'packages/plugin-sdk',
@@ -45,11 +57,10 @@ const PACKAGE_SELECTED_GENERATED_RECORDS = Object.freeze([
       'node ./scripts/apiSurfaceCli.mjs --materialize-source --write',
       'node ../../scripts/api-governance/cli.mjs --profile plugin-sdk --write',
     ]),
+    committedRecords: Object.freeze(['API.md', 'capability-matrix.json']),
     records: Object.freeze([
-      'API.md',
       'api-declarations.md',
       'api-surface.json',
-      'capability-matrix.json',
     ]),
   }),
   Object.freeze({
@@ -58,8 +69,20 @@ const PACKAGE_SELECTED_GENERATED_RECORDS = Object.freeze([
     prepackMaterializers: Object.freeze([
       'node ../../scripts/api-governance/cli.mjs --profile plugin-ui --write',
     ]),
+    committedRecords: Object.freeze(['API.md']),
     records: Object.freeze([
-      'API.md',
+      'api-declarations.md',
+      'api-surface.json',
+    ]),
+  }),
+  Object.freeze({
+    packageRelativePath: 'packages/sdk',
+    packageName: '@happier-dev/sdk',
+    prepackMaterializers: Object.freeze([
+      'node ../../scripts/api-governance/cli.mjs --profile sdk --write',
+    ]),
+    committedRecords: Object.freeze(['API.md']),
+    records: Object.freeze([
       'api-declarations.md',
       'api-surface.json',
     ]),
@@ -115,6 +138,15 @@ function isGitTracked(repoRoot, relativePath) {
     encoding: 'utf8',
   });
   return result.status === 0;
+}
+
+// `--no-index` evaluates the exclude rules even for a path still in the index.
+function gitIgnoredPaths(repoRoot, relativePaths) {
+  const result = spawnSync('git', ['check-ignore', '--no-index', ...relativePaths], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  return result.stdout.split('\n').map((line) => line.trim()).filter(Boolean).sort();
 }
 
 async function collectPublicExampleFiles(root, prefix = '') {
@@ -309,7 +341,10 @@ test('SDK package selection declares and packs the public authoring inventory as
     .filter((entry) => entry.startsWith('examples/'))
     .sort((left, right) => left.localeCompare(right));
   assert.deepEqual(packedExampleFiles, expectedExampleFiles);
-  for (const relativePath of PUBLIC_AUTHORING_COMPANION_FILES) {
+  // Generated API records are ignored and exist only after prepack writes
+  // them, so this ignore-scripts pack of the checkout proves the committed
+  // companions; the records' prepack materialization is asserted separately.
+  for (const relativePath of COMMITTED_AUTHORING_COMPANION_FILES) {
     assert.ok(
       packedFiles.includes(relativePath),
       `SDK tarball must include the public authoring companion ${relativePath}`,
@@ -317,86 +352,58 @@ test('SDK package selection declares and packs the public authoring inventory as
   }
 });
 
-test('the public contract records stay reviewable in version control', () => {
+test('only the exported-name census is committed; generated API records are ignored and packed by prepack', async () => {
   const repoRoot = resolve(packageRoot, '../..');
-  const insideWorkTree = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
+  const insideWorkTree = spawnSync('git', ['rev-parse', '--show-toplevel'], {
     cwd: repoRoot,
     encoding: 'utf8',
   });
-  if (insideWorkTree.status !== 0) return;
+  if (insideWorkTree.status !== 0 || resolve(insideWorkTree.stdout.trim()) !== repoRoot) return;
+  if (!isGitTracked(repoRoot, 'packages/plugin-sdk/package.json')) return;
 
-  // A record that Git ignores produces no diff when a symbol or a signature
-  // enters or leaves the published API, which is exactly the review gap these
-  // records exist to close. `check-ignore` exits 0 only for an ignored path.
-  const recordPaths = PUBLIC_AUTHORING_COMPANION_FILES
-    .map((relativePath) => `packages/plugin-sdk/${relativePath}`)
-    .concat(
-      PACKAGE_SELECTED_GENERATED_RECORDS
-        .filter((packageRecord) => packageRecord.packageRelativePath === 'packages/plugin-ui')
-        .flatMap((packageRecord) => packageRecord.records)
-        .map((relativePath) => `packages/plugin-ui/${relativePath}`),
-    );
-  const ignored = spawnSync('git', ['check-ignore', ...recordPaths], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-  });
-  assert.equal(
-    ignored.stdout.trim(),
-    '',
-    `public contract records must not be excluded from version control: ${ignored.stdout.trim()}`,
+  const committedPaths = PACKAGE_SELECTED_GENERATED_RECORDS.flatMap((packageRecord) => (
+    packageRecord.committedRecords.map((record) => `${packageRecord.packageRelativePath}/${record}`)
+  )).concat('packages/plugin-sdk/README.md');
+  const generatedPaths = PACKAGE_SELECTED_GENERATED_RECORDS.flatMap((packageRecord) => (
+    packageRecord.records.map((record) => `${packageRecord.packageRelativePath}/${record}`)
+  )).sort();
+  assert.deepEqual(
+    gitIgnoredPaths(repoRoot, committedPaths),
+    [],
+    'the committed exported-name census must stay reviewable in version control',
   );
-});
+  assert.deepEqual(
+    gitIgnoredPaths(repoRoot, generatedPaths),
+    generatedPaths,
+    'generated API records are produced on demand and must not be committed',
+  );
 
-test('package-selected generated records stay reviewable and use canonical prepack materializers', async () => {
-  const repoRoot = resolve(packageRoot, '../..');
-  const insideWorkTree = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-  });
-  if (insideWorkTree.status !== 0) return;
-
-  const untrackedReviewBaselineRecords = [];
   for (const packageRecord of PACKAGE_SELECTED_GENERATED_RECORDS) {
     const packageJson = JSON.parse(await readFile(
       join(repoRoot, packageRecord.packageRelativePath, 'package.json'),
       'utf8',
     ));
     assert.equal(packageJson.name, packageRecord.packageName);
+    const published = [...packageRecord.committedRecords, ...packageRecord.records];
     assert.deepEqual(
-      packageRecord.records.filter((record) => packageJson.files.includes(record)),
-      packageRecord.records,
-      `${packageRecord.packageName} must package every generated public record`,
+      published.filter((record) => packageJson.files.includes(record)),
+      published,
+      `${packageRecord.packageName} must package every public API record`,
     );
 
-    const untracked = packageRecord.records.filter((record) => !isGitTracked(
-      repoRoot,
-      `${packageRecord.packageRelativePath}/${record}`,
-    ));
-    untrackedReviewBaselineRecords.push(
-      ...untracked.map((record) => `${packageRecord.packageRelativePath}/${record}`),
-    );
-
-    // `prepack` is the package's clean-checkout materialization contract. It
+    // `prepack` is the package's clean-checkout materialization contract: an
+    // ignored record reaches the tarball only because prepack writes it. It
     // may enter the shared lock-owning wrapper before it delegates to a
     // prepared script, so inspect that canonical script graph rather than
-    // duplicating writers on the root command. Do not execute it here: the
-    // SDK's real prepack owns the shared artifact bundler. The writer
-    // implementations have their own owner-level tests; this test makes every
-    // package-selected record depend on that one path.
+    // duplicating writers on the root command. Do not execute it here.
     const prepackGraph = reachablePackageScriptCommands(packageJson.scripts, 'prepack');
     for (const materializer of packageRecord.prepackMaterializers) {
       assert.ok(
         prepackGraph.some(({ command }) => runsExactShellStep(command, materializer)),
-        `${packageRecord.packageName} must run ${materializer} for selected generated records (${untracked.length === 0 ? 'tracked' : `untracked: ${untracked.join(', ')}`})`,
+        `${packageRecord.packageName} prepack must run ${materializer} to materialize its generated records`,
       );
     }
   }
-
-  assert.deepEqual(
-    untrackedReviewBaselineRecords,
-    [],
-    `package-selected generated records must be Git-tracked review baselines: ${untrackedReviewBaselineRecords.join(', ')}`,
-  );
 });
 
 test('SDK package boundary permits only explicitly allowlisted source declaration sidecars', async () => {

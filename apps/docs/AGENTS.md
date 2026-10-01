@@ -77,7 +77,7 @@ These pages are generated. Do not hand-edit the output — change the generator 
 | `/getting-started/get-the-apps` | `apps/website/src/data/downloads.ts` |
 | `/plugins/manifest/availability` | `packages/plugin-sdk/capability-matrix.json` |
 | `/plugins/bundled` | every `packages/plugins/*/.happier-plugin/plugin.json`, cross-checked against the bundled registry |
-| `/plugins/api/surface` | `packages/plugin-sdk/api-surface.json` |
+| `/plugins/api/surface` | the Plugin SDK API-surface inventory, projected in memory by `packages/plugin-sdk/scripts/apiSurfaceCli.mjs` |
 | `/plugins/api/host-actions` | the Protocol Action registry through `packages/protocol/scripts/generate-plugin-action-reference.ts` |
 | `/development/architecture/runtime/runtime-events` | the protocol's `agentSessionV1` runtime schema (built form) |
 

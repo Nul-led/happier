@@ -38,6 +38,7 @@ import {
 } from '../../../scripts/api-governance/emittedDeclarationSurface.mjs';
 import { assertVendoredWorkspaceDeclarationsAreCurrent } from './vendoredWorkspaceDeclarations.mjs';
 import { renderDeclarationDiffSample, summarizeDeclarationDiff } from '../../../scripts/api-governance/declarationDiff.mjs';
+import { planGovernanceOutputs } from '../../../scripts/api-governance/apiGovernance.mjs';
 import { parseStructuredDeprecationTags } from '../../../scripts/api-governance/structuredDeprecation.mjs';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
@@ -975,6 +976,21 @@ async function assertInventoryValueRealmClosures({
         for (const { moduleSpecifier, resolutionCondition } of collectRuntimeModuleEdges(current.source)) {
           if (NODE_BUILTIN_MODULES.has(moduleSpecifier) || moduleSpecifier.startsWith('node:')) {
             if (closureRealm === 'browser' || closureRealm === 'react-native') {
+              // Metro and browser bundlers replace package-owned false entries
+              // with an empty module; the original Node edge is not reachable.
+              const runtimePackageJson = await readJson(
+                join(current.source.physicalRoot, 'package.json'),
+                `API surface runtime package ${current.source.sourceModule}`,
+              );
+              const mainFields = closureRealm === 'react-native'
+                ? ['react-native', 'browser']
+                : ['browser'];
+              const replacementField = mainFields.find((field) => {
+                const replacements = runtimePackageJson[field];
+                return replacements !== null && typeof replacements === 'object'
+                  && Object.hasOwn(replacements, moduleSpecifier);
+              });
+              if (replacementField && runtimePackageJson[replacementField][moduleSpecifier] === false) continue;
               throw new Error(
                 `API surface ${closureRealm} value closure ${rootLabel} reaches Node builtin ${moduleSpecifier} via ${[...current.chain, moduleSpecifier].join(' -> ')}`,
               );
@@ -2320,8 +2336,14 @@ async function prepareApiSurfaceMaterialization(
  * for source consumers such as pack staging. This never reads a generated
  * inventory or writes public-contract outputs.
  */
-export async function readCurrentApiSurfaceInventory({ packageRoot }) {
-  const prepared = await prepareApiSurfaceMaterialization({ packageRoot });
+export async function readCurrentApiSurfaceInventory({ packageRoot = DEFAULT_PACKAGE_ROOT } = {}) {
+  // The inventory is a syntactic projection of author publication specs; it
+  // answers no type question, so it does not need current vendored
+  // declarations.
+  const prepared = await prepareApiSurfaceMaterialization(
+    { packageRoot },
+    { requireVendoredWorkspaceDeclarations: false },
+  );
   return prepared.inventory;
 }
 
@@ -2340,6 +2362,7 @@ function buildApiSurfaceOutputs(prepared, additionalOutputs) {
       absolutePath: inventoryPath,
       relativePath: 'api-surface.json',
       contents: `${JSON.stringify(inventory, null, 2)}\n`,
+      generated: true,
     }),
     Object.freeze({
       owner: 'packageExports',
@@ -2408,18 +2431,28 @@ async function finalizeApiSurfaceMaterialization(
     outputs: preflightedOutputs,
     packageRoot,
   });
-  const changedOutputs = preflightedOutputs.filter((output) => output.changed);
+  // Package exports, source barrels, `API.md` and the capability matrix are
+  // committed and gate drift; the inventory and declaration report are
+  // generated on demand through the shared governance output plan.
+  const plan = planGovernanceOutputs(preflightedOutputs.map((output) => Object.freeze({
+    ...output,
+    generated: output.generated === true,
+    relativePath: relativeOutputPath(packageRoot, output.absolutePath),
+    summary: output.relativePath === PUBLIC_DECLARATION_REPORT_PATH
+      ? renderDeclarationDiffSample(summarizeDeclarationDiff(output.originalContents, output.contents))
+      : Object.freeze([]),
+  })), options);
 
-  if (options.write) {
+  if (plan.written.length > 0) {
     reportProgress(options, 'write-outputs');
-    const staged = await stageChangedOutputs(changedOutputs);
+    const staged = await stageChangedOutputs(plan.written);
     await commitStagedOutputs(staged, options.renameFile);
   }
 
   return Object.freeze({
     schemaVersion: 1,
     mode: options.write ? 'write' : options.check ? 'check' : 'dry-run',
-    status: options.write || changedOutputs.length === 0 ? 'current' : 'drift',
+    status: plan.status,
     sourceToolingComplete: true,
     packageRoot,
     inventoryPath: prepared.inventoryPath,
@@ -2429,18 +2462,10 @@ async function finalizeApiSurfaceMaterialization(
     unmaterializedPlanOutputs: Object.freeze([]),
     summary: Object.freeze({
       plannedFiles: preflightedOutputs.length,
-      changedFiles: changedOutputs.length,
-      writtenFiles: options.write ? changedOutputs.length : 0,
+      changedFiles: plan.changedFiles,
+      writtenFiles: plan.written.length,
     }),
-    files: Object.freeze(preflightedOutputs.map((output) => Object.freeze({
-      owner: output.owner,
-      path: relativeOutputPath(packageRoot, output.absolutePath),
-      changed: output.changed,
-      written: options.write && output.changed,
-      summary: output.relativePath === PUBLIC_DECLARATION_REPORT_PATH
-        ? renderDeclarationDiffSample(summarizeDeclarationDiff(output.originalContents, output.contents))
-        : Object.freeze([]),
-    }))),
+    files: plan.files,
     generationPlan,
   });
 }
@@ -2525,6 +2550,7 @@ export async function runApiSurfaceCli(options) {
         absolutePath: join(prepared.packageRoot, PUBLIC_DECLARATION_REPORT_PATH),
         relativePath: PUBLIC_DECLARATION_REPORT_PATH,
         contents: emittedDeclarationSurface.declarationReport,
+        generated: true,
       }),
     ],
     materializedPlanOutputs: MATERIALIZED_PLAN_OUTPUTS,

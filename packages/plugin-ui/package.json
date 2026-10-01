@@ -61,11 +61,11 @@
   "scripts": {
     "prepare:declarations": "yarn --cwd ../plugin-sdk -s prepare:declarations",
     "prepare:api-governance": "yarn -s prepare:declarations && yarn --cwd ../plugin-sdk -s check:public-toolchain:prepared && yarn -s build:compiled",
-    "api-governance": "yarn -s prepare:api-governance && node ../../scripts/api-governance/cli.mjs --profile plugin-ui --write",
+    "api-governance": "yarn -s prepare:api-governance && yarn -s api-governance:emit",
+    "api-governance:emit": "node ../../scripts/api-governance/cli.mjs --profile plugin-ui --write",
     "check:api-governance": "yarn -s prepare:api-governance && node ../../scripts/api-governance/cli.mjs --profile plugin-ui --check",
     "check:api-governance:prepared": "node ../../scripts/api-governance/cli.mjs --profile plugin-ui --check",
     "tsc": "node ../../scripts/workspaces/runTypeScriptCli.mjs",
-    "prebuild": "yarn --cwd ../plugin-sdk -s check:public-toolchain",
     "prepack": "yarn -s prepare:api-governance && node ../../scripts/api-governance/cli.mjs --profile plugin-ui --write && yarn -s check:api-governance:prepared",
     "build:finite": "yarn -s build:compiled",
     "api:finite": "yarn --cwd ../plugin-sdk -s check:public-toolchain:prepared && yarn -s check:api-governance:prepared",

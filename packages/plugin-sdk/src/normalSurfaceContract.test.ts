@@ -13,20 +13,17 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
 
-/* @sdk-negative-type-case:src-normalSurfaceContract-test-ts-34:LS0gdGhlIGNhbm9uaWNhbCB2YWxpZGF0b3IgaXMgY2hlY2tlZCBKYXZhU2NyaXB0IHdpdGhvdXQgZW1pdHRlZCBkZWNsYXJhdGlvbnMu:aW1wb3J0IHsgcmVhZFZhbGlkYXRlZEFwaVN1cmZhY2VJbnZlbnRvcnlJZlByZXNlbnQgfSBmcm9tICcuLi9zY3JpcHRzL2FwaVN1cmZhY2UubWpzJzs */
-const apiSurfaceValidatorModulePath: string = '../scripts/apiSurface.mjs';
-const readValidatedApiSurfaceInventoryIfPresent = (
-    await import(apiSurfaceValidatorModulePath) as Readonly<{
-        readValidatedApiSurfaceInventoryIfPresent(
-            url: URL,
-        ): Promise<Readonly<{ status: 'available'; inventory: never } | { status: 'missing' }>>;
+/* @sdk-negative-type-case:src-normalSurfaceContract-test-ts-34:LS0gdGhlIGNhbm9uaWNhbCB2YWxpZGF0b3IgaXMgY2hlY2tlZCBKYXZhU2NyaXB0IHdpdGhvdXQgZW1pdHRlZCBkZWNsYXJhdGlvbnMu:aW1wb3J0IHsgcmVhZEN1cnJlbnRBcGlTdXJmYWNlSW52ZW50b3J5IH0gZnJvbSAnLi4vc2NyaXB0cy9hcGlTdXJmYWNlQ2xpLm1qcyc7 */
+const apiSurfaceSourceModulePath: string = '../scripts/apiSurfaceCli.mjs';
+const readCurrentApiSurfaceInventory = (
+    await import(apiSurfaceSourceModulePath) as Readonly<{
+        readCurrentApiSurfaceInventory(): Promise<unknown>;
     }>
-).readValidatedApiSurfaceInventoryIfPresent; /* @sdk-negative-type-case-end */
+).readCurrentApiSurfaceInventory; /* @sdk-negative-type-case-end */
 
 import {
     AGENT_RUNTIME_TERMINAL_AUTHOR_CONTRACT,
     projectAuthorSurfaceContract,
-    requireApiSurfaceInventory,
 } from './normalSurfaceContract.js';
 
 type AuthorExportIdentity = Readonly<{
@@ -70,20 +67,12 @@ type ApiSurfaceInventory = Readonly<{
     }>[];
 }>;
 
-const apiSurfaceInventoryRead: Readonly<
-    | { status: 'available'; inventory: ApiSurfaceInventory }
-    | { status: 'missing' }
-> = await readValidatedApiSurfaceInventoryIfPresent(
-    new URL('../api-surface.json', import.meta.url),
-);
-const apiSurfaceInventory: ApiSurfaceInventory | undefined =
-    apiSurfaceInventoryRead.status === 'available'
-        ? apiSurfaceInventoryRead.inventory
-        : undefined;
+// The inventory is generated on demand, so contracts read the generator's
+// in-memory projection of current package source rather than a stored copy.
+const apiSurfaceInventory = await readCurrentApiSurfaceInventory() as ApiSurfaceInventory;
 /**
- * The nonwriting source lane deliberately defers generated-inventory currentness
- * to the ordered publisher. Every ordinary/package run still fails loudly when
- * the inventory is absent or stale (plan UI-D23 / EU-13).
+ * The nonwriting source lane defers the emitted-declaration assertions below
+ * to the ordered publisher, which has built `dist`.
  */
 const inventoryIt = process.env.HAPPIER_PLUGIN_SDK_SOURCE_ONLY === '1' ? it.skip : it;
 
@@ -96,7 +85,7 @@ function versionedAuthorExports(
 }
 
 function readApiSurfaceInventory(): ApiSurfaceInventory {
-    return requireApiSurfaceInventory(apiSurfaceInventoryRead);
+    return apiSurfaceInventory;
 }
 
 function readAuthorSurfaceContract() {
@@ -150,10 +139,13 @@ function createSdkProgram(): ts.Program {
     });
 }
 
-let sdkProgram: ts.Program | undefined;
+// Construct the one package program while Vitest is collecting this owner
+// suite. Creating it lazily inside the first assertion makes TypeScript's
+// whole-package work consume that assertion's timeout under a loaded package
+// lane even though every later case reuses the same program.
+const sdkProgram = createSdkProgram();
 
 function readSdkProgram(): ts.Program {
-    sdkProgram ??= createSdkProgram();
     return sdkProgram;
 }
 
@@ -503,58 +495,7 @@ function missingRequiredDeclarationDependencies(
 }
 
 describe('normal supported package surface', () => {
-    it('blocks publication until the package-owned inventory has been generated', () => {
-        expect(
-            apiSurfaceInventory,
-            'Publication remains blocked: packages/plugin-sdk/api-surface.json has not been generated from source',
-        ).toBeDefined();
-    });
-
-    it('fails a missing tracked inventory with the canonical regeneration and check commands', async () => {
-        expect(requireApiSurfaceInventory({
-            status: 'available',
-            inventory: { entrypoints: [], symbols: [] },
-        })).toEqual({ entrypoints: [], symbols: [] });
-
-        // The tracked generated artifact can still be missing or unavailable in
-        // a working tree. The diagnostic must describe that state accurately and
-        // point to the package-owned regeneration and currentness checks.
-        expect(() => requireApiSurfaceInventory({ status: 'missing' }))
-            .toThrowError(/packages\/plugin-sdk\/api-surface\.json/u);
-
-        // The named command must be a script this package actually declares.
-        // A retired producer left behind in this message reads as runnable and
-        // is not (UI-D28: `api-surface:seed` was removed with its mode).
-        let message = '';
-        try {
-            requireApiSurfaceInventory({ status: 'missing' });
-        } catch (error) {
-            message = error instanceof Error ? error.message : String(error);
-        }
-        expect(message).toContain('tracked generated artifact');
-        expect(message).toContain('packages/plugin-sdk/api-surface.json');
-        expect(message).toContain(
-            '`yarn workspace @happier-dev/plugin-sdk api-surface --write`',
-        );
-        expect(message).toContain(
-            '`yarn workspace @happier-dev/plugin-sdk api-surface --check`',
-        );
-        expect(message).not.toMatch(/not tracked|untracked|clean clone never receives/iu);
-        const named = [...message.matchAll(
-            /`yarn workspace @happier-dev\/plugin-sdk ([a-z0-9:-]+)[^`]*`/gu,
-        )].map((match) => match[1]);
-        expect(named.length).toBeGreaterThan(0);
-        const packageScripts = JSON.parse(await readFile(
-            fileURLToPath(new URL('../package.json', import.meta.url)),
-            'utf8',
-        )) as Readonly<{ scripts?: Readonly<Record<string, string>> }>;
-        for (const script of named) {
-            expect(Object.keys(packageScripts.scripts ?? {})).toContain(script);
-        }
-        expect(named).toContain('api-surface');
-    });
-
-    it('derives author paths and symbols from the tracked inventory', () => {
+    it('derives author paths and symbols from the package inventory', () => {
         const inventory = {
             entrypoints: [
                 {

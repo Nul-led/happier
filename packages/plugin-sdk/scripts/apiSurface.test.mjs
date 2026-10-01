@@ -12,6 +12,7 @@ import {
   readValidatedApiSurfaceInventory,
   validateApiSurfaceInventory,
 } from './apiSurface.mjs';
+import { readCurrentApiSurfaceInventory } from './apiSurfaceCli.mjs';
 
 const AUTHOR_ENTRYPOINT = Object.freeze({
   specifier: './actions',
@@ -910,9 +911,7 @@ test('one generation plan includes host package seams but excludes them from aut
 });
 
 test('generation orders package export conditions from types through realm targets to default', async () => {
-  const inventory = await readValidatedApiSurfaceInventory(
-    new URL('../api-surface.json', import.meta.url),
-  );
+  const inventory = await readCurrentApiSurfaceInventory();
   const generated = createApiSurfaceGenerationPlan(inventory);
 
   assert.deepEqual(Object.keys(generated.packageExports['.']), ['types', 'browser', 'default']);

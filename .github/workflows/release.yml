@@ -740,6 +740,38 @@ jobs:
             --publish-channels-protocol false \
             --github-output "$GITHUB_OUTPUT"
 
+      - name: Enable Corepack for public SDK API generation
+        if: ${{ steps.bump_plan.outputs.publish_plugin_sdk == 'true' || steps.bump_plan.outputs.publish_sdk == 'true' }}
+        run: |
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
+
+      - name: Install dependencies for public SDK API generation
+        if: ${{ steps.bump_plan.outputs.publish_plugin_sdk == 'true' || steps.bump_plan.outputs.publish_sdk == 'true' }}
+        env:
+          YARN_PRODUCTION: "false"
+          npm_config_production: "false"
+        uses: ./.github/actions/install-yarn-dependencies
+        with:
+          args: --frozen-lockfile --ignore-engines
+
+      # The API inventory and declaration records are generated on demand, not
+      # committed, so the comparison needs the prepared package declarations.
+      - name: Prepare public SDK declarations for API generation
+        if: ${{ steps.bump_plan.outputs.publish_plugin_sdk == 'true' || steps.bump_plan.outputs.publish_sdk == 'true' }}
+        env:
+          PUBLISH_PLUGIN_SDK: ${{ steps.bump_plan.outputs.publish_plugin_sdk }}
+          PUBLISH_SDK: ${{ steps.bump_plan.outputs.publish_sdk }}
+        run: |
+          set -euo pipefail
+          if [ "$PUBLISH_PLUGIN_SDK" = "true" ]; then
+            yarn workspace @happier-dev/plugin-sdk -s prepare:api-governance
+            yarn workspace @happier-dev/plugin-ui -s prepare:api-governance
+          fi
+          if [ "$PUBLISH_SDK" = "true" ]; then
+            yarn workspace @happier-dev/sdk -s prepare:api-governance
+          fi
+
       - name: Compare public SDK APIs for the exact planning source
         id: public_sdk_analysis
         if: ${{ steps.bump_plan.outputs.publish_plugin_sdk == 'true' || steps.bump_plan.outputs.publish_sdk == 'true' }}

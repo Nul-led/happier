@@ -438,8 +438,11 @@ export async function resolvePreviousPublishedApiInventory({
 
 /**
  * Produces the mechanical API comparison used to inform editorial/version
- * approval. It deliberately verifies already-generated source records rather
- * than inventing a proposed release version or rewriting the shared worktree.
+ * approval. The inventory and declaration records are generated on demand
+ * (never committed), so the canonical generator materializes them here without
+ * rewriting any committed record or inventing a proposed release version.
+ * `verifyCurrentRecords: false` trusts the exact-SHA CI check for
+ * committed-census currentness; the records are still generated.
  */
 export async function analyzeCurrentPublicApiForEditorial({
   profileId,
@@ -462,15 +465,17 @@ export async function analyzeCurrentPublicApiForEditorial({
     packageRoot: resolvedPackageRoot,
     packageRootKind: 'source-complete-publication-sandbox',
     check: true,
+    writeGenerated: true,
   };
   if (!governanceInput.profileId) throw new Error('Public API governance profile id is required');
-  if (verifyCurrentRecords) {
-    const governanceReport = runApiGovernanceImpl
-      ? await runApiGovernanceImpl(governanceInput)
-      : await runRepositoryApiGovernance({ repositoryRoot, options: governanceInput });
-    if (!isRecord(governanceReport) || governanceReport.status !== 'current') {
-      throw new Error(`Public API governance records are not current for ${packageName}`);
-    }
+  const governanceReport = runApiGovernanceImpl
+    ? await runApiGovernanceImpl(governanceInput)
+    : await runRepositoryApiGovernance({ repositoryRoot, options: governanceInput });
+  if (!isRecord(governanceReport)) {
+    throw new Error(`Public API governance returned no report for ${packageName}`);
+  }
+  if (verifyCurrentRecords && governanceReport.status !== 'current') {
+    throw new Error(`Public API governance records are not current for ${packageName}`);
   }
 
   const baseline = await resolvePreviousPublishedInventoryImpl({

@@ -8,13 +8,13 @@ import { isDeepStrictEqual } from 'node:util';
 import ts from 'typescript';
 
 import { validateApiSurfaceInventory } from '../../plugin-sdk/scripts/apiSurface.mjs';
+import { readCurrentApiSurfaceInventory } from '../../plugin-sdk/scripts/apiSurfaceCli.mjs';
 import { resolveNpmCommandInvocation } from '../../../scripts/workspaces/execYarnCommand.mjs';
 import { resolveTypeScriptCliInvocation } from '../../../scripts/workspaces/resolveTypeScriptCliInvocation.mjs';
 
 const repoRoot = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
 const pluginSdkDir = join(repoRoot, 'packages', 'plugin-sdk');
 const rootNodeModules = join(repoRoot, 'node_modules');
-const sdkInventoryPath = join(pluginSdkDir, 'api-surface.json');
 const consumerArg = process.argv.find((arg) => arg.startsWith('--consumer='));
 const tarballArg = process.argv.find((arg) => arg.startsWith('--tarball='));
 const requestedConsumers = new Set(
@@ -142,20 +142,16 @@ function assertOutOfWorkspace(path) {
   }
 }
 
-export async function readCanonicalAuthorSurfaceInventory(inventoryPath = sdkInventoryPath) {
-  let serializedInventory;
-  try {
-    serializedInventory = await readFile(inventoryPath, 'utf8');
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      throw new Error(
-        'EU-3 publication remains blocked: packages/plugin-sdk/api-surface.json has not been seeded',
-      );
-    }
-    throw error;
-  }
-
-  const inventory = validateApiSurfaceInventory(JSON.parse(serializedInventory));
+/**
+ * The SDK inventory is generated on demand, so the default reads the
+ * generator's in-memory projection of current package source; an explicit
+ * path reads a supplied inventory (for example one extracted from a tarball).
+ */
+export async function readCanonicalAuthorSurfaceInventory(inventoryPath) {
+  const candidate = inventoryPath === undefined
+    ? await readCurrentApiSurfaceInventory({ packageRoot: pluginSdkDir })
+    : JSON.parse(await readFile(inventoryPath, 'utf8'));
+  const inventory = validateApiSurfaceInventory(candidate);
   return { inventory };
 }
 

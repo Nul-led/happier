@@ -1,5 +1,7 @@
 /**
- * Renders the complete public surface of the Plugin SDK from `api-surface.json`.
+ * Renders the complete public surface of the Plugin SDK from its API-surface
+ * inventory, which is generated on demand: this renders from the SDK generator's
+ * in-memory projection of current package source rather than a stored copy.
  *
  * `sdk-entrypoints.mdx` answers "which import path does this capability live
  * behind", and a test already holds it to every entry in the package's
@@ -29,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..', '..', '..');
-const SURFACE = join(REPO, 'packages', 'plugin-sdk', 'api-surface.json');
+const PLUGIN_SDK_ROOT = join(REPO, 'packages', 'plugin-sdk');
 export const OUTPUT_PATH = join(HERE, '..', 'content', 'docs', 'plugins', 'api', 'surface.mdx');
 
 /** The shape this generator understands. A bump means the projection changed. */
@@ -175,8 +177,14 @@ ${detail}
 `;
 }
 
-export async function renderSdkSurfaceReferenceMarkdown({ surfacePath = SURFACE } = {}) {
-  return renderSdkSurfaceMarkdown(JSON.parse(readFileSync(surfacePath, 'utf8')));
+export async function renderSdkSurfaceReferenceMarkdown({ surfacePath } = {}) {
+  if (surfacePath !== undefined) {
+    return renderSdkSurfaceMarkdown(JSON.parse(readFileSync(surfacePath, 'utf8')));
+  }
+  const { readCurrentApiSurfaceInventory } = await import(
+    '../../../packages/plugin-sdk/scripts/apiSurfaceCli.mjs'
+  );
+  return renderSdkSurfaceMarkdown(await readCurrentApiSurfaceInventory({ packageRoot: PLUGIN_SDK_ROOT }));
 }
 
 const isEntrypoint = process.argv[1] ? resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;

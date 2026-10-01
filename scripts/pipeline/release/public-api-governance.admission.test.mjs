@@ -101,14 +101,11 @@ test('editorial API analysis verifies source records and compares them before a 
     await mkdir(previousRoot, { recursive: true });
     const previousInventoryPath = join(previousRoot, 'api-surface.json');
     const previousDeclarationsPath = join(previousRoot, 'api-declarations.md');
-    await writeFile(
-      join(packageRoot, 'api-surface.json'),
-      `${JSON.stringify(inventory([{ specifier: '.', exportName: 'Alpha', kind: 'type' }]))}\n`,
-    );
-    await writeFile(join(packageRoot, 'api-declarations.md'), declarations());
     await writeFile(previousInventoryPath, `${JSON.stringify(inventory([]))}\n`);
     await writeFile(previousDeclarationsPath, declarations());
 
+    // The candidate records are not committed: the analysis must have the
+    // generator materialize them before it reads them.
     const analysis = await analyzeCurrentPublicApiForEditorial({
       profileId: 'example',
       packageName: '@happier-dev/example',
@@ -131,7 +128,13 @@ test('editorial API analysis verifies source records and compares them before a 
           packageRoot,
           packageRootKind: 'source-complete-publication-sandbox',
           check: true,
+          writeGenerated: true,
         });
+        await writeFile(
+          join(packageRoot, 'api-surface.json'),
+          `${JSON.stringify(inventory([{ specifier: '.', exportName: 'Alpha', kind: 'type' }]))}\n`,
+        );
+        await writeFile(join(packageRoot, 'api-declarations.md'), declarations());
         return { status: 'current' };
       },
     });
@@ -144,13 +147,11 @@ test('editorial API analysis verifies source records and compares them before a 
   }
 });
 
-test('exact release admission can consume CI-verified checked-in API records without rerunning the generator', async () => {
+test('trusted release admission still generates the API records but tolerates committed-record drift', async () => {
   const root = await mkdtemp(join(tmpdir(), 'public-api-governance-admission-'));
   try {
     const packageRoot = join(root, 'package');
     await mkdir(packageRoot, { recursive: true });
-    await writeFile(join(packageRoot, 'api-surface.json'), `${JSON.stringify(inventory([]))}\n`);
-    await writeFile(join(packageRoot, 'api-declarations.md'), declarations());
     const analysis = await analyzeCurrentPublicApiForEditorial({
       profileId: 'example',
       packageName: '@happier-dev/example',
@@ -164,8 +165,12 @@ test('exact release admission can consume CI-verified checked-in API records wit
         previousDeclarationsPath: null,
         cleanup: async () => {},
       }),
-      runApiGovernanceImpl: async () => {
-        throw new Error('exact admission must rely on the already-required exact-SHA CI governance check');
+      runApiGovernanceImpl: async (input) => {
+        assert.equal(input.writeGenerated, true);
+        await writeFile(join(packageRoot, 'api-surface.json'), `${JSON.stringify(inventory([]))}\n`);
+        await writeFile(join(packageRoot, 'api-declarations.md'), declarations());
+        // The exact-SHA CI check already owns committed-census currentness.
+        return { status: 'drift' };
       },
     });
     assert.equal(analysis.comparison.status, 'dormant_pre_baseline');

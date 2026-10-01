@@ -1,19 +1,16 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-/* @sdk-negative-type-case:src-agentRuntime-runnerFactoryAuthoringContract-test-ts-88:LS0gdGhlIGNhbm9uaWNhbCB2YWxpZGF0b3IgaXMgY2hlY2tlZCBKYXZhU2NyaXB0IHdpdGhvdXQgZW1pdHRlZCBkZWNsYXJhdGlvbnMu:aW1wb3J0IHsgcmVhZFZhbGlkYXRlZEFwaVN1cmZhY2VJbnZlbnRvcnlJZlByZXNlbnQgfSBmcm9tICcuLi8uLi9zY3JpcHRzL2FwaVN1cmZhY2UubWpzJzs */
-const apiSurfaceValidatorModulePath: string = '../../scripts/apiSurface.mjs';
-const readValidatedApiSurfaceInventoryIfPresent = (
-  await import(apiSurfaceValidatorModulePath) as Readonly<{
-    readValidatedApiSurfaceInventoryIfPresent(
-      url: URL,
-    ): Promise<Readonly<{ status: 'available'; inventory: never } | { status: 'missing' }>>;
+/* @sdk-negative-type-case:src-agentRuntime-runnerFactoryAuthoringContract-test-ts-88:LS0gdGhlIGNhbm9uaWNhbCB2YWxpZGF0b3IgaXMgY2hlY2tlZCBKYXZhU2NyaXB0IHdpdGhvdXQgZW1pdHRlZCBkZWNsYXJhdGlvbnMu:aW1wb3J0IHsgcmVhZEN1cnJlbnRBcGlTdXJmYWNlSW52ZW50b3J5IH0gZnJvbSAnLi4vLi4vc2NyaXB0cy9hcGlTdXJmYWNlQ2xpLm1qcyc7 */
+const apiSurfaceSourceModulePath: string = '../../scripts/apiSurfaceCli.mjs';
+const readCurrentApiSurfaceInventory = (
+  await import(apiSurfaceSourceModulePath) as Readonly<{
+    readCurrentApiSurfaceInventory(): Promise<unknown>;
   }>
-).readValidatedApiSurfaceInventoryIfPresent; /* @sdk-negative-type-case-end */
+).readCurrentApiSurfaceInventory; /* @sdk-negative-type-case-end */
 
 import {
   type ApiSurfaceInventoryContract,
   projectAuthorSurfaceContract,
-  requireApiSurfaceInventory,
 } from '../normalSurfaceContract.js';
 
 import type {
@@ -50,17 +47,10 @@ import type {
   AgentTerminalPromptSubmitVerificationPolicyV1,
 } from './index.js';
 
-const apiSurfaceInventoryRead: Readonly<
-  | { status: 'available'; inventory: ApiSurfaceInventoryContract }
-  | { status: 'missing' }
-> = await readValidatedApiSurfaceInventoryIfPresent(
-  new URL('../../api-surface.json', import.meta.url),
-);
+const apiSurfaceInventory = await readCurrentApiSurfaceInventory() as ApiSurfaceInventoryContract;
 
 function readAuthorSurfaceContract() {
-  return projectAuthorSurfaceContract(
-    requireApiSurfaceInventory<ApiSurfaceInventoryContract>(apiSurfaceInventoryRead),
-  );
+  return projectAuthorSurfaceContract(apiSurfaceInventory);
 }
 
 describe('public Agent runner-factory authoring contract', () => {

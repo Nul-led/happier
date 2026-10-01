@@ -4,13 +4,15 @@ import test from 'node:test';
 
 import ts from 'typescript';
 
+import { readCurrentApiSurfaceInventory } from './apiSurfaceCli.mjs';
+
 async function readSource(relativePath) {
   const text = await readFile(new URL(`../src/${relativePath}`, import.meta.url), 'utf8');
   return ts.createSourceFile(relativePath, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 }
 
 async function readApiSurfaceInventory() {
-  return JSON.parse(await readFile(new URL('../api-surface.json', import.meta.url), 'utf8'));
+  return readCurrentApiSurfaceInventory();
 }
 
 function requiredTypeAlias(source, name) {

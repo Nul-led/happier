@@ -311,25 +311,19 @@ function publicPluginPackageSpecifiers(rootDir: string): ReadonlySet<string> {
     '@happier-dev/plugin-ui',
   ]);
 
-  const sdkSurfacePath = path.join(rootDir, 'packages/plugin-sdk/api-surface.json');
-  if (existsSync(sdkSurfacePath)) {
-    const surface = JSON.parse(readFileSync(sdkSurfacePath, 'utf8')) as {
-      entrypoints?: unknown;
+  // The SDK's committed package exports are generated from its author
+  // publication specs. Host entrypoints live only under the reserved `./host`
+  // namespace (the API-surface validator rejects any author entrypoint there),
+  // so every other export key is an author entrypoint.
+  const pluginSdkPackageJsonPath = path.join(rootDir, 'packages/plugin-sdk/package.json');
+  if (existsSync(pluginSdkPackageJsonPath)) {
+    const packageJson = JSON.parse(readFileSync(pluginSdkPackageJsonPath, 'utf8')) as {
+      exports?: unknown;
     };
-    if (Array.isArray(surface.entrypoints)) {
-      for (const entrypoint of surface.entrypoints) {
-        if (
-          !entrypoint
-          || typeof entrypoint !== 'object'
-          || (entrypoint as { visibility?: unknown }).visibility !== 'author'
-          || typeof (entrypoint as { specifier?: unknown }).specifier !== 'string'
-        ) {
-          continue;
-        }
-        const specifier = packageSpecifierForExportKey(
-          '@happier-dev/plugin-sdk',
-          (entrypoint as { specifier: string }).specifier,
-        );
+    if (packageJson.exports && typeof packageJson.exports === 'object' && !Array.isArray(packageJson.exports)) {
+      for (const exportKey of Object.keys(packageJson.exports)) {
+        if (exportKey === './host' || exportKey.startsWith('./host/')) continue;
+        const specifier = packageSpecifierForExportKey('@happier-dev/plugin-sdk', exportKey);
         if (specifier) specifiers.add(specifier);
       }
     }
