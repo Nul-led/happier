@@ -8265,7 +8265,7 @@ settingsSession: {
         visibilityHiddenSubtitle: "Ukryj limit dostawcy przy polu wpisywania.",
         windowTitle: "Okno wskaźnika",
         labelsTitle: 'Pokaż etykiety użycia',
-        labelsSubtitle: 'Podpisz wskaźniki kontekstu i dostawcy.',
+        labelsSubtitle: 'Wyświetlaj etykiety wskaźników kontekstu i dostawcy.',
         windowMostConstrainedTitle: "Najbardziej ograniczone",
         windowMostConstrainedSubtitle:
           "Pokazuj wiarygodne okno limitu z najmniejszym pozostałym limitem.",
