@@ -119,6 +119,7 @@ export function createWorkflowActivityPublisher(params: Readonly<{
   const now = params.now ?? Date.now;
   const committedByRun = new Map<string, CommittedRunState>();
   const seededRunIds = new Set<string>();
+  let lastPublishedHeadlineFingerprint: string | null = null;
 
   async function seedCommittedRunState(runId: string): Promise<void> {
     if (committedByRun.has(runId) || seededRunIds.has(runId) || !params.readCommittedRunSnapshot) return;
@@ -193,8 +194,12 @@ export function createWorkflowActivityPublisher(params: Readonly<{
     }
 
     const committedStates = [...committedByRun.values()];
-    const updatedAt = now();
-    await params.writeHeadlines({
+    const entries = committedStates.flatMap((state) => projectWorkflowRunAgentActivityEntries(state.display));
+    const updatedAt = entries.reduce(
+      (latest, entry) => Math.max(latest, entry.updatedAt),
+      committedStates.reduce((latest, state) => Math.max(latest, state.headline.updatedAt), 0),
+    );
+    const bundle: SessionActivityHeadlineBundleV1 = {
       workflow: buildSessionWorkflowActivityHeadline({
         backendId: params.backendId,
         ...(params.agentId ? { agentId: params.agentId } : {}),
@@ -205,12 +210,20 @@ export function createWorkflowActivityPublisher(params: Readonly<{
         backendId: params.backendId,
         ...(params.agentId ? { agentId: params.agentId } : {}),
         updatedAt,
-        entries: committedStates.flatMap((state) => projectWorkflowRunAgentActivityEntries(state.display)),
+        entries,
         ...(params.recentEntriesLimit !== undefined
           ? { recentEntriesLimit: params.recentEntriesLimit }
           : {}),
       }),
-    });
+    };
+    // The timestamps above come from activity evidence, so identical bundles contain no new
+    // headline state. Failed record retries must not repeatedly mutate session metadata.
+    const fingerprint = JSON.stringify(bundle);
+    if (fingerprint !== lastPublishedHeadlineFingerprint) {
+      await params.writeHeadlines(bundle);
+      // Rejected metadata writes remain retryable even when the durable record already landed.
+      lastPublishedHeadlineFingerprint = fingerprint;
+    }
     return { failedRunIds, permanentFailedRunIds };
   }
 
