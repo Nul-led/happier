@@ -30,13 +30,13 @@ export function createPeerTcpTunnelApplicationSubstreamSession(input: Readonly<{
     tunnelId: string;
     maxBinaryHeaderBytes: number;
     maxFrameBytes: number;
-    maxBytesPerSubstream: number;
-    maxAggregateBytes: number;
+    maxBytesPerSubstream?: number;
+    maxAggregateBytes?: number;
     maxConcurrentSubstreams: number;
-    maxTotalSubstreams: number;
-    maxSubstreamIdleMs: number;
-    maxSessionIdleMs: number;
-    maxDurationMs: number;
+    maxTotalSubstreams?: number;
+    maxSubstreamIdleMs?: number;
+    maxSessionIdleMs?: number;
+    maxDurationMs?: number;
     maxPendingDispatches?: number;
     maxPendingDispatchBytes?: number;
     sendBinaryFrame: (frame: Uint8Array) => Promise<void> | void;
@@ -144,7 +144,10 @@ export function createPeerTcpTunnelApplicationSubstreamSession(input: Readonly<{
         active: ActivePeerTcpTunnelApplicationSubstream,
         bytes: number,
     ): PeerTcpTunnelApplicationSubstreamSessionResult {
-        if (active.bytes + bytes > input.maxBytesPerSubstream || aggregateBytes + bytes > input.maxAggregateBytes) {
+        if (
+            (input.maxBytesPerSubstream !== undefined && active.bytes + bytes > input.maxBytesPerSubstream)
+            || (input.maxAggregateBytes !== undefined && aggregateBytes + bytes > input.maxAggregateBytes)
+        ) {
             return { ok: false, reasonCode: 'substream_cap_exceeded', substreamId };
         }
         return { ok: true };
@@ -204,10 +207,10 @@ export function createPeerTcpTunnelApplicationSubstreamSession(input: Readonly<{
             }
 
             const now = nowMs();
-            if (now - startedAtMs > input.maxDurationMs) {
+            if (input.maxDurationMs !== undefined && now - startedAtMs > input.maxDurationMs) {
                 return deny('max_duration_exceeded', substreamId);
             }
-            if (now - lastSessionActivityMs > input.maxSessionIdleMs) {
+            if (input.maxSessionIdleMs !== undefined && now - lastSessionActivityMs > input.maxSessionIdleMs) {
                 return deny('max_idle_exceeded', substreamId);
             }
             if (decoded.header.kind === 'close' || decoded.header.kind === 'abort') {
@@ -233,7 +236,7 @@ export function createPeerTcpTunnelApplicationSubstreamSession(input: Readonly<{
             if (!active) {
                 if (
                     activeSubstreams.size >= input.maxConcurrentSubstreams
-                    || openedSubstreamIds.size >= input.maxTotalSubstreams
+                    || (input.maxTotalSubstreams !== undefined && openedSubstreamIds.size >= input.maxTotalSubstreams)
                 ) {
                     return deny('substream_cap_exceeded', substreamId);
                 }
@@ -248,7 +251,7 @@ export function createPeerTcpTunnelApplicationSubstreamSession(input: Readonly<{
                 };
                 activeSubstreams.set(substreamId, active);
                 openedSubstreamIds.add(substreamId);
-            } else if (now - active.lastActivityMs > input.maxSubstreamIdleMs) {
+            } else if (input.maxSubstreamIdleMs !== undefined && now - active.lastActivityMs > input.maxSubstreamIdleMs) {
                 return deny('max_idle_exceeded', substreamId);
             }
 

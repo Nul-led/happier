@@ -57,6 +57,9 @@ export type PeerTcpTunnelStreamConnection = Readonly<{
     pauseRead?: () => Promise<void> | void;
     resumeRead?: () => Promise<void> | void;
     onData?: (handler: (bytes: Uint8Array) => Promise<void> | void) => (() => void) | void;
+    onEnd?: (handler: () => void) => (() => void) | void;
+    onError?: (handler: (error: unknown) => void) => (() => void) | void;
+    onClose?: (handler: () => void) => (() => void) | void;
     close: () => Promise<void> | void;
 }>;
 
@@ -81,6 +84,7 @@ export type PeerTcpTunnelStreamSessionResult =
             | 'max_duration_exceeded'
             | 'frame_send_failed'
             | 'connection_write_failed'
+            | 'connection_read_failed'
             | 'tunnel_closed';
       }>;
 

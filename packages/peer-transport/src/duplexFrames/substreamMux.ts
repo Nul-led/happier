@@ -15,7 +15,6 @@ import type { PeerTcpTunnelStreamConnection, PeerTcpTunnelSubstreamMuxSessionRes
  * stream session the mux instantiates per substream.
  */
 type ActivePeerTcpTunnelSubstream = {
-    connection: PeerTcpTunnelStreamConnection;
     session: ReturnType<typeof createPeerTcpTunnelStreamSession>;
     bytes: number;
     lastActivityMs: number;
@@ -36,7 +35,12 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
 }>) {
     const nowMs = input.nowMs ?? Date.now;
     const activeSubstreams = new Map<string, ActivePeerTcpTunnelSubstream>();
-    const openedSubstreamIds = new Set<string>();
+    const pendingSubstreams = new Map<string, {
+        ready: Promise<void>;
+        finish: () => void;
+        bytes: number;
+    }>();
+    let totalOpenedSubstreams = 0;
     let aggregateBytes = 0;
     let lastSessionActivityMs = nowMs();
     let closed = false;
@@ -84,11 +88,16 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
     }
 
     async function closeSubstream(substreamId: string): Promise<void> {
+        const pending = pendingSubstreams.get(substreamId);
+        if (pending) {
+            pendingSubstreams.delete(substreamId);
+            pending.finish();
+        }
         const active = activeSubstreams.get(substreamId);
         if (!active) return;
         activeSubstreams.delete(substreamId);
         clearSubstreamTimer(active);
-        await active.connection.close();
+        await active.session.close();
     }
 
     async function abortAndCloseSubstream(substreamId: string, reasonCode: string): Promise<void> {
@@ -108,6 +117,8 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
         if (closed) return;
         closed = true;
         clearSessionIdleTimer();
+        for (const pending of pendingSubstreams.values()) pending.finish();
+        pendingSubstreams.clear();
         const substreamIds = [...activeSubstreams.keys()];
         await Promise.all(substreamIds.map(async (substreamId) => {
             if (reasonCode) {
@@ -121,10 +132,10 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
     function canRecordBytes(substreamId: string, bytes: number): PeerTcpTunnelSubstreamMuxSessionResult {
         const active = activeSubstreams.get(substreamId);
         if (!active) return { ok: false, reasonCode: 'substream_not_open', substreamId };
-        if (active.bytes + bytes > input.caps.maxBytesPerSubstream) {
+        if (input.caps.maxBytesPerSubstream !== undefined && active.bytes + bytes > input.caps.maxBytesPerSubstream) {
             return { ok: false, reasonCode: 'substream_cap_exceeded', substreamId };
         }
-        if (aggregateBytes + bytes > input.caps.maxAggregateBytes) {
+        if (input.caps.maxAggregateBytes !== undefined && aggregateBytes + bytes > input.caps.maxAggregateBytes) {
             return { ok: false, reasonCode: 'substream_cap_exceeded', substreamId };
         }
         return { ok: true };
@@ -146,77 +157,93 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
             await abortAndCloseSubstream(substreamId, 'substream_id_already_open');
             return { ok: false, reasonCode: 'substream_id_already_open', substreamId };
         }
+        if (pendingSubstreams.has(substreamId)) {
+            await sendSubstreamAbort(substreamId, 'substream_id_already_open');
+            return { ok: false, reasonCode: 'substream_id_already_open', substreamId };
+        }
         if (
-            activeSubstreams.size >= input.caps.maxConcurrentSubstreams
-            || openedSubstreamIds.size >= input.caps.maxTotalSubstreams
+            activeSubstreams.size + pendingSubstreams.size >= input.caps.maxConcurrentSubstreams
+            || (input.caps.maxTotalSubstreams !== undefined && totalOpenedSubstreams + pendingSubstreams.size >= input.caps.maxTotalSubstreams)
         ) {
             await sendSubstreamAbort(substreamId, 'substream_cap_exceeded');
             return { ok: false, reasonCode: 'substream_cap_exceeded', substreamId };
         }
 
-        let connection: PeerTcpTunnelStreamConnection;
+        let finish!: () => void;
+        const pending = { ready: new Promise<void>((resolve) => { finish = resolve; }), finish: () => finish(), bytes: 0 };
+        pendingSubstreams.set(substreamId, pending);
         try {
-            connection = await input.connectTcp(input.destination);
-        } catch {
-            await sendSubstreamAbort(substreamId, 'tcp_connect_failed');
-            return { ok: false, reasonCode: 'tcp_connect_failed', substreamId };
-        }
+            let connection: PeerTcpTunnelStreamConnection;
+            try {
+                connection = await input.connectTcp(input.destination);
+            } catch {
+                if (pendingSubstreams.get(substreamId) === pending && !closed) {
+                    await sendSubstreamAbort(substreamId, 'tcp_connect_failed');
+                }
+                return { ok: false, reasonCode: 'tcp_connect_failed', substreamId };
+            }
+            if (closed || pendingSubstreams.get(substreamId) !== pending) {
+                await connection.close();
+                return { ok: false, reasonCode: 'tunnel_closed', substreamId };
+            }
 
-        let active: ActivePeerTcpTunnelSubstream;
-        const session = createPeerTcpTunnelStreamSession({
-            tunnelId: input.tunnelId,
-            initialWindowBytes: input.initialWindowBytes,
-            maxFrameBytes: input.maxFrameBytes,
-            maxDecodedPayloadBytes: input.maxRawPayloadBytes,
-            maxSendChunkBytes: input.maxRawPayloadBytes,
-            maxIdleMs: input.caps.maxSubstreamIdleMs,
-            maxDurationMs: Number.MAX_SAFE_INTEGER,
-            maxTotalBytes: input.caps.maxBytesPerSubstream,
-            nowMs,
-            connection,
-            onClosed: () => {
-                if (activeSubstreams.get(substreamId) !== active) return;
-                activeSubstreams.delete(substreamId);
-                clearSubstreamTimer(active);
-            },
-            sendFrame: async (frame) => {
-                if (frame.kind === 'data') {
-                    const bytes = frame.payload.byteLength;
-                    const accepted = canRecordBytes(substreamId, bytes);
-                    if (!accepted.ok) {
-                        await abortAndCloseSubstream(substreamId, accepted.reasonCode);
-                        return;
+            let active: ActivePeerTcpTunnelSubstream;
+            const session = createPeerTcpTunnelStreamSession({
+                tunnelId: input.tunnelId,
+                initialWindowBytes: input.initialWindowBytes,
+                maxFrameBytes: input.maxFrameBytes,
+                maxDecodedPayloadBytes: input.maxRawPayloadBytes,
+                maxSendChunkBytes: input.maxRawPayloadBytes,
+                maxIdleMs: input.caps.maxSubstreamIdleMs,
+                maxTotalBytes: input.caps.maxBytesPerSubstream,
+                nowMs,
+                connection,
+                onClosed: () => {
+                    if (activeSubstreams.get(substreamId) !== active) return;
+                    activeSubstreams.delete(substreamId);
+                    clearSubstreamTimer(active);
+                },
+                sendFrame: async (frame) => {
+                    if (frame.kind === 'data') {
+                        const bytes = frame.payload.byteLength;
+                        const accepted = canRecordBytes(substreamId, bytes);
+                        if (!accepted.ok) {
+                            await abortAndCloseSubstream(substreamId, accepted.reasonCode);
+                            return;
+                        }
+                        recordBytes(substreamId, bytes);
+                    } else {
+                        active.lastActivityMs = nowMs();
+                        recordSessionActivity();
+                        scheduleSubstreamIdleTimer(substreamId, active);
                     }
-                    recordBytes(substreamId, bytes);
-                } else {
-                    active.lastActivityMs = nowMs();
-                    recordSessionActivity();
-                    scheduleSubstreamIdleTimer(substreamId, active);
-                }
-                await input.sendBinaryFrame(encodePeerTcpTunnelBinaryFrameForSubstream({
-                    frame,
-                    substreamId,
-                }));
-                if (frame.kind === 'close' && !frame.halfClose) {
-                    await closeSubstream(substreamId);
-                }
-                if (frame.kind === 'abort') {
-                    await closeSubstream(substreamId);
-                }
-            },
-        });
+                    await input.sendBinaryFrame(encodePeerTcpTunnelBinaryFrameForSubstream({
+                        frame,
+                        substreamId,
+                    }));
+                    if (frame.kind === 'close' && !frame.halfClose) {
+                        await closeSubstream(substreamId);
+                    }
+                    if (frame.kind === 'abort') {
+                        await closeSubstream(substreamId);
+                    }
+                },
+            });
 
-        active = {
-            connection,
-            session,
-            bytes: 0,
-            lastActivityMs: nowMs(),
-        };
-        activeSubstreams.set(substreamId, active);
-        openedSubstreamIds.add(substreamId);
-        recordSessionActivity();
-        scheduleSubstreamIdleTimer(substreamId, active);
-        return { ok: true };
+            active = {
+                session,
+                bytes: 0,
+                lastActivityMs: nowMs(),
+            };
+            activeSubstreams.set(substreamId, active);
+            if (input.caps.maxTotalSubstreams !== undefined) totalOpenedSubstreams += 1;
+            recordSessionActivity();
+            scheduleSubstreamIdleTimer(substreamId, active);
+            return { ok: true };
+        } finally {
+            if (pendingSubstreams.get(substreamId) === pending) pendingSubstreams.delete(substreamId);
+            pending.finish();
+        }
     }
 
     scheduleSessionIdleTimer();
@@ -239,7 +266,7 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
 
             if (closed) return { ok: false, reasonCode: 'tunnel_closed', substreamId };
             const now = nowMs();
-            if (now - lastSessionActivityMs > input.caps.maxSessionIdleMs) {
+            if (input.caps.maxSessionIdleMs !== undefined && now - lastSessionActivityMs > input.caps.maxSessionIdleMs) {
                 await closeAll('max_idle_exceeded');
                 return { ok: false, reasonCode: 'max_idle_exceeded', substreamId };
             }
@@ -249,15 +276,6 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
                 return openSubstream(substreamId);
             }
 
-            const active = activeSubstreams.get(substreamId);
-            if (!active) {
-                await sendSubstreamAbort(substreamId, 'substream_not_open');
-                return { ok: false, reasonCode: 'substream_not_open', substreamId };
-            }
-            if (now - active.lastActivityMs > input.caps.maxSubstreamIdleMs) {
-                await abortAndCloseSubstream(substreamId, 'max_idle_exceeded');
-                return { ok: false, reasonCode: 'max_idle_exceeded', substreamId };
-            }
             const frame = decodePeerTcpTunnelBinaryFrameForSubstreamSession({
                 header: decoded.header,
                 payload: decoded.payload,
@@ -265,6 +283,33 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
             if (!frame) {
                 await abortAndCloseSubstream(substreamId, 'frame_invalid');
                 return { ok: false, reasonCode: 'frame_invalid', substreamId };
+            }
+            const pending = pendingSubstreams.get(substreamId);
+            if (pending) {
+                if (frame.kind === 'abort' || (frame.kind === 'close' && !frame.halfClose)) {
+                    await closeSubstream(substreamId);
+                    return { ok: true };
+                }
+                if (frame.kind === 'data') {
+                    pending.bytes += decoded.payload.byteLength;
+                    if (pending.bytes > input.initialWindowBytes) {
+                        await abortAndCloseSubstream(substreamId, 'receive_window_exceeded');
+                        return { ok: false, reasonCode: 'receive_window_exceeded', substreamId };
+                    }
+                }
+                // Retain early data only within the stream's existing receive window.
+                // Closing the parent or child releases this wait without waiting for TCP.
+                await pending.ready;
+                if (closed) return { ok: false, reasonCode: 'tunnel_closed', substreamId };
+            }
+            const active = activeSubstreams.get(substreamId);
+            if (!active) {
+                await sendSubstreamAbort(substreamId, 'substream_not_open');
+                return { ok: false, reasonCode: 'substream_not_open', substreamId };
+            }
+            if (input.caps.maxSubstreamIdleMs !== undefined && now - active.lastActivityMs > input.caps.maxSubstreamIdleMs) {
+                await abortAndCloseSubstream(substreamId, 'max_idle_exceeded');
+                return { ok: false, reasonCode: 'max_idle_exceeded', substreamId };
             }
             if (frame.kind === 'data') {
                 const accepted = canRecordBytes(substreamId, decoded.payload.byteLength);

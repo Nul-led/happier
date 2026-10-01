@@ -3,6 +3,72 @@ import { describe, expect, it, vi } from 'vitest';
 import { createPeerTcpTunnelStreamSession } from './streamSession.js';
 
 describe('client-side duplex stream session', () => {
+    it('settles a credit-blocked write and detaches its producer on local close', async () => {
+        const close = vi.fn(async () => undefined);
+        const detach = vi.fn();
+        const sent: unknown[] = [];
+        const session = createPeerTcpTunnelStreamSession({
+            tunnelId: 'preview_tunnel',
+            outboundDirection: 'client_to_daemon',
+            initialWindowBytes: 1,
+            maxFrameBytes: 1024,
+            connection: {
+                close,
+                onData: () => detach,
+            },
+            sendFrame: async (frame) => {
+                sent.push(frame);
+            },
+        });
+
+        const pendingWrite = session.write(new Uint8Array([1, 2]));
+        expect(sent).toContainEqual(expect.objectContaining({
+            kind: 'data',
+            payload: new Uint8Array([1]),
+        }));
+        expect(sent).not.toContainEqual(expect.objectContaining({
+            kind: 'data',
+            payload: new Uint8Array([2]),
+        }));
+
+        await session.close();
+
+        await expect(pendingWrite).resolves.toEqual({ ok: false, reasonCode: 'tunnel_closed' });
+        expect(detach).toHaveBeenCalledOnce();
+        expect(close).toHaveBeenCalledOnce();
+        await session.close();
+        expect(close).toHaveBeenCalledOnce();
+    });
+
+    it('keeps a successfully handed-off write successful when the peer closes synchronously', async () => {
+        const close = vi.fn(async () => undefined);
+        let remoteClose: Promise<unknown> | undefined;
+        let session!: ReturnType<typeof createPeerTcpTunnelStreamSession>;
+        session = createPeerTcpTunnelStreamSession({
+            tunnelId: 'preview_tunnel',
+            outboundDirection: 'client_to_daemon',
+            initialWindowBytes: 16,
+            maxFrameBytes: 1024,
+            connection: { close },
+            sendFrame: (frame) => {
+                if (frame.kind !== 'data') return;
+                remoteClose = session.acceptFrame({
+                    v: 1,
+                    kind: 'close',
+                    tunnelId: 'preview_tunnel',
+                    halfClose: false,
+                    reasonCode: 'response_complete',
+                });
+            },
+        });
+
+        const write = session.write(new Uint8Array([1]));
+
+        await expect(write).resolves.toEqual({ ok: true });
+        await remoteClose;
+        expect(close).toHaveBeenCalledOnce();
+    });
+
     it('terminalizes a rejected sink write, settles queued writers, and emits one typed abort', async () => {
         const close = vi.fn(async () => undefined);
         const sent: unknown[] = [];
@@ -210,7 +276,7 @@ describe('client-side duplex stream session', () => {
         await expect(session.endWrite('request_complete')).resolves.toEqual({ ok: true });
         await expect(session.write(new TextEncoder().encode('late'))).resolves.toEqual({
             ok: false,
-            reasonCode: 'direction_half_closed',
+            reasonCode: 'tunnel_closed',
         });
     });
 

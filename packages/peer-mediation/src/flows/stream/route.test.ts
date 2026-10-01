@@ -111,15 +111,15 @@ describe('resolveLiveStreamRouteDecision', () => {
         });
     });
 
-    it('uses server relay only when server-routed gate is enabled and caps are present', () => {
+    it('uses the enabled server relay without inventing an absent quality policy', () => {
         expect(resolveLiveStreamRouteDecision({
             ...baseInput,
             serverFeatures: features({ directPeer: false, serverRouted: true, caps: null }),
             accountMachinePreference: 'disabled',
             relayCaps: null,
         })).toMatchObject({
-            kind: 'unavailable',
-            reasonCode: 'relay_cap_missing',
+            kind: 'selected',
+            routeKind: 'server_relay',
         });
 
         expect(resolveLiveStreamRouteDecision({

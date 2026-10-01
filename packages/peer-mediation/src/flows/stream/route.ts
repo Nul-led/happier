@@ -119,17 +119,13 @@ export function resolveLiveStreamRouteDecision(input: ResolveLiveStreamRouteDeci
             appendReason(disabledReasons, 'server_relay_disabled');
         } else {
             const relayCaps = input.relayCaps ?? readMachineLiveStreamRelayCaps(serverFeatures);
-            if (!relayCaps) {
-                appendReason(disabledReasons, 'relay_cap_missing');
-            } else {
-                return {
-                    kind: 'selected',
-                    flowKind: 'live_stream',
-                    routeKind: 'server_relay',
-                    relayCaps,
-                    disabledReasons,
-                };
-            }
+            return {
+                kind: 'selected',
+                flowKind: 'live_stream',
+                routeKind: 'server_relay',
+                ...(relayCaps ? { relayCaps } : {}),
+                disabledReasons,
+            };
         }
     }
 
