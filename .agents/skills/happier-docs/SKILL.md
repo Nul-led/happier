@@ -24,6 +24,8 @@ Classify published pages as task guide, concept, reference, troubleshooting, or 
 
 Search by the feature, command, setting, route, schema, provider/agent id, UI label, error, and reader phrasing before creating a page. Update, move, consolidate, or retire the canonical page instead of adding a parallel explanation. Map links, navigation, related pages, examples, and translations or screenshots that depend on the changed documentation contract.
 
+For internal architecture, [runtime ownership](../../../docs/runtime-core.md) and [plugin platform/SDK ownership](../../../docs/plugin-platform.md) are the standing references. [Collection presentation](../../../docs/collection-presentation.md), [surface states](../../../docs/surface-states.md), and [Triage sources](../../../docs/triage-sources.md) own their specific boundaries. Keep mandatory standing guidance in tracked docs; ignored plans supply approved execution contracts, history and evidence rather than a fresh-clone prerequisite.
+
 Placement is part of authorship, not cleanup afterwards. A published page belongs to exactly one section, is listed in that section's `meta.json` at the point a reader should meet it, and is linked from that section's `index.mdx`. A page missing from either is unreachable in a way that breaks no link and shows up in no diff. Moving a page is the same four edits in reverse. The section inventory is in `apps/docs/AGENTS.md`.
 
 ## 3. Establish product truth and release basis

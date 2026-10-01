@@ -4,7 +4,7 @@ Use orchestration to deepen independent work, not to perform parallelism theater
 
 ## Workspace and source of truth
 
-For substantial work, create one unique `.project/reviews/...` workspace. The orchestrator alone updates `TRACKING.md`; lane agents write only their assigned `subagents/<lane>.md`, and raw evidence goes under `evidence/`. Update tracking only when scope, readiness, blockers, authority, finding disposition, substantial review-boundary state, or the verdict changes. Ordinary searches, lane dispatches, self-checks, RED/GREEN loops, fixes, and local validations stay in command output and concise lane handoffs.
+Reuse the existing canonical program/boundary record; create a `.project/reviews/...` workspace only under SKILL.md §10's conditions when none exists for the boundary. The orchestrator alone updates the tracking record; lane agents write only their assigned lane report, and raw evidence goes beside it. Update tracking only when scope, readiness, blockers, authority, finding disposition, substantial review-boundary state, or the verdict changes. Ordinary searches, lane dispatches, self-checks, RED/GREEN loops, fixes, and local validations stay in command output and concise lane handoffs.
 
 Never read or merge sibling review workspaces unless the user explicitly placed them in scope. They may belong to concurrent agents.
 
@@ -51,6 +51,8 @@ Do not hardcode model versions in review artifacts. Use the strongest appropriat
 Re-derive every accepted finding from primary evidence. Use `.agents/skills/verify-claims` for decision-material delegated claims consolidated at the applicable boundary; do not create a formal claim audit for every routine lane output or count reviewer agreement as evidence.
 
 ## Review availability and cadence
+
+Apply root waiting/recovery and validation-reuse policies. Resume an interrupted reviewer before replacing it, retaining completed findings and applicable execution evidence. A replacement brief identifies only the remaining review scope, relevant current changes, prior findings/evidence, and acceptance checks; preserve required reviewer independence. Quota/transport failure leaves the missing review pending, not failed on substance, and does not restart completed review lanes.
 
 - Advisory review may inspect moving, dirty, partial, or completed work at any time and report evidence-backed findings without a completeness verdict.
 - Formal independent review is normally batched at the fewest substantial integrated boundaries needed by the approved plan, plus explicit user-requested reviews and decision-material security/data/persistence/compatibility triggers that cannot safely wait. Do not invent per-lane, per-gate, per-commit, or per-microchange independent review gates.
