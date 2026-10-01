@@ -28,7 +28,7 @@ describe('RetainedPanelSurface', () => {
             )).tree;
 
             expect(tracker.mounts).toBe(1);
-            expect(tree.findByType(FocusEligibilityProbe).props.eligible).toBe(true);
+            expect(tree.findByType('FocusEligibilityProbe').props.eligible).toBe(true);
 
             act(() => {
                 tree.update(
@@ -45,7 +45,7 @@ describe('RetainedPanelSurface', () => {
             expect(inactiveSurface.props.inert).toBe(true);
             expect(inactiveSurface.props['aria-hidden']).toBe(true);
             expect(tracker.unmounts).toBe(0);
-            expect(tree.findByType(FocusEligibilityProbe).props.eligible).toBe(false);
+            expect(tree.findByType('FocusEligibilityProbe').props.eligible).toBe(false);
 
             act(() => {
                 tree.update(
@@ -65,7 +65,7 @@ describe('RetainedPanelSurface', () => {
             });
             expect(tracker.mounts).toBe(1);
             expect(tracker.unmounts).toBe(0);
-            expect(tree.findByType(FocusEligibilityProbe).props.eligible).toBe(true);
+            expect(tree.findByType('FocusEligibilityProbe').props.eligible).toBe(true);
         } finally {
             Object.defineProperty(Platform, 'OS', { configurable: true, value: originalPlatform });
         }
