@@ -17,6 +17,7 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
       reason: 'Run the declared Ollama executable.',
       scope: {
         executables: [{ kind: 'systemTool', id: 'ollama-cli' }],
+        envKeys: ['OLLAMA_HOST'],
       },
     }],
     optional: [],

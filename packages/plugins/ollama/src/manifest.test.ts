@@ -17,7 +17,10 @@ describe('Ollama plugin manifest', () => {
         required: [{
           id: 'ollama-process',
           capability: 'process',
-          scope: { executables: [{ kind: 'systemTool', id: 'ollama-cli' }] },
+          scope: {
+            executables: [{ kind: 'systemTool', id: 'ollama-cli' }],
+            envKeys: ['OLLAMA_HOST'],
+          },
         }],
         optional: [],
       },
