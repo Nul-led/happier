@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { buildAccountScopedContentEnvelopeV1Schema } from '../account/accountScopedContentEnvelope.js';
 
 import { getAccountScopedBlobCiphertextBase64LengthV1 } from '../crypto/accountScopedCipherEnvelope.js';
 import {
@@ -203,13 +204,10 @@ export const SessionDraftPrivatePayloadV1Schema = z.object({
 });
 export type SessionDraftPrivatePayloadV1 = z.infer<typeof SessionDraftPrivatePayloadV1Schema>;
 
-export const SessionDraftStoredContentEnvelopeV1Schema = z.discriminatedUnion('t', [
-  z.object({ t: z.literal('plain'), v: SessionDraftPrivatePayloadV1Schema }).strict(),
-  z.object({
-    t: z.literal('encrypted'),
-    c: z.string().min(1).max(SESSION_DRAFT_MAX_CIPHERTEXT_LENGTH),
-  }).strict(),
-]);
+export const SessionDraftStoredContentEnvelopeV1Schema = buildAccountScopedContentEnvelopeV1Schema(
+  SessionDraftPrivatePayloadV1Schema,
+  z.string().min(1).max(SESSION_DRAFT_MAX_CIPHERTEXT_LENGTH),
+);
 export type SessionDraftStoredContentEnvelopeV1 = z.infer<typeof SessionDraftStoredContentEnvelopeV1Schema>;
 
 export const SessionDraftRecordV1Schema = z.object({

@@ -2,11 +2,13 @@ import { z } from 'zod';
 
 import {
   getAccountScopedBlobCiphertextBase64LengthV1,
-  isAccountScopedBlobCiphertextForKind,
   openAccountScopedBlobCiphertext,
   sealAccountScopedBlobCiphertext,
   type AccountScopedCryptoMaterial,
 } from '../../crypto/accountScopedCipher.js';
+import {
+  buildAccountScopedContentEnvelopeV1,
+} from '../../account/accountScopedContentEnvelope.js';
 import { decodeBase64, encodeBase64 } from '../../crypto/base64.js';
 import {
   normalizeStrictJsonValue,
@@ -140,16 +142,13 @@ export function openPluginAccountStoragePrivatePayloadV1(params: Readonly<{
  * explicit and mode-checked before read or mutation. A plaintext account
  * never needs an Account content key just to read this envelope.
  */
-export const PluginAccountStorageEnvelopeV1Schema = z.discriminatedUnion('t', [
-  z.object({
-    t: z.literal('plain'),
-    v: PluginAccountStorageRowV1Schema,
-  }).strict(),
-  z.object({
-    t: z.literal('encrypted'),
-    c: PluginAccountStorageEncryptedCiphertextV1Schema,
-  }).strict(),
-]);
+const pluginAccountStorageEnvelope = buildAccountScopedContentEnvelopeV1({
+  kind: PLUGIN_ACCOUNT_STORAGE_PRIVATE_PAYLOAD_ACCOUNT_SCOPED_BLOB_KIND_V1,
+  valueSchema: PluginAccountStorageRowV1Schema,
+  ciphertextSchema: PluginAccountStorageEncryptedCiphertextV1Schema,
+  mismatchError: () => new PluginAccountStorageEnvelopeModeMismatchError(),
+});
+export const PluginAccountStorageEnvelopeV1Schema = pluginAccountStorageEnvelope.schema;
 export type PluginAccountStorageEnvelopeV1 = z.infer<typeof PluginAccountStorageEnvelopeV1Schema>;
 
 export class PluginAccountStorageEnvelopeModeMismatchError extends Error {
@@ -163,23 +162,7 @@ export function assertPluginAccountStorageEnvelopeForModeV1(
   input: unknown,
   mode: 'plain' | 'e2ee',
 ): PluginAccountStorageEnvelopeV1 {
-  const envelope = PluginAccountStorageEnvelopeV1Schema.parse(input);
-  if (
-    (mode === 'plain' && envelope.t !== 'plain')
-    || (
-      mode === 'e2ee'
-      && (
-        envelope.t !== 'encrypted'
-        || !isAccountScopedBlobCiphertextForKind({
-          kind: PLUGIN_ACCOUNT_STORAGE_PRIVATE_PAYLOAD_ACCOUNT_SCOPED_BLOB_KIND_V1,
-          ciphertext: envelope.c,
-        })
-      )
-    )
-  ) {
-    throw new PluginAccountStorageEnvelopeModeMismatchError();
-  }
-  return envelope;
+  return pluginAccountStorageEnvelope.assertForMode(input, mode);
 }
 
 const PluginAccountStorageRevisionV1Schema = z

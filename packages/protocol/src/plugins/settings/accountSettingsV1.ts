@@ -1,13 +1,18 @@
 import { z } from 'zod';
 
 import {
-  isAccountScopedBlobCiphertextForKind,
-} from '../../crypto/accountScopedCipher.js';
+  buildAccountScopedContentEnvelopeV1,
+  buildAccountScopedContentEnvelopeV1Schema,
+} from '../../account/accountScopedContentEnvelope.js';
 import type { JsonValue } from '../../json/strictJsonValue.js';
 import { PluginSettingFieldIdV2Schema } from '../contributions/settings.js';
 import { PLUGIN_ACCOUNT_SETTINGS_LIMITS_V1 } from './accountSettingsLimits.js';
 
 export { PLUGIN_ACCOUNT_SETTINGS_LIMITS_V1 } from './accountSettingsLimits.js';
+
+/** Declarative Settings' cipher purpose remains distinct from other Account data. */
+export const PLUGIN_ACCOUNT_SETTINGS_ACCOUNT_SCOPED_BLOB_KIND_V1 =
+  'plugin_declarative_settings' as const;
 
 const textEncoder = new TextEncoder();
 
@@ -147,39 +152,22 @@ const PluginAccountSettingsEncryptedCiphertextWriteV1Schema = z.string().min(1).
 );
 
 /** Server storage is envelope-only: it never opens or interprets E2EE values. */
-export const PluginAccountSettingsContentV1Schema = z.discriminatedUnion('t', [
-  z.object({
-    t: z.literal('plain'),
-    v: PluginAccountSettingsValuesV1Schema,
-  }).strict(),
-  z.object({
-    t: z.literal('encrypted'),
-    c: z.string().min(1),
-  }).strict(),
-]);
+const pluginAccountSettingsEnvelope = buildAccountScopedContentEnvelopeV1({
+  kind: PLUGIN_ACCOUNT_SETTINGS_ACCOUNT_SCOPED_BLOB_KIND_V1,
+  valueSchema: PluginAccountSettingsValuesV1Schema,
+  mismatchError: () => new PluginAccountSettingsContentModeMismatchError(),
+});
+export const PluginAccountSettingsContentV1Schema = pluginAccountSettingsEnvelope.schema;
 export type PluginAccountSettingsContentV1 = z.infer<typeof PluginAccountSettingsContentV1Schema>;
 
 /**
  * Current writers use the cipher-derived bound while the broad reader above
  * preserves an oversized predecessor envelope for recovery.
  */
-const PluginAccountSettingsContentV1WriteSchema = z.discriminatedUnion('t', [
-  z.object({
-    t: z.literal('plain'),
-    v: PluginAccountSettingsValuesV1Schema,
-  }).strict(),
-  z.object({
-    t: z.literal('encrypted'),
-    c: PluginAccountSettingsEncryptedCiphertextWriteV1Schema,
-  }).strict(),
-]);
-
-/**
- * Declarative Settings has its own Account-scoped cipher domain. It remains
- * distinct from Account KV, Collections, and the host Account settings root.
- */
-export const PLUGIN_ACCOUNT_SETTINGS_ACCOUNT_SCOPED_BLOB_KIND_V1 =
-  'plugin_declarative_settings' as const;
+const PluginAccountSettingsContentV1WriteSchema = buildAccountScopedContentEnvelopeV1Schema(
+  PluginAccountSettingsValuesV1Schema,
+  PluginAccountSettingsEncryptedCiphertextWriteV1Schema,
+);
 
 export class PluginAccountSettingsContentModeMismatchError extends Error {
   constructor() {
@@ -196,23 +184,7 @@ export function assertPluginAccountSettingsContentForModeV1(
   input: unknown,
   mode: 'plain' | 'e2ee',
 ): PluginAccountSettingsContentV1 {
-  const content = PluginAccountSettingsContentV1Schema.parse(input);
-  if (
-    (mode === 'plain' && content.t !== 'plain')
-    || (
-      mode === 'e2ee'
-      && (
-        content.t !== 'encrypted'
-        || !isAccountScopedBlobCiphertextForKind({
-          kind: PLUGIN_ACCOUNT_SETTINGS_ACCOUNT_SCOPED_BLOB_KIND_V1,
-          ciphertext: content.c,
-        })
-      )
-    )
-  ) {
-    throw new PluginAccountSettingsContentModeMismatchError();
-  }
-  return content;
+  return pluginAccountSettingsEnvelope.assertForMode(input, mode);
 }
 
 const PluginAccountSettingsRevisionV1Schema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
