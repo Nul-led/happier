@@ -29,10 +29,8 @@ private func audioFormatsMatchForGraphRestart(
   _ current: AVAudioFormat,
   _ baseline: AVAudioFormat
 ) -> Bool {
-  guard
-    let currentDescription = current.streamDescription?.pointee,
-    let baselineDescription = baseline.streamDescription?.pointee
-  else { return false }
+  let currentDescription = current.streamDescription.pointee
+  let baselineDescription = baseline.streamDescription.pointee
   return currentDescription.mSampleRate == baselineDescription.mSampleRate
     && currentDescription.mFormatID == baselineDescription.mFormatID
     && currentDescription.mFormatFlags == baselineDescription.mFormatFlags
