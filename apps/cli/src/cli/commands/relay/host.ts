@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
 import chalk from 'chalk';
-import { createStepPrinter, definitionList, ok, sectionTitle, warn } from '@happier-dev/cli-common/output';
+import { createStepPrinter, definitionList, sectionTitle, warn } from '@happier-dev/cli-common/output';
 
 import { wantsJson, printJsonEnvelope } from '@/cli/output/jsonEnvelope';
 import { configuration, reloadConfiguration } from '@/configuration';
@@ -738,8 +738,9 @@ export async function runRelayHostSubcommand(args: string[]): Promise<void> {
       ...(mergedEnv ? { env: mergedEnv } : {}),
       ...(selfHostRelayBinaryOverride ? { selfHostRelayBinaryOverride } : {}),
     };
+    const steps = createStepPrinter({ enabled: !json });
     const result = ssh
-      ? (() => {
+      ? (async () => {
           const runner = buildSshRunner(ssh);
           const resolveRemoteReleaseTarget = createMemoizedResolveRemoteReleaseTarget(runner);
           const override = resolveTestFirstPartyPayloadOverride();
@@ -791,7 +792,17 @@ export async function runRelayHostSubcommand(args: string[]): Promise<void> {
               return { binaryPath: out.binaryPath, versionId: out.versionId };
             },
           });
-          return engine.installOrUpdate(installParams);
+          // ssh and scp can prompt for a password or host key on this terminal, so this step
+          // is a static line rather than a spinner drawn over the prompt.
+          steps.info('- [..] Installing relay host over SSH');
+          try {
+            const installed = await engine.installOrUpdate(installParams);
+            steps.stop('✓', 'Relay host installed');
+            return installed;
+          } catch (error) {
+            steps.stop('x', 'Installing relay host over SSH');
+            throw error;
+          }
         })()
       : (async () => {
           const override = resolveTestFirstPartyPayloadOverride();
@@ -810,10 +821,10 @@ export async function runRelayHostSubcommand(args: string[]): Promise<void> {
                 cleanup: async () => undefined,
               };
             }
-            return await prepareFirstPartyComponentPayloadFromGitHubRelease({
+            return await steps.run('Downloading relay', () => prepareFirstPartyComponentPayloadFromGitHubRelease({
               componentId: 'happier-server',
               channel: channel === 'dev' ? 'publicdev' : channel,
-            });
+            }));
           })();
           try {
             const serverBinaryPath = selfHostRelayBinaryOverride || resolveLocalServerBinaryFromPayloadRoot(prepared.payloadRoot);
@@ -830,10 +841,14 @@ export async function runRelayHostSubcommand(args: string[]): Promise<void> {
               },
             });
 
-            return await engine.installOrUpdate({
-              ...installParams,
-              selfHostRelayBinaryOverride: serverBinaryPath,
-            });
+            return await steps.run(
+              'Installing relay host',
+              () => engine.installOrUpdate({
+                ...installParams,
+                selfHostRelayBinaryOverride: serverBinaryPath,
+              }),
+              () => 'Relay host installed',
+            );
           } finally {
             await prepared.cleanup();
           }
@@ -843,7 +858,6 @@ export async function runRelayHostSubcommand(args: string[]): Promise<void> {
     const payload: RelayHostInstallJson = await result;
 
     if (!json) {
-      console.log(ok('Relay host installed'));
       console.log(chalk.gray(`  ${payload.relayUrl}`));
       if (localRelayDataDir && !relayDataDirExistedBeforeInstall) {
         console.log('');
