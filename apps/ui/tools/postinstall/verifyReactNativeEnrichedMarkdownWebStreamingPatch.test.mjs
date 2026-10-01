@@ -173,7 +173,7 @@ test('rejects stale visibility behavior independently in every consumed source a
     }
 });
 
-for (const scenario of ['missing module', 'stale overlapping implementation']) {
+for (const scenario of ['missing module', 'stale overlapping implementation', 'stale native renderer ownership']) {
 test(`partial repair handles ${scenario} without certifying an incompatible dependency`, () => {
     const installedResult = verifyReactNativeEnrichedMarkdownWebStreamingPatch({ packageDir: INSTALLED_PACKAGE_DIR });
     assert.equal(installedResult.status, 'ok', formatReactNativeEnrichedMarkdownWebStreamingPatchFailure(installedResult));
@@ -192,6 +192,11 @@ test(`partial repair handles ${scenario} without certifying an incompatible depe
         fs.writeFileSync(path.join(fixtureDir, 'package.json'), '{"name":"partial-repair-fixture","private":true}\n');
         if (scenario === 'missing module') {
             fs.rmSync(path.join(packageDir, 'lib', 'module', 'web', 'streamingReveal.js'));
+        } else if (scenario === 'stale native renderer ownership') {
+            const rendererPath = path.join(packageDir, 'ios', 'renderer', 'StrongRenderer.m');
+            const current = fs.readFileSync(rendererPath, 'utf8');
+            assert.match(current, /(?:__weak )?RendererFactory \*_rendererFactory;/);
+            fs.writeFileSync(rendererPath, current.replace('__weak RendererFactory *_rendererFactory;', 'RendererFactory *_rendererFactory;'));
         } else {
             for (const [relativePath, marker] of VISIBILITY_MARKERS) {
                 const filePath = path.join(packageDir, relativePath);
@@ -212,7 +217,7 @@ test(`partial repair handles ${scenario} without certifying an incompatible depe
         });
         // --partial can restore a missing added file, but cannot rebase overlapping
         // previously patched implementation hunks. The verifier must fail closed.
-        assert.equal(repairedResult.status, scenario === 'missing module' ? 'ok' : 'failed');
+        assert.equal(repairedResult.status, scenario === 'stale overlapping implementation' ? 'failed' : 'ok');
     } finally {
         fs.rmSync(fixtureDir, { recursive: true, force: true });
     }

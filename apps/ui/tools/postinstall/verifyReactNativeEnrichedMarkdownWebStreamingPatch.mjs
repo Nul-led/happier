@@ -1,7 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+// AttributedRenderer owns the factory; cached child renderers must not retain it.
+const WEAK_FACTORY_RENDERERS = [
+    'Blockquote', 'CodeBlock', 'Code', 'ENRMSpoiler', 'Emphasis', 'Heading',
+    'Link', 'ListItem', 'List', 'Paragraph', 'Strikethrough', 'Strong', 'Underline',
+].map((name) => `ios/renderer/${name}Renderer.m`);
+const UNUSED_FACTORY_RENDERERS = [
+    'ios/renderer/ENRMImageRenderer.m',
+    'ios/renderer/ENRMMathInlineRenderer.m',
+];
+
 export const REACT_NATIVE_ENRICHED_MARKDOWN_STREAMING_PATCH_REQUIRED_FILES = Object.freeze([
+    ...WEAK_FACTORY_RENDERERS,
+    ...UNUSED_FACTORY_RENDERERS,
     'lib/module/web/EnrichedMarkdownText.js',
     'lib/module/web/parseMarkdown.js',
     'lib/module/web/streamingReveal.d.ts',
@@ -19,6 +31,7 @@ export const REACT_NATIVE_ENRICHED_MARKDOWN_STREAMING_PATCH_REQUIRED_FILES = Obj
 ]);
 
 export const REACT_NATIVE_ENRICHED_MARKDOWN_STREAMING_PATCH_REQUIRED_MARKERS = Object.freeze([
+    ...WEAK_FACTORY_RENDERERS.map((file) => [file, '__weak RendererFactory *_rendererFactory;']),
     ['lib/module/web/EnrichedMarkdownText.js', 'markStreamingRevealOffsets'],
     ['lib/module/web/EnrichedMarkdownText.js', 'streamingAnimation'],
     ['lib/module/web/EnrichedMarkdownText.js', 'updateStreamingRevealRanges'],
@@ -58,6 +71,7 @@ export const REACT_NATIVE_ENRICHED_MARKDOWN_STREAMING_PATCH_REQUIRED_MARKERS = O
 ]);
 
 export const REACT_NATIVE_ENRICHED_MARKDOWN_STREAMING_PATCH_FORBIDDEN_MARKERS = Object.freeze([
+    ...UNUSED_FACTORY_RENDERERS.map((file) => [file, '_rendererFactory']),
     ['lib/module/web/parseMarkdown.js', "import('./wasm/md4c"],
     ['lib/module/web/parseMarkdown.js', 'parseCache.clear()'],
     ['src/web/parseMarkdown.ts', "import('./wasm/md4c"],
@@ -133,7 +147,7 @@ export function verifyReactNativeEnrichedMarkdownWebStreamingPatch({ packageDir 
 }
 
 export function formatReactNativeEnrichedMarkdownWebStreamingPatchFailure(result) {
-    const lines = ['react-native-enriched-markdown web streaming patch is not installed correctly:'];
+    const lines = ['react-native-enriched-markdown patch is not installed correctly:'];
     for (const relativePath of result.missingFiles) lines.push(`  - missing ${relativePath}`);
     for (const [relativePath, marker, minOccurrences = 1] of result.missingMarkers) {
         const occurrenceRequirement = minOccurrences > 1 ? ` at least ${minOccurrences} times` : '';
