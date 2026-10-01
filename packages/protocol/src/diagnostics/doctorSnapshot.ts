@@ -163,6 +163,7 @@ export const DoctorSnapshotDaemonStatusSchema = z.object({
   service: z.object({
     installed: z.boolean(),
     running: z.boolean(),
+    autostart: z.enum(['at-login', 'on-demand']).nullable().optional(),
   }),
   auth: z.object({
     authenticated: z.boolean(),
@@ -174,6 +175,8 @@ export const DoctorSnapshotDaemonStatusSchema = z.object({
     machineId: NonEmptyString.nullable(),
     needsAuth: z.boolean(),
     accountId: NonEmptyString.nullable(),
+    /** Readable label of the validated account (username, else display name); never an email. */
+    accountLabel: NonEmptyString.nullable().optional(),
   }),
 });
 

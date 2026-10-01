@@ -134,3 +134,13 @@ export {
     isPersistentMachine,
     type MachineKind,
 } from './machineKind.js';
+export {
+    CliInstallSourceSchema,
+    CliUpdateFactsSchema,
+    CliUpdateLastResultSchema,
+    CliUpdateOutcomeSchema,
+    type CliInstallSource,
+    type CliUpdateFacts,
+    type CliUpdateLastResult,
+    type CliUpdateOutcome,
+} from './cliUpdateFacts.js';
