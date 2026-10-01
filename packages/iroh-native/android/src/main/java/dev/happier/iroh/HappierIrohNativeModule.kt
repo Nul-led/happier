@@ -8,6 +8,8 @@ import android.util.Base64
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.exception.CodedException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.KeyStore
@@ -23,28 +25,42 @@ class HappierIrohNativeModule : Module() {
     Name("HappierIrohNative")
     Function("getAvailability") { HappierIrohNativeBridge.availability() }
     AsyncFunction("getTunnelStatus") { tunnelId: String -> HappierIrohNativeBridge.tunnelStatus(tunnelId) }
-    AsyncFunction("createEndpoint") { request: Map<String, Any?> ->
+    AsyncFunction("createEndpoint").SuspendBody { request: Map<String, Any?> ->
       val context = appContext.reactContext?.applicationContext
         ?: throw CodedException("endpoint_key_unavailable", "Android application storage is unavailable.", null)
-      HappierIrohNativeBridge.createEndpoint(request, context)
+      withContext(Dispatchers.IO) {
+        HappierIrohNativeBridge.createEndpoint(request, context)
+      }
     }
-    AsyncFunction("ensureHomeTunnel") { request: Map<String, Any?> ->
-      HappierIrohNativeBridge.ensureHomeTunnel(request)
+    AsyncFunction("ensureHomeTunnel").SuspendBody { request: Map<String, Any?> ->
+      withContext(Dispatchers.IO) {
+        HappierIrohNativeBridge.ensureHomeTunnel(request)
+      }
     }
-    AsyncFunction("releaseHomeTunnel") { tunnelId: String ->
-      HappierIrohNativeBridge.releaseHomeTunnel(tunnelId)
+    AsyncFunction("releaseHomeTunnel").SuspendBody { tunnelId: String ->
+      withContext(Dispatchers.IO) {
+        HappierIrohNativeBridge.releaseHomeTunnel(tunnelId)
+      }
     }
-    AsyncFunction("shutdownEndpoint") { request: Map<String, Any?> ->
-      HappierIrohNativeBridge.shutdownEndpoint(request)
+    AsyncFunction("shutdownEndpoint").SuspendBody { request: Map<String, Any?> ->
+      withContext(Dispatchers.IO) {
+        HappierIrohNativeBridge.shutdownEndpoint(request)
+      }
     }
-    AsyncFunction("startMachineTunnel") { request: Map<String, Any?> ->
-      HappierIrohNativeBridge.startMachineTunnel(request)
+    AsyncFunction("startMachineTunnel").SuspendBody { request: Map<String, Any?> ->
+      withContext(Dispatchers.IO) {
+        HappierIrohNativeBridge.startMachineTunnel(request)
+      }
     }
-    AsyncFunction("startMachineHttpTunnel") { request: Map<String, Any?> ->
-      HappierIrohNativeBridge.startMachineHttpTunnel(request)
+    AsyncFunction("startMachineHttpTunnel").SuspendBody { request: Map<String, Any?> ->
+      withContext(Dispatchers.IO) {
+        HappierIrohNativeBridge.startMachineHttpTunnel(request)
+      }
     }
-    AsyncFunction("stopMachineTunnel") { machineTunnelId: String ->
-      HappierIrohNativeBridge.stopMachineTunnel(machineTunnelId)
+    AsyncFunction("stopMachineTunnel").SuspendBody { machineTunnelId: String ->
+      withContext(Dispatchers.IO) {
+        HappierIrohNativeBridge.stopMachineTunnel(machineTunnelId)
+      }
     }
   }
 }

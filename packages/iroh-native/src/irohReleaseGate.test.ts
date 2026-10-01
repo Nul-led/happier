@@ -107,6 +107,40 @@ describe('Iroh mobile release build contract', () => {
     expect(rust).toContain('env.new_global_ref(application_context)');
   });
 
+  it('keeps blocking Android Iroh lifecycle calls off Expo\'s serial module queue', () => {
+    const android = readPackageFile(
+      'android/src/main/java/dev/happier/iroh/HappierIrohNativeModule.kt',
+    );
+    const definition = android.slice(
+      android.indexOf('override fun definition()'),
+      android.indexOf('\n  }\n}\n\nprivate object HappierIrohNativeBridge'),
+    );
+
+    expect(android).toContain('import kotlinx.coroutines.Dispatchers');
+    expect(android).toContain('import kotlinx.coroutines.withContext');
+    expect(definition).toContain('Function("getAvailability")');
+    expect(definition).not.toContain('AsyncFunction("getAvailability")');
+    expect(definition).toContain('AsyncFunction("getTunnelStatus")');
+
+    for (const operation of [
+      'createEndpoint',
+      'ensureHomeTunnel',
+      'releaseHomeTunnel',
+      'shutdownEndpoint',
+      'startMachineTunnel',
+      'startMachineHttpTunnel',
+      'stopMachineTunnel',
+    ]) {
+      const start = definition.indexOf(`AsyncFunction("${operation}")`);
+      const next = definition.indexOf('AsyncFunction(', start + 1);
+      const body = definition.slice(start, next === -1 ? undefined : next);
+
+      expect(start, operation).toBeGreaterThanOrEqual(0);
+      expect(body, operation).toContain(`AsyncFunction("${operation}").SuspendBody`);
+      expect(body, operation).toContain('withContext(Dispatchers.IO)');
+    }
+  });
+
   it('does not publish the Cargo target directory with the package sources', () => {
     const manifest = JSON.parse(readPackageFile('package.json')) as { files?: string[] };
     expect(manifest.files).not.toContain('rust');
