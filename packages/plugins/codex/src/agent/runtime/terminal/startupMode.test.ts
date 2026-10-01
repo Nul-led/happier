@@ -19,11 +19,18 @@ describe('resolveCodexStartupRuntimeMode', () => {
     })).toBe('terminal');
   });
 
-  it('forces remote when started by daemon even with an explicit terminal override', () => {
+  it('honors an explicit terminal mode for a daemon-hosted interactive terminal', () => {
     expect(resolveCodexStartupRuntimeMode({
       explicitRuntimeMode: 'terminal',
       startedBy: 'daemon',
       hasTtyForTerminal: true,
+      terminalRuntimeEnabled: true,
+    })).toBe('terminal');
+
+    expect(resolveCodexStartupRuntimeMode({
+      explicitRuntimeMode: 'terminal',
+      startedBy: 'daemon',
+      hasTtyForTerminal: false,
       terminalRuntimeEnabled: true,
     })).toBe('remote');
   });

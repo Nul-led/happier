@@ -7,6 +7,9 @@ export function resolveCodexStartupRuntimeMode(params: Readonly<{
   terminalRuntimeEnabled: boolean;
 }>): CodexRuntimeMode {
   if (params.startedBy === 'daemon') {
+    if (params.explicitRuntimeMode === 'terminal' && params.hasTtyForTerminal && params.terminalRuntimeEnabled) {
+      return 'terminal';
+    }
     return 'remote';
   }
 
