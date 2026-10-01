@@ -8,6 +8,8 @@ describe('isSafeBadgeUrl', () => {
 
     it('accepts localhost http links for local development', () => {
         expect(isSafeBadgeUrl('http://localhost:3000/profile')).toBe(true);
+        expect(isSafeBadgeUrl('http://127.0.0.2:3000/profile')).toBe(true);
+        expect(isSafeBadgeUrl('http://assets.localhost:3000/profile')).toBe(true);
     });
 
     it('accepts ipv6 localhost http links for local development', () => {
