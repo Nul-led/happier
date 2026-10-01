@@ -87,6 +87,29 @@ describe('resolveModelSelectionIntentFromSessionMetadata', () => {
     });
   });
 
+  it('resolves a 0.2 Session model override under the canonical Agent key', () => {
+    // Exact artifact from 0.2's own writer: `buildModelOverrideV1` in
+    // ../0.2 packages/protocol dist (HEAD ff95c165, source commit a928b794).
+    // 0.2 Session metadata stores the model unkeyed; 0.3 binds it to the
+    // Session's canonical target when it reads it.
+    const released02Metadata = {
+      flavor: 'claude',
+      modelOverrideV1: { v: 1, updatedAt: 1760000000000, modelId: 'claude-sonnet-4-5' },
+    };
+    expect(resolveModelSelectionIntentFromSessionMetadata(
+      released02Metadata,
+      'agent:happier.agent.claude/claude',
+    )).toEqual({
+      v: 1,
+      updatedAt: 1760000000000,
+      selection: {
+        agentTargetKey: 'agent:happier.agent.claude/claude',
+        providerConnectionId: null,
+        modelId: 'claude-sonnet-4-5',
+      },
+    });
+  });
+
   it('refuses a canonical selection for another target', () => {
     expect(() => resolveModelSelectionIntentFromSessionMetadata({
       modelSelectionIntentV1: {
