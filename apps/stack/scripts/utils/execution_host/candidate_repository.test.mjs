@@ -559,7 +559,7 @@ test('candidate Git bootstrap reproduces exact refs and detached worktree commit
     encoding: 'utf8',
     ...options,
   }).trim();
-  execFileSync('git', ['init', '-q', source]);
+  execFileSync('git', ['init', '-q', '-b', 'main', source]);
   git(['config', 'user.email', 'candidate@example.com']);
   git(['config', 'user.name', 'Candidate Test']);
   await writeFile(join(source, 'tracked.txt'), 'tracked\n');
@@ -609,7 +609,7 @@ test('candidate Git refresh atomically replaces captured refs and index without 
     encoding: 'utf8',
     ...options,
   }).trim();
-  execFileSync('git', ['init', '-q', source]);
+  execFileSync('git', ['init', '-q', '-b', 'main', source]);
   git(['config', 'user.email', 'candidate@example.com']);
   git(['config', 'user.name', 'Candidate Test']);
   await writeFile(join(source, 'tracked.txt'), 'initial\n');

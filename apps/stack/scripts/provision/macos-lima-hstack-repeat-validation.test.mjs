@@ -6,6 +6,10 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
+import { createLimaTestEnv, limaGuestExec } from '../testkit/core/lima_guest_harness.mjs';
+
+const testEnv = createLimaTestEnv();
+
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 async function fileExists(path) {
@@ -34,7 +38,10 @@ test('macos lima repeat-validation wrapper records per-run artifacts for repeate
   const curlLog = join(logDir, 'curl.log');
 
   const unamePath = join(binDir, 'uname');
-  await writeFile(unamePath, ['#!/usr/bin/env bash', 'echo Darwin'].join('\n') + '\n', 'utf8');
+  await writeFile(unamePath, [
+    '#!/usr/bin/env bash',
+    'if [[ "${1:-}" == "-m" ]]; then echo x86_64; else echo Darwin; fi',
+  ].join('\n') + '\n', 'utf8');
   await chmod(unamePath, 0o755);
 
   const curlPath = join(binDir, 'curl');
@@ -134,18 +141,12 @@ test('macos lima repeat-validation wrapper records per-run artifacts for repeate
       '    if [[ "${1:-}" == "--" ]]; then',
       '      shift',
       '    fi',
-      '    if [[ "${1:-}" == "env" ]]; then',
-      '      shift',
-      '      while [[ $# -gt 0 && "$1" == *=* ]]; do',
-      '        export "$1"',
-      '        shift',
-      '      done',
-      '      if [[ "${1:-}" == "bash" && "${2:-}" == "-lc" ]]; then',
-      '        shift 2',
-      '        exec bash -c "${1:-}"',
-      '      fi',
+      '    if [[ "${1:-}" == "bash" && "${2:-}" == "-s" ]]; then',
+      '      cat >/dev/null',
+      '      echo "provision ${*:3}"',
+      '      exit 0',
       '    fi',
-      '    exec "$@"',
+      limaGuestExec,
       '    ;;',
       '  *)',
       '    exit 0',
@@ -158,10 +159,10 @@ test('macos lima repeat-validation wrapper records per-run artifacts for repeate
 
   const scriptPath = join(__dirname, 'macos-lima-hstack-repeat-validation.sh');
   const env = {
-    ...process.env,
+    ...testEnv,
     HOME: homeDir,
     LIMA_HOME: limaHome,
-    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+    PATH: `${binDir}:${testEnv.PATH}`,
     HSTACK_RAW_BASE: 'https://example.test/apps/stack',
     HSTACK_VERSION: '0.9.0-test',
     HSTACK_REPEAT_COUNT: '2',
@@ -200,7 +201,11 @@ test('macos lima repeat-validation wrapper records per-run artifacts for repeate
 
   const limactlOut = await readFile(limactlLog, 'utf8');
   assert.match(limactlOut, /limactl create --name happy-repeat/);
-  assert.equal((limactlOut.match(/limactl shell/g) ?? []).length, 2, 'expected two guest shell invocations');
+  assert.equal(
+    (limactlOut.match(/limactl shell/g) ?? []).length,
+    3,
+    'expected one fresh-guest provision plus two smoke invocations',
+  );
 });
 
 test('macos lima repeat-validation wrapper writes summary.json with failureReason when a run fails', async () => {
@@ -220,7 +225,10 @@ test('macos lima repeat-validation wrapper writes summary.json with failureReaso
   const curlLog = join(logDir, 'curl.log');
 
   const unamePath = join(binDir, 'uname');
-  await writeFile(unamePath, ['#!/usr/bin/env bash', 'echo Darwin'].join('\n') + '\n', 'utf8');
+  await writeFile(unamePath, [
+    '#!/usr/bin/env bash',
+    'if [[ "${1:-}" == "-m" ]]; then echo x86_64; else echo Darwin; fi',
+  ].join('\n') + '\n', 'utf8');
   await chmod(unamePath, 0o755);
 
   const curlPath = join(binDir, 'curl');
@@ -314,6 +322,11 @@ test('macos lima repeat-validation wrapper writes summary.json with failureReaso
       '    # Fail closed on the second run by inspecting the injected HSTACK_SMOKE_DIR.',
       '    while [[ $# -gt 0 && "$1" != "--" ]]; do shift; done',
       '    if [[ "${1:-}" == "--" ]]; then shift; fi',
+      '    if [[ "${1:-}" == "bash" && "${2:-}" == "-s" ]]; then',
+      '      cat >/dev/null',
+      '      echo "provision ${*:3}"',
+      '      exit 0',
+      '    fi',
       '    if [[ "${1:-}" == "env" ]]; then',
       '      shift',
       '      while [[ $# -gt 0 && "$1" == *=* ]]; do',
@@ -325,7 +338,7 @@ test('macos lima repeat-validation wrapper writes summary.json with failureReaso
       '        exit 42',
       '      fi',
       '    fi',
-      '    exec "$@"',
+      limaGuestExec,
       '    ;;',
       '  *)',
       '    exit 0',
@@ -338,10 +351,10 @@ test('macos lima repeat-validation wrapper writes summary.json with failureReaso
 
   const scriptPath = join(__dirname, 'macos-lima-hstack-repeat-validation.sh');
   const env = {
-    ...process.env,
+    ...testEnv,
     HOME: homeDir,
     LIMA_HOME: limaHome,
-    PATH: `${binDir}:${process.env.PATH ?? ''}`,
+    PATH: `${binDir}:${testEnv.PATH}`,
     HSTACK_RAW_BASE: 'https://example.test/apps/stack',
     HSTACK_VERSION: '0.9.0-test',
     HSTACK_REPEAT_COUNT: '2',

@@ -22,6 +22,12 @@ function managedLimaError(message, code) {
 
 async function probeLima(executor) {
   const result = await executor.capture('limactl', ['--version']);
+  if (executor.host?.kind === 'ssh' && result.exitCode === 255) {
+    throw managedLimaError(
+      `[managed-lima] outer host is unavailable: ${String(result.err ?? '').trim() || 'SSH failed'}`,
+      'MANAGED_LIMA_HOST_UNAVAILABLE',
+    );
+  }
   return result.exitCode === 0;
 }
 

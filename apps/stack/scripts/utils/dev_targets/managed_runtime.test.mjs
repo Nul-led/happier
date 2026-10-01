@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import {
@@ -179,4 +182,104 @@ test('managed capacity with no resource drift does not require or restart the VM
 
   assert.equal(setupCalled, false);
   assert.deepEqual(result, { changed: false, status: 'Running' });
+});
+
+test('force capacity retries incomplete guest provisioning even when VM resources match', async () => {
+  const target = {
+    name: 'worker',
+    managedRuntime: {
+      kind: 'lima', instance: 'worker', limaHome: '/tmp/lima', host: { kind: 'local' },
+      profile: 'worker-balanced', architecture: 'aarch64',
+      capacity: {
+        mode: 'shared',
+        shared: { cpus: 8, memoryGiB: 24 },
+        dedicated: { cpus: 12, memoryGiB: 32 },
+      },
+    },
+  };
+  let provisioned = false;
+  const dependencies = {
+    createExecutor: () => ({}),
+    doctorRuntime: async () => ({
+      exists: true,
+      status: 'Running',
+      drift: { creation: [], resources: [], configuration: [] },
+      guestToolchain: { ok: false, error: 'Node.js unavailable' },
+    }),
+    setupRuntime: async () => {
+      provisioned = true;
+      return { created: false, provision: { changed: true } };
+    },
+    getRuntimeStatus: async () => ({
+      exists: true, status: 'Running', instance: { sshLocalPort: 61234 },
+    }),
+    ensureGuestLoginManager: async () => ({ repaired: false }),
+    reconcileSshPublication: async () => ({ changed: false }),
+  };
+
+  await assert.rejects(
+    () => applyManagedDevTargetCapacity({ target, force: false, env: {} }, dependencies),
+    (error) => error?.code === 'MANAGED_LIMA_CAPACITY_FORCE_REQUIRED',
+  );
+  assert.equal(provisioned, false);
+  const result = await applyManagedDevTargetCapacity({ target, force: true, env: {} }, dependencies);
+  assert.equal(provisioned, true);
+  assert.deepEqual(result.provision, { changed: true });
+});
+
+test('force capacity recreating an absent managed worker provisions the guest and restores controller access', async (t) => {
+  const outerDir = await mkdtemp(join(tmpdir(), 'happier-managed-worker-key-'));
+  t.after(() => rm(outerDir, { recursive: true, force: true }));
+  const publicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeTestKey worker';
+  await writeFile(join(outerDir, 'id_ed25519.pub'), `${publicKey}\n`);
+  const guestSshConfigFile = join(outerDir, 'guest.ssh.config');
+  await writeFile(guestSshConfigFile, `Host happier-dev-target-worker\n  IdentityFile "${join(outerDir, 'id_ed25519')}"\n`);
+  const target = {
+    name: 'worker',
+    sshConfigFile: guestSshConfigFile,
+    managedRuntime: {
+      kind: 'lima', instance: 'happier-worker', limaHome: '/tmp/lima',
+      host: { kind: 'ssh', sshConfigFile: join(outerDir, 'ssh.config') },
+      profile: 'worker-balanced', architecture: 'aarch64',
+      capacity: {
+        mode: 'shared',
+        shared: { cpus: 8, memoryGiB: 24 },
+        dedicated: { cpus: 12, memoryGiB: 32 },
+      },
+    },
+  };
+  const events = [];
+  await applyManagedDevTargetCapacity({ target, force: true, env: {} }, {
+    createExecutor: () => ({
+      capture: async (command, args) => {
+        events.push(['key-install', command, args]);
+        return { exitCode: 0, out: '', err: '' };
+      },
+    }),
+    doctorRuntime: async () => ({
+      exists: false, status: 'Absent',
+      drift: { creation: [], resources: [], configuration: [] },
+    }),
+    setupRuntime: async (input) => {
+      events.push(['guest-setup', input]);
+      return { created: true, status: 'Running', provision: { changed: true } };
+    },
+    getRuntimeStatus: async () => ({
+      exists: true, status: 'Running', instance: { sshLocalPort: 61234 },
+    }),
+    ensureGuestLoginManager: async () => ({ repaired: false }),
+    reconcileSshPublication: async () => {
+      events.push(['publication']);
+      return { changed: true, port: 61234 };
+    },
+  });
+
+  assert.equal(events[0]?.[0], 'guest-setup');
+  assert.match(events[0]?.[1].guestProvisionScriptSource ?? '', /provision_happier_user_resource_slices/);
+  assert.match(events[0]?.[1].guestPressureScriptSource ?? '', /HAPPIER/);
+  assert.equal(events[1]?.[0], 'key-install');
+  assert.equal(events[1]?.[1], 'limactl');
+  assert.deepEqual(events[1]?.[2].slice(0, 3), ['shell', 'happier-worker', '--']);
+  assert.equal(events[1]?.[2].at(-1), publicKey);
+  assert.equal(events[2]?.[0], 'publication');
 });

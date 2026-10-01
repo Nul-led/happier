@@ -125,6 +125,29 @@ const INSTALL_CONTROLLER_KEY_SCRIPT = [
   'grep -qxF "$key" "$authorized" || printf "%s\\n" "$key" >>"$authorized"',
 ].join('\n');
 
+export async function installManagedLimaDevTargetControllerKey({
+  executor,
+  instance,
+  publicKeyPath,
+  guestSshConfigFile,
+}) {
+  const resolvedPublicKeyPath = publicKeyPath ?? `${readSshConfigDirective(
+    await readFile(guestSshConfigFile, 'utf8'),
+    'IdentityFile',
+  )}.pub`;
+  const publicKey = String(await readFile(resolvedPublicKeyPath, 'utf8')).trim();
+  if (!publicKey || /[\0\r\n]/.test(publicKey)) {
+    throw new Error('[dev-targets] managed worker controller public key is invalid');
+  }
+  const result = await executor.capture('limactl', [
+    'shell', instance, '--', 'sh', '-ceu', INSTALL_CONTROLLER_KEY_SCRIPT,
+    'happier-managed-worker-key', publicKey,
+  ]);
+  if (result.exitCode !== 0) {
+    throw new Error(`[dev-targets] failed to install the controller key in managed guest: ${String(result.err ?? '').trim()}`);
+  }
+}
+
 export async function reconcileManagedLimaDevTargetSshPublication(
   { target, sshLocalPort, guestVerified = false, env = process.env },
   { runSshProbe = defaultRunSshProbe } = {},
@@ -243,17 +266,11 @@ export async function provisionManagedLimaDevTarget(
     guestPressureScriptSource,
     guestProvisionProfile: 'happier',
   });
-  const publicKey = String(await readFile(outer.controllerKey.publicKeyPath, 'utf8')).trim();
-  if (!publicKey || /[\0\r\n]/.test(publicKey)) {
-    throw new Error('[dev-targets] managed worker controller public key is invalid');
-  }
-  const keyInstall = await executor.capture('limactl', [
-    'shell', instance, '--', 'sh', '-ceu', INSTALL_CONTROLLER_KEY_SCRIPT,
-    'happier-managed-worker-key', publicKey,
-  ]);
-  if (keyInstall.exitCode !== 0) {
-    throw new Error(`[dev-targets] failed to install the controller key in managed guest: ${String(keyInstall.err ?? '').trim()}`);
-  }
+  await installManagedLimaDevTargetControllerKey({
+    executor,
+    instance,
+    publicKeyPath: outer.controllerKey.publicKeyPath,
+  });
   const status = await getRuntimeStatus({ executor, instance });
   if (!status.exists || String(status.status).toLowerCase() !== 'running') {
     throw new Error(`[dev-targets] managed Lima guest is not running: ${String(status.status)}`);

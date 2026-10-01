@@ -201,12 +201,13 @@ test('workspace build lock preserves a fresh authenticated owner from another Li
         async () => 'must-not-run',
         {
           lockPath,
+          signal: AbortSignal.timeout(100),
           timeoutMs: 80,
           pollIntervalMs: 10,
           staleAfterMs: 120_000,
         },
       ),
-      (error) => error?.code === 'EWORKSPACEBUNDLELOCKTIMEOUT',
+      (error) => error?.name === 'TimeoutError',
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -249,7 +250,7 @@ test('withCliDistBuildLock reports wait progress while a live owner holds the lo
       },
       {
         lockPath,
-        timeoutMs: 500,
+        timeoutMs: 20,
         pollIntervalMs: 10,
         staleAfterMs: 120_000,
         onWait: (event) => {

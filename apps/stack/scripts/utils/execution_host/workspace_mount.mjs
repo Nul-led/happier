@@ -2,13 +2,18 @@ import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { parseDevTargetsConfig, resolveDevTargetsConfigPath } from '../dev_targets/config.mjs';
 import { runCaptureResult } from '../proc/proc.mjs';
+import { withJsonOwnerFileLock } from '../proc/jsonOwnerFileLock.mjs';
 import { getHappyStacksHomeDir } from '../paths/paths.mjs';
 
 const MACFUSE_FILESYSTEM_PATH = '/Library/Filesystems/macfuse.fs';
 const MOUNT_PROBE_TIMEOUT_MS = 5_000;
+// Recheck at the same cadence as the SSH connection heartbeat. The latter
+// cannot recover if the SSHFS process itself aborts.
+const MOUNT_RECONCILE_INTERVAL_MS = 15_000;
 
 function requireAbsolutePath(value, label) {
   const path = String(value ?? '').trim();
@@ -115,6 +120,8 @@ export async function loadExecutionHostGuestDevTargetsConfig({
 function defaultBoundary(env) {
   return {
     capture: (command, args, options = {}) => runCaptureResult(command, args, { env, ...options }),
+    delay: (ms, options = {}) => delay(ms, undefined, options),
+    reportWarning: (message) => process.stderr.write(`${message}\n`),
     start: (command, args) => {
       const child = spawn(command, args, {
         env,
@@ -141,8 +148,13 @@ function mountHealthError(code, message) {
   return { ok: false, code, message };
 }
 
-async function waitForMountedFilesystem({ boundary, mountDir, child }) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+function isDefiniteDeadMount(health) {
+  return health?.code === 'mount_unreachable'
+    && /Device not configured|Transport endpoint is not connected/i.test(String(health.message ?? ''));
+}
+
+async function waitForMountedFilesystem({ boundary, mountDir, child, signal }) {
+  while (true) {
     const observed = await boundary.capture('mount', []);
     if (observed.exitCode === 0 && mountOutputContains(observed.out, mountDir)) return;
     if (child?.happierLaunchError) {
@@ -151,9 +163,13 @@ async function waitForMountedFilesystem({ boundary, mountDir, child }) {
     if (child?.exitCode != null) {
       throw new Error(`[dev-vm] SSHFS mount failed with exit ${child.exitCode}`);
     }
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+    await boundary.delay(100, { signal });
   }
-  throw new Error('[dev-vm] SSHFS mount did not become ready within 10 seconds');
+}
+
+function terminateLaunchedMount(child) {
+  if (!child || child.exitCode != null || typeof child.kill !== 'function') return;
+  child.kill('SIGTERM');
 }
 
 function mountProbeFailureDetail(probe) {
@@ -244,7 +260,7 @@ export async function inspectExecutionHostWorkspaceMount({
   };
 }
 
-export async function mountExecutionHostWorkspace({
+async function mountExecutionHostWorkspaceUnlocked({
   profile,
   env = process.env,
   mountDir = '',
@@ -252,6 +268,8 @@ export async function mountExecutionHostWorkspace({
   executor,
   platform = process.platform,
   fileExists = existsSync,
+  requireDefiniteStale = false,
+  signal,
 } = {}) {
   const processBoundary = boundary ?? defaultBoundary(env);
   const current = await inspectExecutionHostWorkspaceMount({
@@ -263,8 +281,11 @@ export async function mountExecutionHostWorkspace({
     fileExists,
   });
   if (current.mounted && current.health?.ok === true) return current;
+  if (current.mounted && requireDefiniteStale && !isDefiniteDeadMount(current.health)) {
+    throw new Error(`[dev-vm] workspace mount probe is inconclusive; leaving the listed mount in place: ${current.health?.message ?? 'unknown failure'}`);
+  }
   if (current.mounted) {
-    await unmountExecutionHostWorkspace({ profile, env, mountDir, boundary: processBoundary, platform });
+    await unmountExecutionHostWorkspaceUnlocked({ profile, env, mountDir, boundary: processBoundary, platform });
   }
   const ready = current.mounted
     ? await inspectExecutionHostWorkspaceMount({
@@ -295,11 +316,16 @@ export async function mountExecutionHostWorkspace({
     resolved.mountDir,
     '-o', 'reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,defer_permissions,noappledouble,volname=Happier VM',
   ]);
-  await waitForMountedFilesystem({ boundary: processBoundary, mountDir: resolved.mountDir, child });
+  try {
+    await waitForMountedFilesystem({ boundary: processBoundary, mountDir: resolved.mountDir, child, signal });
+  } catch (error) {
+    terminateLaunchedMount(child);
+    throw error;
+  }
   return { ...resolved, mounted: true, health: { ok: true, code: 'mounted' } };
 }
 
-export async function unmountExecutionHostWorkspace({
+async function unmountExecutionHostWorkspaceUnlocked({
   profile,
   env = process.env,
   mountDir = '',
@@ -307,23 +333,82 @@ export async function unmountExecutionHostWorkspace({
   platform = process.platform,
 } = {}) {
   const processBoundary = boundary ?? defaultBoundary(env);
-  const current = await inspectExecutionHostWorkspaceMount({
+  let current = await inspectExecutionHostWorkspaceMount({
     profile,
     env,
     mountDir,
     boundary: processBoundary,
     platform,
   });
-  if (!current.mounted) return current;
-  const result = await processBoundary.capture('umount', [current.mountDir]);
-  if (result.exitCode === 0) return { ...current, mounted: false };
-
-  const detail = String(result.err ?? '').trim();
-  if (platform === 'darwin' && /resource busy/i.test(detail)) {
-    const fallback = await processBoundary.capture('diskutil', ['unmount', current.mountDir]);
-    if (fallback.exitCode === 0) return { ...current, mounted: false };
-    const forcedFallback = await processBoundary.capture('diskutil', ['unmount', 'force', current.mountDir]);
-    if (forcedFallback.exitCode === 0) return { ...current, mounted: false };
+  while (current.mounted) {
+    const result = await processBoundary.capture('umount', [current.mountDir]);
+    if (result.exitCode !== 0) {
+      const detail = String(result.err ?? '').trim();
+      let unmounted = false;
+      if (platform === 'darwin' && /resource busy/i.test(detail)) {
+        const fallback = await processBoundary.capture('diskutil', ['unmount', current.mountDir]);
+        if (fallback.exitCode === 0) {
+          unmounted = true;
+        } else {
+          const forcedFallback = await processBoundary.capture('diskutil', ['unmount', 'force', current.mountDir]);
+          unmounted = forcedFallback.exitCode === 0;
+        }
+      }
+      if (!unmounted) throw new Error(`[dev-vm] SSHFS unmount failed${detail ? `: ${detail}` : ''}`);
+    }
+    current = await inspectExecutionHostWorkspaceMount({
+      profile,
+      env,
+      mountDir,
+      boundary: processBoundary,
+      platform,
+    });
   }
-  throw new Error(`[dev-vm] SSHFS unmount failed${detail ? `: ${detail}` : ''}`);
+  return { ...current, mounted: false, health: { ok: true, code: 'ready' } };
+}
+
+function withWorkspaceMountLock({ profile, env, mountDir, signal }, operation) {
+  const resolved = resolveExecutionHostWorkspaceMount(profile, env, mountDir);
+  return withJsonOwnerFileLock(operation, {
+    // The sibling remains accessible when the mountpoint itself is stale.
+    lockPath: `${resolved.mountDir}.lock`,
+    errorLabel: 'execution-host workspace mount lock',
+    signal,
+  });
+}
+
+export async function mountExecutionHostWorkspace(options = {}) {
+  return await withWorkspaceMountLock(options, async () => await mountExecutionHostWorkspaceUnlocked(options));
+}
+
+export async function unmountExecutionHostWorkspace(options = {}) {
+  return await withWorkspaceMountLock(options, async () => await unmountExecutionHostWorkspaceUnlocked(options));
+}
+
+export async function superviseExecutionHostWorkspaceMount({ signal, boundary, env = process.env, ...options } = {}) {
+  const processBoundary = boundary ?? defaultBoundary(env);
+  let previousError = '';
+  while (!signal?.aborted) {
+    try {
+      await mountExecutionHostWorkspace({ ...options, env, boundary: processBoundary, signal, requireDefiniteStale: true });
+      if (previousError) {
+        processBoundary.reportWarning?.('[dev-vm] workspace mount recovered after a transient failure');
+        previousError = '';
+      }
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError') break;
+      const message = String(error?.message ?? error);
+      if (message !== previousError) {
+        processBoundary.reportWarning?.(`[dev-vm] workspace mount reconciliation failed; retrying: ${message}`);
+        previousError = message;
+      }
+    }
+    try {
+      await processBoundary.delay(MOUNT_RECONCILE_INTERVAL_MS, { signal });
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError') break;
+      throw error;
+    }
+  }
+  return { status: 'cancelled' };
 }

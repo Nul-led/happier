@@ -131,6 +131,11 @@ function executorFor(profile) {
   );
 }
 
+function workspaceMountStatus(mount) {
+  if (mount?.mounted) return mount.health?.ok === true ? 'mounted' : mount.health?.code ?? 'mount_unreachable';
+  return mount?.health?.ok === true ? 'not mounted' : mount?.health?.code ?? 'not mounted';
+}
+
 function plainStatus(result) {
   if (!result.configured) return '[dev-vm] execution host: not configured';
   return [
@@ -138,7 +143,7 @@ function plainStatus(result) {
     `[dev-vm] authoritative: ${result.authoritative ? 'yes' : 'no'}`,
     `[dev-vm] VM status: ${result.doctor?.status ?? 'unknown'}`,
     `[dev-vm] doctor: ${result.doctor?.ok === true ? 'ok' : 'attention required'}`,
-    ...(result.mount ? [`[dev-vm] workspace mount: ${result.mount.health?.ok === true && result.mount.mounted ? 'mounted' : result.mount.health?.code ?? 'not mounted'}`] : []),
+    ...(result.mount ? [`[dev-vm] workspace mount: ${workspaceMountStatus(result.mount)}`] : []),
     ...(result.backup ? [`[dev-vm] backup schedule: ${result.backup.health?.code ?? 'unknown'} (${result.backup.stacks?.length ?? 0} configured Stack${result.backup.stacks?.length === 1 ? '' : 's'})`] : []),
     ...(result.serviceTunnels ? [`[dev-vm] service forwards: ${result.serviceTunnels.map((tunnel) => tunnel.status).join(', ') || 'none'}`] : []),
     ...(result.candidateRetirement ? [`[dev-vm] candidate mirror retirement: ${result.candidateRetirement.state}`] : []),
@@ -508,7 +513,7 @@ async function main() {
         ...result,
         autoMount: mountAction === 'enable' ? true : mountAction === 'disable' ? false : profile.autoMount === true,
       },
-      text: `[dev-vm] workspace mount: ${result.health?.ok === true && result.mounted ? 'mounted' : result.health?.code ?? 'not mounted'}\n[dev-vm] path: ${result.mountDir}`,
+      text: `[dev-vm] workspace mount: ${workspaceMountStatus(result)}\n[dev-vm] path: ${result.mountDir}`,
     });
   }
   if (command === 'backup') {

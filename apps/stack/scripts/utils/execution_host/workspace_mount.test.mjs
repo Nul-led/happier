@@ -7,6 +7,7 @@ import {
   inspectExecutionHostWorkspaceMount,
   mountExecutionHostWorkspace,
   resolveExecutionHostWorkspaceMount,
+  superviseExecutionHostWorkspaceMount,
   unmountExecutionHostWorkspace,
 } from './workspace_mount.mjs';
 
@@ -189,6 +190,217 @@ test('workspace mount probes a listed SSHFS mount and remounts an inaccessible g
   assert.equal(calls.filter((call) => call.command === 'umount').length, 1);
   assert.equal(calls.filter((call) => call.command === 'diskutil').length, 2);
   assert.equal(calls.filter((call) => call.command === 'sshfs' && call.args[0] !== '--version').length, 1);
+});
+
+test('concurrent automatic mount reconciliations start only one SSHFS process', async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'execution-host-workspace-mount-concurrent-' });
+  const limaHome = fixture.path('lima');
+  const mountDir = fixture.path('vm-home');
+  await mkdir(fixture.path('lima', 'happier-agent-primary'), { recursive: true });
+  await writeFile(fixture.path('lima', 'happier-agent-primary', 'ssh.config'), 'Host lima-happier-agent-primary\n', 'utf8');
+  let mounted = false;
+  let starts = 0;
+  const boundary = {
+    capture: async (command) => {
+      if (command === 'mount') return { exitCode: 0, out: mounted ? `macfuse on ${mountDir} (osxfuse)\n` : '', err: '' };
+      if (command === 'ls' || command === 'sshfs') return { exitCode: 0, out: '', err: '' };
+      throw new Error(`unexpected command: ${command}`);
+    },
+    start: async () => {
+      starts += 1;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+      mounted = true;
+      return { pid: 733, exitCode: null };
+    },
+  };
+  const input = {
+    profile: profile(limaHome), mountDir, boundary, platform: 'darwin',
+    fileExists: () => true,
+    executor: { capture: async () => ({ exitCode: 0, out: '/home/leeroy.guest', err: '' }) },
+  };
+  const results = await Promise.all([mountExecutionHostWorkspace(input), mountExecutionHostWorkspace(input)]);
+  assert.equal(starts, 1);
+  assert.ok(results.every((result) => result.health.ok));
+});
+
+test('workspace mount waits for a valid slow SSHFS launch instead of imposing a local retry cutoff', async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'execution-host-workspace-mount-slow-launch-' });
+  const limaHome = fixture.path('lima');
+  const mountDir = fixture.path('vm-home');
+  await mkdir(fixture.path('lima', 'happier-agent-primary'), { recursive: true });
+  await writeFile(fixture.path('lima', 'happier-agent-primary', 'ssh.config'), 'Host lima-happier-agent-primary\n', 'utf8');
+  let started = false;
+  let launchPolls = 0;
+  const result = await mountExecutionHostWorkspace({
+    profile: profile(limaHome),
+    mountDir,
+    platform: 'darwin',
+    fileExists: () => true,
+    executor: { capture: async () => ({ exitCode: 0, out: '/home/leeroy.guest', err: '' }) },
+    boundary: {
+      capture: async (command, args) => {
+        if (command === 'mount') {
+          if (started) launchPolls += 1;
+          return {
+            exitCode: 0,
+            out: started && launchPolls > 100 ? `macfuse on ${mountDir} (osxfuse)\n` : '',
+            err: '',
+          };
+        }
+        if (command === 'ls' || (command === 'sshfs' && args[0] === '--version')) {
+          return { exitCode: 0, out: '', err: '' };
+        }
+        throw new Error(`unexpected command: ${command}`);
+      },
+      start: async () => {
+        started = true;
+        return { pid: 735, exitCode: null };
+      },
+      delay: async () => {},
+    },
+  });
+
+  assert.equal(result.mounted, true);
+  assert.equal(launchPolls, 101);
+});
+
+test('workspace mount cancellation terminates the launched SSHFS child', async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'execution-host-workspace-mount-cancel-' });
+  const limaHome = fixture.path('lima');
+  const mountDir = fixture.path('vm-home');
+  await mkdir(fixture.path('lima', 'happier-agent-primary'), { recursive: true });
+  await writeFile(fixture.path('lima', 'happier-agent-primary', 'ssh.config'), 'Host lima-happier-agent-primary\n', 'utf8');
+  const controller = new AbortController();
+  const signals = [];
+
+  await assert.rejects(mountExecutionHostWorkspace({
+    profile: profile(limaHome),
+    mountDir,
+    signal: controller.signal,
+    platform: 'darwin',
+    fileExists: () => true,
+    executor: { capture: async () => ({ exitCode: 0, out: '/home/leeroy.guest', err: '' }) },
+    boundary: {
+      capture: async (command, args) => {
+        if (command === 'mount') return { exitCode: 0, out: '', err: '' };
+        if (command === 'ls' || (command === 'sshfs' && args[0] === '--version')) {
+          return { exitCode: 0, out: '', err: '' };
+        }
+        throw new Error(`unexpected command: ${command}`);
+      },
+      start: async () => ({
+        pid: 736,
+        exitCode: null,
+        kill: (signal) => {
+          signals.push(signal);
+          return true;
+        },
+      }),
+      delay: async (_ms, options) => {
+        controller.abort();
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        assert.equal(options.signal, controller.signal);
+        throw error;
+      },
+    },
+  }), { name: 'AbortError' });
+
+  assert.deepEqual(signals, ['SIGTERM']);
+});
+
+test('workspace unmount removes every stacked layer and reports the unmounted state', async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'execution-host-workspace-unmount-layers-' });
+  const mountDir = fixture.path('vm-home');
+  let layers = 3;
+  let unmounts = 0;
+  const result = await unmountExecutionHostWorkspace({
+    profile: profile(fixture.path('lima')),
+    mountDir,
+    platform: 'darwin',
+    boundary: {
+      capture: async (command) => {
+        if (command === 'mount') {
+          return {
+            exitCode: 0,
+            out: Array.from({ length: layers }, () => `macfuse on ${mountDir} (osxfuse)`).join('\n'),
+            err: '',
+          };
+        }
+        if (command === 'ls') return { exitCode: 0, out: '', err: '' };
+        if (command === 'umount') {
+          unmounts += 1;
+          layers -= 1;
+          return { exitCode: 0, out: '', err: '' };
+        }
+        throw new Error(`unexpected command: ${command}`);
+      },
+    },
+  });
+
+  assert.equal(unmounts, 3);
+  assert.equal(result.mounted, false);
+  assert.deepEqual(result.health, { ok: true, code: 'ready' });
+});
+
+test('active Stack mount supervision repairs a crashed SSHFS mount and stops on cancellation', async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'execution-host-workspace-mount-supervise-' });
+  const limaHome = fixture.path('lima');
+  const mountDir = fixture.path('vm-home');
+  await mkdir(fixture.path('lima', 'happier-agent-primary'), { recursive: true });
+  await writeFile(fixture.path('lima', 'happier-agent-primary', 'ssh.config'), 'Host lima-happier-agent-primary\n', 'utf8');
+  const controller = new AbortController();
+  let mounted = true;
+  let reachable = true;
+  let starts = 0;
+  let delays = 0;
+  const boundary = {
+    capture: async (command) => {
+      if (command === 'mount') return { exitCode: 0, out: mounted ? `macfuse on ${mountDir} (osxfuse)\n` : '', err: '' };
+      if (command === 'ls') return { exitCode: reachable ? 0 : 1, out: '', err: reachable ? '' : 'Device not configured' };
+      if (command === 'umount') { mounted = false; return { exitCode: 0, out: '', err: '' }; }
+      if (command === 'sshfs') return { exitCode: 0, out: '', err: '' };
+      throw new Error(`unexpected command: ${command}`);
+    },
+    start: async () => { starts += 1; mounted = true; reachable = true; return { pid: 734, exitCode: null }; },
+    delay: async () => {
+      delays += 1;
+      if (delays === 1) reachable = false;
+      if (delays === 2) controller.abort();
+    },
+  };
+  const result = await superviseExecutionHostWorkspaceMount({
+    profile: profile(limaHome), mountDir, boundary, signal: controller.signal,
+    platform: 'darwin', fileExists: () => true,
+    executor: { capture: async () => ({ exitCode: 0, out: '/home/leeroy.guest', err: '' }) },
+  });
+  assert.equal(result.status, 'cancelled');
+  assert.equal(starts, 1);
+  assert.equal(reachable, true);
+});
+
+test('active Stack mount supervision does not force-unmount a transiently slow live mount', async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'execution-host-workspace-mount-slow-' });
+  const mountDir = fixture.path('vm-home');
+  const controller = new AbortController();
+  let unmounts = 0;
+  const result = await superviseExecutionHostWorkspaceMount({
+    profile: profile(fixture.path('lima')),
+    mountDir,
+    signal: controller.signal,
+    platform: 'darwin',
+    boundary: {
+      capture: async (command) => {
+        if (command === 'mount') return { exitCode: 0, out: `macfuse on ${mountDir} (osxfuse)\n`, err: '' };
+        if (command === 'ls') return { exitCode: 1, out: '', err: '', timedOut: true };
+        if (command === 'umount') { unmounts += 1; return { exitCode: 0, out: '', err: '' }; }
+        throw new Error(`unexpected command: ${command}`);
+      },
+      delay: async () => controller.abort(),
+    },
+  });
+  assert.equal(result.status, 'cancelled');
+  assert.equal(unmounts, 0);
 });
 
 test('workspace mount status identifies a macFUSE approval blocker without attempting another mount mechanism', async () => {

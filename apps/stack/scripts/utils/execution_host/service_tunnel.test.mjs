@@ -310,7 +310,7 @@ test('execution-host service tunnel starts one detached SSH transport with all r
   assert.equal(state.transition, undefined, 'steady-state records retain the established active shape');
 });
 
-test('execution-host service tunnel starts one local forwarder process for controller-host services', async (t) => {
+test('execution-host service tunnel preserves its local forwarder when listener discovery times out', async (t) => {
   const fixture = await createTempFixture(t, { prefix: 'execution-host-local-service-forwarder-' });
   const env = { HAPPIER_STACK_HOME_DIR: fixture.path('home') };
   const boundary = tunnelBoundary({ listenerPids: new Map([[52753, [731]], [18829, [731]]]) });
@@ -335,13 +335,14 @@ test('execution-host service tunnel starts one local forwarder process for contr
     }),
   ].join('\n'));
 
-  const result = await ensureExecutionHostServiceTunnel({
+  const input = {
     profile: profile(fixture.path('lima')),
     workspaceId: '0.3',
     executor,
     env,
     boundary,
-  });
+  };
+  const result = await ensureExecutionHostServiceTunnel(input);
 
   assert.equal(result.status, 'running');
   assert.equal(boundary.spawned.length, 1);
@@ -356,6 +357,23 @@ test('execution-host service tunnel starts one local forwarder process for contr
   const state = JSON.parse(await readFile(result.statePath, 'utf8'));
   assert.equal(state.transport, 'host');
   assert.equal(state.sshConfigFile, undefined);
+
+  const listListeners = boundary.listListeners.bind(boundary);
+  boundary.listListeners = async () => ({ status: 'timeout', supported: true, pids: [], reason: 'listener-discovery-timeout' });
+  const inconclusive = await ensureExecutionHostServiceTunnel(input);
+  assert.equal(inconclusive.status, 'running');
+  assert.equal(inconclusive.changed, false);
+  assert.equal(inconclusive.inspectionReason, 'listener_discovery_unavailable');
+  assert.equal(boundary.spawned.length, 1);
+  assert.equal(boundary.terminated.length, 0);
+  assert.equal(JSON.parse(await readFile(result.statePath, 'utf8')).pid, state.pid);
+
+  boundary.listListeners = listListeners;
+  const recovered = await ensureExecutionHostServiceTunnel(input);
+  assert.equal(recovered.status, 'running');
+  assert.equal(recovered.inspectionReason, undefined);
+  assert.equal(boundary.spawned.length, 1);
+  assert.equal(boundary.terminated.length, 0);
 });
 
 test('service tunnel admits free ports by binding and scopes listener ownership checks to its SSH PID', async (t) => {
@@ -824,7 +842,7 @@ test('service tunnel supervision retries a transient initial runtime inspection 
   assert.match(warnings[1] ?? '', /recovered after a transient initial reconciliation failure/);
 });
 
-test('service tunnel supervision does not poll a stable initial remote Expo projection', async (t) => {
+test('service tunnel supervision rechecks a stable runtime plan without replacing its transport', async (t) => {
   const fixture = await createTempFixture(t, { prefix: 'execution-host-service-tunnel-supervision-expo-' });
   const env = { HAPPIER_STACK_HOME_DIR: fixture.path('home') };
   const controller = new AbortController();
@@ -877,9 +895,81 @@ test('service tunnel supervision does not poll a stable initial remote Expo proj
   });
 
   assert.equal(result.status, 'cancelled');
-  assert.equal(executor.calls.length, 1, 'a stable plan must not spawn a guest executor on every health check');
+  assert.equal(executor.calls.length, 2, 'supervision must recheck the runtime plan for newly published services');
   assert.equal(boundary.spawned.length, 1);
   assert.equal(boundary.terminated.length, 0);
+  const state = JSON.parse(await readFile(`${fixture.path('home')}/execution-host-tunnels/primary-0.3.json`, 'utf8'));
+  assert.deepEqual(state.forwards, [
+    { service: 'server', listenHost: '0.0.0.0', listenPort: 52753, targetHost: '127.0.0.1', targetPort: 52754 },
+    { service: 'expo-web', listenHost: '0.0.0.0', listenPort: 19364, targetHost: '127.0.0.1', targetPort: 19364 },
+  ]);
+});
+
+test('service tunnel supervision replaces a healthy transport when the runtime publishes an additional service', async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'execution-host-service-tunnel-supervision-plan-drift-' });
+  const env = { HAPPIER_STACK_HOME_DIR: fixture.path('home') };
+  const controller = new AbortController();
+  const startedAt = '2026-09-22T08:25:15.669Z';
+  let projection = runtimeProjection({ startedAt, expoEnabled: false });
+  const executor = {
+    calls: 0,
+    async capture() {
+      this.calls += 1;
+      return { exitCode: 0, out: projection, err: '' };
+    },
+  };
+  let activePid = null;
+  let nextPid = 731;
+  let delays = 0;
+  const boundary = tunnelBoundary({
+    listenerPids: (_port, _spawned, { candidatePids } = {}) => (
+      activePid != null && candidatePids?.includes(activePid) ? [activePid] : []
+    ),
+  });
+  boundary.spawn = (command, args, options) => {
+    const child = { pid: nextPid, unref() {} };
+    nextPid += 1;
+    activePid = child.pid;
+    boundary.spawned.push({ command, args, options, child });
+    return child;
+  };
+  boundary.readFingerprint = (pid) => `darwin-ps:${pid}`;
+  boundary.observeProcess = async (pid) => (
+    pid === activePid
+      ? {
+          status: 'ok',
+          line: `${pid} ssh HAPPIER_STACK_PROCESS_KIND=execution-host-service-tunnel HAPPIER_STACK_EXECUTION_HOST_TUNNEL=primary:0.3:repo-dev-1234567890`,
+        }
+      : { status: 'not_found' }
+  );
+  boundary.terminate = async (pid, options) => {
+    boundary.terminated.push({ pid, options });
+    if (pid === activePid) activePid = null;
+    return { ok: true, signal: 'SIGTERM' };
+  };
+  boundary.delay = async () => {
+    delays += 1;
+    if (delays === 1) {
+      projection = runtimeProjection({ startedAt, expoPort: 19364 });
+      return;
+    }
+    controller.abort();
+  };
+
+  const result = await superviseExecutionHostServiceTunnel({
+    profile: profile(fixture.path('lima')),
+    workspaceId: '0.3',
+    stackName: 'repo-dev-1234567890',
+    executor,
+    env,
+    boundary,
+    signal: controller.signal,
+  });
+
+  assert.equal(result.status, 'cancelled');
+  assert.equal(executor.calls, 2);
+  assert.deepEqual(boundary.spawned.map(({ child }) => child.pid), [731, 732]);
+  assert.deepEqual(boundary.terminated.map(({ pid }) => pid), [731]);
   const state = JSON.parse(await readFile(`${fixture.path('home')}/execution-host-tunnels/primary-0.3.json`, 'utf8'));
   assert.deepEqual(state.forwards, [
     { service: 'server', listenHost: '0.0.0.0', listenPort: 52753, targetHost: '127.0.0.1', targetPort: 52754 },
@@ -1519,6 +1609,8 @@ test('service tunnel replaces only its PID-verified SSH child when a Stack runti
       ? [731]
       : [],
   });
+  const warnings = [];
+  boundary.reportWarning = (message) => warnings.push(message);
   const input = {
     profile: profile(fixture.path('lima')),
     workspaceId: '0.3',
@@ -1532,6 +1624,8 @@ test('service tunnel replaces only its PID-verified SSH child when a Stack runti
   const reconciled = await ensureExecutionHostServiceTunnel(input);
 
   assert.equal(reconciled.changed, true);
+  assert.equal(reconciled.replacementReason, 'forward_plan_changed');
+  assert.equal(warnings.some((message) => message.includes('reason=forward_plan_changed')), true);
   assert.equal(boundary.spawned.length, 2);
   assert.equal(boundary.terminated.length, 1);
   assert.equal(boundary.terminated[0].pid, 731);

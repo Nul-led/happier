@@ -16,12 +16,12 @@ function installDirLockKey(installDir) {
   return createHash('sha256').update(resolve(installDir), 'utf-8').digest('hex');
 }
 
-function resolveDependencyRefreshLockPath(installDir) {
+function resolveDependencyRefreshLockPath(installDir, env = process.env) {
   const monorepoRoot = coerceHappyMonorepoRootFromPath(installDir);
   if (monorepoRoot && resolve(monorepoRoot) === resolve(installDir)) {
     return join(monorepoRoot, '.project', 'tmp', 'dependency-install.lock');
   }
-  return join(getHappyStacksHomeDir(), 'cache', 'dependencies', `${installDirLockKey(installDir)}.lock`);
+  return join(getHappyStacksHomeDir(env), 'cache', 'dependencies', `${installDirLockKey(installDir)}.lock`);
 }
 
 async function collectPatchPaths(installDir) {
@@ -250,6 +250,7 @@ export async function inspectDependencyRefresh({ installDir, componentDir = inst
 export async function withDependencyRefresh({
   installDir,
   componentDir = installDir,
+  env = process.env,
   onDependenciesReady = null,
   runtimeIdentity,
 }, refresh) {
@@ -306,7 +307,8 @@ export async function withDependencyRefresh({
     };
     return await mutate();
   }, {
-    lockPath: resolveDependencyRefreshLockPath(installDir),
+    lockPath: resolveDependencyRefreshLockPath(installDir, env),
     errorLabel: 'dependency refresh lock',
+    allowLiveOwnerStaleReclaim: true,
   });
 }

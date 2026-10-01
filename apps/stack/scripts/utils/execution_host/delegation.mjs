@@ -7,7 +7,7 @@ import { doctorManagedLimaInstance } from '../managed_lima/manager.mjs';
 import { resolveManagedLimaCapacityResources } from '../managed_lima/capacity.mjs';
 import { parseArgs } from '../cli/args.mjs';
 import { inferTuiStackName } from '../tui/args.mjs';
-import { mountExecutionHostWorkspace } from './workspace_mount.mjs';
+import { mountExecutionHostWorkspace, superviseExecutionHostWorkspaceMount } from './workspace_mount.mjs';
 import { ensureExecutionHostServiceTunnel, superviseExecutionHostServiceTunnel } from './service_tunnel.mjs';
 
 let delegatedCommandSequence = 0;
@@ -85,7 +85,7 @@ async function reconcileManagedHostAfterStart({
     env,
     { hostEnvironment: { LIMA_HOME: profile.limaHome } },
   );
-  return await superviseExecutionHostServiceTunnel({
+  const tunnel = superviseExecutionHostServiceTunnel({
     profile,
     workspaceId,
     stackName,
@@ -94,6 +94,16 @@ async function reconcileManagedHostAfterStart({
     signal,
     previousRuntimeStartedAt,
   });
+  if (profile.autoMount !== true) return await tunnel;
+  const mount = superviseExecutionHostWorkspaceMount({
+    profile,
+    env,
+    mountDir: profile.hostMountDir || '',
+    executor,
+    signal,
+  });
+  const [tunnelResult] = await Promise.all([tunnel, mount]);
+  return tunnelResult;
 }
 
 export function mapHostCwdToGuest(profile, hostCwd) {

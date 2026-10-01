@@ -637,6 +637,7 @@ async function ensureExecutionHostServiceTunnelUnlocked({
     throw tunnelError('EXECUTION_HOST_SERVICE_TUNNEL_STATE_INVALID', '[dev-vm] refusing to replace an invalid SSH tunnel state record');
   }
   let replacementInProgress = false;
+  let replacementReason = '';
   try {
     if (loaded.state) {
       const transition = tunnelTransition(loaded.state);
@@ -655,7 +656,7 @@ async function ensureExecutionHostServiceTunnelUnlocked({
           && loaded.state.marker === marker
           && sameForwards(loaded.state.forwards, projection.forwards);
         const inspection = await inspectSavedTunnel(loaded.state, processBoundary);
-        if (samePlan && inspection.ok) {
+        if (samePlan && (inspection.ok || inspection.reason === 'listener_discovery_unavailable')) {
           return {
             changed: false,
             status: 'running',
@@ -664,6 +665,7 @@ async function ensureExecutionHostServiceTunnelUnlocked({
             stackName: projection.stackName,
             forwards: projection.forwards,
             pendingServices: projection.pendingServices,
+            ...(!inspection.ok ? { inspectionReason: inspection.reason, inspectionPort: inspection.port } : {}),
             ...(projection.runtimeStartedAt ? { runtimeStartedAt: projection.runtimeStartedAt } : {}),
           };
         }
@@ -674,6 +676,10 @@ async function ensureExecutionHostServiceTunnelUnlocked({
             { pid: loaded.state.pid, reason: inspection.reason },
           );
         }
+        replacementReason = samePlan ? inspection.reason : 'forward_plan_changed';
+        processBoundary.reportWarning?.(
+          `[dev-vm] service tunnel replacement requested (reason=${replacementReason}, observed=${inspection.reason}, workspace=${workspace.id})`,
+        );
         // Keep the owned state record visible while the old transport releases
         // its ports and the replacement binds. A concurrent supervisor must not
         // mistake that handoff for an operator-requested stop.
@@ -777,6 +783,7 @@ async function ensureExecutionHostServiceTunnelUnlocked({
       forwards: projection.forwards,
       statePath,
       pendingServices: projection.pendingServices,
+      ...(replacementReason ? { replacementReason } : {}),
       ...(projection.runtimeStartedAt ? { runtimeStartedAt: projection.runtimeStartedAt } : {}),
     };
   } catch (error) {
@@ -947,7 +954,6 @@ export async function superviseExecutionHostServiceTunnel({
       return { changed: false, status: 'stopped', workspaceId: workspace.id, statePath: inspection.statePath };
     }
     if (inspection.status === TUNNEL_TRANSITION_REPLACING || inspection.status === TUNNEL_TRANSITION_STOPPING) continue;
-    if (inspection.healthy && inspection.status !== 'absent') continue;
 
     try {
       result = await waitForExecutionHostServiceTunnel({

@@ -442,6 +442,7 @@ test('dev-vm mount exposes the guest home through the managed Lima SSH identity'
   const bin = fixture.path('bin');
   const limaHome = fixture.path('lima');
   const mountDir = fixture.path('workspace');
+  const mountState = fixture.path('mount-state');
   const sshConfig = fixture.path('lima', 'candidate', 'ssh.config');
   const sshfsLog = fixture.path('sshfs.log');
   await mkdir(home, { recursive: true });
@@ -449,10 +450,16 @@ test('dev-vm mount exposes the guest home through the managed Lima SSH identity'
   await mkdir(fixture.path('mirror'), { recursive: true });
   await mkdir(fixture.path('lima', 'candidate'), { recursive: true });
   await writeFile(sshConfig, 'Host lima-candidate\n  HostName 127.0.0.1\n');
-  await writeFile(fixture.path('bin', 'mount'), '#!/bin/sh\nexit 0\n');
+  await writeFile(fixture.path('bin', 'mount'), [
+    '#!/bin/sh',
+    `if [ -f ${JSON.stringify(mountState)} ]; then printf '/dev/fuse on %s (fuse.sshfs)\\n' ${JSON.stringify(mountDir)}; fi`,
+    'exit 0',
+    '',
+  ].join('\n'));
   await writeFile(fixture.path('bin', 'sshfs'), [
     '#!/bin/sh',
     `printf '%s\\n' "$*" > ${JSON.stringify(sshfsLog)}`,
+    `: > ${JSON.stringify(mountState)}`,
     'exit 0',
     '',
   ].join('\n'));
@@ -531,7 +538,7 @@ test('dev-vm mount exposes the guest home through the managed Lima SSH identity'
   );
   assert.match(
     await readFile(sshfsLog, 'utf8'),
-    new RegExp(`^-F ${sshConfig.replaceAll('/', '\\/')} lima-candidate:\/home\/happier ${mountDir.replaceAll('/', '\\/')} `),
+    new RegExp(`^-F ${sshConfig.replaceAll('/', '\\/')} .*lima-candidate:\/home\/happier ${mountDir.replaceAll('/', '\\/')} `),
   );
 });
 
@@ -623,6 +630,10 @@ test('dev-vm mount status rejects a stale SSHFS entry and normal mount recovers 
   const recovered = await runNodeCapture([script, 'mount', `--mount-dir=${mountDir}`, '--json'], { env });
   assert.equal(recovered.code, 0, recovered.stderr);
   assert.deepEqual(JSON.parse(recovered.stdout).health, { ok: true, code: 'mounted' });
+  await writeFile(state, 'absent\n', 'utf8');
+  const unmountedText = await runNodeCapture([script, 'mount', 'status', `--mount-dir=${mountDir}`], { env });
+  assert.equal(unmountedText.code, 0, unmountedText.stderr);
+  assert.match(unmountedText.stdout, /\[dev-vm\] workspace mount: not mounted/);
   const operations = await readFile(log, 'utf8');
   assert.match(operations, new RegExp(`umount ${mountDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
   assert.match(operations, /sshfs -F /);
@@ -766,6 +777,11 @@ test('dev-vm backup schedule persists explicit Stack names without starting the 
     `--destination-root=${destinationRoot}`,
     '--json',
   ], { env });
+  if (process.platform !== 'darwin') {
+    assert.equal(enabled.code, 1);
+    assert.match(enabled.stderr, /supported only by macOS user LaunchAgents/);
+    return;
+  }
   assert.equal(enabled.code, 0, enabled.stderr);
   assert.deepEqual(JSON.parse(enabled.stdout).schedule.stackNames, stacks);
   const plist = await readFile(join(home, 'Library', 'LaunchAgents', 'dev.happier.stack.dev-vm-backup.plist'), 'utf8');
@@ -1037,7 +1053,7 @@ test('host mirror status inspects continuous candidate sync without touching the
   assert.equal(JSON.parse(result.stdout).status.state, 'ready');
 });
 
-test('active execution profile delegates an ordinary hstack command before local workspace admission', async (t) => {
+test('active execution profile delegates an ordinary hstack command on macOS and remains local elsewhere', async (t) => {
   const fixture = await createTempFixture(t, { prefix: 'hstack-host-active-' });
   const home = fixture.path('home');
   const bin = fixture.path('bin');
@@ -1100,6 +1116,10 @@ test('active execution profile delegates an ordinary hstack command before local
     },
   });
 
+  if (process.platform !== 'darwin') {
+    assert.equal(result.code, 0, result.stderr);
+    return;
+  }
   assert.equal(result.code, 23, result.stderr);
   assert.match(await readFile(log, 'utf8'), /shell --workdir \/home\/happier\/workspace candidate -- env HAPPIER_STACK_EXECUTION_HOST_REENTRY=1/);
 });
@@ -1163,6 +1183,11 @@ test('dev-vm recovery enable installs a next-login LaunchAgent without touching 
   };
   const result = await runNodeCapture([script, 'recovery', 'enable', '--json'], { env });
 
+  if (process.platform !== 'darwin') {
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /supported only by macOS user LaunchAgents/);
+    return;
+  }
   assert.equal(result.code, 0, result.stderr);
   const enabled = JSON.parse(result.stdout);
   assert.equal(enabled.launchAgent.label, 'dev.happier.stack.dev-vm-recovery');

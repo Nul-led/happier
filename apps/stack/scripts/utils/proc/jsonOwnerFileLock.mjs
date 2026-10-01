@@ -141,6 +141,7 @@ export async function withJsonOwnerFileLock(fn, options = {}) {
   let waited = false;
 
   while (true) {
+    options.signal?.throwIfAborted();
     try {
       acquiredAtMs = Date.now();
       ownLockRaw = serializeJsonOwnerLock({ createdAtMs: acquiredAtMs, updatedAtMs: acquiredAtMs });
@@ -174,11 +175,12 @@ export async function withJsonOwnerFileLock(fn, options = {}) {
           });
         } catch {}
       }
-      await delay(pollIntervalMs);
+      await delay(pollIntervalMs, undefined, { signal: options.signal });
     }
   }
 
   try {
+    options.signal?.throwIfAborted();
     heartbeat = setInterval(() => {
       try {
         if (readJsonOwnerLockRaw(lockPath) !== ownLockRaw) return;

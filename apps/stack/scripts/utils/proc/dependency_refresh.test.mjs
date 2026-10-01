@@ -1,10 +1,101 @@
 import assert from 'node:assert/strict';
-import { cp, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { inspectDependencyRefresh, withDependencyRefresh } from './dependency_refresh.mjs';
+
+test('dependency refresh reclaims a stale lock after its pid is reused', async (t) => {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), 'happier-dependency-lock-reused-pid-'));
+  t.after(async () => {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  });
+
+  for (const component of ['ui', 'cli', 'server']) {
+    const componentDir = join(fixtureRoot, 'apps', component);
+    await mkdir(componentDir, { recursive: true });
+    await writeFile(join(componentDir, 'package.json'), `{ "name": "fixture-${component}" }\n`, 'utf8');
+  }
+  await mkdir(join(fixtureRoot, 'node_modules'), { recursive: true });
+  await Promise.all([
+    writeFile(join(fixtureRoot, 'package.json'), '{"name":"fixture","private":true}\n', 'utf8'),
+    writeFile(join(fixtureRoot, 'yarn.lock'), '# fixture\n', 'utf8'),
+  ]);
+
+  const lockPath = join(fixtureRoot, '.project', 'tmp', 'dependency-install.lock');
+  const moduleUrl = new URL('./dependency_refresh.mjs', import.meta.url).href;
+  const script = [
+    "import { mkdir, writeFile } from 'node:fs/promises';",
+    "import { dirname } from 'node:path';",
+    `import { withDependencyRefresh } from ${JSON.stringify(moduleUrl)};`,
+    `const lockPath = ${JSON.stringify(lockPath)};`,
+    'await mkdir(dirname(lockPath), { recursive: true });',
+    'await writeFile(lockPath, JSON.stringify({',
+    '  pid: process.pid,',
+    '  createdAtMs: Date.now() - 300_000,',
+    '  updatedAtMs: Date.now() - 300_000,',
+    '}), "utf8");',
+    `await withDependencyRefresh({ installDir: ${JSON.stringify(fixtureRoot)} }, async () => {});`,
+    'process.stdout.write("refreshed\\n");',
+  ].join('\n');
+  const child = spawn(process.execPath, ['--input-type=module', '--eval', script], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const result = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error('dependency refresh did not reclaim the stale reused-pid lock'));
+    }, 5_000);
+    child.once('error', (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once('close', (code, signal) => {
+      clearTimeout(timeout);
+      resolve({ code, signal });
+    });
+  });
+
+  assert.deepEqual(result, { code: 0, signal: null }, stderr);
+  assert.equal(stdout, 'refreshed\n');
+});
+
+test('dependency refresh lock follows the explicit Stack home environment', async (t) => {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), 'happier-dependency-lock-home-'));
+  t.after(async () => {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  });
+
+  const installDir = join(fixtureRoot, 'install');
+  const stackHomeDir = join(fixtureRoot, 'stack-home');
+  const expectedLockDir = join(stackHomeDir, 'cache', 'dependencies');
+  await mkdir(join(installDir, 'node_modules'), { recursive: true });
+  await Promise.all([
+    writeFile(join(installDir, 'package.json'), '{"name":"fixture","private":true}\n', 'utf8'),
+    writeFile(join(installDir, 'yarn.lock'), '# fixture\n', 'utf8'),
+  ]);
+
+  await withDependencyRefresh({
+    installDir,
+    env: { ...process.env, HAPPIER_STACK_HOME_DIR: stackHomeDir },
+  }, async () => {
+    const lockNames = await readdir(expectedLockDir);
+    assert.equal(lockNames.length, 1);
+    assert.match(lockNames[0], /^[a-f0-9]{64}\.lock$/);
+  });
+});
 
 test('dependency readiness survives relocation of a byte-identical installed tree', async (t) => {
   const fixtureRoot = await mkdtemp(join(tmpdir(), 'happier-dependency-relocation-'));

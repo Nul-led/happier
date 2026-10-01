@@ -125,3 +125,34 @@ test('live-owner stale reclaim preserves an actively heartbeating owner', async 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('a cancelled contender stops waiting without disturbing the active owner', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hstack-json-owner-lock-abort-'));
+  const lockPath = join(root, 'owner.lock');
+  const controller = new AbortController();
+  let releaseHolder;
+  const held = new Promise((resolve) => { releaseHolder = resolve; });
+  let enteredHolder;
+  const entered = new Promise((resolve) => { enteredHolder = resolve; });
+  const holder = withJsonOwnerFileLock(async () => { enteredHolder(); await held; }, { lockPath });
+  let contender;
+  try {
+    await entered;
+    const originalOwner = await readFile(lockPath, 'utf8');
+    contender = withJsonOwnerFileLock(async () => { throw new Error('cancelled contender acquired lock'); }, {
+      lockPath,
+      signal: controller.signal,
+      onWait: () => controller.abort(),
+    });
+    const outcome = await Promise.race([
+      contender.then(() => 'acquired', (error) => error?.name),
+      delay(500).then(() => 'still_waiting'),
+    ]);
+    assert.equal(outcome, 'AbortError');
+    assert.equal(await readFile(lockPath, 'utf8'), originalOwner);
+  } finally {
+    releaseHolder();
+    await Promise.allSettled([holder, contender].filter(Boolean));
+    await rm(root, { recursive: true, force: true });
+  }
+});

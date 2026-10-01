@@ -87,6 +87,28 @@ test('managed Lima setup fails with explicit guidance instead of installing duri
   assert.equal(executor.calls.some((call) => call.kind === 'run'), false);
 });
 
+test('managed Lima setup does not treat an outer-host SSH failure as a missing Lima installation', async () => {
+  const executor = executorWithLimaProbe({ installed: true });
+  executor.host = { kind: 'ssh' };
+  executor.capture = async () => ({
+    exitCode: 255,
+    out: '',
+    err: 'Connection timed out during banner exchange',
+  });
+
+  await assert.rejects(
+    setupManagedLimaInstance({
+      executor,
+      instance: 'happier-agent-primary',
+      profileName: 'small',
+      allowInstall: true,
+    }),
+    (error) => error.code === 'MANAGED_LIMA_HOST_UNAVAILABLE'
+      && /banner exchange/.test(error.message),
+  );
+  assert.equal(executor.calls.some((call) => call.kind === 'run'), false);
+});
+
 test('managed Lima doctor reports retained drift without mutating or stopping the VM', async () => {
   const executor = executorWithLimaProbe({ installed: true });
   const listCall = executor.capture.bind(executor);
