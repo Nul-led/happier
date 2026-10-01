@@ -292,7 +292,10 @@ run_installer_step() {
     installer_animate_step "${label}" "$!" "${started}" || status=$?
   else
     say "- [$(installer_step_pending_symbol)] ${label}"
-    "$@" >"${tmp_output}" 2>&1 || status=$?
+    # A job, not "$@" || …: errexit is ignored inside a command tested by ||/if, so a failing
+    # command in the step (a rejected signature) would not fail it. The animated path does the same.
+    "$@" >"${tmp_output}" 2>&1 &
+    wait "$!" || status=$?
     if [[ "${status}" -eq 0 ]]; then
       say "- [$(installer_step_success_symbol)] ${label}"
     else
@@ -334,7 +337,8 @@ capture_installer_step_output() {
     installer_animate_step "${label}" "$!" "${started}" || status=$?
   else
     say "- [$(installer_step_pending_symbol)] ${label}"
-    "$@" >"${tmp_output}" 2>"${tmp_error}" || status=$?
+    "$@" >"${tmp_output}" 2>"${tmp_error}" &
+    wait "$!" || status=$?
     if [[ "${status}" -eq 0 ]]; then
       say "- [$(installer_step_success_symbol)] ${label}"
     else
