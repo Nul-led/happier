@@ -78,6 +78,7 @@ import { ExternalLinkIcon } from '@hugeicons/core-free-icons';
 import { EyeIcon } from '@hugeicons/core-free-icons';
 import { File01Icon } from '@hugeicons/core-free-icons';
 import { FileCodeIcon } from '@hugeicons/core-free-icons';
+import { FileDiffIcon } from '@hugeicons/core-free-icons';
 import { FileDownloadIcon } from '@hugeicons/core-free-icons';
 import { FileEmpty01Icon } from '@hugeicons/core-free-icons';
 import { FileMinusIcon } from '@hugeicons/core-free-icons';
@@ -93,6 +94,7 @@ import { FlashIcon } from '@hugeicons/core-free-icons';
 import { FlaskConicalIcon } from '@hugeicons/core-free-icons';
 import { FloppyDiskIcon } from '@hugeicons/core-free-icons';
 import { Folder02Icon } from '@hugeicons/core-free-icons';
+import { FolderAddIcon } from '@hugeicons/core-free-icons';
 import { FolderOpenIcon } from '@hugeicons/core-free-icons';
 import { FootprintsIcon } from '@hugeicons/core-free-icons';
 import { FullSignalIcon } from '@hugeicons/core-free-icons';
@@ -110,6 +112,7 @@ import { Grid2X2Icon } from '@hugeicons/core-free-icons';
 import { GripVerticalIcon } from '@hugeicons/core-free-icons';
 import { HammerIcon } from '@hugeicons/core-free-icons';
 import { HandIcon } from '@hugeicons/core-free-icons';
+import { HardDriveDownloadIcon } from '@hugeicons/core-free-icons';
 import { HardDriveIcon } from '@hugeicons/core-free-icons';
 import { HeadingIcon } from '@hugeicons/core-free-icons';
 import { HeartIcon } from '@hugeicons/core-free-icons';
@@ -130,7 +133,6 @@ import { LeftToRightListBulletIcon } from '@hugeicons/core-free-icons';
 import { LeftToRightListNumberIcon } from '@hugeicons/core-free-icons';
 import { LifebuoyIcon } from '@hugeicons/core-free-icons';
 import { Link01Icon } from '@hugeicons/core-free-icons';
-import { LockIcon } from '@hugeicons/core-free-icons';
 import { Login01Icon } from '@hugeicons/core-free-icons';
 import { Logout01Icon } from '@hugeicons/core-free-icons';
 import { MagicWand01Icon } from '@hugeicons/core-free-icons';
@@ -202,6 +204,7 @@ import { SmileIcon } from '@hugeicons/core-free-icons';
 import { SourceCodeIcon } from '@hugeicons/core-free-icons';
 import { SparklesIcon } from '@hugeicons/core-free-icons';
 import { SquareIcon } from '@hugeicons/core-free-icons';
+import { SquareLock01Icon } from '@hugeicons/core-free-icons';
 import { SquareUnlock01Icon } from '@hugeicons/core-free-icons';
 import { StarIcon } from '@hugeicons/core-free-icons';
 import { StopCircleIcon } from '@hugeicons/core-free-icons';
@@ -326,6 +329,7 @@ export const HUGE_ICON_REGISTRY = {
     'file-arrow-up': FileUploadIcon,
     'file-code': FileCodeIcon,
     'file-dashed': FileEmpty01Icon,
+    'file-diff': FileDiffIcon,
     'file-minus': FileMinusIcon,
     'file-plus': FilePlusIcon,
     'file-text': File01Icon,
@@ -338,6 +342,7 @@ export const HUGE_ICON_REGISTRY = {
     'floppy-disk': FloppyDiskIcon,
     'folder': Folder02Icon,
     'folder-open': FolderOpenIcon,
+    'folder-plus': FolderAddIcon,
     'funnel-simple': FilterMailIcon,
     'game-controller': GameController01Icon,
     'gear': Settings01Icon,
@@ -355,6 +360,7 @@ export const HUGE_ICON_REGISTRY = {
     'grid-four': Grid2X2Icon,
     'hammer': HammerIcon,
     'hand': HandIcon,
+    'hard-drive-download': HardDriveDownloadIcon,
     'hard-drives': HardDriveIcon,
     'heart': HeartIcon,
     'hourglass': HourglassIcon,
@@ -375,7 +381,7 @@ export const HUGE_ICON_REGISTRY = {
     'list-bullets': LeftToRightListBulletIcon,
     'list-checks': CheckListIcon,
     'list-numbers': LeftToRightListNumberIcon,
-    'lock': LockIcon,
+    'lock': SquareLock01Icon,
     'lock-open': SquareUnlock01Icon,
     'magic-wand': MagicWand01Icon,
     'magnifying-glass': Search01Icon,

@@ -1,4 +1,6 @@
 {
+  "#alias:file-diff": "git-diff",
+  "#alias:hard-drive-download": "download",
   "#alias:octagon-x": "prohibit",
   "#alias:sidebar-left-close": "sidebar",
   "#alias:sidebar-left-open": "sidebar-simple",
@@ -131,6 +133,7 @@
   "flask": "flask",
   "folder": "folder",
   "folder-open": "folder-open",
+  "folder-plus": "folder-plus",
   "format-bold": "text-b",
   "format-color-text": "text-aa",
   "format-italic": "text-italic",
