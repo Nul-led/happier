@@ -418,7 +418,7 @@ final class HostedWebArtifactView: UIView, WKNavigationDelegate, WKScriptMessage
     decisionHandler(.cancel)
   }
 
-  @available(iOS 18.0, *)
+  @available(iOS 18.4, *)
   func webView(
     _ webView: WKWebView,
     runOpenPanelWith parameters: WKOpenPanelParameters,
