@@ -196,12 +196,11 @@ describe('InboxView mark as read', () => {
                 { key: 'b', serverUrl: 'https://inbox-b.test', accountId: 'me' },
                 { key: 'a', serverUrl: 'https://inbox-a.test', accountId: 'me' },
             ],
-            route: async ({ home, path }) => {
+            route: ({ home, path }) => {
                 if (path !== readStatePath) return undefined;
                 const answer = readAnswers.get(harness.homes[home].id);
                 if (!answer) return undefined;
-                await answer.respondAfter;
-                return Response.json(answer.body, { status: answer.status ?? 200 });
+                return Promise.resolve(answer.respondAfter).then(() => Response.json(answer.body, { status: answer.status ?? 200 }));
             },
         });
         homeB = harness.homes.b.id;

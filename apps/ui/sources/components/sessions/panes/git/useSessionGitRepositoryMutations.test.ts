@@ -7,6 +7,7 @@ import { renderHook } from '@/dev/testkit';
 const { confirm, rpc } = vi.hoisted(() => ({
     confirm: vi.fn(async () => true),
     rpc: {
+        sessionScmCommitUndoLast: vi.fn(),
         sessionScmRemoteAdd: vi.fn(),
         sessionScmBranchMerge: vi.fn(),
         sessionScmBranchOperationSkip: vi.fn(),
@@ -24,6 +25,7 @@ vi.mock('@/text', async () => {
 vi.mock('@/sync/ops/sessions', async (importOriginal) => {
     const { createSyncOpsModuleMock } = await import('@/dev/testkit/mocks/syncOps');
     return createSyncOpsModuleMock({ importOriginal, overrides: {
+        sessionScmCommitUndoLast: (...args: unknown[]) => rpc.sessionScmCommitUndoLast(...args),
         sessionScmRemoteAdd: (...args: unknown[]) => rpc.sessionScmRemoteAdd(...args),
         sessionScmBranchMerge: (...args: unknown[]) => rpc.sessionScmBranchMerge(...args),
         sessionScmBranchOperationSkip: (...args: unknown[]) => rpc.sessionScmBranchOperationSkip(...args),
@@ -36,14 +38,13 @@ vi.mock('@/sync/ops/sessionScm', async (importOriginal) => {
         sessionScmRepositoryRemoveIndexLock: (...args: unknown[]) => rpc.sessionScmRepositoryRemoveIndexLock(...args),
     } });
 });
-vi.mock('@/scm/scmStatusSync', () => ({ scmStatusSync: { invalidateFromMutationAndAwait: vi.fn(async () => {}) } }));
 
 const { storage } = await import('@/sync/domains/state/storage');
 const { projectManager } = await import('@/sync/runtime/orchestration/projectManager');
 const { useSessionGitRepositoryMutations } = await import('./useSessionGitRepositoryMutations');
 
-async function mutations() {
-    const hook = await renderHook(() => useSessionGitRepositoryMutations({ sessionId: 's1', sessionPath: '/tmp/repo' }));
+async function mutations(refreshAfterUndo?: () => Promise<void>) {
+    const hook = await renderHook(() => useSessionGitRepositoryMutations({ sessionId: 's1', sessionPath: '/tmp/repo', refreshAfterUndo }));
     return hook.getCurrent();
 }
 
@@ -53,10 +54,40 @@ describe('useSessionGitRepositoryMutations', () => {
         projectManager.clear();
         storage.getState().applySessions([createSessionFixture({ id: 's1', active: true, metadata: { path: '/tmp/repo', host: 'localhost', machineId: 'machine-1' } })]);
         rpc.sessionScmRemoteAdd.mockReset().mockResolvedValue({ success: true });
+        rpc.sessionScmCommitUndoLast.mockReset().mockResolvedValue({ success: true, outcome: { v: 1, kind: 'succeeded', nextActions: [] } });
         rpc.sessionScmBranchMerge.mockReset().mockResolvedValue({ success: true, stdout: 'merged' });
         rpc.sessionScmBranchOperationSkip.mockReset().mockResolvedValue({ success: true, outcome: { v: 1, kind: 'succeeded', nextActions: [] } });
         rpc.sessionScmRepositoryRemoveIndexLock.mockReset();
         confirm.mockClear();
+    });
+
+    it('undoes the observed commit under the same project lock and retains typed unsafe-head refusals', async () => {
+        const owner = await mutations();
+        const expectedHeadOid = 'a'.repeat(40);
+        const refusal = { success: false, errorCode: 'COMMIT_UNDO_PUBLISHED', outcome: { v: 1, kind: 'needs_input', errorCode: 'COMMIT_UNDO_PUBLISHED', nextActions: [] } };
+        rpc.sessionScmCommitUndoLast.mockImplementationOnce(async () => {
+            expect(storage.getState().getSessionProjectScmInFlightOperation('s1')).toMatchObject({ operation: 'commit_undo' });
+            return refusal;
+        });
+        expect(await owner.undoLastCommit(expectedHeadOid)).toEqual(refusal);
+        expect(rpc.sessionScmCommitUndoLast).toHaveBeenCalledWith('s1', { expectedHeadOid }, undefined);
+        expect(storage.getState().getSessionProjectScmOperationLog('s1')).toEqual(expect.arrayContaining([
+            expect.objectContaining({ operation: 'commit_undo', outcome: expect.objectContaining({ kind: 'needs_input', errorCode: 'COMMIT_UNDO_PUBLISHED' }) }),
+        ]));
+        expect(storage.getState().getSessionProjectScmInFlightOperation('s1')).toBeNull();
+    });
+
+    it('keeps undo applied when the refresh resolves with a stored repository error', async () => {
+        const effect = { kind: 'branch', name: 'HEAD', headOid: 'b'.repeat(40) };
+        rpc.sessionScmCommitUndoLast.mockResolvedValueOnce({ success: true, outcome: { v: 1, kind: 'succeeded', effect, nextActions: [] } });
+        const owner = await mutations(async () => {
+            storage.getState().updateSessionProjectScmSnapshotError('s1', { message: 'Machine unavailable', at: Date.now(), errorCode: 'BACKEND_UNAVAILABLE' });
+        });
+        await owner.undoLastCommit('a'.repeat(40));
+        expect(storage.getState().getSessionProjectScmOperationLog('s1')[0]).toMatchObject({
+            operation: 'commit_undo', outcome: { kind: 'effect_applied_with_warning', effect, errorCode: 'REPOSITORY_REFRESH_FAILED' },
+        });
+        expect(rpc.sessionScmCommitUndoLast).toHaveBeenCalledTimes(1);
     });
 
     it('holds the project operation lock before remote add reaches the machine and rejects a competing write', async () => {

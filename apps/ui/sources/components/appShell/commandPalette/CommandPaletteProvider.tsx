@@ -10,6 +10,7 @@ import {
     UniversalSearchRuntimeProvider,
     resolveUniversalSearchInvocationScope,
     type UniversalSearchRuntime,
+    type UniversalSearchOpenOptions,
     type UniversalSearchScopeSeed,
 } from '@/components/appShell/search/UniversalSearchRuntimeContext';
 import { storage } from '@/sync/domains/state/storage';
@@ -58,6 +59,8 @@ import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 import { projectParameterFreeRoute } from '@/track/parameterFreeRouteProjection';
 import { useResolveNewSessionOrdinaryEntryRoute } from '@/components/sessions/new/navigation/newSessionOrdinaryEntryRoute';
 import { UNIVERSAL_SEARCH_ROUTE } from '@/components/appShell/search/universalSearchRoutePresentation';
+import { parseSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
+import { TERMINAL_JUMP_ROUTE_PARAM } from '@/components/sessions/terminal/jump/terminalJumpTarget';
 
 export function readActiveSessionIdFromRoute(
     segments: readonly string[],
@@ -371,6 +374,10 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
             nav: {
                 push: (path) => router.push(path as any),
                 openNewSession,
+                openHomePairingModal: async () => {
+                    const { showHomePairingModal } = await import('@/components/auth/pairing/HomePairingModal');
+                    showHomePairingModal('phone');
+                },
                 navigateToSession,
             },
             actions: {
@@ -413,18 +420,22 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
         });
     }, [paletteOpen, refreshOpenPaletteCommands]);
 
-    const showCommandPalette = useCallback((initialQuery?: string, requestedScope?: UniversalSearchScopeSeed) => {
+    const showCommandPalette = useCallback((initialQuery?: string, requestedScope?: UniversalSearchScopeSeed, options?: UniversalSearchOpenOptions) => {
         const activeAccountScope = captureActiveServerAccountScopeLifetime()?.scope;
-        const activeSession = activeSessionId
-            ? (storage.getState().sessions as Record<string, { serverId?: string } | undefined>)[activeSessionId]
+        // A Jump is about the session it was opened from, which need not be the route's session (a
+        // split workspace shows several); its pane scope names that session exactly.
+        const terminalSession = options?.terminals ? parseSessionPaneScopeId(options.terminals.scopeId) : null;
+        const ambientSessionId = terminalSession?.sessionId ?? activeSessionId;
+        const activeSession = ambientSessionId
+            ? (storage.getState().sessions as Record<string, { serverId?: string } | undefined>)[ambientSessionId]
             : null;
-        const activeMachineTarget = activeSessionId ? readMachineControlTargetForSession(activeSessionId) : null;
+        const activeMachineTarget = ambientSessionId ? readMachineControlTargetForSession(ambientSessionId) : null;
         const invocationScope = resolveUniversalSearchInvocationScope({
             requestedScope,
             ambientScope: {
                 accountId: activeAccountScope?.accountId ?? null,
-                serverId: activeSession?.serverId ?? activeAccountScope?.serverId ?? null,
-                sessionId: activeSessionId,
+                serverId: terminalSession?.address?.serverId ?? activeSession?.serverId ?? activeAccountScope?.serverId ?? null,
+                sessionId: ambientSessionId,
                 machineId: activeMachineTarget?.machineId ?? null,
                 rootPath: activeMachineTarget?.basePath ?? null,
             },
@@ -441,6 +452,7 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
                     ...(invocationScope.serverId ? { serverId: invocationScope.serverId } : {}),
                     ...(invocationScope.machineId ? { machineId: invocationScope.machineId } : {}),
                     ...(invocationScope.rootPath ? { rootPath: invocationScope.rootPath } : {}),
+                    ...(options?.terminals ? { [TERMINAL_JUMP_ROUTE_PARAM]: options.terminals.scopeId } : {}),
                 },
             } as never);
             return;
@@ -461,6 +473,7 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
                 ...(initialQuery?.trim() ? { initialQuery: initialQuery.trim() } : {}),
                 ...(invocationScope.sessionId ? { activeSessionId: invocationScope.sessionId } : {}),
                 initialScope: invocationScope,
+                ...(options?.terminals ? { terminalJump: options.terminals } : {}),
             },
         });
         openUniversalSearchModalRef.current = {

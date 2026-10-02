@@ -46,6 +46,21 @@ function allText(screen: Awaited<ReturnType<typeof render>>): string {
 describe('GitOutcomeLine (Git lab C/S/SX)', () => {
     afterEach(() => vi.useRealTimers());
 
+    it('undoes only the commit shown in a successful result and never offers undo for a warning', async () => {
+        const undoCommit = vi.fn();
+        const screen = await render({
+            operation: { phase: 'succeeded', action: 'commit', id: 'c1', at: 1, message: '', result: { sha: 'a'.repeat(40) }, outcome: { v: 1, kind: 'succeeded', nextActions: [] } },
+            recovery: { undoCommit },
+        });
+        await screen.pressByTestIdAsync('session-git-outcome-undo');
+        expect(undoCommit).toHaveBeenCalledWith('a'.repeat(40));
+        await act(async () => screen.setProps({
+            operation: { phase: 'effect_applied_with_warning', action: 'commit', id: 'c2', at: 2, message: '', result: { sha: 'b'.repeat(40) }, outcome: { v: 1, kind: 'effect_applied_with_warning', errorCode: 'REPOSITORY_REFRESH_FAILED', effect: { kind: 'commit', commitSha: 'b'.repeat(40) }, nextActions: [{ kind: 'refresh' }] } },
+            recovery: { undoCommit },
+        }));
+        expect(screen.findAllHostsByTestId('session-git-outcome-undo')).toHaveLength(0);
+    });
+
     it('says how much a landed push moved, from the facts captured when it started, then fades after 6 s', async () => {
         vi.useFakeTimers();
         const screen = await render({ operation: { phase: 'running', action: 'push', id: 'p1', at: 1 } });

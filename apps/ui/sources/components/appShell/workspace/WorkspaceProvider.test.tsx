@@ -3,7 +3,7 @@ import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { invokeTestInstanceHandler, renderScreen, standardCleanup } from '@/dev/testkit';
 import { WORKSPACE_ACTION_OUTPUT_SCHEMAS } from '@happier-dev/protocol';
-import { createStorageModuleStub } from '@/dev/testkit/mocks/storage';
+import { createStorageModuleMock, createStorageModuleStub } from '@/dev/testkit/mocks/storage';
 import { resolveCompactAppDestinations } from '../destinations/compactAppDestinationCatalog';
 import { DestinationInstanceHost, useDestinationParams, useDestinationRouter } from './DestinationInstanceHost';
 import type { WorkspaceNavigationContextValue } from './WorkspaceNavigationContext';
@@ -11,6 +11,9 @@ import { WorkspaceProvider } from './WorkspaceProvider';
 import { WorkspaceShell } from './WorkspaceShell';
 import { captureMountedWorkspaceAction, invokeWorkspaceAction } from './workspaceActionRuntime';
 import { clearActiveUnsavedChangesGuard, setActiveUnsavedChangesGuard } from '@/utils/navigation/runGuardedNavigation';
+import { KeyboardShortcutProvider, useKeyboardCommand, type KeyboardCommandId } from '@/keyboard';
+import { createWorkspaceState } from './workspaceState';
+import { serializeWorkspaceLayout, workspaceLayoutScopeKey } from './workspacePersistence';
 
 const boundary = vi.hoisted(() => ({ layouts: {} as Record<string, unknown>, mirrors: [] as string[], scope: { serverId: 'home-a', accountId: 'alice' } }));
 // Native has no browser History; Expo is the genuine platform URL boundary here.
@@ -31,14 +34,14 @@ vi.mock('expo-router', async () => {
     return createExpoRouterMock({ pathname: '/session/A1', params: { id: 'A1', serverId: 'home-a' },
         router: { replace: (href: unknown) => { boundary.mirrors.push(String(href)); } } }).module;
 });
-vi.mock('@/sync/domains/state/storage', () => createStorageModuleStub({
+vi.mock('@/sync/domains/state/storage', importOriginal => createStorageModuleMock({ importOriginal, overrides: {
     useIsDataReady: () => true,
     useActiveServerAccountScope: () => boundary.scope,
-    useLocalSettingMutable: (key: string) => {
+    useLocalSettingMutable: createStorageModuleStub({ useLocalSettingMutable: (key: string) => {
         if (key !== 'workspaceLayoutV1') throw new Error(`Unexpected setting ${key}`);
         return [boundary.layouts, (next: Record<string, unknown>) => { boundary.layouts = next; }] as const;
-    },
-}));
+    } }).useLocalSettingMutable,
+} }));
 
 function HostedProbe() {
     const params = useDestinationParams<{ id?: string; serverId?: string }>();
@@ -59,6 +62,83 @@ function NavigationProbe(props: Readonly<{ navigation: WorkspaceNavigationContex
 
 describe('consumed workspace navigation owner', () => {
     afterEach(() => { boundary.layouts = {}; boundary.mirrors = []; boundary.scope = { serverId: 'home-a', accountId: 'alice' }; clearActiveUnsavedChangesGuard(); standardCleanup(); });
+    it('admits the initial route over a restored layout without persisting until an explicit navigation', async () => {
+        const catalog = resolveCompactAppDestinations({ pages: [], builtins: {
+            externalSessions: false, inbox: false, workflows: false, friends: false,
+        } });
+        const saved = createWorkspaceState({ id: 'saved', target: { kind: 'session', params: { id: 'saved', serverId: 'home-a' } }, pinned: true, preview: false });
+        boundary.layouts = { [workspaceLayoutScopeKey({ ...boundary.scope, windowId: 'main' })]: saved };
+        const layouts = boundary.layouts;
+        const screen = await renderScreen(<WorkspaceProvider enabled catalog={catalog}>{navigation => <NavigationProbe navigation={navigation} />}</WorkspaceProvider>);
+        const navigation = () => screen.root.findByType('WorkspaceOwner').props.navigation as WorkspaceNavigationContextValue;
+        const state = navigation().state;
+        expect(state.tabs[state.groups[state.focusedGroupId].activeTabId].target.params.id).toBe('A1');
+        expect(state.tabs.saved).toBeDefined();
+        expect(boundary.layouts).toBe(layouts);
+        act(() => { navigation().openHref('/session/A2?serverId=home-a', { mode: 'newTab' }); });
+        expect(boundary.layouts).not.toBe(layouts);
+        expect(Object.values(boundary.layouts)[0]).toEqual(serializeWorkspaceLayout(navigation().state));
+        await screen.unmount();
+    });
+    it('binds tab commands only while active and uses the current focused group through mounted Actions', async () => {
+        const catalog = resolveCompactAppDestinations({ pages: [], builtins: {
+            externalSessions: false, inbox: false, workflows: false, friends: false,
+        } });
+        let invoke: (command: KeyboardCommandId) => boolean = () => false;
+        function Commands() { invoke = useKeyboardCommand(); return null; }
+        let enabled = true;
+        const element = () => <KeyboardShortcutProvider handlers={{}}><Commands /><WorkspaceProvider enabled={enabled} catalog={catalog}>
+            {(navigation) => React.createElement('WorkspaceOwner', { navigation })}
+        </WorkspaceProvider></KeyboardShortcutProvider>;
+        const screen = await renderScreen(element());
+        const navigation = () => screen.root.findByType('WorkspaceOwner').props.navigation as WorkspaceNavigationContextValue;
+        const state = () => navigation().state;
+        const originalGroupId = state().focusedGroupId;
+        const originalTabId = state().groups[originalGroupId].activeTabId;
+        await act(async () => { expect(invoke('workspace.tab.new')).toBe(true); });
+        const emptyTabId = state().groups[originalGroupId].activeTabId;
+        expect(state().tabs[emptyTabId]).toMatchObject({ target: { kind: 'newTab' }, preview: false });
+        expect(emptyTabId).not.toBe(originalTabId);
+        await act(async () => { navigation().dispatch({ type: 'splitTab', tabId: emptyTabId, sourceGroupId: originalGroupId,
+            targetGroupId: originalGroupId, newGroupId: 'other-group', axis: 'row', placement: 'after',
+            availableSizePx: 1600, minimumFirstSizePx: 320, minimumSecondSizePx: 320 }); });
+        expect(state().focusedGroupId).toBe('other-group');
+        await act(async () => { expect(invoke('workspace.tab.new')).toBe(true); });
+        expect(state().groups[originalGroupId].tabIds).toEqual([originalTabId]);
+        const lastTabId = state().groups['other-group'].activeTabId;
+        await act(async () => { expect(invoke('workspace.tab.select1')).toBe(true); });
+        expect(state().groups['other-group'].activeTabId).toBe(emptyTabId);
+        await act(async () => { expect(invoke('workspace.tab.select9')).toBe(true); });
+        expect(state().groups['other-group'].activeTabId).toBe(lastTabId);
+        const beforeOutOfRange = state();
+        await act(async () => { invoke('workspace.tab.select8'); });
+        expect(state()).toBe(beforeOutOfRange);
+        setActiveUnsavedChangesGuard({ isDirtyRef: { current: true }, requestDecision: async () => 'keepEditing', tag: 'workspace-keyboard-test' });
+        await act(async () => { invoke('workspace.tab.close'); });
+        expect(state()).toBe(beforeOutOfRange);
+        clearActiveUnsavedChangesGuard();
+        await act(async () => { invoke('workspace.tab.close'); invoke('workspace.tab.close'); });
+        expect(state().groups['other-group']).toBeUndefined();
+        expect(state().focusedGroupId).toBe(originalGroupId);
+        expect(state().groups[originalGroupId].tabIds).toEqual([originalTabId]);
+        await act(async () => { invoke('workspace.tab.close'); });
+        expect(state().groups[originalGroupId].tabIds).toHaveLength(1);
+        expect(state().tabs[state().groups[originalGroupId].activeTabId].target.kind).toBe('newTab');
+        const closedState = state();
+        setActiveUnsavedChangesGuard({ isDirtyRef: { current: true }, requestDecision: async () => 'keepEditing', tag: 'workspace-reopen-test' });
+        await act(async () => { expect(invoke('workspace.tab.reopen')).toBe(true); });
+        expect(state()).toBe(closedState);
+        clearActiveUnsavedChangesGuard();
+        await act(async () => { invoke('workspace.tab.reopen'); });
+        expect(state().groups[originalGroupId].activeTabId).toBe(originalTabId);
+        expect(state().recentlyClosed).toEqual([]);
+        enabled = false;
+        await act(async () => { screen.update(element()); });
+        expect(invoke('workspace.tab.new')).toBe(false);
+        expect(invoke('workspace.tab.close')).toBe(false);
+        expect(invoke('workspace.tab.reopen')).toBe(false);
+        expect(invoke('workspace.tab.select1')).toBe(false);
+    });
     it('does not carry a guarded Action into the replacement Account workspace', async () => {
         const catalog = resolveCompactAppDestinations({ pages: [], builtins: {
             externalSessions: false, inbox: false, workflows: false, friends: false,
@@ -67,11 +147,18 @@ describe('consumed workspace navigation owner', () => {
             {(navigation) => React.createElement('WorkspaceOwner', { navigation })}
         </WorkspaceProvider>;
         const screen = await renderScreen(element());
+        const navigation = () => screen.root.findByType('WorkspaceOwner').props.navigation as WorkspaceNavigationContextValue;
+        await act(async () => {
+            const state = navigation().state;
+            const group = state.groups[state.focusedGroupId];
+            navigation().closeTab(group.id, group.activeTabId);
+        });
+        expect(WORKSPACE_ACTION_OUTPUT_SCHEMAS['workspace.tabs.closed.list'].parse(await invokeWorkspaceAction({ actionId: 'workspace.tabs.closed.list', input: {} })).tabs).toHaveLength(1);
         const mounted = captureMountedWorkspaceAction();
         let settleDecision!: (value: 'discard') => void;
         setActiveUnsavedChangesGuard({ isDirtyRef: { current: true }, tag: 'account-change-test',
             requestDecision: () => new Promise((resolve) => { settleDecision = resolve; }) });
-        const pending = invokeWorkspaceAction({ actionId: 'workspace.tabs.open', input: {} });
+        const pending = invokeWorkspaceAction({ actionId: 'workspace.tabs.reopen', input: {} });
         await act(async () => {
             boundary.scope = { serverId: 'home-a', accountId: 'bob' };
             screen.update(element());
@@ -81,6 +168,7 @@ describe('consumed workspace navigation owner', () => {
         expect(await mounted?.({ actionId: 'workspace.tabs.list', input: {} })).toMatchObject({ ok: false, errorCode: 'workspace_unavailable' });
         const listed = WORKSPACE_ACTION_OUTPUT_SCHEMAS['workspace.tabs.list'].parse(await invokeWorkspaceAction({ actionId: 'workspace.tabs.list', input: {} }));
         expect(listed.tabs).toHaveLength(1);
+        expect(WORKSPACE_ACTION_OUTPUT_SCHEMAS['workspace.tabs.closed.list'].parse(await invokeWorkspaceAction({ actionId: 'workspace.tabs.closed.list', input: {} })).tabs).toEqual([]);
     });
     it('splits an explicitly selected inactive-group tab through the mounted measured canvas and resizes that split', async () => {
         const catalog = resolveCompactAppDestinations({ pages: [], builtins: {
@@ -118,6 +206,12 @@ describe('consumed workspace navigation owner', () => {
         expect(state().groups[state().focusedGroupId].tabIds).toEqual([inactiveTabId]);
         if (root.kind !== 'split' || root.first.kind !== 'split') throw new Error('The source group must own the new split');
         const splitId = root.first.id;
+        await act(async () => {
+            expect(await invokeWorkspaceAction({ actionId: 'workspace.resize', input: { splitId, ratio: 0.65 } }))
+                .toMatchObject({ ok: false, errorCode: 'workspace_layout_unmeasured' });
+            invokeTestInstanceHandler(screen.findByTestId(`split-canvas-split-${splitId}`), 'onLayout',
+                { nativeEvent: { layout: { width: 1497, height: 1000 } } });
+        });
         await act(async () => {
             expect(await invokeWorkspaceAction({ actionId: 'workspace.resize', input: { splitId, ratio: 0.65 } })).toMatchObject({ ok: true });
         });

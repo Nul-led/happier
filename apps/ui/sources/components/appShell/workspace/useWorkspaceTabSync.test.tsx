@@ -15,19 +15,22 @@ import { getStorage } from '@/sync/domains/state/storage';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
 import { dispatchKvBatchUpdate } from '@/sync/engine/socket/kvUpdateDispatcher';
+import { ACCOUNT_SETTINGS_QUIET_FLUSH_DELAY_MS } from '@/sync/engine/pending/pendingSettings';
 import type { SharedWorkspaceTabs } from './workspaceSyncedTabs';
 import { getVitestNodeBuiltin } from '@/dev/vitestNodeBuiltins';
-import { createWorkspaceState, reduceWorkspaceState } from './workspaceState';
+import { createWorkspaceState, reduceWorkspaceState, type WorkspaceState } from './workspaceState';
+import { admitWorkspaceSingletonState, workspaceSingletonDestinationIds } from './workspaceDestinationPolicy';
+import { randomUUID } from '@/platform/randomUUID';
 import { workspaceLayoutScopeKey } from './workspacePersistence';
 import type { CompactAppDestination } from '../destinations/compactAppDestinationCatalog';
 
-const boundary = vi.hoisted(() => ({ enabled: true, layouts: {} as Record<string, unknown>, scope: { serverId: 'home', accountId: 'alice' },
+const boundary = vi.hoisted(() => ({ enabled: true, ready: true, layouts: {} as Record<string, unknown>, scope: { serverId: 'home', accountId: 'alice' },
     observations: [] as { accountId: string; ids: readonly string[] | null }[],
     catalog: [] as readonly CompactAppDestination[],
 }));
 installDisconnectedServerSocketBoundary();
 vi.mock('@/sync/domains/state/storage', importOriginal => createStorageModuleMock({ importOriginal, overrides: {
-    useIsDataReady: () => true,
+    useIsDataReady: () => boundary.ready,
     useActiveServerAccountScope: () => boundary.scope,
     useSetting: createUseSettingMock({ values: { get workspaceTabsSyncEnabled() { return boundary.enabled; } } }),
     useLocalSettingMutable: createUseLocalSettingMutableMock(createUseLocalSettingMock({ values: {
@@ -97,14 +100,16 @@ async function mountHome(serverUrl: string) {
 }
 
 function Probe() {
-    const local = useWorkspaceState({ initialTab, windowId: 'test-window' });
+    const singletonPolicyKey = JSON.stringify([...workspaceSingletonDestinationIds(boundary.catalog)].sort());
+    const admitState = React.useCallback((state: WorkspaceState) => admitWorkspaceSingletonState(state, boundary.catalog, randomUUID), [singletonPolicyKey]);
+    const local = useWorkspaceState({ initialTab, windowId: 'test-window', admitState });
     const owner = useWorkspaceTabSync({ local, enabled: true, catalog: boundary.catalog });
     boundary.observations.push({ accountId: boundary.scope.accountId, ids: owner.sharedTabs?.order ?? null });
     return React.createElement('WorkspaceOwner', { owner });
 }
 
 describe('live workspace tab sync hook', () => {
-    afterEach(async () => { vi.useRealTimers(); standardCleanup(); await connection?.dispose(); connection = null; restoreModuleLoader?.(); restoreModuleLoader = null; resetRuntimeFetch(); boundary.layouts = {}; boundary.enabled = true; boundary.observations = []; boundary.catalog = []; });
+    afterEach(async () => { vi.useRealTimers(); standardCleanup(); await connection?.dispose(); connection = null; restoreModuleLoader?.(); restoreModuleLoader = null; resetRuntimeFetch(); boundary.layouts = {}; boundary.enabled = true; boundary.ready = true; boundary.observations = []; boundary.catalog = []; });
     it('imports remote tabs without reuploading, then debounces only accepted local semantic edits', async () => {
         const home = await mountHome('https://workspace-hook.test');
         boundary.scope = { serverId: home.id, accountId: 'alice' };
@@ -140,6 +145,32 @@ describe('live workspace tab sync hook', () => {
         expect(writes).toEqual([]);
         await act(async () => { await vi.advanceTimersByTimeAsync(900); });
         expect(writes.at(-1)?.order).toEqual(['remote', 'local']);
+        await screen.unmount();
+    });
+    it('retains a reordered tab set through the debounced write, remote echo and reload', async () => {
+        const home = await mountHome('https://workspace-reorder.test');
+        boundary.scope = { serverId: home.id, accountId: 'alice' };
+        const writes = servePortableKv(record('a', 'b', 'c'));
+        let screen = await renderScreen(<InjectedAuthProvider credentials={credentials}><Probe /></InjectedAuthProvider>);
+        const owner = () => screen.root.findByType('WorkspaceOwner').props.owner as ReturnType<typeof useWorkspaceTabSync>;
+        await vi.waitFor(() => expect(owner().sharedTabs?.order).toEqual(['a', 'b', 'c']));
+        vi.useFakeTimers();
+        act(() => owner().dispatch({ type: 'reorderTab', groupId: 'group:1', tabId: 'c', index: 0 }));
+        act(() => owner().dispatch({ type: 'reorderTab', groupId: 'group:1', tabId: 'placeholder', index: 1 }));
+        const localOrder = owner().state.groups['group:1'].tabIds;
+        expect(localOrder).toEqual(['c', 'placeholder', 'a', 'b']);
+        await act(async () => { await vi.advanceTimersByTimeAsync(ACCOUNT_SETTINGS_QUIET_FLUSH_DELAY_MS); });
+        expect(writes.at(-1)?.record.order).toEqual(['c', 'a', 'b']);
+        await act(async () => {
+            await dispatchKvBatchUpdate({ kvUpdate: { changes: [{ key: 'workspace:tabs:v1', value: null, version: 2 }] }, credentials,
+                shouldContinue: () => true, applyTodoSocketUpdates: async () => {}, invalidateTodosSync: () => {}, log: { log: () => {} } });
+        });
+        expect(owner().state.groups['group:1'].tabIds).toEqual(localOrder);
+        await screen.unmount();
+        vi.useRealTimers();
+        screen = await renderScreen(<InjectedAuthProvider credentials={credentials}><Probe /></InjectedAuthProvider>);
+        await vi.waitFor(() => expect(owner().tabSyncStatus).toBe('synced'));
+        expect(owner().state.groups['group:1'].tabIds).toEqual(localOrder);
         await screen.unmount();
     });
     it('keeps local tabs on unavailable transport and never requires an auth provider', async () => {
@@ -217,6 +248,29 @@ describe('live workspace tab sync hook', () => {
         expect(screen.root.findByType('WorkspaceOwner').props.owner.state.tabs.private).toBeUndefined();
         await screen.unmount();
     });
+    it('does not interpret Account settings hydration before layout readiness as deliberate enable', async () => {
+        const home = await mountHome('https://workspace-hydration-enable.test');
+        boundary.scope = { serverId: home.id, accountId: 'alice' };
+        boundary.ready = false;
+        boundary.enabled = false;
+        const saved = createWorkspaceState({ ...portableTab('restored'), preview: false });
+        boundary.layouts[workspaceLayoutScopeKey({ ...boundary.scope, windowId: 'test-window' })] = saved;
+        const layouts = boundary.layouts;
+        const writes = servePortableKv(record('remote'));
+        const element = () => <InjectedAuthProvider credentials={credentials}><Probe /></InjectedAuthProvider>;
+        const screen = await renderScreen(element());
+        const owner = () => screen.root.findByType('WorkspaceOwner').props.owner as ReturnType<typeof useWorkspaceTabSync>;
+        await act(async () => {
+            boundary.ready = true;
+            boundary.enabled = true;
+            screen.update(element());
+        });
+        await vi.waitFor(() => expect(owner().tabSyncStatus).toBe('synced'));
+        expect(writes).toEqual([]);
+        expect(owner().sharedTabs?.order).toEqual(['remote']);
+        expect(boundary.layouts).toBe(layouts);
+        await screen.unmount();
+    });
     it('deliberately enrolls local intentional tabs on OFF to ON without importing while OFF', async () => {
         const home = await mountHome('https://workspace-toggle.test');
         boundary.scope = { serverId: home.id, accountId: 'alice' };
@@ -246,7 +300,7 @@ describe('live workspace tab sync hook', () => {
         await vi.waitFor(() => expect(writes.at(-1)?.order).toEqual(['remote', 'local']));
         await screen.unmount();
     });
-    it('publishes an OFF restored source projection without requiring a subsequent edit', async () => {
+    it('keeps an OFF restored source read-only until an explicit tab edit publishes its projection', async () => {
         const home = await mountHome('https://workspace-off-source.test');
         boundary.scope = { serverId: home.id, accountId: 'alice' };
         boundary.enabled = false;
@@ -254,11 +308,19 @@ describe('live workspace tab sync hook', () => {
         boundary.layouts[workspaceLayoutScopeKey({ ...boundary.scope, windowId: 'test-window' })] = saved;
         const writes = servePortableKv(null);
         const screen = await renderScreen(<InjectedAuthProvider credentials={credentials}><Probe /></InjectedAuthProvider>);
-        await vi.waitFor(() => expect(writes.find(value => value.key.startsWith('workspace:handoff-tabs:v1:'))?.record.order).toEqual(['restored']));
+        const owner = () => screen.root.findByType('WorkspaceOwner').props.owner as ReturnType<typeof useWorkspaceTabSync>;
+        expect(owner().sharedTabs?.order).toEqual(['restored']);
+        expect(writes).toEqual([]);
+        vi.useFakeTimers();
+        act(() => owner().dispatch({ type: 'setPinned', tabId: 'restored', pinned: true }));
+        await act(async () => { await vi.advanceTimersByTimeAsync(ACCOUNT_SETTINGS_QUIET_FLUSH_DELAY_MS); });
+        const published = writes.find(value => value.key.startsWith('workspace:handoff-tabs:v1:'))?.record;
+        expect(published?.order).toEqual(['restored']);
+        expect(published?.tabsById.restored.pinned).toBe(true);
         expect(writes.some(value => value.key === 'workspace:tabs:v1')).toBe(false);
         await screen.unmount();
     });
-    it.each([false, true])('enrolls canonical restored pair metadata on creation or deliberate enable: enable=%s', async enable => {
+    it.each([false, true])('enrolls canonical restored pairs only on explicit edit or deliberate enable: enable=%s', async enable => {
         const home = await mountHome(`https://workspace-enroll-pairs-${enable}.test`);
         boundary.scope = { serverId: home.id, accountId: 'alice' };
         boundary.enabled = !enable;
@@ -271,17 +333,33 @@ describe('live workspace tab sync hook', () => {
         const writes = servePortableKv(enable ? record('remote') : null);
         const element = () => <InjectedAuthProvider credentials={credentials}><Probe /></InjectedAuthProvider>;
         const screen = await renderScreen(element());
+        const owner = () => screen.root.findByType('WorkspaceOwner').props.owner as ReturnType<typeof useWorkspaceTabSync>;
+        if (!enable) {
+            await vi.waitFor(() => expect(owner().tabSyncStatus).toBe('synced'));
+            expect(owner().sharedTabs?.order).toEqual(['left', 'right']);
+            expect(writes).toEqual([]);
+            expect(boundary.layouts[workspaceLayoutScopeKey({ ...boundary.scope, windowId: 'test-window' })]).toBe(saved);
+            vi.useFakeTimers();
+            act(() => owner().dispatch({ type: 'setPinned', tabId: 'left', pinned: true }));
+            await act(async () => { await vi.advanceTimersByTimeAsync(ACCOUNT_SETTINGS_QUIET_FLUSH_DELAY_MS); });
+        }
         if (enable) await act(async () => { boundary.enabled = true; screen.update(element()); });
         await vi.waitFor(() => expect(writes.find(value => value.key === 'workspace:tabs:v1')?.record.pairs).toEqual([['left', 'right']]));
         if (!enable) expect(writes.some(value => value.key.startsWith('workspace:handoff-tabs:v1:'))).toBe(false);
         await screen.unmount();
     });
-    it('normalizes imported unavailable kinds when the actual catalog later declares an app-page singleton, despite KV failure', async () => {
-        const home = await mountHome('https://workspace-late-catalog.test');
+    it.each([true, false])('normalizes unavailable kinds when the actual catalog later declares an app-page singleton, despite KV failure: sync=%s', async syncEnabled => {
+        const home = await mountHome(`https://workspace-late-catalog-${syncEnabled}.test`);
         boundary.scope = { serverId: home.id, accountId: 'alice' };
+        boundary.enabled = syncEnabled;
         const kind = 'plugin:acme.notes:notes';
         const first = { ...portableTab('first'), target: { kind, params: { subPath: 'first' } } };
         const second = { ...portableTab('second'), target: { kind, params: { subPath: 'last' } } };
+        if (!syncEnabled) {
+            const saved = reduceWorkspaceState(createWorkspaceState({ ...first, preview: false }),
+                { type: 'openTab', groupId: 'group:1', tab: { ...second, preview: false } });
+            boundary.layouts[workspaceLayoutScopeKey({ ...boundary.scope, windowId: 'test-window' })] = saved;
+        }
         const writes = servePortableKv({ v: 1, tabsById: { first, second }, order: ['first', 'second'], pairs: [] });
         const element = () => <InjectedAuthProvider credentials={credentials}><Probe /></InjectedAuthProvider>;
         const screen = await renderScreen(element());
@@ -289,14 +367,16 @@ describe('live workspace tab sync hook', () => {
         await vi.waitFor(() => expect(owner().state.tabs.second).toBeDefined());
         vi.useFakeTimers();
         setRuntimeFetch(async () => { throw new Error('KV endpoint unavailable'); });
-        await act(async () => {
-            await dispatchKvBatchUpdate({ kvUpdate: { changes: [{ key: 'workspace:tabs:v1', value: null, version: 2 }] }, credentials,
-                shouldContinue: () => true, applyTodoSocketUpdates: async () => {}, invalidateTodosSync: () => {}, log: { log: () => {} } });
-        });
-        expect(owner().tabSyncStatus).toBe('unavailable');
+        if (syncEnabled) {
+            await act(async () => {
+                await dispatchKvBatchUpdate({ kvUpdate: { changes: [{ key: 'workspace:tabs:v1', value: null, version: 2 }] }, credentials,
+                    shouldContinue: () => true, applyTodoSocketUpdates: async () => {}, invalidateTodosSync: () => {}, log: { log: () => {} } });
+            });
+            expect(owner().tabSyncStatus).toBe('unavailable');
+        }
         await act(async () => {
             boundary.catalog = [{ id: kind, kind: 'plugin', container: 'appPage', destination: { pluginId: 'acme.notes', localId: 'notes' },
-                title: 'Notes', icon: 'document-text-outline', order: 40, placement: { kind: 'rail', region: 'plugins' },
+                title: 'Notes', icon: 'file', order: 40, placement: { kind: 'rail', region: 'plugins' },
                 activation: 'navigate', availability: 'available', routePath: '/plugins/acme.notes/notes' }];
             screen.update(element());
         });

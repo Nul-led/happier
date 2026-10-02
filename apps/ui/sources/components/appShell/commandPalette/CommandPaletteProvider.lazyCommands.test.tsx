@@ -178,6 +178,27 @@ describe('CommandPaletteProvider lazy command building', () => {
         })).resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
     });
 
+    it('offers phone pairing in Search and invokes the same modal through the palette Action', async () => {
+        const { Modal } = await import('@/modal');
+        await renderScreen(<CommandPaletteProvider><React.Fragment /></CommandPaletteProvider>);
+
+        const listing = await executeCommandPaletteAction({
+            actionId: 'ui.command_palette.list', input: {}, context: { surface: 'agent' },
+        });
+        expect(listing).toMatchObject({
+            ok: true, result: { commands: expect.arrayContaining([expect.objectContaining({ id: 'add-phone' })]) },
+        });
+
+        await expect(executeCommandPaletteAction({
+            actionId: 'ui.command_palette.invoke', input: { commandId: 'add-phone' }, context: { surface: 'agent' },
+        })).resolves.toEqual({ ok: true, result: { invoked: true } });
+        expect(Modal.show).toHaveBeenCalledWith(expect.objectContaining({
+            props: expect.objectContaining({ purpose: 'phone' }),
+            chrome: expect.objectContaining({ kind: 'card', header: 'none' }),
+        }));
+        expect(testState.routerPush).not.toHaveBeenCalled();
+    });
+
     it('keeps repeated web open requests on the existing Search modal', async () => {
         const { Modal } = await import('@/modal');
         const { CommandPaletteProvider } = await import('./CommandPaletteProvider');

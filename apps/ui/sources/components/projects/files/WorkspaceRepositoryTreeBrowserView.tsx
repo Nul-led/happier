@@ -58,6 +58,7 @@ export type WorkspaceRepositoryTreeBrowserViewProps = Readonly<{
      */
     scope: WorkspaceScopeBase;
     onOpenFile: (fullPath: string) => void;
+    fileHref?: (fullPath: string) => string | null;
     onOpenFilePinned?: (fullPath: string) => void;
     density?: 'panel' | 'screen' | 'modal';
     searchQuery?: string;
@@ -449,6 +450,7 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
             : null;
         return (
             <RepositoryTreeRowActionsMenu
+                href={node.type === 'file' ? props.fileHref?.(node.path) : null}
                 path={node.path}
                 kind={nodeKind}
                 disableWriteActions={!allowCreateActions}
@@ -457,7 +459,7 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
                 control={control}
             />
         );
-    }, [allowCreateActions, rowActions, transferActionsAvailable]);
+    }, [allowCreateActions, props.fileHref, rowActions, transferActionsAvailable]);
 
     // This pane has no header of its own, so its + menu ends the toolbar (the session pane's header carries it).
     // The one changed-file count, needed only while its chip shows.
@@ -535,6 +537,7 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
                 <View style={{ flex: 1, position: 'relative' }}>
                     {shouldShowSearchResults ? (
                         <SearchResultsList
+                            fileHref={props.fileHref}
                             theme={theme}
                             isSearching={isSearching}
                             searchQuery={searchQuery}
@@ -545,6 +548,7 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
                         />
                     ) : (
                         <WorkspaceRepositoryTreeList
+                            fileHref={props.fileHref}
                             theme={theme}
                             scope={workspaceScope}
                             reloadToken={treeReloadNonce}

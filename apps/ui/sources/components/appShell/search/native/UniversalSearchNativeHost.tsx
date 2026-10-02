@@ -66,6 +66,7 @@ export type UniversalSearchNativeHostProps = Readonly<{
     query: string;
     onChangeQuery: (next: string) => void;
     onSelect: (id: string, option: SelectionListOption) => void;
+    onCommandSelect?: (id: string, option: SelectionListOption) => void;
     /** Close the route. Activation-driven navigation is the controller's business, not the host's. */
     onRequestClose: () => void;
     selectedOptionId?: string | null;
@@ -214,6 +215,7 @@ export function UniversalSearchNativeHost(props: UniversalSearchNativeHostProps)
                         inputValue={props.query}
                         onChangeInputValue={props.onChangeQuery}
                         onSelect={props.onSelect}
+                        onCommandSelect={props.onCommandSelect}
                         onRequestClose={requestClose}
                         dynamicSectionCache={props.dynamicSectionCache}
                         filters={props.filters}

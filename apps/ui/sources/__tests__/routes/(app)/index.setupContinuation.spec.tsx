@@ -161,7 +161,9 @@ describe('/ (welcome) setup continuation', () => {
         ['thisComputer', 'awaiting_auth', 'thisComputer'],
         ['remoteMachine', 'post_auth', 'ssh'],
     ] as const)('routes an explicit %s intent once to the draft', async (branch, phase, path) => {
-        getPendingSetupIntentMock.mockReturnValue({ branch, phase, relayUrl: 'https://relay.example.test' });
+        getPendingSetupIntentMock.mockReturnValue(branch === 'remoteMachine'
+            ? { branch, phase, relayUrl: 'https://relay.example.test', machineId: null, remoteSetupIntent: 'remoteMachine' }
+            : { branch, phase, relayUrl: 'https://relay.example.test' });
         const Screen = (await import('@/app/(app)/index')).Home;
         const screen = await renderScreen(<React.StrictMode><Screen /></React.StrictMode>);
         await flushHookEffects({ cycles: 1, turns: 2 });

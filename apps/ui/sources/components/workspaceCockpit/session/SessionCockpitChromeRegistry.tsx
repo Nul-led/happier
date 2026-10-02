@@ -1,8 +1,6 @@
 import * as React from 'react';
 import { makeMutable, type SharedValue } from 'react-native-reanimated';
 
-import type { SessionNavigationDirection } from '@/sync/domains/session/navigation/sessionNavigationOrder';
-
 import type { SessionMobileSurface } from './sessionCockpitState';
 import type { PluginUiSurfacePlacementProjection } from '@/sync/domains/plugins/ui/projection';
 
@@ -46,79 +44,54 @@ const SessionCockpitChromeRegistrationContext = React.createContext<SessionCockp
 const SessionCockpitChromeRegisterContext = React.createContext<SessionCockpitChromeRegister>(NOOP_REGISTER);
 
 /**
- * The live state of the cockpit's lateral session swipe, published as shared values
- * so every reader animates on the UI thread and no frame of the gesture reaches React.
+ * The live state of the phone's session switcher, published as shared values so every reader
+ * animates on the UI thread and no frame of the gesture reaches React.
  *
- * It lives on this registry because the registry already spans the band and the
- * session screen: the pan is mounted in the bottom chrome (outside the navigator)
- * while the surfaces that respond to it live inside it.
+ * It lives on this registry because the registry already spans the band and the session screen:
+ * the bar's gesture is mounted in the bottom chrome (outside the navigator) while the session
+ * content that recedes behind the switcher lives inside it. Nothing here navigates: scrubbing
+ * only moves the selection, because a session switch remounts a transcript and that cost is paid
+ * once, on release. The decisions are `sessionSwitcherGesture`'s.
  */
-export type SessionLateralSwipeState = Readonly<{
-    /** -1..1. Negative travels toward the NEXT session, positive toward the previous one. */
-    progress: SharedValue<number>;
-    /** True from gesture activation until the release settles (including a cancelled swipe). */
-    isActive: SharedValue<boolean>;
-    /** The gesture's second axis. See `SessionLateralSwipePickerState`. */
-    picker: SessionLateralSwipePickerState;
-}>;
-
-/**
- * The vertical axis of the same gesture: once the horizontal has locked a direction,
- * lifting the finger browses the sessions FURTHER that way.
- *
- * These are the published half of `sessionLateralPickerState`'s decision — the gesture
- * writes them every frame and the picker surface, the capsule readout and the scrim all
- * read them from worklets. Nothing here navigates: scrubbing moves only what the capsule
- * is showing, because a session switch remounts a transcript and that cost is paid once,
- * on release.
- */
-export type SessionLateralSwipePickerState = Readonly<{
-    /** Locked at horizontal activation and held for the rest of the gesture. */
-    direction: SharedValue<SessionNavigationDirection | null>;
-    /** 0 = shut, 1 = fully open. Drives the scrim and the rows' own dissolve. */
-    browseProgress: SharedValue<number>;
-    /** Continuous rows past the immediate neighbour, including the rubber-band at the end. */
-    rowOffset: SharedValue<number>;
-    /** 1-based selection into the locked direction; 0 while nothing is selectable. */
+export type SessionSwitcherSharedState = Readonly<{
+    /** 0 = closed, 1 = open. Drives the session recede, the scrim and the panel's presence. */
+    open: SharedValue<number>;
+    /** 0..1 of the ghost's way to the lock; 1 once locked, sideways or docked. */
+    ghost: SharedValue<number>;
+    /** How far the bar has risen with the finger, in points. */
+    lift: SharedValue<number>;
+    /** The selected row, nearest first; -1 = stay where you are. */
     index: SharedValue<number>;
+    /** How far the panel's list has scrolled to show further rows, in points. */
+    scroll: SharedValue<number>;
 }>;
 
 /**
- * There is exactly one bottom band and one session screen on a phone, and the four
- * readers (the pan in the chrome host, the capsule readout, the tab row's dim, and the
- * session content) all belong to that single pair. So the state is a process singleton
- * rather than provider state: a per-provider instance would buy no isolation that the
- * single band does not already have, and it would put a `useSharedValue` call in a
- * provider mounted on EVERY route — which is a real tax, because every route spec that
- * hand-rolls a narrow `react-native-reanimated` mock would then have to restate it.
+ * There is exactly one bottom band and one session screen on a phone, so the state is a process
+ * singleton rather than provider state: a per-provider instance would buy no isolation the single
+ * band does not already have, and would put a `useSharedValue` call in a provider mounted on
+ * EVERY route.
  *
- * Built on FIRST USE rather than at module evaluation, and that difference is not an
- * optimisation. `makeMutable` reaches into the animation runtime, so constructing it
- * eagerly made merely IMPORTING this registry touch Reanimated, and every suite with a
- * hand-rolled mock failed at collection with an error about chrome it never rendered.
- * `motionSprings.ts` records the same lesson from the same cause.
- *
- * Identity is stable: built at most once, so it is safe in dependency arrays.
+ * Built on FIRST USE rather than at module evaluation: `makeMutable` reaches into the animation
+ * runtime, so constructing it eagerly made merely IMPORTING this registry touch Reanimated
+ * (`motionSprings.ts` records the same lesson). Identity is stable, so it is safe in dependency arrays.
  */
-let sessionLateralSwipeState: SessionLateralSwipeState | null = null;
+let sessionSwitcherState: SessionSwitcherSharedState | null = null;
 
-function getSessionLateralSwipeState(): SessionLateralSwipeState {
-    sessionLateralSwipeState ??= {
-        progress: makeMutable(0),
-        isActive: makeMutable(false),
-        picker: {
-            direction: makeMutable<SessionNavigationDirection | null>(null),
-            browseProgress: makeMutable(0),
-            rowOffset: makeMutable(0),
-            index: makeMutable(0),
-        },
+function getSessionSwitcherState(): SessionSwitcherSharedState {
+    sessionSwitcherState ??= {
+        open: makeMutable(0),
+        ghost: makeMutable(0),
+        lift: makeMutable(0),
+        index: makeMutable(-1),
+        scroll: makeMutable(0),
     };
-    return sessionLateralSwipeState;
+    return sessionSwitcherState;
 }
 
-/** Drops the singleton so one suite's gesture progress cannot leak into the next. */
-export function resetSessionLateralSwipeForTests(): void {
-    sessionLateralSwipeState = null;
+/** Drops the singleton so one suite's gesture state cannot leak into the next. */
+export function resetSessionSwitcherStateForTests(): void {
+    sessionSwitcherState = null;
 }
 
 // Exported so a screen-level surface that already reserves the bottom-chrome
@@ -323,10 +296,7 @@ export function useSessionCockpitDismissingSessionId(): string | null {
     return React.useContext(SessionCockpitDismissingSessionIdContext);
 }
 
-/**
- * The live lateral-swipe shared values. The band's pan writes them; the capsule
- * readout and the session content read them from worklets.
- */
-export function useSessionLateralSwipe(): SessionLateralSwipeState {
-    return getSessionLateralSwipeState();
+/** The live switcher shared values. The bar's gesture writes them; the panel and the session content read them. */
+export function useSessionSwitcherState(): SessionSwitcherSharedState {
+    return getSessionSwitcherState();
 }

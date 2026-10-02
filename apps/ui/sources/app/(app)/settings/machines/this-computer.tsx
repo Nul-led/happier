@@ -18,7 +18,7 @@ export function ThisComputerSetupRoute() {
     const router = useRouter();
     const isDesktop = isDesktopHost();
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader description={t('settingsMachines.thisComputerPageDescription')} />
             {isDesktop ? (
                 <>

@@ -12,8 +12,33 @@ import { resolveCommitScopeForStrategy, isAtomicCommitStrategy, type ScmCommitSt
 import { storage } from '@/sync/domains/state/storage';
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 import type { ScmCommitSelectionPatch } from '@/sync/domains/state/storageTypes';
-import { machineScmCommitCreate } from '@/sync/ops/scm/machineScm';
+import { machineScmCommitCreate, machineScmCommitUndoLast } from '@/sync/ops/scm/machineScm';
+import { runWorkspaceScmMutation } from '@/scm/operations/runSessionScmMutation';
 import { SCM_OPERATION_ERROR_CODES, createScmOperationUnknownOutcome, normalizeScmOperationOutcome } from '@happier-dev/protocol/scm';
+
+export async function executeWorkspaceScmCommitUndoLast(input: Readonly<{
+    scope: WorkspaceScopeBase;
+    expectedHeadOid: string;
+    refreshScmData: () => Promise<void>;
+}>) {
+    return runWorkspaceScmMutation({
+        state: storage.getState(),
+        scope: input.scope,
+        cwd: input.scope.rootPath,
+        operation: 'commit_undo',
+        fallbackError: t('sessionGitPane.flow.undo.failed'),
+        run: () => machineScmCommitUndoLast(input.scope.machineId, {
+            cwd: input.scope.rootPath,
+            expectedHeadOid: input.expectedHeadOid,
+        }, { serverId: input.scope.serverId }),
+        refreshAfterSuccess: async () => {
+            await input.refreshScmData();
+            // Snapshot controllers retain failure state and resolve their refresh promise.
+            const refreshError = storage.getState().getWorkspaceScmSnapshotError(input.scope);
+            if (refreshError) throw new Error(refreshError.message);
+        },
+    });
+}
 
 export async function executeWorkspaceScmCommit(input: Readonly<{
     scope: WorkspaceScopeBase;
@@ -51,7 +76,7 @@ export async function executeWorkspaceScmCommit(input: Readonly<{
                 });
                 const outcome = normalizeScmOperationOutcome(response);
                 if (outcome.kind !== 'succeeded') {
-                    const shownDaemonUnavailable = tryShowDaemonUnavailableAlertForScmOperationFailure({
+                    tryShowDaemonUnavailableAlertForScmOperationFailure({
                         errorCode: outcome.kind === 'failed' ? response.errorCode : undefined,
                         onRetry: () => {
                             void executeWorkspaceScmCommit(input);
@@ -75,7 +100,6 @@ export async function executeWorkspaceScmCommit(input: Readonly<{
                         surface: 'files',
                         tracking: input.tracking,
                     });
-                    if (!shownDaemonUnavailable) Modal.alert(t('common.error'), errorMessage);
                     return;
                 }
 
@@ -111,7 +135,6 @@ export async function executeWorkspaceScmCommit(input: Readonly<{
                         surface: 'files',
                         tracking: input.tracking,
                     });
-                    Modal.alert(t('common.error'), refreshMessage);
                     return;
                 }
 
@@ -132,13 +155,10 @@ export async function executeWorkspaceScmCommit(input: Readonly<{
                     surface: 'files',
                     tracking: input.tracking,
                 });
-                const shownDaemonUnavailable = tryShowDaemonUnavailableAlertForRpcError({
+                tryShowDaemonUnavailableAlertForRpcError({
                     error,
                     shouldContinue: input.shouldContinue ?? null,
                 });
-                if (!shownDaemonUnavailable) {
-                    Modal.alert(t('common.error'), fallbackMessage);
-                }
             } finally {
                 input.setScmOperationBusy(false);
                 input.setScmOperationStatus(null);

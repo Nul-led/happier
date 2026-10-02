@@ -122,7 +122,7 @@ export function SessionLogScreen() {
     }
 
     return (
-        <ItemList>
+        <ItemList presentation="grouped">
             <ItemGroup title={t('sessionLog.title')}>
                 <Item
                     title={t('sessionLog.logPathTitle')}

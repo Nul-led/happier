@@ -4,6 +4,7 @@ import { Platform, View, type ScrollViewProps } from 'react-native';
 import type { useUnistyles } from 'react-native-unistyles';
 
 import { FilesystemBrowser } from '@/components/ui/filesystemBrowser/FilesystemBrowser';
+import { WorkspaceDestinationRow } from '@/components/appShell/workspace/WorkspaceDestinationRow';
 import { FilesystemBrowserRow, type FilesystemBrowserRowActionsControl } from '@/components/ui/filesystemBrowser/FilesystemBrowserRow';
 import type { FilesystemBrowserRowRenderInput } from '@/components/ui/filesystemBrowser/filesystemBrowserTypes';
 import { FileIcon } from '@/components/ui/media/FileIcon';
@@ -72,6 +73,7 @@ type WorkspaceRepositoryTreeListProps = Readonly<{
     expandedPaths: readonly string[];
     onExpandedPathsChange: (paths: string[]) => void;
     onOpenFile: (fullPath: string) => void;
+    fileHref?: (fullPath: string) => string | null;
     onOpenFilePinned?: (fullPath: string) => void;
     scmSnapshot?: ScmWorkingSnapshot | null;
     /** Trailing per-row actions; the row reveals them (hover/focus/selected; long press on touch). */
@@ -208,6 +210,7 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
         selectedPath,
         detailsMode,
         onOpenFile,
+        fileHref: props.fileHref,
         onOpenFilePinned: props.onOpenFilePinned,
         onWebDropTargetChange: props.onWebDropTargetChange,
         renderRowActions: props.renderRowActions,
@@ -224,6 +227,7 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
         selectedPath,
         detailsMode,
         onOpenFile,
+        props.fileHref,
         props.onOpenFilePinned,
         props.onWebDropTargetChange,
         props.renderRowActions,
@@ -236,7 +240,7 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
     ]);
     const rowRenderStateRef = React.useRef(rowRenderState);
     rowRenderStateRef.current = rowRenderState;
-    const rowVisualExtraData = React.useMemo(() => [
+    const rowVisualSignature = React.useMemo(() => [
         treeKeyboard.activePath,
         badgeSignature,
         // The web badge index lands a tick after the snapshot (useScmTreeBadgeIndex): mounted rows must
@@ -273,6 +277,10 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
         theme.colors.text?.link,
         theme.colors.text?.secondary,
     ]);
+    const rowVisualExtraData = React.useMemo(() => ({
+        href: props.fileHref,
+        visual: rowVisualSignature,
+    }), [props.fileHref, rowVisualSignature]);
 
     const renderRow = React.useCallback(({ node, showDivider }: FilesystemBrowserRowRenderInput) => {
         const rowState = rowRenderStateRef.current;
@@ -391,6 +399,7 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
         })();
 
         return (
+            <WorkspaceDestinationRow existingMenu={Boolean(rowActions)} href={node.type === 'file' ? rowState.fileHref?.(node.path) ?? null : null}>
             <FilesystemBrowserRow
                 testID={rowTestId}
                 treeItemProps={rowState.treeKeyboard.getRowProps(node,
@@ -479,6 +488,7 @@ export const WorkspaceRepositoryTreeList = React.memo(function WorkspaceReposito
                         : null
                 }
             />
+            </WorkspaceDestinationRow>
         );
     }, []);
 

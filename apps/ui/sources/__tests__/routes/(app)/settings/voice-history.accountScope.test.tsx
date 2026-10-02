@@ -87,11 +87,6 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithSer
   }),
 }));
 
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', () => ({
-  isAccountStoredContentClientUpgradeRequiredError: () => false,
-  requireCurrentAccountStoredContentServerCompatibility: async () => undefined,
-}));
-
 vi.mock('@/sync/runtime/getSyncSingleton', () => ({
   getSyncSingleton: () => ({
     ensureSessionVisibleForMessageRoute: async (sessionId: string) => ({

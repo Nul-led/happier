@@ -72,6 +72,9 @@ import {
 } from '@/components/sessions/shell/useSessionListSearchTextByKey';
 import { buildSessionOrganizationListViewState } from '@/sync/domains/session/organization/viewState';
 import { sessionTagKey } from '@/components/sessions/shell/sessionTagUtils';
+import type { TerminalJumpTarget } from '@/components/sessions/terminal/jump/terminalJumpTarget';
+import { useTerminalJumpStep } from '@/components/sessions/terminal/jump/useTerminalJumpStep';
+import { useTerminalJumpScopeChrome } from '@/components/sessions/terminal/jump/useTerminalJumpScopeChrome';
 
 import { activateUniversalSearchResult } from './activateUniversalSearchResult';
 import {
@@ -187,6 +190,8 @@ export type UniversalSearchControllerProps = Readonly<{
     initialQuery?: string;
     activeSessionId?: string | null;
     initialScope?: UniversalSearchScopeSeed;
+    /** Open in the Terminals scope of this session pane (Jump to a terminal, terminal lab B4). */
+    terminalJump?: TerminalJumpTarget;
     presentation: 'modal' | 'route';
     onRequestClose(): void;
 }>;
@@ -209,6 +214,10 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
     const [query, setQuery] = React.useState(() => props.initialQuery?.trim() ?? '');
     const [selectedOptionId, setSelectedOptionId] = React.useState<string | null>(null);
     const [sessionInventoryStatus, setSessionInventoryStatus] = React.useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+    // The Terminals scope (Jump): one session's terminals until the person drops the scope with ⌫
+    // on an empty field or the chip's ×, then the ordinary search over everything.
+    const [terminalScope, setTerminalScope] = React.useState<TerminalJumpTarget | null>(() => props.terminalJump ?? null);
+    const terminalJump = useTerminalJumpStep({ target: terminalScope, query });
     const committedResultRef = React.useRef<UniversalSearchResult | null>(null);
     const committedPluginActivationRef = React.useRef<PendingActivation | null>(null);
     const profilesGeneration = useServerProfilesGeneration();
@@ -710,6 +719,24 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
         ],
     }), [sections]);
 
+    const leaveTerminalScope = React.useCallback(() => {
+        setSelectedOptionId(null);
+        setTerminalScope(null);
+    }, []);
+    const terminalScopeChrome = useTerminalJumpScopeChrome(terminalJump !== null, leaveTerminalScope);
+    const activateTerminalJump = React.useCallback((optionId: string, placement: 'bottom' | 'details') => {
+        if (!terminalJump) return;
+        setSelectedOptionId(optionId);
+        void runUniversalSearchActivation({
+            prepare: () => terminalJump.hasOption(optionId),
+            dismiss: props.onRequestClose,
+            activate: () => terminalJump.activate(optionId, placement),
+            presentFailure: () => { Modal.alert(t('common.error'), t('errors.searchFailed')); },
+        });
+    }, [props.onRequestClose, terminalJump]);
+    const handleTerminalJumpSelect = React.useCallback((optionId: string) => activateTerminalJump(optionId, 'bottom'), [activateTerminalJump]);
+    const handleTerminalJumpDetails = React.useCallback((optionId: string) => activateTerminalJump(optionId, 'details'), [activateTerminalJump]);
+
     const isBuiltInTargetCurrent = React.useCallback((target: UniversalSearchResult['target']) => {
         const targetServerId = 'serverId' in target ? target.serverId : null;
         const targetAccountId = 'accountId' in target ? target.accountId : null;
@@ -824,12 +851,16 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
         });
     }, [isBuiltInTargetCurrent, navigateToSession, openProject, pluginScopeIsCurrent, props.commands, props.onRequestClose, readExactSessionForActivation, router]);
 
+    const activeRootStep = terminalJump?.step ?? rootStep;
+    const activeFilters = terminalJump ? terminalScopeChrome.filters : scopeFilters;
+    const activeSelect = terminalJump ? handleTerminalJumpSelect : handleSelect;
+    const listAccessibilityLabel = terminalJump ? t('terminalWorkspace.jump.title') : t('tools.names.search');
     if (Platform.OS !== 'web' && props.presentation === 'route') {
-        return <UniversalSearchNativeHost rootStep={rootStep} query={query} onChangeQuery={setQuery} onSelect={handleSelect} onRequestClose={props.onRequestClose} selectedOptionId={selectedOptionId} listAccessibilityLabel={t('tools.names.search')} filters={scopeFilters} dynamicSectionCache={dynamicSectionCache} />;
+        return <UniversalSearchNativeHost rootStep={activeRootStep} query={query} onChangeQuery={setQuery} onSelect={activeSelect} onCommandSelect={terminalJump ? handleTerminalJumpDetails : undefined} onRequestClose={props.onRequestClose} selectedOptionId={selectedOptionId} listAccessibilityLabel={listAccessibilityLabel} filters={activeFilters} dynamicSectionCache={dynamicSectionCache} />;
     }
     return (
         <View style={styles.root} testID="universal-search-host">
-            <SelectionList rootStep={rootStep} selectionMark="enter" inputValue={query} onChangeInputValue={setQuery} onSelect={handleSelect} onRequestClose={props.onRequestClose} selectedOptionId={selectedOptionId} listAccessibilityLabel={t('tools.names.search')} filters={scopeFilters} autoFocusInputOnWeb fillAvailableSpace dynamicSectionCache={dynamicSectionCache} />
+            <SelectionList rootStep={activeRootStep} selectionMark="enter" inputValue={query} onChangeInputValue={setQuery} onSelect={activeSelect} onCommandSelect={terminalJump ? handleTerminalJumpDetails : undefined} onRequestClose={props.onRequestClose} selectedOptionId={selectedOptionId} listAccessibilityLabel={listAccessibilityLabel} filters={activeFilters} inputBehavior={terminalScopeChrome.inputBehavior} autoFocusInputOnWeb fillAvailableSpace dynamicSectionCache={dynamicSectionCache} />
         </View>
     );
 }

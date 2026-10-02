@@ -5,6 +5,7 @@ import { StyleSheet } from 'react-native-unistyles';
 
 import { UpdatesContent } from '@/components/updates/UpdatesContent';
 import { UpdatesPopoverButton } from '@/components/updates/UpdatesPopoverButton';
+import { projectMachineAgent } from '@/agents/machineAgents/machineAgentModel';
 import { Text } from '@/components/ui/text/Text';
 import type { DesktopUpdaterSnapshot } from '@/desktop/updates/desktopUpdater';
 import { buildAppUpdateItem } from '@/updates/items/buildAppUpdateItem';
@@ -51,7 +52,9 @@ function buildDemoGroups(state: DemoState): UpdatesGroup[] {
         native: { updateUrl: null },
         webUiUpdateAvailable: false,
         desktop: desktopSnapshot(state),
-        ota: { isDownloading: false, downloadProgress: null, isUpdatePending: false },
+        ota: { supported: false, isChecking: false, isDownloading: false, isRestarting: false,
+            downloadProgress: null, isUpdateAvailable: false, isUpdatePending: false,
+            checkFailed: false, downloadFailed: false, checkedAt: null },
     }).item;
     const thisCli = buildThisComputerCliUpdateItem({
         machineId: 'laptop',
@@ -61,20 +64,25 @@ function buildDemoGroups(state: DemoState): UpdatesGroup[] {
     });
     const claude = buildAgentCliUpdateItem({
         machineId: 'laptop',
-        agentId: 'claude',
-        title: 'Claude Code',
         online: true,
-        data: { available: true, version: '2.1.3', latestVersion: '2.1.4', installSource: 'managed', updateSupported: true, updateCommand: null },
+        agent: {
+            ...projectMachineAgent({ agentId: 'claude', title: 'Claude Code', facts: null,
+                checking: false, stale: false, connectedServices: [], job: null }),
+            installed: true, version: '2.1.3', latestVersion: '2.1.4', update: { supported: true, command: null },
+        },
         task: state === 'failed'
             ? { running: false, step: null, errorMessage: 'The update didn’t finish. Try again.', logPath: '/Users/lee/.happier/logs/provider-installs/claude-2026-09-25.log' }
             : IDLE,
     });
     const codex = buildAgentCliUpdateItem({
         machineId: 'laptop',
-        agentId: 'codex',
-        title: 'Codex',
         online: true,
-        data: { available: true, version: '0.61.0', latestVersion: '0.61.0', installSource: 'npm', updateSupported: false, updateCommand: 'npm install -g @openai/codex@latest' },
+        agent: {
+            ...projectMachineAgent({ agentId: 'codex', title: 'Codex', facts: null,
+                checking: false, stale: false, connectedServices: [], job: null }),
+            installed: true, version: '0.61.0', latestVersion: '0.61.0',
+            update: { supported: false, command: 'npm install -g @openai/codex@latest' },
+        },
         task: IDLE,
     });
     const gh = buildInstallableUpdateItem({

@@ -20,6 +20,7 @@ export type DesktopWindowPointerLikeEvent = Readonly<{
     target?: unknown;
     currentTarget?: unknown;
     preventDefault?: () => void;
+    defaultPrevented?: boolean;
     nativeEvent?: Readonly<{
         button?: number;
         buttons?: number;
@@ -49,6 +50,8 @@ const NON_DRAGGABLE_TARGET_SELECTOR = [
     'textarea',
     'select',
     '[role="button"]',
+    // React Native Web Pressable hosts can be focusable divs without a button role.
+    '[tabindex]:not([tabindex="-1"])',
     // Tabs in the title strip (the workspace bar) activate, reorder and open their menu; the gaps
     // between them stay part of the drag region.
     '[role="tab"]',
@@ -94,7 +97,7 @@ function isPrimaryTitlebarMouseEvent(event: DesktopWindowPointerLikeEvent): bool
 export function resolveDesktopWindowTitlebarMouseAction(
     event: DesktopWindowPointerLikeEvent,
 ): DesktopWindowTitlebarMouseAction {
-    if (!isPrimaryTitlebarMouseEvent(event) || isNonDraggableTarget(resolveMouseTarget(event))) {
+    if (event.defaultPrevented || !isPrimaryTitlebarMouseEvent(event) || isNonDraggableTarget(resolveMouseTarget(event))) {
         return 'none';
     }
 
@@ -124,11 +127,11 @@ export function handleDesktopWindowTitlebarMouseAction(
     return action;
 }
 
-export function useDesktopWindowDragMouseProps(): DesktopWindowDragMouseProps {
+export function useDesktopWindowDragMouseProps(enabled = true): DesktopWindowDragMouseProps {
     const handledPointerDownRef = React.useRef(false);
 
     return React.useMemo(() => {
-        if (Platform.OS !== 'web') {
+        if (Platform.OS !== 'web' || !enabled) {
             return {};
         }
 
@@ -152,7 +155,7 @@ export function useDesktopWindowDragMouseProps(): DesktopWindowDragMouseProps {
                 handleTitlebarMouseEvent(event, 'DesktopWindowDragRegion.mouseDown');
             },
         };
-    }, []);
+    }, [enabled]);
 }
 
 export const DesktopWindowDragRegion = React.memo((props: DesktopWindowDragRegionProps) => {

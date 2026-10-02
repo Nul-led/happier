@@ -1,31 +1,9 @@
 import * as React from 'react';
-import { Animated, Keyboard, Platform, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Reanimated, { useAnimatedStyle, useSharedValue, withSpring, type WithSpringConfig } from 'react-native-reanimated';
-import { scheduleOnRN } from 'react-native-worklets';
+import { Animated, Platform, View, type LayoutChangeEvent } from 'react-native';
 import { useGlobalSearchParams, usePathname, useRouter } from 'expo-router';
 
 import { motionTokens } from '@/components/ui/motion/motionTokens';
-import { slideTransitionTokens } from '@/components/ui/motion/slideTransitionTokens';
-import { hapticsLight, hapticsSelection } from '@/components/ui/theme/haptics';
-import {
-    resolveSessionLateralPickerCommit,
-    resolveSessionLateralPickerFrame,
-} from '@/components/navigation/mobile/chrome/lateralSwipe/sessionLateralPickerState';
-import { SessionCockpitLateralPicker } from '@/components/navigation/mobile/chrome/lateralSwipe/SessionCockpitLateralPicker';
-import {
-    SESSION_LATERAL_SWIPE_ACTIVATION_OFFSET_PX,
-    SESSION_LATERAL_SWIPE_COMMIT_DISTANCE_PX,
-    SESSION_LATERAL_SWIPE_TRAVEL_GAIN,
-    resolveSessionLateralSwipeEdgeHitSlop,
-    resolveSessionLateralSwipeProgress,
-} from '@/components/navigation/mobile/chrome/lateralSwipe/sessionLateralSwipeMotion';
-import { useSessionCockpitLateralNavigation } from '@/components/navigation/mobile/chrome/lateralSwipe/useSessionCockpitLateralNavigation';
-import {
-    useSessionLateralSwipe,
-    type SessionLateralSwipePickerState,
-} from '@/components/workspaceCockpit/session/SessionCockpitChromeRegistry';
-import type { SessionNavigationDirection } from '@/sync/domains/session/navigation/sessionNavigationOrder';
+import { SessionSwitcherBand } from '@/components/navigation/mobile/chrome/lateralSwipe/SessionSwitcherBand';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { useAuth } from '@/auth/context/AuthContext';
 import {
@@ -126,41 +104,6 @@ type BottomChromeItem = Readonly<{
     /** Set only for session cockpit chrome — the one answer to "whose band is this". */
     cockpitSessionId?: string;
 }>;
-
-/**
- * Puts the gesture's second axis back at rest.
- *
- * Module scope, not a `useCallback` worklet: the gesture handlers call it on the UI
- * thread, and a helper that is not reliably workletized throws there and surfaces
- * somewhere else entirely. It closes over nothing and takes what it needs.
- *
- * `settle` is the difference between a release and a reset. On release the frost and the
- * rows fade out IN PLACE — the row positions are deliberately left frozen so the exit does
- * not slide against the capsule's own travel, and the capsule keeps naming the destination
- * while the switch lands. A reset (a new touch, or the destination having arrived) also
- * drops the selection itself, which is what guarantees every gesture re-resolves its rows
- * instead of reusing the list the last one cached.
- */
-function closeSessionLateralPicker(params: Readonly<{
-    picker: SessionLateralSwipePickerState;
-    settle: boolean;
-    spring: WithSpringConfig;
-    reducedMotion: boolean;
-}>): void {
-    'worklet';
-    params.picker.browseProgress.value = params.settle && !params.reducedMotion
-        ? withSpring(0, params.spring)
-        : 0;
-    if (params.settle) return;
-    params.picker.direction.value = null;
-    params.picker.rowOffset.value = 0;
-    params.picker.index.value = 0;
-}
-
-export const SESSION_LATERAL_SWIPE_GESTURE_TEST_ID = 'session-cockpit-lateral-swipe';
-export const SESSION_LATERAL_SWIPE_HIT_TARGET_TEST_ID = 'session-cockpit-band-hit-target';
-
-
 
 function isSameBottomChromeItem(left: BottomChromeItem | null, right: BottomChromeItem | null): boolean {
     if (!left || !right) {
@@ -499,237 +442,6 @@ export const MobileBottomChromeHost = React.memo(function MobileBottomChromeHost
         frozenChromeRef.current = resolvedChrome;
     }
 
-    // ---------------------------------------------------------------------------
-    // Lateral session swipe.
-    //
-    // The band is the only chrome that spans the full width on a session route, and
-    // it is otherwise empty pixels, so it carries the power-user shortcut for moving
-    // through the session order the user last saw. There is deliberately NO resting
-    // affordance: the capsule itself becomes the readout while the finger is down.
-    // ---------------------------------------------------------------------------
-    const cockpitSessionId = resolvedChrome?.cockpitSessionId ?? null;
-    const lateralSwipe = useSessionLateralSwipe();
-    const lateralNavigation = useSessionCockpitLateralNavigation({ sessionId: cockpitSessionId, serverId: routeServerId });
-    const lateralSwipeSettingEnabled = useSetting('sessionCockpitSwipeNavigationEnabled');
-    const lateralNavigate = lateralNavigation.navigate;
-    const canStepPrevious = lateralNavigation.previous !== null;
-    const canStepNext = lateralNavigation.next !== null;
-
-    // Passive settled keyboard height. The swipe must not arm over a raised keyboard:
-    // the band sits directly above it and the horizontal room belongs to text editing.
-    const [keyboardVisible, setKeyboardVisible] = React.useState(false);
-    React.useEffect(() => {
-        const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-        const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-        const shown = Keyboard.addListener(showEvent, () => setKeyboardVisible(true));
-        const hidden = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false));
-        return () => {
-            shown.remove();
-            hidden.remove();
-        };
-    }, []);
-
-    // Native phones only: this is a touch shortcut for the mobile cockpit, and on
-    // mobile web the browser owns horizontal edge gestures.
-    const lateralNavigationAvailable = Platform.OS !== 'web'
-        && deviceType === 'phone'
-        && cockpitSessionId !== null
-        && lateralSwipeSettingEnabled === true;
-
-    const canStepPreviousSV = useSharedValue(false);
-    const canStepNextSV = useSharedValue(false);
-    // How many sessions lie each way, capped at the picker's reach. The gesture needs
-    // both before it knows which one the finger will lock, so they are published up
-    // front rather than resolved mid-worklet.
-    const availablePreviousSV = useSharedValue(0);
-    const availableNextSV = useSharedValue(0);
-    // Single-flight: a commit already travelling must ignore re-entrant releases.
-    const lateralCommitInFlightSV = useSharedValue(false);
-    const lateralAvailableCount = lateralNavigation.availableCount;
-    React.useEffect(() => {
-        canStepPreviousSV.value = canStepPrevious;
-        canStepNextSV.value = canStepNext;
-        availablePreviousSV.value = lateralAvailableCount('previous');
-        availableNextSV.value = lateralAvailableCount('next');
-    }, [
-        availableNextSV,
-        availablePreviousSV,
-        canStepNext,
-        canStepNextSV,
-        canStepPrevious,
-        canStepPreviousSV,
-        lateralAvailableCount,
-    ]);
-
-    // A lateral switch changes the chrome key, which normally cross-fades the bar.
-    // Suppress that for exactly the switch we caused: the capsule is under the
-    // finger, and dissolving the surface being dragged is the one thing that would
-    // make the gesture feel broken. Same shape as the `dismissingSessionId` flag.
-    const lateralSwitchSourceSessionIdRef = React.useRef<string | null>(null);
-    const commitLateralStep = React.useCallback((direction: SessionNavigationDirection, index: number) => {
-        lateralSwitchSourceSessionIdRef.current = cockpitSessionId;
-        if (!lateralNavigate(direction, index)) {
-            lateralSwitchSourceSessionIdRef.current = null;
-            return;
-        }
-        // Aligned with the threshold crossing at release — the causal moment — rather
-        // than with the end of the settle animation. Fired after the step so a device
-        // that cannot vibrate cannot swallow the navigation.
-        void hapticsLight();
-    }, [cockpitSessionId, lateralNavigate]);
-
-    // Dev's slide presets carry their spring physics inline; reduced motion is applied
-    // by the call sites below rather than baked into the config.
-    const lateralSpring = React.useMemo<WithSpringConfig>(
-        () => ({ ...slideTransitionTokens.signature.spring.config }),
-        [],
-    );
-    const lateralSwipeProgress = lateralSwipe.progress;
-    const lateralSwipeActive = lateralSwipe.isActive;
-    const lateralPicker = lateralSwipe.picker;
-    const lateralPanGesture = React.useMemo(() => {
-        // Absent rather than inert: when the shortcut cannot apply the recognizer must
-        // not exist at all, so it never enters arbitration with a tab press.
-        if (!lateralNavigationAvailable) return null;
-        if (keyboardVisible) return null;
-        if (!canStepPrevious && !canStepNext) return null;
-
-        return Gesture.Pan()
-            .withTestId(SESSION_LATERAL_SWIPE_GESTURE_TEST_ID)
-            // Wider than the carousel's 10px on purpose: the tabs carry `hitSlop: 8`,
-            // so a slightly sloppy tap must never arm the pan.
-            .activeOffsetX([-SESSION_LATERAL_SWIPE_ACTIVATION_OFFSET_PX, SESSION_LATERAL_SWIPE_ACTIVATION_OFFSET_PX])
-            // Deliberately NO `failOffsetY`. Activation stays horizontal-only — which is
-            // what keeps tab taps and vertical intent behaving exactly as they did — but
-            // once the pan owns the touch, BOTH axes are its own: the upward movement
-            // that opens the picker is the movement a vertical failure bound cancelled on.
-            .hitSlop(resolveSessionLateralSwipeEdgeHitSlop(Platform.OS))
-            .cancelsTouchesInView(true)
-            .onBegin(() => {
-                'worklet';
-                lateralSwipeActive.value = true;
-                closeSessionLateralPicker({
-                    picker: lateralPicker,
-                    settle: false,
-                    spring: lateralSpring,
-                    reducedMotion: reduceMotion,
-                });
-            })
-            .onUpdate((event: { translationX?: number; translationY?: number }) => {
-                'worklet';
-                if (lateralCommitInFlightSV.value) return;
-                lateralSwipeProgress.value = resolveSessionLateralSwipeProgress({
-                    translationX: event.translationX ?? 0,
-                    canStepPrevious: canStepPreviousSV.value,
-                    canStepNext: canStepNextSV.value,
-                });
-                const resolved = resolveSessionLateralPickerFrame({
-                    translationX: event.translationX ?? 0,
-                    translationY: event.translationY ?? 0,
-                    availablePrevious: availablePreviousSV.value,
-                    availableNext: availableNextSV.value,
-                    lockedDirection: lateralPicker.direction.value,
-                });
-                // One tick per row crossed, fired from the compare-before-write rather
-                // than from a reaction: the gesture already knows the old index, so the
-                // dedupe is inherent and no frame can double-fire.
-                const previousIndex = lateralPicker.index.value;
-                if (resolved.index !== previousIndex && previousIndex >= 1 && resolved.index >= 1) {
-                    scheduleOnRN(hapticsSelection);
-                }
-                lateralPicker.direction.value = resolved.direction;
-                lateralPicker.browseProgress.value = resolved.browseProgress;
-                lateralPicker.rowOffset.value = resolved.rowOffset;
-                lateralPicker.index.value = resolved.index;
-            })
-            .onEnd((event: { translationX?: number; translationY?: number; velocityX?: number }, success?: boolean) => {
-                'worklet';
-                if (lateralCommitInFlightSV.value) return;
-                const commit = resolveSessionLateralPickerCommit({
-                    // Resolved from the release frame rather than read back from the
-                    // shared values, so a flick that ends before it ever updates commits
-                    // exactly the way the shipped gesture does.
-                    state: resolveSessionLateralPickerFrame({
-                        translationX: event.translationX ?? 0,
-                        translationY: event.translationY ?? 0,
-                        availablePrevious: availablePreviousSV.value,
-                        availableNext: availableNextSV.value,
-                        lockedDirection: lateralPicker.direction.value,
-                    }),
-                    translationX: event.translationX ?? 0,
-                    velocityX: event.velocityX ?? 0,
-                    // RNGH reports a gesture the system took away as an unsuccessful end.
-                    cancelled: success === false,
-                });
-                if (!commit) {
-                    // Below threshold, rubber-banding against an end of the order, or
-                    // taken away: settle back with no commit and no haptic.
-                    lateralSwipeProgress.value = reduceMotion ? 0 : withSpring(0, lateralSpring);
-                    lateralSwipeActive.value = false;
-                    closeSessionLateralPicker({
-                        picker: lateralPicker,
-                        settle: true,
-                        spring: lateralSpring,
-                        reducedMotion: reduceMotion,
-                    });
-                    return;
-                }
-                lateralCommitInFlightSV.value = true;
-                // Commit here, not from the spring's completion callback: the release IS
-                // the decision, and the settle only carries the eye to the destination.
-                scheduleOnRN(commitLateralStep, commit.direction, commit.index);
-                closeSessionLateralPicker({
-                    picker: lateralPicker,
-                    settle: true,
-                    spring: lateralSpring,
-                    reducedMotion: reduceMotion,
-                });
-                // Reduced motion snap-commits and still navigates.
-                lateralSwipeProgress.value = reduceMotion
-                    ? 0
-                    : withSpring(commit.direction === 'previous' ? 1 : -1, lateralSpring);
-            })
-            .onFinalize(() => {
-                'worklet';
-                if (lateralCommitInFlightSV.value) return;
-                // Android claims its edge strips AFTER the app has already received the
-                // touch down, so a pan can begin and then be cancelled. That is a
-                // snap-back, never a commit.
-                lateralSwipeProgress.value = reduceMotion ? 0 : withSpring(0, lateralSpring);
-                lateralSwipeActive.value = false;
-                closeSessionLateralPicker({
-                    picker: lateralPicker,
-                    settle: true,
-                    spring: lateralSpring,
-                    reducedMotion: reduceMotion,
-                });
-            });
-    }, [
-        availableNextSV,
-        availablePreviousSV,
-        canStepNext,
-        canStepNextSV,
-        canStepPrevious,
-        canStepPreviousSV,
-        commitLateralStep,
-        keyboardVisible,
-        lateralCommitInFlightSV,
-        lateralNavigationAvailable,
-        lateralPicker,
-        lateralSpring,
-        lateralSwipeActive,
-        lateralSwipeProgress,
-        reduceMotion,
-    ]);
-
-    // The capsule follows the finger at reduced gain; reduced motion keeps the readout
-    // but drops the travel.
-    const lateralTravelGain = reduceMotion ? 0 : SESSION_LATERAL_SWIPE_TRAVEL_GAIN;
-    const lateralTravelStyle = useAnimatedStyle(() => ({
-        transform: [{
-            translateX: lateralSwipeProgress.value * SESSION_LATERAL_SWIPE_COMMIT_DISTANCE_PX * lateralTravelGain,
-        }],
-    }), [lateralSwipeProgress, lateralTravelGain]);
     const [renderedChrome, setRenderedChrome] = React.useState<Readonly<{
         current: BottomChromeItem | null;
         previous: BottomChromeItem | null;
@@ -918,29 +630,28 @@ export const MobileBottomChromeHost = React.memo(function MobileBottomChromeHost
     // owned reservation in `AgentContentView`. Because the reservation lives inside
     // the session screen, it slides away with the session on dismiss, so the window
     // canvas behind the chrome is never exposed as a lingering bottom band.
-    const wrapperStyle = { position: 'absolute', left: 0, right: 0, bottom: 0 } as const;
+    // Full-screen and transparent to touches (`box-none`), with the bar at its foot: the switcher
+    // a session's bar opens rises above the bar, and Android only delivers touches to children
+    // inside their parent's bounds. The published chrome height is the bar's own (measured on it
+    // below), never this frame's.
+    const wrapperStyle = { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, justifyContent: 'flex-end' } as const;
 
-    // The band's only hit-testable pixels, and they exist ONLY while the lateral pan
-    // does: without the pan the band stays exactly as transparent to touches as before.
+    // On a session the bar is wrapped by the switcher band, which owns the bar's gestures and the
+    // switcher they open. The band keeps the same element type for the whole session, so the bar
+    // never remounts when a gesture setting or the keyboard changes.
     const currentChromeContent = renderedChrome.current ? (
-        <Reanimated.View pointerEvents="box-none" style={lateralTravelStyle}>
-            {lateralPanGesture ? (
-                <SessionCockpitLateralPicker sessionId={cockpitSessionId} serverId={routeServerId} />
-            ) : null}
-            {lateralPanGesture ? (
-                <View style={StyleSheet.absoluteFill} testID={SESSION_LATERAL_SWIPE_HIT_TARGET_TEST_ID} />
-            ) : null}
-            {renderedChrome.current.node}
-        </Reanimated.View>
+        renderedChrome.current.cockpitSessionId ? (
+            <SessionSwitcherBand sessionId={renderedChrome.current.cockpitSessionId} serverId={routeServerId}>
+                {renderedChrome.current.node}
+            </SessionSwitcherBand>
+        ) : renderedChrome.current.node
     ) : null;
 
     return (
-        <View onLayout={handleChromeLayout} pointerEvents="box-none" style={wrapperStyle}>
+        <View pointerEvents="box-none" style={wrapperStyle}>
             {currentChromeContent ? (
-                <View pointerEvents="box-none" style={currentStyle}>
-                    {lateralPanGesture
-                        ? <GestureDetector gesture={lateralPanGesture}>{currentChromeContent}</GestureDetector>
-                        : currentChromeContent}
+                <View onLayout={handleChromeLayout} pointerEvents="box-none" style={currentStyle}>
+                    {currentChromeContent}
                 </View>
             ) : null}
             {renderedChrome.previous ? (

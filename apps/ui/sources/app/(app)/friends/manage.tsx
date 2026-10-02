@@ -22,7 +22,7 @@ export function FriendsManageScreen() {
 
     return (
         <RequireFriendsIdentityForFriends>
-            <ItemList presentation="page">
+            <ItemList>
                 <PageHeader
                     title={t('navigation.friends')}
                     description={t('detailPages.friendsManage.description')}

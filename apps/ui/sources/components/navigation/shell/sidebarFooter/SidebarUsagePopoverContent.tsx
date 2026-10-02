@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { SurfaceAsOfLabel } from '@/components/ui/surfaces/SurfaceAsOfLabel';
+import { SurfaceFreshnessLine } from '@/components/ui/surfaces/SurfaceFreshnessLine';
 import { groupUsageByProvider, type UsageAccountRow } from '@/components/hub/usage/usageByProvider';
 import { useUsageSummary, type UsageSummary } from '@/components/hub/usage/useUsageSummary';
 import { ConnectedAccountIdentityText } from '@/components/settings/connectedServices/ConnectedAccountIdentityText';
@@ -18,6 +19,7 @@ import { ConnectedAccountPrivacyToggle } from '@/components/settings/connectedSe
 import { UsageMeterRow, UsageMeterStack } from '@/components/settings/connectedServices/usage/UsageMeterRow';
 import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { IconButton } from '@/components/ui/buttons/IconButton';
 import { Icon } from '@/components/ui/icons/Icon';
 import { ActionListSection } from '@/components/ui/lists/ActionListSection';
 import { MENU_ROW_METRICS } from '@/components/ui/lists/itemDensityMetrics';
@@ -55,7 +57,6 @@ export const USAGE_POPOVER_WIDTH_PX = 372;
 export type UsagePopoverAccountFacts = Readonly<{
     subscription: ProviderAccountSubscriptionV1 | null;
     recoveryCredits: ConnectedServiceQuotaRecoveryCreditsV1 | null;
-    snapshotFetchedAtMs: number | null;
 }>;
 
 /**
@@ -73,6 +74,14 @@ export type UsagePopoverPrivacy = Readonly<{
     hidden: boolean;
     setHidden: (hidden: boolean) => void;
     present: ConnectedAccountIdentityPresenter;
+}>;
+
+/** Refresh and its state belong to the connected-account quota store, not the popover. */
+export type UsagePopoverRefresh = Readonly<{
+    keys: readonly string[];
+    refreshingByKey: Readonly<Record<string, boolean>>;
+    errorsByKey: Readonly<Record<string, string | null>>;
+    run(keys?: readonly string[]): Promise<void>;
 }>;
 
 /** One window of a group that is not a connected account (a session that signs in on its own). */
@@ -127,6 +136,7 @@ export function SidebarUsagePopoverContent(props: SidebarFooterPopoverContentPro
             usage={data.usage}
             facts={data.facts}
             privacy={data.privacy}
+            refresh={data.refresh}
             onOpenConnectedServices={handlers.openConnectedServices}
             onSignInAgain={handlers.signInAgain}
         />
@@ -138,6 +148,7 @@ export function useUsagePopoverData(): Readonly<{
     usage: UsageSummary;
     facts: SidebarUsageAccountFacts;
     privacy: UsagePopoverPrivacy;
+    refresh: UsagePopoverRefresh;
 }> {
     const usage = useUsageSummary({ load: 'once' });
     // The facts beside usage come from the same summaries owner the usage summary reads.
@@ -155,7 +166,6 @@ export function useUsagePopoverData(): Readonly<{
             byKey[summary.key] = {
                 subscription: recordId ? usageRecords.snapshotsByRecordId[recordId]?.subscription ?? null : null,
                 recoveryCredits: summary.recoveryCredits,
-                snapshotFetchedAtMs: summary.fetchedAt,
             };
         }
         return byKey;
@@ -166,7 +176,13 @@ export function useUsagePopoverData(): Readonly<{
         accounts,
     }), [accounts, quota.accountsNeedingSignIn, quota.keysWithoutLimits]);
     const privacy = useConnectedAccountIdentityPrivacy();
-    return { usage, facts, privacy };
+    const refresh = React.useMemo((): UsagePopoverRefresh => ({
+        keys: quota.refreshableKeys,
+        refreshingByKey: quota.refreshingByKey,
+        errorsByKey: quota.errorsByKey,
+        run: quota.refresh,
+    }), [quota.refreshableKeys, quota.refreshingByKey, quota.errorsByKey, quota.refresh]);
+    return { usage, facts, privacy, refresh };
 }
 
 /** Opening Connected services and signing an account in again close the popover first. */
@@ -199,6 +215,7 @@ export function SidebarUsagePopoverView(props: Readonly<{
     facts?: SidebarUsageAccountFacts;
     privacy: UsagePopoverPrivacy;
     session?: UsagePopoverSession | null;
+    refresh?: UsagePopoverRefresh;
     onOpenConnectedServices: () => void;
     onSignInAgain?: (account: ConnectedServiceAccountNeedingSignIn) => void;
 }>) {
@@ -224,6 +241,13 @@ export function SidebarUsagePopoverView(props: Readonly<{
         && (session.accountKey !== null || session.ownSignIn !== null);
     const total = accounts.length + facts.accountsNeedingSignIn.length;
     const nothing = total === 0 && !scoped;
+    const refresh = props.refresh;
+    const refreshKeys = scoped
+        ? refresh?.keys.filter((key) => key === session?.accountKey) ?? []
+        : refresh?.keys ?? [];
+    const refreshing = refreshKeys.some((key) => refresh?.refreshingByKey[key] === true);
+    const refreshError = refreshKeys.map((key) => refresh?.errorsByKey[key]).find((error) => error != null);
+    const shownAsOf = scoped ? sessionAccount?.account.fetchedAt ?? null : usage.asOf;
 
     const renderAccount = (entry: (typeof accounts)[number]) => (
         <UsageAccountGroup
@@ -291,7 +315,18 @@ export function SidebarUsagePopoverView(props: Readonly<{
                 <Text style={styles.title}>{t('settings.usage')}</Text>
                 {scoped ? <Text style={styles.headerScope} numberOfLines={1}>{t('sidebarFooter.usageThisSession')}</Text> : null}
                 <View style={styles.headerEnd}>
-                    {usage.asOf !== null ? <SurfaceAsOfLabel at={usage.asOf} testID="sidebar-usage-as-of" /> : null}
+                    {shownAsOf !== null ? <SurfaceAsOfLabel at={shownAsOf} testID="sidebar-usage-as-of" /> : null}
+                    {refresh && refreshKeys.length > 0 ? (
+                        <IconButton
+                            testID="sidebar-usage-refresh"
+                            iconName="arrow-clockwise"
+                            variant="plain"
+                            accessibilityLabel={t('common.refresh')}
+                            tooltip={t('common.refresh')}
+                            disabled={refreshing}
+                            onPress={() => refresh.run(scoped ? refreshKeys : undefined)}
+                        />
+                    ) : null}
                     <ConnectedAccountPrivacyToggle
                         testID="usage-popover-privacy"
                         hidden={privacy.hidden}
@@ -299,6 +334,9 @@ export function SidebarUsagePopoverView(props: Readonly<{
                     />
                 </View>
             </View>
+            {refreshError ? (
+                <SurfaceFreshnessLine testID="sidebar-usage-refresh-error" reason={refreshError} tone="warning" />
+            ) : null}
             {scoped && session?.scopeLine ? (
                 <Text testID="usage-popover-session-scope" style={styles.scopeLine} numberOfLines={2}>{session.scopeLine}</Text>
             ) : null}
@@ -395,6 +433,7 @@ const UsageAccountGroup = React.memo(function UsageAccountGroup(props: Readonly<
                 email={identity.email}
             />
             <AccountSubscriptionLine subscription={props.facts?.subscription ?? null} now={props.now} />
+            {account.fetchedAt !== null ? <SurfaceAsOfLabel at={account.fetchedAt} testID={`sidebar-usage-as-of-${account.key}`} /> : null}
             {stateLabel ? <Text style={styles.accountState}>{stateLabel}</Text> : (
                 <UsageMeterStack>
                     {account.windows.map((window) => (
@@ -415,7 +454,7 @@ const UsageAccountGroup = React.memo(function UsageAccountGroup(props: Readonly<
                     recoveryCredits={props.facts?.recoveryCredits ?? null}
                     legacyServiceId={props.legacyServiceId as ConnectedServiceId | null}
                     accountId={account.accountId}
-                    snapshotFetchedAtMs={props.facts?.snapshotFetchedAtMs ?? null}
+                    snapshotFetchedAtMs={account.fetchedAt}
                     now={props.now}
                     // The receipt is spoken by the action; the popover's meters refresh on the next read.
                     onApplied={noop}

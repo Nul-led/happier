@@ -91,6 +91,8 @@ import { PageHeader, type PageHeaderMetaFact } from '@/components/ui/layout/Page
 import { PageHeaderMarkTile, PageHeaderMenu, type PageHeaderMenuAction } from '@/components/ui/layout/PageHeaderEntityParts';
 import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
 import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { FieldItem } from '@/components/ui/forms/FieldItem';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { filterUserFacingMachineDetailSessions } from './machineDetailSessionQueries';
 import { motionTokens } from '@/components/ui/motion/motionTokens';
@@ -221,6 +223,13 @@ export default function MachineDetailScreen() {
         machineListByServerId,
     }), [activeServerId, machineId, machineListByServerId]);
     const machineServerId = requestedServerId || machineListServerId || activeServerId;
+    const [nameDraft, setNameDraft] = useState<{ machineId: string; serverId: string; value: string } | null>(null);
+    const currentNameDraft = nameDraft && nameDraft.machineId === machineId
+        && areServerProfileIdentifiersEquivalent(nameDraft.serverId, machineServerId) ? nameDraft : null;
+    React.useEffect(() => {
+        setNameDraft((draft) => draft && draft.machineId === machineId
+            && areServerProfileIdentifiersEquivalent(draft.serverId, machineServerId) ? draft : null);
+    }, [machineId, machineServerId]);
     const [executionRunsState, setExecutionRunsState] = useState<
         | { status: 'idle' | 'loading'; runs: readonly DaemonExecutionRunEntry[] }
         | { status: 'loaded'; runs: readonly DaemonExecutionRunEntry[] }
@@ -677,43 +686,29 @@ export default function MachineDetailScreen() {
         return snapshot ?? null;
     }, [detectedCapabilities]);
 
-    const handleRenameMachine = async () => {
-        if (!machine || !machineId) return;
+    const handleRenameMachine = () => {
+        if (!machine || !machineId || isRenamingMachine) return;
+        setNameDraft({ machineId, serverId: machineServerId, value: machine.metadata?.displayName || '' });
+    };
 
-        const newDisplayName = await Modal.prompt(
-            t('machine.renameTitle'),
-            t('machine.renameDescription'),
-            {
-                defaultValue: machine.metadata?.displayName || '',
-                placeholder: machine.metadata?.host || t('machine.renamePlaceholder'),
-                cancelText: t('common.cancel'),
-                confirmText: t('common.rename')
-            }
-        );
-
-        if (newDisplayName !== null) {
-            setIsRenamingMachine(true);
-            try {
-                const updatedMetadata = {
-                    ...machine.metadata!,
-                    displayName: newDisplayName.trim() || undefined
-                };
-                
-                await machineUpdateMetadata(
-                    machineId,
-                    updatedMetadata,
-                    machine.metadataVersion
-                );
-            } catch (error) {
-                Modal.alert(
-                    t('common.error'),
-                    error instanceof Error ? error.message : t('machine.renameFailed')
-                );
-                // Refresh to get latest state
-                await sync.refreshMachines();
-            } finally {
-                setIsRenamingMachine(false);
-            }
+    const handleSaveMachineName = async () => {
+        if (!machine || !machineId || !currentNameDraft || isRenamingMachine || isServerSwitching) return;
+        const savedDraft = currentNameDraft;
+        setIsRenamingMachine(true);
+        try {
+            await machineUpdateMetadata(machineId, {
+                ...machine.metadata!,
+                displayName: savedDraft.value.trim() || undefined,
+            }, machine.metadataVersion);
+            setNameDraft((draft) => draft === savedDraft ? null : draft);
+        } catch (error) {
+            Modal.alert(
+                t('common.error'),
+                error instanceof Error ? error.message : t('machine.renameFailed')
+            );
+            await sync.refreshMachines();
+        } finally {
+            setIsRenamingMachine(false);
         }
     };
 
@@ -873,7 +868,7 @@ export default function MachineDetailScreen() {
                 <Stack.Screen
                     options={screenOptions}
                 />
-                <ItemList presentation="page">
+                <ItemList>
                     <PageHeader
                         testID="machine-detail-header"
                         alwaysShowTitle
@@ -919,7 +914,6 @@ export default function MachineDetailScreen() {
             {/* An agent's own sign-in opens in this page's bottom pane (lab agent-setup T1). */}
             <AgentSignInPaneHost scopeId={`machine:${machineId}`} main={(
             <ItemList
-                presentation="page"
                 refreshControl={
                     <RefreshControl
                         refreshing={isRefreshing}
@@ -953,6 +947,30 @@ export default function MachineDetailScreen() {
                     )}
                 />
 
+                {currentNameDraft ? (
+                    <ItemGroup>
+                        <SectionContentRow>
+                            <FieldItem label={t('machine.renameTitle')} supportingText={t('machine.renameDescription')}>
+                                <FieldTextInput
+                                    testID="machine-detail-name-input"
+                                    accessibilityLabel={t('machine.renameTitle')}
+                                    value={currentNameDraft.value}
+                                    placeholder={machine.metadata?.host || t('machine.renamePlaceholder')}
+                                    editable={!isRenamingMachine}
+                                    onChangeText={(value) => setNameDraft((draft) => draft ? { ...draft, value } : draft)}
+                                    onSubmitEditing={handleSaveMachineName}
+                                />
+                            </FieldItem>
+                        </SectionContentRow>
+                        <SectionContentRow>
+                            <View style={styles.leaveActions}>
+                                <RoundButton testID="machine-detail-name-save" size="small" title={t('common.save')} loading={isRenamingMachine} disabled={isRenamingMachine || isServerSwitching} action={handleSaveMachineName} />
+                                <RoundButton testID="machine-detail-name-cancel" size="small" display="secondary" title={t('common.cancel')} disabled={isRenamingMachine} onPress={() => setNameDraft(null)} />
+                            </View>
+                        </SectionContentRow>
+                    </ItemGroup>
+                ) : null}
+
                 {/* What blocks use comes first, with the next action inside it. */}
                 {!machineCanSpawn ? (
                     <AttentionBanner
@@ -981,12 +999,25 @@ export default function MachineDetailScreen() {
                 {!!machineId && (
                     <ItemGroup title={t('settingsSessionPages.runtime.terminalHostTitle')} description={t('settingsSessionPages.runtime.pageDescription')}>
                         <Item
-                            title={t('settingsSessionPages.runtime.terminalHostTitle')}
-                            subtitle={t('settingsSessionPages.runtime.pageDescription')}
+                            title={t('machine.tmux.overrideTitle')}
+                            subtitle={tmuxOverrideEnabled ? t('machine.tmux.overrideEnabledSubtitle') : t('machine.tmux.overrideDisabledSubtitle')}
                             rightElement={<Switch value={tmuxOverrideEnabled} onValueChange={setTmuxOverrideEnabled} />}
                             showChevron={false}
                             onPress={() => setTmuxOverrideEnabled(!tmuxOverrideEnabled)}
                         />
+
+                        {!tmuxOverrideEnabled && (
+                            <Item
+                                testID="machine-terminal-effective-host"
+                                title={t('settingsSessionPages.runtime.terminalHostTitle')}
+                                subtitle={selectedMachineTerminalHost === 'none'
+                                    ? t('settingsSessionPages.runtime.terminalHostNone')
+                                    : selectedMachineTerminalHost === 'herdr' ? 'Herdr'
+                                        : selectedMachineTerminalHost === 'zellij' ? 'Zellij' : 'tmux'}
+                                mode="info"
+                                showChevron={false}
+                            />
+                        )}
 
                         {tmuxOverrideEnabled && (
                             <>

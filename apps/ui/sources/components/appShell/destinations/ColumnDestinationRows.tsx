@@ -4,6 +4,7 @@ import { Platform } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
+import { WorkspaceDestinationRow } from '@/components/appShell/workspace/WorkspaceDestinationRow';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
 import {
@@ -103,6 +104,7 @@ export function destinationRowTestId(destination: CompactAppDestination): string
  */
 export type ColumnLeadingRow = Readonly<{
     id: string;
+    href?: string;
     testID: string;
     title: string;
     icon: IconName;
@@ -154,8 +156,7 @@ export const ColumnDestinationRows = React.memo(function ColumnDestinationRows(p
             containerStyle={column === undefined ? undefined : sessionListStyles.groupSheetInset}
         >
             {leadingRows.map((row) => (
-                <Item
-                    key={row.id}
+                <WorkspaceDestinationRow key={row.id} href={row.href ?? null}><Item
                     testID={row.testID}
                     title={row.title}
                     icon={<Icon name={row.icon} color={theme.colors.text.secondary} />}
@@ -167,9 +168,11 @@ export const ColumnDestinationRows = React.memo(function ColumnDestinationRows(p
                     pressableStyle={ROW_FILL_SHAPE_STYLE}
                     selected={row.selected}
                     onPress={row.onPress}
-                />
+                /></WorkspaceDestinationRow>
             ))}
             {destinations.map((destination) => (
+                <WorkspaceDestinationRow key={destination.id}
+                    href={destination.activation === 'navigate' && destination.availability === 'available' ? destination.routePath : null}>
                 <Item
                     key={destination.id}
                     testID={destinationRowTestId(destination)}
@@ -198,6 +201,7 @@ export const ColumnDestinationRows = React.memo(function ColumnDestinationRows(p
                         ? () => activate(destination, { searchScope: props.universalSearchScope })
                         : undefined}
                 />
+                </WorkspaceDestinationRow>
             ))}
         </ItemGroup>
     );

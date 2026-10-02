@@ -82,7 +82,7 @@ export function LanguageSettingsScreen() {
     };
 
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settingsLanguage.pageDescription')} />
             <SettingAnchor setting={LANGUAGE_SETTINGS.settings.appLanguage}>
                 <ItemGroup

@@ -1,10 +1,10 @@
-import { WORKSPACE_ACTION_INPUT_SCHEMAS, type WorkspaceActionId, type WorkspaceTabsListOutput } from '@happier-dev/protocol';
+import { WORKSPACE_ACTION_INPUT_SCHEMAS, type WorkspaceActionId, type WorkspaceTabsListOutput, type WorkspaceClosedTabsListOutput } from '@happier-dev/protocol';
 import type { SplitCanvasHostControls } from '../splitCanvas/components/SplitCanvasHost';
 import { createWorkspaceEmptyTab, type WorkspaceState } from './workspaceState';
 import type { createWorkspaceNavigationAdapter } from './workspaceNavigationAdapter';
 import { createWorkspaceSplit } from './workspaceSplit';
 
-export type WorkspaceActionOutcome = Readonly<{ ok: true }> | WorkspaceTabsListOutput
+export type WorkspaceActionOutcome = Readonly<{ ok: true }> | WorkspaceTabsListOutput | WorkspaceClosedTabsListOutput
     | Readonly<{ ok: false; errorCode: string; error: string }>;
 
 export function workspaceActionFailure(errorCode: string): WorkspaceActionOutcome {
@@ -42,6 +42,12 @@ export function createWorkspaceActionAdapter(input: Readonly<{
         if (!parsed.success) return workspaceActionFailure('invalid_parameters');
         const data = parsed.data;
         const state = input.getState();
+        if (actionId === 'workspace.tabs.closed.list') return { ok: true, tabs: state.recentlyClosed.map(entry => ({
+            id: entry.tab.id, target: { kind: entry.tab.target.kind, params: { ...entry.tab.target.params } }, pinned: entry.tab.pinned,
+            ...(entry.fallbackTitle === undefined ? {} : { title: entry.fallbackTitle }),
+        })) };
+        if (actionId === 'workspace.tabs.reopen') return input.navigation.reopenTab('tabId' in data ? data.tabId : undefined)
+            ? { ok: true } : workspaceActionFailure('workspace_closed_tab_not_found');
         const requestedGroupId = 'groupId' in data && data.groupId ? data.groupId : undefined;
         const tabId = 'tabId' in data ? data.tabId : undefined;
         const source = tabId ? Object.values(state.groups).find((group) => group.tabIds.includes(tabId)) : state.groups[requestedGroupId ?? state.focusedGroupId];

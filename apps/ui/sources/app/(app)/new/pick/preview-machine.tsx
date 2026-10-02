@@ -153,7 +153,7 @@ export default React.memo(function PreviewMachinePickerScreen() {
     return (
         <>
             <Stack.Screen options={screenOptions} />
-            <ItemList>
+            <ItemList presentation="grouped">
                 <MachineSelector
                     machines={machines}
                     serverId={activeServerId}

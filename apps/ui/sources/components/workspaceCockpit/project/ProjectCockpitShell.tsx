@@ -99,6 +99,8 @@ export const ProjectCockpitShell = React.memo((props: ProjectCockpitShellProps) 
             <View testID="project-files-screen" style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
                 <React.Suspense fallback={<PaneLoadingFallback />}>
                     <ProjectBrowseFilesSurface
+                        workspaceRef={props.workspaceRef}
+                        activeWorktreeId={props.activeWorktreeId}
                         scopeId={props.scopeId}
                         scope={workspaceScope}
                         onOpenFile={openFileInDetails}
@@ -186,4 +188,3 @@ export const ProjectCockpitShell = React.memo((props: ProjectCockpitShellProps) 
         </View>
     );
 });
-

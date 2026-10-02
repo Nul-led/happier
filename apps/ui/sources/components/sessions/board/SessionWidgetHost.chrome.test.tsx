@@ -384,10 +384,40 @@ describe('SessionWidgetHost chrome', () => {
         });
 
         await screen.pressByTestIdAsync('widget-state-action');
-        await screen.pressByTestIdAsync('widget-state-secondary-action');
+        const remove = actionsOf(screen).find((action) => action.id === 'remove');
+        expect(remove).toBeDefined();
+        (remove?.onPress as (() => void) | undefined)?.();
 
         expect(managePlugin).toHaveBeenCalledOnce();
         expect(removeFromBoard).toHaveBeenCalledOnce();
+        expect(screen.findHostByTestId('widget-state-secondary-action')).toBeNull();
+    });
+
+    it('keeps unavailable cards quiet while preserving their recovery actions and expanded explanation', async () => {
+        const screen = await renderCard({
+            item: unavailableInstalledItem(),
+            onManagePlugin: vi.fn(),
+            resolveSourceAvailability: () => ({ kind: 'unavailable', reason: 'plugin_unavailable' }),
+        });
+
+        expect(screen.findHostByTestId('widget-state')).toBeTruthy();
+        expect(screen.findHostByTestId('widget-state-title')).toBeNull();
+        expect(screen.findHostByTestId('widget-state-icon')).toBeNull();
+        expect(screen.findHostByTestId('widget-state-action')).toBeTruthy();
+
+        standardCleanup();
+        const expanded = await renderCard({
+            item: unavailableInstalledItem(),
+            expanded: true,
+            resolveSourceAvailability: () => ({ kind: 'unavailable', reason: 'plugin_unavailable' }),
+        });
+        expect(expanded.findHostByTestId('widget-state-title')).toBeTruthy();
+    });
+
+    it('keeps the Board header clear when the same widget is in the Companion', async () => {
+        const screen = await renderCard({ inCompanion: true });
+        expect(screen.findHostByTestId('widget-companion-mark')).toBeNull();
+        expect(screen.findHostByTestId('widget-title')).toBeTruthy();
     });
 
     it('keeps plugin management available without exposing shared Board removal to a read-only viewer', async () => {

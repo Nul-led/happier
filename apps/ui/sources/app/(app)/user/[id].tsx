@@ -129,7 +129,7 @@ export default function UserProfileScreen() {
         // The page keeps its identity while the person loads or when they can't be found: the same
         // header with a placeholder name, then the state where the sections would be.
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <PageHeader
                     testID="user-profile.header"
                     alwaysShowTitle
@@ -194,7 +194,7 @@ export default function UserProfileScreen() {
     ];
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <PageHeader
                 testID="user-profile.header"
                 alwaysShowTitle

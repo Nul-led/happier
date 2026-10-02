@@ -388,6 +388,8 @@ function ProjectRightPanelContent(props: ProjectRightPanelProps & Readonly<{
                     <RetainedPanelSurface isActive={activeTab === 'files'} testID="project-rightpanel-surface-files">
                         <React.Suspense fallback={<PaneLoadingFallback />}>
                             <ProjectBrowseFilesSurface
+                                workspaceRef={props.workspaceRef}
+                                activeWorktreeId={props.activeWorktreeId}
                         scopeId={props.scopeId}
                                 scope={workspaceScope}
                                 onOpenFile={openFileInDetails}

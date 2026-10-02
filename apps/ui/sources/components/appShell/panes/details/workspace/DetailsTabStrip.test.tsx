@@ -226,8 +226,8 @@ describe('DetailsTabStrip chrome absorption for browser-view tabs', () => {
                 for (const testID of ['tab-pin-browser-view_bs_bv', 'tab-close-browser-view_bs_bv']) {
                     const style = flattenStyle(screen.findByTestId(testID)?.props.style);
                     // Never below the WCAG 2.5.8 target, and the platform floor for a finger.
-                    expect(style.minWidth).toBe(floor ?? 24);
-                    expect(style.minHeight).toBe(floor ?? 24);
+                    expect(style.width ?? style.minWidth).toBe(floor ?? 24);
+                    expect(style.height ?? style.minHeight).toBe(floor ?? 24);
                 }
 
                 await screen.unmount();
@@ -257,8 +257,8 @@ describe('DetailsTabStrip chrome absorption for browser-view tabs', () => {
 
         expect(flattenStyle(tabTarget.props.style).flex).toBe(1);
         expect(flattenStyle(actionRegion.props.style).position).toBeUndefined();
-        expect(pin.props.hitSlop).toBeUndefined();
-        expect(close.props.hitSlop).toBeUndefined();
+        expect(pin.props.hitSlop ?? 0).toBe(0);
+        expect(close.props.hitSlop ?? 0).toBe(0);
     });
 });
 
@@ -293,7 +293,8 @@ describe('DetailsTabStrip unsaved tabs', () => {
         await act(async () => { reportUnsaved?.(true); });
         expect(screen.findByTestId('tab-unsaved-file_src_a.ts')).not.toBeNull();
         expect(screen.findByTestId('tab-close-file_src_a.ts')?.props.accessibilityLabel)
-            .toBe('detailsSurface.chrome.closeUnsavedTabA11y');
+            .toContain('detailsSurface.chrome.closeUnsavedTabA11y');
+        expect(screen.findByTestId('tab-close-file_src_a.ts')?.props.accessibilityLabel).toContain(tab.title);
 
         await act(async () => { reportUnsaved?.(false); });
         expect(screen.findByTestId('tab-unsaved-file_src_a.ts')).toBeNull();
@@ -302,6 +303,8 @@ describe('DetailsTabStrip unsaved tabs', () => {
 
 function flattenStyle(style: unknown): Record<string, unknown> {
     if (!style) return {};
+    // The native Pressable boundary asks its real style callback for the resting target geometry.
+    if (typeof style === 'function') return flattenStyle(style({ pressed: false, hovered: false, focused: false }));
     if (Array.isArray(style)) {
         return style.reduce<Record<string, unknown>>((acc, entry) => ({ ...acc, ...flattenStyle(entry) }), {});
     }

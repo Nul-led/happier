@@ -296,7 +296,7 @@ export const WorkspaceRouteBody = React.memo(function AppearanceSettingsScreen()
     ].filter(Boolean).join(' · ');
 
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             <SettingsPageHeader
                 description={t('settingsAppearance.pageDescription')}
                 actions={

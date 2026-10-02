@@ -72,7 +72,7 @@ describe('WorkspaceShell', () => {
     it('provides discoverable toolbar actions through the shared button interaction owner', async () => {
         const screen = await renderScreen(<Harness initial={initialState()} />);
         const button = screen.findByTestId('workspace-new-tab-group_1');
-        expect(button?.props.accessibilityLabel).toBe('browser.tabs.newTab');
+        expect(button?.props.accessibilityLabel).toBe('workspaceBar.newTab');
         const background = () => {
             const style = screen.findByTestId('workspace-new-tab-group_1')?.props.style;
             const resolved = typeof style === 'function' ? style({ pressed: false }) : style;

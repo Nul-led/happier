@@ -180,6 +180,24 @@ function buildCommandsWithPluginActions(input: Readonly<{
 }
 
 describe('buildCommandPaletteCommands', () => {
+  it('offers phone pairing without navigating away from the current page', async () => {
+    const openHomePairingModal = vi.fn();
+    const push = vi.fn();
+    mockedState = { createSessionActionDraft: createSessionActionDraftSpy, settings: {} };
+    const commands = buildCommandPaletteCommands({
+      sessionsById: {}, isDev: false, activeSessionId: null,
+      features: { executionRunsEnabled: false, voiceEnabled: false },
+      nav: { push, openNewSession: () => {}, navigateToSession: () => {}, openHomePairingModal },
+      actions: { execute: async () => ({ ok: true, result: {} }) },
+      alert: async () => {},
+    });
+    const pairing = commands.find((command) => command.id === 'add-phone');
+    expect(pairing).toBeDefined();
+    await pairing?.action();
+    expect(openHomePairingModal).toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
+  });
+
   it('marks a small intentional launch set for empty Search', () => {
     mockedState = { createSessionActionDraft: createSessionActionDraftSpy, settings: {} };
     const commands = buildCommandPaletteCommands({

@@ -239,7 +239,7 @@ export default React.memo(function PathPickerScreen() {
                 <Stack.Screen
                     options={screenOptions}
                 />
-                <ItemList>
+                <ItemList presentation="grouped">
                     <View style={styles.emptyContainer}>
                         <Text style={styles.emptyText}>{t('newSession.noMachineSelected')}</Text>
                     </View>

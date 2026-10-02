@@ -312,7 +312,10 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                 headerBackTitle: back,
             },
             artifactsId: {
-                headerShown: false,
+                // The page header carries the artifact's own title; the native header is the way back.
+                headerShown: true,
+                headerTitle: t('artifacts.title'),
+                headerBackTitle: back,
             },
             artifactsNew: {
                 headerShown: true,
@@ -494,6 +497,11 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                 <Stack.Screen
                     name="oauth/[provider]"
                     options={rootStackRouteOptions.hiddenHeader}
+                />
+                {/* All tabs (phone): a full page over the session, reached by pulling the session title down. */}
+                <Stack.Screen
+                    name="all-tabs"
+                    options={{ headerShown: false, presentation: 'fullScreenModal', animation: 'fade' }}
                 />
                 <Stack.Screen
                     name="settings"

@@ -4,6 +4,7 @@ import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { useActivateAppDestination } from '@/components/appShell/destinations/compactAppDestinationCatalog';
+import { WorkspaceDestinationRow } from '@/components/appShell/workspace/WorkspaceDestinationRow';
 import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
@@ -133,7 +134,8 @@ const AppRailItem = React.memo(function AppRailItem(props: Readonly<{
         />
     );
     return (
-        <View style={styles.itemSlot}>
+        <WorkspaceDestinationRow style={styles.itemSlot}
+            href={!unavailable && entry.activation === 'navigate' ? entry.routePath : null}>
             {column
                 ? <AppRailPeek testID={`app-rail-peek:${entry.id}`} destinationId={entry.id}>{button}</AppRailPeek>
                 : button(false)}
@@ -144,7 +146,7 @@ const AppRailItem = React.memo(function AppRailItem(props: Readonly<{
                     signal={{ kind: 'dot', tone: resolveAppRailBadgeTone({ source: 'plugin', tone: pluginBadge.tone }) }}
                 />
             ) : null}
-        </View>
+        </WorkspaceDestinationRow>
     );
 });
 
@@ -168,6 +170,11 @@ const AppRailMore = React.memo(function AppRailMore(props: Readonly<{
     const styles = stylesheet;
     const { theme } = useUnistyles();
     const [open, setOpen] = React.useState(false);
+    const wrapItem = React.useCallback((item: Readonly<{ id: string }>, children: React.ReactNode) => {
+        const entry = props.entries.find(candidate => candidate.id === item.id);
+        return <WorkspaceDestinationRow href={entry?.availability === 'available' && entry.activation === 'navigate'
+            ? entry.routePath : null}>{children}</WorkspaceDestinationRow>;
+    }, [props.entries]);
     const items = props.entries.map((entry): DropdownMenuItem => ({
         id: entry.id,
         testID: `app-rail-more:${entry.id}`,
@@ -182,6 +189,7 @@ const AppRailMore = React.memo(function AppRailMore(props: Readonly<{
                 open={open}
                 onOpenChange={setOpen}
                 items={items}
+                wrapItem={wrapItem}
                 onSelect={(id) => {
                     setOpen(false);
                     const entry = props.entries.find((candidate) => candidate.id === id);
@@ -231,7 +239,7 @@ const AppRailBottom = React.memo(function AppRailBottom(props: Readonly<{
     }, [router]);
     return (
         <View testID="app-rail-bottom" style={styles.group}>
-            <View style={styles.itemSlot}>
+            <WorkspaceDestinationRow href={SETTINGS_ROUTES.usage} style={styles.itemSlot}>
                 {quotaMetersAvailable ? (
                     <SidebarFooterPopoverButton
                         testID="app-rail-usage"
@@ -263,7 +271,7 @@ const AppRailBottom = React.memo(function AppRailBottom(props: Readonly<{
                         signal={{ kind: 'count', value: signInCount, tone: resolveAppRailBadgeTone({ source: 'signIn' }) }}
                     />
                 ) : null}
-            </View>
+            </WorkspaceDestinationRow>
             <View style={styles.itemSlot}>
                 <AppRailMachines />
             </View>

@@ -9,6 +9,15 @@ import { useOnboardingJourneySessionActive } from '@/components/onboarding/tour/
 
 /** The same shell eligibility owns both navigation and responsive chrome. */
 export function useWorkspaceShellEnabled(): boolean {
+    return useWorkspacePresentation() === 'shell';
+}
+
+/**
+ * Where the workspace owner runs: the desktop/tablet shell (it owns navigation), a phone (it owns
+ * the open-tab set while the phone's stack keeps navigation), or nowhere (signed out, onboarding,
+ * public pages, the activity overlay).
+ */
+export function useWorkspacePresentation(): 'shell' | 'phone' | null {
     const auth = useAuth();
     const pathname = usePathname();
     const segments = useSegments();
@@ -19,5 +28,6 @@ export function useWorkspaceShellEnabled(): boolean {
     const publicNonHome = normalized.length > 0 && normalized[0] !== 'index'
         && isPublicRouteForUnauthenticated([...segments]);
     const bypass = onboarding || (Platform.OS === 'web' && (isTerminalConnectWebPathname(pathname) || publicNonHome));
-    return auth.isAuthenticated && isTablet && !overlay && !bypass;
+    if (!auth.isAuthenticated || overlay || bypass) return null;
+    return isTablet ? 'shell' : 'phone';
 }

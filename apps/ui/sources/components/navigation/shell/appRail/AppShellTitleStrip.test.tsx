@@ -31,8 +31,11 @@ describe('AppShellTitleStrip', () => {
         const screen = await renderScreen(
             <AppShellTitleStrip columnVisible columnToggleAvailable onToggleColumn={() => {}} navigation={navigation} />,
         );
-        expect(screen.findByTestId('app-shell-back').props.disabled).toBe(false);
-        expect(screen.findByTestId('app-shell-forward').props.disabled).toBe(false);
+        const back = screen.findByTestId('app-shell-back');
+        const forward = screen.findByTestId('app-shell-forward');
+        if (!back || !forward) throw new Error('Expected both shell history controls');
+        expect(back.props.disabled).toBe(false);
+        expect(forward.props.disabled).toBe(false);
         await screen.pressByTestIdAsync('app-shell-back');
         await screen.pressByTestIdAsync('app-shell-forward');
         await screen.pressByTestIdAsync('app-shell-logo');

@@ -22,6 +22,26 @@ function harness(pages: Parameters<typeof resolveCompactAppDestinations>[0]['pag
 }
 
 describe('workspace navigation adapter', () => {
+    it('reopens through URL history and reuses an already open catalog singleton', () => {
+        const h = harness([{
+            id: 'plugin:acme.notes:notes', pluginId: 'acme.notes', descriptorId: 'notes', localId: 'notes',
+            label: 'Notes', icon: 'note', order: 40, disabledReason: null,
+            placement: {} as NonNullable<Parameters<typeof resolveCompactAppDestinations>[0]['pages'][number]>['placement'],
+            routePath: '/plugins/acme.notes/notes',
+        }]);
+        h.adapter.initialize('/session/A1?serverId=home-a');
+        h.adapter.openHref('/plugins/acme.notes/notes/first', { mode: 'newTab' });
+        const closedId = h.active().id;
+        h.adapter.closeTab('group:1', closedId);
+        h.adapter.openHref('/plugins/acme.notes/notes/second', { mode: 'newTab' });
+        const existingId = h.active().id;
+        expect(h.adapter.reopenTab(closedId)).toBe(true);
+        expect(h.active().id).toBe(existingId);
+        expect(h.active().target.params.subPath).toBe('first');
+        expect(Object.values(h.state().tabs).filter(tab => tab.target.kind === 'plugin:acme.notes:notes')).toHaveLength(1);
+        expect(h.commits.at(-1)?.href).toBe('/plugins/acme.notes/notes/first');
+        expect(h.state().recentlyClosed).toEqual([]);
+    });
     it('promotes an existing preview through new-tab intent without duplicating its identity or pinning it', () => {
         const h = harness();
         h.adapter.openHref('/session/B1?serverId=home-b');

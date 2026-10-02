@@ -10,7 +10,7 @@ import { t } from '@/text';
 
 import type { SessionGitPaneAction, SessionGitPaneActionKey, SessionGitPaneHeaderAction } from './sessionGitPaneHeader';
 
-export type GitNextActionMenuExtra = Readonly<{ id: string; title: string; subtitle?: string; icon: IconName; onPress: () => void }>;
+export type GitNextActionMenuExtra = Readonly<{ id: string; title: string; subtitle?: string; icon: IconName; disabled?: boolean; onPress: () => void }>;
 
 /**
  * The header's next-best action and its menu (Git lab A/S): the one sync step the branch needs now, as a
@@ -56,6 +56,7 @@ export const GitNextActionButton = React.memo(function GitNextActionButton(props
                 ...(extra.subtitle ? { subtitle: extra.subtitle } : {}),
                 icon: <Icon name={extra.icon} size={14} color={iconColor} />,
                 category: t('sessionGitPane.flow.menu.more'),
+                disabled: extra.disabled,
             });
         }
         return list;
@@ -64,7 +65,8 @@ export const GitNextActionButton = React.memo(function GitNextActionButton(props
     const onSelect = React.useCallback((id: string) => {
         setOpen(false);
         if (id.startsWith('extra:')) {
-            props.extras?.find((extra) => `extra:${extra.id}` === id)?.onPress();
+            const extra = props.extras?.find((extra) => `extra:${extra.id}` === id);
+            if (extra && !extra.disabled) extra.onPress();
             return;
         }
         props.onRun(id as SessionGitPaneActionKey);

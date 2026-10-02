@@ -1,12 +1,12 @@
 import * as React from 'react';
 
 import { WorkflowsGate } from '@/components/workflows/gating/WorkflowsGate';
-import { WorkflowsHistoryScreen } from '@/components/workflows/history/WorkflowsHistoryScreen';
+import { SessionsList } from '@/components/sessions/shell/SessionsList';
 
-/** History: every run you started (FIN 07 S3), from the column's **All runs**. */
-export function WorkflowsHistoryRoute(): React.ReactElement {
-    return <WorkflowsGate><WorkflowsHistoryScreen /></WorkflowsGate>;
+/** The Runs deep link is the canonical list with its Show control fixed to Runs. */
+export function WorkflowsRunsRoute(): React.ReactElement {
+    return <WorkflowsGate><SessionsList fixedShow="runs" /></WorkflowsGate>;
 }
 import { WorkspaceRouteEntry } from '@/components/appShell/workspace/createWorkspaceRouteEntry';
-export { WorkflowsHistoryRoute as WorkspaceRouteBody };
-export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkflowsHistoryRoute} />; }
+export { WorkflowsRunsRoute as WorkspaceRouteBody };
+export default function RouteEntry() { return <WorkspaceRouteEntry Body={WorkflowsRunsRoute} />; }

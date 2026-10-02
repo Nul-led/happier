@@ -625,7 +625,7 @@ export default memo(function PublicShareViewerScreen() {
         return (
             <View style={[styles.center, { backgroundColor: theme.colors.background.canvas }]}>
                 <Icon name="warning-circle" size={64} color={theme.colors.state.danger.foreground} />
-                <ItemList>
+                <ItemList presentation="grouped">
                     <ItemGroup>
                         <Item
                             title={errorKind === 'transcript_unavailable'
@@ -643,7 +643,7 @@ export default memo(function PublicShareViewerScreen() {
     if (consentInfo?.requiresConsent) {
         const ownerName = getOwnerDisplayName(consentInfo.owner);
         return (
-            <ItemList style={{ paddingTop: 0 }}>
+            <ItemList presentation="grouped" style={{ paddingTop: 0 }}>
                 <ItemGroup title={t('session.sharing.consentRequired')}>
                     <Item
                         title={t('session.sharing.sharedBy', { name: ownerName })}

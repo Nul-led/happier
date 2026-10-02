@@ -135,6 +135,7 @@ function controller(items: readonly SessionCompanionItemRefV1[]): SessionCompani
         addItem: () => null,
         removeItem,
         moveItem,
+        setItemFrameStyle: () => null,
         openFullSurface: () => {},
         applyLocalInverse,
         realmKey: 'account-a:home-1:session-1',

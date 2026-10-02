@@ -1,3 +1,4 @@
+import { authoringMemoryDefaults } from '@/sync/store/domains/authoringMemory';
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -56,8 +57,8 @@ installPickerCommonModuleMocks({
                 // Boundary fixture: this picker only needs the selected machine homeDir.
                 useAllMachines: (() => [{ id: 'm1', metadata: { homeDir: '/home' } }]) as any,
                 useAllSessionListRenderables: () => [],
+                useAuthoringMemoryField: (key) => ({ ...authoringMemoryDefaults, recentMachinePaths: [] })[key],
                 useSetting: createUseSettingMock({ fallback: (key) => {
-                    if (key === 'recentMachinePaths') return [];
                     if (key === 'usePathPickerSearch') return false;
                     return null;
                 } }),

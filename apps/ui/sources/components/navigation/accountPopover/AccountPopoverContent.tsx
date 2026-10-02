@@ -223,6 +223,18 @@ function RootStep(props: React.ComponentProps<typeof AccountPopoverContent> & Re
                 separatorAbove
                 actions={[
                     {
+                        id: 'add-device',
+                        testID: 'connection-popover-add-device',
+                        label: t('accountPopover.addDevice'),
+                        icon: <Icon name="device-mobile" size={16} color={secondaryIconColor} />,
+                        onPress: async () => {
+                            const targetProfileId = props.displayServerId;
+                            props.onClose();
+                            const { showHomePairingModal } = await import('@/components/auth/pairing/HomePairingModal');
+                            showHomePairingModal('phone', targetProfileId);
+                        },
+                    },
+                    {
                         id: 'manage-homes',
                         testID: 'connection-popover-manage-homes',
                         label: t('accountPopover.manageHomes'),

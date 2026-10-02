@@ -225,7 +225,6 @@ describe('FeaturesSettingsScreen gating', () => {
         useLocalSettingMutableMock.mockImplementation((key: string) => {
             if (key === 'commandPaletteEnabled') return createNoopMutable(false);
             if (key === 'devModeEnabled') return createNoopMutable(false);
-            if (key === 'embeddedTerminalDockLocation') return createNoopMutable('sidebar');
             if (key === 'terminalRendererPreference') return createNoopMutable('native');
             return createNoopMutable(false);
         });
@@ -233,8 +232,8 @@ describe('FeaturesSettingsScreen gating', () => {
         const { default: FeaturesSettingsScreen } = await import('@/app/(app)/settings/features');
 
         const screen = await renderSettingsView(React.createElement(FeaturesSettingsScreen));
-        const location = screen.findAll((node) => node.props?.title === 'terminalEmbedded.settings.locationTitle' && Array.isArray(node.props?.options))[0];
-        expect(location?.props.value).toBe('sidebar');
+        // The terminal lives in the bottom pane (terminal lab B1); there is no location to choose.
+        expect(screen.findAll((node) => node.props?.title === 'terminalEmbedded.settings.locationTitle')).toHaveLength(0);
         const renderer = screen.findAll((node) => node.props?.title === 'terminalEmbedded.settings.rendererTitle' && Array.isArray(node.props?.options))[0];
         expect(renderer?.props.value).toBe('native');
     });

@@ -19,4 +19,11 @@ describe('resolveDesktopWindowTitlebarMouseAction (title strip tabs)', () => {
         expect(resolveDesktopWindowTitlebarMouseAction({ button: 0, buttons: 1, detail: 1, target: tablist })).toBe('drag');
         expect(resolveDesktopWindowTitlebarMouseAction({ button: 0, buttons: 1, detail: 2, target: strip })).toBe('toggleMaximize');
     });
+
+    it('honors a titlebar gesture already consumed by another chrome region or a child control', () => {
+        const strip = document.createElement('div');
+        expect(resolveDesktopWindowTitlebarMouseAction({
+            button: 0, buttons: 1, detail: 2, target: strip, defaultPrevented: true,
+        })).toBe('none');
+    });
 });

@@ -3,7 +3,7 @@ import { act } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
-import { createTextModuleMock } from '@/dev/testkit/mocks/text';
+import { WorkspaceRepositoryTreeList } from './WorkspaceRepositoryTreeList';
 import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
 
 vi.mock('react-native', async () => {
@@ -16,12 +16,15 @@ vi.mock('react-native', async () => {
     });
 });
 
-vi.mock('@expo/vector-icons', () => ({
-    Ionicons: 'Ionicons',
-}));
+vi.mock('@expo/vector-icons', async () => {
+    const { createExpoVectorIconsMock } = await import('@/dev/testkit/mocks/icons');
+    return createExpoVectorIconsMock();
+});
 
-const textMock = createTextModuleMock({ translate: (key: string) => key });
-vi.mock('@/text', () => textMock);
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock({ translate: (key: string) => key });
+});
 
 vi.mock('@/components/ui/media/FileIcon', () => ({
     FileIcon: 'FileIcon',
@@ -29,13 +32,6 @@ vi.mock('@/components/ui/media/FileIcon', () => ({
 
 vi.mock('@/components/ui/text/Text', () => ({
     Text: 'Text',
-}));
-
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
 }));
 
 const badgeIndexState = vi.hoisted(() => ({ current: null as any }));
@@ -137,7 +133,6 @@ describe('WorkspaceRepositoryTreeList', () => {
     it('names a failed folder load and preserves its retry and diagnostic cause', async () => {
         repositoryTreeBrowserState.rootError = 'RPC method not available';
         repositoryTreeBrowserState.nodes = [];
-        const { WorkspaceRepositoryTreeList } = await import('./WorkspaceRepositoryTreeList');
         const screen = await renderScreen(
             <WorkspaceRepositoryTreeList
                 theme={theme}
@@ -156,7 +151,6 @@ describe('WorkspaceRepositoryTreeList', () => {
     });
 
     it('assigns one repository-tree row testID per shared workspace tree row on web', async () => {
-        const { WorkspaceRepositoryTreeList } = await import('./WorkspaceRepositoryTreeList');
         const screen = await renderScreen(
             <WorkspaceRepositoryTreeList
                 theme={theme}
@@ -180,7 +174,6 @@ describe('WorkspaceRepositoryTreeList', () => {
     it('reports root loading and can suppress the inline loading header while rows stay mounted', async () => {
         repositoryTreeBrowserState.rootLoading = true;
         const onRootLoadingChange = vi.fn();
-        const { WorkspaceRepositoryTreeList } = await import('./WorkspaceRepositoryTreeList');
 
         const screen = await renderScreen(
             <WorkspaceRepositoryTreeList
@@ -201,7 +194,6 @@ describe('WorkspaceRepositoryTreeList', () => {
     });
 
     it('keeps file browser row plumbing stable when equivalent row actions change identity', async () => {
-        const { WorkspaceRepositoryTreeList } = await import('./WorkspaceRepositoryTreeList');
 
         function Wrapper() {
             const [version, setVersion] = React.useState(0);
@@ -241,7 +233,6 @@ describe('WorkspaceRepositoryTreeList', () => {
 
     // Moved from the retired session-only RepositoryTreeList: the live tree owns drop targets and pinning.
     const renderWithDrop = async (props: Record<string, unknown> = {}) => {
-        const { WorkspaceRepositoryTreeList } = await import('./WorkspaceRepositoryTreeList');
         return renderScreen(
             <WorkspaceRepositoryTreeList
                 theme={theme}
@@ -292,7 +283,6 @@ describe('WorkspaceRepositoryTreeList', () => {
 
     it('redraws mounted rows when the change badges arrive after the first render', async () => {
         badgeIndexState.current = null;
-        const { WorkspaceRepositoryTreeList } = await import('./WorkspaceRepositoryTreeList');
         function Wrapper() {
             const [, bump] = React.useState(0);
             return (

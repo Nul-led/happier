@@ -584,10 +584,6 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
         });
     }, [openDetailsSurface, pane]);
 
-    const openNewTerminalTab = React.useCallback(() => {
-        openDetailsRoute({ kind: 'terminal' }, { intent: 'pinned' });
-    }, [openDetailsRoute]);
-
     const safeAreaTopMode = 'internal';
     const headerSafeAreaTopMode = 'internal';
     const renderSessionChrome = React.useCallback((contentOverride?: React.ReactNode) => (
@@ -764,7 +760,6 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
                     <SessionTerminalSurface
                         sessionId={props.sessionId}
                         scopeId={props.scopeId}
-                        onOpenNewTerminalTab={openNewTerminalTab}
                     />
                 </React.Suspense>
             </SessionCockpitFullscreenSurface>,

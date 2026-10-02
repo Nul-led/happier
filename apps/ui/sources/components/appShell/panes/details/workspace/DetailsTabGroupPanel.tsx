@@ -97,6 +97,9 @@ const DetailsTabSurface = React.memo((props: Readonly<{
 });
 
 export type DetailsTabGroupPanelProps = Readonly<{
+    sessionId?: string;
+    serverId?: string | null;
+    resolveTabHref?: (tab: DetailsTabState) => string | null;
     pane: AppPaneScopeApi;
     group: DetailsWorkspaceGroupView;
     paddingTop?: number;
@@ -169,10 +172,13 @@ export const DetailsTabGroupPanel = React.memo((props: DetailsTabGroupPanelProps
                 {props.renderHeaderLeadingActions ? props.renderHeaderLeadingActions() : null}
                 {!forceEmptyState ? (
                     <DetailsTabStrip
+                        sessionId={props.sessionId}
+                        serverId={props.serverId}
                         pane={props.pane}
                         group={props.group}
                         resolveTabIconName={props.resolveTabIconName}
                         resolveTabPresentation={props.resolveTabPresentation}
+                        resolveTabHref={props.resolveTabHref}
                         unsavedTabKeys={unsavedKeys}
                         testIds={props.testIds}
                     />

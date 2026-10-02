@@ -37,7 +37,6 @@ export const WorkspaceRouteBody = React.memo(function FeaturesSettingsScreen() {
     const [featureToggles, setFeatureToggles] = useSettingMutable('featureToggles');
     const [useProfiles, setUseProfiles] = useSettingMutable('useProfiles');
     const [commandPaletteEnabled, setCommandPaletteEnabled] = useSettingMutable('commandPaletteEnabled');
-    const [embeddedTerminalDockLocation, setEmbeddedTerminalDockLocation] = useLocalSettingMutable('embeddedTerminalDockLocation');
     const [terminalRendererPreference, setTerminalRendererPreference] = useLocalSettingMutable('terminalRendererPreference');
     const [useMachinePickerSearch, setUseMachinePickerSearch] = useSettingMutable('useMachinePickerSearch');
     const [usePathPickerSearch, setUsePathPickerSearch] = useSettingMutable('usePathPickerSearch');
@@ -267,7 +266,7 @@ export const WorkspaceRouteBody = React.memo(function FeaturesSettingsScreen() {
     };
 
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settings.featuresSubtitle')} />
             <ItemGroup
                 title={t(FEATURES_SETTINGS.sections.general.titleKey)}
@@ -303,25 +302,7 @@ export const WorkspaceRouteBody = React.memo(function FeaturesSettingsScreen() {
                     {standardToggleDefinitions.flatMap((d) => {
                         const rows = [renderToggleRow(d)];
                         if (d.featureId !== 'terminal.embeddedPty' || !embeddedTerminalDockSettingVisible) return rows;
-                        // Where the terminal opens and how it draws belong right under the terminal itself.
-                        rows.push(
-                            <SettingAnchor key="terminalLocation" setting={FEATURES_SETTINGS.settings.terminalLocation}>
-                                <SegmentedChoiceItem<'sidebar' | 'details' | 'bottom'>
-                                    testID="settings-embedded-terminal-dock-location"
-                                    testIDPrefix="settings-embedded-terminal-dock-location"
-                                    title={t(FEATURES_SETTINGS.settings.terminalLocation.titleKey)}
-                                    options={[
-                                        { id: 'sidebar', label: t('terminalEmbedded.location.sidebar') },
-                                        { id: 'details', label: t('terminalEmbedded.location.details') },
-                                        { id: 'bottom', label: t('terminalEmbedded.location.bottom') },
-                                    ]}
-                                    value={embeddedTerminalDockLocation === 'details' || embeddedTerminalDockLocation === 'bottom'
-                                        ? embeddedTerminalDockLocation
-                                        : 'sidebar'}
-                                    onChange={setEmbeddedTerminalDockLocation}
-                                />
-                            </SettingAnchor>,
-                        );
+                        // How the terminal draws belongs right under the terminal itself.
                         if (settingRendersOnHost(FEATURES_SETTINGS.settings.terminalRenderer)) {
                             rows.push(
                                 <SettingAnchor key="terminalRenderer" setting={FEATURES_SETTINGS.settings.terminalRenderer}>

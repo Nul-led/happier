@@ -27,6 +27,7 @@ import {
     useSettingMutable,
     useWorkspaceScmCommitSelectionPatches,
     useWorkspaceScmCommitSelectionPaths,
+    useWorkspaceScmInFlightOperation,
 } from '@/sync/domains/state/storage';
 import { buildCommitSelectionPathHints } from '@/scm/operations/commitSelectionHints';
 import { evaluateScmOperationPreflight } from '@/scm/core/operationPolicy';
@@ -43,6 +44,7 @@ import { applyWorkspaceFileDiscardAction } from './applyWorkspaceFileDiscardActi
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { executeWorkspaceScmCommit } from './executeWorkspaceScmCommit';
 import { executeWorkspaceScmRemoteOperation } from './executeWorkspaceScmRemoteOperation';
+import { WorkspaceScmOutcomeLine } from './WorkspaceScmOutcomeLine';
 import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback';
 import { CopiedPill } from '@/components/ui/copy/CopiedPill';
 import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
@@ -64,6 +66,8 @@ export type WorkspaceSourceControlViewProps = Readonly<{
     listHeader?: React.ReactNode;
     listFooter?: React.ReactElement | null;
     scopeAccessory?: React.ReactNode;
+    /** The full Git pane mounts the same outcome above both Changes and History. */
+    hideOutcomeLine?: boolean;
 }>;
 
 const WORKSPACE_CHANGED_FILES_INITIAL_RENDER_COUNT = 12;
@@ -82,13 +86,15 @@ export const WorkspaceSourceControlView = React.memo((props: WorkspaceSourceCont
     const [searchQuery, setSearchQuery] = React.useState('');
     const [requestedChangedFilesViewMode, setChangedFilesViewMode] = React.useState<ChangedFilesViewMode>('repository');
     const [commitDraftMessage, setCommitDraftMessage] = React.useState('');
-    const [scmOperationBusy, setScmOperationBusy] = React.useState(false);
+    const [localScmOperationBusy, setScmOperationBusy] = React.useState(false);
     const [scmOperationStatus, setScmOperationStatus] = React.useState<string | null>(null);
     const scope = React.useMemo(() => ({
         serverId: props.serverId,
         machineId: props.machineId,
         rootPath: props.rootPath,
     }), [props.machineId, props.rootPath, props.serverId]);
+    const inFlightOperation = useWorkspaceScmInFlightOperation(scope);
+    const scmOperationBusy = localScmOperationBusy || Boolean(inFlightOperation);
     const activeReviewFileKey = activeReviewFileKeyForWorkspace(scope);
     const activeReviewPath = useActiveReviewFilePath(activeReviewFileKey);
     const listRef = React.useRef<VirtualizedListRef | null>(null);
@@ -344,6 +350,15 @@ export const WorkspaceSourceControlView = React.memo((props: WorkspaceSourceCont
 
     return (
         <View style={{ flex: 1, minHeight: 0 }}>
+            {!props.hideOutcomeLine ? (
+                <WorkspaceScmOutcomeLine
+                    scope={scope}
+                    snapshot={snapshot}
+                    selectedCount={repositorySelectedCount}
+                    writeEnabled={scmWriteEnabled}
+                    onRefresh={refresh}
+                />
+            ) : null}
             <VirtualizedList
                 ref={listRef}
                 data={filteredChangedFiles}

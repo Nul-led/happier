@@ -1,311 +1,43 @@
-import React from 'react';
-import { View, Pressable } from 'react-native';
-import { Text, TextInput } from '@/components/ui/text/Text';
-import { useRouter, Stack, useLocalSearchParams } from 'expo-router';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { t } from '@/text';
-import { layout } from '@/components/ui/layout/layout';
-import { Modal } from '@/modal';
-import { sync } from '@/sync/sync';
+import * as React from 'react';
+import { Redirect, useLocalSearchParams, type Href } from 'expo-router';
+
+import { opensInArtifactView, resolveArtifactOpenRoute } from '@/components/artifacts/artifactBrowserModel';
+import { ArtifactEditor } from '@/components/artifacts/ArtifactEditor';
+import { useArtifactBody } from '@/components/artifacts/useArtifactBody';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import type { DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
 import { useArtifact } from '@/sync/domains/state/storage';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
-import { KeyboardAwareScrollView } from '@/components/ui/keyboardAvoidance';
+import { t } from '@/text';
 
-const stylesheet = StyleSheet.create((theme) => ({
-    container: {
-        flex: 1,
-        backgroundColor: theme.colors.background.canvas,
-    },
-    scrollView: {
-        flex: 1,
-    },
-    contentContainer: {
-        padding: 16,
-        paddingBottom: 100,
-    },
-    loadingContainer: {
-        flex: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    errorContainer: {
-        flex: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
-        paddingHorizontal: 32,
-    },
-    errorText: {
-        fontSize: 16,
-        color: theme.colors.text.primary,
-        textAlign: 'center',
-    },
-    inputGroup: {
-        marginBottom: 24,
-    },
-    label: {
-        fontSize: 13,
-        fontWeight: '600',
-        color: theme.colors.text.secondary,
-        marginBottom: 8,
-        textTransform: 'uppercase',
-        letterSpacing: 0.5,
-    },
-    input: {
-        backgroundColor: theme.colors.surface.base,
-        borderRadius: 12,
-        paddingHorizontal: 16,
-        paddingVertical: 14,
-        fontSize: 16,
-        color: theme.colors.text.primary,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-    },
-    textArea: {
-        minHeight: 200,
-        textAlignVertical: 'top',
-        paddingTop: 14,
-        lineHeight: 22,
-    },
-    headerButton: {
-        paddingHorizontal: 16,
-        paddingVertical: 8,
-    },
-    headerButtonText: {
-        fontSize: 17,
-        fontWeight: '600',
-        color: theme.colors.chrome.header.foreground,
-    },
-    headerButtonDisabled: {
-        opacity: 0.5,
-    },
-}));
-
-export default function EditArtifactScreen() {
-    const { theme } = useUnistyles();
-    const styles = stylesheet;
-    const router = useRouter();
+export default function EditArtifactScreen(): React.ReactElement {
     const { id } = useLocalSearchParams<{ id: string }>();
     const artifact = useArtifact(id);
-    
-    const [title, setTitle] = React.useState('');
-    const [body, setBody] = React.useState('');
-    const [isSaving, setIsSaving] = React.useState(false);
-    const [isLoading, setIsLoading] = React.useState(true);
-    const [hasChanges, setHasChanges] = React.useState(false);
-    
-    // Load full artifact with body if needed
-    React.useEffect(() => {
-        if (!artifact) {
-            setIsLoading(false);
-            return;
-        }
+    return <EditArtifactContent id={id} artifact={artifact} />;
+}
 
-        if (artifact.isDecrypted === false) {
-            setIsLoading(false);
-            return;
-        }
-        
-        let cancelled = false;
-        
-        (async () => {
-            try {
-                // If body is not loaded, fetch it
-                if (artifact.body === undefined) {
-                    const fullArtifact = await sync.fetchArtifactWithBody(id);
-                    if (!cancelled && fullArtifact) {
-                        setTitle(fullArtifact.title || '');
-                        setBody(fullArtifact.body || '');
-                    }
-                } else {
-                    setTitle(artifact.title || '');
-                    setBody(artifact.body || '');
-                }
-            } catch (err) {
-                console.error('Failed to load artifact for editing:', err);
-            } finally {
-                if (!cancelled) {
-                    setIsLoading(false);
-                }
-            }
-        })();
-        
-        return () => {
-            cancelled = true;
-        };
-    }, [id, artifact]);
-    
-    // Track changes
-    React.useEffect(() => {
-        if (artifact) {
-            const titleChanged = (title || null) !== artifact.title;
-            const bodyChanged = (body || null) !== artifact.body;
-            setHasChanges(titleChanged || bodyChanged);
-        }
-    }, [title, body, artifact]);
-    
-    const handleSave = React.useCallback(async () => {
-        if (isSaving || !hasChanges) return;
-        
-        // At least one field should have content
-        if (!title.trim() && !body.trim()) {
-            await Modal.alert(
-                t('common.error'),
-                t('artifacts.emptyFieldsError')
-            );
-            return;
-        }
-        
-        try {
-            setIsSaving(true);
-            
-            // Update the artifact
-            await sync.updateArtifact(
-                id,
-                title.trim() || null,
-                body.trim() || null
-            );
-            
-            // Navigate back
-            router.back();
-        } catch (err) {
-            console.error('Failed to update artifact:', err);
-            await Modal.alert(
-                t('common.error'),
-                t('artifacts.updateError')
-            );
-            setIsSaving(false);
-        }
-    }, [id, title, body, hasChanges, isSaving, router]);
-    
-    const HeaderRight = React.useCallback(() => (
-        <Pressable
-            style={[styles.headerButton, (!hasChanges || isSaving) && styles.headerButtonDisabled]}
-            onPress={handleSave}
-            disabled={!hasChanges || isSaving}
-        >
-            {isSaving ? (
-                <ActivitySpinner size="small" color={theme.colors.chrome.header.foreground} />
-            ) : (
-                <Text style={styles.headerButtonText}>
-                    {t('common.save')}
-                </Text>
-            )}
-        </Pressable>
-    ), [handleSave, hasChanges, isSaving, styles]);
-    
-    const loadingTitle = t('artifacts.loading');
-    const errorTitle = t('common.error');
-    const headerTitle = t('artifacts.edit');
+/** A kind with its own editor (a board, a workflow, a prompt…) edits there; a document edits here. */
+export function EditArtifactContent(props: Readonly<{ id: string; artifact: DecryptedArtifact | null }>): React.ReactElement {
+    if (props.artifact && !opensInArtifactView(props.artifact)) return <Redirect href={resolveArtifactOpenRoute(props.artifact) as Href} />;
+    return <EditDocument id={props.id} artifact={props.artifact} />;
+}
 
-    const loadingScreenOptions = React.useMemo(() => {
-        return {
-            headerShown: true,
-            headerTitle: loadingTitle,
-        } as const;
-    }, [loadingTitle]);
-
-    const errorScreenOptions = React.useMemo(() => {
-        return {
-            headerShown: true,
-            headerTitle: errorTitle,
-        } as const;
-    }, [errorTitle]);
-
-    const screenOptions = React.useMemo(() => {
-        return {
-            headerShown: true,
-            headerTitle,
-            headerRight: HeaderRight,
-        } as const;
-    }, [HeaderRight, headerTitle]);
-    
-    if (isLoading) {
-        return (
-            <View style={styles.container}>
-                <Stack.Screen 
-                    options={loadingScreenOptions}
-                />
-                <View style={styles.loadingContainer}>
-                    <ActivitySpinner size="large" />
-                </View>
-            </View>
-        );
+function EditDocument(props: Readonly<{ id: string; artifact: DecryptedArtifact | null }>): React.ReactElement {
+    const body = useArtifactBody(props.id, props.artifact);
+    if (props.artifact === null || props.artifact.isDecrypted === false) {
+        return <SurfaceStateCard testID="artifact-editor:unavailable" kind="empty" title={t('artifacts.notFound')} />;
     }
-    
-    if (!artifact) {
+    if (body.state === 'failed') {
         return (
-            <View style={styles.container}>
-                <Stack.Screen 
-                    options={errorScreenOptions}
-                />
-                <View style={styles.errorContainer}>
-                    <Text style={styles.errorText}>
-                        {t('artifacts.notFound')}
-                    </Text>
-                </View>
-            </View>
-        );
-    }
-
-    if (artifact.isDecrypted === false) {
-        const lockedMessage = artifact.availability.reason === 'encryption_material_unavailable'
-            ? t('settingsAccount.secretKeyMissing')
-            : t('artifacts.error');
-
-        return (
-            <View style={styles.container}>
-                <Stack.Screen options={errorScreenOptions} />
-                <View style={styles.errorContainer}>
-                    <Text style={styles.errorText}>{lockedMessage}</Text>
-                </View>
-            </View>
-        );
-    }
-    
-    return (
-        <>
-            <Stack.Screen 
-                options={screenOptions}
+            <SurfaceStateCard
+                testID="artifact-editor:failed"
+                kind="error"
+                title={t('artifacts.error')}
+                action={{ label: t('common.retry'), onPress: body.retry }}
+                accessibilitySemantics="alert"
             />
-            <View style={styles.container}>
-                    <KeyboardAwareScrollView
-                        style={styles.scrollView}
-                        contentContainerStyle={[
-                            styles.contentContainer,
-                            { maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' }
-                        ]}
-                        keyboardShouldPersistTaps="handled"
-                    >
-                        <View style={styles.inputGroup}>
-                            <Text style={styles.label}>{t('artifacts.titleLabel')}</Text>
-                            <TextInput
-                                style={styles.input}
-                                value={title}
-                                onChangeText={setTitle}
-                                placeholder={t('artifacts.titlePlaceholder')}
-                                placeholderTextColor={theme.colors.input.placeholder}
-                                editable={!isSaving}
-                                returnKeyType="next"
-                                autoCapitalize="sentences"
-                            />
-                        </View>
-                        
-                        <View style={styles.inputGroup}>
-                            <Text style={styles.label}>{t('artifacts.bodyLabel')}</Text>
-                            <TextInput
-                                style={[styles.input, styles.textArea]}
-                                value={body}
-                                onChangeText={setBody}
-                                placeholder={t('artifacts.bodyPlaceholder')}
-                                placeholderTextColor={theme.colors.input.placeholder}
-                                editable={!isSaving}
-                                multiline
-                                numberOfLines={10}
-                                autoCapitalize="sentences"
-                            />
-                        </View>
-                    </KeyboardAwareScrollView>
-            </View>
-        </>
-    );
+        );
+    }
+    // The editor keeps its fields from the first body it sees, so it waits for the body rather than flashing empty.
+    if (body.state === 'loading') return <SurfaceStateCard testID="artifact-editor:loading" kind="loading" title={t('common.loading')} />;
+    return <ArtifactEditor artifact={props.artifact} mode="edit" />;
 }

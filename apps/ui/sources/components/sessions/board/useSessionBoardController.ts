@@ -158,6 +158,7 @@ export type SessionBoardRetainedMutation = Readonly<{
     /** A completed stale→fresh or refreshing→settled repository cycle was observed. */
     refreshObserved: boolean;
     ready: boolean;
+    onApplied?: () => void;
 }>;
 
 export type SessionBoardNoteDraft = Readonly<{
@@ -779,6 +780,7 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
     const submit = React.useCallback(async (
         command: SessionBoardCommand,
         call: (port: SessionBoardActionsPort) => Promise<SessionBoardActionOutcome<SessionBoardMutationResult>>,
+        onApplied?: () => void,
     ): Promise<SessionBoardCommandOutcome | null> => {
         const port = stable.current.actions;
         if (!port) return null;
@@ -820,6 +822,7 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                     baselineSnapshot,
                     refreshObserved: false,
                     ready: false,
+                    ...(onApplied ? { onApplied } : {}),
                 });
                 return true;
             };
@@ -844,6 +847,7 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                         const applied = { kind: 'applied' } as const;
                         present(applied, command);
                         stable.current.binding.refresh?.();
+                        onApplied?.();
                     },
                     onFailed: (code, failure) => {
                         approvalPendingRef.current = false;
@@ -857,6 +861,7 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                                 baselineSnapshot,
                                 refreshObserved: false,
                                 ready: false,
+                                ...(onApplied ? { onApplied } : {}),
                             } satisfies SessionBoardRetainedMutation;
                             setRetainedMutation(retained);
                             requestMutationRecoveryRefresh(retained);
@@ -896,6 +901,9 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
                     const next = retainedMutationRef.current;
                     if (next) requestMutationRecoveryRefresh(next);
                 }
+            } else if (outcome.kind === 'applied') {
+                setRetainedMutation(null);
+                onApplied?.();
             } else {
                 setRetainedMutation(null);
             }
@@ -922,6 +930,7 @@ export function useSessionBoardController(input: SessionBoardControllerInput): S
             setRetainedMutation(null);
             const applied = { kind: 'applied' } as const;
             present(applied, retained.command);
+            retained.onApplied?.();
             return;
         }
         if (!retained.ready) setRetainedMutation({ ...retained, ready: true, refreshObserved: true });

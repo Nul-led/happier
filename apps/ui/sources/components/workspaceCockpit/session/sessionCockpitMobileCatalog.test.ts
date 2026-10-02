@@ -82,7 +82,7 @@ describe('sessionCockpitMobileCatalog', () => {
             .toContain('companion');
     });
 
-    it('keeps a plugin in host-owned discovery and reveals an explicitly pinned plugin in the inline cap', () => {
+    it('keeps a plugin in host-owned discovery and puts an explicitly pinned plugin on the bar', () => {
         const plugin = createMobilePluginPlacement({
             pluginId: 'acme.review',
             destinationId: 'session-review',
@@ -110,32 +110,48 @@ describe('sessionCockpitMobileCatalog', () => {
             'terminal',
         ]);
 
+        // At rest the bar is Chat plus the host's default tools; everything else waits in More.
         expect(resolveSessionCockpitMobileTabVisibility({
             catalog,
-            pinnedSurfaceIds: [],
+            barSurfaceIds: null,
+            slotCount: 7,
+            alwaysSwipe: false,
         })).toMatchObject({
-            visible: [
-                { id: 'chat' },
-                { id: 'browse' },
-                { id: 'git' },
-                { id: 'tabs' },
-            ],
+            mode: 'fit',
+            visible: [{ id: 'chat' }, { id: 'browse' }, { id: 'git' }, { id: 'companion' }, { id: 'terminal' }],
+            held: [],
             overflow: expect.arrayContaining([
                 expect.objectContaining({ id: 'plugin:acme.review:session-review' }),
+                expect.objectContaining({ id: 'tabs' }),
             ]),
         });
 
+        // A pin puts the plugin on the bar, after the tools already there.
         expect(resolveSessionCockpitMobileTabVisibility({
             catalog,
-            pinnedSurfaceIds: ['plugin:acme.review:session-review'],
+            barSurfaceIds: ['browse', 'git', 'plugin:acme.review:session-review'],
+            slotCount: 7,
+            alwaysSwipe: false,
         })).toMatchObject({
-            visible: [
-                { id: 'chat' },
-                { id: 'plugin:acme.review:session-review' },
-                { id: 'browse' },
-                { id: 'git' },
-            ],
+            mode: 'fit',
+            visible: [{ id: 'chat' }, { id: 'browse' }, { id: 'git' }, { id: 'plugin:acme.review:session-review' }],
         });
+    });
+
+    it('lets the bar width be the cap: more pins than fit scroll, or wait in More while Always swipe is on', () => {
+        const catalog = resolveSessionCockpitMobileCatalog({ terminalTabAvailable: true, boardFeatureEnabled: true });
+        const pins = ['browse', 'git', 'companion', 'terminal', 'tabs', 'navigation', 'board'];
+        // 390 pt holds 7 slots: Chat, More and five tools. Seven pinned tools do not fit.
+        const scrolling = resolveSessionCockpitMobileTabVisibility({ catalog, barSurfaceIds: pins, slotCount: 7, alwaysSwipe: false });
+        expect(scrolling.mode).toBe('scroll');
+        expect(scrolling.visible.map((entry) => entry.id)).toEqual(['chat', ...pins]);
+        expect(scrolling.held).toEqual([]);
+
+        const swiping = resolveSessionCockpitMobileTabVisibility({ catalog, barSurfaceIds: pins, slotCount: 7, alwaysSwipe: true });
+        expect(swiping.mode).toBe('more');
+        expect(swiping.visible.map((entry) => entry.id)).toEqual(['chat', 'browse', 'git', 'companion', 'terminal', 'tabs']);
+        expect(swiping.held.map((entry) => entry.id)).toEqual(['navigation', 'board']);
+        expect(swiping.overflow.map((entry) => entry.id)).not.toContain('navigation');
     });
 
     it('never turns unavailable or unknown pinned values into a visible catalog entry', () => {
@@ -145,13 +161,13 @@ describe('sessionCockpitMobileCatalog', () => {
 
         expect(resolveSessionCockpitMobileTabVisibility({
             catalog,
-            pinnedSurfaceIds: ['plugin:removed:panel', 'not-a-surface'],
+            barSurfaceIds: ['plugin:removed:panel', 'not-a-surface', 'git'],
+            slotCount: 7,
+            alwaysSwipe: false,
         })).toMatchObject({
             visible: [
                 { id: 'chat' },
-                { id: 'browse' },
                 { id: 'git' },
-                { id: 'tabs' },
             ],
         });
     });

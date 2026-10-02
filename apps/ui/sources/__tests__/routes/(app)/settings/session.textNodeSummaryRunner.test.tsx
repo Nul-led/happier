@@ -93,10 +93,7 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => await createSt
                 sessionSettingsEntryState.settingsState[key] = next;
             },
         ] as any,
-        useSetting: createUseSettingMock({ fallback: (key) => {
-            if (key === 'recentMachinePaths') return [];
-            return null;
-        } }),
+        useSetting: createUseSettingMock({ fallback: () => null }),
     },
 }));
 

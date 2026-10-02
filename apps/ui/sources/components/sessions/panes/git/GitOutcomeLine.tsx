@@ -41,6 +41,8 @@ export type GitOutcomeRecovery = Readonly<{
     pullWith?: (policy: Readonly<{ dirtyPolicy?: 'autostash' | 'allow_git'; reconcile?: 'rebase' | 'merge' }>) => void;
     /** The branch is a feature branch (not the repository's default): rebase is the highlighted reconcile. */
     preferRebase?: boolean;
+    /** Undo exactly the commit displayed by this result; the daemon rejects a changed HEAD. */
+    undoCommit?: (expectedHeadOid: string) => void | Promise<unknown>;
 }>;
 
 /** A success line stays this long, then fades (Git lab round 3: "the line fades after 6 s or on the next action"). */
@@ -115,7 +117,7 @@ export const GitOutcomeLine = React.memo(function GitOutcomeLine(props: Readonly
     if (operation.phase === 'succeeded') {
         return (
             <OutcomeFrame>
-                <SuccessLine operation={operation} facts={factsAtStart} />
+                <SuccessLine operation={operation} facts={factsAtStart} undoCommit={props.recovery.undoCommit} />
             </OutcomeFrame>
         );
     }
@@ -139,9 +141,11 @@ function OutcomeFrame(props: Readonly<{ children: React.ReactNode }>) {
     return <View style={{ paddingHorizontal: 12, paddingTop: 4, paddingBottom: 6 }}>{props.children}</View>;
 }
 
-function SuccessLine(props: Readonly<{ operation: Extract<ScmWriteTerminalOperation, { phase: 'succeeded' | 'effect_applied_with_warning' }>; facts: GitOutcomeFacts | null }>) {
+function SuccessLine(props: Readonly<{ operation: Extract<ScmWriteTerminalOperation, { phase: 'succeeded' | 'effect_applied_with_warning' }>; facts: GitOutcomeFacts | null; undoCommit?: GitOutcomeRecovery['undoCommit'] }>) {
     const { theme } = useUnistyles();
     const copy = successCopy(props.operation, props.facts);
+    const sha = props.operation.action === 'commit' && props.operation.phase === 'succeeded' ? props.operation.result?.sha : undefined;
+    const undoCommit = props.undoCommit;
     return (
         <SurfaceStateCard
             testID="session-git-outcome-succeeded"
@@ -149,6 +153,7 @@ function SuccessLine(props: Readonly<{ operation: Extract<ScmWriteTerminalOperat
             kind="success"
             title={copy.title}
             reason={copy.detail ?? undefined}
+            action={sha && undoCommit ? { label: t('sessionGitPane.flow.undo.action'), testID: 'session-git-outcome-undo', onPress: () => undoCommit(sha) } : undefined}
             icon={<Icon name="check-circle" size={16} color={theme.colors.state.success.foreground} />}
             accessibilitySemantics="status"
         />
@@ -288,6 +293,7 @@ const RETRYABLE: ReadonlySet<ScmProjectOperationKind> = new Set(['push', 'pull',
 
 function runningTitle(action: ScmProjectOperationKind): string {
     switch (action) {
+        case 'commit_undo': return t('sessionGitPane.flow.undo.running');
         case 'branch_switch': return t('sessionGitPane.flow.running.branchSwitch');
         case 'branch_create': return t('sessionGitPane.flow.running.branchCreate');
         case 'stash_create': return t('sessionGitPane.flow.running.stashCreate');
@@ -299,6 +305,7 @@ function runningTitle(action: ScmProjectOperationKind): string {
 
 function failedTitle(action: ScmProjectOperationKind): string {
     switch (action) {
+        case 'commit_undo': return t('sessionGitPane.flow.undo.failed');
         case 'commit': return t('sessionGitPane.flow.failed.commitTitle');
         case 'push': return t('sessionGitPane.flow.failed.pushTitle');
         case 'pull': return t('sessionGitPane.flow.failed.pullTitle');
@@ -314,6 +321,7 @@ function successCopy(
 ): { title: string; detail: string | null } {
     const target = facts?.upstream ?? t('sessionGitPane.flow.failed.origin');
     switch (operation.action) {
+        case 'commit_undo': return { title: t('sessionGitPane.flow.undo.done'), detail: t('sessionGitPane.flow.undo.staged') };
         case 'commit': {
             const count = facts?.selectedCount ?? 0;
             return {

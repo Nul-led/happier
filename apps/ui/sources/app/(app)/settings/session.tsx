@@ -21,6 +21,7 @@ import { getPreferredLanguage, t } from '@/text';
 import { useLocalSettingMutable, useSettingMutable } from '@/sync/domains/state/storage';
 import { useDeviceType } from '@/utils/platform/responsive';
 import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
+import { SessionGestureSettingsRows } from '@/components/settings/session/SessionGestureSettingsRows';
 import {
     resolveSessionListViewOptionSelectionDelta,
     resolveSessionListViewOptionsPresentation,
@@ -339,12 +340,12 @@ export const WorkspaceRouteBody = React.memo(function SessionSettingsScreen() {
     }, [setSessionListNarrowWorkingIndicatorStyle]);
 
     return (
-        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }} presentation="page">
+        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settingsSession.pageDescription')} />
             <SettingSection section={SESSION_SETTINGS.sectionRefs.launchDefaults}>
                 <ItemGroup
                     title={t('settingsSession.rootGroups.launchDefaults.title')}
-                    footer={t('settingsSession.rootGroups.launchDefaults.footer')}
+                    description={t('settingsSession.rootGroups.launchDefaults.footer')}
                 >
                     <SettingAnchor setting={SESSION_SETTINGS.settings.startWith}>
                         <SegmentedChoiceItem<'composer' | 'wizard'>
@@ -413,7 +414,7 @@ export const WorkspaceRouteBody = React.memo(function SessionSettingsScreen() {
             <SettingSection section={SESSION_SETTINGS.sectionRefs.listOrganization}>
                 <ItemGroup
                     title={t('settingsSession.rootGroups.listOrganization.title')}
-                    footer={t('settingsSession.rootGroups.listOrganization.footer')}
+                    description={t('settingsSession.rootGroups.listOrganization.footer')}
                 >
                     <SettingAnchor setting={SESSION_SETTINGS.settings.listDensity}>
                         <Item
@@ -604,7 +605,7 @@ export const WorkspaceRouteBody = React.memo(function SessionSettingsScreen() {
 
             <ItemGroup
                 title={t('settingsSession.rootGroups.rowDetails.title')}
-                footer={t('settingsSession.rootGroups.rowDetails.footer')}
+                description={t('settingsSession.rootGroups.rowDetails.footer')}
             >
                 <SettingAnchor setting={SESSION_SETTINGS.settings.tags}>
                     <Item
@@ -745,7 +746,7 @@ export const WorkspaceRouteBody = React.memo(function SessionSettingsScreen() {
 
             <ItemGroup
                 title={t('settingsSession.rootGroups.activitySignals.title')}
-                footer={t('settingsSession.rootGroups.activitySignals.footer')}
+                description={t('settingsSession.rootGroups.activitySignals.footer')}
             >
                 <SettingAnchor setting={SESSION_SETTINGS.settings.workingStatusAnimatedText}>
                     <Item
@@ -859,7 +860,7 @@ export const WorkspaceRouteBody = React.memo(function SessionSettingsScreen() {
 
             <ItemGroup
                 title={t('settingsSession.rootGroups.mobileLayout.title')}
-                footer={t('settingsSession.rootGroups.mobileLayout.footer')}
+                description={t('phoneNav.settings.sectionDescription')}
             >
                 <SettingAnchor setting={SESSION_SETTINGS.settings.mobileWorkspaceExperience}>
                     <Item
@@ -879,6 +880,7 @@ export const WorkspaceRouteBody = React.memo(function SessionSettingsScreen() {
                         testID="settings-session-mobileWorkspaceExperience-trigger"
                     />
                 </SettingAnchor>
+                <SessionGestureSettingsRows />
             </ItemGroup>
 
             <ItemGroup title={t(SESSION_SETTINGS.sections.openTabs.titleKey)}>
@@ -894,7 +896,7 @@ export const WorkspaceRouteBody = React.memo(function SessionSettingsScreen() {
 
             <ItemGroup
                 title={t('settingsSession.rootGroups.agentPersonalization.title')}
-                footer={t('settingsSession.rootGroups.agentPersonalization.footer')}
+                description={t('settingsSession.rootGroups.agentPersonalization.footer')}
             >
                 <SettingAnchor setting={SESSION_SETTINGS.settings.renameSessions}>
                     <DropdownMenu
@@ -947,7 +949,7 @@ export const WorkspaceRouteBody = React.memo(function SessionSettingsScreen() {
 
             <ItemGroup
                 title={t('settingsSession.detailedBehavior.title')}
-                footer={t('settingsSession.detailedBehavior.footer')}
+                description={t('settingsSession.detailedBehavior.footer')}
             >
                 <SettingAnchor setting={SESSION_SETTINGS.settings.composer}>
                     <Item

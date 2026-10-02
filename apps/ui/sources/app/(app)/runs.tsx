@@ -196,7 +196,7 @@ export default function RunsScreen() {
     <View style={{ flex: 1, backgroundColor: theme.colors.surface.base }}>
       <Stack.Screen options={screenOptions} />
       <ConstrainedScreenContent style={{ flex: 1 }}>
-        <ItemList presentation="page">
+        <ItemList>
           <PageHeader
             title={t('runs.title')}
             description={t('detailPages.runs.description')}

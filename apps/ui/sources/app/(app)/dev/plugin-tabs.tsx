@@ -139,6 +139,8 @@ function createFixtureHostApi(context: SurfaceContext, state: FixtureState): Plu
         readResource: readResource as PluginUiHostApi['readResource'],
         statOpenableContent: async () => ({ status: 'unsupported' as const }),
         readOpenableContent: async () => ({ status: 'unsupported' as const }),
+        readStoredImage: unsupported,
+        watchLiveStream: unsupported,
         watchResource: unsupported,
         activeComposer: unsupported,
         readComposer: unsupported,

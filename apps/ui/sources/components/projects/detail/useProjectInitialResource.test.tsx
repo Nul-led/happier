@@ -29,7 +29,7 @@ function ReopenHarness() {
     return <AppPaneProvider><DestinationInstanceHost tabId="a"
         ref={{ kind: 'project', params: { workspaceRefId: 'project-a', ...(initialFile ? { initialFile } : {}) } }}
         pathname="/projects/project-a" focused visible navigation={{ push: () => {}, back: () => {},
-            replace: () => {}, setParams: (params) => setInitialFile(typeof params.initialFile === 'string' ? params.initialFile : undefined) }}>
+            replace: () => {}, setParams: (params) => setInitialFile('initialFile' in params && typeof params.initialFile === 'string' ? params.initialFile : undefined) }}>
         <Body />
         {React.createElement('ReopenResource', { open: () => setInitialFile('src/index.ts') })}
     </DestinationInstanceHost></AppPaneProvider>;

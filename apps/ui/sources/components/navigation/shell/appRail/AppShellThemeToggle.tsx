@@ -5,7 +5,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { resolveThemeMode, useApplyThemeSelection, useToggleThemeMode } from '@/components/settings/appearance/useApplyThemeSelection';
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { Icon } from '@/components/ui/icons/Icon';
+import { Icon, type IconName } from '@/components/ui/icons/Icon';
 import { motionTokens } from '@/components/ui/motion';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { useLocalSettingMutable } from '@/sync/domains/state/storage';
@@ -45,16 +45,20 @@ function ThemeToggleButton(props: Readonly<{
     const dark = theme.dark;
     const label = dark ? t('settingsAppearance.switchToLightTheme') : t('settingsAppearance.switchToDarkTheme');
     const mode = resolveThemeMode(themePreference);
-    const items = React.useMemo((): readonly DropdownMenuItem[] => [
-        { id: 'light', testID: 'app-shell-theme-menu-light', title: t('settingsAppearance.themeOptions.light'),
-            icon: <Icon name="sun" size={16} color={theme.colors.text.secondary} />, checked: mode === 'light' },
-        { id: 'dark', testID: 'app-shell-theme-menu-dark', title: t('settingsAppearance.themeOptions.dark'),
-            icon: <Icon name="moon" size={16} color={theme.colors.text.secondary} />, checked: mode === 'dark' },
-        { id: 'adaptive', testID: 'app-shell-theme-menu-adaptive', title: t('settingsAppearance.themeToggle.matchSystem'),
-            icon: <Icon name="desktop" size={16} color={theme.colors.text.secondary} />, checked: mode === 'adaptive' },
-        { id: MENU_HIDE_ID, testID: 'app-shell-theme-menu-hide', title: t('settingsAppearance.themeToggle.hideFromToolbar'),
-            icon: <Icon name="eye-slash" size={16} color={theme.colors.text.secondary} /> },
-    ], [mode, theme.colors.text.secondary]);
+    const items = React.useMemo((): readonly DropdownMenuItem[] => {
+        const glyph = (name: IconName) => <Icon name={name} size={16} color={theme.colors.text.secondary} />;
+        const current = <Icon name="check" size={16} color={theme.colors.text.secondary} />;
+        const choice = (id: 'light' | 'dark' | 'adaptive', title: string, icon: IconName): DropdownMenuItem => ({
+            id, testID: `app-shell-theme-menu-${id}`, title, icon: glyph(icon),
+            checked: mode === id, ...(mode === id ? { rightElement: current } : {}),
+        });
+        return [
+            choice('light', t('settingsAppearance.themeOptions.light'), 'sun'),
+            choice('dark', t('settingsAppearance.themeOptions.dark'), 'moon'),
+            choice('adaptive', t('settingsAppearance.themeToggle.matchSystem'), 'desktop'),
+            { id: MENU_HIDE_ID, testID: 'app-shell-theme-menu-hide', title: t('settingsAppearance.themeToggle.hideFromToolbar'), icon: glyph('eye-slash') },
+        ];
+    }, [mode, theme.colors.text.secondary]);
     const select = React.useCallback((id: string) => {
         setMenuOpen(false);
         if (id === MENU_HIDE_ID) {

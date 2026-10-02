@@ -3,7 +3,8 @@ import { useSessionBoardFeatureEnabled } from '@/components/sessions/board/useSe
 import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
 import * as React from 'react';
 import { listPendingPermissionRequests } from '@/utils/sessions/sessionUtils';
-import { Platform } from 'react-native';
+import { Platform, useWindowDimensions } from 'react-native';
+import { useUnistyles } from 'react-native-unistyles';
 
 import { getAgentCore, isBundledAgentId } from '@/agents/catalog/catalog';
 import { formatAgentLikeIdForDisplay } from '@/agents/catalog/formatAgentLikeIdForDisplay';
@@ -16,26 +17,30 @@ import { t } from '@/text';
 import type { SessionMobileSurface } from '@/components/workspaceCockpit/session/sessionCockpitState';
 import type { PluginUiSurfacePlacementProjection } from '@/sync/domains/plugins/ui/projection';
 import {
+    SESSION_COCKPIT_DEFAULT_BAR_SURFACE_IDS,
     resolveSessionCockpitMobileCatalog,
     resolveSessionCockpitMobileTabVisibility,
     type SessionCockpitMobileCatalogEntry,
 } from '@/components/workspaceCockpit/session/sessionCockpitMobileCatalog';
-import { toggleSessionCockpitPinnedSurface } from '@/sync/domains/settings/mobileSurfacePinning';
+import { toggleSessionCockpitBarSurface } from '@/sync/domains/settings/mobileSurfacePinning';
+import { resolveFloatingTabBarSlotCount } from '@/components/ui/navigation/FloatingTabBarSurface';
+import { resolveTabBarMetrics } from '@/components/ui/navigation/tabBarMetrics';
+import { layout } from '@/components/ui/layout/layout';
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Icon } from '@/components/ui/icons/Icon';
-import { useSessionLateralSwipe } from '@/components/workspaceCockpit/session/SessionCockpitChromeRegistry';
 import { SessionCollaborationRailBadge } from '@/components/sessions/collaboration/sessionConversationAttention';
 import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 
-import { SessionCockpitLateralReadout } from '../lateralSwipe/SessionCockpitLateralReadout';
-import { useSessionCockpitLateralNavigation } from '../lateralSwipe/useSessionCockpitLateralNavigation';
+import { useSessionSwitcherBand } from '../lateralSwipe/SessionSwitcherBand';
+import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import {
     CockpitTabBar,
     CockpitTabBarAction,
     type CockpitTabBarTabDefinition,
 } from './CockpitTabBar';
+import { publishCockpitBarScrolls } from './cockpitBarScrollState';
 
 type SessionCockpitTabBarProps = Readonly<{
     sessionId: string;
@@ -58,9 +63,10 @@ type SessionCockpitTabDefinition = Readonly<{
 
 const PREVIOUS_SESSION_ACTION = 'previousSession';
 const NEXT_SESSION_ACTION = 'nextSession';
+const SWITCH_SESSION_ACTION = 'switchSession';
 
 export const SessionCockpitTabBar = React.memo((props: SessionCockpitTabBarProps) => {
-    const lateralSwipe = useSessionLateralSwipe();
+    const { theme } = useUnistyles();
     const sessionServerId = usePreferredServerIdForSession({ serverId: props.serverId, sessionId: props.sessionId });
     const collaborationAdmitted = useSessionCollaborationDestinationAdmitted(sessionServerId ?? '');
     const sessionSharingAvailable = Boolean(sessionServerId) && collaborationAdmitted;
@@ -69,32 +75,35 @@ export const SessionCockpitTabBar = React.memo((props: SessionCockpitTabBarProps
         [props.sessionId, sessionServerId],
     );
     const boardFeatureEnabled = useSessionBoardFeatureEnabled(sessionServerId);
-    // The band's actions are built HERE rather than in the chrome host because a tab is
-    // the only element in the band a screen reader can focus, and an action only reaches
-    // the rotor through the element that owns it.
-    const lateralNavigation = useSessionCockpitLateralNavigation({
-        sessionId: props.sessionId,
-        ...(props.serverId === undefined ? null : { serverId: props.serverId }),
-    });
-    const bandAccessibilityActions = React.useMemo(() => {
-        const actions: Array<{ name: string; label: string }> = [];
-        if (lateralNavigation.previous) {
-            actions.push({ name: PREVIOUS_SESSION_ACTION, label: t('workspaceCockpit.previousSession') });
-        }
-        if (lateralNavigation.next) {
-            actions.push({ name: NEXT_SESSION_ACTION, label: t('workspaceCockpit.nextSession') });
-        }
-        return actions.length > 0 ? actions : undefined;
-    }, [lateralNavigation.next, lateralNavigation.previous]);
+    // The band's actions are built HERE because a tab is the only element in the band a screen
+    // reader can focus, and an action only reaches the rotor through the element that owns it.
+    // They are the switcher's non-gesture path: step either way, or open it for tapping.
+    const switcherBand = useSessionSwitcherBand();
+    const bandAccessibilityActions = React.useMemo(() => (switcherBand ? [
+        { name: SWITCH_SESSION_ACTION, label: t('phoneNav.switcher.switchSessionAction') },
+        { name: PREVIOUS_SESSION_ACTION, label: t('workspaceCockpit.previousSession') },
+        { name: NEXT_SESSION_ACTION, label: t('workspaceCockpit.nextSession') },
+    ] : undefined), [switcherBand]);
     const handleBandAccessibilityAction = React.useCallback((actionName: string) => {
-        if (actionName === PREVIOUS_SESSION_ACTION) lateralNavigation.navigate('previous');
-        else if (actionName === NEXT_SESSION_ACTION) lateralNavigation.navigate('next');
-    }, [lateralNavigation]);
+        if (!switcherBand) return;
+        if (actionName === SWITCH_SESSION_ACTION) { switcherBand.dock(); return; }
+        const direction = actionName === PREVIOUS_SESSION_ACTION ? 'previous' : actionName === NEXT_SESSION_ACTION ? 'next' : null;
+        if (direction && !switcherBand.step(direction)) {
+            announceAccessibilityMessage(t(direction === 'next' ? 'phoneNav.switcher.noOlderSessions' : 'phoneNav.switcher.noNewerSessions'));
+        }
+    }, [switcherBand]);
     const session = useSession(props.sessionId, props.serverId);
     const scmStatus = useSessionProjectScmStatus(props.sessionId, props.serverId);
     const gitBadgeMode = useSetting('tabBarGitBadgeMode');
     const openTabsBadgeEnabled = useSetting('tabBarOpenTabsBadgeEnabled');
-    const [pinnedSurfaceIds, setPinnedSurfaceIds] = useLocalSettingMutable('sessionCockpitPinnedSurfaceIds');
+    const [barSurfaceIds, setBarSurfaceIds] = useLocalSettingMutable('sessionCockpitBarSurfaceIds');
+    // "Always swipe between sessions" depends on the sideways swipe itself.
+    const alwaysSwipeSetting = useSetting('sessionCockpitSwipeAlwaysSessionsEnabled');
+    const swipeSetting = useSetting('sessionCockpitSwipeNavigationEnabled');
+    const alwaysSwipe = alwaysSwipeSetting === true && swipeSetting !== false;
+    const windowWidth = useWindowDimensions().width;
+    const tabMinWidth = resolveTabBarMetrics(useSetting('tabBarSize'), useSetting('tabBarShowLabels')).tabMinWidth;
+    const slotCount = resolveFloatingTabBarSlotCount({ windowWidth, maxWidth: layout.maxWidth, tabMinWidth });
     const [moreOpen, setMoreOpen] = React.useState(false);
     // A session whose Agent cannot be named has no brand for this tab. The
     // catalog identity owner already renders that neutrally; substituting the
@@ -124,11 +133,16 @@ export const SessionCockpitTabBar = React.memo((props: SessionCockpitTabBarProps
     }), [boardFeatureEnabled, sessionSharingAvailable, props.pluginPlacements, props.projectionGeneration, props.terminalTabAvailable]);
     const visibility = React.useMemo(() => resolveSessionCockpitMobileTabVisibility({
         catalog,
-        pinnedSurfaceIds: [
-            ...(pinnedSurfaceIds ?? []),
-            ...(props.activeSurface === 'chat' ? [] : [props.activeSurface]),
-        ],
-    }), [catalog, pinnedSurfaceIds, props.activeSurface]);
+        barSurfaceIds,
+        slotCount,
+        alwaysSwipe,
+    }), [alwaysSwipe, barSurfaceIds, catalog, slotCount]);
+    // A scrolling bar owns the horizontal axis; the band's session swipe reads this and steps aside.
+    const barScrolls = visibility.mode === 'scroll';
+    React.useEffect(() => {
+        publishCockpitBarScrolls(barScrolls);
+        return () => publishCockpitBarScrolls(false);
+    }, [barScrolls]);
     const tabForEntry = (entry: SessionCockpitMobileCatalogEntry): SessionCockpitTabDefinition => {
         if (entry.owner === 'host') {
             if (entry.id === 'chat') {
@@ -166,8 +180,10 @@ export const SessionCockpitTabBar = React.memo((props: SessionCockpitTabBarProps
             }
             return {
                 id: 'tabs',
-                label: t('common.tabs'),
-                icon: 'stack',
+                // "Open files": the Details views open in this session. Not "Tabs" (that word now
+                // means the account's open tabs), and not the Companion's layered glyph.
+                label: t('phoneNav.bar.openFiles'),
+                icon: 'files',
                 badge: openTabsBadgeEnabled && props.openDetailsTabCount > 0
                     ? { kind: 'count', value: props.openDetailsTabCount }
                     : undefined,
@@ -182,56 +198,64 @@ export const SessionCockpitTabBar = React.memo((props: SessionCockpitTabBarProps
         };
     };
     const tabs = visibility.visible.map(tabForEntry);
-    const menuEntries = React.useMemo(() => {
-        const result = [...visibility.overflow];
-        for (const entry of visibility.visible) {
-            if (entry.owner !== 'rightSidebar' || entry.tab.owner !== 'plugin') continue;
-            if (!result.some((candidate) => candidate.id === entry.id)) result.push(entry);
-        }
-        return result;
-    }, [visibility.overflow, visibility.visible]);
-    const menuItems: readonly DropdownMenuItem[] = menuEntries.map((entry) => {
+    // More lists every tool: what is on the bar first (pinned, including any that wait here while
+    // "Always swipe" keeps the bar to what fits), then the rest. Every row can be pinned.
+    const heldIds = new Set(visibility.held.map((entry) => entry.id));
+    const menuEntries: readonly Readonly<{ entry: SessionCockpitMobileCatalogEntry; pinned: boolean }>[] = [
+        ...visibility.visible.filter((entry) => entry.id !== 'chat').map((entry) => ({ entry, pinned: true })),
+        ...visibility.held.map((entry) => ({ entry, pinned: true })),
+        ...visibility.overflow.map((entry) => ({ entry, pinned: false })),
+    ];
+    const menuItems: readonly DropdownMenuItem[] = menuEntries.map(({ entry, pinned }) => {
         const tab = tabForEntry(entry);
-        const pluginEntry = entry.owner === 'rightSidebar' && entry.tab.owner === 'plugin';
-        const pinned = pinnedSurfaceIds?.includes(entry.id) === true;
+        const pinLabel = t(pinned ? 'phoneNav.bar.removeFromBar' : 'phoneNav.bar.keepOnBar');
         return {
             id: entry.id,
             testID: `session-cockpit-more-item:${entry.id}`,
             title: tab.label,
+            category: t(pinned ? 'phoneNav.bar.onTheBar' : 'phoneNav.bar.more'),
+            ...(heldIds.has(entry.id) ? { subtitle: t('phoneNav.bar.heldInMore') } : {}),
             icon: <Icon name={typeof tab.icon === 'string' ? tab.icon : 'puzzle-piece'} size={18} />,
-            // Collaboration says only news: a dot when someone mentioned you (the rail's dot).
-            ...(entry.id === 'collaboration' && collaborationTarget ? {
-                rightElement: (
-                    <SessionCollaborationRailBadge
-                        target={collaborationTarget}
-                        placement="inline"
-                        testID="session-cockpit-more-fact:collaboration"
-                    />
-                ),
-            } : {}),
-            ...(pluginEntry ? {
-                rightElement: (
+            rightElement: (
+                <>
+                    {/* Collaboration says only news: a dot when someone mentioned you (the rail's dot). */}
+                    {entry.id === 'collaboration' && collaborationTarget ? (
+                        <SessionCollaborationRailBadge
+                            target={collaborationTarget}
+                            placement="inline"
+                            testID="session-cockpit-more-fact:collaboration"
+                        />
+                    ) : null}
                     <IconButton
                         testID={`session-cockpit-pin:${entry.id}`}
-                        accessibilityLabel={t(pinned ? 'projects.actions.unpin' : 'projects.actions.pin')}
-                        tooltip={t(pinned ? 'projects.actions.unpin' : 'projects.actions.pin')}
-                        iconName="push-pin"
-                        iconSize={16}
+                        accessibilityLabel={pinLabel}
+                        tooltip={pinLabel}
+                        // State is the glyph's own weight (filled = on the bar), never a tile behind it.
+                        icon={<Icon name="push-pin" size={16} weight={pinned ? 'fill' : 'regular'}
+                            color={pinned ? theme.colors.text.primary : theme.colors.text.secondary} />}
                         minimumInteractiveTargetSize={minimumInteractiveTargetSize}
                         accessibilityRole="checkbox"
                         checked={pinned}
-                        selected={pinned}
                         size={28}
                         variant="plain"
                         onPress={(event) => {
                             event?.stopPropagation?.();
-                            setPinnedSurfaceIds([...toggleSessionCockpitPinnedSurface(pinnedSurfaceIds, entry.id)]);
+                            setBarSurfaceIds([...toggleSessionCockpitBarSurface(
+                                barSurfaceIds,
+                                entry.id,
+                                SESSION_COCKPIT_DEFAULT_BAR_SURFACE_IDS,
+                            )]);
                         }}
                     />
-                ),
-            } : {}),
+                </>
+            ),
         };
     });
+    // A tool opened from More lives behind it: the More slot shows that tool, selected.
+    const activeBehindMore = visibility.visible.some((entry) => entry.id === props.activeSurface)
+        ? null
+        : menuEntries.find(({ entry }) => entry.id === props.activeSurface)?.entry ?? null;
+    const activeBehindMoreTab = activeBehindMore ? tabForEntry(activeBehindMore) : null;
 
     return (
         <CockpitTabBar
@@ -239,25 +263,17 @@ export const SessionCockpitTabBar = React.memo((props: SessionCockpitTabBarProps
             barTestId={`session-cockpit-tabbar-${props.sessionId}`}
             tabs={tabs}
             tabTestIdPrefix="session-cockpit-tab-"
+            layout={barScrolls ? 'scroll' : 'fit'}
             onSurfacePress={props.onSurfacePress}
             bandAccessibilityActions={bandAccessibilityActions}
             onBandAccessibilityAction={bandAccessibilityActions ? handleBandAccessibilityAction : undefined}
-            swipeReadout={{
-                progress: lateralSwipe.progress,
-                browseProgress: lateralSwipe.picker.browseProgress,
-                node: (
-                    <SessionCockpitLateralReadout
-                        sessionId={props.sessionId}
-                        {...(props.serverId === undefined ? null : { serverId: props.serverId })}
-                    />
-                ),
-            }}
             trailing={menuItems.length > 0 ? (
                 <DropdownMenu
                     open={moreOpen}
                     onOpenChange={setMoreOpen}
                     items={menuItems}
-                    selectedId={menuItems.some((item) => item.id === props.activeSurface) ? props.activeSurface : null}
+                    selectedId={activeBehindMore ? props.activeSurface : null}
+                    showCategoryTitles
                     onSelect={(surface) => {
                         setMoreOpen(false);
                         props.onSurfacePress(surface as SessionMobileSurface);
@@ -267,8 +283,9 @@ export const SessionCockpitTabBar = React.memo((props: SessionCockpitTabBarProps
                     trigger={({ open, toggle }) => (
                         <CockpitTabBarAction
                             testID="session-cockpit-tab-more"
-                            label={t('common.more')}
-                            icon="dots-three"
+                            label={activeBehindMoreTab?.label ?? t('common.more')}
+                            icon={activeBehindMoreTab && typeof activeBehindMoreTab.icon === 'string' ? activeBehindMoreTab.icon : 'dots-three'}
+                            selected={activeBehindMoreTab !== null}
                             expanded={open}
                             onPress={toggle}
                         />

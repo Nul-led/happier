@@ -1234,7 +1234,7 @@ describe('PluginAgentSettingsScreen', () => {
         };
         expect(settingsSection.props.isDaemonTargetCurrent(daemonTarget)).toBe(false);
 
-        const { AgentContributedSettingsSection } = await import('@/app/(app)/settings/agents/[agentId]');
+        const { AgentContributedSettingsSection } = await import('@/components/settings/agents/AgentSettingsScreen');
         const offlineScreen = await renderScreen(
             <AgentContributedSettingsSection
                 pluginSettingsProjection={settingsSection.props.projection}

@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { Pressable, View } from 'react-native';
-import Animated, { useAnimatedStyle, useSharedValue, type SharedValue } from 'react-native-reanimated';
+import { ScrollView } from 'react-native-gesture-handler';
+import Animated from 'react-native-reanimated';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAreaInsets';
@@ -11,8 +12,9 @@ import { resolveTabBarMetrics } from '@/components/ui/navigation/tabBarMetrics';
 import { useSetting } from '@/sync/domains/state/storage';
 import { Typography } from '@/constants/Typography';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { ScrollEdgeFades } from '@/components/ui/scroll/ScrollEdgeFades';
+import { useScrollEdgeFades } from '@/components/ui/scroll/useScrollEdgeFades';
 
-import { resolveSessionLateralSwipeTabRowOpacity } from '../lateralSwipe/sessionLateralSwipeMotion';
 
 const styles = StyleSheet.create((theme) => ({
     innerContainer: {
@@ -54,6 +56,22 @@ const styles = StyleSheet.create((theme) => ({
     labelInactive: {
         color: theme.colors.text.secondary,
     },
+    // The leading tab stays put while the rest scroll; a short hairline marks where the track starts.
+    trackDivider: {
+        width: StyleSheet.hairlineWidth,
+        alignSelf: 'center',
+        height: 20,
+        marginHorizontal: 2,
+        backgroundColor: theme.colors.border.default,
+    },
+    track: {
+        flexGrow: 0,
+        flexShrink: 1,
+    },
+    trackContent: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
 }));
 
 export type CockpitTabBadge =
@@ -85,16 +103,11 @@ type CockpitTabBarProps<TSurface extends string> = Readonly<{
     onSurfacePress: (surface: TSurface) => void;
     trailing?: React.ReactNode;
     /**
-     * Readout painted over the tab row while a lateral swipe is under the finger.
-     * Both layers fade from the SAME `progress`, and the readout is absolute, so the
-     * capsule keeps its tab-derived width for the whole gesture instead of resizing.
+     * `scroll` when the tabs do not fit the capsule: the first tab stays fixed and the rest (with
+     * `trailing`) scroll sideways under an edge fade. The bar decides this from its width
+     * (`resolveFloatingTabBarSlotCount`); `fit` (the default) renders one row.
      */
-    swipeReadout?: Readonly<{
-        progress: SharedValue<number>;
-        /** The gesture's second axis; floors the dim so an open picker fully clears the row. */
-        browseProgress: SharedValue<number>;
-        node: React.ReactNode;
-    }>;
+    layout?: 'fit' | 'scroll';
     /**
      * Actions that belong to the BAND rather than to any one tab — today, the lateral
      * session swipe's non-gesture equivalent.
@@ -114,63 +127,92 @@ export function CockpitTabBar<TSurface extends string>(props: CockpitTabBarProps
     const { theme } = useUnistyles();
     const insets = useChromeSafeAreaInsets();
     const metrics = resolveTabBarMetrics(useSetting('tabBarSize'), useSetting('tabBarShowLabels'));
-    // Idle stand-in so the row's animated style is unconditional: a bar that swapped
-    // between `View` and `Animated.View` would remount its tabs.
-    const idleProgress = useSharedValue(0);
-    const idleBrowseProgress = useSharedValue(0);
-    const rowProgress = props.swipeReadout?.progress ?? idleProgress;
-    const rowBrowseProgress = props.swipeReadout?.browseProgress ?? idleBrowseProgress;
-    const rowStyle = useAnimatedStyle(
-        () => ({ opacity: resolveSessionLateralSwipeTabRowOpacity(rowProgress.value, rowBrowseProgress.value) }),
-        [rowBrowseProgress, rowProgress],
-    );
+    const renderTab = (tab: CockpitTabBarTabDefinition<TSurface>) => {
+        const active = tab.id === props.activeSurface;
+        const tintColor = active ? theme.colors.text.primary : theme.colors.text.secondary;
+        return (
+            <Pressable
+                key={tab.id}
+                testID={`${props.tabTestIdPrefix}${tab.id}`}
+                onPress={() => props.onSurfacePress(tab.id)}
+                hitSlop={{ top: 8, bottom: 8 }}
+                style={[styles.tab, {
+                    minWidth: metrics.tabMinWidth,
+                    paddingVertical: metrics.tabPaddingVertical,
+                    paddingHorizontal: metrics.tabPaddingHorizontal,
+                }]}
+                accessibilityRole="tab"
+                accessibilityLabel={tab.accessibilityLabel ?? tab.label}
+                accessibilityState={{ selected: active }}
+                accessibilityActions={props.bandAccessibilityActions}
+                onAccessibilityAction={props.onBandAccessibilityAction
+                    ? (event) => props.onBandAccessibilityAction?.(event.nativeEvent.actionName)
+                    : undefined}
+            >
+                {active ? <View pointerEvents="none" style={[styles.activePill, { borderRadius: metrics.activePillRadius }]} /> : null}
+                <View style={styles.iconContainer}>
+                    {typeof tab.icon === 'string' ? (
+                        <Icon name={tab.icon} size={metrics.iconSize} color={tintColor} />
+                    ) : (
+                        tab.icon.render({ active, size: metrics.iconSize, tintColor })
+                    )}
+                    {renderTabBadge(tab.badge, `${props.tabTestIdPrefix}${tab.id}-badge`)}
+                </View>
+                {metrics.showLabels ? (
+                    <Text style={[styles.label, active ? styles.labelActive : styles.labelInactive]}>
+                        {tab.label}
+                    </Text>
+                ) : null}
+            </Pressable>
+        );
+    };
+    const scrolls = props.layout === 'scroll' && props.tabs.length > 1;
 
     return (
         <FloatingTabBarSurface testID={props.barTestId} bottomInset={insets.bottom} opaqueBand>
-            <Animated.View accessibilityRole="tablist" style={[styles.innerContainer, { gap: metrics.rowGap }, rowStyle]}>
-                {props.tabs.map((tab) => {
-                    const active = tab.id === props.activeSurface;
-                    const tintColor = active ? theme.colors.text.primary : theme.colors.text.secondary;
-                    return (
-                        <Pressable
-                            key={tab.id}
-                            testID={`${props.tabTestIdPrefix}${tab.id}`}
-                            onPress={() => props.onSurfacePress(tab.id)}
-                            hitSlop={{ top: 8, bottom: 8 }}
-                            style={[styles.tab, {
-                                minWidth: metrics.tabMinWidth,
-                                paddingVertical: metrics.tabPaddingVertical,
-                                paddingHorizontal: metrics.tabPaddingHorizontal,
-                            }]}
-                            accessibilityRole="tab"
-                            accessibilityLabel={tab.accessibilityLabel ?? tab.label}
-                            accessibilityState={{ selected: active }}
-                            accessibilityActions={props.bandAccessibilityActions}
-                            onAccessibilityAction={props.onBandAccessibilityAction
-                                ? (event) => props.onBandAccessibilityAction?.(event.nativeEvent.actionName)
-                                : undefined}
-                        >
-                            {active ? <View pointerEvents="none" style={[styles.activePill, { borderRadius: metrics.activePillRadius }]} /> : null}
-                            <View style={styles.iconContainer}>
-                                {typeof tab.icon === 'string' ? (
-                                    <Icon name={tab.icon} size={metrics.iconSize} color={tintColor} />
-                                ) : (
-                                    tab.icon.render({ active, size: metrics.iconSize, tintColor })
-                                )}
-                                {renderTabBadge(tab.badge, `${props.tabTestIdPrefix}${tab.id}-badge`)}
-                            </View>
-                            {metrics.showLabels ? (
-                                <Text style={[styles.label, active ? styles.labelActive : styles.labelInactive]}>
-                                    {tab.label}
-                                </Text>
-                            ) : null}
-                        </Pressable>
-                    );
-                })}
-                {props.trailing}
+            <Animated.View accessibilityRole="tablist" style={[styles.innerContainer, { gap: metrics.rowGap }]}>
+                {scrolls ? (
+                    <>
+                        {props.tabs[0] ? renderTab(props.tabs[0]) : null}
+                        <View style={styles.trackDivider} />
+                        <CockpitTabBarTrack>
+                            {props.tabs.slice(1).map(renderTab)}
+                            {props.trailing}
+                        </CockpitTabBarTrack>
+                    </>
+                ) : (
+                    <>
+                        {props.tabs.map(renderTab)}
+                        {props.trailing}
+                    </>
+                )}
             </Animated.View>
-            {props.swipeReadout?.node ?? null}
         </FloatingTabBarSurface>
+    );
+}
+
+/**
+ * The scrolling part of an overflowing bar. Gesture-handler's ScrollView so it takes part in
+ * arbitration with the band's pan, which stays off the horizontal axis while the bar scrolls
+ * (`publishCockpitBarScrolls`). The fades say "more this way" only while there is more.
+ */
+function CockpitTabBarTrack(props: Readonly<{ children: React.ReactNode }>) {
+    const { theme } = useUnistyles();
+    const fades = useScrollEdgeFades({ enabledEdges: { left: true, right: true }, overflowThreshold: 4, edgeThreshold: 2 });
+    return (
+        <View style={styles.track} onLayout={fades.onViewportLayout}>
+            <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.trackContent}
+                onContentSizeChange={fades.onContentSizeChange}
+                onScroll={fades.onScroll}
+                scrollEventThrottle={32}
+            >
+                {props.children}
+            </ScrollView>
+            <ScrollEdgeFades color={theme.colors.surface.base} size={16} edges={fades.visibility} />
+        </View>
     );
 }
 
@@ -179,6 +221,8 @@ export const CockpitTabBarAction = React.forwardRef<View, Readonly<{
     label: string;
     icon: IconName;
     expanded?: boolean;
+    /** The open surface lives behind this action (a tool opened from More): it reads as the active tab. */
+    selected?: boolean;
     onPress: () => void;
 }>>((props, ref) => {
     const { theme } = useUnistyles();
@@ -196,13 +240,14 @@ export const CockpitTabBarAction = React.forwardRef<View, Readonly<{
             }]}
             accessibilityRole="button"
             accessibilityLabel={props.label}
-            accessibilityState={{ expanded: props.expanded }}
+            accessibilityState={{ expanded: props.expanded, selected: props.selected === true }}
         >
+            {props.selected ? <View pointerEvents="none" style={[styles.activePill, { borderRadius: metrics.activePillRadius }]} /> : null}
             <View style={styles.iconContainer}>
-                <Icon name={props.icon} size={metrics.iconSize} color={theme.colors.text.secondary} />
+                <Icon name={props.icon} size={metrics.iconSize} color={props.selected ? theme.colors.text.primary : theme.colors.text.secondary} />
             </View>
             {metrics.showLabels ? (
-                <Text style={[styles.label, styles.labelInactive]}>{props.label}</Text>
+                <Text style={[styles.label, props.selected ? styles.labelActive : styles.labelInactive]}>{props.label}</Text>
             ) : null}
         </Pressable>
     );

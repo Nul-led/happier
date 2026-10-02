@@ -12,6 +12,7 @@ import {
     sessionScmBranchOperationContinue,
     sessionScmBranchOperationSkip,
     sessionScmBranchRebase,
+    sessionScmCommitUndoLast,
     sessionScmRemoteAdd,
     sessionScmRemoteRemove,
     sessionScmRemoteSetUrl,
@@ -30,6 +31,7 @@ export function useSessionGitRepositoryMutations(input: Readonly<{
     sessionId: string;
     serverId?: string;
     sessionPath: string | null;
+    refreshAfterUndo?: () => Promise<void>;
 }>) {
     const { sessionId, serverId, sessionPath } = input;
     const refresh = React.useCallback(async () => {
@@ -39,6 +41,7 @@ export function useSessionGitRepositoryMutations(input: Readonly<{
         operation: ScmProjectOperationKind;
         fallbackError: string;
         call: () => Promise<T>;
+        refreshAfterSuccess?: () => Promise<void>;
     }): Promise<ScmMutationResponse> => {
         const result = await runSessionScmMutation({
             state: storage.getState(),
@@ -47,6 +50,7 @@ export function useSessionGitRepositoryMutations(input: Readonly<{
             cwd: sessionPath,
             run: mutation.call,
             fallbackError: mutation.fallbackError,
+            refreshAfterSuccess: mutation.refreshAfterSuccess,
         });
         if (!result.started) return { success: false, error: result.message };
         return result.response === 'cancelled' ? { success: false } : result.response;
@@ -54,6 +58,17 @@ export function useSessionGitRepositoryMutations(input: Readonly<{
 
     return React.useMemo(() => ({
         refresh,
+        undoLastCommit: (expectedHeadOid: string) => run({
+            operation: 'commit_undo',
+            fallbackError: t('sessionGitPane.flow.undo.failed'),
+            call: () => sessionScmCommitUndoLast(sessionId, { expectedHeadOid }, serverId),
+            refreshAfterSuccess: async () => {
+                await (input.refreshAfterUndo ?? refresh)();
+                // Status sync publishes failures to the store instead of rejecting its await.
+                const error = storage.getState().getSessionProjectScmSnapshotError(sessionId, serverId);
+                if (error) throw new Error(error.message);
+            },
+        }),
         addRemote: (request: Parameters<typeof sessionScmRemoteAdd>[1]) => run({
             operation: 'remote_add',
             fallbackError: t('files.sourceControlOperations.update.remotes.errors.addFailed'),
@@ -94,5 +109,5 @@ export function useSessionGitRepositoryMutations(input: Readonly<{
             fallbackError: t('files.sourceControlOperations.update.branchIntegration.errors.abortFailed'),
             call: () => sessionScmBranchOperationAbort(sessionId, { operation }, serverId),
         }),
-    }), [refresh, run, serverId, sessionId]);
+    }), [input.refreshAfterUndo, refresh, run, serverId, sessionId]);
 }

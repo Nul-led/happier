@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { collectSplitCanvasLeafIds } from '../splitCanvas/model/splitCanvasSelectors';
-import { createWorkspaceState, reduceWorkspaceState } from './workspaceState';
+import { createWorkspaceState, reduceWorkspaceState, WORKSPACE_RECENTLY_CLOSED_LIMIT } from './workspaceState';
 import type { WorkspaceTab } from './workspaceState';
 import { parseWorkspaceLayout, serializeWorkspaceLayout, readScopedWorkspaceLayout, writeScopedWorkspaceLayout, workspaceLayoutScopeKey } from './workspacePersistence';
 
@@ -11,6 +11,65 @@ const tab = (id: string, kind = 'session', preview = false): WorkspaceTab => {
 };
 
 describe('workspace state', () => {
+    it('retains the owner-bounded most recent undo entries without limiting open tabs', () => {
+        let state = createWorkspaceState(tab('a'));
+        for (let index = 0; index <= WORKSPACE_RECENTLY_CLOSED_LIMIT; index++) {
+            const nextTab = tab(`closed:${index}`);
+            state = reduceWorkspaceState(state, { type: 'openTab', groupId: 'group:1', tab: nextTab });
+            state = reduceWorkspaceState(state, { type: 'closeTab', groupId: 'group:1', tabId: nextTab.id, newTab: tab('blank', 'newTab') });
+        }
+        expect(state.recentlyClosed).toHaveLength(WORKSPACE_RECENTLY_CLOSED_LIMIT);
+        expect(state.recentlyClosed[0].tab.id).toBe(`closed:${WORKSPACE_RECENTLY_CLOSED_LIMIT}`);
+        expect(state.recentlyClosed.some(entry => entry.tab.id === 'closed:0')).toBe(false);
+        expect(reduceWorkspaceState(state, { type: 'reopenTab', tabId: 'closed:0' })).toBe(state);
+        expect(reduceWorkspaceState(state, { type: 'reopenTab', tabId: 'closed:1' }).tabs['closed:1']).toBeDefined();
+    });
+    it('reopens an explicitly closed preview as a kept tab at its former position without replacing the current preview', () => {
+        let state = createWorkspaceState(tab('a'));
+        state = reduceWorkspaceState(state, { type: 'openTab', groupId: 'group:1', tab: tab('closed', 'session', true), fallbackTitle: 'Saved title' });
+        state = reduceWorkspaceState(state, { type: 'closeTab', groupId: 'group:1', tabId: 'closed', newTab: tab('blank', 'newTab') });
+        state = reduceWorkspaceState(state, { type: 'openTab', groupId: 'group:1', tab: tab('current', 'settings', true) });
+        const reopened = reduceWorkspaceState(state, { type: 'reopenTab' });
+        expect(reopened.groups['group:1'].tabIds).toEqual(['a', 'closed', 'current']);
+        expect(reopened.groups['group:1'].activeTabId).toBe('closed');
+        expect(reopened.tabs.closed).toMatchObject({ pinned: false, preview: false });
+        expect(reopened.tabs.current).toBe(state.tabs.current);
+        expect(reopened.fallbackTitlesByTabId.closed).toBe('Saved title');
+        expect(reopened.recentlyClosed).toEqual([]);
+        expect(reduceWorkspaceState(reopened, { type: 'reopenTab' })).toBe(reopened);
+    });
+
+    it('restores a closed pane in place while preserving changes in the surviving pane', () => {
+        let state = createWorkspaceState(tab('a'));
+        state = reduceWorkspaceState(state, { type: 'openTab', groupId: 'group:1', tab: tab('b') });
+        state = reduceWorkspaceState(state, { type: 'splitTab', tabId: 'b', sourceGroupId: 'group:1', targetGroupId: 'group:1', newGroupId: 'group:2', axis: 'row', placement: 'after', availableSizePx: 1000, minimumFirstSizePx: 320, minimumSecondSizePx: 320 });
+        const root = state.root;
+        state = reduceWorkspaceState(state, { type: 'closeTab', groupId: 'group:2', tabId: 'b', newTab: tab('blank', 'newTab') });
+        state = reduceWorkspaceState(state, { type: 'openTab', groupId: 'group:1', tab: tab('new') });
+        const reopened = reduceWorkspaceState(state, { type: 'reopenTab' });
+        expect(reopened.root).toEqual(root);
+        expect(reopened.groups['group:1'].tabIds).toEqual(['a', 'new']);
+        expect(reopened.groups['group:2'].tabIds).toEqual(['b']);
+        expect(reopened.focusedGroupId).toBe('group:2');
+        expect(reopened.tabPairs).toEqual([['new', 'b']]);
+        expect(parseWorkspaceLayout(serializeWorkspaceLayout(reopened))).toEqual(reopened);
+    });
+
+    it('keeps closed-tab history local to this window lifetime, excluding remote closes and replaced previews', () => {
+        let state = createWorkspaceState(tab('a'));
+        state = reduceWorkspaceState(state, { type: 'openTab', groupId: 'group:1', tab: tab('preview', 'session', true) });
+        state = reduceWorkspaceState(state, { type: 'openTab', groupId: 'group:1', tab: tab('replacement', 'session', true) });
+        expect(state.recentlyClosed).toEqual([]);
+        state = reduceWorkspaceState(state, { type: 'closeTab', groupId: 'group:1', tabId: 'a', newTab: tab('blank', 'newTab'), remember: false });
+        expect(state.recentlyClosed).toEqual([]);
+        state = reduceWorkspaceState(state, { type: 'closeTab', groupId: 'group:1', tabId: 'replacement', newTab: tab('blank', 'newTab') });
+        expect(state.recentlyClosed.map(entry => entry.tab.id)).toEqual(['replacement']);
+        expect(serializeWorkspaceLayout(state)).not.toHaveProperty('recentlyClosed');
+        expect(parseWorkspaceLayout(serializeWorkspaceLayout(state))?.recentlyClosed).toEqual([]);
+        state = reduceWorkspaceState(state, { type: 'closeTab', groupId: 'group:1', tabId: 'blank', newTab: tab('next-blank', 'newTab') });
+        expect(state.recentlyClosed.map(entry => entry.tab.id)).toEqual(['replacement']);
+    });
+
     it('keeps portable split membership across focus, local restore and closing one member', () => {
         let state = createWorkspaceState(tab('a'));
         state = reduceWorkspaceState(state, { type: 'openTab', groupId: 'group:1', tab: tab('b') });
@@ -152,7 +211,7 @@ describe('workspace state', () => {
 
         state = reduceWorkspaceState(state, { type: 'closeTab', tabId: 'b', groupId: 'group:3', newTab: tab('new', 'newTab') });
         const restored = parseWorkspaceLayout(serializeWorkspaceLayout(state));
-        expect(restored).toEqual(state);
+        expect(restored).toEqual({ ...state, recentlyClosed: [] });
         expect(restored?.groups['group:3']?.activeTabId).toBe('c');
     });
 

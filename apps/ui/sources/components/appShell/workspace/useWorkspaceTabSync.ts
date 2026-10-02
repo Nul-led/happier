@@ -69,11 +69,14 @@ export function useWorkspaceTabSync(input: Readonly<{
     const [published, setPublished] = React.useState<PublishedProjection>({ binding, credentials,
         snapshot: { status: 'pending', record: null }, source: null });
     const accountKey = scope ? JSON.stringify([scope.serverId, scope.accountId]) : null;
-    const preference = React.useRef({ accountKey, enabled: syncEnabled });
+    const readyForEnrollment = dataReady && input.local.isReady;
+    const preference = React.useRef({ accountKey, enabled: syncEnabled, ready: readyForEnrollment });
     const deliberateEnrollment = React.useRef(false);
-    if (preference.current.accountKey === accountKey && !preference.current.enabled && syncEnabled) deliberateEnrollment.current = true;
+    // Hydrating settings before the layout is ready is not an explicit enable.
+    if (preference.current.accountKey === accountKey && preference.current.ready && readyForEnrollment
+        && !preference.current.enabled && syncEnabled) deliberateEnrollment.current = true;
     if (preference.current.accountKey !== accountKey) deliberateEnrollment.current = false;
-    preference.current = { accountKey, enabled: syncEnabled };
+    preference.current = { accountKey, enabled: syncEnabled, ready: readyForEnrollment };
 
     React.useEffect(() => {
         runtime.current = null;

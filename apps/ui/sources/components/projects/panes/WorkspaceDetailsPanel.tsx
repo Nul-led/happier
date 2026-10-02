@@ -57,6 +57,8 @@ import { WorkspaceSyncRelationshipList } from '@/components/workspaces/sync/Work
 import { openWorkspaceSyncAddMachine } from '@/components/workspaces/sync/openWorkspaceSyncAddMachine';
 import { createWorkspaceSyncConflictDetailsTab } from '@/components/workspaces/sync/workspaceSyncConflictDetailsTab';
 import { createWorkspaceSyncRelationshipDetailsTab } from '@/components/workspaces/sync/workspaceSyncRelationshipDetailsTab';
+import { buildActiveDetailsRouteParams, parseSessionPaneUrlState } from '@/components/sessions/panes/url/sessionPaneUrlState';
+import { buildProjectRouteHref } from '@/components/projects/detail/projectRouteState';
 
 export type WorkspaceDetailsPanelHeaderActionRenderParams = Readonly<{
     iconButtonStyle: Readonly<Record<string, unknown>>;
@@ -530,6 +532,17 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
         effectiveRootPath,
     ]);
 
+    const resolveTabHref = React.useCallback((tab: DetailsTabState) => {
+        const details = parseSessionPaneUrlState(buildActiveDetailsRouteParams([tab], tab.key))?.details;
+        if (details?.kind !== 'file' && details?.kind !== 'commit') return null;
+        return buildProjectRouteHref({
+            workspaceRefId: props.workspaceRef.id,
+            segment: 'details', activeRootPath: effectiveRootPath, defaultRootPath: props.workspaceRef.rootPath,
+            activeWorktreeId: props.activeWorktreeId,
+            sourceSurface: details.kind === 'file' ? 'browse' : 'git', initialResource: details,
+        });
+    }, [effectiveRootPath, props.activeWorktreeId, props.workspaceRef.id, props.workspaceRef.rootPath]);
+
     return (
         <DetailsSplitWorkspace
             pane={pane}
@@ -541,6 +554,7 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
                 tabClose: (safeTabKey) => `workspace-details-tab-close-${safeTabKey}`,
             }}
             forceEmptyState={props.forceOverviewMode}
+            resolveTabHref={resolveTabHref}
             renderTabContent={renderTabContent}
             renderOverlay={renderOverlay}
             renderHeaderActions={renderHeaderActions}

@@ -24,9 +24,12 @@ const badgeSettingsState = vi.hoisted(() => ({
     openTabs: true,
 }));
 const cockpitPinsState = vi.hoisted(() => ({
-    value: [] as string[],
+    value: null as string[] | null,
     set: vi.fn(),
 }));
+// The bar's width decides what fits; 800 is wide enough for everything, 390 is an iPhone.
+const windowState = vi.hoisted(() => ({ width: 800 }));
+const swipeSettingsState = vi.hoisted(() => ({ always: false, swipe: true }));
 const reachableMachineState = vi.hoisted(() => ({
     target: null as { machineId: string; basePath: string } | null,
 }));
@@ -35,34 +38,6 @@ const scopedSessionReadCalls = vi.hoisted(() => ({
     scm: [] as Array<[string | null, string | null | undefined]>,
     machine: [] as Array<[string, string | null | undefined]>,
 }));
-type LateralTarget = { sessionId: string; title: string; position: number; total: number } | null;
-const lateralNavigationState = vi.hoisted(() => ({
-    previous: null as LateralTarget,
-    next: null as LateralTarget,
-    navigate: vi.fn(),
-}));
-
-// What the readout SAYS is proven in its own suite, against real shared values. Here the
-// contract is where it hangs, so it is stood in for by a locatable marker.
-vi.mock('../lateralSwipe/SessionCockpitLateralReadout', () => ({
-    SessionCockpitLateralReadout: (props: Record<string, unknown>) =>
-        React.createElement('View', { ...props, testID: 'session-cockpit-lateral-readout-slot' }),
-}));
-
-// The bar's contract here is PLACEMENT: given navigable neighbours, expose named actions on
-// focusable elements. Resolving those neighbours reaches auth, routing and the session store,
-// and is proven in `useSessionCockpitLateralNavigation`'s own suite.
-vi.mock('../lateralSwipe/useSessionCockpitLateralNavigation', () => ({
-    useSessionCockpitLateralNavigation: () => ({
-        previous: lateralNavigationState.previous,
-        next: lateralNavigationState.next,
-        anchorSessionKey: 'sess_1',
-        availableCount: () => 0,
-        resolveTargets: () => [],
-        navigate: lateralNavigationState.navigate,
-    }),
-}));
-
 installNavigationCommonModuleMocks({
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -87,6 +62,7 @@ installNavigationCommonModuleMocks({
             },
             View: ({ children, ...props }: any) => React.createElement('View', props, children),
             Pressable: ({ children, ...props }: any) => React.createElement('Pressable', props, children),
+            useWindowDimensions: () => ({ width: windowState.width, height: 844, scale: 3, fontScale: 1 }),
         });
     },
     text: async () => {
@@ -120,9 +96,11 @@ installNavigationCommonModuleMocks({
             if (key === 'tabBarOpenTabsBadgeEnabled') return badgeSettingsState.openTabs;
             if (key === 'tabBarShowLabels') return true;
             if (key === 'tabBarSize') return 'regular';
+            if (key === 'sessionCockpitSwipeAlwaysSessionsEnabled') return swipeSettingsState.always;
+            if (key === 'sessionCockpitSwipeNavigationEnabled') return swipeSettingsState.swipe;
             return undefined;
         },
-        useLocalSettingMutable: (key: string) => key === 'sessionCockpitPinnedSurfaceIds'
+        useLocalSettingMutable: (key: string) => key === 'sessionCockpitBarSurfaceIds'
             ? [cockpitPinsState.value, cockpitPinsState.set]
             : [null, vi.fn()],
     }),
@@ -192,15 +170,15 @@ describe('cockpit tab bars', () => {
         scmState.status = null;
         badgeSettingsState.gitBadgeMode = 'changedFiles';
         badgeSettingsState.openTabs = true;
-        cockpitPinsState.value = [];
+        cockpitPinsState.value = null;
         cockpitPinsState.set.mockClear();
+        windowState.width = 800;
+        swipeSettingsState.always = false;
+        swipeSettingsState.swipe = true;
         reachableMachineState.target = null;
         scopedSessionReadCalls.session.length = 0;
         scopedSessionReadCalls.scm.length = 0;
         scopedSessionReadCalls.machine.length = 0;
-        lateralNavigationState.previous = null;
-        lateralNavigationState.next = null;
-        lateralNavigationState.navigate.mockClear();
     });
 
     it('forwards the route Home to every session-scoped cockpit read', async () => {
@@ -236,23 +214,24 @@ describe('cockpit tab bars', () => {
         expect(navigate).toHaveBeenCalledWith('browse');
     });
 
-    it('offers the lateral step as an accessibility action on every cockpit tab', async () => {
+    it('offers the switcher as accessibility actions on every cockpit tab', async () => {
         // The band's own container is `pointerEvents="box-none"` and is not an accessibility
         // element, so actions placed there never reach the VoiceOver rotor or the TalkBack
         // context menu. A tab is the only focusable thing in the band, so the actions ride
         // the tabs — the same shape `SessionItem` uses for its row actions.
-        lateralNavigationState.previous = { sessionId: 'sess_0', title: 'Previous', position: 1, total: 3 };
-        lateralNavigationState.next = { sessionId: 'sess_2', title: 'Next', position: 3, total: 3 };
-
+        const controls = { dock: vi.fn(), step: vi.fn(() => true) };
         const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
+        const { SessionSwitcherBandContext } = await import('../lateralSwipe/SessionSwitcherBand');
         const screen = await renderScreen(
-            <SessionCockpitTabBar
-                sessionId="sess_1"
-                activeSurface="chat"
-                terminalTabAvailable={true}
-                openDetailsTabCount={0}
-                onSurfacePress={() => {}}
-            />,
+            <SessionSwitcherBandContext.Provider value={controls}>
+                <SessionCockpitTabBar
+                    sessionId="sess_1"
+                    activeSurface="chat"
+                    terminalTabAvailable={true}
+                    openDetailsTabCount={0}
+                    onSurfacePress={() => {}}
+                />
+            </SessionSwitcherBandContext.Provider>,
         );
 
         const tabs = screen.tree.root.findAll((node) => (
@@ -263,7 +242,7 @@ describe('cockpit tab bars', () => {
         expect(tabs.length).toBeGreaterThan(0);
         for (const tab of tabs) {
             expect((tab.props.accessibilityActions as Array<{ name: string }>).map((action) => action.name))
-                .toEqual(['previousSession', 'nextSession']);
+                .toEqual(['switchSession', 'previousSession', 'nextSession']);
             // An action is only operable if the element carrying it is also named.
             expect(typeof tab.props.accessibilityLabel).toBe('string');
         }
@@ -271,38 +250,14 @@ describe('cockpit tab bars', () => {
         act(() => {
             tabs[0]!.props.onAccessibilityAction({ nativeEvent: { actionName: 'nextSession' } });
         });
-        expect(lateralNavigationState.navigate).toHaveBeenCalledWith('next');
+        expect(controls.step).toHaveBeenCalledWith('next');
+        act(() => {
+            tabs[0]!.props.onAccessibilityAction({ nativeEvent: { actionName: 'switchSession' } });
+        });
+        expect(controls.dock).toHaveBeenCalledTimes(1);
     });
 
-    it('mounts the lateral readout inside the capsule rather than beside the band', async () => {
-        // The capsule IS the readout for this gesture: the picker column above deliberately
-        // starts one entry out because the nearest session is named here. An unmounted
-        // readout therefore does not just lose a label, it hides the first reachable
-        // session entirely.
-        const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
-        const screen = await renderScreen(
-            <SessionCockpitTabBar
-                sessionId="sess_1"
-                serverId="server_a"
-                activeSurface="chat"
-                terminalTabAvailable={true}
-                openDetailsTabCount={0}
-                onSurfacePress={() => {}}
-            />,
-        );
-
-        const readouts = screen.findAllHostsByTestId('session-cockpit-lateral-readout-slot');
-        expect(readouts).toHaveLength(1);
-        // Scoped like the picker column, so the capsule and the row descending into it can
-        // never resolve to two different sessions on a multi-server order.
-        expect(readouts[0]!.props.sessionId).toBe('sess_1');
-        expect(readouts[0]!.props.serverId).toBe('server_a');
-    });
-
-    it('offers no lateral accessibility action when there is no neighbour to step to', async () => {
-        lateralNavigationState.previous = null;
-        lateralNavigationState.next = null;
-
+    it('offers no band action where no switcher wraps the bar', async () => {
         const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
         const screen = await renderScreen(
             <SessionCockpitTabBar
@@ -573,6 +528,7 @@ describe('cockpit tab bars', () => {
 
     it('shows an open-tab count badge on the tabs surface', async () => {
         const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
+        cockpitPinsState.value = ['browse', 'git', 'tabs'];
 
         const screen = await renderScreen(
             <SessionCockpitTabBar
@@ -632,6 +588,7 @@ describe('cockpit tab bars', () => {
     it('renders Browser and Services as first-class session cockpit tabs', async () => {
         const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
         const pressed: string[] = [];
+        cockpitPinsState.value = ['browse', 'browser'];
 
         const screen = await renderScreen(
             <SessionCockpitTabBar
@@ -661,8 +618,9 @@ describe('cockpit tab bars', () => {
         expect(pressed).toEqual(['services']);
     });
 
-    it('keeps the bounded inline set and exposes remaining built-ins through More', async () => {
+    it('puts Chat and the default tools on the bar and lists every tool, pinnable, in More', async () => {
         const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
+        windowState.width = 390;
 
         const screen = await renderScreen(
             <SessionCockpitTabBar
@@ -674,23 +632,68 @@ describe('cockpit tab bars', () => {
             />,
         );
 
-        expect(screen.findByTestId('session-cockpit-tab-chat')).toBeTruthy();
-        expect(screen.findByTestId('session-cockpit-tab-browse')).toBeTruthy();
-        expect(screen.findByTestId('session-cockpit-tab-git')).toBeTruthy();
-        expect(screen.findByTestId('session-cockpit-tab-tabs')).toBeTruthy();
-        expect(screen.findByTestId('session-cockpit-tab-navigation')).toBeNull();
-        expect(screen.findByTestId('session-cockpit-tab-browser')).toBeNull();
-        expect(screen.findByTestId('session-cockpit-tab-services')).toBeNull();
-        expect(screen.findByTestId('session-cockpit-tab-terminal')).toBeNull();
-        expect(screen.tree.findByType('DropdownMenu' as never).props.items).toEqual(expect.arrayContaining([
-            expect.objectContaining({ id: 'navigation' }),
-            expect.objectContaining({ id: 'browser' }),
-            expect.objectContaining({ id: 'services' }),
-            expect.objectContaining({ id: 'terminal' }),
-        ]));
+        for (const id of ['chat', 'browse', 'git', 'companion', 'terminal']) {
+            expect(screen.findByTestId(`session-cockpit-tab-${id}`)).toBeTruthy();
+        }
+        expect(screen.findByTestId('session-cockpit-tab-tabs')).toBeNull();
+        expect(screen.tree.findAllByType('GestureHandlerScrollView' as never)).toHaveLength(0);
+        const items = screen.tree.findByType('DropdownMenu' as never).props.items as readonly Record<string, unknown>[];
+        expect(items.map((item) => item.id)).toEqual(expect.arrayContaining(['browse', 'git', 'tabs', 'navigation', 'browser', 'services']));
+        expect(items.find((item) => item.id === 'git')?.category).toBe('en:phoneNav.bar.onTheBar');
+        expect(items.find((item) => item.id === 'tabs')?.category).toBe('en:phoneNav.bar.more');
+        // Every tool can be pinned, not only plugins.
+        expect(screen.findByTestId('session-cockpit-pin:navigation')).toBeTruthy();
+        expect(screen.findByTestId('session-cockpit-pin:git')?.props.accessibilityState?.checked).toBe(true);
     });
 
-    it('discovers admitted plugin tabs in More and applies the host-owned persisted pin order', async () => {
+    it('scrolls a bar of more tools than fit, and hands the horizontal axis to it', async () => {
+        const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
+        const { useCockpitBarScrolls } = await import('./cockpitBarScrollState');
+        const observed: boolean[] = [];
+        const Probe = () => { observed.push(useCockpitBarScrolls()); return null; };
+        windowState.width = 390;
+        cockpitPinsState.value = ['browse', 'git', 'companion', 'terminal', 'tabs', 'navigation', 'browser'];
+        const bar = () => (
+            <>
+                <SessionCockpitTabBar sessionId="sess_1" activeSurface="chat" terminalTabAvailable={true}
+                    openDetailsTabCount={0} onSurfacePress={() => {}} />
+                <Probe />
+            </>
+        );
+
+        const screen = await renderScreen(bar());
+        expect(screen.tree.findAllByType('GestureHandlerScrollView' as never)).toHaveLength(1);
+        expect(screen.findByTestId('session-cockpit-tab-browser')).toBeTruthy();
+        expect(observed.at(-1)).toBe(true);
+
+        // "Always swipe between sessions": the bar keeps what fits; the rest wait in More, labelled.
+        swipeSettingsState.always = true;
+        await screen.update(bar());
+        expect(screen.tree.findAllByType('GestureHandlerScrollView' as never)).toHaveLength(0);
+        expect(screen.findByTestId('session-cockpit-tab-tabs')).toBeTruthy();
+        expect(screen.findByTestId('session-cockpit-tab-navigation')).toBeNull();
+        const items = screen.tree.findByType('DropdownMenu' as never).props.items as readonly Record<string, unknown>[];
+        expect(items.find((item) => item.id === 'navigation')).toEqual(expect.objectContaining({
+            category: 'en:phoneNav.bar.onTheBar',
+            subtitle: 'en:phoneNav.bar.heldInMore',
+        }));
+        expect(observed.at(-1)).toBe(false);
+    });
+
+    it('shows a tool opened from More in the More slot, selected', async () => {
+        const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
+        windowState.width = 390;
+        const screen = await renderScreen(
+            <SessionCockpitTabBar sessionId="sess_1" activeSurface="services" terminalTabAvailable={true}
+                openDetailsTabCount={0} onSurfacePress={() => {}} />,
+        );
+        const more = screen.findByTestId('session-cockpit-tab-more');
+        expect(more?.props.accessibilityState).toEqual(expect.objectContaining({ selected: true }));
+        expect(more?.props.accessibilityLabel).not.toBe('en:common.more');
+        expect(screen.findByTestId('session-cockpit-tab-services')).toBeNull();
+    });
+
+    it('discovers admitted plugin tabs in More and puts a pinned one on the bar', async () => {
         const placement = createMobilePluginPlacement();
         const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
         const renderBar = () => (
@@ -712,7 +715,7 @@ describe('cockpit tab bars', () => {
         ]));
         expect(screen.findByTestId('session-cockpit-tab-plugin:acme.review:review-panel')).toBeNull();
 
-        cockpitPinsState.value = ['plugin:acme.review:review-panel'];
+        cockpitPinsState.value = ['browse', 'plugin:acme.review:review-panel'];
         await screen.update(renderBar());
 
         expect(screen.findByTestId('session-cockpit-tab-plugin:acme.review:review-panel')).toBeTruthy();
@@ -747,7 +750,7 @@ describe('cockpit tab bars', () => {
             expect(minimumTargetSize).toBe(48);
             expect(pin?.props).toEqual(expect.objectContaining({
                 accessibilityRole: 'checkbox',
-                accessibilityLabel: 'en:projects.actions.pin',
+                accessibilityLabel: 'en:phoneNav.bar.keepOnBar',
                 accessibilityState: expect.objectContaining({ checked: false }),
                 // The shared IconButton owns the minimum target with a real press
                 // frame; RNW cannot turn Pressable hitSlop into a physical target.
@@ -771,7 +774,8 @@ describe('cockpit tab bars', () => {
                 pin?.props.onPress?.({ stopPropagation });
             });
             expect(stopPropagation).toHaveBeenCalledTimes(1);
-            expect(cockpitPinsState.set).toHaveBeenCalledWith(['plugin:acme.review:review-panel']);
+            // The first change starts from the host defaults, then adds the plugin at the end.
+            expect(cockpitPinsState.set).toHaveBeenCalledWith(['browse', 'git', 'companion', 'terminal', 'plugin:acme.review:review-panel']);
             expect(onSurfacePress).not.toHaveBeenCalled();
 
             await act(async () => {
@@ -784,7 +788,7 @@ describe('cockpit tab bars', () => {
             cockpitPinsState.value = ['plugin:acme.review:review-panel'];
             await screen.update(renderBar());
             const pinnedControl = screen.findByTestId(pinTestID);
-            expect(pinnedControl?.props.accessibilityLabel).toBe('en:projects.actions.unpin');
+            expect(pinnedControl?.props.accessibilityLabel).toBe('en:phoneNav.bar.removeFromBar');
             expect(pinnedControl?.props.accessibilityState?.checked).toBe(true);
         } finally {
             Object.defineProperty(Platform, 'OS', { configurable: true, value: originalPlatform });
@@ -794,6 +798,7 @@ describe('cockpit tab bars', () => {
     it('offers the transcript navigation surface as a session cockpit tab', async () => {
         const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
         const pressed: string[] = [];
+        cockpitPinsState.value = ['navigation'];
 
         const screen = await renderScreen(
             <SessionCockpitTabBar
@@ -893,7 +898,7 @@ describe('cockpit tab bars', () => {
         });
 
         expect(screen.getTextContent()).toContain('fr:common.files');
-        expect(screen.getTextContent()).toContain('fr:common.tabs');
+        expect(screen.getTextContent()).toContain('fr:sessionBoard.companion.title');
         expect(screen.getTextContent()).toContain('fr:session.rightPanel.tabs.git');
         expect(screen.getTextContent()).not.toContain('fr:common.details');
     });
@@ -924,7 +929,7 @@ describe('cockpit tab bars', () => {
         });
 
         expect(screen.getTextContent()).toContain('fr:common.files');
-        expect(screen.getTextContent()).toContain('fr:common.tabs');
+        expect(screen.getTextContent()).toContain('fr:phoneNav.bar.openFiles');
         expect(screen.getTextContent()).toContain('fr:session.rightPanel.tabs.git');
         expect(screen.getTextContent()).not.toContain('fr:common.details');
     });

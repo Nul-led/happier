@@ -1,7 +1,11 @@
 import React from 'react';
 import renderer from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSessionFixture, renderScreen } from '@/dev/testkit';
+import { createSessionFixture, createMachineFixture, createSessionMessagesFixture, createToolCallMessageFixture, renderScreen } from '@/dev/testkit';
+import { settingsDefaults } from '@/sync/domains/settings/settings';
+import { profileDefaults } from '@/sync/domains/profiles/profile';
+import type { StorageState } from '@/sync/store/types';
+import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { installNavigationShellCommonModuleMocks } from './navigationShellTestHelpers';
 
 
@@ -56,15 +60,15 @@ const primarySession = () => createSessionFixture({
         },
     },
 });
-const storageState = {
-    profile: { id: 'me' },
-    settings: { workspacePathDisplayModeV1: 'name', workspaceRefsV1: [] },
+const storageState: Partial<StorageState> = {
+    profile: { ...profileDefaults, id: 'me' },
+    settings: { ...settingsDefaults, workspacePathDisplayModeV1: 'name', workspaceRefsV1: [] },
     sessionMessages: {
-        'session-1': { messages: [] },
-        'hidden-voice': {
-            messages: [
-                {
-                    kind: 'tool-call',
+        'session-1': createSessionMessagesFixture(),
+        'hidden-voice': createSessionMessagesFixture({
+            messageIdsOldestFirst: ['hidden-voice-tool-message'],
+            messagesById: {
+                'hidden-voice-tool-message': createToolCallMessageFixture({
                     id: 'hidden-voice-tool-message',
                     localId: null,
                     createdAt: pendingRequestObservedAt,
@@ -84,10 +88,10 @@ const storageState = {
                             kind: 'permission',
                         },
                     },
-                },
-            ],
-        },
-        'hidden-voice-late-result': { messages: [] },
+                }),
+            },
+        }),
+        'hidden-voice-late-result': createSessionMessagesFixture(),
     },
     get sessions() {
         return {
@@ -129,7 +133,7 @@ const storageState = {
         };
     },
     get sessionListRowsByServerId() {
-        return { 'server-a': { 'session-1': primarySession() } };
+        return { 'server-a': { 'session-1': buildSessionListRenderableFromSession(primarySession()) } };
     },
     ordinarySessionListMembershipByServerId: { 'server-a': ['session-1'] },
     sessionListIndexByServerId: {
@@ -138,7 +142,7 @@ const storageState = {
     concurrentSessionListCacheByServerId: {},
     isDataReady: true,
     machines: {
-        'machine-stale': {
+        'machine-stale': createMachineFixture({
             id: 'machine-stale',
             active: false,
             activeAt: 1,
@@ -146,21 +150,23 @@ const storageState = {
             replacedAt: 2,
             replacementReason: 'manual_repair',
             replacementSource: 'manual',
-            metadata: { host: 'stale.local' },
-        },
-        'machine-target': {
+            metadata: { ...createMachineFixture().metadata!, host: 'stale.local' },
+        }),
+        'machine-target': createMachineFixture({
             id: 'machine-target',
             active: true,
             activeAt: 10,
-            metadata: { host: 'workstation.local' },
-        },
+            metadata: { ...createMachineFixture().metadata!, host: 'workstation.local' },
+        }),
     },
     getProjectForSession: (sessionId: string) =>
         sessionId === 'session-1'
             ? {
+                id: 'project-1', sessionIds: ['session-1'], createdAt: 1, updatedAt: 1,
                 key: {
+                    serverId: 'server-a',
                     machineId: 'machine-target',
-                    path: '/Users/leeroy/repo',
+                    rootPath: '/Users/leeroy/repo',
                 },
             }
             : null,
@@ -533,6 +539,9 @@ function collectText(node: renderer.ReactTestRenderer): string[] {
         .map((entry) => String(entry.props.children ?? ''))
         .filter((value) => value.length > 0);
 }
+
+// Load the source dependency closure outside the interaction tests' timeout budget.
+await import('./InboxView');
 
 describe('InboxView session attention', () => {
     beforeEach(() => {

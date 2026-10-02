@@ -137,8 +137,20 @@ export function createWorkspaceNavigationAdapter(input: Readonly<{
             visit();
         },
         dispatch(action: WorkspaceAction) {
+            if (action.type === 'reopenTab') { this.reopenTab(action.tabId); return; }
             input.dispatch(action);
             visit();
+        },
+        reopenTab(tabId?: string): boolean {
+            const state = input.getState();
+            const entry = tabId ? state.recentlyClosed.find(item => item.tab.id === tabId) : state.recentlyClosed[0];
+            if (!entry) return false;
+            const singleton = singletonActions(state, entry.tab.target)?.find(action => action.type === 'activateTab');
+            input.dispatch({ type: 'reopenTab', tabId: entry.tab.id,
+                ...(singleton?.type === 'activateTab' ? { reuseTabId: singleton.tabId } : {}),
+            });
+            visit();
+            return true;
         },
         closeTab(groupId: string, tabId: string) {
             input.dispatch({ type: 'closeTab', groupId, tabId, newTab: createWorkspaceEmptyTab(input.createId()) });

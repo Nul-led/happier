@@ -78,7 +78,7 @@ export function SessionFollowScreen() {
     }
     return <>
         {followingHeader}
-        <ItemList presentation="page" style={{ paddingTop: 0 }}>
+        <ItemList style={{ paddingTop: 0 }}>
             <PageHeader title={t('session.follow.editor.title')} description={t('sessionPages.follow.description')} />
             <AccountSessionFollowControl
                 address={address}

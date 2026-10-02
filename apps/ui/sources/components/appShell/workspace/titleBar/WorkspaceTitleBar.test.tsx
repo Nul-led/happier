@@ -80,6 +80,21 @@ function threePanes(): WorkspaceState {
 }
 
 describe('WorkspaceTitleBar', () => {
+    it('offers recently closed tabs even when all open tabs fit and reopens the chosen tab', async () => {
+        let state = createWorkspaceState(tab('a'));
+        state = reduceWorkspaceState(state, { type: 'openTab', groupId: 'group:1', tab: tab('b'), fallbackTitle: 'Closed document' });
+        state = reduceWorkspaceState(state, { type: 'closeTab', groupId: 'group:1', tabId: 'b', newTab: tab('blank', { target: { kind: 'newTab', params: {} } }) });
+        const screen = await renderScreen(<Harness initial={state} clusterEndPx={200} />, {
+            createNodeMock: windowMeasurement({ 'workspace-title-bar': { x: 0, width: 1440 }, 'workspace-group-group_1': { x: 300, width: 1100 } }),
+        });
+        expect(screen.findByTestId('workspace-overflow-group_1')).not.toBeNull();
+        await screen.pressByTestIdAsync('workspace-overflow-group_1');
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+        await screen.pressByTestIdAsync('workspace-reopen-tab-b');
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 150)); });
+        expect(stateOf(screen).groups['group:1'].activeTabId).toBe('b');
+        expect(stateOf(screen).recentlyClosed).toEqual([]);
+    });
     it('puts each top-row pane\'s tabs in the window strip over that pane and keeps a strip for a pane below', async () => {
         const screen = await renderScreen(<Harness initial={threePanes()} clusterEndPx={200} />, {
             createNodeMock: windowMeasurement({
@@ -102,6 +117,10 @@ describe('WorkspaceTitleBar', () => {
         const below = screen.findByTestId('workspace-group-group_3');
         expect(top && hasTestId(top, 'workspace-tabs-group_1')).toBe(false);
         expect(below && hasTestId(below, 'workspace-tab-d')).toBe(true);
+
+        // The raised tab is the whole focus signal: panes draw no card, ring or controls of their own.
+        expect(screen.root.findAll((node) => typeof node.props?.testID === 'string'
+            && /^split-canvas-leaf-(maximize|close)-/.test(node.props.testID))).toHaveLength(0);
 
         // A tab in the strip is the pane's own tab: pressing it focuses that pane.
         await act(async () => { second?.findAll((node) => node.props?.testID === 'workspace-tab-c' && typeof node.props.onPress === 'function')[0]?.props.onPress(); });
@@ -177,6 +196,8 @@ describe('WorkspaceTitleBar', () => {
         await screen.pressByTestIdAsync('workspace-tab-menu-close-others');
         await act(async () => { await new Promise((resolve) => setTimeout(resolve, 150)); });
         expect(stateOf(screen).groups['group:1'].tabIds).toEqual(['a', 'h']);
-        expect(screen.findByTestId('workspace-overflow-group_1')).toBeNull();
+        // Open-tab overflow is gone, but every explicit close remains reachable for undo.
+        expect(screen.findByTestId('workspace-overflow-group_1')?.props.accessibilityLabel).toBe('workspaceTabs.recentlyClosed');
+        expect(stateOf(screen).recentlyClosed.map(entry => entry.tab.id)).toEqual(ids.slice(1, -1).reverse());
     });
 });

@@ -13,6 +13,7 @@ const state = vi.hoisted(() => ({
     recordIds: {} as Record<string, string | null>,
     usageRecords: {} as Record<string, unknown>,
     persisted: null as unknown,
+    refresh: async (_keys?: readonly string[]) => {},
 }));
 const modalSpy = vi.hoisted(() => vi.fn());
 
@@ -42,6 +43,10 @@ vi.mock('@/hooks/server/connectedServices/useConnectedServiceQuotaSummaries', ()
         usageRecordIdsByKey: state.recordIds,
         isRefreshing: false,
         hasConnectedProfiles: state.summaries.length + state.withoutUsage.length > 0,
+        refreshableKeys: state.summaries.map((summary) => (summary as { key: string }).key),
+        refreshingByKey: {},
+        errorsByKey: {},
+        refresh: state.refresh,
     }),
 }));
 
@@ -168,6 +173,19 @@ describe('SidebarUsagePopoverContent', () => {
         expect(screen.findByTestId('sidebar-usage-as-of')).toBeNull();
     });
 
+    it('shows each account reading time instead of labeling old values with the newest account time', async () => {
+        state.summaries = [
+            { ...summary('claude:a', 'Work', 73), fetchedAt: 1_000 },
+            { ...summary('claude:b', 'Personal', 40), fetchedAt: 5_000 },
+        ];
+        const screen = await renderContent();
+        const { SurfaceAsOfLabel } = await import('@/components/ui/surfaces/SurfaceAsOfLabel');
+        const times = screen.findAllByType(SurfaceAsOfLabel)
+            .filter((label) => label.props.testID !== 'sidebar-usage-as-of')
+            .map((label) => label.props.at);
+        expect(times).toEqual([1_000, 5_000]);
+    });
+
     it('explains what usage is for when no account is connected', async () => {
         const screen = await renderContent();
         expect(screen.findByTestId('sidebar-usage-status')).toBeTruthy();
@@ -195,6 +213,7 @@ describe('SidebarUsagePopoverContent', () => {
             setHidden?: (hidden: boolean) => void;
             session?: import('./SidebarUsagePopoverContent').UsagePopoverSession;
             accountState?: 'loading' | 'unavailable';
+            refresh?: import('./SidebarUsagePopoverContent').UsagePopoverRefresh;
         }> = {}) {
             const { SidebarUsagePopoverView } = await import('./SidebarUsagePopoverContent');
             const { buildUsageSummary, buildUsageSummaryCache } = await import('@/components/hub/usage/useUsageSummary');
@@ -208,7 +227,7 @@ describe('SidebarUsagePopoverContent', () => {
                 ] as never),
                 saved: null,
                 accountsWithoutUsage: options.accountState ? [{
-                    key: 'claude:pending', serviceLabel: 'Anthropic Claude', legacyServiceId: 'claude',
+                    key: 'claude:pending', serviceLabel: 'Anthropic Claude', legacyServiceId: 'claude-subscription',
                     serviceGroupKey: 'plugin.anthropic/claude', accountLabel: 'Pending', accountEmail: null,
                     accountId: 'pending', state: options.accountState,
                 }] : [],
@@ -227,10 +246,31 @@ describe('SidebarUsagePopoverContent', () => {
                         }),
                     }}
                     session={options.session}
+                    refresh={options.refresh}
                     onOpenConnectedServices={() => {}}
                 />,
             );
         }
+
+        it('refreshes only the session account until All accounts explicitly widens the scope', async () => {
+            const scopes: Array<readonly string[] | undefined> = [];
+            const screen = await renderView({
+                session: { accountKey: 'claude:work', ownSignIn: null, scopeLine: null, nextMove: null },
+                refresh: {
+                    keys: ['claude:work', 'claude:personal'],
+                    refreshingByKey: {},
+                    errorsByKey: { 'claude:personal': 'other_account_failed' },
+                    run: async (keys) => { scopes.push(keys); },
+                },
+            });
+            expect(screen.getTextContent()).not.toContain('other_account_failed');
+            await screen.pressByTestIdAsync('sidebar-usage-refresh');
+            expect(scopes).toEqual([['claude:work']]);
+            await screen.pressByTestIdAsync('usage-popover-all-accounts');
+            await screen.pressByTestIdAsync('sidebar-usage-refresh');
+            expect(scopes).toEqual([['claude:work'], undefined]);
+            expect(screen.getTextContent()).toContain('other_account_failed');
+        });
 
         it('shows emails and ids as they are until the device hides them; names people gave stay', async () => {
             const shown = (await renderView()).getTextContent();

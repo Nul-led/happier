@@ -100,6 +100,9 @@ const stylesheet = StyleSheet.create((theme) => ({
 }));
 
 export type DetailsSplitWorkspaceProps = Readonly<{
+    sessionId?: string;
+    serverId?: string | null;
+    resolveTabHref?: (tab: DetailsTabState) => string | null;
     pane: AppPaneScopeApi;
     paddingTop?: number;
     headerPaddingTop?: number;
@@ -235,6 +238,8 @@ export const DetailsSplitWorkspace = React.memo((props: DetailsSplitWorkspacePro
         return (
             <View key={group.id} style={styles.groupFrame}>
                 <DetailsTabGroupPanel
+                    sessionId={props.sessionId}
+                    serverId={props.serverId}
                     pane={props.pane}
                     group={group}
                     paddingTop={props.paddingTop}
@@ -243,6 +248,7 @@ export const DetailsSplitWorkspace = React.memo((props: DetailsSplitWorkspacePro
                     testIds={groupPanelTestIds}
                     resolveTabIconName={props.resolveTabIconName}
                     resolveTabPresentation={props.resolveTabPresentation}
+                    resolveTabHref={props.resolveTabHref}
                     // A maximized group is the only one on screen; its siblings stay
                     // mounted for continuity and must not report their tabs presented.
                     presented={!details.maximizedGroupId || group.id === details.maximizedGroupId}
@@ -259,6 +265,8 @@ export const DetailsSplitWorkspace = React.memo((props: DetailsSplitWorkspacePro
         groupPanelTestIds,
         props.headerPaddingTop,
         props.paddingTop,
+        props.sessionId,
+        props.serverId,
         props.pane,
         props.renderEmptyState,
         props.renderHeaderActions,
@@ -266,11 +274,14 @@ export const DetailsSplitWorkspace = React.memo((props: DetailsSplitWorkspacePro
         props.renderTabContent,
         props.resolveTabIconName,
         props.resolveTabPresentation,
+        props.resolveTabHref,
         styles.groupFrame,
     ]);
 
     const renderEmptyWorkspace = React.useCallback(() => (
         <DetailsTabGroupPanel
+            sessionId={props.sessionId}
+            serverId={props.serverId}
             pane={props.pane}
             group={emptyGroup}
             paddingTop={props.paddingTop}
@@ -279,6 +290,7 @@ export const DetailsSplitWorkspace = React.memo((props: DetailsSplitWorkspacePro
             testIds={groupPanelTestIds}
             resolveTabIconName={props.resolveTabIconName}
             resolveTabPresentation={props.resolveTabPresentation}
+            resolveTabHref={props.resolveTabHref}
             renderTabContent={props.renderTabContent}
             renderHeaderLeadingActions={props.renderHeaderLeadingActions}
             renderHeaderActions={props.renderHeaderActions}
@@ -286,6 +298,8 @@ export const DetailsSplitWorkspace = React.memo((props: DetailsSplitWorkspacePro
         />
     ), [
         emptyGroup,
+        props.sessionId,
+        props.serverId,
         props.forceEmptyState,
         groupPanelTestIds,
         props.headerPaddingTop,
@@ -297,6 +311,7 @@ export const DetailsSplitWorkspace = React.memo((props: DetailsSplitWorkspacePro
         props.renderTabContent,
         props.resolveTabIconName,
         props.resolveTabPresentation,
+        props.resolveTabHref,
     ]);
 
     const handleRequestSplitLeaf = React.useCallback((input: Readonly<{

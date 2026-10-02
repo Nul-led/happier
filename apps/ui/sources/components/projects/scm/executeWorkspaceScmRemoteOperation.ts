@@ -6,6 +6,7 @@ import type { ScmPushRejectPolicy, ScmRemoteConfirmPolicy } from '@/scm/settings
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import { storage } from '@/sync/domains/state/storage';
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
+import type { ScmRemotePolicy } from '@happier-dev/protocol/scm';
 import {
     machineScmRemoteFetch,
     machineScmRemotePull,
@@ -27,6 +28,7 @@ export async function executeWorkspaceScmRemoteOperation(input: Readonly<{
     tracking: ScmOperationTracker | null;
     shouldContinue?: () => boolean;
     skipConfirmation?: boolean;
+    policy?: ScmRemotePolicy;
 }>): Promise<void> {
     await executeScmRemoteOperation({
         kind: input.kind,
@@ -36,7 +38,9 @@ export async function executeWorkspaceScmRemoteOperation(input: Readonly<{
         scmCommitStrategy: input.scmCommitStrategy,
         scmRemoteConfirmPolicy: input.scmRemoteConfirmPolicy,
         scmPushRejectPolicy: input.scmPushRejectPolicy,
+        policy: input.policy,
         surface: 'files',
+        failureFeedback: 'outcomeLine',
         tracking: input.tracking,
         setScmOperationBusy: input.setScmOperationBusy,
         setScmOperationStatus: input.setScmOperationStatus,
@@ -61,11 +65,13 @@ export async function executeWorkspaceScmRemoteOperation(input: Readonly<{
                         cwd: input.scope.rootPath,
                         remote: remoteTarget.remote,
                         branch: remoteTarget.branch ?? undefined,
+                        ...input.policy,
                     }, options)
                     : await machineScmRemotePush(input.scope.machineId, {
                         cwd: input.scope.rootPath,
                         remote: remoteTarget.remote,
                         branch: remoteTarget.branch ?? undefined,
+                        ...input.policy,
                     }, options);
         },
         removeIndexLock: async (request) =>

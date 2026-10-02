@@ -18,6 +18,7 @@ import { createSessionRouteServerScope } from '@/hooks/session/sessionRouteServe
 import { resolveNewSessionAuthContinuation } from '@/components/sessions/new/navigation/newSessionAuthContinuation';
 import { useVoiceSurfaceE2eFixtureComposition } from '@/dev/testkit/harness/useVoiceSurfaceE2eFixtureComposition';
 import { isPersonalHomeBootstrapRuntimeHost } from '@/components/personalHome/bootstrap/personalHomeBootstrapHost';
+import { PersonalHomeBootstrapContent } from '@/components/personalHome/bootstrap/PersonalHomeBootstrapGate';
 import { buildMachineAddHref } from '@/components/settings/machines/collection/machineCollectionModel';
 import { shouldKeepDesktopPersonalHomeShell } from './personalHomeIndexRoutePolicy';
 
@@ -139,7 +140,9 @@ function Authenticated(props: Readonly<{
 
     return (
         <View style={stylesheet.root}>
-            <MainView variant="phone" />
+            <PersonalHomeBootstrapContent>
+                <MainView variant="phone" />
+            </PersonalHomeBootstrapContent>
         </View>
     );
 }

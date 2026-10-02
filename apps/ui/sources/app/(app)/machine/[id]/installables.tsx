@@ -115,7 +115,7 @@ export default function MachineInstallablesScreen() {
     return (
         <>
             <Stack.Screen options={screenOptions} />
-            <ItemList presentation="page">
+            <ItemList>
                 <PageHeader
                     testID="machine-installables-header"
                     title={screenTitle}

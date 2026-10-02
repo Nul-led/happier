@@ -1,8 +1,12 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act } from 'react-test-renderer';
-import { renderScreen } from '@/dev/testkit';
+import { renderScreen as renderScreenWithProviders } from '@/dev/testkit';
 import { installMachineDetailsCommonModuleMocks } from './machineDetailsTestHelpers';
+import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLoader';
+import { decodePlainMachineStoredContent } from '@happier-dev/protocol';
+import type { MachineUpdateMetadataRequest, MachineUpdateMetadataResponse } from '@happier-dev/protocol';
+import type { Machine } from '@/sync/domains/state/storageTypes';
 
 const testGlobal = globalThis as typeof globalThis & {
     IS_REACT_ACT_ENVIRONMENT?: boolean;
@@ -21,7 +25,9 @@ const {
     coordinatorSpy,
     alertSpy,
     promptSpy,
-    machineUpdateMetadataSpy,
+    metadataTransportSpy,
+    refreshMachinesSpy,
+    routeParams,
     stackOptionsState,
     mutateAccountSettingsSpy,
     replaceSpy,
@@ -45,7 +51,9 @@ const {
     }),
     alertSpy: vi.fn(),
     promptSpy: vi.fn<(..._args: any[]) => Promise<string | null>>(async () => null),
-    machineUpdateMetadataSpy: vi.fn(async () => ({})),
+    metadataTransportSpy: vi.fn<(_event: string, _request: MachineUpdateMetadataRequest) => Promise<MachineUpdateMetadataResponse>>(),
+    refreshMachinesSpy: vi.fn(async () => {}),
+    routeParams: { id: 'machine-1', serverId: undefined as string | undefined },
     stackOptionsState: { current: null as Record<string, unknown> | null },
     mutateAccountSettingsSpy: vi.fn(async (mutate: (raw: Record<string, unknown>) => Record<string, unknown>) => {
         mutate({ providerSettingsV1: undefined });
@@ -64,7 +72,7 @@ installMachineDetailsCommonModuleMocks({
         const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
         return createExpoRouterMock({
             router: { ...routerMock, back: routerBackSpy },
-            params: { id: 'machine-1' },
+            params: routeParams,
             stackOptionsCapture: {
                 record: (options) => {
                     stackOptionsState.current = typeof options === 'function' ? options() : options;
@@ -90,6 +98,7 @@ installMachineDetailsCommonModuleMocks({
     },
     storage: async () => {
         const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+        const { profileDefaults } = await import('@/sync/domains/profiles/profile');
         return createStorageModuleStub({
             useSessions: () => [],
             useMachine: () => machineState.currentMachine,
@@ -100,8 +109,13 @@ installMachineDetailsCommonModuleMocks({
             storage: {
                 getState: () => ({
                     settings: {},
+                    profile: profileDefaults,
+                    profileScope: null,
                     sessions: {},
-                    machines: {},
+                    machines: { [machineState.currentMachine.id]: machineState.currentMachine },
+                    applyMachines: (machines: Machine[]) => {
+                        machineState.currentMachine = machines.find((machine) => machine.id === routeParams.id) ?? machineState.currentMachine;
+                    },
                     getProjectForSession: () => null,
                 }),
             },
@@ -135,11 +149,14 @@ vi.mock('@/components/ui/text/Text', () => ({
 vi.mock('@/components/machines/InstallableDepInstaller', () => ({ InstallableDepInstaller: () => null }));
 vi.mock('@/components/sessions/runs/ExecutionRunRow', () => ({ ExecutionRunRow: () => null }));
 
-vi.mock('@/sync/ops', () => ({
+vi.mock('@/sync/api/session/apiSocket', () => ({ apiSocket: { emitWithAck: metadataTransportSpy } }));
+
+vi.mock('@/sync/ops', async () => ({
     machineSpawnNewSession: vi.fn(async () => ({ type: 'error', errorCode: 'unexpected', errorMessage: 'noop' })),
     machineStopDaemon: vi.fn(async () => ({ message: 'noop' })),
     machineStopSession: vi.fn(async () => ({ ok: true })),
-    machineUpdateMetadata: machineUpdateMetadataSpy,
+    // Keep metadata serialization, concurrency, retry and projection updates real beneath the socket boundary.
+    machineUpdateMetadata: (await import('@/sync/ops/machines')).machineUpdateMetadata,
     machineExecutionRunsList: vi.fn(async () => ({ ok: true, runs: [] })),
     machineClearReplacementFromAccount: clearReplacementSpy,
     machineReplaceInAccount: replaceSpy,
@@ -173,7 +190,7 @@ vi.mock('@/sync/domains/server/activeServerSwitch', () => ({ setActiveServerAndS
 vi.mock('@/sync/sync', () => ({ sync: {
     mutateAccountSettings: mutateAccountSettingsSpy,
     refreshMachinesThrottled: refreshMachinesThrottledSpy,
-    refreshMachines: vi.fn(),
+    refreshMachines: refreshMachinesSpy,
     retryNow: vi.fn(),
 } }));
 vi.mock('@/utils/system/fireAndForget', () => ({
@@ -208,6 +225,11 @@ vi.mock('@/sync/ops/sessionMachineTarget', () => ({
 
 type RenderedScreen = Awaited<ReturnType<typeof renderScreen>>;
 
+async function renderScreen(element: React.ReactElement) {
+    const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
+    return renderScreenWithProviders(React.createElement(AppPaneProvider, null, element));
+}
+
 /** The page's closing destructive button (a quiet button row, not a row in a sheet). */
 function findRemoveMachineButton(screen: RenderedScreen) {
     return screen.findAll((node) => node.props?.testID === 'machine-detail-remove' && typeof node.props?.onPress === 'function')[0]?.props;
@@ -220,7 +242,8 @@ function findHeaderMenuAction(screen: RenderedScreen, testID: string) {
 }
 
 describe('MachineDetailScreen (revoke/forget machine)', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
+        await loadSyncSingletonForTests();
         itemSpy.mockReset();
         showSpy.mockReset();
         confirmSpy.mockReset();
@@ -232,8 +255,11 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         alertSpy.mockReset();
         promptSpy.mockReset();
         promptSpy.mockResolvedValue(null);
-        machineUpdateMetadataSpy.mockReset();
-        machineUpdateMetadataSpy.mockResolvedValue({});
+        routeParams.id = 'machine-1';
+        routeParams.serverId = undefined;
+        metadataTransportSpy.mockReset();
+        metadataTransportSpy.mockResolvedValue({ result: 'success', version: 2, metadata: 'server-plain' });
+        refreshMachinesSpy.mockReset();
         stackOptionsState.current = null;
         mutateAccountSettingsSpy.mockReset();
         mutateAccountSettingsSpy.mockImplementation(async (mutate: (raw: Record<string, unknown>) => Record<string, unknown>) => {
@@ -256,6 +282,7 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
             daemonState: null,
             daemonStateVersion: 0,
             revokedAt: null,
+            storageMode: 'plain',
         };
         machineState.machinesByServerId = {
             'server-a': [
@@ -278,8 +305,7 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         machineState.settings = { providerSettingsV1: undefined };
     });
 
-    it('updates the visible machine name without interrupting success with an alert', async () => {
-        promptSpy.mockResolvedValueOnce('theo-devbox');
+    it('updates the visible machine name only after saving the inline rename draft', async () => {
         const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
 
         const screen = await renderScreen(React.createElement(MachineDetailScreen));
@@ -292,13 +318,69 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
         await act(async () => {
             await menu.props.onSelect('rename');
         });
-
-        expect(machineUpdateMetadataSpy).toHaveBeenCalledWith(
-            'machine-1',
-            expect.objectContaining({ displayName: 'theo-devbox' }),
-            1,
-        );
+        expect(screen.findByTestId('machine-detail-name-input')?.props.value).toBe('My Machine');
+        await act(async () => screen.changeTextByTestId('machine-detail-name-input', '  theo-devbox  '));
+        expect(metadataTransportSpy).not.toHaveBeenCalled();
+        expect(promptSpy).not.toHaveBeenCalled();
+        await screen.pressByTestIdAsync('machine-detail-name-save');
+        const request = metadataTransportSpy.mock.calls[0]?.[1];
+        expect(request).toMatchObject({ machineId: 'machine-1', expectedVersion: 1 });
+        expect(decodePlainMachineStoredContent(request!.metadata)).toMatchObject({ displayName: 'theo-devbox', host: 'host' });
+        expect(machineState.currentMachine.metadata.displayName).toBe('theo-devbox');
+        expect(machineState.currentMachine.metadataVersion).toBe(2);
+        expect(screen.findByTestId('machine-detail-name-input')).toBeNull();
         expect(alertSpy).not.toHaveBeenCalled();
+    });
+
+    it('cancels and retires the inline rename draft when the machine identity changes', async () => {
+        const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
+        const screen = await renderScreen(React.createElement(MachineDetailScreen));
+        await act(async () => findHeaderMenuAction(screen, 'machine-detail-menu-rename').onSelect());
+        expect(screen.findByTestId('machine-detail-name-input')).toBeTruthy();
+        await act(async () => screen.changeTextByTestId('machine-detail-name-input', 'not saved'));
+        await screen.pressByTestIdAsync('machine-detail-name-cancel');
+        expect(screen.findByTestId('machine-detail-name-input')).toBeNull();
+        await act(async () => findHeaderMenuAction(screen, 'machine-detail-menu-rename').onSelect());
+        expect(screen.findByTestId('machine-detail-name-input')?.props.value).toBe('My Machine');
+        routeParams.id = 'machine-2';
+        machineState.currentMachine = machineState.machinesByServerId['server-a']![1];
+        const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
+        await screen.update(React.createElement(AppPaneProvider, null, React.createElement(MachineDetailScreen)));
+        expect(screen.findByTestId('machine-detail-name-input')).toBeNull();
+        await act(async () => findHeaderMenuAction(screen, 'machine-detail-menu-rename').onSelect());
+        expect(screen.findByTestId('machine-detail-name-input')?.props.value).toBe('Replacement Machine');
+        // The same machine id on another Home is a different editing target.
+        routeParams.serverId = 'server-b';
+        await screen.update(React.createElement(AppPaneProvider, null, React.createElement(MachineDetailScreen)));
+        expect(screen.findByTestId('machine-detail-name-input')).toBeNull();
+        expect(metadataTransportSpy).not.toHaveBeenCalled();
+    });
+
+    it('keeps the inline rename draft available after a save error and refreshes machine metadata', async () => {
+        metadataTransportSpy.mockRejectedValueOnce(new Error('rename transport failed'));
+        const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
+        const screen = await renderScreen(React.createElement(MachineDetailScreen));
+        await act(async () => findHeaderMenuAction(screen, 'machine-detail-menu-rename').onSelect());
+        expect(screen.findByTestId('machine-detail-name-input')).toBeTruthy();
+        await act(async () => screen.changeTextByTestId('machine-detail-name-input', 'Retry name'));
+        await screen.pressByTestIdAsync('machine-detail-name-save');
+        expect(alertSpy).toHaveBeenCalledWith('common.error', 'rename transport failed');
+        expect(refreshMachinesSpy).toHaveBeenCalled();
+        expect(screen.findByTestId('machine-detail-name-input')?.props.value).toBe('Retry name');
+        expect(screen.findByTestId('machine-detail-name-input')?.props.editable).toBe(true);
+    });
+
+    it('clears a custom machine name by saving an empty inline rename draft', async () => {
+        const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
+        const screen = await renderScreen(React.createElement(MachineDetailScreen));
+        await act(async () => findHeaderMenuAction(screen, 'machine-detail-menu-rename').onSelect());
+        expect(screen.findByTestId('machine-detail-name-input')).toBeTruthy();
+        await act(async () => screen.changeTextByTestId('machine-detail-name-input', '  '));
+        await screen.pressByTestIdAsync('machine-detail-name-save');
+        expect(machineState.currentMachine.metadata.displayName).toBeUndefined();
+        const request = metadataTransportSpy.mock.calls[0]?.[1];
+        expect(request).toMatchObject({ machineId: 'machine-1', expectedVersion: 1 });
+        expect(decodePlainMachineStoredContent(request!.metadata)).not.toHaveProperty('displayName');
     });
 
     it('confirms and revokes the machine', async () => {

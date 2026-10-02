@@ -8,11 +8,28 @@ const tab = (id: string) => ({ id, target: { kind: 'settings', params: { pageId:
 const record = (...ids: string[]) => ({ v: 1 as const, tabsById: Object.fromEntries(ids.map(id => [id, tab(id)])), order: ids, pairs: [] });
 const singletonKind = 'plugin:acme.notes:notes';
 const singletonCatalog = [{ id: singletonKind, kind: 'plugin', container: 'appPage', destination: { pluginId: 'acme.notes', localId: 'notes' },
-    title: 'Notes', icon: 'document-text-outline', order: 40, placement: { kind: 'rail', region: 'plugins' },
+    title: 'Notes', icon: 'file', order: 40, placement: { kind: 'rail', region: 'plugins' },
     activation: 'navigate', availability: 'available', routePath: '/plugins/acme.notes/notes',
 }] satisfies readonly CompactAppDestination[];
 
 describe('workspace KV synchronization', () => {
+    it('projects restored tabs on an absent key without publishing until an explicit edit', async () => {
+        let stored: SharedWorkspaceTabs | null = null;
+        const publications: SharedWorkspaceTabs[] = [];
+        const controller = createWorkspaceTabsSync({ transport: {
+            read: async () => ({ value: stored, version: stored ? 0 : -1 }),
+            compareAndSet: async value => { publications.push(value); stored = value; return { success: true as const, version: 0 }; },
+        }, enroll: () => [{ type: 'open', tab: tab('restored') }], onRecord: () => {} });
+        await controller.refresh();
+        await controller.flush();
+        expect(publications).toEqual([]);
+        expect(controller.getSnapshot().record?.order).toEqual(['restored']);
+        controller.enqueue([{ type: 'patch', tabId: 'restored', pinned: true }]);
+        await controller.flush();
+        expect(publications).toHaveLength(1);
+        expect(publications[0].tabsById.restored.pinned).toBe(true);
+        controller.stop();
+    });
     it('rebases concurrent app-page opens to one catalog-owned identity while keeping the latest reopen target', async () => {
         const kind = singletonKind;
         const catalog = singletonCatalog;
@@ -87,6 +104,124 @@ describe('workspace KV synchronization', () => {
         await controller.flush();
         expect(stored.order).toEqual(closeDuringWrite ? [] : ['local']);
         if (!closeDuringWrite) expect(stored.tabsById.local.target).toEqual(local.target);
+        controller.stop();
+    });
+    it('retires an obsolete singleton alias when the peer restores its original ID and retypes the former winner', async () => {
+        const first = { ...tab('first'), target: { kind: singletonKind, params: { subPath: 'first' } } };
+        const second = { ...tab('second'), target: { kind: singletonKind, params: { subPath: 'second' } } };
+        const retargeted = { ...first, target: { kind: 'settings', params: { pageId: 'privacy' } } };
+        const other = tab('other');
+        let stored: SharedWorkspaceTabs = emptyWorkspaceTabs();
+        let conflict = true;
+        const projections: SharedWorkspaceTabs[] = [];
+        const controller = createWorkspaceTabsSync({ transport: {
+            read: async () => ({ value: stored, version: 0 }),
+            compareAndSet: async value => {
+                if (conflict) {
+                    conflict = false;
+                    // Both devices already know these restored IDs; no UUID collision is involved.
+                    stored = { v: 1, tabsById: { first: retargeted, second }, order: ['first', 'second'], pairs: [] };
+                    return { success: false as const, value: stored, version: 1 };
+                }
+                stored = value;
+                return { success: true as const, version: 2 };
+            },
+        }, onRecord: value => projections.push(value), normalizeRecord: value => normalizeWorkspaceSingletonTabs(value, singletonCatalog) });
+        await controller.refresh();
+        controller.enqueue([{ type: 'open', tab: first }, { type: 'open', tab: second }, { type: 'open', tab: other }]);
+        await controller.flush();
+        expect(projections.some(value => value.tabsById.first?.target.kind === singletonKind)).toBe(false);
+        expect(stored.order).toEqual(['first', 'second', 'other']);
+        expect(stored.tabsById.first.target).toEqual(retargeted.target);
+        expect(stored.tabsById.second.target).toEqual(second.target);
+        controller.stop();
+    });
+    it.each([false, true])('does not redirect an original plugin operation to a peer-retyped winner: close=%s', async closeDuringWrite => {
+        const remote = { ...tab('remote'), target: { kind: singletonKind, params: { subPath: 'old' } } };
+        const local = { ...tab('local'), target: { kind: singletonKind, params: { subPath: 'new' } } };
+        const retyped = { ...remote, target: { kind: 'settings', params: { pageId: 'privacy' } } };
+        let stored: SharedWorkspaceTabs = { v: 1, tabsById: { remote }, order: ['remote'], pairs: [] };
+        let conflict = true;
+        const controller = createWorkspaceTabsSync({ transport: {
+            read: async () => ({ value: stored, version: 0 }),
+            compareAndSet: async value => {
+                if (conflict) {
+                    conflict = false;
+                    if (closeDuringWrite) controller.enqueue([{ type: 'close', tabId: 'local' }]);
+                    stored = { v: 1, tabsById: { remote: retyped }, order: ['remote'], pairs: [] };
+                    return { success: false as const, value: stored, version: 1 };
+                }
+                stored = value;
+                return { success: true as const, version: 2 };
+            },
+        }, onRecord: () => {}, normalizeRecord: value => normalizeWorkspaceSingletonTabs(value, singletonCatalog) });
+        await controller.refresh();
+        controller.enqueue([{ type: 'open', tab: local }]);
+        await controller.flush();
+        expect(stored.order).toEqual(closeDuringWrite ? ['remote'] : ['remote', 'local']);
+        expect(stored.tabsById.remote.target).toEqual(retyped.target);
+        if (!closeDuringWrite) expect(stored.tabsById.local.target).toEqual(local.target);
+        controller.stop();
+    });
+    it('keeps aliases acyclic when concurrent deliberate enrollments choose opposite known singleton IDs', async () => {
+        const first = { ...tab('first'), target: { kind: singletonKind, params: { subPath: 'first' } } };
+        const second = { ...tab('second'), target: { kind: singletonKind, params: { subPath: 'second' } } };
+        let stored: SharedWorkspaceTabs = emptyWorkspaceTabs();
+        let conflict = true;
+        const controller = createWorkspaceTabsSync({ transport: {
+            read: async () => ({ value: stored, version: 0 }),
+            compareAndSet: async value => {
+                if (conflict) {
+                    conflict = false;
+                    stored = { v: 1, tabsById: { second }, order: ['second'], pairs: [] };
+                    return { success: false as const, value: stored, version: 1 };
+                }
+                stored = value;
+                return { success: true as const, version: 2 };
+            },
+        }, onRecord: () => {}, normalizeRecord: value => normalizeWorkspaceSingletonTabs(value, singletonCatalog) });
+        await controller.refresh();
+        controller.enqueue([{ type: 'open', tab: first }, { type: 'open', tab: second }]);
+        await controller.flush();
+        expect(stored.order).toEqual(['second']);
+        expect(stored.tabsById.second.target).toEqual(first.target);
+        expect(controller.getSnapshot().record).toEqual(stored);
+        controller.stop();
+    });
+    it('does not follow a mixed-kind alias chain when the final peer identity happens to return to the original kind', async () => {
+        const otherKind = 'plugin:acme.notes:other';
+        const catalog = [...singletonCatalog, { ...singletonCatalog[0], id: otherKind,
+            destination: { pluginId: 'acme.notes', localId: 'other' }, routePath: '/plugins/acme.notes/other' }];
+        const local = { ...tab('local'), target: { kind: singletonKind, params: {} } };
+        const remote = { ...local, id: 'remote' };
+        const peer = { ...local, id: 'peer' };
+        const unrelated = tab('unrelated');
+        let stored: SharedWorkspaceTabs = { v: 1, tabsById: { remote, local }, order: ['remote', 'local'], pairs: [] };
+        let conflicts = 2;
+        const controller = createWorkspaceTabsSync({ transport: {
+            read: async () => ({ value: stored, version: 0 }),
+            compareAndSet: async value => {
+                if (conflicts === 2) {
+                    conflicts--;
+                    expect(value.order).toEqual(['unrelated']);
+                    stored = { v: 1, tabsById: { peer: { ...peer, target: { kind: otherKind, params: {} } },
+                        remote: { ...remote, target: { kind: otherKind, params: {} } } }, order: ['peer', 'remote'], pairs: [] };
+                    return { success: false as const, value: stored, version: 1 };
+                }
+                if (conflicts === 1) {
+                    conflicts--;
+                    stored = { v: 1, tabsById: { peer }, order: ['peer'], pairs: [] };
+                    return { success: false as const, value: stored, version: 2 };
+                }
+                stored = value;
+                return { success: true as const, version: 3 };
+            },
+        }, onRecord: () => {}, normalizeRecord: value => normalizeWorkspaceSingletonTabs(value, catalog) });
+        controller.enqueue([{ type: 'close', tabId: 'local' }, { type: 'open', tab: unrelated }]);
+        await controller.refresh();
+        await controller.flush();
+        expect(stored.order).toEqual(['peer', 'unrelated']);
+        expect(stored.tabsById.peer.target).toEqual(peer.target);
         controller.stop();
     });
     it('applies a newly declared singleton policy to cached tabs even when its subsequent KV reread fails', async () => {

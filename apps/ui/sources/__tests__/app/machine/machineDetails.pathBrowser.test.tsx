@@ -17,7 +17,7 @@ function createMachineRecord() {
     createdAt: Date.now(),
     updatedAt: Date.now(),
     seq: 0,
-    metadata: { displayName: 'My Machine', host: 'host', platform: 'darwin', homeDir: '/Users/test' },
+    metadata: { displayName: 'My Machine', host: 'host', platform: 'darwin', homeDir: '/Users/test', happyCliVersion: '0.0.0-test', happyHomeDir: '/Users/test/.happy-dev' },
     metadataVersion: 1,
     daemonState: null,
     daemonStateVersion: 0,
@@ -79,26 +79,15 @@ installMachineDetailsCommonModuleMocks({
             params: () => mockState.routeParamsRef.current,
         }).module;
     },
-    storage: async () => {
-        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
-        return createStorageModuleStub({
-            useSessions: () => mockState.sessionsState,
-            useAllMachines: () => [],
-            useMachine: () => mockState.machinesState[String(mockState.routeParamsRef.current.id ?? '')] ?? null,
-            storage: {
-                getState: () => ({
-                    settings: mockState.settingsState,
-                    sessions: mockState.machineTargetSessionsState,
-                    machines: mockState.machinesState,
-                    getProjectForSession: (sessionId: string) => mockState.projectForSession[sessionId] ?? null,
-                }),
-            },
-            useSetting: () => false,
-            useSettingMutable: () => [null, vi.fn()],
-            useSettings: () => mockState.settingsState,
-        });
-    },
+    storage: async (importOriginal) => importOriginal(),
 });
+
+// Configure platform boundaries before loading the real store/hooks graph.
+vi.doUnmock('@/sync/domains/state/storage');
+const { storage } = await import('@/sync/domains/state/storageStore');
+const { settingsDefaults } = await import('@/sync/domains/settings/settings');
+const { createMachineFixture } = await import('@/dev/testkit/fixtures/machineFixtures');
+const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
 
 vi.mock('@/components/ui/lists/Item', () => ({
     Item: (props: any) => {
@@ -253,8 +242,7 @@ vi.mock('@/sync/ops/sessionMachineTarget', () => ({
 }));
 
 describe('MachineDetailScreen start a session', () => {
-    beforeEach(() => {
-        vi.resetModules();
+    beforeEach(async () => {
         mockState.activeServerIdRef.current = 'server-a';
         mockState.routerBackSpy.mockReset();
         mockState.routerPushSpy.mockReset();
@@ -266,16 +254,37 @@ describe('MachineDetailScreen start a session', () => {
         mockState.machinesState = { 'machine-1': createMachineRecord() };
         mockState.projectForSession = {};
         mockState.settingsState = {};
+        storage.setState(storage.getInitialState(), true);
+        await upsertAndActivateServer({ serverUrl: 'https://server-a', scope: 'tab' });
+        await storage.getState().activateSettingsScope({ serverId: 'server-a', accountId: 'account-a' });
+        storage.getState().applySettings(settingsDefaults, (storage.getState().settingsVersion ?? 0) + 1);
+        storage.getState().applyMachines([createMachineFixture({ id: 'machine-1', metadata: createMachineRecord().metadata })], true);
+        expect(storage.getState().machines['machine-1']).toBeTruthy();
         machineContributionRegistryProjectionDescribe.mockReset();
         machineContributionRegistryProjectionDescribe.mockResolvedValue({ supported: false, reason: 'not-supported' });
+    });
+
+    it('shows the inherited effective host without implying that override-off disables hosting', async () => {
+        const { settingsDefaults } = await import('@/sync/domains/settings/settings');
+        mockState.settingsState = { ...settingsDefaults, sessionTerminalHost: 'herdr' };
+        const { storage } = await import('@/sync/domains/state/storageStore');
+        storage.getState().applySettings({ ...settingsDefaults, sessionTerminalHost: 'herdr' }, (storage.getState().settingsVersion ?? 0) + 1);
+        const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
+        const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
+        const screen = await renderScreen(<AppPaneProvider><MachineDetailScreen /></AppPaneProvider>);
+        expect(screen.findByTestId('machine-terminal-effective-host')?.props.subtitle).toBe('Herdr');
     });
 
     it('shows the retained host choice even after an older UI removes its legacy tmux record', async () => {
         const { settingsDefaults } = await import('@/sync/domains/settings/settings');
         mockState.settingsState = { ...settingsDefaults, sessionTerminalHostByMachineId: { 'machine-1': 'herdr' }, sessionTmuxByMachineId: {} };
+        const { storage } = await import('@/sync/domains/state/storageStore');
+        storage.getState().applySettings({ ...settingsDefaults, sessionTerminalHostByMachineId: { 'machine-1': 'herdr' }, sessionTmuxByMachineId: {} }, (storage.getState().settingsVersion ?? 0) + 1);
+        expect(storage.getState().settings.sessionTerminalHostByMachineId['machine-1']).toBe('herdr');
         const { default: MachineDetailScreen } = await import('@/app/(app)/machine/[id]');
         const { SegmentedChoiceItem } = await import('@/components/ui/lists/SegmentedChoiceItem');
-        const screen = await renderScreen(React.createElement(MachineDetailScreen));
+        const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
+        const screen = await renderScreen(<AppPaneProvider><MachineDetailScreen /></AppPaneProvider>);
         expect(screen.findAllByType(SegmentedChoiceItem).some((row) => row.props.value === 'herdr')).toBe(true);
     });
 
@@ -290,9 +299,10 @@ describe('MachineDetailScreen start a session', () => {
         // App boot prepares draft storage before any screen can seed a draft.
         await prepareSessionDraftPersistenceStorage();
         const accountScope = { serverId: 'server-a', accountId: 'account-a' };
-        getStorage().setState({ profileScope: accountScope } as never);
+        await getStorage().getState().activateProfileScope(accountScope);
 
-        const screen = await renderScreen(React.createElement(MachineDetailScreen));
+        const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
+        const screen = await renderScreen(<AppPaneProvider><MachineDetailScreen /></AppPaneProvider>);
         await flushHookEffects({ cycles: 1, turns: 2 });
 
         expect(mockState.multiTextInputSpy).not.toHaveBeenCalled();
@@ -301,6 +311,7 @@ describe('MachineDetailScreen start a session', () => {
         await act(async () => {
             await start!.props.onPress();
         });
+        expect(getStorage().getState().profileScope).toEqual(accountScope);
 
         expect(mockState.sessionSpawnNewActionMock).not.toHaveBeenCalled();
         const route = mockState.routerPushSpy.mock.calls.at(-1)?.[0] as Readonly<{ pathname: string; params: Readonly<{ draftId: string }> }>;

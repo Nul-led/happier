@@ -466,7 +466,7 @@ export default React.memo(function ProfilePickerScreen() {
                 />
 
                 {!useProfiles ? (
-                    <ItemGroup footer={t('settingsFeatures.profilesDisabled')}>
+                    <ItemGroup description={t('settingsFeatures.profilesDisabled')}>
                         <Item
                             title={t('settingsFeatures.profiles')}
                             subtitle={t('settingsFeatures.profilesDisabled')}

@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import type { Command } from '@/components/appShell/commandPalette/types';
+import type { TerminalJumpTarget } from '@/components/sessions/terminal/jump/terminalJumpTarget';
 import { resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
 
 export type UniversalSearchScopeSeed = Readonly<{
@@ -26,8 +27,13 @@ export function resolveUniversalSearchInvocationScope(input: Readonly<{
     return canonicalizeUniversalSearchScopeSeed(input.requestedScope ?? input.ambientScope);
 }
 
+/** What Search opens on: everything (default), or one session's terminals (Jump, terminal lab B4). */
+export type UniversalSearchOpenOptions = Readonly<{
+    terminals?: TerminalJumpTarget;
+}>;
+
 export type UniversalSearchRuntime = Readonly<{
-    open(query?: string, scope?: UniversalSearchScopeSeed): void;
+    open(query?: string, scope?: UniversalSearchScopeSeed, options?: UniversalSearchOpenOptions): void;
     buildCommands(activeSessionId?: string | null, scope?: UniversalSearchScopeSeed): readonly Command[];
 }>;
 

@@ -171,6 +171,8 @@ describe('resolveCompactAppDestinations', () => {
             ['workflows', { kind: 'rail', region: 'app' }],
             // Boards (INT §5.1): its own column listing the user's boards.
             ['boards', { kind: 'rail', region: 'app' }],
+            // Artifacts (RU2 §9.6): a full page over the Account Artifact store, after Boards.
+            ['artifacts', { kind: 'rail', region: 'app' }],
             ['browseExistingSessions', { kind: 'column', column: 'sessions' }],
             ['plugins', { kind: 'rail', region: 'plugins' }],
             ['settings', { kind: 'rail', region: 'account' }],
@@ -179,9 +181,11 @@ describe('resolveCompactAppDestinations', () => {
         expect(destinations.find((destination) => destination.id === 'sessions')).toMatchObject({ column: 'sessions', activation: 'navigate' });
         expect(destinations.find((destination) => destination.id === 'workflows')).toMatchObject({ column: 'workflows', routePath: '/workflows' });
         expect(destinations.find((destination) => destination.id === 'boards')).toMatchObject({ column: 'boards', routePath: '/boards' });
+        expect(destinations.find((destination) => destination.id === 'artifacts')).toMatchObject({ routePath: '/artifacts', activation: 'navigate' });
+        expect(destinations.find((destination) => destination.id === 'artifacts')).not.toHaveProperty('column');
         // Built-ins the viewer cannot open are not listed at all.
         expect(ids(resolveCompactAppDestinations({ builtins: CORE_BUILTINS, pages: [] })))
-            .toEqual(['sessions', 'search', 'projects', 'boards', 'plugins', 'settings']);
+            .toEqual(['sessions', 'search', 'projects', 'boards', 'artifacts', 'plugins', 'settings']);
     });
 
     it('places a plugin page on the rail or in a named column, and falls back to the rail for a column this host lacks', () => {
@@ -293,7 +297,7 @@ describe('resolveCompactAppDestinations', () => {
 
         // The notes page leads its own (plugins) group but never moves ahead of the app's destinations.
         expect(ids(destinations)).toEqual([
-            'sessions', 'search', 'inbox', 'projects', 'workflows', 'boards',
+            'sessions', 'search', 'inbox', 'projects', 'workflows', 'boards', 'artifacts',
             'plugin:acme.prompts:prompts', 'browseExistingSessions',
             'plugin:acme.notes:notes', 'plugins', 'plugin:acme.review:review',
             'settings',
@@ -336,7 +340,7 @@ describe('catalog destination instances', () => {
             { kind: 'session', params: { id: 'sess-a', serverId: 'home-a' } },
             { kind: 'project', params: { workspaceRefId: 'workspace-1' } },
             { kind: 'workflowRun', params: { runId: 'run-1', invocationId: 'inv-1' } },
-            { kind: 'settings', params: { pageId: 'providers/connection-1/models' } },
+            { kind: 'settings', params: { pageId: 'providers/connection-1/models', connectionId: 'connection-1' } },
             { kind: page.id, params: { pluginId: 'acme.notes', localId: 'notes', subPath: 'folder/item' } },
         ]);
         expect(refs.map((ref) => ref && hrefForDestinationRef(catalog, ref))).toEqual(hrefs);
@@ -449,6 +453,9 @@ describe('resolveCurrentAppDestination', () => {
         expect(at('/workflows/wf-1')).toBe('workflows');
         expect(at('/boards')).toBe('boards');
         expect(at('/boards/board-1')).toBe('boards');
+        expect(at('/artifacts')).toBe('artifacts');
+        expect(at('/artifacts/artifact-1')).toBe('artifacts');
+        expect(at('/artifacts/edit/artifact-1')).toBe('artifacts');
         expect(at('/projects')).toBe('projects');
         expect(at('/projects/ws-1/files')).toBe('projects');
         expect(at('/inbox/approvals')).toBe('inbox');

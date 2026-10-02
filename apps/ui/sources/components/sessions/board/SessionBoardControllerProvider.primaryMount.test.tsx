@@ -150,7 +150,7 @@ const companion: SessionCompanionController = {
     preference: { ...HIDDEN_SESSION_COMPANION_PREFERENCE_V1, visible: true, items: [{ kind: 'widget', widgetId: 'item-b' }] },
     availability: 'ready', preferenceExists: true, realmKey: 'alice:home-1:session-1',
     show: () => null, hide: () => null, setCollapsed: () => null, setEdge: () => null, setDensity: () => null,
-    addItem: () => null, removeItem: () => null, moveItem: () => null, applyLocalInverse: () => false,
+    addItem: () => null, removeItem: () => null, moveItem: () => null, setItemFrameStyle: () => null, applyLocalInverse: () => false,
     openFullSurface: () => {},
 };
 function viewportSnapshot(recovered: boolean): SessionBoardSnapshot {

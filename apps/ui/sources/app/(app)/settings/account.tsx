@@ -42,6 +42,9 @@ import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHead
 import { SettingAnchor, SettingRow } from '@/components/settings/shell/SettingRow';
 import { AccountDirectConnectionsSection } from '@/components/settings/connections/DirectConnectionSettings';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { FieldItem } from '@/components/ui/forms/FieldItem';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
 import { Avatar } from '@/components/ui/avatar/Avatar';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
 import { resolveHomeDisplayName } from '@/components/settings/server/homeDisplayName';
@@ -76,25 +79,16 @@ export const WorkspaceRouteBody = React.memo(() => {
         !friendsIdentityReadiness.isLoadingFeatures &&
         friendsIdentityReadiness.gate.gateVariant === 'username';
 
+    const [usernameDraft, setUsernameDraft] = useState<string | null>(null);
     const [savingUsername, saveUsername] = useHappyAction(async () => {
         if (!auth.credentials) return;
         if (!canSetUsername) return;
-
-        const next = await Modal.prompt(
-            t('profile.username'),
-            undefined,
-            {
-                placeholder: t('profile.username'),
-                defaultValue: profile.username ?? undefined,
-                confirmText: t('common.save'),
-                cancelText: t('common.cancel'),
-            },
-        );
-        if (next == null) return;
+        if (usernameDraft === null) return;
 
         try {
-            const res = await setAccountUsername(auth.credentials, next);
+            const res = await setAccountUsername(auth.credentials, usernameDraft);
             applyProfile({ ...profile, username: res.username });
+            setUsernameDraft(null);
         } catch (e) {
             if (e instanceof HappyError) {
                 const msg =
@@ -246,7 +240,7 @@ export const WorkspaceRouteBody = React.memo(() => {
         else void connectAccount();
     };
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             <SettingsPageHeader
                 testID="settings-account-identity"
                 {...(displayName ? { title: displayName, alwaysShowTitle: true } : {})}
@@ -267,12 +261,36 @@ export const WorkspaceRouteBody = React.memo(() => {
                         display="secondary"
                         title={profile.username ? t('settingsAccount.editUsername') : t('settingsAccount.chooseUsername')}
                         accessibilityHint={profile.username ? undefined : t('friends.username.required')}
-                        onPress={saveUsername}
+                        onPress={() => setUsernameDraft(profile.username ?? '')}
                         disabled={savingUsername}
                         loading={savingUsername}
                     />
                 ) : undefined}
             />
+
+            {canSetUsername && usernameDraft !== null ? (
+                <ItemGroup>
+                    <SectionContentRow>
+                        <FieldItem label={t('profile.username')}>
+                            <FieldTextInput
+                                testID="settings-account-username-field"
+                                value={usernameDraft}
+                                onChangeText={setUsernameDraft}
+                                accessibilityLabel={t('profile.username')}
+                                autoCapitalize="none"
+                                editable={!savingUsername}
+                                onSubmitEditing={saveUsername}
+                            />
+                        </FieldItem>
+                    </SectionContentRow>
+                    <SectionContentRow>
+                        <View style={{ flexDirection: 'row', gap: 8 }}>
+                            <RoundButton testID="settings-account-username-cancel" size="small" display="secondary" title={t('common.cancel')} disabled={savingUsername} onPress={() => setUsernameDraft(null)} />
+                            <RoundButton testID="settings-account-username-save" size="small" title={t('common.save')} disabled={savingUsername || !usernameDraft.trim()} loading={savingUsername} onPress={saveUsername} />
+                        </View>
+                    </SectionContentRow>
+                </ItemGroup>
+            ) : null}
 
             <AccountSignInSecuritySection
                 homeName={activeHomeLabel}

@@ -2,8 +2,7 @@ import * as React from 'react';
 import { Platform, View, type LayoutChangeEvent } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { hrefForDestinationRef, resolveCurrentAppDestination, type CompactAppDestination } from '@/components/appShell/destinations/compactAppDestinationCatalog';
-import { useDestinationInstanceTitles } from '@/components/appShell/destinations/destinationInstanceTitles';
+import { hrefForDestinationRef, resolveCurrentAppDestination, useDestinationInstanceTitles, type CompactAppDestination } from '@/components/appShell/destinations/compactAppDestinationCatalog';
 import { DETAILS_TAB_STRIP_METRICS as M } from '@/components/appShell/panes/details/header/detailsTabHeaderMetrics';
 import type { SplitCanvasDirection } from '@/components/appShell/splitCanvas/model/splitCanvasTypes';
 import { IconButton } from '@/components/ui/buttons/IconButton';
@@ -12,6 +11,7 @@ import { Icon, type IconName } from '@/components/ui/icons/Icon';
 import { resolveTouchTargetFloorPx } from '@/components/ui/interactiveTargetSize';
 import { DocumentTabStrip, DOCUMENT_TAB_BAR_METRICS as B, type DocumentTabItem } from '@/components/ui/navigation/DocumentTabStrip';
 import type { PopoverAnchor } from '@/components/ui/popover';
+import { resolvePointerMenuAnchor } from '@/components/ui/popover/resolvePointerMenuAnchor';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { KeyboardShortcutLabelsContext } from '@/keyboard/shortcutLabels';
@@ -21,6 +21,9 @@ import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
 import type { WorkspaceNavigationContextValue } from '../WorkspaceNavigationContext';
 import { createWorkspaceEmptyTab, type WorkspaceGroup } from '../workspaceState';
 import { createWorkspaceSplit } from '../workspaceSplit';
+import { decodeWorkspaceDragData, encodeWorkspaceDragData, resolveWorkspaceTabStripDrop, setWorkspaceTabDragActive } from '../workspaceDragData';
+import { WebDropTargetView } from '@/components/workspaces/files/repositoryTree/WebDropTargetView';
+import { useDestinationInstanceTabPresentations } from './useDestinationInstanceTabPresentations';
 
 type WorkspaceDocumentTab = DocumentTabItem & Readonly<{ icon: IconName }>;
 type MenuState = Readonly<{ tabId: string; anchor: PopoverAnchor | undefined }>;
@@ -54,15 +57,6 @@ export function selectVisibleWorkspaceTabs(input: Readonly<{
     return input.tabIds.filter((id) => keep.has(id));
 }
 
-function resolveMenuAnchor(event: unknown): PopoverAnchor | undefined {
-    if (!event || typeof event !== 'object') return undefined;
-    const source = event as { clientX?: unknown; clientY?: unknown; nativeEvent?: { pageX?: unknown; pageY?: unknown; clientX?: unknown; clientY?: unknown } };
-    const x = source.clientX ?? source.nativeEvent?.clientX ?? source.nativeEvent?.pageX;
-    const y = source.clientY ?? source.nativeEvent?.clientY ?? source.nativeEvent?.pageY;
-    if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) return undefined;
-    return { kind: 'rect', rect: { left: x, top: y, height: 1 }, coordinateSpace: 'window' };
-}
-
 /**
  * One pane's tabs, wherever the pane's tabs live: in the window's top strip over a top-row pane
  * (`bar`), or in the pane's own strip below the top row (`strip`). Both are the same tabs, menu and
@@ -93,7 +87,11 @@ export function WorkspaceGroupTabs(props: Readonly<{
     }), [group.tabIds, workspace.state.tabs]);
     // The live instance title (a session's name, a file, a page); the title saved with the layout
     // stands in only while the instance cannot be named yet.
-    const liveTitles = useDestinationInstanceTitles(props.catalog, titleEntries);
+    const titleResolutionEntries = React.useMemo(() => overflowOpen
+        ? [...titleEntries, ...workspace.state.recentlyClosed.map(entry => ({ key: `closed:${entry.tab.id}`, ref: entry.tab.target }))]
+        : titleEntries, [overflowOpen, titleEntries, workspace.state.recentlyClosed]);
+    const liveTitles = useDestinationInstanceTitles(props.catalog, titleResolutionEntries);
+    const hasRecentlyClosed = workspace.state.recentlyClosed.length > 0;
     const tabs = React.useMemo(() => {
         const byId = new Map<string, WorkspaceDocumentTab>();
         for (const id of group.tabIds) {
@@ -116,14 +114,17 @@ export function WorkspaceGroupTabs(props: Readonly<{
     const capacity = React.useMemo(() => {
         if (widthPx === null) return unpinnedIds.length;
         const pinnedPx = pinnedIds.length * (tabHeightPx + B.stripGapPx) + (pinnedIds.length > 0 ? PIN_SEPARATOR_PX : 0);
-        const room = widthPx - pinnedPx - ACTION_SLOT_PX;
+        const room = widthPx - pinnedPx - ACTION_SLOT_PX - (hasRecentlyClosed ? OVERFLOW_SLOT_PX : 0);
         if (room >= unpinnedIds.length * (B.tabMinWidthPx + B.stripGapPx)) return unpinnedIds.length;
-        return Math.max(1, Math.floor((room - OVERFLOW_SLOT_PX) / (B.tabMinWidthPx + B.stripGapPx)));
-    }, [pinnedIds.length, tabHeightPx, unpinnedIds.length, widthPx]);
+        return Math.max(1, Math.floor((room - (hasRecentlyClosed ? 0 : OVERFLOW_SLOT_PX)) / (B.tabMinWidthPx + B.stripGapPx)));
+    }, [hasRecentlyClosed, pinnedIds.length, tabHeightPx, unpinnedIds.length, widthPx]);
     const visibleUnpinned = selectVisibleWorkspaceTabs({ tabIds: unpinnedIds, activeTabId: group.activeTabId, mru: group.mru, capacity });
     const hiddenCount = unpinnedIds.length - visibleUnpinned.length;
     const pinnedTabs = pinnedIds.flatMap((id) => tabs.get(id) ?? []);
     const visibleTabs = visibleUnpinned.flatMap((id) => tabs.get(id) ?? []);
+    // Hidden tabs have no status mark; keep their live work updates out of the mounted strip.
+    const visibleTabKeys = new Set([...pinnedIds, ...visibleUnpinned]);
+    const livePresentations = useDestinationInstanceTabPresentations(titleEntries.filter(entry => visibleTabKeys.has(entry.key)));
 
     const onLayout = React.useCallback((event: LayoutChangeEvent) => {
         const next = Math.round(event.nativeEvent.layout.width);
@@ -160,10 +161,11 @@ export function WorkspaceGroupTabs(props: Readonly<{
                 icon: glyph('arrows-out'), shortcut: shortcutLabels['workspace.toggleMaximize'],
             }] : []),
             { id: 'close', testID: 'workspace-tab-menu-close', title: t('workspaceBar.closeTab'), icon: glyph('x') },
+            ...(hasRecentlyClosed ? [{ id: 'reopen', testID: 'workspace-tab-menu-reopen', title: t('workspaceTabs.reopenTab'), shortcut: shortcutLabels['workspace.tab.reopen'], icon: glyph('arrow-counter-clockwise') }] : []),
             ...(hasOthers ? [{ id: 'closeOthers', testID: 'workspace-tab-menu-close-others', title: t('workspaceBar.closeOtherTabs') }] : []),
             ...(hasRight ? [{ id: 'closeRight', testID: 'workspace-tab-menu-close-right', title: t('workspaceBar.closeTabsToRight') }] : []),
         ];
-    }, [group.id, group.tabIds, menuTab, shortcutLabels, theme.colors.text.secondary, workspace.state.groups,
+    }, [group.id, group.tabIds, hasRecentlyClosed, menuTab, shortcutLabels, theme.colors.text.secondary, workspace.state.groups,
         workspace.state.maximizedGroupId, workspace.state.tabs]);
 
     const selectMenu = React.useCallback((itemId: string) => {
@@ -177,6 +179,7 @@ export function WorkspaceGroupTabs(props: Readonly<{
             case 'splitDown': split(tabId, 'down'); break;
             case 'maximize': workspace.dispatch({ type: 'toggleMaximize', groupId: group.id }); break;
             case 'close': workspace.closeTab(group.id, tabId); break;
+            case 'reopen': workspace.dispatch({ type: 'reopenTab' }); break;
             case 'closeOthers':
                 for (const id of group.tabIds) if (id !== tabId && !workspace.state.tabs[id]?.pinned) workspace.closeTab(group.id, id);
                 break;
@@ -188,14 +191,45 @@ export function WorkspaceGroupTabs(props: Readonly<{
         }
     }, [group.id, group.tabIds, menu?.tabId, split, workspace]);
 
-    const overflowItems = React.useMemo((): readonly DropdownMenuItem[] => group.tabIds.flatMap((id) => {
+    const overflowItems = React.useMemo((): readonly DropdownMenuItem[] => [...group.tabIds.flatMap((id) => {
         const tab = tabs.get(id);
         return tab ? [{
             id, testID: `workspace-overflow-tab-${toTestIdSafeValue(id)}`, title: tab.title,
             icon: <Icon name={tab.icon} size={16} color={theme.colors.text.secondary} />,
             checked: id === group.activeTabId,
+            ...(hasRecentlyClosed ? { category: t('workspaceBar.tabsLabel') } : {}),
         }] : [];
-    }), [group.activeTabId, group.tabIds, tabs, theme.colors.text.secondary]);
+    }), ...workspace.state.recentlyClosed.map((entry, index) => ({
+        id: `closed:${entry.tab.id}`, testID: `workspace-reopen-tab-${toTestIdSafeValue(entry.tab.id)}`,
+        title: liveTitles.get(`closed:${entry.tab.id}`) ?? entry.fallbackTitle ?? t('common.unavailable'),
+        category: t('workspaceTabs.recentlyClosed'),
+        icon: <Icon name="arrow-counter-clockwise" size={16} color={theme.colors.text.secondary} />,
+        ...(index === 0 ? { shortcut: shortcutLabels['workspace.tab.reopen'] } : {}),
+    }))], [group.activeTabId, group.tabIds, hasRecentlyClosed, liveTitles, shortcutLabels, tabs, theme.colors.text.secondary, workspace.state.recentlyClosed]);
+
+    // A tab dropped on a tab lands before it; on the strip's free space, at the end. A destination
+    // dragged from a row opens here as a kept tab (workspace lab O/D).
+    const drop = React.useCallback((payload: string, beforeTabId: string | null) => {
+        setWorkspaceTabDragActive(false);
+        const data = decodeWorkspaceDragData(payload);
+        if (!data) return;
+        if (data.kind === 'href') {
+            workspace.openHref(data.href, { mode: 'newTab', groupId: group.id });
+            return;
+        }
+        for (const action of resolveWorkspaceTabStripDrop(workspace.state, { tabId: data.tabId, groupId: group.id, beforeTabId })) {
+            workspace.dispatch(action);
+        }
+    }, [group.id, workspace]);
+    const stripDropProps = React.useMemo(() => ({
+        onDragOver: (event: { preventDefault?: () => void }) => event.preventDefault?.(),
+        onDrop: (event: { preventDefault?: () => void; dataTransfer?: { getData?: (type: string) => string } | null }) => {
+            const payload = event.dataTransfer?.getData?.('text/plain') ?? '';
+            if (!decodeWorkspaceDragData(payload)) return;
+            event.preventDefault?.();
+            drop(payload, null);
+        },
+    }), [drop]);
 
     const touchFloor = resolveTouchTargetFloorPx(Platform.OS);
     const actionSize = Math.max(props.placement === 'bar' ? 28 : M.actionSizePx, touchFloor ?? 0);
@@ -206,12 +240,19 @@ export function WorkspaceGroupTabs(props: Readonly<{
             activeEmphasis={props.focused ? 'raised' : 'quiet'}
             tabs={items}
             activeTabKey={group.activeTabId}
+            resolveTabPresentation={(tab) => livePresentations.get(tab.key)}
             accessibilityLabel={t('workspaceBar.tabsLabel')}
             onActivate={(tabId) => workspace.activateTab(group.id, tabId)}
             onPin={(tabId) => workspace.dispatch({ type: 'setPinned', tabId, pinned: true })}
             onUnpin={(tabId) => workspace.dispatch({ type: 'setPinned', tabId, pinned: false })}
             onClose={(tabId) => workspace.closeTab(group.id, tabId)}
-            onTabMenu={(tabId, event) => setMenu({ tabId, anchor: resolveMenuAnchor(event) })}
+            onTabMenu={(tabId, event) => setMenu({ tabId, anchor: resolvePointerMenuAnchor(event) })}
+            tabDragPayload={(tabId) => {
+                setWorkspaceTabDragActive(true);
+                return encodeWorkspaceDragData({ kind: 'tab', tabId });
+            }}
+            onTabDragEnd={() => setWorkspaceTabDragActive(false)}
+            onTabDrop={(beforeTabId, payload) => drop(payload, beforeTabId)}
             renderLeadingIcon={(tab, emphasized) => <Icon name={tab.icon} size={M.tabGlyphPx}
                 color={emphasized ? theme.colors.text.primary : theme.colors.text.secondary} />}
             tabNativeId={(key) => `workspace-${safeGroup}-tab-${toTestIdSafeValue(key)}`}
@@ -221,16 +262,20 @@ export function WorkspaceGroupTabs(props: Readonly<{
     );
 
     return (
-        <View testID={`workspace-tabs-${safeGroup}`} style={styles.row} onLayout={onLayout}>
+        <WebDropTargetView testID={`workspace-tabs-${safeGroup}`} style={styles.row} onLayout={onLayout} {...stripDropProps}>
             <View style={styles.tabs}>
                 {renderStrip([...pinnedTabs, ...visibleTabs])}
             </View>
-            {hiddenCount > 0 ? (
+            {hiddenCount > 0 || hasRecentlyClosed ? (
                 <DropdownMenu
                     open={overflowOpen}
                     onOpenChange={setOverflowOpen}
                     items={overflowItems}
-                    onSelect={(tabId) => workspace.activateTab(group.id, tabId)}
+                    onSelect={(tabId) => {
+                        const closed = workspace.state.recentlyClosed.find(entry => `closed:${entry.tab.id}` === tabId);
+                        if (closed) workspace.dispatch({ type: 'reopenTab', tabId: closed.tab.id });
+                        else workspace.activateTab(group.id, tabId);
+                    }}
                     search
                     searchPlaceholder={t('workspaceBar.searchTabs')}
                     matchTriggerWidth={false}
@@ -242,13 +287,13 @@ export function WorkspaceGroupTabs(props: Readonly<{
                             testID={`workspace-overflow-${safeGroup}`}
                             variant="plain"
                             size={actionSize}
-                            accessibilityLabel={t('workspaceBar.moreTabs', { count: hiddenCount })}
-                            tooltip={t('workspaceBar.moreTabs', { count: hiddenCount })}
+                            accessibilityLabel={hiddenCount > 0 ? t('workspaceBar.moreTabs', { count: hiddenCount }) : t('workspaceTabs.recentlyClosed')}
+                            tooltip={hiddenCount > 0 ? t('workspaceBar.moreTabs', { count: hiddenCount }) : t('workspaceTabs.recentlyClosed')}
                             tooltipPlacement="bottom"
                             hasPopup="menu"
                             expanded={overflowOpen}
                             onPress={toggle}
-                            icon={<Text style={styles.overflowCount}>{`+${hiddenCount}`}</Text>}
+                            icon={hiddenCount > 0 ? <Text style={styles.overflowCount}>{`+${hiddenCount}`}</Text> : <Icon name="dots-three" size={M.actionGlyphPx} color={theme.colors.text.secondary} />}
                         />
                     )}
                 />
@@ -259,8 +304,8 @@ export function WorkspaceGroupTabs(props: Readonly<{
                 size={actionSize}
                 iconSize={M.actionGlyphPx}
                 iconName="plus"
-                accessibilityLabel={t('browser.tabs.newTab')}
-                tooltip={t('browser.tabs.newTab')}
+                accessibilityLabel={t('workspaceBar.newTab')}
+                tooltip={t('workspaceBar.newTab')}
                 tooltipPlacement="bottom"
                 onPress={() => workspace.dispatch({ type: 'openTab', groupId: group.id, tab: createWorkspaceEmptyTab(randomUUID()) })}
             />
@@ -282,7 +327,7 @@ export function WorkspaceGroupTabs(props: Readonly<{
                     allowEmptySelection
                 />
             ) : null}
-        </View>
+        </WebDropTargetView>
     );
 }
 

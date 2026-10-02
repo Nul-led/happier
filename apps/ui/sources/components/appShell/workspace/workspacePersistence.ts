@@ -75,8 +75,9 @@ function parseNode(
     } satisfies SplitCanvasNode<Readonly<{ groupId: string }>>;
 }
 
-export function serializeWorkspaceLayout(state: WorkspaceState): WorkspaceState {
-    return state;
+export function serializeWorkspaceLayout(state: WorkspaceState): Omit<WorkspaceState, 'recentlyClosed'> {
+    const { recentlyClosed: _recentlyClosed, ...layout } = state;
+    return layout;
 }
 
 export type WorkspaceLayoutScope = Readonly<{ serverId: string; accountId: string; windowId: string }>;
@@ -142,5 +143,6 @@ export function parseWorkspaceLayout(value: unknown): WorkspaceState | null {
         maximizedGroupId: candidate.maximizedGroupId as string | null,
         fallbackTitlesByTabId: rawTitles as Record<string, string>,
         tabPairs,
+        recentlyClosed: [],
     };
 }

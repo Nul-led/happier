@@ -266,6 +266,8 @@ function createDemoSurfaceHost(initial: SurfaceContext): DemoSurfaceHost {
             throw new Error('dev surface has no Composer');
         },
         readSession: async () => null,
+        readStoredImage: async () => { throw new Error('dev surface has no stored images'); },
+        watchLiveStream: async () => { throw new Error('dev surface has no live streams'); },
         watchSession: async () => {
             throw new Error('dev surface has no Session store');
         },

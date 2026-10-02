@@ -1,3 +1,4 @@
+import { SessionTerminalRailBadge } from '@/components/sessions/terminal/strip/SessionTerminalRailBadge';
 import { SessionGitActionRailBadge, SessionGitActionRailTooltip } from './SessionGitActionRailBadge';
 import { SessionCollaborationRailBadge, useSessionConversationMentioned } from '@/components/sessions/collaboration/sessionConversationAttention';
 import { parseSessionPaneScopeId } from './sessionPaneScopeId';
@@ -700,7 +701,10 @@ export const SessionActionRail = React.memo(() => {
     if (terminal.available) {
         // The terminal closes the machine group, ahead of any plugin tabs.
         const firstPlugin = actions.findIndex((action) => action.group === 'plugins');
-        actions.splice(firstPlugin === -1 ? actions.length : firstPlugin, 0, { id: 'terminal', label: t('settings.terminal'), icon: 'terminal', group: 'machine', active: terminal.active, onPress: terminal.onPress });
+        actions.splice(firstPlugin === -1 ? actions.length : firstPlugin, 0, {
+            id: 'terminal', label: t('settings.terminal'), icon: 'terminal', group: 'machine', active: terminal.active, onPress: terminal.onPress,
+            badge: terminal.active ? undefined : <SessionTerminalRailBadge sessionId={model.sessionId} serverId={model.pluginRuntime.serverId ?? null} />,
+        });
     }
     return <RightSidebarActionRail actions={actions} testID="session-action-rail" testIDPrefix="session-action-rail" />;
 });

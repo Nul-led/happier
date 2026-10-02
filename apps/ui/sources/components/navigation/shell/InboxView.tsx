@@ -77,7 +77,7 @@ const InboxViewContent = React.memo(function InboxViewContent(props: Readonly<{ 
                 headerTransparent
             />
             <NavigationTitleChromeProvider showsTitle={phone}>
-                <ItemList presentation="page" testID="inbox.screen">
+                <ItemList testID="inbox.screen">
                     <PageHeader
                         title={t('tabs.inbox')}
                         description={t('inbox.work.pageDescription')}

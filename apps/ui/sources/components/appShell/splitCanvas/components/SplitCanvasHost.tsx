@@ -83,7 +83,7 @@ const leafContentContainerStyle = {
     position: 'relative',
 } as const;
 
-export const SplitCanvasHost = React.memo(<TLeafPayload,>(props: Readonly<{
+function SplitCanvasHostInner<TLeafPayload>(props: Readonly<{
     state: SplitCanvasState<TLeafPayload>;
     dispatch: (action: SplitCanvasAction<TLeafPayload>) => void;
     renderLeaf: (input: Readonly<{
@@ -110,7 +110,14 @@ export const SplitCanvasHost = React.memo(<TLeafPayload,>(props: Readonly<{
     }>) => void;
     keyboardEnabled?: boolean;
     controlsRef?: React.MutableRefObject<SplitCanvasHostControls | null>;
-}>) => {
+    /**
+     * `framed` (default): each pane is a card with its own maximize/close controls and a focus ring.
+     * `flat`: the panes carry no chrome of their own — the consumer shows focus and pane actions
+     * elsewhere (the workspace: the raised tab and the tab menu); only a keyboard focus change still
+     * rings the pane.
+     */
+    chrome?: 'framed' | 'flat';
+}>) {
     const keyboardEnabled = props.keyboardEnabled ?? true;
     const inputModality = useSplitCanvasInputModality(keyboardEnabled);
     const leafCount = countSplitCanvasLeaves(props.state.root);
@@ -235,6 +242,7 @@ export const SplitCanvasHost = React.memo(<TLeafPayload,>(props: Readonly<{
                     isFocused={isFocused}
                     isMaximized={isMaximized}
                     hasMultipleLeaves={hasMultipleLeaves}
+                    flatChrome={props.chrome === 'flat'}
                     inputModality={inputModality}
                     dispatch={props.dispatch}
                     renderLeaf={props.renderLeaf}
@@ -260,6 +268,7 @@ export const SplitCanvasHost = React.memo(<TLeafPayload,>(props: Readonly<{
     }, [
         hasMultipleLeaves,
         inputModality,
+        props.chrome,
         props.activeDropTarget,
         props.dispatch,
         props.getLeafMinimumSizePx,
@@ -285,7 +294,9 @@ export const SplitCanvasHost = React.memo(<TLeafPayload,>(props: Readonly<{
             {renderNode(props.state.root)}
         </WebDropTargetView>
     );
-});
+}
+
+export const SplitCanvasHost = React.memo(SplitCanvasHostInner) as typeof SplitCanvasHostInner;
 
 function SplitCanvasLeafRendererInner<TLeafPayload>(props: Readonly<{
     leaf: SplitCanvasLeafNode<TLeafPayload>;
@@ -293,6 +304,7 @@ function SplitCanvasLeafRendererInner<TLeafPayload>(props: Readonly<{
     isFocused: boolean;
     isMaximized: boolean;
     hasMultipleLeaves: boolean;
+    flatChrome: boolean;
     inputModality: 'pointer' | 'keyboard';
     dispatch: (action: SplitCanvasAction<TLeafPayload>) => void;
     renderLeaf: (input: Readonly<{
@@ -336,9 +348,10 @@ function SplitCanvasLeafRendererInner<TLeafPayload>(props: Readonly<{
             accessibilityLabel={props.renderLeafLabel?.(props.leaf)}
             isFocused={props.isFocused}
             isMaximized={props.isMaximized}
-            quietChrome={!props.hasMultipleLeaves}
-            showControls={props.hasMultipleLeaves && (props.isFocused || props.isMaximized)}
-            showFocusRing={props.hasMultipleLeaves && props.isFocused}
+            quietChrome={props.flatChrome || !props.hasMultipleLeaves}
+            showControls={!props.flatChrome && props.hasMultipleLeaves && (props.isFocused || props.isMaximized)}
+            showFocusRing={props.hasMultipleLeaves && props.isFocused
+                && (!props.flatChrome || props.inputModality === 'keyboard')}
             keyboardFocusVisible={props.hasMultipleLeaves && props.isFocused && props.inputModality === 'keyboard'}
             onLayout={handleLayout}
             onHostRefChange={handleHostRefChange}

@@ -43,10 +43,26 @@ describe('Board frame styles through the real Board Actions', () => {
             repository: createSessionSystemRecordRepository({ scope, request }), contentContext: { mode: 'plain' },
             capabilities: { readTranscript: true, editSessionRecords: true },
         });
-        const deps = { sessionBoardAction: adapter, isActionApprovalRequired: () => false } satisfies
-            Pick<ActionExecutorDeps, 'sessionBoardAction' | 'isActionApprovalRequired'>;
-        // This Board-only fixture does not dispatch unrelated required host ports.
-        const executor = createActionExecutor(deps as ActionExecutorDeps);
+        // Unrelated host delivery ports are genuine boundaries; fail if this Board journey reaches one.
+        const unexpectedHostPort = async (): Promise<never> => { throw new Error('Unexpected host port in Board journey'); };
+        const deps: ActionExecutorDeps = {
+            sessionBoardAction: adapter, isActionApprovalRequired: () => false,
+            executionRunStart: unexpectedHostPort, executionRunList: unexpectedHostPort,
+            executionRunGet: unexpectedHostPort, detachedExecutionRunSend: unexpectedHostPort,
+            executionRunStop: unexpectedHostPort, executionRunAction: unexpectedHostPort, executionRunWait: unexpectedHostPort,
+            sessionOpen: unexpectedHostPort, sessionFork: unexpectedHostPort, sessionRollback: unexpectedHostPort,
+            sessionSpawnNew: unexpectedHostPort, pathsListRecent: unexpectedHostPort, machinesList: unexpectedHostPort,
+            serversList: unexpectedHostPort, reviewEnginesList: unexpectedHostPort, agentsBackendsList: unexpectedHostPort,
+            agentsModelsList: unexpectedHostPort, sessionSendMessage: unexpectedHostPort,
+            sessionPermissionRespond: unexpectedHostPort, sessionUserActionAnswer: unexpectedHostPort,
+            sessionModeSet: unexpectedHostPort, sessionModesList: unexpectedHostPort,
+            sessionTargetPrimarySet: unexpectedHostPort, sessionTargetTrackedSet: unexpectedHostPort,
+            sessionList: unexpectedHostPort, sessionActivityGet: unexpectedHostPort,
+            sessionRecentMessagesGet: unexpectedHostPort, resetGlobalVoiceAgent: unexpectedHostPort,
+            daemonMemorySearch: unexpectedHostPort, daemonMemoryGetWindow: unexpectedHostPort,
+            daemonMemoryEnsureUpToDate: unexpectedHostPort,
+        };
+        const executor = createActionExecutor(deps);
         const actions = createSessionBoardActionsPort({ ...session,
             execute: (actionId, input, context) => executor.execute(actionId, input, { ...context, authority: 'present_user' }),
         });

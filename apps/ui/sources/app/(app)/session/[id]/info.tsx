@@ -987,7 +987,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
 
     return (
         <>
-            <ItemList presentation="page" style={{ paddingTop: 0 }}>
+            <ItemList style={{ paddingTop: 0 }}>
                 <PageHeader
                     testID="session-info-header"
                     alwaysShowTitle

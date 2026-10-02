@@ -108,7 +108,7 @@ export function reconcileWorkspaceSyncedTabs(state: WorkspaceState, record: Shar
     for (const tab of Object.values(state.tabs)) {
         if (!intentional(tab) || record.tabsById[tab.id]) continue;
         const group = Object.values(next.groups).find(group => group.tabIds.includes(tab.id));
-        if (group) next = reduceWorkspaceState(next, { type: 'closeTab', groupId: group.id, tabId: tab.id, newTab: createWorkspaceEmptyTab(createId()) });
+        if (group) next = reduceWorkspaceState(next, { type: 'closeTab', groupId: group.id, tabId: tab.id, newTab: createWorkspaceEmptyTab(createId()), remember: false });
     }
     for (const id of record.order) {
         const shared = record.tabsById[id];
@@ -123,8 +123,17 @@ export function reconcileWorkspaceSyncedTabs(state: WorkspaceState, record: Shar
     const groups = { ...next.groups };
     for (const group of Object.values(next.groups)) {
         const sharedIds = record.order.filter(id => group.tabIds.includes(id));
-        const localIds = group.tabIds.filter(id => !record.tabsById[id]);
-        const tabIds = [...sharedIds, ...localIds];
+        // Shared order fills the existing shared slots; previews and empty tabs keep
+        // their device-local positions. New remote tabs precede trailing local tabs.
+        const tabIds = group.tabIds.filter(id => !record.tabsById[id] || state.tabs[id]);
+        let sharedIndex = 0;
+        let insertionIndex = 0;
+        for (let index = 0; index < tabIds.length; index++) {
+            if (!record.tabsById[tabIds[index]]) continue;
+            tabIds[index] = sharedIds[sharedIndex++];
+            insertionIndex = index + 1;
+        }
+        tabIds.splice(insertionIndex, 0, ...sharedIds.slice(sharedIndex));
         const old = state.groups[group.id];
         const activeTabId = old && tabIds.includes(old.activeTabId) ? old.activeTabId : group.activeTabId;
         const mru = [...(old?.mru ?? group.mru).filter(id => tabIds.includes(id)), ...tabIds.filter(id => !(old?.mru ?? group.mru).includes(id))];

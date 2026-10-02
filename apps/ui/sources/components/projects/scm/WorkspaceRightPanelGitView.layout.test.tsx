@@ -7,6 +7,9 @@ import { EMPTY_SCM_CAPABILITIES } from '@/scm/core/snapshotMappers';
 import { storage } from '@/sync/domains/state/storage';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import type { ScmLogEntry } from '@happier-dev/protocol';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+import { projectManager } from '@/sync/runtime/orchestration/projectManager';
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -50,6 +53,11 @@ vi.mock('@/sync/ops/scm/machineScm', async (importOriginal) => ({
         success: true,
         entries: [{ sha: 'abc123', shortSha: 'abc123', subject: 'Saved project change', body: '', authorName: 'Ada', authorEmail: '', timestamp: 1 }],
     })),
+}));
+// The session placement's public SCM RPC facade is its transport boundary.
+vi.mock('@/sync/ops', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/ops')>(),
+    sessionScmLogList: vi.fn(),
 }));
 
 const scope = { serverId: 's1', machineId: 'm1', rootPath: '/repo' };
@@ -102,7 +110,7 @@ describe('project Git presentation', () => {
             ...snapshot,
             repo: { ...snapshot.repo, defaultBranch: 'main' },
             branch: { ...snapshot.branch, head: 'feature' },
-            capabilities: { ...snapshot.capabilities, readPullRequestStatus: true, readHostingRepositoryPublishTargets: true, writePullRequestCreate: true, writeRemoteAdd: true, writeBranchMerge: true },
+            capabilities: { ...EMPTY_SCM_CAPABILITIES, ...snapshot.capabilities, readPullRequestStatus: true, readHostingRepositoryPublishTargets: true, writePullRequestCreate: true, writeRemoteAdd: true, writeBranchMerge: true },
         });
         const { WorkspaceRightPanelGitView } = await import('./WorkspaceRightPanelGitView');
         const screen = await renderScreen(<WorkspaceRightPanelGitView {...scope} onOpenFile={() => {}} />);
@@ -119,6 +127,94 @@ describe('project Git presentation', () => {
         await screen.pressByTestIdAsync('project-rightpanel-git-subtab:commit');
         expect(screen.findHostByTestId('scm-remote-editor-name')?.props.value).toBe('backup');
         expect(splitStreamingRevealTextParts).not.toHaveBeenCalled();
+    });
+
+    it('keeps the observed force-with-lease action available when the branch is behind', async () => {
+        storage.getState().updateWorkspaceScmSnapshot(scope, {
+            ...snapshot,
+            capabilities: { ...snapshot.capabilities, changeSetModel: 'index', writeRemotePush: true, writeRemotePolicies: true, writeRemoteForceWithLease: true },
+            branch: { ...snapshot.branch, upstream: 'origin/main', upstreamOid: 'a'.repeat(40), behind: 1 },
+        });
+        const { WorkspaceRightPanelGitView } = await import('./WorkspaceRightPanelGitView');
+        const screen = await renderScreen(<WorkspaceRightPanelGitView {...scope} onOpenFile={() => {}} />);
+        await screen.pressByTestIdAsync('project-git-tools');
+        expect(screen.findHostByTestId('workspace-scm-force-with-lease')?.props.disabled).toBe(false);
+    });
+
+    it('reloads the timeline after undo moves HEAD without changing the branch name', async () => {
+        storage.getState().updateWorkspaceScmSnapshot(scope, {
+            ...snapshot, branch: { ...snapshot.branch, headOid: 'a'.repeat(40) },
+        });
+        const { WorkspaceRightPanelGitView } = await import('./WorkspaceRightPanelGitView');
+        const screen = await renderScreen(<WorkspaceRightPanelGitView {...scope} onOpenFile={() => {}} />);
+        expect(screen.getTextContent()).toContain('Saved project change');
+        const { machineScmLogList } = await import('@/sync/ops/scm/machineScm');
+        vi.mocked(machineScmLogList).mockResolvedValueOnce({
+            success: true,
+            entries: [{ sha: 'parent', shortSha: 'parent', subject: 'Previous project commit', body: '', authorName: 'Ada', authorEmail: '', timestamp: 1 }],
+        });
+        await act(async () => {
+            storage.getState().updateWorkspaceScmSnapshot(scope, {
+                ...snapshot, branch: { ...snapshot.branch, headOid: 'b'.repeat(40) },
+            });
+        });
+        expect(screen.getTextContent()).toContain('Previous project commit');
+        expect(screen.getTextContent()).not.toContain('Saved project change');
+    });
+
+    it('refreshes the moved HEAD after an earlier timeline read finishes', async () => {
+        const { machineScmLogList } = await import('@/sync/ops/scm/machineScm');
+        let completeInitialLog!: (value: Awaited<ReturnType<typeof machineScmLogList>>) => void;
+        vi.mocked(machineScmLogList).mockImplementationOnce(() => new Promise((resolve) => { completeInitialLog = resolve; }));
+        storage.getState().updateWorkspaceScmSnapshot(scope, {
+            ...snapshot, branch: { ...snapshot.branch, headOid: 'a'.repeat(40) },
+        });
+        const { WorkspaceRightPanelGitView } = await import('./WorkspaceRightPanelGitView');
+        const screen = await renderScreen(<WorkspaceRightPanelGitView {...scope} onOpenFile={() => {}} />);
+        vi.mocked(machineScmLogList).mockResolvedValueOnce({
+            success: true,
+            entries: [{ sha: 'parent', shortSha: 'parent', subject: 'Previous project commit', body: '', authorName: 'Ada', authorEmail: '', timestamp: 1 }],
+        });
+        await act(async () => {
+            storage.getState().updateWorkspaceScmSnapshot(scope, {
+                ...snapshot, branch: { ...snapshot.branch, headOid: 'b'.repeat(40) },
+            });
+        });
+        await act(async () => {
+            completeInitialLog({ success: true, entries: [{ sha: 'old', shortSha: 'old', subject: 'Saved project change', body: '', authorName: 'Ada', authorEmail: '', timestamp: 1 }] });
+        });
+        expect(screen.getTextContent()).toContain('Previous project commit');
+        expect(screen.getTextContent()).not.toContain('Saved project change');
+    });
+
+    it('refreshes the session timeline after HEAD moves during an earlier read', async () => {
+        storage.setState(storage.getInitialState(), true);
+        projectManager.clear();
+        storage.setState({ settings: { ...storage.getState().settings, scmGitPaneLayout: 'unified', scmFilesAutoRefreshIntervalMs: 0 } });
+        storage.getState().applySessions([createSessionFixture({ id: 'history-session', active: true,
+            metadata: { path: '/repo', host: 'localhost', machineId: 'm1' } })]);
+        storage.getState().applyMachines([createMachineFixture({ id: 'm1', activeAt: Date.now() })]);
+        storage.getState().updateSessionProjectScmSnapshot('history-session', {
+            ...snapshot, branch: { ...snapshot.branch, headOid: 'a'.repeat(40) },
+        });
+        const { sessionScmLogList } = await import('@/sync/ops');
+        let completeInitialLog!: (value: Awaited<ReturnType<typeof sessionScmLogList>>) => void;
+        vi.mocked(sessionScmLogList).mockImplementationOnce(() => new Promise((resolve) => { completeInitialLog = resolve; }));
+        vi.mocked(sessionScmLogList).mockResolvedValue({ success: true,
+            entries: [{ sha: 'parent', shortSha: 'parent', subject: 'Previous session commit', body: '', authorName: 'Ada', authorEmail: '', timestamp: 1 }] });
+        const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
+        const { SessionRightPanelGitView } = await import('@/components/sessions/panes/git/SessionRightPanelGitView');
+        const screen = await renderScreen(<AppPaneProvider><SessionRightPanelGitView sessionId="history-session" scopeId="session:history-session" /></AppPaneProvider>);
+        await act(async () => {
+            storage.getState().updateSessionProjectScmSnapshot('history-session', {
+                ...snapshot, branch: { ...snapshot.branch, headOid: 'b'.repeat(40) },
+            });
+        });
+        await act(async () => {
+            completeInitialLog({ success: true, entries: [{ sha: 'old', shortSha: 'old', subject: 'Saved session change', body: '', authorName: 'Ada', authorEmail: '', timestamp: 1 }] });
+        });
+        expect(screen.getTextContent()).toContain('Previous session commit');
+        expect(screen.getTextContent()).not.toContain('Saved session change');
     });
 
     it('offers the shared pane preference without unsupported project tree choices', async () => {

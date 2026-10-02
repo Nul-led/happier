@@ -35,6 +35,7 @@ import { SurfaceFreshnessLine } from '@/components/ui/surfaces/SurfaceFreshnessL
 import { formatExactCount } from '@/components/ui/navigation/tabBadge/tabBadgeModel';
 import { selectScmChangedFiles, selectScmConflictFiles } from '@/scm/scmStatusFiles';
 import { isFileSelectedForCommit } from '@/scm/operations/commitSelectionHints';
+import { resolveForceWithLeaseTarget } from '@/scm/operations/remoteTarget';
 import { resolveSessionGitPaneActions, resolveSessionGitPaneHeaderFacts, type SessionGitPaneActionKey } from './sessionGitPaneHeader';
 import {
     useProjectForSession,
@@ -263,12 +264,13 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
     // Tabs layout (a setting, not a second design): Changes | History from the same sections.
     const displayActiveGitSubTab = resolveGitPaneActiveSubTab(paneLayout, activeGitSubTab);
     const timelineVisible = paneLayout === 'unified' || displayActiveGitSubTab === 'history';
+    const commitHistoryRefreshKey = JSON.stringify([commitHistoryInitKey, effectiveScmSnapshot?.branch.headOid ?? null]);
     React.useEffect(() => {
         if (!timelineVisible || !sessionPath) return;
-        if (didInitCommitHistoryKeyRef.current === commitHistoryInitKey) return;
-        didInitCommitHistoryKeyRef.current = commitHistoryInitKey;
+        if (didInitCommitHistoryKeyRef.current === commitHistoryRefreshKey || historyLoading) return;
+        didInitCommitHistoryKeyRef.current = commitHistoryRefreshKey;
         void loadCommitHistory({ reset: true });
-    }, [commitHistoryInitKey, loadCommitHistory, sessionPath, timelineVisible]);
+    }, [commitHistoryRefreshKey, historyLoading, loadCommitHistory, sessionPath, timelineVisible]);
     const loadMoreHistory = React.useCallback(() => {
         void loadCommitHistory();
     }, [loadCommitHistory]);
@@ -365,7 +367,11 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
     const refreshScmDataFromMutation = React.useCallback(async () => {
         await scmStatusSync.invalidateFromMutationAndAwait(props.sessionId, props.serverId);
     }, [props.sessionId, props.serverId]);
-    const repositoryMutations = useSessionGitRepositoryMutations({ sessionId: props.sessionId, serverId: props.serverId, sessionPath });
+    const refreshAfterUndo = React.useCallback(async () => {
+        await scmStatusSync.invalidateFromMutationAndAwait(props.sessionId, props.serverId);
+        await loadCommitHistory({ reset: true });
+    }, [loadCommitHistory, props.serverId, props.sessionId]);
+    const repositoryMutations = useSessionGitRepositoryMutations({ sessionId: props.sessionId, serverId: props.serverId, sessionPath, refreshAfterUndo });
     const initializeRepository = React.useCallback(
         () => sessionScmRepositoryInit(props.sessionId, {}, props.serverId),
         [props.sessionId, props.serverId],
@@ -485,13 +491,28 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
         else if (key === 'open-pr' && openPullRequestUrl) void openExternalUrl(openPullRequestUrl);
         else if (key === 'create-pr') requestGitPullRequestForm(props.sessionId, props.serverId);
     }, [openPullRequestUrl, props.serverId, props.sessionId, publishBranch, runRemoteOperation]);
-    const menuExtras = React.useMemo<readonly GitNextActionMenuExtra[]>(() => [{
-        id: 'remotes-and-merges',
-        title: t('sessionGitPane.flow.tools.title'),
-        subtitle: t('sessionGitPane.flow.tools.subtitle'),
-        icon: 'git-merge',
-        onPress: () => showGitRemotesAndMergesSheet({ sessionId: props.sessionId, serverId: props.serverId, navigation: router }),
-    }], [props.serverId, props.sessionId, router]);
+    const undoLastCommit = React.useCallback(async (expectedHeadOid: string) => {
+        if (!scmWriteEnabled || effectiveScmSnapshot?.capabilities?.writeCommitUndoLast !== true || branchBusy) return;
+        await repositoryMutations.undoLastCommit(expectedHeadOid);
+    }, [branchBusy, effectiveScmSnapshot?.capabilities?.writeCommitUndoLast, repositoryMutations, scmWriteEnabled]);
+    const leaseTarget = React.useMemo(() => resolveForceWithLeaseTarget(effectiveScmSnapshot), [effectiveScmSnapshot]);
+    const menuExtras = React.useMemo<readonly GitNextActionMenuExtra[]>(() => {
+        const extras: GitNextActionMenuExtra[] = [{
+            id: 'remotes-and-merges',
+            title: t('sessionGitPane.flow.tools.title'),
+            subtitle: t('sessionGitPane.flow.tools.subtitle'),
+            icon: 'git-merge',
+            onPress: () => showGitRemotesAndMergesSheet({ sessionId: props.sessionId, serverId: props.serverId, navigation: router }),
+        }];
+        if (effectiveScmSnapshot?.capabilities?.writeCommitUndoLast === true) {
+            const headOid = effectiveScmSnapshot.branch.headOid;
+            extras.push({ id: 'undo-last-commit', title: t('sessionGitPane.flow.undo.action'), subtitle: t('sessionGitPane.flow.undo.description'), icon: 'clock-counter-clockwise', disabled: branchBusy || !headOid, onPress: () => { if (headOid) void undoLastCommit(headOid); } });
+        }
+        if (effectiveScmSnapshot?.capabilities?.writeRemoteForceWithLease === true) {
+            extras.push({ id: 'force-with-lease', title: t('sessionGitPane.flow.lease.push'), subtitle: t(leaseTarget ? 'sessionGitPane.flow.lease.description' : 'sessionGitPane.flow.lease.fetchFirst'), icon: 'arrow-up', disabled: branchBusy || !leaseTarget, onPress: () => { if (leaseTarget) void runRemoteOperation('push', { policy: leaseTarget }); } });
+        }
+        return extras;
+    }, [branchBusy, effectiveScmSnapshot?.branch.headOid, effectiveScmSnapshot?.capabilities?.writeCommitUndoLast, effectiveScmSnapshot?.capabilities?.writeRemoteForceWithLease, leaseTarget, props.serverId, props.sessionId, router, runRemoteOperation, undoLastCommit]);
     const headerAction = React.useMemo(() => {
         if (!paneActions || !scmWriteEnabled) return null;
         return (
@@ -519,6 +540,7 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
         upstream: effectiveScmSnapshot?.branch.upstream ?? null,
     }), [changedFileCount, effectiveScmSnapshot?.branch.ahead, effectiveScmSnapshot?.branch.behind, effectiveScmSnapshot?.branch.upstream, selectedForCommitCount]);
     const outcomeRecovery = React.useMemo(() => ({
+        ...(scmWriteEnabled && effectiveScmSnapshot?.capabilities?.writeCommitUndoLast === true && !branchBusy ? { undoCommit: undoLastCommit } : {}),
         fetch: () => { void runRemoteOperation('fetch'); },
         retry: (action: string) => {
             if (action === 'push' || action === 'pull' || action === 'fetch') void runRemoteOperation(action);
@@ -533,7 +555,7 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
         } : {}),
         preferRebase: Boolean(effectiveScmSnapshot?.branch.head)
             && effectiveScmSnapshot?.branch.head !== (effectiveScmSnapshot?.repo.defaultBranch ?? null),
-    }), [effectiveScmSnapshot?.branch.head, effectiveScmSnapshot?.capabilities?.writeRemotePolicies, effectiveScmSnapshot?.repo.defaultBranch, publishBranch, refreshScmData, runRemoteOperation]);
+    }), [branchBusy, effectiveScmSnapshot?.branch.head, effectiveScmSnapshot?.capabilities?.writeCommitUndoLast, effectiveScmSnapshot?.capabilities?.writeRemotePolicies, effectiveScmSnapshot?.repo.defaultBranch, publishBranch, refreshScmData, runRemoteOperation, scmWriteEnabled, undoLastCommit]);
     const landedSha = (writeOperation?.phase === 'succeeded' || writeOperation?.phase === 'effect_applied_with_warning')
         && writeOperation.action === 'commit'
         ? writeOperation.result?.sha ?? null

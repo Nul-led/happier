@@ -86,6 +86,8 @@ type BuildCommandPaletteCommandsBaseParams = Readonly<{
   nav: Readonly<{
     push: (path: string) => void;
     openNewSession: () => void;
+    /** Opens the shared device-pairing panel while retaining the current page. */
+    openHomePairingModal?: () => void | Promise<void>;
     /** Matches `useNavigateToSession`: the Home is passed when the producer holds it. */
     navigateToSession: (sessionId: string, opts?: Readonly<{ serverId?: string }>) => void;
   }>;
@@ -182,6 +184,16 @@ export function buildCommandPaletteCommands(
       action: () => nav.push('/scan/terminal'),
     },
   ];
+
+  if (nav.openHomePairingModal) {
+    cmds.push({
+      id: 'add-phone',
+      title: t('settings.addYourPhone'),
+      icon: 'device-mobile',
+      category: t('commandPalette.commands.actionsCategory'),
+      action: nav.openHomePairingModal,
+    });
+  }
 
   if (params.compactAppDestinations !== undefined) {
     for (const destination of params.compactAppDestinations) {

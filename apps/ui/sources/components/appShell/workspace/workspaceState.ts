@@ -12,6 +12,15 @@ export function createWorkspaceEmptyTab(id: string): WorkspaceTab {
     return { id, target: { kind: 'newTab', params: {} }, pinned: false, preview: false };
 }
 export type WorkspaceGroup = Readonly<{ id: string; tabIds: readonly string[]; activeTabId: string; mru: readonly string[] }>;
+export type ClosedWorkspaceTab = Readonly<{
+    tab: WorkspaceTab;
+    groupId: string;
+    index: number;
+    fallbackTitle?: string;
+    placement?: Readonly<{ siblingId: string; splitId: string; axis: SplitCanvasAxis; ratio: number; side: 'first' | 'second' }>;
+}>;
+// The requested bounded undo list is window-lifetime state, owned here rather than a persisted store.
+export const WORKSPACE_RECENTLY_CLOSED_LIMIT = 20;
 export type WorkspaceState = Readonly<{
     v: 1;
     tabs: Readonly<Record<string, WorkspaceTab>>;
@@ -21,6 +30,7 @@ export type WorkspaceState = Readonly<{
     maximizedGroupId: string | null;
     fallbackTitlesByTabId: Readonly<Record<string, string>>;
     tabPairs: readonly (readonly string[])[];
+    recentlyClosed: readonly ClosedWorkspaceTab[];
 }>;
 
 type MeasuredSplit = Readonly<{
@@ -32,7 +42,8 @@ type MeasuredSplit = Readonly<{
 export type WorkspaceAction =
     | Readonly<{ type: 'openTab'; groupId: string; tab: WorkspaceTab; fallbackTitle?: string }>
     | Readonly<{ type: 'activateTab'; groupId: string; tabId: string }>
-    | Readonly<{ type: 'closeTab'; groupId: string; tabId: string; newTab: WorkspaceTab }>
+    | Readonly<{ type: 'closeTab'; groupId: string; tabId: string; newTab: WorkspaceTab; remember?: boolean }>
+    | Readonly<{ type: 'reopenTab'; tabId?: string; reuseTabId?: string }>
     | Readonly<{ type: 'moveTab'; tabId: string; sourceGroupId: string; targetGroupId: string }>
     | Readonly<{ type: 'reorderTab'; groupId: string; tabId: string; index: number }>
     | Readonly<{ type: 'focusGroup'; groupId: string }>
@@ -84,6 +95,41 @@ function leaf(groupId: string): Extract<WorkspaceState['root'], { kind: 'leaf' }
     return { id: groupId, kind: 'leaf', leafKind: 'workspace-group', payload: { groupId } };
 }
 
+function closedPanePlacement(node: WorkspaceState['root'], groupId: string): ClosedWorkspaceTab['placement'] {
+    if (node.kind === 'leaf') return undefined;
+    for (const side of ['first', 'second'] as const) {
+        if (node[side].kind === 'leaf' && node[side].id === groupId) {
+            return { siblingId: node[side === 'first' ? 'second' : 'first'].id, splitId: node.id, axis: node.axis, ratio: node.ratio, side };
+        }
+    }
+    return closedPanePlacement(node.first, groupId) ?? closedPanePlacement(node.second, groupId);
+}
+
+function restoreClosedPane(root: WorkspaceState['root'], entry: ClosedWorkspaceTab): WorkspaceState['root'] {
+    const placement = entry.placement;
+    if (!placement) return root;
+    const ids = new Set<string>();
+    const collect = (node: WorkspaceState['root']): void => {
+        ids.add(node.id);
+        if (node.kind === 'split') { collect(node.first); collect(node.second); }
+    };
+    collect(root);
+    let splitId = placement.splitId;
+    for (let index = 1; ids.has(splitId); index++) splitId = `split:${index}`;
+    const restore = (node: WorkspaceState['root']): WorkspaceState['root'] => {
+        if (node.id === placement.siblingId) return {
+            id: splitId, kind: 'split', axis: placement.axis, ratio: placement.ratio,
+            first: placement.side === 'first' ? leaf(entry.groupId) : node,
+            second: placement.side === 'second' ? leaf(entry.groupId) : node,
+        };
+        if (node.kind === 'leaf') return node;
+        const first = restore(node.first);
+        const second = restore(node.second);
+        return first === node.first && second === node.second ? node : { ...node, first, second };
+    };
+    return restore(root);
+}
+
 export function projectWorkspaceSplitTabPairs(state: Pick<WorkspaceState, 'root' | 'groups'>): WorkspaceState['tabPairs'] {
     const ids = collectSplitCanvasLeaves(state.root).map(leaf => state.groups[leaf.payload.groupId].activeTabId);
     return ids.length >= 2 ? [ids] : [];
@@ -104,6 +150,7 @@ export function createWorkspaceState(tab: WorkspaceTab): WorkspaceState {
         maximizedGroupId: null,
         fallbackTitlesByTabId: {},
         tabPairs: [],
+        recentlyClosed: [],
     };
 }
 
@@ -145,14 +192,22 @@ export function reduceWorkspaceState(state: WorkspaceState, action: WorkspaceAct
             const tabs = withoutTabs(state.tabs, [action.tabId]);
             const titles = withoutTabs(state.fallbackTitlesByTabId, [action.tabId]);
             const nextGroup = closeGroupTab(group, action.tabId);
+            const tab = state.tabs[action.tabId];
+            const recentlyClosed = action.remember === false || tab.target.kind === 'newTab' ? state.recentlyClosed : [
+                { tab, groupId: group.id, index: group.tabIds.indexOf(tab.id),
+                    ...(state.fallbackTitlesByTabId[tab.id] === undefined ? {} : { fallbackTitle: state.fallbackTitlesByTabId[tab.id] }),
+                    ...(nextGroup.tabIds.length === 0 ? { placement: closedPanePlacement(state.root, group.id) } : {}),
+                },
+                ...state.recentlyClosed.filter(entry => entry.tab.id !== tab.id),
+            ].slice(0, WORKSPACE_RECENTLY_CLOSED_LIMIT);
             if (nextGroup.tabIds.length > 0) {
-                return { ...state, tabs, fallbackTitlesByTabId: titles, groups: { ...state.groups, [group.id]: nextGroup as WorkspaceGroup }, tabPairs: removePairMembers(state, [action.tabId]) };
+                return { ...state, recentlyClosed, tabs, fallbackTitlesByTabId: titles, groups: { ...state.groups, [group.id]: nextGroup as WorkspaceGroup }, tabPairs: removePairMembers(state, [action.tabId]) };
             }
             if (Object.keys(state.groups).length === 1) {
                 if (action.newTab.target.kind !== 'newTab' || action.newTab.id === action.tabId || state.tabs[action.newTab.id]) return state;
                 const replacement = insertGroupTab({ ...nextGroup, activeTabId: null }, action.newTab.id);
                 return {
-                    ...state, tabs: { ...tabs, [action.newTab.id]: action.newTab },
+                    ...state, recentlyClosed, tabs: { ...tabs, [action.newTab.id]: action.newTab },
                     groups: { [group.id]: replacement as WorkspaceGroup }, fallbackTitlesByTabId: titles,
                     tabPairs: removePairMembers(state, [action.tabId]),
                 };
@@ -160,7 +215,32 @@ export function reduceWorkspaceState(state: WorkspaceState, action: WorkspaceAct
             const closed = splitCanvasReduce(canvasFor(state), { type: 'closeLeaf', leafId: group.id });
             const groups = { ...state.groups };
             delete groups[group.id];
-            return { ...fromCanvas(state, closed), tabs, groups, fallbackTitlesByTabId: titles, tabPairs: removePairMembers(state, [action.tabId]) };
+            return { ...fromCanvas(state, closed), recentlyClosed, tabs, groups, fallbackTitlesByTabId: titles, tabPairs: removePairMembers(state, [action.tabId]) };
+        }
+        case 'reopenTab': {
+            const entry = action.tabId ? state.recentlyClosed.find(item => item.tab.id === action.tabId) : state.recentlyClosed[0];
+            if (!entry) return state;
+            const recentlyClosed = state.recentlyClosed.filter(item => item !== entry);
+            const existingTabId = action.reuseTabId ?? entry.tab.id;
+            const existing = groupContaining(state, existingTabId);
+            if (existing) {
+                const retargeted = reduceWorkspaceState(state, { type: 'setTarget', tabId: existingTabId, target: entry.tab.target });
+                const kept = reduceWorkspaceState(retargeted, { type: 'promoteTab', tabId: existingTabId });
+                return { ...reduceWorkspaceState(kept, { type: 'activateTab', groupId: existing.id, tabId: existingTabId }), recentlyClosed };
+            }
+            const root = state.groups[entry.groupId] ? state.root : restoreClosedPane(state.root, entry);
+            const restoredPane = root !== state.root;
+            const groupId = state.groups[entry.groupId] || restoredPane ? entry.groupId : state.focusedGroupId;
+            const group = state.groups[groupId] ?? { id: groupId, tabIds: [], activeTabId: '', mru: [] };
+            const tabIds = [...group.tabIds];
+            tabIds.splice(Math.min(entry.index, tabIds.length), 0, entry.tab.id);
+            const reopened = {
+                ...state, root, recentlyClosed, focusedGroupId: groupId, maximizedGroupId: null,
+                tabs: { ...state.tabs, [entry.tab.id]: { ...entry.tab, preview: false } },
+                groups: { ...state.groups, [groupId]: activateGroupTab({ ...group, tabIds }, entry.tab.id) as WorkspaceGroup },
+                fallbackTitlesByTabId: { ...state.fallbackTitlesByTabId, ...(entry.fallbackTitle === undefined ? {} : { [entry.tab.id]: entry.fallbackTitle }) },
+            };
+            return restoredPane ? { ...reopened, tabPairs: projectWorkspaceSplitTabPairs(reopened) } : reopened;
         }
         case 'reorderTab': {
             const group = state.groups[action.groupId];

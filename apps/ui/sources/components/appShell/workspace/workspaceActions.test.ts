@@ -9,6 +9,26 @@ import { createWorkspaceEmptyTab, createWorkspaceState, reduceWorkspaceState } f
 installPanelCommonModuleMocks();
 
 describe('workspace Action intent adapter', () => {
+    it('lists local closed tabs and reopens the selected tab through the navigation owner', () => {
+        let state = createWorkspaceState({ id: 'a', target: { kind: 'session', params: { id: 'a', serverId: 'home-a' } }, pinned: false, preview: false });
+        const catalog = resolveCompactAppDestinations({ builtins: { externalSessions: false, inbox: true, workflows: true, friends: false }, pages: [] });
+        let id = 0;
+        const navigation = createWorkspaceNavigationAdapter({ getState: () => state, getCatalog: () => catalog,
+            dispatch: action => { state = reduceWorkspaceState(state, action); }, transport: { commit: () => {} },
+            createId: () => `new:${++id}`, onChange: () => {} });
+        const execute = createWorkspaceActionAdapter({ getState: () => state, navigation, readCanvas: () => null, createId: () => `new:${++id}` });
+        navigation.initialize('/session/a?serverId=home-a');
+        navigation.closeTab('group:1', 'a');
+        const closed = ActionIdSchema.parse('workspace.tabs.closed.list');
+        const reopen = ActionIdSchema.parse('workspace.tabs.reopen');
+        if (!isWorkspaceActionId(closed) || !isWorkspaceActionId(reopen)) throw new Error('Expected workspace Actions');
+        expect(execute(closed, {})).toMatchObject({ ok: true, tabs: [{ id: 'a', target: { kind: 'session', params: { id: 'a', serverId: 'home-a' } } }] });
+        expect(execute(reopen, { tabId: 'missing' })).toMatchObject({ ok: false, errorCode: 'workspace_closed_tab_not_found' });
+        expect(execute(reopen, { tabId: 'a' })).toEqual({ ok: true });
+        expect(state.groups[state.focusedGroupId].activeTabId).toBe('a');
+        expect(execute(closed, {})).toEqual({ ok: true, tabs: [] });
+        expect(execute(reopen, {})).toMatchObject({ ok: false, errorCode: 'workspace_closed_tab_not_found' });
+    });
     it('reorders through the real navigation reducer and returns typed rejection for invalid positions', () => {
         let state = createWorkspaceState({ id: 'a', target: { kind: 'session', params: { id: 'a', serverId: 'home-a' } }, pinned: false, preview: false });
         state = reduceWorkspaceState(state, { type: 'openTab', groupId: 'group:1', tab: createWorkspaceEmptyTab('b') });

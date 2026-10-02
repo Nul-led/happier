@@ -30,7 +30,7 @@ import { useFeatureDecision } from '@/hooks/server/useFeatureDecision';
 import { useFriendsEnabled } from '@/hooks/server/useFriendsEnabled';
 import type { KeyboardCommandId } from '@/keyboard/types';
 import { selectPluginRightSidebarTabPlacements } from '@/sync/domains/plugins/ui/surfacePlacementSelectors';
-import { useLocalSetting } from '@/sync/domains/state/storage';
+import { useLocalSetting, useSessionDisplayNameProjections } from '@/sync/domains/state/storage';
 import { t, type TranslationKeyNoParams } from '@/text';
 import { UNIVERSAL_SEARCH_ROUTE } from '@/components/appShell/search/universalSearchRoutePresentation';
 import {
@@ -42,7 +42,10 @@ import {
 import { useOpenAppRightSidebarTab } from '@/components/appShell/rightSidebar/appScopeRightSidebarNavigation';
 import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
 import { fireAndForget } from '@/utils/system/fireAndForget';
-import { parseSessionPaneUrlState, serializeSessionPaneUrlState } from '@/components/sessions/panes/url/sessionPaneUrlState';
+import { createSessionPaneDetailsTab, parseSessionPaneUrlState, serializeSessionPaneUrlState } from '@/components/sessions/panes/url/sessionPaneUrlState';
+import { resolveSettingsRouteTitleKey } from '@/components/settings/navigation/settingsRouteRegistry';
+import { getSessionName, resolveLockedSessionTitle } from '@/utils/sessions/sessionUtils';
+import { useSessionDiscussionTitleProjections } from '@/sync/ops/sessionDiscussions/useSessionDiscussionRepositorySnapshot';
 import { matchWorkspaceDestinationRoute } from '@/components/appShell/workspace/workspaceRouteBodies';
 
 /**
@@ -224,6 +227,12 @@ const BUILTIN_DESTINATION_ROWS: readonly BuiltinDestinationRow[] = [
         id: 'boards', titleKey: 'boards.title', icon: 'squares-four',
         placement: { kind: 'rail', region: 'app' }, column: 'boards',
         activation: 'navigate', routePath: '/boards', currentRoutePatterns: ['/boards/[...rest]'],
+    },
+    {
+        // Everything saved to the Account Artifact store, as one browser page (RU2 §9.6).
+        id: 'artifacts', titleKey: 'artifacts.title', icon: 'files',
+        placement: { kind: 'rail', region: 'app' },
+        activation: 'navigate', routePath: '/artifacts', currentRoutePatterns: ['/artifacts/[...rest]'],
     },
     {
         id: 'friends', titleKey: 'tabs.friends', icon: 'users', placement: { kind: 'rail', region: 'app' },
@@ -763,4 +772,76 @@ export function useActivateAppDestination(): ActivateAppDestination {
         const result = runGuardedNavigation(() => owners.router.push(destination.routePath as never));
         if (result !== true) fireAndForget(result, { tag: 'AppDestination.activate' });
     }, []);
+}
+
+export type DestinationInstanceTitleEntry = Readonly<{ key: string; ref: DestinationRef }>;
+
+/** A session's name as every surface shows it: the session title owner's, locked titles included. */
+function sessionTitle(source: Parameters<typeof getSessionName>[0] | null): string | null {
+    if (!source) return null;
+    return resolveLockedSessionTitle(getSessionName(source, source.serverId));
+}
+
+/**
+ * The title of what is open, without asking any store: a Details target's own title (its file name,
+ * "Board", a terminal), a settings page's title, or the catalog's title for a plugin page or an
+ * app area. `null` when only live data can name it (a session) or nothing can.
+ */
+function resolveStaticInstanceTitle(catalog: readonly CompactAppDestination[], ref: DestinationRef): string | null {
+    if (ref.kind === 'newTab') return t('workspaceBar.newTab');
+    if (ref.kind === 'session') return null;
+    if (ref.kind === 'sessionDetails') {
+        const details = parseSessionPaneUrlState(ref.params)?.details;
+        return details ? createSessionPaneDetailsTab(details)?.title ?? null : null;
+    }
+    const href = hrefForDestinationRef(catalog, ref);
+    if (!href) return null;
+    if (ref.kind === 'settings') {
+        const key = resolveSettingsRouteTitleKey(href.split(/[?#]/, 1)[0]);
+        if (key) return t(key);
+    }
+    return resolveCurrentAppDestination(catalog, href)?.title ?? null;
+}
+
+/**
+ * The live title of each open destination instance (workspace lab T: "its title comes from the
+ * destination"): a session's current name, a Details target's own name, a settings page or plugin
+ * page title. One resolver for every tab bar, keyed by the caller's tab key; a key is absent when the
+ * instance cannot be named yet, so the caller shows its saved title (loading, unavailable).
+ */
+export function useDestinationInstanceTitles(
+    catalog: readonly CompactAppDestination[],
+    entries: readonly DestinationInstanceTitleEntry[],
+): ReadonlyMap<string, string> {
+    const sessionEntries = React.useMemo(() => entries.filter((entry) => entry.ref.kind === 'session'
+        && typeof entry.ref.params.id === 'string' && entry.ref.params.id.length > 0), [entries]);
+    const addresses = React.useMemo(() => sessionEntries.map((entry) => ({
+        sessionId: entry.ref.params.id!, serverId: entry.ref.params.serverId ?? null,
+    })), [sessionEntries]);
+    const sessionTitles = useSessionDisplayNameProjections(addresses, sessionTitle);
+    const discussionEntries = React.useMemo(() => entries.flatMap(entry => {
+        if (entry.ref.kind !== 'sessionDetails' || !entry.ref.params.id) return [];
+        const details = parseSessionPaneUrlState(entry.ref.params)?.details;
+        return details?.kind === 'discussion' ? [{ key: entry.key, serverId: entry.ref.params.serverId ?? null,
+            sessionId: entry.ref.params.id!, discussionId: details.discussionId }] : [];
+    }), [entries]);
+    const discussionTitles = useSessionDiscussionTitleProjections(discussionEntries);
+    return React.useMemo(() => {
+        const titles = new Map<string, string>();
+        for (const entry of entries) {
+            const title = resolveStaticInstanceTitle(catalog, entry.ref);
+            if (title) titles.set(entry.key, title);
+        }
+        sessionEntries.forEach((entry, index) => {
+            const name = sessionTitles[index];
+            if (!name) return;
+            // A Details tab names its target; a session tab names the session.
+            if (entry.ref.kind === 'session') titles.set(entry.key, name);
+        });
+        discussionEntries.forEach((entry, index) => {
+            const name = discussionTitles[index];
+            if (name) titles.set(entry.key, name);
+        });
+        return titles;
+    }, [catalog, entries, sessionEntries, sessionTitles, discussionEntries, discussionTitles]);
 }

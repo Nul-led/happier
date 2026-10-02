@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { REMOVE_INDEX_LOCK_CONFIRMATION_TOKEN, type ScmOperationOutcome, type ScmRemoteResponse } from '@happier-dev/protocol/scm';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
-import type { machineScmCommitCreate } from '@/sync/ops/scm/machineScm';
+import type { machineScmCommitCreate, machineScmCommitUndoLast } from '@/sync/ops/scm/machineScm';
+import { Modal } from '@/modal';
 
-const { commit, push, removeIndexLock } = vi.hoisted(() => ({
+const { commit, undo, push, removeIndexLock } = vi.hoisted(() => ({
     commit: vi.fn<typeof machineScmCommitCreate>(),
+    undo: vi.fn<typeof machineScmCommitUndoLast>(),
     push: vi.fn<() => Promise<ScmRemoteResponse>>(),
     removeIndexLock: vi.fn(async () => ({ success: true, removed: true, lockPath: '/repo/.git/index.lock' })),
 }));
@@ -17,12 +19,12 @@ vi.mock('@/modal', async () => {
     return createModalModuleMock({ confirmResult: true }).module;
 });
 // Machine RPC is the system boundary; storage, projectManager and internal SCM logic stay real.
-vi.mock('@/sync/ops/scm/machineScm', () => ({ machineScmCommitCreate: commit, machineScmRemotePush: push, machineScmRepositoryRemoveIndexLock: removeIndexLock }));
+vi.mock('@/sync/ops/scm/machineScm', () => ({ machineScmCommitCreate: commit, machineScmCommitUndoLast: undo, machineScmRemotePush: push, machineScmRepositoryRemoveIndexLock: removeIndexLock }));
 
 import { storage } from '@/sync/domains/state/storage';
 import { projectManager } from '@/sync/runtime/orchestration/projectManager';
 import { selectScmWriteOperation } from '@/scm/operations/selectScmWriteOperation';
-import { executeWorkspaceScmCommit } from './executeWorkspaceScmCommit';
+import { executeWorkspaceScmCommit, executeWorkspaceScmCommitUndoLast } from './executeWorkspaceScmCommit';
 import { executeWorkspaceScmRemoteOperation } from './executeWorkspaceScmRemoteOperation';
 import { runWorkspaceScmMutation } from '@/scm/operations/runSessionScmMutation';
 
@@ -54,9 +56,14 @@ describe('workspace SCM public write outcomes', () => {
         vi.restoreAllMocks();
         projectManager.clear();
         commit.mockReset().mockResolvedValue({ success: true, commitSha: 'commit-1' });
+        undo.mockReset().mockResolvedValue({ success: true, undoneCommitSha: 'a'.repeat(40), headOid: 'b'.repeat(40), outcome: {
+            v: 1, kind: 'succeeded', effect: { kind: 'branch', name: 'HEAD', headOid: 'b'.repeat(40) }, repositoryState: { headOid: 'b'.repeat(40), hasConflicts: false, operation: null }, nextActions: [{ kind: 'refresh' }],
+        } });
         push.mockReset().mockResolvedValue({ success: true });
         removeIndexLock.mockClear();
+        vi.mocked(Modal.alert).mockClear();
         storage.getState().markWorkspaceScmCommitSelectionPaths(scope, ['a.ts']);
+        storage.getState().updateWorkspaceScmSnapshotError(scope, null);
     });
     it('passes the captured server scope to a successful commit and clears real selection', async () => {
         const request = input();
@@ -64,6 +71,37 @@ describe('workspace SCM public write outcomes', () => {
         expect(await executeWorkspaceScmCommit(request)).toEqual({ ok: true });
         expect(commit).toHaveBeenCalledWith('machine-1', { cwd: '/repo', message: 'Commit message', scope: { kind: 'all-pending' } }, { serverId: 'server-1' });
         expect(storage.getState().getWorkspaceScmCommitSelectionPaths(scope)).toEqual([]);
+    });
+    it('undoes exactly the displayed workspace commit through the canonical lock and leaves selection staged', async () => {
+        const request = { scope, expectedHeadOid: 'a'.repeat(40), refreshScmData: vi.fn(async () => {}) };
+        await executeWorkspaceScmCommitUndoLast(request);
+        expect(undo).toHaveBeenCalledWith('machine-1', { cwd: '/repo', expectedHeadOid: 'a'.repeat(40) }, { serverId: 'server-1' });
+        expect(outcomeLine()).toMatchObject({ phase: 'succeeded', action: 'commit_undo', outcome: { repositoryState: { headOid: 'b'.repeat(40) } } });
+        expect(storage.getState().getWorkspaceScmCommitSelectionPaths(scope)).toEqual(['a.ts']);
+        expect(request.refreshScmData).toHaveBeenCalled();
+        expect(storage.getState().getWorkspaceScmInFlightOperation(scope)).toBeNull();
+    });
+    it('preserves an undo refusal and refreshes neither repository nor selection', async () => {
+        const outcome: ScmOperationOutcome = { v: 1, kind: 'needs_input', errorCode: 'COMMIT_UNDO_HEAD_CHANGED', nextActions: [{ kind: 'refresh' }] };
+        undo.mockResolvedValue({ success: false, outcome });
+        const request = { scope, expectedHeadOid: 'a'.repeat(40), refreshScmData: vi.fn(async () => {}) };
+        await executeWorkspaceScmCommitUndoLast(request);
+        expect(outcomeLine()).toMatchObject({ phase: 'needs_input', action: 'commit_undo', outcome });
+        expect(request.refreshScmData).not.toHaveBeenCalled();
+        expect(storage.getState().getWorkspaceScmCommitSelectionPaths(scope)).toEqual(['a.ts']);
+    });
+    it('keeps an applied undo visible when the snapshot controller retains a refresh failure', async () => {
+        await executeWorkspaceScmCommitUndoLast({
+            scope, expectedHeadOid: 'a'.repeat(40),
+            refreshScmData: async () => {
+                storage.getState().updateWorkspaceScmSnapshotError(scope, { message: 'status unavailable', at: 1 });
+            },
+        });
+        expect(outcomeLine()).toMatchObject({
+            phase: 'effect_applied_with_warning', action: 'commit_undo',
+            outcome: { errorCode: 'REPOSITORY_REFRESH_FAILED', effect: { kind: 'branch', name: 'HEAD', headOid: 'b'.repeat(40) }, nextActions: [{ kind: 'refresh' }] },
+        });
+        expect(storage.getState().getWorkspaceScmCommitSelectionPaths(scope)).toEqual(['a.ts']);
     });
     it('offers stale index-lock recovery and retries the same scoped push', async () => {
         push.mockResolvedValueOnce({ success: false, errorCode: 'COMMAND_FAILED', error: "fatal: Unable to create '/repo/.git/index.lock': File exists." });
@@ -79,6 +117,7 @@ describe('workspace SCM public write outcomes', () => {
         expect(await executeWorkspaceScmCommit(input())).toEqual({ ok: false });
         expect(outcomeLine()).toMatchObject({ phase: outcome.kind, outcome });
         expect(storage.getState().getWorkspaceScmCommitSelectionPaths(scope)).toEqual(['a.ts']);
+        expect(Modal.alert).not.toHaveBeenCalled();
     });
     it('records transport loss as unknown and keeps commit selection', async () => {
         commit.mockRejectedValue(new Error('socket closed'));
@@ -94,12 +133,32 @@ describe('workspace SCM public write outcomes', () => {
         expect(await executeWorkspaceScmCommit(request)).toEqual({ ok: true });
         expect(outcomeLine()).toMatchObject({ phase: 'effect_applied_with_warning', outcome: { errorCode: 'REPOSITORY_REFRESH_FAILED', effect: { kind: 'commit', commitSha: 'commit-1' }, nextActions: [{ kind: 'refresh' }] } });
         expect(storage.getState().getWorkspaceScmCommitSelectionPaths(scope)).toEqual([]);
+        expect(Modal.alert).not.toHaveBeenCalled();
     });
     it('keeps remote warnings and their exact recovery actions', async () => {
         const outcome: ScmOperationOutcome = { v: 1, kind: 'effect_applied_with_warning', errorCode: 'REPOSITORY_REFRESH_FAILED', effect: { kind: 'remote', remote: 'origin', branch: 'main' }, nextActions: [{ kind: 'refresh' }] };
         push.mockResolvedValue({ success: false, outcome });
         await executeWorkspaceScmRemoteOperation(pushInput());
         expect(outcomeLine()).toMatchObject({ phase: outcome.kind, outcome });
+    });
+    it('uses the observed upstream identity for a workspace force-with-lease push and preserves typed rejection', async () => {
+        const outcome: ScmOperationOutcome = { v: 1, kind: 'needs_input', errorCode: 'REMOTE_LEASE_REJECTED', nextActions: [{ kind: 'refresh' }] };
+        push.mockResolvedValue({ success: false, outcome });
+        await executeWorkspaceScmRemoteOperation({
+            ...pushInput(),
+            scmSnapshot: {
+                ...snapshot,
+                capabilities: { ...snapshot.capabilities, writeRemotePolicies: true, writeRemoteForceWithLease: true },
+                branch: { ...snapshot.branch, upstreamOid: 'a'.repeat(40) },
+            },
+            policy: { pushMode: 'force_with_lease', expectedRemoteOid: 'a'.repeat(40) },
+        });
+        expect(push).toHaveBeenCalledWith('machine-1', {
+            cwd: '/repo', remote: 'origin', branch: 'main',
+            pushMode: 'force_with_lease', expectedRemoteOid: 'a'.repeat(40),
+        }, { serverId: 'server-1' });
+        expect(outcomeLine()).toMatchObject({ phase: 'needs_input', outcome });
+        expect(Modal.alert).not.toHaveBeenCalled();
     });
     it('keeps an unknown push result and its remote reconciliation target', async () => {
         push.mockRejectedValue(new Error('socket closed'));

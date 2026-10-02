@@ -7,12 +7,15 @@ import type { Command } from '@/components/appShell/commandPalette/types';
 import { t } from '@/text';
 import { UniversalSearchController } from './UniversalSearchController';
 import type { UniversalSearchScopeSeed } from './UniversalSearchRuntimeContext';
+import type { TerminalJumpTarget } from '@/components/sessions/terminal/jump/terminalJumpTarget';
 
 export type UniversalSearchModalProps = CustomModalInjectedProps & Readonly<{
     commands: readonly Command[];
     initialQuery?: string;
     activeSessionId?: string | null;
     initialScope?: UniversalSearchScopeSeed;
+    /** Open in the Terminals scope of this session pane (Jump to a terminal). */
+    terminalJump?: TerminalJumpTarget;
 }>;
 
 export function UniversalSearchModal(props: UniversalSearchModalProps): React.ReactElement {
@@ -30,6 +33,7 @@ export function UniversalSearchModal(props: UniversalSearchModalProps): React.Re
             initialQuery={props.initialQuery}
             activeSessionId={props.activeSessionId}
             initialScope={props.initialScope}
+            terminalJump={props.terminalJump}
             presentation="modal"
             onRequestClose={props.onClose}
         />

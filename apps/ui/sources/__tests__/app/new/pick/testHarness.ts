@@ -423,13 +423,12 @@ export function createConfiguredAcpBackendCatalogSettings(configuredBackendId: s
  * The canonical daemon `PluginProjectionV2` a resume picker suite feeds through
  * the real `machineContributionRegistryProjectionDescribe` seam: the bundled
  * Claude Agent with a browseable `claudeConfig` External Sessions source, plus
- * optional extra packages/Agents/backends for plugin-carrier cases. Schema-parsed
+ * optional extra packages/Agents for plugin-carrier cases. Schema-parsed
  * so a fixture drift fails here rather than as a silent projection `error` phase.
  */
 export function createSupportedClaudeProjection(params: Readonly<{
     additionalAgentsById?: Readonly<Record<string, unknown>>;
     additionalInstalledPackagesById?: Readonly<Record<string, unknown>>;
-    backendsById?: Readonly<Record<string, unknown>>;
     /**
      * Models an ACP `session/list`-backed source: listing plus "resume in
      * Happier" only, with no link identity and no follow/takeover claim.
@@ -499,13 +498,12 @@ export function createSupportedClaudeProjection(params: Readonly<{
                 },
             },
         },
-        backendsById: params.backendsById ?? {},
     });
 }
 
 /**
- * The `plugin:review-bot` Agent + `plugin-review-bot` backend pair a plugin
- * carrier case adds to `createSupportedClaudeProjection`: the projection is the
+ * The `plugin:review-bot` Agent with its settings-backed carrier that a plugin
+ * case adds to `createSupportedClaudeProjection`: the projection is the
  * only authority that proves which qualified contribution owns the
  * settings-backed plugin backend, and its `externalSessions` block is what
  * makes the real browse resolver pick that carrier over the bundled one.
@@ -555,16 +553,6 @@ export function createReviewBotPluginProjectionContributions() {
                     }],
                 },
                 settingsBackendId: 'plugin-review-bot',
-            },
-        },
-        backendsById: {
-            'plugin-review-bot': {
-                id: 'plugin-review-bot',
-                agentId: 'plugin:review-bot',
-                title: 'Review Bot (plugin)',
-                subtitle: 'plugin backend',
-                catalogAgentId: 'claude',
-                iconAgentId: 'claude',
             },
         },
     } as const;

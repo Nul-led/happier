@@ -653,11 +653,10 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
         // Removal belongs with the other card operations, marked destructive and
         // last, rather than as the one control drawn louder than every
         // constructive one beneath every card.
-        onRemove: presentation.kind === 'content' ? props.onRemove : undefined,
+        onRemove: props.onRemove,
         frame: props.frameOverride,
     }), [
         beginRename,
-        presentation.kind,
         props.canEdit,
         props.canMoveAfter,
         props.canMoveBefore,
@@ -702,6 +701,9 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
 
     const stateActions = presentation.kind === 'state'
         ? presentation.card.actionKinds.flatMap((kind) => {
+            // Keep destructive removal in the existing menu when that menu is available.
+            // Locked/missing records and inert previews retain their state-owned recovery.
+            if (kind === 'remove' && itemActions.some((action) => action.id === 'remove')) return [];
             const available = kind === 'remove' ? props.onRemove !== undefined
                 : kind === 'managePlugin' ? props.onManagePlugin !== undefined
                     : kind === 'prepareEncryption' ? props.onPrepareEncryption !== undefined
@@ -736,9 +738,11 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
         ? (
             <SurfaceStateCard
                 testID={`${testID}-executable-${props.executableCurrentness}`}
+                size={props.expanded ? undefined : 'line'}
                 kind={props.executableCurrentness === 'unverified' ? 'unavailable' : 'warning'}
                 title={t('sessionBoard.board.unavailable.title')}
-                reason={executablePausedReason}
+                reason={props.expanded ? executablePausedReason : undefined}
+                detail={props.expanded ? undefined : executablePausedReason}
                 diagnosticCode={`session_board_executable_${props.executableCurrentness}`}
                 accessibilitySemantics="status"
             />
@@ -747,9 +751,11 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
         ? (
             <SurfaceStateCard
                 testID={`${testID}-state`}
+                size={props.expanded ? undefined : 'line'}
                 kind={presentation.card.kind}
                 title={presentation.card.title}
-                reason={presentation.card.reason}
+                reason={props.expanded ? presentation.card.reason : undefined}
+                detail={props.expanded ? undefined : presentation.card.reason}
                 diagnosticCode={presentation.card.diagnosticCode}
                 accessibilitySemantics="status"
                 {...(stateActions[0] ? { action: stateActions[0] } : {})}
@@ -846,9 +852,11 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
                         // available; the presentation resolver has already refused otherwise.
                         <SurfaceStateCard
                             testID={`${testID}-state`}
+                            size={props.expanded ? undefined : 'line'}
                             kind="unavailable"
                             title={t('sessionBoard.item.rendererUnavailable.title')}
-                            reason={t('sessionBoard.item.rendererUnavailable.reason')}
+                            reason={props.expanded ? t('sessionBoard.item.rendererUnavailable.reason') : undefined}
+                            detail={props.expanded ? undefined : t('sessionBoard.item.rendererUnavailable.reason')}
                             diagnosticCode="session_board_renderer_missing"
                             accessibilitySemantics="status"
                         />
@@ -942,8 +950,8 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
         </Text>
     ) : undefined;
 
-    // The meta slot says where else the widget lives: a section outside the Board carries a quiet
-    // Board glyph, and a Board card the viewer keeps beside chat carries the Companion's.
+    // A Companion section identifies its shared Board record. Board cards keep their header
+    // clear; Companion membership still controls drag admission and the menu's inverse action.
     const meta = section ? (
         <View
             testID={`${testID}-on-board-mark`}
@@ -953,14 +961,6 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
                 : t('sessionBoard.companion.actions.openOnBoard')}
         >
             <Icon name="squares-four" size={13} color={theme.colors.text.tertiary} />
-        </View>
-    ) : props.inCompanion ? (
-        <View
-            testID={`${testID}-companion-mark`}
-            accessibilityRole="image"
-            accessibilityLabel={t('sessionBoard.companion.inCompanionA11y')}
-        >
-            <Icon name="stack" size={13} color={theme.colors.text.tertiary} />
         </View>
     ) : null;
 

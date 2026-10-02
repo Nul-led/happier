@@ -37,6 +37,18 @@ async function renderStrip() {
 }
 
 describe('AppShellThemeToggle', () => {
+    it.each(['light', 'dark', 'adaptive'] as const)('marks only the stored %s mode as selected', async (mode) => {
+        const { storage } = await import('@/sync/domains/state/storage');
+        act(() => storage.getState().applyLocalSettings({ themePreference: mode }));
+        const screen = await renderStrip();
+        await act(async () => { toggleWith(screen, 'onLongPress')?.(); });
+        for (const id of ['light', 'dark', 'adaptive']) {
+            const rows = screen.findAllByTestId(`app-shell-theme-menu-${id}`);
+            expect(rows.some(row => row.props['aria-checked'] === (id === mode)
+                || row.props.accessibilityState?.checked === (id === mode))).toBe(true);
+        }
+    });
+
     it('opens its menu on a long press and on a right click, and hides itself from the toolbar on request', async () => {
         const screen = await renderStrip();
         expect(screen.findByTestId('app-shell-theme-menu-hide')).toBeNull();

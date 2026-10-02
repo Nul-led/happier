@@ -47,6 +47,7 @@ export const ProjectsColumn = React.memo(function ProjectsColumn() {
     const projectRow = (workspaceRef: WorkspaceRefV1, pinned: boolean) => (
         <CollectionNavigationRow
             key={workspaceRef.id}
+            href={`/projects/${encodeURIComponent(workspaceRef.id)}`}
             testID={`projects-column:project:${workspaceRef.id}`}
             title={resolveWorkspaceRefDisplayName(workspaceRef)}
             icon={<Icon name="folder" />}
@@ -84,6 +85,7 @@ export const ProjectsColumn = React.memo(function ProjectsColumn() {
                 {placed.destinations.map((destination) => (
                     <CollectionNavigationRow
                         key={destination.id}
+                        href={destination.activation === 'navigate' ? destination.routePath : null}
                         testID={destinationRowTestId(destination)}
                         title={destination.title}
                         icon={<Icon name={destination.icon} />}

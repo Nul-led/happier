@@ -586,6 +586,8 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
             : renderEmptyState()
         : (
         <DetailsSplitWorkspace
+            sessionId={props.sessionId}
+            serverId={pluginRuntime.serverId}
             pane={pane}
             paddingTop={panelPaddingTop}
             headerPaddingTop={0}

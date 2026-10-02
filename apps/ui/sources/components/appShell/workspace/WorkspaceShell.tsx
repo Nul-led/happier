@@ -5,7 +5,8 @@ import { StyleSheet } from 'react-native-unistyles';
 import { hrefForDestinationRef, type CompactAppDestination } from '@/components/appShell/destinations/compactAppDestinationCatalog';
 import { DETAILS_TAB_STRIP_METRICS as M } from '@/components/appShell/panes/details/header/detailsTabHeaderMetrics';
 import { SplitCanvasHost } from '@/components/appShell/splitCanvas/components/SplitCanvasHost';
-import type { SplitCanvasAction, SplitCanvasDirection, SplitCanvasLeafNode } from '@/components/appShell/splitCanvas/model/splitCanvasTypes';
+import type { SplitCanvasAction, SplitCanvasDirection, SplitCanvasDropTarget, SplitCanvasLeafNode } from '@/components/appShell/splitCanvas/model/splitCanvasTypes';
+import { decodeWorkspaceDragData, resolveWorkspaceTabCanvasDrop, setWorkspaceTabDragActive, useWorkspaceTabDragActive } from './workspaceDragData';
 import { NavigationTitleChromeProvider } from '@/components/ui/layout/navigationTitleChrome';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback';
@@ -108,7 +109,24 @@ function WorkspaceCanvas(props: Readonly<{
             tabsInTitleBar={titleBarGroupIds.includes(group.id)}
             visible={!workspace.state.maximizedGroupId || workspace.state.maximizedGroupId === group.id} />;
     }, [props.catalog, titleBarGroupIds, workspace]);
+    // A tab dragged onto a pane: the centre moves it there, an edge splits (workspace lab D). The
+    // canvas owns the drop preview and the measured admission.
+    const [dropTarget, setDropTarget] = React.useState<SplitCanvasDropTarget | null>(null);
+    const onLeafDrop = React.useCallback((input: Readonly<{ payload: string; target: SplitCanvasDropTarget;
+        availableSizePx?: number; minimumExistingSizePx?: number }>) => {
+        setWorkspaceTabDragActive(false);
+        const data = decodeWorkspaceDragData(input.payload);
+        if (data?.kind !== 'tab') return;
+        const action = resolveWorkspaceTabCanvasDrop(workspace.state, { tabId: data.tabId, target: input.target,
+            availableSizePx: input.availableSizePx, minimumExistingSizePx: input.minimumExistingSizePx, createId: randomUUID });
+        if (action) workspace.dispatch(action);
+    }, [workspace]);
+    const tabDragActive = useWorkspaceTabDragActive();
+    React.useEffect(() => { if (!tabDragActive) setDropTarget(null); }, [tabDragActive]);
     return <SplitCanvasHost
+        activeDropTarget={tabDragActive ? dropTarget : null}
+        onActiveDropTargetChange={tabDragActive ? setDropTarget : undefined}
+        onLeafDrop={tabDragActive ? onLeafDrop : undefined}
         controlsRef={workspace.canvasControlsRef}
         state={{ root: workspace.state.root, focusedLeafId: workspace.state.focusedGroupId,
             maximizedLeafId: workspace.state.maximizedGroupId, maxLeaves: Number.POSITIVE_INFINITY }}
@@ -117,6 +135,7 @@ function WorkspaceCanvas(props: Readonly<{
         getLeafMinimumSizePx={leafMinimum}
         onRequestSplitLeaf={(input) => splitTab(workspace, { ...input, groupId: input.leafId })}
         keyboardEnabled={workspace.active}
+        chrome="flat"
     />;
 }
 

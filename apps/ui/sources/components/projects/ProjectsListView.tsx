@@ -21,7 +21,7 @@ export const ProjectsListView = React.memo(() => {
     const { groups, hasAnyProjects } = model;
 
     return (
-        <ItemList
+        <ItemList presentation="grouped"
             testID="projects-list"
             containerStyle={{ paddingTop: 12 }}
         >
