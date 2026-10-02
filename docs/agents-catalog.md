@@ -207,6 +207,13 @@ removes unrelated ambient credentials; only explicitly selected profile/account 
 back before the Agent contribution runs. Model, mode, config-option, and passive-setup probes all
 consume that same environment and include the selected profile identity in their cache scope.
 
+The current development Copilot plugin probes `copilot --acp` through that host-owned JSON-RPC
+client, passing the host-selected working directory to `session/new`. It projects observed effort
+choices onto the current model only; it does not infer other models' reasoning support. Model
+selection uses the existing `projectSetModelResponse` seam on the config-option path, retaining
+previously observed controls on unselected models. A complete authenticated per-model probe walk
+remains separate follow-up work.
+
 In the current development source, daemon model, mode and config probes demand the exact Agent
 registration from the authoritative plugin runtime and retain its lease for the operation.
 `withAgentPreflightCatalog` serves both capability RPCs and in-process Action inventories. The

@@ -5,6 +5,7 @@ import { AGENT_DEFINITION } from './agent/definition.js';
 import { createCopilotAgentRuntime } from './agent/runtime/factory.js';
 import { COPILOT_AGENT_SETTINGS_CONTRIBUTION } from './agentSettings/definition.js';
 import { COPILOT_UI_TRANSLATION_BUNDLES } from './ui/translations.js';
+import { COPILOT_PREFLIGHT_SESSION_CONTROLS } from './agent/acp/preflight.js';
 
 const COPILOT_AUTH_ENV_KEYS = [
   'COPILOT_GITHUB_TOKEN',
@@ -81,6 +82,7 @@ export const COPILOT_PLUGIN = definePlugin({
         }),
       },
       factory: createCopilotAgentRuntime,
+      preflightSessionControls: COPILOT_PREFLIGHT_SESSION_CONTROLS,
       sessionRunnerFactory: {
         module: './agent/runtime/factory',
         export: 'createCopilotAgentRuntime',

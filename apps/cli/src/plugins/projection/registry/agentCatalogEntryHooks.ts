@@ -1059,6 +1059,7 @@ export function projectAgentPreflightSessionControlsCatalogEntry(params: Readonl
             };
         return Object.freeze({
             ...input,
+            cwd: probeParams.cwd,
             bypassCache: probeParams.bypassCache,
             signal,
             runDeclaredSystemToolCommand,

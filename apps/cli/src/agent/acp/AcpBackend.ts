@@ -1776,6 +1776,17 @@ export class AcpBackend implements CatalogAcpBackend {
     this.emit({ type: 'event', name: 'config_options_state', payload: { configOptions } });
   }
 
+  private async projectSetModelResponse(
+    response: unknown,
+    requestedModelId: string,
+    requestMeta: Readonly<Record<string, unknown>> | null,
+    targetModel: SessionModel,
+  ): Promise<SessionModel | null> {
+    return this.options.projectSetModelResponseAwaitable
+      ? await this.options.projectSetModelResponseAwaitable({ response, requestedModelId, requestMeta, targetModel })
+      : this.options.projectSetModelResponse?.({ response, requestedModelId, requestMeta, targetModel }) ?? null;
+  }
+
   async setSessionConfigOption(sessionId: SessionId, configId: string, valueId: string): Promise<void> {
     if (this.disposed) {
       throw new Error('Backend has been disposed');
@@ -1811,13 +1822,34 @@ export class AcpBackend implements CatalogAcpBackend {
     const configOptionsRaw = Array.isArray(configOptionsCandidate) ? configOptionsCandidate : null;
     if (configOptionsRaw) {
       const next = normalizeSessionConfigOptions(configOptionsRaw);
-      this.sessionConfigOptionsState = next;
       if (this.options.modelConfigOptionId === normalizedConfigId) {
         const rawModelState = readSessionModelStateFromConfigOptions(
           { configOptions: next },
           normalizedConfigId,
         );
         if (rawModelState) {
+          if (rawModelState.currentModelId !== normalizedValueId) {
+            throw new Error('ACP config-option response selected a different model');
+          }
+          // Config-option replies replace the selector catalog, not previously
+          // observed controls on unselected models. The Agent interprets only
+          // the selected model's native reply through the existing SDK seam.
+          if (this.options.projectSetModelResponse || this.options.projectSetModelResponseAwaitable) {
+            const availableModels = rawModelState.availableModels.map((model) => ({
+              ...this.sessionModelState?.availableModels.find((previous) => previous.id === model.id),
+              ...model,
+            }));
+            const target = availableModels.find((model) => model.id === rawModelState.currentModelId);
+            const projected = target ? await this.projectSetModelResponse(response, normalizedValueId, null, target) : null;
+            const validated = readSessionModelStateFromSessionResponse({ models: {
+              currentModelId: rawModelState.currentModelId,
+              availableModels: availableModels.map((model) => model.id === target?.id && projected ? projected : model),
+            } });
+            if (!validated || (projected && projected.id !== target?.id)) {
+              throw new Error('ACP model projector returned an invalid model');
+            }
+            rawModelState.availableModels = validated.availableModels;
+          }
           const modelState = this.options.sessionModelAdapter?.projectModelState?.({
             normalizedModelState: rawModelState,
           }) ?? rawModelState;
@@ -1825,6 +1857,7 @@ export class AcpBackend implements CatalogAcpBackend {
           this.emit({ type: 'event', name: 'session_models_state', payload: modelState });
         }
       }
+      this.sessionConfigOptionsState = next;
     }
 
     this.emit({
@@ -2614,19 +2647,7 @@ export class AcpBackend implements CatalogAcpBackend {
     ) {
       const targetModel = this.sessionModelState.availableModels.find((model) => model.id === normalizedModelId);
       const projected = targetModel
-        ? this.options.projectSetModelResponseAwaitable
-          ? await this.options.projectSetModelResponseAwaitable({
-              response,
-              requestedModelId: providerModelId,
-              requestMeta: providerRequestMeta ?? null,
-              targetModel,
-            })
-          : this.options.projectSetModelResponse!({
-              response,
-              requestedModelId: providerModelId,
-              requestMeta: providerRequestMeta ?? null,
-              targetModel,
-            })
+        ? await this.projectSetModelResponse(response, providerModelId, providerRequestMeta ?? null, targetModel)
         : null;
       if (projected) {
         const candidate = readSessionModelStateFromSessionResponse({
