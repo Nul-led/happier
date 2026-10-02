@@ -51,13 +51,15 @@ describe('createHeader', () => {
         vi.resetModules();
     });
 
-    it('shows the default back button at tablet stack index one', async () => {
+    it('shows a translated accessible back button at tablet stack index one', async () => {
         responsiveState.isTablet = true;
         const navigation = {
             goBack: vi.fn(),
             getState: () => ({ index: 1 }),
         };
 
+        const { t, setPreferredLanguageFromSettings } = await import('@/text');
+        setPreferredLanguageFromSettings('fr');
         const { createHeader } = await import('./Header');
         const header = createHeader({
             options: {
@@ -78,8 +80,14 @@ describe('createHeader', () => {
         const backButtons = screen.findAllByType('Pressable');
 
         expect(backButtons).toHaveLength(1);
-        backButtons[0]?.props.onPress();
-        expect(navigation.goBack).toHaveBeenCalledOnce();
+        try {
+            expect(backButtons[0]?.props.accessibilityRole).toBe('button');
+            expect(backButtons[0]?.props.accessibilityLabel).toBe(t('common.back'));
+            backButtons[0]?.props.onPress();
+            expect(navigation.goBack).toHaveBeenCalledOnce();
+        } finally {
+            setPreferredLanguageFromSettings(null);
+        }
     });
 
     it('marks the route header drag and content regions with stable test IDs', async () => {
