@@ -18,8 +18,6 @@ export const DEFAULT_VOICE_INFERENCE_WORKER_CONFIG = {
             codec: VOICE_RUNTIME_TTS_DEFAULTS.defaultCodec.codec,
             mimeType: VOICE_RUNTIME_TTS_DEFAULTS.defaultCodec.mimeType,
         },
-        latencyBudgetMs: VOICE_RUNTIME_TTS_DEFAULTS.latencyBudgetMs,
-        consecutiveSlowCallsBeforeDemotion: VOICE_RUNTIME_TTS_DEFAULTS.consecutiveSlowCallsBeforeDemotion,
     },
     stt: {
         maxUploadBytes: VOICE_RUNTIME_STT_DEFAULTS.maxUploadBytes,

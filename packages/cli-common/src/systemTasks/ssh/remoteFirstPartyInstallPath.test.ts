@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, readlink, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 
 import {
   buildRemoteFirstPartyPromotionCommand,
@@ -22,25 +27,29 @@ describe('remote first-party install layout', () => {
     });
   });
 
-  it('builds one shared promote command for uploaded and self-downloaded payloads', () => {
-    const layout = resolveRemoteFirstPartyInstallLayout({
-      componentId: 'happier-cli',
-      channel: 'stable',
-      versionId: '1.2.3',
-    });
-
-    const command = buildRemoteFirstPartyPromotionCommand({
-      layout,
-      payloadRootExpression: '"$payload_root"',
-    });
-
-    expect(command).toEqual([
-      'mkdir -p $HOME/.happier/cli/versions',
-      'rm -rf $HOME/.happier/cli/versions/1.2.3',
-      'cp -R "$payload_root" $HOME/.happier/cli/versions/1.2.3',
-      'chmod +x $HOME/.happier/cli/versions/1.2.3/happier',
-      'if [ -L $HOME/.happier/cli/current ]; then prev="$(readlink $HOME/.happier/cli/current || true)"; if [ -n "$prev" ]; then ln -sfn "$prev" $HOME/.happier/cli/previous; fi; fi',
-      'ln -sfn $HOME/.happier/cli/versions/1.2.3 $HOME/.happier/cli/current',
-    ].join('; '));
+  it('promotes the next version and preserves the previous target in a real remote shell', async () => {
+    if (process.platform === 'win32') return; // The shared promotion command runs on POSIX targets.
+    const root = await mkdtemp(join(tmpdir(), 'happier-promote-'));
+    const home = join(root, 'home with spaces');
+    const payload = join(root, 'payload');
+    try {
+      await mkdir(home);
+      await mkdir(payload);
+      await writeFile(join(payload, 'happier'), '#!/bin/sh\nexit 0\n');
+      for (const versionId of ['1.2.3', '1.2.4']) {
+        const command = buildRemoteFirstPartyPromotionCommand({
+          layout: resolveRemoteFirstPartyInstallLayout({ componentId: 'happier-cli', channel: 'stable', versionId }),
+          payloadRootExpression: '"$payload_root"',
+        });
+        await promisify(execFile)('/bin/sh', ['-c', command], {
+          cwd: root, env: { ...process.env, HOME: home, payload_root: payload },
+        });
+      }
+      const installRoot = join(home, '.happier', 'cli');
+      expect(await readlink(join(installRoot, 'current'))).toBe(join(installRoot, 'versions', '1.2.4'));
+      expect(await readlink(join(installRoot, 'previous'))).toBe(join(installRoot, 'versions', '1.2.3'));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

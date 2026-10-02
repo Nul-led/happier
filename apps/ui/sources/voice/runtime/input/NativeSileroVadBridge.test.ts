@@ -1,8 +1,59 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { resolveNativeSileroVadBridge } from './NativeSileroVadBridge';
+import { createNativeVadController } from './NativeVadController';
+import { createNativeVoicePcmCaptureHarness } from '@/dev/testkit/harness/nativeVoicePcmCapture';
 
 describe('resolveNativeSileroVadBridge frame-fed VAD', () => {
+    it('returns native work to the bounded capture owner and clears controller health on saturation', async () => {
+        const harness = createNativeVoicePcmCaptureHarness();
+        let settlePush!: (value: { speechStarted: boolean; speechEnded: boolean }) => void;
+        const pushVadAudioFrame = vi.fn(() => new Promise<{ speechStarted: boolean; speechEnded: boolean }>((resolve) => { settlePush = resolve; }));
+        const cancelVadDetector = vi.fn(async () => {});
+        const bridge = await resolveNativeSileroVadBridge({ createVadDetector: vi.fn(async () => {}), pushVadAudioFrame, cancelVadDetector }, { frameSource: harness.capture });
+        const onEndpointSignal = vi.fn();
+        const controller = createNativeVadController({ bridge, onEndpointSignal });
+        expect(await controller.startSession({ sessionId: 'bounded', minSpeechMs: 0, redemptionMs: 0 })).toBe(true);
+        harness.emit();
+        await vi.waitFor(() => expect(pushVadAudioFrame).toHaveBeenCalledTimes(1));
+        for (let frame = 0; frame < 8; frame += 1) harness.emit();
+        await vi.waitFor(() => expect(controller.isActiveSession('bounded')).toBe(false));
+        await controller.stopSession();
+        expect(cancelVadDetector).toHaveBeenCalledTimes(1);
+        expect(harness.capture.getSnapshot().subscriberCount).toBe(0);
+        settlePush({ speechStarted: true, speechEnded: true });
+        await harness.capture.waitForDrain();
+        expect(onEndpointSignal).not.toHaveBeenCalled();
+        expect(pushVadAudioFrame).toHaveBeenCalledTimes(1);
+    });
+
+    it('degrades the real controller after rejected native frame work, including a startup terminal', async () => {
+        const harness = createNativeVoicePcmCaptureHarness();
+        const bridge = await resolveNativeSileroVadBridge({
+            createVadDetector: vi.fn(async () => {}),
+            pushVadAudioFrame: vi.fn(async () => { throw new Error('native_vad_failed'); }),
+            cancelVadDetector: vi.fn(async () => {}),
+        }, { frameSource: harness.capture });
+        const controller = createNativeVadController({ bridge, onEndpointSignal: vi.fn() });
+        await controller.startSession({ sessionId: 'failed', minSpeechMs: 0, redemptionMs: 0 });
+        harness.emit();
+        await vi.waitFor(() => expect(controller.isActiveSession('failed')).toBe(false));
+        expect(harness.capture.getSnapshot().subscriberCount).toBe(0);
+
+        const release = vi.fn(async () => {});
+        const earlyBridge = await resolveNativeSileroVadBridge({
+            createVadDetector: vi.fn(async () => {}),
+            pushVadAudioFrame: vi.fn(async () => ({ speechStarted: false, speechEnded: false })),
+            cancelVadDetector: vi.fn(async () => {}),
+        }, { frameSource: { acquire: async (request) => {
+            request.onError?.(new Error('early_capture_terminal'));
+            return { release };
+        } } });
+        const earlyController = createNativeVadController({ bridge: earlyBridge, onEndpointSignal: vi.fn() });
+        expect(await earlyController.startSession({ sessionId: 'early', minSpeechMs: 0, redemptionMs: 0 })).toBe(false);
+        expect(earlyController.isActiveSession('early')).toBe(false);
+        expect(release).toHaveBeenCalledTimes(1);
+    });
     it('feeds the shared host capture into Sherpa without starting a second recorder', async () => {
         let onFrame: ((frame: Readonly<{
             pcm16leBase64: string;

@@ -117,7 +117,7 @@ async function speakWithLocalNeuralDeviceRuntime(
         await speakKokoroText({
             text: ctx.text,
             assetSetId: params.assetSetId,
-            voiceId: params.voiceId ?? 'af_heart',
+            voiceId: params.voiceId,
             speed: params.speed,
             timeoutMs: resolveKokoroOperationTimeoutMs(ctx.networkTimeoutMs),
             registerPlaybackStopper: ctx.registerPlaybackStopper,

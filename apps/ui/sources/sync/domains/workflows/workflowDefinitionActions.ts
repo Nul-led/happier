@@ -23,11 +23,11 @@ import { WorkflowActionError } from '@/sync/domains/workflows/workflowActionErro
 import { callWorkflowAction } from './callWorkflowAction';
 
 /**
- * The saved-workflow library client: `workflow.definition.list/get/create/
- * update/delete` and nothing else.
+ * The workflow library client: `workflow.definition.list/get/create/update/delete`.
  *
  * The library is an Account-scoped view of Artifact kind
- * `workflow-definition.v1`. This module is deliberately thin: it names the
+ * `workflow-definition.v1`, alongside read-only plugin sources from the serving
+ * machine's canonical projection. This module is deliberately thin: it names the
  * Action, hands the one Action front door a request the canonical Protocol
  * schema accepts, and parses the reply through the canonical result schema. It
  * adds no transport, no CRUD service and no local definition cache, so the row,
@@ -59,7 +59,7 @@ function signalOption(signal: AbortSignal | undefined): Readonly<{ signal?: Abor
     return signal === undefined ? {} : { signal };
 }
 
-/** One page of the Account's saved workflows, newest page boundary first. */
+/** One shared page of Account workflows and current read-only plugin descriptors. */
 export async function listWorkflowDefinitions(params: Readonly<{
     cursor?: string;
     limit?: number;

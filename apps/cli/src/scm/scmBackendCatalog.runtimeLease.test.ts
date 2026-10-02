@@ -40,6 +40,7 @@ function createRuntimeRegistry(contributes: ResolvedContributionRegistry): Resol
   return {
     contributes,
     resolvePromptAssetBlocks: async () => [],
+    resolveCaptureSource: async () => null,
     hookHandlersByHookId: new Map(),
     agentRuntimesByAgentId: new Map(),
     scmHostingProvidersById: new Map(),

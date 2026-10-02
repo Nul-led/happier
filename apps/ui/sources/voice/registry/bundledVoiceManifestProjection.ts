@@ -5,7 +5,7 @@ import {
   type VoiceProviderContribution,
 } from '@happier-dev/protocol';
 
-import type { VoiceProviderPresentation } from './voiceProviderPresentation';
+import type { VoiceProviderPresentation, VoiceSpeechSettingsPresentation } from './voiceProviderPresentation';
 
 export type BundledVoiceManifestContribution = Readonly<{
   pluginId: string;
@@ -37,4 +37,16 @@ export function indexVoiceProviderPresentations(
     indexed.set(presentation.providerId, Object.freeze(presentation));
   }
   return indexed;
+}
+
+/** Restores the existing presentation callback from published data, without importing a plugin leaf. */
+export function createBundledVoiceProviderPresentations(
+  presentations: readonly (Omit<VoiceProviderPresentation, 'createSettingsSpec'> & Readonly<{
+    settingsSpec?: VoiceSpeechSettingsPresentation;
+  }>)[],
+): readonly VoiceProviderPresentation[] {
+  return Object.freeze(presentations.map(({ settingsSpec, ...presentation }) => Object.freeze({
+    ...presentation,
+    ...(settingsSpec ? { createSettingsSpec: () => settingsSpec } : {}),
+  })));
 }

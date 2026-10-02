@@ -6,15 +6,15 @@ import type {
   VoiceRealtimeTransportEvent,
 } from '@/voice/runtime/connection/VoiceRealtimeConnection';
 import type { VoiceRealtimeProtocolAdapter } from '@/voice/runtime/protocol/VoiceRealtimeProtocolAdapter';
-import {
-  projectCanonicalVoiceTranscriptEvent,
-  readCanonicalVoiceTranscriptSnapshot,
-} from '@/voice/transcript/voiceConversationTranscript';
 import { createRealtimeToolBarrier } from '@/voice/tools/realtimeToolBarrier';
+import { createOpenAiRealtimeProtocolAdapter } from '../../../../../../packages/plugins/openai/src/ui/voice/protocol';
 import {
   createVoiceConversationController,
   type VoiceConversationControllerDeps,
 } from './VoiceConversationController';
+
+const logSpy = vi.hoisted(() => vi.fn());
+vi.mock('@/log', () => ({ log: { log: logSpy } }));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -153,6 +153,62 @@ function createMachineFixture() {
 }
 
 describe('VoiceConversationController', () => {
+  it('ends an expired OpenAI session with its typed cause and no automatic remint or reconnect', async () => {
+    const fixture = createConnectionFixture('webrtc');
+    fixture.events.push({ type: 'error', event_id: 'expired-session', error: { code: 'session_expired', message: 'private-provider-detail' } });
+    const machine = createMachineFixture();
+    const provider = createOpenAiRealtimeProtocolAdapter({ prepare: async () => ({ kind: 'declined', code: 'unused' }) });
+    const createConnection = vi.fn(async () => fixture.connection);
+    const controller = createVoiceConversationController({
+      adapter: createAdapter({ decodeControl: provider.decodeControl }),
+      machine: machine.machine,
+      createConnection,
+      isSelectionCurrent: () => true,
+      onCanonicalEvent: async () => {},
+    });
+    await controller.start({ controlSessionId: 'session' });
+    await vi.waitFor(() => expect(machine.failureCodes).toEqual(['voice_session_expired']));
+    expect(controller.getActiveControlSessionId()).toBeNull();
+    expect(fixture.close).toHaveBeenCalledTimes(1);
+    expect(createConnection).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps transcription and tool errors nonterminal while delivering their sanitized diagnostics', async () => {
+    logSpy.mockClear();
+    const fixture = createConnectionFixture('webrtc');
+    fixture.events.push(
+      { type: 'conversation.item.input_audio_transcription.failed', event_id: 'failed-transcription', item_id: 'input', content_index: 0, error: { message: 'private-provider-detail' } },
+      { type: 'error', event_id: 'failed-tool', error: { code: 'invalid_request_error', message: 'private-provider-detail' } },
+      { type: 'input_audio_buffer.speech_started', event_id: 'next-input' },
+    );
+    const machine = createMachineFixture();
+    const provider = createOpenAiRealtimeProtocolAdapter({ prepare: async () => ({ kind: 'declined', code: 'unused' }) });
+    const canonicalEvents: unknown[] = [];
+    const controller = createVoiceConversationController({
+      adapter: createAdapter({ decodeControl: provider.decodeControl }),
+      machine: machine.machine,
+      createConnection: async () => fixture.connection,
+      isSelectionCurrent: () => true,
+      onCanonicalEvent: async (event) => { canonicalEvents.push(event); },
+    });
+    await expect(controller.start({ controlSessionId: 'session' })).resolves.toEqual({ status: 'connected' });
+    await vi.waitFor(() => expect(canonicalEvents).toEqual([
+      { type: 'provider_error', code: 'voice_transcription_failed', terminal: false },
+      { type: 'provider_error', code: 'provider_response_invalid', terminal: false },
+      { type: 'input_speech_started' },
+    ]));
+    expect(machine.failureCodes).toEqual([]);
+    expect(fixture.close).not.toHaveBeenCalled();
+    expect(controller.getActiveControlSessionId()).toBe('session');
+    const diagnostics = logSpy.mock.calls.map(([line]) => String(line));
+    expect(diagnostics).toHaveLength(2);
+    expect(diagnostics.join('\n')).toContain('"outcome":"provider_error"');
+    expect(diagnostics.join('\n')).toContain('voice_transcription_failed');
+    expect(diagnostics.join('\n')).toContain('provider_response_invalid');
+    expect(diagnostics.join('\n')).not.toContain('private-provider-detail');
+    await controller.stop();
+  });
+
   it('latches a transient output suspension onto a connection that arrives after focus loss', async () => {
     const connectionReady = deferred<VoiceRealtimeConnection>();
     const fixture = createConnectionFixture('sdk_handle');
@@ -654,10 +710,21 @@ describe('VoiceConversationController', () => {
     const first = createConnectionFixture('webrtc');
     const second = createConnectionFixture('webrtc');
     const machine = createMachineFixture();
-    const onConnectionReady = vi.fn(async () => {});
+    const preparedSessions = [
+      { config: {}, safeMetadata: null, initialContextDelivery: 'prepared' as const },
+      { config: {}, safeMetadata: null },
+    ];
+    const onConnectionReady = vi.fn(async (input: Parameters<NonNullable<VoiceConversationControllerDeps['onConnectionReady']>>[0]) => {
+      if (input.session.initialContextDelivery !== 'prepared') {
+        await input.connection.sendControl({ type: 'context', text: 'workspace context' });
+      }
+    });
+    let preparationIndex = 0;
     let connectionIndex = 0;
     const controller = createVoiceConversationController({
-      adapter: createAdapter(),
+      adapter: createAdapter({
+        prepare: async () => ({ kind: 'prepared', session: preparedSessions[preparationIndex++]! }),
+      }),
       machine: machine.machine,
       createConnection: async () => [first.connection, second.connection][connectionIndex++]!,
       isSelectionCurrent: () => true,
@@ -670,14 +737,16 @@ describe('VoiceConversationController', () => {
     const request = { initialContext: 'workspace context' } as const;
     await expect(controller.start({ controlSessionId: 'context-reconnect', request })).resolves.toEqual({ status: 'connected' });
     expect(onConnectionReady).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      controlSessionId: 'context-reconnect', reason: 'initial', request, connection: first.connection,
+      controlSessionId: 'context-reconnect', reason: 'initial', request, session: preparedSessions[0], connection: first.connection,
     }));
+    expect(first.sendControl).not.toHaveBeenCalled();
     expect(machine.transitions).toEqual(['connecting', 'connected']);
 
     await expect(controller.requestReconnect()).resolves.toBe(true);
     expect(onConnectionReady).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      controlSessionId: 'context-reconnect', reason: 'reconnect', request, connection: second.connection,
+      controlSessionId: 'context-reconnect', reason: 'reconnect', request, session: preparedSessions[1], connection: second.connection,
     }));
+    expect(second.sendControl).toHaveBeenCalledWith({ type: 'context', text: 'workspace context' });
     expect(machine.transitions).toEqual([
       'connecting',
       'connected',
@@ -1155,6 +1224,65 @@ describe('VoiceConversationController', () => {
     expect(connection.sendControl).toHaveBeenCalledWith({ type: 'cancel_response' });
   });
 
+  it.each([true, false])('submits admitted Manual input and requests a response while keeping its connection open (%s)', async (inputCommitRequired) => {
+    const connection = createConnectionFixture();
+    const provider = createOpenAiRealtimeProtocolAdapter({ prepare: async () => ({ kind: 'declined', code: 'unused' }) });
+    const controller = createVoiceConversationController({
+      adapter: createAdapter({
+        async prepare() {
+          return { kind: 'prepared', session: { config: {}, safeMetadata: null, inputCommitRequired } };
+        },
+        encodeTurnControl: provider.encodeTurnControl,
+        encodePostInputCommitControls: provider.encodePostInputCommitControls,
+      }),
+      machine: createMachineFixture().machine,
+      createConnection: async () => connection.connection,
+      isSelectionCurrent: () => true,
+      onCanonicalEvent: () => {},
+    });
+    await controller.start({ controlSessionId: 'manual-input' });
+    expect(controller.canCommitInput()).toBe(inputCommitRequired);
+    expect(await controller.performTurnControl('commit_input')).toEqual(inputCommitRequired
+      ? { status: 'sent' } : { status: 'unavailable', code: 'voice_turn_action_unsupported' });
+    expect(connection.sendControl.mock.calls.map(([event]) => event)).toEqual(inputCommitRequired ? [
+      { type: 'input_audio_buffer.commit' }, { type: 'response.create' },
+    ] : []);
+    if (inputCommitRequired) {
+      expect(await controller.performTurnControl('commit_input')).toEqual({ status: 'sent' });
+      expect(connection.sendControl.mock.calls.slice(2).map(([event]) => event)).toEqual([
+        { type: 'input_audio_buffer.commit' }, { type: 'response.create' },
+      ]);
+    }
+    expect(connection.close).not.toHaveBeenCalled();
+    await controller.stop();
+    expect(controller.canCommitInput()).toBe(false);
+  });
+
+  it('does not create a response after End Voice retires an in-flight input commit', async () => {
+    const connection = createConnectionFixture();
+    const provider = createOpenAiRealtimeProtocolAdapter({ prepare: async () => ({ kind: 'declined', code: 'unused' }) });
+    const acceptedCommit = deferred<void>();
+    connection.sendControl.mockImplementation(async () => { await acceptedCommit.promise; });
+    const controller = createVoiceConversationController({
+      adapter: createAdapter({
+        prepare: async () => ({ kind: 'prepared', session: { config: {}, safeMetadata: null, inputCommitRequired: true } }),
+        encodeTurnControl: provider.encodeTurnControl,
+        encodePostInputCommitControls: provider.encodePostInputCommitControls,
+      }),
+      machine: createMachineFixture().machine,
+      createConnection: async () => connection.connection,
+      isSelectionCurrent: () => true,
+      onCanonicalEvent: async () => {},
+    });
+    await controller.start({ controlSessionId: 'manual-input' });
+    const submitting = controller.performTurnControl('commit_input').catch((error: unknown) => error);
+    await vi.waitFor(() => expect(connection.sendControl).toHaveBeenCalledWith({ type: 'input_audio_buffer.commit' }));
+    await controller.stop();
+    acceptedCommit.resolve();
+    await expect(submitting).resolves.toEqual({ status: 'unavailable', code: 'voice_connection_not_open' });
+    expect(connection.sendControl).toHaveBeenCalledTimes(1);
+  });
+
   it('exposes provider-encoded client controls only while the owned connection is open', async () => {
     const connection = createConnectionFixture();
     const controller = createVoiceConversationController({
@@ -1582,6 +1710,10 @@ describe('VoiceConversationController', () => {
   });
 
   it('coordinates canonical transcript projection and the all-results tool barrier', async () => {
+    const {
+      projectCanonicalVoiceTranscriptEvent,
+      readCanonicalVoiceTranscriptSnapshot,
+    } = await import('@/voice/transcript/voiceConversationTranscript');
     const connection = createConnectionFixture();
     connection.events.push(
       { kind: 'transcript' },

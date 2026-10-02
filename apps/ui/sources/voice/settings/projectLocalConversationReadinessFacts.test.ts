@@ -110,6 +110,19 @@ function project(settings: Settings) {
 }
 
 describe('projectLocalConversationReadinessFacts credential readiness', () => {
+  it('makes fresh device defaults runnable where recognition exists and reports setup when it does not', () => {
+    const settings = settingsParse({ voice: { ...voiceSettingsDefaults, providerId: 'local_conversation' } });
+    expect(project(settings)).toMatchObject({ runtime: 'ready', endpoint: 'ready', credential: 'ready' });
+    const unavailableInput = {
+      ...localInput, browserSpeech: { support: 'unavailable' as const, onDevice: 'unsupported' as const },
+    };
+    expect(projectLocalConversationReadinessFacts({
+      registry, voice: settings.voice, voiceSettingsV1: settings.voiceSettingsV1,
+      secrets: settings.secrets, connectedAccountPurposeBindingsV1: settings.connectedAccountPurposeBindingsV1,
+      platform: 'web', executionMachineId, voiceAgentEnabled: true, localInput: unavailableInput,
+      local: resolveVoiceProviderAvailability({ happierVoiceSupported: true, platformOs: 'web', local: unavailableInput }).local,
+    })).toMatchObject({ runtime: 'missing', endpoint: 'ready', credential: 'ready' });
+  });
   it('requires voice.agent only for Agent-backed Local Voice', () => {
     const direct = createLocalSettings('device', 'device');
     expect(projectLocalConversationReadinessFacts({

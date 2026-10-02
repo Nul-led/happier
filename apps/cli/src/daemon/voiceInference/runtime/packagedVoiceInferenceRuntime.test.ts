@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { VoiceInferenceRuntimeTranscribeInput } from '../voiceInferenceRuntimeTypes';
+import type { VoiceInferenceRuntimeSynthesizeInput, VoiceInferenceRuntimeTranscribeInput } from '../voiceInferenceRuntimeTypes';
 
 const spawnMock = vi.hoisted(() => vi.fn());
 const require = createRequire(import.meta.url);
@@ -78,6 +78,29 @@ describe('packagedVoiceInferenceRuntime', () => {
         const dir = await mkdtemp(join(tmpdir(), 'happier-packaged-voice-runtime-'));
         tempDirs.push(dir);
         return dir;
+    }
+
+    async function createKokoroFixture(): Promise<VoiceInferenceRuntimeSynthesizeInput> {
+        const packDir = await createTempDir();
+        const paths = [...ZIPFORMER_SUPPORT_PATHS, 'model.onnx', 'voices.bin', 'tokens.txt', 'espeak-ng-data/en_dict', 'espeak-ng-data/lexicon.txt'];
+        await Promise.all([mkdir(join(packDir, 'LICENSES')), mkdir(join(packDir, 'espeak-ng-data'))]);
+        await Promise.all(paths.map((path) => writeFile(join(packDir, path), 'fixture', 'utf8')));
+        return {
+            requestId: 'kokoro-tts',
+            text: 'Hello',
+            voiceId: null,
+            speed: null,
+            output: { codec: 'wav', mimeType: 'audio/wav' },
+            packId: 'kokoro-82m-v1.0-onnx-q8-wasm',
+            packDir,
+            manifest: {
+                packId: 'kokoro-82m-v1.0-onnx-q8-wasm',
+                kind: 'tts_sherpa',
+                model: 'kokoro',
+                version: '2026-04-17',
+                files: manifestFiles(paths),
+            },
+        };
     }
 
     async function createInputFixture(rootDir: string, overrides?: Partial<VoiceInferenceRuntimeTranscribeInput>): Promise<VoiceInferenceRuntimeTranscribeInput> {
@@ -325,6 +348,80 @@ describe('packagedVoiceInferenceRuntime', () => {
         ]);
     });
 
+    it('uses the declared Kokoro frontend and speaker for synthesis and priming', async () => {
+        const input = await createKokoroFixture();
+        const manifest = {
+            ...input.manifest,
+            frontend: { lang: 'en-us', lexicon: 'espeak-ng-data/lexicon.txt' },
+            voices: [{ id: 'first', title: 'First', sid: 2 }, { id: 'second', title: 'Second', sid: 7 }],
+            defaultVoiceId: 'second',
+        };
+        const generatedSids: number[] = [];
+        const constructedConfigs: Record<string, unknown>[] = [];
+        vi.doMock('sherpa-onnx-node', () => ({
+            OfflineTts: class MockOfflineTts {
+                numSpeakers = 8;
+                constructor(config: Record<string, unknown>) {
+                    constructedConfigs.push(config);
+                }
+                generate({ sid }: Readonly<{ sid: number }>) {
+                    generatedSids.push(sid);
+                    return { samples: new Float32Array([sid / 10]), sampleRate: 16_000 };
+                }
+            },
+        }));
+        const { voiceInferenceRuntimeEngine } = await import('./packagedVoiceInferenceRuntime');
+        const audio = await voiceInferenceRuntimeEngine.synthesizeTts({ ...input, manifest, voiceId: 'second' });
+        await voiceInferenceRuntimeEngine.primeModel?.({ packId: input.packId, packDir: input.packDir, manifest });
+        await voiceInferenceRuntimeEngine.synthesizeTts({ ...input, manifest, voiceId: 'first' });
+        expect(Buffer.from(audio.bytes).subarray(0, 4).toString('ascii')).toBe('RIFF');
+        expect(generatedSids).toEqual([7, 7, 2]);
+        expect(constructedConfigs).toEqual([expect.objectContaining({
+            model: expect.objectContaining({ kokoro: expect.objectContaining({
+                lang: 'en-us', lexicon: join(input.packDir, 'espeak-ng-data/lexicon.txt'),
+            }) }),
+        })]);
+    });
+
+    it.each(['missing', 'directory'] as const)('rejects a %s declared Kokoro lexicon before loading native inference', async (kind) => {
+        const input = await createKokoroFixture();
+        const lexiconPath = join(input.packDir, 'espeak-ng-data/lexicon.txt');
+        await rm(lexiconPath);
+        if (kind === 'directory') await mkdir(lexiconPath);
+        vi.doMock('sherpa-onnx-node', () => ({
+            OfflineTts: class MockOfflineTts {
+                constructor() { throw new Error('native_constructor_must_not_run'); }
+            },
+        }));
+        const { voiceInferenceRuntimeEngine } = await import('./packagedVoiceInferenceRuntime');
+        await expect(voiceInferenceRuntimeEngine.synthesizeTts({
+            ...input, manifest: { ...input.manifest, frontend: { lang: 'en-us', lexicon: 'espeak-ng-data/lexicon.txt' } },
+        })).rejects.toMatchObject({ code: 'voice_inference_missing_tts_lexicon' });
+    });
+
+    it('rejects unknown Kokoro voices and only accepts generic speakers within the loaded model count', async () => {
+        const input = await createKokoroFixture();
+        const generatedSids: number[] = [];
+        vi.doMock('sherpa-onnx-node', () => ({
+            OfflineTts: class MockOfflineTts {
+                numSpeakers = 3;
+                generate({ sid }: Readonly<{ sid: number }>) {
+                    generatedSids.push(sid);
+                    return { samples: new Float32Array([0.1]), sampleRate: 16_000 };
+                }
+            },
+        }));
+        const { voiceInferenceRuntimeEngine } = await import('./packagedVoiceInferenceRuntime');
+        await expect(voiceInferenceRuntimeEngine.synthesizeTts({ ...input, voiceId: 'unknown-voice' })).rejects.toMatchObject({
+            code: 'invalid_audio_input', message: 'voice_inference_tts_voice_unavailable',
+        });
+        await voiceInferenceRuntimeEngine.synthesizeTts({ ...input, voiceId: 'sid:2' });
+        await expect(voiceInferenceRuntimeEngine.synthesizeTts({ ...input, voiceId: 'sid:3' })).rejects.toMatchObject({
+            code: 'invalid_audio_input', message: 'voice_inference_tts_voice_unavailable',
+        });
+        expect(generatedSids).toEqual([2]);
+    });
+
     it('does not cache a Kokoro runtime when native construction finishes after cancellation', async () => {
         const rootDir = await createTempDir();
         const packId = 'kokoro-82m-v1.0-onnx-q8-wasm';
@@ -519,6 +616,8 @@ describe('packagedVoiceInferenceRuntime', () => {
         const acceptedSamples: number[] = [];
         const decoded: string[] = [];
         const resetCalls: string[] = [];
+        let tailPending = false;
+        let inputFinished = false;
         vi.doMock('sherpa-onnx-node', () => ({
             OfflineTts: class MockOfflineTts {
                 generate() {
@@ -535,19 +634,25 @@ describe('packagedVoiceInferenceRuntime', () => {
                     return {
                         acceptWaveform: ({ samples }: { samples: Float32Array }) => {
                             acceptedSamples.push(samples.length);
+                            if (samples.length === 6400 && samples.every((sample) => sample === 0)) {
+                                expect(inputFinished).toBe(false);
+                                tailPending = true;
+                            }
                         },
                         inputFinished: () => {
+                            inputFinished = true;
                             decoded.push('inputFinished');
                         },
                     };
                 }
 
                 isReady() {
-                    return this.decodeCount < 1;
+                    return this.decodeCount < 1 || (inputFinished && tailPending);
                 }
 
                 decode() {
                     this.decodeCount += 1;
+                    tailPending = false;
                     decoded.push(`decode:${this.decodeCount}`);
                 }
 
@@ -607,13 +712,66 @@ describe('packagedVoiceInferenceRuntime', () => {
             ],
         });
         await expect(session?.finish({ finalSeq: 0 })).resolves.toEqual({
-            text: 'hel',
+            text: 'hel hello',
             language: 'en',
-            events: [{ type: 'final', seq: 0, text: 'hel', language: 'en', modelPackId: PUBLIC_ZIPFORMER_PACK_ID }],
+            events: [
+                { type: 'partial', seq: 0, text: 'hello', isEndpoint: false, confidence: null },
+                { type: 'final', seq: 0, text: 'hel hello', language: 'en', modelPackId: PUBLIC_ZIPFORMER_PACK_ID },
+            ],
         });
-        expect(acceptedSamples).toEqual([2]);
-        expect(decoded).toEqual(['decode:1', 'inputFinished']);
+        expect(acceptedSamples).toEqual([2, 6400]);
+        expect(decoded).toEqual(['decode:1', 'inputFinished', 'decode:3']);
         expect(resetCalls).toEqual(['reset']);
+    });
+
+    it('drains the final Zipformer model chunk for whole WAV transcription', async () => {
+        const rootDir = await createTempDir();
+        const filePath = join(rootDir, 'tail.wav');
+        await mkdir(join(rootDir, 'LICENSES'));
+        await Promise.all([
+            writeFile(filePath, createMonoPcm16WavBuffer(32)),
+            ...['encoder.onnx', 'decoder.onnx', 'joiner.onnx', 'tokens.txt', ...ZIPFORMER_SUPPORT_PATHS]
+                .map((path) => writeFile(join(rootDir, path), 'fixture')),
+        ]);
+        const input = await createInputFixture(rootDir, {
+            filePath,
+            inputMimeType: 'audio/wav',
+            manifest: {
+                packId: ZIPFORMER_PACK_ID,
+                kind: 'stt_sherpa',
+                model: 'sherpa',
+                version: '2026-04-17',
+                files: manifestFiles(['encoder.onnx', 'decoder.onnx', 'joiner.onnx', 'tokens.txt', ...ZIPFORMER_SUPPORT_PATHS]),
+            },
+        });
+
+        let tailAccepted = false;
+        let finished = false;
+        let decoded = false;
+        vi.doMock('sherpa-onnx-node', () => ({
+            OnlineRecognizer: class {
+                createStream() {
+                    return {
+                        acceptWaveform({ samples, sampleRate }: { samples: Float32Array; sampleRate: number }) {
+                            if (samples.length === 6400 && samples.every((sample) => sample === 0)) {
+                                expect(finished).toBe(false);
+                                expect(sampleRate).toBe(16000);
+                                tailAccepted = true;
+                            }
+                        },
+                        inputFinished() { finished = true; },
+                    };
+                }
+                isReady() { return tailAccepted && finished && !decoded; }
+                decode() { decoded = true; }
+                getResult() { return { text: decoded ? 'tail flushed' : 'unfinished' }; }
+            },
+        }));
+
+        const { voiceInferenceRuntimeEngine } = await import('./packagedVoiceInferenceRuntime');
+        await expect(voiceInferenceRuntimeEngine.transcribeAudio(input)).resolves.toEqual({
+            text: 'tail flushed', language: 'en',
+        });
     });
 
     it('observes timer-driven cancellation before an online Zipformer append drains all ready decode work', async () => {

@@ -33,12 +33,7 @@ export function filterSessionListIndexByStorageKind(
             continue;
         }
 
-        if (item.type !== 'session') {
-            didChange = true;
-            continue;
-        }
-
-        const kind = item.storageKind != null
+        const kind = item.type === 'workflow_run' ? 'persisted' : item.storageKind != null
             ? item.storageKind
             : (resolveSessionRow ? getSessionStorageKind(resolveSessionRowForItem(item, resolveSessionRow)) : 'persisted');
         if (kind !== storageFilter) {

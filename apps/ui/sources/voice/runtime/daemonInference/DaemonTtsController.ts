@@ -13,7 +13,6 @@ import {
     type DaemonSegmentedTtsSegment,
     type DaemonSegmentedTtsSession,
 } from './DaemonVoiceInferenceClient';
-import { recordDaemonVoiceInferenceTtsLatencySample } from './daemonVoiceInferencePolicy';
 import { createDaemonVoiceInferenceClientError } from './daemonVoiceInferenceErrors';
 
 type SupportedPlaybackFormat = 'wav';
@@ -65,7 +64,6 @@ function toDaemonTtsControllerErrorCode(code: string): Parameters<typeof createD
 export type DaemonTtsControllerDeps = Readonly<{
     client: Pick<DaemonVoiceInferenceClient, 'synthesizeText'> & Partial<Pick<DaemonVoiceInferenceClient, 'startSegmentedTts'>>;
     playAudioBytesWithStopper: typeof playAudioBytesWithStopper;
-    now: () => number;
 }>;
 
 type DaemonTtsSegmentPayload = Readonly<{
@@ -82,7 +80,6 @@ export class DaemonTtsController {
         this.deps = {
             client: new DaemonVoiceInferenceClient(),
             playAudioBytesWithStopper,
-            now: () => Date.now(),
             ...deps,
         };
     }
@@ -179,7 +176,6 @@ export class DaemonTtsController {
                 params.onSpeaking();
             };
 
-            const synthesisStartedAtMs = this.deps.now();
             const requestedOutput = params.output ?? VOICE_RUNTIME_CONFIG_DEFAULTS.daemonInference.tts.defaultCodec;
             const normalizedOutput = normalizeDaemonTtsOutput(requestedOutput);
             const startSegmentedTts = this.deps.client.startSegmentedTts;
@@ -195,7 +191,6 @@ export class DaemonTtsController {
                     stopActivePlayback,
                     onSpeaking: notifySpeakingOnce,
                     abortController,
-                    synthesisStartedAtMs,
                     startSegmentedTts,
                 });
                 return;
@@ -209,10 +204,6 @@ export class DaemonTtsController {
                 speed: params.speed,
                 output: normalizedOutput,
                 signal: abortController.signal,
-            });
-            recordDaemonVoiceInferenceTtsLatencySample({
-                sessionId: params.sessionId ?? null,
-                elapsedMs: this.deps.now() - synthesisStartedAtMs,
             });
 
             await this.deps.playAudioBytesWithStopper({
@@ -239,12 +230,10 @@ export class DaemonTtsController {
         stopActivePlayback: () => void;
         onSpeaking: () => void;
         abortController: AbortController;
-        synthesisStartedAtMs: number;
         startSegmentedTts: NonNullable<DaemonTtsControllerDeps['client']['startSegmentedTts']>;
     }>): Promise<void> {
         const epoch = ++this.speakEpoch;
         let stream: DaemonSegmentedTtsSession | null = null;
-        let firstSegmentRecorded = false;
         let abortObserved = params.abortController.signal.aborted;
         let cancelDelivery: Promise<void> | null = null;
         let abortPlayback: (() => void) | null = null;
@@ -394,13 +383,6 @@ export class DaemonTtsController {
                         toDaemonTtsControllerErrorCode(event.errorCode),
                         event.error,
                     );
-                }
-                if (!firstSegmentRecorded) {
-                    firstSegmentRecorded = true;
-                    recordDaemonVoiceInferenceTtsLatencySample({
-                        sessionId: params.sessionId,
-                        elapsedMs: this.deps.now() - params.synthesisStartedAtMs,
-                    });
                 }
                 receivedSegments += 1;
                 residentSegmentIds.add(event.segmentId);

@@ -73,7 +73,7 @@ describe('native WebSocketPcmMedia', () => {
         getStream: () => null,
       },
       input: { sampleRate: 24_000, chunkMs: 100 },
-      output: { sampleRate: 24_000, maxBufferedMs: 5_000 },
+      output: { sampleRate: 24_000 },
       onInputChunk,
       onOutputLevel,
     });
@@ -90,7 +90,7 @@ describe('native WebSocketPcmMedia', () => {
     }));
     expect((nativeBoundary.playback as { open: ReturnType<typeof vi.fn> }).open).toHaveBeenCalledWith(expect.objectContaining({
       capture: { streamId: 'stream-1', generation: 3 },
-      format: { sampleRate: 24_000, channels: 1, maxBufferedMs: 5_000 },
+      format: { sampleRate: 24_000, channels: 1 },
     }));
 
     callbacks.onFrame?.({ pcm16leBase64: 'AQACAA==' });
@@ -162,7 +162,7 @@ describe('native WebSocketPcmMedia', () => {
     const media = createWebSocketPcmMedia({
       mic: { getStream: () => null },
       input: { sampleRate: 24_000, chunkMs: 100 },
-      output: { sampleRate: 24_000, maxBufferedMs: 5_000 },
+      output: { sampleRate: 24_000 },
       onInputChunk: () => {},
     });
     const starting = media.pcm.start(new AbortController().signal);
@@ -201,7 +201,7 @@ describe('native WebSocketPcmMedia', () => {
     const media = createWebSocketPcmMedia({
       mic: { getStream: () => null },
       input: { sampleRate: 24_000, chunkMs: 100 },
-      output: { sampleRate: 24_000, maxBufferedMs: 5_000 },
+      output: { sampleRate: 24_000 },
       onInputChunk: () => {},
     });
     const starting = media.pcm.start(controller.signal);

@@ -1,4 +1,5 @@
 import { normalizePublicReleaseRingId, type PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
+import { quoteRemotePathWithHomeExpansion } from '../../ssh/shellQuote.js';
 
 import {
   getFirstPartyComponentCatalogEntry,
@@ -97,14 +98,18 @@ export function buildRemoteFirstPartyPromotionCommand(params: Readonly<{
     throw new Error('Remote first-party payload root is required.');
   }
   const layout = params.layout;
-  const versionBinaryPath = `${layout.versionDir}${layout.binaryPath.slice(layout.currentPath.length)}`;
+  const versionsDir = quoteRemotePathWithHomeExpansion(layout.versionsDir);
+  const versionDir = quoteRemotePathWithHomeExpansion(layout.versionDir);
+  const currentPath = quoteRemotePathWithHomeExpansion(layout.currentPath);
+  const previousPath = quoteRemotePathWithHomeExpansion(layout.previousPath);
+  const versionBinaryPath = quoteRemotePathWithHomeExpansion(`${layout.versionDir}${layout.binaryPath.slice(layout.currentPath.length)}`);
   return [
-    `mkdir -p ${layout.versionsDir}`,
-    `rm -rf ${layout.versionDir}`,
-    `cp -R ${payloadRootExpression} ${layout.versionDir}`,
+    `mkdir -p ${versionsDir}`,
+    `rm -rf ${versionDir}`,
+    `cp -R ${payloadRootExpression} ${versionDir}`,
     `chmod +x ${versionBinaryPath}`,
-    `if [ -L ${layout.currentPath} ]; then prev="$(readlink ${layout.currentPath} || true)"; if [ -n "$prev" ]; then ln -sfn "$prev" ${layout.previousPath}; fi; fi`,
-    `ln -sfn ${layout.versionDir} ${layout.currentPath}`,
+    `if [ -L ${currentPath} ]; then prev="$(readlink ${currentPath} || true)"; if [ -n "$prev" ]; then ln -sfn "$prev" ${previousPath}; fi; fi`,
+    `ln -sfn ${versionDir} ${currentPath}`,
   ].join('; ');
 }
 

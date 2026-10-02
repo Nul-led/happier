@@ -11,7 +11,7 @@ export type ReverseCaptureMachineRpcClient = Readonly<{
   callConnectedClientRpc: (
     method: string,
     params: unknown,
-    options?: Readonly<{ timeoutMs?: number }>,
+    options?: Readonly<{ timeoutMs?: number; signal?: AbortSignal; onIssued?: () => void }>,
   ) => Promise<
     | Readonly<{ ok: true; result: unknown }>
     | Readonly<{ ok: false; error?: string; errorCode?: string }>

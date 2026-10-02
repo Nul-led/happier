@@ -154,6 +154,53 @@ async function waitForResult(
 }
 
 describe('createRemoteSshBootstrapMachineTaskKind', () => {
+  it.each([
+    { serviceMode: 'none', relayRuntime: false },
+    { serviceMode: 'user', relayRuntime: false },
+    { serviceMode: 'user', relayRuntime: true },
+  ] as const)('installs an empty descriptor target before any remote CLI use ($serviceMode, relay=$relayRuntime)', async ({ serviceMode, relayRuntime }) => {
+    let installed = false;
+    const steps: string[] = [];
+    const kind = createRemoteSshBootstrapMachineTaskKind({
+      resolveHostTrust: async () => ({ status: 'trusted' }),
+      installRemoteCli: async () => { installed = true; steps.push('install'); },
+      approveLocalAuthRequest: async () => undefined,
+      remoteEnrollment: {
+        resultData: { machineId: 'remote-machine' },
+        onRun: () => {
+          if (!installed) throw new Error('Remote CLI missing at enrollment');
+          steps.push('enroll');
+        },
+      },
+      runRemoteCommand: async ({ label }) => {
+        if (!installed) throw new Error(`Remote CLI missing at ${label}`);
+        steps.push(label);
+        if (label === 'relay.runtime.install') return { ok: true, data: { relayUrl: HOME_TARGET.applicationUrl } };
+        if (label === 'daemon.service.list') return { ok: true, data: { services: [], platform: 'darwin' } };
+        if (label === 'auth.status') return { ok: true, data: {
+          authenticated: true, credentialState: 'valid', machineRegistrationState: 'server-confirmed', machineId: 'remote-machine',
+        } };
+        if (label === 'daemon.service.install' || label === 'daemon.service.start') return { ok: true, data: {} };
+        throw new Error(`Unexpected remote command: ${label}`);
+      },
+    });
+    const runner = createSystemTasksRunner({ kinds: { 'remote.ssh.bootstrapMachine.v1': kind } });
+    await runner.start({
+      taskId: 'empty-descriptor-target', kind: 'remote.ssh.bootstrapMachine.v1',
+      params: {
+        ssh: { target: 'dev@example.test', auth: 'agent' },
+        relay: { relayUrl: HOME_TARGET.applicationUrl }, homeTarget: HOME_TARGET, serviceMode,
+        ...(relayRuntime ? { relayRuntime: { enabled: true, mode: 'user' } } : {}),
+        promptResolution: { authApproval: { publicKey: 'pub-key' } },
+      },
+    });
+    const completed = await waitForResult(runner, { taskId: 'empty-descriptor-target', cursor: 0 });
+    expect(completed.result).toMatchObject({ ok: true, data: { machineId: 'remote-machine' } });
+    expect(steps[0]).toBe('install');
+    expect(steps).toContain('enroll');
+    expect(steps).not.toContain('server.configure');
+  });
+
   it('enrolls an Iroh-only Home through the single-process streaming owner without public URL configuration', async () => {
     const endpointId = 'c'.repeat(64);
     const target = resolveHomeTargetFromDescriptor({
@@ -955,9 +1002,8 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
       },
     });
     expect(invocations).toEqual([
-      'daemon.service.list',
-      'server.configure',
       'installRemoteCli',
+      'daemon.service.list',
       'server.configure',
       'auth.status',
       'auth.enroll-remote',
@@ -1230,9 +1276,7 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
         },
         accept: async () => undefined,
       }),
-      installRemoteCli: async () => {
-        throw new Error('should not install cli when already authenticated');
-      },
+      installRemoteCli: async () => undefined,
       approveLocalAuthRequest: async () => {
         throw new Error('should not approve when already authenticated');
       },
@@ -1766,7 +1810,7 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
     ]);
   });
 
-  it('runs the optional remote relay runtime install after machine pairing and emits dedicated progress steps', async () => {
+  it('installs the CLI before the optional relay runtime and machine pairing', async () => {
     const invocations: Array<Readonly<{ label: string; data?: Record<string, unknown> }>> = [];
     const kind = createRemoteSshBootstrapMachineTaskKind({
       resolveHostTrust: async () => ({
@@ -1833,8 +1877,8 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
     const secondPoll = await waitForPendingPrompt(runner, { taskId: 'ssh-relay-task', cursor: firstPoll.nextCursor });
     expect(secondPoll.pendingPrompt?.kind).toBe('auth.approveRemoteProvisioning');
     expect(secondPoll.events.map((event) => event.stepId)).toEqual([
-      'relay.runtime.install',
       'ssh.installCli',
+      'relay.runtime.install',
       'ssh.auth.request',
       'ssh.auth.wait',
       'ssh.auth.approval',
@@ -1863,7 +1907,6 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
   it('keeps the remote CLI/daemon on the original relay target while using the installed relay runtime as the local server URL', async () => {
     const invocations: Array<Readonly<{ label: string; relayUrl: string }>> = [];
     const installRemoteCliCalls: Array<Readonly<{ relayUrl: string }>> = [];
-    let serverConfigureAttempts = 0;
     const kind = createRemoteSshBootstrapMachineTaskKind({
       resolveHostTrust: async () => ({ status: 'trusted' }),
       installRemoteCli: async ({ parsed }) => {
@@ -1885,9 +1928,6 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
           return { ok: true, data: { authenticated: false } };
         }
         if (label === 'server.configure') {
-          if (serverConfigureAttempts++ === 0) {
-            return { ok: false, data: {} };
-          }
           return { ok: true, data: { configured: true } };
         }
         if (label === 'relay.runtime.install') {
@@ -1941,7 +1981,6 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
     expect(invocations).toEqual([
       { label: 'relay.runtime.install', relayUrl: 'https://relay.example.test' },
       { label: 'daemon.service.list', relayUrl: 'https://relay.example.test' },
-      { label: 'server.configure', relayUrl: 'https://relay.example.test' },
       { label: 'server.configure', relayUrl: 'https://relay.example.test' },
       { label: 'auth.status', relayUrl: 'https://relay.example.test' },
       { label: 'auth.enroll-remote', relayUrl: 'https://relay.example.test' },
@@ -2025,8 +2064,6 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
   it('derives the installed relay runtime URL from serverPort without switching the remote CLI/daemon by default', async () => {
     const invocations: Array<Readonly<{ label: string; relayUrl: string }>> = [];
     const installRemoteCliCalls: Array<Readonly<{ relayUrl: string }>> = [];
-    let serverConfigureAttempts = 0;
-
     const kind = createRemoteSshBootstrapMachineTaskKind({
       resolveHostTrust: async () => ({ status: 'trusted' }),
       installRemoteCli: async ({ parsed }) => {
@@ -2048,9 +2085,6 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
           return { ok: true, data: { serverPort: 4449 } };
         }
         if (label === 'server.configure') {
-          if (serverConfigureAttempts++ === 0) {
-            return { ok: false, data: {} };
-          }
           return { ok: true, data: { configured: true } };
         }
         if (label === 'auth.status') {
@@ -2117,7 +2151,6 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
       { label: 'relay.runtime.install', relayUrl: 'https://public.example.test' },
       { label: 'daemon.service.list', relayUrl: 'https://public.example.test' },
       { label: 'server.configure', relayUrl: 'https://public.example.test' },
-      { label: 'server.configure', relayUrl: 'https://public.example.test' },
       { label: 'auth.status', relayUrl: 'https://public.example.test' },
       { label: 'auth.enroll-remote', relayUrl: 'https://public.example.test' },
       { label: 'daemon.service.install', relayUrl: 'https://public.example.test' },
@@ -2144,9 +2177,7 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
           invocations.push('acceptHostTrust');
         },
       }),
-      installRemoteCli: async () => {
-        throw new Error('should not install cli when remote commands already succeed');
-      },
+      installRemoteCli: async () => { invocations.push('installRemoteCli'); },
       approveLocalAuthRequest: async ({ publicKey }) => {
         invocations.push(`approveLocalAuthRequest:${publicKey}`);
       },
@@ -2206,6 +2237,7 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
     });
     expect(invocations).toEqual([
       'acceptHostTrust',
+      'installRemoteCli',
       'daemon.service.list',
       'server.configure',
       'auth.status',
@@ -2362,7 +2394,6 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
 
   it('treats unsupported SSH auth modes as agent auth (no password prompt)', async () => {
     const observedAuthModes: string[] = [];
-    let serverConfigureAttempts = 0;
     const kind = createRemoteSshBootstrapMachineTaskKind({
       resolveHostTrust: async () => ({ status: 'trusted' }),
       installRemoteCli: async ({ auth }) => {
@@ -2372,9 +2403,6 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
       runRemoteCommand: async ({ label, auth }) => {
         observedAuthModes.push(auth.mode);
         if (label === 'server.configure') {
-          if (serverConfigureAttempts++ === 0) {
-            return { ok: false, data: {} };
-          }
           return { ok: true, data: { configured: true } };
         }
         if (label === 'auth.status') {

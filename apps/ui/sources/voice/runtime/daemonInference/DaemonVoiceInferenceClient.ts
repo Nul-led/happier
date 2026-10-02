@@ -37,7 +37,7 @@ import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { isRuntimeFeatureEnabled } from '@/sync/domains/features/featureDecisionInputs';
 import type { LocalUploadSource } from '@/sync/runtime/files/localUploadSourceReader';
 import { openLocalUploadSourceReader } from '@/sync/runtime/files/localUploadSourceReader';
-import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
+import { createOrderedMachineRpcCaller, machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
 import { downloadInChunks, uploadInChunks } from '@/sync/domains/transfers/runtime/transferRuntime/carriers/chunkTransferClient';
 import { randomUUID } from '@/platform/randomUUID';
 import {
@@ -742,6 +742,7 @@ export class DaemonVoiceInferenceClient {
                 durationMs: null,
             })
             : undefined;
+        const callChunk = createOrderedMachineRpcCaller(this.deps.machineRpcWithServerScope);
         const compatibilityTransport: DaemonSpeechStreamTransport = {
             start: async (payload) =>
                 parseSchema(
@@ -754,7 +755,7 @@ export class DaemonVoiceInferenceClient {
                     }),
                 ),
             chunk: async (payload) =>
-                this.sendCompatibilityStreamingSttChunk(machineTarget.machineId, payload, rpcSignal),
+                this.sendCompatibilityStreamingSttChunk(machineTarget.machineId, payload, rpcSignal, callChunk),
             finish: async (payload) =>
                 parseSchema(
                     DaemonVoiceInferenceSttStreamFinishResponseSchema,
@@ -814,6 +815,7 @@ export class DaemonVoiceInferenceClient {
         machineId: string,
         payload: DaemonSpeechStreamTransportChunkRequest,
         signal: AbortSignal | null,
+        call: typeof machineRpcWithServerScope,
     ): Promise<DaemonVoiceInferenceSttStreamChunkResponse> {
         if (payload.carrierFrame.kind !== 'machine_rpc_json_base64') {
             throw createDaemonVoiceInferenceClientError(
@@ -823,7 +825,7 @@ export class DaemonVoiceInferenceClient {
         }
         return parseSchema(
             DaemonVoiceInferenceSttStreamChunkResponseSchema,
-            await this.deps.machineRpcWithServerScope({
+            await call({
                 machineId,
                 method: RPC_METHODS.DAEMON_VOICE_INFERENCE_STT_STREAM_CHUNK,
                 payload: {

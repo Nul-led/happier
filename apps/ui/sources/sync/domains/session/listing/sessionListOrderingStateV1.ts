@@ -309,7 +309,7 @@ function buildChildKeySetByGroupKey(source: ReadonlyArray<SessionListViewItem>):
             if (sessionKey) addKey(map, groupKey, sessionKey);
             continue;
         }
-        if (item.headerKind !== 'folder') continue;
+        if (item.type !== 'header' || item.headerKind !== 'folder') continue;
         const groupKey = resolveFolderParentGroupKeyFromViewSource({ source, itemIndex: index, folder: item });
         const folderKey = buildFolderKey(item);
         if (groupKey && folderKey) addKey(map, groupKey, folderKey);
@@ -328,7 +328,7 @@ function buildChildKeySetByGroupKeyFromIndex(source: ReadonlyArray<SessionListIn
             if (sessionKey) addKey(map, groupKey, sessionKey);
             continue;
         }
-        if (item.headerKind !== 'folder') continue;
+        if (item.type !== 'header' || item.headerKind !== 'folder') continue;
         const groupKey = resolveFolderParentGroupKeyFromIndexSource({ source, itemIndex: index, folder: item });
         const folderKey = buildFolderKey(item);
         if (groupKey && folderKey) addKey(map, groupKey, folderKey);

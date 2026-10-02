@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { resolveSessionListViewEmptyState } from './sessionListViewEmptyStateModel';
+import { createSessionListViewFilterDefaults } from './search/sessionListViewFilters';
 
 const globalDefaults = {
+    ...createSessionListViewFilterDefaults(),
     scope: 'my_work',
     attention: 'any',
     homeServerIds: ['home-a'],
@@ -66,6 +68,7 @@ describe('resolveSessionListViewEmptyState', () => {
 
     it('keeps the personal-scope recovery inside Team Sessions', () => {
         const teamDefaults = {
+            ...createSessionListViewFilterDefaults(),
             scope: 'all_accessible',
             attention: 'any',
             homeServerIds: ['home-a'],
@@ -94,6 +97,7 @@ describe('resolveSessionListViewEmptyState', () => {
 
     it('distinguishes Team and personal-scope authoritative zeros', () => {
         const teamDefaults = {
+            ...createSessionListViewFilterDefaults(),
             scope: 'all_accessible',
             attention: 'any',
             homeServerIds: ['home-a'],

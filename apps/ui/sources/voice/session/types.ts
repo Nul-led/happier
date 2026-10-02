@@ -63,6 +63,7 @@ export type VoiceSessionSnapshot = Readonly<{
   status: VoiceSessionStatus;
   mode: VoiceSessionMode;
   canStop: boolean;
+  canCommitInput?: boolean;
   micMuted?: boolean;
   errorCode?: string;
   errorMessage?: string;
@@ -98,6 +99,7 @@ export type VoiceAdapterController = Readonly<{
     requestedTargetSessionAddress: SessionAddress | null;
   }>): Promise<void>;
   interrupt(input: Readonly<{ sessionId: string }>): Promise<void>;
+  commitInput?(input: Readonly<{ sessionId: string }>): Promise<void>;
   bargeIn?(input: Readonly<{ sessionId: string }>): Promise<void>;
   /**
    * Applies the native audio-session's provider-neutral output policy through

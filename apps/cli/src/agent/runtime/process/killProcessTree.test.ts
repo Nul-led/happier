@@ -46,6 +46,39 @@ async function waitForPidFile(filePath: string, opts: { timeoutMs: number }): Pr
 }
 
 describe('killProcessTree', () => {
+  it('bounds hung Windows taskkill by the owning grace and force budgets and reports incomplete containment', async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    if (!platformDescriptor) throw new Error('Expected process.platform to be configurable');
+    const pid = 987_654_321;
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => { throw Object.assign(new Error('Access denied'), { code: 'EPERM' }); });
+    psListState.mock.mockResolvedValue([{ pid: pid + 1, ppid: pid }]);
+    const budgets: number[] = [];
+    const stoppedTools: boolean[] = [];
+    vi.useFakeTimers();
+    try {
+      Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' });
+      const result = killProcessTree({ pid }, {
+        graceMs: 700,
+        terminateWindowsTree: async (input: { timeoutMs?: number }) => new Promise<void>((_resolve, reject) => {
+          if (input.timeoutMs === undefined) return; // Old owner never bounded this adapter.
+          budgets.push(input.timeoutMs);
+          setTimeout(() => {
+            stoppedTools.push(true);
+            reject(Object.assign(new Error('taskkill deadline'), { killed: true }));
+          }, input.timeoutMs);
+        }),
+      }).then(() => 'success', (error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(budgets).toEqual([700, 250]);
+      expect(stoppedTools).toEqual([true, true]);
+      expect(await result).toMatchObject({ code: 'plugin_exec_termination_incomplete' });
+    } finally {
+      Object.defineProperty(process, 'platform', platformDescriptor);
+      kill.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('attempts the known root but rejects and records cleanup when neither census nor direct-child discovery is available', async () => {
     if (process.platform === 'win32') return; // POSIX direct-child utility boundary.
     const directory = mkdtempSync(join(tmpdir(), 'happier-kill-tree-discovery-'));
@@ -143,6 +176,7 @@ describe('killProcessTree', () => {
       expect(terminateWindowsTree).toHaveBeenNthCalledWith(1, {
         pid: child.pid,
         force: false,
+        timeoutMs: 25,
       });
       expect(terminateWindowsTree).toHaveBeenCalledTimes(1);
     } finally {

@@ -150,19 +150,38 @@ describe('createTerminalRuntimeProjectionHostService', () => {
         expect(fixture.readDirectEvents()).toEqual([]);
     });
 
-    it('updates controlledByUser for control state', async () => {
+    it('clears predecessor exclusive custody for an unsupported selected-runtime control surface', async () => {
         const { createTerminalRuntimeProjectionHostService } = await loadProjectionModule();
         const fixture = createSessionFixture();
+        fixture.session.updateAgentState((state) => ({
+            ...state,
+            controlledByUser: true,
+            localControl: {
+                attached: true,
+                topology: 'exclusive',
+                remoteWritable: false,
+                canAttach: false,
+                canDetach: true,
+            },
+        }));
+        const metadata = fixture.readMetadata();
         const service = createTerminalRuntimeProjectionHostService({
             session: fixture.session,
             subagents: createHostSubagentStore(),
         });
 
-        await service.publishControlState({ target: 'remote', reason: 'terminal_released' });
+        await service.publishControlState({
+            target: 'remote',
+            localControl: 'unsupported',
+            reason: 'selected_runtime_control_unsupported',
+        });
 
         expect(fixture.readAgentState()).toMatchObject({
             controlledByUser: false,
         });
+        expect(fixture.readAgentState().localControl).toBeUndefined();
+        expect(fixture.readMetadata()).toBe(metadata);
+        expect(fixture.readCommittedEvents()).toEqual([]);
     });
 
     it('publishes running subagents through the host subagent store', async () => {

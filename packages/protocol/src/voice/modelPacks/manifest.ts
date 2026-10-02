@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { assertModelPackFilePathPortable } from './pathSafety.js';
 
 const Sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/i);
 
@@ -37,6 +38,13 @@ export const ModelPackManifestSchema = z.object({
   voices: z.array(ModelPackVoiceCatalogEntrySchema).optional(),
   /** Explicit catalog default. Omitted legacy manifests use the first declared voice. */
   defaultVoiceId: z.string().min(1).optional(),
+  /** Model-owned phonemizer configuration, consumed by every sherpa host. */
+  frontend: z.object({
+    lang: z.string(),
+    lexicon: z.string().min(1).optional(),
+  }).strict().refine((frontend) => Boolean(frontend.lang.trim() || frontend.lexicon), {
+    message: 'Kokoro requires a language or lexicon.',
+  }).optional(),
   files: z
     .array(
       z.object({
@@ -48,6 +56,15 @@ export const ModelPackManifestSchema = z.object({
     )
     .min(1),
 }).superRefine((manifest, ctx) => {
+  if (manifest.frontend?.lexicon) {
+    const lexicon = manifest.frontend.lexicon;
+    try {
+      assertModelPackFilePathPortable(lexicon);
+      if (!manifest.files.some((file) => file.path === lexicon)) throw new Error('undeclared_lexicon');
+    } catch {
+      ctx.addIssue({ code: 'custom', path: ['frontend', 'lexicon'], message: 'The lexicon must be an integrity-declared pack file.' });
+    }
+  }
   if (
     manifest.defaultVoiceId
     && !(manifest.voices ?? []).some((voice) => voice.id === manifest.defaultVoiceId)

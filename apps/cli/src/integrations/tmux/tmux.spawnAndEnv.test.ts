@@ -1,4 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFile } from 'node:child_process';
+import { readFile, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
+import { withTempDir } from '@/testkit/fs/tempDir';
+import { writeExecutableShim } from '@/testkit/fs/executableShim';
 import { createTmuxSession, TmuxUtilities, type TmuxCommandResult } from './index';
 
 describe('TmuxUtilities.detectTmuxEnvironment', () => {
@@ -158,6 +164,69 @@ describe('TmuxUtilities.spawnInTmux', () => {
             return { returncode: 0, stdout: '', stderr: '', command: cmd };
         }
     }
+
+    it.skipIf(process.platform === 'win32').each([false, true])('preserves failed cleanup disposition without replacing a ready runner (ready=%s)', async (ready) => {
+        let launchDirectory = '';
+        class CleanupFailureTmux extends FakeTmuxUtilities {
+            override async executeTmuxCommand(cmd: string[], session?: string): Promise<TmuxCommandResult | null> {
+                if (cmd[0] === 'new-window') {
+                    const command = cmd[cmd.indexOf(';') - 1]!;
+                    const { stdout } = await promisify(execFile)('/bin/sh', ['-c', `printf '%s\\n' ${command}`]);
+                    launchDirectory = dirname(stdout.trim().split('\n')[1]!);
+                    await writeFile(join(launchDirectory, 'unexpected'), 'retained');
+                    return ready
+                        ? { returncode: 0, stdout: '@7\t4242\n', stderr: '', command: cmd }
+                        : { returncode: 1, stdout: '', stderr: 'create window failed: index 1 in use', command: cmd };
+                }
+                return super.executeTmuxCommand(cmd, session);
+            }
+        }
+        try {
+            const result = await new CleanupFailureTmux().spawnInTmux(['native'], { sessionName: 'work' }, {});
+            expect(result).toMatchObject(ready
+                ? { success: true, pid: 4242 }
+                : { success: false, creationDisposition: 'not_created', cleanupIncomplete: true });
+            await expect(readFile(join(launchDirectory, 'unexpected'), 'utf8')).resolves.toBe('retained');
+        } finally {
+            if (launchDirectory) {
+                await unlink(join(launchDirectory, 'unexpected'));
+                await unlink(join(launchDirectory, 'launch.sh')).catch(() => undefined);
+                await rmdir(launchDirectory);
+            }
+        }
+    });
+
+    it.skipIf(process.platform === 'win32')('retains an uncertain launch handoff until the accepted native shell reads it', async () => {
+        await withTempDir('tmux-delayed-native-', async (directory) => {
+            const marker = join(directory, 'native-started');
+            await writeExecutableShim({ dir: directory, fileName: 'tmux', contents: '#!/bin/sh\nexit 0\n' });
+            let acceptedCommand: string | undefined;
+            class DelayedNativeTmux extends FakeTmuxUtilities {
+                override async executeTmuxCommand(cmd: string[], session?: string): Promise<TmuxCommandResult | null> {
+                    if (cmd[0] === 'new-window') {
+                        this.calls.push({ cmd, session });
+                        acceptedCommand = cmd[cmd.indexOf(';') - 1];
+                        // The external server accepted creation, but its native shell has
+                        // not opened the one-shot file before the client timed out.
+                        return { returncode: 1, stdout: '', stderr: '', command: cmd, timedOut: true };
+                    }
+                    if (cmd[0] === 'list-windows' || cmd[0] === 'kill-window') return null;
+                    return super.executeTmuxCommand(cmd, session);
+                }
+            }
+            const result = await new DelayedNativeTmux().spawnInTmux(
+                [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started')`],
+                { sessionName: 'my-session', windowName: 'my-window', windowNameIsUnique: true },
+                {},
+            );
+            expect(result).toMatchObject({ success: false, creationDisposition: 'created_or_uncertain' });
+            expect(acceptedCommand).toBeTypeOf('string');
+            await promisify(execFile)('/bin/sh', ['-c', acceptedCommand!], {
+                env: { ...process.env, PATH: `${directory}:${process.env.PATH ?? ''}` },
+            });
+            await expect(readFile(marker, 'utf8')).resolves.toBe('started');
+        });
+    });
 
     it('keeps window environment values out of tmux client arguments', async () => {
         const tmux = new FakeTmuxUtilities();

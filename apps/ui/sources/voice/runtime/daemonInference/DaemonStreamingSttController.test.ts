@@ -46,6 +46,7 @@ describe('createDaemonStreamingSttController', () => {
     const capture = {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
+      finish: vi.fn(async () => {}),
       waitForDrain: vi.fn(async () => {}),
       isActive: vi.fn(() => true),
     };
@@ -117,7 +118,8 @@ describe('createDaemonStreamingSttController', () => {
     expect(sink.onFinal).toHaveBeenCalledWith('open notes');
     expect(sink.onEndpoint).toHaveBeenCalledWith('vad');
     expect(sink.onAudioStarted).toHaveBeenCalledTimes(1);
-    expect(capture.stop).toHaveBeenCalledTimes(1);
+    expect(capture.finish).toHaveBeenCalledTimes(1);
+    expect(capture.stop).not.toHaveBeenCalled();
     expect(sender.finish).toHaveBeenCalledTimes(1);
     expect(sender.cancel).not.toHaveBeenCalled();
   });
@@ -129,9 +131,10 @@ describe('createDaemonStreamingSttController', () => {
     const capture = {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
-      waitForDrain: vi.fn(async () => {
+      finish: vi.fn(async () => {
         await requireCaptureOptions(captureOptions).onChunk(drainedPcmBytes);
       }),
+      waitForDrain: vi.fn(async () => {}),
       isActive: vi.fn(() => true),
     };
     const sender = {
@@ -192,6 +195,7 @@ describe('createDaemonStreamingSttController', () => {
     const capture = {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
+      finish: vi.fn(async () => {}),
       waitForDrain: vi.fn(async () => {}),
       isActive: vi.fn(() => true),
     };
@@ -243,6 +247,7 @@ describe('createDaemonStreamingSttController', () => {
     const capture = {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
+      finish: vi.fn(async () => {}),
       waitForDrain: vi.fn(async () => {}),
       isActive: vi.fn(() => true),
     };
@@ -307,6 +312,7 @@ describe('createDaemonStreamingSttController', () => {
     const capture = {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
+      finish: vi.fn(async () => {}),
       waitForDrain: vi.fn(async () => {}),
       isActive: vi.fn(() => true),
     };
@@ -370,12 +376,14 @@ describe('createDaemonStreamingSttController', () => {
     const firstCapture = {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
-      waitForDrain: vi.fn(async () => drainGate),
+      finish: vi.fn(async () => drainGate),
+      waitForDrain: vi.fn(async () => {}),
       isActive: vi.fn(() => true),
     };
     const secondCapture = {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
+      finish: vi.fn(async () => {}),
       waitForDrain: vi.fn(async () => {}),
       isActive: vi.fn(() => true),
     };
@@ -432,6 +440,7 @@ describe('createDaemonStreamingSttController', () => {
     const capture = {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
+      finish: vi.fn(async () => {}),
       waitForDrain: vi.fn(async () => {}),
       isActive: vi.fn(() => false),
     };
@@ -494,6 +503,7 @@ describe('createDaemonStreamingSttController', () => {
       stop: vi.fn(() => new Promise<void>((resolve) => {
         resolveCaptureStop = resolve;
       })),
+      finish: vi.fn(async () => {}),
       waitForDrain: vi.fn(async () => {}),
       isActive: vi.fn(() => true),
     };
@@ -569,6 +579,7 @@ describe('createDaemonStreamingSttController', () => {
       const capture = {
         start: vi.fn(async () => {}),
         stop: vi.fn(async () => {}),
+        finish: vi.fn(async () => {}),
         waitForDrain: vi.fn(async () => {}),
         isActive: vi.fn(() => true),
       };
@@ -636,6 +647,7 @@ describe('createDaemonStreamingSttController', () => {
         emitCaptureError(captureOptions);
       }),
       stop: vi.fn(async () => {}),
+      finish: vi.fn(async () => {}),
       waitForDrain: vi.fn(async () => {}),
       isActive: vi.fn(() => false),
     };
@@ -700,6 +712,7 @@ describe('createDaemonStreamingSttController', () => {
       stop: vi.fn(() => new Promise<void>((resolve) => {
         resolveCaptureStop = resolve;
       })),
+      finish: vi.fn(async () => {}),
       waitForDrain: vi.fn(async () => {}),
       isActive: vi.fn(() => true),
     };
@@ -817,6 +830,7 @@ describe('createDaemonStreamingSttController', () => {
     const capture = {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
+      finish: vi.fn(async () => {}),
       waitForDrain: vi.fn(async () => {}),
       isActive: vi.fn(() => true),
     };
@@ -872,13 +886,7 @@ describe('createDaemonStreamingSttController', () => {
       sink,
     });
 
-    await expect(requireCaptureOptions(captureOptions).onChunk(new Uint8Array([0, 1]))).rejects.toMatchObject({
-      code: 'daemon_voice_inference_substream_response_timeout',
-    });
-    requireCaptureOptions(captureOptions).onError?.(createVoiceMachineError({
-      kind: 'provider_error',
-      reason: 'daemon_streaming_stt_pcm_chunk_failed',
-    }));
+    await expect(requireCaptureOptions(captureOptions).onChunk(new Uint8Array([0, 1]))).resolves.toBeUndefined();
 
     await vi.waitFor(() => {
       expect(sender.cancel).toHaveBeenCalledTimes(1);
@@ -930,6 +938,7 @@ describe('createDaemonStreamingSttController', () => {
     const capture = {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
+      finish: vi.fn(async () => {}),
       waitForDrain: vi.fn(async () => {}),
       isActive: vi.fn(() => true),
     };

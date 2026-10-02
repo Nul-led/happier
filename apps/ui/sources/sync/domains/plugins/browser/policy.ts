@@ -11,44 +11,9 @@ export type PluginBrowserPolicyDecision = Readonly<{
     unavailableReason: string | null;
 }>;
 
-const DEFERRED_POLICY_FIELDS = [
-    'visibility',
-    'enabled',
-    'featureGate',
-    'compatibility',
-    'availability',
-] as const;
-
-function hasRequiredPolicyValue(policy: unknown): boolean {
-    if (!policy || typeof policy !== 'object' || Array.isArray(policy)) {
-        return false;
-    }
-    const value = policy as Readonly<Record<string, unknown>>;
-    return (Array.isArray(value.requiredFeatureIds) && value.requiredFeatureIds.length > 0)
-        || (Array.isArray(value.requiredPermissionIds) && value.requiredPermissionIds.length > 0)
-        || typeof value.profileMode === 'string';
-}
-
-/**
- * Whether a browser entry DECLARES any host-evaluated policy field. Retained for
- * diagnostics; declared policy is now EVALUATED (Phase 1.1) via the shared
- * `evaluatePluginUiPolicy`, not silently hidden.
- */
-export function hasDeferredPluginBrowserPolicy(
-    entry: PluginBrowserProjectionEntry | null | undefined,
-): boolean {
-    if (!entry) {
-        return false;
-    }
-    return DEFERRED_POLICY_FIELDS.some((field) => entry[field] !== undefined)
-        || hasRequiredPolicyValue(entry.policy);
-}
-
 /**
  * Canonical render/use gate for a plugin browser projection entry. Shares the
- * single policy evaluator with the plugin-UI surfaces: declared
- * `visibility/enabled/featureGate/compatibility` and `policy.{requiredFeatureIds,
- * requiredPermissionIds, profileMode}` are EVALUATED against the host context.
+ * canonical contribution availability evaluator with plugin-UI surfaces.
  *
  * The context is optional so the existing pure callers keep working; gating
  * signals that REQUIRE a resolver fail closed when none is supplied.

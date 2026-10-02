@@ -1,8 +1,22 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createDaemonPluginActionExecutor } from './createDaemonPluginActionExecutor';
+import { createActionExecutor, type ActionExecutorDeps } from '@happier-dev/protocol';
 
 describe('createDaemonPluginActionExecutor', () => {
+  it('exposes nested wait invocation without falling back recursively for an unavailable plugin', async () => {
+    const transport = createDaemonPluginActionExecutor({
+      base: { execute: async () => { throw new Error('Nested invocation must not re-enter the base'); } },
+      requestPluginActionExecution: async () => ({ matched: false }),
+    });
+    const executor = createActionExecutor({
+      invokeContributedAction: async (request) => transport.invokeContributedAction(request),
+    } as unknown as ActionExecutorDeps);
+    expect(await executor.execute('wait', {
+      target: { kind: 'plugin_source', serverId: 'home', pluginId: 'acme.checks', sourceId: 'checkpoint' },
+      condition: { kind: 'plugin', actionLocalId: 'observe/checks', condition: 'checks_passed' },
+    }, { surface: 'mcp', serverId: 'home' })).toMatchObject({ ok: true, result: { disposition: 'target_unavailable' } });
+  });
   it('routes all contributed Action discovery operations to the daemon owner', async () => {
     const baseExecute = vi.fn(async () => ({
       ok: false as const,

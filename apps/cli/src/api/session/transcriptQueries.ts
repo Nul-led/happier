@@ -12,6 +12,7 @@ import { serializeAxiosErrorForLog } from '../client/serializeAxiosErrorForLog';
 import { SessionMessageContentSchema, type PermissionMode, type SessionMessageContent } from '../types';
 import { extractSemanticTranscriptItemFromDecryptedPayload } from '@/session/services/transcript/extractSemanticTranscriptItem';
 import { openSessionMessageContent, SessionMessageContentError } from '@/session/transport/encryption/sessionEncryptionContext';
+import { fetchEncryptedTranscriptMessagesPage } from '@/session/replay/fetchEncryptedTranscriptMessages';
 import {
   createSessionTranscriptStoredContentUnavailableError,
   resolveSessionTranscriptStoredContentUnavailableError,
@@ -31,6 +32,11 @@ export {
 
 type EncryptionVariant = 'legacy' | 'dataKey';
 
+export type CommittedTranscriptIdentitySnapshot = Readonly<{
+  complete: boolean;
+  rows: readonly Readonly<{ localId: string | null; role: 'user' | 'agent'; provider?: string; meta: Readonly<Record<string, unknown>> | null }>[];
+}>;
+
 type SessionTranscriptQueryParams = Readonly<{
   token: string;
   sessionId: string;
@@ -46,6 +52,44 @@ type SessionTranscriptQueryParams = Readonly<{
       encryptionVariant: EncryptionVariant;
     }>
 );
+
+/** Full committed conversation identity baseline, using the ordinary paged and encrypted reader. */
+export async function fetchCommittedTranscriptIdentitySnapshot(
+  params: SessionTranscriptQueryParams & Readonly<{ signal?: AbortSignal }>,
+): Promise<CommittedTranscriptIdentitySnapshot> {
+  const rows: CommittedTranscriptIdentitySnapshot['rows'][number][] = [];
+  let beforeSeq: number | undefined;
+  let complete = true;
+  for (;;) {
+    const page = await fetchEncryptedTranscriptMessagesPage({
+      token: params.token, sessionId: params.sessionId, limit: 500, scope: 'main', roles: ['user', 'agent'],
+      ...(beforeSeq === undefined ? {} : { beforeSeq }), ...(params.signal ? { signal: params.signal } : {}),
+    });
+    for (const row of page.messages) {
+      if (row.sidechainId) continue;
+      const content = SessionMessageContentSchema.parse(row.content);
+      const decrypted = openSessionMessageContent({ content,
+        ...(params.encryptionMode === 'plain' ? { mode: 'plain', ctx: null } as const
+          : { mode: 'e2ee', ctx: { encryptionKey: params.encryptionKey, encryptionVariant: params.encryptionVariant } } as const),
+      });
+      if (!decrypted || typeof decrypted !== 'object' || Array.isArray(decrypted)) { complete = false; continue; }
+      const semantic = extractSemanticTranscriptItemFromDecryptedPayload({ decrypted, row, index: rows.length,
+        options: { mode: 'transcript', transcriptRoles: ['user', 'assistant'], maxTextChars: null },
+      }).item;
+      if (!semantic || (semantic.role !== 'user' && semantic.role !== 'assistant')) continue;
+      const payload = decrypted as Record<string, unknown>;
+      const meta = payload.meta && typeof payload.meta === 'object' && !Array.isArray(payload.meta)
+        ? payload.meta as Record<string, unknown> : null;
+      rows.push({ localId: typeof row.localId === 'string' && row.localId.length > 0 ? row.localId : null,
+        role: semantic.role === 'user' ? 'user' : 'agent', ...(semantic.provider ? { provider: semantic.provider } : {}), meta });
+    }
+    if (!page.hasMore) return { complete, rows };
+    if (page.nextBeforeSeq === null || (beforeSeq !== undefined && page.nextBeforeSeq >= beforeSeq) || page.messages.length === 0) {
+      return { complete: false, rows };
+    }
+    beforeSeq = page.nextBeforeSeq;
+  }
+}
 
 function normalizeTake(value: number | undefined, max: number): number {
   if (typeof value !== 'number' || value <= 0) return max;

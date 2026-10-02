@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildLaunchdPlistXml, renderSystemdServiceUnit, renderWindowsScheduledTaskWrapperPs1 } from '@happier-dev/cli-common/service';
@@ -7,6 +7,7 @@ import { buildLaunchdPlistXml, renderSystemdServiceUnit, renderWindowsScheduledT
 import { withTempDir } from '@/testkit/fs/tempDir';
 
 import { discoverInstalledDaemonServiceEntries } from './discoverInstalledDaemonServiceEntries';
+import { planDaemonServiceInstall } from './plan';
 
 const { spawnSyncMock } = vi.hoisted(() => ({
   spawnSyncMock: vi.fn<typeof import('node:child_process').spawnSync>(),
@@ -19,7 +20,25 @@ vi.mock('node:child_process', () => ({
 describe('discoverInstalledDaemonServiceEntries', () => {
   beforeEach(() => {
     spawnSyncMock.mockReset();
-    spawnSyncMock.mockReturnValue({ status: 1, stdout: '', stderr: '' } as never);
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: '', stderr: '' } as never);
+  });
+
+  it.each(['linux', 'darwin', 'win32'] as const)('honours the explicit pinned declaration on a default-named %s definition', async (platform) => {
+    await withTempDir('happier-discover-pinned-default-', async (homeDir) => {
+      const plan = planDaemonServiceInstall({ platform, channel: 'stable', targetMode: 'pinned', instanceId: 'default', activeServerId: 'default', uid: 501, userHomeDir: homeDir, happierHomeDir: join(homeDir, '.happier'), serverUrl: 'https://relay.test', publicServerUrl: 'https://relay.test', webappUrl: 'https://relay.test', nodePath: '/usr/local/bin/happier', entryPath: '' });
+      const file = plan.files[0]!;
+      mkdirSync(dirname(file.path), { recursive: true });
+      writeFileSync(file.path, file.content);
+      expect(await discoverInstalledDaemonServiceEntries({ platform, userHomeDir: homeDir, happierHomeDir: join(homeDir, '.happier'), mode: 'user', serversById: {} })).toEqual([expect.objectContaining({ serverId: 'default', targetMode: 'pinned', path: file.path })]);
+    });
+  });
+
+  it.each(['exit', 'error', 'throw'] as const)('preserves top-level Scheduler %s failures', async (failure) => {
+    await withTempDir('happier-discover-task-error-', async (homeDir) => {
+      if (failure === 'throw') spawnSyncMock.mockImplementationOnce(() => { throw new Error('Scheduler denied'); });
+      else spawnSyncMock.mockReturnValueOnce({ status: failure === 'exit' ? 1 : null, error: failure === 'error' ? new Error('Scheduler unavailable') : undefined, stdout: '', stderr: 'Access denied' } as never);
+      await expect(discoverInstalledDaemonServiceEntries({ platform: 'win32', userHomeDir: homeDir, happierHomeDir: join(homeDir, '.happier'), mode: 'user', serversById: {} })).rejects.toMatchObject({ code: 'service_inventory_unavailable' });
+    });
   });
 
   it('prefers the embedded active server id over an env-hash filename for pinned linux units', async () => {
@@ -680,7 +699,7 @@ describe('discoverInstalledDaemonServiceEntries', () => {
     });
   });
 
-  it('does not fabricate a local wrapper path when Windows task wrapper path cannot be resolved', async () => {
+  it('names an unreadable Windows task instead of claiming an empty inventory', async () => {
     await withTempDir('happier-discover-service-entry-windows-unresolved-task-', async (homeDir) => {
       const happierHomeDir = join(homeDir, '.happier');
       mkdirSync(join(happierHomeDir, 'services'), { recursive: true });
@@ -714,15 +733,27 @@ describe('discoverInstalledDaemonServiceEntries', () => {
         return { status: 1, stdout: '', stderr: 'unexpected schtasks call' } as never;
       });
 
-      const entries = await discoverInstalledDaemonServiceEntries({
+      await expect(discoverInstalledDaemonServiceEntries({
         platform: 'win32',
         userHomeDir: homeDir,
         happierHomeDir,
         mode: 'user',
         serversById: {},
-      });
+      })).rejects.toMatchObject({ code: 'service_inventory_unavailable', message: expect.stringContaining('happier-daemon.default') });
+    });
+  });
 
-      expect(entries).toEqual([]);
+  it('names the task when its OS inspection throws, and confirms absence only with a successful listing', async () => {
+    await withTempDir('happier-discover-task-throw-', async (homeDir) => {
+      const params = { platform: 'win32' as const, userHomeDir: homeDir, happierHomeDir: join(homeDir, '.happier'), mode: 'user' as const, serversById: {} };
+      const listing = { status: 0, stdout: '"\\Happier\\happier-daemon.company","N/A"\r\n', stderr: '' };
+      spawnSyncMock.mockReturnValueOnce(listing as never).mockImplementationOnce(() => { throw new Error('OS process unavailable'); });
+      await expect(discoverInstalledDaemonServiceEntries(params)).rejects.toMatchObject({ code: 'service_inventory_unavailable', message: expect.stringContaining('happier-daemon.company') });
+      spawnSyncMock.mockReturnValueOnce(listing as never)
+        .mockReturnValueOnce({ status: 1, stdout: '', stderr: 'not found' } as never)
+        .mockReturnValueOnce({ status: 1, stdout: '', stderr: 'not found' } as never)
+        .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' } as never);
+      await expect(discoverInstalledDaemonServiceEntries(params)).resolves.toEqual([]);
     });
   });
 

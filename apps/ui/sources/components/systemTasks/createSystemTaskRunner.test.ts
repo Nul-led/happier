@@ -1,6 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SystemTaskEvent, SystemTaskResult, SystemTaskSpec } from '@happier-dev/protocol';
 import { SystemTaskSpecSchema } from '@happier-dev/protocol';
+
+afterEach(() => vi.restoreAllMocks());
 
 type BridgeListenerSet = Readonly<{
     onEvent: (payload: unknown) => void;
@@ -54,6 +56,25 @@ function createManualBridge() {
 }
 
 describe('createSystemTaskRunner', () => {
+    it('retires the bridge subscription when registration delivers an already-completed result', async () => {
+        const { createSystemTaskRunner } = await import('./createSystemTaskRunner');
+        const manual = createManualBridge();
+        let activeSubscriptions = 0;
+        const runner = createSystemTaskRunner({ bridge: {
+            ...manual.bridge,
+            // Native registration replays a snapshot before returning its SDK unlisten handle.
+            async subscribe(taskId: string, listeners: BridgeListenerSet) {
+                activeSubscriptions += 1;
+                listeners.onResult({ protocolVersion: 1, taskId, ok: true, data: { completed: true } } satisfies SystemTaskResult);
+                await Promise.resolve();
+                return () => { activeSubscriptions -= 1; };
+            },
+        } });
+        const taskId = await runner.start(createSpec());
+        expect(runner.getSnapshot(taskId)?.result).toMatchObject({ ok: true, data: { completed: true } });
+        expect(activeSubscriptions).toBe(0);
+    });
+
     it('does not replay a prompt when its subscriber synchronously changes task state', async () => {
         const { createSystemTaskRunner } = await import('./createSystemTaskRunner');
         const manual = createManualBridge();
@@ -481,6 +502,7 @@ describe('createSystemTaskRunner', () => {
     });
 
     it('allows a failed prompt continuation to retry when the owner re-registers', async () => {
+        const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
         const { createSystemTaskRunner } = await import('./createSystemTaskRunner');
         const manual = createManualBridge();
         const runner = createSystemTaskRunner({ bridge: manual.bridge });
@@ -508,11 +530,15 @@ describe('createSystemTaskRunner', () => {
         runner.registerPromptContinuation?.(taskId, failedContinuation);
         manual.emitEvent(taskId, prompt);
         await vi.waitFor(() => expect(failedContinuation).toHaveBeenCalledTimes(1));
+        await vi.waitFor(() => expect(warning).toHaveBeenCalledWith(expect.any(String), {
+            taskId, promptKind: 'personal_home.publish_relocation_descriptor.v1',
+        }));
 
         runner.registerPromptContinuation?.(taskId, retryContinuation);
         await vi.waitFor(() => expect(manual.respondMock).toHaveBeenCalledTimes(1));
 
         expect(retryContinuation).toHaveBeenCalledTimes(1);
         expect(manual.respondMock).toHaveBeenCalledWith(taskId, { descriptor: { revision: 3 } });
+        warning.mockRestore();
     });
 });

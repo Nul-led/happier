@@ -44,9 +44,10 @@ describe('fetchEncryptedTranscriptWindow', () => {
 
     expect(rows).toHaveLength(1);
     expect(mockGet).toHaveBeenCalledTimes(1);
-    const [url, opts] = mockGet.mock.calls[0]!;
-    expect(url).toBe('http://127.0.0.1:1234/v1/sessions/sess_1/messages');
-    expect(opts.params).toEqual({ afterSeq: 4, limit: 3 });
+    const [url] = mockGet.mock.calls[0]!;
+    const requestUrl = new URL(String(url));
+    expect(`${requestUrl.origin}${requestUrl.pathname}`).toBe('http://127.0.0.1:1234/v1/sessions/sess_1/messages');
+    expect(Object.fromEntries(requestUrl.searchParams)).toEqual({ afterSeq: '4', limit: '3' });
   });
 
   it('rejects oversized windows with window_too_large', async () => {
@@ -73,8 +74,8 @@ describe('fetchEncryptedTranscriptWindow', () => {
     });
 
     expect(rows).toHaveLength(1);
-    const [_url, opts] = mockGet.mock.calls.at(-1)!;
-    expect(opts.params).toEqual({ limit: 2 });
+    const [url] = mockGet.mock.calls.at(-1)!;
+    expect(Object.fromEntries(new URL(String(url)).searchParams)).toEqual({ limit: '2' });
   });
 
   it('applies sanitized caller timeouts to page fetches', async () => {
@@ -189,8 +190,8 @@ describe('fetchEncryptedTranscriptWindow', () => {
 
     expect(result.ok).toBe(true);
     expect(mockGet).toHaveBeenCalledTimes(1);
-    const [_url, opts] = mockGet.mock.calls[0]!;
-    expect(opts.params).toEqual({ afterSeq: 4, limit: 3 });
+    const [url] = mockGet.mock.calls[0]!;
+    expect(Object.fromEntries(new URL(String(url)).searchParams)).toEqual({ afterSeq: '4', limit: '3' });
   });
 
   it('throws a typed auth error when transcript fetch returns 401', async () => {

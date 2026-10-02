@@ -5,11 +5,12 @@ import { discardPendingQueueV2Messages } from '@/api/session/pendingQueueV2Trans
 import { resolveSessionTransportContext } from './resolveSessionTransportContext';
 import { callSessionRpc } from '@/session/transport/rpc/sessionRpc';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { SessionInputCancelExactTurnResultV1Schema, type SessionInputCancelExactTurnResultV1 } from '@happier-dev/protocol';
 
 export type CancelSessionInputResult =
   | Readonly<{ kind: 'pending_retired' }>
   | Readonly<{ kind: 'turn_cancel_requested' }>
-  | Readonly<{ kind: 'session_absent' }>
+  | Readonly<{ kind: 'turn_cancel_refused'; status: Extract<SessionInputCancelExactTurnResultV1, { ok: false }>['status']; code: string }>
   | Readonly<{ kind: 'turn_cancel_unavailable'; code: string }>;
 
 /**
@@ -37,7 +38,9 @@ export async function cancelSessionInput(params: Readonly<{
       || !('error' in responseData) || typeof responseData.error !== 'string') {
       throw error;
     }
-    if (responseData.error === 'session-not-found') return { kind: 'session_absent' };
+    // The server deliberately collapses absence and denied submit authority.
+    // Neither is evidence that this exact input has stopped.
+    if (responseData.error === 'session-not-found') return { kind: 'turn_cancel_unavailable', code: responseData.error };
     if (responseData.error !== 'not-found') throw error;
   }
 
@@ -55,8 +58,17 @@ export async function cancelSessionInput(params: Readonly<{
       method: `${transport.sessionId}:${SESSION_RPC_METHODS.SESSION_INPUT_CANCEL_EXACT_TURN_V1}`,
       request: { sessionId: transport.sessionId, localId: params.localId },
     };
-    if (transport.mode === 'plain') await callSessionRpc({ ...rpc, mode: 'plain' });
-    else await callSessionRpc({ ...rpc, mode: 'e2ee', ctx: transport.ctx });
+    const response = transport.mode === 'plain'
+      ? await callSessionRpc({ ...rpc, mode: 'plain' })
+      : await callSessionRpc({ ...rpc, mode: 'e2ee', ctx: transport.ctx });
+    const parsed = SessionInputCancelExactTurnResultV1Schema.safeParse(response);
+    if (!parsed.success) return { kind: 'turn_cancel_unavailable', code: 'session_input_cancel_invalid_result' };
+    if (parsed.data.sessionId !== params.sessionId || parsed.data.localId !== params.localId) {
+      return { kind: 'turn_cancel_unavailable', code: 'session_input_cancel_identity_mismatch' };
+    }
+    if (!parsed.data.ok) {
+      return { kind: 'turn_cancel_refused', status: parsed.data.status, code: parsed.data.errorCode ?? parsed.data.status };
+    }
     return { kind: 'turn_cancel_requested' };
   } catch (error) {
     return {

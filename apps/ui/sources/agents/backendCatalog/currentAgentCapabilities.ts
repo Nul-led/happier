@@ -108,6 +108,7 @@ export type AgentLifecycleCapability =
     | 'sessionFork.conversation'
     | 'sessionFork.fromMessage'
     | 'sessionRollback.conversation'
+    | 'usageReporting'
     | 'usageLimitRecovery.checkNow'
     | 'surface.terminal';
 
@@ -165,6 +166,9 @@ export function supportsAgentLifecycleCapability(query: AgentLifecycleCapability
         : null;
 
     switch (query.capability) {
+        case 'usageReporting':
+            return currentAgent?.capabilities.sessions?.usageReporting === true
+                && supportsSessionCapability(query, agentId, 'usageReporting', true);
         case 'sessionFork.conversation':
             return supportsSessionCapability(
                 query,

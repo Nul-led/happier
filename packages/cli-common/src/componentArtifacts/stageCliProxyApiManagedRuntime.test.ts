@@ -25,6 +25,23 @@ afterEach(async () => {
 });
 
 describe('stageCliProxyApiManagedRuntime', () => {
+  it('omits a failed optional publication without touching its missing package or building its runtime', async () => {
+    const repoRoot = await createTempDir();
+    const runCommand = async (): Promise<void> => { throw new Error('Excluded plugin must not build'); };
+    await expect(stageCliProxyApiManagedRuntime({
+      repoRoot,
+      payloadDir: join(repoRoot, 'payload'),
+      target: { bunTarget: 'bun-linux-x64-baseline', os: 'linux', arch: 'x64', exeExt: '' },
+      yarn: { cmd: 'corepack', args: ['yarn'] },
+      runCommand,
+      publicationFailures: [{
+        packageName: '@happier-dev/plugins-cliproxyapi',
+        pluginId: 'happier.provider.cliproxyapi',
+        diagnostic: { code: 'plugin_package_build_failed', message: 'Package unavailable' },
+      }],
+    })).resolves.toBeNull();
+  });
+
   it('invokes the one package-owned build contract and stages its license beside the executable', async () => {
     const repoRoot = await createTempDir();
     const payloadDir = join(repoRoot, 'payload');
@@ -90,6 +107,7 @@ describe('stageCliProxyApiManagedRuntime', () => {
       licensePath: join(payloadDir, 'tools', 'unpacked', 'CLIProxyAPI-LICENSE'),
       thirdPartyNoticesPath: join(payloadDir, 'tools', 'unpacked', 'CLIProxyAPI-THIRD-PARTY-NOTICES'),
     });
+    if (!result) throw new Error('expected a staged managed runtime');
     await expect(readFile(result.executablePath, 'utf8')).resolves.toBe('managed runtime fixture\n');
     await expect(readFile(result.licensePath, 'utf8')).resolves.toBe('MIT fixture\n');
     await expect(readFile(result.thirdPartyNoticesPath, 'utf8')).resolves.toBe('transitive notices fixture\n');
@@ -126,6 +144,7 @@ describe('stageCliProxyApiManagedRuntime', () => {
       },
     });
 
+    if (!result) throw new Error('expected a staged managed runtime');
     await expect(readFile(result.executablePath, 'utf8')).resolves.toBe('signed windows fixture\n');
     await expect(readFile(result.licensePath, 'utf8')).resolves.toBe('MIT fixture\n');
     await expect(readFile(result.thirdPartyNoticesPath, 'utf8')).resolves.toBe('transitive notices fixture\n');

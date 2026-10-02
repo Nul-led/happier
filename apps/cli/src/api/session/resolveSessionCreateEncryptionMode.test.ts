@@ -87,28 +87,29 @@ describe('resolveSessionCreateEncryptionMode', () => {
     { reason: 'network' as const },
     { reason: 'timeout' as const },
     { reason: 'response_status' as const },
-  ])('fails closed but retryably when the server feature snapshot has a transient $reason error', async ({ reason }) => {
+  ])('uses the E2EE storage policy when feature discovery has a transient $reason error', async ({ reason }) => {
     fetchServerFeaturesSnapshot.mockResolvedValue({ status: 'error', reason });
+    fetchAccountEncryptionCurrentness.mockResolvedValue({ mode: 'plain', version: 3 });
 
     await expect(resolveSessionCreateEncryptionMode({
       token: 'token-1',
       serverBaseUrl: 'https://server.example',
-    })).rejects.toMatchObject({
-      code: 'account_stored_content_compatibility_unavailable',
-      retryable: true,
-      reason,
+    })).resolves.toMatchObject({
+      status: 'resolved',
+      desiredSessionEncryptionMode: 'e2ee',
+      storagePolicy: 'required_e2ee',
+      accountEncryptionCurrentness: { mode: 'plain', version: 3 },
     });
     expect(fetchServerFeaturesSnapshot).toHaveBeenCalledWith({
       serverUrl: 'https://server.example',
     });
-    expect(fetchAccountEncryptionCurrentness).not.toHaveBeenCalled();
+    expect(fetchAccountEncryptionCurrentness).toHaveBeenCalled();
   });
 
   it.each([
     {
       name: 'missing requirements',
       requirements: undefined,
-      decision: 'missing',
     },
     {
       name: 'protocol v1',
@@ -118,25 +119,24 @@ describe('resolveSessionCreateEncryptionMode', () => {
         currentProtocolVersion: 1,
         declarationTransport: 'http-header-and-socket-auth-v1',
       },
-      decision: 'server-too-old',
     },
-  ])('rejects $name before resolving Account mode', async ({
+  ])('resolves Account mode despite $name', async ({
     requirements,
-    decision,
   }) => {
     fetchServerFeaturesSnapshot.mockResolvedValue(
       readySnapshot(requirements),
     );
+    fetchAccountEncryptionCurrentness.mockResolvedValue({ mode: 'plain', version: 3 });
 
     await expect(resolveSessionCreateEncryptionMode({
       token: 'token-1',
       serverBaseUrl: 'https://server.example',
-    })).rejects.toMatchObject({
-      code: 'client-upgrade-required',
-      retryable: false,
-      decision,
+    })).resolves.toMatchObject({
+      status: 'resolved',
+      desiredSessionEncryptionMode: 'plain',
+      accountEncryptionCurrentness: { mode: 'plain', version: 3 },
     });
-    expect(fetchAccountEncryptionCurrentness).not.toHaveBeenCalled();
+    expect(fetchAccountEncryptionCurrentness).toHaveBeenCalled();
   });
 
   it.each([

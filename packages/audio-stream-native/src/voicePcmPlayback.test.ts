@@ -68,13 +68,13 @@ function createHarness() {
 }
 
 describe('VoicePcmPlayback', () => {
-  it('attaches bounded PCM output to the exact active capture stream and rejects writes after release', async () => {
+  it('attaches PCM output to the exact active capture stream and rejects writes after release', async () => {
     const harness = createHarness();
     const playback = createVoicePcmPlayback(harness);
     const onOutputLevel = vi.fn();
     const lease = await playback.open({
       capture: { streamId: 'capture-1', generation: 7 },
-      format: { sampleRate: 24_000, channels: 1, maxBufferedMs: 5_000 },
+      format: { sampleRate: 24_000, channels: 1 },
       onOutputLevel,
     });
 
@@ -83,7 +83,6 @@ describe('VoicePcmPlayback', () => {
       generation: 7,
       sampleRate: 24_000,
       channels: 1,
-      maxBufferedMs: 5_000,
     });
     expect(lease.enqueue('AQI=')).toBe(true);
     expect(harness.nativeModule.enqueuePlayback).toHaveBeenCalledWith({
@@ -116,14 +115,14 @@ describe('VoicePcmPlayback', () => {
     const playback = createVoicePcmPlayback(harness);
     await expect(playback.open({
       capture: { streamId: 'stale-stream', generation: 6 },
-      format: { sampleRate: 24_000, channels: 1, maxBufferedMs: 5_000 },
+      format: { sampleRate: 24_000, channels: 1 },
     })).rejects.toMatchObject({ code: 'playback_capture_mismatch' });
     expect(harness.nativeModule.startPlayback).not.toHaveBeenCalled();
 
     const onError = vi.fn();
     const lease = await playback.open({
       capture: { streamId: 'capture-1', generation: 7 },
-      format: { sampleRate: 24_000, channels: 1, maxBufferedMs: 5_000 },
+      format: { sampleRate: 24_000, channels: 1 },
       onError,
     });
     harness.emitLevel({ streamId: 'wrong-stream', generation: 7, level: 1 });

@@ -52,6 +52,7 @@ async function publishSwitchEvent(
     session: TerminalProjectionSession,
     projection: HostTerminalControlProjection,
 ): Promise<Readonly<{ persisted: boolean; delivered: boolean }> | null> {
+    if (projection.localControl === 'unsupported') return null;
     if (projection.target !== 'local' && projection.target !== 'remote') {
         return null;
     }
@@ -65,9 +66,15 @@ function publishAgentControlState(
     session: TerminalProjectionSession,
     projection: HostTerminalControlProjection,
     logPrefix: string,
-): void {
+): void | Promise<void> {
     if (projection.target !== 'local' && projection.target !== 'remote') {
         return;
+    }
+    if (projection.localControl === 'unsupported') {
+        return session.updateAgentState((current) => {
+            const { localControl: _previousControl, ...retainedState } = current;
+            return { ...retainedState, controlledByUser: false };
+        });
     }
     updateAgentStateBestEffort(
         session,
@@ -163,10 +170,10 @@ export function createTerminalRuntimeProjectionHostService(
             try {
                 admission = await publishSwitchEvent(params.session, projection);
             } catch (error) {
-                publishAgentControlState(params.session, projection, logPrefix);
+                await publishAgentControlState(params.session, projection, logPrefix);
                 throw error;
             }
-            publishAgentControlState(params.session, projection, logPrefix);
+            await publishAgentControlState(params.session, projection, logPrefix);
             if (admission && !admission.persisted) {
                 throw new Error('Terminal switch transcript event was not durably admitted');
             }

@@ -1,4 +1,13 @@
-type VoiceAgentTurn = { role: 'user' | 'assistant'; text: string };
+import type { VoiceAgentTurn } from './voiceAgentTypes';
+
+/** Accepted read-only Follow context shares the conversation's existing budget. */
+export function appendVoiceAgentHistoryContext(
+  history: VoiceAgentTurn[],
+  params: Readonly<{ text: string; maxTurns: number; maxTurnTextChars: number }>,
+): void {
+  history.push({ role: 'context', text: clipTurnText(params.text, 'head', params.maxTurnTextChars) });
+  if (history.length > params.maxTurns) history.splice(0, history.length - params.maxTurns);
+}
 
 export function appendVoiceAgentHistoryTurn(
   history: VoiceAgentTurn[],

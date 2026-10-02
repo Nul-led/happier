@@ -10,16 +10,19 @@ import { toggleTodo, updateTodoTitle, deleteTodo } from '@/sync/domains/todos/to
 import { useAuth } from '@/auth/context/AuthContext';
 import { useShallow } from 'zustand/react/shallow';
 import { clarifyPrompt } from '@/components/zen/workflow/clarifyPrompt';
-import { storeTempData, type NewSessionData } from '@/utils/sessions/tempDataStore';
-import { toCamelCase } from '@/utils/strings/stringUtils';
-import { removeTaskLinks, getSessionsForTask } from '@/sync/domains/todos/taskSessionLink';
+import { projectTaskSessionLinks } from '@/sync/domains/todos/taskSessionLink';
 import { t } from '@/text';
-import { DEFAULT_AGENT_ID } from '@/agents/catalog/catalog';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { KeyboardAwareScrollView } from '@/components/ui/keyboardAvoidance';
 import { Icon } from '@/components/ui/icons/Icon';
-import { resolveNewSessionDraftRouteIdentity } from '@/components/sessions/new/navigation/newSessionDraftRouteIdentity';
 import { buildNewSessionLaunchRouteParams } from '@/components/sessions/new/navigation/newSessionRouteParams';
+import { seedNewSessionDraftV1 } from '@/components/sessions/new/newSessionDraftSeed';
+import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
+import { toCamelCase } from '@/utils/strings/stringUtils';
+import { TaskSessionStatusPill, TaskStatusPill } from '@/components/zen/views/TaskSessionStatusPill';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
+import { resolveServerCredentialAccountScope } from '@/sync/domains/scope/serverCredentialAccountScope';
+import { areServerAccountScopesEqual, serverAccountScopedResourceKey } from '@/sync/domains/scope/serverAccountScope';
 
 
 export const ZenView = React.memo(() => {
@@ -30,6 +33,7 @@ export const ZenView = React.memo(() => {
     const auth = useAuth();
 
     const todoId = params.id as string;
+    const taskScope = storage((state) => state.profileScope);
 
     // Get todo from storage
     const todo = storage(useShallow(state => {
@@ -40,7 +44,8 @@ export const ZenView = React.memo(() => {
         return {
             id: todoItem.id,
             title: todoItem.title,
-            done: todoItem.done
+            done: todoItem.done,
+            linkedSessions: todoItem.linkedSessions,
         };
     }));
 
@@ -49,15 +54,15 @@ export const ZenView = React.memo(() => {
 
     // Get linked sessions for this task
     const linkedSessions = React.useMemo(() => {
-        return getSessionsForTask(todoId);
-    }, [todoId]);
+        return projectTaskSessionLinks(todo, taskScope);
+    }, [todo, taskScope]);
 
     // Update local state when todo changes
     React.useEffect(() => {
         if (todo) {
             setEditedText(todo.title);
         }
-    }, [todo]);
+    }, [todo?.title]);
 
     // Handle keyboard shortcut
     React.useEffect(() => {
@@ -96,10 +101,22 @@ export const ZenView = React.memo(() => {
     const handleDelete = async () => {
         if (auth?.credentials) {
             // Remove any linked sessions
-            removeTaskLinks(todoId);
             await deleteTodo(auth.credentials, todoId);
             router.back();
         }
+    };
+
+    const openTaskSessionDraft = (prompt: string) => {
+        const scope = getActiveServerAccountScope();
+        if (!scope) return;
+        const draftId = seedNewSessionDraftV1({
+            scope,
+            seed: {
+                prompt: { text: prompt, mode: 'replace' },
+                zenTaskSource: { kind: 'zen_task', taskId: todoId, title: editedText, scope },
+            },
+        });
+        if (draftId) router.push({ pathname: '/new', params: buildNewSessionLaunchRouteParams({ draftId }) });
     };
 
     const handleClarifyWithAI = () => {
@@ -112,45 +129,11 @@ export const ZenView = React.memo(() => {
             .replace('{{taskFile}}', taskFile)
             .replace('{{task}}', editedText);
 
-        // Create a display title for the prompt
-        const promptDisplayTitle = `Clarify: ${editedText}`;
-
-        // Store the prompt data in temporary store
-        const sessionData: NewSessionData = {
-            prompt: promptText,
-            agentType: DEFAULT_AGENT_ID, // Default agent for clarification tasks
-            taskId: todoId,
-            taskTitle: editedText
-        };
-        const dataId = storeTempData(sessionData);
-        const draftId = resolveNewSessionDraftRouteIdentity({ routeDraftId: undefined }).draftId;
-
-        // Navigate to new session screen with the data ID
-        router.push({
-            pathname: '/new',
-            params: { ...buildNewSessionLaunchRouteParams({ draftId }), dataId }
-        });
+        openTaskSessionDraft(promptText);
     };
 
     const handleWorkOnTask = () => {
-        // Create a simple prompt to work on the task
-        const promptText = `Work on this task: ${editedText}`;
-
-        // Store the prompt data in temporary store
-        const sessionData: NewSessionData = {
-            prompt: promptText,
-            agentType: DEFAULT_AGENT_ID, // Default agent
-            taskId: todoId,
-            taskTitle: editedText
-        };
-        const dataId = storeTempData(sessionData);
-        const draftId = resolveNewSessionDraftRouteIdentity({ routeDraftId: undefined }).draftId;
-
-        // Navigate to new session screen with the data ID
-        router.push({
-            pathname: '/new',
-            params: { ...buildNewSessionLaunchRouteParams({ draftId }), dataId }
-        });
+        openTaskSessionDraft(`Work on this task: ${editedText}`);
     };
 
     return (
@@ -243,6 +226,7 @@ export const ZenView = React.memo(() => {
                     </View>
 
                     {/* Linked Sessions */}
+                    <TaskStatusPill taskId={todoId} />
                     {linkedSessions.length > 0 && (
                         <View style={styles.linkedSessionsSection}>
                             <Text style={[styles.sectionTitle, { color: theme.colors.text.primary }]}>
@@ -250,14 +234,20 @@ export const ZenView = React.memo(() => {
                             </Text>
                             {linkedSessions.map((link, index) => (
                                 <Pressable
-                                    key={link.sessionId}
-                                    onPress={() => { router.dismissAll(); router.push(`/session/${link.sessionId}`); }}
+                                    key={serverAccountScopedResourceKey(link, link.sessionId)}
+                                    onPress={async () => {
+                                        const target = await resolveServerCredentialAccountScope(link.serverId);
+                                        if (target.kind !== 'bound' || !areServerAccountScopesEqual(target.scope, link)) return;
+                                        router.dismissAll();
+                                        router.push(buildScopedSessionRouteHref({ sessionId: link.sessionId, serverId: link.serverId }));
+                                    }}
                                     style={[styles.linkedSession, { backgroundColor: theme.colors.surface.elevated }]}
                                 >
                                     <Icon name="chat-circle" size={16} color={theme.colors.text.secondary} />
                                     <Text style={[styles.linkedSessionText, { color: theme.colors.text.primary }]}>
                                         {link.title}
                                     </Text>
+                                    <TaskSessionStatusPill link={link} />
                                     <Icon name="caret-right" size={16} color={theme.colors.text.secondary} />
                                 </Pressable>
                             ))}

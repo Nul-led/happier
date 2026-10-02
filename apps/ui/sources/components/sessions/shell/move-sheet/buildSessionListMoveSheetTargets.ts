@@ -26,7 +26,9 @@ function compareByItemIndex(left: SessionListTreeRowMetadata, right: SessionList
 
 function readRowTitle(metadata: SessionListTreeRowMetadata): string {
     if (metadata.item.type === 'header') return String(metadata.item.title ?? metadata.folderId ?? '');
-    return String(metadata.item.sessionId ?? metadata.sessionId ?? '');
+    return metadata.item.type === 'session'
+        ? String(metadata.item.sessionId ?? metadata.sessionId ?? '')
+        : metadata.item.runId;
 }
 
 function readSourceSubtreeDepthSpan(params: Readonly<{

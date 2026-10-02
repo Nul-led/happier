@@ -18,6 +18,7 @@ export function createDaemonSpeechPcmCapture(
       }));
     },
     stop: async () => {},
+    finish: async () => {},
     waitForDrain: async () => {},
     isActive: () => false,
   };

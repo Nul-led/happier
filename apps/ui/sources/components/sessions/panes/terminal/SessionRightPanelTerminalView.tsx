@@ -1,5 +1,24 @@
-// Vite/Vitest doesn't resolve RN platform suffixes by default, so keep a stable `.tsx` entrypoint for web/test.
-// Metro/Expo resolves `SessionRightPanelTerminalView.native.tsx` (ios/android) and
-// `SessionRightPanelTerminalView.web.tsx` (web) automatically.
-export { SessionRightPanelTerminalView } from './SessionRightPanelTerminalView.web';
+import * as React from 'react';
 
+import { useSessionScreenTestIdsEnabled } from '../../shell/sessionScreenTestIds';
+import { SessionTerminalPage } from './SessionTerminalPage';
+
+/**
+ * The session's Terminal surface wherever it is a page of its own (the phone's Terminal page and the
+ * cockpit terminal surface): the terminal workspace's chips over the active terminal (lab P1).
+ */
+export const SessionRightPanelTerminalView = React.memo(function SessionRightPanelTerminalView(props: Readonly<{
+    sessionId: string;
+    scopeId: string;
+}>) {
+    const sessionScreenTestIdsEnabled = useSessionScreenTestIdsEnabled();
+    return (
+        <SessionTerminalPage
+            sessionId={props.sessionId}
+            scopeId={props.scopeId}
+            testIdPrefix={sessionScreenTestIdsEnabled ? 'session-rightpanel-terminal' : null}
+        />
+    );
+});
+
+export default SessionRightPanelTerminalView;

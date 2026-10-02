@@ -15,8 +15,6 @@ vi.mock('@/voice/runtime/voiceRuntimeConfigDefaults', () => ({
                     codec: 'wav',
                     mimeType: 'audio/wav',
                 },
-                latencyBudgetMs: 2_000,
-                consecutiveSlowCallsBeforeDemotion: 2,
             },
             stt: {
                 maxUploadBytes: 25 * 1024 * 1024,
@@ -30,10 +28,6 @@ vi.mock('./DaemonVoiceInferenceClient', () => ({
     DaemonVoiceInferenceClient: class {
         synthesizeText = vi.fn();
     },
-}));
-
-vi.mock('./daemonVoiceInferencePolicy', () => ({
-    recordDaemonVoiceInferenceTtsLatencySample: vi.fn(),
 }));
 
 describe('DaemonTtsController', () => {

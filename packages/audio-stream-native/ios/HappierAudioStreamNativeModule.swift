@@ -63,7 +63,6 @@ private final class AudioStreamSession {
   private var playbackFormat: AVAudioFormat?
   private var playbackGeneration: Int?
   private var playbackChannels = 0
-  private var maxPlaybackFrames = 0
   private var queuedPlaybackFrames = 0
   private var playbackActive = false
   private var playbackEpoch = 0
@@ -244,7 +243,6 @@ private final class AudioStreamSession {
     playbackGeneration = nil
     playbackChannels = 0
     queuedPlaybackFrames = 0
-    maxPlaybackFrames = 0
     playbackFormat = nil
     playbackCursorBaseMs = 0
     playbackTimelineCursorMs = 0
@@ -346,8 +344,7 @@ private final class AudioStreamSession {
     streamId: String,
     generation: Int,
     sampleRate: Double,
-    channels: Int,
-    maxBufferedMs: Int
+    channels: Int
   ) throws {
     guard self.streamId == streamId, self.generation == generation else {
       throw NSError(domain: "HappierAudioStreamNative", code: 301, userInfo: [NSLocalizedDescriptionKey: "playback_capture_mismatch"])
@@ -355,7 +352,7 @@ private final class AudioStreamSession {
     guard !playbackActive else {
       throw NSError(domain: "HappierAudioStreamNative", code: 302, userInfo: [NSLocalizedDescriptionKey: "playback_already_active"])
     }
-    guard sampleRate > 0, (channels == 1 || channels == 2), maxBufferedMs > 0 else {
+    guard sampleRate > 0, (channels == 1 || channels == 2) else {
       throw NSError(domain: "HappierAudioStreamNative", code: 303, userInfo: [NSLocalizedDescriptionKey: "invalid_playback_format"])
     }
     guard let player, engine != nil else {
@@ -369,10 +366,6 @@ private final class AudioStreamSession {
     ) else {
       throw NSError(domain: "HappierAudioStreamNative", code: 305, userInfo: [NSLocalizedDescriptionKey: "invalid_playback_format"])
     }
-    let requestedFrames = (sampleRate * Double(maxBufferedMs) / 1_000.0).rounded(.up)
-    guard requestedFrames > 0, requestedFrames <= Double(Int.max) else {
-      throw NSError(domain: "HappierAudioStreamNative", code: 306, userInfo: [NSLocalizedDescriptionKey: "invalid_playback_buffer"])
-    }
     playbackFormat = format
     // Give the player the provider's canonical PCM format explicitly. The
     // engine's main mixer owns conversion from that format to the current
@@ -384,7 +377,6 @@ private final class AudioStreamSession {
     }
     playbackGeneration = generation
     playbackChannels = channels
-    maxPlaybackFrames = Int(requestedFrames)
     queuedPlaybackFrames = 0
     playbackActive = true
     playbackEpoch += 1
@@ -405,7 +397,7 @@ private final class AudioStreamSession {
       return ["accepted": false, "level": 0]
     }
     let frameCount = data.count / bytesPerFrame
-    guard frameCount > 0, frameCount <= maxPlaybackFrames - queuedPlaybackFrames else {
+    guard frameCount > 0 else {
       return ["accepted": false, "level": 0]
     }
     guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)) else {
@@ -476,7 +468,6 @@ private final class AudioStreamSession {
     playbackGeneration = nil
     playbackChannels = 0
     queuedPlaybackFrames = 0
-    maxPlaybackFrames = 0
     playbackFormat = nil
     player?.stop()
   }
@@ -1115,7 +1106,6 @@ public final class HappierAudioStreamNativeModule: Module {
       let generation = (params["generation"] as? Int) ?? 0
       let sampleRate = (params["sampleRate"] as? Double) ?? 0
       let channels = (params["channels"] as? Int) ?? 0
-      let maxBufferedMs = (params["maxBufferedMs"] as? Int) ?? 0
       if streamId.isEmpty || generation <= 0 {
         throw NSError(domain: "HappierAudioStreamNative", code: 307, userInfo: [NSLocalizedDescriptionKey: "playback_capture_mismatch"])
       }
@@ -1127,8 +1117,7 @@ public final class HappierAudioStreamNativeModule: Module {
           streamId: streamId,
           generation: generation,
           sampleRate: sampleRate,
-          channels: channels,
-          maxBufferedMs: maxBufferedMs
+          channels: channels
         )
         return ["streamId": streamId, "generation": generation]
       }

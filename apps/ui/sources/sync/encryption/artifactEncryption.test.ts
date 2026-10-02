@@ -2,8 +2,29 @@ import { describe, expect, it } from 'vitest';
 
 import type { ArtifactHeader } from '../domains/artifacts/artifactTypes';
 import { ArtifactEncryption } from './artifactEncryption';
+import { frameSessionDataKeyBundleV0, sealAesGcmPayloadWebCrypto } from '@happier-dev/protocol';
+import { encodeBase64 } from '@/encryption/base64';
 
 describe('ArtifactEncryption', () => {
+  it('opens arbitrary binary bytes in the canonical V0 AES frame and refuses tampering', async () => {
+    const key = new Uint8Array(32).fill(7);
+    const encryption = new ArtifactEncryption(key);
+    const bytes = new Uint8Array([0, 255, 128, 32, 10, 0]);
+    const ciphertext = frameSessionDataKeyBundleV0(await sealAesGcmPayloadWebCrypto(bytes, key));
+    await expect(encryption.decryptBytes(encodeBase64(ciphertext, 'base64'))).resolves.toEqual(bytes);
+    await expect(encryption.decryptBytes(await encryption.encryptBytes(bytes))).resolves.toEqual(bytes);
+    ciphertext[ciphertext.length - 1] ^= 1;
+    await expect(encryption.decryptBytes(encodeBase64(ciphertext, 'base64'))).rejects.toThrow();
+  });
+  it('retains binary references and rejects malformed bodies instead of erasing them', async () => {
+    const encryption = new ArtifactEncryption(new Uint8Array(32).fill(7));
+    const reference = { blobId: '00000000-0000-4000-8000-000000000001', mime: 'image/png', sizeBytes: 4, sha256: 'a'.repeat(64) };
+    const stored = await encryption.encryptBody({ body: reference });
+    await expect(encryption.decryptBody(stored)).resolves.toEqual({ body: reference });
+    // Encode malformed external storage without admitting it through the body type.
+    const invalid = await encryption.encryptHeader({ body: { ...reference, sizeBytes: -1 } });
+    await expect(encryption.decryptBody(invalid)).resolves.toBeNull();
+  });
   it('preserves passthrough fields in decrypted headers', async () => {
     const key = new Uint8Array(32).fill(7);
     const encryption = new ArtifactEncryption(key);
@@ -42,6 +63,7 @@ describe('ArtifactEncryption', () => {
     const encrypted = await encryption.encryptHeader(header);
     const decrypted = await encryption.decryptHeader(encrypted);
 
+    await expect(encryption.decryptHeaderRaw(encrypted)).resolves.toEqual(header);
     expect(decrypted).toMatchObject({
       v: 1,
       kind: 'artifact.legacy',

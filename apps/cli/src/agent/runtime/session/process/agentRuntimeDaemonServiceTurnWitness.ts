@@ -2,12 +2,16 @@ import { z } from 'zod';
 import {
   SESSION_PERMISSION_MODES,
   SessionInputCausalPermissionAuthorityV1Schema,
+  AgentStartSessionCallerV1Schema,
+  readAgentStartCallerWorkDepthV1,
 } from '@happier-dev/protocol';
 import { asHostProtocolZod } from '@/plugins/runtime/protocolComposableZodAdapter';
 
 const OpaqueIdSchema = z.string().trim().min(1).max(512);
 const HostSessionInputCausalPermissionAuthorityV1Schema =
   asHostProtocolZod(SessionInputCausalPermissionAuthorityV1Schema);
+const HostAgentStartSessionCallerV1Schema =
+  asHostProtocolZod(AgentStartSessionCallerV1Schema);
 
 export const AgentRuntimeDaemonServiceTurnWitnessV1Schema =
   z.object({
@@ -22,7 +26,14 @@ export const AgentRuntimeDaemonServiceTurnWitnessV1Schema =
       HostSessionInputCausalPermissionAuthorityV1Schema.optional(),
     callerPermissionMode:
       z.enum(SESSION_PERMISSION_MODES).nullable().optional(),
-  }).strict();
+    agentStartCaller: HostAgentStartSessionCallerV1Schema.optional(),
+    workDepth: z.number().int().nonnegative().safe().optional(),
+  }).strict().refine((witness) => witness.agentStartCaller
+    ? witness.workDepth === readAgentStartCallerWorkDepthV1(witness.agentStartCaller)
+    : witness.workDepth === undefined, {
+    message: 'Work depth must match the host Session caller facts',
+    path: ['workDepth'],
+  });
 
 export type AgentRuntimeDaemonServiceTurnWitnessV1 =
   z.infer<
@@ -39,6 +50,7 @@ export type AgentRuntimeDaemonServiceTurnWitnessInputV1 =
       .SessionInputCausalPermissionAuthorityV1;
     callerPermissionMode?: import('@happier-dev/protocol')
       .SessionPermissionMode | null;
+    agentStartCaller?: import('@happier-dev/protocol').AgentStartSessionCallerV1;
   }>;
 
 /**
@@ -60,5 +72,9 @@ export function projectAgentRuntimeDaemonServiceTurnWitnessV1(
     ...(Object.prototype.hasOwnProperty.call(witness, 'callerPermissionMode')
       ? { callerPermissionMode: witness.callerPermissionMode ?? null }
       : {}),
+    ...(witness.agentStartCaller ? {
+      agentStartCaller: witness.agentStartCaller,
+      workDepth: readAgentStartCallerWorkDepthV1(witness.agentStartCaller),
+    } : {}),
   });
 }

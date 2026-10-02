@@ -1,9 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { VOICE_RUNTIME_STT_PCM_FORMAT } from '@happier-dev/protocol';
-import type { SherpaNativeStreamingFinalResult } from '@happier-dev/sherpa-native';
+import type { SherpaNativeModule, SherpaNativeStreamingFinalResult } from '@happier-dev/sherpa-native';
 
 import type { MicSession } from '@/voice/runtime/mic/MicSession';
 import type { SttSink } from '@/voice/input/sttController';
+import { createNativeVoicePcmCaptureHarness } from '@/dev/testkit/harness/nativeVoicePcmCapture';
+import type { VoicePcmCapture } from '@happier-dev/audio-stream-native';
+
+vi.mock('@/modal', async () => {
+  const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+  return createModalModuleMock();
+});
 
 const ensureModelPackInstalled = vi.fn(async () => ({
   packDirUri: 'file:///packs/stt-pack',
@@ -24,6 +31,7 @@ type CaptureRequest = Readonly<{
 }>;
 
 const runtime = vi.hoisted(() => ({
+  realCapture: null as VoicePcmCapture | null,
   captureAvailable: true,
   sherpaAvailable: true,
   captureRequest: null as CaptureRequest | null,
@@ -33,13 +41,13 @@ const runtime = vi.hoisted(() => ({
 }));
 
 vi.mock('@happier-dev/audio-stream-native', () => ({
-  getSharedVoicePcmCapture: () => runtime.captureAvailable ? {
+  getSharedVoicePcmCapture: () => runtime.captureAvailable ? runtime.realCapture ?? {
     acquire: runtime.acquire,
   } : null,
 }));
 
 const sherpaStreamingCreate = vi.fn(async () => {});
-const sherpaStreamingPushFrame = vi.fn(async () => ({ text: '', isEndpoint: false }));
+const sherpaStreamingPushFrame = vi.fn<SherpaNativeModule['pushAudioFrame']>(async () => ({ text: '', isEndpoint: false }));
 const sherpaStreamingFinish = vi.fn<() => Promise<SherpaNativeStreamingFinalResult>>(
   async () => ({ status: 'finalized', text: '' }),
 );
@@ -106,6 +114,7 @@ async function emitAudioFrame(pcm16leBase64 = 'AAE='): Promise<void> {
 
 describe('SherpaStreamingSttController (native shared capture)', () => {
   beforeEach(() => {
+    runtime.realCapture = null;
     runtime.captureAvailable = true;
     runtime.sherpaAvailable = true;
     runtime.captureRequest = null;
@@ -120,6 +129,7 @@ describe('SherpaStreamingSttController (native shared capture)', () => {
         id: 'lease',
         streamId: 'shared-stream',
         release: runtime.release,
+        finish: async () => { await runtime.release(); await runtime.waitForDrain(); },
         waitForDrain: runtime.waitForDrain,
       };
     });
@@ -142,7 +152,7 @@ describe('SherpaStreamingSttController (native shared capture)', () => {
     const micSession = createMicSession();
     const { createSherpaStreamingSttController } = await import('./SherpaStreamingSttController');
     const controller = createSherpaStreamingSttController({ getSettings: () => localNeuralSettings() });
-    await controller.start({ micSession, sink: createSink() });
+    await controller.start({ capturePurpose: 'conversation', micSession, sink: createSink() });
 
     expect(micSession.ensureActive).toHaveBeenCalledTimes(1);
     expect(sherpaStreamingCreate).toHaveBeenCalledWith(expect.objectContaining({
@@ -159,6 +169,60 @@ describe('SherpaStreamingSttController (native shared capture)', () => {
       audioSession: { mode: 'conversation', input: true, output: true, aec: 'required' },
       maxQueuedFrames: 8,
     }));
+  });
+
+  it('finishes admitted final-word PCM and admits Dictation on hardware without AEC', async () => {
+    const harness = createNativeVoicePcmCaptureHarness(false);
+    runtime.realCapture = harness.capture;
+    let releaseFirst!: () => void;
+    const first = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const frames: string[] = [];
+    sherpaStreamingPushFrame.mockImplementation(async (input) => {
+      frames.push(input.pcm16leBase64);
+      if (frames.length === 1) await first;
+      return { text: frames.length === 1 ? 'last' : 'last word', isEndpoint: false };
+    });
+    sherpaStreamingFinish.mockImplementation(async () => ({ status: 'finalized', text: frames.length === 2 ? 'last word' : 'truncated' }));
+    const { createSherpaStreamingSttController } = await import('./SherpaStreamingSttController');
+    const controller = createSherpaStreamingSttController({ getSettings: () => localNeuralSettings() });
+    await controller.start({ capturePurpose: 'dictation', micSession: createMicSession(), sink: createSink() });
+    expect(harness.apply).toHaveBeenCalledWith(expect.objectContaining({ configuration: expect.objectContaining({ mode: 'dictation', input: true, output: false, aec: 'off' }) }));
+    harness.emit('AAE=');
+    harness.emit('AgM=');
+    await vi.waitFor(() => expect(frames).toEqual(['AAE=']));
+    const stopping = controller.stop();
+    await vi.waitFor(() => expect(harness.nativeModule.stop).toHaveBeenCalledTimes(1));
+    releaseFirst();
+    await expect(stopping).resolves.toEqual({ finalText: 'last word' });
+    expect(frames).toEqual(['AAE=', 'AgM=']);
+  });
+
+  it('cancels native decode immediately when graceful finishing is aborted', async () => {
+    const harness = createNativeVoicePcmCaptureHarness(false);
+    runtime.realCapture = harness.capture;
+    let settlePush!: () => void;
+    sherpaStreamingPushFrame.mockImplementation(async () => {
+      await new Promise<void>((resolve) => { settlePush = resolve; });
+      return { text: 'aborted words', isEndpoint: false };
+    });
+    const signal = new AbortController();
+    const sink = createSink();
+    const { createSherpaStreamingSttController } = await import('./SherpaStreamingSttController');
+    const controller = createSherpaStreamingSttController({ getSettings: () => localNeuralSettings() });
+    await controller.start({ capturePurpose: 'dictation', micSession: createMicSession(), sink, signal: signal.signal });
+    harness.emit();
+    await vi.waitFor(() => expect(sherpaStreamingPushFrame).toHaveBeenCalledTimes(1));
+    const stopping = controller.stop();
+    signal.abort();
+    try {
+      await vi.waitFor(() => expect(sherpaCancel).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(harness.capture.getSnapshot().subscriberCount).toBe(0));
+    } finally {
+      settlePush();
+      await stopping;
+    }
+    expect(sherpaStreamingFinish).not.toHaveBeenCalled();
+    expect(sink.onPartial).not.toHaveBeenCalled();
   });
 
   it('emits audio start, partial/final transcript, and runtime-owned endpoint from shared frames', async () => {

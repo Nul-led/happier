@@ -430,34 +430,31 @@ export function createRealtimeToolBarrier(deps: RealtimeToolBarrierDeps) {
     const existing = responses.get(responseId);
     if (existing) {
       if (existing.fingerprint !== fingerprint) throw new RealtimeToolBarrierError('response_conflict');
-      if (
-        existing.settled
-        && (existing.result?.status === 'failed' || existing.result?.status === 'detached')
-      ) {
-        // The controller calls `run` again only after the provider has proven
-        // same-response custody on a resumed transport. Reapply current
-        // redaction to its retained result without re-entering authorization
-        // or execution.
+      // Each proven duplicate delivery needs its own result (SDK callbacks
+      // can be concurrent). Serialize delivery, not execution, and reapply
+      // current privacy to the canonical retained result every time.
+      const abort = () => existing.controller.abort();
+      if (input.signal?.aborted) abort();
+      else input.signal?.addEventListener('abort', abort, { once: true });
+      existing.settled = false;
+      const replay = existing.promise.then(async (previous) => {
+        if (previous.status === 'cancelled' || existing.controller.signal.aborted) return previous;
         existing.detached = false;
         resetDeliveryController(existing);
-        existing.settled = false;
-        existing.promise = submitCompletedResults(
-          responseId,
-          existing.result.results,
-          existing,
-        ).then((result) => {
-          existing.result = result;
-          existing.settled = true;
-          if (result.status === 'cancelled' && responses.get(responseId) === existing) {
-            responses.delete(responseId);
-          }
-          return result;
-        }).finally(() => {
-          existing.settled = true;
-          evictSettledResponses(maxResponses);
-        });
-      }
-      return await existing.promise;
+        return await submitCompletedResults(responseId, previous.results, existing);
+      }).then((result) => {
+        existing.result = result;
+        if (result.status === 'cancelled' && responses.get(responseId) === existing) {
+          responses.delete(responseId);
+        }
+        return result;
+      }).finally(() => {
+        input.signal?.removeEventListener('abort', abort);
+        if (existing.promise === replay) existing.settled = true;
+        evictSettledResponses(maxResponses);
+      });
+      existing.promise = replay;
+      return await replay;
     }
 
     evictSettledResponses(maxResponses - 1);
@@ -480,9 +477,9 @@ export function createRealtimeToolBarrier(deps: RealtimeToolBarrierDeps) {
       promise: Promise.resolve({ status: 'cancelled', results: [] }),
     };
     resetDeliveryController(record);
-    record.promise = executeResponse(responseId, calls, record)
+    const response = executeResponse(responseId, calls, record)
       .then((result) => {
-        record.settled = true;
+        if (record.promise === response) record.settled = true;
         record.result = result;
         if (result.status === 'cancelled' && responses.get(responseId) === record) {
           responses.delete(responseId);
@@ -490,10 +487,11 @@ export function createRealtimeToolBarrier(deps: RealtimeToolBarrierDeps) {
         return result;
       })
       .finally(() => {
-        record.settled = true;
+        if (record.promise === response) record.settled = true;
         input.signal?.removeEventListener('abort', abort);
         evictSettledResponses(maxResponses);
       });
+    record.promise = response;
     responses.set(responseId, record);
     return await record.promise;
   };

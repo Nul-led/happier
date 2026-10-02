@@ -1,6 +1,5 @@
 import * as React from 'react';
-import { PixelRatio, Platform, Pressable, ScrollView, View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
+import { PixelRatio, Platform, Pressable, View } from 'react-native';
 import {
     getTerminalNativeQaCapabilities,
     getTerminalNativeAvailability,
@@ -12,7 +11,6 @@ import {
 } from '@happier-dev/terminal-native';
 
 import { resolveCodeEditorFontMetrics } from '@/components/ui/code/editor/codeEditorFontMetrics';
-import { Text } from '@/components/ui/text/Text';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useKeyboardHeight } from '@/hooks/ui/useKeyboardHeight';
 import { useScreenReaderEnabled } from '@/hooks/ui/useScreenReaderEnabled';
@@ -29,16 +27,12 @@ import { GhosttyTerminalSurface } from '@/components/terminal/ghostty/surface.na
 import { resolveTermuxRendererSelection, type TermuxRendererSelectionOptions } from '@/components/terminal/termux/availability';
 import { TermuxTerminalSurface } from '@/components/terminal/termux/surface.native';
 import type { EmbeddedTerminalRendererHandle } from '@/components/terminal/embedded/embeddedTerminalRendererHandle';
+import { useDeviceType } from '@/utils/platform/responsive';
 import { EmbeddedTerminalPaneFrame } from './EmbeddedTerminalPaneFrame';
-import { embeddedTerminalPaneStyles } from './embeddedTerminalPaneStyles';
+import { TerminalKeyRail } from './keys/TerminalKeyRail';
+import { TerminalKeysSurface } from './keys/TerminalKeysSurface';
+import { useTerminalKeys } from './keys/useTerminalKeys';
 import type { EmbeddedTerminalPaneController } from './types';
-
-const DEFAULT_QUICK_KEYS: ReadonlyArray<Readonly<{ id: string; label: string; data: string }>> = [
-    { id: 'escape', label: 'Esc', data: '\u001b' },
-    { id: 'ctrl-c', label: 'Ctrl+C', data: '\u0003' },
-    { id: 'ctrl-d', label: 'Ctrl+D', data: '\u0004' },
-    { id: 'enter', label: 'Enter', data: '\r' },
-];
 
 export type EmbeddedTerminalPaneProps = Readonly<{
     title: string;
@@ -47,6 +41,9 @@ export type EmbeddedTerminalPaneProps = Readonly<{
     nativeRenderer?: GhosttyRendererSelectionOptions | TermuxRendererSelectionOptions;
     onRequestClose?: (() => void) | null;
     toolbarActionsStart?: React.ReactNode;
+    /** See `EmbeddedTerminalPaneFrame` `chrome`. */
+    chrome?: 'toolbar' | 'none';
+    machineName?: string | null;
     testIdPrefix?: string | null;
     nativeSurfaceKey?: string | null;
     showQuickKeys?: boolean;
@@ -54,8 +51,6 @@ export type EmbeddedTerminalPaneProps = Readonly<{
 }>;
 
 export const EmbeddedTerminalPane = React.memo(function EmbeddedTerminalPaneNative(props: EmbeddedTerminalPaneProps) {
-    const { theme } = useUnistyles();
-    const styles = embeddedTerminalPaneStyles;
     const uiFontScale = useLocalSetting('uiFontScale');
     const terminalRendererPreference = useLocalSetting('terminalRendererPreference');
     const screenReaderActive = useScreenReaderEnabled();
@@ -167,31 +162,22 @@ export const EmbeddedTerminalPane = React.memo(function EmbeddedTerminalPaneNati
         props.terminalRef.current?.copySelection?.();
     }, [props.terminalRef]);
 
-    const footer = props.showQuickKeys ? (
-        <ScrollView
-            horizontal={true}
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.quickKeysRow}
-            style={styles.quickKeysScroll}
-        >
-            {DEFAULT_QUICK_KEYS.map((key) => (
-                <Pressable
-                    key={key.id}
-                    accessibilityRole="button"
-                    onPress={() => {
-                        props.controller.onInput(key.data);
-                        webViewRef.current?.focus();
-                    }}
-                    style={styles.quickKey}
-                >
-                    <Text style={styles.quickKeyLabel}>{key.label}</Text>
-                </Pressable>
-            ))}
-        </ScrollView>
-    ) : null;
+    // A phone gets the key rail and the floating arrow pad (terminal lab P1).
+    const deviceType = useDeviceType();
+    const showKeys = props.showQuickKeys ?? deviceType === 'phone';
+    const keys = useTerminalKeys({
+        onInput: props.controller.onInput,
+        focusRenderer: React.useCallback(() => props.terminalRef.current?.focus?.(), [props.terminalRef]),
+    });
+    const onRendererInput = showKeys ? keys.onInput : props.controller.onInput;
+    const footer = showKeys
+        ? <TerminalKeyRail modifiers={keys.modifiers} onPressKey={keys.pressRailKey} testIdPrefix={props.testIdPrefix} />
+        : null;
 
     return (
         <EmbeddedTerminalPaneFrame
+            chrome={props.chrome}
+            machineName={props.machineName}
             title={props.title}
             controller={props.controller}
             onRequestClose={props.onRequestClose}
@@ -203,7 +189,7 @@ export const EmbeddedTerminalPane = React.memo(function EmbeddedTerminalPaneNati
             keyboardBottomInset={keyboardBottomInset}
             platformOS={Platform.OS === 'android' ? 'android' : 'ios'}
             surface={(
-                <View style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
+                <TerminalKeysSurface showArrowPad={showKeys} onArrow={keys.pressArrow} testIdPrefix={props.testIdPrefix}>
                     {effectiveRenderer === 'ios-ghosttykit' ? (
                         <GhosttyTerminalSurface
                             ref={props.terminalRef}
@@ -218,7 +204,7 @@ export const EmbeddedTerminalPane = React.memo(function EmbeddedTerminalPaneNati
                             accessibilityCopySelectionActionLabel={t('terminalEmbedded.nativeAccessibility.copySelectionAction')}
                             accessibilitySelectAllActionLabel={t('terminalEmbedded.nativeAccessibility.selectAllAction')}
                             accessibilityOpenLinkActionLabel={t('terminalEmbedded.nativeAccessibility.openLinkAction')}
-                            onInput={props.controller.onInput}
+                            onInput={onRendererInput}
                             onLink={(event) => props.controller.onLink?.(event.url)}
                             onTitle={(event) => props.controller.onTitle?.(event.title)}
                             onBell={(event) => props.controller.onBell?.(event.label ?? '')}
@@ -243,7 +229,7 @@ export const EmbeddedTerminalPane = React.memo(function EmbeddedTerminalPaneNati
                             accessibilityCopySelectionActionLabel={t('terminalEmbedded.nativeAccessibility.copySelectionAction')}
                             accessibilitySelectAllActionLabel={t('terminalEmbedded.nativeAccessibility.selectAllAction')}
                             accessibilityOpenLinkActionLabel={t('terminalEmbedded.nativeAccessibility.openLinkAction')}
-                            onInput={props.controller.onInput}
+                            onInput={onRendererInput}
                             onLink={(event) => props.controller.onLink?.(event.url)}
                             onTitle={(event) => props.controller.onTitle?.(event.title)}
                             onBell={(event) => props.controller.onBell?.(event.label ?? '')}
@@ -261,7 +247,7 @@ export const EmbeddedTerminalPane = React.memo(function EmbeddedTerminalPaneNati
                             testID={props.testIdPrefix ? `${props.testIdPrefix}-xterm` : undefined}
                             fontSize={fontMetrics.fontSize}
                             lineHeightPx={fontMetrics.lineHeight}
-                            onInput={props.controller.onInput}
+                            onInput={onRendererInput}
                             onPaste={props.controller.onPaste}
                             onCopySelection={(text) => props.controller.copySelection?.({ source: 'user-selection', text })}
                             onLink={props.controller.onLink}
@@ -289,7 +275,7 @@ export const EmbeddedTerminalPane = React.memo(function EmbeddedTerminalPaneNati
                             }}
                         />
                     ) : null}
-                </View>
+                </TerminalKeysSurface>
             )}
         />
     );

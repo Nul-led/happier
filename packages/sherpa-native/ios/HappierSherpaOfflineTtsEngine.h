@@ -32,8 +32,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 /** Build (or reuse) the engine for `assetsDir` so later calls are warm. */
 + (BOOL)prepareAssetsDir:(NSString *)assetsDir
+                frontend:(NSDictionary<NSString *, NSString *> * _Nullable)frontend
                    error:(NSError * _Nullable * _Nullable)error
-    NS_SWIFT_NAME(prepare(assetsDir:));
+    NS_SWIFT_NAME(prepare(assetsDir:frontend:));
 
 /**
  * Continue a worker request admitted by `admitInitializationForAssetsDir:`. A
@@ -42,12 +43,14 @@ NS_ASSUME_NONNULL_BEGIN
  */
 + (BOOL)prepareAssetsDir:(NSString *)assetsDir
              admissionId:(NSString *)admissionId
+                frontend:(NSDictionary<NSString *, NSString *> * _Nullable)frontend
                    error:(NSError * _Nullable * _Nullable)error
-    NS_SWIFT_NAME(prepare(assetsDir:admissionId:));
+    NS_SWIFT_NAME(prepare(assetsDir:admissionId:frontend:));
 
 /** Speakers the pack at `assetsDir` exposes; 0 when its engine cannot be built. */
 + (int32_t)numSpeakersForAssetsDir:(NSString *)assetsDir
-    NS_SWIFT_NAME(numSpeakers(assetsDir:));
+                         frontend:(NSDictionary<NSString *, NSString *> * _Nullable)frontend
+    NS_SWIFT_NAME(numSpeakers(assetsDir:frontend:));
 
 /**
  * Synthesize `text` to `wavPath` using the engine cached for `assetsDir`,
@@ -57,13 +60,14 @@ NS_ASSUME_NONNULL_BEGIN
  */
 + (BOOL)synthesizeToWavFileAtPath:(NSString *)wavPath
                         assetsDir:(NSString *)assetsDir
+                         frontend:(NSDictionary<NSString *, NSString *> * _Nullable)frontend
                              text:(NSString *)text
                               sid:(int32_t)sid
                             speed:(float)speed
                             jobId:(NSString *)jobId
                        sampleRate:(int32_t *)outSampleRate
                             error:(NSError * _Nullable * _Nullable)error
-    NS_SWIFT_NAME(synthesizeToWavFile(atPath:assetsDir:text:sid:speed:jobId:sampleRate:));
+    NS_SWIFT_NAME(synthesizeToWavFile(atPath:assetsDir:frontend:text:sid:speed:jobId:sampleRate:));
 
 /** Mark `jobId` cancelled on every cached engine. Safe from any thread. */
 + (void)cancelJob:(NSString *)jobId NS_SWIFT_NAME(cancelJob(_:));

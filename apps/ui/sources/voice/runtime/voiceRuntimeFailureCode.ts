@@ -43,6 +43,9 @@ const VOICE_RUNTIME_FAILURE_DIAGNOSTIC_REASONS: Readonly<
  * indistinguishable from one that was never delivered at all: the surface
  * closes, nothing changes, and nothing is reported. It is recorded once per
  * gesture.
+ *
+ * `provider_error` records a sanitized, nonterminal provider diagnostic. It
+ * does not mark the conversation failed or authorize reconnect or retries.
  */
 export type VoiceRuntimeFailureOutcome =
   | 'declined'
@@ -51,11 +54,12 @@ export type VoiceRuntimeFailureOutcome =
   | 'unstarted'
   | 'unregistered'
   | 'transcript_dropped'
+  | 'provider_error'
   | 'unapplied';
 
 /**
- * Sole record for a Voice Start that did not connect and for an authoritative
- * transcript event the runtime refused to project.
+ * Sole record for Voice runtime failure outcomes, including sanitized
+ * nonterminal provider diagnostics and refused transcript projection.
  *
  * Every error kind renders as one generic status label and a pre-flight refusal
  * can end a Start before any provider request or microphone acquisition, so the

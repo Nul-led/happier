@@ -1,6 +1,5 @@
 import {
   normalizeSpawnSessionNonceResolution,
-  settleSpawnSessionNonce,
   type SpawnSessionCreationOutcome,
   type SpawnSessionErrorDetail,
   type SpawnSessionNonceResolution,
@@ -8,7 +7,6 @@ import {
 
 import { SPAWN_SESSION_ERROR_CODES } from '@/session/shared/spawnSessionContract';
 import { logger } from '@/ui/logger';
-import { delay } from '@/utils/time';
 
 export type SpawnSessionNonceResolver = (
   spawnNonce: string,
@@ -24,9 +22,7 @@ export type AbandonSpawnedSessionResult =
   | Readonly<{ status: 'pending' | 'not_found' | 'unsupported' | 'failed' }>;
 
 const DEFAULT_TIMEOUT_MS = 90_000;
-const DEFAULT_POLL_INTERVAL_MS = 250;
 const DEFAULT_ABANDON_TIMEOUT_MS = 10 * 60_000;
-const DEFAULT_ABANDON_POLL_INTERVAL_MS = 2_000;
 
 function readBoundedInt(raw: string | undefined, fallback: number, bounds: Readonly<{ min: number; max: number }>): number {
   const parsed = typeof raw === 'string' && raw.trim().length > 0 ? Number(raw.trim()) : NaN;
@@ -77,7 +73,6 @@ export async function awaitSpawnedSessionId(params: Readonly<{
   spawnNonce: string;
   resolveSpawnSessionByNonce: SpawnSessionNonceResolver;
   timeoutMs?: number;
-  pollIntervalMs?: number;
   signal?: AbortSignal;
 }>): Promise<AwaitSpawnedSessionIdResult> {
   const result = readSpawnResult(params.result);
@@ -94,16 +89,22 @@ export async function awaitSpawnedSessionId(params: Readonly<{
 
   const timeoutMs = params.timeoutMs
     ?? readBoundedInt(process.env.HAPPIER_SPAWN_SESSION_ID_RESOLVE_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, { min: 100, max: 10 * 60_000 });
-  const pollIntervalMs = params.pollIntervalMs
-    ?? readBoundedInt(process.env.HAPPIER_SPAWN_SESSION_ID_RESOLVE_POLL_INTERVAL_MS, DEFAULT_POLL_INTERVAL_MS, { min: 25, max: 10_000 });
-  const settled = await settleSpawnSessionNonce({
-    spawnNonce: params.spawnNonce,
-    resolve: params.resolveSpawnSessionByNonce,
-    timeoutMs,
-    pollIntervalMs,
-    notFoundGraceMs: Math.min(timeoutMs, 15_000),
-    sleep: async (ms) => { await delay(ms); },
-    ...(params.signal ? { signal: params.signal } : {}),
+  const settled = await new Promise<SpawnSessionNonceResolution | { status: 'timeout' }>((resolve) => {
+    const finish = (result: SpawnSessionNonceResolution | { status: 'timeout' }) => {
+      clearTimeout(timer);
+      params.signal?.removeEventListener('abort', abort);
+      resolve(result);
+    };
+    const abort = () => finish({ status: 'timeout' });
+    const timer = setTimeout(abort, Math.max(0, timeoutMs));
+    params.signal?.addEventListener('abort', abort, { once: true });
+    if (params.signal?.aborted || timeoutMs <= 0) { abort(); return; }
+    // The daemon owner parks this one observation until terminal or deadline.
+    // A transport error cannot prove that the accepted spawn failed.
+    void Promise.resolve().then(() => params.resolveSpawnSessionByNonce(params.spawnNonce, timeoutMs)).then(
+      (resolution) => { if (resolution.status !== 'pending') finish(resolution); },
+      () => {},
+    );
   });
   switch (settled.status) {
     case 'success': return {
@@ -121,6 +122,7 @@ export async function awaitSpawnedSessionId(params: Readonly<{
     };
     case 'unsupported': return { type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.UNEXPECTED, errorMessage: 'Daemon does not support spawn nonce resolution for pending spawns' };
     case 'not_found': return { type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED, errorMessage: 'The accepted spawn is no longer tracked by the daemon' };
+    case 'pending':
     case 'timeout': return { type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT, errorMessage: 'Timed out waiting for the spawned session id to resolve' };
   }
 }
@@ -157,15 +159,13 @@ export function abandonSpawnedSessionBestEffort(params: Readonly<{
 }>): void {
   void (async () => {
     const timeoutMs = readBoundedInt(process.env.HAPPIER_SPAWN_ABANDON_TIMEOUT_MS, DEFAULT_ABANDON_TIMEOUT_MS, { min: 1_000, max: 60 * 60_000 });
-    const settled = await settleSpawnSessionNonce({
+    const settled = await awaitSpawnedSessionId({
+      result: { type: 'success' },
       spawnNonce: params.spawnNonce,
-      resolve: params.resolveSpawnSessionByNonce,
+      resolveSpawnSessionByNonce: params.resolveSpawnSessionByNonce,
       timeoutMs,
-      pollIntervalMs: readBoundedInt(process.env.HAPPIER_SPAWN_ABANDON_POLL_INTERVAL_MS, DEFAULT_ABANDON_POLL_INTERVAL_MS, { min: 100, max: 60_000 }),
-      notFoundGraceMs: timeoutMs,
-      sleep: async (ms) => { await delay(ms); },
     });
-    if (settled.status !== 'success') return;
+    if (settled.type !== 'success') return;
     await params.stopSession(settled.sessionId).catch(() => false);
     await params.archiveSession?.(settled.sessionId).catch(() => undefined);
   })().catch((error) => {

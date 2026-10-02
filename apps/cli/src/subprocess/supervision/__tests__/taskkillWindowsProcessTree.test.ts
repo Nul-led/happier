@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { execFileWithDeadline } from '@happier-dev/cli-common/process';
+import { isPidAlive } from '@/testkit/process/spawn';
 
 import { taskkillWindowsProcessTree } from '../taskkillWindowsProcessTree';
 
@@ -26,20 +28,53 @@ describe('taskkillWindowsProcessTree', () => {
         vi.unstubAllEnvs();
     });
 
+    it('stops a hung tool at the caller budget rather than leaving its process running', async () => {
+        const abort = new AbortController();
+        let toolPid: number | undefined;
+        const execFile = async (_command: string, _args: readonly string[], options: Parameters<typeof execFileWithDeadline>[2] = {}) => {
+            try {
+                return await execFileWithDeadline(process.execPath, ['-e', 'console.log(process.pid); setInterval(() => {}, 1000)'], {
+                    ...options, signal: abort.signal,
+                });
+            } catch (error) {
+                if (error && typeof error === 'object' && 'stdout' in error) {
+                    toolPid = Number.parseInt(String(error.stdout).trim(), 10);
+                }
+                throw error;
+            }
+        };
+        const input = { pid: 4_321, force: false, timeoutMs: 500, execFile };
+        const result = taskkillWindowsProcessTree(input).then(() => 'success', (error: unknown) => error);
+        let observer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            const outcome = await Promise.race([
+                result,
+                new Promise<'pending'>((resolve) => { observer = setTimeout(() => resolve('pending'), 2_000); }),
+            ]);
+            expect(outcome).toMatchObject({ killed: true });
+            expect(toolPid).toBeGreaterThan(0);
+            expect(isPidAlive(toolPid!)).toBe(false);
+        } finally {
+            if (observer) clearTimeout(observer);
+            abort.abort();
+            await result;
+        }
+    });
+
     it('resolves when taskkill terminates the tree', async () => {
         const execFile = vi.fn(async () => ({ stdout: 'SUCCESS', stderr: '' }));
 
-        await expect(taskkillWindowsProcessTree({ pid: 4_321, force: false, execFile }))
+        await expect(taskkillWindowsProcessTree({ pid: 4_321, force: false, timeoutMs: 1_000, execFile }))
             .resolves.toBeUndefined();
-        expect(execFile).toHaveBeenCalledWith(expect.stringMatching(/taskkill(\.exe)?$/u), ['/PID', '4321', '/T']);
+        expect(execFile).toHaveBeenCalledWith(expect.stringMatching(/taskkill(\.exe)?$/u), ['/PID', '4321', '/T'], expect.objectContaining({ timeout: 1_000 }));
     });
 
     it('adds /F only when forcing', async () => {
         const execFile = vi.fn(async () => ({ stdout: '', stderr: '' }));
 
-        await taskkillWindowsProcessTree({ pid: 4_321, force: true, execFile });
+        await taskkillWindowsProcessTree({ pid: 4_321, force: true, timeoutMs: 1_000, execFile });
 
-        expect(execFile).toHaveBeenCalledWith(expect.stringMatching(/taskkill(\.exe)?$/u), ['/PID', '4321', '/T', '/F']);
+        expect(execFile).toHaveBeenCalledWith(expect.stringMatching(/taskkill(\.exe)?$/u), ['/PID', '4321', '/T', '/F'], expect.objectContaining({ timeout: 1_000 }));
     });
 
     // Cancellation must terminate through the SAME executable the launch and inventory steps used.
@@ -49,11 +84,12 @@ describe('taskkillWindowsProcessTree', () => {
         vi.stubEnv('SystemRoot', 'C:\\WINDOWS');
         const execFile = vi.fn(async () => ({ stdout: '', stderr: '' }));
 
-        await taskkillWindowsProcessTree({ pid: 4_321, force: true, execFile });
+        await taskkillWindowsProcessTree({ pid: 4_321, force: true, timeoutMs: 1_000, execFile });
 
         expect(execFile).toHaveBeenCalledWith(
             'C:\\WINDOWS\\System32\\taskkill.exe',
             ['/PID', '4321', '/T', '/F'],
+            expect.objectContaining({ timeout: 1_000 }),
         );
     });
 
@@ -65,7 +101,7 @@ describe('taskkillWindowsProcessTree', () => {
             });
         });
 
-        await expect(taskkillWindowsProcessTree({ pid: 4_321, force: false, execFile }))
+        await expect(taskkillWindowsProcessTree({ pid: 4_321, force: false, timeoutMs: 1_000, execFile }))
             .resolves.toBeUndefined();
     });
 
@@ -79,7 +115,7 @@ describe('taskkillWindowsProcessTree', () => {
             });
         });
 
-        await expect(taskkillWindowsProcessTree({ pid: 1_284, force: true, execFile }))
+        await expect(taskkillWindowsProcessTree({ pid: 1_284, force: true, timeoutMs: 1_000, execFile }))
             .rejects.toThrow(/Command failed/u);
     });
 
@@ -91,7 +127,7 @@ describe('taskkillWindowsProcessTree', () => {
             });
         });
 
-        await expect(taskkillWindowsProcessTree({ pid: 4_321, force: true, execFile }))
+        await expect(taskkillWindowsProcessTree({ pid: 4_321, force: true, timeoutMs: 1_000, execFile }))
             .rejects.toThrow(/Command failed/u);
     });
 
@@ -100,7 +136,7 @@ describe('taskkillWindowsProcessTree', () => {
             throw execFileError({ code: 'ENOENT', stderr: '' });
         });
 
-        await expect(taskkillWindowsProcessTree({ pid: 4_321, force: false, execFile }))
+        await expect(taskkillWindowsProcessTree({ pid: 4_321, force: false, timeoutMs: 1_000, execFile }))
             .rejects.toThrow(/Command failed/u);
     });
 });

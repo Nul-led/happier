@@ -8,11 +8,10 @@ import {
     type KvMutation,
 } from '@/sync/api/account/apiKv';
 import type { ServerFetch } from '@/sync/http/client';
+import { areServerAccountScopesEqual, serverAccountScopedResourceKey, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { parseToken } from '@/utils/auth/parseToken';
 import { randomUUID } from '@/platform/randomUUID';
 import { AsyncLock } from '@/utils/system/lock';
-import {
-    requireCurrentAccountStoredContentServerCompatibility,
-} from '@/sync/api/capabilities/accountStoredContentCompatibility';
 import {
     decodeTodoStoredContent,
     encodeTodoStoredContent,
@@ -22,6 +21,7 @@ import {
     TODO_PREFIX,
     type TodoIndex,
     type TodoItem,
+    type ZenTaskSource,
 } from './todoStoredContent';
 import {
     resolveAccountStorageContext,
@@ -79,9 +79,6 @@ export async function resolveTodoAccountStorageContext(
 async function createTodoDataEncoder(
     context: TodoAccountStorageContext,
 ): Promise<(key: string, data: unknown) => Promise<string>> {
-    if (context.mode === 'plain') {
-        await requireCurrentAccountStoredContentServerCompatibility();
-    }
     const encryption = isRawAccountStorageEncryption(context.encryption)
         ? context.encryption
         : null;
@@ -592,104 +589,107 @@ export async function toggleTodo(
     });
 }
 
-/**
- * Update a todo's linked sessions
- */
-export async function updateTodoLinkedSessions(
-    taskId: string,
-    linkedSessions: TodoItem['linkedSessions']
-): Promise<void> {
-    const auth = (await import('@/auth/context/AuthContext')).getCurrentAuth();
-    if (!auth?.credentials) {
-        console.error('No auth credentials available');
-        return;
+export type TodoSessionLinkIntent = Readonly<{
+    source: ZenTaskSource;
+    session: Readonly<{ scope: ServerAccountScope; sessionId: string }>;
+}>;
+
+export class TodoSessionLinkError extends Error {
+    constructor(readonly code: 'task_deleted' | 'task_scope_mismatch' | 'task_link_failed', readonly cause?: unknown) {
+        super(code);
+        this.name = 'TodoSessionLinkError';
     }
+}
 
-    const currentState = storage.getState();
-    const priorState = currentState.todoState || {
-        todos: {},
-        undoneOrder: [],
-        doneOrder: [],
-        versions: {}
-    };
-    const { todos, undoneOrder, doneOrder, versions } = priorState;
-
-    const todo = todos[taskId];
-    if (!todo) {
-        console.error(`Todo ${taskId} not found`);
-        return;
+/** Apply one accepted Session to the current task, never a captured replacement map. */
+export async function applyTodoSessionLinkIntent(credentials: AuthCredentials, intent: TodoSessionLinkIntent): Promise<void> {
+    const [{ captureActiveServerAccountScopeLifetime }, { getActiveServerSnapshot }, { serverFetch }] = await Promise.all([
+        import('@/sync/domains/scope/activeServerAccountScope'),
+        import('@/sync/domains/server/serverRuntime'),
+        import('@/sync/http/client'),
+    ]);
+    const lifetime = captureActiveServerAccountScopeLifetime();
+    const snapshot = getActiveServerSnapshot();
+    let credentialAccountId: string;
+    try {
+        credentialAccountId = parseToken(credentials.token);
+    } catch (error) {
+        throw new TodoSessionLinkError('task_scope_mismatch', error);
     }
-
-    const updatedTodo: TodoItem = {
-        ...todo,
-        linkedSessions,
-        updatedAt: Date.now()
-    };
-
-    // Apply optimistic update immediately
-    storage.getState().applyTodos({
-        todos: { ...todos, [taskId]: updatedTodo },
-        undoneOrder,
-        doneOrder,
-        versions
-    });
-
-    // Sync to server inside lock
-    await todoLock.inLock(async () => {
-        try {
-            if (!auth.credentials) {
-                console.error('No credentials available for sync');
-                return;
-            }
-            const context = await resolveTodoAccountStorageContext(
-                auth.credentials,
-            );
-
-            const todoKey = getTodoKey(taskId);
-            const todoResponse = await kvGet(auth.credentials, todoKey);
-
-            if (todoResponse) {
-                const serverTodo = await decryptTodoItem(todoKey, todoResponse.value, context);
-                const mergedTodo: TodoItem = {
-                    ...serverTodo,
-                    linkedSessions,
-                    updatedAt: updatedTodo.updatedAt,
-                };
-                const encodeTodoData = await createTodoDataEncoder(context);
-                const encrypted = await encodeTodoData(todoKey, mergedTodo);
-                const newVersion = await kvSet(auth.credentials, todoKey, encrypted, todoResponse.version);
-
-                // Update version
-                const newVersions = { ...versions };
-                newVersions[todoKey] = newVersion;
-
-                storage.getState().applyTodos({
-                    todos: { ...todos, [taskId]: mergedTodo },
-                    undoneOrder,
-                    doneOrder,
-                    versions: newVersions
-                });
-            } else {
-                // Todo doesn't exist on backend, create it
-                const encodeTodoData = await createTodoDataEncoder(context);
-                const encrypted = await encodeTodoData(todoKey, updatedTodo);
-                const newVersion = await kvSet(auth.credentials, todoKey, encrypted, -1);
-
-                // Update version
-                const newVersions = { ...versions };
-                newVersions[todoKey] = newVersion;
-
-                storage.getState().applyTodos({
-                    todos: { ...todos, [taskId]: updatedTodo },
-                    undoneOrder,
-                    doneOrder,
-                    versions: newVersions
-                });
-            }
-        } catch (error) {
-            handleTodoMutationFailure(error, 'Failed to sync linked sessions update:', priorState);
+    const requireCurrent = () => {
+        if (!lifetime?.isCurrent() || !areServerAccountScopesEqual(lifetime.scope, intent.source.scope)
+            || snapshot.serverId !== intent.source.scope.serverId
+            || credentialAccountId !== intent.source.scope.accountId) {
+            throw new TodoSessionLinkError('task_scope_mismatch');
         }
-    });
+    };
+    requireCurrent();
+    const request: ServerFetch = (path, init, options) => {
+        requireCurrent();
+        return serverFetch(path, init, { ...options, expectedActiveServer: { serverId: snapshot.serverId, generation: snapshot.generation } });
+    };
+    try {
+        await todoLock.inLock(async () => {
+            requireCurrent();
+            const context = await resolveTodoAccountStorageContext(credentials, { request });
+            requireCurrent();
+            const key = getTodoKey(intent.source.taskId);
+            const linkKey = serverAccountScopedResourceKey(intent.session.scope, intent.session.sessionId);
+            const encode = await createTodoDataEncoder(context);
+            let row = await kvGet(credentials, key, { request, retry: 'none' });
+            while (true) {
+                requireCurrent();
+                if (!row) throw new TodoSessionLinkError('task_deleted');
+                const todo = await decryptTodoItem(key, row.value, context);
+                requireCurrent();
+                const publish = (item: TodoItem, version: number) => {
+                    requireCurrent();
+                    const current = storage.getState().todoState;
+                    if (!current?.todos[item.id]) return;
+                    storage.getState().applyTodos({
+                        ...current,
+                        todos: { ...current.todos, [item.id]: item },
+                        versions: { ...current.versions, [key]: version },
+                    });
+                };
+                // The acceptance was already persisted (including after an ambiguous HTTP result).
+                const predecessorLink = todo.linkedSessions?.[intent.session.sessionId];
+                if (todo.linkedSessions?.[linkKey]?.session
+                    || (areServerAccountScopesEqual(intent.source.scope, intent.session.scope)
+                        && predecessorLink && predecessorLink.session === undefined)) {
+                    publish(todo, row.version);
+                    return;
+                }
+                const linkedSessions = { ...todo.linkedSessions };
+                const updated: TodoItem = {
+                    ...todo,
+                    updatedAt: Date.now(),
+                    linkedSessions: {
+                        ...linkedSessions,
+                        [linkKey]: {
+                            title: intent.source.title,
+                            linkedAt: Date.now(),
+                            session: { ...intent.session.scope, sessionId: intent.session.sessionId },
+                        },
+                    },
+                };
+                const value = await encode(key, updated);
+                requireCurrent();
+                const result = await kvMutate(credentials, [{ key, value, version: row.version }], { request, retry: 'none' });
+                requireCurrent();
+                if (result.success) {
+                    publish(updated, result.results[0]!.version);
+                    return;
+                }
+                const conflict = result.errors.find((error) => error.key === key);
+                if (!conflict) throw new TodoSessionLinkError('task_link_failed');
+                row = conflict.value === null ? null : { key, value: conflict.value, version: conflict.version };
+            }
+        });
+    } catch (error) {
+        if (error instanceof TodoSessionLinkError) throw error;
+        throw new TodoSessionLinkError('task_link_failed', error);
+    }
 }
 
 /**

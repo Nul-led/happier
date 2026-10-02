@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 
@@ -73,6 +73,26 @@ describe('createSessionAttachFile', () => {
     }
     await cleanup();
     await expect(stat(filePath)).rejects.toBeTruthy();
+  });
+
+  test('reports failed exact-file cleanup without removing replacement content', async () => {
+    await createHappyHomeFixture();
+    vi.resetModules();
+    const { createSessionAttachFile } = await import('./sessionAttachFile');
+    const { logger } = await import('@/ui/logger');
+    const diagnostic = vi.spyOn(logger, 'infoFile').mockImplementation(() => undefined);
+    try {
+      const attachment = await createSessionAttachFile({
+        happySessionId: 'cleanup-failure', payload: { v: 2, encryptionMode: 'plain' },
+      });
+      await unlink(attachment.filePath);
+      await mkdir(attachment.filePath);
+      await expect(attachment.cleanup()).rejects.toMatchObject({ code: expect.any(String) });
+      expect((await stat(attachment.filePath)).isDirectory()).toBe(true);
+      expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining('session_attach_cleanup_incomplete'));
+    } finally {
+      diagnostic.mockRestore();
+    }
   });
 
   test('scopes session attach files by public release ring (dev lane)', async () => {

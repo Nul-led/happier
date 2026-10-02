@@ -102,7 +102,7 @@ export function useTerminalSurfaceState(params: Readonly<{
         const cached = readTerminalSurfaceState(params.terminalKey) ?? createEmptyTerminalSurfaceState();
         renderer.clear();
         if (cached.output) {
-            renderer.write(cached.output);
+            renderer.write(cached.output, { intent: 'replay' });
         }
     }, [params.terminalKey, params.terminalRef, params.terminalRendererHandleRef]);
 

@@ -80,11 +80,6 @@ vi.mock('@/auth/context/AuthContext', () => ({
   useAuth: () => ({ credentials: { token: 't', encryption: { type: 'dataKey' } }, refreshFromActiveServer: vi.fn(async () => {}) }),
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-  TokenStorage: { getCredentials: vi.fn(async () => null) },
-  isLegacyAuthCredentials: () => false,
-}));
-
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
   getActiveServerUrl: () => 'https://api.happier.dev',
   listServerProfiles: () => [],
@@ -117,9 +112,10 @@ vi.mock('@/auth/terminal/terminalProvisioning', () => ({
   buildTerminalResponseV3: vi.fn(() => new Uint8Array([3, 2, 1])),
 }));
 
+const { useConnectTerminal } = await import('./useConnectTerminal');
+
 describe('useConnectTerminal (scanner lifecycle)', () => {
   beforeEach(() => {
-    vi.resetModules();
     screenState.platformOS = 'ios';
     screenState.windowDimensions = { width: 390, height: 844 };
     routerPushSpy.mockClear();
@@ -134,8 +130,6 @@ describe('useConnectTerminal (scanner lifecycle)', () => {
     });
 
   it('navigates to the in-app QR scanner when starting terminal connect', async () => {
-    const { useConnectTerminal } = await import('./useConnectTerminal');
-
     let hookApi: ReturnType<typeof useConnectTerminal> | null = null;
     function Probe() {
       hookApi = useConnectTerminal();
@@ -159,8 +153,6 @@ describe('useConnectTerminal (scanner lifecycle)', () => {
       userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)',
       mediaDevices: { getUserMedia: async () => ({}) },
     } as any);
-
-    const { useConnectTerminal } = await import('./useConnectTerminal');
 
     let hookApi: ReturnType<typeof useConnectTerminal> | null = null;
     function Probe() {
@@ -186,8 +178,6 @@ describe('useConnectTerminal (scanner lifecycle)', () => {
       mediaDevices: { getUserMedia: async () => ({}) },
     } as any);
 
-    const { useConnectTerminal } = await import('./useConnectTerminal');
-
     let hookApi: ReturnType<typeof useConnectTerminal> | null = null;
     function Probe() {
       hookApi = useConnectTerminal();
@@ -210,8 +200,6 @@ describe('useConnectTerminal (scanner lifecycle)', () => {
     screenState.platformOS = 'web';
     screenState.windowDimensions = { width: 480, height: 700 };
     vi.stubGlobal('navigator', { maxTouchPoints: 0, userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' } as any);
-
-    const { useConnectTerminal } = await import('./useConnectTerminal');
 
     let hookApi: ReturnType<typeof useConnectTerminal> | null = null;
     function Probe() {

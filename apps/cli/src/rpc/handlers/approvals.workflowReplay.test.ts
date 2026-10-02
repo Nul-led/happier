@@ -5,7 +5,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import {
   ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1,
+  API_TOKEN_FULL_GRANT_V1,
   CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+  type AccountApiTokenSummaryV1,
   type ApprovalRequest,
   type WorkflowAcceptedAuthorizationV1,
 } from '@happier-dev/protocol';
@@ -68,7 +70,7 @@ const rows = new Map<string, Record<string, unknown>>();
 let currentTokens: unknown[] = [];
 const poolDeletes: unknown[] = [];
 
-function tokenSummary(tokenId: string) {
+function tokenSummary(tokenId: string): AccountApiTokenSummaryV1 {
   return {
     tokenId,
     label: 'Workflow token',
@@ -78,6 +80,10 @@ function tokenSummary(tokenId: string) {
     expiresAt: null,
     hasEncryptionAccess: false,
     hasUnattendedTeamAccess: false,
+    grant: API_TOKEN_FULL_GRANT_V1,
+    parentTokenId: null,
+    activeChildCount: 0,
+    embedConfig: null,
   };
 }
 
@@ -96,8 +102,9 @@ function installAccountServer(): void {
   vi.spyOn(axios, 'post').mockImplementation(async (url: string, raw: unknown) => {
     const body = raw as Record<string, unknown>;
     if (url === `${HOME_URL}/v1/artifacts`) {
-      rows.set(String(body.id), { ...body, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 });
-      return { status: 200, data: { id: body.id } };
+      rows.set(String(body.id), { ...body, ownerAccountId: ACCOUNT_ID, access: 'owner', encryptionMode: 'plain',
+        headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 });
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     }
     const artifactPrefix = `${HOME_URL}/v1/artifacts/`;
     if (!url.startsWith(artifactPrefix)) {
@@ -279,7 +286,8 @@ describe('machine RPC replay of a deferred Workflow-origin approval', () => {
     const artifactId = await createApprovedWorkflowApproval(workflowAcceptedAuthorizationCurrentness);
     const replay = registerProductionApprovalHandlers();
 
-    await expect(replay({ artifactId })).resolves.toMatchObject({
+    const firstReplay = await replay({ artifactId });
+    expect(firstReplay, JSON.stringify(firstReplay)).toMatchObject({
       ok: true,
       result: { status: 'executed' },
     });

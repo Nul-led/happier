@@ -1,9 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readBackendTargetRefV2 } from '@happier-dev/protocol';
 
 import type { ExecutionRunController } from '@/agent/executionRuns/controllers/types';
 import type { ExecutionRunState } from './executionRunTypes';
 import { resolveExecutionRunLifecycle } from './resolveExecutionRunLifecycle';
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const { createBundledPluginPublicationFsFixture } = await import('@/plugins/projection/registry/builtIn/locators.testkit');
+  return createBundledPluginPublicationFsFixture(actual);
+});
 
 function run(overrides: Partial<ExecutionRunState> = {}): ExecutionRunState {
   return {
@@ -44,6 +50,18 @@ describe('resolveExecutionRunLifecycle', () => {
   it('allows open-only recovery only for long-lived runs', () => {
     expect(resolveExecutionRunLifecycle(run({ runClass: 'long_lived' }), null).projection)
       .toEqual({ v: 1, state: 'recoverable' });
+  });
+
+  it('does not present a definitively missing provider session as recoverable', () => {
+    expect(resolveExecutionRunLifecycle(run({
+      error: { code: 'execution_run_provider_state_missing', message: 'Provider session state is missing' },
+    }), null)).toEqual({
+      projection: { v: 1, state: 'unavailable' },
+      unavailableReason: 'provider_state_missing',
+    });
+    expect(resolveExecutionRunLifecycle(run({
+      error: { code: 'execution_run_failed', message: 'Transport unavailable' },
+    }), null).projection.state).toBe('recoverable_with_input');
   });
 
   it('fails closed when retention or the exact backend-bound handle cannot prove recovery', () => {

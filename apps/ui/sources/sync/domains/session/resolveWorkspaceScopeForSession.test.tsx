@@ -1,7 +1,7 @@
 import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { renderHook, standardCleanup } from '@/dev/testkit';
+import { createMachineFixture, renderHook, standardCleanup } from '@/dev/testkit';
 
 import { useWorkspaceScopeForSession } from './resolveWorkspaceScopeForSession';
 import { storage } from '@/sync/domains/state/storageStore';
@@ -44,6 +44,23 @@ function buildSession(overrides?: Partial<Session>): Session {
 }
 
 describe('useWorkspaceScopeForSession', () => {
+    it('resolves an explicitly scoped file preview from that Home\'s machines', async () => {
+        const previousState = storage.getState();
+        try {
+            storage.setState({
+                sessions: { 'session-1': buildSession({ serverId: 'background-home' }) },
+                machines: {}, sessionListRowsByServerId: {},
+                machineListByServerId: { 'background-home': [createMachineFixture({ id: 'machine-1', active: true })] },
+                getProjectForSession: () => null,
+            });
+            const hook = await renderHook(() => useWorkspaceScopeForSession('session-1', 'background-home'));
+            expect(hook.getCurrent()).toMatchObject({ serverId: 'background-home', machineId: 'machine-1', rootPath: '/Users/alice/repo' });
+            await hook.unmount();
+        } finally {
+            storage.setState(previousState);
+        }
+    });
+
     it('keeps workspace scope stable during unrelated session hot-path updates', async () => {
         const previousState = storage.getState();
         try {

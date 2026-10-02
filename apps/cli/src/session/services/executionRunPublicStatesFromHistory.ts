@@ -127,6 +127,9 @@ function readBackendTarget(input: Record<string, unknown> | null, output: Record
 }
 
 function toExecutionRunPublicState(state: TranscriptExecutionRunState): ExecutionRunPublicState | null {
+    // Even an explicit historical running result is not present-day liveness.
+    // The execution owner/visibility projection supplies current running state.
+    if (state.status === 'running') return null;
     const runClass = state.runClass ?? 'bounded';
     const ioMode = state.ioMode ?? (runClass === 'long_lived' ? 'streaming' : 'request_response');
     const retentionPolicy = state.retentionPolicy ?? (runClass === 'long_lived' ? 'resumable' : 'ephemeral');
@@ -168,7 +171,9 @@ export function listExecutionRunPublicStatesFromHistoryRows(rows: readonly RawHi
 
         const current = byRunId.get(runId);
         const nextStatus = parsed.kind === 'tool-call'
-            ? current?.status ?? 'running'
+            // A call proves admission, not that its owning process is alive.
+            // Only the live owner/marker or a retained terminal fact supplies status.
+            ? current?.status ?? 'unknown'
             : readString(output, 'status') ?? current?.status ?? 'unknown';
         const nextCallId = readString(event, 'callId') ?? readString(input, 'callId') ?? readString(output, 'callId') ?? current?.callId ?? null;
         const nextSidechainId = readString(input, 'sidechainId') ?? readString(output, 'sidechainId') ?? nextCallId ?? current?.sidechainId ?? null;

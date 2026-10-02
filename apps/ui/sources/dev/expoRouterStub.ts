@@ -2,6 +2,9 @@
 // The real package imports React Native internals (`react-native/Libraries/...`) in its native entrypoints.
 
 import * as React from 'react';
+import { createExpoRouterRuntime } from './testkit/runtime/routerRuntime';
+
+export const Redirect = createExpoRouterRuntime().module.Redirect;
 
 export const Link = 'Link' as any;
 

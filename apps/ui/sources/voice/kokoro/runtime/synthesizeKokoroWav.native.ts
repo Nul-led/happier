@@ -5,7 +5,6 @@ import {
   readCachedSpeakerCountForAssetsDir,
 } from '@/voice/kokoro/runtime/kokoroSpeakerCountCache';
 import { createSentenceStream } from '@/voice/kokoro/runtime/streamKokoroWavSentences';
-import { resolveKokoroSherpaSidForVoiceIdWithSpeakerCount } from '@/voice/kokoro/voices/kokoroSherpaVoiceMapping';
 import { ensureModelPackInstalled } from '@/voice/modelPacks/installer.native';
 import { resolveModelPackManifestUrl } from '@/voice/modelPacks/manifests';
 import {
@@ -13,11 +12,14 @@ import {
   getModelPackCatalogEntry,
   isPublishedModelPackCatalogEntry,
   resolveCanonicalModelPackId,
+  resolveKokoroModelConfig,
+  resolveKokoroVoiceSid,
+  type KokoroModelConfig,
 } from '@happier-dev/protocol';
 
 type KokoroNativeModuleLike = {
-  initialize(params: { assetsDir: string; initializationId: string }): Promise<void>;
-  listVoices(params: { assetsDir: string }): Promise<Array<{ id: string; title: string; sid?: number }>>;
+  initialize(params: { assetsDir: string; initializationId: string; frontend?: KokoroModelConfig }): Promise<void>;
+  listVoices(params: { assetsDir: string; frontend?: KokoroModelConfig }): Promise<Array<{ id: string; title: string; sid?: number }>>;
   synthesizeToWavFile(params: {
     jobId: string;
     assetsDir: string;
@@ -26,6 +28,7 @@ type KokoroNativeModuleLike = {
     sid: number | null;
     speed: number;
     outWavPath: string | null;
+    frontend?: KokoroModelConfig;
   }): Promise<{ wavPath: string; sampleRate: number }>;
   cancel(params: { jobId: string }): Promise<void>;
   /** Refuses one queued initialization without retiring this pack's runtime. */
@@ -160,10 +163,11 @@ async function initializeNativeRuntime(opts: {
   assetsDirPath: string;
   timeoutMs: number;
   signal: AbortSignal;
+  frontend: KokoroModelConfig;
 }): Promise<void> {
   const initializationId = randomUUID();
   await awaitAbortableOperation(
-    () => opts.native.initialize({ assetsDir: opts.assetsDirPath, initializationId }),
+    () => opts.native.initialize({ assetsDir: opts.assetsDirPath, initializationId, frontend: opts.frontend }),
     {
       signal: opts.signal,
       timeoutMs: opts.timeoutMs,
@@ -185,6 +189,7 @@ async function getSpeakerCountForAssetsDir(opts: {
   assetsDirPath: string;
   timeoutMs: number;
   signal: AbortSignal;
+  frontend: KokoroModelConfig;
 }): Promise<number | null> {
   const key = opts.assetsDirPath;
   const cached = readCachedSpeakerCountForAssetsDir(key);
@@ -192,7 +197,7 @@ async function getSpeakerCountForAssetsDir(opts: {
 
   try {
     const voices = await awaitAbortableOperation(
-      () => opts.native.listVoices({ assetsDir: key }),
+      () => opts.native.listVoices({ assetsDir: key, frontend: opts.frontend }),
       { signal: opts.signal, timeoutMs: opts.timeoutMs },
     );
     const count = Array.isArray(voices) ? voices.length : null;
@@ -255,7 +260,7 @@ type KokoroSynthContext = Readonly<{
 async function prepareKokoroSynthContext(
   opts: {
     assetSetId?: string | null;
-    voiceId: string;
+    voiceId: string | null;
     speed: number;
     timeoutMs: number;
     signal: AbortSignal;
@@ -287,27 +292,27 @@ async function prepareKokoroSynthContext(
   );
   const installedAssetsDirUri = installed.packDirUri;
   const assetsDirPath = uriToFilePath(installedAssetsDirUri);
+  const frontend = resolveKokoroModelConfig(installed.manifest);
 
   await initializeNativeRuntime({
     native,
     assetsDirPath,
     timeoutMs: opts.timeoutMs,
     signal: opts.signal,
+    frontend,
   });
 
-  const manifestVoiceSid =
-    (installed.manifest as any)?.voices?.find?.((v: any) => v?.id === opts.voiceId && typeof v?.sid === 'number')?.sid
-    ?? null;
-  const speakerCount =
-    manifestVoiceSid != null
-      ? null
-      : await getSpeakerCountForAssetsDir({
-          native,
-          assetsDirPath,
-          timeoutMs: opts.timeoutMs,
-          signal: opts.signal,
-        });
-  const sid = manifestVoiceSid ?? resolveKokoroSherpaSidForVoiceIdWithSpeakerCount(opts.voiceId, speakerCount) ?? null;
+  const speakerCount = await getSpeakerCountForAssetsDir({
+    native,
+    assetsDirPath,
+    timeoutMs: opts.timeoutMs,
+    signal: opts.signal,
+    frontend,
+  });
+  // sherpa substitutes speaker zero for an out-of-range SID. Validate even
+  // declared metadata against the loaded model rather than silently changing it.
+  if (speakerCount === null) throw new Error('kokoro_voice_unavailable');
+  const sid = resolveKokoroVoiceSid(installed.manifest, opts.voiceId, speakerCount);
 
   const synthesizeText = async (text: string): Promise<ArrayBuffer> => {
     const jobId = randomUUID();
@@ -334,6 +339,7 @@ async function prepareKokoroSynthContext(
             sid,
             speed: opts.speed,
             outWavPath: uriToFilePath(outWavUri),
+            frontend,
           });
           // The native job outlives a lost race. Track its settlement so cleanup
           // never deletes a staged WAV the job is still writing.
@@ -380,7 +386,7 @@ export async function synthesizeKokoroWav(
   opts: {
     text: string;
     assetSetId?: string | null;
-    voiceId: string;
+    voiceId: string | null;
     speed: number;
     timeoutMs: number;
     signal: AbortSignal;
@@ -431,6 +437,7 @@ export async function prepareKokoroTts(
     assetsDirPath: uriToFilePath(installed.packDirUri),
     timeoutMs: opts.timeoutMs,
     signal: opts.signal,
+    frontend: resolveKokoroModelConfig(installed.manifest),
   });
 }
 
@@ -447,7 +454,7 @@ export function streamKokoroWavSentences(
   opts: {
     text: string;
     assetSetId?: string | null;
-    voiceId: string;
+    voiceId: string | null;
     speed: number;
     timeoutMs: number;
     signal: AbortSignal;
@@ -474,7 +481,7 @@ export function streamKokoroWavSentences(
 export async function prewarmKokoroRuntime(
   opts: {
     assetSetId?: string | null;
-    voiceId: string;
+    voiceId: string | null;
     speed: number;
     timeoutMs: number;
     signal: AbortSignal;

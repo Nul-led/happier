@@ -2,9 +2,11 @@ import * as React from 'react';
 
 import {
     BUNDLED_LEGACY_CONNECTED_ACCOUNT_COMPATIBILITY_BY_SERVICE_ID,
+    assertConnectedAccountOperationTransportV1,
     type BuiltInLegacyConnectedAccountOperation,
     type ConnectedServiceId,
     type PluginContributionIdentityV1,
+    type ConnectedAccountExpectedOperationTransport,
 } from '@happier-dev/protocol';
 
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
@@ -27,12 +29,7 @@ function admissionError(code: string): Error & Readonly<{ code: string }> {
     return Object.assign(new Error(code), { code });
 }
 
-export type ConnectedAccountExpectedOperationTransport =
-    | Readonly<{ kind: 'v4' }>
-    | Readonly<{
-        kind: 'legacy';
-        serviceId: ConnectedServiceId;
-    }>;
+export type { ConnectedAccountExpectedOperationTransport } from '@happier-dev/protocol';
 
 export function useConnectedAccountOperationAdmission(): (
     service: PluginContributionIdentityV1,
@@ -71,42 +68,7 @@ export function useConnectedAccountOperationAdmission(): (
                 requiredOperation: operation,
             },
         });
-        if (result.status !== 'described') {
-            throw admissionError(
-                result.status === 'unavailable'
-                || result.status === 'conflict'
-                    ? result.code
-                    : 'connected_account_peer_operation_admission_unavailable',
-            );
-        }
-        if (
-            result.service.pluginId !== service.pluginId
-            || result.service.localId !== service.localId
-        ) {
-            throw admissionError(
-                expectedTransport.kind === 'v4'
-                    ? 'connected_account_v4_operation_unsupported'
-                    : 'connected_account_legacy_operation_unsupported',
-            );
-        }
-        if (expectedTransport.kind === 'v4') {
-            if (result.operationTransport?.kind !== 'v4') {
-                throw admissionError(
-                    'connected_account_v4_operation_unsupported',
-                );
-            }
-            return;
-        }
-        if (
-            result.operationTransport?.kind !== 'legacy'
-            || result.operationTransport.peerClass !== 'revisioned_v2_v3'
-            || result.operationTransport.serviceId
-                !== expectedTransport.serviceId
-        ) {
-            throw admissionError(
-                'connected_account_legacy_operation_unsupported',
-            );
-        }
+        assertConnectedAccountOperationTransportV1(result, service, expectedTransport);
     }, [activeServerGeneration, machineId, serverId]);
 }
 

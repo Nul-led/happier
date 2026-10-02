@@ -2,8 +2,14 @@ import { buildLocalVoiceAgentSystemPrompt } from '@happier-dev/agents';
 import { buildPromptPlanV1, renderPromptPlanV1, type PromptBlockV1 } from '@happier-dev/protocol';
 
 import { listDisabledActionIdsForSurfaceFromEnv } from '../../../settings/actionsSettings';
+import type { VoiceAgentTurn } from './voiceAgentTypes';
 
-type VoiceAgentTurn = { role: 'user' | 'assistant'; text: string };
+function renderConversationHistory(history: readonly VoiceAgentTurn[]): string {
+  return [
+    'Conversation (reference context only; do not repeat previous requests, actions, or tool effects):',
+    ...history.map((turn) => `${turn.role === 'context' ? 'Context' : turn.role === 'user' ? 'User' : 'Voice agent'}: ${turn.text}`),
+  ].join('\n');
+}
 
 function resolveDisabledVoicePromptActionIds(disabledActionIds?: readonly string[]): readonly string[] {
   return Array.from(
@@ -97,6 +103,7 @@ export function buildVoiceAgentSeededUserTurnPrompt(params: Readonly<{
   disabledActionIds?: readonly string[];
   memoryRecallGuidanceEnabled?: boolean;
   systemAppendBlocks?: readonly string[];
+  history?: readonly VoiceAgentTurn[];
 }>): string {
   const disabledActionIds = resolveDisabledVoicePromptActionIds(params.disabledActionIds);
   return renderPromptPlanV1(buildPromptPlanV1({
@@ -117,6 +124,9 @@ export function buildVoiceAgentSeededUserTurnPrompt(params: Readonly<{
         scope: 'bootstrap',
         text: ['Initial context:', String(params.initialContext ?? '').trim()].join('\n'),
       },
+      ...(params.history?.length
+        ? [{ id: 'voice.seeded.conversation', scope: 'bootstrap' as const, text: renderConversationHistory(params.history) }]
+        : []),
       {
         id: 'voice.seeded.user_turn',
         scope: 'turn',
@@ -131,13 +141,7 @@ export function buildVoiceAgentCommitPrompt(params: Readonly<{
   history: VoiceAgentTurn[];
   maxChars: number;
 }>): string {
-  const conversationLines =
-    params.history.length > 0
-      ? [
-          'Conversation:',
-          ...params.history.map((turn) => `${turn.role === 'user' ? 'User' : 'Voice agent'}: ${turn.text}`),
-        ]
-      : [];
+  const conversationText = params.history.length > 0 ? renderConversationHistory(params.history) : '';
 
   return renderPromptPlanV1(buildPromptPlanV1({
     modality: 'voice',
@@ -155,11 +159,11 @@ export function buildVoiceAgentCommitPrompt(params: Readonly<{
         scope: 'bootstrap',
         text: ['Initial context:', params.initialContext].join('\n'),
       },
-      ...(conversationLines.length > 0
+      ...(conversationText
         ? [{
             id: 'voice.commit.conversation',
             scope: 'bootstrap' as const,
-            text: conversationLines.join('\n'),
+            text: conversationText,
           }]
         : []),
       {

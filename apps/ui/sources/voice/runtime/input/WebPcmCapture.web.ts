@@ -109,6 +109,7 @@ export type WebPcmCaptureOptions = Readonly<{
 
 export type WebPcmCapture = Readonly<{
   start(): Promise<void>;
+  finish(): Promise<void>;
   stop(): Promise<void>;
   waitForDrain(): Promise<void>;
   isActive(): boolean;
@@ -356,10 +357,12 @@ export function createWebPcmCapture(options: WebPcmCaptureOptions): WebPcmCaptur
   );
 
   let active = false;
-  let failed = false;
+  let failure: WebPcmCaptureError | null = null;
   let lifecycleVersion = 0;
+  let deliveryVersion = 0;
   let startPromise: Promise<void> | null = null;
   let stopPromise: Promise<void> | null = null;
+  let cancelFinish: ((error: Error) => void) | null = null;
   let sourceNode: MediaStreamAudioSourceNodeLike | null = null;
   let processorNode: ScriptProcessorNodeLike | null = null;
   let workletNode: AudioWorkletNodeLike | null = null;
@@ -373,13 +376,15 @@ export function createWebPcmCapture(options: WebPcmCaptureOptions): WebPcmCaptur
   let unlinkVisibility = (): void => {};
   let unlinkDeviceLoss = (): void => {};
 
-  const cleanup = (): void => {
+  const cleanup = (releaseAbort = true): void => {
     active = false;
     pendingSamples = [];
     resampler.reset();
     latestLevel = 0;
-    unlinkAbort();
-    unlinkAbort = () => {};
+    if (releaseAbort) {
+      unlinkAbort();
+      unlinkAbort = () => {};
+    }
     unlinkVisibility();
     unlinkVisibility = () => {};
     unlinkDeviceLoss();
@@ -406,26 +411,52 @@ export function createWebPcmCapture(options: WebPcmCaptureOptions): WebPcmCaptur
   };
 
   const stop = async (): Promise<void> => {
-    if (stopPromise) return stopPromise;
     lifecycleVersion += 1;
+    deliveryVersion += 1;
     // Ownership moves here, so an outstanding start is abandoned rather than
     // joined: `performStart` bails and cleans up at its next version check, and
     // a startup step the browser never settles (an unanswered permission
     // prompt, a suspended context) can no longer pin Stop. Dropping the handle
     // also stops a later `start()` from re-binding to that abandoned attempt.
     startPromise = null;
-    stopPromise = (async () => {
-      cleanup();
-      await drainTail.catch(() => {});
-    })().finally(() => {
-      stopPromise = null;
+    cancelFinish?.(failure
+      ? Object.assign(new Error(failure), { code: failure })
+      : Object.assign(new Error('PCM capture was cancelled'), { name: 'AbortError' }));
+    cancelFinish = null;
+    stopPromise = null;
+    cleanup();
+    drainTail = Promise.resolve();
+    queuedChunks = 0;
+  };
+
+  const finish = async (): Promise<void> => {
+    if (stopPromise) return stopPromise;
+    // Detach new browser admission without invalidating already admitted chunks.
+    lifecycleVersion += 1;
+    startPromise = null;
+    cleanup(false);
+    const releaseAbort = unlinkAbort;
+    const cancellation = new Promise<never>((_resolve, reject) => { cancelFinish = reject; });
+    const finishing = Promise.race([
+      drainTail.then(() => {
+        if (failure) throw Object.assign(new Error(failure), { code: failure });
+      }),
+      cancellation,
+    ]).finally(() => {
+      releaseAbort();
+      if (unlinkAbort === releaseAbort) unlinkAbort = () => {};
+      if (stopPromise === finishing) {
+        stopPromise = null;
+        cancelFinish = null;
+      }
     });
-    return stopPromise;
+    stopPromise = finishing;
+    return finishing;
   };
 
   const fail = (reason: WebPcmCaptureError): void => {
-    if (failed) return;
-    failed = true;
+    if (failure) return;
+    failure = reason;
     try {
       options.onError?.(reason);
     } catch {
@@ -443,12 +474,15 @@ export function createWebPcmCapture(options: WebPcmCaptureOptions): WebPcmCaptur
       return;
     }
     queuedChunks += 1;
+    const version = deliveryVersion;
     drainTail = drainTail
       .catch(() => undefined)
-      .then(async () => options.onChunk(chunk))
-      .catch(() => fail('pcm_capture_chunk_failed'))
+      .then(async () => {
+        if (version === deliveryVersion) await options.onChunk(chunk);
+      })
+      .catch(() => { if (version === deliveryVersion) fail('pcm_capture_chunk_failed'); })
       .finally(() => {
-        queuedChunks = Math.max(0, queuedChunks - 1);
+        if (version === deliveryVersion) queuedChunks = Math.max(0, queuedChunks - 1);
       });
   };
 
@@ -558,7 +592,7 @@ export function createWebPcmCapture(options: WebPcmCaptureOptions): WebPcmCaptur
   };
 
   const performStart = async (version: number): Promise<void> => {
-    failed = false;
+    failure = null;
     queuedChunks = 0;
     pendingSamples = [];
     drainTail = Promise.resolve();
@@ -640,6 +674,7 @@ export function createWebPcmCapture(options: WebPcmCaptureOptions): WebPcmCaptur
 
   return Object.freeze({
     start,
+    finish,
     stop,
     waitForDrain: async () => { await drainTail; },
     isActive: () => active,

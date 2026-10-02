@@ -58,6 +58,7 @@ export function buildTmuxWindowEnv(
 }
 
 export async function buildTmuxSpawnConfig(params: {
+  startingMode?: 'terminal' | 'remote';
   agent: TmuxSpawnAgentId;
   directory: string;
   extraEnv: Record<string, string>;
@@ -75,7 +76,7 @@ export async function buildTmuxSpawnConfig(params: {
   const args = [
     params.agent,
     '--happy-starting-mode',
-    'remote',
+    params.startingMode ?? 'remote',
     '--started-by',
     'daemon',
     ...(params.extraArgs ?? []),

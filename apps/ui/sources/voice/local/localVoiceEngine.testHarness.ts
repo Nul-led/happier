@@ -18,6 +18,13 @@ import {
 
 const platformOsState = vi.hoisted(() => ({ value: 'ios' as 'ios' | 'web' }));
 
+// Permission alerts are an external UI boundary; keep the real voice owners
+// without loading an unrelated application modal/composer tree.
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock();
+});
+
 type MachineContributionRegistryProjectionDescribeFn = typeof machineContributionRegistryProjectionDescribeFn;
 type GetMachineContributionRegistryProjectionRevisionFn = typeof getMachineContributionRegistryProjectionRevisionFn;
 type MachinePluginSettingsGetFn = typeof machinePluginSettingsGetFn;
@@ -689,14 +696,16 @@ vi.mock(
                         frameMs: request.format.frameMs,
                     });
                     let released = false;
+                    const releaseCapture = async () => {
+                        if (released) return;
+                        released = true;
+                        subscription.remove();
+                        await (audioStreamStop as any)();
+                    };
                     return {
                         id: `test-pcm-capture:${String(request.ownerId)}`,
-                        release: async () => {
-                            if (released) return;
-                            released = true;
-                            subscription.remove();
-                            await (audioStreamStop as any)();
-                        },
+                        release: releaseCapture,
+                        finish: releaseCapture,
                         waitForDrain: async () => {},
                     };
                 },

@@ -13,14 +13,14 @@ describe('resolveSessionListSelectionPointerAction', () => {
         })).toBe('open');
     });
 
-    it('toggles rows for platform command-click and adds ranges with shift', () => {
+    it('leaves platform command-click to navigation, including modified range clicks', () => {
         expect(resolveSessionListSelectionPointerAction({
             isSelectionMode: false,
             platform: 'macos',
             shiftKey: false,
             ctrlKey: false,
             metaKey: true,
-        })).toBe('toggle');
+        })).toBe('open');
 
         expect(resolveSessionListSelectionPointerAction({
             isSelectionMode: false,
@@ -28,7 +28,7 @@ describe('resolveSessionListSelectionPointerAction', () => {
             shiftKey: true,
             ctrlKey: true,
             metaKey: false,
-        })).toBe('addRange');
+        })).toBe('open');
     });
 
     it('selects ranges with shift and toggles plain row presses once already in selection mode', () => {

@@ -12,7 +12,7 @@ import {
 import { isSafeWorkspaceRelativePath } from '@/utils/path/isSafeWorkspaceRelativePath';
 import { resolveLocalUploadSourceSizeBytes } from '@/sync/runtime/files/localUploadSourceReader';
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
-import { createNativeCacheFileSink, type NativeCacheFileSink } from '@/sync/runtime/files/nativeCacheFileSink';
+import { createNativeCacheFileSink, shareNativeCacheFile, type NativeCacheFileSink } from '@/sync/runtime/files/nativeCacheFileSink';
 import { createWebDownloadFileSink, type WebDownloadFileSink } from './webDownloadFileSink';
 import { runTransferFinalizeRecovery } from '@/components/transfers/recovery/runTransferFinalizeRecovery';
 import { t } from '@/text';
@@ -749,13 +749,7 @@ export function useWorkspaceFileTransfers(params: Readonly<{
                 downloadWebFile(file, res.name || 'download', cleanupWebSinkOnce);
             } else if (nativeSinkRef.current) {
                 try {
-                    const Sharing: any = await import('expo-sharing');
-                    if (isCurrentDownload() && !controller.signal.aborted && Sharing && typeof Sharing.isAvailableAsync === 'function') {
-                        const available = await Sharing.isAvailableAsync();
-                        if (isCurrentDownload() && !controller.signal.aborted && available && typeof Sharing.shareAsync === 'function') {
-                            await Sharing.shareAsync(nativeSinkRef.current.fileUri);
-                        }
-                    }
+                    await shareNativeCacheFile(nativeSinkRef.current.fileUri, undefined, () => isCurrentDownload() && !controller.signal.aborted);
                 } catch {
                     // Best-effort share only.
                 }

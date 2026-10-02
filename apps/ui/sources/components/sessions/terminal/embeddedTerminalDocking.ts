@@ -30,6 +30,15 @@ export function openNewSessionDetailsTerminalTab(pane: AppPaneScopeApi): void {
     );
 }
 
+/** Move an existing terminal's view, never its PTY, into pinned Details. */
+export function openSessionTerminalInDetails(
+    pane: Pick<AppPaneScopeApi, 'openDetailsTab' | 'closeBottom'>,
+    terminalInstanceId: string,
+): void {
+    pane.openDetailsTab(createSessionDetailsTerminalTab({ terminalInstanceId }), { intent: 'pinned' });
+    pane.closeBottom();
+}
+
 export function closeEmbeddedTerminalOutsideDockLocation(params: Readonly<{
     pane: AppPaneScopeApi;
     dockLocation: EmbeddedTerminalDockLocation;

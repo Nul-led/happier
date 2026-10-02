@@ -20,6 +20,7 @@ export type NewSessionDraftLocalState = Readonly<Pick<NewSessionDraft,
     | 'placementCandidates'
     | 'teamCredentialBindings'
     | 'composerAttachmentSeeds'
+    | 'zenTaskSource'
 >>;
 
 /** Device-local New Session choices that must not enter the synchronized document. */
@@ -38,5 +39,6 @@ export function buildNewSessionDraftLocalState(draft: NewSessionDraft): NewSessi
         ...(draft.placementCandidates === undefined ? {} : { placementCandidates: draft.placementCandidates }),
         ...(draft.teamCredentialBindings === undefined ? {} : { teamCredentialBindings: draft.teamCredentialBindings }),
         ...(draft.composerAttachmentSeeds === undefined ? {} : { composerAttachmentSeeds: draft.composerAttachmentSeeds }),
+        ...(draft.zenTaskSource === undefined ? {} : { zenTaskSource: draft.zenTaskSource }),
     };
 }

@@ -1,5 +1,6 @@
 #import "HappierSherpaOfflineTtsEngine.h"
 #import "HappierSherpaOfflineTtsEngineCache.h"
+#import "HappierSherpaKokoroConfig.h"
 #import "HappierSherpaTtsJobRegistry.h"
 
 #include <cstring>
@@ -59,41 +60,21 @@ void SetError(NSError * _Nullable * _Nullable error, NSInteger code, NSString *m
   }
 }
 
-std::shared_ptr<TtsEngine> CreateEngine(const std::string &assetsDir, NSError * _Nullable * _Nullable error) {
-  const std::string modelPath = assetsDir + "/model.onnx";
-  const std::string voicesPath = assetsDir + "/voices.bin";
-  const std::string tokensPath = assetsDir + "/tokens.txt";
-  const std::string dataDirPath = assetsDir + "/espeak-ng-data";
+std::shared_ptr<TtsEngine> CreateEngine(const std::string &assetsDir, const happier_sherpa::KokoroConfig &kokoro, NSError * _Nullable * _Nullable error) {
+  const auto config = kokoro.config();
 
-  if (!SherpaOnnxFileExists(modelPath.c_str())) {
+  if (!SherpaOnnxFileExists(config.model.kokoro.model)) {
     SetError(error, 3, @"model.onnx not found");
     return nullptr;
   }
-  if (!SherpaOnnxFileExists(voicesPath.c_str())) {
+  if (!SherpaOnnxFileExists(config.model.kokoro.voices)) {
     SetError(error, 4, @"voices.bin not found");
     return nullptr;
   }
-  if (!SherpaOnnxFileExists(tokensPath.c_str())) {
+  if (!SherpaOnnxFileExists(config.model.kokoro.tokens)) {
     SetError(error, 5, @"tokens.txt not found");
     return nullptr;
   }
-
-  SherpaOnnxOfflineTtsConfig config;
-  memset(&config, 0, sizeof(config));
-
-  config.model.num_threads = 2;
-  config.model.debug = 0;
-  config.model.provider = "cpu";
-  config.max_num_sentences = 1;
-  config.silence_scale = 0.2f;
-
-  config.model.kokoro.model = modelPath.c_str();
-  config.model.kokoro.voices = voicesPath.c_str();
-  config.model.kokoro.tokens = tokensPath.c_str();
-  config.model.kokoro.data_dir = dataDirPath.c_str();
-  config.model.kokoro.length_scale = 1.0f;
-  config.model.kokoro.lexicon = nullptr;
-  config.model.kokoro.lang = nullptr;
 
   const SherpaOnnxOfflineTts *tts = SherpaOnnxCreateOfflineTts(&config);
   if (!tts) {
@@ -114,6 +95,7 @@ std::shared_ptr<TtsEngine> CreateEngine(const std::string &assetsDir, NSError * 
  */
 std::shared_ptr<TtsEngine> LeaseEngine(
     const std::string &assetsDir,
+    NSDictionary<NSString *, NSString *> *frontend,
     NSError * _Nullable * _Nullable error,
     const std::string *initializationId = nullptr) {
   if (assetsDir.empty()) {
@@ -121,12 +103,18 @@ std::shared_ptr<TtsEngine> LeaseEngine(
     return nullptr;
   }
 
-  const auto engine = initializationId
-      ? Engines().leaseOrCreateInitialization(
-            assetsDir,
-            *initializationId,
-            [&] { return CreateEngine(assetsDir, error); })
-      : Engines().leaseOrCreate(assetsDir, [&] { return CreateEngine(assetsDir, error); });
+  std::shared_ptr<TtsEngine> engine;
+  try {
+    const happier_sherpa::KokoroFrontend resolved{NsToStd(frontend[@"lang"]), NsToStd(frontend[@"lexicon"])};
+    const happier_sherpa::KokoroConfig kokoro(assetsDir, frontend ? &resolved : nullptr);
+    engine = initializationId
+        ? Engines().leaseOrCreateInitialization(assetsDir, *initializationId,
+            [&] { return CreateEngine(assetsDir, kokoro, error); })
+        : Engines().leaseOrCreate(assetsDir, [&] { return CreateEngine(assetsDir, kokoro, error); });
+  } catch (const std::invalid_argument &exception) {
+    SetError(error, 12, [NSString stringWithUTF8String:exception.what()]);
+    return nullptr;
+  }
   if (!engine && error && !*error) {
     // The create can lose either a pack lifecycle race or its one caller-owned
     // admission. In both cases there is no sherpa creation error to report, and
@@ -148,25 +136,27 @@ std::shared_ptr<TtsEngine> LeaseEngine(
   Engines().cancelInitialization(NsToStd(assetsDir), NsToStd(admissionId));
 }
 
-+ (BOOL)prepareAssetsDir:(NSString *)assetsDir error:(NSError * _Nullable * _Nullable)error {
-  return LeaseEngine(NsToStd(assetsDir), error) != nullptr;
++ (BOOL)prepareAssetsDir:(NSString *)assetsDir frontend:(NSDictionary<NSString *, NSString *> *)frontend error:(NSError * _Nullable * _Nullable)error {
+  return LeaseEngine(NsToStd(assetsDir), frontend, error) != nullptr;
 }
 
 + (BOOL)prepareAssetsDir:(NSString *)assetsDir
              admissionId:(NSString *)admissionId
+                frontend:(NSDictionary<NSString *, NSString *> *)frontend
                    error:(NSError * _Nullable * _Nullable)error {
   const std::string id = NsToStd(admissionId);
-  return LeaseEngine(NsToStd(assetsDir), error, &id) != nullptr;
+  return LeaseEngine(NsToStd(assetsDir), frontend, error, &id) != nullptr;
 }
 
-+ (int32_t)numSpeakersForAssetsDir:(NSString *)assetsDir {
-  const auto engine = LeaseEngine(NsToStd(assetsDir), nullptr);
++ (int32_t)numSpeakersForAssetsDir:(NSString *)assetsDir frontend:(NSDictionary<NSString *, NSString *> *)frontend {
+  const auto engine = LeaseEngine(NsToStd(assetsDir), frontend, nullptr);
   if (!engine || !engine->tts) return 0;
   return SherpaOnnxOfflineTtsNumSpeakers(engine->tts);
 }
 
 + (BOOL)synthesizeToWavFileAtPath:(NSString *)wavPath
                         assetsDir:(NSString *)assetsDir
+                         frontend:(NSDictionary<NSString *, NSString *> *)frontend
                              text:(NSString *)text
                               sid:(int32_t)sid
                             speed:(float)speed
@@ -177,7 +167,7 @@ std::shared_ptr<TtsEngine> LeaseEngine(
 
   // The lease is held for the whole synthesis, so an invalidation racing this
   // call retires the cache entry and cancels the job without freeing the engine.
-  const auto engine = LeaseEngine(NsToStd(assetsDir), error);
+  const auto engine = LeaseEngine(NsToStd(assetsDir), frontend, error);
   if (!engine || !engine->tts) {
     if (error && !*error) SetError(error, 7, @"TTS not initialized");
     return NO;

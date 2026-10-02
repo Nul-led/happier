@@ -12,6 +12,11 @@ export type BlockingApprovalWaitDecision =
   | Readonly<{ decision: 'reject'; request: BlockingApprovalRequest; reason?: string }>
   | Readonly<{ decision: 'canceled'; request: BlockingApprovalRequest; reason?: string }>;
 
+export type BlockingApprovalChangeSubscription = (
+  onChange: () => void,
+  onError: (error: unknown) => void,
+) => Readonly<{ dispose(): void | Promise<void> }>;
+
 export type BlockingApprovalCoordinator = Readonly<{
   waitForDecision: (args: Readonly<{
     artifactId: string;
@@ -19,7 +24,7 @@ export type BlockingApprovalCoordinator = Readonly<{
     serverId?: string | null;
     signal?: AbortSignal;
     readRequest?: (() => Promise<BlockingApprovalRequest | null>) | null;
-    pollIntervalMs?: number;
+    subscribeChanges?: BlockingApprovalChangeSubscription;
   }>) => Promise<BlockingApprovalWaitDecision>;
   notifyApprovalUpdated: (args: Readonly<{
     artifactId: string;
@@ -43,15 +48,11 @@ export type BlockingApprovalCoordinator = Readonly<{
 type Waiter = {
   resolve: (value: BlockingApprovalWaitDecision) => void;
   reject: (error: Error) => void;
-  cleanup: () => void;
+  cleanup: () => void | Promise<void>;
 };
 
 function normalizeId(raw: unknown): string {
   return String(raw ?? '').trim();
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function createCoordinatorError(reason: unknown, fallback: string): Error {
@@ -98,12 +99,6 @@ function readDurableDecision(request: BlockingApprovalRequest): BlockingApproval
   return null;
 }
 
-function normalizePollIntervalMs(raw: unknown): number {
-  const parsed = typeof raw === 'number' ? raw : Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 250;
-  return Math.max(1, Math.min(60_000, Math.floor(parsed)));
-}
-
 export function createBlockingApprovalCoordinator(): BlockingApprovalCoordinator {
   const waitersByArtifactId = new Map<string, Set<Waiter>>();
   const detachedWaiterCountByArtifactId = new Map<string, number>();
@@ -126,13 +121,12 @@ export function createBlockingApprovalCoordinator(): BlockingApprovalCoordinator
     if (!waiters) return;
     waitersByArtifactId.delete(artifactId);
     for (const waiter of waiters) {
-      waiter.cleanup();
       waiter.reject(createCoordinatorError(reason, 'approval_wait_canceled'));
     }
   };
 
   return {
-    waitForDecision: ({ artifactId: rawArtifactId, signal, readRequest, pollIntervalMs }) => {
+    waitForDecision: ({ artifactId: rawArtifactId, signal, readRequest, subscribeChanges }) => {
       const artifactId = normalizeId(rawArtifactId);
       if (!artifactId) return Promise.reject(new Error('approval_artifact_id_required'));
       if (signal?.aborted) {
@@ -142,46 +136,53 @@ export function createBlockingApprovalCoordinator(): BlockingApprovalCoordinator
 
       return new Promise<BlockingApprovalWaitDecision>((resolve, reject) => {
         let settled = false;
+        let subscription: ReturnType<BlockingApprovalChangeSubscription> | undefined;
         const waiter: Waiter = {
           resolve: (value) => {
             if (settled) return;
             settled = true;
             removeWaiter(artifactId, waiter);
-            waiter.cleanup();
-            resolve(value);
+            void Promise.resolve().then(() => waiter.cleanup()).then(() => resolve(value), reject);
           },
           reject: (error) => {
             if (settled) return;
             settled = true;
             removeWaiter(artifactId, waiter);
-            waiter.cleanup();
-            reject(error);
+            void Promise.resolve().then(() => waiter.cleanup()).then(() => reject(error), reject);
           },
-          cleanup: () => {},
+          cleanup: () => {
+            signal?.removeEventListener('abort', abort);
+            const current = subscription;
+            subscription = undefined;
+            return current?.dispose();
+          },
         };
         const abort = () => {
+          if (settled) return;
           detachedWaiterCountByArtifactId.set(artifactId, (detachedWaiterCountByArtifactId.get(artifactId) ?? 0) + 1);
           waiter.reject(createCoordinatorError(signal?.reason, 'approval_wait_aborted'));
         };
         if (signal) {
           signal.addEventListener('abort', abort, { once: true });
-          waiter.cleanup = () => signal.removeEventListener('abort', abort);
         }
 
         const waiters = waitersByArtifactId.get(artifactId) ?? new Set<Waiter>();
         waiters.add(waiter);
         waitersByArtifactId.set(artifactId, waiters);
 
-        if (readRequest) {
-          const intervalMs = normalizePollIntervalMs(pollIntervalMs);
+        let reading = false;
+        let readRequested = false;
+        const invalidate = () => {
+          if (settled || !readRequest) return;
+          readRequested = true;
+          if (reading) return;
+          reading = true;
           void (async () => {
-            while (!settled) {
-              if (signal?.aborted) {
-                abort();
-                return;
-              }
-              try {
+            try {
+              while (!settled && readRequested) {
+                readRequested = false;
                 const latest = await readRequest();
+                if (settled) return;
                 if (latest) {
                   const decision = readDurableDecision(latest);
                   if (decision) {
@@ -189,12 +190,22 @@ export function createBlockingApprovalCoordinator(): BlockingApprovalCoordinator
                     return;
                   }
                 }
-              } catch {
-                // Transient artifact reads should not abandon the live approval wait.
               }
-              await delay(intervalMs);
+            } catch (error) {
+              waiter.reject(error instanceof Error ? error : createCoordinatorError(error, 'approval_read_failed'));
+            } finally {
+              reading = false;
             }
           })();
+        };
+        try {
+          subscription = subscribeChanges?.(invalidate, (error) => {
+            waiter.reject(error instanceof Error ? error : createCoordinatorError(error, 'approval_feed_failed'));
+          });
+          // Subscribe first so changes racing the initial durable read remain pending.
+          invalidate();
+        } catch (error) {
+          waiter.reject(error instanceof Error ? error : createCoordinatorError(error, 'approval_feed_failed'));
         }
       });
     },
@@ -216,7 +227,6 @@ export function createBlockingApprovalCoordinator(): BlockingApprovalCoordinator
       if (!waiters) return;
       waitersByArtifactId.delete(artifactId);
       for (const waiter of waiters) {
-        waiter.cleanup();
         waiter.resolve(decision);
       }
     },
@@ -240,7 +250,6 @@ export function createBlockingApprovalCoordinator(): BlockingApprovalCoordinator
       const resolvedDecision = readDecision(request) ?? { decision, request };
       waitersByArtifactId.delete(artifactId);
       for (const waiter of waiters) {
-        waiter.cleanup();
         waiter.resolve(resolvedDecision);
       }
       return { resolved: true };

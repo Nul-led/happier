@@ -62,6 +62,12 @@ class MockTerminal {
     element: HTMLElement | null = null;
     textarea: HTMLTextAreaElement | null = null;
     disposed = false;
+    buffer = { active: { cursorY: 20, baseY: 0, viewportY: 0 } };
+    cursorMoved: (() => void) | null = null;
+    scrolled: (() => void) | null = null;
+    onCursorMove(callback: () => void) { this.cursorMoved = callback; return { dispose: () => { this.cursorMoved = null; } }; }
+    onScroll(callback: () => void) { this.scrolled = callback; return { dispose: () => { this.scrolled = null; } }; }
+    onResize(_callback: () => void) { return { dispose: vi.fn() }; }
     parser = {
         registerOscHandler: registerOscHandlerSpy,
         registerDcsHandler: registerDcsHandlerSpy,
@@ -218,6 +224,18 @@ describe('XtermTerminalView.web', () => {
         });
         HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect;
         container.remove();
+    });
+
+    it('reports the visible cursor row and clears it when the viewport scrolls away', async () => {
+        const { XtermTerminalView } = await import('./XtermTerminalView.web');
+        const cursor = vi.fn();
+        await act(async () => { root.render(<XtermTerminalView fontSize={14} onInput={() => {}} onResize={() => {}} onReady={() => {}} onCursorRowChange={cursor} />); });
+        const terminal = terminalInstances[0]!;
+        await act(async () => { terminal.cursorMoved?.(); });
+        expect(cursor).toHaveBeenLastCalledWith({ top: 20 * 320 / 24, height: 320 / 24 });
+        terminal.buffer.active.viewportY = 30;
+        await act(async () => { terminal.scrolled?.(); });
+        expect(cursor).toHaveBeenLastCalledWith(null);
     });
 
     it('refocuses the terminal when the web container receives mouse down', async () => {
@@ -394,6 +412,84 @@ describe('XtermTerminalView.web', () => {
         });
         onDataSpy('文');
         expect(onInput).toHaveBeenCalledWith('文');
+    });
+
+    it('suppresses real parser replies during replay until completion and forwards live replies afterwards', async () => {
+        // No browser renderer is opened; xterm can use its non-canvas color fallback.
+        const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+        const { Terminal } = await vi.importActual<typeof import('@xterm/xterm')>('@xterm/xterm');
+        getContext.mockRestore();
+        const terminal = new Terminal();
+        const { XtermTerminalView } = await import('./XtermTerminalView.web');
+        const ref = React.createRef<XtermTerminalHandle>();
+        const onInput = vi.fn();
+        await act(async () => root.render(
+            <XtermTerminalView ref={ref} fontSize={14} onInput={onInput} onResize={() => {}} onReady={() => {}} />,
+        ));
+        const instance = terminalInstances[0];
+        const parsed: Array<Promise<void>> = [];
+        const completions: Array<() => void> = [];
+        terminal.onData((data) => onDataSpy(data));
+        instance.write.mockImplementation((data, callback) => {
+            parsed.push(new Promise<void>((resolve) => terminal.write(data, () => {
+                if (callback) completions.push(callback);
+                resolve();
+            })));
+        });
+        try {
+            await act(async () => {
+                requireTerminalHandle(ref).write('\u001b[c', { intent: 'replay' });
+                await new Promise((resolve) => setTimeout(resolve, 40));
+                await Promise.all(parsed);
+            });
+            expect(onInput).not.toHaveBeenCalled();
+            terminal.input('during replay');
+            expect(onInput).not.toHaveBeenCalled();
+            completions.shift()?.();
+            terminal.input('after replay');
+            expect(onInput).toHaveBeenCalledWith('after replay');
+            onInput.mockClear();
+            await act(async () => {
+                requireTerminalHandle(ref).writeBytes({ terminalId: 'live', seq: 1, byteOffset: 0, writeGeneration: 0, bytes: new TextEncoder().encode('\u001b[c') });
+                await new Promise((resolve) => setTimeout(resolve, 40));
+                await Promise.all(parsed);
+            });
+            expect(onInput).toHaveBeenCalledWith(expect.stringMatching(/^\u001b\[\?/));
+            completions.shift()?.();
+        } finally {
+            terminal.dispose();
+        }
+    });
+
+    it('releases replay suppression when a renderer is replaced before its callback', async () => {
+        const { XtermTerminalView } = await import('./XtermTerminalView.web');
+        const ref = React.createRef<XtermTerminalHandle>();
+        const onInput = vi.fn();
+        deferWriteCallbacks = true;
+        await act(async () => root.render(
+            <XtermTerminalView ref={ref} fontSize={14} onInput={onInput} onResize={() => {}} onReady={() => {}} />,
+        ));
+        await act(async () => {
+            requireTerminalHandle(ref).write('\u001b[c', { intent: 'replay' });
+            await new Promise((resolve) => setTimeout(resolve, 40));
+        });
+        expect(pendingWriteCallbacks).toHaveLength(1);
+        await act(async () => root.render(
+            <XtermTerminalView ref={ref} fontSize={15} onInput={onInput} onResize={() => {}} onReady={() => {}} />,
+        ));
+        onDataSpy('fresh renderer input');
+        expect(onInput).toHaveBeenCalledWith('fresh renderer input');
+        onInput.mockClear();
+        await act(async () => {
+            requireTerminalHandle(ref).write('\u001b[c', { intent: 'replay' });
+            await new Promise((resolve) => setTimeout(resolve, 40));
+        });
+        pendingWriteCallbacks.shift()?.();
+        onDataSpy('after stale completion');
+        expect(onInput).not.toHaveBeenCalled();
+        pendingWriteCallbacks.shift()?.();
+        onDataSpy('new replay completed');
+        expect(onInput).toHaveBeenCalledWith('new replay completed');
     });
 
     it('writes byte chunks to xterm as Uint8Array without decoding high-bit bytes', async () => {

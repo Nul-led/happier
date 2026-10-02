@@ -626,11 +626,17 @@ describe('daemon control client (HTTP error responses)', () => {
   });
 
   it('resolves spawn-session nonce status from daemon control server', async () => {
+    let observedBody: unknown;
     const server = http.createServer((req, res) => {
       if (req.method === 'POST' && req.url === '/spawn-session/resolve') {
-        res.statusCode = 200;
-        res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ success: true, status: 'success', sessionId: 'sess-resolved' }));
+        let raw = '';
+        req.on('data', (chunk) => { raw += String(chunk); });
+        req.on('end', () => {
+          observedBody = JSON.parse(raw);
+          res.statusCode = 200;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ success: true, status: 'success', sessionId: 'sess-resolved' }));
+        });
         return;
       }
       res.statusCode = 404;
@@ -650,10 +656,11 @@ describe('daemon control client (HTTP error responses)', () => {
         controlToken: 'test-token',
       });
 
-      await expect(resolveDaemonSpawnSessionByNonce('nonce-1')).resolves.toEqual({
+      await expect(resolveDaemonSpawnSessionByNonce('nonce-1', 90_000)).resolves.toEqual({
         status: 'success',
         sessionId: 'sess-resolved',
       });
+      expect(observedBody).toEqual({ spawnNonce: 'nonce-1', timeoutMs: 90_000 });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -689,5 +696,17 @@ describe('daemon control client (HTTP error responses)', () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  it('does not turn a nonce observation transport failure into not-found proof', async () => {
+    const server = http.createServer((_req, res) => { res.statusCode = 503; res.end('unavailable'); });
+    try {
+      const { port } = await listen(server);
+      tmpHomeDir = await createTempDir('happier-daemon-client-test-');
+      envScope.patch({ HAPPIER_HOME_DIR: tmpHomeDir });
+      reloadConfiguration();
+      writeDaemonState({ pid: process.pid, httpPort: port, startedAt: Date.now(), startedWithCliVersion: 'test', controlToken: 'test-token' });
+      await expect(resolveDaemonSpawnSessionByNonce('nonce-1', 90_000)).rejects.toThrow();
+    } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
   });
 });

@@ -12,6 +12,7 @@ import type { TerminalPtySessionManager } from '@/terminal/pty/sessions';
 import { createEncryptedTransferChunkEnvelope } from '@/machines/transfer/transferChunkEncryption';
 
 import { registerRestrictedRunnerMachineServices } from './registerRestrictedRunnerMachineServices';
+import { createRestrictedRunnerLocalServicesRoutes } from './restrictedRunnerLocalServices';
 
 type Handler = (input: unknown) => Promise<unknown>;
 
@@ -24,6 +25,31 @@ afterEach(async () => {
 });
 
 describe('restricted Runner ordinary Machine services', () => {
+  it('refuses native application acquisition without borrowing Machine-wide preview authority', async () => {
+    const runtime = createLocalServicesDaemonRuntime({
+      machineId: 'runner-machine', inventoryEnabled: () => false, startLoop: false,
+      inventoryAnnotations: { read: () => null, write: () => undefined },
+      scan: async () => ({ listeners: [], processes: new Map(), workspaces: [], diagnostics: [] }),
+    });
+    try {
+      const routes = createRestrictedRunnerLocalServicesRoutes({
+        machineId: 'runner-machine', sessionId: 'runner-session', workingDirectory: '/workspace', runtime,
+        publicPreviewRoutes: {
+          getStatus: async () => { throw new Error('not exercised'); },
+          createExposure: async () => { throw new Error('not exercised'); },
+          revokeExposure: async () => { throw new Error('not exercised'); },
+          copyUrl: async () => { throw new Error('not exercised'); },
+        },
+      });
+      await expect(Promise.resolve().then(() => routes.localServicesPreview!.acquireNativeApplication({
+        machineId: 'runner-machine', previewId: 'native-preview', sessionId: 'runner-session',
+        owner: { kind: 'session', id: 'runner-session' }, target: { scheme: 'http', host: '127.0.0.1', port: 3000 },
+      }, 'native-grant'))).rejects.toMatchObject({ code: 'plugin_service_unavailable' });
+    } finally {
+      await runtime.stop();
+    }
+  });
+
   it('registers the closed ordinary Machine-service surface and excludes daemon administration', async () => {
     const workingDirectory = await mkdtemp(join(tmpdir(), 'happier-runner-machine-services-'));
     temporaryDirectories.push(workingDirectory);

@@ -1,7 +1,5 @@
 import type { SessionPublicLinkSettingsV1 } from '@happier-dev/protocol';
 
-import { getRandomBytes } from '@/platform/cryptoRandom';
-
 /**
  * The canonical publication projection plus the bearer this device generated.
  *
@@ -12,12 +10,9 @@ import { getRandomBytes } from '@/platform/cryptoRandom';
  */
 export type SessionPublicLinkPublication = SessionPublicLinkSettingsV1 & Readonly<{
     token: string | null;
+    /** Current isolated link, kept solely by the generating host. */
+    publicUrl?: string | null;
 }>;
-
-/** Bearer material for a new publication; 12 bytes of hex, as the released link format expects. */
-export function generateSessionPublicLinkBearer(): string {
-    return Array.from(getRandomBytes(12), (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
 
 export type SessionPublicLinkReadOutcome =
     | Readonly<{ ok: true; publication: SessionPublicLinkSettingsV1 | null }>
@@ -48,10 +43,12 @@ export function mergeSessionPublicLinkWithCachedBearer(params: Readonly<{
         && previous.maxUses === refreshed.maxUses
         && previous.useCount === refreshed.useCount
         && previous.isConsentRequired === refreshed.isConsentRequired
+        && previous.keyDerivation === refreshed.keyDerivation
+        && previous.isolatedOrigin === refreshed.isolatedOrigin
         && previous.updatedAt === refreshed.updatedAt;
     if (settingsAreIdentical) {
         return {
-            publication: { ...refreshed, token: params.cachedToken },
+            publication: { ...refreshed, token: params.cachedToken, ...(previous.publicUrl ? { publicUrl: previous.publicUrl } : {}) },
             cachedToken: params.cachedToken,
         };
     }

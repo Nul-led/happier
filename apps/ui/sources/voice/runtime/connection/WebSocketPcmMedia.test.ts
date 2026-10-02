@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { WebPcmCaptureError } from '@/voice/runtime/input/WebPcmCapture.web';
+import { createWebSocketPcmConnection } from './VoiceRealtimeConnection';
 
 import {
   createWebSocketPcmMedia,
@@ -9,6 +10,143 @@ import {
 } from './WebSocketPcmMedia';
 
 describe('WebSocketPcmMedia', () => {
+  function createBrowserPlaybackHarness() {
+    const sources: Array<{
+      buffer: { samples: Float32Array } | null;
+      onended: (() => void) | null;
+      start: ReturnType<typeof vi.fn>;
+      stop: ReturnType<typeof vi.fn>;
+      disconnect: ReturnType<typeof vi.fn>;
+    }> = [];
+    const gain = { value: 1, setTargetAtTime: vi.fn() };
+    const disconnectGain = vi.fn();
+    const context = {
+      currentTime: 0,
+      destination: {},
+      createGain: () => ({ gain, connect: vi.fn(), disconnect: disconnectGain }),
+      createBuffer: (_channels: number, length: number) => {
+        const samples = new Float32Array(length);
+        return { samples, getChannelData: () => samples };
+      },
+      createBufferSource: () => {
+        const source = { buffer: null, onended: null, start: vi.fn(), stop: vi.fn(), disconnect: vi.fn(), connect: vi.fn() };
+        sources.push(source);
+        return source;
+      },
+    };
+    const media = createWebSocketPcmMedia({
+      mic: { getStream: () => ({} as MediaStream), getAudioContext: () => context as unknown as AudioContext },
+      input: { sampleRate: 24_000, chunkMs: 100 },
+      output: { sampleRate: 24_000, retainedOutputMaxMs: 1_500 },
+      onInputChunk: vi.fn(),
+      createCapture: () => ({ start: async () => {}, stop: async () => {}, waitForDrain: async () => {}, isActive: () => true, level: () => 0 }),
+    });
+    const enqueueSeconds = (seconds: number, marker: number) => media.enqueueOutput(
+      encodePcm16LeBase64(new Int16Array(seconds * 24_000).fill(marker)),
+    );
+    return { media, context, sources, gain, disconnectGain, enqueueSeconds };
+  }
+
+  it('accepts faster-than-realtime output beyond five seconds in order and drains only after the complete burst', async () => {
+    const harness = createBrowserPlaybackHarness();
+    await harness.media.pcm.start(new AbortController().signal);
+    expect(harness.enqueueSeconds(4, 1_000)).toBe(true);
+    expect(harness.enqueueSeconds(4, 2_000)).toBe(true);
+    expect(harness.enqueueSeconds(4, 3_000)).toBe(true);
+    expect(harness.sources.map((source) => source.start.mock.calls[0]?.[0])).toEqual([0, 4, 8]);
+    expect(harness.sources.map((source) => source.buffer?.samples[0])).toEqual([
+      expect.closeTo(1_000 / 32_767), expect.closeTo(2_000 / 32_767), expect.closeTo(3_000 / 32_767),
+    ]);
+    let drained = false;
+    const drain = harness.media.waitForOutputDrain(new AbortController().signal).then(() => { drained = true; });
+    harness.sources[0]!.onended?.();
+    harness.sources[1]!.onended?.();
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    harness.context.currentTime = 12;
+    harness.sources[2]!.onended?.();
+    await drain;
+    expect(harness.media.playbackCursorMs()).toBe(12_000);
+    expect(harness.sources.every((source) => source.disconnect.mock.calls.length === 1)).toBe(true);
+    await harness.media.pcm.stop();
+    expect(harness.disconnectGain).toHaveBeenCalledOnce();
+  });
+
+  it('ducks a long accepted burst during a candidate and clears every source on confirmed interruption', async () => {
+    const harness = createBrowserPlaybackHarness();
+    await harness.media.pcm.start(new AbortController().signal);
+    expect(harness.enqueueSeconds(4, 1_000)).toBe(true);
+    expect(harness.enqueueSeconds(4, 2_000)).toBe(true);
+    expect(harness.media.beginOutputInterruptionCandidate()).toBe('ducked');
+    expect(harness.sources.every((source) => source.stop.mock.calls.length === 0)).toBe(true);
+    expect(harness.gain.setTargetAtTime).toHaveBeenLastCalledWith(0.18, 0, 0.015);
+    expect(harness.enqueueSeconds(4, 3_000)).toBe(true);
+    harness.media.resolveOutputInterruptionCandidate('false_alarm');
+    expect(harness.sources).toHaveLength(3);
+    expect(harness.gain.setTargetAtTime).toHaveBeenLastCalledWith(1, 0, 0.015);
+    expect(harness.media.beginOutputInterruptionCandidate()).toBe('ducked');
+    const drain = harness.media.waitForOutputDrain(new AbortController().signal);
+    harness.media.resolveOutputInterruptionCandidate('confirmed');
+    await drain;
+    expect(harness.sources.every((source) => source.stop.mock.calls.length === 1 && source.onended === null)).toBe(true);
+    harness.media.resolveOutputInterruptionCandidate('false_alarm');
+    expect(harness.sources).toHaveLength(3);
+    await harness.media.pcm.stop();
+    expect(harness.enqueueSeconds(1, 4_000)).toBe(false);
+  });
+
+  it('promotes retained candidate audio to ducked playback when a burst outgrows retention without losing its tail', async () => {
+    const harness = createBrowserPlaybackHarness();
+    await harness.media.pcm.start(new AbortController().signal);
+    expect(harness.enqueueSeconds(1, 1_000)).toBe(true);
+    harness.context.currentTime = 0.25;
+    expect(harness.media.beginOutputInterruptionCandidate()).toBe('retained');
+    expect(harness.enqueueSeconds(4, 2_000)).toBe(true);
+    expect(harness.sources).toHaveLength(3);
+    expect(harness.sources[1]!.start).toHaveBeenCalledWith(0.25);
+    expect(harness.sources[2]!.start).toHaveBeenCalledWith(1);
+    expect(harness.sources[1]!.buffer?.samples.length).toBe(18_000);
+    expect(harness.gain.setTargetAtTime).toHaveBeenLastCalledWith(0.18, 0.25, 0.015);
+    harness.media.resolveOutputInterruptionCandidate('false_alarm');
+    expect(harness.sources).toHaveLength(3);
+    await harness.media.pcm.stop();
+  });
+
+  it('exposes browser candidate interruption through the host PCM connection', async () => {
+    const harness = createBrowserPlaybackHarness();
+    const connection = createWebSocketPcmConnection({
+      driver: { open: async () => {}, sendControl: async () => {}, close: async () => {} },
+      pcm: harness.media.pcm,
+    });
+    await connection.connect(new AbortController().signal);
+    expect(harness.enqueueSeconds(1, 1_000)).toBe(true);
+    expect(connection.beginOutputInterruptionCandidate()).toBe('retained');
+    connection.resolveOutputInterruptionCandidate('false_alarm');
+    expect(harness.sources).toHaveLength(2);
+    await connection.close({ code: 'user_stop' });
+    expect(harness.sources[1]!.stop).toHaveBeenCalledOnce();
+  });
+
+  it('settles aborted drain waits and releases the complete queued burst on stop', async () => {
+    const harness = createBrowserPlaybackHarness();
+    await harness.media.pcm.start(new AbortController().signal);
+    expect(harness.enqueueSeconds(4, 1_000)).toBe(true);
+    expect(harness.enqueueSeconds(4, 2_000)).toBe(true);
+    const preAborted = new AbortController();
+    preAborted.abort();
+    await harness.media.waitForOutputDrain(preAborted.signal);
+    const controller = new AbortController();
+    const abortedDrain = harness.media.waitForOutputDrain(controller.signal);
+    controller.abort();
+    await abortedDrain;
+    expect(harness.sources.every((source) => source.stop.mock.calls.length === 0)).toBe(true);
+    const drain = harness.media.waitForOutputDrain(new AbortController().signal);
+    await harness.media.pcm.stop();
+    await drain;
+    expect(harness.sources.every((source) => source.stop.mock.calls.length === 1 && source.onended === null)).toBe(true);
+    expect(harness.media.outputLevel()).toBe(0);
+  });
+
   it('round-trips PCM16LE without a Buffer/browser-global dependency', () => {
     const source = new Int16Array([-32768, -1, 0, 1, 32767]);
     expect([...decodePcm16LeBase64(encodePcm16LeBase64(source))]).toEqual([...source]);
@@ -27,7 +165,7 @@ describe('WebSocketPcmMedia', () => {
     const media = createWebSocketPcmMedia({
       mic: { ensureActive: vi.fn(async () => {}), isMuted: () => false, getStream: () => stream, getAudioContext: () => context },
       input: { sampleRate: 24_000, chunkMs: 100 },
-      output: { sampleRate: 24_000, maxBufferedMs: 1_000 },
+      output: { sampleRate: 24_000 },
       onInputChunk,
       onOutputLevel,
       createCapture: vi.fn(({ mic, format, onChunk }) => {
@@ -43,6 +181,7 @@ describe('WebSocketPcmMedia', () => {
             await onChunk({ bytes: new Uint8Array(new Int16Array([1, 2, 3]).buffer), level });
           },
           async stop() { active = false; await stopCapture(); },
+          finish: async () => {},
           async waitForDrain() {},
           isActive: () => active,
           level: () => level,
@@ -98,7 +237,7 @@ describe('WebSocketPcmMedia', () => {
     const media = createWebSocketPcmMedia({
       mic: { getStream: () => ({} as MediaStream), getAudioContext: () => ({ currentTime: 0 } as AudioContext) },
       input: { sampleRate: 24_000, chunkMs: 20 },
-      output: { sampleRate: 24_000, maxBufferedMs: 1_000 },
+      output: { sampleRate: 24_000 },
       onInputChunk: vi.fn(),
       onOutputLevel,
       createCapture: vi.fn(() => {
@@ -106,6 +245,7 @@ describe('WebSocketPcmMedia', () => {
         return {
           start: vi.fn(async () => { active = true; }),
           stop: vi.fn(() => stopCapture()),
+          finish: async () => {},
           waitForDrain: vi.fn(async () => {}),
           isActive: () => active,
           level: () => 0,
@@ -137,7 +277,7 @@ describe('WebSocketPcmMedia', () => {
     const media = createWebSocketPcmMedia({
       mic: { getStream: () => ({} as MediaStream), getAudioContext: () => ({ currentTime: 0 } as AudioContext) },
       input: { sampleRate: 24_000, chunkMs: 20 },
-      output: { sampleRate: 24_000, maxBufferedMs: 1_000 },
+      output: { sampleRate: 24_000 },
       onInputChunk: vi.fn(),
       onInputError,
       createCapture: vi.fn(({ onError }) => {
@@ -146,6 +286,7 @@ describe('WebSocketPcmMedia', () => {
         return {
           start: vi.fn(async () => { active = true; }),
           stop: vi.fn(async () => { active = false; await stopCapture(); }),
+          finish: async () => {},
           waitForDrain: vi.fn(async () => {}),
           isActive: () => active,
           level: () => 0,
@@ -183,11 +324,11 @@ describe('WebSocketPcmMedia', () => {
     expect(stopCapture).toHaveBeenCalledTimes(1);
   });
 
-  it('bounds output queued before playback startup', () => {
+  it('rejects output before playback startup', () => {
     const media = createWebSocketPcmMedia({
       mic: { getStream: () => null, getAudioContext: () => null },
       input: { sampleRate: 24_000, chunkMs: 100 },
-      output: { sampleRate: 24_000, maxBufferedMs: 10 },
+      output: { sampleRate: 24_000 },
       onInputChunk: vi.fn(),
     });
     const twentyMs = encodePcm16LeBase64(new Int16Array(480));
@@ -200,11 +341,12 @@ describe('WebSocketPcmMedia', () => {
     const media = createWebSocketPcmMedia({
       mic: { getStream: () => ({} as MediaStream), getAudioContext: () => ({ currentTime: 0 } as AudioContext) },
       input: { sampleRate: 24_000, chunkMs: 20 },
-      output: { sampleRate: 24_000, maxBufferedMs: 1_000 },
+      output: { sampleRate: 24_000 },
       onInputChunk: vi.fn(),
       createCapture: vi.fn(() => ({
         start: vi.fn(async () => { throw Object.assign(new Error('denied'), { code: 'mic_denied' }); }),
         stop: stopCapture,
+        finish: async () => {},
         waitForDrain: vi.fn(async () => {}),
         isActive: () => false,
         level: () => 0,
@@ -261,10 +403,10 @@ describe('WebSocketPcmMedia', () => {
     const media = createWebSocketPcmMedia({
       mic: { getStream: () => ({} as MediaStream), getAudioContext: () => context },
       input: { sampleRate: 24_000, chunkMs: 20 },
-      output: { sampleRate: 24_000, maxBufferedMs: 5_000, retainedOutputMaxMs: 1_500 },
+      output: { sampleRate: 24_000, retainedOutputMaxMs: 1_500 },
       onInputChunk: vi.fn(),
       createCapture: vi.fn(() => ({
-        start: vi.fn(async () => {}), stop: vi.fn(async () => {}), waitForDrain: vi.fn(async () => {}),
+        start: vi.fn(async () => {}), stop: vi.fn(async () => {}), finish: async () => {}, waitForDrain: vi.fn(async () => {}),
         isActive: () => true, level: () => 0,
       })),
     });
@@ -285,10 +427,8 @@ describe('WebSocketPcmMedia', () => {
     expect(media.outputLevel()).toBe(0);
 
     // 750ms remains from the interrupted chunk. A second 750ms chunk reaches
-    // the canonical 1.5s bound; any additional audio is rejected rather than
-    // creating an unbounded hidden queue during a cough/noise candidate.
+    // the canonical retention boundary and still resumes without ducking.
     expect(media.enqueueOutput(encodePcm16LeBase64(new Int16Array(18_000)))).toBe(true);
-    expect(media.enqueueOutput(encodePcm16LeBase64(new Int16Array(2_400)))).toBe(false);
 
     media.resolveOutputInterruptionCandidate('false_alarm');
     expect(sources).toHaveLength(3);
@@ -317,10 +457,10 @@ describe('WebSocketPcmMedia', () => {
     const media = createWebSocketPcmMedia({
       mic: { getStream: () => ({} as MediaStream), getAudioContext: () => context },
       input: { sampleRate: 24_000, chunkMs: 20 },
-      output: { sampleRate: 24_000, maxBufferedMs: 5_000, retainedOutputMaxMs: 1_500 },
+      output: { sampleRate: 24_000, retainedOutputMaxMs: 1_500 },
       onInputChunk: vi.fn(),
       createCapture: vi.fn(() => ({
-        start: vi.fn(async () => {}), stop: vi.fn(async () => {}), waitForDrain: vi.fn(async () => {}),
+        start: vi.fn(async () => {}), stop: vi.fn(async () => {}), finish: vi.fn(async () => {}), waitForDrain: vi.fn(async () => {}),
         isActive: () => true, level: () => 0,
       })),
     });

@@ -1,0 +1,6 @@
+{
+  "name": "HappierTextSegmentation",
+  "platforms": ["android", "ios"],
+  "android": { "modules": ["dev.happier.textsegmentation.HappierTextSegmentationModule"] },
+  "ios": { "modules": ["HappierTextSegmentationModule"] }
+}

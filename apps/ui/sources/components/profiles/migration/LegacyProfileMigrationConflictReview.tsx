@@ -108,7 +108,7 @@ export const LegacyProfileMigrationConflictReview = React.memo(function LegacyPr
     return <ItemList style={{ paddingTop: 0 }} keyboardShouldPersistTaps="handled">
         <ItemGroup
             title={t('settingsProviders.migration.conflictReviewTitle')}
-            footer={t('settingsProviders.migration.conflictReviewFooter')}
+            description={t('settingsProviders.migration.conflictReviewFooter')}
         >
             <Item mode="info" title={props.profileName} showChevron={false} />
             {props.conflict.kinds.map((kind) => (
@@ -118,7 +118,7 @@ export const LegacyProfileMigrationConflictReview = React.memo(function LegacyPr
 
         {hasModelConflict ? <ItemGroup
             title={t('settingsProviders.migration.modelOutcomeTitle')}
-            footer={t('settingsProviders.migration.modelOutcomeFooter')}
+            description={t('settingsProviders.migration.modelOutcomeFooter')}
         >
             {props.conflict.modelChoices.map((choice) => {
                 const selected = modelSelection?.agentTargetKey === choice.selection.agentTargetKey
@@ -162,7 +162,7 @@ export const LegacyProfileMigrationConflictReview = React.memo(function LegacyPr
 
         <ItemGroup
             title={t('settingsProviders.migration.createNamed')}
-            footer={t('settingsProviders.migration.createNamedDescription')}
+            description={t('settingsProviders.migration.createNamedDescription')}
         >
             <MachineSetupTextField
                 testID="profile-migration-conflict-name"

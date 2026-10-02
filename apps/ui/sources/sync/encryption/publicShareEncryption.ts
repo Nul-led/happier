@@ -1,50 +1,32 @@
-import { deriveKey } from '@/encryption/deriveKey';
-import { encodeBase64, decodeBase64 } from '@/encryption/base64';
 import {
-    openPublicShareEncryptedDataKeyEnvelopeV0,
-    PUBLIC_SHARE_KEY_DERIVATION_PATH_V1,
-    PUBLIC_SHARE_KEY_DERIVATION_USAGE_V1,
-    sealPublicShareEncryptedDataKeyEnvelopeV0,
+    openPublicShareDataKeyV1,
+    sealPublicShareDataKeyV1,
 } from '@happier-dev/protocol';
 import { getRandomBytes } from '@/platform/cryptoRandom';
 
 /**
- * Encrypt a data encryption key for public sharing using a token
+ * Wrap a data encryption key with the client-held public-link secret.
  *
  * @param dataEncryptionKey - The session's data encryption key to encrypt
- * @param token - The random public share token
+ * @param token - The fragment secret (the path token only for retained 0.2 readers)
  * @returns Base64 encoded encrypted data key
  *
  * @remarks
- * Uses SecretBox encryption with a key derived from the token.
- * The token must be kept secret as it enables decryption.
+ * Uses the Protocol-owned SecretBox and key derivation. New writers use an
+ * independent URL-fragment secret that never reaches the server.
  */
 export async function encryptDataKeyForPublicShare(
     dataEncryptionKey: Uint8Array,
     token: string
 ): Promise<string> {
-    // Derive encryption key from token
-    const tokenBytes = new TextEncoder().encode(token);
-    const encryptionKey = await deriveKey(
-        tokenBytes,
-        PUBLIC_SHARE_KEY_DERIVATION_USAGE_V1,
-        [...PUBLIC_SHARE_KEY_DERIVATION_PATH_V1],
-    );
-    const encrypted = sealPublicShareEncryptedDataKeyEnvelopeV0({
-        dataKey: dataEncryptionKey,
-        wrappingKey: encryptionKey,
-        randomBytes: getRandomBytes,
-    });
-
-    // Return as base64
-    return encodeBase64(encrypted, 'base64');
+    return sealPublicShareDataKeyV1({ dataKey: dataEncryptionKey, secret: token, randomBytes: getRandomBytes });
 }
 
 /**
- * Decrypt a data encryption key from a public share using a token
+ * Open a data encryption key using the exact secret selected by the link format.
  *
  * @param encryptedDataKey - The encrypted data key (base64)
- * @param token - The public share token
+ * @param token - A fragment secret, or the retained 0.2 path token
  * @returns Decrypted data encryption key, or null if decryption fails
  *
  * @remarks
@@ -54,21 +36,5 @@ export async function decryptDataKeyFromPublicShare(
     encryptedDataKey: string,
     token: string
 ): Promise<Uint8Array | null> {
-    try {
-        // Derive decryption key from token
-        const tokenBytes = new TextEncoder().encode(token);
-        const decryptionKey = await deriveKey(
-            tokenBytes,
-            PUBLIC_SHARE_KEY_DERIVATION_USAGE_V1,
-            [...PUBLIC_SHARE_KEY_DERIVATION_PATH_V1],
-        );
-
-        // Decode from base64
-        return openPublicShareEncryptedDataKeyEnvelopeV0({
-            envelope: decodeBase64(encryptedDataKey, 'base64'),
-            wrappingKey: decryptionKey,
-        });
-    } catch (error) {
-        return null;
-    }
+    return openPublicShareDataKeyV1({ encryptedDataKey, secret: token });
 }

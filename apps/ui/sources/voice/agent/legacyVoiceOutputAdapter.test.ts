@@ -4,6 +4,13 @@ import { createLegacyVoiceOutputAdapter } from './legacyVoiceOutputAdapter';
 import type { VoiceAgentOutputEventV1 } from '@happier-dev/protocol';
 
 describe('createLegacyVoiceOutputAdapter', () => {
+  it('uses the same early semantic first-sentence boundary as the daemon producer', () => {
+    const adapter = createLegacyVoiceOutputAdapter({ streamId: 'stream-1' });
+    expect(adapter.ingest(0, { t: 'delta', textDelta: 'Open index.' })).toEqual([]);
+    expect(adapter.ingest(1, { t: 'delta', textDelta: 'ts at 10:30. Next' })).toEqual([
+      { v: 1, kind: 'speech_segment', turnId: 'stream-1', seq: 0, segmentId: 'stream-1:legacy:segment:0', text: 'Open index.ts at 10:30.' },
+    ]);
+  });
   it('maps legacy delta/done/actions into one ordered provider-neutral event stream', () => {
     const adapter = createLegacyVoiceOutputAdapter({ streamId: 'stream-1' });
     expect(adapter.ingest(0, { t: 'delta', textDelta: 'Hello ' })).toEqual([]);

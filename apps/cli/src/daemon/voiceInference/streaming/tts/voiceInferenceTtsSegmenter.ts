@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isSpeechSentenceBoundary, isSpeechClauseBoundary, speechSentenceEnd, speechTextEndAtOrBefore } from '@happier-dev/protocol';
 
 export type VoiceInferenceTtsTextSegment = Readonly<{
   segmentId: string;
@@ -17,72 +18,34 @@ export type SegmentTextForDaemonTtsOptions = Readonly<{
 
 const DEFAULT_FIRST_SEGMENT_MAX_CHARS = 160;
 const DEFAULT_MAX_SEGMENT_CHARS = 260;
-const ABBREVIATIONS = new Set([
-  'mr',
-  'mrs',
-  'ms',
-  'dr',
-  'prof',
-  'sr',
-  'jr',
-  'st',
-  'vs',
-  'etc',
-  'e.g',
-  'i.e',
-]);
 
 function hashText(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 16);
 }
 
-function previousToken(value: string, punctuationIndex: number): string {
-  const before = value.slice(0, punctuationIndex).trimEnd();
-  const match = before.match(/([A-Za-z](?:[A-Za-z]|\.)*)$/u);
-  return match?.[1]?.toLowerCase() ?? '';
-}
-
-function isDecimalPoint(value: string, index: number): boolean {
-  return /\d/u.test(value[index - 1] ?? '') && /\d/u.test(value[index + 1] ?? '');
-}
-
-function isSentenceBoundary(value: string, index: number): boolean {
-  const char = value[index];
-  if (char === '!' || char === '?' || char === ';' || char === ':') {
-    return true;
-  }
-  if (char !== '.') {
-    return false;
-  }
-  if (isDecimalPoint(value, index)) {
-    return false;
-  }
-  return !ABBREVIATIONS.has(previousToken(value, index));
-}
-
 function findBreakAtOrBefore(value: string, maxEnd: number, minEnd: number): number {
-  for (let index = Math.min(maxEnd, value.length - 1); index >= minEnd; index -= 1) {
-    if (isSentenceBoundary(value, index)) {
-      return index + 1;
+  for (let index = Math.min(maxEnd - 1, value.length - 1); index >= minEnd; index -= 1) {
+    if (isSpeechSentenceBoundary(value, index)) {
+      return Math.min(maxEnd, speechSentenceEnd(value, index));
     }
   }
-  for (let index = Math.min(maxEnd, value.length - 1); index >= minEnd; index -= 1) {
-    if (value[index] === ',') {
-      return index + 1;
+  for (let index = Math.min(maxEnd - 1, value.length - 1); index >= minEnd; index -= 1) {
+    if (isSpeechClauseBoundary(value, index)) {
+      return Math.min(maxEnd, speechSentenceEnd(value, index));
     }
   }
-  for (let index = Math.min(maxEnd, value.length - 1); index >= minEnd; index -= 1) {
+  for (let index = Math.min(maxEnd - 1, value.length - 1); index >= minEnd; index -= 1) {
     if (/\s/u.test(value[index] ?? '')) {
       return index;
     }
   }
-  return Math.min(maxEnd, value.length);
+  return speechTextEndAtOrBefore(value, Math.min(maxEnd, value.length));
 }
 
 function findFirstSentenceBoundary(value: string, start: number, maxEnd: number): number | null {
   for (let index = start; index < Math.min(maxEnd, value.length); index += 1) {
-    if (isSentenceBoundary(value, index)) {
-      return index + 1;
+    if (isSpeechSentenceBoundary(value, index)) {
+      return Math.min(maxEnd, speechSentenceEnd(value, index));
     }
   }
   return null;

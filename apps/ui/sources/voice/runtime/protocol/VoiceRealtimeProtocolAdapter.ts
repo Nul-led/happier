@@ -43,6 +43,7 @@ export type VoiceRealtimeProtocolAdapter = Readonly<{
     action: VoiceTurnControlAction,
     payload?: VoiceRealtimeJsonValue,
   ): VoiceRealtimeJsonValue | null;
+  encodePostInputCommitControls?(): readonly VoiceRealtimeJsonValue[];
   refreshAuth?(signal: AbortSignal): Promise<boolean>;
   releasePrepared?(input: Readonly<{
     controlSessionId: string;

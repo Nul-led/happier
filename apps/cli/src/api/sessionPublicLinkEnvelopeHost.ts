@@ -1,13 +1,10 @@
 import {
-  PUBLIC_SHARE_DATA_ENCRYPTION_KEY_BYTES,
-  PUBLIC_SHARE_KEY_DERIVATION_PATH_V1,
-  PUBLIC_SHARE_KEY_DERIVATION_USAGE_V1,
   SessionPublicLinkCreateActionInputV1Schema,
-  sealPublicShareEncryptedDataKeyEnvelopeV0,
+  generateStoredContentPublicShareMaterialV1,
+  sealPublicShareDataKeyV1,
 } from '@happier-dev/protocol';
 
-import { encodeBase64, getRandomBytes } from '@/api/encryption';
-import { deriveKey } from '@/utils/deriveKey';
+import { getRandomBytes } from '@/api/encryption';
 import { openSessionDataEncryptionKey } from '@/api/client/openSessionDataEncryptionKey';
 import { isAuthenticationError } from '@/api/client/httpStatusError';
 import { fetchSessionById } from '@/session/transport/http/sessionsHttp';
@@ -33,52 +30,11 @@ export class SessionPublicLinkEnvelopeHostError extends Error {
 }
 
 /**
- * Client-generated bearer for the released owner route. The server stores only
- * its hash and echoes it solely at creation/rotation time; the logical Action
- * never accepts or returns it.
- */
-export function generatePublicShareTokenHex(): string {
-  return Array.from(getRandomBytes(12), (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-/**
- * Uses the Protocol-owned current V0 payload and SecretBox framing. The
- * Protocol reader retains the deployed legacy JSON payload solely for
- * compatibility; both UI and CLI write the same current format.
- */
-export async function encryptDataKeyForPublicShare(
-  dataKey: Uint8Array,
-  token: string,
-): Promise<string> {
-  if (!(dataKey instanceof Uint8Array) || dataKey.length !== PUBLIC_SHARE_DATA_ENCRYPTION_KEY_BYTES) {
-    throw new SessionPublicLinkEnvelopeHostError('session_data_key_unavailable');
-  }
-  const tokenBytes = new TextEncoder().encode(token);
-  if (tokenBytes.length === 0) {
-    throw new SessionPublicLinkEnvelopeHostError('session_access_request_failed');
-  }
-  const wrappingKey = await deriveKey(
-    tokenBytes,
-    PUBLIC_SHARE_KEY_DERIVATION_USAGE_V1,
-    [...PUBLIC_SHARE_KEY_DERIVATION_PATH_V1],
-  );
-  try {
-    return encodeBase64(sealPublicShareEncryptedDataKeyEnvelopeV0({
-      dataKey,
-      wrappingKey,
-      randomBytes: getRandomBytes,
-    }));
-  } catch {
-    throw new SessionPublicLinkEnvelopeHostError('session_access_request_failed');
-  }
-}
-
-/**
  * Materializes the private physical half of the key-free logical
  * `session.public_link.create` intent. The Home remains the final
  * authorization/currentness owner: this trusted host only opens the exact-Home
  * current Session DEK already available to its bound Account credential and
- * seals it for the freshly generated token. Plain sessions stay key-free.
+ * seals it for the locally retained fragment secret. Plain sessions stay key-free.
  * Caller-authored envelopes are rejected by the strict logical parse before
  * any effect.
  */
@@ -89,7 +45,7 @@ export async function materializeSessionPublicLinkCreateBody(params: Readonly<{
   input: unknown;
   isCurrent?: () => boolean | Promise<boolean>;
   signal?: AbortSignal;
-}>): Promise<Readonly<{ token: string; encryptedDataKey?: string }>> {
+}>): Promise<Readonly<{ lookupId: string; secret: string; keyDerivation: 'fragment_v1'; encryptedDataKey?: string }>> {
   const logical = SessionPublicLinkCreateActionInputV1Schema.parse(params.input);
   const assertCurrent = async (): Promise<void> => {
     if (params.signal?.aborted) {
@@ -131,13 +87,10 @@ export async function materializeSessionPublicLinkCreateBody(params: Readonly<{
   const encryptionMode = (rawSession as Readonly<{ encryptionMode?: unknown }>).encryptionMode === 'plain'
     ? 'plain'
     : 'e2ee';
-  const freshToken = generatePublicShareTokenHex().trim();
-  if (!freshToken) {
-    throw new SessionPublicLinkEnvelopeHostError('session_access_request_failed');
-  }
+  const material = { ...generateStoredContentPublicShareMaterialV1(getRandomBytes), keyDerivation: 'fragment_v1' as const };
   if (encryptionMode === 'plain') {
     await assertCurrent();
-    return { token: freshToken };
+    return material;
   }
 
   if (!params.credentials || params.credentials.token !== params.token) {
@@ -151,7 +104,7 @@ export async function materializeSessionPublicLinkCreateBody(params: Readonly<{
     throw new SessionPublicLinkEnvelopeHostError('session_data_key_unavailable');
   }
   await assertCurrent();
-  const encryptedDataKey = await encryptDataKeyForPublicShare(sessionDataKey, freshToken);
+  const encryptedDataKey = sealPublicShareDataKeyV1({ dataKey: sessionDataKey, secret: material.secret, randomBytes: getRandomBytes });
   await assertCurrent();
-  return { token: freshToken, encryptedDataKey };
+  return { ...material, encryptedDataKey };
 }

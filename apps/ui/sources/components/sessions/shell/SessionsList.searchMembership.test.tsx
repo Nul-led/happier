@@ -2,6 +2,9 @@ import React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Third-party rendering is outside this listing contract; its streaming renderer is unused here.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({ splitStreamingRevealTextParts: () => [] }));
+
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import {
     buildSessionListIndexNodeId,
@@ -14,6 +17,7 @@ import { storage } from '@/sync/domains/state/storageStore';
 
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
 import type { SessionListViewFilterController } from './search/useSessionListViewFilterController';
+import { createSessionListViewFilterDefaults } from './search/sessionListViewFilters';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -179,6 +183,7 @@ function buildFilterController(
     overrides: Partial<SessionListViewFilterController> = {},
 ): SessionListViewFilterController {
     const filters = {
+        ...createSessionListViewFilterDefaults(),
         scope: 'my_work' as const,
         attention: 'any' as const,
         homeServerIds: [HOME],
@@ -355,6 +360,7 @@ describe('main-list contextual search structural membership', () => {
             sourceMachineId: null,
         }];
         const filters = {
+            ...createSessionListViewFilterDefaults(),
             scope: 'all_accessible' as const,
             attention: 'any' as const,
             homeServerIds: [TEAM_HOME],
@@ -402,6 +408,7 @@ describe('main-list contextual search structural membership', () => {
 
     it('opens Search everything with the explicit Team Home credential scope while Home A stays focused', async () => {
         const filters = {
+            ...createSessionListViewFilterDefaults(),
             scope: 'all_accessible' as const,
             attention: 'any' as const,
             homeServerIds: [TEAM_HOME],

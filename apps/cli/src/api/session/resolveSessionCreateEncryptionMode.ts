@@ -5,9 +5,6 @@ import {
   AccountEncryptionCurrentnessUnavailableError,
   fetchAccountEncryptionCurrentness,
 } from '@/api/client/connectedServiceCredentialApi';
-import {
-  assertCurrentAccountStoredContentServerCompatibility,
-} from '@/api/clientCompatibility/accountStoredContentActivation';
 import { assertSessionEncryptionModeAllowedByEffectiveClientRequirement } from '@/settings/accountSettings/resolveEffectiveClientEncryptionRequirement';
 
 export type DesiredSessionCreateEncryptionModeResult = Readonly<{
@@ -20,8 +17,8 @@ export type DesiredSessionCreateEncryptionModeResult = Readonly<{
 
 /**
  * The preflight either resolves the Session mode or reports that the Account
- * currentness read could not be served. Server-compatibility and client
- * encryption-requirement refusals still throw: they are decisions, not
+ * currentness read could not be served. Client encryption-requirement
+ * refusals still throw: they are decisions, not
  * transport outcomes. The caller owns the transport classification (offline
  * mode, stable auth errors) because the same transport serves its own request.
  */
@@ -39,7 +36,6 @@ export async function resolveSessionCreateEncryptionMode(params: Readonly<{
   accountEncryptionCurrentness?: AccountEncryptionCurrentnessResponse;
 }>): Promise<SessionCreateEncryptionModeResolution> {
   const featuresSnapshot = await fetchServerFeaturesSnapshot({ serverUrl: params.serverBaseUrl });
-  assertCurrentAccountStoredContentServerCompatibility(featuresSnapshot);
   const serverSupportsFeatureSnapshot = featuresSnapshot.status === 'ready';
   const storagePolicy: 'required_e2ee' | 'optional' | 'plaintext_only' =
     featuresSnapshot.status === 'ready'

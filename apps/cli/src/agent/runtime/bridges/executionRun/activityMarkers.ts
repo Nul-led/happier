@@ -1,6 +1,6 @@
 import type { ExecutionRunController } from '@/agent/executionRuns/controllers/types';
 import type { ExecutionRunState } from './executionRunTypes';
-import { writeExecutionRunMarker } from '@/daemon/executionRunRegistry';
+import { retainExecutionRunState, writeExecutionRunMarker } from '@/daemon/executionRunRegistry';
 import { projectExecutionRunRequestedConfiguration, readBackendTargetRefV2 } from '@happier-dev/protocol';
 import { buildExecutionRunConnectedServicesCleanupReceipt } from './connectedServicesCleanupReceipt';
 
@@ -30,6 +30,7 @@ export async function writeExecutionRunActivityMarker(args: Readonly<{
   nowMs: number;
   opts?: Readonly<{ force?: boolean }>;
   runs: Map<string, ExecutionRunState>;
+  retainedState?: ExecutionRunState;
   controllers: Map<string, ExecutionRunController>;
   enqueueMarkerWrite: (runId: string, write: () => Promise<void>) => Promise<void>;
 }>): Promise<void> {
@@ -74,6 +75,8 @@ export async function writeExecutionRunActivityMarker(args: Readonly<{
       ? { executionRunConnectedServicesCleanupReceiptV1: cleanupReceipt }
       : {}),
   } as const;
-  const write = args.enqueueMarkerWrite(args.runId, () => writeExecutionRunMarker(markerPayload));
-  await write.catch(() => {});
+  await args.enqueueMarkerWrite(args.runId, async () => {
+    await retainExecutionRunState(args.retainedState ?? run);
+    await writeExecutionRunMarker(markerPayload).catch(() => {});
+  });
 }

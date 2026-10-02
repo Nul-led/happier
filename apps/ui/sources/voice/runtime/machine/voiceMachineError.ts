@@ -149,7 +149,10 @@ export function classifyVoiceMachineError(
             reason: readErrorReason(error, 'mic_permission_denied'),
         });
     }
-    const kind = fallback.kind ?? 'provider_error';
+    // Preserve an explicit installed-client setup refusal as a visible
+    // preflight error rather than offering a retry that cannot add capability.
+    const code = error && typeof error === 'object' && 'code' in error ? error.code : null;
+    const kind = code === 'provider_setup_required' ? 'provider_setup_required' : fallback.kind ?? 'provider_error';
     return createVoiceMachineError({
         kind,
         reason: readErrorReason(error, fallback.reason ?? kind),

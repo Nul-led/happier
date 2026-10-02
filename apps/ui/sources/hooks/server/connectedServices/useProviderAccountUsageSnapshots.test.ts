@@ -13,6 +13,7 @@ import {
     buildProviderAccountUsageRecordId,
     type ProviderAccountUsageSnapshotV1,
 } from '@happier-dev/protocol';
+import * as hookModule from './useProviderAccountUsageSnapshots';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -32,7 +33,9 @@ const {
     fetchAccountEncryptionModeSpy,
     getProviderAccountUsageSnapshotPlainSpy,
     getProviderAccountUsageSnapshotSealedSpy,
+    runtime,
 } = vi.hoisted(() => ({
+    runtime: { active: true, listeners: new Set<() => void>() },
     fetchAccountEncryptionModeSpy: vi.fn<
         (...args: Parameters<typeof fetchAccountEncryptionMode>) => ReturnType<typeof fetchAccountEncryptionMode>
     >(async () => ({ mode: 'plain', updatedAt: 0 })),
@@ -43,6 +46,23 @@ const {
         (...args: Parameters<typeof getProviderAccountUsageSnapshotSealed>) => ReturnType<typeof getProviderAccountUsageSnapshotSealed>
     >(async () => null),
 }));
+
+// Visibility signals are an environment boundary; exercise the real runtime hook.
+vi.mock('@/utils/runtime/isRuntimeActive', () => ({
+    isRuntimeActive: () => runtime.active,
+    subscribeToRuntimeActiveChange: (listener: () => void) => {
+        runtime.listeners.add(listener);
+        return () => runtime.listeners.delete(listener);
+    },
+}));
+
+async function setRuntimeActive(active: boolean): Promise<void> {
+    await act(async () => {
+        runtime.active = active;
+        for (const listener of [...runtime.listeners]) listener();
+    });
+    await flushHookEffects({ cycles: 5, turns: 5 });
+}
 
 vi.mock('@/auth/context/AuthContext', () => ({
     useAuth: () => ({ credentials: currentCredentials }),
@@ -56,7 +76,8 @@ vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
     useActiveServerSnapshot: () => activeServerSnapshotState.current,
 }));
 
-vi.mock('@/sync/api/account/apiAccountEncryptionMode', () => ({
+vi.mock('@/sync/api/account/apiAccountEncryptionMode', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/api/account/apiAccountEncryptionMode')>(),
     fetchAccountEncryptionMode: fetchAccountEncryptionModeSpy,
 }));
 
@@ -113,22 +134,20 @@ function makeUsageSnapshot(params: Readonly<{
 }
 
 async function loadHook() {
-    try {
-        return await import('./useProviderAccountUsageSnapshots');
-    } catch (error) {
-        expect.fail(`canonical provider account usage hook is missing: ${String(error)}`);
-    }
+    return hookModule;
 }
 
 describe('useProviderAccountUsageSnapshots', () => {
     beforeEach(() => {
+        runtime.active = true;
         currentCredentials = stableCredentials;
         activeServerSnapshotState.current = {
             serverId: 'server-a',
             serverUrl: 'https://server-a.example.test',
             generation: 1,
         };
-        vi.resetModules();
+        // Mounted hooks release their real cache entries on unmount. Do not
+        // rebuild the full application import graph between isolated mounts.
         vi.clearAllMocks();
         useFeatureEnabledSpy.mockReturnValue(true);
         fetchAccountEncryptionModeSpy.mockResolvedValue({ mode: 'plain', updatedAt: 0 });
@@ -136,6 +155,38 @@ describe('useProviderAccountUsageSnapshots', () => {
 
     afterEach(() => {
         vi.useRealTimers();
+    });
+
+    it('parks background readers and immediately refreshes retained data on foreground return', async () => {
+        vi.useFakeTimers();
+        runtime.active = false;
+        const snapshot = makeUsageSnapshot();
+        getProviderAccountUsageSnapshotPlainSpy.mockResolvedValue(snapshot);
+        const { useProviderAccountUsageSnapshots } = await loadHook();
+        const hook = await renderHook(() => useProviderAccountUsageSnapshots([snapshot.recordId]));
+        try {
+            await flushHookEffects({ cycles: 5, turns: 5 });
+            expect(getProviderAccountUsageSnapshotPlainSpy).not.toHaveBeenCalled();
+            await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+            expect(getProviderAccountUsageSnapshotPlainSpy).not.toHaveBeenCalled();
+            await setRuntimeActive(true);
+            expect(hook.getCurrent().snapshotsByRecordId[snapshot.recordId]).toEqual(snapshot);
+            expect(getProviderAccountUsageSnapshotPlainSpy).toHaveBeenCalledTimes(1);
+            await setRuntimeActive(false);
+            await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+            expect(hook.getCurrent().snapshotsByRecordId[snapshot.recordId]).toEqual(snapshot);
+            const refreshed = { ...snapshot, fetchedAtMs: Date.now() };
+            getProviderAccountUsageSnapshotPlainSpy.mockResolvedValue(refreshed);
+            await setRuntimeActive(true);
+            expect(hook.getCurrent().snapshotsByRecordId[snapshot.recordId]).toEqual(refreshed);
+            expect(getProviderAccountUsageSnapshotPlainSpy).toHaveBeenCalledTimes(2);
+            await setRuntimeActive(false);
+            await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+            expect(getProviderAccountUsageSnapshotPlainSpy).toHaveBeenCalledTimes(2);
+        } finally {
+            await hook.unmount();
+            expect(runtime.listeners.size).toBe(0);
+        }
     });
 
     it('loads canonical usage by record id without exposing connected-service quota projections', async () => {
@@ -306,69 +357,35 @@ describe('useProviderAccountUsageSnapshots', () => {
         await hook.unmount();
     });
 
-    it('preserves last-known-good usage when a refresh fails', async () => {
+    it('settles every loading record and preserves last-known-good usage when refreshes fail', async () => {
         vi.useFakeTimers();
         const snapshot = makeUsageSnapshot({ staleAfterMs: 1, meterId: 'weekly' });
-        getProviderAccountUsageSnapshotPlainSpy
-            .mockResolvedValueOnce(snapshot)
-            .mockRejectedValueOnce(new Error('temporary'));
+        const sibling = makeUsageSnapshot({ accountSubjectId: 'acct_second', staleAfterMs: 1, meterId: 'daily' });
+        const snapshots = new Map([snapshot, sibling].map((value) => [value.recordId, value]));
+        let failRefresh = false;
+        getProviderAccountUsageSnapshotPlainSpy.mockImplementation(async (_credentials, { recordId }) => {
+            if (failRefresh) throw new Error('temporary');
+            return snapshots.get(recordId) ?? null;
+        });
 
         const { useProviderAccountUsageSnapshots } = await loadHook();
-        const hook = await renderHook(() => useProviderAccountUsageSnapshots([snapshot.recordId]));
+        const hook = await renderHook(() => useProviderAccountUsageSnapshots([snapshot.recordId, sibling.recordId]));
         await flushHookEffects({ cycles: 5, turns: 5 });
 
-        expect(hook.getCurrent().snapshotsByRecordId[snapshot.recordId]?.meters[0]?.meterId).toBe('weekly');
+        for (const value of snapshots.values()) {
+            expect(hook.getCurrent().snapshotsByRecordId[value.recordId]).toEqual(value);
+        }
+        failRefresh = true;
         await flushHookEffects({ cycles: 1, turns: 2, advanceTimersMs: 30_001 });
         await flushHookEffects({ cycles: 5, turns: 5 });
 
-        expect(getProviderAccountUsageSnapshotPlainSpy).toHaveBeenCalledTimes(2);
-        expect(hook.getCurrent().snapshotsByRecordId[snapshot.recordId]?.meters[0]?.meterId).toBe('weekly');
-        expect(hook.getCurrent().stateByRecordId[snapshot.recordId]).toBe('error_last_known_good');
-        expect(hook.getCurrent().loadingByRecordId[snapshot.recordId]).toBe(false);
-        await hook.unmount();
-    });
-
-    it('settles every loading record through the existing LKG backoff when account-mode resolution fails', async () => {
-        vi.useFakeTimers();
-        const snapshot = makeUsageSnapshot({ staleAfterMs: 1, meterId: 'mode-lkg' });
-        const resolveAccountModeSpy = vi.fn()
-            .mockResolvedValueOnce('plain')
-            .mockRejectedValueOnce(new Error('mode unavailable'));
-        vi.doMock('./useCredentialScopedAccountModeResolver', () => ({
-            useCredentialScopedAccountModeResolver: () => resolveAccountModeSpy,
-        }));
-        getProviderAccountUsageSnapshotPlainSpy.mockResolvedValue(snapshot);
-
-        try {
-            const { useProviderAccountUsageSnapshots } = await loadHook();
-            const cache = await import('@/sync/domains/connectedServices/accountUsage/providerAccountUsageCache');
-            const hook = await renderHook(() => useProviderAccountUsageSnapshots([snapshot.recordId]));
-            await flushHookEffects({ cycles: 5, turns: 5 });
-
-            expect(hook.getCurrent().snapshotsByRecordId[snapshot.recordId]).toEqual(snapshot);
-            const retryStartedAtMs = Date.now();
-            await flushHookEffects({ cycles: 1, turns: 2, advanceTimersMs: 30_001 });
-            await flushHookEffects({ cycles: 5, turns: 5 });
-
-            expect(resolveAccountModeSpy).toHaveBeenCalledTimes(2);
-            expect(getProviderAccountUsageSnapshotPlainSpy).toHaveBeenCalledTimes(1);
-            expect(hook.getCurrent().snapshotsByRecordId[snapshot.recordId]).toEqual(snapshot);
-            expect(hook.getCurrent().stateByRecordId[snapshot.recordId]).toBe('error_last_known_good');
-            expect(hook.getCurrent().loadingByRecordId[snapshot.recordId]).toBe(false);
-            const scopeEntries = Object.values(
-                cache.getProviderAccountUsageCacheState().entriesByCredentialScope,
-            )[0];
-            expect(scopeEntries?.[snapshot.recordId]).toMatchObject({
-                snapshot,
-                consecutiveErrors: 1,
-                loading: false,
-                hadError: true,
-            });
-            expect(scopeEntries?.[snapshot.recordId]?.nextFetchAtMs).toBeGreaterThan(retryStartedAtMs);
-            await hook.unmount();
-        } finally {
-            vi.doUnmock('./useCredentialScopedAccountModeResolver');
+        expect(getProviderAccountUsageSnapshotPlainSpy).toHaveBeenCalledTimes(4);
+        for (const value of snapshots.values()) {
+            expect(hook.getCurrent().snapshotsByRecordId[value.recordId]).toEqual(value);
+            expect(hook.getCurrent().stateByRecordId[value.recordId]).toBe('error_last_known_good');
+            expect(hook.getCurrent().loadingByRecordId[value.recordId]).toBe(false);
         }
+        await hook.unmount();
     });
 
     it('serves canonical cache entries in cache-only mode without refetching', async () => {

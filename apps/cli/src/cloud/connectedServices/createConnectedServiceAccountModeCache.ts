@@ -1,5 +1,4 @@
 import { AsyncTtlCache } from '@happier-dev/protocol';
-import { AccountStoredContentClientUpgradeRequiredError } from '@/api/clientCompatibility/accountStoredContentActivation';
 
 export type ConnectedServiceAccountMode = 'e2ee' | 'plain' | 'unknown';
 
@@ -75,10 +74,7 @@ export function createConnectedServiceAccountModeCache(params?: Readonly<{
       }
       if (readGeneration(key) === generation) cache.setSuccess(key, mode, { nowMs: nowMs() });
       return mode;
-    } catch (error) {
-      if (error instanceof AccountStoredContentClientUpgradeRequiredError) {
-        throw error;
-      }
+    } catch {
       if (readGeneration(key) === generation) cache.setError(key, { nowMs: nowMs() });
       return 'unknown';
     }

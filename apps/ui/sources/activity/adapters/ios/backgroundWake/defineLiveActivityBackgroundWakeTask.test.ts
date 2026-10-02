@@ -240,6 +240,32 @@ describe('defineLiveActivityBackgroundWakeTask', () => {
         expect(storage.read(liveActivityKey('server-a', 'session-1'))).toBeNull();
     });
 
+    it('passes the refreshed snapshot expiry to the native activity on a background wake', async () => {
+        const mod = await loadModule();
+        expect(mod).not.toBeNull();
+        if (!mod) return;
+
+        const storage = mod.createLiveActivityBackgroundWakeStateStore(createMemoryStorage());
+        storage.remember({
+            activityInstanceKey: liveActivityKey('server-a', 'session-1'),
+            generatedAt: 500,
+            snapshotFingerprint: 'fingerprint-current',
+        });
+        const update = vi.fn(async () => undefined);
+        const result = await mod.applyLiveActivityBackgroundWakeTaskPayload({
+            payload: createWakePayload(),
+            stateStore: storage,
+            liveActivityFactory: { getInstances: () => [{ update, end: vi.fn(async () => undefined) }] },
+        });
+
+        expect(result.action).toBe('apply_update');
+        expect(update).toHaveBeenCalledWith(
+            expect.objectContaining({ staleAt: 1_801_000 }),
+            new Date(1_801_000),
+        );
+        expect(storage.read(liveActivityKey('server-a', 'session-1'))?.snapshotFingerprint).toBe('fingerprint-new');
+    });
+
     it('does not mark a background wake update applied when no native activity exists', async () => {
         const mod = await loadModule();
         expect(mod).not.toBeNull();

@@ -92,6 +92,26 @@ function plainHistoryRequest(rows: readonly StoredRow[], page?: Readonly<{ hasMo
 }
 
 describe('fetchUserMessageHistoryPage', () => {
+    it('recalls authored display text verbatim without restoring an explicitly hidden prompt', async () => {
+        const request = plainHistoryRequest([
+            { id: 'visible', seq: 1, createdAt: 10, content: {
+                ...userPromptContent('expanded review context'), meta: { displayText: '  authored\n\n' },
+            } },
+            { id: 'hidden', seq: 2, createdAt: 20, content: {
+                ...userPromptContent('attachment scaffolding'), meta: { displayText: '' },
+            } },
+            { id: 'legacy', seq: 3, createdAt: 30, content: userPromptContent('  legacy\n') },
+        ]);
+
+        const result = await fetchUserMessageHistoryPage({
+            sessionId: 's1', sessionEncryptionMode: 'plain', request, getSessionEncryption: () => null,
+        });
+
+        expect(result.status === 'loaded' ? result.rows.map((row) => row.text) : []).toEqual([
+            '  legacy\n', '  authored\n\n',
+        ]);
+    });
+
     it('asks for user rows and agent rows on one request so old servers still return user-only pages', async () => {
         const request = plainHistoryRequest([
             { id: 'm2', seq: 2, messageRole: 'user', content: userPromptContent('second prompt'), createdAt: 20 },
@@ -232,16 +252,18 @@ describe('fetchUserMessageHistoryPage', () => {
             },
         ]);
 
+        // The real encryption owner retains identity until scope retirement.
+        const encryption = { decryptMessages };
         const result = await fetchUserMessageHistoryPage({
             sessionId: 's1',
             beforeSeq: 10,
             request,
-            getSessionEncryption: () => ({ decryptMessages }),
+            getSessionEncryption: () => encryption,
         });
 
         expect(decryptMessages).toHaveBeenCalledWith([
             expect.objectContaining({ id: 'm2', messageRole: 'user' }),
-        ]);
+        ], expect.objectContaining({ onAuthenticationFailure: expect.any(Function) }));
         expect(result).toEqual({
             status: 'loaded',
             rows: [{ messageId: 'm2', routeMessageId: 'server:m2', seq: 2, createdAt: 20, role: 'user', text: 'second prompt' }],

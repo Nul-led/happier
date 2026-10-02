@@ -1,253 +1,259 @@
-import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act } from 'react';
+import type { ExecutionRunPublicState } from '@happier-dev/protocol';
+import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+import type { HomeCredentialMutationEvent } from '@/auth/storage/tokenStorage';
 
 import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
 
-const sessionExecutionRunListSpy = vi.fn();
-
-vi.mock('@/sync/ops/sessionExecutionRuns', () => ({
-    sessionExecutionRunList: (...args: unknown[]) => sessionExecutionRunListSpy(...args),
-}));
+const rpc = vi.hoisted(() => vi.fn());
+const credentialListeners = vi.hoisted(() => new Set<(event: HomeCredentialMutationEvent) => void>());
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
+    return createTokenStorageModuleMock({
+        importOriginal,
+        subscribeHomeCredentialMutations: (listener) => {
+            credentialListeners.add(listener);
+            return () => { credentialListeners.delete(listener); };
+        },
+    });
+});
+// Complete network boundary: importing its live implementation here recursively
+// boots UI sync. List parsing, roster projection and activity delivery stay real.
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc', () => ({
+    sessionRpcWithServerScope: (params: unknown) => rpc(params),
+    sessionRpcWithServerAccountScope: (params: unknown) => rpc(params),
+} satisfies typeof import('@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc')));
+vi.mock('@/sync/domains/state/storage', async () => {
+    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    return createStorageModuleStub({ storage: { getState: () => ({ sessions: {}, settings: {} }) } });
+});
 
 import { resolveRunningExecutionRunsFromListResult, useSessionRunningExecutionRuns } from './useSessionRunningExecutionRuns';
-import { notifyExecutionRunActivity } from '@/sync/runtime/executionRuns/executionRunActivityBus';
+import { notifyExecutionRunActivity, notifyExecutionRunActivityFromUpdate } from '@/sync/runtime/executionRuns/executionRunActivityBus';
+import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
 
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+function run(runId = 'run_1', status: ExecutionRunPublicState['status'] = 'running'): ExecutionRunPublicState {
+    return {
+        runId, callId: runId, sidechainId: runId, intent: 'review',
+        backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+        permissionMode: 'read_only', retentionPolicy: 'ephemeral', runClass: 'bounded',
+        ioMode: 'request_response', status, startedAtMs: 123,
+    };
+}
+
+function roster(serverId = 'server-a', sessionId = 's1') {
+    return renderHook(() => useSessionRunningExecutionRuns({ serverId, sessionId, enabled: true }));
+}
 
 describe('resolveRunningExecutionRunsFromListResult', () => {
-    it('returns only execution runs with status=running', () => {
-        const out = resolveRunningExecutionRunsFromListResult({
-            runs: [
-                { runId: 'run_1', status: 'running' } as any,
-                { runId: 'run_2', status: 'failed' } as any,
-                { runId: 'run_3', status: 'completed' } as any,
-            ],
-        } as any);
-
-        expect(out.map((run) => run.runId)).toEqual(['run_1']);
-    });
-
-    it('returns empty array for ok:false responses', () => {
-        const out = resolveRunningExecutionRunsFromListResult({
-            ok: false,
-            error: 'RPC failed',
-        } as any);
-        expect(out).toEqual([]);
+    it('projects only the owner states that are running', () => {
+        expect(resolveRunningExecutionRunsFromListResult({
+            runs: [run(), run('run_2', 'failed'), run('run_3', 'succeeded')],
+        }).map((item) => item.runId)).toEqual(['run_1']);
+        expect(resolveRunningExecutionRunsFromListResult({ ok: false, error: 'offline' })).toEqual([]);
     });
 });
 
 describe('useSessionRunningExecutionRuns', () => {
     beforeEach(() => {
         vi.useFakeTimers();
-        sessionExecutionRunListSpy.mockReset();
+        rpc.mockReset();
     });
-
     afterEach(() => {
         standardCleanup();
         vi.useRealTimers();
     });
 
-    it('polls while a run is running and stops after it is confirmed finished', async () => {
-        sessionExecutionRunListSpy
-            .mockResolvedValueOnce({ runs: [{ runId: 'run_1', status: 'running' }] })
-            .mockResolvedValueOnce({ runs: [] })
-            .mockResolvedValueOnce({ runs: [] });
-
-        const hook = await renderHook(
-            ({ sessionId, enabled }: Readonly<{ sessionId: string; enabled: boolean }>) =>
-                useSessionRunningExecutionRuns({ sessionId, serverId: 'server-a', enabled }),
-            {
-                initialProps: { sessionId: 's1', enabled: true },
-            },
-        );
-
-        expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(1);
-        expect(hook.getCurrent().map((r: any) => r.runId)).toEqual(['run_1']);
-
-        await flushHookEffects({ cycles: 1, turns: 1, advanceTimersMs: 5_000 });
-
-        expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(2);
-        expect(hook.getCurrent().map((r: any) => r.runId)).toEqual(['run_1']);
-
-        await flushHookEffects({ cycles: 1, turns: 1, advanceTimersMs: 1_000 });
-
-        expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(3);
+    it('updates running and terminal rosters on activity without timer reads', async () => {
+        rpc.mockResolvedValueOnce({ runs: [run()] }).mockResolvedValueOnce({ runs: [run('run_1', 'succeeded')] });
+        const hook = await roster();
+        expect(hook.getCurrent().map((item) => item.runId)).toEqual(['run_1']);
+        await flushHookEffects({ advanceTimersMs: 60_000 });
+        expect(rpc).toHaveBeenCalledTimes(1);
+        notifyExecutionRunActivity({ serverId: 'server-a', sessionId: 's1' }, { runId: 'run_1' });
+        await flushHookEffects();
         expect(hook.getCurrent()).toEqual([]);
-
-        await flushHookEffects({ cycles: 1, turns: 1, advanceTimersMs: 60_000 });
-        expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(3);
+        expect(rpc).toHaveBeenCalledTimes(2);
+        await flushHookEffects({ advanceTimersMs: 60_000 });
+        expect(rpc).toHaveBeenCalledTimes(2);
     });
 
-    it('keeps the same running run reference when polling returns unchanged runs', async () => {
-        sessionExecutionRunListSpy
-            .mockResolvedValueOnce({ runs: [{ runId: 'run_1', status: 'running' }] })
-            .mockResolvedValueOnce({ runs: [{ runId: 'run_1', status: 'running' }] });
+    it('shares one baseline and activity read between simultaneous visible consumers', async () => {
+        rpc.mockResolvedValueOnce({ runs: [run()] }).mockResolvedValueOnce({ runs: [] });
+        const first = await roster();
+        const second = await roster();
+        expect(rpc).toHaveBeenCalledTimes(1);
+        expect(second.getCurrent()).toBe(first.getCurrent());
+        notifyExecutionRunActivity({ serverId: 'server-a', sessionId: 's1' });
+        await flushHookEffects();
+        expect(first.getCurrent()).toEqual([]);
+        expect(second.getCurrent()).toBe(first.getCurrent());
+        expect(rpc).toHaveBeenCalledTimes(2);
+    });
 
-        const hook = await renderHook(
-            ({ sessionId, enabled }: Readonly<{ sessionId: string; enabled: boolean }>) =>
-                useSessionRunningExecutionRuns({ sessionId, serverId: 'server-a', enabled }),
-            {
-                initialProps: { sessionId: 's1', enabled: true },
-            },
-        );
+    it('keeps unchanged rows and snapshots stable and does not render siblings', async () => {
+        rpc.mockResolvedValue({ runs: [run()] });
+        const hook = await roster();
         const first = hook.getCurrent();
-
-        await flushHookEffects({ cycles: 1, turns: 1, advanceTimersMs: 5_000 });
-
-        expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(2);
+        notifyExecutionRunActivity({ serverId: 'server-b', sessionId: 's1' });
+        await flushHookEffects();
+        expect(rpc).toHaveBeenCalledTimes(1);
+        notifyExecutionRunActivity({ serverId: 'server-a', sessionId: 's1' });
+        await flushHookEffects();
         expect(hook.getCurrent()).toBe(first);
-    });
-
-    it('does not poll repeatedly when there are no running runs', async () => {
-        sessionExecutionRunListSpy.mockResolvedValueOnce({ runs: [] });
-
-        const hook = await renderHook(
-            ({ sessionId, enabled }: Readonly<{ sessionId: string; enabled: boolean }>) =>
-                useSessionRunningExecutionRuns({ sessionId, serverId: 'server-a', enabled }),
-            {
-                initialProps: { sessionId: 's1', enabled: true },
-            },
-        );
-        expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(1);
-        expect(hook.getCurrent()).toEqual([]);
-
-        await flushHookEffects({ cycles: 1, turns: 1, advanceTimersMs: 60_000 });
-
-        expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(1);
-    });
-
-    it('polls the exact Home for a qualified Session address', async () => {
-        sessionExecutionRunListSpy.mockResolvedValueOnce({ runs: [] });
-
-        const hook = await renderHook(() => useSessionRunningExecutionRuns({
-            sessionId: 'same-session',
-            serverId: 'home-b',
-            enabled: true,
-        }));
-
-        expect(sessionExecutionRunListSpy).toHaveBeenCalledWith(
-            'same-session',
-            {},
-            { serverId: 'home-b' },
-        );
-        hook.unmount();
-    });
-
-    it('keeps the empty running-runs reference stable after an idle poll', async () => {
-        sessionExecutionRunListSpy.mockResolvedValueOnce({ runs: [] });
-
-        let renderCount = 0;
-        const hook = await renderHook(
-            ({ sessionId, enabled }: Readonly<{ sessionId: string; enabled: boolean }>) => {
-                renderCount += 1;
-                return useSessionRunningExecutionRuns({ sessionId, serverId: 'server-a', enabled });
-            },
-            {
-                initialProps: { sessionId: 's1', enabled: true },
-            },
-        );
-        const initial = hook.getCurrent();
-
-        await flushHookEffects({ cycles: 1, turns: 1 });
-
-        expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(1);
-        expect(hook.getCurrent()).toBe(initial);
-        expect(renderCount).toBe(1);
-    });
-
-    it('clears running runs when disabled', async () => {
-        sessionExecutionRunListSpy.mockResolvedValueOnce({ runs: [{ runId: 'run_1', status: 'running' }] });
-
-        const hook = await renderHook(
-            ({ sessionId, enabled }: Readonly<{ sessionId: string; enabled: boolean }>) =>
-                useSessionRunningExecutionRuns({ sessionId, serverId: 'server-a', enabled }),
-            {
-                initialProps: { sessionId: 's1', enabled: true },
-            },
-        );
-        expect(hook.getCurrent().map((r: any) => r.runId)).toEqual(['run_1']);
-
-        await hook.rerender({ sessionId: 's1', enabled: false });
-        expect(hook.getCurrent()).toEqual([]);
-    });
-
-    it('rechecks for running runs when execution-run activity is observed', async () => {
-        sessionExecutionRunListSpy
-            .mockResolvedValueOnce({ runs: [] })
-            .mockResolvedValueOnce({ runs: [{ runId: 'run_1', status: 'running' }] });
-
-        const hook = await renderHook(
-            ({ sessionId, enabled }: Readonly<{ sessionId: string; enabled: boolean }>) =>
-                useSessionRunningExecutionRuns({ sessionId, serverId: 'server-a', enabled }),
-            {
-                initialProps: { sessionId: 's1', enabled: true },
-            },
-        );
-        expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(1);
-        expect(hook.getCurrent()).toEqual([]);
-
+        rpc.mockResolvedValue({ runs: [run(), run('run_2')] });
         notifyExecutionRunActivity({ serverId: 'server-a', sessionId: 's1' });
-        await flushHookEffects({ cycles: 1, turns: 1 });
-
-        expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(2);
-        expect(hook.getCurrent().map((r: any) => r.runId)).toEqual(['run_1']);
-        hook.unmount();
+        await flushHookEffects();
+        expect(hook.getCurrent()[0]).toBe(first[0]);
     });
 
-    it('rechecks after activity arrives during an in-flight poll', async () => {
-        let resolveFirstPoll: ((value: { runs: readonly any[] }) => void) | null = null;
-        sessionExecutionRunListSpy
-            .mockImplementationOnce(
-                () =>
-                    new Promise<{ runs: readonly any[] }>((resolve) => {
-                        resolveFirstPoll = resolve;
-                    }),
-            )
-            .mockResolvedValueOnce({ runs: [{ runId: 'run_1', status: 'running' }] });
-
-        const hook = await renderHook(
-            ({ sessionId, enabled }: Readonly<{ sessionId: string; enabled: boolean }>) =>
-                useSessionRunningExecutionRuns({ sessionId, serverId: 'server-a', enabled }),
-            {
-                initialProps: { sessionId: 's1', enabled: true },
-            },
-        );
-        expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(1);
-
+    it('catches up missed terminal activity on the existing Home reconnect wake', async () => {
+        rpc.mockResolvedValueOnce({ runs: [run()] })
+            .mockResolvedValueOnce({ ok: false, error: 'disconnected' })
+            .mockResolvedValueOnce({ runs: [] });
+        const hook = await roster();
+        const lastKnown = hook.getCurrent();
         notifyExecutionRunActivity({ serverId: 'server-a', sessionId: 's1' });
-        await flushHookEffects({ cycles: 1, turns: 1 });
-
-        expect(resolveFirstPoll).not.toBeNull();
-        resolveFirstPoll!({ runs: [] });
-        await flushHookEffects({ cycles: 1, turns: 2 });
-
-        expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(2);
-        expect(hook.getCurrent().map((r: any) => r.runId)).toEqual(['run_1']);
+        await flushHookEffects();
+        expect(hook.getCurrent()).toBe(lastKnown);
+        await flushHookEffects({ advanceTimersMs: 60_000 });
+        expect(rpc).toHaveBeenCalledTimes(2);
+        publishHomeAccountChange('server-b');
+        await flushHookEffects();
+        expect(rpc).toHaveBeenCalledTimes(2);
+        publishHomeAccountChange('server-a');
+        await flushHookEffects();
+        expect(hook.getCurrent()).toEqual([]);
+        expect(rpc).toHaveBeenCalledTimes(3);
     });
 
-    it('clears running runs state immediately when sessionId changes', async () => {
-        sessionExecutionRunListSpy
-            .mockResolvedValueOnce({ runs: [{ runId: 'run_1', status: 'running' }] })
-            .mockImplementationOnce(
-                () =>
-                    new Promise((resolve) => {
-                        setTimeout(() => resolve({ runs: [] }), 100);
-                    }),
-            );
+    it('recovers a failed empty baseline on reconnect without retry timers', async () => {
+        rpc.mockResolvedValueOnce({ ok: false, error: 'disconnected' }).mockResolvedValueOnce({ runs: [run()] });
+        const hook = await roster();
+        await flushHookEffects({ advanceTimersMs: 60_000 });
+        expect(rpc).toHaveBeenCalledTimes(1);
+        publishHomeAccountChange('server-a');
+        await flushHookEffects();
+        expect(hook.getCurrent().map((item) => item.runId)).toEqual(['run_1']);
+        expect(rpc).toHaveBeenCalledTimes(2);
+    });
 
-        const hook = await renderHook(
-            ({ sessionId, enabled }: Readonly<{ sessionId: string; enabled: boolean }>) =>
-                useSessionRunningExecutionRuns({ sessionId, serverId: 'server-a', enabled }),
-            {
-                initialProps: { sessionId: 's1', enabled: true },
-            },
-        );
-        expect(sessionExecutionRunListSpy).toHaveBeenCalledTimes(1);
-        expect(hook.getCurrent().map((r: any) => r.runId)).toEqual(['run_1']);
+    it('subscribes before the baseline and coalesces activity during an in-flight read', async () => {
+        let resolveBaseline!: (result: { runs: ExecutionRunPublicState[] }) => void;
+        rpc.mockImplementationOnce(() => new Promise((resolve) => { resolveBaseline = resolve; }))
+            .mockResolvedValueOnce({ runs: [run()] });
+        const first = await roster();
+        const second = await roster();
+        notifyExecutionRunActivity({ serverId: 'server-a', sessionId: 's1' });
+        notifyExecutionRunActivity({ serverId: 'server-a', sessionId: 's1' });
+        resolveBaseline({ runs: [] });
+        await flushHookEffects();
+        expect(rpc).toHaveBeenCalledTimes(2);
+        expect(first.getCurrent().map((item) => item.runId)).toEqual(['run_1']);
+        expect(second.getCurrent()).toBe(first.getCurrent());
+    });
 
-        await hook.rerender({ sessionId: 's2', enabled: true });
+    it('isolates equal Session ids in different Homes', async () => {
+        rpc.mockImplementation(({ serverId }) => Promise.resolve({ runs: [run(serverId)] }));
+        const homeA = await roster();
+        const homeB = await roster('server-b');
+        expect(homeA.getCurrent().map((item) => item.runId)).toEqual(['server-a']);
+        expect(homeB.getCurrent().map((item) => item.runId)).toEqual(['server-b']);
+        expect(rpc).toHaveBeenCalledWith({
+            serverId: 'server-b', sessionId: 's1', method: SESSION_RPC_METHODS.EXECUTION_RUN_LIST, payload: {},
+        });
+        rpc.mockResolvedValueOnce({ runs: [] });
+        const update = {
+            type: 'execution-run-updated', sessionId: 's1', run: run('server-b', 'succeeded'),
+        };
+        notifyExecutionRunActivityFromUpdate('server-b', update);
+        await flushHookEffects();
+        expect(homeB.getCurrent()).toEqual([]);
+        expect(homeA.getCurrent().map((item) => item.runId)).toEqual(['server-a']);
+        expect(rpc).toHaveBeenCalledTimes(3);
+    });
 
-        // The old runs should be cleared immediately (synchronously) before the new poll completes
+    it('clears the old address and does not lose the new baseline behind an old in-flight read', async () => {
+        let resolveOld!: (result: { runs: ExecutionRunPublicState[] }) => void;
+        rpc.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+            .mockResolvedValueOnce({ runs: [run('new')] });
+        const hook = await renderHook(({ sessionId }) => useSessionRunningExecutionRuns({
+            sessionId, serverId: 'server-a', enabled: true,
+        }), { initialProps: { sessionId: 'old' } });
+        await hook.rerender({ sessionId: 'new' });
+        expect(hook.getCurrent().map((item) => item.runId)).toEqual(['new']);
+        resolveOld({ runs: [run('old')] });
+        await flushHookEffects();
+        expect(hook.getCurrent().map((item) => item.runId)).toEqual(['new']);
+    });
+
+    it('keeps the shared projection until the last consumer detaches then catches up on remount', async () => {
+        rpc.mockResolvedValueOnce({ runs: [run()] }).mockResolvedValueOnce({ runs: [] }).mockResolvedValueOnce({ runs: [run('new')] });
+        const first = await roster();
+        const second = await roster();
+        await first.unmount();
+        notifyExecutionRunActivity({ serverId: 'server-a', sessionId: 's1' });
+        await flushHookEffects();
+        expect(second.getCurrent()).toEqual([]);
+        await second.unmount();
+        publishHomeAccountChange('server-a');
+        await flushHookEffects();
+        expect(rpc).toHaveBeenCalledTimes(2);
+        const remounted = await roster();
+        expect(remounted.getCurrent().map((item) => item.runId)).toEqual(['new']);
+        expect(rpc).toHaveBeenCalledTimes(3);
+    });
+
+    it('withdraws disabled demand and catches up when enabled again', async () => {
+        rpc.mockResolvedValueOnce({ runs: [run()] }).mockResolvedValueOnce({ runs: [] });
+        const hook = await renderHook(({ enabled }) => useSessionRunningExecutionRuns({
+            sessionId: 's1', serverId: 'server-a', enabled,
+        }), { initialProps: { enabled: true } });
+        await hook.rerender({ enabled: false });
+        expect(hook.getCurrent()).toEqual([]);
+        notifyExecutionRunActivity({ serverId: 'server-a', sessionId: 's1' });
+        publishHomeAccountChange('server-a');
+        await flushHookEffects();
+        expect(rpc).toHaveBeenCalledTimes(1);
+        await hook.rerender({ enabled: true });
+        expect(hook.getCurrent()).toEqual([]);
+        expect(rpc).toHaveBeenCalledTimes(2);
+    });
+
+    it('refreshes on a changed transcript key without duplicating the initial baseline', async () => {
+        rpc.mockResolvedValueOnce({ runs: [] }).mockResolvedValueOnce({ runs: [run()] });
+        const hook = await renderHook(({ refreshKey }) => useSessionRunningExecutionRuns({
+            sessionId: 's1', serverId: 'server-a', enabled: true, refreshKey,
+        }), { initialProps: { refreshKey: 'before' } });
+        expect(rpc).toHaveBeenCalledTimes(1);
+        await hook.rerender({ refreshKey: 'after' });
+        expect(hook.getCurrent().map((item) => item.runId)).toEqual(['run_1']);
+        expect(rpc).toHaveBeenCalledTimes(2);
+    });
+
+    it('retires Account data and rejects an old in-flight response when credentials change', async () => {
+        let resolveOld!: (result: { runs: ExecutionRunPublicState[] }) => void;
+        rpc.mockResolvedValueOnce({ runs: [run('account-a')] })
+            .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+            .mockResolvedValueOnce({ runs: [run('account-b')] });
+        const hook = await roster();
+        notifyExecutionRunActivity({ serverId: 'server-a', sessionId: 's1' });
+        const event: HomeCredentialMutationEvent = {
+            kind: 'credentials_set', serverId: 'server-a', serverUrl: 'https://server-a.test',
+        };
+        await act(async () => {
+            for (const listener of [...credentialListeners]) listener(event);
+        });
+        await flushHookEffects();
+        expect(hook.getCurrent().map((item) => item.runId)).toEqual(['account-b']);
+        resolveOld({ runs: [run('account-a')] });
+        await flushHookEffects();
+        expect(hook.getCurrent().map((item) => item.runId)).toEqual(['account-b']);
+        await act(async () => {
+            for (const listener of [...credentialListeners]) listener({ ...event, kind: 'credentials_removed' });
+        });
+        await flushHookEffects();
         expect(hook.getCurrent()).toEqual([]);
     });
 });

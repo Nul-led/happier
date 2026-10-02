@@ -7,7 +7,40 @@ import {
   synthesizeKokoroWav,
 } from '@/voice/kokoro/runtime/synthesizeKokoroWav.native';
 
+const loadedNativeVoices = Array.from({ length: 3 }, (_, sid) => ({ id: `sid:${sid}`, title: `Speaker ${sid}`, sid }));
+
 describe('synthesizeKokoroWav (native)', () => {
+  it.each(['bad', null])('rejects a manifest SID outside the loaded model instead of synthesizing speaker zero (%s)', async (voiceId) => {
+    class File {
+      uri: string;
+      constructor(uri: string) { this.uri = uri; }
+      async arrayBuffer() { return new Uint8Array([1]).buffer; }
+      delete() {}
+    }
+    const kokoroNativeModule = {
+      initialize: vi.fn().mockResolvedValue(undefined),
+      listVoices: vi.fn().mockResolvedValue([{ id: 'sid:0', title: 'Speaker 0', sid: 0 }]),
+      synthesizeToWavFile: vi.fn().mockResolvedValue({ wavPath: 'file:///tmp/out.wav', sampleRate: 24000 }),
+      cancel: vi.fn().mockResolvedValue(undefined),
+    };
+    await expect(synthesizeKokoroWav({
+      text: 'hello', assetSetId: 'kokoro-bounded-test', voiceId, speed: 1,
+      timeoutMs: 5000, signal: new AbortController().signal,
+    }, {
+      kokoroNativeModule,
+      fs: { File, Paths: { cache: 'file:///tmp/', document: 'file:///docs/' } },
+      resolveOutWavPath: () => 'file:///tmp/out.wav',
+      ensureInstalled: async () => ({
+        packDirUri: 'file:///docs/kokoro-bounded-test',
+        manifest: {
+          packId: 'kokoro-bounded-test', kind: 'tts_sherpa', model: 'kokoro', version: 'v1.1', files: [],
+          voices: [{ id: 'bad', title: 'Bad metadata', sid: 1 }], defaultVoiceId: 'bad',
+        },
+      }),
+    })).rejects.toThrow('kokoro_voice_unavailable');
+    expect(kokoroNativeModule.synthesizeToWavFile).not.toHaveBeenCalled();
+  });
+
   it('rejects preparation of an unavailable built-in publication before install or network work', async () => {
     const ensureInstalled = vi.fn();
     const kokoroNativeModule = {
@@ -112,7 +145,7 @@ describe('synthesizeKokoroWav (native)', () => {
 
     const kokoroNativeModule = {
       initialize: vi.fn().mockResolvedValue(undefined),
-      listVoices: vi.fn().mockResolvedValue([]),
+      listVoices: vi.fn().mockResolvedValue(loadedNativeVoices),
       synthesizeToWavFile: vi.fn().mockResolvedValue({ wavPath: 'file:///tmp/out.wav', sampleRate: 24000 }),
       cancel: vi.fn().mockResolvedValue(undefined),
     };
@@ -162,7 +195,7 @@ describe('synthesizeKokoroWav (native)', () => {
 
     const kokoroNativeModule = {
       initialize: vi.fn().mockResolvedValue(undefined),
-      listVoices: vi.fn().mockResolvedValue([]),
+      listVoices: vi.fn().mockResolvedValue(loadedNativeVoices),
       synthesizeToWavFile: vi.fn().mockResolvedValue({ wavPath: 'file:///tmp/out.wav', sampleRate: 24000 }),
       cancel: vi.fn().mockResolvedValue(undefined),
     };
@@ -193,7 +226,8 @@ describe('synthesizeKokoroWav (native)', () => {
             kind: 'tts_sherpa',
             model: 'kokoro',
             version: '1.0.0',
-            voices: [{ id: 'af_bella', title: 'Bella', sid: 0 }],
+            frontend: { lang: 'en-us', lexicon: 'lexicon.txt' },
+            voices: [{ id: 'af_bella', title: 'Bella', sid: 2 }],
             files: [],
           } as any,
         }),
@@ -201,9 +235,12 @@ describe('synthesizeKokoroWav (native)', () => {
     );
 
     expect(kokoroNativeModule.initialize).toHaveBeenCalledTimes(1);
+    expect(kokoroNativeModule.initialize).toHaveBeenCalledWith(expect.objectContaining({
+      frontend: { lang: 'en-us', lexicon: 'lexicon.txt' },
+    }));
     expect(kokoroNativeModule.synthesizeToWavFile).toHaveBeenCalledTimes(1);
     expect(kokoroNativeModule.synthesizeToWavFile).toHaveBeenCalledWith(
-      expect.objectContaining({ voiceId: 'af_bella', sid: 0 }),
+      expect.objectContaining({ voiceId: 'af_bella', sid: 2, frontend: { lang: 'en-us', lexicon: 'lexicon.txt' } }),
     );
     expect(fileDelete).toHaveBeenCalledTimes(1);
     expect(new Uint8Array(bytes)).toEqual(new Uint8Array([1, 2, 3, 4]));
@@ -222,7 +259,7 @@ describe('synthesizeKokoroWav (native)', () => {
     }
     const kokoroNativeModule = {
       initialize: vi.fn().mockResolvedValue(undefined),
-      listVoices: vi.fn().mockResolvedValue([]),
+      listVoices: vi.fn().mockResolvedValue(loadedNativeVoices),
       synthesizeToWavFile: vi.fn().mockResolvedValue({ wavPath: 'file:///tmp/out.wav', sampleRate: 24000 }),
       cancel: vi.fn().mockResolvedValue(undefined),
     };
@@ -233,6 +270,7 @@ describe('synthesizeKokoroWav (native)', () => {
         kind: 'tts_sherpa',
         model: 'kokoro',
         version: 'kokoro-int8-multi-lang-v1_1',
+        voices: [{ id: 'af_bella', title: 'Bella', sid: 2 }],
         files: [],
       } as any,
     });
@@ -279,7 +317,7 @@ describe('synthesizeKokoroWav (native)', () => {
 
     const kokoroNativeModule = {
       initialize: vi.fn().mockResolvedValue(undefined),
-      listVoices: vi.fn().mockResolvedValue([]),
+      listVoices: vi.fn().mockResolvedValue(loadedNativeVoices),
       synthesizeToWavFile: vi.fn().mockResolvedValue({ wavPath: 'file:///tmp/out.wav', sampleRate: 24000 }),
       cancel: vi.fn().mockResolvedValue(undefined),
     };
@@ -290,6 +328,7 @@ describe('synthesizeKokoroWav (native)', () => {
         kind: 'tts_sherpa',
         model: 'kokoro',
         version: '1.0.0',
+        voices: [{ id: 'af_bella', title: 'Bella', sid: 2 }],
         files: [],
       } as any,
     });
@@ -345,7 +384,7 @@ describe('synthesizeKokoroWav (native)', () => {
 
     const kokoroNativeModule = {
       initialize: vi.fn().mockResolvedValue(undefined),
-      listVoices: vi.fn().mockResolvedValue([]),
+      listVoices: vi.fn().mockResolvedValue(loadedNativeVoices),
       synthesizeToWavFile: vi.fn().mockImplementation(() => synthesizePromise),
       cancel: vi.fn().mockResolvedValue(undefined),
     };
@@ -366,7 +405,7 @@ describe('synthesizeKokoroWav (native)', () => {
         resolveOutWavPath: () => 'file:///tmp/out.wav',
         ensureInstalled: async () => ({
           packDirUri: 'file:///docs/happier/voice/modelPacks/kokoro-test',
-          manifest: { packId: 'kokoro-test', kind: 'tts_sherpa', model: 'kokoro', version: '1.0.0', files: [] } as any,
+          manifest: { packId: 'kokoro-test', kind: 'tts_sherpa', model: 'kokoro', version: '1.0.0', voices: [{ id: 'af_bella', title: 'Bella', sid: 2 }], files: [] } as any,
         }),
       },
     );
@@ -394,7 +433,7 @@ describe('synthesizeKokoroWav (native)', () => {
       const removeAbortListener = vi.spyOn(controller.signal, 'removeEventListener');
       const kokoroNativeModule = {
         initialize: vi.fn().mockResolvedValue(undefined),
-        listVoices: vi.fn().mockResolvedValue([]),
+        listVoices: vi.fn().mockResolvedValue(loadedNativeVoices),
         synthesizeToWavFile: vi.fn(),
         cancel: vi.fn().mockResolvedValue(undefined),
       };
@@ -439,7 +478,7 @@ describe('synthesizeKokoroWav (native)', () => {
           await initialization;
           if (!cancelledAdmissions.has(initializationId)) publishedAdmissions.push(initializationId);
         }),
-        listVoices: vi.fn().mockResolvedValue([]),
+        listVoices: vi.fn().mockResolvedValue(loadedNativeVoices),
         synthesizeToWavFile: vi.fn(),
         cancel: vi.fn().mockResolvedValue(undefined),
         cancelInitialization: vi.fn(async ({ initializationId }: { initializationId: string }) => {
@@ -526,7 +565,7 @@ describe('synthesizeKokoroWav (native)', () => {
       const removeAbortListener = vi.spyOn(controller.signal, 'removeEventListener');
       const kokoroNativeModule = {
         initialize: vi.fn(() => initialization),
-        listVoices: vi.fn().mockResolvedValue([]),
+        listVoices: vi.fn().mockResolvedValue(loadedNativeVoices),
         synthesizeToWavFile: vi.fn(),
         cancel: vi.fn().mockResolvedValue(undefined),
         cancelInitialization: vi.fn(async () => await admissionCancellation),
@@ -595,7 +634,7 @@ describe('synthesizeKokoroWav (native)', () => {
       });
       const kokoroNativeModule = {
         initialize: vi.fn().mockResolvedValue(undefined),
-        listVoices: vi.fn().mockResolvedValue([]),
+        listVoices: vi.fn().mockResolvedValue(loadedNativeVoices),
         synthesizeToWavFile: vi.fn().mockImplementation(() => nativeSynthesis),
         cancel: vi.fn().mockResolvedValue(undefined),
       };
@@ -712,7 +751,7 @@ describe('synthesizeKokoroWav (native)', () => {
 
     const kokoroNativeModule = {
       initialize: vi.fn().mockResolvedValue(undefined),
-      listVoices: vi.fn().mockResolvedValue([]),
+      listVoices: vi.fn().mockResolvedValue(loadedNativeVoices),
       synthesizeToWavFile: vi.fn().mockResolvedValue({ wavPath: 'file:///tmp/out.wav', sampleRate: 24000 }),
       cancel: vi.fn().mockResolvedValue(undefined),
     };
@@ -815,12 +854,10 @@ describe('synthesizeKokoroWav (native)', () => {
       timeoutMs: 5000,
     };
 
-    // First call: listVoices fails → speaker count unknown → fallback sid (v1.0
-    // map → af_bella = 0). Synthesis still proceeds.
-    await synthesizeKokoroWav({ ...baseOpts, signal: new AbortController().signal }, overrides);
-    expect(kokoroNativeModule.synthesizeToWavFile).toHaveBeenLastCalledWith(
-      expect.objectContaining({ voiceId: 'af_bella', sid: 0 }),
-    );
+    // An unavailable catalog cannot establish a named speaker identity.
+    await expect(synthesizeKokoroWav({ ...baseOpts, signal: new AbortController().signal }, overrides))
+      .rejects.toThrow('kokoro_voice_unavailable');
+    expect(kokoroNativeModule.synthesizeToWavFile).not.toHaveBeenCalled();
 
     // Second call (same assets dir): listVoices now succeeds with 11 speakers.
     // A poisoned cache would reuse the failed `null` and keep sid 0; the fix

@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 
-import { VOICE_RUNTIME_DAEMON_STT_PCM_FORMAT } from '@happier-dev/protocol';
+import { resolveKokoroModelConfig, resolveKokoroVoiceSid, VOICE_RUNTIME_DAEMON_STT_PCM_FORMAT } from '@happier-dev/protocol';
 import type { ModelPackManifest } from '@happier-dev/protocol';
 
 import type {
@@ -60,6 +61,7 @@ type SherpaOfflineRecognizer = Readonly<{
 }>;
 
 type SherpaOfflineTts = Readonly<{
+    numSpeakers: number;
     generate: (input: Readonly<{ text: string; sid: number; speed: number }>) => SherpaGeneratedAudio;
     free?: () => void;
     delete?: () => void;
@@ -154,13 +156,35 @@ async function decodeOnlineRecognizerWhileReady(
     return decoded;
 }
 
+async function finishOnlineRecognizer(
+    runtime: SherpaOnlineRecognizer,
+    stream: SherpaOnlineStream,
+    assertNotCancelled: () => void,
+): Promise<boolean> {
+    assertNotCancelled();
+    // sherpa-onnx-node v1.12.38's streaming-transducer example flushes the
+    // model's final chunk with 0.4 seconds of silence. All daemon STT input is
+    // normalized to 16 kHz; native v1.12.25 owns its separate 0.3-second recipe.
+    // https://github.com/k2-fsa/sherpa-onnx/blob/v1.12.38/nodejs-addon-examples/test_asr_streaming_transducer.js
+    stream.acceptWaveform({
+        samples: new Float32Array(DEFAULT_STT_SAMPLE_RATE * 0.4),
+        sampleRate: DEFAULT_STT_SAMPLE_RATE,
+    });
+    assertNotCancelled();
+    stream.inputFinished();
+    return await decodeOnlineRecognizerWhileReady(runtime, stream, assertNotCancelled);
+}
+
 function isNodeError(value: unknown): value is NodeJS.ErrnoException {
     return value instanceof Error;
 }
 
-async function assertPathExists(path: string, code: string): Promise<string> {
+async function assertPathExists(path: string, code: string, expectedType?: 'file'): Promise<string> {
     try {
-        await stat(path);
+        const pathStat = await stat(path);
+        if (expectedType === 'file' && !pathStat.isFile()) {
+            throw createVoiceInferenceError(code);
+        }
         return path;
     } catch (error) {
         if (isNodeError(error) && error.code === 'ENOENT') {
@@ -224,22 +248,12 @@ async function importSherpaOnnxModule(): Promise<SherpaOnnxModule> {
     return await sherpaOnnxModulePromise;
 }
 
-function resolveVoiceSpeakerId(input: VoiceInferenceRuntimeSynthesizeInput): number {
-    if (!Array.isArray((input.manifest as ModelPackManifest).voices)) {
-        return 0;
-    }
-
-    const voiceCatalog = (input.manifest as ModelPackManifest).voices ?? [];
-    const requestedVoiceId = input.voiceId
-        ?? (input.manifest as ModelPackManifest).defaultVoiceId
-        ?? voiceCatalog[0]?.id
-        ?? null;
-    if (!requestedVoiceId) return 0;
-    const matchedVoice = voiceCatalog.find((voice) => voice.id === requestedVoiceId) ?? null;
-    if (!matchedVoice) {
+function resolveTtsSpeakerId(manifest: ModelPackManifest, voiceId: string | null, runtime: SherpaOfflineTts): number {
+    try {
+        return resolveKokoroVoiceSid(manifest, voiceId, runtime.numSpeakers);
+    } catch {
         throw createVoiceInferenceError('invalid_audio_input', 'voice_inference_tts_voice_unavailable');
     }
-    return typeof matchedVoice.sid === 'number' ? matchedVoice.sid : 0;
 }
 
 async function createTtsRuntime(input: VoiceInferenceRuntimeSynthesizeInput): Promise<CachedTtsRuntime> {
@@ -276,6 +290,10 @@ async function createTtsRuntime(input: VoiceInferenceRuntimeSynthesizeInput): Pr
     const voices = await assertPathExists(adapter.files.voices, 'voice_inference_missing_tts_voices');
     const tokens = await assertPathExists(adapter.files.tokens, 'voice_inference_missing_tts_tokens');
     const dataDir = await assertPathExists(adapter.files.dataDir, 'voice_inference_missing_tts_data');
+    const frontend = resolveKokoroModelConfig(input.manifest);
+    const lexicon = frontend.lexicon
+        ? await assertPathExists(join(input.packDir, frontend.lexicon), 'voice_inference_missing_tts_lexicon', 'file')
+        : '';
 
     const runtime = new OfflineTts({
         model: {
@@ -286,7 +304,8 @@ async function createTtsRuntime(input: VoiceInferenceRuntimeSynthesizeInput): Pr
                 voices,
                 tokens,
                 dataDir,
-                lang: 'en',
+                lang: frontend.lang,
+                lexicon,
             },
         },
         maxNumSentences: 1,
@@ -613,7 +632,7 @@ export const voiceInferenceRuntimeEngine = {
                 output: { codec: 'wav', mimeType: 'audio/wav' },
                 ...input,
             });
-            runtime.generate({ text: 'a', sid: 0, speed: DEFAULT_TTS_SPEED });
+            runtime.generate({ text: 'a', sid: resolveTtsSpeakerId(input.manifest, null, runtime), speed: DEFAULT_TTS_SPEED });
             return;
         }
         if (String(input.manifest?.kind ?? '') === 'stt_sherpa') {
@@ -645,8 +664,7 @@ export const voiceInferenceRuntimeEngine = {
                 samples: new Float32Array(DEFAULT_STT_SAMPLE_RATE / 100),
                 sampleRate: DEFAULT_STT_SAMPLE_RATE,
             });
-            stream.inputFinished();
-            await decodeOnlineRecognizerWhileReady(
+            await finishOnlineRecognizer(
                 sttRuntime.runtime,
                 stream,
                 () => throwIfAborted(input.signal),
@@ -680,7 +698,7 @@ export const voiceInferenceRuntimeEngine = {
         const { runtime } = await createTtsRuntime(input);
         const synthesized = runtime.generate({
             text: input.text,
-            sid: resolveVoiceSpeakerId(input),
+            sid: resolveTtsSpeakerId(input.manifest, input.voiceId, runtime),
             speed: input.speed ?? DEFAULT_TTS_SPEED,
         });
         throwIfAborted(input.signal);
@@ -754,9 +772,10 @@ export const voiceInferenceRuntimeEngine = {
             }
         };
 
-        const drain = async (seq: number, signal?: AbortSignal | null) => {
+        const drain = async (seq: number, signal?: AbortSignal | null, finishInput = false) => {
             const events = [];
-            const decodedInDrain = await decodeOnlineRecognizerWhileReady(runtime, stream, () => {
+            const decode = finishInput ? finishOnlineRecognizer : decodeOnlineRecognizerWhileReady;
+            const decodedInDrain = await decode(runtime, stream, () => {
                 assertOpen();
                 throwIfAborted(signal);
             });
@@ -806,8 +825,7 @@ export const voiceInferenceRuntimeEngine = {
             finish: async ({ finalSeq, signal }) => {
                 assertOpen();
                 throwIfAborted(signal);
-                stream.inputFinished();
-                const finishEvents = await drain(finalSeq, signal);
+                const finishEvents = await drain(finalSeq, signal, true);
                 const finalText = [...committedSegments, openPartialText]
                     .map((segment) => segment.trim())
                     .filter((segment) => segment.length > 0)
@@ -859,8 +877,7 @@ export const voiceInferenceRuntimeEngine = {
             samples: audio.samples,
             sampleRate: audio.sampleRate,
         });
-        stream.inputFinished();
-        await decodeOnlineRecognizerWhileReady(
+        await finishOnlineRecognizer(
             sttRuntime.runtime,
             stream,
             () => throwIfAborted(input.signal),

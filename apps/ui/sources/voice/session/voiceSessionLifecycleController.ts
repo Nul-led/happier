@@ -28,6 +28,7 @@ export type VoiceSessionLifecycleController = Readonly<{
     getConfiguredProviderId: () => VoiceAdapterId | 'off' | null;
     getSnapshot: () => VoiceSessionSnapshot;
     interrupt: (sessionId: string) => Promise<void>;
+    commitInput: (sessionId: string) => Promise<void>;
     rearmAfterCredentialAuthorityChange: (options?: Readonly<{
         exactSessionAccountScopeChanged?: boolean;
         globalBindingAuthorityChanged?: boolean;
@@ -68,7 +69,7 @@ type StartingAdapter = {
     observedActiveTransition: boolean;
 };
 
-type UnavailableConfiguredProvider = Readonly<{
+type VoiceRecoveryBinding = Readonly<{
     providerId: VoiceAdapterId;
     sessionId: string;
     requestedTargetSessionAddress: SessionAddress | null;
@@ -162,7 +163,10 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
     const acquireConnectivityLease = deps?.acquireConnectivityLease ?? (() => () => {});
     let configuredProviderId: VoiceAdapterId | 'off' | null = null;
     let currentUiContextToolSetEnabled: boolean | null = null;
-    let unavailableConfiguredProvider: UnavailableConfiguredProvider | null = null;
+    // Recovery intent outlives capture/connectivity, but never its Account or
+    // explicit End/provider-selection authority. Home cannot be rebuilt from
+    // a session id, including when two Homes contain that same id.
+    let recoveryBinding: VoiceRecoveryBinding | null = null;
     let publishedSnapshot = getVoiceSessionSnapshot();
     let pendingAdapterSwitch: PendingAdapterSwitch | null = null;
     let suppressedProviderAuthFailureAdapterId: string | null = null;
@@ -276,6 +280,7 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
     ): Promise<void> => {
         const ownedSessionId = startAttempt.expectedSnapshotSessionId;
         if (adapter.engineKind !== 'realtime') {
+            recoveryBinding = { providerId: adapter.id, sessionId: ownedSessionId, requestedTargetSessionAddress };
             ensureAttemptConnectivityLease(adapter, ownedSessionId, requestedTargetSessionAddress);
             startingAdapter = startAttempt;
             try {
@@ -317,6 +322,7 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
             throw busy;
         }
         ensureAttemptConnectivityLease(adapter, ownedSessionId, requestedTargetSessionAddress);
+        recoveryBinding = { providerId: adapter.id, sessionId: ownedSessionId, requestedTargetSessionAddress };
         realtimeCaptureAdmission = {
             adapter,
             adapterId: adapter.id,
@@ -515,7 +521,7 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
             return createDisconnectedSnapshot();
         }
 
-        const unavailable = unavailableConfiguredProvider;
+        const unavailable = recoveryBinding;
         if (
             unavailable?.providerId === configuredProviderId
             && !getRegistry().get(unavailable.providerId)
@@ -753,10 +759,6 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
     };
 
     function refreshAdapterSubscriptions(): void {
-        const unavailable = unavailableConfiguredProvider;
-        if (unavailable && getRegistry().get(unavailable.providerId)) {
-            unavailableConfiguredProvider = null;
-        }
         const adapters = listAttemptAdapters();
         const currentAdapters = new Set(adapters);
         for (const [adapter, unsubscribe] of adapterUnsubs) {
@@ -818,6 +820,7 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
         const cancelledRestartStart = cancelPendingCurrentUiContextToolSetRestart();
         const owned = resolveOwnedAdapter();
         if (owned) {
+            recoveryBinding = null;
             await stopAdapter(
                 owned.adapter,
                 owned.snapshot.sessionId ?? sessionId,
@@ -825,11 +828,13 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
             return;
         }
         if (cancelledRestartStart) {
+            recoveryBinding = null;
             await stopAdapter(cancelledRestartStart.adapter, cancelledRestartStart.sessionId);
             return;
         }
         const pendingStartAttempt = startingAdapter;
         if (pendingStartAttempt) {
+            recoveryBinding = null;
             await stopAdapter(pendingStartAttempt.adapter, pendingStartAttempt.sessionId);
             return;
         }
@@ -843,26 +848,26 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
              * that refusal through this lifecycle owner.
              */
             if (configuredProviderId !== null && configuredProviderId !== 'off') {
-                const unavailable: UnavailableConfiguredProvider = {
+                const unavailable: VoiceRecoveryBinding = {
                     providerId: configuredProviderId,
                     sessionId: sessionId.trim() || VOICE_AGENT_GLOBAL_SESSION_ID,
                     requestedTargetSessionAddress,
                 };
                 if (
-                    unavailableConfiguredProvider?.providerId === unavailable.providerId
-                    && unavailableConfiguredProvider.sessionId === unavailable.sessionId
+                    recoveryBinding?.providerId === unavailable.providerId
+                    && recoveryBinding.sessionId === unavailable.sessionId
                     && (
-                        unavailableConfiguredProvider.requestedTargetSessionAddress
+                        recoveryBinding.requestedTargetSessionAddress
                             === unavailable.requestedTargetSessionAddress
                         || areSessionAddressesEqual(
-                            unavailableConfiguredProvider.requestedTargetSessionAddress,
+                            recoveryBinding.requestedTargetSessionAddress,
                             unavailable.requestedTargetSessionAddress,
                         )
                     )
                 ) {
                     return;
                 }
-                unavailableConfiguredProvider = unavailable;
+                recoveryBinding = unavailable;
                 recordVoiceRuntimeFailure(
                     configuredProviderId,
                     'unstarted',
@@ -872,9 +877,6 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
                 publishSnapshot();
             }
             return;
-        }
-        if (unavailableConfiguredProvider?.providerId === adapter.id) {
-            unavailableConfiguredProvider = null;
         }
         if (suppressedProviderAuthFailureAdapterId === adapter.id) {
             suppressedProviderAuthFailureAdapterId = null;
@@ -922,11 +924,6 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
             withdrawnStart
             && getRegistry().get(withdrawnStart.adapter.id) !== withdrawnStart.adapter
         ) {
-            unavailableConfiguredProvider = {
-                providerId: withdrawnStart.adapter.id,
-                sessionId: withdrawnStart.expectedSnapshotSessionId,
-                requestedTargetSessionAddress: withdrawnStart.requestedTargetSessionAddress,
-            };
             // Stop immediately at withdrawal. The post-Start currentness check
             // above repeats Stop after a late successful settlement, which is
             // necessary when the provider's first cancellation settles before
@@ -973,6 +970,7 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
                 });
             }
             disposed = true;
+            recoveryBinding = null;
             muteAttemptOwner = null;
             pendingAdapterSwitch = null;
             unsubscribeRegistry?.();
@@ -1010,6 +1008,14 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
             if (!owned) return;
             await owned.adapter.interrupt({ sessionId: owned.snapshot.sessionId ?? sessionId });
         },
+        commitInput: async (sessionId) => {
+            if (disposed) return;
+            const owned = resolveOwnedAdapter();
+            if (!owned || owned.snapshot.sessionId !== sessionId
+                || owned.snapshot.status !== 'connected'
+                || owned.snapshot.canCommitInput !== true) return;
+            await owned.adapter.commitInput?.({ sessionId });
+        },
         rearmAfterCredentialAuthorityChange: (options) => {
             if (disposed) return;
             if (options?.exactSessionAccountScopeChanged === true) {
@@ -1017,6 +1023,15 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
                 // authority that admitted it. Retire that intent before an
                 // in-flight source stop can settle and reconcile the target.
                 pendingAdapterSwitch = null;
+            }
+            if (
+                options?.exactSessionAccountScopeChanged === true
+                || (
+                    options?.globalBindingAuthorityChanged === true
+                    && recoveryBinding?.sessionId === VOICE_AGENT_GLOBAL_SESSION_ID
+                )
+            ) {
+                recoveryBinding = null;
             }
             const owned = resolveOwnedAdapter();
             const stopTargets = new Map<string, Readonly<{
@@ -1082,7 +1097,7 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
             if (disposed) return;
             if (providerId !== configuredProviderId) {
                 suppressedProviderAuthFailureAdapterId = null;
-                unavailableConfiguredProvider = null;
+                recoveryBinding = null;
             }
             configuredProviderId = providerId;
             publishSnapshot();
@@ -1227,11 +1242,11 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
                 await toggle(requestedTargetSessionAddress);
                 return;
             }
-            const unavailable = unavailableConfiguredProvider;
-            const requestedTargetSessionAddress = unavailable?.sessionId === sessionId
-                ? unavailable.requestedTargetSessionAddress
-                : null;
-            await toggle(requestedTargetSessionAddress);
+            const binding = recoveryBinding;
+            if (!binding || binding.providerId !== configuredProviderId) return;
+            // The recovery surface's session id is a navigation hint, not
+            // authority to retarget the failed attempt or change its Home.
+            await toggle(binding.requestedTargetSessionAddress);
         },
         setOutputFocusState: async (sessionId, state) => {
             if (disposed) return 'unsupported';
@@ -1274,6 +1289,7 @@ export function createVoiceSessionLifecycleController(deps?: Readonly<{
         },
         stop: async (sessionId) => {
             if (disposed) return;
+            recoveryBinding = null;
             const cancelledRestartStart = cancelPendingCurrentUiContextToolSetRestart();
             const owned = resolveOwnedAdapter();
             if (!owned) {

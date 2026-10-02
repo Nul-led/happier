@@ -1,5 +1,6 @@
 import { resolvePublicReleaseRingLabelForId, type PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 import type { OpenSshAuth as CanonicalOpenSshAuth } from '../../ssh/openSshTransport.js';
+import { quoteRemotePathWithHomeExpansion, safeBashSingleQuote } from '../../ssh/shellQuote.js';
 export type { OpenSshAuth } from '../../ssh/openSshTransport.js';
 import {
   SystemTaskResultSchema,
@@ -54,12 +55,6 @@ export type OpenSshRunRemoteText = (params: Readonly<{
   input?: string;
 }>) => Promise<HappierTextResult>;
 
-function safeBashSingleQuote(value: string): string {
-  const raw = String(value ?? '');
-  if (raw === '') return "''";
-  return `'${raw.replaceAll("'", `'\"'\"'`)}'`;
-}
-
 function parseFirstJsonObject(text: string): unknown {
   const lines = String(text ?? '')
     .split(/\r?\n/u)
@@ -84,10 +79,6 @@ function isJsonFailureEnvelope(value: unknown): value is Readonly<{ ok: false }>
   );
 }
 
-function buildRemoteCommandFromArgv(argv: readonly string[]): string {
-  return argv.map((part) => safeBashSingleQuote(String(part))).join(' ');
-}
-
 export function createOpenSshHappierJsonExecutor(params: Readonly<{
   ssh: SystemTaskSshConnectionConfig;
   auth: CanonicalOpenSshAuth;
@@ -105,7 +96,7 @@ export function createOpenSshHappierJsonExecutor(params: Readonly<{
 
   return {
     async runHappierText(args, opts) {
-      const argvCommand = buildRemoteCommandFromArgv([remoteHappier, ...args]);
+      const argvCommand = [quoteRemotePathWithHomeExpansion(remoteHappier), ...args.map(safeBashSingleQuote)].join(' ');
       const remoteCommand = scopedLabel
         ? `HAPPIER_PUBLIC_RELEASE_CHANNEL=${safeBashSingleQuote(scopedLabel)} HAPPIER_RELEASE_RING=${safeBashSingleQuote(scopedLabel)} ${argvCommand}`
         : argvCommand;

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     PLUGIN_UI_HOST_API_VERSION_V1,
     PluginHostedWebSecurityPolicyV1Schema,
+    PluginUiArtifactsManifestV2Schema,
 } from '@happier-dev/protocol/plugins/ui';
 
 import { createHostedWebStaticAssetLifecycle } from './lifecycle';
@@ -38,26 +39,21 @@ function manifestFile(relativePath: string, contents: string) {
 }
 
 function manifest(digest = DIGEST_WEB) {
-    return {
-        version: 1,
+    return PluginUiArtifactsManifestV2Schema.parse({
+        version: 2,
         entries: [{
-            contributionId: 'preview-web',
+            artifactId: 'preview-web',
             tier: 'hostedWeb',
-            platform: 'web',
             entry: 'hosted-web/preview-web/index.html',
             files: [
                 manifestFile('hosted-web/preview-web/index.html', INDEX_HTML),
                 manifestFile('hosted-web/preview-web/assets/index.js', INDEX_JS),
             ],
             digest,
-            builtWith: {
-                bundler: 'vite',
-                version: '6.0.0',
-            },
-            hostUiApiVersion: PLUGIN_UI_HOST_API_VERSION_V1,
-            compat: {},
+            builtWith: { staging: 'staticDirectory' },
+            hostUiApiRange: `^${PLUGIN_UI_HOST_API_VERSION_V1}`,
         }],
-    };
+    });
 }
 
 function contribution(overrides: Partial<Parameters<ReturnType<typeof createHostedWebStaticAssetLifecycle>['sync']>[0][number]> = {}) {
@@ -70,7 +66,7 @@ function contribution(overrides: Partial<Parameters<ReturnType<typeof createHost
         installedRoot: root,
         runtimeMode: {
             kind: 'installedStaticAssets' as const,
-            artifactId: 'hosted-web-preview',
+            artifactId: 'preview-web',
             assetRootId: 'hosted-web/preview-web',
         },
         artifactManifest: manifest(),
@@ -123,6 +119,7 @@ describe('hosted-web static asset lifecycle', () => {
         const first = await lifecycle.sync([contribution()]);
         const second = await lifecycle.sync([contribution()]);
 
+        expect(first.diagnostics).toEqual([]);
         expect(first.active).toHaveLength(1);
         expect(second.active).toHaveLength(1);
         expect(second.active[0]?.baseUrl).toBe(first.active[0]?.baseUrl);
@@ -132,7 +129,7 @@ describe('hosted-web static asset lifecycle', () => {
                 owner: { kind: 'plugin', id: 'acme.preview' },
                 machineId: 'machine-1',
                 sessionId: 'session-1',
-                originMode: 'path',
+                originMode: 'host',
             }),
         ]);
 
@@ -214,7 +211,7 @@ describe('hosted-web static asset lifecycle', () => {
         });
 
         const result = await lifecycle.sync([
-            contribution({ artifactManifest: { version: 1, entries: [] } }),
+            contribution({ artifactManifest: { version: 2, entries: [] } }),
             contribution(),
             contribution({ title: 'Duplicate preview' }),
         ]);

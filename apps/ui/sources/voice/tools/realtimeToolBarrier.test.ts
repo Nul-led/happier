@@ -321,28 +321,51 @@ describe('realtime tool barrier', () => {
     expect(submitResults).toHaveBeenCalledTimes(2);
   });
 
-  it('dedupes response replay and rejects conflicting duplicate call ids', async () => {
-    const executeCall = vi.fn(async () => ({ ok: true }));
+  it('redelivers completed replays with current privacy without repeating the effect and rejects conflicting ids', async () => {
+    const executeCall = vi.fn(async () => ({ ok: true, machineId: 'private-machine' }));
+    let shareInventory = true;
     const submitResults = vi.fn(async () => undefined);
     const continueResponse = vi.fn(async () => undefined);
     const barrier = createRealtimeToolBarrier({
       authorizeCall: async () => ({ status: 'allowed' as const }),
       executeCall,
-      redactResult: (value) => value,
+      redactResult: (value) => shareInventory ? value : { ok: false, errorCode: 'privacy_disabled' },
       submitResults,
       continueResponse,
     });
     const first = await barrier.run({ responseId: 'response-1', calls: [call('a', 0)] });
+    shareInventory = false;
     const replay = await barrier.run({ responseId: 'response-1', calls: [call('a', 0)] });
-    expect(replay).toBe(first);
+    expect(first.results[0]?.output).toEqual({ ok: true, machineId: 'private-machine' });
+    expect(replay.results[0]?.output).toEqual({ ok: false, errorCode: 'privacy_disabled' });
     expect(executeCall).toHaveBeenCalledTimes(1);
-    expect(submitResults).toHaveBeenCalledTimes(1);
-    expect(continueResponse).toHaveBeenCalledTimes(1);
+    expect(submitResults).toHaveBeenCalledTimes(2);
+    expect(continueResponse).toHaveBeenCalledTimes(2);
 
     await expect(barrier.run({ responseId: 'response-2', calls: [
       { ...call('same', 0), responseId: 'response-2' },
       { ...call('same', 1), responseId: 'response-2', toolName: 'different' },
     ] })).rejects.toMatchObject({ code: 'duplicate_call_id' });
+  });
+
+  it('submits one result per concurrent duplicate delivery while executing the effect once', async () => {
+    let release!: (value: unknown) => void;
+    const executeCall = vi.fn(async () => await new Promise((resolve) => { release = resolve; }));
+    const submitResults = vi.fn(async () => {});
+    const barrier = createRealtimeToolBarrier({
+      classifyCall: () => 'mutation', authorizeCall: async () => ({ status: 'allowed' }),
+      executeCall, redactResult: (value) => value,
+      submitResults, continueResponse: async () => {},
+    });
+    const input = { responseId: 'response-1', calls: [call('same-call', 0)] };
+    const first = barrier.run(input);
+    const duplicate = barrier.run(input);
+    await vi.waitFor(() => expect(executeCall).toHaveBeenCalledTimes(1));
+    release({ ok: true });
+    await Promise.all([first, duplicate]);
+    expect(submitResults).toHaveBeenCalledTimes(2);
+    expect(executeCall).toHaveBeenCalledTimes(1);
+    barrier.dispose();
   });
 
   it('rejects rather than normalizes whitespace around the response identity', async () => {

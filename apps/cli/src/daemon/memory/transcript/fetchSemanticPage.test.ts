@@ -7,6 +7,53 @@ import { fetchMemorySemanticTranscriptPage } from './fetchSemanticPage';
 const contentContext = { mode: 'plain', ctx: null } as const;
 
 describe('fetchMemorySemanticTranscriptPage', () => {
+  it('includes tool results when outputs alone are enabled and excludes tool calls', async () => {
+    const fetchPage = vi.fn<FetchTranscriptRawPage>().mockResolvedValue({
+      messages: [
+        {
+          id: 'tool-call',
+          seq: 1,
+          createdAt: 1000,
+          messageRole: 'agent',
+          content: { t: 'plain', v: {
+            role: 'agent',
+            content: { type: 'acp', agentId: 'codex', data: { type: 'tool-call', name: 'Bash', callId: 'call-1' } },
+          } },
+        },
+        {
+          id: 'tool-result',
+          seq: 2,
+          createdAt: 2000,
+          messageRole: 'agent',
+          content: { t: 'plain', v: {
+            role: 'agent',
+            content: { type: 'acp', agentId: 'codex', data: { type: 'tool-result', callId: 'call-1', output: 'memory tool result' } },
+          } },
+        },
+      ],
+      hasMore: false,
+      nextBeforeSeq: null,
+      nextAfterSeq: null,
+    });
+    const page = await fetchMemorySemanticTranscriptPage({
+      token: 'token',
+      sessionId: 'sess-tools',
+      contentContext,
+      limit: 10,
+      rawPageLimit: 10,
+      maxRawRowsToScan: 20,
+      direction: 'after',
+      contentPolicy: { includeToolSummaries: false, includeToolOutputs: true },
+      includeLegacyUnknownRoleFallback: false,
+      fetchPage,
+    });
+
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]).toMatchObject({
+      seq: 2, kind: 'tool_summary', text: expect.stringContaining('memory tool result'),
+    });
+  });
+
   it('uses server-side user and agent role filtering for memory transcript pages', async () => {
     const fetchPage = vi.fn<FetchTranscriptRawPage>()
       .mockResolvedValueOnce({

@@ -94,7 +94,6 @@ import {
     initializeTodoSync,
     reorderTodos,
     toggleTodo,
-    updateTodoLinkedSessions,
     updateTodoTitle,
 } from './todoOps';
 import { TodoStoredContentUnavailableError } from './todoStoredContent';
@@ -402,56 +401,6 @@ describe('todoOps plaintext account storage', () => {
         expect(mocks.kvSet).not.toHaveBeenCalled();
     });
 
-    it('refuses plain Todo link writes against observe-only servers', async () => {
-        mocks.todoState = {
-            todos: {
-                existing: {
-                    id: 'existing',
-                    title: 'Keep me',
-                    done: false,
-                    createdAt: 1,
-                    updatedAt: 1,
-                    linkedSessions: {},
-                },
-            },
-            undoneOrder: ['existing'],
-            doneOrder: [],
-            versions: { 'todo.existing': 2 },
-        };
-        mocks.fetchAccountEncryptionMode.mockResolvedValue({ mode: 'plain', updatedAt: 0 });
-        mocks.getServerFeaturesSnapshot.mockResolvedValue({
-            status: 'ready',
-            features: {
-                capabilities: {
-                    accountStoredContentCompatibility: {
-                        v: 1,
-                        minimumProtocolVersion: 1,
-                        currentProtocolVersion: 1,
-                        declarationTransport: 'http-header-and-socket-auth-v1',
-                    },
-                },
-            },
-        });
-        mocks.kvGet.mockResolvedValue({
-            key: 'todo.existing',
-            value: encodeBase64StoredJsonContentEnvelope({
-                t: 'plain',
-                v: mocks.todoState.todos.existing,
-            }),
-            version: 2,
-        });
-
-        await expect(updateTodoLinkedSessions('existing', {
-            session: { title: 'Session', linkedAt: 2 },
-        })).rejects.toMatchObject({
-            code: 'client-upgrade-required',
-            retryable: false,
-        });
-
-        expect(mocks.kvSet).not.toHaveBeenCalled();
-        expect(mocks.kvMutate).not.toHaveBeenCalled();
-    });
-
     it('does not misreport encrypted Todo storage as empty when key material is unavailable', async () => {
         mocks.kvList.mockResolvedValue({
             items: [{
@@ -635,9 +584,6 @@ describe('todoOps plaintext account storage', () => {
         for (const mutate of [
             () => updateTodoTitle({ token: 'token-only' }, 'existing', 'Changed'),
             () => toggleTodo({ token: 'token-only' }, 'existing'),
-            () => updateTodoLinkedSessions('existing', {
-                session: { title: 'Session', linkedAt: 2 },
-            }),
             () => deleteTodo({ token: 'token-only' }, 'existing'),
         ]) {
             mocks.todoState = priorState;

@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { createSocketTransportAdapter } from '@happier-dev/sync-client';
 import axios from 'axios';
 
 import {
@@ -23,13 +25,22 @@ vi.mock('@/session/transport/http/sessionsHttp', async (importOriginal) => ({
 }));
 const fetchAccountEncryptionCurrentness = vi.hoisted(() => vi.fn());
 vi.mock('@/api/client/connectedServiceCredentialApi', () => ({ fetchAccountEncryptionCurrentness }));
+const socketBoundary = vi.hoisted(() => ({ create: vi.fn() }));
+vi.mock('@/api/session/sockets', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/api/session/sockets')>(),
+  createUserScopedSocketConnection: () => {
+    const socket = socketBoundary.create();
+    return { socket, transport: createSocketTransportAdapter(socket) };
+  },
+}));
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 const sessionCreationTag = deriveSessionCreationTagV1({ callerCreationNamespace: 'user', creationKey: 'admission-test' });
 const sessionCreationCorrespondence = SessionCreationCorrespondenceV1Schema.parse({
   v: 1,
   sessionCreationTag,
   recipe: {
-    execution: { machineId: 'machine-1', directory: '/repo' },
+    execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/repo' } },
     organization: { folderId: null, tagIds: [] },
     agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
     modelSelection: null, profileId: null, requestedPermissionMode: null, agentModeId: null,
@@ -51,6 +62,9 @@ describe('canonical Session creation admission', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    socketBoundary.create.mockReturnValue(Object.assign(new EventEmitter(), {
+      connected: false, connect: vi.fn(), disconnect: vi.fn(), close: vi.fn(),
+    }));
     vi.mocked(axios.post).mockResolvedValue({ status: 200, data: { sessions: [] } });
     spawn.mockResolvedValue({
       success: true, sessionId: 'session-created',
@@ -97,5 +111,22 @@ describe('canonical Session creation admission', () => {
       sessionCreationOutcome: { disposition: 'rejoined', organizationPlacement: { folderId: null, tagIds: [] } },
     });
     await expect(createSpawnedSession(params)).rejects.toMatchObject({ code: 'SESSION_WEBHOOK_TIMEOUT' });
+  });
+
+  it('parks known Session visibility and re-reads it after reconnect', async () => {
+    vi.useFakeTimers();
+    const session = await fetchSessionById();
+    fetchSessionById.mockClear();
+    fetchSessionById.mockResolvedValue(null);
+    const result = createSpawnedSession(params);
+    await vi.advanceTimersByTimeAsync(0);
+    const baselineReads = fetchSessionById.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetchSessionById).toHaveBeenCalledTimes(baselineReads);
+    fetchSessionById.mockResolvedValue(session);
+    const socket = socketBoundary.create.mock.results[0]?.value;
+    socket.emit('connect');
+    await expect(result).resolves.toMatchObject({ sessionId: 'session-created', disposition: 'created' });
+    expect(socket.eventNames()).toEqual([]);
   });
 });

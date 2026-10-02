@@ -190,7 +190,7 @@ export async function executeCliTranscriptAction(
         if (!registry) {
             return unsupported(params.actionId, 'transcript_follow_lease_registry_unavailable');
         }
-        const result = await followSessionTranscript({ store, registry, sessionId, input });
+        const result = await followSessionTranscript({ store, registry, sessionId, input, signal: params.context?.signal });
         if (!result.ok) {
             return {
                 ok: false,

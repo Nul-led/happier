@@ -3,6 +3,8 @@ import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { RawJSONLines as CanonicalRawJSONLines } from '@happier-dev/plugins-claude/agent/transcripts';
+import { RawJSONLinesSchema } from '@happier-dev/protocol/agents/claude/transcripts';
+import { RawJSONLinesSchema as PluginRawJSONLinesSchema } from '../../../packages/plugins/claude/src/agent/transcripts/rawJsonLines';
 import { describe, expect, it } from 'vitest';
 
 import type { RawJSONLines as CliLibRawJSONLines } from './lib.js';
@@ -23,7 +25,7 @@ const rawJSONLinesTypesHaveExactIdentity: IsExactType<
 
 const cliSourceDir = dirname(fileURLToPath(import.meta.url));
 const cliPackageDir = resolve(cliSourceDir, '..');
-const claudeTranscriptExportSource = '@happier-dev/plugins-claude/agent/transcripts';
+const claudeTranscriptExportSource = '@happier-dev/protocol/agents/claude/transcripts';
 const genericRuntimeRootNames = ['agent', 'api', 'daemon', 'rpc', 'session', 'terminal'] as const;
 
 function listProductionTypeScriptFiles(root: string): readonly string[] {
@@ -39,6 +41,20 @@ function listProductionTypeScriptFiles(root: string): readonly string[] {
 }
 
 describe('@happier-dev/cli/lib Claude transcript compatibility identities', () => {
+    it('keeps native ingress and the public library on the same fail-soft JSONL parser', () => {
+        expect(PluginRawJSONLinesSchema).toBe(RawJSONLinesSchema);
+        expect(RawJSONLinesSchema.safeParse({
+            type: 'assistant', uuid: 'assistant-1', custom: { preserved: true },
+            message: { usage: { input_tokens: -1, output_tokens: 2 } },
+        })).toEqual({
+            success: true,
+            data: {
+                type: 'assistant', uuid: 'assistant-1', custom: { preserved: true },
+                message: { usage: undefined },
+            },
+        });
+        expect(RawJSONLinesSchema.safeParse({ type: 'user', uuid: 'user-1' }).success).toBe(false);
+    });
     it('keeps the released package subpath mapped to the CLI lib artifact', () => {
         const packageJson = JSON.parse(
             readFileSync(resolve(cliPackageDir, 'package.json'), 'utf8'),
@@ -66,7 +82,7 @@ describe('@happier-dev/cli/lib Claude transcript compatibility identities', () =
             ...libSource.matchAll(/from\s+['"](@happier-dev\/plugins-claude[^'"]*)['"]/gu),
         ].map((match) => match[1]);
         const canonicalExport = libSource.match(
-            /export\s*\{([^}]*)\}\s*from\s*['"]@happier-dev\/plugins-claude\/agent\/transcripts['"]/u,
+            /export\s*\{([^}]*)\}\s*from\s*['"]@happier-dev\/protocol\/agents\/claude\/transcripts['"]/u,
         );
         const exportedNames = (canonicalExport?.[1] ?? '')
             .split(',')
@@ -74,12 +90,13 @@ describe('@happier-dev/cli/lib Claude transcript compatibility identities', () =
             .filter(Boolean)
             .sort();
 
-        expect(claudeModuleReferences).toEqual([claudeTranscriptExportSource]);
+        expect(claudeModuleReferences).toEqual([]);
+        expect(libSource).toContain(claudeTranscriptExportSource);
         expect(exportedNames).toEqual(['RawJSONLinesSchema', 'type RawJSONLines']);
     });
 
-    it('keeps generic CLI runtime roots free of direct Claude-plugin imports', () => {
-        const offenders = genericRuntimeRootNames.flatMap((rootName) =>
+    it('keeps generic CLI runtime and Provider roots free of direct Claude-plugin imports', () => {
+        const offenders = [...genericRuntimeRootNames, 'providers'].flatMap((rootName) =>
             listProductionTypeScriptFiles(resolve(cliSourceDir, rootName)).flatMap((filePath) => {
                 const source = readFileSync(filePath, 'utf8');
                 return source.includes('@happier-dev/plugins-claude')

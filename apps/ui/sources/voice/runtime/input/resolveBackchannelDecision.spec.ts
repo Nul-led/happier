@@ -21,6 +21,31 @@ describe('resolveBackchannelDecision', () => {
         })).toEqual({ isBackchannel: true, reason: 'phrase_match' });
     });
 
+    it('matches canonically equivalent accented backchannels without matching a different unaccented word', () => {
+        const config = { ignoredPhrases: ['très bien'] };
+        expect(resolveBackchannelDecision({ config, transcript: 'TRE\u0300S BIEN!' }))
+            .toEqual({ isBackchannel: true, reason: 'phrase_match' });
+        expect(resolveBackchannelDecision({ config, transcript: 'tres bien' }))
+            .toEqual({ isBackchannel: false });
+    });
+
+    it.each(['…!? 🎧', '\u0300\u0301', '  '])('keeps non-lexical noise empty: %s', (transcript) => {
+        expect(resolveBackchannelDecision({ config: { ignoredPhrases: [] }, transcript }))
+            .toEqual({ isBackchannel: true, reason: 'empty_transcript' });
+    });
+
+    it.each(['请打开最新的文件', '最新のファイルを開いてください', 'กรุณาเปิดไฟล์ล่าสุด'])('does not classify an unspaced multi-word turn as a short backchannel: %s', (transcript) => {
+        expect(resolveBackchannelDecision({
+            config: { ignoredPhrases: [] }, transcript, durationMs: 400,
+        })).toEqual({ isBackchannel: false });
+    });
+
+    it.each(['你好', 'สวัสดีครับ'])('retains the measured short-word gate for segmented acknowledgements: %s', (transcript) => {
+        expect(resolveBackchannelDecision({
+            config: { ignoredPhrases: [] }, transcript, durationMs: 400,
+        })).toEqual({ isBackchannel: true, reason: 'min_words' });
+    });
+
     it('does not demote short finalized turns when duration was not measured', () => {
         expect(resolveBackchannelDecision({
             config: { ignoredPhrases: DEFAULT_ADAPTIVE_INTERRUPTION_IGNORED_PHRASES },

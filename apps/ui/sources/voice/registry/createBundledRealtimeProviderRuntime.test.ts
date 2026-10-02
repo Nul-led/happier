@@ -450,6 +450,7 @@ describe('createBundledRealtimeProviderRuntime', () => {
       })),
       sendClientControl: vi.fn(async () => ({ status: 'sent' as const })),
       getActiveControlSessionId: vi.fn(() => null),
+      canCommitInput: () => false,
       getOwnedControlSessionId: vi.fn(() => 'voice-global'),
       getOwnedAttemptId: vi.fn(() => 1),
       requestReconnect: vi.fn(async () => false),
@@ -696,6 +697,7 @@ describe('createBundledRealtimeProviderRuntime', () => {
       })),
       sendClientControl: vi.fn(async () => ({ status: 'sent' as const })),
       getActiveControlSessionId: vi.fn(() => null),
+      canCommitInput: () => false,
       getOwnedControlSessionId: vi.fn(() => null),
       getOwnedAttemptId: vi.fn(() => null),
       requestReconnect: vi.fn(async () => false),
@@ -969,6 +971,7 @@ describe('createBundledRealtimeProviderRuntime', () => {
           performTurnControl,
           sendClientControl,
           getActiveControlSessionId,
+          canCommitInput: () => false,
           getOwnedControlSessionId: vi.fn(() => 'voice-global'),
           getOwnedAttemptId: vi.fn(() => 1),
           requestReconnect,
@@ -1200,6 +1203,57 @@ describe('createBundledRealtimeProviderRuntime', () => {
     await runtimeEvents.onCanonicalEvent({ type: 'input_speech_started' });
     expect(beginOutputInterruptionCandidate).not.toHaveBeenCalled();
     hostGenerationCurrent = true;
+    const onConnectionReady = (controllerInput as unknown as Readonly<{
+      onConnectionReady(input: Readonly<{
+        request: VoiceRealtimeJsonValue;
+        session: Readonly<{ config: VoiceRealtimeJsonValue; safeMetadata: VoiceRealtimeJsonValue; initialContextDelivery?: 'prepared' }>;
+        connection: Readonly<{ sendControl(event: VoiceRealtimeJsonValue): Promise<void> }>;
+        signal: AbortSignal;
+      }>): Promise<void>;
+    }>).onConnectionReady;
+    sentEvents.length = 0;
+    await onConnectionReady({
+      request: { initialContext: 'context' },
+      session: { config: {}, safeMetadata: null },
+      connection: { sendControl: async (event) => { sentEvents.push(event); } },
+      signal: new AbortController().signal,
+    });
+    expect(sentEvents).toEqual([{ type: 'session.update', text: 'context' }]);
+    sentEvents.length = 0;
+    await onConnectionReady({
+      request: { initialContext: 'context' },
+      session: { config: {}, safeMetadata: null, initialContextDelivery: 'prepared' },
+      connection: { sendControl: async (event) => { sentEvents.push(event); } },
+      signal: new AbortController().signal,
+    });
+    expect(sentEvents).toEqual([]);
+    runtime.adapter.sendContextUpdate({ sessionId: 'session-1', update: 'later context' });
+    await vi.waitFor(() => expect(sentEvents).toEqual([{ type: 'session.update', text: 'later context' }]));
+    sentEvents.length = 0;
+    const startupProtocol = controllerInput as unknown as Readonly<{
+      adapter: Readonly<{ prepare(input: unknown): Promise<unknown> }>;
+    }>;
+    prepare.mockRejectedValueOnce(Object.assign(new Error('agent config is stale'), {
+      code: 'realtime_agent_update_required',
+    }));
+    await expect(startupProtocol.adapter.prepare({})).resolves.toEqual({
+      kind: 'declined', code: 'realtime_agent_update_required',
+    });
+    const unavailableIntl = Object.create(Intl);
+    Object.defineProperty(unavailableIntl, 'Segmenter', { value: undefined });
+    vi.stubGlobal('Intl', unavailableIntl);
+    try {
+      interruptionPolicy = 'provider_immediate';
+      await expect(controllerInput!.resources!.preflight?.({
+        controlSessionId: 'session-1', attemptId: 1, request: {}, signal: new AbortController().signal,
+      })).resolves.toBeUndefined();
+      interruptionPolicy = 'client_two_stage';
+      await expect(controllerInput!.resources!.preflight?.({
+        controlSessionId: 'session-1', attemptId: 1, request: {}, signal: new AbortController().signal,
+      })).rejects.toMatchObject({ code: 'provider_setup_required', message: 'voice_text_segmentation_unavailable' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
     await controllerInput!.resources!.preflight?.({
       controlSessionId: 'session-1',
       attemptId: 1,
@@ -1494,6 +1548,12 @@ describe('createBundledRealtimeProviderRuntime', () => {
       kind: 'provider_setup_required',
       reason: 'realtime_byo_not_configured',
     });
+    controllerProtocol.machine.disconnected({
+      controlSessionId: 'voice-global', code: 'realtime_agent_update_required',
+    });
+    expect(host.createMachineError).toHaveBeenLastCalledWith({
+      kind: 'provider_setup_required', reason: 'realtime_agent_update_required',
+    });
     emitMicFailure({ kind: 'mic_permission_revoked', reason: 'browser_permission_revoked' });
     await vi.waitFor(() => expect(fail).toHaveBeenCalledWith('mic_permission_revoked'));
     controllerProtocol.machine.failed({ controlSessionId: 'voice-global', code: 'mic_permission_revoked' });
@@ -1536,20 +1596,6 @@ describe('createBundledRealtimeProviderRuntime', () => {
       kind: 'update_required',
       reason: 'update_required',
     });
-    const onConnectionReady = (controllerInput as unknown as Readonly<{
-      onConnectionReady(input: Readonly<{
-        request: VoiceRealtimeJsonValue;
-        connection: Readonly<{ sendControl(event: VoiceRealtimeJsonValue): Promise<void> }>;
-        signal: AbortSignal;
-      }>): Promise<void>;
-    }>).onConnectionReady;
-    await onConnectionReady({
-      request: { initialContext: 'context' },
-      connection: { sendControl: async (event) => { sentEvents.push(event); } },
-      signal: new AbortController().signal,
-    });
-    expect(sentEvents).toEqual([{ type: 'session.update', text: 'context' }]);
-    sentEvents.length = 0;
     const resources = (controllerInput as unknown as Readonly<{ resources: Readonly<{
       preflight(input: unknown): Promise<void>;
       prepare(input: unknown): Promise<void>;
@@ -1613,12 +1659,12 @@ describe('createBundledRealtimeProviderRuntime', () => {
     })).resolves.toEqual({ kind: 'declined', code: 'mic_permission_denied' });
 
     const createToolBarrier = (controllerInput as unknown as Readonly<{
-      createToolBarrier(): Readonly<{
+      createToolBarrier(input: Readonly<{ controlSessionId: string; attemptId: number }>): Readonly<{
         submitResults(responseId: string, results: readonly unknown[], signal: AbortSignal): Promise<void>;
         continueResponse(responseId: string, signal: AbortSignal): Promise<void>;
       }>;
     }>).createToolBarrier;
-    createToolBarrier();
+    createToolBarrier({ controlSessionId: 'session-1', attemptId: 3 });
     const barrier = barrierInput!;
     expect(barrier).toMatchObject({ effectCalls: 'stable_ids' });
     const signal = new AbortController().signal;

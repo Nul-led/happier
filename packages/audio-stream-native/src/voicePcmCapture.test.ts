@@ -131,6 +131,78 @@ function createRequiredAecHarness() {
 }
 
 describe('VoicePcmCapture', () => {
+  it('finishes admitted frames in order after stopping admission, without blocking cancellation', async () => {
+    const harness = createRequiredAecHarness();
+    const capture = createVoicePcmCapture(harness);
+    const frames: string[] = [];
+    let resolveFirst!: () => void;
+    const first = new Promise<void>((resolve) => { resolveFirst = resolve; });
+    const lease = await capture.acquire({
+      ownerId: 'graceful', format: FORMAT,
+      onFrame: async (frame) => {
+        frames.push(frame.pcm16leBase64);
+        if (frames.length === 1) await first;
+      },
+    });
+    const emit = (value: string) => harness.emit({ streamId: lease.streamId, pcm16leBase64: value, sampleRate: 16_000, channels: 1 });
+    emit('first');
+    emit('last-word');
+    await vi.waitFor(() => expect(frames).toEqual(['first']));
+    const finishing = lease.finish();
+    await vi.waitFor(() => expect(harness.nativeModule.stop).toHaveBeenCalledTimes(1));
+    emit('too-late');
+    expect(frames).toEqual(['first']);
+    resolveFirst();
+    await finishing;
+    expect(frames).toEqual(['first', 'last-word']);
+    await lease.release();
+    expect(harness.nativeModule.stop).toHaveBeenCalledTimes(1);
+
+    let releaseHeld!: () => void;
+    const held = new Promise<void>((resolve) => { releaseHeld = resolve; });
+    const onFrame = vi.fn(async () => { await held; });
+    const cancel = await capture.acquire({ ownerId: 'cancel', format: FORMAT, onFrame });
+    harness.emit({ streamId: cancel.streamId, pcm16leBase64: 'held', sampleRate: 16_000, channels: 1 });
+    harness.emit({ streamId: cancel.streamId, pcm16leBase64: 'cancelled-tail', sampleRate: 16_000, channels: 1 });
+    await vi.waitFor(() => expect(onFrame).toHaveBeenCalledTimes(1));
+    const cancelledFinish = expect(cancel.finish()).rejects.toThrow('voice_pcm_capture_cancelled');
+    await cancel.release();
+    expect(capture.getSnapshot().subscriberCount).toBe(0);
+    releaseHeld();
+    await cancelledFinish;
+    expect(onFrame).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects graceful finish when admitted frame delivery or native stop failed', async () => {
+    const harness = createRequiredAecHarness();
+    const capture = createVoicePcmCapture(harness);
+    const lease = await capture.acquire({ ownerId: 'failed-frame', format: FORMAT, onFrame: async () => { throw new Error('decode_failed'); } });
+    harness.emit({ streamId: lease.streamId, pcm16leBase64: 'failed', sampleRate: 16_000, channels: 1 });
+    await expect(lease.finish()).rejects.toThrow('decode_failed');
+    const next = await capture.acquire({ ownerId: 'failed-stop', format: FORMAT, onFrame: () => {} });
+    vi.mocked(harness.nativeModule.stop).mockRejectedValueOnce(new Error('stop_failed'));
+    await expect(next.finish()).rejects.toThrow('stop_failed');
+    await next.release();
+    expect(capture.getSnapshot().streamId).toBeNull();
+  });
+
+  it('cancels a detached graceful tail when the shared capture is disposed', async () => {
+    const harness = createRequiredAecHarness();
+    const capture = createVoicePcmCapture(harness);
+    let releaseHeld!: () => void;
+    const held = new Promise<void>((resolve) => { releaseHeld = resolve; });
+    const onFrame = vi.fn(async () => { await held; });
+    const lease = await capture.acquire({ ownerId: 'disposing', format: FORMAT, onFrame });
+    const emit = () => harness.emit({ streamId: lease.streamId, pcm16leBase64: 'AAE=', sampleRate: 16_000, channels: 1 });
+    emit();
+    emit();
+    await vi.waitFor(() => expect(onFrame).toHaveBeenCalledTimes(1));
+    const finishing = lease.finish();
+    await capture.dispose();
+    releaseHeld();
+    await expect(finishing).rejects.toThrow('voice_pcm_capture_cancelled');
+    expect(onFrame).toHaveBeenCalledTimes(1);
+  });
   it('admits required AEC only after the host capture reports it active', async () => {
     const harness = createRequiredAecHarness();
     const capture = createVoicePcmCapture(harness);

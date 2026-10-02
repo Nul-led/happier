@@ -15,7 +15,6 @@ export type VoicePcmPlaybackIdentity = Readonly<{
 export type VoicePcmPlaybackFormat = Readonly<{
   sampleRate: number;
   channels: 1 | 2;
-  maxBufferedMs: number;
 }>;
 
 export type VoicePcmPlaybackRequest = Readonly<{
@@ -90,8 +89,6 @@ function validatePlaybackFormat(format: VoicePcmPlaybackFormat): void {
     !Number.isSafeInteger(format.sampleRate)
     || format.sampleRate <= 0
     || (format.channels !== 1 && format.channels !== 2)
-    || !Number.isSafeInteger(format.maxBufferedMs)
-    || format.maxBufferedMs <= 0
   ) {
     throw new VoicePcmPlaybackError(
       'invalid_playback_request',
@@ -153,8 +150,9 @@ function nativeTerminalError(
 
 /**
  * The sole JavaScript owner for a native player attached to a live PCM capture
- * stream. Native methods provide the bounded queue; this wrapper provides
- * currentness, terminal signaling, and idempotent lifecycle semantics.
+ * stream. Native methods own ordered response PCM and platform backpressure;
+ * this wrapper provides currentness, terminal signaling, and idempotent
+ * lifecycle semantics.
  */
 export function createVoicePcmPlayback(options: Readonly<{
   nativeModule: HappierAudioStreamNativeModule;

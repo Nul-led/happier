@@ -7,6 +7,7 @@ export type {
   SherpaNativeCancelInitializationParams,
   SherpaNativeCancelParams,
   SherpaNativeInitializeParams,
+  SherpaNativeKokoroFrontend,
   SherpaNativeListVoicesParams,
   SherpaNativeModule,
   SherpaNativeStreamingFinalResult,

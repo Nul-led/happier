@@ -80,6 +80,8 @@ export type VoiceAttemptControlProjection = VoiceAttemptControl & Readonly<{
     /** Starts the caller's idle target when idle; ends the running attempt otherwise. Never re-targets. */
     onToggle: () => void;
     onToggleMute: () => void;
+    commitInputLabel?: string | null;
+    onCommitInput?: () => void;
     /** The same canonical recovery dispatch Horizon uses. */
     onRecover: () => void;
     /**
@@ -304,6 +306,7 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
         status: snap.status,
         sessionId: snap.sessionId ?? null,
         canStop: snap.canStop === true,
+        canCommitInput: snap.canCommitInput === true,
         muted: snap.micMuted === true,
         capturing,
         startAdmitted: startAdmission.canStart,
@@ -312,6 +315,7 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
         recoveryAvailable,
         setupIncomplete,
         snap.canStop,
+        snap.canCommitInput,
         snap.micMuted,
         snap.sessionId,
         snap.status,
@@ -350,6 +354,12 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
         if (!canMute || !sessionId) return;
         fireAndForget(voiceSessionManager.setMuted(sessionId, !muted), { tag: 'VoiceAttemptControl.mute' });
     }, [canMute, muted, snapSessionId]);
+
+    const onCommitInput = React.useCallback(() => {
+        if (control.canCommitInput !== true || !snapSessionId) return;
+        fireAndForget(voiceSessionManager.commitInput(snapSessionId), { tag: 'VoiceAttemptControl.commitInput' });
+    }, [control.canCommitInput, snapSessionId]);
+    const commitInputLabel = control.canCommitInput === true ? t('common.send') : null;
 
     const onRecover = React.useMemo(() => createVoiceAttemptRecoveryDispatch({
         recoveryAction,
@@ -473,6 +483,8 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
             ...control,
             onToggle,
             onToggleMute,
+            onCommitInput,
+            commitInputLabel,
             onRecover,
             primaryActionLabel,
             primaryActionHint,
@@ -485,6 +497,8 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
         }),
         [
             control,
+            onCommitInput,
+            commitInputLabel,
             onOpenConversation,
             onPrimaryAction,
             onRecover,

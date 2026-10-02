@@ -3,6 +3,29 @@ import { describe, expect, it, vi } from 'vitest';
 import { createRealtimeBargeInCoordinator } from './createRealtimeBargeInCoordinator';
 
 describe('createRealtimeBargeInCoordinator', () => {
+  it.each(['Привет, как дела', 'こんにちは', 'مرحبا بالعالم'])('confirms a meaningful Unicode interruption: %s', async (text) => {
+    let now = 1_000;
+    const resolutions: string[] = [];
+    let interrupted = false;
+    const coordinator = createRealtimeBargeInCoordinator({
+      beginOutputInterruptionCandidate: () => 'retained',
+      resolveOutputInterruptionCandidate: (resolution) => { resolutions.push(resolution); },
+      interrupt: async () => { interrupted = true; },
+      transitionToSpeaking: () => {},
+      transitionToConnected: () => {},
+      getControlSessionId: () => 'unicode-session',
+      isBargeInEnabled: () => true,
+      now: () => now,
+    });
+    coordinator.onAssistantOutputStarted();
+    now += 1_500;
+    coordinator.onInputSpeechStarted();
+    await coordinator.onTranscript({ role: 'user', type: 'voice.transcript.final', text });
+    expect(resolutions).toEqual(['confirmed']);
+    expect(interrupted).toBe(true);
+    coordinator.reset();
+  });
+
   it('retains output on speech onset and only interrupts for a substantive finalized turn', async () => {
     let now = 1_000;
     const begin = vi.fn(() => 'retained' as const);

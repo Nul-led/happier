@@ -1,6 +1,9 @@
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Third-party rendering is outside this listing contract; its streaming renderer is unused here.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({ splitStreamingRevealTextParts: () => [] }));
+
 import { renderHook, type RenderHookResult } from '@/dev/testkit';
 import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
@@ -789,7 +792,7 @@ describe('useSessionListRenderModels', () => {
                 showPinnedServerBadge: false,
             }));
 
-        expect(hook.getCurrent().listItems.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(hook.getCurrent().listItems.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : `run:${item.runId}`)).toEqual([
             'Active',
             'Today',
             'session-1',
@@ -865,7 +868,7 @@ describe('useSessionListRenderModels', () => {
                 showPinnedServerBadge: false,
             }));
 
-        expect(hook.getCurrent().listItems.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(hook.getCurrent().listItems.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : `run:${item.runId}`)).toEqual([
             'Pinned',
             'Sessions',
             'Repo',

@@ -1,8 +1,11 @@
 import type { Socket } from 'socket.io-client';
 
-import { createSessionScopedSocket } from '@/api/session/sockets';
+import { createSessionScopedSocket, createSessionScopedSocketConnection, createUserScopedSocketConnection } from '@/api/session/sockets';
+import { createManagedConnectionSupervisor, DEFAULT_MANAGED_CONNECTION_POLICY } from '@happier-dev/connection-supervisor';
+import { classifyTransportErrorToProbeResult } from '@/api/connection/classifyTransportErrorToProbeResult';
+import { createAuthenticationHttpStatusError } from '@/api/client/httpStatusError';
 import { SessionMessageContentSchema } from '@/api/types';
-import { UpdateContainerSchema, type UpdateContainer } from '@happier-dev/protocol/updates';
+import { UpdateContainerSchema, EphemeralUpdateSchema, type UpdateContainer } from '@happier-dev/protocol/updates';
 import { decodeBase64, decrypt } from '@/api/encryption';
 import { fetchSessionById } from '@/session/transport/http/sessionsHttp';
 import {
@@ -20,6 +23,118 @@ import {
 } from '@/session/shared/sessionTurnLifecycle';
 import type { SessionEncryptionContext, SessionStoredContentEncryptionMode } from '@/session/transport/encryption/sessionEncryptionContext';
 import { resolveSessionControlWaitIdleConfirmMs } from '@/session/transport/shared/sessionTimeouts';
+
+/** The shared session event transport; consumers re-read their own canonical facts. */
+export function observeSessionSocketEvents(
+  opts: { token: string; sessionId?: string; serverUrl?: string; scope?: 'user' },
+  handlers: { onUpdate?: (value: unknown) => void; onEphemeral?: (value: unknown) => void; onConnected?: () => void; onError: (error: unknown) => void },
+): Readonly<{ dispose: () => Promise<void> }> {
+  const supervisor = createManagedConnectionSupervisor({
+    ...DEFAULT_MANAGED_CONNECTION_POLICY,
+    createTransport: () => {
+      const connection = (() => {
+        if (opts.scope === 'user') return createUserScopedSocketConnection(opts);
+        if (!opts.sessionId) throw new Error('session_observation_id_required');
+        return createSessionScopedSocketConnection({ ...opts, sessionId: opts.sessionId });
+      })();
+      const update = (value: unknown) => handlers.onUpdate?.(value);
+      const ephemeral = (value: unknown) => handlers.onEphemeral?.(value);
+      connection.socket.on('update', update);
+      connection.socket.on('ephemeral', ephemeral);
+      // Also consume connect directly so every reconnection invalidates a reader's baseline.
+      const connected = () => handlers.onConnected?.();
+      connection.socket.on('connect', connected);
+      return { ...connection.transport, destroy: async () => {
+        connection.socket.off('update', update);
+        connection.socket.off('ephemeral', ephemeral);
+        connection.socket.off('connect', connected);
+        await connection.transport.destroy();
+      } };
+    },
+    probeReadiness: async () => ({ status: 'ready' }),
+    classifyTransportErrorToProbeResult,
+    onAuthFailed: ({ probe }) => handlers.onError(createAuthenticationHttpStatusError(
+      probe.statusCode === 403 ? 403 : 401, 'Session observation authentication failed',
+    )),
+  });
+  void supervisor.start().catch(handlers.onError);
+  return { dispose: () => supervisor.stop() };
+}
+
+/** Transport invalidation only. Readers retain authority over every wait predicate. */
+export function openSessionEventSource(opts: { token: string; sessionId: string; scope?: 'user' }): Readonly<{
+    currentRevision: () => number;
+    waitForChange: (observedRevision: number, params: { deadlineMs: number | null; signal?: AbortSignal }) => Promise<boolean>;
+    close: () => Promise<void>;
+}> {
+    let revision = 0;
+    let closed = false;
+    let failure: unknown;
+    const listeners = new Set<() => void>();
+    const changed = () => {
+        revision += 1;
+        for (const listener of [...listeners]) listener();
+    };
+    const onUpdate = (raw: unknown) => {
+        const parsed = UpdateContainerSchema.safeParse(raw);
+        if (!parsed.success) return;
+        const body = parsed.data.body;
+        if ((body.t === 'new-session' || body.t === 'update-session' || body.t === 'delete-session')
+            && body.id === opts.sessionId) changed();
+        if ((body.t === 'new-message' || body.t === 'message-updated' || body.t === 'pending-changed')
+            && (body.sid === opts.sessionId || ('sessionId' in body && body.sessionId === opts.sessionId))) changed();
+    };
+    const onEphemeral = (raw: unknown) => {
+        const parsed = EphemeralUpdateSchema.safeParse(raw);
+        if (!parsed.success) return;
+        const event = parsed.data;
+        if (('sessionId' in event && event.sessionId === opts.sessionId
+            && event.type !== 'transcript-stream-segment' && event.type !== 'transcript-stream-segment-delta')
+            || (event.type === 'activity' && event.id === opts.sessionId)) changed();
+    };
+    const observation = observeSessionSocketEvents(opts, {
+      onUpdate, onEphemeral, onConnected: changed,
+      onError: (error) => { failure = error; changed(); },
+    });
+    return {
+        currentRevision: () => revision,
+        waitForChange: (observedRevision: number, params: { deadlineMs: number | null; signal?: AbortSignal }): Promise<boolean> => {
+            if (failure !== undefined) return Promise.reject(failure);
+            if (closed || params.signal?.aborted) return Promise.resolve(false);
+            if (params.deadlineMs !== null && Date.now() >= params.deadlineMs) return Promise.resolve(false);
+            if (revision !== observedRevision) return Promise.resolve(true);
+            return new Promise((resolve, reject) => {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                const finish = () => {
+                    if (timer !== undefined) clearTimeout(timer);
+                    listeners.delete(finish);
+                    params.signal?.removeEventListener('abort', finish);
+                    if (failure !== undefined) reject(failure);
+                    else resolve(!closed && !params.signal?.aborted && revision !== observedRevision
+                        && (params.deadlineMs === null || Date.now() < params.deadlineMs));
+                };
+                listeners.add(finish);
+                params.signal?.addEventListener('abort', finish, { once: true });
+                const armDeadline = () => {
+                    if (params.deadlineMs === null) return;
+                    const remainingMs = params.deadlineMs - Date.now();
+                    if (remainingMs <= 0) { finish(); return; }
+                    // Node coerces delays above its signed 32-bit timer limit to 1ms.
+                    // Re-arm the same absolute deadline rather than shortening the observation.
+                    timer = setTimeout(armDeadline, Math.min(2_147_483_647, Math.max(1, remainingMs)));
+                };
+                armDeadline();
+                if (closed || params.signal?.aborted || revision !== observedRevision) finish();
+            });
+        },
+        close: async () => {
+            if (closed) return;
+            closed = true;
+            for (const listener of [...listeners]) listener();
+            await observation.dispose();
+        },
+    };
+}
 
 export type AgentStateSummary = Readonly<{
   controlledByUser?: boolean;
@@ -161,8 +276,6 @@ export async function waitForIdleViaSocket(params: Readonly<{
   const initiallyIdle = isIdle(initial) && !hasTurnInFlight();
   const idleConfirmMs = initiallyIdle ? resolveSessionControlWaitIdleConfirmMs() : 0;
 
-  const socket = createSessionScopedSocket({ token: params.token, sessionId: params.sessionId }) as unknown as Socket;
-
   const timeoutMs = Math.max(1, Math.trunc(params.timeoutMs));
   const deadlineMs = Date.now() + timeoutMs;
 
@@ -170,8 +283,9 @@ export async function waitForIdleViaSocket(params: Readonly<{
     let settled = false;
     let waitingForIdleAfterFreshBusy = !initiallyIdle;
     let hasFreshAgentStateObservation = false;
+    let observationRevision = 0;
     let idleConfirmTimer: ReturnType<typeof setTimeout> | null = null;
-    let busyRecheckTimer: ReturnType<typeof setTimeout> | null = null;
+    let observation: ReturnType<typeof observeSessionSocketEvents> | null = null;
 
     const cleanup = () => {
       if (settled) return;
@@ -180,22 +294,7 @@ export async function waitForIdleViaSocket(params: Readonly<{
         clearTimeout(idleConfirmTimer);
         idleConfirmTimer = null;
       }
-      if (busyRecheckTimer) {
-        clearTimeout(busyRecheckTimer);
-        busyRecheckTimer = null;
-      }
-      try {
-        socket.off('update', onUpdate as any);
-        socket.off('connect_error', onConnectError as any);
-      } catch {
-        // ignore
-      }
-      try {
-        socket.disconnect();
-        socket.close();
-      } catch {
-        // ignore
-      }
+      void observation?.dispose().catch(() => undefined);
     };
 
     const timer = setTimeout(() => {
@@ -221,6 +320,7 @@ export async function waitForIdleViaSocket(params: Readonly<{
     };
 
     const resolveIdle = () => {
+      if (settled) return;
       clearTimeout(timer);
       cleanup();
       resolve({ idle: true, observedAt: Math.min(Date.now(), deadlineMs) });
@@ -229,7 +329,9 @@ export async function waitForIdleViaSocket(params: Readonly<{
     const recheckRequiredTranscriptIdleEvidence = async (): Promise<boolean> => {
       if (!requiresTranscriptIdleEvidence) return true;
       if (!params.recheckTurnActivity) return false;
+      const revision = observationRevision;
       const latestTurnActivity = await params.recheckTurnActivity();
+      if (settled || revision !== observationRevision) return false;
       return applyRecheckedTurnActivity(latestTurnActivity);
     };
 
@@ -237,102 +339,60 @@ export async function waitForIdleViaSocket(params: Readonly<{
       void (async () => {
         try {
           if (!(await recheckRequiredTranscriptIdleEvidence())) {
-            scheduleBusyTurnActivityRecheck();
             return;
           }
           resolveIdle();
         } catch {
-          scheduleBusyTurnActivityRecheck();
+          // Wait for the next transcript/projection event or reconnect.
         }
       })();
     };
 
-    const scheduleBusyTurnActivityRecheck = () => {
-      if (!params.recheckTurnActivity) return;
-      if (settled) return;
-      if (!waitingForIdleAfterFreshBusy) return;
-
-      const remainingMs = Math.max(1, deadlineMs - Date.now());
-      const delayMs = Math.min(resolveSessionControlWaitIdleConfirmMs(), remainingMs);
-
-      if (busyRecheckTimer) {
-        clearTimeout(busyRecheckTimer);
-        busyRecheckTimer = null;
-      }
-
-      busyRecheckTimer = setTimeout(() => {
-        busyRecheckTimer = null;
-        void (async () => {
-          if (settled) return;
-          try {
-            const latestTurnActivity = await params.recheckTurnActivity?.();
-            if (!latestTurnActivity) {
-              scheduleBusyTurnActivityRecheck();
-              return;
-            }
-            if (!applyRecheckedTurnActivity(latestTurnActivity)) {
-              scheduleBusyTurnActivityRecheck();
-              return;
-            }
-
-            const refreshedSession = await fetchSessionById({
-              token: params.token,
-              sessionId: params.sessionId,
-            }).catch(() => null);
-            const refreshedProjectionActivity = preferProjectionUpdates
-              ? detectSessionTurnActivityFromProjection(refreshedSession)
-              : null;
-            if (refreshedProjectionActivity) {
-              pendingUserTurns = refreshedProjectionActivity.pendingUserTurns;
-              activeTaskInFlight = refreshedProjectionActivity.activeTaskInFlight;
-            }
-            const refreshedProjectedSummary = preferProjectionUpdates
-              ? summarizeProjectedPendingRequests(refreshedSession)
-              : null;
-            const refreshedObservedAgentState = summarizeAgentStateCiphertext({
-              ciphertextBase64: readSessionSnapshotAgentStateCiphertext(refreshedSession),
-              sessionEncryptionMode: params.sessionEncryptionMode,
-              ctx: params.ctx,
-            });
-            latestSummary =
-              mergeProjectedPendingRequestCount(
-                refreshedProjectedSummary,
-                refreshedObservedAgentState ?? latestSummary,
-              )
-              ?? refreshedObservedAgentState;
-            if (refreshedProjectedSummary || refreshedObservedAgentState) {
-              hasFreshAgentStateObservation = true;
-            }
-
-            const staleAgentStateSnapshot = !hasFreshAgentStateObservation;
-
-            if ((!isIdle(latestSummary) && !staleAgentStateSnapshot) || hasTurnInFlight()) {
-              scheduleBusyTurnActivityRecheck();
-              return;
-            }
-
-            resolveIdle();
-          } catch {
-            scheduleBusyTurnActivityRecheck();
+    const onConnect = () => {
+      const revision = ++observationRevision;
+      void (async () => {
+        try {
+          const latestTurnActivity = await params.recheckTurnActivity?.();
+          if (settled || revision !== observationRevision) return;
+          if (latestTurnActivity && !applyRecheckedTurnActivity(latestTurnActivity)) return;
+          const refreshedSession = await fetchSessionById({
+            token: params.token, sessionId: params.sessionId,
+          });
+          if (settled || revision !== observationRevision || !refreshedSession) return;
+          const refreshedProjectionActivity = preferProjectionUpdates
+            ? detectSessionTurnActivityFromProjection(refreshedSession) : null;
+          if (refreshedProjectionActivity) {
+            pendingUserTurns = refreshedProjectionActivity.pendingUserTurns;
+            activeTaskInFlight = refreshedProjectionActivity.activeTaskInFlight;
           }
-        })();
-      }, delayMs);
+          const refreshedObservedAgentState = summarizeAgentStateCiphertext({
+            ciphertextBase64: readSessionSnapshotAgentStateCiphertext(refreshedSession),
+            sessionEncryptionMode: params.sessionEncryptionMode, ctx: params.ctx,
+          });
+          latestSummary = mergeProjectedPendingRequestCount(
+            preferProjectionUpdates ? summarizeProjectedPendingRequests(refreshedSession) : null,
+            refreshedObservedAgentState ?? latestSummary,
+          ) ?? refreshedObservedAgentState;
+          if (hasTurnInFlight() || !isIdle(latestSummary)) {
+            waitingForIdleAfterFreshBusy = true;
+            return;
+          }
+          resolveIdleAfterRequiredTranscriptEvidence();
+        } catch {
+          // The managed transport owns reconnection; missing evidence is not idle.
+        }
+      })();
     };
 
-    const onConnectError = (err: any) => {
-      if (initiallyIdle && !waitingForIdleAfterFreshBusy) {
-        resolveIdleAfterRequiredTranscriptEvidence();
-        return;
-      }
-      clearTimeout(timer);
-      cleanup();
-      reject(err instanceof Error ? err : new Error(String(err)));
-    };
 
     const onUpdate = (raw: unknown) => {
       const parsed = UpdateContainerSchema.safeParse(raw);
       if (!parsed.success) return;
       const update: UpdateContainer = parsed.data;
+      const observedBody = update.body;
+      const sessionId = 'sid' in observedBody ? observedBody.sid ?? ('sessionId' in observedBody ? observedBody.sessionId : undefined)
+        : 'id' in observedBody ? observedBody.id : undefined;
+      if (sessionId === params.sessionId) observationRevision += 1;
 
       if (update.body?.t === 'pending-changed') {
         if (!preferProjectionUpdates) return;
@@ -359,7 +419,7 @@ export async function waitForIdleViaSocket(params: Readonly<{
       }
 
       if (update.body?.t === 'update-session') {
-        const body = update.body as any;
+        const body = update.body;
         if (String(body.id ?? '') !== params.sessionId) return;
 
         const shouldReadProjection = preferProjectionUpdates || !readyCompletesPendingUserTurns;
@@ -491,17 +551,17 @@ export async function waitForIdleViaSocket(params: Readonly<{
         return;
       }
 
-      if (update.body?.t !== 'new-message') return;
+      const messageBody = update.body;
+      if (messageBody.t !== 'new-message') return;
       if (
         preferProjectionUpdates
         && !requiresTranscriptIdleEvidence
         && pendingInputTurnsAwaitingMaterialization === 0
       ) return;
-      const body = update.body as any;
-      if (String(body.sid ?? '') !== params.sessionId) return;
+      if (String(messageBody.sid ?? '') !== params.sessionId) return;
 
       const decrypted = tryDecryptMessageEnvelope({
-        content: body.message?.content,
+        content: messageBody.message?.content,
         sessionEncryptionMode: params.sessionEncryptionMode,
         ctx: params.ctx,
       });
@@ -572,19 +632,20 @@ export async function waitForIdleViaSocket(params: Readonly<{
       resolveIdleAfterRequiredTranscriptEvidence();
     };
 
-    socket.on('connect_error', onConnectError as any);
-    socket.on('update', onUpdate as any);
-    socket.connect();
-
-    scheduleBusyTurnActivityRecheck();
+    observation = observeSessionSocketEvents(params, {
+      onUpdate, onConnected: onConnect,
+      onError: (error) => { clearTimeout(timer); cleanup(); reject(error); },
+    });
 
     if (initiallyIdle) {
       idleConfirmTimer = setTimeout(() => {
         idleConfirmTimer = null;
+        const revision = observationRevision;
         void (async () => {
           if (params.recheckTurnActivity) {
             try {
               const latestTurnActivity = await params.recheckTurnActivity();
+              if (settled || revision !== observationRevision) return;
               pendingUserTurns = latestTurnActivity.pendingUserTurns;
               activeTaskInFlight = latestTurnActivity.activeTaskInFlight;
               if (latestTurnActivity.turnInFlight) {

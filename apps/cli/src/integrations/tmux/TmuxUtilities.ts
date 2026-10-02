@@ -1,5 +1,6 @@
 import { spawn, type SpawnOptions } from 'child_process';
 import { randomUUID } from 'node:crypto';
+import { TerminalHostCreationError, type TerminalHostCreationDisposition } from '../terminal/host/errors';
 
 import {
   isTmuxWindowIndexConflict,
@@ -68,7 +69,7 @@ export interface TmuxSpawnOptions<TCommitRefusal = never> extends Omit<SpawnOpti
   // client arguments while installing the exact window environment.
 }
 
-export type TmuxWindowCreationDisposition = 'not_created' | 'created_and_absent' | 'created_or_uncertain';
+export type TmuxWindowCreationDisposition = TerminalHostCreationDisposition;
 
 export type TmuxSpawnResult<TCommitRefusal = never> =
   | Readonly<{
@@ -84,6 +85,7 @@ export type TmuxSpawnResult<TCommitRefusal = never> =
   | Readonly<{
       success: false;
       creationDisposition: TmuxWindowCreationDisposition;
+      cleanupIncomplete?: boolean;
       error?: string;
       commitRefusal?: TCommitRefusal;
     }>;
@@ -546,6 +548,8 @@ export class TmuxUtilities {
     env?: Record<string, string>,
   ): Promise<TmuxSpawnResult<TCommitRefusal>> {
     let preparedWindowLaunch: PreparedTmuxWindowLaunch | null = null;
+    let nativeReadinessConfirmed = false;
+    let outcome: TmuxSpawnResult<TCommitRefusal> | undefined;
     let creationDisposition: TmuxWindowCreationDisposition = 'not_created';
     try {
       // Check if tmux is available
@@ -690,7 +694,7 @@ export class TmuxUtilities {
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         const commitRefusal = await options.beforeCreateWindow?.() ?? null;
         if (commitRefusal !== null) {
-          return { success: false, creationDisposition, commitRefusal };
+          return outcome = { success: false, creationDisposition, commitRefusal };
         }
         if (!preparedWindowLaunch) {
           const readySignal = `happier-window-${randomUUID()}`;
@@ -710,7 +714,12 @@ export class TmuxUtilities {
         }
         creationDisposition = 'created_or_uncertain';
         createResult = await this.executeTmuxCommand(createWindowArgsForAttempt);
-        if (createResult && createResult.returncode === 0 && createResult.timedOut !== true) break;
+        if (createResult && createResult.returncode === 0 && createResult.timedOut !== true) {
+          // The combined command returns only after the native shell has read
+          // and retired its handoff and signaled the existing readiness channel.
+          nativeReadinessConfirmed = true;
+          break;
+        }
 
         const stderr = createResult?.stderr;
         const explicitSessionNameConflict = requireNewSession
@@ -861,7 +870,7 @@ export class TmuxUtilities {
         window: resolvedWindowId,
       };
 
-      return {
+      return outcome = {
         success: true,
         creationDisposition: 'created_or_uncertain',
         sessionId: formatTmuxSessionIdentifier(sessionIdentifier),
@@ -872,13 +881,24 @@ export class TmuxUtilities {
       };
     } catch (error) {
       logTmuxDebug('[TMUX] Failed to spawn in tmux:', error);
-      return {
+      return outcome = {
         success: false,
         creationDisposition,
         error: error instanceof Error ? error.message : String(error),
+        ...(error instanceof TerminalHostCreationError ? { cleanupIncomplete: error.cleanupIncomplete } : {}),
       };
     } finally {
-      await preparedWindowLaunch?.cleanup();
+      if (creationDisposition !== 'created_or_uncertain' || nativeReadinessConfirmed) {
+        try { await preparedWindowLaunch?.cleanup(); }
+        catch (cleanupError) {
+          if (outcome?.success === false) {
+            return { ...outcome, cleanupIncomplete: true };
+          }
+          // A ready native runner remains accepted. Its cleanup owner emitted the
+          // default-on diagnostic; do not replace a proven successful launch.
+          if (outcome?.success !== true) throw cleanupError;
+        }
+      }
     }
   }
 

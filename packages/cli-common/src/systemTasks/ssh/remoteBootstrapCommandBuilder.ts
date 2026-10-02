@@ -1,16 +1,8 @@
 import { DEFAULT_HAPPIER_CLOUD_SERVER_URL } from '../../happierCloud.js';
-import { safeBashSingleQuote } from '../../ssh/shellQuote.js';
+import { quoteRemotePathWithHomeExpansion, safeBashSingleQuote } from '../../ssh/shellQuote.js';
 import { resolveRemoteInstalledFirstPartyBinaryPath } from './remoteFirstPartyInstallPath.js';
 
 type JsonRecord = Record<string, unknown>;
-
-function quoteRemotePathWithHomeExpansion(path: string): string {
-  if (path === '$HOME') return '"$HOME"';
-  if (path.startsWith('$HOME/')) {
-    return `"$HOME"/${safeBashSingleQuote(path.slice('$HOME/'.length))}`;
-  }
-  return safeBashSingleQuote(path);
-}
 
 function buildRemoteRelayHostCliInvocation(params: Readonly<{
   happier: string;
@@ -102,10 +94,10 @@ export function buildRemoteBootstrapCommand(params: Readonly<{
   daemonServiceMode?: 'none' | 'user' | 'system';
   data?: JsonRecord;
 }>): string {
-  const happier = resolveRemoteInstalledFirstPartyBinaryPath({
+  const happier = quoteRemotePathWithHomeExpansion(resolveRemoteInstalledFirstPartyBinaryPath({
     componentId: 'happier-cli',
     channel: params.channel,
-  });
+  }));
 
   const useCloudId = shouldUseCloudProfileId(params);
   const relayArgs = buildRelayArgs(params);

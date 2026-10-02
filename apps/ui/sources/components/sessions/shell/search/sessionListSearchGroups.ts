@@ -7,6 +7,8 @@ import {
     type SessionListHeaderFilterInput,
 } from '../sessionListFilters';
 import { sessionTagKey } from '../sessionTagUtils';
+import { nestSessionListReports } from '@/sync/domains/session/listing/nestSessionListReports';
+import { pruneOrphanHeaders } from '@/sync/domains/session/listing/computeVisibleSessionListIndex';
 
 export const SESSION_LIST_SEARCH_IN_THIS_VIEW_GROUP_KEY = 'search:in-this-view';
 export const SESSION_LIST_SEARCH_OTHER_MATCHES_GROUP_KEY = 'search:other-matches';
@@ -82,11 +84,13 @@ export function appendSessionListSearchOtherMatches(params: Readonly<{
     outsideMatches: ReadonlyArray<SessionListSearchOutsideMatch>;
     inThisViewTitle: string;
     otherMatchesTitle: string;
+    resolveSessionRow?: Parameters<typeof nestSessionListReports>[1];
+    resolveRunOriginSession?: Parameters<typeof nestSessionListReports>[2];
 }>): SessionListIndexItem[] {
     const filtered = params.filteredItems as SessionListIndexItem[];
     if (params.outsideMatches.length === 0) return filtered;
 
-    const hasInViewSessions = filtered.some((item) => item.type === 'session');
+    const hasInViewSessions = filtered.some((item) => item.type !== 'header');
     const next: SessionListIndexItem[] = [];
     if (hasInViewSessions) {
         next.push({
@@ -115,5 +119,9 @@ export function appendSessionListSearchOtherMatches(params: Readonly<{
             contextualSearchSourceMachineId: match.sourceMachineId ?? null,
         });
     }
-    return next;
+    if (!params.resolveSessionRow) return next;
+    const nested = pruneOrphanHeaders(nestSessionListReports(next, params.resolveSessionRow, params.resolveRunOriginSession));
+    // A step moved into the in-view parent is not a second Other-matches region.
+    return nested.some((item) => item.type !== 'header' && item.groupKey === SESSION_LIST_SEARCH_OTHER_MATCHES_GROUP_KEY)
+        ? nested : nested.filter((item) => item.type !== 'header' || item.groupKey !== SESSION_LIST_SEARCH_IN_THIS_VIEW_GROUP_KEY);
 }

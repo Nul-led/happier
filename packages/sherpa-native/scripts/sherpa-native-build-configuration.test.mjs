@@ -17,6 +17,18 @@ function extractOptionalPodspecAssignment(podspec, property) {
   return match?.[1] ?? "";
 }
 
+test("native library acquisition rejects an override that disagrees with the pinned header version", () => {
+  const packageJson = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+  const gradle = readFileSync(path.join(packageRoot, "android", "build.gradle"), "utf8");
+  const podspec = readFileSync(path.join(packageRoot, "ios", "HappierSherpaNative.podspec"), "utf8");
+
+  assert.equal(packageJson.sherpaOnnxVersion, "v1.12.25");
+  assert.match(gradle, /def sherpaVersion = sherpaPackage\.sherpaOnnxVersion/);
+  assert.match(gradle, /if \(requestedSherpaVersion && requestedSherpaVersion != sherpaVersion\)\s*\{\s*throw new GradleException/);
+  assert.match(podspec, /sherpa_version = package\.fetch\('sherpaOnnxVersion'\)/);
+  assert.match(podspec, /if requested_sherpa_version && requested_sherpa_version != sherpa_version\s+raise/);
+});
+
 test("Android JNI source includes the standard containers it instantiates", () => {
   const jniSource = readFileSync(
     path.join(packageRoot, "android", "src", "main", "cpp", "HappierSherpaNativeJni.cpp"),
@@ -55,7 +67,10 @@ test("iOS podspec exposes the shared native registry headers to the pod target",
   for (const header of [
     "HappierSherpaTtsJobRegistry.h",
     "HappierSherpaAsrStreamRegistry.h",
+    "HappierSherpaCapiAbi.h",
+    "HappierSherpaOnlineAsr.h",
     "HappierSherpaOfflineTtsEngineCache.h",
+    "HappierSherpaKokoroConfig.h",
     "HappierSherpaCacheEpoch.h",
   ]) {
     assert.ok(
@@ -84,11 +99,10 @@ test("streaming ASR ownership lives in the shared registry, not beside it", () =
     "utf8",
   );
 
-  // Both platforms instantiate the one owner, differing only in the handle
-  // const-qualification their vendored sherpa header uses.
+  // Both platforms instantiate the one owner with the exact pinned C handles.
   assert.match(
     jniSource,
-    /happier_sherpa::AsrStreamRegistry<const SherpaOnnxOnlineRecognizer, SherpaOnnxOnlineStream>/,
+    /happier_sherpa::AsrStreamRegistry<const SherpaOnnxOnlineRecognizer, const SherpaOnnxOnlineStream>/,
     "Android streaming ASR must be owned by the shared registry",
   );
   assert.match(
@@ -125,11 +139,11 @@ test("iOS Swift module uses Objective-C failable and throwing imports", () => {
   // and one invalidation reaches both engine kinds.
   assert.doesNotMatch(offlineHeader, /instancetype\)initWithAssetsDir:/);
   assert.match(offlineHeader, /\+\s*\(BOOL\)prepareAssetsDir:\(NSString \*\)assetsDir/);
-  assert.match(offlineHeader, /NS_SWIFT_NAME\(prepare\(assetsDir:\)\)/);
-  assert.match(offlineHeader, /NS_SWIFT_NAME\(synthesizeToWavFile\(atPath:assetsDir:text:sid:speed:jobId:sampleRate:\)\)/);
+  assert.match(offlineHeader, /NS_SWIFT_NAME\(prepare\(assetsDir:frontend:\)\)/);
+  assert.match(offlineHeader, /NS_SWIFT_NAME\(synthesizeToWavFile\(atPath:assetsDir:frontend:text:sid:speed:jobId:sampleRate:\)\)/);
   assert.match(offlineHeader, /\+\s*\(NSUInteger\)releaseAssetsDir:\(NSString \*\)assetsDir NS_SWIFT_NAME\(releaseAssetsDir\(_:\)\);/);
   assert.match(offlineHeader, /\+\s*\(NSUInteger\)releaseAll NS_SWIFT_NAME\(releaseAll\(\)\);/);
-  assert.match(moduleSource, /try HappierSherpaOfflineTtsEngine\.prepare\(assetsDir: assetsDir\)/);
+  assert.match(moduleSource, /try HappierSherpaOfflineTtsEngine\.prepare\(assetsDir: assetsDir, frontend: frontend\)/);
   assert.match(moduleSource, /try HappierSherpaOfflineTtsEngine\.synthesizeToWavFile\(/);
   assert.match(moduleSource, /HappierSherpaOfflineTtsEngine\.releaseAssetsDir\(assetsDir\)/);
   assert.match(moduleSource, /HappierSherpaOfflineTtsEngine\.releaseAll\(\)/);

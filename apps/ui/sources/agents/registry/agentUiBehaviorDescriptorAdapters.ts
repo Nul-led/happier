@@ -2,7 +2,7 @@ import type {
     AgentUiSettingReferenceV1,
     ExternalSessionsSource,
 } from '@happier-dev/protocol';
-import { RuntimeDescriptorV1Schema } from '@happier-dev/protocol';
+import { mergeSpawnConfigOptionAliases, RuntimeDescriptorV1Schema } from '@happier-dev/protocol';
 
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { parseConnectedServicesBindingsByServiceIdFromAgentOptionState } from '@/sync/domains/connectedServices/connectedServicesAgentOptionStateBindings';
@@ -176,7 +176,7 @@ function readScopedServerBaseUrlFromSettings(opts: Readonly<{
     return normalizeDescriptorUrl(byServerId[serverId], opts.config);
 }
 
-function buildEnvironmentVariables(opts: Readonly<{
+function readRuntimeSettings(opts: Readonly<{
     descriptor: EnvironmentDescriptor;
     settings?: unknown;
     session?: Readonly<{
@@ -184,20 +184,17 @@ function buildEnvironmentVariables(opts: Readonly<{
         metadataLayoutVersion?: number;
         ownerMetadataView?: unknown;
     }> | null;
-    environmentVariables?: Record<string, string> | undefined;
     newSessionOptions?: Record<string, unknown> | null;
     allowLegacySettingsServerBaseUrl?: boolean;
     allowActiveServerFallback?: boolean;
-}>): Record<string, string> {
-    const base = { ...(opts.environmentVariables ?? {}) };
+}>) {
     const backendMode = normalizeEnumValue(
         readSetting(opts.settings, opts.descriptor.backendMode.settingKey),
         opts.descriptor.backendMode,
     );
-    base[opts.descriptor.backendMode.envKey] = backendMode;
 
     const serverBaseUrlConfig = opts.descriptor.serverBaseUrl;
-    if (!serverBaseUrlConfig) return base;
+    if (!serverBaseUrlConfig) return { backendMode, serverBaseUrl: null };
 
     const activeServerId = getActiveServerSnapshot()?.serverId ?? null;
     const targetServerId = readString(opts.newSessionOptions?.targetServerId);
@@ -211,8 +208,17 @@ function buildEnvironmentVariables(opts: Readonly<{
     const legacyServerBaseUrl = opts.allowLegacySettingsServerBaseUrl === true
         ? normalizeDescriptorUrl(readSetting(opts.settings, serverBaseUrlConfig.settingKey), serverBaseUrlConfig)
         : null;
-    const serverBaseUrl = activeServerOverride ?? legacyServerBaseUrl;
-    if (serverBaseUrl) {
+    return { backendMode, serverBaseUrl: activeServerOverride ?? legacyServerBaseUrl };
+}
+
+function buildEnvironmentVariables(opts: Parameters<typeof readRuntimeSettings>[0] & Readonly<{
+    environmentVariables?: Record<string, string>;
+}>): Record<string, string> {
+    const base = { ...(opts.environmentVariables ?? {}) };
+    const { backendMode, serverBaseUrl } = readRuntimeSettings(opts);
+    base[opts.descriptor.backendMode.envKey] = backendMode;
+    const serverBaseUrlConfig = opts.descriptor.serverBaseUrl;
+    if (serverBaseUrl && serverBaseUrlConfig) {
         base[serverBaseUrlConfig.envKey] = serverBaseUrl;
         base[serverBaseUrlConfig.explicitEnvKey] = '1';
     }
@@ -668,16 +674,29 @@ function createExternalSessionsBehavior(
 
 function createPayloadBehavior(descriptor: EnvironmentDescriptor): NonNullable<AgentUiBehavior['payload']> {
     return {
-        buildSpawnEnvironmentVariables: ({ agentId, settings, environmentVariables, newSessionOptions }) => {
-            if (agentId !== descriptor.providerId) return environmentVariables;
-            return buildEnvironmentVariables({
+        buildSpawnSessionExtras: ({ agentId, settings, newSessionOptions, sessionConfigOptionOverrides, updatedAt }) => {
+            if (agentId !== descriptor.providerId) return {};
+            const values = readRuntimeSettings({
                 descriptor,
                 settings,
-                environmentVariables,
                 newSessionOptions,
                 allowLegacySettingsServerBaseUrl: false,
                 allowActiveServerFallback: true,
             });
+            // The Agent's declared setting ids own its Session configuration
+            // options. Raw environment remains a predecessor resume carrier.
+            return {
+                sessionConfigOptionOverrides: mergeSpawnConfigOptionAliases({
+                    sessionConfigOptionOverrides: sessionConfigOptionOverrides ?? undefined,
+                    configOptions: {
+                        [descriptor.backendMode.settingKey.localId]: values.backendMode,
+                        ...(values.serverBaseUrl && descriptor.serverBaseUrl
+                            ? { [descriptor.serverBaseUrl.settingKey.localId]: values.serverBaseUrl }
+                            : {}),
+                    },
+                    updatedAt,
+                }),
+            };
         },
         buildResumeSessionExtras: ({ agentId, settings, session }) => {
             if (agentId !== descriptor.providerId) return {};

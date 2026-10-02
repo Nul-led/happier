@@ -2,8 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { ActionIdSchema } from './actionIds.js';
 import { getActionSpec } from './actionSpecs.js';
 import { projectSessionPublicLinkActionResultV1 } from '../sessions/access/sessionAccessActionsV1.js';
+import { bindSessionAccessActionHttpRequestV1 } from './sessionAccessActionFamily.js';
 
 describe('Session access Action contracts', () => {
+  it('creates current Session publications only through the generalized owner, never the legacy token writer', () => {
+    expect(bindSessionAccessActionHttpRequestV1('session.public_link.create', {
+      sessionId: 's/id', maxUses: 3, isConsentRequired: true,
+    })).toEqual({ method: 'POST', path: '/v1/public-shares', body: {
+      subject: { kind: 'session', id: 's/id' }, maxUses: 3, isConsentRequired: true,
+    } });
+  });
   it('admits logical desired-state grants and excludes host encryption material', () => {
     const id = ActionIdSchema.parse('session.access.grant.set');
     const spec = getActionSpec(id);

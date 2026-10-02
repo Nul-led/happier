@@ -2,6 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { VOICE_RUNTIME_DAEMON_STT_PCM_FORMAT } from '@happier-dev/protocol';
 
 import { createDaemonSpeechPcmCapture } from './DaemonSpeechPcmCapture.native';
+import { createNativeVoicePcmCaptureHarness } from '@/dev/testkit/harness/nativeVoicePcmCapture';
+import type { VoicePcmCapture } from '@happier-dev/audio-stream-native';
+
+vi.mock('@/modal', async () => {
+  const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+  return createModalModuleMock();
+});
 
 type SubscriberRequest = Readonly<{
   ownerId: string;
@@ -14,6 +21,7 @@ type SubscriberRequest = Readonly<{
 }>;
 
 const sharedCapture = vi.hoisted(() => ({
+  realCapture: null as VoicePcmCapture | null,
   available: true,
   request: null as SubscriberRequest | null,
   acquire: vi.fn(),
@@ -22,7 +30,7 @@ const sharedCapture = vi.hoisted(() => ({
 }));
 
 vi.mock('@happier-dev/audio-stream-native', () => ({
-  getSharedVoicePcmCapture: () => sharedCapture.available ? {
+  getSharedVoicePcmCapture: () => sharedCapture.available ? sharedCapture.realCapture ?? {
     acquire: sharedCapture.acquire,
     waitForDrain: sharedCapture.waitForDrain,
   } : null,
@@ -71,6 +79,7 @@ async function emitFrame(overrides: Record<string, unknown> = {}): Promise<void>
 
 describe('createDaemonSpeechPcmCapture (native shared capture)', () => {
   beforeEach(() => {
+    sharedCapture.realCapture = null;
     sharedCapture.available = true;
     sharedCapture.request = null;
     sharedCapture.release.mockClear();
@@ -82,6 +91,7 @@ describe('createDaemonSpeechPcmCapture (native shared capture)', () => {
         id: 'lease',
         streamId: 'shared-stream',
         release: sharedCapture.release,
+        finish: async () => { await sharedCapture.release(); await sharedCapture.waitForDrain(); },
         waitForDrain: sharedCapture.waitForDrain,
       };
     });
@@ -97,7 +107,7 @@ describe('createDaemonSpeechPcmCapture (native shared capture)', () => {
   });
 
   it('acquires one conversation/AEC subscriber with the canonical PCM format', async () => {
-    const options = createCaptureOptions();
+    const options = createCaptureOptions({ capturePurpose: 'conversation' });
     const capture = createDaemonSpeechPcmCapture(options);
     await capture.start();
 
@@ -113,6 +123,37 @@ describe('createDaemonSpeechPcmCapture (native shared capture)', () => {
       maxQueuedFrames: 8,
     }));
     expect(capture.isActive()).toBe(true);
+  });
+
+  it('delivers admitted frames on graceful Dictation finish and cancels a held chunk promptly', async () => {
+    const harness = createNativeVoicePcmCaptureHarness(false);
+    sharedCapture.realCapture = harness.capture;
+    let releaseFirst!: () => void;
+    const first = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const chunks: Uint8Array[] = [];
+    const capture = createDaemonSpeechPcmCapture(createCaptureOptions({ capturePurpose: 'dictation', onChunk: async (chunk) => {
+      chunks.push(chunk);
+      if (chunks.length === 1) await first;
+    } }));
+    await capture.start();
+    expect(harness.apply).toHaveBeenCalledWith(expect.objectContaining({ configuration: expect.objectContaining({ mode: 'dictation', output: false, aec: 'off' }) }));
+    harness.emit('AAE=');
+    harness.emit('AgM=');
+    await vi.waitFor(() => expect(chunks).toHaveLength(1));
+    const finishing = capture.finish();
+    await vi.waitFor(() => expect(harness.nativeModule.stop).toHaveBeenCalledTimes(1));
+    releaseFirst();
+    await finishing;
+    expect(chunks).toEqual([new Uint8Array([0, 1]), new Uint8Array([2, 3])]);
+    expect(capture.isActive()).toBe(false);
+
+    const held = createDaemonSpeechPcmCapture(createCaptureOptions({ onChunk: () => new Promise<void>(() => {}) }));
+    await held.start();
+    harness.emit();
+    await Promise.resolve();
+    await held.stop();
+    expect(held.isActive()).toBe(false);
+    expect(harness.capture.getSnapshot().subscriberCount).toBe(0);
   });
 
   it('decodes canonical frames and equality-gates the audio-start edge', async () => {

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import chalk from 'chalk';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,6 +8,7 @@ import { createStepPrinter, runCommandLogged } from './progress';
 
 describe('createStepPrinter', () => {
   const writeSpy = vi.spyOn(process.stdout, 'write');
+  beforeEach(() => vi.stubEnv('WT_SESSION', 'test-modern-terminal'));
 
   afterEach(() => {
     writeSpy.mockReset();
@@ -25,6 +26,37 @@ describe('createStepPrinter', () => {
     const output = writeSpy.mock.calls.map((call) => String(call[0])).join('');
     expect(output).toContain('- [..] Installing');
     expect(output).toContain('- [✓] Installing');
+  });
+
+  it('steps through the Braille spinner and releases the timer when complete', () => {
+    vi.useFakeTimers();
+    writeSpy.mockImplementation(() => true);
+    const descriptors = [process.stdout, process.stderr].map((stream) => Object.getOwnPropertyDescriptor(stream, 'isTTY'));
+    const columns = Object.getOwnPropertyDescriptor(process.stdout, 'columns');
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
+    Object.defineProperty(process.stderr, 'isTTY', { configurable: true, value: true });
+    Object.defineProperty(process.stdout, 'columns', { configurable: true, value: 80 });
+    vi.stubEnv('TERM', 'xterm-256color');
+    vi.stubEnv('NO_COLOR', '1');
+    vi.stubEnv('HAPPIER_NO_ANIMATION', '');
+    try {
+      const printer = createStepPrinter();
+      printer.start('Installing');
+      vi.advanceTimersByTime(80);
+      const output = writeSpy.mock.calls.map((call) => String(call[0])).join('');
+      expect(output).toContain('⠋ Installing');
+      expect(output).toContain('⠙ Installing');
+      printer.stop('✓', 'Installed');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      [process.stdout, process.stderr].forEach((stream, index) => {
+        const descriptor = descriptors[index];
+        if (descriptor) Object.defineProperty(stream, 'isTTY', descriptor);
+        else Reflect.deleteProperty(stream, 'isTTY');
+      });
+      if (columns) Object.defineProperty(process.stdout, 'columns', columns);
+      else Reflect.deleteProperty(process.stdout, 'columns');
+    }
   });
 
   it('keeps redirected planet progress linear and free of terminal control bytes', () => {

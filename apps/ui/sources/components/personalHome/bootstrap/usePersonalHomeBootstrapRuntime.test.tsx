@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ServerCredentialLookupOptions } from '@/auth/storage/tokenStorage';
 
 import { flushHookEffects, renderHook, renderScreen, standardCleanup } from '@/dev/testkit';
+import { PersonalHomeBootstrapContent } from './PersonalHomeBootstrapGate';
 import type { PersonalHomeFacts } from './personalHomeBootstrapTypes';
 
 // The real `useThisComputerSetupTask` resolves its runner through the shared system-tasks
@@ -483,7 +484,9 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         const { PersonalHomeBootstrapRuntimeMount } = await import('./usePersonalHomeBootstrapRuntime');
         const screen = await renderScreen(
             <PersonalHomeBootstrapRuntimeMount>
-                <div data-testid="normal-shell" />
+                <div data-testid="normal-shell">
+                    <PersonalHomeBootstrapContent><div data-testid="home-content" /></PersonalHomeBootstrapContent>
+                </div>
             </PersonalHomeBootstrapRuntimeMount>,
         );
         await flushHookEffects({ cycles: 6, turns: 4 });
@@ -528,7 +531,9 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         const { PersonalHomeBootstrapRuntimeMount } = await import('./usePersonalHomeBootstrapRuntime');
         const screen = await renderScreen(
             <PersonalHomeBootstrapRuntimeMount>
-                <div data-testid="normal-shell" />
+                <div data-testid="normal-shell">
+                    <PersonalHomeBootstrapContent><div data-testid="home-content" /></PersonalHomeBootstrapContent>
+                </div>
             </PersonalHomeBootstrapRuntimeMount>,
         );
         await flushHookEffects({ cycles: 6, turns: 4 });
@@ -575,7 +580,9 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         const { PersonalHomeBootstrapRuntimeMount } = await import('./usePersonalHomeBootstrapRuntime');
         const screen = await renderScreen(
             <PersonalHomeBootstrapRuntimeMount>
-                <div data-testid="normal-shell" />
+                <div data-testid="normal-shell">
+                    <PersonalHomeBootstrapContent><div data-testid="home-content" /></PersonalHomeBootstrapContent>
+                </div>
             </PersonalHomeBootstrapRuntimeMount>,
         );
         await flushHookEffects({ cycles: 6, turns: 4 });
@@ -600,7 +607,9 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         const { PersonalHomeBootstrapRuntimeMount } = await import('./usePersonalHomeBootstrapRuntime');
         const screen = await renderScreen(
             <PersonalHomeBootstrapRuntimeMount>
-                <div data-testid="normal-shell" />
+                <div data-testid="normal-shell">
+                    <PersonalHomeBootstrapContent><div data-testid="home-content" /></PersonalHomeBootstrapContent>
+                </div>
             </PersonalHomeBootstrapRuntimeMount>,
         );
         await flushHookEffects({ cycles: 6, turns: 4 });
@@ -629,7 +638,9 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         } = await import('./usePersonalHomeBootstrapRuntime');
         const screen = await renderScreen(
             <PersonalHomeBootstrapRuntimeMount>
-                <div data-testid="normal-shell" />
+                <div data-testid="normal-shell">
+                    <PersonalHomeBootstrapContent><div data-testid="home-content" /></PersonalHomeBootstrapContent>
+                </div>
             </PersonalHomeBootstrapRuntimeMount>,
         );
         await flushHookEffects({ cycles: 6, turns: 4 });
@@ -666,7 +677,9 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         const { PersonalHomeBootstrapRuntimeMount } = await import('./usePersonalHomeBootstrapRuntime');
         const screen = await renderScreen(
             <PersonalHomeBootstrapRuntimeMount>
-                <div data-testid="normal-shell" />
+                <div data-testid="normal-shell">
+                    <PersonalHomeBootstrapContent><div data-testid="home-content" /></PersonalHomeBootstrapContent>
+                </div>
             </PersonalHomeBootstrapRuntimeMount>,
         );
         await flushHookEffects({ cycles: 6, turns: 4 });
@@ -702,7 +715,9 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         const { PersonalHomeBootstrapRuntimeMount } = await import('./usePersonalHomeBootstrapRuntime');
         const screen = await renderScreen(
             <PersonalHomeBootstrapRuntimeMount>
-                <div data-testid="normal-shell" />
+                <div data-testid="normal-shell">
+                    <PersonalHomeBootstrapContent><div data-testid="home-content" /></PersonalHomeBootstrapContent>
+                </div>
             </PersonalHomeBootstrapRuntimeMount>,
         );
         await flushHookEffects({ cycles: 8, turns: 6 });
@@ -731,7 +746,9 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         harness.desktopHostKind.mockReturnValue(null);
         const offDesktopScreen = await renderScreen(
             <PersonalHomeBootstrapRuntimeMount>
-                <div data-testid="normal-shell" />
+                <div data-testid="normal-shell">
+                    <PersonalHomeBootstrapContent><div data-testid="home-content" /></PersonalHomeBootstrapContent>
+                </div>
             </PersonalHomeBootstrapRuntimeMount>,
         );
         await flushHookEffects({ cycles: 2, turns: 2 });
@@ -746,7 +763,9 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         harness.currentWindowLabel.mockReturnValue('activity_overlay');
         const overlayScreen = await renderScreen(
             <PersonalHomeBootstrapRuntimeMount>
-                <div data-testid="normal-shell" />
+                <div data-testid="normal-shell">
+                    <PersonalHomeBootstrapContent><div data-testid="home-content" /></PersonalHomeBootstrapContent>
+                </div>
             </PersonalHomeBootstrapRuntimeMount>,
         );
         await flushHookEffects({ cycles: 2, turns: 2 });
@@ -818,22 +837,25 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         const { PersonalHomeBootstrapRuntimeMount } = await import('./usePersonalHomeBootstrapRuntime');
         const screen = await renderScreen(
             <PersonalHomeBootstrapRuntimeMount>
-                <div data-testid="normal-shell" />
+                <div data-testid="normal-shell">
+                    <PersonalHomeBootstrapContent><div data-testid="home-content" /></PersonalHomeBootstrapContent>
+                </div>
             </PersonalHomeBootstrapRuntimeMount>,
         );
 
         expect(screen.findByTestId('normal-shell')).not.toBeNull();
         expect(screen.findByTestId('personal-home-setup-surface')).toBeNull();
-        expect(harness.useLocalRelayRuntimeControl).toHaveBeenCalledTimes(1);
-        expect(harness.useLocalDaemonControl).toHaveBeenCalledTimes(1);
+        expect(screen.findByTestId('home-content')).not.toBeNull();
 
         await flushHookEffects({ cycles: 6, turns: 4 });
 
         // The completed receipt releases the shell, but missing authenticated Home readback must
         // not start daemon setup or mislabel the Home outage as computer recovery.
         expect(screen.findByTestId('normal-shell')).not.toBeNull();
+        expect(screen.findByTestId('home-content')).not.toBeNull();
         expect(screen.findByTestId('personal-home-setup-surface')).toBeNull();
         expect(screen.findByTestId('personal-home-recovery-strip')).toBeNull();
+        expect(harness.taskCalls).toEqual([]);
     });
 
     it('uses durable completion only to release the shell while runtime status has no canonical origin', async () => {
@@ -858,7 +880,9 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         const { PersonalHomeBootstrapRuntimeMount } = await import('./usePersonalHomeBootstrapRuntime');
         const screen = await renderScreen(
             <PersonalHomeBootstrapRuntimeMount>
-                <div data-testid="normal-shell" />
+                <div data-testid="normal-shell">
+                    <PersonalHomeBootstrapContent><div data-testid="home-content" /></PersonalHomeBootstrapContent>
+                </div>
             </PersonalHomeBootstrapRuntimeMount>,
         );
 

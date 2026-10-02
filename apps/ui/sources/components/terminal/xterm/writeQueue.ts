@@ -1,9 +1,12 @@
+import type { EmbeddedTerminalWriteOptions } from '../embedded/embeddedTerminalRendererHandle';
+
 export type XtermWritePayload = string | Uint8Array;
 
 export type XtermQueuedWrite = Readonly<{
     data: XtermWritePayload;
     byteLength: number;
     onComplete?: () => void;
+    options?: EmbeddedTerminalWriteOptions;
 }>;
 
 export type XtermRejectedWrite = Readonly<{
@@ -22,7 +25,7 @@ export type XtermWriteQueue = Readonly<{
 
 export type CreateXtermWriteQueueParams = Readonly<{
     canWrite?: () => boolean;
-    write: (data: XtermWritePayload, callback: () => void) => void;
+    write: (data: XtermWritePayload, callback: () => void, options?: EmbeddedTerminalWriteOptions) => void;
     schedule: (flush: () => void) => void;
     maxPendingBytes: number;
     onReject?: (event: XtermRejectedWrite) => void;
@@ -53,7 +56,7 @@ export function createXtermWriteQueue(params: CreateXtermWriteQueueParams): Xter
             if (pending.length > 0) {
                 params.schedule(flush);
             }
-        });
+        }, next.options);
     };
 
     return {

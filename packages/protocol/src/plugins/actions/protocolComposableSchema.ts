@@ -70,6 +70,9 @@ function assertUniqueStrings(values: readonly string[], label: string): void {
 function assertSchemaSemantics(schema: Readonly<Record<string, unknown>>): void {
   if (Array.isArray(schema.enum) && schema.enum.length === 0) throw invalidSchema('enum must contain at least one value');
   if (Array.isArray(schema.required)) assertUniqueStrings(schema.required as readonly string[], 'required');
+  if (schema.not && typeof schema.not === 'object' && !Array.isArray(schema.not)) {
+    assertSchemaSemantics(schema.not as Readonly<Record<string, unknown>>);
+  }
   for (const keyword of ['anyOf', 'oneOf', 'allOf'] as const) {
     const variants = schema[keyword];
     if (!Array.isArray(variants)) continue;
@@ -83,9 +86,17 @@ function assertSchemaSemantics(schema: Readonly<Record<string, unknown>>): void 
     && !Array.isArray(schema.additionalProperties)) {
     assertSchemaSemantics(schema.additionalProperties as Readonly<Record<string, unknown>>);
   }
-  if (schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)) {
-    for (const child of Object.values(schema.properties)) {
-      assertSchemaSemantics(child as Readonly<Record<string, unknown>>);
+  if (schema.propertyNames && typeof schema.propertyNames === 'object' && !Array.isArray(schema.propertyNames)) {
+    assertSchemaSemantics(schema.propertyNames as Readonly<Record<string, unknown>>);
+  }
+  // Visit the finite schema document, never expand references: recursive
+  // references remain JSON strings for the single AJV compiler to resolve.
+  for (const keyword of ['properties', 'definitions', '$defs'] as const) {
+    const children = schema[keyword];
+    if (children && typeof children === 'object' && !Array.isArray(children)) {
+      for (const child of Object.values(children)) {
+        assertSchemaSemantics(child as Readonly<Record<string, unknown>>);
+      }
     }
   }
 }

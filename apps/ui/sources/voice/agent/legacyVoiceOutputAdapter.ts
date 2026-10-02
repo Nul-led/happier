@@ -1,13 +1,12 @@
 import {
   VoiceAgentOutputEventV1Schema,
+  resolveVoiceSpeechSegmentLength,
   VoiceAssistantActionSchema,
   type VoiceAgentOutputEventV1,
 } from '@happier-dev/protocol';
 
 import type { VoiceAgentTurnStreamEvent } from './types';
 
-const TARGET_SEGMENT_CHARS = 320;
-const MAX_SEGMENT_CHARS = 1_024;
 const MAX_SPEECH_CHARS = 65_536;
 
 export function createLegacyVoiceOutputAdapter(input: Readonly<{ streamId: string }>): Readonly<{
@@ -38,19 +37,8 @@ export function createLegacyVoiceOutputAdapter(input: Readonly<{ streamId: strin
   const flushSpeech = (force: boolean): VoiceAgentOutputEventV1[] => {
     const output: VoiceAgentOutputEventV1[] = [];
     while (speechBuffer) {
-      let length = Math.min(speechBuffer.length, MAX_SEGMENT_CHARS);
-      if (!force) {
-        if (speechBuffer.length < TARGET_SEGMENT_CHARS) break;
-        let boundary = 0;
-        for (let index = length - 1; index >= TARGET_SEGMENT_CHARS - 1; index -= 1) {
-          if (/\s|[.!?;,:]/.test(speechBuffer[index]!)) {
-            boundary = index + 1;
-            break;
-          }
-        }
-        if (boundary > 0) length = boundary;
-        else if (speechBuffer.length < MAX_SEGMENT_CHARS) break;
-      }
+      const length = resolveVoiceSpeechSegmentLength(speechBuffer, { force, firstSegment: segmentIndex === 0 });
+      if (length === 0) break;
       const text = speechBuffer.slice(0, length);
       speechBuffer = speechBuffer.slice(length);
       speechChars += text.length;

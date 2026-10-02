@@ -11,12 +11,13 @@ import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { resolveCurrentAccountMachineTarget } from '@/api/machine/resolveCurrentAccountMachineTarget';
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { readStoredCredentials } from '@/persistence';
-import { callMachineRpc } from '@/session/transport/rpc/machineRpc';
+import { callExactMachineRpc } from '@/session/transport/rpc/machineRpc';
 import type { PluginInvocationLogQuery } from '@/ui/logger';
 
 export type PluginInvocationLogMachineTarget = Readonly<{
   serverIdentityId: string;
   serverLabel: string;
+  serverUrl: string;
   machineId: string;
   machineLabel: string;
 }>;
@@ -50,10 +51,12 @@ function projectCurrentMachineTarget(params: Readonly<{
   machineLabel: string;
   serverIdentityId: string;
   serverLabel: string;
+  serverUrl: string;
 }>): PluginInvocationLogMachineTarget {
   return {
     serverIdentityId: params.serverIdentityId,
     serverLabel: params.serverLabel,
+    serverUrl: params.serverUrl,
     machineId: params.machineId,
     machineLabel: params.machineLabel,
   };
@@ -75,9 +78,8 @@ export async function resolvePluginInvocationLogTarget(params: Readonly<{
     return unavailable('not_authenticated', 'Sign in before reading plugin logs from a machine.');
   }
 
-  const snapshot = await fetchServerFeaturesSnapshot({
-    serverUrl: resolveServerHttpBaseUrl(),
-  });
+  const serverUrl = resolveServerHttpBaseUrl();
+  const snapshot = await fetchServerFeaturesSnapshot({ serverUrl });
   params.signal?.throwIfAborted();
   const serverIdentityId = snapshot.status === 'ready'
     ? snapshot.features.capabilities.serverIdentity.serverIdentityId
@@ -90,9 +92,10 @@ export async function resolvePluginInvocationLogTarget(params: Readonly<{
     return unavailable('server_identity_unavailable', 'The current server identity is unavailable.');
   }
   const canonicalServerUrl = snapshot.features.capabilities.server?.canonicalServerUrl;
-  const serverLabel = nonEmptyString(canonicalServerUrl) ?? resolveServerHttpBaseUrl();
+  const serverLabel = nonEmptyString(canonicalServerUrl) ?? serverUrl;
   const resolved = await resolveCurrentAccountMachineTarget({
     token: credentials.token,
+    serverHttpBaseUrl: serverUrl,
     ...(params.requestedMachineId !== undefined ? { requestedMachineId: params.requestedMachineId } : {}),
     ...(params.signal ? { signal: params.signal } : {}),
   });
@@ -104,6 +107,7 @@ export async function resolvePluginInvocationLogTarget(params: Readonly<{
         ...candidate,
         serverIdentityId,
         serverLabel,
+        serverUrl,
       })),
     };
   }
@@ -113,6 +117,7 @@ export async function resolvePluginInvocationLogTarget(params: Readonly<{
       ...resolved.target,
       serverIdentityId,
       serverLabel,
+      serverUrl,
     }),
   };
 }
@@ -125,6 +130,7 @@ export async function resolvePluginInvocationLogTarget(params: Readonly<{
 export async function readPluginInvocationLogsOnMachine(params: Readonly<{
   target: PluginInvocationLogMachineTarget;
   request: PluginInvocationLogQuery;
+  waitForChanges?: true;
   signal?: AbortSignal;
 }>): Promise<MachinePluginInvocationLogReadResult> {
   params.signal?.throwIfAborted();
@@ -139,15 +145,19 @@ export async function readPluginInvocationLogsOnMachine(params: Readonly<{
       machineId: params.target.machineId,
     },
     query: params.request,
+    ...(params.waitForChanges ? { waitForChanges: true } : {}),
   });
 
   try {
-    const raw = await callMachineRpc({
+    const raw = await callExactMachineRpc({
       credentials,
       machineId: params.target.machineId,
+      serverUrl: params.target.serverUrl,
+      requireCurrentMachine: true,
       method: RPC_METHODS.DAEMON_PLUGIN_INVOCATION_LOGS_READ,
       request,
-      timeoutMs: 30_000,
+      timeoutMs: params.waitForChanges ? null : 30_000,
+      reattachOnReconnect: true,
       ...(params.signal ? { signal: params.signal } : {}),
     });
     params.signal?.throwIfAborted();

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createVoiceCaptureAdmissionController } from '@/voice/runtime/input/VoiceCaptureAdmissionController';
+import { VOICE_AGENT_GLOBAL_SESSION_ID } from '@/voice/agent/voiceAgentGlobalSessionId';
 
 import { createVoiceSessionLifecycleController } from './voiceSessionLifecycleController';
 import type { VoiceAdapterController, VoiceSessionSnapshot } from './types';
@@ -10,6 +11,14 @@ const OPENAI_PROVIDER_ID = 'happier.voice.openai/realtime-openai';
 const sessionAddress = (sessionId: string) => ({ serverId: 'server-1', sessionId });
 
 vi.mock('@/log', () => ({ log: { log: vi.fn() } }));
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock();
+});
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock().module;
+});
 
 afterEach(async () => {
     const { resetVoiceSessionRuntimeStateForTests } = await import('./voiceSessionStore');
@@ -37,6 +46,95 @@ function createSnapshotPublisher(initial: VoiceSessionSnapshot): Readonly<{
 }
 
 describe('voice session lifecycle edge contracts', () => {
+    it('retries the exact failed Home binding and honors a later explicit global start', async () => {
+        const snapshots = createSnapshotPublisher({
+            adapterId: OPENAI_PROVIDER_ID, sessionId: null, status: 'disconnected', mode: 'idle', canStop: false,
+        });
+        const start = vi.fn(async ({ sessionId }: Readonly<{ sessionId: string }>) => snapshots.publish({
+            adapterId: OPENAI_PROVIDER_ID, sessionId: sessionId || VOICE_AGENT_GLOBAL_SESSION_ID,
+            status: 'connected', mode: 'listening', canStop: true,
+        }));
+        const adapter: VoiceAdapterController = {
+            id: OPENAI_PROVIDER_ID, engineKind: 'realtime', start,
+            stop: async () => snapshots.publish({
+                adapterId: OPENAI_PROVIDER_ID, sessionId: null, status: 'disconnected', mode: 'idle', canStop: false,
+            }),
+            toggle: async () => {}, interrupt: async () => {}, setMuted: async () => {},
+            sendContextUpdate: () => {}, getSnapshot: snapshots.getSnapshot, subscribe: snapshots.subscribe,
+        };
+        const releaseConnectivity = vi.fn();
+        const controller = createVoiceSessionLifecycleController({
+            captureAdmission: createVoiceCaptureAdmissionController(),
+            acquireConnectivityLease: () => releaseConnectivity,
+            getRegistry: () => ({ get: () => adapter, list: () => [adapter] }),
+        });
+        const fail = () => snapshots.publish({
+            adapterId: OPENAI_PROVIDER_ID, sessionId: snapshots.getSnapshot().sessionId,
+            status: 'disconnected', mode: 'idle', canStop: false,
+            errorCode: 'network_error', errorRecoveryAction: 'retry',
+        });
+        try {
+            controller.setConfiguredProviderId(adapter.id);
+            for (const serverId of ['home-a', 'home-b']) {
+                const target = { serverId, sessionId: 'same-session' };
+                await controller.toggle(target);
+                fail();
+                expect(releaseConnectivity).toHaveBeenCalled();
+                await controller.retry('another-visible-session');
+                expect(start).toHaveBeenLastCalledWith({ sessionId: 'same-session', requestedTargetSessionAddress: target });
+                await controller.stop('same-session');
+            }
+            await controller.toggle({ serverId: 'home-a', sessionId: 'same-session' });
+            fail();
+            await controller.toggle(null);
+            expect(start).toHaveBeenLastCalledWith({ sessionId: '', requestedTargetSessionAddress: null });
+            fail();
+            await controller.retry(VOICE_AGENT_GLOBAL_SESSION_ID);
+            expect(start).toHaveBeenLastCalledWith({ sessionId: '', requestedTargetSessionAddress: null });
+        } finally {
+            await controller.dispose();
+        }
+    });
+
+    it.each(['end', 'account', 'provider', 'global_binding'] as const)('retires the failed binding after %s without starting a targetless retry', async (retirement) => {
+        const snapshots = createSnapshotPublisher({
+            adapterId: OPENAI_PROVIDER_ID, sessionId: null, status: 'disconnected', mode: 'idle', canStop: false,
+        });
+        const start = vi.fn(async ({ sessionId }: Readonly<{ sessionId: string }>) => snapshots.publish({
+            adapterId: OPENAI_PROVIDER_ID, sessionId: sessionId || VOICE_AGENT_GLOBAL_SESSION_ID,
+            status: 'connected', mode: 'listening', canStop: true,
+        }));
+        const adapter: VoiceAdapterController = {
+            id: OPENAI_PROVIDER_ID, engineKind: 'realtime', start,
+            stop: async () => {}, toggle: async () => {}, interrupt: async () => {}, setMuted: async () => {},
+            sendContextUpdate: () => {}, getSnapshot: snapshots.getSnapshot, subscribe: snapshots.subscribe,
+        };
+        const controller = createVoiceSessionLifecycleController({
+            captureAdmission: createVoiceCaptureAdmissionController(),
+            getRegistry: () => ({ get: (id) => id === adapter.id ? adapter : null, list: () => [adapter] }),
+        });
+        try {
+            controller.setConfiguredProviderId(adapter.id);
+            await controller.toggle(retirement === 'global_binding' ? null : { serverId: 'home-a', sessionId: 'same-session' });
+            snapshots.publish({
+                adapterId: OPENAI_PROVIDER_ID, sessionId: snapshots.getSnapshot().sessionId,
+                status: 'disconnected', mode: 'idle', canStop: false,
+                errorCode: 'network_error', errorRecoveryAction: 'retry',
+            });
+            if (retirement === 'end') await controller.stop('same-session');
+            if (retirement === 'account') controller.rearmAfterCredentialAuthorityChange({ exactSessionAccountScopeChanged: true });
+            if (retirement === 'global_binding') controller.rearmAfterCredentialAuthorityChange({ globalBindingAuthorityChanged: true });
+            if (retirement === 'provider') {
+                controller.setConfiguredProviderId('off');
+                controller.setConfiguredProviderId(adapter.id);
+            }
+            await controller.retry('same-session');
+            expect(start).toHaveBeenCalledTimes(1);
+        } finally {
+            await controller.dispose();
+        }
+    });
+
     it('holds routine connectivity through the exact active Voice attempt', async () => {
         const snapshots = createSnapshotPublisher({
             adapterId: 'local_direct',

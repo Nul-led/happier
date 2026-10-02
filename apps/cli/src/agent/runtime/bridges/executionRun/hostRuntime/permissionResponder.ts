@@ -28,6 +28,8 @@ export function withExecutionRunPermissionResponder(
     readPermissionCapability: () => 'responds',
     readInteraction: () => runtime.interaction,
     readResumeSupport: (opts) => runtime.readResumeSupport(opts),
+    readProviderSessionId: () => runtime.readProviderSessionId?.bind(runtime),
+    readCanContinueAfterCancellation: () => runtime.canContinueAfterCancellation?.bind(runtime),
     provisionRuntime: (opts) => runtime.provisionRuntime(opts),
     deliverInput: (runtimeId, input, context) => runtime.deliverInput(runtimeId, input, context),
     readSteerInput: () => runtime.steerInput?.bind(runtime),

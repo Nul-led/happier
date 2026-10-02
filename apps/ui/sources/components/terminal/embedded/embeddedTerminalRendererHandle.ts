@@ -7,13 +7,19 @@ export type EmbeddedTerminalWriteCompleteEvent = Readonly<{
     writeGeneration: number;
 }>;
 
+/** The renderer's visible cursor line, measured relative to its surface (not the stream byte cursor). */
+export type EmbeddedTerminalCursorRow = Readonly<{ top: number; height: number }>;
+
 export type EmbeddedTerminalWriteBytesResult =
     | boolean
     | void
     | Readonly<{ status: 'queued' }>;
 
+/** Cached output is parsed for display only; its terminal replies must not reach the process. */
+export type EmbeddedTerminalWriteOptions = Readonly<{ intent: 'replay' }>;
+
 export type EmbeddedTerminalRendererHandle = Readonly<{
-    write: (data: string) => boolean | void;
+    write: (data: string, options?: EmbeddedTerminalWriteOptions) => boolean | void;
     writeBytes?: (input: Readonly<{
         terminalId: string;
         seq: number;

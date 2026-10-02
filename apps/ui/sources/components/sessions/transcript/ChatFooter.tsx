@@ -98,7 +98,7 @@ export const ChatFooter = React.memo((props: ChatFooterProps) => {
             && derived.canDetach
             && Boolean(props.onRequestSwitchToRemote);
         const textKey = (() => {
-            if (switchingToRemote) return 'chatFooter.switchingToRemote';
+            if (switchingToRemote) return isSharedAttached ? 'common.loading' : 'chatFooter.switchingToRemote';
             if (isSharedAttached) return 'chatFooter.sessionRunningLocallyAndRemotely';
             if (props.permissionsInUiWhileLocal) return 'chatFooter.sessionRunningLocally';
             return 'chatFooter.permissionsTerminalOnly';

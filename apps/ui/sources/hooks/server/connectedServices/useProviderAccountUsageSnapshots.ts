@@ -4,6 +4,7 @@ import { useAuth } from '@/auth/context/AuthContext';
 import { resolveAuthCredentialsScopeKey } from '@/auth/storage/resolveAuthCredentialsScopeKey';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
+import { useRuntimeActive } from '@/hooks/runtime/useRuntimeActive';
 import {
     getProviderAccountUsageSnapshotPlain,
     getProviderAccountUsageSnapshotSealed,
@@ -106,6 +107,8 @@ export function useProviderAccountUsageSnapshots(
             })
             : '';
     const fetchPolicy = options.fetchPolicy ?? 'poll';
+    const runtimeActive = useRuntimeActive();
+    const previousRuntimeActive = React.useRef(runtimeActive);
     const [wakeSeq, setWakeSeq] = React.useState(0);
     const cacheState = React.useSyncExternalStore(
         subscribeProviderAccountUsageCache,
@@ -142,7 +145,8 @@ export function useProviderAccountUsageSnapshots(
 
     React.useEffect(() => {
         if (
-            fetchPolicy === 'cache_only'
+            !runtimeActive
+            || fetchPolicy === 'cache_only'
             || !quotasEnabled
             || !credentials
             || !activeServer.serverId
@@ -165,10 +169,12 @@ export function useProviderAccountUsageSnapshots(
         const delayMs = Math.max(0, nextWakeAtMs - now);
         const handle = setTimeout(() => setWakeSeq((value) => value + 1), delayMs);
         return () => clearTimeout(handle);
-    }, [cacheByRecordId, credentials, fetchPolicy, normalizedRecordIds, quotasEnabled, wakeSeq]);
+    }, [cacheByRecordId, credentials, fetchPolicy, normalizedRecordIds, quotasEnabled, runtimeActive, wakeSeq]);
 
     React.useEffect(() => {
-        if (fetchPolicy === 'cache_only' || !quotasEnabled || !credentials || normalizedRecordIds.length === 0) return;
+        const returningToForeground = runtimeActive && !previousRuntimeActive.current;
+        previousRuntimeActive.current = runtimeActive;
+        if (!runtimeActive || fetchPolicy === 'cache_only' || !quotasEnabled || !credentials || normalizedRecordIds.length === 0) return;
 
         const now = Date.now();
         const toFetch = normalizedRecordIds.filter((recordId) => {
@@ -178,7 +184,7 @@ export function useProviderAccountUsageSnapshots(
                 : undefined;
             if (!cached) return true;
             if (cached.loading) return false;
-            return now >= cached.nextFetchAtMs;
+            return returningToForeground || now >= cached.nextFetchAtMs;
         });
         if (toFetch.length === 0) return;
 
@@ -310,6 +316,7 @@ export function useProviderAccountUsageSnapshots(
         normalizedRecordIds,
         quotasEnabled,
         resolveAccountMode,
+        runtimeActive,
         wakeSeq,
     ]);
 

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
 
 import { describe, expect, it } from 'vitest';
@@ -46,6 +46,40 @@ async function extractTarFixture(params: Readonly<{ archivePath: string }>): Pro
 }
 
 describe('installRemoteFirstPartyComponent', () => {
+  it('installs and promotes an uploaded payload in a remote HOME containing spaces', async () => {
+    if (process.platform === 'win32') return; // The remote installer runs on POSIX targets.
+    const root = await mkdtemp(join(tmpdir(), 'happier-remote-home-'));
+    const home = join(root, 'home with spaces');
+    const fixture = await createPayloadRootFixture();
+    try {
+      await mkdir(home);
+      const installed = await installRemoteFirstPartyComponent({
+        componentId: 'happier-cli', ssh: { target: 'dev@example.test', auth: 'agent' },
+      }, {
+        resolveRemoteReleaseTarget: async () => ({ os: 'linux', arch: 'x64' }),
+        runRemoteText: async ({ remoteCommand }) => {
+          const result = await execFileAsync('/bin/sh', ['-c', remoteCommand], { cwd: root, env: { ...process.env, HOME: home } });
+          return { status: 0, stdout: result.stdout, stderr: result.stderr };
+        },
+        // SCP is the network boundary; preserve its directory-copy semantics locally.
+        copyLocalDirectoryToRemote: async ({ localPath, remotePath }) => {
+          await cp(localPath, join(home, remotePath, basename(localPath)), { recursive: true });
+        },
+        preparePayload: async () => ({
+          componentId: 'happier-cli', channel: 'stable', versionId: '1.2.3',
+          payloadRoot: fixture.payloadRoot, source: null, cleanup: async () => undefined,
+        }),
+      });
+      expect(installed.binaryPath).toBe('$HOME/.happier/cli/current/happier');
+      const binary = join(home, '.happier', 'cli', 'current', 'happier');
+      await expect(execFileAsync(binary, [])).resolves.toMatchObject({ stdout: '', stderr: '' });
+      expect(await readFile(binary, 'utf8')).toContain('exit 0');
+    } finally {
+      await fixture.cleanup();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('forwards cancellation to each remote process boundary', async () => {
     const controller = new AbortController();
     const observedSignals: Array<AbortSignal | undefined> = [];
@@ -119,7 +153,7 @@ describe('installRemoteFirstPartyComponent', () => {
       expect(copiedRemotePaths).toEqual([
         '.happier/bootstrap-staging/happier-cli-preview-1-123',
       ]);
-      expect(remoteTextCommands.some((command) => command.includes('mkdir -p $HOME/.happier'))).toBe(true);
+      expect(remoteTextCommands.some((command) => command.includes('mkdir -p "$HOME"/'))).toBe(true);
       expect(remoteTextCommands.some((command) => command.includes('/versions/'))).toBe(true);
       expect(remoteTextCommands.some((command) => command.includes('tar -xf'))).toBe(true);
       expect(remoteTextCommands.some((command) => command.includes('ln -sfn'))).toBe(true);

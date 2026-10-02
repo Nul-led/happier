@@ -5,6 +5,7 @@ import type {
 
 import { readVoicePrivacySettings } from '@/sync/domains/settings/readVoicePrivacySettings';
 import { storage } from '@/sync/domains/state/storage';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import {
   redactVoiceToolResultForProvider,
   type VoiceToolResultRedactionPrefs,
@@ -39,6 +40,7 @@ type VoiceHandlerBarrierDeps = Readonly<{
 
 type DefaultRealtimeToolBarrierDeps = Readonly<{
   resolveSessionId: (explicitSessionId?: string | null) => string | null;
+  currentSessionAddress?: SessionAddress | null;
   /** Provider-local current-context capability; absent means no such tool. */
   currentUiContext?: VoiceCurrentUiToolPort;
   /** Omission is intentionally fail-closed for internal and legacy callers. */
@@ -106,6 +108,7 @@ export function createDefaultRealtimeToolBarrier(deps: DefaultRealtimeToolBarrie
   return createRealtimeToolBarrierForVoiceHandlers({
     handlers: createVoiceToolHandlers({
       resolveSessionId: deps.resolveSessionId,
+      currentSessionAddress: deps.currentSessionAddress,
       ...(deps.currentUiContext ? { currentUiContext: deps.currentUiContext } : {}),
     }),
     effectCalls: deps.effectCalls,

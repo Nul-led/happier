@@ -9,15 +9,6 @@ import {
 } from '@/dev/testkit';
 import { decideApprovalAsInbox } from '@/dev/testkit/harness/approvalInbox';
 
-// Creating an approval Artifact crosses the stored-content HTTP compatibility
-// probe. This suite is about the invitation wrappers' Action contract, so keep
-// that external probe at its supported current version rather than seeding a
-// second Home capability fixture for one deferred-approval assertion.
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')>(),
-    requireCurrentAccountStoredContentServerCompatibility: vi.fn(async () => undefined),
-}));
-
 /**
  * The invitation wrappers, through the path they actually take.
  *

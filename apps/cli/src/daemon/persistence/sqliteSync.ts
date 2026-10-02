@@ -1,23 +1,13 @@
-import { createRequire } from 'node:module';
 import { dirname, isAbsolute } from 'node:path';
+import { openSqliteDatabaseSync, type SqliteDatabaseSync } from '@happier-dev/plugin-sdk/fs';
 
 import {
   ensureProtectedLocalStateDirectorySync,
   ensureProtectedLocalStateFileSync,
 } from '@/utils/fs/protectedLocalState';
 
-export type SqliteStatementSync = Readonly<{
-  get: (...params: readonly unknown[]) => unknown;
-  all: (...params: readonly unknown[]) => unknown[];
-  iterate: (...params: readonly unknown[]) => Iterable<unknown>;
-  run: (...params: readonly unknown[]) => unknown;
-}>;
-
-export type SqliteDatabaseSync = Readonly<{
-  exec: (sql: string) => void;
-  prepare: (sql: string) => SqliteStatementSync;
-  close: () => void;
-}>;
+export { openSqliteDatabaseSync } from '@happier-dev/plugin-sdk/fs';
+export type { SqliteDatabaseSync, SqliteStatementSync } from '@happier-dev/plugin-sdk/fs';
 
 // The lower host-parameter ceiling exposed by the daemon's supported SQLite
 // providers: the shipped node:sqlite build reports 32,766 while Bun reports a
@@ -37,33 +27,6 @@ export function resolveSqliteSupportedValueBatchSize(params: Readonly<{
     throw new Error('SQLite query shape exceeds the supported bound-parameter boundary');
   }
   return batchSize;
-}
-
-function isBunRuntime(): boolean {
-  return typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
-}
-
-export function openSqliteDatabaseSync(filePath: string): SqliteDatabaseSync {
-  const require = createRequire(import.meta.url);
-  // Keep the runtime-selected specifier opaque to pkgroll. A literal
-  // `node:sqlite` branch is otherwise emitted as an eager external import and
-  // prevents the Bun-compiled CLI from starting before this function runs.
-  const moduleName = [isBunRuntime() ? 'bun' : 'node', 'sqlite'].join(':');
-
-  const mod = require(moduleName) as unknown;
-  if (!mod || typeof mod !== 'object') {
-    throw new Error(`Failed to load sqlite module: ${moduleName}`);
-  }
-
-  const ctor = (isBunRuntime()
-    ? (mod as { Database?: unknown }).Database
-    : (mod as { DatabaseSync?: unknown }).DatabaseSync) as unknown;
-
-  if (typeof ctor !== 'function') {
-    throw new Error(`Failed to resolve sqlite Database constructor from ${moduleName}`);
-  }
-
-  return new (ctor as new (path: string) => SqliteDatabaseSync)(filePath);
 }
 
 export function protectSqliteDatabaseFilesSync(filePath: string): void {

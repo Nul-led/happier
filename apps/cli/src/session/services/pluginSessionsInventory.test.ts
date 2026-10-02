@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
+import { EventEmitter } from 'node:events';
+import { createSocketTransportAdapter } from '@happier-dev/sync-client';
 
 import type { StoredCredentials } from '@/persistence';
 import type { RawSessionListRow, RawSessionRecord } from '@/session/transport/http/sessionsHttp';
@@ -19,6 +21,24 @@ import {
 } from './pluginSessionsInventory';
 import type { PluginSubagentsHostService } from '@/session/subagents/pluginSubagentsService';
 import type { HostExternalSessionsAuthorService } from '@/session/external/privateContract';
+
+const socketBoundary = vi.hoisted(() => ({ create: vi.fn() }));
+vi.mock('@/api/session/sockets', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/api/session/sockets')>(),
+  createSessionScopedSocketConnection: (options: { sessionId: string }) => {
+    const socket = socketBoundary.create(options);
+    return { socket, transport: createSocketTransportAdapter(socket) };
+  },
+}));
+
+function createWatchSocket() {
+  const socket = Object.assign(new EventEmitter(), {
+    connected: false, connect: vi.fn(), disconnect: vi.fn(), close: vi.fn(),
+  });
+  socket.connect.mockImplementation(() => { socket.connected = true; socket.emit('connect'); });
+  socket.disconnect.mockImplementation(() => { socket.connected = false; });
+  return socket;
+}
 
 const credentials = {
   token: 'account-token',
@@ -217,6 +237,7 @@ function createInventory(params?: {
 describe('plugin sessions inventory public service boundary', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it('represents an invocation without a bound Session as current null', () => {
@@ -767,9 +788,17 @@ describe('plugin sessions inventory public service boundary', () => {
   });
 
   it('replays and follows the bound Session transcript identically for ordinary and Agent invocations', async () => {
+    vi.useFakeTimers();
+    const ordinarySocket = createWatchSocket();
+    const agentSocket = createWatchSocket();
+    socketBoundary.create.mockImplementation(({ sessionId }: { sessionId: string }) => (
+      sessionId === 'session-ordinary' ? ordinarySocket : agentSocket
+    ));
     let latestSequence = 2;
-    const get = vi.spyOn(axios, 'get').mockImplementation(async (url, config) => {
+    let turnStatus: 'in_progress' | 'completed' = 'in_progress';
+    const get = vi.spyOn(axios, 'get').mockImplementation(async (url) => {
       const href = String(url);
+      const requestUrl = new URL(href);
       const sessionId = decodeURIComponent(href.match(/\/sessions\/([^/]+)/)?.[1] ?? '');
       if (href.endsWith('/v1/account/encryption/currentness')) {
         return { status: 200, data: plainAccountEncryptionCurrentness } as never;
@@ -777,13 +806,14 @@ describe('plugin sessions inventory public service boundary', () => {
       if (href.includes('/v2/sessions/')) {
         return {
           status: 200,
-          data: { session: rawSession({ id: sessionId, active: true }) },
+          data: { session: rawSession({ id: sessionId, active: true,
+            latestTurnId: 'turn-1', latestTurnStatus: turnStatus }) },
         } as never;
       }
-      if (!href.includes('/v1/sessions/') || !href.endsWith('/messages')) {
+      if (!href.includes('/v1/sessions/') || !requestUrl.pathname.endsWith('/messages')) {
         throw new Error(`unexpected Session watch request: ${href}`);
       }
-      const after = Number((config as { params?: { afterSeq?: number } } | undefined)?.params?.afterSeq ?? 0);
+      const after = Number(requestUrl.searchParams.get('afterSeq') ?? 0);
       const rows = [
         {
           id: 'message-1',
@@ -806,6 +836,10 @@ describe('plugin sessions inventory public service boundary', () => {
           messageRole: 'agent',
           content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'world' } } },
         }] : []),
+        ...(latestSequence >= 4 ? [{
+          id: 'message-4', seq: 4, createdAt: 13, messageRole: 'agent',
+          content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'missed while offline' } } },
+        }] : []),
       ].filter((item) => item.seq > after && item.seq <= latestSequence);
       return {
         status: 200,
@@ -826,23 +860,29 @@ describe('plugin sessions inventory public service boundary', () => {
       isCurrent,
       readStoragePolicy: async () => 'optional',
       fetchPage: async () => ({ sessions: [], nextCursor: null, hasNext: false }),
-      fetchById: async ({ sessionId }) => rawSession({ id: sessionId, active: true }),
+      fetchById: async ({ sessionId }) => rawSession({ id: sessionId, active: true,
+        latestTurnId: 'turn-1', latestTurnStatus: turnStatus }),
       watchPollIntervalMs: 5,
     });
     const ordinary = createBoundInventory('session-ordinary', () => ordinaryCurrent);
     const agent = createBoundInventory('session-agent', () => agentCurrent);
     const ordinaryEvents: unknown[] = [];
     const agentEvents: unknown[] = [];
+    const ordinaryChanges: unknown[] = [];
+    const agentChanges: unknown[] = [];
     const ordinarySubscription = ordinary.current!.watch(async (event) => {
+      if (event.kind === 'changed') { ordinaryChanges.push(event); return; }
       ordinaryEvents.push(event);
       if (ordinaryEvents.length === 1) throw new Error('listener failure must stay isolated');
     });
-    const agentSubscription = agent.current!.watch((event) => agentEvents.push(event));
-
-    await vi.waitFor(() => {
-      expect(ordinaryEvents).toHaveLength(1);
-      expect(agentEvents).toEqual(ordinaryEvents);
+    const agentSubscription = agent.current!.watch((event) => {
+      if (event.kind === 'changed') agentChanges.push(event);
+      else agentEvents.push(event);
     });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ordinaryEvents).toHaveLength(1);
+    expect(agentEvents).toEqual(ordinaryEvents);
     expect(ordinaryEvents).toEqual([{
       sequence: 1,
       kind: 'message',
@@ -855,11 +895,33 @@ describe('plugin sessions inventory public service boundary', () => {
     }]);
     expect(JSON.stringify(ordinaryEvents)).not.toContain('must-not-project');
 
+    const baselineReads = get.mock.calls.length;
+    expect(vi.getTimerCount()).toBe(0);
+    const provisional = {
+      type: 'transcript-stream-segment-delta', sessionId: 'session-ordinary',
+      message: { localId: 'live', tick: 1, baseLength: 0, createdAt: 1, updatedAt: 1,
+        content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'Working' } } } },
+    };
+    ordinarySocket.emit('ephemeral', provisional);
+    ordinarySocket.emit('ephemeral', { ...provisional, type: 'transcript-stream-segment' });
+    ordinarySocket.emit('update', { id: 'unrelated', seq: 1, createdAt: 1,
+      body: { t: 'update-session', id: 'another-session', latestTurnStatus: 'completed' } });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(get.mock.calls).toHaveLength(baselineReads);
+    expect(ordinaryEvents).toHaveLength(1);
+
     latestSequence = 3;
-    await vi.waitFor(() => {
-      expect(ordinaryEvents).toHaveLength(2);
-      expect(agentEvents).toEqual(ordinaryEvents);
-    });
+    ordinarySocket.emit('update', { id: 'committed', seq: 2, createdAt: 12,
+      body: { t: 'new-message', sid: 'session-ordinary', message: {
+        id: 'message-3', seq: 3, localId: null, createdAt: 12, updatedAt: 12,
+        content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'world' } } },
+      } } });
+    agentSocket.emit('update', { id: 'turn-committed', seq: 2, createdAt: 12,
+      body: { t: 'update-session', id: 'session-agent', latestTurnId: 'turn-1', latestTurnStatus: 'completed' } });
+    // No clock advance: either committed source wakes the retained reader.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ordinaryEvents).toHaveLength(2);
+    expect(agentEvents).toEqual(ordinaryEvents);
     expect(ordinaryEvents[1]).toEqual({
       sequence: 3,
       kind: 'message',
@@ -870,14 +932,40 @@ describe('plugin sessions inventory public service boundary', () => {
         parts: [{ kind: 'text', text: 'world' }],
       },
     });
-    const messageRequests = get.mock.calls.filter(([url]) => String(url).endsWith('/messages'));
+    const messageRequests = get.mock.calls.filter(([url]) => new URL(String(url)).pathname.endsWith('/messages'));
     expect(messageRequests.length).toBeGreaterThanOrEqual(4);
-    expect(messageRequests.every(([url, config]) => (
+    expect(messageRequests.every(([url]) => (
       (String(url).includes('/sessions/session-ordinary/messages')
         || String(url).includes('/sessions/session-agent/messages'))
-      && (config as { params?: { afterSeq?: number } } | undefined)?.params?.afterSeq !== undefined
-      && (config as { params?: { scope?: string } } | undefined)?.params?.scope === 'main'
+      && new URL(String(url)).searchParams.has('afterSeq')
+      && new URL(String(url)).searchParams.get('scope') === 'main'
     ))).toBe(true);
+
+    // Settlement can release Channels' publication barrier without appending a message.
+    turnStatus = 'completed';
+    agentSocket.emit('update', { id: 'terminal-only', seq: 3, createdAt: 13,
+      body: { t: 'update-session', id: 'session-agent', latestTurnId: 'turn-1', latestTurnStatus: turnStatus } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(agentChanges).toHaveLength(1);
+    expect(agentEvents).toHaveLength(2);
+
+    ordinarySocket.emit('disconnect', 'transport close');
+    latestSequence = 4;
+    // Reconnection must catch up retained evidence, not depend on replay of socket messages.
+    await vi.advanceTimersByTimeAsync(500);
+    const readsAfterReconnect = get.mock.calls.length;
+    expect(ordinarySocket.connect.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(ordinaryEvents).toHaveLength(3);
+    expect(ordinaryEvents[2]).toMatchObject({ sequence: 4, message: { messageId: 'message-4' } });
+    expect(ordinaryChanges).toHaveLength(1);
+    ordinarySocket.emit('connect');
+    ordinarySocket.emit('update', { id: 'turn-replayed', seq: 3, createdAt: 13,
+      body: { t: 'update-session', id: 'session-ordinary', latestTurnStatus: 'completed' } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get.mock.calls.length).toBeGreaterThan(readsAfterReconnect);
+    expect(ordinaryEvents).toHaveLength(3);
+    expect(ordinaryChanges).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
 
     ordinarySubscription.dispose();
     ordinaryCurrent = false;
@@ -885,21 +973,79 @@ describe('plugin sessions inventory public service boundary', () => {
     const ordinaryCallsAtDisposal = get.mock.calls.filter(
       ([url]) => String(url).includes('/sessions/session-ordinary/messages'),
     ).length;
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await vi.advanceTimersByTimeAsync(20);
     expect(ordinaryEvents).toHaveLength(ordinaryEventCount);
     expect(get.mock.calls.filter(
       ([url]) => String(url).includes('/sessions/session-ordinary/messages'),
     )).toHaveLength(ordinaryCallsAtDisposal);
 
     agentCurrent = false;
+    agentSocket.emit('connect');
     const agentCallsAtRetirement = get.mock.calls.filter(
       ([url]) => String(url).includes('/sessions/session-agent/messages'),
     ).length;
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await vi.advanceTimersByTimeAsync(20);
     expect(get.mock.calls.filter(
       ([url]) => String(url).includes('/sessions/session-agent/messages'),
     )).toHaveLength(agentCallsAtRetirement);
     agentSubscription.dispose();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ordinarySocket.eventNames()).toEqual([]);
+    expect(agentSocket.eventNames()).toEqual([]);
+  });
+
+  it('catches an invalidation during a retained read and aborts a parked watch with its invocation', async () => {
+    vi.useFakeTimers();
+    const socket = createWatchSocket();
+    socketBoundary.create.mockReturnValue(socket);
+    const sessionId = 'c' + 'a'.repeat(24);
+    const lifetime = new AbortController();
+    let releaseRead: (() => void) | undefined;
+    let pageReads = 0;
+    let transportSignal: AbortSignal | undefined;
+    const get = vi.spyOn(axios, 'get').mockImplementation(async (url, options) => {
+      if (url.endsWith('/v1/account/encryption/currentness')) {
+        return { status: 200, data: plainAccountEncryptionCurrentness };
+      }
+      if (url.includes('/v2/sessions/')) {
+        return { status: 200, data: { session: rawSession({ id: sessionId, active: true }) } };
+      }
+      if (!url.includes('/messages?')) throw new Error(`unexpected_read:${url}`);
+      pageReads += 1;
+      transportSignal = options?.signal as AbortSignal;
+      if (pageReads === 1) await new Promise<void>((resolve) => { releaseRead = resolve; });
+      return { status: 200, data: { messages: pageReads === 1 ? [] : [{
+        id: 'race-message', seq: 1, createdAt: 1, messageRole: 'agent',
+        content: { t: 'plain', v: { role: 'agent', content: { type: 'text', text: 'Committed during read' } } },
+      }], nextAfterSeq: pageReads === 1 ? 0 : 1, hasMore: false } };
+    });
+    const inventory = createTestPluginSessionsInventory({
+      credentials, signal: lifetime.signal, currentSessionId: sessionId, isCurrent: () => true,
+      fetchById: async () => rawSession({ id: sessionId, active: true }),
+      readStoragePolicy: async () => 'optional',
+    });
+    const listener = vi.fn();
+    const subscription = inventory.current!.watch(listener);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(releaseRead).toBeDefined();
+    expect(socket.listenerCount('update')).toBe(1);
+    socket.emit('update', { id: 'race-update', seq: 1, createdAt: 1,
+      body: { t: 'update-session', id: sessionId, latestTurnStatus: 'completed' } });
+    releaseRead?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pageReads).toBe(2);
+    expect(listener).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      kind: 'message', sequence: 1, message: expect.objectContaining({ messageId: 'race-message' }),
+    }));
+    const readsAtAbort = get.mock.calls.length;
+    lifetime.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(transportSignal?.aborted).toBe(true);
+    expect(socket.eventNames()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(get.mock.calls).toHaveLength(readsAtAbort);
+    expect(vi.getTimerCount()).toBe(0);
+    subscription.dispose();
   });
 
   it('includes the canonical archived route in global listing and filtering', async () => {

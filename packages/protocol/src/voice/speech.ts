@@ -1,5 +1,36 @@
 import type { JsonValue } from '../json/strictJsonValue.js';
-import type { VoiceSpeechInputMimeType } from '../plugins/contributions/voiceProviders.js';
+import type { VoiceSpeechInputMimeType, VoiceProviderContribution } from '../plugins/contributions/voiceProviders.js';
+
+export type VoiceSpeechSynthesisInputLimits = Readonly<{
+  maxInputCharacters?: number;
+  maxInputUtf8Bytes?: number;
+}>;
+
+/** Resolve limits against the same immutable endpoint settings used for synthesis. */
+export function resolveVoiceSpeechSynthesisInputLimits(input: Readonly<{
+  contribution: Pick<Extract<VoiceProviderContribution, { kind: 'speech' }>, 'settings' | 'limits'>;
+  settings: Readonly<Record<string, JsonValue>>;
+}>): VoiceSpeechSynthesisInputLimits {
+  const declaration = input.contribution.limits?.synthesize;
+  let maxInputCharacters = declaration?.maxInputCharacters;
+  const settingId = declaration?.maxInputCharactersSettingId;
+  if (settingId) {
+    const field = input.contribution.settings.fields.find((candidate) => candidate.id === settingId);
+    const selected = Object.prototype.hasOwnProperty.call(input.settings, settingId)
+      ? input.settings[settingId] : field?.default;
+    if (typeof selected !== 'number' || !Number.isSafeInteger(selected) || selected < 1
+      || maxInputCharacters === undefined || selected > maxInputCharacters) {
+      throw Object.assign(new Error('provider_settings_invalid'), { code: 'provider_settings_invalid' });
+    }
+    maxInputCharacters = selected;
+  }
+  return { maxInputCharacters, maxInputUtf8Bytes: declaration?.maxInputUtf8Bytes };
+}
+
+export function isVoiceSpeechSynthesisInputWithinLimits(text: string, limits: VoiceSpeechSynthesisInputLimits): boolean {
+  return (limits.maxInputCharacters === undefined || text.length <= limits.maxInputCharacters)
+    && (limits.maxInputUtf8Bytes === undefined || new TextEncoder().encode(text).byteLength <= limits.maxInputUtf8Bytes);
+}
 
 /**
  * Provider-neutral speech invocation data. The Plugin SDK supplies the

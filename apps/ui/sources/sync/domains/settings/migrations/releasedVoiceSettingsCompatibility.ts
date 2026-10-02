@@ -1,12 +1,5 @@
-import type { VoiceProviderSettingsJsonValueV1 } from '@happier-dev/protocol';
-import {
-  DEFAULT_ELEVENLABS_VOICE_ID,
-  ElevenLabsAgentIdSchema,
-  ElevenLabsModelIdSchema,
-  ElevenLabsVoiceIdSchema,
-  ElevenLabsVoiceProviderSettingsLegacySchema,
-  ElevenLabsVoiceProviderSettingsSchema,
-} from '@happier-dev/plugins-elevenlabs/protocol/voice';
+import { SecretStringV1Schema, type VoiceProviderSettingsJsonValueV1 } from '@happier-dev/protocol';
+import { z } from 'zod';
 
 import { VoiceLocalDirectSchema } from '@/voice/adapters/localDirect/settings';
 import {
@@ -193,69 +186,109 @@ const localConversationCompatibility: ReleasedVoiceSettingsCompatibility = Objec
 
 // Stable/preview releases persisted this fully materialized adapter default.
 const RELEASED_LEGACY_ELEVENLABS_DEFAULT_VOICE_ID = 'EST9Ui6982FZPSi7gCHi';
-const elevenLabsCompatibility: ReleasedVoiceSettingsCompatibility = Object.freeze({
-  defaultLegacyConfig: ElevenLabsVoiceProviderSettingsLegacySchema.parse({
-    tts: { voiceId: RELEASED_LEGACY_ELEVENLABS_DEFAULT_VOICE_ID },
-  }),
-  legacyDefaultSelection: true,
-  readLegacySecret(value) {
-    const parsed = ElevenLabsVoiceProviderSettingsLegacySchema.safeParse(value);
-    return parsed.success ? parsed.data.byo.apiKey : null;
-  },
-  preserveLegacyEnvelope(value) {
-    const parsed = ElevenLabsVoiceProviderSettingsLegacySchema.safeParse(value);
-    return !parsed.success || parsed.data.byo.apiKey == null
-      ? null
-      : Object.freeze({ schemaVersion: 1, config: parsed.data });
-  },
-  migrateLegacy(value) {
-    const parsed = ElevenLabsVoiceProviderSettingsLegacySchema.safeParse(value);
-    if (!parsed.success) return null;
-    const { assistantLanguage, welcome, byo, ...rest } = parsed.data;
-    const { style: _style, useSpeakerBoost: _speakerBoost, ...supportedVoiceSettings } = rest.tts.voiceSettings;
-    const legacyAgentId = byo.agentId === null ? null : ElevenLabsAgentIdSchema.safeParse(byo.agentId);
-    const legacyVoiceId = ElevenLabsVoiceIdSchema.safeParse(rest.tts.voiceId);
-    const legacyModelId = rest.tts.modelId === null ? null : ElevenLabsModelIdSchema.safeParse(rest.tts.modelId);
-    const legacySpeed = rest.tts.voiceSettings.speed;
-    const config = ElevenLabsVoiceProviderSettingsSchema.safeParse({
-      ...rest,
-      tts: {
-        ...rest.tts,
-        voiceId: legacyVoiceId.success ? legacyVoiceId.data : DEFAULT_ELEVENLABS_VOICE_ID,
-        modelId: legacyModelId === null ? null : legacyModelId.success ? legacyModelId.data : null,
-        voiceSettings: {
-          ...supportedVoiceSettings,
-          speed: legacySpeed !== null && (legacySpeed < 0.7 || legacySpeed > 1.2) ? null : legacySpeed,
+
+/** Exact predecessor parser shape; current settings are admitted by the contribution owner. */
+function createReleasedElevenLabsLegacySchema(defaultVoiceId: string) {
+  return z.object({
+    assistantLanguage: z.string().nullable().default(null),
+    billingMode: z.enum(['happier', 'byo']).default('happier'),
+    welcome: z.object({
+      enabled: z.boolean().default(false),
+      mode: z.enum(['immediate', 'on_first_turn']).default('immediate'),
+      templateId: z.string().nullable().default(null),
+    }).default({ enabled: false, mode: 'immediate', templateId: null }),
+    tts: z.object({
+      voiceId: z.string().default(defaultVoiceId),
+      modelId: z.string().nullable().default(null),
+      voiceSettings: z.object({
+        stability: z.number().min(0).max(1).nullable().default(null),
+        similarityBoost: z.number().min(0).max(1).nullable().default(null),
+        style: z.number().min(0).max(1).nullable().default(null),
+        useSpeakerBoost: z.boolean().nullable().default(null),
+        speed: z.number().min(0.5).max(2).nullable().default(null),
+      }).prefault({}),
+    }).prefault({}),
+    byo: z.object({
+      agentId: z.string().nullable().default(null),
+      apiKey: SecretStringV1Schema.nullable().default(null),
+    }).default({ agentId: null, apiKey: null }),
+  });
+}
+
+type CurrentVoiceSettings = Readonly<{
+  defaultConfig: unknown;
+  parseConfig(config: unknown): unknown | null;
+}>;
+
+function createElevenLabsCompatibility(settings: CurrentVoiceSettings): ReleasedVoiceSettingsCompatibility | null {
+  const defaults = settings.defaultConfig;
+  if (!isRecord(defaults) || !isRecord(defaults.tts) || typeof defaults.tts.voiceId !== 'string') return null;
+  const defaultVoiceId = defaults.tts.voiceId;
+  const legacySchema = createReleasedElevenLabsLegacySchema(defaultVoiceId);
+  // Identifier cleanup is translation into current declaration fields, not a current parser.
+  const identifier = z.string().trim().min(1).max(256);
+  return Object.freeze({
+    defaultLegacyConfig: legacySchema.parse({
+      tts: { voiceId: RELEASED_LEGACY_ELEVENLABS_DEFAULT_VOICE_ID },
+    }),
+    legacyDefaultSelection: true,
+    readLegacySecret(value) {
+      const parsed = legacySchema.safeParse(value);
+      return parsed.success ? parsed.data.byo.apiKey : null;
+    },
+    preserveLegacyEnvelope(value) {
+      const parsed = legacySchema.safeParse(value);
+      return !parsed.success || parsed.data.byo.apiKey == null
+        ? null
+        : Object.freeze({ schemaVersion: 1, config: parsed.data });
+    },
+    migrateLegacy(value) {
+      const parsed = legacySchema.safeParse(value);
+      if (!parsed.success) return null;
+      const { assistantLanguage, welcome, byo, ...rest } = parsed.data;
+      const { style: _style, useSpeakerBoost: _speakerBoost, ...supportedVoiceSettings } = rest.tts.voiceSettings;
+      const legacyAgentId = byo.agentId === null ? null : identifier.safeParse(byo.agentId);
+      const legacyVoiceId = identifier.safeParse(rest.tts.voiceId);
+      const legacyModelId = rest.tts.modelId === null ? null : identifier.safeParse(rest.tts.modelId);
+      const legacySpeed = rest.tts.voiceSettings.speed;
+      const config = settings.parseConfig({
+        ...rest,
+        tts: {
+          ...rest.tts,
+          voiceId: legacyVoiceId.success ? legacyVoiceId.data : defaultVoiceId,
+          modelId: legacyModelId === null ? null : legacyModelId.success ? legacyModelId.data : null,
+          voiceSettings: {
+            ...supportedVoiceSettings,
+            speed: legacySpeed !== null && (legacySpeed < 0.7 || legacySpeed > 1.2) ? null : legacySpeed,
+          },
         },
-      },
-      agentId: legacyAgentId === null ? '' : legacyAgentId.success ? legacyAgentId.data : '',
-    });
-    return config.success
-      ? Object.freeze({ config: config.data, root: Object.freeze({ assistantLanguage, welcome }) })
-      : null;
-  },
-  projectLegacy(value, context) {
-    const parsed = ElevenLabsVoiceProviderSettingsSchema.safeParse(value);
-    if (!parsed.success) return null;
-    const credential = context.resolveCredential('realtime_elevenlabs', 'api_key');
-    const legacy = ElevenLabsVoiceProviderSettingsLegacySchema.safeParse({
-      ...parsed.data,
-      assistantLanguage: context.root.assistantLanguage ?? null,
-      welcome: context.root.welcome ?? { enabled: false, mode: 'immediate', templateId: null },
-      byo: { agentId: parsed.data.agentId || null, apiKey: credential },
-    });
-    return legacy.success ? legacy.data : null;
-  },
-  mergeLegacy(_currentValue, migratedValue) {
-    const parsed = ElevenLabsVoiceProviderSettingsSchema.safeParse(migratedValue);
-    return parsed.success ? parsed.data : null;
-  },
-});
+        agentId: legacyAgentId === null ? '' : legacyAgentId.success ? legacyAgentId.data : '',
+      });
+      return config !== null
+        ? Object.freeze({ config, root: Object.freeze({ assistantLanguage, welcome }) })
+        : null;
+    },
+    projectLegacy(value, context) {
+      const parsed = settings.parseConfig(value);
+      if (!isRecord(parsed) || typeof parsed.agentId !== 'string') return null;
+      const credential = context.resolveCredential('realtime_elevenlabs', 'api_key');
+      const legacy = legacySchema.safeParse({
+        ...parsed,
+        assistantLanguage: context.root.assistantLanguage ?? null,
+        welcome: context.root.welcome ?? { enabled: false, mode: 'immediate', templateId: null },
+        byo: { agentId: parsed.agentId || null, apiKey: credential },
+      });
+      return legacy.success ? legacy.data : null;
+    },
+    mergeLegacy(_currentValue, migratedValue) {
+      return settings.parseConfig(migratedValue);
+    },
+  } satisfies ReleasedVoiceSettingsCompatibility);
+}
 
 const RELEASED_COMPATIBILITY_BY_PROVIDER_ID = Object.freeze({
   local_direct: localDirectCompatibility,
   local_conversation: localConversationCompatibility,
-  'happier.voice.elevenlabs/realtime-elevenlabs': elevenLabsCompatibility,
 } satisfies Record<string, ReleasedVoiceSettingsCompatibility>);
 
 /**
@@ -264,7 +297,11 @@ const RELEASED_COMPATIBILITY_BY_PROVIDER_ID = Object.freeze({
  */
 export function getReleasedVoiceSettingsCompatibility(
   providerId: string,
+  settings?: CurrentVoiceSettings,
 ): ReleasedVoiceSettingsCompatibility | null {
+  if (providerId === 'happier.voice.elevenlabs/realtime-elevenlabs') {
+    return settings ? createElevenLabsCompatibility(settings) : null;
+  }
   return Object.prototype.hasOwnProperty.call(RELEASED_COMPATIBILITY_BY_PROVIDER_ID, providerId)
     ? RELEASED_COMPATIBILITY_BY_PROVIDER_ID[
         providerId as keyof typeof RELEASED_COMPATIBILITY_BY_PROVIDER_ID

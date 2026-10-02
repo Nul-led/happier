@@ -41,6 +41,6 @@ assert.match(
 );
 assert.match(
   androidJniSource,
-  /const auto engine = LeaseEngine\(JStringToUtf8\(env, assetsDir\)\);/,
+  /const auto engine = LeaseEngine\(JStringToUtf8\(env, assetsDir\), lang \|\| lexicon \? &frontend : nullptr\);/,
   "Android synthesis must lease its engine for the call rather than trust a handle from JS",
 );

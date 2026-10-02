@@ -3,6 +3,20 @@ import { describe, expect, it } from 'vitest';
 import { segmentTextForDaemonTts } from './voiceInferenceTtsSegmenter';
 
 describe('segmentTextForDaemonTts', () => {
+  it('keeps Unicode code points intact when a configured segment budget is odd', () => {
+    const text = '😀'.repeat(40);
+    const segments = segmentTextForDaemonTts(text, { preferredFirstSegmentMaxChars: 25, maxSegmentChars: 25 });
+    expect(segments.map((segment) => segment.text).join('')).toBe(text);
+    expect(segments.every((segment) => segment.text.length <= 25
+      && !/[\ud800-\udbff]$|^[\udc00-\udfff]/u.test(segment.text))).toBe(true);
+  });
+  it('keeps files, URL schemes, queries, times and abbreviations intact', () => {
+    const text = 'Open index.ts at https://example.com/a?b=yes at 10:30, e.g. with Dr. Smith. Then continue.';
+    expect(segmentTextForDaemonTts(text).map((segment) => segment.text)).toEqual([
+      'Open index.ts at https://example.com/a?b=yes at 10:30, e.g. with Dr. Smith.',
+      'Then continue.',
+    ]);
+  });
   it('creates stable ordered sentence segments without losing text', () => {
     const segments = segmentTextForDaemonTts('Hello daemon. This is segment two. Final segment!');
 

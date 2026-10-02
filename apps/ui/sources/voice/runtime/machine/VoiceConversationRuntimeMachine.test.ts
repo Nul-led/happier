@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createVoiceConversationRuntimeMachine } from './VoiceConversationRuntimeMachine';
 import { createVoiceMachineError } from './voiceMachineError';
+import { ensureInterruptionWordSegmentationAvailable } from '../input/segmentInterruptionWords';
 
 function createDeferred<T>() {
     let resolve!: (value: T | PromiseLike<T>) => void;
@@ -16,6 +17,26 @@ function createDeferred<T>() {
 describe('VoiceConversationRuntimeMachine', () => {
     beforeEach(() => {
         createVoiceConversationRuntimeMachine().reset();
+    });
+
+    it('keeps missing installed word segmentation visible through listening startup', async () => {
+        const unavailableIntl = Object.create(Intl);
+        Object.defineProperty(unavailableIntl, 'Segmenter', { value: undefined });
+        vi.stubGlobal('Intl', unavailableIntl);
+        try {
+            const machine = createVoiceConversationRuntimeMachine();
+            await machine.rearmListening({
+                controlSessionId: 's1',
+                startListening: async () => ensureInterruptionWordSegmentationAvailable(),
+            });
+            expect(machine.getSnapshot()).toMatchObject({
+                state: 'mic_error',
+                error: { kind: 'provider_setup_required', reason: 'voice_text_segmentation_unavailable',
+                    presentation: 'error', recoverable: false },
+            });
+        } finally {
+            vi.unstubAllGlobals();
+        }
     });
 
     it('waits for listening start confirmation before entering listening', async () => {

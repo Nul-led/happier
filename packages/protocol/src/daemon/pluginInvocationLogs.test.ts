@@ -7,6 +7,26 @@ import {
 } from './pluginInvocationLogs.js';
 
 describe('daemon plugin invocation log RPC contract', () => {
+  it('reads current occurrence-stamped diagnostics and carries a replacement-aware follow cursor', () => {
+    expect(PluginInvocationLogRecordV1Schema.safeParse({
+      version: 1, kind: 'plugin_invocation_log', level: 'info', message: 'arrived',
+      context: {
+        plugin: { id: 'acme.example', version: '1' },
+        contribution: { id: 'run', qualifiedId: 'acme.example/run' },
+        occurrenceId: 'occurrence-1', correlationId: 'correlation-1', surface: 'cli',
+      },
+      occurredAtMs: 1, sequence: 1,
+    }).success).toBe(true);
+    expect(DaemonPluginInvocationLogReadRequestV1Schema.safeParse({
+      version: 1, target: { serverIdentityId: 'srv_plugin_logs', machineId: 'machine-logs' },
+      query: { pluginId: 'acme.example', occurrenceId: 'occurrence-1', cursor: 42, logId: 'active-log' },
+      waitForChanges: true,
+    }).success).toBe(true);
+    expect(DaemonPluginInvocationLogReadResponseV1Schema.safeParse({
+      version: 1, kind: 'available', records: [], cursor: 0, hasMore: false,
+      logId: 'replacement-log', cursorReset: true,
+    }).success).toBe(true);
+  });
   it('rejects a structured message above its UTF-8 byte bound', () => {
     expect(PluginInvocationLogRecordV1Schema.safeParse({
       version: 1,
@@ -16,7 +36,7 @@ describe('daemon plugin invocation log RPC contract', () => {
       context: {
         plugin: { id: 'acme.example', version: '1.0.0' },
         contribution: { id: 'run', qualifiedId: 'acme.example/actions/run' },
-        generation: '1', correlationId: 'correlation-1', surface: 'cli',
+        occurrenceId: '1', correlationId: 'correlation-1', surface: 'cli',
       },
       occurredAtMs: 1,
       sequence: 1,
@@ -32,7 +52,7 @@ describe('daemon plugin invocation log RPC contract', () => {
       },
       query: {
         pluginId: 'acme.example',
-        generation: 'generation-1',
+        occurrenceId: 'generation-1',
         correlationId: 'correlation-1',
         cursor: 0,
         limit: 500,

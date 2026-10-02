@@ -1,5 +1,6 @@
 #import "HappierSherpaOnlineAsrEngine.h"
 #import "HappierSherpaAsrStreamRegistry.h"
+#import "HappierSherpaOnlineAsr.h"
 
 #include <cstring>
 #include <memory>
@@ -10,8 +11,7 @@
 
 namespace {
 
-// The iOS xcframework hands back const-qualified handles where the Android C API
-// does not, which is why the shared registry is parameterised on the handle types.
+// Both platforms consume the pinned upstream const-qualified handle contract.
 using AsrStreams = happier_sherpa::AsrStreamRegistry<const SherpaOnnxOnlineRecognizer, const SherpaOnnxOnlineStream>;
 
 AsrStreams &AsrJobs() {
@@ -47,34 +47,8 @@ std::shared_ptr<const SherpaOnnxOnlineRecognizer> CreateRecognizer(const std::st
     return nullptr;
   }
 
-  SherpaOnnxOnlineRecognizerConfig config;
-  memset(&config, 0, sizeof(config));
-
-  config.feat_config.sample_rate = 16000;
-  config.feat_config.feature_dim = 80;
-
-  config.model_config.tokens = tokensPath.c_str();
-  config.model_config.num_threads = 2;
-  config.model_config.debug = 0;
-  config.model_config.provider = "cpu";
-  // Most sherpa-onnx streaming Zipformer transducer models do not require an explicit model_type.
-  // Leave it empty so sherpa can select defaults based on the provided ONNX graphs.
-  config.model_config.model_type = "";
-  config.model_config.modeling_unit = nullptr;
-  config.model_config.bpe_vocab = nullptr;
-
-  config.model_config.transducer.encoder = encoderPath.c_str();
-  config.model_config.transducer.decoder = decoderPath.c_str();
-  config.model_config.transducer.joiner = joinerPath.c_str();
-
-  config.decoding_method = "greedy_search";
-  config.max_active_paths = 4;
-  config.enable_endpoint = 1;
-
-  // Default endpointing tuned for streaming turn-taking. Units are seconds.
-  config.rule1_min_trailing_silence = 1.2f;
-  config.rule2_min_trailing_silence = 0.6f;
-  config.rule3_min_utterance_length = 15.0f;
+  const auto config = happier_sherpa::OnlineTransducerConfig(
+      tokensPath.c_str(), encoderPath.c_str(), decoderPath.c_str(), joinerPath.c_str());
 
   const SherpaOnnxOnlineRecognizer *recognizer = SherpaOnnxCreateOnlineRecognizer(&config);
   if (!recognizer) {
@@ -191,7 +165,9 @@ std::vector<float> Pcm16LeToMonoFloats(NSData *pcm16le, int32_t channels) {
     return @{@"text": @"", @"isEndpoint": @NO};
   }
 
-  SherpaOnnxOnlineStreamAcceptWaveform(job->stream(), sampleRate > 0 ? sampleRate : 16000, mono.data(),
+  const int32_t inputSampleRate = sampleRate > 0 ? sampleRate : 16000;
+  job->recordInputSampleRate(inputSampleRate);
+  SherpaOnnxOnlineStreamAcceptWaveform(job->stream(), inputSampleRate, mono.data(),
                                        static_cast<int32_t>(mono.size()));
 
   while (!job->cancelled() && SherpaOnnxIsOnlineStreamReady(job->recognizer(), job->stream())) {
@@ -237,11 +213,8 @@ std::vector<float> Pcm16LeToMonoFloats(NSData *pcm16le, int32_t channels) {
     return @{@"status": @"cancelled"};
   }
 
-  SherpaOnnxOnlineStreamInputFinished(job->stream());
-  while (!job->cancelled() && SherpaOnnxIsOnlineStreamReady(job->recognizer(), job->stream())) {
-    SherpaOnnxDecodeOnlineStream(job->recognizer(), job->stream());
-  }
-  if (job->cancelled()) {
+  if (!happier_sherpa::FinishOnlineTransducer(
+          job->recognizer(), job->stream(), [&] { return job->cancelled(); }, job->inputSampleRate())) {
     AsrJobs().endFinish(jobKey, job);
     return @{@"status": @"cancelled"};
   }

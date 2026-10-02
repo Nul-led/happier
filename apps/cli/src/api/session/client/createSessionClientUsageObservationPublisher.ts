@@ -1,7 +1,5 @@
-import { serializeAxiosErrorForLog } from '@/api/client/serializeAxiosErrorForLog';
 import type { SessionClientTransport } from './transport/sessionClientTransport';
 import { createUsageObservationPublisher } from '@/usage/createUsageObservationPublisher';
-import { logger } from '@/ui/logger';
 
 export function createSessionClientUsageObservationPublisher(
     params: Readonly<{
@@ -17,12 +15,10 @@ export function createSessionClientUsageObservationPublisher(
         emitLegacyUsageReport: (report) => {
             const socket = params.getSocket();
             if (!socket.connected) {
-                return;
+                return false;
             }
             socket.emit('usage-report', report);
-        },
-        onPublishError: (error) => {
-            logger.debug('[SOCKET] Failed to publish usage observation (non-fatal)', serializeAxiosErrorForLog(error));
+            return true;
         },
     });
 }

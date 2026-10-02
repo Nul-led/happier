@@ -7,6 +7,39 @@ import { openDeepIndexDb } from './deepIndex/deepIndexDb';
 import { searchTier2Memory } from './searchMemory';
 
 describe('searchTier2Memory (embeddings rerank)', () => {
+  it('limits text-only results after selecting the larger candidate pool', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'happier-memory-search-limit-'));
+    try {
+      const dbPath = join(dir, 'deep.sqlite');
+      const db = openDeepIndexDb({ dbPath });
+      db.init();
+      for (const seq of [1, 2, 3]) {
+        db.insertChunk({
+          sessionId: 's1',
+          seqFrom: seq,
+          seqTo: seq,
+          createdAtFromMs: seq,
+          createdAtToMs: seq,
+          text: 'openclaw',
+        });
+      }
+      db.close();
+
+      const result = await searchTier2Memory({
+        dbPath,
+        query: { v: 1, query: 'openclaw', scope: { type: 'global' }, mode: 'deep', maxResults: 1 },
+        previewChars: 200,
+        candidateLimit: 3,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.hits.map((hit) => hit.seqFrom)).toEqual([3]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('reranks deep hits when embeddings are available and enabled', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'happier-memory-search-emb-'));
     try {
@@ -34,7 +67,7 @@ describe('searchTier2Memory (embeddings rerank)', () => {
         sessionId: 's1',
         seqFrom: 0,
         seqTo: 1,
-        provider: 'test',
+        provider: 'local_transformers',
         modelId: 'm1',
         embedding: new Float32Array([1, 0]),
         updatedAtMs: 1,
@@ -43,29 +76,28 @@ describe('searchTier2Memory (embeddings rerank)', () => {
         sessionId: 's1',
         seqFrom: 2,
         seqTo: 3,
-        provider: 'test',
+        provider: 'local_transformers',
         modelId: 'm1',
         embedding: new Float32Array([0, 1]),
         updatedAtMs: 1,
       });
       db.close();
 
-      // Use `as any` to allow RED→GREEN without changing the function signature first.
-      const baseline = await (searchTier2Memory as any)({
+      const baseline = await searchTier2Memory({
         dbPath,
-        query: { v: 1, query: 'openclaw', scope: { type: 'global' }, mode: 'deep', maxResults: 2 },
+        query: { v: 1, query: 'openclaw', scope: { type: 'global' }, mode: 'deep', maxResults: 1 },
         previewChars: 200,
         candidateLimit: 10,
       });
-      const result = await (searchTier2Memory as any)({
+      const result = await searchTier2Memory({
         dbPath,
-        query: { v: 1, query: 'openclaw', scope: { type: 'global' }, mode: 'deep', maxResults: 2 },
+        query: { v: 1, query: 'openclaw', scope: { type: 'global' }, mode: 'deep', maxResults: 1 },
         previewChars: 200,
         embeddings: {
           enabled: true,
           mode: 'custom',
           presetId: null,
-          providerKind: 'test',
+          providerKind: 'local_transformers',
           modelId: 'm1',
           blend: { ftsWeight: 0.1, embeddingWeight: 0.9 },
           providerConfig: null,
@@ -74,8 +106,11 @@ describe('searchTier2Memory (embeddings rerank)', () => {
         candidateLimit: 10,
       });
 
+      expect(baseline.ok).toBe(true);
+      if (baseline.ok) expect(baseline.hits[0]?.seqFrom).toBe(2);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
+      expect(result.hits).toHaveLength(1);
       expect(result.hits[0]?.seqFrom).toBe(0);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -106,13 +141,13 @@ describe('searchTier2Memory (embeddings rerank)', () => {
       });
       db.close();
 
-      const baseline = await (searchTier2Memory as any)({
+      const baseline = await searchTier2Memory({
         dbPath,
         query: { v: 1, query: 'openclaw', scope: { type: 'global' }, mode: 'deep', maxResults: 2 },
         previewChars: 200,
         candidateLimit: 10,
       });
-      const result = await (searchTier2Memory as any)({
+      const result = await searchTier2Memory({
         dbPath,
         query: { v: 1, query: 'openclaw', scope: { type: 'global' }, mode: 'deep', maxResults: 2 },
         previewChars: 200,
@@ -120,7 +155,7 @@ describe('searchTier2Memory (embeddings rerank)', () => {
           enabled: true,
           mode: 'custom',
           presetId: null,
-          providerKind: 'test',
+          providerKind: 'local_transformers',
           modelId: 'm1',
           blend: { ftsWeight: 0.1, embeddingWeight: 0.9 },
           providerConfig: null,

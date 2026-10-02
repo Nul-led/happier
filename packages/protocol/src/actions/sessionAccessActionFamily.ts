@@ -3,6 +3,7 @@ import type { z } from 'zod';
 import { isSessionAccessActionId, type SessionAccessActionId } from './actionIds.js';
 import { getActionSpec } from './actionSpecs.js';
 import { bindHomeDomainHttpRequestV1, type HomeDomainHttpRequestV1 } from './homeDomainHttpBinding.js';
+import { SessionPublicLinkCreateActionInputV1Schema } from '../sessions/access/sessionAccessActionsV1.js';
 
 /**
  * The Session-access family's transport and codec lookup.
@@ -53,6 +54,13 @@ export function bindSessionAccessActionHttpRequestV1(
   const spec = getActionSpec(actionId);
   if (!spec.serverTransport) {
     throw new TypeError(`Session access Action declares no server transport: ${actionId}`);
+  }
+  if (actionId === 'session.public_link.create') {
+    // Current fragment-wrapped keys must never reach the released token writer:
+    // a predecessor can strip new fields while retaining its legacy token hash.
+    const { sessionId, ...settings } = SessionPublicLinkCreateActionInputV1Schema.parse(input);
+    return { method: spec.serverTransport.method, path: spec.serverTransport.path,
+      body: { subject: { kind: 'session', id: sessionId }, ...settings } };
   }
   return bindHomeDomainHttpRequestV1({
     transport: spec.serverTransport,

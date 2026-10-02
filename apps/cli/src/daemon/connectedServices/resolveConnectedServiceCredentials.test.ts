@@ -11,7 +11,6 @@ import {
 } from '@/cloud/connectedServices/resolveConnectedServiceCredentials';
 import type { ConnectedServiceCredentialApi } from '@/api/client/connectedServiceCredentialApi';
 import { ConnectedServiceCredentialUnsupportedFormatError } from '@/api/client/connectedServiceCredentialApi';
-import { AccountStoredContentClientUpgradeRequiredError } from '@/api/clientCompatibility/accountStoredContentActivation';
 import type { Credentials, StoredCredentials } from '@/persistence';
 
 describe('resolveConnectedServiceCredentials', () => {
@@ -375,36 +374,6 @@ describe('resolveConnectedServiceCredentials', () => {
     expect(api.getAccountEncryptionMode).toHaveBeenCalledTimes(1);
     expect(api.getConnectedServiceCredentialPlain).not.toHaveBeenCalled();
     expect(api.getConnectedServiceCredentialSealed).not.toHaveBeenCalled();
-  });
-
-  it('preserves stored-content upgrade-required before selecting credential storage', async () => {
-    const upgradeRequired = new AccountStoredContentClientUpgradeRequiredError(
-      'server-too-old',
-    );
-    const getPlain = vi.fn(async () => null);
-    const getSealed = vi.fn(async () => null);
-    const api = {
-      getAccountEncryptionMode: vi.fn(async () => {
-        throw upgradeRequired;
-      }),
-      getConnectedServiceCredentialPlain: getPlain,
-      getConnectedServiceCredentialSealed: getSealed,
-    };
-
-    await expect(resolveConnectedServiceCredentials({
-      credentials: {
-        token: 't',
-        encryption: {
-          type: 'legacy',
-          secret: new Uint8Array(32).fill(9),
-        },
-      },
-      api: api as unknown as ConnectedServiceCredentialApi,
-      bindings: [{ serviceId: 'openai-codex', profileId: 'work' }],
-    })).rejects.toBe(upgradeRequired);
-
-    expect(getPlain).not.toHaveBeenCalled();
-    expect(getSealed).not.toHaveBeenCalled();
   });
 
   it('does not probe sealed credentials when Account mode is unknown', async () => {

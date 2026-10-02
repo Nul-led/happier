@@ -40,6 +40,12 @@ function makeResolver(rowsByKey: Record<string, SessionListRenderableSession>) {
 }
 
 describe('filterSessionListIndexByStorageKind', () => {
+    it('retains Run rows in Happier storage and excludes them from external storage', () => {
+        const source: SessionListIndexItem[] = [{ type: 'header', title: 'repo', groupKey: 'repo' },
+            { type: 'workflow_run', runId: 'run', serverId: 'home', groupKey: 'repo' }];
+        expect(filterSessionListIndexByStorageKind(source, 'persisted')).toBe(source);
+        expect(filterSessionListIndexByStorageKind(source, 'direct')).toEqual([]);
+    });
     it('returns the original array for storageKind=all', () => {
         const source: SessionListIndexItem[] = [
             { type: 'session', sessionId: 's1', serverId: 'server-a' },
@@ -63,7 +69,8 @@ describe('filterSessionListIndexByStorageKind', () => {
             'server-a:persisted-1': makeSessionRow('persisted-1', false),
         }))!;
 
-        expect(result.map((item) => (item.type === 'session' ? item.sessionId : `${item.headerKind}:${item.title}`))).toEqual([
+        expect(result.map((item) => item.type === 'session' ? item.sessionId
+            : item.type === 'workflow_run' ? item.runId : `${item.headerKind}:${item.title}`)).toEqual([
             'server:Server A',
             'date:Today',
             'direct-1',

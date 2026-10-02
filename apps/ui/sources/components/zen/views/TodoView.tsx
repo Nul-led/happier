@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import { SharedValue, useAnimatedReaction, runOnJS } from 'react-native-reanimated';
 import { Text } from '@/components/ui/text/Text';
 import { Icon } from '@/components/ui/icons/Icon';
+import { TaskStatusPill } from './TaskSessionStatusPill';
 
 
 export const TODO_HEIGHT = 56;
@@ -78,7 +79,7 @@ export const TodoView = React.memo<TodoViewProps>((props) => {
                     <Icon name="check" size={16} color={theme.colors.button.primary.tint} />
                 )}
             </Pressable>
-            <View style={{ flex: 1, flexDirection: 'row' }}>
+            <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <Text
                     style={{
                         paddingLeft: 4,
@@ -89,6 +90,7 @@ export const TodoView = React.memo<TodoViewProps>((props) => {
                         color: props.done ? theme.colors.text.secondary : theme.colors.text.primary,
                         fontSize: 18,
                         flexGrow: 1,
+                        flexShrink: 1,
                         textDecorationLine: props.done ? 'line-through' : 'none',
                         opacity: props.done ? 0.6 : 1
                     }}
@@ -96,6 +98,7 @@ export const TodoView = React.memo<TodoViewProps>((props) => {
                 >
                     {props.value}
                 </Text>
+                <TaskStatusPill taskId={props.id} />
             </View>
             {Platform.OS === 'web' && (
                 <View

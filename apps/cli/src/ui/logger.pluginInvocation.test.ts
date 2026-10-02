@@ -18,7 +18,7 @@ function pluginInvocationRecord(message: string, sequence = 1): Readonly<Record<
         context: {
             plugin: { id: 'acme.example', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'acme.example/run' },
-            generation: 'generation-1',
+            occurrenceId: 'generation-1',
             correlationId: 'correlation-1',
             surface: 'cli' as const,
         },
@@ -35,6 +35,57 @@ afterEach(async () => {
 });
 
 describe('plugin invocation structured file sink', () => {
+    it('wakes from external file appends without restarting the observer', async () => {
+        const path = join(tmpdir(), `happier-plugin-external-follow-${process.pid}-${Date.now()}.log`);
+        paths.push(path);
+        await writeFile(path, '');
+        const logger = new Logger({ logFilePath: path, pruneCurrentProcessLogs: false });
+        const controller = new AbortController();
+        const following = logger.waitForPluginInvocationLogRecords({ pluginId: 'acme.example' }, controller.signal);
+        try {
+            await appendFile(path, `${JSON.stringify(pluginInvocationRecord('external append'))}\n`);
+            await expect(following).resolves.toMatchObject({ records: [{ message: 'external append' }] });
+        } finally {
+            controller.abort();
+        }
+    });
+    it('parks a filtered follow until an appended record matches and cancels only its own waiter', async () => {
+        const path = join(tmpdir(), `happier-plugin-follow-${process.pid}-${Date.now()}.log`);
+        paths.push(path);
+        await writeFile(path, '');
+        const logger = new Logger({ logFilePath: path, pruneCurrentProcessLogs: false });
+        const controller = new AbortController();
+        let settled = false;
+        const following = logger.waitForPluginInvocationLogRecords({ pluginId: 'acme.example', cursor: 0 }, controller.signal);
+        void following.then(() => { settled = true; });
+        logger.appendPluginInvocationLogRecord({ ...pluginInvocationRecord('other'), context: {
+            ...pluginInvocationRecord('other').context as Record<string, unknown>,
+            plugin: { id: 'other.plugin', version: '1' },
+        } });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(settled).toBe(false);
+        const sibling = new AbortController();
+        const cancelled = logger.waitForPluginInvocationLogRecords({ pluginId: 'acme.example', cursor: 0 }, sibling.signal);
+        sibling.abort(new Error('stop observing'));
+        await expect(cancelled).rejects.toThrow('stop observing');
+        logger.appendPluginInvocationLogRecord(pluginInvocationRecord('arrived'));
+        await expect(following).resolves.toMatchObject({ records: [{ message: 'arrived' }], hasMore: false });
+    });
+
+    it('resets a cursor explicitly when the active logger is replaced, even when the new file is longer', async () => {
+        const oldPath = join(tmpdir(), `happier-plugin-old-${process.pid}-${Date.now()}.log`);
+        const newPath = `${oldPath}.new`;
+        paths.push(oldPath, newPath);
+        const previous = new Logger({ logFilePath: oldPath, pruneCurrentProcessLogs: false });
+        previous.appendPluginInvocationLogRecord(pluginInvocationRecord('old'));
+        const page = previous.readPluginInvocationLogRecords({ pluginId: 'acme.example' });
+        if (page.kind !== 'available') throw new Error('Expected old log');
+        const current = new Logger({ logFilePath: newPath, pruneCurrentProcessLogs: false });
+        current.appendPluginInvocationLogRecord(pluginInvocationRecord('new '.repeat(200)));
+        expect(current.readPluginInvocationLogRecords({ pluginId: 'acme.example', cursor: page.cursor, logId: page.logId }))
+            .toMatchObject({ cursorReset: true, records: [{ message: 'new '.repeat(200) }] });
+    });
+
     it('appends one structured record without writing to stdout or stderr', async () => {
         const path = join(tmpdir(), `happier-plugin-log-${process.pid}-${Date.now()}.log`);
         paths.push(path);
@@ -82,7 +133,7 @@ describe('plugin invocation structured file sink', () => {
         const context = (pluginId: string, correlationId: string) => ({
             plugin: { id: pluginId, version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: `${pluginId}/run` },
-            generation: 'generation-1',
+            occurrenceId: 'generation-1',
             correlationId,
             surface: 'cli' as const,
         });

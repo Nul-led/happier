@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSetupChoicePrompt, renderNumericPlanet, renderSetupChoice, renderSetupWelcome } from './planet';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createSetupChoicePrompt, renderPlanet, renderSetupChoice, renderSetupWelcome, supportsBrailleArt } from './planet';
+
+beforeEach(() => vi.stubEnv('WT_SESSION', 'test-modern-terminal'));
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -16,7 +18,7 @@ describe('setup welcome handoff', () => {
     expect(output).toContain('preview-machine');
     expect(output).toContain('Choose your connection');
     expect(output.split('\n')).not.toContain('Happier');
-    expect(output).not.toMatch(/[0-9.]{8}/u);
+    expect(output).not.toMatch(/[\u2801-\u28ff]/u);
   });
 
   it('places the static planet beside the complete first setup choice on a wide terminal', () => {
@@ -39,8 +41,8 @@ describe('setup welcome handoff', () => {
       isTTY: true,
     });
     const lines = output.split('\n');
-    expect(lines.some((line) => /^[ 0-9.]{24} {3}Happier$/u.test(line))).toBe(true);
-    expect(lines.some((line) => /^[ 0-9.]{24} {3}How would you like to set up this computer\?$/u.test(line))).toBe(true);
+    expect(lines.some((line) => /^[ \u2800-\u28ff]{24} {3}Happier$/u.test(line))).toBe(true);
+    expect(lines.some((line) => /^[ \u2800-\u28ff]{24} {3}How would you like to set up this computer\?$/u.test(line))).toBe(true);
     expect(output).toContain('Find my linked Homes (recommended)');
     expect(output).toContain('sign-in service');
     expect(output.trimEnd().endsWith('Use ↑/↓ to move, Enter to select, or type a letter')).toBe(true);
@@ -61,12 +63,12 @@ describe('setup welcome handoff', () => {
     const narrow = renderSetupChoice(options);
     expect(narrow).toContain('Happier\nChoose your connection\nComputer: preview-machine');
     expect(narrow.replace(/\n\s*/gu, ' ')).toContain('A deliberately long option whose meaning must wrap instead of being cropped');
-    expect(narrow).not.toMatch(/[0-9.]{8}/u);
+    expect(narrow).not.toMatch(/[\u2801-\u28ff]/u);
 
     vi.stubEnv('HAPPIER_INSTALLER_WELCOME_SHOWN', '1');
     const handedOff = renderSetupChoice({ ...options, columns: 100 });
     expect(handedOff).not.toContain('Happier');
-    expect(handedOff).toMatch(/[0-9.]{8}/u);
+    expect(handedOff).toMatch(/[\u2801-\u28ff]/u);
     expect(handedOff).toContain('Question');
     expect(handedOff).toContain('Computer: preview-machine');
   });
@@ -84,9 +86,12 @@ describe('setup welcome handoff', () => {
       isTTY: true,
     } as const;
     const animated = createSetupChoicePrompt(base);
+    expect(animated.message).toBe(animated.renderMessage?.(0));
     expect(animated.renderMessage?.(1)).not.toBe(animated.message);
     vi.stubEnv('HAPPIER_NO_ANIMATION', ' TRUE ');
-    expect(createSetupChoicePrompt(base)).toMatchObject({ animate: false, renderMessage: expect.any(Function) });
+    const still = createSetupChoicePrompt(base);
+    expect(still).toMatchObject({ animate: false, renderMessage: expect.any(Function) });
+    expect(still.renderMessage?.(0)).toBe(still.message);
     vi.stubEnv('HAPPIER_NO_ANIMATION', '');
     expect(createSetupChoicePrompt({ ...base, columns: 44 })).toMatchObject({ animate: false, renderMessage: expect.any(Function) });
     expect(createSetupChoicePrompt({ ...base, isTTY: false }).renderMessage).toBeUndefined();
@@ -131,28 +136,34 @@ describe('setup welcome handoff', () => {
     expect(prompt.message).toContain('Try again?\n› r) Retry\n  x) Exit');
     expect(prompt.message).not.toContain('Happier');
     expect(prompt.message).not.toContain('Computer:');
-    expect(prompt.message).not.toMatch(/[0-9.]{8}/u);
+    expect(prompt.message).not.toMatch(/[\u2801-\u28ff]/u);
     expect(prompt).toMatchObject({ animate: false, renderMessage: expect.any(Function) });
   });
 });
 
-describe('numeric planet', () => {
-  it('grows and shrinks slowly inside a fixed-height, fixed-width ASCII canvas', () => {
-    const first = renderNumericPlanet({ columns: 24, seconds: 0, color: false });
-    const later = renderNumericPlanet({ columns: 24, seconds: 2, color: false });
+describe('planet', () => {
+  it('uses readable text instead of Braille in legacy Windows consoles', () => {
+    expect(supportsBrailleArt({}, 'win32')).toBe(false);
+    expect(supportsBrailleArt({ WT_SESSION: 'terminal-session' }, 'win32')).toBe(true);
+    expect(supportsBrailleArt({ TERM_PROGRAM: 'vscode' }, 'win32')).toBe(true);
+    expect(supportsBrailleArt({}, 'linux')).toBe(true);
+    expect(supportsBrailleArt({}, 'darwin')).toBe(true);
+  });
+  it('opens from an eclipse inside a fixed-height Braille canvas', () => {
+    const first = renderPlanet({ columns: 24, seconds: 0, color: false });
+    const later = renderPlanet({ columns: 24, seconds: 2, color: false });
     expect(later).not.toEqual(first);
     const occupiedCells = (frame: string[]) => frame.join('').replace(/\s/gu, '').length;
     expect(occupiedCells(later)).toBeGreaterThan(occupiedCells(first));
-    expect(occupiedCells(renderNumericPlanet({ columns: 24, seconds: 6, color: false }))).toBeLessThan(occupiedCells(later));
     expect(later).toHaveLength(first.length);
     for (const frame of [first, later]) {
-      expect(frame.join('\n')).toMatch(/^[0-9. \n]+$/u);
+      expect(frame.join('\n')).toMatch(/^[\u2801-\u28ff \n]+$/u);
       expect(frame.every((line) => line.length <= 24)).toBe(true);
     }
   });
 
-  it('renders a rounded globe with varied numeric texture instead of concentric bands', () => {
-    const frame = renderNumericPlanet({ columns: 28, seconds: 1.6, color: false });
+  it('renders a rounded globe with varied dot density', () => {
+    const frame = renderPlanet({ columns: 28, seconds: 1.6, color: false });
     const occupiedWidths = frame.map((line) => line.trim().length).filter((width) => width > 0);
     const visible = frame.join('').replace(/[ .]/gu, '');
 
@@ -160,6 +171,6 @@ describe('numeric planet', () => {
     expect(occupiedWidths.at(0)).toBeLessThan(occupiedWidths[Math.floor(occupiedWidths.length / 2)]!);
     expect(occupiedWidths.at(-1)).toBeLessThan(occupiedWidths[Math.floor(occupiedWidths.length / 2)]!);
     expect(new Set(visible).size).toBeGreaterThanOrEqual(8);
-    expect(visible).not.toMatch(/^(?:0+1+2+3+4+)+$/u);
+    expect(visible).toMatch(/^[\u2801-\u28ff]+$/u);
   });
 });

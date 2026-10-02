@@ -29,6 +29,7 @@ import {
 import { VOICE_RUNTIME_CONFIG_DEFAULTS } from '@/voice/runtime/voiceRuntimeConfigDefaults';
 import {
   normalizeVoiceRuntimeFailureCode,
+  recordVoiceRuntimeFailure,
   readSafeVoiceRuntimeFailureCode,
   readSafeVoiceRuntimeFailureDiagnosticReason,
   type VoiceRuntimeFailureDiagnosticReason,
@@ -111,6 +112,7 @@ export type VoiceConversationControllerDeps = Readonly<{
     attemptId: number;
     reason: 'initial' | 'reconnect' | 'auth_refresh';
     request: VoiceRealtimeJsonValue;
+    session: VoiceRealtimePreparedSession;
     connection: VoiceRealtimeConnection;
     signal: AbortSignal;
   }>): Promise<void>;
@@ -177,6 +179,7 @@ export type VoiceConversationController = Readonly<{
     | Readonly<{ status: 'unavailable'; code: 'voice_connection_not_open' }>
   >;
   getActiveControlSessionId(): string | null;
+  canCommitInput(): boolean;
   getOwnedControlSessionId(): string | null;
   /** Existing attempt identity for a current owner-scoped side effect. */
   getOwnedAttemptId(): number | null;
@@ -216,6 +219,7 @@ type Attempt = {
   toolTasks: Set<Promise<void>>;
   /** Current prepared carrier's proof that exact tool identities survived. */
   toolResultReplay: 'none' | 'stable_ids';
+  inputCommitRequired: boolean;
   request: VoiceRealtimeJsonValue;
   resourcesPrepared: boolean;
   resourceReleasePromise: Promise<void> | null;
@@ -307,10 +311,11 @@ export function createVoiceConversationController(
     attempt.activeToolResponseIds.clear();
   };
 
-  const recordPreparedToolResultReplay = (
+  const recordPreparedSessionPolicy = (
     attempt: Attempt,
     preparation: Extract<VoiceRealtimePreparation, Readonly<{ kind: 'prepared' }>>,
   ): void => {
+    attempt.inputCommitRequired = preparation.session.inputCommitRequired === true;
     // A provider declaration says what its implementation can support in
     // principle. Only this concrete prepared carrier can establish that the
     // original response/call identities survived this reconnect.
@@ -564,7 +569,7 @@ export function createVoiceConversationController(
         if (preparation.kind === 'aborted') {
           return;
         }
-        recordPreparedToolResultReplay(attempt, preparation);
+        recordPreparedSessionPolicy(attempt, preparation);
 
         let nextConnection: VoiceRealtimeConnection;
         try {
@@ -606,6 +611,7 @@ export function createVoiceConversationController(
             attemptId: attempt.id,
             reason,
             request: attempt.request,
+            session: preparation.session,
             connection: nextConnection,
             signal: attempt.abortController.signal,
           })));
@@ -694,6 +700,20 @@ export function createVoiceConversationController(
           if (event.type === 'auth_expired') {
             await reconnect(attempt, 'auth_refresh');
             return;
+          }
+          if (event.type === 'provider_error') {
+            if (event.terminal) {
+              await settleReconnectFailure(attempt, event.code);
+              return;
+            }
+            recordVoiceRuntimeFailure(
+              deps.adapter.id,
+              'provider_error',
+              'provider_error',
+              event.code,
+            );
+            await deps.onCanonicalEvent(event, attempt.abortController.signal);
+            continue;
           }
           if (event.type === 'transcript') {
             if (deps.projectTranscript) {
@@ -853,6 +873,7 @@ export function createVoiceConversationController(
       activeToolResponseIds: new Set(),
       toolTasks: new Set(),
       toolResultReplay: 'none',
+      inputCommitRequired: false,
       request: input.request ?? null,
       resourcesPrepared: false,
       resourceReleasePromise: null,
@@ -935,7 +956,7 @@ export function createVoiceConversationController(
         settleDisconnected(attempt, failureCode);
         return { status: 'declined', code: failureCode };
       }
-      recordPreparedToolResultReplay(attempt, preparation);
+      recordPreparedSessionPolicy(attempt, preparation);
 
       if (deps.resources) {
         attempt.resourcesPrepared = true;
@@ -993,6 +1014,7 @@ export function createVoiceConversationController(
         attemptId: attempt.id,
         reason: 'initial',
         request: attempt.request,
+        session: preparation.session,
         connection,
         signal: attempt.abortController.signal,
       })));
@@ -1090,15 +1112,30 @@ export function createVoiceConversationController(
     status: 'unavailable';
     code: 'voice_turn_action_unsupported' | 'voice_connection_not_open';
   }>> => {
-    const availability = resolveVoiceTurnControlAction(deps.adapter.turnControls, action);
-    if (availability.status === 'unavailable') return availability;
     const attempt = current;
+    const availability = resolveVoiceTurnControlAction(
+      action === 'commit_input'
+        ? { ...deps.adapter.turnControls, commitInput: attempt?.inputCommitRequired === true }
+        : deps.adapter.turnControls,
+      action,
+    );
+    if (availability.status === 'unavailable') return availability;
     if (!attempt?.connection || !owns(attempt) || attempt.connection.state() !== 'open') {
       return { status: 'unavailable', code: 'voice_connection_not_open' };
     }
     const encoded = deps.adapter.encodeTurnControl(action, payload);
     if (encoded === null) return { status: 'unavailable', code: 'voice_turn_action_unsupported' };
-    await attempt.connection.sendControl(encoded);
+    const connection = attempt.connection;
+    await connection.sendControl(encoded);
+    if (action === 'commit_input') {
+      const ownsConnection = () => owns(attempt) && attempt.connection === connection && connection.state() === 'open';
+      if (!ownsConnection()) return { status: 'unavailable', code: 'voice_connection_not_open' };
+      for (const event of deps.adapter.encodePostInputCommitControls?.() ?? []) {
+        if (!ownsConnection()) return { status: 'unavailable', code: 'voice_connection_not_open' };
+        await connection.sendControl(event);
+      }
+      if (!ownsConnection()) return { status: 'unavailable', code: 'voice_connection_not_open' };
+    }
     return { status: 'sent' };
   };
 
@@ -1121,6 +1158,11 @@ export function createVoiceConversationController(
     return attempt && owns(attempt) && attempt.connection?.state() === 'open'
       ? attempt.controlSessionId
       : null;
+  };
+
+  const canCommitInput = (): boolean => {
+    const attempt = current;
+    return attempt?.inputCommitRequired === true && owns(attempt) && attempt.connection?.state() === 'open';
   };
 
   const getOwnedControlSessionId = (): string | null => {
@@ -1185,6 +1227,7 @@ export function createVoiceConversationController(
     performTurnControl,
     sendClientControl,
     getActiveControlSessionId,
+    canCommitInput,
     getOwnedControlSessionId,
     getOwnedAttemptId,
     requestReconnect,

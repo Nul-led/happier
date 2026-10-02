@@ -55,7 +55,7 @@ describe('postSendReactions', () => {
                 'token_count failed for https://alice:SUPER_SECRET_PASSWORD@api.example.test/v1/usage?token=secret Authorization: Bearer USAGE_SECRET',
             );
         });
-        const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+        const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
 
         try {
             applyAcpPostSendReactions(port, {
@@ -68,11 +68,11 @@ describe('postSendReactions', () => {
             });
 
             await vi.waitFor(() => {
-                expect(debugSpy.mock.calls.some(([message]) =>
+                expect(warnSpy.mock.calls.some(([message]) =>
                     message === '[SOCKET] Failed to publish token_count usage observation (non-fatal)'
                 )).toBe(true);
             });
-            const [, logged] = debugSpy.mock.calls.find(([message]) =>
+            const [, logged] = warnSpy.mock.calls.find(([message]) =>
                 message === '[SOCKET] Failed to publish token_count usage observation (non-fatal)'
             ) ?? [];
             expect(logged).toEqual(expect.objectContaining({
@@ -84,7 +84,7 @@ describe('postSendReactions', () => {
             expect(JSON.stringify(logged)).not.toContain('USAGE_SECRET');
             expect(JSON.stringify(logged)).not.toContain('stack');
         } finally {
-            debugSpy.mockRestore();
+            warnSpy.mockRestore();
         }
     });
 

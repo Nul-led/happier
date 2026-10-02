@@ -64,6 +64,7 @@ export type NewSessionDraftAttachmentSeedV1 = Readonly<{
 }>;
 
 export type NewSessionDraftSeedV1 = Readonly<{
+    zenTaskSource?: NewSessionDraft['zenTaskSource'];
     prompt?: NewSessionDraftPromptSeedV1;
     profileId?: string;
     /**
@@ -109,7 +110,8 @@ export function newSessionDraftSeedDeclaresChangeV1(seed: NewSessionDraftSeedV1)
         // Attaching a selection and nothing else is a whole intent: "open New
         // Session with these entries on it" carries no prompt of its own, and
         // reading it as an empty seed would refuse the destination outright.
-        || (seed.attachments?.length ?? 0) > 0;
+        || (seed.attachments?.length ?? 0) > 0
+        || seed.zenTaskSource !== undefined;
 }
 
 /**
@@ -149,6 +151,7 @@ export function applyNewSessionDraftSeedV1(input: Readonly<{
 
     return {
         ...base,
+        ...(input.seed.zenTaskSource === undefined ? {} : { zenTaskSource: input.seed.zenTaskSource }),
         ...(promptText === null
             ? {}
             : {
@@ -195,6 +198,7 @@ export function seedNewSessionDraftV1(input: Readonly<{
     (input.writeDraft ?? writeNewSessionDraftToRepository)({
         scope,
         draftId,
+        materializationIntent: 'seeded',
         draft: input.attachmentSeeds === undefined
             ? draft
             : { ...draft, composerAttachmentSeeds: input.attachmentSeeds },

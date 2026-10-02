@@ -32,6 +32,9 @@ export type VoicePcmCaptureLease = Readonly<{
   streamId: string;
   generation: number;
   waitForDrain: () => Promise<void>;
+  /** Stop admitting frames, release native capture, and deliver the admitted tail. */
+  finish: () => Promise<void>;
+  /** Cancel delivery and release capture without waiting for subscriber work. */
   release: () => Promise<void>;
 }>;
 
@@ -66,6 +69,8 @@ type Subscriber = {
   droppedFrames: number;
   tail: Promise<void>;
   active: boolean;
+  accepting: boolean;
+  failure: Readonly<{ error: unknown }> | null;
 };
 
 function normalizeQueueBound(value: number | undefined): number {
@@ -162,6 +167,7 @@ export function createVoicePcmCapture(options: Readonly<{
   };
 
   const reportSubscriberError = (subscriber: Subscriber, error: unknown): void => {
+    subscriber.failure ??= { error };
     try {
       subscriber.request.onError?.(error);
     } catch {
@@ -170,7 +176,7 @@ export function createVoicePcmCapture(options: Readonly<{
   };
 
   const enqueue = (subscriber: Subscriber, frame: AudioStreamFrameEvent): void => {
-    if (!subscriber.active) return;
+    if (!subscriber.active || !subscriber.accepting) return;
     try {
       if (subscriber.request.shouldDeliver?.() === false) return;
     } catch (error) {
@@ -191,7 +197,7 @@ export function createVoicePcmCapture(options: Readonly<{
     subscriber.tail = subscriber.tail
       .catch(() => undefined)
       .then(async () => {
-        if (subscriber.active) await subscriber.request.onFrame(frame);
+        if (subscriber.active && !disposalRequested) await subscriber.request.onFrame(frame);
       })
       .catch((error: unknown) => {
         reportSubscriberError(subscriber, error);
@@ -382,6 +388,8 @@ export function createVoicePcmCapture(options: Readonly<{
           droppedFrames: 0,
           tail: Promise.resolve(),
           active: true,
+          accepting: true,
+          failure: null,
         };
         subscribers.set(id, subscriber);
         subscriberAdded = true;
@@ -460,6 +468,25 @@ export function createVoicePcmCapture(options: Readonly<{
         if (!acquiredStreamId) throw new Error('voice_pcm_capture_stream_id_missing');
         const acquiredGeneration = generation;
         let releaseAttempt: Promise<void> | null = null;
+        let finishAttempt: Promise<void> | null = null;
+        const detach = async (): Promise<void> => {
+          subscriber.accepting = false;
+          if (releaseAttempt) return releaseAttempt;
+          const attempt = serialize(async () => {
+            const active = subscribers.get(id);
+            if (active) subscribers.delete(id);
+            if (subscribers.size === 0 && (active || pendingStopStreamId || audioSessionLease)) {
+              await stopNativeCapture();
+            }
+          });
+          releaseAttempt = attempt;
+          try {
+            await attempt;
+          } catch (error) {
+            releaseAttempt = null;
+            throw error;
+          }
+        };
         return {
           id,
           streamId: acquiredStreamId,
@@ -467,25 +494,18 @@ export function createVoicePcmCapture(options: Readonly<{
           waitForDrain: async () => {
             await subscriber.tail.catch(() => undefined);
           },
+          finish: () => {
+            if (!finishAttempt) finishAttempt = (async () => {
+              await detach();
+              await subscriber.tail;
+              if (subscriber.failure) throw subscriber.failure.error;
+              if (!subscriber.active || disposalRequested) throw new Error('voice_pcm_capture_cancelled');
+            })();
+            return finishAttempt;
+          },
           release: async () => {
-            if (releaseAttempt) return releaseAttempt;
-            const attempt = serialize(async () => {
-              const active = subscribers.get(id);
-              if (active) {
-                subscribers.delete(id);
-                active.active = false;
-              }
-              if (subscribers.size === 0 && (active || pendingStopStreamId || audioSessionLease)) {
-                await stopNativeCapture();
-              }
-            });
-            releaseAttempt = attempt;
-            try {
-              await attempt;
-            } catch (error) {
-              releaseAttempt = null;
-              throw error;
-            }
+            subscriber.active = false;
+            await detach();
           },
         };
       } catch (error) {

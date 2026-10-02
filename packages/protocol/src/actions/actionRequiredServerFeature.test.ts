@@ -30,6 +30,7 @@ describe('getActionRequiredServerFeatureId', () => {
     expect(getActionRequiredServerFeatureId('session.access.grant.set')).toBe('sharing.session');
     expect(getActionRequiredServerFeatureId('session.responsibility.set')).toBe('sharing.session');
     expect(getActionRequiredServerFeatureId('session.public_link.create')).toBe('sharing.public');
+    expect(getActionRequiredServerFeatureId('artifact.public_link.create')).toBe('sharing.public');
     expect(getActionRequiredServerFeatureId('machines.pools.create')).toBe('machines.pools');
     expect(getActionRequiredServerFeatureId('sessions.runner.activation.create'))
       .toBe('sessions.ephemeralRunner');

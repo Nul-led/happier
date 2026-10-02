@@ -39,7 +39,6 @@ type OutputScheduler = Readonly<{
 type CreateOutputScheduler = (input: Readonly<{
   context: AudioContext;
   sampleRate: number;
-  maxBufferedMs: number;
   retainedOutputMaxMs?: number;
 }>) => OutputScheduler;
 
@@ -54,18 +53,15 @@ function createDefaultOutputScheduler(input: Parameters<CreateOutputScheduler>[0
   const sources = new Set<ScheduledSource>();
   const retained: Int16Array[] = [];
   const maxRetainedSamples = Math.max(1, Math.floor(
-    input.sampleRate * Math.min(
-      input.maxBufferedMs,
-      input.retainedOutputMaxMs
-        ?? VOICE_RUNTIME_CONFIG_DEFAULTS.turnTaking.interruption.retainedOutputMaxMs,
-    ) / 1_000,
+    input.sampleRate * (input.retainedOutputMaxMs
+      ?? VOICE_RUNTIME_CONFIG_DEFAULTS.turnTaking.interruption.retainedOutputMaxMs) / 1_000,
   ));
   let retainedSamples = 0;
   let nextStart = input.context.currentTime;
   let playedSeconds = 0;
   let level = 0;
   let stopped = false;
-  let candidateActive = false;
+  let candidateMode: VoicePlaybackInterruptionMode | null = null;
   let outputFocusState: VoiceOutputFocusState = 'active';
   const gainNode = typeof input.context.createGain === 'function' ? input.context.createGain() : null;
   if (gainNode) gainNode.connect(input.context.destination);
@@ -83,7 +79,7 @@ function createDefaultOutputScheduler(input: Parameters<CreateOutputScheduler>[0
     if (!gainNode) return outputFocusState === 'active' ? 'applied' : 'unsupported';
     const gain = outputFocusState === 'suspended'
       ? 0
-      : outputFocusState === 'ducked'
+      : outputFocusState === 'ducked' || candidateMode === 'ducked'
         ? VOICE_RUNTIME_CONFIG_DEFAULTS.turnTaking.interruption.duckGain
         : 1;
     return setGain(gain) ? 'applied' : 'unsupported';
@@ -131,15 +127,13 @@ function createDefaultOutputScheduler(input: Parameters<CreateOutputScheduler>[0
   const clear = (): void => {
     stopScheduled(false);
     clearRetained();
-    candidateActive = false;
+    candidateMode = null;
     applyOutputFocus();
     settleDrain();
   };
   const schedule = (samples: Int16Array): boolean => {
     if (stopped || samples.length === 0) return false;
     const duration = samples.length / input.sampleRate;
-    const bufferedMs = Math.max(0, nextStart - input.context.currentTime) * 1_000;
-    if (bufferedMs + duration * 1_000 > input.maxBufferedMs) return false;
     const buffer = input.context.createBuffer(1, samples.length, input.sampleRate);
     const channel = buffer.getChannelData(0);
     let sum = 0;
@@ -154,7 +148,7 @@ function createDefaultOutputScheduler(input: Parameters<CreateOutputScheduler>[0
     source.connect(gainNode ?? input.context.destination);
     const startAt = Math.max(input.context.currentTime, nextStart);
     nextStart = startAt + duration;
-    const scheduled: ScheduledSource = { source, samples: samples.slice(), startAt };
+    const scheduled: ScheduledSource = { source, samples, startAt };
     sources.add(scheduled);
     source.onended = () => {
       if (!sources.delete(scheduled)) return;
@@ -166,30 +160,54 @@ function createDefaultOutputScheduler(input: Parameters<CreateOutputScheduler>[0
     source.start(startAt);
     return true;
   };
+  const resumeRetained = (): void => {
+    const pending = retained.splice(0);
+    retainedSamples = 0;
+    for (const samples of pending) schedule(samples);
+  };
   return Object.freeze({
     enqueue(samples: Int16Array): boolean {
-      if (candidateActive) return appendRetained(samples, false);
+      if (stopped || samples.length === 0) return false;
+      if (candidateMode === 'retained') {
+        if (appendRetained(samples, false)) return true;
+        // Retention is a candidate-interruption resource, not response
+        // admission. A fast provider burst continues through the existing
+        // ducked path rather than losing accepted speech or closing the call.
+        if (!gainNode) return false;
+        candidateMode = 'ducked';
+        applyOutputFocus();
+        resumeRetained();
+      }
       return schedule(samples);
     },
     beginCandidate(): VoicePlaybackInterruptionMode {
       if (stopped) return 'unsupported';
-      if (candidateActive) return 'retained';
-      candidateActive = true;
+      if (candidateMode) return candidateMode;
+      const now = input.context.currentTime;
+      const pendingSamples = [...sources].reduce((total, scheduled) => total + Math.max(
+        0,
+        scheduled.samples.length - Math.max(0, Math.floor((now - scheduled.startAt) * input.sampleRate)),
+      ), 0);
+      if (pendingSamples > maxRetainedSamples) {
+        if (!gainNode) return 'unsupported';
+        candidateMode = 'ducked';
+        applyOutputFocus();
+        return 'ducked';
+      }
+      candidateMode = 'retained';
       stopScheduled(true);
       settleDrain();
       return 'retained';
     },
     resolveCandidate(resolution): void {
-      if (!candidateActive) return;
-      candidateActive = false;
+      if (!candidateMode) return;
+      candidateMode = null;
       if (resolution === 'confirmed') {
         clear();
         return;
       }
-      const pending = retained.splice(0);
-      retainedSamples = 0;
       applyOutputFocus();
-      for (const samples of pending) schedule(samples);
+      resumeRetained();
       settleDrain();
     },
     setOutputFocusState(state: VoiceOutputFocusState): VoiceOutputFocusApplication {
@@ -204,7 +222,7 @@ function createDefaultOutputScheduler(input: Parameters<CreateOutputScheduler>[0
       try { gainNode?.disconnect(); } catch {}
     },
     async waitForDrain(signal: AbortSignal): Promise<void> {
-      if (sources.size === 0 && retainedSamples === 0) return;
+      if (signal.aborted || (sources.size === 0 && retainedSamples === 0)) return;
       await new Promise<void>((resolve) => {
         const done = () => { signal.removeEventListener('abort', aborted); drainWaiters.delete(done); resolve(); };
         const aborted = () => done();
@@ -223,7 +241,7 @@ function createDefaultOutputScheduler(input: Parameters<CreateOutputScheduler>[0
       }
       return Math.round((playedSeconds + activeSeconds) * 1_000);
     },
-    outputLevel: () => candidateActive || outputFocusState === 'suspended' ? 0 : level,
+    outputLevel: () => candidateMode === 'retained' || outputFocusState === 'suspended' ? 0 : level,
   });
 }
 
@@ -232,7 +250,6 @@ export function createWebSocketPcmMedia(input: Readonly<{
   input: Readonly<{ sampleRate: number; chunkMs: number }>;
   output: Readonly<{
     sampleRate: number;
-    maxBufferedMs: number;
     retainedOutputMaxMs?: number;
   }>;
   onInputChunk(base64Pcm16Le: string): void;
@@ -365,6 +382,15 @@ export function createWebSocketPcmMedia(input: Readonly<{
       return Object.freeze({ remove: () => terminalListeners.delete(listener) });
     },
     playbackCursorMs: (): number => playback?.playbackCursorMs() ?? 0,
+    beginOutputInterruptionCandidate: (): VoicePlaybackInterruptionMode => {
+      const mode = playback?.beginCandidate() ?? 'unsupported';
+      publishOutputLevel(playback?.outputLevel() ?? 0);
+      return mode;
+    },
+    resolveOutputInterruptionCandidate(resolution: VoicePlaybackInterruptionResolution): void {
+      playback?.resolveCandidate(resolution);
+      publishOutputLevel(playback?.outputLevel() ?? 0);
+    },
     setOutputFocusState(state: VoiceOutputFocusState): VoiceOutputFocusApplication {
       outputFocusState = state;
       if (terminalError) return 'unsupported';
@@ -385,15 +411,8 @@ export function createWebSocketPcmMedia(input: Readonly<{
       playback?.clear();
       publishOutputLevel(0);
     },
-    beginOutputInterruptionCandidate: (): VoicePlaybackInterruptionMode => {
-      const mode = playback?.beginCandidate() ?? 'unsupported';
-      publishOutputLevel(playback?.outputLevel() ?? 0);
-      return mode;
-    },
-    resolveOutputInterruptionCandidate(resolution: VoicePlaybackInterruptionResolution): void {
-      playback?.resolveCandidate(resolution);
-      publishOutputLevel(playback?.outputLevel() ?? 0);
-    },
+    beginOutputInterruptionCandidate: pcm.beginOutputInterruptionCandidate,
+    resolveOutputInterruptionCandidate: pcm.resolveOutputInterruptionCandidate,
     async waitForOutputDrain(signal: AbortSignal) { await playback?.waitForDrain(signal); },
     playbackCursorMs: () => playback?.playbackCursorMs() ?? 0,
     inputLevel: () => capture?.level() ?? latestInputLevel,

@@ -1,4 +1,5 @@
 import * as React from 'react';
+import type { SessionListFilterV1 } from '@happier-dev/protocol';
 
 import { useVisibleSessionListSummaryState } from './useVisibleSessionListSummaryState';
 import { useVisibleSessionListViewState, type VisibleSessionListViewState } from './useVisibleSessionListViewState';
@@ -23,6 +24,7 @@ export type VisibleSessionListPaneState = Readonly<{
     showEmptyState: boolean;
     query?: VisibleSessionListViewState['query'];
     queryPresentation?: SessionListQueryPresentation;
+    workflowRunWindow?: VisibleSessionListViewState['workflowRunWindow'];
 }>;
 
 export type VisibleSessionListPaneStateOptions = Readonly<{
@@ -33,13 +35,14 @@ export type VisibleSessionListPaneStateOptions = Readonly<{
     queryHomes?: VisibleSessionListSourceStateOptions['queryHomes'];
     emptyQuerySelectionComplete?: boolean;
     corpusStorage?: 'active' | 'archived';
+    workFilter?: SessionListFilterV1;
 }>;
 
 function countVisibleSessions(index: ReadonlyArray<SessionListIndexItem> | null): number {
     if (!index) return 0;
     let count = 0;
     for (const item of index) {
-        if (item.type === 'session') {
+        if (item.type === 'session' || item.type === 'workflow_run') {
             count += 1;
         }
     }
@@ -51,7 +54,7 @@ export function useVisibleSessionListPaneState(
     options: VisibleSessionListPaneStateOptions = {},
 ): VisibleSessionListPaneState {
     const { summary: ordinarySummary } = useVisibleSessionListSummaryState(storageFilter);
-    const { visibleSessionListIndex, hasHiddenInactiveSessions, folderFocus, folderFeatureEnabledServerIds, query } = useVisibleSessionListViewState(storageFilter, {
+    const { visibleSessionListIndex, hasHiddenInactiveSessions, folderFocus, folderFeatureEnabledServerIds, query, workflowRunWindow, workflowRunUnavailableHomes } = useVisibleSessionListViewState(storageFilter, {
         pathname: options.pathname,
         retainedPathname: options.retainedPathname,
         retainedVisibleSessionListIndex: options.retainedVisibleSessionListIndex,
@@ -59,19 +62,23 @@ export function useVisibleSessionListPaneState(
         queryHomes: options.queryHomes,
         emptyQuerySelectionComplete: options.emptyQuerySelectionComplete,
         corpusStorage: options.corpusStorage,
+        workFilter: options.workFilter,
     });
     const visibleSessionCount = React.useMemo(
         () => countVisibleSessions(visibleSessionListIndex),
         [visibleSessionListIndex],
     );
-    const queryPresentation = React.useMemo(() => query?.active === true
+    const queryPresentation = React.useMemo(() => query?.active === true || workflowRunWindow !== undefined || (workflowRunUnavailableHomes?.length ?? 0) > 0
         ? resolveSessionListQueryPresentation({
             selectedServerIds: (options.queryHomes ?? []).map((home) => home.serverId),
-            statesByServerId: query.statesByServerId,
-            coverageComplete: query.coverageComplete,
+            statesByServerId: query?.statesByServerId ?? {},
+            coverageComplete: query?.active === true ? query.coverageComplete : ordinarySummary.sessionsReady,
             retainedRowCount: visibleSessionCount,
+            sessionsEnabled: options.workFilter?.show !== 'runs',
+            workflowRunWindow,
+            workflowRunUnavailableHomes,
         })
-        : undefined, [options.queryHomes, query, visibleSessionCount]);
+        : undefined, [options.queryHomes, options.workFilter?.show, ordinarySummary.sessionsReady, query, visibleSessionCount, workflowRunWindow, workflowRunUnavailableHomes]);
     const summary = React.useMemo(() => queryPresentation
         ? {
             sessionsReady: queryPresentation.kind !== 'initial_loading',
@@ -95,5 +102,6 @@ export function useVisibleSessionListPaneState(
         showEmptyState: !queryActive && summary.sessionsReady && visibleSessionCount === 0,
         query,
         queryPresentation,
-    }), [folderFeatureEnabledServerIds, folderFocus, hasHiddenInactiveSessions, query, queryActive, queryPresentation, summary, visibleSessionCount, visibleSessionListIndex]);
+        workflowRunWindow,
+    }), [folderFeatureEnabledServerIds, folderFocus, hasHiddenInactiveSessions, query, queryActive, queryPresentation, summary, visibleSessionCount, visibleSessionListIndex, workflowRunWindow]);
 }

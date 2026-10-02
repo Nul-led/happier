@@ -59,6 +59,6 @@ export function createHostedWebStaticAssetPreviewResource(
                 assetServer: 'hostedWebStaticAssets',
             }),
         }),
-        originMode: 'path' as const,
+        originMode: 'host' as const,
     });
 }

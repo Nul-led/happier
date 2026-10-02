@@ -43,6 +43,8 @@ export type RuntimePermissionResponseOutcome = Readonly<{ delivered: true }>
     }>;
 
 export type ExecutionRunHostRuntime = Readonly<{
+    /** Host projection from the current permission store, never plugin-authored state. */
+    readPendingPermissionRequestIds?: () => readonly string[];
     permissionCapability?: ExecutionRunPermissionCapability;
     /**
      * Present only when this exact runtime is the retained Agent Session adapter.
@@ -51,6 +53,10 @@ export type ExecutionRunHostRuntime = Readonly<{
      */
     interaction?: ExecutionRunInteractionV1;
     readResumeSupport: (opts?: Readonly<{ captureReplay?: boolean }>) => Promise<boolean>;
+    /** Authoritative provider thread identity; never the host dispatch runtime id. */
+    readProviderSessionId?: () => string | null;
+    /** Retained Session owner joins cancellation before proving another turn is admissible. */
+    canContinueAfterCancellation?: (timeoutMs?: number | null) => Promise<boolean>;
     provisionRuntime: (opts?: ExecutionRunRuntimeProvisionOptions) => Promise<ExecutionRunRuntimeProvisionResult>;
     deliverInput: (
         runtimeId: string,

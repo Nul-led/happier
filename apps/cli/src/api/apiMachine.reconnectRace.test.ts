@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Machine } from '@/api/types';
 import { createApiSessionSocketStub, type ApiSessionSocketStub } from '@/testkit/backends/apiSessionSocketHarness';
-import { createDeferred } from '@/testkit/async/deferred';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 
@@ -368,87 +367,6 @@ describe('ApiMachineClient reconnect race handling', () => {
             response,
         );
         await Promise.resolve();
-
-        expect(rpcHandleRequestMock).not.toHaveBeenCalled();
-        expect(response).not.toHaveBeenCalled();
-    });
-
-    it('does not dispatch an RPC request when its transport becomes stale during Account compatibility admission', async () => {
-        const { ApiMachineClient } = await import('./apiMachine');
-        const compatibilityAdmission = createDeferred();
-        const requireCurrentAccountStoredContentCompatibility = vi.fn(
-            async () => await compatibilityAdmission.promise,
-        );
-
-        const machine: Machine = {
-            id: 'machine-1',
-            encryptionMode: 'plain',
-            metadata: null,
-            metadataVersion: 0,
-            daemonState: null,
-            daemonStateVersion: 0,
-        };
-
-        const client = new ApiMachineClient('token', machine, undefined, {
-            requireCurrentAccountStoredContentCompatibility,
-        });
-        client.connect();
-
-        const firstSocket = harness.getSocket(0);
-        const response = vi.fn();
-        firstSocket.trigger(
-            SOCKET_RPC_EVENTS.REQUEST,
-            { method: 'machine-1:stale.request', params: {} },
-            response,
-        );
-        await vi.waitFor(() => {
-            expect(requireCurrentAccountStoredContentCompatibility).toHaveBeenCalledOnce();
-        });
-
-        harness.establishReconnectTransport();
-        compatibilityAdmission.resolve();
-        await compatibilityAdmission.promise;
-        await new Promise<void>((resolve) => setImmediate(resolve));
-
-        expect(rpcHandleRequestMock).not.toHaveBeenCalled();
-        expect(response).not.toHaveBeenCalled();
-    });
-
-    it('does not answer an RPC request when its transport becomes stale before Account compatibility admission rejects', async () => {
-        const { ApiMachineClient } = await import('./apiMachine');
-        const compatibilityAdmission = createDeferred();
-        const requireCurrentAccountStoredContentCompatibility = vi.fn(
-            async () => await compatibilityAdmission.promise,
-        );
-
-        const machine: Machine = {
-            id: 'machine-1',
-            encryptionMode: 'plain',
-            metadata: null,
-            metadataVersion: 0,
-            daemonState: null,
-            daemonStateVersion: 0,
-        };
-
-        const client = new ApiMachineClient('token', machine, undefined, {
-            requireCurrentAccountStoredContentCompatibility,
-        });
-        client.connect();
-
-        const firstSocket = harness.getSocket(0);
-        const response = vi.fn();
-        firstSocket.trigger(
-            SOCKET_RPC_EVENTS.REQUEST,
-            { method: 'machine-1:stale.request', params: {} },
-            response,
-        );
-        await vi.waitFor(() => {
-            expect(requireCurrentAccountStoredContentCompatibility).toHaveBeenCalledOnce();
-        });
-
-        harness.establishReconnectTransport();
-        compatibilityAdmission.reject(new Error('client upgrade required'));
-        await new Promise<void>((resolve) => setImmediate(resolve));
 
         expect(rpcHandleRequestMock).not.toHaveBeenCalled();
         expect(response).not.toHaveBeenCalled();

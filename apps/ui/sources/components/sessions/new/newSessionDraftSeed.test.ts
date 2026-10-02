@@ -163,6 +163,7 @@ describe('seedNewSessionDraftV1', () => {
         expect(writeDraft).toHaveBeenCalledWith({
             scope,
             draftId: 'draft-seeded',
+            materializationIntent: 'seeded',
             draft: expect.objectContaining({
                 input: 'Seeded',
                 entryIntent: 'session',

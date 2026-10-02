@@ -20,6 +20,7 @@ const harness = vi.hoisted(() => ({
     resolutions: new Map<string, { kind: 'bound'; scope: { serverId: string; accountId: string } } | { kind: 'resolving' }>(),
     requestedServerIds: [] as string[],
     credentialObservers: new Set<(event: { serverId: string }) => void>(),
+    hideInactiveSessions: false,
     storage: {
         externalSessionsEnabled: true,
         storageKind: 'persisted' as 'all' | 'persisted' | 'direct',
@@ -53,7 +54,7 @@ vi.mock('@/sync/domains/server/selection/serverSelectionProfileScopeIds', () => 
     listServerProfileScopeIds: () => ['home-a', 'home-b'],
 }));
 vi.mock('@/sync/domains/state/storage', () => ({
-    useSettingMutable: () => [false, vi.fn()],
+    useSettingMutable: () => [harness.hideInactiveSessions, vi.fn()],
 }));
 vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
     useServerCredentialAccountScopeResolutions: (serverIds: readonly string[]) => {
@@ -74,6 +75,7 @@ afterEach(() => {
     harness.resolutions = new Map();
     harness.requestedServerIds = [];
     harness.credentialObservers.clear();
+    harness.hideInactiveSessions = false;
     harness.storage = { externalSessionsEnabled: true, storageKind: 'persisted', setStorageKind: vi.fn() };
 });
 
@@ -93,6 +95,26 @@ function paneState() {
 }
 
 describe('useSessionListViewFilterController retention lifetime', () => {
+    it('loads inactive step sessions for a Runs-inclusive view while retaining the ordinary visibility preference', async () => {
+        harness.hideInactiveSessions = true;
+        harness.resolutions = new Map([
+            ['home-a', { kind: 'bound', scope: { serverId: 'home-a', accountId: 'account-a' } }],
+            ['home-b', { kind: 'bound', scope: { serverId: 'home-b', accountId: 'account-b' } }],
+        ]);
+        const { useSessionListViewFilterController } = await import('./useSessionListViewFilterController');
+        const hook = await renderHook((show: 'sessions' | 'runs' | 'both') => useSessionListViewFilterController(
+            'active', { kind: 'global' }, show,
+        ), { initialProps: 'sessions' });
+        expect(hook.getCurrent().includeInactive).toBe(false);
+        expect(hook.getCurrent().queryHomes.map((home) => home.query.includeInactive)).toEqual([false, false]);
+        const runs = await hook.rerender('runs');
+        expect(runs.includeInactive).toBe(false);
+        expect(runs.queryHomes.map((home) => home.query.includeInactive)).toEqual([true, true]);
+        const both = await hook.rerender('both');
+        expect(both.includeInactive).toBe(false);
+        expect(both.queryHomes.map((home) => home.query.includeInactive)).toEqual([true, true]);
+    });
+
     it('keeps global filters, selected Homes and retained pane identity across focus A to B', async () => {
         harness.resolutions = new Map([
             ['home-a', { kind: 'bound', scope: { serverId: 'home-a', accountId: 'account-a' } }],

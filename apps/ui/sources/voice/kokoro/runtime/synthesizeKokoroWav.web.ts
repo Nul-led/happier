@@ -1,7 +1,7 @@
 type KokoroSynthesisOptions = {
     text: string;
     assetSetId?: string | null;
-    voiceId: string;
+    voiceId: string | null;
     speed: number;
     timeoutMs: number;
     signal: AbortSignal;

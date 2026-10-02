@@ -258,6 +258,7 @@ export function buildXtermWebViewHtml(params: Readonly<{
       let lastRows = 0;
       let pendingWrites = [];
       let isWriting = false;
+      let replayWritesInFlight = 0;
       let readyFitAttemptCount = 0;
       let pendingFitTimer = 0;
       let pendingFitFrame = 0;
@@ -271,8 +272,11 @@ export function buildXtermWebViewHtml(params: Readonly<{
         const chunk = pendingWrites.shift();
         if (!chunk) return;
         isWriting = true;
+        const replay = chunk.intent === 'replay';
+        if (replay) replayWritesInFlight += 1;
 
         const onWritten = () => {
+          if (replay) replayWritesInFlight -= 1;
           isWriting = false;
           if (chunk.kind === 'bytes') {
             sendEnvelope({
@@ -304,9 +308,9 @@ export function buildXtermWebViewHtml(params: Readonly<{
         }
       }
 
-      function enqueueWrite(data) {
+      function enqueueWrite(data, intent) {
         if (!data || !term) return;
-        pendingWrites.push({ kind: 'text', data });
+        pendingWrites.push({ kind: 'text', data, intent });
         scheduleWriteFlush();
       }
 
@@ -459,7 +463,7 @@ export function buildXtermWebViewHtml(params: Readonly<{
         const payload = message.payload || {};
 
         if (message.type === 'write') {
-          if (typeof payload.data === 'string') enqueueWrite(payload.data);
+          if (typeof payload.data === 'string') enqueueWrite(payload.data, payload.intent);
           return;
         }
         if (message.type === 'writeBytes') {
@@ -561,6 +565,7 @@ export function buildXtermWebViewHtml(params: Readonly<{
           return false;
         });
         term.onData((data) => {
+          if (replayWritesInFlight > 0) return;
           if (INTERACTION_POLICY.committedImeOnly === true && typeof data === 'string' && data) {
             sendEnvelope({ v: 1, type: 'input', payload: { data } });
           }

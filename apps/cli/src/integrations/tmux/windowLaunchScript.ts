@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,6 +6,8 @@ import {
   buildPosixShellCommand,
   buildPosixShellEnvironmentAssignments,
 } from '@happier-dev/agents/process/shellCommand';
+import { logger } from '@/ui/logger';
+import { TerminalHostCreationError } from '../terminal/host/errors';
 
 export type PreparedTmuxWindowLaunch = Readonly<{
   command: string;
@@ -25,8 +27,20 @@ export async function prepareTmuxWindowLaunch(input: Readonly<{
   readySignal: string;
 }>): Promise<PreparedTmuxWindowLaunch> {
   const directory = await mkdtemp(join(tmpdir(), 'happier-tmux-window-'));
+  const scriptPath = join(directory, 'launch.sh');
+  const cleanup = async () => {
+    try {
+      const ignoreMissing = (error: unknown) => {
+        if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 'ENOENT') throw error;
+      };
+      await unlink(scriptPath).catch(ignoreMissing);
+      await rmdir(directory).catch(ignoreMissing);
+    } catch (error) {
+      logger.infoFile('[tmux] Private launch cleanup incomplete (tmux_launch_cleanup_incomplete)');
+      throw error;
+    }
+  };
   try {
-    const scriptPath = join(directory, 'launch.sh');
     const assignments = buildPosixShellEnvironmentAssignments(input.env);
     const lines = [
       '#!/bin/sh',
@@ -44,17 +58,16 @@ export async function prepareTmuxWindowLaunch(input: Readonly<{
       mode: 0o600,
     });
 
-    let cleaned = false;
     return {
       command: buildPosixShellCommand(['/bin/sh', scriptPath]),
-      cleanup: async () => {
-        if (cleaned) return;
-        cleaned = true;
-        await rm(directory, { recursive: true, force: true }).catch(() => undefined);
-      },
+      cleanup,
     };
   } catch (error) {
-    await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    try { await cleanup(); } catch (cleanupError) {
+      throw new TerminalHostCreationError([error, cleanupError], 'Tmux launch preparation failed with incomplete cleanup', {
+        creationDisposition: 'not_created', cleanupIncomplete: true,
+      });
+    }
     throw error;
   }
 }

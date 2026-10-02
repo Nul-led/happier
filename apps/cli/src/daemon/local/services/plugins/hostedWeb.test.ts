@@ -27,7 +27,7 @@ describe('hosted-web plugin local-service adapter', () => {
                 port: 49152,
             },
             initialPath: { pathname: '/' },
-            originMode: 'path',
+            originMode: 'host',
         });
 
         const registry = createLocalServicePreviewRegistry();

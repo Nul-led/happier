@@ -9,6 +9,7 @@ import type { MicSession } from '@/voice/runtime/mic/MicSession';
 
 export type WebDaemonSpeechPcmCaptureOptions = Readonly<{
   micSession: MicSession;
+  capturePurpose?: 'dictation' | 'conversation';
   onAudioStarted: () => void;
   onChunk: (pcm16Bytes: Uint8Array) => Promise<void>;
   onError?: (error: ReturnType<typeof createVoiceMachineError>) => void;
@@ -20,6 +21,7 @@ export type WebDaemonSpeechPcmCaptureOptions = Readonly<{
 
 export type WebDaemonSpeechPcmCapture = Readonly<{
   start(): Promise<void>;
+  finish(): Promise<void>;
   stop(): Promise<void>;
   waitForDrain(): Promise<void>;
   isActive(): boolean;

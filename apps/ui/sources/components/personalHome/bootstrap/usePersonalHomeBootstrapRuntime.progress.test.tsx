@@ -36,7 +36,7 @@ afterEach(standardCleanup);
 describe('Personal Home bootstrap live task progress', () => {
     it('shows daemon CLI acquisition while the first facts read is pending without restarting that read per event', async () => {
         const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
-        const { PersonalHomeBootstrapGate } = await import('./PersonalHomeBootstrapGate');
+        const { PersonalHomeBootstrapContent, PersonalHomeBootstrapGate } = await import('./PersonalHomeBootstrapGate');
         let latestRuntime!: ReturnType<typeof usePersonalHomeBootstrapRuntime>;
         let initialReadFacts!: ReturnType<typeof usePersonalHomeBootstrapRuntime>['readFacts'];
         const readFacts = vi.fn(() => initialReadFacts());
@@ -49,7 +49,7 @@ describe('Personal Home bootstrap live task progress', () => {
             return <PersonalHomeBootstrapGate
                 isDesktopHost isDesktopMainWindow readFacts={readFacts}
                 activeTask={runtime.activeTask}
-            ><></></PersonalHomeBootstrapGate>;
+            ><PersonalHomeBootstrapContent><></></PersonalHomeBootstrapContent></PersonalHomeBootstrapGate>;
         }
         const screen = await renderScreen(<Gate />);
 

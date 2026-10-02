@@ -1,11 +1,17 @@
 import { act } from 'react-test-renderer';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { renderHook, standardCleanup } from '@/dev/testkit';
+// Genuine third-party render boundary; these storage tests never render Markdown.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({
+    splitStreamingRevealTextParts: (text: string) => [{ text, reveal: false }],
+}));
+
+import { renderHook } from '@/dev/testkit/hooks/renderHook';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
 import { storage } from '@/sync/domains/state/storageStore';
 import { workflowRunRowFromSummary } from '@/sync/store/domains/workflowRuns';
-import { useWorkflowRunRows } from '@/sync/store/hooks';
+import { useWorkflowRun, useWorkflowRunRows } from '@/sync/store/hooks';
 
 /**
  * The ordered window reader for the one Account-scoped Run row owner.
@@ -37,6 +43,35 @@ function seedRuns(): void {
 }
 
 describe('useWorkflowRunRows', () => {
+    it('detaches an inactive exact Run reader and resumes with current facts when demanded', async () => {
+        const previousState = storage.getState();
+        try {
+            seedRuns();
+            let renders = 0;
+            const hook = await renderHook((props: { enabled: boolean }) => {
+                renders += 1;
+                return useWorkflowRun('run-a', { enabled: props.enabled });
+            }, { initialProps: { enabled: false } });
+            expect(hook.getCurrent()).toBeNull();
+
+            await hook.rerender({ enabled: true });
+            expect(hook.getCurrent()?.summary?.state).toBe('running');
+            await hook.rerender({ enabled: false });
+            const rendersWhileInactive = renders;
+            act(() => {
+                storage.getState().upsertWorkflowRuns([workflowRunRowFromSummary(
+                    createWorkflowRunSummaryFixture({ id: 'run-a', state: 'succeeded', revision: 2 }),
+                )]);
+            });
+            expect(renders).toBe(rendersWhileInactive);
+            await hook.rerender({ enabled: true });
+            expect(hook.getCurrent()?.summary?.state).toBe('succeeded');
+            await hook.unmount();
+        } finally {
+            storage.setState(previousState);
+        }
+    });
+
     it('keeps an unrelated Run refresh out of a mounted window while a referenced row still updates', async () => {
         const previousState = storage.getState();
         try {

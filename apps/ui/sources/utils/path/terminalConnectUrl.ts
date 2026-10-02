@@ -33,28 +33,32 @@ export type TerminalConnectPreAuthTargetDecision = Readonly<{
     canNavigateToAuth: boolean;
 }>;
 
-export function resolveTerminalConnectPreAuthTarget(params: Readonly<{
+export async function resolveTerminalConnectPreAuthTarget(params: Readonly<{
     requestedServerUrl: string | null | undefined;
     activeServerUrl: string | null | undefined;
     homeConnectionDescriptor?: HomeConnectionDescriptorV1;
     allowLegacyLoopbackOverride?: boolean;
-}>): TerminalConnectPreAuthTargetDecision | null {
+}>): Promise<TerminalConnectPreAuthTargetDecision | null> {
     const activeServerUrl = canonicalizeServerUrl(String(params.activeServerUrl ?? ''));
     const descriptorServerUrl = params.homeConnectionDescriptor
         ? canonicalizeServerUrl(params.homeConnectionDescriptor.canonicalServerUrl)
         : '';
+    if (params.homeConnectionDescriptor) {
+        // Canonical Home identity is custody, not the carrier this device uses.
+        const { resolveHomeEnrollmentTransport } = await import('@/auth/enrollment/homeEnrollmentTransport');
+        const resolution = await resolveHomeEnrollmentTransport(params.homeConnectionDescriptor);
+        if (resolution.ok) await resolution.transport.close();
+        return descriptorServerUrl
+            ? { pendingServerUrl: descriptorServerUrl, canNavigateToAuth: resolution.ok }
+            : null;
+    }
     const requestedServerUrl = descriptorServerUrl
         || canonicalizeServerUrl(String(params.requestedServerUrl ?? ''));
     const effectiveServerUrl = resolveEffectiveServerUrlOverride({
         requestedServerUrl,
         activeServerUrl,
-        allowLoopbackOverride: params.homeConnectionDescriptor
-            ? false
-            : params.allowLegacyLoopbackOverride === true,
+        allowLoopbackOverride: params.allowLegacyLoopbackOverride === true,
     });
-    if (params.homeConnectionDescriptor && descriptorServerUrl && !effectiveServerUrl) {
-        return { pendingServerUrl: descriptorServerUrl, canNavigateToAuth: false };
-    }
     const pendingServerUrl = effectiveServerUrl || activeServerUrl;
     return pendingServerUrl ? { pendingServerUrl, canNavigateToAuth: true } : null;
 }

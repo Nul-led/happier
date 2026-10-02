@@ -15,6 +15,7 @@ type RegisteredRepository = {
 };
 
 const repositories = new Map<string, RegisteredRepository>();
+const registrationListeners = new Map<string, Set<() => void>>();
 
 function repositoryKey(scope: ServerAccountScope, address: SessionAddress): string {
     if (scope.serverId !== address.serverId) {
@@ -49,6 +50,7 @@ export function getSessionDiscussionRepository(options: Readonly<{
     const repository = createSessionDiscussionRepository({ address: options.address, client: options.client });
     const registered: RegisteredRepository = { repository };
     repositories.set(key, registered);
+    for (const listener of [...registrationListeners.get(key) ?? []]) listener();
     if (options.accountLifetime) {
         registered.retirement = options.accountLifetime.onRetire(() => retireRegisteredRepository(key));
     }
@@ -59,8 +61,34 @@ function retireRegisteredRepository(key: string): void {
     const existing = repositories.get(key);
     if (!existing) return;
     repositories.delete(key);
+    for (const listener of [...registrationListeners.get(key) ?? []]) listener();
     existing.retirement?.dispose();
     existing.repository.clear();
+}
+
+/** Chrome reads the same repository as list/detail bodies without creating a client or mounting a watcher. */
+export function readRegisteredSessionDiscussionRepository(scope: ServerAccountScope, address: SessionAddress): SessionDiscussionRepository | null {
+    return repositories.get(repositoryKey(scope, address))?.repository ?? null;
+}
+
+/** Follow both an existing projection and a body that registers it after its chrome mounted. */
+export function subscribeRegisteredSessionDiscussionRepository(scope: ServerAccountScope, address: SessionAddress, listener: () => void): () => void {
+    const key = repositoryKey(scope, address);
+    let unsubscribe: (() => void) | undefined;
+    const bind = () => {
+        unsubscribe?.();
+        unsubscribe = repositories.get(key)?.repository.subscribe(listener);
+        listener();
+    };
+    const listeners = registrationListeners.get(key) ?? new Set<() => void>();
+    listeners.add(bind);
+    registrationListeners.set(key, listeners);
+    unsubscribe = repositories.get(key)?.repository.subscribe(listener);
+    return () => {
+        unsubscribe?.();
+        listeners.delete(bind);
+        if (!listeners.size) registrationListeners.delete(key);
+    };
 }
 
 /** Explicit scope retirement hook for Account removal/sign-out. */

@@ -4,7 +4,8 @@ import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import chalk from 'chalk';
-import { isTerminalAnimationDisabled, renderNumericPlanet } from './planet.js';
+import { planetFrameIntervalMs, PLANET_ACCENT_HEX } from '@happier-dev/brand/planet';
+import { isTerminalAnimationDisabled, renderPlanet, supportsBrailleArt } from './planet.js';
 
 type ChalkLike = typeof chalk;
 
@@ -13,7 +14,7 @@ function isTty(): boolean {
 }
 
 function spinnerFrames(): string[] {
-  return ['|', '/', '-', '\\'];
+  return supportsBrailleArt() ? ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] : ['|', '/', '-', '\\'];
 }
 
 function colorResult(chalkLike: ChalkLike, result: string): string {
@@ -26,7 +27,7 @@ function colorResult(chalkLike: ChalkLike, result: string): string {
 }
 
 function colorSpinner(chalkLike: ChalkLike, frame: string): string {
-  return chalkLike.level <= 0 ? String(frame) : chalkLike.cyan(String(frame));
+  return chalkLike.level <= 0 ? String(frame) : chalkLike.hex(PLANET_ACCENT_HEX)(String(frame));
 }
 
 export function createStepPrinter({ enabled = true, chalkLike = chalk, appearance = 'compact' }: Readonly<{
@@ -48,7 +49,7 @@ export function createStepPrinter({ enabled = true, chalkLike = chalk, appearanc
   const color = tty && !process.env.NO_COLOR;
   const colors = chalkLike;
   const frames = spinnerFrames();
-  let timer: ReturnType<typeof setInterval> | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
   let idx = 0;
   let currentLine = '';
   let drawnRows = 0;
@@ -78,6 +79,7 @@ export function createStepPrinter({ enabled = true, chalkLike = chalk, appearanc
 
   const start = (label: string) => {
     pause();
+    idx = 0;
     if (!animate) {
       write(`- [..] ${label}\n`);
       return;
@@ -88,7 +90,7 @@ export function createStepPrinter({ enabled = true, chalkLike = chalk, appearanc
       // Keep status text outside the redrawn region: URLs/long labels can wrap
       // freely without invalidating our cursor geometry.
       write(`${label}\n`);
-      if (initialColumns < 40 || initialRows < 18) return;
+      if (initialColumns < 40 || initialRows < 18 || !supportsBrailleArt()) return;
       const startedAt = Date.now();
       const draw = () => {
         if (resized()) {
@@ -100,19 +102,20 @@ export function createStepPrinter({ enabled = true, chalkLike = chalk, appearanc
           return;
         }
         if (drawnRows > 0) write(`\x1b[${drawnRows}A`);
-        const rows = renderNumericPlanet({ seconds: (Date.now() - startedAt) / 1000, chalkLike: colors, color });
+        const seconds = (Date.now() - startedAt) / 1000;
+        const rows = renderPlanet({ seconds, intro: false, chalkLike: colors, color });
         write(rows.map((row) => `\r\x1b[2K${row}\n`).join(''));
         drawnRows = rows.length;
+        timer = setTimeout(draw, planetFrameIntervalMs(seconds));
+        timer.unref?.();
       };
       draw();
-      timer = setInterval(draw, 160);
-      timer.unref?.();
       return;
     }
     // Long compact labels use the linear mode rather than wrapping a cursor
     // animation onto multiple unowned rows.
     if (label.length + 8 >= initialColumns) { write(`- [..] ${label}\n`); return; }
-    currentLine = `- [${color ? colorSpinner(colors, frames[idx % frames.length] ?? '|') : frames[idx % frames.length]}] ${label}`;
+    currentLine = `${color ? colorSpinner(colors, frames[idx % frames.length]!) : frames[idx % frames.length]} ${label}`;
     write(currentLine);
     timer = setInterval(() => {
       idx += 1;
@@ -123,11 +126,11 @@ export function createStepPrinter({ enabled = true, chalkLike = chalk, appearanc
         write('\n');
         return;
       }
-      const next = `- [${color ? colorSpinner(colors, frames[idx % frames.length] ?? '|') : frames[idx % frames.length]}] ${label}`;
+      const next = `${color ? colorSpinner(colors, frames[idx % frames.length]!) : frames[idx % frames.length]} ${label}`;
       const pad = currentLine.length > next.length ? ' '.repeat(currentLine.length - next.length) : '';
       currentLine = next;
       write(`\r${next}${pad}`);
-    }, 120);
+    }, 80);
     timer.unref?.();
   };
 

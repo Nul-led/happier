@@ -1,4 +1,4 @@
-import { normalizeInterruptionTranscript } from '@/voice/runtime/input/normalizeInterruptionTranscript';
+import { interruptionTranscriptWords, normalizeInterruptionTranscript } from '@/voice/runtime/input/normalizeInterruptionTranscript';
 import { VOICE_RUNTIME_CONFIG_DEFAULTS } from '@/voice/runtime/voiceRuntimeConfigDefaults';
 
 /**
@@ -30,18 +30,13 @@ export const DEFAULT_TEXTUAL_ECHO_GUARD: TextualEchoGuardConfig = Object.freeze(
     justStartedGuardMs: VOICE_RUNTIME_CONFIG_DEFAULTS.turnTaking.textualEchoGuard.justStartedGuardMs,
 });
 
-function tokenize(value: string | null | undefined): string[] {
-    const normalized = normalizeInterruptionTranscript(value);
-    return normalized ? normalized.split(' ') : [];
-}
-
 /**
  * Fraction of the candidate's tokens that also appear in the TTS text
  * (token-set containment). 1 = every candidate word is in the TTS output.
  */
 export function textOverlapRatio(candidate: string | null | undefined, ttsText: string | null | undefined): number {
-    const candidateTokens = tokenize(candidate);
-    const ttsTokens = tokenize(ttsText);
+    const candidateTokens = interruptionTranscriptWords(candidate);
+    const ttsTokens = interruptionTranscriptWords(ttsText);
     if (candidateTokens.length === 0 || ttsTokens.length === 0) {
         return 0;
     }

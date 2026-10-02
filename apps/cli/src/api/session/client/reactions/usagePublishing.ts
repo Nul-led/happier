@@ -1,5 +1,6 @@
 import { serializeAxiosErrorForLog } from '@/api/client/serializeAxiosErrorForLog';
 import { logger } from '@/ui/logger';
+import type { UsageObservationPublishResult } from '@/usage/createUsageObservationPublisher';
 import {
     extractUsageObservationFromTokenCountMessage,
     type UsageObservation,
@@ -11,7 +12,7 @@ export type SessionUsageObservationPublisher = Readonly<{
         observation: UsageObservation;
         backendMode?: string | null;
         externalKey?: string | null;
-    }>) => Promise<void>;
+    }>) => Promise<void | UsageObservationPublishResult>;
 }>;
 
 export async function publishTokenCountUsageObservation(params: Readonly<{
@@ -37,6 +38,6 @@ export async function publishTokenCountUsageObservation(params: Readonly<{
             externalKey: params.externalKey ?? null,
         });
     } catch (error) {
-        logger.debug('[SOCKET] Failed to publish token_count usage observation (non-fatal)', serializeAxiosErrorForLog(error));
+        logger.warn('[SOCKET] Failed to publish token_count usage observation (non-fatal)', serializeAxiosErrorForLog(error));
     }
 }

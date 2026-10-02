@@ -5,7 +5,6 @@ import {
 } from '@/voice/persistence/voiceTranscriptHistorySession';
 
 export type VoiceHistorySessionDiscoveryDeps = Readonly<{
-  prepareLookup(): Promise<void>;
   lookupByTags(tags: readonly string[]): Promise<readonly Readonly<{ id: string }>[]>;
   hydrateSession(sessionId: string): Promise<Readonly<{
     kind: string;
@@ -17,7 +16,6 @@ export type VoiceHistorySessionDiscoveryDeps = Readonly<{
 export async function discoverVoiceHistorySession(
   deps: VoiceHistorySessionDiscoveryDeps,
 ): Promise<string | null> {
-  await deps.prepareLookup();
   const candidates = await deps.lookupByTags([
     VOICE_TRANSCRIPT_HISTORY_SYSTEM_SESSION_TAG,
   ]);

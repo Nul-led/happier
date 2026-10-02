@@ -81,7 +81,7 @@ export type VoiceBargeInController = Readonly<{
      * barge-in, abort playback + interrupt + rearm. Returns once any rearm has
      * settled so callers can sequence follow-up work.
      */
-    handleUserSpeechDuringPlayback: (signal: VoiceBargeInSignal) => Promise<void>;
+    handleUserSpeechDuringPlayback: (signal: VoiceBargeInSignal) => Promise<boolean>;
 }>;
 
 type VoiceBargeInControllerDeps = Readonly<{
@@ -179,18 +179,18 @@ export function createVoiceBargeInController(deps: VoiceBargeInControllerDeps): 
         },
         handleUserSpeechDuringPlayback: async (signal) => {
             if (signal.bargeInEnabled === false) {
-                return;
+                return false;
             }
 
             const snapshot = deps.machine.getSnapshot();
             // Honor the legal table: a barge-in only applies while the machine is
             // actually speaking for the session that owns it.
             if (snapshot.state !== 'speaking') {
-                return;
+                return false;
             }
             const sessionId = String(signal.sessionId ?? '').trim();
             if (!sessionId || snapshot.controlSessionId !== sessionId) {
-                return;
+                return false;
             }
             beginCandidate({ sessionId, bargeInEnabled: signal.bargeInEnabled });
 
@@ -202,7 +202,7 @@ export function createVoiceBargeInController(deps: VoiceBargeInControllerDeps): 
                     reason: resolveEchoTelemetryReason(echoDecision),
                 });
                 clearCandidate('false_alarm', sessionId);
-                return;
+                return false;
             }
 
             // T2: protected-head window + backchannel gate. Passing the agent's
@@ -221,7 +221,7 @@ export function createVoiceBargeInController(deps: VoiceBargeInControllerDeps): 
                     reason: BACKCHANNEL_REASON_TO_TELEMETRY[backchannel.reason] ?? 'min_words',
                 });
                 clearCandidate('false_alarm', sessionId);
-                return;
+                return false;
             }
 
             // Confirmed barge-in: abort playback, then interrupt + rearm through
@@ -239,6 +239,7 @@ export function createVoiceBargeInController(deps: VoiceBargeInControllerDeps): 
                 controlSessionId: sessionId,
                 startListening: deps.startListening,
             });
+            return true;
         },
     };
 }

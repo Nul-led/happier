@@ -9,10 +9,12 @@ import {
   type ExecutionRunParentSessionPermissionResponseTarget,
 } from '@/agent/executionRuns/policy/executionRunPermissionInteractionPolicy';
 import type { StructuredQuestionAnswersV1 } from '@happier-dev/protocol';
+import { logger } from '@/ui/logger';
 
 export type { ExecutionRunParentSessionPermissionResponseTarget };
 
 export type ExecutionRunPermissionRequestStore = Readonly<{
+  listOutstandingRequests?(): readonly Readonly<{ requestId: string; responseTarget?: AgentStateRequestResponseTarget }>[];
   readOutstandingRequest?(requestId: string): Readonly<{
     responseTarget?: AgentStateRequestResponseTarget;
   }> | null;
@@ -53,6 +55,34 @@ export type ExecutionRunPermissionRequestStore = Readonly<{
     handler: AgentStateResponseTargetHandler,
   ): AgentStateRequestStoreUnsubscribe;
 }>;
+
+/** Transport projection over the request owner: never retains or decides permissions. */
+export function observeExecutionRunPermissionStore(
+  store: ExecutionRunPermissionRequestStore,
+  changed: () => void,
+): ExecutionRunPermissionRequestStore {
+  return {
+    ...(store.listOutstandingRequests ? { listOutstandingRequests: () => store.listOutstandingRequests!() } : {}),
+    ...(store.readOutstandingRequest ? { readOutstandingRequest: (id) => store.readOutstandingRequest!(id) } : {}),
+    publishRequest: (params) => {
+      if (store.publishRequestAndWait) {
+        void store.publishRequestAndWait(params).then(changed).catch((error: unknown) => {
+          logger.debug('[EXECUTION RUN] Failed to publish permission request (non-fatal)', error);
+        });
+      } else { store.publishRequest(params); changed(); }
+    },
+    ...(store.publishRequestAndWait ? { publishRequestAndWait: async (params: Parameters<NonNullable<ExecutionRunPermissionRequestStore['publishRequestAndWait']>>[0]) => {
+      await store.publishRequestAndWait!(params); changed();
+    } } : {}),
+    ...(store.completeRequest ? { completeRequest: async (params: Parameters<NonNullable<ExecutionRunPermissionRequestStore['completeRequest']>>[0]) => {
+      const completed = await store.completeRequest!(params); changed(); return completed;
+    } } : {}),
+    ...(store.retireCompletedRequestsForTurn ? { retireCompletedRequestsForTurn: async (id: string) => {
+      await store.retireCompletedRequestsForTurn!(id); changed();
+    } } : {}),
+    registerResponseTargetHandler: (kind, handler) => store.registerResponseTargetHandler(kind, handler),
+  };
+}
 
 export type ExecutionRunPermissionRequestStoreProvider = () => ExecutionRunPermissionRequestStore | null | undefined;
 

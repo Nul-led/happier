@@ -4,6 +4,8 @@ import type { UseUpdatesReturnType } from 'expo-updates';
 
 import { createDeferred, createRootLayoutFeaturesResponse, renderHook } from '@/dev/testkit';
 import { flushHookEffects } from '@/hooks/server/serverFeatureHookHarness.testHelpers';
+import { useAppUpdateStatus } from '@/updates/useAppUpdateStatus';
+import { useUpdates } from './useUpdates';
 
 const appStateRef = vi.hoisted(() => ({
     listener: null as ((nextAppState: string) => void) | null,
@@ -82,16 +84,13 @@ vi.mock('expo-updates', () => ({
 function stubFeatureResponse(otaEnabled: boolean): void {
     vi.stubGlobal(
         'fetch',
-        vi.fn(async () => ({
-            ok: true,
-            json: async () => createRootLayoutFeaturesResponse({
-                features: {
-                    updates: {
-                        ota: { enabled: otaEnabled },
-                    },
+        vi.fn(async () => Response.json(createRootLayoutFeaturesResponse({
+            features: {
+                updates: {
+                    ota: { enabled: otaEnabled },
                 },
-            }),
-        })) as unknown as typeof fetch,
+            },
+        }))) as typeof fetch,
     );
 }
 
@@ -105,7 +104,7 @@ async function flushMoreInAct(): Promise<void> {
     });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
     vi.stubGlobal('__DEV__', false);
     appStateRef.listener = null;
     appStateRef.remove.mockReset();
@@ -143,11 +142,13 @@ beforeEach(() => {
     reloadAsyncMock.mockReset();
     reloadAsyncMock.mockResolvedValue(undefined);
     useExpoUpdatesMock.mockImplementation(() => expoUpdatesStateRef.current);
+    // Reset the real feature cache without rebuilding the app module graph for every OTA case.
+    const { resetServerFeaturesClientForTests } = await import('@/sync/api/capabilities/serverFeaturesClient');
+    resetServerFeaturesClientForTests();
 });
 
 afterEach(() => {
     vi.unstubAllGlobals();
-    vi.resetModules();
 });
 
 describe('useUpdates (OTA runtime)', () => {
@@ -162,7 +163,6 @@ describe('useUpdates (OTA runtime)', () => {
             lastCheckForUpdateTimeSinceRestart: new Date('2026-04-10T09:00:00.000Z'),
         };
 
-        const { useUpdates } = await import('./useUpdates');
         const harness = await renderHook(() => useUpdates());
         await flushMoreInAct();
 
@@ -201,7 +201,6 @@ describe('useUpdates (OTA runtime)', () => {
         resetServerFeaturesClientForTests();
         await getServerFeaturesSnapshot({ force: true });
 
-        const { useUpdates } = await import('./useUpdates');
         const harness = await renderHook(() => useUpdates());
         await flushMoreInAct();
 
@@ -231,7 +230,6 @@ describe('useUpdates (OTA runtime)', () => {
             lastCheckForUpdateTimeSinceRestart: lastChecked,
         };
 
-        const { useUpdates } = await import('./useUpdates');
         const harness = await renderHook(() => {
             const first = useUpdates();
             const second = useUpdates();
@@ -265,7 +263,6 @@ describe('useUpdates (OTA runtime)', () => {
     it('rechecks when the app becomes active through the shared runtime listener', async () => {
         stubFeatureResponse(true);
 
-        const { useUpdates } = await import('./useUpdates');
         const harness = await renderHook(() => useUpdates());
         await flushMoreInAct();
         await vi.waitFor(() => {
@@ -288,7 +285,6 @@ describe('useUpdates (OTA runtime)', () => {
     it('stops shared OTA app-state checks after updates.ota is disabled', async () => {
         stubFeatureResponse(true);
 
-        const { useUpdates } = await import('./useUpdates');
         const { resetServerFeaturesClientForTests } = await import('@/sync/api/capabilities/serverFeaturesClient');
 
         const firstHarness = await renderHook(() => useUpdates());
@@ -323,7 +319,6 @@ describe('useUpdates (OTA runtime)', () => {
     it('dedupes concurrent manual checkForUpdates calls', async () => {
         stubFeatureResponse(true);
 
-        const { useUpdates } = await import('./useUpdates');
         const harness = await renderHook(() => useUpdates());
         await flushMoreInAct();
         await vi.waitFor(() => {
@@ -360,7 +355,6 @@ describe('useUpdates (OTA runtime)', () => {
         stubFeatureResponse(true);
         checkForUpdateAsyncMock.mockRejectedValueOnce(new Error('check failed'));
 
-        const { useUpdates } = await import('./useUpdates');
         const harness = await renderHook(() => useUpdates());
         await flushMoreInAct();
         await vi.waitFor(() => {
@@ -379,7 +373,6 @@ describe('useUpdates (OTA runtime)', () => {
     it('swallows reload failures from expo-updates', async () => {
         stubFeatureResponse(true);
 
-        const { useUpdates } = await import('./useUpdates');
         const harness = await renderHook(() => useUpdates());
         await flushMoreInAct();
         await vi.waitFor(() => {
@@ -391,6 +384,55 @@ describe('useUpdates (OTA runtime)', () => {
         await expect(harness.getCurrent().reloadApp()).resolves.toBeUndefined();
         expect(reloadAsyncMock).toHaveBeenCalledTimes(1);
 
+        await harness.unmount();
+    });
+
+    it('runs OTA row recovery through the shared check-and-download owner, and restarts only a downloaded update', async () => {
+        stubFeatureResponse(true);
+        expoUpdatesStateRef.current = {
+            ...expoUpdatesStateRef.current,
+            checkError: new Error('check failed'),
+            lastCheckForUpdateTimeSinceRestart: new Date('2026-04-10T09:00:00.000Z'),
+        };
+        const harness = await renderHook(() => useAppUpdateStatus());
+        await flushMoreInAct();
+        await vi.waitFor(() => {
+            expect(harness.getCurrent().model).toMatchObject({
+                channel: 'ota', item: { state: 'unknown', failure: { kind: 'appCheck' } },
+            });
+        });
+        expect(harness.getCurrent().checkedAt).toBe(new Date('2026-04-10T09:00:00.000Z').getTime());
+
+        checkForUpdateAsyncMock.mockClear();
+        await act(async () => { await harness.getCurrent().run(); });
+        expect(checkForUpdateAsyncMock).toHaveBeenCalledTimes(1);
+        expect(reloadAsyncMock).not.toHaveBeenCalled();
+
+        expoUpdatesStateRef.current = {
+            ...expoUpdatesStateRef.current, checkError: undefined,
+            isUpdateAvailable: true, downloadError: new Error('download failed'),
+        };
+        await harness.rerender();
+        expect(harness.getCurrent().model.item).toMatchObject({ state: 'failed', failure: { kind: 'appDownload' } });
+        checkForUpdateAsyncMock.mockResolvedValue({ isAvailable: true });
+        await act(async () => { await harness.getCurrent().run(); });
+        expect(fetchUpdateAsyncMock).toHaveBeenCalledTimes(1);
+        expect(checkForUpdateAsyncMock).toHaveBeenCalledTimes(2);
+        expect(reloadAsyncMock).not.toHaveBeenCalled();
+
+        expoUpdatesStateRef.current = { ...expoUpdatesStateRef.current, downloadError: undefined };
+        await harness.rerender();
+        expect(harness.getCurrent().model.item.state).toBe('available');
+        await act(async () => { await harness.getCurrent().run(); });
+        expect(fetchUpdateAsyncMock).toHaveBeenCalledTimes(2);
+        expect(checkForUpdateAsyncMock).toHaveBeenCalledTimes(3);
+        expect(reloadAsyncMock).not.toHaveBeenCalled();
+
+        expoUpdatesStateRef.current = { ...expoUpdatesStateRef.current, isUpdatePending: true };
+        await harness.rerender();
+        expect(harness.getCurrent().model.item.state).toBe('ready');
+        await act(async () => { await harness.getCurrent().run(); });
+        expect(reloadAsyncMock).toHaveBeenCalledTimes(1);
         await harness.unmount();
     });
 });

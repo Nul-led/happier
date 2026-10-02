@@ -141,7 +141,7 @@ describe('XtermWebViewSurface (native)', () => {
         expect(typeof handle.clear).toBe('function');
 
         // Buffer write before terminal is ready.
-        handle.write('hello');
+        handle.write('hello', { intent: 'replay' });
         expect(findPostedEnvelopeByType('write')).toBeNull();
 
         // Terminal reports ready; host should flush pending writes.
@@ -152,7 +152,7 @@ describe('XtermWebViewSurface (native)', () => {
             expect.objectContaining({
                 v: 1,
                 type: 'write',
-                payload: { data: 'hello' },
+                payload: { data: 'hello', intent: 'replay' },
             }),
         );
 

@@ -107,6 +107,7 @@ describe('desktopWindowBridge', () => {
 
         await expect(getDesktopWindowState()).resolves.toEqual({
             isMaximized: false,
+            isFullscreen: false,
         });
 
         vi.resetModules();
@@ -122,6 +123,7 @@ describe('desktopWindowBridge', () => {
 
         await expect(disabledWindowBridge.getDesktopWindowState()).resolves.toEqual({
             isMaximized: false,
+            isFullscreen: false,
         });
     });
 
@@ -164,6 +166,7 @@ describe('desktopWindowBridge', () => {
 
         expect(handler).toHaveBeenCalledWith({
             isMaximized: false,
+            isFullscreen: false,
         });
 
         const nextEventHandler = eventHandler;
@@ -171,11 +174,13 @@ describe('desktopWindowBridge', () => {
         if (typeof nextEventHandler === 'function') {
             nextEventHandler({
                 isMaximized: true,
+                isFullscreen: true,
             });
         }
 
         expect(handler).toHaveBeenLastCalledWith({
             isMaximized: true,
+            isFullscreen: true,
         });
 
         await dispose();
@@ -211,12 +216,14 @@ describe('desktopWindowBridge', () => {
 
         await expect(getDesktopWindowState()).resolves.toEqual({
             isMaximized: false,
+            isFullscreen: false,
         });
 
         const dispose = await listenDesktopWindowState(handler);
 
         expect(handler).toHaveBeenCalledWith({
             isMaximized: false,
+            isFullscreen: false,
         });
 
         await expect(dispose()).resolves.toBeUndefined();

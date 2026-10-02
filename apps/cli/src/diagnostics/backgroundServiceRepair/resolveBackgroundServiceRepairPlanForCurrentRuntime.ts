@@ -32,6 +32,7 @@ export async function resolveBackgroundServiceRepairPlanForCurrentRuntime(params
   }));
   const services = serviceLists.flat();
   const plan = buildBackgroundServiceRepairPlan({
+    uid: runtime.uid,
     currentReleaseChannel: runtime.channel,
     currentHappierHomeDir: runtime.happierHomeDir,
     currentServerId: runtime.instanceId,

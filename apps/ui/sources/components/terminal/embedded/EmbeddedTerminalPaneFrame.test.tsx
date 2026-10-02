@@ -74,11 +74,91 @@ function flattenStyle(style: unknown): Record<string, unknown> {
     return {};
 }
 
+function makeController(overrides: Partial<EmbeddedTerminalPaneController>): EmbeddedTerminalPaneController {
+    return {
+        status: 'connected',
+        error: null,
+        detectedUrl: null,
+        onInput: () => {},
+        onPaste: () => {},
+        onResize: () => {},
+        onReady: () => {},
+        onWriteComplete: () => {},
+        clearTerminal: () => {},
+        requestRestart: () => {},
+        retryConnect: () => {},
+        dismissDetectedUrl: () => {},
+        ...overrides,
+    };
+}
+
+describe('EmbeddedTerminalPaneFrame states (terminal lab ST)', () => {
+    it('without its own chrome, leaves the toolbar and the address to the owning strip', async () => {
+        const screen = await renderScreen(React.createElement(EmbeddedTerminalPaneFrame, {
+            title: 'zsh',
+            chrome: 'none',
+            controller: makeController({ detectedUrl: { url: 'http://localhost:5173/', kind: 'generic' } }),
+            surface: React.createElement('TerminalSurface'),
+            testIdPrefix: 'term',
+            platformOS: 'web',
+        }));
+        expect(screen.findByTestId('term-clear')).toBeFalsy();
+        expect(screen.findByTestId('term-url-banner')).toBeFalsy();
+        expect(screen.findByTestId('term-surface')).toBeTruthy();
+    });
+
+    it('keeps an exited process\'s output readable and offers Restart instead of covering it', async () => {
+        const requestRestart = vi.fn();
+        const screen = await renderScreen(React.createElement(EmbeddedTerminalPaneFrame, {
+            title: 'zsh',
+            chrome: 'none',
+            controller: makeController({ status: 'exited', requestRestart }),
+            surface: React.createElement('TerminalSurface'),
+            testIdPrefix: 'term',
+            platformOS: 'web',
+        }));
+        expect(screen.findByTestId('term-overlay')).toBeFalsy();
+        const line = screen.findByTestId('term-state-line');
+        expect(line).toBeTruthy();
+        screen.findByTestId('term-state-line-action')?.props.onPress();
+        expect(requestRestart).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the output when the machine goes offline, with one line and Check again', async () => {
+        const retryConnect = vi.fn();
+        const screen = await renderScreen(React.createElement(EmbeddedTerminalPaneFrame, {
+            title: 'zsh',
+            chrome: 'none',
+            controller: makeController({ status: 'error', error: 'terminal_machine_unreachable', retryConnect }),
+            surface: React.createElement('TerminalSurface'),
+            testIdPrefix: 'term',
+            platformOS: 'web',
+        }));
+        expect(screen.findByTestId('term-overlay')).toBeFalsy();
+        screen.findByTestId('term-state-line-action')?.props.onPress();
+        expect(retryConnect).toHaveBeenCalledTimes(1);
+    });
+
+    it('covers the surface with the cause and Try again when the terminal could not start', async () => {
+        const retryConnect = vi.fn();
+        const screen = await renderScreen(React.createElement(EmbeddedTerminalPaneFrame, {
+            title: 'zsh',
+            chrome: 'none',
+            controller: makeController({ status: 'error', error: 'terminal_cwd_denied', retryConnect }),
+            surface: React.createElement('TerminalSurface'),
+            testIdPrefix: 'term',
+            platformOS: 'web',
+        }));
+        expect(screen.findByTestId('term-overlay')).toBeTruthy();
+        expect(screen.findByTestId('term-state-line')).toBeFalsy();
+    });
+});
+
 describe('EmbeddedTerminalPaneFrame', () => {
-    it('keeps the disconnected overlay inside the terminal surface so toolbar actions remain accessible', async () => {
+    it('keeps the failure overlay inside the terminal surface so toolbar actions remain accessible', async () => {
         const controller: EmbeddedTerminalPaneController = {
-            status: 'exited',
-            error: null,
+            status: 'error',
+            error: 'terminal_spawn_failed',
             detectedUrl: null,
             onInput: () => {},
             onPaste: () => {},
@@ -136,8 +216,10 @@ describe('EmbeddedTerminalPaneFrame', () => {
             }),
         );
 
-        const surface = screen.findByTestId('embedded-terminal-surface');
-        expect(flattenStyle(surface?.props.style).marginBottom).toBe(216);
+        // The footer (the phone key rail) sits last, above the keyboard, at the full width.
+        const footer = screen.findByTestId('embedded-terminal-footer');
+        expect(flattenStyle(footer?.props.style).marginBottom).toBe(216);
+        expect(flattenStyle(screen.findByTestId('embedded-terminal-surface')?.props.style).marginBottom).toBeUndefined();
     });
 
     it('does not add a second keyboard inset on Android because the window already resizes', async () => {
@@ -168,7 +250,6 @@ describe('EmbeddedTerminalPaneFrame', () => {
             }),
         );
 
-        const surface = screen.findByTestId('embedded-terminal-surface');
-        expect(flattenStyle(surface?.props.style).marginBottom).toBeUndefined();
+        expect(flattenStyle(screen.findByTestId('embedded-terminal-footer')?.props.style).marginBottom).toBeUndefined();
     });
 });

@@ -82,7 +82,7 @@ export function removePromptBundleEntry(entries: PromptBundleEntryV1[], path: st
   return entries.filter((entry) => entry.path !== path);
 }
 
-function readPromptBundleArtifactTitle(artifact: { header?: ArtifactHeader | null; title?: string | null } | null): string {
+function readPromptBundleArtifactTitle(artifact: { header?: Readonly<Record<string, unknown>> | null; title?: string | null } | null): string {
   const headerTitle = typeof artifact?.header?.title === 'string' ? artifact.header.title : null;
   if (headerTitle && headerTitle.trim().length > 0) return headerTitle;
   const legacyTitle = typeof artifact?.title === 'string' ? artifact.title : null;
@@ -215,20 +215,10 @@ export async function updateSkillPromptBundleWithEntry(params: Readonly<{
   const artifactId = String(params.artifactId ?? '').trim();
   if (!artifactId) throw new Error('invalid_artifact_id');
 
-  const existing = storage.getState().artifacts[artifactId] ?? null;
-  const ensureBody = async (): Promise<string> => {
-    if (existing?.body === undefined) {
-      const full = await sync.fetchArtifactWithBody(artifactId);
-      if (full) storage.getState().updateArtifact(full);
-      const next = storage.getState().artifacts[artifactId] ?? null;
-      if (typeof next?.body === 'string') return next.body;
-      throw new Error('prompt_bundle_missing_body');
-    }
-    if (typeof existing?.body === 'string') return existing.body;
-    throw new Error('prompt_bundle_missing_body');
-  };
-
-  const bodyRaw = await ensureBody();
+  const cachedTitle = storage.getState().artifacts[artifactId]?.title ?? null;
+  const artifact = await uiPromptLibraryArtifactStore.read(artifactId);
+  if (typeof artifact?.body !== 'string') throw new Error('prompt_bundle_missing_body');
+  const bodyRaw = artifact.body;
   const parsed = PromptBundleBodyV1Schema.safeParse(JSON.parse(bodyRaw));
   if (!parsed.success) throw new Error('prompt_bundle_invalid_body');
 
@@ -246,9 +236,8 @@ export async function updateSkillPromptBundleWithEntry(params: Readonly<{
   const validation = validatePromptBundleBodyV1AgainstSchemaId({ bundleSchemaId: 'skills.skill_md_v1', body: nextBody });
   if (!validation.ok) throw new Error(validation.errorCode);
 
-  const currentArtifact = storage.getState().artifacts[artifactId] ?? existing ?? null;
-  const headerTitle = readPromptBundleArtifactTitle(currentArtifact);
-  const baseHeader = currentArtifact?.header ?? { v: 1, kind: 'prompt_bundle.v2', title: currentArtifact?.title ?? null };
+  const headerTitle = readPromptBundleArtifactTitle({ header: artifact.header, title: cachedTitle });
+  const baseHeader = artifact.header ?? { v: 1, kind: 'prompt_bundle.v2', title: cachedTitle };
   const header: ArtifactHeader = {
     ...baseHeader,
     v: 1,
@@ -257,7 +246,8 @@ export async function updateSkillPromptBundleWithEntry(params: Readonly<{
     bundleSchemaId: 'skills.skill_md_v1',
   };
 
-  await sync.updateArtifactWithHeader(artifactId, header, JSON.stringify(nextBody));
+  await uiPromptLibraryArtifactStore.update({ artifactId, expectedRevision: artifact.revision,
+    header, body: JSON.stringify(nextBody) });
 }
 
 export async function removeSkillPromptBundleEntry(params: Readonly<{
@@ -267,20 +257,10 @@ export async function removeSkillPromptBundleEntry(params: Readonly<{
   const artifactId = String(params.artifactId ?? '').trim();
   if (!artifactId) throw new Error('invalid_artifact_id');
 
-  const existing = storage.getState().artifacts[artifactId] ?? null;
-  const ensureBody = async (): Promise<string> => {
-    if (existing?.body === undefined) {
-      const full = await sync.fetchArtifactWithBody(artifactId);
-      if (full) storage.getState().updateArtifact(full);
-      const next = storage.getState().artifacts[artifactId] ?? null;
-      if (typeof next?.body === 'string') return next.body;
-      throw new Error('prompt_bundle_missing_body');
-    }
-    if (typeof existing?.body === 'string') return existing.body;
-    throw new Error('prompt_bundle_missing_body');
-  };
-
-  const bodyRaw = await ensureBody();
+  const cachedTitle = storage.getState().artifacts[artifactId]?.title ?? null;
+  const artifact = await uiPromptLibraryArtifactStore.read(artifactId);
+  if (typeof artifact?.body !== 'string') throw new Error('prompt_bundle_missing_body');
+  const bodyRaw = artifact.body;
   const parsed = PromptBundleBodyV1Schema.safeParse(JSON.parse(bodyRaw));
   if (!parsed.success) throw new Error('prompt_bundle_invalid_body');
 
@@ -295,9 +275,8 @@ export async function removeSkillPromptBundleEntry(params: Readonly<{
   const validation = validatePromptBundleBodyV1AgainstSchemaId({ bundleSchemaId: 'skills.skill_md_v1', body: nextBody });
   if (!validation.ok) throw new Error(validation.errorCode);
 
-  const currentArtifact = storage.getState().artifacts[artifactId] ?? existing ?? null;
-  const headerTitle = readPromptBundleArtifactTitle(currentArtifact);
-  const baseHeader = currentArtifact?.header ?? { v: 1, kind: 'prompt_bundle.v2', title: currentArtifact?.title ?? null };
+  const headerTitle = readPromptBundleArtifactTitle({ header: artifact.header, title: cachedTitle });
+  const baseHeader = artifact.header ?? { v: 1, kind: 'prompt_bundle.v2', title: cachedTitle };
   const header: ArtifactHeader = {
     ...baseHeader,
     v: 1,
@@ -306,5 +285,6 @@ export async function removeSkillPromptBundleEntry(params: Readonly<{
     bundleSchemaId: 'skills.skill_md_v1',
   };
 
-  await sync.updateArtifactWithHeader(artifactId, header, JSON.stringify(nextBody));
+  await uiPromptLibraryArtifactStore.update({ artifactId, expectedRevision: artifact.revision,
+    header, body: JSON.stringify(nextBody) });
 }

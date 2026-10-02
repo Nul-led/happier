@@ -1,4 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
+import { pathToFileURL } from 'node:url';
 
 import {
   buildRemoteSelfDownloadFirstPartyInstallCommand,
@@ -26,21 +33,28 @@ describe('remote self-download first-party installer command', () => {
     expect(command).not.toMatch(/curl\b[^|]*\|\s*(?:sh|bash)/u);
   });
 
-  it('creates the remote install root before staging under $HOME', () => {
-    const command = buildRemoteSelfDownloadFirstPartyInstallCommand({
-      componentId: 'happier-cli',
-      channel: 'stable',
-      versionId: '1.2.3',
-      archive: {
-        name: 'happier-v1.2.3-linux-x64.tar.gz',
-        url: 'https://downloads.example.test/happier.tar.gz',
-      },
-      expectedSha256: 'b'.repeat(64),
-    });
-
-    expect(command).toContain('mkdir -p $HOME/.happier');
-    expect(command).toContain('mktemp -d $HOME/.happier/bootstrap-self-download.XXXXXX');
-    expect(command).not.toContain("mktemp -d '$HOME/.happier/bootstrap-self-download.XXXXXX'");
+  it('stages and promotes a verified self-download in a remote HOME containing spaces', async () => {
+    if (process.platform === 'win32') return; // The remote installer runs on POSIX targets.
+    const root = await mkdtemp(join(tmpdir(), 'happier-self-download-'));
+    const home = join(root, 'home with spaces');
+    const payload = join(root, 'payload');
+    const archivePath = join(root, 'payload.tar.gz');
+    const run = promisify(execFile);
+    try {
+      await mkdir(home);
+      await mkdir(payload);
+      await writeFile(join(payload, 'happier'), '#!/bin/sh\nprintf "%s\\n" installed\n');
+      await run('tar', ['-czf', archivePath, '-C', root, 'payload']);
+      const command = buildRemoteSelfDownloadFirstPartyInstallCommand({
+        componentId: 'happier-cli', channel: 'stable', versionId: '1.2.3',
+        archive: { name: 'payload.tar.gz', url: pathToFileURL(archivePath).href },
+        expectedSha256: createHash('sha256').update(await readFile(archivePath)).digest('hex'),
+      });
+      await run('/bin/sh', ['-c', command], { cwd: root, env: { ...process.env, HOME: home } });
+      expect((await run(join(home, '.happier', 'cli', 'current', 'happier'), [])).stdout).toBe('installed\n');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('resolves release metadata locally before building the remote install command', async () => {

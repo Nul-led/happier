@@ -58,7 +58,7 @@ describe('resolveFolderAwareSessionListSourceForLayout', () => {
     it('narrows Recent activity to the focused folder subtree without folder presentation', () => {
         const result = resolveForLayout('recent_activity', 'f-parent');
 
-        expect(result.items.map((item) => item.type === 'session' ? item.sessionId : `header:${item.headerKind}`))
+        expect(result.items.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? `header:${item.headerKind}` : `run:${item.runId}`))
             .toEqual(['in-parent', 'in-child']);
         expect(result.items.every((item) => item.type === 'session' && item.groupKind === 'project')).toBe(true);
         expect(result.folderFocus?.folder.id).toBe('f-parent');

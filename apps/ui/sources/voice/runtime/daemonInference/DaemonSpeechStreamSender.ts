@@ -296,7 +296,7 @@ export class DaemonSpeechStreamSender {
       }
       pending.responseEvents = response.events;
       this.applyAck(response.ackSeq);
-      this.settlePendingIfComplete(pending);
+      this.settlePendingIfComplete();
     } catch (error) {
       if (ownerGeneration === this.localOwnerGeneration && !this.closed) {
         this.failActiveStream(error);
@@ -319,17 +319,20 @@ export class DaemonSpeechStreamSender {
           this.pendingBytes = Math.max(0, this.pendingBytes - pending.pcm16Bytes.byteLength);
           pending.pcm16Bytes = new Uint8Array(0);
         }
-        this.settlePendingIfComplete(pending);
+        this.settlePendingIfComplete();
       }
     }
     this.resolveDrainIfNeeded();
   }
 
-  private settlePendingIfComplete(pending: PendingChunk): void {
-    if (!pending.acknowledged || pending.responseEvents === null) return;
-    if (this.pendingChunks.get(pending.seq) !== pending) return;
-    this.pendingChunks.delete(pending.seq);
-    pending.resolve(pending.responseEvents);
+  private settlePendingIfComplete(): void {
+    // Cumulative ACKs can arrive before an earlier chunk's recognizer events.
+    // Publish only the contiguous completed prefix of the same bounded window.
+    for (const pending of this.pendingChunks.values()) {
+      if (!pending.acknowledged || pending.responseEvents === null) return;
+      this.pendingChunks.delete(pending.seq);
+      pending.resolve(pending.responseEvents);
+    }
   }
 
   private closePending(error: unknown): void {

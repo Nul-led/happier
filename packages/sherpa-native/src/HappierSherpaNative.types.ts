@@ -6,12 +6,19 @@ export type SherpaNativeVoice = {
 
 export type SherpaNativeInitializeParams = {
   assetsDir: string;
+  frontend?: SherpaNativeKokoroFrontend;
   /**
    * Immutable identifier for one cancellable native initialization request.
    * Optional while an older JS bundle can invoke a newer native module with the
    * predecessor `{ assetsDir }` shape.
    */
   initializationId?: string;
+};
+
+/** Manifest-resolved Kokoro frontend; lexicon is relative to the installed pack. */
+export type SherpaNativeKokoroFrontend = {
+  lang: string;
+  lexicon: string;
 };
 
 export type SherpaNativeCancelInitializationParams = {
@@ -21,11 +28,13 @@ export type SherpaNativeCancelInitializationParams = {
 
 export type SherpaNativeListVoicesParams = {
   assetsDir: string;
+  frontend?: SherpaNativeKokoroFrontend;
 };
 
 export type SherpaNativeSynthesizeParams = {
   jobId: string;
   assetsDir: string;
+  frontend?: SherpaNativeKokoroFrontend;
   text: string;
   voiceId: string | null;
   sid: number | null;

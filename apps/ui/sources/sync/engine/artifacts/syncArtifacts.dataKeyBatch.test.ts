@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ArtifactEncryption } from '@/sync/encryption/artifactEncryption';
 
-import type { ArtifactDataKeyCache } from './syncArtifacts';
+import { fetchAndApplyArtifactsList, type ArtifactDataKeyCache } from './syncArtifacts';
 
 const fetchArtifactsMock = vi.hoisted(() => vi.fn());
 
@@ -50,11 +50,9 @@ async function buildArtifact(id: string, envelope: string, dataKey: Uint8Array) 
 describe('fetchAndApplyArtifactsList artifact data-key unwrapping', () => {
     afterEach(() => {
         fetchArtifactsMock.mockReset();
-        vi.resetModules();
     });
 
     it('opens every artifact envelope in one batch instead of one call per artifact', async () => {
-        const { fetchAndApplyArtifactsList } = await import('./syncArtifacts');
         const keyA = new Uint8Array(32).fill(1);
         const keyB = new Uint8Array(32).fill(2);
         const keyC = new Uint8Array(32).fill(3);
@@ -80,7 +78,6 @@ describe('fetchAndApplyArtifactsList artifact data-key unwrapping', () => {
     });
 
     it('does not re-open an envelope whose unwrapped key is already cached', async () => {
-        const { fetchAndApplyArtifactsList } = await import('./syncArtifacts');
         const keyA = new Uint8Array(32).fill(1);
         const keyB = new Uint8Array(32).fill(2);
         fetchArtifactsMock.mockResolvedValue([
@@ -105,7 +102,6 @@ describe('fetchAndApplyArtifactsList artifact data-key unwrapping', () => {
     });
 
     it('re-opens only the artifact whose envelope rotated', async () => {
-        const { fetchAndApplyArtifactsList } = await import('./syncArtifacts');
         const keyA = new Uint8Array(32).fill(1);
         const keyB = new Uint8Array(32).fill(2);
         const rotatedKeyB = new Uint8Array(32).fill(7);
@@ -137,7 +133,6 @@ describe('fetchAndApplyArtifactsList artifact data-key unwrapping', () => {
     });
 
     it('drops the cached key when a rotated envelope fails to open', async () => {
-        const { fetchAndApplyArtifactsList } = await import('./syncArtifacts');
         const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
         const keyA = new Uint8Array(32).fill(1);
         const { encryption, decryptEncryptionKeys } = createEncryptionHarness(new Map([['env-a', keyA]]));

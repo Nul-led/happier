@@ -22,7 +22,11 @@ Pod::Spec.new do |s|
     'HEADER_SEARCH_PATHS' => '$(inherited) "$(PODS_TARGET_SRCROOT)/../common/cpp"'
   }
 
-  sherpa_version = ENV['HAPPIER_SHERPA_ONNX_VERSION'] || 'v1.12.25'
+  sherpa_version = package.fetch('sherpaOnnxVersion')
+  requested_sherpa_version = ENV['HAPPIER_SHERPA_ONNX_VERSION']
+  if requested_sherpa_version && requested_sherpa_version != sherpa_version
+    raise "[HappierSherpaNative] Runtime/header ABI is pinned to #{sherpa_version}; update the vendored header and ABI checks together to change it"
+  end
   sherpa_archive = "sherpa-onnx-#{sherpa_version}-ios.tar.bz2"
   sherpa_base_url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/#{sherpa_version}"
   sherpa_vendor_dir = File.join(__dir__, 'vendor', 'sherpa-onnx', sherpa_version)
@@ -65,14 +69,20 @@ Pod::Spec.new do |s|
   s.source_files = [
     '*.{h,m,mm,swift}',
     '../common/cpp/HappierSherpaAsrStreamRegistry.h',
+    '../common/cpp/HappierSherpaCapiAbi.h',
+    '../common/cpp/HappierSherpaOnlineAsr.h',
     '../common/cpp/HappierSherpaCacheEpoch.h',
     '../common/cpp/HappierSherpaOfflineTtsEngineCache.h',
+    '../common/cpp/HappierSherpaKokoroConfig.h',
     '../common/cpp/HappierSherpaTtsJobRegistry.h'
   ]
   s.private_header_files = [
     '../common/cpp/HappierSherpaAsrStreamRegistry.h',
+    '../common/cpp/HappierSherpaCapiAbi.h',
+    '../common/cpp/HappierSherpaOnlineAsr.h',
     '../common/cpp/HappierSherpaCacheEpoch.h',
     '../common/cpp/HappierSherpaOfflineTtsEngineCache.h',
+    '../common/cpp/HappierSherpaKokoroConfig.h',
     '../common/cpp/HappierSherpaTtsJobRegistry.h'
   ]
   s.exclude_files = 'Tests/**/*'

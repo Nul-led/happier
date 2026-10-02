@@ -3,8 +3,42 @@ import { describe, expect, it, vi } from 'vitest';
 import { FeaturesResponseSchema } from '@happier-dev/protocol';
 
 import { createUsageObservationPublisher } from './createUsageObservationPublisher';
+import { logger } from '@/ui/logger';
 
 describe('createUsageObservationPublisher', () => {
+    it('returns a failure and warns when v2 transport fails without losing the stable retry key', async () => {
+        const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+        const postJson = vi.fn().mockRejectedValueOnce(new Error('network unavailable')).mockResolvedValueOnce({ ok: true });
+        const publisher = createUsageObservationPublisher({
+            token: 'token', apiServerUrl: 'https://api.example.test', postJson,
+            emitLegacyUsageReport: vi.fn(),
+            fetchServerFeaturesSnapshot: async () => ({
+                status: 'ready',
+                features: FeaturesResponseSchema.parse({ features: {}, capabilities: { server: { usageAnalytics: {
+                    version: 1, eventsIngest: { path: '/v2/usage-events' }, query: { path: '/v2/usage/query' },
+                    legacy: { usageReportsPath: '/v2/usage-reports', usageQueryPath: '/v1/usage/query' },
+                } } } }),
+            }),
+        });
+        const input = {
+            sessionId: 'session-1', externalKey: 'native-record-1',
+            observation: {
+                provider: 'claude', source: 'claude-assistant-usage', scope: 'turn_delta' as const,
+                key: 'claude-session', modelId: null,
+                tokens: { total: 12, input: 7, output: 5, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+                cost: null, contextUsedTokens: null, contextWindowTokens: null,
+            },
+        };
+        try {
+            await expect(publisher.publish(input)).resolves.toEqual({ status: 'failed' });
+            expect(warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ message: 'network unavailable' }));
+            await expect(publisher.publish(input)).resolves.toEqual({ status: 'sent', transport: 'v2' });
+            expect(postJson.mock.calls.map(([request]) => request.body.externalKey)).toEqual(['native-record-1', 'native-record-1']);
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
     it('posts usage events to v2 analytics ingest when the server advertises support', async () => {
         const fetchServerFeaturesSnapshot = vi.fn(async () => ({
             status: 'ready' as const,

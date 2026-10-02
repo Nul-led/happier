@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 
-import { PersonalHomeBootstrapGate } from './bootstrap/PersonalHomeBootstrapGate';
+import { PersonalHomeBootstrapContent, PersonalHomeBootstrapGate } from './bootstrap/PersonalHomeBootstrapGate';
 import type { PersonalHomeFacts } from './bootstrap/personalHomeBootstrapTypes';
 
 const facts: PersonalHomeFacts = {
@@ -21,6 +21,19 @@ const facts: PersonalHomeFacts = {
     daemon: null,
     activeTask: null,
 };
+
+function TestShell(): React.ReactElement {
+    return (
+        <View testID="normal-shell">
+            <View testID="usable-sidebar" />
+            <View testID="home-content">
+                <PersonalHomeBootstrapContent>
+                    <View testID="ready-home-content" />
+                </PersonalHomeBootstrapContent>
+            </View>
+        </View>
+    );
+}
 
 describe('PersonalHomeBootstrapGate', () => {
     it('keeps the shell mounted while showing one truthful post-shell pending status', async () => {
@@ -87,22 +100,18 @@ describe('PersonalHomeBootstrapGate', () => {
                 },
             },
         },
-    ])('does not mount the unauthenticated route tree while Tauri bootstrap is $name', async ({ currentFacts }) => {
-        const unauthenticatedRouteMounted = vi.fn();
-        function UnauthenticatedRoute(): React.ReactElement {
-            unauthenticatedRouteMounted();
-            return <View testID="unauthenticated-home-discovery" />;
-        }
-
+    ])('keeps navigation usable while centered Home content is $name', async ({ currentFacts }) => {
         const screen = await renderScreen(
             <PersonalHomeBootstrapGate isDesktopHost isDesktopMainWindow readFacts={async () => currentFacts}>
-                <UnauthenticatedRoute />
+                <TestShell />
             </PersonalHomeBootstrapGate>,
         );
-
+        await flushHookEffects({ cycles: 4, turns: 2 });
         expect(screen.findByTestId('personal-home-setup-surface')).not.toBeNull();
-        expect(screen.findByTestId('unauthenticated-home-discovery')).toBeNull();
-        expect(unauthenticatedRouteMounted).not.toHaveBeenCalled();
+        expect(screen.findByTestId('usable-sidebar')).not.toBeNull();
+        expect(screen.findByTestId('ready-home-content')).toBeNull();
+        expect(screen.findByTestId('personal-home-bootstrap-pending-strip')).toBeNull();
+        expect(screen.findByTestId('home-content')?.findAll((node) => node.props.testID === 'personal-home-setup-surface').length).toBeGreaterThan(0);
     });
 
     it('keeps non-desktop hosts on the normal shell', async () => {
@@ -115,14 +124,15 @@ describe('PersonalHomeBootstrapGate', () => {
         expect(screen.findByTestId('personal-home-setup-surface')).toBeNull();
     });
 
-    it('gates only the desktop main window while facts are incomplete', async () => {
+    it('keeps Settings reachable while the desktop Home facts are incomplete', async () => {
         const screen = await renderScreen(
             <PersonalHomeBootstrapGate isDesktopHost isDesktopMainWindow readFacts={async () => facts}>
-                <View testID="normal-shell" />
+                <View testID="settings-route" />
             </PersonalHomeBootstrapGate>,
         );
-        expect(screen.findByTestId('personal-home-setup-surface')).not.toBeNull();
-        expect(screen.findByTestId('normal-shell')).toBeNull();
+        await flushHookEffects({ cycles: 4, turns: 2 });
+        expect(screen.findByTestId('personal-home-setup-surface')).toBeNull();
+        expect(screen.findByTestId('settings-route')).not.toBeNull();
     });
 
     it('bypasses setup in an overlay window', async () => {

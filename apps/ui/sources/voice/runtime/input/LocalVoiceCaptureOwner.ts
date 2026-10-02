@@ -38,6 +38,7 @@ import {
 import type { VoiceMachineErrorKind } from '@/voice/runtime/machine/voiceConversationRuntimeTypes';
 import type { SttController, SttSink } from '@/voice/input/sttController';
 import { resolveLocalVoiceAdapterSettings } from '@/voice/local/localVoiceSettings';
+import { ensureInterruptionWordSegmentationAvailable } from './segmentInterruptionWords';
 
 type RuntimeCaptureError = Readonly<{
     controlSessionId: string;
@@ -62,6 +63,8 @@ export type StopLocalVoiceCaptureResult =
     | Readonly<{ provider: 'device' | 'local_neural'; text: string; continueHandsFree: boolean }>;
 
 export type LocalVoiceCaptureOwner = Readonly<{
+    /** Whether the session still has its endpoint-driven STT producer. */
+    isCaptureActive: (sessionId: string) => boolean;
     resolveManualBargeInAction: (args: Readonly<{
         bargeInEnabled: boolean;
         currentSessionId: string | null;
@@ -196,6 +199,7 @@ export function createLocalVoiceCaptureOwner(
     // Per-capture streaming state (single capture active at a time).
     let activeAbortController: AbortController | null = null;
     let activeCaptureErrored = false;
+    let activeCaptureStarted = false;
     let pendingCaptureStart: Promise<void> | null = null;
     let pendingFailureCleanup: Promise<void> | null = null;
     let captureLifecycleGeneration = 0;
@@ -280,6 +284,7 @@ export function createLocalVoiceCaptureOwner(
 
         clearMicPlateauWatchdog();
         activeCaptureErrored = true;
+        activeCaptureStarted = false;
         activeCaptureSessionId = null;
         activeCaptureProvider = null;
         activeCaptureSettings = null;
@@ -599,6 +604,7 @@ export function createLocalVoiceCaptureOwner(
         controller: SttController,
         isCurrent: () => boolean,
     ): Promise<Readonly<{ finalText: string; failed: boolean }>> => {
+        if (isCurrent()) activeCaptureStarted = false;
         const result = await controller.stop();
         if ('error' in result) {
             if (isCurrent()) {
@@ -699,6 +705,9 @@ export function createLocalVoiceCaptureOwner(
     };
 
     return {
+        isCaptureActive: (sessionId) => activeCaptureStarted
+            && activeCaptureSessionId === normalizeSessionId(sessionId)
+            && !activeCaptureErrored,
         resolveManualBargeInAction: (args) => runtimeTurnPolicyController.resolveManualBargeInAction(args),
         resolveEndpointSignalAction: (args) => runtimeTurnPolicyController.resolveEndpointSignalAction(args),
         isHandsFreeCaptureSession: ({ sessionId, provider }) =>
@@ -720,11 +729,17 @@ export function createLocalVoiceCaptureOwner(
             pendingCaptureStart = captureStart;
             try {
                 await waitForPendingFailureCleanup();
+                if (handsFree && (provider === 'device' || provider === 'local_neural')) {
+                    // Endpoint/backchannel policy needs real word boundaries;
+                    // refuse setup before acquiring audio on an older binary.
+                    ensureInterruptionWordSegmentationAvailable();
+                }
                 configureHandsFree({ sessionId, provider, handsFree });
                 const normalizedSessionId = normalizeSessionId(sessionId) ?? sessionId;
                 activeCaptureSessionId = normalizedSessionId;
                 activeCaptureProvider = provider;
                 activeCaptureSettings = settings ?? null;
+                activeCaptureStarted = false;
                 switch (provider) {
                 case 'device': {
                     const micSession = getLiveMicSession();
@@ -760,6 +775,7 @@ export function createLocalVoiceCaptureOwner(
                         return;
                     }
                     armMicPlateauWatchdog();
+                    activeCaptureStarted = true;
                     deps.onCaptureStarted(normalizedSessionId);
                     return;
                 }
@@ -815,7 +831,7 @@ export function createLocalVoiceCaptureOwner(
                         await nativeVadController.stopSession().catch(() => {});
                     }
                     try {
-                        await getLocalNeuralSttController(activeLocalNeuralExecution).start({ sessionId: normalizedSessionId, micSession, sink, signal });
+                        await getLocalNeuralSttController(activeLocalNeuralExecution).start({ capturePurpose, sessionId: normalizedSessionId, micSession, sink, signal });
                     } catch (error) {
                         unlinkExternalAbort();
                         await releaseLiveMicAfterFailedStartup(normalizedSessionId, provider, micSession);
@@ -831,6 +847,7 @@ export function createLocalVoiceCaptureOwner(
                         return;
                     }
                     armMicPlateauWatchdog();
+                    activeCaptureStarted = true;
                     deps.onCaptureStarted(normalizedSessionId);
                     return;
                 }
@@ -1007,6 +1024,7 @@ export function createLocalVoiceCaptureOwner(
             deviceSttController = null;
             sherpaSttController = null;
             daemonStreamingSttController = null;
+            activeCaptureStarted = false;
             activeCaptureSessionId = null;
             activeCaptureProvider = null;
             activeCaptureSettings = null;

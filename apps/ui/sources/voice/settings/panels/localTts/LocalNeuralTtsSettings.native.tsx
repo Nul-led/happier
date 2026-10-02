@@ -87,7 +87,7 @@ export function LocalNeuralTtsSettings(props: {
   const voices = usesDaemonExecution ? daemonVoiceSelection.voices : deviceVoices;
   const effectiveVoiceId = usesDaemonExecution
     ? daemonVoiceSelection.selectedVoiceId
-    : props.cfgKokoro.voiceId ?? 'af_heart';
+    : props.cfgKokoro.voiceId ?? installSummary?.manifest?.defaultVoiceId ?? deviceVoices[0]?.id ?? null;
 
   const previewController = React.useMemo(() => createVoicePlaybackController(), []);
   const [previewingVoiceId, setPreviewingVoiceId] = React.useState<string | null>(null);

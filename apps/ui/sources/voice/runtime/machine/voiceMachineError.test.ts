@@ -9,6 +9,13 @@ import {
 } from './voiceMachineError';
 
 describe('createVoiceMachineError', () => {
+    it('projects an installed-client setup refusal through the existing visible setup policy', () => {
+        const error = Object.assign(new Error('voice_text_segmentation_unavailable'), { code: 'provider_setup_required' });
+        expect(classifyVoiceMachineError(error)).toMatchObject({
+            kind: 'provider_setup_required', reason: 'voice_text_segmentation_unavailable',
+            phase: 'preflight', presentation: 'error', recoverable: false,
+        });
+    });
     it('mints complete structured policy for a preflight microphone denial', () => {
         expect(createVoiceMachineError({ kind: 'mic_permission_denied', reason: 'denied' })).toEqual({
             kind: 'mic_permission_denied',

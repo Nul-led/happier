@@ -9,6 +9,7 @@ export type VoiceSessionManager = Readonly<{
   toggle: (targetSessionAddress: SessionAddress | null) => Promise<void>;
   stop: (sessionId: string) => Promise<void>;
   interrupt: (sessionId: string) => Promise<void>;
+  commitInput: (sessionId: string) => Promise<void>;
   setMuted: (sessionId: string, muted: boolean) => Promise<void>;
   sendContextUpdate: (sessionId: string, update: string) => void;
   getSnapshot: () => VoiceSessionSnapshot;
@@ -55,6 +56,10 @@ export function createVoiceSessionManager(deps: Readonly<{
     await lifecycleController.setMuted(sessionId, muted);
   };
 
+  const commitInput = async (sessionId: string) => {
+    await resolveLifecycleController()?.commitInput(sessionId);
+  };
+
   const sendContextUpdate = (sessionId: string, update: string) => {
     const lifecycleController = resolveLifecycleController();
     if (!lifecycleController) return;
@@ -67,6 +72,7 @@ export function createVoiceSessionManager(deps: Readonly<{
     toggle,
     stop,
     interrupt,
+    commitInput,
     setMuted,
     sendContextUpdate,
     getSnapshot: () => resolveLifecycleController()?.getSnapshot() ?? getVoiceSessionSnapshot(),

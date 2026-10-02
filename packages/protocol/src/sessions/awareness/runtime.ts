@@ -58,9 +58,17 @@ export function hasTerminalPrimaryTurnStatusV1(
 }
 
 export function hasProjectedActiveTurnV1(
-  status: PrimaryTurnStatusV1 | null | undefined,
+  status: string | null | undefined,
 ): boolean {
   return status === 'in_progress';
+}
+
+/** Presence and the Session's own persisted turn are independent, clock-free facts. */
+export function isProjectedSessionStalledV1(input: Readonly<{
+  active?: boolean | null;
+  latestTurnStatus: string | null | undefined;
+}>): boolean {
+  return input.active === false && hasProjectedActiveTurnV1(input.latestTurnStatus);
 }
 
 export function hasActivityClearlyAfterTerminalProjectionV1(

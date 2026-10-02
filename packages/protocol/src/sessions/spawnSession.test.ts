@@ -17,6 +17,13 @@ import {
 } from './spawnSession.js';
 
 describe('spawn-session execution authorization', () => {
+  it('preserves bounded terminal-host setup recovery from the daemon', () => {
+    const detail = { kind: 'terminal_host_unavailable', host: 'herdr', reason: 'server_version_unsupported' };
+    expect(normalizeSpawnSessionErrorDetail(detail)).toEqual(detail);
+    expect(normalizeSpawnSessionErrorDetail({ ...detail, reason: 'installation_unavailable' })).toEqual({ ...detail, reason: 'installation_unavailable' });
+    expect(normalizeSpawnSessionErrorDetail({ ...detail, host: 'other' })).toBeUndefined();
+    expect(normalizeSpawnSessionErrorDetail({ ...detail, localPath: '/private' })).toBeUndefined();
+  });
   it('preserves opaque request-id bytes and rejects blank ids without collapsing identities', () => {
     const first = SpawnSessionExecutionAuthorizationSchema.parse({
       provenance: 'user_request',

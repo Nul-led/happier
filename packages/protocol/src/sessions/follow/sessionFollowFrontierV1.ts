@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { SessionIdSchema, TurnIdSchema } from '../idsV1.js';
+import { isProjectedSessionStalledV1 } from '../awareness/runtime.js';
 
 /**
  * Canonical Session Follow frontier.
@@ -26,6 +27,12 @@ export const SessionFollowTerminalTurnV1Schema = z
   .strict();
 export type SessionFollowTerminalTurnV1 = z.infer<typeof SessionFollowTerminalTurnV1Schema>;
 
+/** A deliverable own-turn fact, including presence loss before terminal completion. */
+export const SessionFollowObservedTurnV1Schema = SessionFollowTerminalTurnV1Schema.extend({
+  status: z.enum([...SESSION_FOLLOW_DELIVERED_TURN_STATUSES_V1, 'stalled']),
+});
+export type SessionFollowObservedTurnV1 = z.infer<typeof SessionFollowObservedTurnV1Schema>;
+
 const FrontierSequenceSchema = z.number().int().min(0);
 
 export const SessionFollowFrontierV1Schema = z
@@ -33,7 +40,7 @@ export const SessionFollowFrontierV1Schema = z
     transcriptSeq: FrontierSequenceSchema,
     readyEventSeq: FrontierSequenceSchema,
     agentStateVersion: FrontierSequenceSchema,
-    turn: SessionFollowTerminalTurnV1Schema.nullable(),
+    turn: SessionFollowObservedTurnV1Schema.nullable(),
   })
   .strict();
 export type SessionFollowFrontierV1 = z.infer<typeof SessionFollowFrontierV1Schema>;
@@ -43,7 +50,7 @@ const PersistedSessionFollowFrontierV1Schema = z.object({
   transcriptSeq: FrontierSequenceSchema,
   readyEventSeq: FrontierSequenceSchema,
   agentStateVersion: FrontierSequenceSchema,
-  turn: SessionFollowTerminalTurnV1Schema.nullable(),
+  turn: SessionFollowObservedTurnV1Schema.nullable(),
 }).strict();
 
 export function encodePersistedSessionFollowFrontierV1(frontier: SessionFollowFrontierV1): string {
@@ -89,12 +96,12 @@ function isDeliveredTurnStatus(value: unknown): value is SessionFollowDeliveredT
 /**
  * Projects any nullable component mix onto the one logical frontier. A missing
  * ready-event sequence is logically identical to `0` (pre-ready), and a turn is
- * only carried when both its identity and a closed terminal status are present.
+ * only carried when both its identity and a deliverable own-turn status are present.
  */
 export function normalizeSessionFollowFrontierV1(input: SessionFollowFrontierInputV1): SessionFollowFrontierV1 {
   const turn = input.turn ?? null;
   const turnId = typeof turn?.id === 'string' && turn.id.length > 0 ? turn.id : null;
-  const turnStatus = isDeliveredTurnStatus(turn?.status) ? turn.status : null;
+  const turnStatus = turn?.status === 'stalled' || isDeliveredTurnStatus(turn?.status) ? turn.status : null;
   return {
     transcriptSeq: normalizeSequence(input.transcriptSeq),
     readyEventSeq: normalizeSequence(input.readyEventSeq),
@@ -109,11 +116,14 @@ export type SessionFollowSourceFrontierFactsV1 = Readonly<{
   agentStateVersion: number | null | undefined;
   latestTurnId: string | null | undefined;
   latestTurnStatus: string | null | undefined;
+  /** Supplied only by the reports-to presence observation, never by ordinary Follow. */
+  active?: boolean | null;
 }>;
 
 /**
  * Projects the current frontier from the canonical source Session row. A
- * non-terminal latest turn yields `null` rather than a partial turn state.
+ * reachable non-terminal latest turn yields `null`; an inactive in-flight own
+ * turn carries the exact stalled identity through the same delivery/ACK path.
  */
 export function projectSessionFollowFrontierFromSourceV1(
   source: SessionFollowSourceFrontierFactsV1,
@@ -122,13 +132,14 @@ export function projectSessionFollowFrontierFromSourceV1(
     transcriptSeq: source.seq,
     readyEventSeq: source.latestReadyEventSeq,
     agentStateVersion: source.agentStateVersion,
-    turn: { id: source.latestTurnId, status: source.latestTurnStatus },
+    turn: { id: source.latestTurnId,
+      status: isProjectedSessionStalledV1(source) ? 'stalled' : source.latestTurnStatus },
   });
 }
 
-export function isSessionFollowTerminalTurnEqualV1(
-  left: SessionFollowTerminalTurnV1 | null,
-  right: SessionFollowTerminalTurnV1 | null,
+export function isSessionFollowTurnEqualV1(
+  left: SessionFollowObservedTurnV1 | null,
+  right: SessionFollowObservedTurnV1 | null,
 ): boolean {
   if (left === null || right === null) return left === right;
   return left.id === right.id && left.status === right.status;
@@ -141,7 +152,7 @@ export function isSessionFollowFrontierEqualV1(
   return left.transcriptSeq === right.transcriptSeq
     && left.readyEventSeq === right.readyEventSeq
     && left.agentStateVersion === right.agentStateVersion
-    && isSessionFollowTerminalTurnEqualV1(left.turn, right.turn);
+    && isSessionFollowTurnEqualV1(left.turn, right.turn);
 }
 
 export type SessionFollowFrontierProgressV1 = 'equal' | 'ahead' | 'behind';
@@ -149,7 +160,7 @@ export type SessionFollowFrontierProgressV1 = 'equal' | 'ahead' | 'behind';
 /**
  * Compares `candidate` against an already delivered `delivered` frontier.
  *
- * Numeric components are monotone. Terminal turns are not ordered: a different
+ * Numeric components are monotone. Deliverable turns are not ordered: a different
  * exact `(id, status)` is progress, never a comparison, so turn identity is
  * never sorted lexically or by timestamp.
  */
@@ -170,9 +181,9 @@ export function compareSessionFollowFrontierProgressV1(
 /**
  * Checks one ACK against the stored lower bound, the exact observe response
  * that produced the delivery, and the source frontier visible at ACK time.
- * Terminal turns are identities rather than ordered counters, so consumption
+ * Deliverable turns are identities rather than ordered counters, so consumption
  * must name the observed turn exactly; the server separately requires it to
- * remain the current terminal turn before advancing persistence.
+ * remain the current deliverable turn before advancing persistence.
  */
 export function isSessionFollowConsumptionWithinCurrentV1(input: Readonly<{
   expected: SessionFollowFrontierV1;
@@ -187,7 +198,7 @@ export function isSessionFollowConsumptionWithinCurrentV1(input: Readonly<{
     && consumed.transcriptSeq <= observed.transcriptSeq
     && consumed.readyEventSeq <= observed.readyEventSeq
     && consumed.agentStateVersion <= observed.agentStateVersion
-    && isSessionFollowTerminalTurnEqualV1(consumed.turn, observed.turn)
+    && isSessionFollowTurnEqualV1(consumed.turn, observed.turn)
     && consumed.transcriptSeq <= current.transcriptSeq
     && consumed.readyEventSeq <= current.readyEventSeq
     && consumed.agentStateVersion <= current.agentStateVersion;

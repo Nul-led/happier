@@ -130,6 +130,8 @@ export function createLazyExecutionRunHostRuntime(params: Readonly<{
       const runtime = await resolveRuntime();
       return await runtime.readResumeSupport(opts);
     },
+    readProviderSessionId: () => resolvedRuntime?.readProviderSessionId?.bind(resolvedRuntime),
+    readCanContinueAfterCancellation: () => resolvedRuntime?.canContinueAfterCancellation?.bind(resolvedRuntime),
     async provisionRuntime(opts) {
       const provisionPromise = (async () => {
         const runtime = await resolveRuntime();

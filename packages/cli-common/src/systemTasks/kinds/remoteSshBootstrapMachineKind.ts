@@ -443,6 +443,13 @@ export function createRemoteSshBootstrapMachineTaskKind(
         }
       }
 
+        ctx.emit({
+          type: 'progress',
+          stepId: 'ssh.installCli',
+          message: 'Ensuring Happier is installed on the remote machine',
+        });
+        await installRemoteCli({ parsed: parsedRemote, auth, knownHostsMode });
+
         let relayRuntime: Readonly<{ relayUrl: string; mode: 'user' | 'system' }> | undefined;
         let relayRuntimeLocalServerUrl: string | undefined;
         if (parsedRemote.relayRuntime?.enabled === true) {
@@ -511,12 +518,6 @@ export function createRemoteSshBootstrapMachineTaskKind(
 
       const webappUrl = deriveWebappUrl(parsedRemote.relay.relayUrl, parsedRemote.relay.webappUrl);
 
-      ctx.emit({
-        type: 'progress',
-        stepId: 'ssh.installCli',
-        message: 'Ensuring Happier is installed on the remote machine',
-      });
-
       const relayProfile = {
         serverUrl: parsedRemote.relay.relayUrl,
         webappUrl,
@@ -539,7 +540,6 @@ export function createRemoteSshBootstrapMachineTaskKind(
         knownHostsMode,
         ...(relayRuntimeLocalServerUrl ? { localServerUrl: relayRuntimeLocalServerUrl } : {}),
         serviceMode: parsedRemote.serviceMode ?? 'user',
-        installRemoteCli,
         runRemoteCommand,
         signal: ctx.signal,
         ...(deps.createHappierJsonExecutor ? { createHappierJsonExecutor: deps.createHappierJsonExecutor } : {}),

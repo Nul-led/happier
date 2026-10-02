@@ -212,7 +212,7 @@ describe('attention standing placement', () => {
                 })),
         });
 
-        expect(result?.attentionItems.map((item) => (item.type === 'session' ? item.sessionId : item.headerKind))).toEqual([
+        expect(result?.attentionItems.map((item) => (item.type === 'session' ? item.sessionId : item.type === 'header' ? item.headerKind : `run:${item.runId}`))).toEqual([
             'attention',
             'unread',
             'kept',

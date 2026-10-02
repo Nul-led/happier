@@ -143,7 +143,7 @@ function extractBundledOwner(raw: unknown): VoiceProviderSettingsOwner | null {
       localId: publicDeclaration.data.id,
     }));
     const settings = createExternalVoiceProviderSettingsDescriptor(publicDeclaration.data.settings);
-    const releasedCompatibility = getReleasedVoiceSettingsCompatibility(providerId);
+    const releasedCompatibility = getReleasedVoiceSettingsCompatibility(providerId, settings);
     return Object.freeze({
       providerId,
       currentSchemaVersion: settings.schemaVersion,

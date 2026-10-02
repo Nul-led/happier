@@ -6,7 +6,7 @@ import { pressTestInstanceAsync, renderScreen, standardCleanup } from '@/dev/tes
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { createModelBackedSessionItemTestComponent } from './sessionItemRowViewModelTestFixture';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
-import { SessionListSelectionProvider } from './selection/SessionListSelectionContext';
+import { SessionListSelectionProvider, createSessionListSelectionStore } from './selection/SessionListSelectionContext';
 import { SESSION_ACTION_RENAME_ID } from '@/components/sessions/actions/sessionActionIds';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -158,8 +158,10 @@ vi.mock('@/sync/ops', async (importOriginal) => {
     });
 });
 
+// Collect the real owner before test execution. A cold graph transform inside
+// a timed test can finish after cleanup and contaminate the next renderer.
+const { SessionItem } = await import('./SessionItem');
 async function importSessionItem() {
-    const { SessionItem } = await import('./SessionItem');
     return createModelBackedSessionItemTestComponent(SessionItem);
 }
 
@@ -657,7 +659,7 @@ describe('SessionItem context menu press suppression', () => {
         expect(sessionRenameSpy).toHaveBeenCalledWith('sess_rename', 'Renamed Session', { serverId: 'server_a' });
     });
 
-    it('keeps the session identity visible on web row hover outside selection mode', async () => {
+    it('does not show selection checkboxes merely on hover', async () => {
         platformOs = 'web';
         const SessionItem = await importSessionItem();
         const session = createSessionFixture({
@@ -692,7 +694,7 @@ describe('SessionItem context menu press suppression', () => {
         });
 
         expect(screen.tree.root.findAllByProps({ testID: 'session-list-selection-checkbox-sess_hover' })).toHaveLength(0);
-        expect(screen.tree.root.findAllByType('Avatar' as React.ElementType)).toHaveLength(1);
+        expect(navigateToSessionSpy).not.toHaveBeenCalled();
     });
 
     it('adds a web more-menu Select entry that enters selection mode for the row', async () => {
@@ -737,6 +739,44 @@ describe('SessionItem context menu press suppression', () => {
 
         const checkbox = screen.findByProps({ testID: 'session-list-selection-checkbox-sess_web_select' });
         expect(checkbox.props.accessibilityState).toEqual({ checked: true });
+    });
+
+    it('tracks keyboard focus independently from the selected row', async () => {
+        platformOs = 'web';
+        const SessionItem = await importSessionItem();
+        const keys = ['server_a:first', 'server_a:second'] as const;
+        const store = createSessionListSelectionStore({ scopeKey: 'scope-a', visibleOrderedKeys: keys });
+        store.replaceWith(keys[0]);
+        const screen = await renderScreen(
+            <SessionListSelectionProvider scopeKey="scope-a" visibleOrderedKeys={keys} store={store}>
+                <SessionItem session={createSessionFixture({ id: 'second' })}
+                    serverId="server_a" selectionKey={keys[1]} />
+            </SessionListSelectionProvider>,
+        );
+        const row = screen.findByProps({ testID: 'session-list-item-second' });
+        await act(async () => { row.props.onFocus?.(); });
+        expect(store.getSnapshot().focusedKey).toBe(keys[1]);
+        expect(Array.from(store.getSnapshot().selectedKeys)).toEqual([keys[0]]);
+    });
+
+    it('keeps touch long-press as a menu, whose Select item enters selection', async () => {
+        const SessionItem = await importSessionItem();
+        const selectionKey = 'server_a:sess_touch_select';
+        const screen = await renderScreen(
+            <SessionListSelectionProvider scopeKey="scope-a" visibleOrderedKeys={[selectionKey]}>
+                <SessionItem session={createSessionFixture({ id: 'sess_touch_select' })}
+                    serverId="server_a" selectionKey={selectionKey} />
+            </SessionListSelectionProvider>,
+        );
+        const row = screen.findByProps({ testID: 'session-list-item-sess_touch_select' });
+        await act(async () => { row.props.onLongPress(); });
+        expect(screen.tree.root.findAllByProps({ testID: 'session-list-selection-checkbox-sess_touch_select' })).toHaveLength(0);
+        await act(async () => { row.props.onPress(); });
+        expect(navigateToSessionSpy).not.toHaveBeenCalled();
+        const menu = screen.findByType('ContextMenu' as React.ElementType);
+        expect(hasSelectMenuItem(menu.props.items)).toBe(true);
+        await act(async () => { menu.props.onSelect('selection.select'); });
+        expect(screen.findByProps({ testID: 'session-list-selection-checkbox-sess_touch_select' }).props.accessibilityState.checked).toBe(true);
     });
 
     it('offers fork in the session row dropdown without a subtitle and opens the shared fork flow', async () => {

@@ -1,9 +1,37 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { reloadConfiguration } from '@/configuration';
+import { listExecutionRunMarkers, listExecutionRunMarkersForRehydration } from '@/daemon/executionRunRegistry';
 
-const writeExecutionRunMarkerMock = vi.fn(async (_marker: unknown) => undefined);
-vi.mock('@/daemon/executionRunRegistry', () => ({
-  writeExecutionRunMarker: (marker: unknown) => writeExecutionRunMarkerMock(marker),
-}));
+const filesystemBoundary = vi.hoisted(() => ({ rejectMarkerRename: false }));
+// Fail only the marker's OS publication; retain real parsing and lifecycle custody.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, rename: async (...args: Parameters<typeof actual.rename>) => {
+    if (filesystemBoundary.rejectMarkerRename && String(args[1]).endsWith('run-run_required.json')) {
+      throw new Error('marker disk unavailable');
+    }
+    return await actual.rename(...args);
+  } };
+});
+
+let directory: string;
+beforeEach(() => {
+  directory = mkdtempSync(join(tmpdir(), 'happier-run-marker-'));
+  vi.stubEnv('HAPPIER_HOME_DIR', directory);
+  vi.stubEnv('HAPPIER_PUBLIC_RELEASE_CHANNEL', undefined);
+  vi.stubEnv('HAPPIER_RELEASE_RING', undefined);
+  vi.stubEnv('HAPPIER_RELEASE_CHANNEL', undefined);
+  filesystemBoundary.rejectMarkerRename = false;
+  reloadConfiguration();
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  reloadConfiguration();
+  rmSync(directory, { recursive: true, force: true });
+});
 
 import { writeExecutionRunActivityMarker } from './activityMarkers';
 import type { ExecutionRunState } from './executionRunTypes';
@@ -56,7 +84,7 @@ describe('writeExecutionRunActivityMarker marker privacy', () => {
       enqueueMarkerWrite: async (_runId, write) => await write(),
     });
 
-    const marker = writeExecutionRunMarkerMock.mock.calls.at(-1)?.[0];
+    const marker = (await listExecutionRunMarkersForRehydration()).find((item) => item.runId === run.runId);
     expect(marker).toMatchObject({
       permissionMode: 'default',
       retentionPolicy: 'resumable',
@@ -76,10 +104,12 @@ describe('writeExecutionRunActivityMarker marker privacy', () => {
     expect(marker).not.toHaveProperty('summary');
     expect(JSON.stringify(marker)).not.toContain('/tmp/project');
     expect(JSON.stringify(marker)).not.toContain('profile_1');
+    expect((await listExecutionRunMarkers()).find((item) => item.runId === run.runId))
+      .not.toHaveProperty('executionRunConnectedServicesCleanupReceiptV1');
   });
 
   it('keeps marker publication best-effort when an in-memory launch fact is registered', async () => {
-    writeExecutionRunMarkerMock.mockRejectedValueOnce(new Error('marker disk unavailable'));
+    filesystemBoundary.rejectMarkerRename = true;
     const run = {
       runId: 'run_required',
       callId: 'call_required',
@@ -164,12 +194,13 @@ describe('writeExecutionRunActivityMarker marker privacy', () => {
       enqueueMarkerWrite: async (_runId, write) => await write(),
     });
 
-    expect(writeExecutionRunMarkerMock.mock.calls.at(-1)?.[0]).toMatchObject({
+    const marker = (await listExecutionRunMarkers()).find((item) => item.runId === run.runId);
+    expect(marker).toMatchObject({
       runId: run.runId,
       intent: 'voice_agent',
       happySessionId: run.sessionId,
     });
-    expect(writeExecutionRunMarkerMock.mock.calls.at(-1)?.[0])
+    expect(marker)
       .not.toHaveProperty('executionRunBrokerAuthorityV1');
   });
 });

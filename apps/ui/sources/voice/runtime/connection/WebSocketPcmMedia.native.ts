@@ -95,7 +95,6 @@ export function createWebSocketPcmMedia(input: Readonly<{
   input: Readonly<{ sampleRate: number; chunkMs: number }>;
   output: Readonly<{
     sampleRate: number;
-    maxBufferedMs: number;
     retainedOutputMaxMs?: number;
   }>;
   onInputChunk(base64Pcm16Le: string): void;
@@ -263,7 +262,6 @@ export function createWebSocketPcmMedia(input: Readonly<{
           format: {
             sampleRate: input.output.sampleRate,
             channels: 1,
-            maxBufferedMs: input.output.maxBufferedMs,
           },
           onOutputLevel: publishOutputLevel,
           onError: failTerminal,

@@ -5,7 +5,7 @@ import {
 import { fetchEncryptedTranscriptMessagesPage } from '@/session/replay/fetchEncryptedTranscriptMessages';
 import type { SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
 
-import type { MemoryContentPolicy } from './contentPolicy';
+import { normalizeMemoryContentPolicy, type MemoryContentPolicy } from './contentPolicy';
 import { mapSemanticTranscriptItemToMemoryIndexable } from './extractIndexableItem';
 import type { MemoryIndexableTranscriptItem } from './indexableItem';
 import { isLegacyUnclassifiedTranscriptRow } from './legacyUnclassifiedTranscriptRows';
@@ -40,6 +40,7 @@ export async function fetchMemorySemanticTranscriptPage(params: Readonly<{
   fetchPage?: FetchTranscriptRawPage;
   signal?: AbortSignal;
 }>): Promise<FetchMemorySemanticTranscriptPageResult> {
+  const policy = normalizeMemoryContentPolicy(params.contentPolicy);
   const fetchSemanticPage = async (
     serverRoles: readonly ['user', 'agent'] | undefined,
     fetchPage: FetchTranscriptRawPage | undefined = params.fetchPage,
@@ -58,8 +59,8 @@ export async function fetchMemorySemanticTranscriptPage(params: Readonly<{
     ...(serverRoles ? { serverRoles } : {}),
     mode: 'transcript',
     transcriptRoles: ['user', 'assistant'],
-    includeReasoning: params.contentPolicy?.includeReasoning === true,
-    includeTools: params.contentPolicy?.includeToolSummaries === true,
+    includeReasoning: policy.includeReasoning,
+    includeTools: policy.includeToolSummaries || policy.includeToolOutputs,
     ...(params.signal ? { signal: params.signal } : {}),
     ...(fetchPage ? { fetchPage } : {}),
   });

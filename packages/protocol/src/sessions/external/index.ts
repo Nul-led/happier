@@ -219,6 +219,7 @@ export {
 export {
   EXTERNAL_SESSION_OPERATION_SOCKET_EVENT_V1,
   EXTERNAL_SESSION_OPERATION_SOCKET_MAX_BATCH_ITEMS_V1,
+  ExternalSessionMaterializeActionInputV1Schema,
   ExternalSessionMaterializeActionResultV1Schema,
   ExternalSessionMaterializeStartInputV1Schema,
   ExternalSessionOperationActionErrorCodeV1Schema,
@@ -240,6 +241,8 @@ export {
   ExternalSessionTakeoverStartInputV1Schema,
   authorizeExternalSessionOperationSocketCommandV1,
   makeExternalSessionHistoricalImportBatchIdV1,
+  projectExternalSessionMaterializeActionResultV1,
+  projectExternalSessionOperationActionResultV1,
   resolveExternalSessionOperationSocketBatchLimitsV1,
   validateExternalSessionOperationSocketBatchV1,
   type ExternalSessionMaterializeActionResultV1,

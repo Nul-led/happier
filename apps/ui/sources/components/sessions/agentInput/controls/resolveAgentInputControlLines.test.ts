@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 
-import { AGENT_INPUT_CONTROL_REGISTRY } from './agentInputControlRegistry';
 import { resolveAgentInputControlLines } from './resolveAgentInputControlLines';
 
 describe('resolveAgentInputControlLines', () => {
@@ -136,34 +135,11 @@ describe('resolveAgentInputControlLines', () => {
     });
 
     it('keeps stop pinned in the early primary order defined by the canonical registry', () => {
-        expect(AGENT_INPUT_CONTROL_REGISTRY.map((control) => control.id)).toEqual([
-            'engine',
-            'mode',
-            'goal',
-            'permission',
-            'actionMenu',
-            'profile',
-            'env',
-            'server',
-            'connectedServices',
-            'mcp',
-            'checkout',
-            'automation',
-            'stop',
-            'sessionAccess',
-            'recipient',
-            'delivery',
-            'attachments',
-            'linkedFiles',
-            'files',
-            'reviewComments',
-            'storage',
-            'windowsRemoteSessionMode',
-            'providerOption',
-            'shortcuts',
-            'machine',
-            'path',
-            'resume',
+        const lines = resolveAgentInputControlLines({ layout: 'collapsed', controlIds: [
+            'path', 'workflowTargets', 'sessionAccess', 'stop', 'workflowInputs', 'machine', 'automation', 'workflowRoles', 'workflow',
+        ] });
+        expect(lines.collapsed).toEqual([
+            'workflow', 'workflowInputs', 'workflowRoles', 'workflowTargets', 'automation', 'stop', 'sessionAccess', 'machine', 'path',
         ]);
     });
 });

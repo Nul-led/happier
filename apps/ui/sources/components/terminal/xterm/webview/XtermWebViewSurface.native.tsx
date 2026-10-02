@@ -18,6 +18,7 @@ import {
     estimateXtermWebViewTextWriteBytes,
 } from './writeQueue';
 import { buildXtermWebViewHtml } from './xtermWebViewHtml';
+import type { EmbeddedTerminalWriteOptions } from '../../embedded/embeddedTerminalRendererHandle';
 
 const XTERM_WEBVIEW_BOOT_RETRY_LIMIT = 1;
 // Inline readiness retries finish in roughly 1.5 seconds; this only bounds a WebView that never boots.
@@ -31,7 +32,7 @@ function createMessageId(): string {
 }
 
 export type XtermWebViewSurfaceHandle = Readonly<{
-    write: (data: string) => boolean;
+    write: (data: string, options?: EmbeddedTerminalWriteOptions) => boolean;
     writeBytes: (input: XtermWriteBytesInput) => boolean | Readonly<{ status: 'queued' }>;
     clear: () => void;
     focus: () => void;
@@ -272,10 +273,10 @@ export const XtermWebViewSurface = React.forwardRef<XtermWebViewSurfaceHandle, X
         React.useImperativeHandle(
             ref,
             () => ({
-                write: (data: string) => {
+                write: (data: string, options?: EmbeddedTerminalWriteOptions) => {
                     if (!data) return true;
                     return enqueueEnvelope(
-                        { v: 1, type: 'write', payload: { data } },
+                        { v: 1, type: 'write', payload: { data, ...(options ? { intent: options.intent } : {}) } },
                         estimateXtermWebViewTextWriteBytes(data),
                     );
                 },

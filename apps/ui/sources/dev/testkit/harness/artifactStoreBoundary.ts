@@ -59,11 +59,16 @@ function isVersion(value: unknown): value is number {
     return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
-export function createArtifactStoreBoundary(): ArtifactStoreBoundary {
+export function createArtifactStoreBoundary(params: Readonly<{
+    ownerAccountId: () => string | null;
+    encryptionMode: 'plain' | 'e2ee';
+}>): ArtifactStoreBoundary {
     const rows = new Map<string, Artifact>();
     let pendingBeforeUpdate: (() => Promise<void>) | null = null;
 
     const create = (input: Record<string, unknown> | null): Response => {
+        const ownerAccountId = params.ownerAccountId();
+        if (!ownerAccountId) return json({ error: 'Not authenticated' }, 401);
         const { id, header, body, dataEncryptionKey } = input ?? {};
         if (typeof id !== 'string' || typeof header !== 'string' || typeof body !== 'string'
             || typeof dataEncryptionKey !== 'string') {
@@ -75,6 +80,7 @@ export function createArtifactStoreBoundary(): ArtifactStoreBoundary {
         if (existing) return json(existing);
         const now = Date.now();
         const row: Artifact = {
+            ownerAccountId, access: 'owner', encryptionMode: params.encryptionMode,
             id, header, headerVersion: 1, body, bodyVersion: 1, dataEncryptionKey, seq: 0, createdAt: now, updatedAt: now,
         };
         rows.set(id, row);

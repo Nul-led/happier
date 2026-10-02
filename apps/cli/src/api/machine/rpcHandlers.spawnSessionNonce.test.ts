@@ -26,7 +26,7 @@ describe('registerMachineSpawnSessionNonceRpcHandlers', () => {
     expect(current).toBeDefined();
     expect(predecessor).toBeDefined();
 
-    await expect(current?.({ spawnNonce: ' current ' })).resolves.toEqual({
+    await expect(current?.({ spawnNonce: ' current ', timeoutMs: 90_000 })).resolves.toEqual({
       status: 'success',
       sessionId: 'session-1',
     });
@@ -35,8 +35,8 @@ describe('registerMachineSpawnSessionNonceRpcHandlers', () => {
       sessionId: 'session-1',
     });
     expect(resolveSpawnSessionByNonce.mock.calls).toEqual([
-      ['current'],
-      ['predecessor'],
+      ['current', 90_000],
+      ['predecessor', undefined],
     ]);
   });
 });

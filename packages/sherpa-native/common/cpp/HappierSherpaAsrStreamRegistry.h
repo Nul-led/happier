@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -31,12 +32,8 @@ namespace happier_sherpa {
  * audio: `SherpaOnnxOnlineStreamInputFinished` has already been called on the
  * stream, so a further push would feed a closed stream.
  *
- * The handle types are template parameters because the two vendored sherpa-onnx
- * headers disagree about const-qualification -- the Android C API declares
- * `SherpaOnnxOnlineStream *SherpaOnnxCreateOnlineStream(...)` while the iOS
- * xcframework declares `const SherpaOnnxOnlineStream *` -- and because keeping
- * sherpa types out of this header is what lets both platforms share one owner
- * and lets that owner be unit-tested on the host toolchain.
+ * The handle types are template parameters to keep the inference library at
+ * the external boundary and let this lifetime owner run on the host toolchain.
  */
 template <typename Recognizer, typename Stream>
 class AsrStreamJob {
@@ -55,6 +52,11 @@ class AsrStreamJob {
   Recognizer *recognizer() const noexcept { return recognizer_.get(); }
   Stream *stream() const noexcept { return stream_.get(); }
 
+  // Owned by the ordered ASR worker, alongside waveform admission/decode.
+  // Finish must retain this rate when sherpa has created an input resampler.
+  void recordInputSampleRate(int32_t sampleRate) noexcept { inputSampleRate_ = sampleRate; }
+  int32_t inputSampleRate() const noexcept { return inputSampleRate_; }
+
   void cancel() noexcept { cancelled_.store(true, std::memory_order_relaxed); }
   bool cancelled() const noexcept { return cancelled_.load(std::memory_order_relaxed); }
 
@@ -69,6 +71,7 @@ class AsrStreamJob {
   const std::string assetsDir_;
   const std::shared_ptr<Recognizer> recognizer_;
   const std::shared_ptr<Stream> stream_;
+  int32_t inputSampleRate_ = 16000;
   std::atomic<bool> cancelled_{false};
   std::atomic<bool> finishing_{false};
 };

@@ -141,6 +141,7 @@ export function createExternalMcpServer(params: Readonly<{
             sessionId: 'cli-global',
           },
           {
+            invokeContributedAction: async (request) => pluginExecutor.invokeContributedAction(request),
             ...createAccountServerActionDeps({
               token: params.credentials.token,
               credentials: params.credentials,
@@ -202,21 +203,17 @@ export function createExternalMcpServer(params: Readonly<{
                   error: 'daemon_unavailable',
                 },
               });
-        return createDaemonPluginActionExecutor({
+        const pluginExecutor = createDaemonPluginActionExecutor({
           base: pinnedBaseExecutor,
           ...(requestPluginActionExecution ? { requestPluginActionExecution } : {}),
         });
+        return pluginExecutor;
       })();
 
   const mcp = new McpServer({
     name: 'Happier MCP',
     version: '1.0.0',
-  });
-
-  registerHappierMcpResources(mcp as any, {
-    surface: toolSurface,
-    isActionEnabled,
-  });
+  }, { capabilities: { resources: { subscribe: true } } });
 
   const actionToolBridge = createActionToolExecutorBridge({
     executor,
@@ -231,6 +228,13 @@ export function createExternalMcpServer(params: Readonly<{
     resolveSessionListAccess: (defaultSessionId) => (
       defaultSessionAddress?.sessionId === defaultSessionId ? 'current_session' : undefined
     ),
+  });
+
+  registerHappierMcpResources(mcp, {
+    surface: toolSurface,
+    isActionEnabled,
+    watch: { server: mcp, execute: actionToolBridge.executeActionByToolName,
+      defaultSessionId: defaultSessionAddress?.sessionId ?? 'cli-global', isEnabled: () => isActionEnabled('wait') },
   });
 
   const { toolNames } = registerHappierMcpBuiltInTools(mcp as any, {
@@ -254,5 +258,5 @@ export function createExternalMcpServer(params: Readonly<{
     },
   });
 
-  return { mcp, toolNames };
+  return { mcp, toolNames: [...toolNames, 'watch'] };
 }

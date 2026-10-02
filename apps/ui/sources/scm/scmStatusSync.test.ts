@@ -5,6 +5,7 @@ import { apiSocket } from '@/sync/api/session/apiSocket';
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { EMPTY_SCM_CAPABILITIES } from './core/snapshotMappers';
+import { buildSnapshotSignature } from './statusSync/projectState';
 
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import {
@@ -51,6 +52,13 @@ describe('isSessionPathWithinRepoRoot', () => {
 });
 
 describe('repository scope snapshot publication and reuse', () => {
+    it('publishes changed HEAD and upstream observations even when status shape is unchanged', () => {
+        const base = makeSnapshot([]);
+        const observed = { ...base, branch: { ...base.branch, headOid: 'a'.repeat(40), upstreamOid: 'b'.repeat(40) } };
+        expect(buildSnapshotSignature({ ...observed, branch: { ...observed.branch, headOid: 'c'.repeat(40) } })).not.toBe(buildSnapshotSignature(observed));
+        expect(buildSnapshotSignature({ ...observed, branch: { ...observed.branch, upstreamOid: 'd'.repeat(40) } })).not.toBe(buildSnapshotSignature(observed));
+    });
+
     const initialState = storage.getState();
     afterEach(() => {
         storage.setState(initialState, true);

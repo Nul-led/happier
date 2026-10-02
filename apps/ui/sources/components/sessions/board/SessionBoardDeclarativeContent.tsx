@@ -80,6 +80,7 @@ export function SessionBoardDeclarativeContent(props: Readonly<{
                 minimumTouchTarget,
                 localize: readDeclarativeText,
                 useSharedSpinner: true,
+                markdownProfile: 'widget',
                 resolveAction,
                 renderField: renderNothing,
                 renderCollectionList: renderNothing,

@@ -4,6 +4,8 @@ import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient'
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { normalizeBaseUrl } from '@/diagnostics/httpClient';
 import { isAuthenticationStatus, readHttpStatus } from '@/api/client/httpStatusError';
+import { serializeAxiosErrorForLog } from '@/api/client/serializeAxiosErrorForLog';
+import { logger } from '@/ui/logger';
 
 import type { UsageObservation } from './usageObservation';
 import {
@@ -15,6 +17,10 @@ import { buildUsageEventIngestRequest } from './buildUsageEventIngestRequest';
 type UsageObservationPublisherMode = 'unknown' | 'v2' | 'legacy';
 
 type PostJsonResult = Readonly<{ ok: true }>;
+
+export type UsageObservationPublishResult =
+    | Readonly<{ status: 'sent'; transport: 'v2' | 'legacy' }>
+    | Readonly<{ status: 'skipped' | 'failed' }>;
 
 function isUnsupportedHttpStatus(status: number | null | undefined): boolean {
     return status === 404 || status === 405 || status === 501;
@@ -56,12 +62,16 @@ export function createUsageObservationPublisher(params: Readonly<{
         path: string;
         body: unknown;
     }>) => Promise<PostJsonResult>;
-    emitLegacyUsageReport: (report: UsageReportV1) => void;
-    onPublishError?: (error: unknown) => void;
+    emitLegacyUsageReport: (report: UsageReportV1) => void | boolean;
 }>) {
     let mode: UsageObservationPublisherMode = 'unknown';
     let ingestPath: string | null = null;
     let currentToken = params.token;
+
+    function publishFailure(error: unknown): UsageObservationPublishResult {
+        logger.warn('[USAGE] Failed to publish usage observation (non-fatal)', serializeAxiosErrorForLog(error));
+        return { status: 'failed' };
+    }
 
     async function resolveModeForPublish(): Promise<Readonly<{ mode: UsageObservationPublisherMode; path: string | null }>> {
         if (mode === 'v2' && ingestPath) {
@@ -99,13 +109,19 @@ export function createUsageObservationPublisher(params: Readonly<{
     function emitLegacyReport(params2: Readonly<{
         sessionId: string;
         observation: UsageObservation;
-    }>): void {
+    }>): UsageObservationPublishResult {
         const report = buildLegacyUsageReportFromUsageObservation({
             sessionId: params2.sessionId,
             observation: params2.observation,
         });
-        if (report) {
-            params.emitLegacyUsageReport(report);
+        if (!report) return { status: 'skipped' };
+        try {
+            if (params.emitLegacyUsageReport(report) === false) {
+                return publishFailure(new Error('Usage report transport is disconnected.'));
+            }
+            return { status: 'sent', transport: 'legacy' };
+        } catch (error) {
+            return publishFailure(error);
         }
     }
 
@@ -121,8 +137,13 @@ export function createUsageObservationPublisher(params: Readonly<{
             turnId?: string | null;
             externalKey?: string | null;
             metadata?: Record<string, unknown>;
-        }>): Promise<void> {
-            const publishMode = await resolveModeForPublish();
+        }>): Promise<UsageObservationPublishResult> {
+            let publishMode: Awaited<ReturnType<typeof resolveModeForPublish>>;
+            try {
+                publishMode = await resolveModeForPublish();
+            } catch (error) {
+                return publishFailure(error);
+            }
             if (publishMode.mode === 'v2' && publishMode.path) {
                 const request = buildUsageEventIngestRequest({
                     sessionId: input.sessionId,
@@ -136,7 +157,7 @@ export function createUsageObservationPublisher(params: Readonly<{
                     externalKey: input.externalKey,
                     metadata: input.metadata,
                 });
-                if (!request) return;
+                if (!request) return { status: 'skipped' };
 
                 try {
                     await (params.postJson ?? defaultPostJson)({
@@ -145,21 +166,26 @@ export function createUsageObservationPublisher(params: Readonly<{
                         path: publishMode.path,
                         body: request,
                     });
-                    return;
+                    return { status: 'sent', transport: 'v2' };
                 } catch (error) {
                     const status = readHttpStatus(error);
                     if (isUnsupportedHttpStatus(status)) {
                         mode = 'legacy';
                         ingestPath = null;
-                        emitLegacyReport({
+                        return emitLegacyReport({
                             sessionId: input.sessionId,
                             observation: input.observation,
                         });
-                        return;
                     }
 
                     if (isAuthenticationStatus(status)) {
-                        const refreshedToken = (await params.resolveToken?.())?.trim() ?? null;
+                        let refreshedToken: string | null;
+                        try {
+                            refreshedToken = (await params.resolveToken?.())?.trim() ?? null;
+                        } catch (refreshError) {
+                            publishFailure(refreshError);
+                            return emitLegacyReport({ sessionId: input.sessionId, observation: input.observation });
+                        }
                         if (refreshedToken && refreshedToken.length > 0) {
                             currentToken = refreshedToken;
                             try {
@@ -169,41 +195,37 @@ export function createUsageObservationPublisher(params: Readonly<{
                                     path: publishMode.path,
                                     body: request,
                                 });
-                                return;
+                                return { status: 'sent', transport: 'v2' };
                             } catch (retryError) {
                                 const retryStatus = readHttpStatus(retryError);
                                 if (isUnsupportedHttpStatus(retryStatus)) {
                                     mode = 'legacy';
                                     ingestPath = null;
-                                    emitLegacyReport({
+                                    return emitLegacyReport({
                                         sessionId: input.sessionId,
                                         observation: input.observation,
                                     });
-                                    return;
                                 }
-                                emitLegacyReport({
+                                publishFailure(retryError);
+                                return emitLegacyReport({
                                     sessionId: input.sessionId,
                                     observation: input.observation,
                                 });
-                                params.onPublishError?.(retryError);
-                                return;
                             }
                         }
 
-                        emitLegacyReport({
+                        publishFailure(error);
+                        return emitLegacyReport({
                             sessionId: input.sessionId,
                             observation: input.observation,
                         });
-                        params.onPublishError?.(error);
-                        return;
                     }
 
-                    params.onPublishError?.(error);
-                    return;
+                    return publishFailure(error);
                 }
             }
 
-            emitLegacyReport({
+            return emitLegacyReport({
                 sessionId: input.sessionId,
                 observation: input.observation,
             });

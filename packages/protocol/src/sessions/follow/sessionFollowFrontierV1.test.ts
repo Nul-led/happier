@@ -12,6 +12,20 @@ import {
 } from './sessionFollowFrontierV1.js';
 
 describe('SessionFollowFrontierV1', () => {
+  it('makes inactive own-turn progress deliverable without transcript or clock progress', () => {
+    const source = { seq: 0, latestReadyEventSeq: 0, agentStateVersion: 0,
+      latestTurnId: 'worker-turn', latestTurnStatus: 'in_progress', active: true };
+    const online = projectSessionFollowFrontierFromSourceV1(source);
+    const offline = projectSessionFollowFrontierFromSourceV1({ ...source, active: false });
+    expect(online.turn).toBeNull();
+    expect(offline.turn).toEqual({ id: 'worker-turn', status: 'stalled' });
+    expect(compareSessionFollowFrontierProgressV1(online, offline)).toBe('ahead');
+    expect(compareSessionFollowFrontierProgressV1(offline, offline)).toBe('equal');
+    expect(parsePersistedSessionFollowFrontierV1(encodePersistedSessionFollowFrontierV1(offline))).toEqual(offline);
+    expect(projectSessionFollowFrontierFromSourceV1({ ...source, active: false, latestTurnStatus: 'completed' }).turn)
+      .toEqual({ id: 'worker-turn', status: 'completed' });
+  });
+
   it('rejects unknown top-level fields', () => {
     const parsed = SessionFollowFrontierV1Schema.safeParse({
       transcriptSeq: 1,

@@ -233,6 +233,7 @@ describe('local voice engine recording lifecycle', () => {
         }));
         vi.doMock('@/voice/runtime/input/LocalVoiceCaptureOwner', () => ({
             createLocalVoiceCaptureOwner: () => ({
+                isCaptureActive: vi.fn(() => false),
                 resolveManualBargeInAction: vi.fn(() => ({
                     kind: 'start_capture',
                     sessionId: 's1',

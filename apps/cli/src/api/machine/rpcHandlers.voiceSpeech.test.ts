@@ -1100,6 +1100,37 @@ describe('unified Voice speech machine RPC', () => {
     await registration.dispose();
   });
 
+  it.each([
+    { limits: { maxInputUtf8Bytes: 6 }, input: '界界a', valid: '界界' },
+    { limits: { maxInputCharacters: 100, maxInputCharactersSettingId: 'inputCap' }, input: 'abcdef', valid: 'abcde' },
+  ])('enforces declared input units and selected settings before synthesis: $limits', async ({ limits, input, valid }) => {
+    const { handlers, registrar } = manager();
+    const base = contribution({ roles: ['conversation_tts'] });
+    const synthesize = vi.fn(async (request) => ({
+      requestId: request.requestId, bytes: new Uint8Array([1]), mimeType: 'audio/wav' as const,
+    }));
+    const definition = contribution({
+      roles: ['conversation_tts'], limits: { synthesize: limits },
+      settings: { ...base.settings, fields: [...base.settings.fields, {
+        id: 'inputCap', title: 'Endpoint input cap', schema: { type: 'integer', minimum: 1, maximum: 100 },
+        default: 5, presentation: { control: 'number', step: 1 },
+      }] },
+    });
+    const registration = registerMachineVoiceSpeechRpcHandlers({
+      rpcHandlerManager: registrar as never,
+      resolveSpeechRuntime: resolveRuntime({ kind: 'speech', synthesize }, definition),
+    });
+    const recipient = createTransferRecipientKeyPair();
+    const invoke = (text: string) => handlers.get(RPC_METHODS.DAEMON_VOICE_SPEECH_SYNTHESIZE)?.({
+      target, requestId: 'tts-input-cap', input: text, recipientPublicKeyBase64: recipient.recipientPublicKeyBase64,
+    });
+    try {
+      await expect(invoke(input)).resolves.toEqual({ ok: false, errorCode: 'invalid_parameters' });
+      expect(synthesize).not.toHaveBeenCalled();
+      await expect(invoke(valid)).resolves.toMatchObject({ ok: true });
+    } finally { await registration.dispose(); }
+  });
+
   it('rejects the first provider output byte over the effective host cap', async () => {
     const { handlers, registrar } = manager();
     const synthesize = vi.fn(async (request) => ({

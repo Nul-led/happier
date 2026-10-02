@@ -20,6 +20,7 @@ import {
     resolveFilesystemAccessPolicy,
     type FilesystemAccessPolicy,
 } from '@/rpc/handlers/fileSystem/accessPolicy/filesystemAccessPolicy';
+import { authorizeFilesystemPath } from '@/rpc/handlers/fileSystem/accessPolicy/filesystemPathAuthorization';
 
 type ScmRequestBase = {
     cwd?: string;
@@ -144,6 +145,16 @@ export async function runScmRoute<TRequest extends ScmRequestBase, TResponse ext
             return await input.runWithBackend({
                 context: Object.freeze({
                     ...resolved.context,
+                    assertFilesystemPathAuthorized: (targetPath: string) => {
+                        const target = authorizeFilesystemPath({
+                            targetPath,
+                            defaultDirectory: cwdResult.cwd,
+                            accessPolicy: input.accessPolicy ?? resolveFilesystemAccessPolicy(),
+                        });
+                        if (!target.valid) {
+                            throw Object.assign(new Error(target.error), { errorCode: SCM_OPERATION_ERROR_CODES.INVALID_PATH });
+                        }
+                    },
                     ...(input.signal ? { signal: input.signal } : {}),
                 }),
                 selection: resolved.selection,

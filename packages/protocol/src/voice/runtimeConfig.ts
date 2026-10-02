@@ -1,5 +1,5 @@
 /**
- * Canonical voice runtime config: defaults and bounds for TTS latency/codec,
+ * Canonical voice runtime config: defaults and bounds for TTS codec,
  * STT format/upload, warm residency, and per-model concurrency.
  *
  * Owned by protocol so the UI runtime config, UI daemon-inference config, and the
@@ -9,21 +9,13 @@
 
 export type VoiceRuntimeBounds = Readonly<{ min: number; max: number }>;
 
-/** TTS output codec/latency/demotion defaults. */
+/** TTS output codec defaults. */
 export const VOICE_RUNTIME_TTS_DEFAULTS = {
   defaultCodec: {
     codec: 'wav',
     mimeType: 'audio/wav',
   },
-  latencyBudgetMs: 2_000,
-  consecutiveSlowCallsBeforeDemotion: 2,
 } as const;
-
-/** Bounds for the env-overridable TTS latency budget. */
-export const VOICE_RUNTIME_TTS_LATENCY_BUDGET_BOUNDS: VoiceRuntimeBounds = { min: 250, max: 60_000 };
-
-/** Bounds for the env-overridable consecutive-slow-call demotion threshold. */
-export const VOICE_RUNTIME_TTS_LATENCY_DEMOTION_THRESHOLD_BOUNDS: VoiceRuntimeBounds = { min: 1, max: 10 };
 
 /** Warm-residency and concurrency defaults. */
 export const VOICE_RUNTIME_WARM_DEFAULTS = {

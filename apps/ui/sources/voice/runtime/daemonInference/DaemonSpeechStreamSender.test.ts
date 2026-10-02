@@ -351,6 +351,29 @@ describe('DaemonSpeechStreamSender', () => {
     await sender.waitForDrain();
   });
 
+  it('delivers recognizer events in input order when a later reply wins the network race', async () => {
+    const responses = [deferred<import('@happier-dev/protocol').DaemonVoiceInferenceSttStreamChunkResponse>(),
+      deferred<import('@happier-dev/protocol').DaemonVoiceInferenceSttStreamChunkResponse>()];
+    const sender = createDaemonSpeechStreamSender({
+      requestId: 'ordered-events',
+      transport: {
+        start: async () => startResponse({ streamId: 'stream', generation: 1 }),
+        chunk: ({ seq }) => responses[seq]!.promise,
+        finish: vi.fn(), cancel: async () => ({ ok: true, streamId: 'stream', generation: 1 }),
+      },
+    });
+    await sender.start();
+    const observed: number[] = [];
+    const first = sender.pushChunk(new Uint8Array(640)).then(() => { observed.push(0); });
+    const second = sender.pushChunk(new Uint8Array(640)).then(() => { observed.push(1); });
+    responses[1]!.resolve({ ok: true, streamId: 'stream', generation: 1, ackSeq: 1, events: [] });
+    for (let turn = 0; turn < 6; turn++) await Promise.resolve();
+    expect(observed).toEqual([]);
+    responses[0]!.resolve({ ok: true, streamId: 'stream', generation: 1, ackSeq: 0, events: [] });
+    await Promise.all([first, second]);
+    expect(observed).toEqual([0, 1]);
+  });
+
   it('bounds the in-flight frame and byte window and releases it with cumulative ACKs', async () => {
     const responses = [deferred<any>(), deferred<any>(), deferred<any>()];
     const chunk = vi.fn(({ seq }: DaemonSpeechStreamTransportChunkRequest) => responses[seq]!.promise);

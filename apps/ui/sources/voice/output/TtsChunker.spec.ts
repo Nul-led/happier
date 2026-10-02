@@ -3,6 +3,15 @@ import { describe, expect, it } from 'vitest';
 import { createTtsChunker, resolveStreamingTtsChunkChars } from './TtsChunker';
 
 describe('TtsChunker', () => {
+    it('waits for token lookahead instead of speaking an incomplete filename or cutting a short URL', () => {
+        const chunker = createTtsChunker(200);
+        expect(chunker.push('Open index.')).toEqual([]);
+        expect(chunker.push('ts. Next')).toEqual(['Open index.ts.']);
+        const url = 'https://example.com/a-long-path-to-the-configuration?mode=voice&enabled=yes';
+        const urlChunker = createTtsChunker(200);
+        expect(urlChunker.push(url)).toEqual([]);
+        expect(urlChunker.flush()).toEqual([url]);
+    });
     it('emits chunks near punctuation boundaries', () => {
         const chunker = createTtsChunker(32);
         const chunks = chunker.push('hello world. this sentence is long enough to emit a chunk near punctuation.');

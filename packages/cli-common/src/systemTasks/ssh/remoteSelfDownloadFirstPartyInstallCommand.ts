@@ -8,7 +8,7 @@ import {
   resolveFirstPartyComponentPublicReleaseVariant,
   type FirstPartyComponentId,
 } from '../../firstPartyRuntime/componentCatalog.js';
-import { safeBashSingleQuote } from '../../ssh/shellQuote.js';
+import { quoteRemotePathWithHomeExpansion, safeBashSingleQuote } from '../../ssh/shellQuote.js';
 import {
   buildRemoteFirstPartyPromotionCommand,
   normalizeRemoteFirstPartyHomeDir,
@@ -125,8 +125,8 @@ export function buildRemoteSelfDownloadFirstPartyInstallCommand(params: Readonly
     'require_cmd tar',
     'if command -v curl >/dev/null 2>&1; then download() { curl -fsSL "$1" -o "$2"; }; elif command -v wget >/dev/null 2>&1; then download() { wget -qO "$2" "$1"; }; else echo "missing required command: curl or wget" >&2; exit 127; fi',
     'if command -v sha256sum >/dev/null 2>&1; then sha256_file() { sha256sum "$1" | awk \'{print $1}\'; }; elif command -v shasum >/dev/null 2>&1; then sha256_file() { shasum -a 256 "$1" | awk \'{print $1}\'; }; else echo "missing required command: sha256sum or shasum" >&2; exit 127; fi',
-    `mkdir -p ${layout.remoteHomeDir}`,
-    `stage="$(mktemp -d ${layout.remoteHomeDir}/bootstrap-self-download.XXXXXX)"`,
+    `mkdir -p ${quoteRemotePathWithHomeExpansion(layout.remoteHomeDir)}`,
+    `stage="$(mktemp -d ${quoteRemotePathWithHomeExpansion(`${layout.remoteHomeDir}/bootstrap-self-download.XXXXXX`)})"`,
     'cleanup() { rm -rf "$stage"; }',
     'trap cleanup EXIT',
     'archive_path="$stage/archive"',

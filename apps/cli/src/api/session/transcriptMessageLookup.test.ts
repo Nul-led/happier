@@ -1,11 +1,24 @@
 import axios from 'axios';
+import { EventEmitter } from 'node:events';
+import { createSocketTransportAdapter } from '@happier-dev/sync-client';
 import fastify, { type FastifyInstance } from 'fastify';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { reloadConfiguration } from '@/configuration';
 import { HttpStatusError } from '@/api/client/httpStatusError';
 import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
 import type { ManagedConnectionState, ManagedConnectionSupervisor } from '@happier-dev/connection-supervisor';
+
+const socketBoundary = vi.hoisted(() => ({ create: vi.fn() }));
+vi.mock('@/api/session/sockets', () => ({
+  createSessionScopedSocket: socketBoundary.create,
+  createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter(socket) }),
+}));
+let socket: EventEmitter & { connected: boolean; connect: () => void; disconnect: () => void; close: () => void };
+beforeEach(() => {
+  socket = Object.assign(new EventEmitter(), { connected: false, connect: () => {}, disconnect: () => {}, close: () => {} });
+  socketBoundary.create.mockReturnValue(socket);
+});
 
 function createState(overrides: Partial<ManagedConnectionState> = {}): ManagedConnectionState {
   return {
@@ -44,7 +57,7 @@ describe('waitForTranscriptEncryptedMessageByLocalId', () => {
     }
   });
 
-  it('backs off between consecutive request errors to avoid tight polling loops', async () => {
+  it('parks after request errors until an event or reconnect rather than rereading on a cadence', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(0));
 
@@ -71,9 +84,6 @@ describe('waitForTranscriptEncryptedMessageByLocalId', () => {
       sessionId: 'sid',
       localId: 'lid',
       maxWaitMs: 1000,
-      pollIntervalMs: 10,
-      errorBackoffBaseMs: 100,
-      errorBackoffMaxMs: 400,
       onError: () => {},
     });
 
@@ -81,7 +91,7 @@ describe('waitForTranscriptEncryptedMessageByLocalId', () => {
     const result = await p;
 
     expect(result).toBeNull();
-    expect(requestCount).toBe(4);
+    expect(requestCount).toBe(1);
 
     // sanity: the adapter should have been exercised via axios
     expect(typeof axios.get).toBe('function');
@@ -110,9 +120,6 @@ describe('waitForTranscriptEncryptedMessageByLocalId', () => {
       localId: 'lid',
       maxWaitMs: 500,
       requestTimeoutMs: 10_000,
-      pollIntervalMs: 1,
-      errorBackoffBaseMs: 1,
-      errorBackoffMaxMs: 1,
       onError: () => {},
     });
 
@@ -143,9 +150,6 @@ describe('waitForTranscriptEncryptedMessageByLocalId', () => {
       localId: 'lid',
       supervisor: createSupervisor(createState({ phase: 'offline', reason: 'server_unreachable' })),
       maxWaitMs: 50,
-      pollIntervalMs: 10,
-      errorBackoffBaseMs: 10,
-      errorBackoffMaxMs: 10,
       onError: () => {},
     });
 
@@ -182,9 +186,6 @@ describe('waitForTranscriptEncryptedMessageByLocalId', () => {
       sessionId: 'sid',
       localId: 'lid',
       maxWaitMs: 100,
-      pollIntervalMs: 10,
-      errorBackoffBaseMs: 10,
-      errorBackoffMaxMs: 10,
       onError: () => {},
     });
 
@@ -222,9 +223,6 @@ describe('waitForTranscriptEncryptedMessageByLocalId', () => {
       localId: 'lid',
       supervisor,
       maxWaitMs: 25,
-      pollIntervalMs: 10,
-      errorBackoffBaseMs: 10,
-      errorBackoffMaxMs: 10,
       onError,
       onUnsupported,
     });
@@ -263,9 +261,6 @@ describe('waitForTranscriptEncryptedMessageByLocalId', () => {
       localId: 'lid',
       supervisor,
       maxWaitMs: 25,
-      pollIntervalMs: 10,
-      errorBackoffBaseMs: 10,
-      errorBackoffMaxMs: 10,
       onError,
     });
 
@@ -306,9 +301,6 @@ describe('waitForTranscriptEncryptedMessageByLocalId', () => {
       sessionId: 'sid',
       localId: 'l1',
       maxWaitMs: 200,
-      pollIntervalMs: 10,
-      errorBackoffBaseMs: 10,
-      errorBackoffMaxMs: 10,
       onError: () => {},
     });
 
@@ -429,9 +421,6 @@ describe('waitForTranscriptEncryptedMessageByLocalId', () => {
       sessionId: 'sid',
       localId: 'l1',
       maxWaitMs: 200,
-      pollIntervalMs: 10,
-      errorBackoffBaseMs: 10,
-      errorBackoffMaxMs: 10,
       onError: () => {},
     });
 
@@ -453,9 +442,6 @@ describe('waitForTranscriptEncryptedMessageByLocalId', () => {
           sessionId: 'sid',
           localId: 'l1',
           maxWaitMs: 200,
-          pollIntervalMs: 10,
-          errorBackoffBaseMs: 10,
-          errorBackoffMaxMs: 10,
           onError: () => {},
         }),
       ).rejects.toMatchObject({
@@ -468,7 +454,7 @@ describe('waitForTranscriptEncryptedMessageByLocalId', () => {
     }
   });
 
-  it('stops transcript polling when stale auth appears after an earlier not-found response', async () => {
+  it('rejects stale auth on reconnect after an earlier not-found response', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(0));
 
@@ -496,9 +482,6 @@ describe('waitForTranscriptEncryptedMessageByLocalId', () => {
         sessionId: 'sid',
         localId: 'l1',
         maxWaitMs: 500,
-        pollIntervalMs: 10,
-        errorBackoffBaseMs: 10,
-        errorBackoffMaxMs: 10,
         onError: () => {},
       });
       const assertion = expect(promise).rejects.toMatchObject({
@@ -506,8 +489,9 @@ describe('waitForTranscriptEncryptedMessageByLocalId', () => {
         response: { status: 403 },
       });
 
+      await vi.advanceTimersByTimeAsync(0);
+      socket.emit('connect');
       await vi.advanceTimersByTimeAsync(100);
-
       await assertion;
       expect(requestCount).toBe(2);
     } finally {

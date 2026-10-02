@@ -13,7 +13,23 @@ export const TODO_INDEX_KEY = 'todo.index';
 const TodoLinkedSessionSchema = z.object({
     title: z.string(),
     linkedAt: z.number(),
+    // Bare session-id keys without these fields are the 0.2 reader input.
+    session: z.object({
+        sessionId: z.string().min(1),
+        serverId: z.string().min(1),
+        accountId: z.string().min(1),
+    }).strict().optional(),
 }).strict();
+
+export const ZenTaskSourceSchema = z.object({
+    kind: z.literal('zen_task'),
+    taskId: z.string().min(1),
+    title: z.string(),
+    scope: z.object({ serverId: z.string().min(1), accountId: z.string().min(1) }).strict(),
+}).strict();
+
+/** Local draft custody; never part of the synchronized authoring document. */
+export type ZenTaskSource = z.infer<typeof ZenTaskSourceSchema>;
 
 export const TodoItemSchema = z.object({
     id: z.string().min(1),

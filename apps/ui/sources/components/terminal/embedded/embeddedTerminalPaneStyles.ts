@@ -68,29 +68,6 @@ export const embeddedTerminalPaneStyles = StyleSheet.create((theme) => ({
         minWidth: 0,
         padding: 8,
     },
-    quickKeysScroll: {
-        marginTop: 8,
-        flexGrow: 0,
-    },
-    quickKeysRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        paddingRight: 8,
-    },
-    quickKey: {
-        paddingVertical: 6,
-        paddingHorizontal: 10,
-        borderRadius: 10,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.inset,
-    },
-    quickKeyLabel: {
-        fontSize: 12,
-        color: theme.colors.text.secondary,
-        ...Typography.default('semiBold'),
-    },
     overlay: {
         ...StyleSheet.absoluteFillObject,
         alignItems: 'center',
@@ -98,32 +75,5 @@ export const embeddedTerminalPaneStyles = StyleSheet.create((theme) => ({
         paddingHorizontal: 16,
         backgroundColor: theme.colors.surface.base,
         opacity: 0.96,
-    },
-    overlayTitle: {
-        fontSize: 14,
-        color: theme.colors.text.secondary,
-        textAlign: 'center',
-        ...Typography.default('semiBold'),
-    },
-    overlayBody: {
-        marginTop: 8,
-        fontSize: 12,
-        color: theme.colors.text.secondary,
-        textAlign: 'center',
-        ...Typography.default(),
-    },
-    overlayRetry: {
-        marginTop: 14,
-        paddingVertical: 8,
-        paddingHorizontal: 12,
-        borderRadius: 10,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        backgroundColor: theme.colors.surface.inset,
-    },
-    overlayRetryLabel: {
-        fontSize: 12,
-        color: theme.colors.text.primary,
-        ...Typography.default('semiBold'),
     },
 }));

@@ -8,8 +8,10 @@ import type {
 import type {
     HappierAudioStreamNativeModule,
 } from '../../../../../../packages/audio-stream-native/src/HappierAudioStreamNative.types';
+import { DAEMON_VOICE_INFERENCE_STT_STREAM_PCM_FORMAT } from '@happier-dev/protocol';
 
 import { createDaemonStreamingSttController } from '../daemonInference/DaemonStreamingSttController';
+import { DaemonSpeechStreamSender } from '../daemonInference/DaemonSpeechStreamSender';
 import type { DaemonSpeechPcmCaptureOptions } from '../daemonInference/DaemonSpeechPcmCapture';
 import { createLocalVoiceCaptureOwner } from './LocalVoiceCaptureOwner';
 import type { CreateMicSessionOptions, MicSession } from '../mic/MicSession';
@@ -21,6 +23,7 @@ import { createVoiceCaptureAdmissionBinding } from './VoiceCaptureAdmissionBindi
 import { createVoiceCaptureAdmissionController } from './VoiceCaptureAdmissionController';
 import { createVoiceAudioSessionCoordinator } from '../../../../../../packages/audio-stream-native/src/voiceAudioSessionCoordinator';
 import { createVoicePcmCapture } from '../../../../../../packages/audio-stream-native/src/voicePcmCapture';
+import { classifyVoiceMachineError } from '../machine/voiceMachineError';
 
 const micVadNew = vi.fn();
 const micVadStart = vi.fn();
@@ -221,6 +224,34 @@ function createSharedPcmSherpaController(capture: VoicePcmCapture): Readonly<{
 }
 
 describe('createLocalVoiceCaptureOwner', () => {
+    it.each([
+        { handsFree: true, settings: {} },
+        { handsFree: false, settings: { voice: { providerId: 'local_conversation', providers: {
+            local_conversation: { schemaVersion: 1, config: { tts: { bargeInEnabled: true } } },
+        } } } },
+    ])('refuses word-gated capture before acquiring audio when installed segmentation is unavailable: $handsFree', async ({ handsFree, settings }) => {
+        const unavailableIntl = Object.create(Intl);
+        Object.defineProperty(unavailableIntl, 'Segmenter', { value: undefined });
+        vi.stubGlobal('Intl', unavailableIntl);
+        try {
+            const owner = createLocalVoiceCaptureOwner({
+                getSettings: () => settings, onCaptureStarted: () => {}, onCaptureError: () => {},
+            });
+            const failure = await owner.startCapture({
+                sessionId: 'missing-segmentation', handsFree, provider: 'local_neural',
+                localNeuralExecution: 'daemon',
+            }).then(() => null, (error: unknown) => error);
+            expect(classifyVoiceMachineError(failure)).toMatchObject({
+                kind: 'provider_setup_required', reason: 'voice_text_segmentation_unavailable',
+                presentation: 'error', recoverable: false,
+            });
+            expect(owner.isCaptureActive('missing-segmentation')).toBe(false);
+            expect(owner.isHandsFreeCaptureSession({ sessionId: 'missing-segmentation', provider: 'local_neural' })).toBe(false);
+            await owner.stopSession('missing-segmentation');
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
     const previousWindow = (globalThis as { window?: object }).window;
     const previousDocument = (globalThis as { document?: object }).document;
 
@@ -635,6 +666,59 @@ describe('createLocalVoiceCaptureOwner', () => {
         expect(recordingMicSession.teardown).toHaveBeenCalledTimes(1);
     });
 
+    it.each(['Привет, как дела', 'こんにちは', 'مرحبا بالعالم', 'très bien'])('submits recognized Unicode text unchanged after endpoint capture: %s', async (transcript) => {
+        const settings = {
+            voice: {
+                providerId: 'local_conversation',
+                providers: {
+                    local_conversation: { schemaVersion: 1, config: {
+                        stt: { provider: 'local_neural', localNeural: {
+                            assetId: 'stt-pack-1', execution: 'daemon', language: 'en',
+                        } },
+                    } },
+                },
+            },
+        };
+        // Only the daemon transport and microphone resources are substituted;
+        // capture ownership, STT finalization, sender and turn policy stay real.
+        const sender = new DaemonSpeechStreamSender({
+            requestId: 'unicode-capture',
+            transport: {
+                start: async () => ({ ok: true, requestId: 'unicode-capture', streamId: 'stream-1', generation: 1,
+                    ackSeq: -1, format: DAEMON_VOICE_INFERENCE_STT_STREAM_PCM_FORMAT }),
+                chunk: async ({ seq }) => ({ ok: true, streamId: 'stream-1', generation: 1,
+                    ackSeq: seq, events: [] }),
+                finish: async () => ({ ok: true, streamId: 'stream-1', generation: 1,
+                    ackSeq: -1, finalText: transcript, language: null, modelPackId: 'stt-pack-1', events: [] }),
+                cancel: async () => ({ ok: true, streamId: 'stream-1', generation: 1 }),
+            },
+        });
+        const owner = createLocalVoiceCaptureOwner({
+            getSettings: () => settings,
+            onCaptureStarted: () => {},
+            onCaptureError: (error) => { throw new Error(error.reason); },
+        }, {
+            createLiveMicSession: () => ({
+                ensureActive: async () => {}, setMuted: () => {}, isMuted: () => false,
+                teardown: async () => {}, getStream: () => null,
+            }),
+            createDaemonStreamingSttController: (deps) => createDaemonStreamingSttController({
+                ...deps,
+                createClient: () => ({ createStreamingSttSender: async () => sender }),
+                createPcmCapture: () => ({
+                    start: async () => {}, stop: async () => {}, finish: async () => {}, waitForDrain: async () => {},
+                    isActive: () => true,
+                }),
+            }),
+        });
+        await owner.startCapture({ handsFree: true, provider: 'local_neural',
+            localNeuralExecution: 'daemon', sessionId: 'unicode-session' });
+        await expect(owner.stopEndpointDrivenCapture({
+            adaptiveConfig: { ignoredPhrases: ['yeah'] }, provider: 'local_neural', sessionId: 'unicode-session',
+        })).resolves.toMatchObject({ kind: 'submit_turn', transcript });
+        await owner.stopSession('unicode-session');
+    });
+
     it('keeps endpoint signal gating and stopped-capture decisions in the runtime capture owner', async () => {
         const sherpaController = {
             start: vi.fn(async () => {}),
@@ -758,6 +842,7 @@ describe('createLocalVoiceCaptureOwner', () => {
         const capture = {
             start: vi.fn(async () => {}),
             stop: vi.fn(async () => {}),
+            finish: vi.fn(async () => {}),
             waitForDrain: vi.fn(async () => {}),
             isActive: vi.fn(() => true),
         };

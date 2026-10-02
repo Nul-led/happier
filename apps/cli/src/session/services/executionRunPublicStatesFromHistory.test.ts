@@ -3,6 +3,37 @@ import { describe, expect, it } from 'vitest';
 import { listExecutionRunPublicStatesFromHistoryRows } from './executionRunPublicStatesFromHistory';
 
 describe('listExecutionRunPublicStatesFromHistoryRows', () => {
+    it('does not treat a historical running result as current liveness evidence', () => {
+        expect(listExecutionRunPublicStatesFromHistoryRows([{
+            id: 'running-result', createdAt: 10, role: 'agent',
+            raw: { role: 'agent', content: { type: 'acp', agentId: 'claude', data: {
+                type: 'tool-result', callId: 'running-call',
+                output: {
+                    _happier: { canonicalToolName: 'SubAgentRun' },
+                    runId: 'running-run', intent: 'agent', status: 'running',
+                    backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+                    permissionMode: 'read_only', retentionPolicy: 'resumable',
+                    runClass: 'long_lived', ioMode: 'streaming',
+                },
+            } } },
+        }])).toEqual([]);
+    });
+
+    it('does not turn an unpaired transcript call into live lifecycle authority', () => {
+        expect(listExecutionRunPublicStatesFromHistoryRows([{
+            id: 'interrupted-call', createdAt: 10, role: 'agent',
+            raw: { role: 'agent', content: { type: 'acp', agentId: 'claude', data: {
+                type: 'tool-call', name: 'SubAgentRun', callId: 'interrupted-call',
+                input: {
+                    runId: 'interrupted-run', intent: 'agent',
+                    backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+                    permissionMode: 'read_only', retentionPolicy: 'resumable',
+                    runClass: 'long_lived', ioMode: 'streaming',
+                },
+            } } },
+        }])).toEqual([]);
+    });
+
     it('reconstructs canonical timestamps when a tool result row arrives before an older tool call row', () => {
         const runs = listExecutionRunPublicStatesFromHistoryRows([
             {

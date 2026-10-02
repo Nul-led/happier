@@ -143,18 +143,22 @@ export const ActionsSettingsV1Schema = z
     // policy. They ignore the waiver and continue requiring default confirmation.
     approvalWaivedSurfaces: z.record(z.string(), z.array(ActionSurfaceKeySchema))
       .optional().catch(undefined),
+    /** One viewing Action waiver per plugin, never a retained source grant. */
+    pluginHostCaptureApprovalWaived: z.array(z.string().min(1)).optional().catch(undefined),
   })
   .passthrough()
   .transform((value) => ({
     v: 1 as const,
     actions: projectKnownActionSettings(value.actions ?? {}),
     ...(value.approvalWaivedSurfaces ? { approvalWaivedSurfaces: value.approvalWaivedSurfaces } : {}),
+    ...(value.pluginHostCaptureApprovalWaived ? { pluginHostCaptureApprovalWaived: value.pluginHostCaptureApprovalWaived } : {}),
   }));
 
 export type ActionsSettingsV1 = Readonly<{
   v: 1;
   actions: Record<string, ActionSettingsOverride>;
   approvalWaivedSurfaces?: Record<string, ActionSurfaceKey[]>;
+  pluginHostCaptureApprovalWaived?: string[];
 }>;
 
 const EMPTY_ACTIONS_SETTINGS_V1 = Object.freeze({
@@ -174,6 +178,7 @@ function isActionsSettingsV1Document(value: unknown): value is Readonly<{
   v: 1;
   actions?: Record<string, unknown>;
   approvalWaivedSurfaces?: unknown;
+  pluginHostCaptureApprovalWaived?: unknown;
 }> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
@@ -200,7 +205,11 @@ export function tryNormalizeActionsSettingsV1(value: unknown): ActionsSettingsV1
     v: 1,
     approvalWaivedSurfaces: value.approvalWaivedSurfaces,
   }).approvalWaivedSurfaces;
-  return { v: 1, actions, ...(waivers ? { approvalWaivedSurfaces: waivers } : {}) };
+  const pluginWaivers = ActionsSettingsV1Schema.parse({ v: 1,
+    pluginHostCaptureApprovalWaived: value.pluginHostCaptureApprovalWaived,
+  }).pluginHostCaptureApprovalWaived;
+  return { v: 1, actions, ...(waivers ? { approvalWaivedSurfaces: waivers } : {}),
+    ...(pluginWaivers ? { pluginHostCaptureApprovalWaived: pluginWaivers } : {}) };
 }
 
 export function normalizeActionsSettingsV1(value: unknown): ActionsSettingsV1 {
@@ -231,6 +240,7 @@ export function setActionApprovalOverride(params: Readonly<{
     v: 1,
     actions,
     ...(Object.keys(waivers).length > 0 ? { approvalWaivedSurfaces: waivers } : {}),
+    ...(settings.pluginHostCaptureApprovalWaived ? { pluginHostCaptureApprovalWaived: settings.pluginHostCaptureApprovalWaived } : {}),
   };
 }
 

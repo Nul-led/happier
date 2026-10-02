@@ -883,8 +883,11 @@ describe('account Voice operation service', () => {
       },
     };
     const materializeSecret = vi.fn(async () => 'must-not-materialize');
-    const materializeConnectedAccountHeaders = vi.fn(async () => ({
-      authorization: 'Bearer codex-access-token',
+    const executeConnectedAccountOperation = vi.fn(async () => ({
+      status: 200,
+      finalUrl: 'https://api.openai.com/v1/realtime/client_secrets',
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ value: 'short-lived-client-auth', expires_at: 2_000_000_000 })),
     }));
     const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
       expect(init?.headers).toMatchObject({
@@ -902,7 +905,7 @@ describe('account Voice operation service', () => {
       isCurrent: () => true,
       fetch,
       materializeSecret,
-      materializeConnectedAccountHeaders,
+      executeConnectedAccountOperation,
     });
 
     await expect(service.inspectAvailability()).resolves.toBeUndefined();
@@ -911,8 +914,11 @@ describe('account Voice operation service', () => {
     // The exact selection this operation's captured authority resolved is what
     // the daemon must be told to materialize under: it resolves its own current
     // Connected Account otherwise.
-    expect(materializeConnectedAccountHeaders).toHaveBeenCalledWith({
+    expect(executeConnectedAccountOperation).toHaveBeenCalledWith({
       operationId: 'client-auth',
+      parameters: {
+        body: { session: { type: 'realtime', model: 'gpt-realtime', audio: { output: { voice: 'marin' } } } },
+      },
       selection: {
         kind: 'account',
         account: {
@@ -923,7 +929,7 @@ describe('account Voice operation service', () => {
       signal: expect.any(AbortSignal),
     });
     expect(materializeSecret).not.toHaveBeenCalled();
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('selects by slot purpose while authorizing a different recipient operation purpose', async () => {
@@ -955,9 +961,7 @@ describe('account Voice operation service', () => {
         },
       },
     };
-    const materializeConnectedAccountHeaders = vi.fn(async () => ({
-      authorization: 'Bearer catalog-token',
-    }));
+    const executeConnectedAccountOperation = vi.fn(async () => ({ status: 200, finalUrl: 'https://api.openai.com/v1/voices', headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode('{"voices":[]}') }));
     const fetch = vi.fn(async () => new Response(JSON.stringify({ voices: [] }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -968,7 +972,7 @@ describe('account Voice operation service', () => {
       signal: new AbortController().signal,
       isCurrent: () => true,
       fetch,
-      materializeConnectedAccountHeaders,
+      executeConnectedAccountOperation,
     });
 
     await expect(service.request({
@@ -990,9 +994,10 @@ describe('account Voice operation service', () => {
       code: 'voice_account_operation_unauthorized',
     });
 
-    expect(materializeConnectedAccountHeaders).toHaveBeenCalledTimes(1);
-    expect(materializeConnectedAccountHeaders).toHaveBeenCalledWith({
+    expect(executeConnectedAccountOperation).toHaveBeenCalledTimes(1);
+    expect(executeConnectedAccountOperation).toHaveBeenCalledWith({
       operationId: 'voices',
+      parameters: { body: { session: { type: 'realtime', model: 'gpt-realtime', audio: { output: { voice: 'marin' } } } } },
       selection: {
         kind: 'account',
         account: {
@@ -1002,7 +1007,7 @@ describe('account Voice operation service', () => {
       },
       signal: expect.any(AbortSignal),
     });
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('preserves missing-credential classification when no SavedSecret exists to approve', async () => {
@@ -1052,7 +1057,7 @@ describe('account Voice operation service', () => {
       },
     };
     const materializeSecret = vi.fn(async () => 'must-not-materialize');
-    const materializeConnectedAccountHeaders = vi.fn(async () => ({ authorization: 'Bearer x' }));
+    const executeConnectedAccountOperation = vi.fn(async () => ({ status: 200, finalUrl: 'https://api.openai.com/v1/realtime/client_secrets', headers: { 'content-type': 'application/json' }, body: new Uint8Array() }));
     const fetch = vi.fn();
     const service = createAccountVoiceOperationService({
       providerId: 'happier.voice.openai/realtime-openai',
@@ -1061,7 +1066,7 @@ describe('account Voice operation service', () => {
       isCurrent: () => true,
       fetch,
       materializeSecret,
-      materializeConnectedAccountHeaders,
+      executeConnectedAccountOperation,
     });
 
     await expect(service.inspectAvailability()).rejects.toMatchObject({
@@ -1070,7 +1075,7 @@ describe('account Voice operation service', () => {
     await expect(requestClientAuth(service)).rejects.toMatchObject({
       code: 'service_temporarily_unavailable',
     });
-    expect(materializeConnectedAccountHeaders).not.toHaveBeenCalled();
+    expect(executeConnectedAccountOperation).not.toHaveBeenCalled();
     expect(materializeSecret).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -1578,10 +1583,10 @@ describe('account Voice operation service', () => {
       isCurrent: () => true,
       fetch,
       materializeSecret: async () => 'must-not-materialize',
-      materializeConnectedAccountHeaders: async () => ({
-        authorization: 'Bearer codex-access-token',
-        'chatgpt-account-id': 'account-work',
-      }),
+      executeConnectedAccountOperation: async () => {
+        const response = await fetch();
+        return { status: response.status, finalUrl: 'https://api.openai.com/v1/realtime/client_secrets', headers: { 'content-type': 'application/json' }, body: new Uint8Array(await response.arrayBuffer()) };
+      },
     });
 
     await expect(requestClientAuth(service)).resolves.toMatchObject({ status: 200 });
@@ -1645,10 +1650,10 @@ describe('account Voice operation service', () => {
         expires_at: Math.floor(Date.now() / 1_000) + 60,
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     });
-    const materializeConnectedAccountHeaders = vi.fn(async () => ({
-      authorization: 'Bearer codex-access-token',
-      'chatgpt-account-id': 'account-work',
-    }));
+    const executeConnectedAccountOperation = vi.fn(async () => {
+      const response = await fetch();
+      return { status: response.status, finalUrl: 'https://api.openai.com/v1/realtime/client_secrets', headers: { 'content-type': 'application/json' }, body: new Uint8Array(await response.arrayBuffer()) };
+    });
     const service = createAccountVoiceOperationService({
       providerId: 'happier.voice.openai/realtime-openai',
       recipientContract,
@@ -1656,13 +1661,13 @@ describe('account Voice operation service', () => {
       isCurrent: () => true,
       fetch,
       materializeSecret: async () => 'must-not-materialize',
-      materializeConnectedAccountHeaders,
+      executeConnectedAccountOperation,
     });
 
     await expect(requestClientAuth(service)).rejects.toMatchObject({
       code: 'voice_account_operation_cancelled',
     });
-    expect(materializeConnectedAccountHeaders).toHaveBeenCalledOnce();
+    expect(executeConnectedAccountOperation).toHaveBeenCalledOnce();
     expect(fetch).toHaveBeenCalledOnce();
   });
 

@@ -9,7 +9,7 @@ import type { ExecutionRunState } from './executionRunTypes';
 
 export type ResolvedExecutionRunLifecycle = Readonly<{
   projection: ExecutionRunLifecycleV1;
-  unavailableReason?: 'not_resumable' | 'unsupported' | 'missing_resume_handle';
+  unavailableReason?: 'not_resumable' | 'unsupported' | 'missing_resume_handle' | 'provider_state_missing';
 }>;
 
 /** One host owner for current-controller and exact resume-handle lifecycle truth. */
@@ -22,6 +22,12 @@ export function resolveExecutionRunLifecycle(
   }
   if (controller) {
     return { projection: { v: 1, state: 'recovering' } };
+  }
+  if (run.error?.code === 'execution_run_provider_state_missing') {
+    return {
+      projection: { v: 1, state: 'unavailable' },
+      unavailableReason: 'provider_state_missing',
+    };
   }
   if (run.retentionPolicy !== 'resumable') {
     return {

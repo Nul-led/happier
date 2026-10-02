@@ -24,6 +24,7 @@ import {
     type RpcActionExecutor,
 } from './_actionDispatchAdapter';
 import type { RpcHandlerContext } from '@/api/rpc/types';
+import { isSessionActionRpcMethodV1 } from '@happier-dev/protocol/socketRpc';
 import { ACTION_SPEC_RPC_EXCEPTIONS } from './actionSpecRpcExceptions';
 import {
     type ActionSpecRpcRegistrationScope,
@@ -268,6 +269,12 @@ export function registerActionSpecRpcHandlers(params: RegisterActionSpecRpcHandl
             isAlias: boolean = method !== rpcMethod,
         ) => {
             const typedActionId = actionId as ActionId;
+            // Older Homes drop unknown origin headers. Never reinterpret an
+            // unstamped autonomous Session edit as local or human authority.
+            if (isSessionActionRpcMethodV1(method) && !context?.sessionActionOrigin
+                && !context?.localActionContext && context?.callerAuthority !== 'present_user') {
+                return { ok: false, errorCode: 'role_rpc_origin_unavailable', error: 'role_rpc_origin_unavailable' };
+            }
             const mappedRequest = await params.mapRequestForMethod?.({
                 actionId: typedActionId,
                 method,

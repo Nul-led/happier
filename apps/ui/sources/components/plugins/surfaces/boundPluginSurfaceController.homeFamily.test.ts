@@ -35,13 +35,6 @@ vi.mock('@/sync/http/client', () => ({
     },
 }));
 
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')>(),
-    // Owned and proven by its own suite; this file is about the Home family
-    // reaching the mount's exact Home at all.
-    requireCurrentAccountStoredContentServerCompatibility: vi.fn(async () => undefined),
-}));
-
 vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
     runtimeFetchWithServerReachability: runtimeFetchMock,
 }));

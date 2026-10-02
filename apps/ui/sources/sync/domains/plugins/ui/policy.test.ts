@@ -18,26 +18,23 @@ describe('plugin UI projection policy', () => {
         })).toBe(true);
     });
 
-    it('EVALUATES declared compatibility instead of hiding it', () => {
+    it('evaluates canonical platform availability', () => {
         const entry = {
             id: 'surfacePlacement:acme.preview:preview-pane',
             pluginId: 'acme.preview',
             contributionKind: 'surfacePlacement',
-            compatibility: { platforms: ['web'] },
+            availability: { when: { fact: 'host.platform', operator: 'equals', value: 'web' } },
         };
-        // Compatible platform: rendered (the old accept-and-hide returned false here).
         expect(canRenderPluginUiProjectionEntry(entry, { platform: 'web' })).toBe(true);
-        // Incompatible platform: not rendered.
         expect(canRenderPluginUiProjectionEntry(entry, { platform: 'ios' })).toBe(false);
     });
 
-    it('EVALUATES declared featureGate (fail-closed without a resolver)', () => {
+    it('fails closed when a required canonical feature fact has no resolver', () => {
         const entry = {
             id: 'surfacePlacement:acme.preview:review-tab',
             pluginId: 'acme.preview',
             contributionKind: 'surfacePlacement',
-            featureGate: 'plugins.ui.hostedWeb',
-            availability: { state: 'available', reason: 'available', diagnostics: [] },
+            availability: { when: { fact: 'host.feature', operator: 'enabled', value: 'plugins.ui.hostedWeb' } },
         };
         // No feature resolver supplied → fail-closed.
         expect(canRenderPluginUiProjectionEntry(entry)).toBe(false);
@@ -47,15 +44,16 @@ describe('plugin UI projection policy', () => {
         ).toBe(true);
     });
 
-    it('treats a declared enabled predicate as visible-but-disabled, not hidden', () => {
+    it('keeps an entry visible when canonical availability disables interaction', () => {
         const entry = {
             id: 'surfacePlacement:acme.preview:review-tab',
             pluginId: 'acme.preview',
             contributionKind: 'surfacePlacement',
-            enabled: { operand: 'feature.enabled', value: 'acme.cap' },
-            availability: { state: 'available', reason: 'available', diagnostics: [] },
+            availability: {
+                disabledWhen: { fact: 'host.feature', operator: 'enabled', value: 'acme.readOnly' },
+                disabledReason: 'Read only',
+            },
         };
-        // Even when the enabled predicate fails, the entry stays VISIBLE.
-        expect(canRenderPluginUiProjectionEntry(entry, { isFeatureEnabled: () => false })).toBe(true);
+        expect(canRenderPluginUiProjectionEntry(entry, { isFeatureEnabled: () => true })).toBe(true);
     });
 });

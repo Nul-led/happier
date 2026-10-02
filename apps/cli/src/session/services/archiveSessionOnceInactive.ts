@@ -1,43 +1,51 @@
 import { fetchSessionByIdCompat } from '@/session/transport/http/sessionsHttp';
-import { delay } from '@/utils/time';
+import { openSessionEventSource } from '@/session/transport/socket/sessionSocketAgentState';
 
 import { isSessionActiveArchiveError, setSessionArchivedStateById } from './sessionArchivedStateById';
 
 const DEFAULT_ARCHIVE_TIMEOUT_MS = 10_000;
-const DEFAULT_ARCHIVE_POLL_INTERVAL_MS = 200;
 
 export async function archiveSessionOnceInactive(params: Readonly<{
   token: string;
   sessionId: string;
   timeoutMs?: number;
-  pollIntervalMs?: number;
 }>): Promise<Readonly<{ archivedAt: number | null }>> {
   const deadlineMs = Date.now() + (params.timeoutMs ?? DEFAULT_ARCHIVE_TIMEOUT_MS);
-  const pollIntervalMs = params.pollIntervalMs ?? DEFAULT_ARCHIVE_POLL_INTERVAL_MS;
+  const events = openSessionEventSource(params);
+  let inactiveRetryRevision: number | undefined;
+  try {
+    while (true) {
+      const revision = events.currentRevision();
+      try {
+        return await setSessionArchivedStateById({
+          token: params.token,
+          sessionId: params.sessionId,
+          archived: true,
+        });
+      } catch (error) {
+        if (!isSessionActiveArchiveError(error)) {
+          throw error;
+        }
+        if (Date.now() >= deadlineMs) {
+          throw error;
+        }
+      }
 
-  while (true) {
-    try {
-      return await setSessionArchivedStateById({
+      const rawSession = await fetchSessionByIdCompat({
         token: params.token,
         sessionId: params.sessionId,
-        archived: true,
-      });
-    } catch (error) {
-      if (!isSessionActiveArchiveError(error)) {
-        throw error;
-      }
-      if (Date.now() >= deadlineMs) {
-        throw error;
+      }).catch(() => null);
+
+      if (!rawSession || rawSession.active !== false || inactiveRetryRevision === revision) {
+        if (!(await events.waitForChange(revision, { deadlineMs }))) {
+          throw Object.assign(new Error('Cannot archive an active session'), { code: 'session_active' });
+        }
+      } else {
+        // Retry once for this freshly observed inactive fact, not repeatedly on a stale snapshot.
+        inactiveRetryRevision = revision;
       }
     }
-
-    const rawSession = await fetchSessionByIdCompat({
-      token: params.token,
-      sessionId: params.sessionId,
-    }).catch(() => null);
-
-    if (!rawSession || rawSession.active === true) {
-      await delay(pollIntervalMs);
-    }
+  } finally {
+    await events.close();
   }
 }

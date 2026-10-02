@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { encodeTerminalConnectLinkV4Payload } from '@happier-dev/protocol';
 
 import {
@@ -6,7 +6,85 @@ import {
     buildTerminalConnectWebHref,
     parseTerminalConnectRouteParams,
     parseTerminalConnectUrl,
+    resolveTerminalConnectPreAuthTarget,
 } from './terminalConnectUrl';
+
+const carrierBoundary = vi.hoisted(() => ({ release: vi.fn(async () => {}) }));
+vi.mock('react-native', async () => {
+    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+    return createReactNativeWebMock({ Platform: { OS: 'ios', select: (values: Record<string, unknown>) => values.ios ?? values.default } });
+});
+vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
+    acquireIrohHomeRuntimeOrigin: async (input: {
+        homeServerIdentityId: string;
+        endpoint: { endpointId: string };
+    }) => {
+        if (input.homeServerIdentityId === 'srv_unavailable') {
+            throw Object.assign(new Error('carrier unavailable'), { name: 'IrohError', code: 'unavailable' });
+        }
+        return {
+            homeServerIdentityId: input.homeServerIdentityId,
+            endpointId: input.endpoint.endpointId,
+            leaseId: 'preauth-probe',
+            runtimeOrigin: 'http://127.0.0.1:43123',
+            status: 'ready',
+            release: carrierBoundary.release,
+        };
+    },
+}));
+
+describe('terminal connect preauth target', () => {
+    it('admits a remote descriptor endpoint while retaining its canonical loopback custody', async () => {
+        expect(await resolveTerminalConnectPreAuthTarget({
+            activeServerUrl: 'https://focused.example.test',
+            requestedServerUrl: null,
+            homeConnectionDescriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_remote',
+                canonicalServerUrl: 'http://localhost:3010',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://remote.example.test' }],
+            },
+        })).toEqual({ pendingServerUrl: 'http://localhost:3010', canNavigateToAuth: true });
+    });
+
+    it('admits a verified Iroh descriptor and releases its enrollment probe', async () => {
+        carrierBoundary.release.mockClear();
+        expect(await resolveTerminalConnectPreAuthTarget({
+            activeServerUrl: 'https://focused.example.test',
+            requestedServerUrl: null,
+            homeConnectionDescriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_iroh',
+                canonicalServerUrl: 'http://localhost:3010',
+                revision: 1,
+                endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
+            },
+        })).toEqual({ pendingServerUrl: 'http://localhost:3010', canNavigateToAuth: true });
+        expect(carrierBoundary.release).toHaveBeenCalledOnce();
+    });
+
+    it('retains an unavailable descriptor without authorizing a focused-Home fallback', async () => {
+        expect(await resolveTerminalConnectPreAuthTarget({
+            activeServerUrl: 'https://focused.example.test',
+            requestedServerUrl: 'https://focused.example.test',
+            homeConnectionDescriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_unavailable',
+                canonicalServerUrl: 'http://localhost:3010',
+                revision: 1,
+                endpoints: [{ kind: 'iroh', endpointId: 'b'.repeat(64) }],
+            },
+        })).toEqual({ pendingServerUrl: 'http://localhost:3010', canNavigateToAuth: false });
+    });
+
+    it('preserves the URL-only loopback policy', async () => {
+        expect(await resolveTerminalConnectPreAuthTarget({
+            activeServerUrl: 'https://focused.example.test',
+            requestedServerUrl: 'http://localhost:3010',
+        })).toEqual({ pendingServerUrl: 'https://focused.example.test', canNavigateToAuth: true });
+    });
+});
 
 it('rebuilds a pending descriptor link as strict opaque V4', () => {
     const link = buildTerminalConnectWebHref({

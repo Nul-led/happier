@@ -3,6 +3,7 @@ import type {
     ConnectedServiceAuthGroupMemberRuntimeState,
     ConnectedServiceAuthGroupPolicyV1,
 } from './selectConnectedServiceAuthGroupCandidate';
+import { credentialHealthAllowsSelection } from './selectConnectedServiceAuthGroupCandidate';
 import { isConnectedServiceQuotaObservationFresh } from '@happier-dev/protocol';
 
 function normalizeProfileId(value: string | null | undefined): string | null {
@@ -41,7 +42,9 @@ export function resolveConnectedServiceAuthGroupPreTurnQuotaProbeProfileIds(inpu
     const mode = input.policy.preTurnProbeMode;
     if (mode === 'never') return [];
     const currentProfileId = normalizeProfileId(input.activeProfileId);
-    const enabledMembers = input.members.filter((member) => member.enabled);
+    const enabledMembers = input.members.filter((member) => member.enabled && credentialHealthAllowsSelection(
+        input.memberStatesByProfileId.get(member.profileId)?.credentialHealthStatus,
+    ));
     const currentMembers = currentProfileId && input.allowCurrentProfileRetry
         ? enabledMembers.filter((member) => member.profileId === currentProfileId)
         : [];

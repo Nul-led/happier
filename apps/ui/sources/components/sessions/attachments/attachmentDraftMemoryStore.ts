@@ -1,13 +1,6 @@
 import type { AttachmentDraft } from './attachmentDraftModel';
 
-const ATTACHMENT_DRAFT_STORE_MAX_ENTRIES = 50;
-
-type AttachmentDraftStoreEntry = Readonly<{
-    drafts: readonly AttachmentDraft[];
-    updatedAt: number;
-}>;
-
-const attachmentDraftMemoryStore = new Map<string, AttachmentDraftStoreEntry>();
+const attachmentDraftMemoryStore = new Map<string, readonly AttachmentDraft[]>();
 
 function copyAttachmentDrafts(drafts: readonly AttachmentDraft[]): AttachmentDraft[] {
     return drafts.map((draft) => ({
@@ -17,21 +10,9 @@ function copyAttachmentDrafts(drafts: readonly AttachmentDraft[]): AttachmentDra
     }));
 }
 
-function pruneAttachmentDraftStore(): void {
-    if (attachmentDraftMemoryStore.size <= ATTACHMENT_DRAFT_STORE_MAX_ENTRIES) return;
-
-    const keysByOldestUpdate = Array.from(attachmentDraftMemoryStore.entries())
-        .sort((left, right) => left[1].updatedAt - right[1].updatedAt)
-        .map(([key]) => key);
-
-    for (const key of keysByOldestUpdate.slice(0, attachmentDraftMemoryStore.size - ATTACHMENT_DRAFT_STORE_MAX_ENTRIES)) {
-        attachmentDraftMemoryStore.delete(key);
-    }
-}
-
 export function readAttachmentDraftsForKey(key: string): AttachmentDraft[] {
-    const entry = attachmentDraftMemoryStore.get(key);
-    return entry ? copyAttachmentDrafts(entry.drafts) : [];
+    const drafts = attachmentDraftMemoryStore.get(key);
+    return drafts ? copyAttachmentDrafts(drafts) : [];
 }
 
 export function writeAttachmentDraftsForKey(key: string, drafts: readonly AttachmentDraft[]): void {
@@ -40,11 +21,7 @@ export function writeAttachmentDraftsForKey(key: string, drafts: readonly Attach
         return;
     }
 
-    attachmentDraftMemoryStore.set(key, {
-        drafts: copyAttachmentDrafts(drafts),
-        updatedAt: Date.now(),
-    });
-    pruneAttachmentDraftStore();
+    attachmentDraftMemoryStore.set(key, copyAttachmentDrafts(drafts));
 }
 
 export function clearAttachmentDraftsForKey(key: string): void {

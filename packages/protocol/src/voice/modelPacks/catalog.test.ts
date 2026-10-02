@@ -16,7 +16,7 @@ describe('MODEL_PACK_CATALOG', () => {
     expect(getModelPackCatalogEntry(KOKORO_DEFAULT_TTS_PACK_ID)).toMatchObject({
       packId: KOKORO_DEFAULT_TTS_PACK_ID,
       kind: 'tts_sherpa',
-      model: 'kokoro-82m-v1.0',
+      model: 'kokoro-int8-multi-lang-v1_1',
       runtimeFamily: 'sherpa_kokoro_offline',
       defaultFor: 'tts_sherpa',
       publicationStatus: 'published',

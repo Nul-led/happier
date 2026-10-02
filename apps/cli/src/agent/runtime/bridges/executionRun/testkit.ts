@@ -15,6 +15,8 @@ type PromptMeta = Parameters<ExecutionRunHostRuntime['deliverInput']>[2];
 
 export type TestExecutionRunHostRuntimeOptions = Readonly<{
     runtimeId?: string;
+    /** Explicit vendor identity, independent of this fixture's dispatch id. */
+    providerSessionId?: string;
     resumeRuntimeId?: string;
     resumeSupported?: boolean;
     replayResumeSupported?: boolean;
@@ -50,6 +52,7 @@ export function createTestExecutionRunHostRuntime(
             }
             return opts.resumeSupported ?? opts.replayResumeSupported ?? false;
         },
+        readProviderSessionId: () => opts.providerSessionId ?? null,
         async provisionRuntime(provisionOpts) {
             await opts.onProvisionRuntime?.(provisionOpts);
             return { runtimeId: provisionOpts?.resumeRuntimeId ?? opts.resumeRuntimeId ?? runtimeId };

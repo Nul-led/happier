@@ -19,7 +19,7 @@ const VoiceLocalSttLocalNeuralSchema = z
   .prefault({});
 
 const VoiceLocalSttSchemaV3 = z.object({
-  provider: VoiceLocalSttProviderSchema.default('happier.voice.openai-compat/stt'),
+  provider: VoiceLocalSttProviderSchema.default('device'),
   localNeural: VoiceLocalSttLocalNeuralSchema,
 });
 

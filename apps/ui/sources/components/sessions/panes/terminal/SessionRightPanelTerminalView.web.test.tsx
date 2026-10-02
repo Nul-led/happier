@@ -58,9 +58,16 @@ async function renderAndFlush(element: React.ReactElement): Promise<RenderScreen
     return screen;
 }
 
+/**
+ * The sidebar-docked session terminal leaf: the PTY controller contract these cases pin. The Terminal
+ * page around it (chips, pager) is covered by `SessionTerminalPage.test.tsx`.
+ */
 async function loadSessionRightPanelTerminalViewWeb() {
-    const mod = await import('./SessionRightPanelTerminalView.web');
-    return mod.SessionRightPanelTerminalView;
+    const mod = await import('@/components/sessions/terminal/SessionEmbeddedTerminalPane.web');
+    const Pane = mod.SessionEmbeddedTerminalPane;
+    return function SidebarTerminalLeaf(props: Readonly<{ sessionId: string; scopeId: string }>) {
+        return <Pane {...props} currentDockLocation="sidebar" testIdPrefix="session-rightpanel-terminal" />;
+    };
 }
 
 async function loadSessionEmbeddedTerminalPaneWeb() {
@@ -78,10 +85,6 @@ vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
 
 vi.mock('@/components/ui/text/Text', () => ({
     Text: (props: any) => React.createElement('Text', props, props.children),
-}));
-
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
 }));
 
 vi.mock('@/components/ui/code/editor/codeEditorFontMetrics', () => ({

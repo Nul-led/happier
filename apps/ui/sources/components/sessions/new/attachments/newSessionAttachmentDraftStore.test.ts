@@ -3,6 +3,7 @@ import type { AttachmentDraft } from '@/components/sessions/attachments/attachme
 
 import {
     clearAllNewSessionAttachmentDrafts,
+    clearNewSessionAttachmentDrafts,
     readNewSessionAttachmentDrafts,
     writeNewSessionAttachmentDrafts,
 } from './newSessionAttachmentDraftStore';
@@ -43,18 +44,23 @@ describe('newSessionAttachmentDraftStore', () => {
         })]);
     });
 
-    it('evicts the oldest flows when the draft store reaches its count cap', () => {
+    it('retains unsent flows beyond fifty until explicitly cleared', () => {
         for (let index = 0; index < 51; index += 1) {
             vi.setSystemTime(new Date(Date.UTC(2026, 1, 5, 0, 0, index)));
             writeNewSessionAttachmentDrafts(`flow-${index}`, [createDraft(`draft-${index}`)]);
         }
 
-        expect(readNewSessionAttachmentDrafts('flow-0')).toEqual([]);
+        expect(readNewSessionAttachmentDrafts('flow-0')).toEqual([expect.objectContaining({
+            id: 'draft-0',
+        })]);
         expect(readNewSessionAttachmentDrafts('flow-1')).toEqual([expect.objectContaining({
             id: 'draft-1',
         })]);
         expect(readNewSessionAttachmentDrafts('flow-50')).toEqual([expect.objectContaining({
             id: 'draft-50',
         })]);
+        clearNewSessionAttachmentDrafts('flow-0');
+        expect(readNewSessionAttachmentDrafts('flow-0')).toEqual([]);
+        expect(readNewSessionAttachmentDrafts('flow-50')).toEqual([expect.objectContaining({ id: 'draft-50' })]);
     });
 });

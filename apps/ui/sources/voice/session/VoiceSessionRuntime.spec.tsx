@@ -178,6 +178,7 @@ function createStubAdapterControls() {
     stop: createAsyncNoopSpy(),
     toggle: createAsyncNoopSpy(),
     interrupt: createAsyncNoopSpy(),
+    commitInput: createAsyncNoopSpy(),
     sendContextUpdate: createNoopSpy(),
   };
 }
@@ -201,6 +202,7 @@ function createStubLifecycleController(
       canStop: true,
     })),
     interrupt: createAsyncNoopSpy(),
+    commitInput: createAsyncNoopSpy(),
     rearmAfterCredentialAuthorityChange,
     sendContextUpdate: createNoopSpy(),
     setConfiguredProviderId: createNoopSpy(),

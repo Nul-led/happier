@@ -1410,13 +1410,12 @@ export function createBundledRealtimeProviderRuntime(
         await connection.sendControl(event);
       }
     },
-    createToolBarrier: () => host.createToolBarrier({
+    createToolBarrier: ({ controlSessionId }) => host.createToolBarrier({
+      controlSessionId,
+      adapterId: providerId,
       effectCalls: config.protocol.toolEffectCalls ?? 'none',
-      resolveSessionId: (explicitSessionId) => explicitSessionId ?? (
-        runtime?.getOwnedControlSessionId()
-          ? host.resolveConversationSessionId(runtime.getOwnedControlSessionId()!, providerId)
-          : null
-      ),
+      resolveSessionId: (explicitSessionId) => explicitSessionId
+        ?? host.resolveConversationSessionId(controlSessionId, providerId),
       async submitResults(_responseId, results, signal) {
         for (const event of config.encodeToolResults(results)) {
           abortIfRequested(signal);
@@ -1436,7 +1435,10 @@ export function createBundledRealtimeProviderRuntime(
   });
 
   const projectAdapterSnapshot = (snapshot: unknown) => {
-    const projected = host.machine.projectSnapshot(providerId, snapshot);
+    const projected = {
+      ...host.machine.projectSnapshot(providerId, snapshot),
+      canCommitInput: runtime?.canCommitInput() === true,
+    };
     const terminalCode = projected.errorCode === 'provider_error'
       && typeof projected.errorMessage === 'string'
       && projected.errorMessage.startsWith('voice_')
@@ -1702,6 +1704,10 @@ export function createBundledRealtimeProviderRuntime(
     },
     async interrupt() {
       await interruptActiveResponse();
+    },
+    async commitInput({ sessionId }) {
+      if (!runtime || runtime.getActiveControlSessionId() !== sessionId) return;
+      await runtime.performTurnControl('commit_input');
     },
     async bargeIn() {
       await interruptActiveResponse();

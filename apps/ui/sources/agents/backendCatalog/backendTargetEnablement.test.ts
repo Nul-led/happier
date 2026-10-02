@@ -1,8 +1,18 @@
 import { describe, expect, it } from 'vitest';
 
-import { getAgentBackendCompatibilityTargetKeys } from './backendTargetEnablement';
+import { getAgentBackendCompatibilityTargetKeys, readBackendTargetEnabled } from './backendTargetEnablement';
 
 describe('backendTargetEnablement', () => {
+    it('reads released target spellings through the canonical Account Settings owner', () => {
+        expect(readBackendTargetEnabled({
+            backendEnabledByTargetKey: { 'agent:codex': false },
+            canonicalTargetKey: 'backend:codex',
+        })).toBe(false);
+        expect(readBackendTargetEnabled({
+            backendEnabledByTargetKey: { 'backend:codex': true, 'agent:codex': false },
+            canonicalTargetKey: 'backend:codex',
+        })).toBe(true);
+    });
     it('derives provider-owned backend compatibility target keys from catalog projections', () => {
         expect(getAgentBackendCompatibilityTargetKeys({
             agentId: 'example-provider',

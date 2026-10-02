@@ -28,4 +28,12 @@ describe('isHardTerminatorDot (canonical sentence-boundary owner)', () => {
         const text = 'U. S. A';
         expect(isHardTerminatorDot(text, dotIndex(text))).toBe(false);
     });
+
+    it('keeps files, domains and URL query punctuation inside their token', () => {
+        for (const text of ['index.ts', 'example.com', 'https://example.com/a?b=yes!']) {
+            for (let index = 0; index < text.length; index += 1) {
+                if (text[index] === '.') expect(isHardTerminatorDot(text, index)).toBe(false);
+            }
+        }
+    });
 });

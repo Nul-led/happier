@@ -1,16 +1,79 @@
 import { execFile } from 'node:child_process';
-import { access, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, readFile, rm, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { prepareTmuxWindowLaunch } from './windowLaunchScript';
+import { logger } from '@/ui/logger';
+import { createHerdrLaunchSpec } from '../herdr/launchSpec';
+
+const writeBoundary = vi.hoisted((): { failure: Error | null; directory: string } => ({ failure: null, directory: '' }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...fs,
+    writeFile: async (...args: Parameters<typeof fs.writeFile>) => {
+      if (writeBoundary.failure && /happier-(?:tmux-window|terminal-launch)-/.test(String(args[0]))) {
+        writeBoundary.directory = dirname(String(args[0]));
+        await fs.writeFile(join(writeBoundary.directory, 'unexpected'), 'retained');
+        throw writeBoundary.failure;
+      }
+      return fs.writeFile(...args);
+    },
+  };
+});
 
 const execFileAsync = promisify(execFile);
 
 describe('prepareTmuxWindowLaunch', () => {
+  it.each(['tmux', 'herdr'])('retains write failure and marks incomplete cleanup before native creation (%s)', async (host) => {
+    const writeFailure = Object.assign(new Error('fixture write failed'), { code: 'EACCES' });
+    // Only the OS file-write boundary fails; the real private artifact owner runs.
+    writeBoundary.failure = writeFailure;
+    const diagnostic = vi.spyOn(logger, 'infoFile').mockImplementation(() => undefined);
+    try {
+      const preparation = host === 'tmux'
+        ? prepareTmuxWindowLaunch({ args: ['native'], env: {}, unsetEnvKeys: [], readySignal: 'write-failed' })
+        : createHerdrLaunchSpec({ workingDirectory: '/tmp', spawnArgv: ['native'], spawnEnv: {} });
+      await expect(preparation).rejects.toMatchObject({
+        creationDisposition: 'not_created', cleanupIncomplete: true, cause: writeFailure,
+        errors: [writeFailure, expect.objectContaining({ code: 'ENOTEMPTY' })],
+      });
+      await expect(readFile(join(writeBoundary.directory, 'unexpected'), 'utf8')).resolves.toBe('retained');
+    } finally {
+      writeBoundary.failure = null;
+      diagnostic.mockRestore();
+      if (writeBoundary.directory) {
+        await unlink(join(writeBoundary.directory, 'unexpected'));
+        await rmdir(writeBoundary.directory);
+        writeBoundary.directory = '';
+      }
+    }
+  });
+  it.skipIf(process.platform === 'win32')('reports exact cleanup failure without recursively removing unexpected content', async () => {
+    const prepared = await prepareTmuxWindowLaunch({ args: ['native'], env: {}, unsetEnvKeys: [], readySignal: 'cleanup-test' });
+    // Let the genuine shell decode the OS launch argv, not a second shell parser.
+    const { stdout } = await execFileAsync('/bin/sh', ['-c', `printf '%s\\n' ${prepared.command}`]);
+    const scriptPath = stdout.trim().split('\n')[1]!;
+    const directory = dirname(scriptPath);
+    const unexpected = join(directory, 'unexpected');
+    const diagnostic = vi.spyOn(logger, 'infoFile').mockImplementation(() => undefined);
+    try {
+      await writeFile(unexpected, 'retained');
+      await expect(prepared.cleanup()).rejects.toMatchObject({ code: 'ENOTEMPTY' });
+      await expect(readFile(unexpected, 'utf8')).resolves.toBe('retained');
+      expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining('tmux_launch_cleanup_incomplete'));
+    } finally {
+      diagnostic.mockRestore();
+      await unlink(unexpected).catch(() => undefined);
+      await unlink(scriptPath).catch(() => undefined);
+      await rmdir(directory).catch(() => undefined);
+    }
+  });
+
   const testDirectories: string[] = [];
 
   afterEach(async () => {

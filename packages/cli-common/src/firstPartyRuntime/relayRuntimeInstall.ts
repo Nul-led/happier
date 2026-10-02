@@ -2,7 +2,7 @@ import { createReadStream, existsSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readlink, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
-import { spawnSync } from 'node:child_process';
+import { spawnBackgroundSync } from '../process/spawnBackgroundSync.js';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, win32 as win32Path } from 'node:path';
 
@@ -1025,7 +1025,7 @@ async function assertIrreversibleMigrationRollbackAllowed(params: Readonly<{
     const args = [`--is-migration-applied=${params.migration.name}`];
     const completion = params.runCommand
         ? await params.runCommand({ command, args, cwd: params.installRoot, env: params.env })
-        : spawnSync(command, args, {
+        : spawnBackgroundSync(command, args, {
             cwd: params.installRoot,
             env: { ...process.env, ...params.env },
             encoding: 'utf8',
@@ -1070,7 +1070,7 @@ async function runInstalledRelayRuntimeMigrations(params: Readonly<{
         await params.runMigrationCommand({ ...plan, cwd: params.installRoot, env: params.env });
         return;
     }
-    const completion = spawnSync(plan.command, [...plan.args], {
+    const completion = spawnBackgroundSync(plan.command, [...plan.args], {
         cwd: params.installRoot,
         env: { ...process.env, ...params.env },
         stdio: 'inherit',

@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawnBackgroundSync } from './spawnBackgroundSync.js';
 
 import { resolveWindowsCommandInvocation } from './windows/resolveWindowsCommandInvocation.js';
 
@@ -28,18 +28,16 @@ export function commandExistsOnPath(
       }
     }
 
-    const res = spawnSync('where', [name], {
+    const res = spawnBackgroundSync('where', [name], {
       stdio: 'ignore',
       env: probeEnv,
-      windowsHide: true,
     });
     return (res.status ?? 1) === 0;
   }
 
-  const res = spawnSync('sh', ['-lc', 'command -v "$1" >/dev/null 2>&1', 'sh', name], {
+  const res = spawnBackgroundSync('sh', ['-lc', 'command -v "$1" >/dev/null 2>&1', 'sh', name], {
     stdio: 'ignore',
     env: probeEnv,
-    windowsHide: true,
   });
   return (res.status ?? 1) === 0;
 }

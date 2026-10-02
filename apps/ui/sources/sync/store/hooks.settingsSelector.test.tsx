@@ -25,9 +25,10 @@ it('does not recompute settings projections for other store domains', async () =
         storage.setState({ machines: { ...storage.getState().machines } });
     });
     expect(computations).toBe(baseline);
+    const nextDensity = hook.getCurrent().density === 'narrow' ? 'cozy' : 'narrow';
     await act(async () => {
-        storage.getState().applySettingsLocal({ sessionListDensity: 'narrow' });
+        storage.getState().applySettingsLocal({ sessionListDensity: nextDensity });
     });
-    expect(hook.result.current.density).toBe('narrow');
+    expect(hook.getCurrent().density).toBe(nextDensity);
     expect(computations).toBe(baseline + 1);
 });

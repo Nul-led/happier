@@ -14,6 +14,11 @@ export type HostSessionRuntimeFactoryResult<TNativeRuntime extends RuntimeTurnOp
   operations: RuntimeTurnOperations;
   nativeRuntime?: TNativeRuntime | null;
   terminalRemoteModeLoop?: HostSessionTerminalRemoteModeLoop | null;
+  /** Invoked once after canonical startup authority/configuration preparation. */
+  prepareStartupPresentation?: () => Promise<Readonly<{
+    terminalRemoteModeLoop: HostSessionTerminalRemoteModeLoop | null;
+    ownsCurrentTerminalDisplay: boolean;
+  }>>;
   /** Exact startup configuration admitted while the runtime was constructed. */
   configuration?: AgentSessionConfigurationSnapshot | null;
   /** Bounded Agent-owned identity resolved during Session open. */

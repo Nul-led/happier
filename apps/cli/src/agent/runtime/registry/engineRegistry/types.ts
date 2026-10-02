@@ -1,4 +1,5 @@
 import type { PluginDaemonConnectionStateSource } from '../pluginConnectionStateSource';
+import type { HostProviderCliAttachRequest } from '@/session/attach/providerCliAttach';
 import type { ResolvedContributionRegistry } from '@/plugins/projection/registry/types';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import type { AgentRuntime } from '@happier-dev/plugin-sdk/agents/runtime';
@@ -61,6 +62,8 @@ export type RunnerAgentExternalSessionProviderOps = Required<Pick<
 >>;
 
 export type RunnerAgentSessionRuntimeSource = Readonly<{
+    /** Captured launch choice; grants no Agent/session authority. */
+    startupRuntimeDescriptorV1?: AgentSessionOpenRequest['runtimeDescriptorV1'];
     /** Exact Agent contribution used to construct this Session. */
     agentContribution: ResolvedAgentContribution;
     identity: Readonly<{
@@ -159,6 +162,7 @@ export type RunnerAgentSessionRuntimeSource = Readonly<{
         ExternalSessionExecutionSurface | null;
     managedServiceEndpointReadPort?:
         RunnerManagedServiceEndpointReadPort | null;
+    resolveProviderCliAttachManagedServiceAccess?: NonNullable<HostProviderCliAttachRequest['resolveManagedServiceAccess']>;
     managedServicesCustodyPort?:
         RunnerManagedServicesCustodyPortV1 | null;
     agentSessionRealtimeVoiceAuthority?: AgentSessionRealtimeVoiceAuthority | null;

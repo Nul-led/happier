@@ -1,5 +1,5 @@
 import * as agents from '@happier-dev/agents';
-import type { BackendTargetRefV2 } from '@happier-dev/protocol';
+import { readAccountSettingValueForBackendTarget, type BackendTargetRefV2, type BackendTargetRefV2Input } from '@happier-dev/protocol';
 
 import { resolveBackendTargetKeyV2 } from './backendTargetKeyV2';
 import type {
@@ -104,36 +104,21 @@ export function readBackendTargetEnabled(params: Readonly<{
     canonicalTargetKey: string;
     compatibilityTargetKeys?: readonly string[];
 }>): boolean {
-    const canonicalEnabledState = params.backendEnabledByTargetKey?.[params.canonicalTargetKey];
+    const settings = { backendEnabledByTargetKey: params.backendEnabledByTargetKey };
+    // This boundary accepts string keys; Protocol validates and normalizes their vocabulary.
+    const readEnabled = (targetKey: string) => readAccountSettingValueForBackendTarget(
+        settings, 'backendEnabledByTargetKey', targetKey as BackendTargetRefV2Input,
+    );
+    const canonicalEnabledState = readEnabled(params.canonicalTargetKey);
     if (canonicalEnabledState !== undefined) {
         return canonicalEnabledState !== false;
     }
 
     for (const compatibilityTargetKey of params.compatibilityTargetKeys ?? []) {
-        if (params.backendEnabledByTargetKey?.[compatibilityTargetKey] === false) {
+        if (readEnabled(compatibilityTargetKey) === false) {
             return false;
         }
     }
 
     return true;
-}
-
-export function readBackendTargetSettingValue<T>(params: Readonly<{
-    valuesByTargetKey: Readonly<Record<string, T>> | null | undefined;
-    canonicalTargetKey: string;
-    compatibilityTargetKeys?: readonly string[];
-}>): T | undefined {
-    const canonicalValue = params.valuesByTargetKey?.[params.canonicalTargetKey];
-    if (canonicalValue !== undefined) {
-        return canonicalValue;
-    }
-
-    for (const compatibilityTargetKey of params.compatibilityTargetKeys ?? []) {
-        const compatibilityValue = params.valuesByTargetKey?.[compatibilityTargetKey];
-        if (compatibilityValue !== undefined) {
-            return compatibilityValue;
-        }
-    }
-
-    return undefined;
 }

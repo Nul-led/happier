@@ -1,28 +1,39 @@
 import chalk from 'chalk';
 import { stripVTControlCharacters } from 'node:util';
-import { createNumericPlanetFrame } from '../../numericPlanetFrame.mjs';
+import { createPlanetFrame, planetRowsForColumns, PLANET_ACCENT_HEX } from '@happier-dev/brand/planet';
 
 export function isTerminalAnimationDisabled(): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(process.env.HAPPIER_NO_ANIMATION ?? '').trim().toLowerCase());
 }
 
-/** Numeric brand texture only; no identifiers, credentials or progress data. */
-export function renderNumericPlanet(options: Readonly<{
+/** Legacy Windows consoles cannot reliably display the Braille dot cells. */
+export function supportsBrailleArt(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== 'win32' || Boolean(env.WT_SESSION || env.TERM_PROGRAM);
+}
+
+/** Terminal presentation only; the brand package owns the model. */
+export function renderPlanet(options: Readonly<{
   columns?: number;
   seconds?: number;
+  intro?: boolean;
+  dim?: number;
   chalkLike?: typeof chalk;
   color?: boolean;
 }> = {}): string[] {
   const colors = options.chalkLike ?? chalk;
-  return createNumericPlanetFrame({
+  const background = process.env.COLORFGBG?.split(';').at(-1)?.trim();
+  return createPlanetFrame({
     ...(options.columns === undefined ? {} : { columns: options.columns }),
     ...(options.seconds === undefined ? {} : { seconds: options.seconds }),
+    ...(options.intro === undefined ? {} : { intro: options.intro }),
+    ...(options.dim === undefined ? {} : { dim: options.dim }),
+    theme: background === '7' || background === '15' ? 'light' : 'dark',
   }).map((row) => {
     const line = row.map((cell) => {
       if (!cell) return ' ';
       return options.color === false || colors.level === 0
-        ? cell.digit
-        : colors.rgb(...cell.rgb)(cell.digit);
+        ? cell.ch
+        : colors.rgb(...cell.rgb)(cell.ch);
     }).join('');
     return line.trimEnd();
   });
@@ -38,10 +49,10 @@ export function renderSetupWelcome(options: Readonly<{
   if (process.env.HAPPIER_INSTALLER_WELCOME_SHOWN === '1') {
     return ['', options.subtitle, `Computer: ${options.machineName}`, ''].join('\n');
   }
-  const rich = Boolean(process.stdout.isTTY) && process.env.TERM !== 'dumb';
+  const rich = Boolean(process.stdout.isTTY) && process.env.TERM !== 'dumb' && supportsBrailleArt();
   const width = options.columns ?? process.stdout.columns ?? 80;
   const lines = rich && width >= 40 && (process.stdout.rows ?? 24) >= 18
-    ? renderNumericPlanet({ color: !process.env.NO_COLOR })
+    ? renderPlanet({ color: !process.env.NO_COLOR })
     : [];
   return [...lines, '', 'Happier', options.subtitle, `Computer: ${options.machineName}`, ''].join('\n');
 }
@@ -97,7 +108,7 @@ function wrapSetupText(value: string, width: number, indent = ''): string[] {
 }
 
 function renderSetupChoiceText(options: SetupChoiceRenderOptions, width: number, showBrand: boolean, color: boolean): string[] {
-  const gold = (value: string): string => color ? chalk.hex('#d6a24a')(value) : value;
+  const gold = (value: string): string => color ? chalk.hex(PLANET_ACCENT_HEX)(value) : value;
   const title = (value: string): string => color ? chalk.bold(value) : value;
   const lines: string[] = [];
   if (options.showWelcome !== false) {
@@ -127,12 +138,12 @@ function renderSetupChoiceText(options: SetupChoiceRenderOptions, width: number,
 }
 
 function canRenderSetupChoiceRich(options: SetupChoiceRenderOptions, width: number, rows: number, isTTY: boolean, showBrand: boolean): boolean {
-  if (!isTTY || process.env.TERM === 'dumb' || width < SETUP_PLANET_WIDTH + SETUP_PLANET_GAP + SETUP_MIN_RIGHT_WIDTH) {
+  if (!isTTY || process.env.TERM === 'dumb' || !supportsBrailleArt() || width < SETUP_PLANET_WIDTH + SETUP_PLANET_GAP + SETUP_MIN_RIGHT_WIDTH) {
     return false;
   }
   const rightWidth = width - SETUP_PLANET_WIDTH - SETUP_PLANET_GAP;
   const rightLineCount = renderSetupChoiceText(options, rightWidth, showBrand, false).length;
-  const planetLineCount = Math.ceil(SETUP_PLANET_WIDTH / 2.2);
+  const planetLineCount = planetRowsForColumns(SETUP_PLANET_WIDTH);
   return Math.max(rightLineCount, planetLineCount) + 2 < rows;
 }
 
@@ -157,9 +168,10 @@ export function renderSetupChoice(options: SetupChoiceRenderOptions): string {
 
   const rightWidth = width - SETUP_PLANET_WIDTH - SETUP_PLANET_GAP;
   const right = renderSetupChoiceText(options, rightWidth, showBrand, color);
-  const planet = renderNumericPlanet({
+  const planet = renderPlanet({
     columns: SETUP_PLANET_WIDTH,
-    seconds: options.seconds ?? 0,
+    ...(options.seconds === undefined ? {} : { seconds: options.seconds }),
+    intro: showBrand,
     color: !process.env.NO_COLOR,
   });
   const lines: string[] = [];
@@ -173,7 +185,6 @@ export function renderSetupChoice(options: SetupChoiceRenderOptions): string {
 }
 
 export function createSetupChoicePrompt(options: SetupChoiceRenderOptions): SetupChoicePrompt {
-  const message = renderSetupChoice(options);
   const width = Math.max(20, Math.floor(options.columns ?? process.stdout.columns ?? 80));
   const rows = options.rows ?? process.stdout.rows ?? 24;
   const isTTY = options.isTTY ?? Boolean(process.stdout.isTTY);
@@ -181,11 +192,18 @@ export function createSetupChoicePrompt(options: SetupChoiceRenderOptions): Setu
   const rich = options.showWelcome !== false && canRenderSetupChoiceRich(options, width, rows, isTTY, showBrand);
   const canNavigate = isTTY && process.env.TERM !== 'dumb';
   const canAnimate = !isTerminalAnimationDisabled() && rich;
+  // Animated welcomes begin at the same pose as their first timed redraw.
+  // No-motion/static callers still get the settled, visible planet.
+  const message = renderSetupChoice(canAnimate ? { ...options, seconds: 0 } : options);
   return canNavigate
     ? {
         message,
         animate: canAnimate,
-        renderMessage: (elapsedSeconds, selectedId) => renderSetupChoice({ ...options, seconds: elapsedSeconds, selectedId }),
+        renderMessage: (elapsedSeconds, selectedId) => renderSetupChoice({
+          ...options,
+          ...(canAnimate ? { seconds: elapsedSeconds } : {}),
+          selectedId,
+        }),
       }
     : { message };
 }

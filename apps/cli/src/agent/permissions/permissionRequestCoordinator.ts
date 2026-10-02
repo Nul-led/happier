@@ -22,6 +22,7 @@ export type PermissionRequestCoordinatorRequest = Readonly<{
     createdAt?: number;
     /** Host-stamped exact turn identity when this request has mediated source authority. */
     turnId?: string;
+    lifetime?: 'turn' | 'occurrence';
     kind?: string;
     source?: string;
     sourceLocalId?: string | null;
@@ -159,6 +160,7 @@ type PendingPermissionRequest<TResult> = {
     toolInput: unknown;
     createdAt: number;
     turnId?: string;
+    lifetime: 'turn' | 'occurrence';
     kind?: string;
     source?: string;
     sourceLocalId: string | null;
@@ -177,6 +179,7 @@ type CachedPermissionDecision<TResult> = {
     result: TResult;
     toolName: string;
     toolInput: unknown;
+    lifetime: 'turn' | 'occurrence';
     turnId?: string;
     source?: string;
     responseTarget?: AgentStateRequestResponseTarget;
@@ -244,7 +247,7 @@ export class PermissionRequestCoordinator<TResult> {
                     new Error(`Permission request ${request.requestId} has incompatible durable custody`),
                 );
             }
-            entry = createPendingRequestFromOutstanding<TResult>(outstanding);
+            entry = createPendingRequestFromOutstanding<TResult>(outstanding, request.lifetime);
             this.pendingRequests.set(request.requestId, entry);
             return this.attachWaiter(entry, options?.signal);
         }
@@ -255,6 +258,7 @@ export class PermissionRequestCoordinator<TResult> {
             toolName: request.toolName,
             toolInput: request.toolInput,
             createdAt: request.createdAt ?? Date.now(),
+            lifetime: request.lifetime ?? 'turn',
             ...(typeof request.turnId === 'string' ? { turnId: request.turnId } : {}),
             ...(typeof request.kind === 'string' ? { kind: request.kind } : {}),
             ...(typeof request.source === 'string' ? { source: request.source } : {}),
@@ -499,6 +503,7 @@ export class PermissionRequestCoordinator<TResult> {
                     result: completion.result,
                     toolName: entry.toolName,
                     toolInput: entry.toolInput,
+                    lifetime: entry.lifetime,
                     ...(typeof entry.turnId === 'string' ? { turnId: entry.turnId } : {}),
                     ...(typeof entry.source === 'string' ? { source: entry.source } : {}),
                     ...(entry.responseTarget ? { responseTarget: entry.responseTarget } : {}),
@@ -588,6 +593,16 @@ export class PermissionRequestCoordinator<TResult> {
             }),
         });
         this.cachedDecisions.clear();
+    }
+
+    async cancelByPluginTurn(pluginId: string, turnId: string, reason: string): Promise<void> {
+        const normalizedPluginId = pluginId.trim();
+        if (!normalizedPluginId || !turnId.trim()) return;
+        const requestIds = [...this.pendingRequests.values()]
+            .filter((entry) => entry.lifetime === 'turn' && (entry.turnId === turnId || entry.turnId === undefined)
+                && isPermissionRequestOwnedByPlugin(entry.owner, normalizedPluginId))
+            .map((entry) => entry.requestId);
+        await this.cancelRequests(requestIds, reason);
     }
 
     async cancelByPlugin(pluginId: string, reason: string): Promise<void> {
@@ -802,6 +817,7 @@ function isCompatibleCachedDecision<TResult>(
     request: PermissionRequestCoordinatorRequest,
 ): boolean {
     return cached.toolName === request.toolName
+        && cached.lifetime === (request.lifetime ?? 'turn')
         && deepEqual(cached.toolInput, request.toolInput)
         && deepEqual(cached.responseTarget ?? null, request.responseTarget ?? null)
         && turnIdsEqual(cached.turnId, request.turnId)
@@ -814,6 +830,7 @@ function isCompatiblePendingRequest<TResult>(
     request: PermissionRequestCoordinatorRequest,
 ): boolean {
     return entry.toolName === request.toolName
+        && entry.lifetime === (request.lifetime ?? 'turn')
         && deepEqual(entry.toolInput, request.toolInput)
         && deepEqual(entry.responseTarget ?? null, request.responseTarget ?? null)
         && turnIdsEqual(entry.turnId, request.turnId)
@@ -859,12 +876,14 @@ function requiresExactTurnCustody(
 
 function createPendingRequestFromOutstanding<TResult>(
     outstanding: AgentStateOutstandingRequest,
+    lifetime: 'turn' | 'occurrence' = 'turn',
 ): PendingPermissionRequest<TResult> {
     return {
         requestId: outstanding.requestId,
         toolName: outstanding.toolName,
         toolInput: outstanding.toolInput,
         createdAt: outstanding.createdAt,
+        lifetime,
         ...(typeof outstanding.turnId === 'string' ? { turnId: outstanding.turnId } : {}),
         ...(typeof outstanding.kind === 'string' ? { kind: outstanding.kind } : {}),
         ...(typeof outstanding.source === 'string' ? { source: outstanding.source } : {}),

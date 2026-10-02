@@ -12,6 +12,8 @@ import type { DaemonLocalServicesMachineRpcRoutes } from '@/rpc/handlers/daemonL
 import type { LocalServicesDaemonRuntime } from '@/daemon/local/services/runtime';
 import { localServiceInventoryEntryMatchesWorkspaceScope } from '@/daemon/local/services/launch/suggestions';
 import type { LocalServicePublicPreviewRoutes } from '@/daemon/local/services/public/routes';
+import { PluginError } from '@happier-dev/plugin-sdk';
+import { PLUGIN_SERVICE_UNAVAILABLE_CODE } from '@/plugins/runtime/invocation/services/unavailable';
 
 function scopeMismatch(): never {
   throw new Error('runner_local_services_scope_mismatch');
@@ -82,6 +84,12 @@ export function createRestrictedRunnerLocalServicesRoutes(input: Readonly<{
   };
 
   const previewRoutes: NonNullable<DaemonLocalServicesMachineRpcRoutes['localServicesPreview']> = {
+    acquireNativeApplication: async () => {
+      throw new PluginError({
+        code: PLUGIN_SERVICE_UNAVAILABLE_CODE,
+        message: 'Native application acquisition is unavailable in the restricted Runner',
+      });
+    },
     getSnapshot: async () => scopePreviewSnapshot(
       await input.runtime.previewRoutes.getSnapshot(),
       input.sessionId,

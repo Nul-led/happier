@@ -1,5 +1,6 @@
 import type { ActionId, ActionSurfaces } from '@happier-dev/protocol';
 import { listActionSpecsForCatalogSurface, serializeActionSpec } from '@happier-dev/protocol';
+import { registerMcpWatchSubscriptions, type McpWatchOptions } from './watchSubscriptions';
 
 export const HAPPIER_MCP_ACTION_SPECS_RESOURCE_URI = 'happier://action-specs/catalog';
 
@@ -27,6 +28,7 @@ export function registerHappierMcpResources(
   opts?: Readonly<{
     surface?: keyof ActionSurfaces;
     isActionEnabled?: (id: ActionId) => boolean;
+    watch?: McpWatchOptions;
   }>,
 ): void {
   // B8 closure note:
@@ -59,4 +61,5 @@ export function registerHappierMcpResources(
       ],
     }),
   );
+  if (opts?.watch) registerMcpWatchSubscriptions(opts.watch);
 }

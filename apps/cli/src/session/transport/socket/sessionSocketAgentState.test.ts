@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createSocketTransportAdapter } from '@happier-dev/sync-client';
 
 type SocketHandler = (value: unknown) => void;
 
@@ -38,14 +39,16 @@ describe('waitForIdleViaSocket', () => {
     vi.useRealTimers();
   });
 
-  it('resolves idle when initially busy but recheckTurnActivity confirms idle without socket updates', async () => {
+  it('parks a busy wait and catches missed terminal evidence on socket reconnect', async () => {
     vi.useFakeTimers();
 
     const socket = createSocketStub();
     const busyAgentStateCiphertext = JSON.stringify({ controlledByUser: false, requests: { r1: { createdAt: 1 } } });
     vi.doMock('@/api/session/sockets', () => ({
-      createSessionScopedSocket: () => socket,
+     createSessionScopedSocket: () => socket,
+      createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter({ ...socket, connected: false }) }),
     }));
+    const recheckTurnActivity = vi.fn(async () => ({ pendingUserTurns: 0, activeTaskInFlight: false, turnInFlight: false }));
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
       fetchSessionById: vi.fn().mockResolvedValue({
         agentState: null,
@@ -61,12 +64,15 @@ describe('waitForIdleViaSocket', () => {
       sessionEncryptionMode: 'plain',
       timeoutMs: 1_000,
       initialTurnActivity: { pendingUserTurns: 1, activeTaskInFlight: false, turnInFlight: true },
-      recheckTurnActivity: async () => ({ pendingUserTurns: 0, activeTaskInFlight: false, turnInFlight: false }),
+      recheckTurnActivity,
       initialAgentStateCiphertextBase64: busyAgentStateCiphertext,
     });
 
-    // Advance past the socket wait deadline; without the busy recheck logic this will reject with `timeout`.
-    await vi.advanceTimersByTimeAsync(1_500);
+    // A quiet busy wait makes no periodic reads; reconnect supplies catch-up evidence.
+    await vi.advanceTimersByTimeAsync(500);
+    expect(recheckTurnActivity).not.toHaveBeenCalled();
+    socket.emit('connect', undefined);
+    await vi.advanceTimersByTimeAsync(0);
 
     await expect(promise).resolves.toEqual(expect.objectContaining({ idle: true, observedAt: expect.any(Number) }));
   });
@@ -76,7 +82,8 @@ describe('waitForIdleViaSocket', () => {
 
     const socket = createSocketStub();
     vi.doMock('@/api/session/sockets', () => ({
-      createSessionScopedSocket: () => socket,
+     createSessionScopedSocket: () => socket,
+      createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter({ ...socket, connected: false }) }),
     }));
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
       fetchSessionById: vi.fn().mockResolvedValue({
@@ -116,7 +123,8 @@ describe('waitForIdleViaSocket', () => {
     const socket = createSocketStub();
     const busyAgentStateCiphertext = JSON.stringify({ controlledByUser: false, requests: { r1: { createdAt: 1 } } });
     vi.doMock('@/api/session/sockets', () => ({
-      createSessionScopedSocket: () => socket,
+     createSessionScopedSocket: () => socket,
+      createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter({ ...socket, connected: false }) }),
     }));
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
       fetchSessionById: vi.fn().mockResolvedValue({
@@ -147,7 +155,8 @@ describe('waitForIdleViaSocket', () => {
 
     const socket = createSocketStub();
     vi.doMock('@/api/session/sockets', () => ({
-      createSessionScopedSocket: () => socket,
+     createSessionScopedSocket: () => socket,
+      createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter({ ...socket, connected: false }) }),
     }));
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
       fetchSessionById: vi.fn().mockResolvedValue({
@@ -206,7 +215,8 @@ describe('waitForIdleViaSocket', () => {
 
     const socket = createSocketStub();
     vi.doMock('@/api/session/sockets', () => ({
-      createSessionScopedSocket: () => socket,
+     createSessionScopedSocket: () => socket,
+      createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter({ ...socket, connected: false }) }),
     }));
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
       fetchSessionById: vi.fn().mockResolvedValue({ agentState: null }),
@@ -322,7 +332,8 @@ describe('waitForIdleViaSocket', () => {
 
     const socket = createSocketStub();
     vi.doMock('@/api/session/sockets', () => ({
-      createSessionScopedSocket: () => socket,
+     createSessionScopedSocket: () => socket,
+      createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter({ ...socket, connected: false }) }),
     }));
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
       fetchSessionById: vi.fn().mockResolvedValue({
@@ -435,7 +446,8 @@ describe('waitForIdleViaSocket', () => {
 
     const socket = createSocketStub();
     vi.doMock('@/api/session/sockets', () => ({
-      createSessionScopedSocket: () => socket,
+     createSessionScopedSocket: () => socket,
+      createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter({ ...socket, connected: false }) }),
     }));
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
       fetchSessionById: vi.fn().mockResolvedValue({
@@ -556,7 +568,8 @@ describe('waitForIdleViaSocket', () => {
 
     const socket = createSocketStub();
     vi.doMock('@/api/session/sockets', () => ({
-      createSessionScopedSocket: () => socket,
+     createSessionScopedSocket: () => socket,
+      createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter({ ...socket, connected: false }) }),
     }));
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
       fetchSessionById: vi.fn().mockResolvedValue({
@@ -654,7 +667,8 @@ describe('waitForIdleViaSocket', () => {
 
     const socket = createSocketStub();
     vi.doMock('@/api/session/sockets', () => ({
-      createSessionScopedSocket: () => socket,
+     createSessionScopedSocket: () => socket,
+      createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter({ ...socket, connected: false }) }),
     }));
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
       fetchSessionById: vi.fn().mockResolvedValue({
@@ -740,7 +754,8 @@ describe('waitForIdleViaSocket', () => {
       turnInFlight: true,
     }));
     vi.doMock('@/api/session/sockets', () => ({
-      createSessionScopedSocket: () => socket,
+     createSessionScopedSocket: () => socket,
+      createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter({ ...socket, connected: false }) }),
     }));
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
       fetchSessionById: vi.fn().mockResolvedValue({
@@ -756,7 +771,7 @@ describe('waitForIdleViaSocket', () => {
       ctx: { encryptionKey: new Uint8Array(32).fill(1), encryptionVariant: 'dataKey' },
       sessionEncryptionMode: 'plain',
       timeoutMs: 1_000,
-      initialTurnActivity: { pendingUserTurns: 1, activeTaskInFlight: false, turnInFlight: true },
+      initialTurnActivity: { pendingUserTurns: 0, activeTaskInFlight: true, turnInFlight: true },
       recheckTurnActivity,
       initialAgentStateSummary: { pendingRequestsCount: 0 },
       initialAgentStateCiphertextBase64: null,
@@ -766,6 +781,8 @@ describe('waitForIdleViaSocket', () => {
 
     const rejection = expect(promise).rejects.toThrow('timeout');
 
+    // Admit the managed transport before delivering the simulated server update.
+    await vi.advanceTimersByTimeAsync(0);
     socket.emit('update', {
       id: 'u_completed_projection',
       seq: 1,
@@ -791,7 +808,8 @@ describe('waitForIdleViaSocket', () => {
     const socket = createSocketStub();
     const decrypt = vi.fn(() => null);
     vi.doMock('@/api/session/sockets', () => ({
-      createSessionScopedSocket: () => socket,
+     createSessionScopedSocket: () => socket,
+      createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter({ ...socket, connected: false }) }),
     }));
     vi.doMock('@/api/encryption', () => ({
       decodeBase64: vi.fn(() => new Uint8Array()),
@@ -858,7 +876,8 @@ describe('waitForIdleViaSocket', () => {
     const socket = createSocketStub();
     const decrypt = vi.fn(() => null);
     vi.doMock('@/api/session/sockets', () => ({
-      createSessionScopedSocket: () => socket,
+     createSessionScopedSocket: () => socket,
+      createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter({ ...socket, connected: false }) }),
     }));
     vi.doMock('@/api/encryption', () => ({
       decodeBase64: vi.fn(() => new Uint8Array()),
@@ -908,7 +927,8 @@ describe('waitForIdleViaSocket', () => {
     const socket = createSocketStub();
     const controlledAgentState = JSON.stringify({ controlledByUser: true, requests: {} });
     vi.doMock('@/api/session/sockets', () => ({
-      createSessionScopedSocket: () => socket,
+     createSessionScopedSocket: () => socket,
+      createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter({ ...socket, connected: false }) }),
     }));
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
       fetchSessionById: vi.fn().mockResolvedValue({
@@ -947,7 +967,8 @@ describe('waitForIdleViaSocket', () => {
     const socket = createSocketStub();
     const uncontrolledAgentState = JSON.stringify({ controlledByUser: false, requests: {} });
     vi.doMock('@/api/session/sockets', () => ({
-      createSessionScopedSocket: () => socket,
+     createSessionScopedSocket: () => socket,
+      createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter({ ...socket, connected: false }) }),
     }));
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
       fetchSessionById: vi.fn().mockResolvedValue({
@@ -984,7 +1005,8 @@ describe('waitForIdleViaSocket', () => {
     const socket = createSocketStub();
     const controlledAgentState = JSON.stringify({ controlledByUser: true, requests: {} });
     vi.doMock('@/api/session/sockets', () => ({
-      createSessionScopedSocket: () => socket,
+     createSessionScopedSocket: () => socket,
+      createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter({ ...socket, connected: false }) }),
     }));
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
       fetchSessionById: vi.fn().mockResolvedValue({
@@ -1027,5 +1049,49 @@ describe('waitForIdleViaSocket', () => {
     await vi.advanceTimersByTimeAsync(1_500);
 
     await rejection;
+  });
+});
+
+describe('openSessionEventSource deadlines', () => {
+  afterEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.useRealTimers();
+  });
+
+  it('keeps a 30-day deadline pending across the Node timer boundary and expires at the full deadline', async () => {
+    vi.useFakeTimers();
+    const socket = createSocketStub();
+    vi.doMock('@/api/session/sockets', () => ({
+      createSessionScopedSocketConnection: () => ({ socket, transport: createSocketTransportAdapter({ ...socket, connected: true }) }),
+    }));
+    const { openSessionEventSource } = await import('./sessionSocketAgentState');
+    const source = openSessionEventSource({ token: 'token', sessionId: 'sess-1' });
+    const durationMs = 30 * 24 * 60 * 60 * 1_000;
+    const deadlineMs = Date.now() + durationMs;
+    const settled = vi.fn();
+    const waiting = source.waitForChange(source.currentRevision(), { deadlineMs }).then((result) => {
+      settled(result);
+      return result;
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2_147_483_647);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(deadlineMs - Date.now() - 1);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(waiting).resolves.toBe(false);
+    const controller = new AbortController();
+    const nextDeadlineMs = Date.now() + durationMs;
+    const cancelled = source.waitForChange(source.currentRevision(), { deadlineMs: nextDeadlineMs, signal: controller.signal });
+    await vi.advanceTimersByTimeAsync(2_147_483_647);
+    controller.abort();
+    await expect(cancelled).resolves.toBe(false);
+    const changed = source.waitForChange(source.currentRevision(), { deadlineMs: nextDeadlineMs });
+    socket.emit('ephemeral', { type: 'activity', id: 'sess-1', active: false, activeAt: Date.now() });
+    await expect(changed).resolves.toBe(true);
+    await source.close();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawnBackgroundSync } from '../process/spawnBackgroundSync.js';
 import { rm, readFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { homedir } from 'node:os';
@@ -994,7 +994,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
   const now = deps.now ?? (() => Date.now());
 
   const runLocalText = (cmd: string, args: readonly string[]) => {
-    const res = spawnSync(cmd, [...args], {
+    const res = spawnBackgroundSync(cmd, [...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       env: buildServiceCommandEnv({ cmd, args, env: process.env }),

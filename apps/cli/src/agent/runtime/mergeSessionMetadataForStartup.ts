@@ -342,6 +342,12 @@ export function mergeSessionMetadataForStartup(opts: {
     let merged: Metadata = {
         ...opts.current,
         ...opts.next,
+        // A runtime choice accepted by this Session is not a fresh process
+        // default or a workspace identity. Resume/rejoin must keep it even
+        // when the runtime moves to another machine/directory.
+        ...(opts.current.runtimeDescriptorV1 !== undefined
+            ? { runtimeDescriptorV1: opts.current.runtimeDescriptorV1 }
+            : {}),
         lifecycleState: 'running',
         lifecycleStateSince: opts.nowMs,
     };

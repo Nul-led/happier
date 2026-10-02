@@ -4,6 +4,7 @@ import {
   ApprovalRequestSchema,
   ApprovalRequestV2Schema,
   createActionExecutor,
+  createBlockingApprovalCoordinator,
   type ActionExecutorDeps,
   type ApprovalExecutionOriginV1,
   type ApprovalRequest,
@@ -33,6 +34,9 @@ vi.mock('@/configuration', () => ({
 
 type StoredArtifact = {
   id: string;
+  ownerAccountId: string;
+  access: 'owner';
+  encryptionMode: 'e2ee';
   header: string;
   headerVersion: number;
   body: string;
@@ -52,6 +56,12 @@ describe('approval Artifact cross-device decision', () => {
     mockPost.mockReset();
 
     mockGet.mockImplementation(async (url: string) => {
+      if (url.endsWith('/recipients')) {
+        const artifactId = decodeURIComponent(url.split('/').at(-3) ?? '');
+        const artifact = artifacts.get(artifactId);
+        return { status: 200, data: { artifactId, ownerAccountId: 'account', access: 'owner', encryptionMode: 'e2ee',
+          dataEncryptionKey: artifact?.dataEncryptionKey, callerDataEncryptionKey: artifact?.dataEncryptionKey, recipients: [] } };
+      }
       const artifactId = decodeURIComponent(url.split('/').at(-1) ?? '');
       const artifact = artifacts.get(artifactId);
       return artifact
@@ -63,6 +73,7 @@ describe('approval Artifact cross-device decision', () => {
         const id = String(body.id);
         artifacts.set(id, {
           id,
+          ownerAccountId: 'account', access: 'owner', encryptionMode: 'e2ee',
           header: String(body.header),
           headerVersion: 1,
           body: String(body.body),
@@ -72,7 +83,7 @@ describe('approval Artifact cross-device decision', () => {
           createdAt: 1,
           updatedAt: 1,
         });
-        return { status: 200, data: { id } };
+        return { status: 200, data: { id, headerVersion: 1, bodyVersion: 1 } };
       }
 
       const artifactId = decodeURIComponent(url.split('/').at(-1) ?? '');
@@ -147,6 +158,18 @@ describe('approval Artifact cross-device decision', () => {
       summary: 'Set title',
     });
     const created = await store.approvalsCreate({ request, serverId: creatorProfileId });
+    const coordinator = createBlockingApprovalCoordinator();
+    let onArtifactChange = () => {};
+    const disposeObservation = vi.fn();
+    const waitingForRemoteResult = coordinator.waitForDecision({
+      artifactId: created.artifactId,
+      request,
+      readRequest: () => store.approvalsGet({ artifactId: created.artifactId, serverId: creatorProfileId }),
+      subscribeChanges: (onChange) => {
+        onArtifactChange = onChange;
+        return { dispose: disposeObservation };
+      },
+    });
     const sessionTitleSet = vi.fn(async () => ({ updated: true }));
     const executor = createActionExecutor({
       ...store,
@@ -183,6 +206,12 @@ describe('approval Artifact cross-device decision', () => {
       ok: true,
       result: { status: 'executed', execution: { ok: true } },
     });
+    // Account-change is a transport wake only; the waiter opens the durable E2EE result.
+    onArtifactChange();
+    await expect(waitingForRemoteResult).resolves.toMatchObject({
+      decision: 'approve', request: { status: 'executed', execution: { ok: true } },
+    });
+    expect(disposeObservation).toHaveBeenCalledTimes(1);
     await expect(decide(created.artifactId, creatorProfileId, stableHomeId)).resolves.toMatchObject({
       ok: true,
       result: { status: 'executed', execution: { ok: true } },

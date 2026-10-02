@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { Conversation, TextConversation } from '@elevenlabs/client';
+import { createElevenLabsVoiceProviderRuntime } from '../../../../../packages/plugins/elevenlabs/src/ui/voice/runtime';
+import { createSdkHandleConnection } from '@/voice/runtime/connection/VoiceRealtimeConnection';
+import {
+  bindVoiceRuntimeAttemptBinding, createVoiceRuntimeAttemptBindingOwner,
+  unbindVoiceRuntimeAttemptBindingIfOwned,
+} from '@/voice/binding/voiceConversationBindingStore';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { settingsDefaults } from '@/sync/domains/settings/settings';
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
@@ -34,8 +41,14 @@ const sendSessionMessageWithServerScope = vi.fn();
 const sessionRpcWithServerScope = vi.fn();
 const teleportVoiceAgentToSessionRoot = vi.fn();
 const createArtifactWithHeader = vi.fn();
+const artifactCreateRequests = vi.fn();
 const voiceSessionStop = vi.hoisted(() => vi.fn(async () => {}));
 const runtimeFetchWithServerReachability = vi.hoisted(() => vi.fn());
+// Rendering is outside this Voice custody test. Keep the third-party native/
+// browser renderer boundary inert while exercising the actual host and Actions.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({
+  splitStreamingRevealTextParts() { throw new Error('unexpected markdown rendering'); },
+}));
 const readOrdinarySessionListCoverage = vi.fn<() => {
   serverId: string | null;
   coverage: 'complete' | 'incomplete';
@@ -46,6 +59,7 @@ const readOrdinarySessionListCoverage = vi.fn<() => {
 
 function createBaseState(): any {
   return {
+    addArtifact: vi.fn(),
     profileScope: { serverId: 'server-a', accountId: 'voice-tools-account' },
     settingsScope: { serverId: 'server-a', accountId: 'voice-tools-account' },
     sessions: {
@@ -242,6 +256,108 @@ function createBaseState(): any {
 
 let state: any = createBaseState();
 const readMockStorageState = () => ({ ...state, applySettingsLocal });
+
+async function createElevenLabsToolHarness() {
+  const { createBundledConversationRuntimeHostLease } = await import('@/voice/registry/bundledConversationRuntimeHost');
+  let incoming!: (event: unknown) => Promise<void>;
+  const sent: Array<Record<string, unknown>> = [];
+  const network = {
+    conversationId: 'elevenlabs-custody',
+    onMessage(callback: typeof incoming) { incoming = callback; },
+    onDisconnect() {}, onModeChange() {}, onOutgoingMessage() {},
+    sendMessage(event: Record<string, unknown>) { sent.push(event); },
+    close: vi.fn(),
+  };
+  // Only external network/media startup is replaced. The installed 1.18 SDK
+  // dispatches real callbacks and sends real client_tool_result envelopes.
+  const start = vi.spyOn(Conversation, 'startSession').mockImplementation(async (options) =>
+    Reflect.construct(TextConversation, [options, network]));
+  onTestFinished(() => start.mockRestore());
+  const runtime = createElevenLabsVoiceProviderRuntime();
+  const lifetime = new AbortController();
+  const directEffect = vi.fn(async () => { throw new Error('voice_effect_call_custody_unavailable'); });
+  const connection = await runtime.createConnection({
+    session: { config: { textOnly: true, dynamicVariables: { sessionId: 's1' } } },
+    attemptId: 1,
+    execution: { kind: 'direct_media' },
+    mic: {
+      ensureActive: async () => {}, teardown: async () => {},
+      setMuted() {}, isMuted: () => false, getStream: () => null,
+    },
+    interruption: { duckGain: 0.18, retainedOutputMaxMs: 1500 },
+    levels: { onOutputLevel() {} },
+    media: {
+      createSdkHandleConnection,
+      createWebRtcConnection() { throw new Error('unexpected WebRTC media'); },
+      createPcmConnection() { throw new Error('unexpected PCM media'); },
+    },
+    tools: [{
+      name: 'sendSessionMessage', description: 'Message a session',
+      parameters: { type: 'object' }, execute: directEffect,
+    }],
+    ui: { alert() {} },
+    credentials: { phase: 'connection', mediated: null, raw: null },
+    signal: lifetime.signal,
+  });
+  const hostLease = createBundledConversationRuntimeHostLease();
+  const bindingOwner = createVoiceRuntimeAttemptBindingOwner();
+  const adapterId = 'happier.voice.elevenlabs/conversation';
+  const controlSessionId = 'elevenlabs-custody-control';
+  bindVoiceRuntimeAttemptBinding({ owner: bindingOwner, binding: {
+    adapterId, controlSessionId, conversationSessionId: 's1',
+    conversationSessionAddress: { serverId: 'server-a', sessionId: 's1' },
+    lifetime: 'runtime_attempt', transcriptMode: 'synthetic', targetSessionAddress: null, updatedAt: 1,
+  } });
+  const barrierInput = {
+    adapterId, controlSessionId,
+    resolveSessionId: () => 's1', effectCalls: 'stable_ids',
+    async submitResults(_responseId: string, results: readonly import('@happier-dev/protocol').VoiceRealtimeToolResultV1[]) {
+      for (const event of runtime.encodeToolResults(results)) await connection.sendControl(event);
+    },
+    async continueResponse(responseId: string) {
+      await connection.sendControl(runtime.encodeToolContinuation(responseId));
+    },
+  } as const;
+  const barrier = hostLease.host.createToolBarrier(barrierInput);
+  await connection.connect(lifetime.signal);
+  const failures: unknown[] = [];
+  const tasks = new Set<Promise<unknown>>();
+  const pump = (async () => {
+    for await (const control of connection.controlEvents(lifetime.signal)) {
+      for (const event of runtime.protocol.decodeControl(control)) {
+        if (event.type !== 'tool_calls') continue;
+        const task = barrier.run({
+          responseId: event.responseId, calls: event.calls, signal: lifetime.signal,
+        }).catch(async (error) => {
+          failures.push(error);
+          // The production controller terminates the attempt when canonical
+          // custody rejects conflicting response/call identity.
+          lifetime.abort(); barrier.dispose();
+          await connection.close({ code: 'error', detail: 'voice_tool_barrier_failed' });
+        }).finally(() => tasks.delete(task));
+        tasks.add(task);
+      }
+    }
+  })();
+  const close = async () => {
+    lifetime.abort(); barrier.dispose();
+    await connection.close({ code: 'user_stop' });
+    await pump;
+    await Promise.all(tasks);
+    await runtime.dispose?.();
+    unbindVoiceRuntimeAttemptBindingIfOwned({ conversationSessionId: 's1', owner: bindingOwner });
+    hostLease.revoke();
+  };
+  onTestFinished(close);
+  return {
+    sent, failures, directEffect, connection, close,
+    deliver(callId: string | undefined, message: string) {
+      return incoming({ type: 'client_tool_call', client_tool_call: {
+        tool_name: 'sendSessionMessage', tool_call_id: callId, parameters: { message },
+      } });
+    },
+  };
+}
 
 function retainVoiceSessionReferenceCorpus(input: Readonly<{
   addresses: ReadonlyArray<Readonly<{ serverId: string; sessionId: string }>>;
@@ -446,6 +562,80 @@ vi.mock('expo-router', async () => {
 });
 
 describe('voice tool handlers', () => {
+  it('routes real ElevenLabs duplicate and concurrent calls through canonical Action custody', async () => {
+    const harness = await createElevenLabsToolHarness();
+    const first = harness.deliver('provider-a', 'first');
+    const duplicate = harness.deliver('provider-a', 'first');
+    const sibling = harness.deliver('provider-b', 'second');
+    await vi.waitFor(() => expect(sendSessionMessageWithServerScope).toHaveBeenCalledTimes(2));
+    await Promise.all([first, duplicate, sibling]);
+    expect(harness.directEffect).not.toHaveBeenCalled();
+    expect(harness.sent.filter((event) => event.type === 'client_tool_result').map((event) => event.tool_call_id))
+      .toEqual(expect.arrayContaining(['provider-a', 'provider-a', 'provider-b']));
+    expect(harness.sent.filter((event) => event.type === 'client_tool_result')).toHaveLength(3);
+    await harness.deliver('provider-a', 'first');
+    expect(sendSessionMessageWithServerScope).toHaveBeenCalledTimes(2);
+    expect(harness.sent.filter((event) => event.tool_call_id === 'provider-a')).toHaveLength(3);
+    expect(harness.failures).toEqual([]);
+    await harness.deliver(undefined, 'missing identity');
+    expect(sendSessionMessageWithServerScope).toHaveBeenCalledTimes(2);
+    expect(harness.sent.at(-1)).toMatchObject({ is_error: true });
+    expect(harness.connection.state()).toBe('open');
+  });
+
+  it('keeps real ElevenLabs identified calls behind canonical Action approval', async () => {
+    state.settings.actionsSettingsV1 = {
+      v: 1, actions: { 'session.message.send': { approvalRequiredSurfaces: ['voice'] } },
+    };
+    const harness = await createElevenLabsToolHarness();
+    const delivery = harness.deliver('provider-approval', 'requires approval');
+    await vi.waitFor(() => expect(artifactCreateRequests).toHaveBeenCalledTimes(1));
+    await delivery;
+    expect(sendSessionMessageWithServerScope).not.toHaveBeenCalled();
+    expect(harness.directEffect).not.toHaveBeenCalled();
+    const result = harness.sent.find((event) => event.tool_call_id === 'provider-approval');
+    expect(JSON.parse(String(result?.result))).toMatchObject({
+      ok: true, kind: 'approval_request_created', actionId: 'session.message.send',
+    });
+  });
+
+  it('rejects real ElevenLabs conflicting duplicates without assigning the first result to the conflicting callback', async () => {
+    let release!: (value: unknown) => void;
+    sendSessionMessageWithServerScope.mockImplementationOnce(async () =>
+      await new Promise((resolve) => { release = resolve; }));
+    const harness = await createElevenLabsToolHarness();
+    const first = harness.deliver('provider-conflict', 'first');
+    await vi.waitFor(() => expect(sendSessionMessageWithServerScope).toHaveBeenCalledTimes(1));
+    const conflict = harness.deliver('provider-conflict', 'different effect');
+    await Promise.all([first, conflict]);
+    expect(harness.failures).toEqual([expect.objectContaining({ code: 'response_conflict' })]);
+    expect(harness.connection.state()).toBe('closed');
+    expect(harness.sent.filter((event) => event.type === 'client_tool_result'))
+      .toEqual([expect.objectContaining({ is_error: true }), expect.objectContaining({ is_error: true })]);
+    expect(sendSessionMessageWithServerScope).toHaveBeenCalledTimes(1);
+    expect(harness.directEffect).not.toHaveBeenCalled();
+    release({ ok: true, ack: { ok: true, localId: 'after-conflict', persistence: 'pending', accepted: true } });
+  });
+
+  it('settles real ElevenLabs cancelled callbacks and cannot deliver late results or replay them on a new connection', async () => {
+    let release!: (value: unknown) => void;
+    sendSessionMessageWithServerScope.mockImplementationOnce(async () =>
+      await new Promise((resolve) => { release = resolve; }));
+    const harness = await createElevenLabsToolHarness();
+    const delivery = harness.deliver('provider-cancelled', 'pending message');
+    await vi.waitFor(() => expect(sendSessionMessageWithServerScope).toHaveBeenCalledTimes(1));
+    await harness.close();
+    await delivery;
+    const resultsAtClose = harness.sent.length;
+    release({ ok: true, ack: { ok: true, localId: 'late', persistence: 'pending', accepted: true } });
+    await Promise.resolve(); await Promise.resolve();
+    expect(harness.sent).toHaveLength(resultsAtClose);
+    await harness.deliver('late-start-call', 'must not execute');
+    expect(sendSessionMessageWithServerScope).toHaveBeenCalledTimes(1);
+    const replacement = await createElevenLabsToolHarness();
+    expect(replacement.sent).toEqual([]);
+    expect(replacement.connection.state()).toBe('open');
+  });
   beforeEach(() => {
     state = createBaseState();
     resetServerFeaturesClientForTests();
@@ -477,6 +667,7 @@ describe('voice tool handlers', () => {
     applySettingsLocal.mockReset();
     teleportVoiceAgentToSessionRoot.mockReset();
     createArtifactWithHeader.mockReset();
+    artifactCreateRequests.mockReset();
     createArtifactWithHeader.mockResolvedValue('approval-artifact-1');
     voiceSessionStop.mockClear();
     runtimeFetchWithServerReachability.mockReset();
@@ -502,8 +693,10 @@ describe('voice tool handlers', () => {
           body: string;
           dataEncryptionKey: string;
         };
+        artifactCreateRequests(request);
         return Response.json({
           ...request,
+          ownerAccountId: 'voice-tools-account', access: 'owner', encryptionMode: 'plain',
           headerVersion: 1,
           bodyVersion: 1,
           seq: 1,

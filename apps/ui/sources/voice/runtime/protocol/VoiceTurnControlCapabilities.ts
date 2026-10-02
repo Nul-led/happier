@@ -4,6 +4,8 @@ export type VoiceTurnControlCapabilities = Readonly<{
   cancelResponse: 'unsupported' | 'immediate';
   truncatePlayback: 'unsupported' | 'played_ms' | 'audio_samples';
   clearInput: boolean;
+  /** Concrete prepared-session input policy, supplied by the attempt owner. */
+  commitInput?: boolean;
   stopSession: boolean;
   resumption: 'none' | 'resume';
   replay: 'none' | 'stable_ids';
@@ -34,6 +36,8 @@ export function resolveVoiceTurnControlAction(
         : { status: 'available', basis: capabilities.truncatePlayback };
     case 'clear_input':
       return capabilities.clearInput ? { status: 'available' } : UNAVAILABLE;
+    case 'commit_input':
+      return capabilities.commitInput === true ? { status: 'available' } : UNAVAILABLE;
     case 'stop_session':
       return capabilities.stopSession ? { status: 'available' } : UNAVAILABLE;
     case 'resume_session':

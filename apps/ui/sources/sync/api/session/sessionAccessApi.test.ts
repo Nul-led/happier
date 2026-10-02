@@ -602,7 +602,7 @@ describe('Session access exact Account transport', () => {
                 agentStateVersion: 1, agentState: null, share: null,
             } }));
             if (path.endsWith('/turns')) return new Response('{}', { status: 404 });
-            if (path === '/v1/sessions/same/public-share') {
+            if (path === '/v1/public-shares') {
                 if (init?.method === 'POST') {
                     bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
                     return new Response(JSON.stringify({ publicShare: {
@@ -610,6 +610,8 @@ describe('Session access exact Account transport', () => {
                         useCount: 0, isConsentRequired: true, createdAt: 1, updatedAt: 5,
                     } }));
                 }
+            }
+            if (path === '/v1/sessions/same/public-share') {
                 if (init?.method === 'DELETE') return new Response(JSON.stringify({ success: true }));
                 return new Response(JSON.stringify({ publicShare: null }));
             }
@@ -622,6 +624,7 @@ describe('Session access exact Account transport', () => {
             scope: { serverId: env.target.id, accountId: 'target-account' },
             sessionId: 'same',
             availability: 'unavailable',
+            onPublicLinkIssued: () => {},
         });
         await expect(client.getPublicLink()).resolves.toBeNull();
         await expect(client.createPublicLink({ maxUses: 4, isConsentRequired: true })).resolves.toEqual({
@@ -629,63 +632,21 @@ describe('Session access exact Account transport', () => {
         });
         await expect(client.removePublicLink()).resolves.toEqual({ changed: true });
 
-        // The public Action input is bearer-free; only this trusted host adds
-        // the generated bearer, and a plain Session carries no wrapped key.
+        // The public Action input is secret-free; only this trusted host adds
+        // the independent lookup, and a plain Session carries no wrapped key.
         expect(bodies).toHaveLength(1);
         // `sessionId` is a declared path parameter, so the descriptor binder consumes
         // it into the URL and it must not be duplicated into the released body.
         expect(env.request.mock.calls.some(([url, init]) =>
-            new URL(url).pathname === '/v1/sessions/same/public-share' && init?.method === 'POST')).toBe(true);
+            new URL(url).pathname === '/v1/public-shares' && init?.method === 'POST')).toBe(true);
         expect(bodies[0]).not.toHaveProperty('sessionId');
+        expect(bodies[0]).toHaveProperty('subject', { kind: 'session', id: 'same' });
         expect(bodies[0]).toMatchObject({ maxUses: 4, isConsentRequired: true });
-        expect(String(bodies[0]!.token)).toMatch(/^[0-9a-f]{24}$/);
+        expect(String(bodies[0]!.lookupId)).toMatch(/^[A-Za-z0-9_-]{43}$/);
+        expect(bodies[0]).toHaveProperty('keyDerivation', 'fragment_v1');
+        expect(bodies[0]).not.toHaveProperty('token');
         expect(bodies[0]).not.toHaveProperty('encryptedDataKey');
         expect(env.request.mock.calls.every(([url]) => new URL(url).origin === 'https://target.example')).toBe(true);
-    });
-
-    it('seals the Session key to the generated bearer for an E2EE publication and reports it before dispatch', async () => {
-        const env = await setup({ accountEncryption: 'e2ee' });
-        const { createSessionAccessClient } = await import('./sessionAccessApi');
-        const { encodeBase64 } = await import('@/encryption/base64');
-        const { encryptDataKeyForRecipientV0 } = await import('@/sync/encryption/directShareEncryption');
-        const { decryptDataKeyFromPublicShare } = await import('@/sync/encryption/publicShareEncryption');
-        const sessionDataKey = new Uint8Array(32).fill(31);
-        const callerEnvelope = encryptDataKeyForRecipientV0(
-            sessionDataKey,
-            encodeBase64(MANAGER_CONTENT_KEYS.publicKey, 'base64'),
-        );
-        let body: Record<string, unknown> | null = null;
-        env.request.mockImplementation(async (url, init) => {
-            const path = new URL(url).pathname;
-            if (path === '/v1/account/encryption') return new Response(JSON.stringify({ mode: 'e2ee', updatedAt: 1 }));
-            if (path === '/v2/sessions/same') return new Response(JSON.stringify({ session: {
-                id: 'same', createdAt: 1, updatedAt: 2, seq: 0, active: true, activeAt: 2,
-                encryptionMode: 'e2ee', dataEncryptionKey: callerEnvelope, metadataVersion: 1,
-                metadata: 'sealed', agentStateVersion: 1, agentState: null, share: null,
-            } }));
-            if (path.endsWith('/turns')) return new Response('{}', { status: 404 });
-            if (path === '/v1/sessions/same/public-share') {
-                body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-                return new Response(JSON.stringify({ publicShare: {
-                    id: 'publication', expiresAt: null, maxUses: null, useCount: 0,
-                    isConsentRequired: false, createdAt: 1, updatedAt: 2,
-                } }));
-            }
-            throw new Error(`Unexpected path ${path}`);
-        });
-
-        const issued: string[] = [];
-        await expect(createSessionAccessClient({
-            scope: { serverId: env.target.id, accountId: 'target-account' },
-            sessionId: 'same',
-            availability: 'available',
-            onPublicLinkBearerIssued: (token) => { issued.push(token); },
-        }).createPublicLink({ isConsentRequired: false })).resolves.toMatchObject({ id: 'publication' });
-
-        expect(issued).toHaveLength(1);
-        expect(body).toMatchObject({ token: issued[0] });
-        await expect(decryptDataKeyFromPublicShare(String(body!.encryptedDataKey), issued[0]!))
-            .resolves.toEqual(sessionDataKey);
     });
 
     it('replays one lost public-link create with the identical physical body', async () => {
@@ -705,7 +666,7 @@ describe('Session access exact Account transport', () => {
                 } }));
             }
             if (path.endsWith('/turns')) return new Response('{}', { status: 404 });
-            if (path === '/v1/sessions/same/public-share') {
+            if (path === '/v1/public-shares') {
                 bodies.push(String(init?.body));
                 if (bodies.length === 1) throw new TypeError('response lost after dispatch');
                 return new Response(JSON.stringify({ publicShare: {
@@ -720,6 +681,7 @@ describe('Session access exact Account transport', () => {
             scope: { serverId: env.target.id, accountId: 'target-account' },
             sessionId: 'same',
             availability: 'available',
+            onPublicLinkIssued: () => {},
         }).createPublicLink({ isConsentRequired: false })).resolves.toMatchObject({ id: 'publication' });
 
         expect(sessionReads).toBe(1);

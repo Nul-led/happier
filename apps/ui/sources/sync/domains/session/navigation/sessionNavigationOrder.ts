@@ -154,22 +154,27 @@ export function resolveVisibleSessionEdgeNavigation(params: Readonly<{
 export function moveSessionMruEntryToFront(params: Readonly<{
     order: readonly string[] | null | undefined;
     activeSessionKey: string | null;
-    knownSessionEntries: readonly VisibleSessionNavigationEntry[];
+    // Supply a projection only when resolving navigation against known rows. Recording
+    // focus must retain history for other Homes and sessions not currently loaded.
+    knownSessionEntries?: readonly VisibleSessionNavigationEntry[];
     maxEntries?: number;
 }>): string[] {
     const activeSessionKey = normalizeSessionKeyPart(params.activeSessionKey);
     const maxEntries = Math.max(0, params.maxEntries ?? DEFAULT_SESSION_MRU_MAX_ENTRIES);
     const next: string[] = [];
 
-    const activeEntry = resolveKnownMruEntry(activeSessionKey, params.knownSessionEntries);
-    if (activeEntry) {
-        next.push(activeEntry.sessionKey);
+    const resolveKey = (rawKey: unknown): string => params.knownSessionEntries
+        ? resolveKnownMruEntry(rawKey, params.knownSessionEntries)?.sessionKey ?? ''
+        : normalizeSessionKeyPart(rawKey);
+    const activeKey = resolveKey(activeSessionKey);
+    if (activeKey) {
+        next.push(activeKey);
     }
 
     for (const rawKey of params.order ?? []) {
-        const entry = resolveKnownMruEntry(rawKey, params.knownSessionEntries);
-        if (!entry || next.includes(entry.sessionKey)) continue;
-        next.push(entry.sessionKey);
+        const key = resolveKey(rawKey);
+        if (!key || next.includes(key)) continue;
+        next.push(key);
         if (next.length >= maxEntries) break;
     }
 

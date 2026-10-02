@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
     audioStreamStart,
+    expoSpeechSpeak,
+    expoSpeechStop,
     emitSpeechRecEvent,
     getStorage,
     loadLocalVoiceEngineWithCompatState,
@@ -27,10 +29,122 @@ const waitForCallCount = async (spy: CallCountSpy, expectedCount: number) => {
     });
 };
 
+async function configureDuplexDeviceSpeech(handsFree: boolean) {
+    speechRecStart.mockImplementation(() => {
+        emitSpeechRecEvent('start');
+        emitSpeechRecEvent('audiostart');
+    });
+    const storage = await getStorage();
+    const config = storage.getState().settings.voice.providers.local_direct.config;
+    storage.__setState({ settings: {
+        ...storage.getState().settings,
+        voice: {
+            ...storage.getState().settings.voice,
+            providerId: 'local_direct',
+            providers: {
+                ...storage.getState().settings.voice.providers,
+                local_direct: { schemaVersion: 1, config: {
+                    ...config,
+                    handsFree: { ...config.handsFree, enabled: handsFree,
+                        endpointing: { silenceMs: 0, minSpeechMs: 0 } },
+                    stt: { ...config.stt, provider: 'device' },
+                    tts: { ...config.tts, provider: 'device', autoSpeakReplies: true, bargeInEnabled: true },
+                } },
+            },
+        },
+    } });
+    return storage;
+}
+
 describe('local voice engine device STT (experimental)', () => {
     registerLocalVoiceEngineHarnessHooks();
     const previousWindow = (globalThis as { window?: object }).window;
     const previousDocument = (globalThis as { document?: object }).document;
+
+    it.each(['direct interruption', 'after a backchannel', 'manual capture'])(
+      'captures a second utterance through the real recognizer while an ordinary spoken reply is held (%s)', async (scenario) => {
+        const storage = await configureDuplexDeviceSpeech(scenario !== 'manual capture');
+        let finishSpeech: (() => void) | undefined;
+        expoSpeechSpeak.mockImplementation((_text, options) => {
+            finishSpeech = options.onStopped;
+            options.onStart?.();
+        });
+        expoSpeechStop.mockImplementation(() => finishSpeech?.());
+        speechRecStop.mockImplementation(() => emitSpeechRecEvent('end'));
+        submitMessage.mockImplementationOnce(() => {
+            storage.__setState({ sessionMessages: { s1: { messages: [
+                { id: 'reply-one', kind: 'agent-text', text: 'The weather will be sunny tomorrow.', createdAt: Date.now() + 60_000 },
+            ] } } });
+            storage.__notify();
+        });
+        const engine = await loadLocalVoiceEngineWithCompatState();
+        await engine.toggleLocalVoiceTurn('s1');
+        emitSpeechRecEvent('result', { isFinal: true, results: [{ transcript: 'what is the forecast', confidence: 0.9 }] });
+        const initialTurn = scenario === 'manual capture' ? engine.toggleLocalVoiceTurn('s1') : Promise.resolve();
+        await vi.waitFor(() => expect(engine.getLocalVoiceState().status).toBe('speaking'));
+        // Capture is live again before the held output finishes, using the actual
+        // capture owner and recognizer controller rather than injected endpoints.
+        expect(speechRecStart.mock.calls.length).toBe(2);
+        await new Promise((resolve) => setTimeout(resolve, 850));
+        if (scenario === 'after a backchannel') {
+            const playbackStops = expoSpeechStop.mock.calls.length;
+            emitSpeechRecEvent('result', { isFinal: true, results: [{ transcript: 'yeah', confidence: 0.9 }] });
+            await waitForCallCount(speechRecStart, 3);
+            expect(expoSpeechStop.mock.calls.length).toBe(playbackStops);
+            expect(submitMessage).toHaveBeenCalledTimes(1);
+        }
+        emitSpeechRecEvent('result', { isFinal: true, results: [{ transcript: 'instead explain the wind speed', confidence: 0.9 }] });
+        await vi.waitFor(() => expect(expoSpeechStop).toHaveBeenCalled());
+        await vi.waitFor(() => expect(submitMessage).toHaveBeenCalledWith('s1', 'instead explain the wind speed', undefined, undefined, {
+            callerSurface: 'voice_turn', forceImmediate: true, hostAdmissionOrigin: 'voice',
+        }));
+        await initialTurn;
+        await engine.stopLocalVoiceSession();
+    }, 180_000);
+
+    it('releases the playback capture when the recognized turn fails to send', async () => {
+        await configureDuplexDeviceSpeech(false);
+        speechRecStop.mockImplementation(() => emitSpeechRecEvent('end'));
+        const failure = new Error('network_send_failed');
+        submitMessage.mockRejectedValueOnce(failure);
+        const engine = await loadLocalVoiceEngineWithCompatState();
+        await engine.toggleLocalVoiceTurn('s1');
+        emitSpeechRecEvent('result', { isFinal: true, results: [{ transcript: 'explain the forecast', confidence: 0.9 }] });
+        await expect(engine.toggleLocalVoiceTurn('s1')).rejects.toBeInstanceOf(Error);
+        expect(engine.getLocalVoiceState()).toMatchObject({ status: 'idle', error: 'send_failed' });
+        // Both actual native recognizer generations must be stopped, not just
+        // the initial turn whose transcript was submitted.
+        expect(speechRecStart).toHaveBeenCalledTimes(2);
+        expect(speechRecStop).toHaveBeenCalledTimes(2);
+        await engine.stopLocalVoiceSession();
+    }, 180_000);
+
+    it('does not submit a late turn when End Voice cancels playback capture startup', async () => {
+        const storage = await configureDuplexDeviceSpeech(false);
+        const { requestMicrophonePermission } = await import('@/utils/platform/microphonePermissions');
+        let resolvePermission!: (result: { granted: boolean; canAskAgain: boolean }) => void;
+        const delayedPermission = new Promise<{ granted: boolean; canAskAgain: boolean }>((resolve) => { resolvePermission = resolve; });
+        vi.mocked(requestMicrophonePermission).mockResolvedValueOnce({ granted: true, canAskAgain: true });
+        vi.mocked(requestMicrophonePermission).mockImplementationOnce(() => delayedPermission);
+        speechRecStop.mockImplementation(() => emitSpeechRecEvent('end'));
+        expoSpeechSpeak.mockImplementation((_text, options) => options.onDone?.());
+        submitMessage.mockImplementationOnce(() => {
+            storage.__setState({ sessionMessages: { s1: { messages: [
+                { id: 'late-reply', kind: 'agent-text', text: 'This should not be sent.', createdAt: Date.now() + 60_000 },
+            ] } } });
+            storage.__notify();
+        });
+        const engine = await loadLocalVoiceEngineWithCompatState();
+        await engine.toggleLocalVoiceTurn('s1');
+        emitSpeechRecEvent('result', { isFinal: true, results: [{ transcript: 'explain the forecast', confidence: 0.9 }] });
+        const turn = engine.toggleLocalVoiceTurn('s1');
+        await waitForCallCount(vi.mocked(requestMicrophonePermission), 2);
+        const end = engine.stopLocalVoiceSession();
+        resolvePermission({ granted: true, canAskAgain: true });
+        await Promise.all([turn, end]);
+        expect(submitMessage).not.toHaveBeenCalled();
+        expect(engine.getLocalVoiceState().status).toBe('idle');
+    }, 180_000);
 
     afterEach(() => {
         if (previousWindow === undefined) {
@@ -261,6 +375,8 @@ describe('local voice engine device STT (experimental)', () => {
 
     it('does not request speech recognition permissions when running in a DOM environment, even if Platform.OS is surprising', async () => {
         setPlatformOs('ios');
+        const storage = await getStorage();
+        const { toggleLocalVoiceTurn, getLocalVoiceState } = await loadLocalVoiceEngineWithCompatState();
 
         const previousWindow = (globalThis as any).window;
         const previousDocument = (globalThis as any).document;
@@ -268,7 +384,6 @@ describe('local voice engine device STT (experimental)', () => {
         (globalThis as any).document = {};
 
         try {
-            const storage = await getStorage();
             storage.__setState({
                 settings: {
                     ...storage.getState().settings,
@@ -289,7 +404,6 @@ describe('local voice engine device STT (experimental)', () => {
                 },
             });
 
-            const { toggleLocalVoiceTurn, getLocalVoiceState } = await loadLocalVoiceEngineWithCompatState();
             await toggleLocalVoiceTurn('s1');
             expect(getLocalVoiceState().status).toBe('recording');
             expect(speechRecStart).toHaveBeenCalled();
@@ -521,6 +635,7 @@ describe('local voice engine device STT (experimental)', () => {
             }) => {
                 endpointSignalHarness.emit = (signal) => deps.onEndpointSignal?.(signal);
                 return {
+                    isCaptureActive: vi.fn(() => false),
                     resolveManualBargeInAction: vi.fn(() => ({
                         kind: 'noop',
                         reason: 'not_speaking',
@@ -705,6 +820,7 @@ describe('local voice engine device STT (experimental)', () => {
         }));
         vi.doMock('@/voice/runtime/input/LocalVoiceCaptureOwner', () => ({
             createLocalVoiceCaptureOwner: () => ({
+                isCaptureActive: vi.fn(() => false),
                 resolveManualBargeInAction: vi.fn(() => ({
                     kind: 'noop',
                     reason: 'not_speaking',

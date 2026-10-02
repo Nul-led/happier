@@ -76,6 +76,57 @@ function installWorklet() {
 describe('WebPcmCapture', () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it.each(['failure', 'cancel'] as const)('does not report a successful graceful drain after accepted callback %s', async (action) => {
+    const { context, processor } = createContext({ sampleRate: 16_000 });
+    let rejectChunk!: (error: Error) => void;
+    const held = new Promise<void>((_resolve, reject) => { rejectChunk = reject; });
+    const signal = new AbortController();
+    const capture = createWebPcmCapture({
+      mic: createMic(context).mic, signal: signal.signal,
+      format: { sampleRate: 16_000, channels: 1, encoding: 'pcm16le' }, chunkMs: 20,
+      fallback: 'allow_script_processor', onChunk: () => held,
+    });
+    await capture.start();
+    processor.onaudioprocess?.(processEvent(new Float32Array(320), 16_000));
+    await Promise.resolve(); await Promise.resolve();
+    const outcome = capture.finish().then(() => ({ ok: true }), (error: unknown) => ({ ok: false, error }));
+    if (action === 'failure') rejectChunk(new Error('consumer failed'));
+    else signal.abort();
+    const settled = await Promise.race([outcome, new Promise((resolve) => setTimeout(() => resolve({ pending: true }), 50))]);
+    expect(settled).toMatchObject(action === 'failure'
+      ? { ok: false, error: { code: 'pcm_capture_chunk_failed' } }
+      : { ok: false, error: { name: 'AbortError' } });
+    expect(capture.isActive()).toBe(false);
+  });
+
+  it('finishes every accepted frame while prompt stop discards frames still queued for delivery', async () => {
+    for (const graceful of [true, false]) {
+      const { context, processor, source } = createContext({ sampleRate: 16_000 });
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const delivered: number[] = [];
+      const capture = createWebPcmCapture({
+        mic: createMic(context).mic,
+        format: { sampleRate: 16_000, channels: 1, encoding: 'pcm16le' },
+        chunkMs: 20, fallback: 'allow_script_processor',
+        onChunk: async () => { delivered.push(delivered.length); await held; },
+      });
+      await capture.start();
+      processor.onaudioprocess?.(processEvent(new Float32Array(960), 16_000));
+      await Promise.resolve(); await Promise.resolve();
+      let settled = false;
+      const stopping = (graceful ? capture.finish() : capture.stop()).then(() => { settled = true; });
+      await Promise.resolve(); await Promise.resolve();
+      expect(source.disconnect).toHaveBeenCalled();
+      expect(capture.isActive()).toBe(false);
+      expect(settled).toBe(!graceful);
+      release();
+      await stopping;
+      await capture.waitForDrain();
+      expect(delivered).toHaveLength(graceful ? 3 : 1);
+    }
+  });
+
   it('prefers AudioWorklet and never constructs the deprecated fallback when available', async () => {
     const { context } = createContext({ worklet: true });
     const { node } = installWorklet();

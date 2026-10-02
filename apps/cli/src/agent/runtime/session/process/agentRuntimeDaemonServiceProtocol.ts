@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  ActionIdSchema,
   ManagedExecutableRefSchema,
   AgentSessionTeamProviderBindingV1Schema,
   SessionEnvOverlayV1Schema,
@@ -8,6 +9,10 @@ import {
   SessionPendingExecutionRunEnqueueByMachineRequestV2Schema,
   ProviderBrokerConsumerV1Schema,
 } from '@happier-dev/protocol';
+import {
+  ActionExecuteFailureSchema,
+  type ActionExecuteResult,
+} from '@happier-dev/protocol/actions/actionExecutionResult';
 import { TeamCredentialRouteV1Schema } from '@happier-dev/protocol/teams';
 
 import {
@@ -44,6 +49,15 @@ export const AGENT_RUNTIME_DAEMON_SERVICES_PATH =
   '/agent-runtime/session/services/v1';
 
 const OpaqueIdSchema = z.string().trim().min(1).max(512);
+const ActionExecuteSuccessSchema = z.object({
+  ok: z.literal(true),
+  result: z.unknown(),
+}).strict();
+const ActionExecuteResultSchema = z.custom<ActionExecuteResult>((value) => {
+  if (ActionExecuteFailureSchema.safeParse(value).success) return true;
+  return ActionExecuteSuccessSchema.safeParse(value).success
+    && Object.prototype.hasOwnProperty.call(value, 'result');
+});
 const ProjectionTokenSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 const CanonicalOriginSchema = z.string().trim().min(1).max(2_048);
 const DeclaredSecretValueSchema = z.string().max(65_536);
@@ -112,6 +126,17 @@ export const AgentRuntimeDaemonServiceRequestV1Schema = z.object({
   operation: z.discriminatedUnion('kind', [
     ...RUNNER_AGENT_DAEMON_FACET_OPERATION_SCHEMAS,
     ...RUNNER_DAEMON_PLUGIN_SERVICE_OPERATION_V1_SCHEMAS,
+    z.object({
+      kind: z.literal('action.execute'),
+      requestId: OpaqueIdSchema,
+      actionId: ActionIdSchema,
+      input: z.unknown(),
+      witness: AgentRuntimeDaemonServiceTurnWitnessV1Schema,
+      toolCallId: OpaqueIdSchema.optional(),
+    }).strict().refine((operation) => Object.prototype.hasOwnProperty.call(operation, 'input'), {
+      path: ['input'],
+      message: 'Action input must be present',
+    }),
     z.object({
       kind: z.literal('session.open.attest'),
       requestId: OpaqueIdSchema,
@@ -232,6 +257,11 @@ export const AgentRuntimeDaemonServiceResponseV1Schema =
     z.object({
       ok: z.literal(true),
       result: z.union([
+        z.object({
+          kind: z.literal('action.execution'),
+          requestId: OpaqueIdSchema,
+          outcome: ActionExecuteResultSchema,
+        }).strict(),
         z.object({
           kind: z.literal('session.open.attestation'),
           status: z.enum(['accepted', 'recorded']),

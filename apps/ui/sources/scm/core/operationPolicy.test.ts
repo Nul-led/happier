@@ -261,6 +261,11 @@ describe('evaluateScmOperationPreflight', () => {
         if (!result.allowed) {
             expect(result.reason).toBe('branch_behind_remote');
         }
+        expect(evaluateScmOperationPreflight({
+            intent: 'push', scmWriteEnabled: true, sessionPath: '/repo',
+            snapshot: makeSnapshot({ branch: { head: 'main', upstream: 'origin/main', ahead: 0, behind: 2, detached: false } }),
+            remotePolicy: { pushMode: 'force_with_lease', expectedRemoteOid: 'a'.repeat(40) },
+        }).allowed).toBe(true);
     });
 
     it('blocks revert when worktree is not clean', () => {

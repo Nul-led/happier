@@ -1,22 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import type { DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes'
-
-const decryptHeader = vi.fn(async (_value: string) => ({ title: 't', sessions: [], draft: false }))
-const decryptBody = vi.fn(async (_value: string) => ({ body: 'b' }))
-
-vi.mock('@/sync/encryption/artifactEncryption', () => ({
-    ArtifactEncryption: class ArtifactEncryptionMock {
-        public constructor(_key: Uint8Array) {}
-
-        public decryptHeader(value: string) {
-            return decryptHeader(value)
-        }
-
-        public decryptBody(value: string) {
-            return decryptBody(value)
-        }
-    },
-}))
+import { ArtifactEncryption } from '@/sync/encryption/artifactEncryption'
+const key = new Uint8Array(32).fill(1)
+const codec = new ArtifactEncryption(key)
 
 import { applySocketArtifactUpdate } from './syncArtifacts'
 
@@ -26,6 +12,8 @@ function buildArtifact(
     return {
         id: 'a1',
         title: 'old',
+        header: { title: 'old' },
+        rawHeader: { title: 'old' },
         sessions: [],
         draft: false,
         body: 'old-body',
@@ -40,27 +28,18 @@ function buildArtifact(
 }
 
 describe('applySocketArtifactUpdate stale guards', () => {
-    beforeEach(() => {
-        decryptHeader.mockClear()
-        decryptBody.mockClear()
-        decryptHeader.mockImplementation(async (_value: string) => ({ title: 't', sessions: [], draft: false }))
-        decryptBody.mockImplementation(async (_value: string) => ({ body: 'b' }))
-    })
-
     it('returns existing artifact unchanged when both updates are stale', async () => {
         const existingArtifact = buildArtifact()
 
         const res = await applySocketArtifactUpdate({
             existingArtifact,
             createdAt: 999,
-            dataEncryptionKey: new Uint8Array([1]),
+            dataEncryptionKey: key,
             header: { version: 10, value: 'h' },
             body: { version: 19, value: 'b' },
         })
 
         expect(res).toBe(existingArtifact)
-        expect(decryptHeader).not.toHaveBeenCalled()
-        expect(decryptBody).not.toHaveBeenCalled()
     })
 
     it('decrypts only newer fields and does not regress versions', async () => {
@@ -69,14 +48,15 @@ describe('applySocketArtifactUpdate stale guards', () => {
         const res = await applySocketArtifactUpdate({
             existingArtifact,
             createdAt: 999,
-            dataEncryptionKey: new Uint8Array([1]),
-            header: { version: 11, value: 'h-new' },
+            dataEncryptionKey: key,
+            header: { version: 11, value: await codec.encryptHeader({ title: 'new' }) },
             body: { version: 20, value: 'b-stale' },
         })
 
         expect(res).not.toBe(existingArtifact)
-        expect(decryptHeader).toHaveBeenCalledTimes(1)
-        expect(decryptBody).not.toHaveBeenCalled()
+        expect(res.title).toBe('new')
+        expect(res.rawHeader).toEqual({ title: 'new' })
+        expect(res.body).toBe('old-body')
         expect(res.headerVersion).toBe(11)
         expect(res.bodyVersion).toBe(20)
         expect(res.updatedAt).toBe(999)
@@ -88,14 +68,13 @@ describe('applySocketArtifactUpdate stale guards', () => {
         const res = await applySocketArtifactUpdate({
             existingArtifact,
             createdAt: 1000,
-            dataEncryptionKey: new Uint8Array([1]),
+            dataEncryptionKey: key,
             header: { version: 10, value: 'header-stale' },
-            body: { version: 21, value: 'body-new' },
+            body: { version: 21, value: await codec.encryptBody({ body: 'b' }) },
         })
 
         expect(res).not.toBe(existingArtifact)
-        expect(decryptHeader).not.toHaveBeenCalled()
-        expect(decryptBody).toHaveBeenCalledTimes(1)
+        expect(res.rawHeader).toBe(existingArtifact.rawHeader)
         expect(res.title).toBe('old')
         expect(res.body).toBe('b')
         expect(res.headerVersion).toBe(10)
@@ -107,33 +86,25 @@ describe('applySocketArtifactUpdate stale guards', () => {
         const res = await applySocketArtifactUpdate({
             existingArtifact,
             createdAt: 5000,
-            dataEncryptionKey: new Uint8Array([1]),
+            dataEncryptionKey: key,
             header: null,
             body: undefined,
         })
 
         expect(res).toBe(existingArtifact)
-        expect(decryptHeader).not.toHaveBeenCalled()
-        expect(decryptBody).not.toHaveBeenCalled()
     })
 
-    it('propagates decryption failures for applicable newer fields', async () => {
+    it('refuses an encrypted update without its resource key', async () => {
         const existingArtifact = buildArtifact()
-        decryptHeader.mockImplementation(async () => {
-            throw new Error('decrypt header failed')
-        })
 
         await expect(
             applySocketArtifactUpdate({
                 existingArtifact,
                 createdAt: 1001,
-                dataEncryptionKey: new Uint8Array([1]),
-                header: { version: 11, value: 'header-new' },
+                dataEncryptionKey: null,
+                header: { version: 11, value: await codec.encryptHeader({ title: 'new' }) },
                 body: { version: 20, value: 'body-stale' },
             }),
-        ).rejects.toThrow('decrypt header failed')
-
-        expect(decryptHeader).toHaveBeenCalledTimes(1)
-        expect(decryptBody).not.toHaveBeenCalled()
+        ).rejects.toThrow('Artifact encryption key is unavailable')
     })
 })

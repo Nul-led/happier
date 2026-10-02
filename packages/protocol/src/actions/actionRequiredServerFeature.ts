@@ -24,6 +24,7 @@ import { EphemeralRunnerActionIdV1Schema } from '../ephemeralRunner/actionIdsV1.
  * Action adapter; this is availability only.
  */
 export function getActionRequiredServerFeatureId(actionId: string): FeatureId | null {
+  if (actionId.startsWith('artifact.public_link.')) return 'sharing.public';
   if (WorkflowActionIdV1Schema.safeParse(actionId).success) return 'workflows';
   if (isSessionBoardActionIdV1(actionId)) return 'sessions.board';
   if (isSessionDiscussionActionIdV1(actionId)) return 'sessions.conversations';

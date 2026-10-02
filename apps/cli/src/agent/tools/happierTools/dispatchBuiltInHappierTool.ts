@@ -28,6 +28,7 @@ type DispatchDeps = Readonly<{
     options?: Readonly<{
       approvalOrigin?: ApprovalRequestOriginV1 | null;
       actionRequestId?: string | null;
+      signal?: AbortSignal;
     }>,
   ) => Promise<unknown>;
   executeActionByToolName: (
@@ -37,6 +38,7 @@ type DispatchDeps = Readonly<{
     options?: Readonly<{
       approvalOrigin?: ApprovalRequestOriginV1 | null;
       actionRequestId?: string | null;
+      signal?: AbortSignal;
     }>,
   ) => Promise<HappierBuiltInToolDispatchResult>;
   resolveActionOptions?: (args: ResolveActionOptionsInput) => Promise<
@@ -112,6 +114,7 @@ export async function dispatchBuiltInHappierTool(params: Readonly<{
   getActionsSettings?: (() => ActionsSettingsV1 | null) | null;
   approvalOrigin?: ApprovalRequestOriginV1 | null;
   actionRequestId?: string | null;
+  signal?: AbortSignal;
   registry?: import('@/plugins/projection/registry/types').ResolvedContributionRegistry;
   pluginToolCatalog?: readonly import('@/plugins/runtime/toolCatalog').ProjectedPluginToolCatalogEntry[];
   requiredDirectActionIds?: readonly ActionId[];
@@ -130,10 +133,11 @@ export async function dispatchBuiltInHappierTool(params: Readonly<{
     pluginToolCatalog: params.pluginToolCatalog,
   });
   const actionDisabled = (details: unknown) => err('action_disabled', 'Action is disabled', details);
-  const executionOptions = params.approvalOrigin || params.actionRequestId
+  const executionOptions = params.approvalOrigin || params.actionRequestId || params.signal
     ? {
         ...(params.approvalOrigin ? { approvalOrigin: params.approvalOrigin } : {}),
         ...(params.actionRequestId ? { actionRequestId: params.actionRequestId } : {}),
+        ...(params.signal ? { signal: params.signal } : {}),
       }
     : undefined;
 

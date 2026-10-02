@@ -3,6 +3,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ExecutionRunState } from './executionRunTypes';
 import { ExecutionRunHostBridge } from './ExecutionRunHostBridge';
 
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const { createBundledPluginPublicationFsFixture } = await import('@/plugins/projection/registry/builtIn/locators.testkit');
+  return createBundledPluginPublicationFsFixture(actual);
+});
+
 vi.mock('./createExecutionRunBridgeRuntime', () => ({
   createExecutionRunBridgeRuntime: vi.fn(() => {
     throw new Error('pending target recovery must not create a runtime outside canonical ensure');

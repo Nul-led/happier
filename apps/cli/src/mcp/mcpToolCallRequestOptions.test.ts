@@ -62,6 +62,12 @@ describe('resolveMcpToolCallRequestOptions', () => {
       args: { runId: 'run_123', timeoutSeconds: 120 },
     })).toBe(165_000);
   });
+
+  it.each(['wait', 'mcp__happier__wait'])('keeps %s observation deadline plus the existing transport grace', (toolName) => {
+    process.env.HAPPIER_MCP_EXECUTION_RUN_WAIT_TIMEOUT_GRACE_MS = '45000';
+    reloadConfiguration();
+    expect(resolveMcpToolCallRequestTimeoutMs({ toolName, args: { timeout: { durationMs: 120000 } } })).toBe(165000);
+  });
 });
 
 describe('callMcpToolWithResolvedTimeout', () => {

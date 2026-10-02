@@ -137,11 +137,15 @@ describe('createBlockingApprovalCoordinator', () => {
   it('resolves from durable executed state without a same-process notification', async () => {
     const coordinator = createBlockingApprovalCoordinator();
     let request = createRequest();
+    let onChange = () => {};
     const pending = coordinator.waitForDecision({
       artifactId: 'approval_durable_1',
       request,
-      pollIntervalMs: 1,
       readRequest: async () => request,
+      subscribeChanges: (change) => {
+        onChange = change;
+        return { dispose() {} };
+      },
     });
 
     request = createRequest({
@@ -153,6 +157,7 @@ describe('createBlockingApprovalCoordinator', () => {
         result: { sessions: [{ id: 'sess_1' }] },
       },
     });
+    onChange();
 
     await expect(pending).resolves.toMatchObject({
       decision: 'approve',

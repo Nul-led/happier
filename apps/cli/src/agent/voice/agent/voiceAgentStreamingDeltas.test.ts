@@ -46,4 +46,22 @@ describe('voice agent streaming speech segmentation', () => {
     expect(stream.events.map((event) => event.output.text).join('')).toBe('Speak this. ');
     expect(stream.suppressActionDeltas).toBe(true);
   });
+  it('emits a useful first sentence before completion and filters split action tags', () => {
+    const stream = {
+      done: false, suppressActionDeltas: false, deltaHold: '', outputSpeechBuffer: '',
+      outputSpeechChars: 0, events: [] as unknown[], id: 'turn', outputSeq: 0, outputSegmentIndex: 0,
+    };
+    const patch = (next: Partial<typeof stream>) => Object.assign(stream, next);
+    ingestVoiceAgentStreamingDelta(stream, patch, 'Open index.');
+    expect(stream.events).toEqual([]);
+    ingestVoiceAgentStreamingDelta(stream, patch, 'ts at https://example.com at 10:30. ');
+    expect(stream.events).toEqual([expect.objectContaining({ output: expect.objectContaining({
+      text: 'Open index.ts at https://example.com at 10:30.', kind: 'speech_segment',
+    }) })]);
+    ingestVoiceAgentStreamingDelta(stream, patch, '<voice_act');
+    ingestVoiceAgentStreamingDelta(stream, patch, 'ions>{"actions":[]}</voice_actions>');
+    finalizeVoiceAgentStreamingSpeech(stream, patch);
+    const speech = stream.events.map((event) => (event as { output: { text: string } }).output.text).join('');
+    expect(speech.trim()).toBe('Open index.ts at https://example.com at 10:30.');
+  });
 });

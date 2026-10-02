@@ -59,17 +59,20 @@ function approvalArtifactMatchesServerScope(
   return normalizeArtifactServerId(header.serverId) === serverId;
 }
 
-function readBuiltInApprovalArtifact(header: Record<string, unknown>, body: string | null | undefined): ApprovalRequest | null {
+function readBuiltInApprovalArtifact(header: Record<string, unknown>, body: unknown): ApprovalRequest | null {
+  if (typeof body !== 'string') return null;
   const parsed = approvalArtifactBodyMatchesHeaderV1(header, body);
   return parsed?.family === 'built_in' ? parsed.request : null;
 }
 
-function readTargetActionApprovalArtifact(header: Record<string, unknown>, body: string | null | undefined): TargetActionApprovalRequestV1 | null {
+function readTargetActionApprovalArtifact(header: Record<string, unknown>, body: unknown): TargetActionApprovalRequestV1 | null {
+  if (typeof body !== 'string') return null;
   const parsed = approvalArtifactBodyMatchesHeaderV1(header, body);
   return parsed?.family === 'target_action' ? parsed.request : null;
 }
 
-function readExecutionRunHostActionApprovalArtifact(header: Record<string, unknown>, body: string | null | undefined): ExecutionRunHostActionApprovalRequestV1 | null {
+function readExecutionRunHostActionApprovalArtifact(header: Record<string, unknown>, body: unknown): ExecutionRunHostActionApprovalRequestV1 | null {
+  if (typeof body !== 'string') return null;
   const parsed = approvalArtifactBodyMatchesHeaderV1(header, body);
   return parsed?.family === 'execution_run_host_action' ? parsed.request : null;
 }
@@ -105,8 +108,10 @@ export function createCliApprovalsArtifactStore(params: Readonly<{
       read: async (artifactId, options) => {
         const artifact = await accountArtifactStore.read(artifactId, options);
         if (!artifact) return null;
+        if (typeof artifact.body !== 'string') return null;
         return {
           id: artifact.artifactId,
+          revision: artifact.revision,
           header: artifact.header,
           body: artifact.body,
         };
@@ -115,11 +120,9 @@ export function createCliApprovalsArtifactStore(params: Readonly<{
         const created = await accountArtifactStore.create({ header, body, signal });
         return created.artifactId;
       },
-      update: async ({ artifactId, header, body, signal }) => {
-        const artifact = await accountArtifactStore.read(artifactId, { signal });
-        if (!artifact) throw new Error('artifact_not_found');
+      update: async ({ artifactId, expectedRevision, header, body, signal }) => {
         const updated = await accountArtifactStore.update({ artifactId,
-          expectedRevision: artifact.revision, header, body, signal });
+          expectedRevision, header, body, signal });
         if (!updated.ok) throw Object.assign(new Error(updated.error), { code: updated.errorCode });
       },
     },

@@ -22,7 +22,7 @@ const VoiceLocalTtsLocalNeuralSchema = z
   .prefault({});
 
 const VoiceLocalTtsSchemaV3 = z.object({
-  provider: VoiceLocalTtsProviderSchema.default('happier.voice.openai-compat/tts'),
+  provider: VoiceLocalTtsProviderSchema.default('device'),
   localNeural: VoiceLocalTtsLocalNeuralSchema,
   autoSpeakReplies: z.boolean().default(true),
   bargeInEnabled: z.boolean().default(true),

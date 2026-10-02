@@ -20,6 +20,7 @@ export type NativeVadBridge = Readonly<{
          * it, and the controller degrades to single-stage (legacy) behavior.
          */
         onSpeechStart?: () => void;
+        onTerminal?: (error: unknown) => void;
         redemptionMs: number;
         sessionId: string;
     }>) => NativeVadSession | Promise<NativeVadSession>;
@@ -160,6 +161,10 @@ export function createNativeVadController(deps: NativeVadControllerDeps): Native
 
                 const session = await bridge.startSession({
                     minSpeechMs: normalizeDurationMs(minSpeechMs),
+                    onTerminal: () => {
+                        if (pendingStart?.token === token) pendingStart = null;
+                        if (activeSession?.token === token) void clearActiveSession(normalizedSessionId);
+                    },
                     // Speech-START edge → two-stage machine (when the native module
                     // surfaces it). The matching speech-end gates emission so a
                     // sub-confirmMs blip opens no turn.

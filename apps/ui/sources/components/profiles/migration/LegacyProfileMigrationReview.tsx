@@ -187,7 +187,7 @@ export const LegacyProfileMigrationReview = React.memo(function LegacyProfileMig
         <ItemList style={{ paddingTop: 0 }} keyboardShouldPersistTaps="handled">
             <ItemGroup
                 title={t('settingsProviders.migration.reviewTitle')}
-                footer={t('settingsProviders.migration.reviewFooter')}
+                description={t('settingsProviders.migration.reviewFooter')}
             >
                 <Item mode="info" title={props.profile.name} subtitle={t('settingsProviders.migration.legacyProfileDescription')} />
             </ItemGroup>
@@ -234,7 +234,7 @@ export const LegacyProfileMigrationReview = React.memo(function LegacyProfileMig
             </ItemGroup>
             <ItemGroup
                 title={t('settingsProviders.migration.credentialTitle')}
-                footer={t('settingsProviders.migration.credentialFooter')}
+                description={t('settingsProviders.migration.credentialFooter')}
             >
                 {draft.credentialCandidateEnvVarNames.length > 0 ? (
                     <DropdownMenu
@@ -298,7 +298,7 @@ export const LegacyProfileMigrationReview = React.memo(function LegacyProfileMig
             </ItemGroup>
             <ItemGroup
                 title={t('settingsProviders.migration.willMoveTitle')}
-                footer={t('settingsProviders.migration.willMoveFooter')}
+                description={t('settingsProviders.migration.willMoveFooter')}
             >
                 {[...movedEnvironmentNames].map((name) => (
                     <Item key={name} mode="info" title={name} showChevron={false} />
@@ -306,7 +306,7 @@ export const LegacyProfileMigrationReview = React.memo(function LegacyProfileMig
             </ItemGroup>
             <ItemGroup
                 title={t('settingsProviders.migration.willKeepTitle')}
-                footer={t('settingsProviders.migration.willKeepFooter')}
+                description={t('settingsProviders.migration.willKeepFooter')}
             >
                 {keptEnvironmentNames.map((name) => (
                     <Item key={name} mode="info" title={name} showChevron={false} />

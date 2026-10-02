@@ -22,6 +22,7 @@ export function useWorkspaceScopeForSession(
             sessionListRowsByServerId: state.sessionListRowsByServerId,
             ordinarySessionListMembershipByServerId: state.ordinarySessionListMembershipByServerId,
             machines: state.machines,
+            machineListByServerId: state.machineListByServerId,
             sessionListIndexByServerId: state.sessionListIndexByServerId,
             getProjectForSession: state.getProjectForSession,
             // A qualified caller names the Home; only an unqualified one may fall back to same-id

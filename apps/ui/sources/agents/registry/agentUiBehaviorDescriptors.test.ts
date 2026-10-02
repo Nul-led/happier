@@ -892,7 +892,7 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
             code: 'A16X1_MALFORMED_DESCRIPTOR',
             path: 'payload.environmentVariables.serverBaseUrl',
         }));
-        expect(behavior.payload?.buildSpawnEnvironmentVariables?.({
+        expect(behavior.payload?.buildSpawnSessionExtras?.({
             agentId: 'opencode' as any,
             settings: makeAgentAccountSettings({
                 opencodeBackendMode: 'server',
@@ -900,11 +900,15 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
                     'server-1': 'http://127.0.0.1:4096/',
                 },
             }),
-            environmentVariables: undefined,
+            resumeSessionId: '',
+            experiments: { enabled: true, switches: {} },
+            updatedAt: 123,
             newSessionOptions: { targetServerId: 'server-1' },
-        })).toEqual({
-            HAPPIER_OPENCODE_BACKEND_MODE: 'server',
-        });
+        })).toEqual({ sessionConfigOptionOverrides: {
+            v: 1, updatedAt: 123, overrides: {
+                opencodeBackendMode: { value: 'server', updatedAt: 123 },
+            },
+        } });
     });
 
     it('builds OpenCode behavior from no-execute descriptor data', () => {
@@ -971,7 +975,7 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
 
         expect(diagnostics).toEqual([]);
         expect(generated.diagnostics).toEqual([]);
-        expect(generated.behavior.payload?.buildSpawnEnvironmentVariables).toBeTypeOf('function');
+        expect(generated.behavior.payload?.buildSpawnSessionExtras).toBeTypeOf('function');
         expect(behavior.guidance?.includeInSessionGettingStartedCliExamples).toBe(true);
         expect(behavior.externalSessions?.browse?.order).toBe(30);
         const sourceOptions = behavior.externalSessions?.browse?.getSourceOptions?.({
@@ -1013,7 +1017,7 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
                 },
             },
         })).toEqual({});
-        expect(behavior.payload?.buildSpawnEnvironmentVariables?.({
+        expect(behavior.payload?.buildSpawnSessionExtras?.({
             agentId: 'opencode' as any,
             settings: makeAgentAccountSettings({
                 opencodeBackendMode: 'acp',
@@ -1021,14 +1025,16 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
                     'server-1': 'http://127.0.0.1:4096/path',
                 },
             }),
-            environmentVariables: { FOO: '1' },
+            resumeSessionId: '',
+            experiments: { enabled: true, switches: {} },
+            updatedAt: 123,
             newSessionOptions: { targetServerId: 'server-1' },
-        })).toEqual({
-            FOO: '1',
-            HAPPIER_OPENCODE_BACKEND_MODE: 'acp',
-            HAPPIER_OPENCODE_SERVER_URL: 'http://127.0.0.1:4096/',
-            HAPPIER_OPENCODE_SERVER_URL_EXPLICIT: '1',
-        });
+        })).toEqual({ sessionConfigOptionOverrides: {
+            v: 1, updatedAt: 123, overrides: {
+                opencodeBackendMode: { value: 'acp', updatedAt: 123 },
+                opencodeServerBaseUrl: { value: 'http://127.0.0.1:4096/', updatedAt: 123 },
+            },
+        } });
         expect(behavior.payload?.buildResumeSessionExtras?.({
             agentId: 'opencode' as any,
             experiments: { enabled: true, switches: {} },

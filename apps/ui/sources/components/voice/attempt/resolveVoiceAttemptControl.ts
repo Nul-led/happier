@@ -56,6 +56,7 @@ export type VoiceAttemptControl = Readonly<{
     canStart: boolean;
     canStop: boolean;
     canMute: boolean;
+    canCommitInput?: boolean;
     muted: boolean;
     /** The canonical runtime capture fact; distinct from the user's mute preference. */
     capturing: boolean;
@@ -83,6 +84,7 @@ export function resolveVoiceAttemptControl(input: Readonly<{
     sessionId: string | null;
     canStop: boolean;
     muted: boolean;
+    canCommitInput?: boolean;
     capturing: boolean;
     /**
      * The canonical start-admission answer from `resolveVoiceStartAdmission`.
@@ -119,6 +121,8 @@ export function resolveVoiceAttemptControl(input: Readonly<{
         live,
         canStart,
         canStop,
+        canCommitInput: input.status === 'connected' && Boolean(input.sessionId)
+            && input.canCommitInput === true,
         // Muting is available for a connected attempt even while a half-duplex provider has
         // temporarily closed capture; the preference still governs the next capture window.
         canMute:

@@ -55,7 +55,7 @@ describe('filterCollapsedSessionListItems', () => {
 
         const result = filterCollapsedSessionListItems(items, { [activeSectionKey]: true });
 
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : `run:${item.runId}`)).toEqual([
             'Active',
             'Inactive',
             'Tomorrow',
@@ -80,7 +80,7 @@ describe('filterCollapsedSessionListItems', () => {
 
         const result = filterCollapsedSessionListItems(items, { [pinnedGroupKey]: true });
 
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : `run:${item.runId}`)).toEqual([
             'Pinned',
             'Sessions',
             'Repo',
@@ -103,7 +103,7 @@ describe('filterCollapsedSessionListItems', () => {
 
         const result = filterCollapsedSessionListItems(items, { [attentionGroupKey]: true });
 
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : `run:${item.runId}`)).toEqual([
             'Needs attention',
             'Sessions',
             'Today',
@@ -125,7 +125,7 @@ describe('filterCollapsedSessionListItems', () => {
 
         const result = filterCollapsedSessionListItems(items, { [collapsedGroupKey]: true });
 
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : `run:${item.runId}`)).toEqual([
             'Inactive',
             'Today',
             'Tomorrow',

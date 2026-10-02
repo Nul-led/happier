@@ -19,6 +19,8 @@ export type AcpPermissionCausalAuthority = SessionInputCausalPermissionAuthority
 
 export type AcpPermissionCallContext = Readonly<{
   origin?: 'host_acp_fs_write';
+  /** Request lifetime is independent of the causal turn's permission authority. */
+  lifetime?: 'turn' | 'occurrence';
   /**
    * Exact host turn that admitted this permission request. ACP transports this
    * host-stamped identity; providers and plugins never create or infer it.

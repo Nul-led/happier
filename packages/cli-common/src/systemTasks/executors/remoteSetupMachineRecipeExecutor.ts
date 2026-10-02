@@ -26,7 +26,6 @@ export function createSetupMachineRecipeExecutorFromRemoteCommandRunner(params: 
   knownHostsMode: 'app' | 'system';
   localServerUrl?: string;
   serviceMode: 'user' | 'none';
-  installRemoteCli: RemoteSshBootstrapMachineDeps['installRemoteCli'];
   runRemoteCommand: RemoteSshBootstrapMachineDeps['runRemoteCommand'];
   createHappierJsonExecutor?: RemoteSshBootstrapMachineDeps['createHappierJsonExecutor'];
   signal?: AbortSignal;
@@ -48,24 +47,10 @@ export function createSetupMachineRecipeExecutorFromRemoteCommandRunner(params: 
 
   return {
     configureRelay: async () => {
-      let configured: Record<string, unknown>;
-      try {
-        configured = requireOk(
-          await remoteExecutor.runHappierJson({ args: ['server', 'set', '--json'] }),
-          'server.configure',
-        );
-      } catch {
-        await params.installRemoteCli({
-          parsed: params.parsed,
-          auth: params.auth,
-          knownHostsMode: params.knownHostsMode,
-          signal: params.signal,
-        });
-        configured = requireOk(
-          await remoteExecutor.runHappierJson({ args: ['server', 'set', '--json'] }),
-          'server.configure',
-        );
-      }
+      const configured = requireOk(
+        await remoteExecutor.runHappierJson({ args: ['server', 'set', '--json'] }),
+        'server.configure',
+      );
       const active = configured.active;
       return active && typeof active === 'object' && !Array.isArray(active)
         && typeof (active as { id?: unknown }).id === 'string'

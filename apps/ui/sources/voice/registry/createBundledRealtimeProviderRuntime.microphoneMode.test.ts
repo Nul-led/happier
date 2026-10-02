@@ -38,6 +38,7 @@ function createRuntimeForMode(
     performTurnControl: vi.fn(async () => ({ status: 'unavailable' as const, code: 'voice_turn_action_unsupported' as const })),
     sendClientControl: vi.fn(async () => ({ status: 'sent' as const })),
     getActiveControlSessionId: vi.fn(() => null),
+    canCommitInput: () => false,
     getOwnedControlSessionId: vi.fn(() => 'voice-test'),
     getOwnedAttemptId: vi.fn(() => ownedAttemptId),
     requestReconnect: vi.fn(async () => false),

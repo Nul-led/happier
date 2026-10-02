@@ -21,6 +21,11 @@ type TerminalConnectApprovalState = Readonly<{
     kind: 'approval';
     publicKey: string;
     isLoading: boolean;
+    homeUrl: string;
+    storageMode: 'plain' | 'e2ee' | null;
+    needsSignIn?: boolean;
+    errorDescription?: string;
+    onRetry?: () => void;
     onApprove: () => void | Promise<void>;
     onReject: () => void | Promise<void>;
 }>;
@@ -139,9 +144,11 @@ export function TerminalConnectSurface(props: TerminalConnectSurfaceProps) {
                 <FlowSurfaceActions
                     primary={{
                         testID: 'terminal-connect-approve',
-                        label: props.state.isLoading ? t('terminal.connecting') : t('terminal.acceptConnection'),
-                        onPress: props.state.onApprove,
-                        disabled: props.state.isLoading,
+                        label: props.state.isLoading ? t('terminal.connecting')
+                            : props.state.onRetry ? t('common.retry')
+                                : props.state.needsSignIn ? t('common.continue') : t('terminal.acceptConnection'),
+                        onPress: props.state.onRetry ?? props.state.onApprove,
+                        disabled: props.state.isLoading || (!props.state.storageMode && !props.state.needsSignIn && !props.state.onRetry),
                         loading: props.state.isLoading,
                     }}
                     secondary={{
@@ -157,10 +164,16 @@ export function TerminalConnectSurface(props: TerminalConnectSurfaceProps) {
                 <Text style={styles.sectionTitle}>{t('terminal.connectionDetails')}</Text>
                 <View style={styles.sectionBody}>
                     <Text style={styles.sectionLine}>
+                        {t('server.customServerUrlLabel')}: {props.state.homeUrl}
+                    </Text>
+                    <Text style={styles.sectionLine}>
                         {t('terminal.publicKey')}: {truncatePublicKey(props.state.publicKey)}
                     </Text>
                     <Text style={styles.sectionLine}>
-                        {t('terminal.encryption')}: {t('terminal.endToEndEncrypted')}
+                        {t('terminal.encryption')}: {props.state.storageMode === 'e2ee'
+                            ? t('terminal.endToEndEncrypted')
+                            : props.state.storageMode === 'plain' ? t('terminal.plaintextStorage')
+                                : props.state.errorDescription ?? (props.state.needsSignIn ? t('modals.pleaseSignInFirst') : t('common.loading'))}
                     </Text>
                 </View>
             </View>
@@ -172,7 +185,10 @@ export function TerminalConnectSurface(props: TerminalConnectSurfaceProps) {
                     <View style={styles.securityCopy}>
                         <Text style={styles.securityTitle}>{t('terminal.clientSideProcessing')}</Text>
                         <Text style={styles.securitySubtitle}>{t('terminal.linkProcessedOnDevice')}</Text>
-                        <Text style={styles.securitySubtitle}>{t('terminal.securityFooterDevice')}</Text>
+                        {props.state.storageMode ? (
+                            <Text style={styles.securitySubtitle}>{props.state.storageMode === 'plain'
+                                ? t('terminal.plaintextStorageDescription') : t('terminal.securityFooterDevice')}</Text>
+                        ) : null}
                     </View>
                 </View>
             </View>

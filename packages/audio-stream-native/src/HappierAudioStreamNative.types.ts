@@ -67,9 +67,8 @@ export type HappierAudioStreamNativeModule = Readonly<{
     generation: number;
     sampleRate: number;
     channels: number;
-    maxBufferedMs: number;
   }) => Promise<{ streamId: string; generation: number }>;
-  /** Synchronous so realtime provider callbacks can apply native backpressure. */
+  /** Synchronous admission into the playback-owned response queue. */
   enqueuePlayback?: (params: {
     streamId: string;
     generation: number;

@@ -35,6 +35,8 @@ export function withExecutionRunRuntimeIdentityPublication(params: Readonly<{
     readPermissionCapability: () => params.runtime.permissionCapability,
     readInteraction: () => params.runtime.interaction,
     readResumeSupport: (opts) => params.runtime.readResumeSupport(opts),
+    readProviderSessionId: () => params.runtime.readProviderSessionId?.bind(params.runtime),
+    readCanContinueAfterCancellation: () => params.runtime.canContinueAfterCancellation?.bind(params.runtime),
     async provisionRuntime(opts) {
       hub.ensureUpstreamRegistered();
       const started = await params.runtime.provisionRuntime(opts);

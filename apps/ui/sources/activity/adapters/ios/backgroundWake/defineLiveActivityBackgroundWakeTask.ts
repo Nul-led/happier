@@ -22,7 +22,7 @@ type BackgroundWakeStorage = Readonly<{
 }>;
 
 type LiveActivityHandle = Readonly<{
-    update: (props: LiveActivitySnapshot) => Promise<void>;
+    update: (props: LiveActivitySnapshot, staleDate?: Date) => Promise<void>;
     end: (
         dismissalPolicy?: 'default' | 'immediate' | { after: Date },
         props?: LiveActivitySnapshot,
@@ -306,7 +306,7 @@ export async function applyLiveActivityBackgroundWakeTaskPayload(params: Readonl
         return result;
     }
 
-    await instance.update(result.snapshot);
+    await instance.update(result.snapshot, new Date(result.snapshot.staleAt));
     stateStore.rememberSnapshot(result.snapshot, result.snapshotFingerprint);
     return result;
 }

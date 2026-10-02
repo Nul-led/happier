@@ -394,14 +394,15 @@ export function createAccountVoiceOperationService(input: Readonly<{
   materializeSecret?: () => Promise<string | null> | string | null;
   /**
    * The selection is passed rather than re-read: the daemon resolves its own
-   * current Connected Account independently, so the materializer must name the
+   * current Connected Account independently, so the executor must name the
    * exact selection this operation's captured authority was resolved under.
    */
-  materializeConnectedAccountHeaders?: (input: Readonly<{
+  executeConnectedAccountOperation?: (input: Readonly<{
     operationId: string;
+    parameters: Parameters<VoiceAccountOperationService['request']>[0]['parameters'];
     selection: QualifiedConnectedAccountPurposeBindingTargetV1;
     signal: AbortSignal;
-  }>) => Promise<Readonly<Record<string, string>>>;
+  }>) => ReturnType<VoiceAccountOperationService['request']>;
 }>): VoiceAccountOperationAttemptService {
   const fetchImpl = input.fetch ?? globalThis.fetch;
   const recipientContract = normalizeRecipientContractV1(input.recipientContract);
@@ -474,7 +475,7 @@ export function createAccountVoiceOperationService(input: Readonly<{
       if (accountAuthority.source.selection.kind !== 'connectedAccount') {
         throw operationError('voice_account_operation_unauthorized');
       }
-      if (!input.materializeConnectedAccountHeaders) {
+      if (!input.executeConnectedAccountOperation) {
         throw operationError('credential_unavailable');
       }
       return authorization;
@@ -550,39 +551,17 @@ export function createAccountVoiceOperationService(input: Readonly<{
           if (accountAuthority.source.selection.kind !== 'connectedAccount') {
             throw operationError('voice_account_operation_unauthorized');
           }
-          const returned = await input.materializeConnectedAccountHeaders?.({
+          const response = await input.executeConnectedAccountOperation?.({
             operationId: operation.id,
+            parameters: request.parameters,
             selection: accountAuthority.source.selection.target,
             signal: operationSignal.signal,
           });
-          if (!returned) throw operationError('credential_unavailable');
-          const allowedHeaderNames = new Set(
-            authorization.projection.allowedHeaderNames.map((name) => name.toLowerCase()),
-          );
-          const requiredHeaderNames = new Set(
-            authorization.projection.requiredHeaderNames.map((name) => name.toLowerCase()),
-          );
-          const normalized = new Map<string, string>();
-          for (const [rawName, value] of Object.entries(returned)) {
-            const name = rawName.trim().toLowerCase();
-            if (
-              !/^[a-z0-9!#$%&'*+.^_`|~-]+$/u.test(name)
-              || typeof value !== 'string'
-              || value.length === 0
-              || /[\r\n]/u.test(value)
-              || normalized.has(name)
-              || !allowedHeaderNames.has(name)
-              || hasHeader(materialized.headers, name)
-            ) {
-              throw operationError('voice_account_operation_unauthorized');
-            }
-            normalized.set(name, value);
+          if (operationSignal.signal.aborted || !isAuthorityCurrent(operationAuthority)) {
+            throw operationError('voice_account_operation_cancelled');
           }
-          if ([...requiredHeaderNames].some((name) => !normalized.has(name))) {
-            throw operationError('credential_unavailable');
-          }
-          credentialHeaders = Object.freeze(Object.fromEntries(normalized));
-          sourceCredentials = Object.freeze([...normalized.values()]);
+          if (!response) throw operationError('credential_unavailable');
+          return response;
         } else {
           const capturedSecret = accountAuthority.secret;
           if (accountAuthority.source.selection.kind !== 'savedSecret' || !capturedSecret) {

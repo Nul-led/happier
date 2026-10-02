@@ -22,6 +22,7 @@ export interface DesktopWindowChromePolicy {
 
 export interface DesktopWindowState {
     isMaximized: boolean;
+    isFullscreen: boolean;
 }
 
 const DISABLED_DESKTOP_WINDOW_CHROME_POLICY: DesktopWindowChromePolicy = {
@@ -30,6 +31,7 @@ const DISABLED_DESKTOP_WINDOW_CHROME_POLICY: DesktopWindowChromePolicy = {
 
 const DEFAULT_DESKTOP_WINDOW_STATE: DesktopWindowState = {
     isMaximized: false,
+    isFullscreen: false,
 };
 
 function normalizeDesktopWindowChromePolicy(
@@ -55,6 +57,7 @@ function normalizeDesktopWindowChromePolicy(
 function normalizeDesktopWindowState(value: unknown): DesktopWindowState {
     return {
         isMaximized: (value as DesktopWindowState | null)?.isMaximized === true,
+        isFullscreen: (value as DesktopWindowState | null)?.isFullscreen === true,
     };
 }
 

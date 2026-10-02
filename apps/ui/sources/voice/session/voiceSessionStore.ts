@@ -39,20 +39,25 @@ function reconcileAttemptId(snapshot: VoiceSessionSnapshot): void {
   lastAttemptSnapshot = snapshot;
 }
 
+const SNAPSHOT_FIELDS = {
+  adapterId: true,
+  sessionId: true,
+  status: true,
+  mode: true,
+  canStop: true,
+  canCommitInput: true,
+  micMuted: true,
+  errorCode: true,
+  errorMessage: true,
+  errorRecoveryAction: true,
+  errorPresentation: true,
+  presentationState: true,
+  reconnectRetryAvailable: true,
+} satisfies Record<keyof VoiceSessionSnapshot, true>;
+const SNAPSHOT_KEYS = Object.keys(SNAPSHOT_FIELDS) as Array<keyof VoiceSessionSnapshot>;
+
 function isVoiceSessionSnapshotEqual(a: VoiceSessionSnapshot, b: VoiceSessionSnapshot): boolean {
-  return (
-    a.adapterId === b.adapterId
-    && a.sessionId === b.sessionId
-    && a.status === b.status
-    && a.mode === b.mode
-    && a.canStop === b.canStop
-    && a.micMuted === b.micMuted
-    && a.errorCode === b.errorCode
-    && a.errorMessage === b.errorMessage
-    && a.errorRecoveryAction === b.errorRecoveryAction
-    && a.errorPresentation === b.errorPresentation
-    && a.presentationState === b.presentationState
-  );
+  return SNAPSHOT_KEYS.every((key) => a[key] === b[key]);
 }
 
 function isDefaultSnapshot(snapshot: VoiceSessionSnapshot): boolean {
@@ -71,6 +76,7 @@ function normalizeVoiceSessionSnapshot(snapshot: VoiceSessionSnapshot): VoiceSes
     errorRecoveryAction: snapshot.errorRecoveryAction,
     errorPresentation: snapshot.errorPresentation,
     presentationState: snapshot.presentationState,
+    reconnectRetryAvailable: snapshot.reconnectRetryAvailable,
   };
 }
 

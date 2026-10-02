@@ -1,17 +1,18 @@
 // One process-tree algorithm for CLI callers and the standalone terminal launcher.
 // The factory admits genuine OS adapters; the launcher resolves its shipped dependency closure.
-const { execFile } = require('node:child_process');
-const { promisify } = require('node:util');
-const execFileAsync = promisify(execFile);
-
-async function taskkillWindowsProcessTree(input, windowsSystemToolCommand) {
+async function taskkillWindowsProcessTree(input, windowsSystemToolCommand, execFileWithDeadline) {
     const args = ['/PID', String(input.pid), '/T', ...(input.force ? ['/F'] : [])];
-    const run = input.execFile ?? ((command, commandArgs) => execFileAsync(command, [...commandArgs]));
+    const run = input.execFile ?? execFileWithDeadline;
     try {
-        await run(windowsSystemToolCommand('taskkill.exe'), args);
+        // The containing teardown owns the budget. Force-stop the tool itself when it
+        // stalls so its late /T cannot race cleanup after this operation has returned.
+        await run(windowsSystemToolCommand('taskkill.exe'), args, {
+            timeout: input.timeoutMs,
+            terminateOnAbort: async (child) => { child.kill('SIGKILL'); },
+        });
     } catch (error) {
         // Exit 128 is the only benign, idempotent result; localized text cannot establish it.
-        if (error.code === 128) return;
+        if (error?.code === 128 && error?.killed !== true) return;
         throw error;
     }
 }
@@ -186,29 +187,32 @@ function createProcessTreeOwner({ psList, execFileWithDeadline, isPidPresent, pr
         if (process.platform === 'win32') {
             const terminateWindowsTree = opts?.terminateWindowsTree ?? taskkillWindowsProcessTree;
             let windowsTreeVerified = false;
+            const gracefulDeadline = Date.now() + graceMs;
             try {
-                await terminateWindowsTree({ pid, force: false });
+                await terminateWindowsTree({ pid, force: false, timeoutMs: graceMs });
                 windowsTreeVerified = true;
             }
             catch {
                 for (const targetPid of all)
                     bestEffortKillPid(targetPid, 'SIGTERM');
             }
-            await waitForAllGone(all, graceMs);
+            await waitForAllGone(all, Math.max(0, gracefulDeadline - Date.now()));
             const remaining = all.filter((targetPid) => isPidPresent(targetPid));
             if (remaining.length === 0) {
                 if (!censusVerified && !windowsTreeVerified) throw terminationIncomplete();
                 return;
             }
+            const forceMs = Math.min(250, graceMs);
+            const forceDeadline = Date.now() + forceMs;
             try {
-                await terminateWindowsTree({ pid, force: true });
+                await terminateWindowsTree({ pid, force: true, timeoutMs: forceMs });
                 windowsTreeVerified = true;
             }
             catch {
                 for (const targetPid of remaining)
                     bestEffortKillPid(targetPid, 'SIGKILL');
             }
-            await waitForAllGone(remaining, Math.min(250, graceMs));
+            await waitForAllGone(remaining, Math.max(0, forceDeadline - Date.now()));
             if (remaining.some((targetPid) => isPidPresent(targetPid)) || (!censusVerified && !windowsTreeVerified)) {
                 throw terminationIncomplete();
             }
@@ -258,7 +262,7 @@ async function killProcessTree(proc, opts) {
     const owner = createProcessTreeOwner({
         ...processTools,
         psList: processes.default,
-        taskkillWindowsProcessTree: (input) => taskkillWindowsProcessTree(input, processTools.windowsSystemToolCommand),
+        taskkillWindowsProcessTree: (input) => taskkillWindowsProcessTree(input, processTools.windowsSystemToolCommand, processTools.execFileWithDeadline),
     });
     await owner.killProcessTree(proc, opts);
 }

@@ -389,7 +389,7 @@ export function createExecutionRunControllerMessageHandler(args: Readonly<{
         return;
       }
 
-      requestStore.publishRequest({
+      const publication = {
         requestId,
         toolName,
         toolInput: mergePermissionRequestOptionsForParentPrompt(
@@ -400,6 +400,13 @@ export function createExecutionRunControllerMessageHandler(args: Readonly<{
         source: 'execution_run',
         responseTarget: envelope.responseTarget,
         sidechainId: args.sidechainId,
+      };
+      // Native and message-based permission producers wake the same Run source
+      // only after the request owner has accepted its fact.
+      args.ctrl.pendingHostBarrier = appendExecutionRunControllerHostBarrier(args.ctrl.pendingHostBarrier, async () => {
+        if (requestStore.publishRequestAndWait) await requestStore.publishRequestAndWait(publication);
+        else requestStore.publishRequest(publication);
+        args.onPublicStateUpdated?.(args.runId);
       });
       return;
     }

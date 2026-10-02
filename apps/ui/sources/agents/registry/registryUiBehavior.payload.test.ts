@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock();
+});
+
 const { getActiveServerSnapshotState } = vi.hoisted(() => {
     const state = {
         activeServerSnapshot: { serverId: 'server-1', serverUrl: 'http://localhost:3000', generation: 1 },
@@ -28,6 +33,25 @@ function makeSettings(account: Readonly<Record<string, unknown>> = {}) {
 }
 
 describe('buildSpawnSessionExtrasFromUiState', () => {
+    it('projects OpenCode settings into strict configuration without a raw spawn environment', () => {
+        const settings = makeSettings({
+            opencodeBackendMode: 'acp',
+            opencodeServerBaseUrlByServerIdV1: { 'server-2': 'https://opencode.example.test/path' },
+        });
+        expect(buildSpawnEnvironmentVariablesFromUiState({
+            agentId: 'opencode', settings, environmentVariables: undefined,
+            newSessionOptions: { targetServerId: 'server-2' },
+        })).toBeUndefined();
+        expect(buildSpawnSessionExtrasFromUiState({
+            agentId: 'opencode', settings, resumeSessionId: '', updatedAt: 123,
+            newSessionOptions: { targetServerId: 'server-2' },
+        })).toEqual({ sessionConfigOptionOverrides: {
+            v: 1, updatedAt: 123, overrides: {
+                opencodeBackendMode: { value: 'acp', updatedAt: 123 },
+                opencodeServerBaseUrl: { value: 'https://opencode.example.test/', updatedAt: 123 },
+            },
+        } });
+    });
     it('projects the normalized Codex backend mode into strict V2 configuration', () => {
         expect(buildSpawnSessionExtrasFromUiState({
             agentId: 'codex',
@@ -353,7 +377,7 @@ describe('buildWakeResumeExtras', () => {
 });
 
 describe('buildSpawnEnvironmentVariablesFromUiState', () => {
-    it('injects OpenCode backend mode env var while preserving existing env', () => {
+    it('preserves caller environment without adding OpenCode settings', () => {
         getActiveServerSnapshotState().activeServerSnapshot = { serverId: 'server-2', serverUrl: 'http://localhost:4000', generation: 2 };
 
         expect(buildSpawnEnvironmentVariablesFromUiState({
@@ -370,9 +394,6 @@ describe('buildSpawnEnvironmentVariablesFromUiState', () => {
             newSessionOptions: null,
         })).toEqual({
             FOO: '1',
-            HAPPIER_OPENCODE_BACKEND_MODE: 'acp',
-            HAPPIER_OPENCODE_SERVER_URL: 'http://127.0.0.1:4097/',
-            HAPPIER_OPENCODE_SERVER_URL_EXPLICIT: '1',
         });
 
         expect(buildSpawnEnvironmentVariablesFromUiState({
@@ -380,15 +401,13 @@ describe('buildSpawnEnvironmentVariablesFromUiState', () => {
             settings: makeSettings({ opencodeBackendMode: 'server' as any }),
             environmentVariables: undefined,
             newSessionOptions: null,
-        })).toEqual({
-            HAPPIER_OPENCODE_BACKEND_MODE: 'server',
-        });
+        })).toBeUndefined();
     });
 
-    it('uses the selected new-session target server for OpenCode server-scoped env', () => {
+    it('uses the selected new-session target server for OpenCode configuration', () => {
         getActiveServerSnapshotState().activeServerSnapshot = { serverId: 'server-1', serverUrl: 'http://localhost:3000', generation: 1 };
 
-        expect(buildSpawnEnvironmentVariablesFromUiState({
+        expect(buildSpawnSessionExtrasFromUiState({
             agentId: 'opencode',
             settings: makeSettings({
                 opencodeBackendMode: 'server' as any,
@@ -397,16 +416,17 @@ describe('buildSpawnEnvironmentVariablesFromUiState', () => {
                     'server-2': ' http://127.0.0.1:4097/ ',
                 },
             }),
-            environmentVariables: { FOO: '1' },
+            resumeSessionId: '',
+            updatedAt: 123,
             newSessionOptions: {
                 targetServerId: 'server-2',
             },
-        })).toEqual({
-            FOO: '1',
-            HAPPIER_OPENCODE_BACKEND_MODE: 'server',
-            HAPPIER_OPENCODE_SERVER_URL: 'http://127.0.0.1:4097/',
-            HAPPIER_OPENCODE_SERVER_URL_EXPLICIT: '1',
-        });
+        })).toEqual({ sessionConfigOptionOverrides: {
+            v: 1, updatedAt: 123, overrides: {
+                opencodeBackendMode: { value: 'server', updatedAt: 123 },
+                opencodeServerBaseUrl: { value: 'http://127.0.0.1:4097/', updatedAt: 123 },
+            },
+        } });
     });
 
     it('ignores invalid OpenCode server url overrides', () => {
@@ -420,7 +440,6 @@ describe('buildSpawnEnvironmentVariablesFromUiState', () => {
             newSessionOptions: null,
         })).toEqual({
             FOO: '1',
-            HAPPIER_OPENCODE_BACKEND_MODE: 'server',
         });
     });
 
@@ -437,7 +456,6 @@ describe('buildSpawnEnvironmentVariablesFromUiState', () => {
             newSessionOptions: null,
         })).toEqual({
             FOO: '1',
-            HAPPIER_OPENCODE_BACKEND_MODE: 'server',
         });
     });
 

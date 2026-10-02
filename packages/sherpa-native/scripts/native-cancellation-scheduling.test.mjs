@@ -180,7 +180,7 @@ test("initialization carries its cancellable cache admission from the control qu
 
   assert.match(
     ios,
-    /AsyncFunction\("initialize"\) \{ \(params: \[String: Any\], promise: Promise\) in[\s\S]*?admitInitialization\(assetsDir: assetsDir, admissionId: initializationId\)[\s\S]*?self\.ttsQueue\.async[\s\S]*?prepare\(assetsDir: assetsDir, admissionId: initializationId\)[\s\S]*?promise\.resolve\(\)[\s\S]*?catch \{[\s\S]*?promise\.reject\(error\)/,
+    /AsyncFunction\("initialize"\) \{ \(params: \[String: Any\], promise: Promise\) in[\s\S]*?admitInitialization\(assetsDir: assetsDir, admissionId: initializationId\)[\s\S]*?self\.ttsQueue\.async[\s\S]*?prepare\(assetsDir: assetsDir, admissionId: initializationId, frontend: frontend\)[\s\S]*?promise\.resolve\(\)[\s\S]*?catch \{[\s\S]*?promise\.reject\(error\)/,
     "iOS must admit on Expo's serial control queue before dispatching initialization onto the TTS worker",
   );
   assert.match(
@@ -195,7 +195,7 @@ test("initialization carries its cancellable cache admission from the control qu
   );
   assert.match(
     android,
-    /AsyncFunction\("initialize"\)\.SuspendBody \{ params: Map<String, Any\?> ->[\s\S]*?admitEngineInitialization\(assetsDir, initializationId\)[\s\S]*?ttsWorker\.run[\s\S]*?requireEngine\(assetsDir, initializationId\)/,
+    /AsyncFunction\("initialize"\)\.SuspendBody \{ params: Map<String, Any\?> ->[\s\S]*?admitEngineInitialization\(assetsDir, initializationId\)[\s\S]*?ttsWorker\.run[\s\S]*?requireEngine\(assetsDir, initializationId, frontend\)/,
     "Android must admit before dispatching initialization onto the TTS worker",
   );
   assert.match(iosOwner, /admitInitializationForAssetsDir/);
@@ -224,11 +224,11 @@ test("initialization accepts the predecessor no-admission shape through the same
   // receives precise queued-initialization cancellation.
   assert.match(
     ios,
-    /let initializationId = params\["initializationId"\] as\? String[\s\S]*?if let initializationId \{[\s\S]*?admitInitialization\(assetsDir: assetsDir, admissionId: initializationId\)[\s\S]*?\} else \{[\s\S]*?self\.ttsQueue\.async[\s\S]*?prepare\(assetsDir: assetsDir\)/,
+    /let initializationId = params\["initializationId"\] as\? String[\s\S]*?if let initializationId \{[\s\S]*?admitInitialization\(assetsDir: assetsDir, admissionId: initializationId\)[\s\S]*?\} else \{[\s\S]*?self\.ttsQueue\.async[\s\S]*?prepare\(assetsDir: assetsDir, frontend: frontend\)/,
   );
   assert.match(
     android,
-    /val initializationId = params\["initializationId"\] as\? String[\s\S]*?if \(initializationId == null\) \{[\s\S]*?ttsWorker\.run[\s\S]*?requireEngine\(assetsDir\)/,
+    /val initializationId = params\["initializationId"\] as\? String[\s\S]*?if \(initializationId == null\) \{[\s\S]*?ttsWorker\.run[\s\S]*?requireEngine\(assetsDir, frontend = frontend\)/,
   );
   assert.match(types, /initializationId\?: string/);
 });
@@ -280,7 +280,7 @@ test("pack invalidation retires both native engine kinds through one owner", () 
   assert.doesNotMatch(kotlin, /enginesByAssetsDir/);
   // The offline-TTS externals are keyed by directory now. (VAD sessions keep a
   // handle on purpose: they are per-detector and not keyed by a model pack.)
-  assert.match(kotlin, /external fun nativeEnsureEngine\(assetsDir: String\): Int/);
+  assert.match(kotlin, /external fun nativeEnsureEngine\(assetsDir: String, lang: String\?, lexicon: String\?\): Int/);
   assert.match(kotlin, /external fun nativeSynthesizeToWavFile\(assetsDir: String,/);
   assert.match(kotlin, /external fun nativeCancel\(jobId: String\)/);
   assert.doesNotMatch(kotlin, /external fun native(Create|Destroy)Engine\b/);

@@ -17,7 +17,7 @@ import type { ArtifactHeader, DecryptedArtifact } from '@/sync/domains/artifacts
 // Protocol approval subject/transition owner all run above it.
 const home = await vi.hoisted(async () => {
     const { createArtifactStoreBoundary } = await import('@/dev/testkit/harness/artifactStoreBoundary');
-    return { artifacts: createArtifactStoreBoundary() };
+    return { artifacts: createArtifactStoreBoundary({ ownerAccountId: () => 'account-1', encryptionMode: 'plain' }) };
 });
 
 vi.mock('@/sync/http/client', async (importOriginal) => ({

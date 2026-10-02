@@ -24,7 +24,8 @@ export type NativePcmFrameSource = Readonly<{
             frameMs: number;
         }>;
         audioSession: typeof VOICE_PCM_CONVERSATION_AUDIO_SESSION;
-        onFrame: (frame: NativePcmFrame) => void;
+        onFrame: (frame: NativePcmFrame) => void | Promise<void>;
+        onDroppedFrames?: (totalDropped: number) => void;
         onError?: (error: unknown) => void;
     }>) => NativePcmCaptureLease | Promise<NativePcmCaptureLease>;
 }>;
@@ -123,7 +124,7 @@ export async function resolveNativeSileroVadBridge(
     }
 
     return {
-        startSession: async ({ minSpeechMs, onSpeechEnd, onSpeechStart, redemptionMs, sessionId }) => {
+        startSession: async ({ minSpeechMs, onSpeechEnd, onSpeechStart, onTerminal, redemptionMs, sessionId }) => {
             const detectorId = `voice-vad:${sessionId}:${nextDetectorOrdinal++}`;
             await resolvedNativeModule.createVadDetector({
                 detectorId,
@@ -135,7 +136,6 @@ export async function resolveNativeSileroVadBridge(
             let stopped = false;
             let speechActive = false;
             let captureLease: NativePcmCaptureLease | null = null;
-            let pushTail: Promise<void> = Promise.resolve();
 
             const cancelDetector = async (): Promise<void> => {
                 try {
@@ -158,23 +158,21 @@ export async function resolveNativeSileroVadBridge(
                 }
             };
 
-            const stopAfterFrameFailure = (): void => {
+            const stopAfterFrameFailure = (error: unknown): void => {
                 if (stopped) {
                     return;
                 }
                 stopped = true;
                 void releaseCapture();
                 void cancelDetector();
+                onTerminal?.(error);
             };
 
-            const onFrame = (frame: NativePcmFrame): void => {
+            const onFrame = async (frame: NativePcmFrame): Promise<void> => {
                 if (stopped || frame.sampleRate !== VAD_SAMPLE_RATE || frame.channels !== VAD_CHANNELS) {
                     return;
                 }
-                pushTail = pushTail.then(async () => {
-                    if (stopped) {
-                        return;
-                    }
+                try {
                     const result = await resolvedNativeModule.pushVadAudioFrame({
                         detectorId,
                         pcm16leBase64: frame.pcm16leBase64,
@@ -192,7 +190,10 @@ export async function resolveNativeSileroVadBridge(
                         speechActive = false;
                         onSpeechEnd();
                     }
-                }).catch(stopAfterFrameFailure);
+                } catch (error) {
+                    stopAfterFrameFailure(error);
+                    throw error;
+                }
             };
 
             try {
@@ -205,8 +206,10 @@ export async function resolveNativeSileroVadBridge(
                     },
                     audioSession: VOICE_PCM_CONVERSATION_AUDIO_SESSION,
                     onFrame,
-                    onError: () => stopAfterFrameFailure(),
+                    onError: stopAfterFrameFailure,
+                    onDroppedFrames: () => stopAfterFrameFailure(new Error('native_vad_pcm_backpressure')),
                 });
+                if (stopped) await releaseCapture();
             } catch (error) {
                 stopped = true;
                 await cancelDetector();
@@ -220,7 +223,6 @@ export async function resolveNativeSileroVadBridge(
                     }
                     stopped = true;
                     await releaseCapture();
-                    await pushTail.catch(() => {});
                     await cancelDetector();
                 },
             };

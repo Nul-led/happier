@@ -2,6 +2,7 @@ import { authApproveAtEndpoint } from '@/auth/flows/approve';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import type { SystemTaskEvent } from '@happier-dev/protocol';
+import { parseToken } from '@/utils/auth/parseToken';
 
 /**
  * Explicit-target approval configuration for system-task token-only pairing prompts. The target
@@ -11,6 +12,8 @@ export type SystemTaskAuthRequestApproval = Readonly<{
     /** Explicit target Home endpoint; never resolved from the focused Home. */
     expectedRelayUrl: string;
     serverId?: string;
+    /** Account the initiating setup promised to connect; checked before issuing an approval. */
+    expectedAccountId?: string;
 }>;
 
 export type SystemTaskTokenOnlyAuthRequestPrompt = Readonly<{
@@ -56,7 +59,7 @@ export type SystemTaskAuthRequestApprovalOutcome =
  * Recognizes the blocking token-only approval prompt emitted by `setup.thisComputer.v1`.
  * Legacy non-blocking `authRequest` prompts (no response material) are ignored.
  */
-export function readTokenOnlyAuthRequestPrompt(event: SystemTaskEvent): SystemTaskTokenOnlyAuthRequestPrompt | null {
+export function readTokenOnlyAuthRequestPrompt(event: Pick<SystemTaskEvent, 'type' | 'data'>): SystemTaskTokenOnlyAuthRequestPrompt | null {
     if (event.type !== 'prompt') {
         return null;
     }
@@ -161,6 +164,17 @@ export async function respondToTokenOnlyAuthRequestPrompt(params: Readonly<{
     }
     if (!token) {
         return await decline('credentials_unavailable');
+    }
+    if (params.approval.expectedAccountId) {
+        let accountId: string;
+        try {
+            accountId = parseToken(token);
+        } catch {
+            return await decline('credentials_unavailable');
+        }
+        if (accountId !== params.approval.expectedAccountId) {
+            return await decline('credentials_unavailable');
+        }
     }
 
     try {

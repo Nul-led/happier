@@ -1,4 +1,3 @@
-import { CLIENT_UPGRADE_REQUIRED_ERROR_CODE } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@/sync/domains/state/storageTypes';
@@ -7,9 +6,6 @@ import type {
 } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import type { VoiceProviderRegistry } from '@/voice/registry/providerRegistry';
-import {
-  AccountStoredContentClientUpgradeRequiredError,
-} from '@/sync/api/capabilities/accountStoredContentCompatibility';
 
 import {
   createDefaultVoiceHistoryConsumerFromRuntime,
@@ -92,7 +88,6 @@ describe('createDefaultVoiceHistoryConsumerFromRuntime', () => {
     ): DefaultVoiceHistoryRuntime => ({
       readActiveScope: () => scope,
       captureAuthority: async () => authority,
-      prepareSessionLookup: async () => undefined,
       lookupByTags: async () => [{ id: 'voice-history' }],
       hydrateSession: async (sessionId) => ({ kind: 'available', sessionId }),
       readHydratedSession: (sessionId) => ({
@@ -120,7 +115,7 @@ describe('createDefaultVoiceHistoryConsumerFromRuntime', () => {
       ...overrides,
     });
     const stageCases: ReadonlyArray<Readonly<{
-      stage: 'capture_scope' | 'compatibility' | 'lookup' | 'hydrate' | 'refresh';
+      stage: 'capture_scope' | 'lookup' | 'hydrate' | 'refresh';
       runtime: DefaultVoiceHistoryRuntime;
       status?: number;
     }>> = [
@@ -129,14 +124,6 @@ describe('createDefaultVoiceHistoryConsumerFromRuntime', () => {
         runtime: createRuntime({
           captureAuthority: async () => {
             throw new Error('captured account details');
-          },
-        }),
-      },
-      {
-        stage: 'compatibility',
-        runtime: createRuntime({
-          prepareSessionLookup: async () => {
-            throw new Error('compatibility response body');
           },
         }),
       },
@@ -202,16 +189,6 @@ describe('createDefaultVoiceHistoryConsumerFromRuntime', () => {
       registry,
     ).open()).rejects.toBe(superseded);
 
-    const upgradeRequired = new AccountStoredContentClientUpgradeRequiredError('server-too-old');
-    await expect(createDefaultVoiceHistoryConsumerFromRuntime(
-      createRuntime({
-        prepareSessionLookup: async () => {
-          throw upgradeRequired;
-        },
-      }),
-      registry,
-    ).open()).rejects.toBe(upgradeRequired);
-
     const codeCompatibleSuperseded = {
       code: 'voice_history_operation_superseded',
     } as const;
@@ -223,18 +200,6 @@ describe('createDefaultVoiceHistoryConsumerFromRuntime', () => {
       }),
       registry,
     ).open()).rejects.toBe(codeCompatibleSuperseded);
-
-    const codeCompatibleUpgradeRequired = {
-      code: CLIENT_UPGRADE_REQUIRED_ERROR_CODE,
-    } as const;
-    await expect(createDefaultVoiceHistoryConsumerFromRuntime(
-      createRuntime({
-        prepareSessionLookup: async () => {
-          throw codeCompatibleUpgradeRequired;
-        },
-      }),
-      registry,
-    ).open()).rejects.toBe(codeCompatibleUpgradeRequired);
   });
 
   it('performs no lookup when account authority capture fails during a same-server switch', async () => {
@@ -255,7 +220,6 @@ describe('createDefaultVoiceHistoryConsumerFromRuntime', () => {
         }
         throw new Error('unreachable');
       },
-      prepareSessionLookup: async () => undefined,
       lookupByTags,
       hydrateSession: async () => ({ kind: 'missing' }),
       readHydratedSession: () => null,
@@ -314,7 +278,6 @@ describe('createDefaultVoiceHistoryConsumerFromRuntime', () => {
     const runtime: DefaultVoiceHistoryRuntime = {
       readActiveScope: () => scopeA,
       captureAuthority: async () => authorityA,
-      prepareSessionLookup: async () => undefined,
       lookupByTags: async (_tags, authority) => {
         calls.push({ operation: 'lookup', authority });
         return [{ id: 'voice-history' }];
@@ -402,7 +365,6 @@ describe('createDefaultVoiceHistoryConsumerFromRuntime', () => {
     const runtime: DefaultVoiceHistoryRuntime = {
       readActiveScope: () => activeScope,
       captureAuthority: async () => authorityA,
-      prepareSessionLookup: async () => undefined,
       lookupByTags: async (_tags, authority) => {
         seenAuthorities.push(authority);
         return await lookup;

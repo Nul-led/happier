@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
     notifyExecutionRunActivity,
+    notifyExecutionRunActivityReconnect,
     subscribeExecutionRunActivity,
 } from './executionRunActivityBus';
 
@@ -25,5 +26,20 @@ describe('executionRunActivityBus', () => {
 
         unsubscribeHomeA();
         unsubscribeHomeB();
+    });
+
+    it('catches up only demanded addresses in the reconnected Home', () => {
+        const homeAListener = vi.fn();
+        const homeBListener = vi.fn();
+        const unsubscribeA = subscribeExecutionRunActivity({ serverId: 'home-a', sessionId: 's1' }, homeAListener);
+        const unsubscribeB = subscribeExecutionRunActivity({ serverId: 'home-b', sessionId: 's1' }, homeBListener);
+        notifyExecutionRunActivityReconnect('home-b');
+        expect(homeAListener).not.toHaveBeenCalled();
+        expect(homeBListener).toHaveBeenCalledWith({ runId: null });
+        unsubscribeB();
+        homeBListener.mockClear();
+        notifyExecutionRunActivityReconnect('home-b');
+        expect(homeBListener).not.toHaveBeenCalled();
+        unsubscribeA();
     });
 });

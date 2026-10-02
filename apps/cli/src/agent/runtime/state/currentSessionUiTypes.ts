@@ -49,6 +49,7 @@ export type HostSessionInteractionOptions = Readonly<{
     permissionContext?: Readonly<{
         origin?: 'host_acp_fs_write';
         owner?: PermissionRequestOwner;
+        lifetime?: 'turn' | 'occurrence';
         /** Exact active turn, stamped by the invocation host rather than a plugin. */
         turnId?: string | null;
         /** Immutable authority carried from the exact admitted input, if any. */

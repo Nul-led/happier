@@ -1,11 +1,13 @@
 import {
-  DaemonVoiceClientMediatedCredentialMaterializeRequestV1Schema,
-  DaemonVoiceClientMediatedCredentialMaterializeResponseV1Schema,
+  DaemonVoiceClientAccountOperationRequestV1Schema,
+  DaemonVoiceClientAccountOperationResponseV1Schema,
   type DaemonVoiceClientMediatedCredentialDeclarationAuthorityV1,
   type PluginContributionIdentityV1,
   type QualifiedConnectedAccountPurposeBindingTargetV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import type { VoiceAccountOperationService } from '@happier-dev/plugin-sdk/voice';
+import { decodeBase64 } from '@/encryption/base64';
 
 import { log } from '@/log';
 import { throwIfAborted } from '@/utils/runtime/abortSignals';
@@ -30,7 +32,7 @@ function readSafeCause(error: unknown): string {
   return SAFE_CAUSE_PATTERN.test(normalized) ? normalized : 'unknown';
 }
 
-export function createVoiceClientMediatedCredentialHeadersMaterializer(input: Readonly<{
+export function createVoiceClientAccountOperationExecutor(input: Readonly<{
   contribution: PluginContributionIdentityV1;
   platform: 'web' | 'ios' | 'android';
   phase: 'settings' | 'prepare' | 'connection';
@@ -48,16 +50,17 @@ export function createVoiceClientMediatedCredentialHeadersMaterializer(input: Re
     ?? createSelectedVoiceMachineClient({ resolveMachineId: () => machineId });
   return async (request: Readonly<{
     operationId: string;
+    parameters: Parameters<VoiceAccountOperationService['request']>[0]['parameters'];
     /** The Connected Account selection this operation was authorized under. */
     selection: QualifiedConnectedAccountPurposeBindingTargetV1;
     signal: AbortSignal;
-  }>): Promise<Readonly<Record<string, string>>> => {
+  }>): ReturnType<VoiceAccountOperationService['request']> => {
     /**
      * This is the only Voice pre-flight step that runs before any provider
      * request or microphone acquisition, so a failure here is invisible at the
      * surface (every Voice error renders as "Connection Error"). Name the
-     * failing step and its cause exactly once. Materialized headers are the
-     * credential itself and are never part of the record.
+     * failing step and its cause exactly once. Neither source credentials nor
+     * provider response bytes are part of the record.
      */
     const failure = (stage: string, code: string, cause: string): Error => {
       log.log(`[voiceMediatedCredential] ${JSON.stringify({
@@ -71,11 +74,12 @@ export function createVoiceClientMediatedCredentialHeadersMaterializer(input: Re
       })}`);
       return operationError(code);
     };
-    const parsedRequest = DaemonVoiceClientMediatedCredentialMaterializeRequestV1Schema.safeParse({
+    const parsedRequest = DaemonVoiceClientAccountOperationRequestV1Schema.safeParse({
       contribution: input.contribution,
       platform: input.platform,
       phase: input.phase,
       operationId: request.operationId,
+      parameters: request.parameters,
       declarationAuthority: input.declarationAuthority,
       expectedSelection: request.selection,
     });
@@ -89,7 +93,7 @@ export function createVoiceClientMediatedCredentialHeadersMaterializer(input: Re
     let raw: unknown;
     try {
       raw = await client.invoke(
-        RPC_METHODS.DAEMON_VOICE_CLIENT_MEDIATED_CREDENTIAL_MATERIALIZE,
+        RPC_METHODS.DAEMON_VOICE_CLIENT_ACCOUNT_OPERATION,
         parsedRequest.data,
         request.signal,
       );
@@ -106,7 +110,7 @@ export function createVoiceClientMediatedCredentialHeadersMaterializer(input: Re
     if (!input.isCurrent() || !input.isInvocationCurrent()) {
       throw operationError('voice_account_operation_cancelled');
     }
-    const response = DaemonVoiceClientMediatedCredentialMaterializeResponseV1Schema.safeParse(raw);
+    const response = DaemonVoiceClientAccountOperationResponseV1Schema.safeParse(raw);
     if (!response.success) {
       throw failure('response', 'provider_response_invalid', 'response_malformed');
     }
@@ -121,6 +125,11 @@ export function createVoiceClientMediatedCredentialHeadersMaterializer(input: Re
         response.data.errorCode,
       );
     }
-    return Object.freeze({ ...response.data.headers });
+    return Object.freeze({
+      status: response.data.response.status,
+      finalUrl: response.data.response.finalUrl,
+      headers: Object.freeze({ ...response.data.response.headers }),
+      body: decodeBase64(response.data.response.bodyBase64, 'base64'),
+    });
   };
 }

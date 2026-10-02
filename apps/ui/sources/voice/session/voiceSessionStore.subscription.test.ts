@@ -1,6 +1,55 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createVoiceConversationRuntimeMachine } from '@/voice/runtime/machine/VoiceConversationRuntimeMachine';
+import { deriveLocalVoiceSessionSnapshot } from '@/voice/runtime/machine/deriveLocalVoiceSessionSnapshot';
+import { useVoiceConversationRuntimeStore } from '@/voice/runtime/machine/voiceConversationRuntimeStore';
+
+vi.mock('@/text', async () => {
+  const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+  return createTextModuleMock();
+});
+vi.mock('@/modal', async () => {
+  const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+  return createModalModuleMock().module;
+});
 
 describe('voiceSessionStore subscriptions', () => {
+  it('publishes Retry availability and withdrawal during the real reconnect projection', async () => {
+    vi.resetModules();
+    const { getVoiceSessionSnapshot, setVoiceSessionSnapshot, subscribeToVoiceSessionSnapshot } = await import('./voiceSessionStore');
+    const machine = createVoiceConversationRuntimeMachine();
+    machine.reset();
+    const owner = { adapterId: 'realtime-test', controlSessionId: 'session-1' };
+    const publish = () => setVoiceSessionSnapshot(deriveLocalVoiceSessionSnapshot(owner.adapterId, 'realtime', machine.getSnapshot()));
+    const unsubscribeMachine = useVoiceConversationRuntimeStore.subscribe(publish);
+    machine.transitionToConnecting(owner);
+    machine.transitionToConnected(owner);
+    machine.setReconnecting({ ...owner, reconnecting: true, retryAvailable: false });
+    const unavailable = getVoiceSessionSnapshot();
+    const listener = vi.fn();
+    const unsubscribe = subscribeToVoiceSessionSnapshot(listener);
+    try {
+      machine.setReconnecting({ ...owner, reconnecting: true, retryAvailable: true });
+      const available = getVoiceSessionSnapshot();
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(available).not.toBe(unavailable);
+      expect(available.reconnectRetryAvailable).toBe(true);
+      publish();
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(getVoiceSessionSnapshot()).toBe(available);
+
+      machine.setReconnecting({ ...owner, reconnecting: true, retryAvailable: false });
+      expect(listener).toHaveBeenCalledTimes(2);
+      expect(getVoiceSessionSnapshot().reconnectRetryAvailable).toBeUndefined();
+      expect(getVoiceSessionSnapshot().presentationState).toBe('reconnecting');
+    } finally {
+      unsubscribe();
+      unsubscribeMachine();
+      machine.reset();
+      const { resetVoiceSessionRuntimeStateForTests } = await import('./voiceSessionStore');
+      await resetVoiceSessionRuntimeStateForTests();
+    }
+  });
+
   it('does not notify external-store subscribers when setVoiceSessionSnapshot receives an identical snapshot', async () => {
     vi.resetModules();
 

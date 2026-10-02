@@ -3,6 +3,7 @@ import { ArtifactHeader, ArtifactBody } from '../domains/artifacts/artifactTypes
 import { AES256Encryption } from './encryptor';
 import { getRandomBytes } from '@/platform/cryptoRandom';
 import { syncPerformanceTelemetry } from '../runtime/syncPerformanceTelemetry';
+import { ArtifactBodyV1Schema } from '@happier-dev/protocol';
 
 const ARTIFACT_HEADER_DEFAULT_VERSION = 1;
 const ARTIFACT_HEADER_MAX_VERSION = 1;
@@ -31,6 +32,21 @@ function sanitizeArtifactHeaderVersion(value: unknown): number {
     return normalized;
 }
 
+/** Presentation projection only. Strict readers and storage writers consume the raw header. */
+export function projectArtifactHeaderForDisplay(header: Readonly<Record<string, unknown>>): ArtifactHeader {
+    const title = typeof header.title === 'string' ? header.title : null;
+    const v = sanitizeArtifactHeaderVersion(header.v);
+    const kindRaw = typeof header.kind === 'string' ? header.kind.trim() : '';
+    const sessions = Array.isArray(header.sessions)
+        ? header.sessions.map((value: unknown) => String(value ?? '').trim()).filter(Boolean)
+        : undefined;
+    return {
+        ...sanitizeArtifactHeaderPassthrough(header), v, kind: kindRaw || 'artifact.legacy', title,
+        ...(sessions ? { sessions } : {}),
+        ...(typeof header.draft === 'boolean' ? { draft: header.draft } : {}),
+    };
+}
+
 export class ArtifactEncryption {
     private encryptor: AES256Encryption;
     
@@ -44,11 +60,19 @@ export class ArtifactEncryption {
     static generateDataEncryptionKey(): Uint8Array {
         return getRandomBytes(32);  // 256 bits for AES-256
     }
+
+    async encryptBytes(bytes: Uint8Array): Promise<string> {
+        return encodeBase64(await this.encryptor.encryptBytes(bytes), 'base64');
+    }
+
+    async decryptBytes(ciphertext: string): Promise<Uint8Array> {
+        return this.encryptor.decryptBytes(decodeBase64(ciphertext, 'base64'));
+    }
     
     /**
      * Encrypt artifact header
      */
-    async encryptHeader(header: ArtifactHeader): Promise<string> {
+    async encryptHeader(header: Readonly<Record<string, unknown>>): Promise<string> {
         return syncPerformanceTelemetry.measureAsync(
             'sync.encryption.artifact.encryptHeader',
             { items: 1 },
@@ -60,9 +84,10 @@ export class ArtifactEncryption {
     }
     
     /**
-     * Decrypt artifact header
+     * Open stored metadata without adding presentation defaults. Storage
+     * transformations and strict document readers must preserve the raw header.
      */
-    async decryptHeader(encryptedHeader: string): Promise<ArtifactHeader | null> {
+    async decryptHeaderRaw(encryptedHeader: string): Promise<Readonly<Record<string, unknown>> | null> {
         try {
             const encryptedData = decodeBase64(encryptedHeader, 'base64');
             const decrypted = await syncPerformanceTelemetry.measureAsync(
@@ -74,34 +99,22 @@ export class ArtifactEncryption {
                 return null;
             }
             // Validate structure
-            const header = decrypted[0] as Record<string, unknown>;
+            const header: unknown = decrypted[0];
             if (typeof header !== 'object' || header === null || Array.isArray(header)) {
                 return null;
             }
-            const title = typeof header.title === 'string' ? header.title : null;
-            const v = sanitizeArtifactHeaderVersion(header.v);
-            const kindRaw = typeof header.kind === 'string' ? String(header.kind).trim() : '';
-            const kind = kindRaw || 'artifact.legacy';
-
-            const sessionsRaw = header.sessions;
-            const sessions = Array.isArray(sessionsRaw)
-                ? sessionsRaw.map((v: unknown) => String(v ?? '').trim()).filter(Boolean)
-                : undefined;
-            const draftRaw = header.draft;
-            const draft = typeof draftRaw === 'boolean' ? draftRaw : undefined;
-
-            return {
-                ...sanitizeArtifactHeaderPassthrough(header),
-                v,
-                kind,
-                title,
-                ...(sessions ? { sessions } : {}),
-                ...(draft !== undefined ? { draft } : {}),
-            };
+            return header as Readonly<Record<string, unknown>>;
         } catch (error) {
             console.error('Failed to decrypt artifact header:', error);
             return null;
         }
+    }
+
+    /** Decrypt and project generic Artifact display fields. */
+    async decryptHeader(encryptedHeader: string): Promise<ArtifactHeader | null> {
+        const header = await this.decryptHeaderRaw(encryptedHeader);
+        if (!header) return null;
+        return projectArtifactHeaderForDisplay(header);
     }
     
     /**
@@ -133,13 +146,12 @@ export class ArtifactEncryption {
                 return null;
             }
             // Validate structure
-            const body = decrypted[0] as any;
-            if (typeof body !== 'object' || body === null) {
+            const body: unknown = decrypted[0];
+            if (typeof body !== 'object' || body === null || Array.isArray(body)) {
                 return null;
             }
-            return {
-                body: typeof body.body === 'string' ? body.body : null
-            };
+            const parsed = ArtifactBodyV1Schema.nullable().safeParse(Reflect.get(body, 'body'));
+            return parsed.success ? { body: parsed.data } : null;
         } catch (error) {
             console.error('Failed to decrypt artifact body:', error);
             return null;

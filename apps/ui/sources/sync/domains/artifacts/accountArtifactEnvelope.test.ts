@@ -14,6 +14,17 @@ const header = Object.freeze({
 const body = Object.freeze({ body: '{"v":1,"files":[]}' });
 
 describe('Account Artifact stored envelope', () => {
+    it('opens binary body metadata in plain and E2EE envelopes without treating it as empty text', async () => {
+        const binaryBody = { body: { blobId: '00000000-0000-4000-8000-000000000001', mime: 'image/png', sizeBytes: 4, sha256: 'a'.repeat(64) } };
+        for (const mode of ['plain', 'e2ee'] as const) {
+            let key: Uint8Array | null = null;
+            const envelope = await createAccountArtifactStoredEnvelope({ mode, header,
+                body: binaryBody as unknown as Parameters<typeof createAccountArtifactStoredEnvelope>[0]['body'],
+                encryptDataEncryptionKey: async dataKey => { key = dataKey; return dataKey; } });
+            if (!envelope) throw new Error('Expected stored envelope');
+            await expect(openAccountArtifactStoredEnvelope({ mode, envelope, decryptDataEncryptionKey: async () => key })).resolves.toEqual({ header, body: binaryBody });
+        }
+    });
     it('round-trips the incumbent plain Artifact representation without Account key material', async () => {
         const envelope = await createAccountArtifactStoredEnvelope({
             mode: 'plain',

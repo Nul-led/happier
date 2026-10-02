@@ -6,7 +6,12 @@ plugins {
 group = 'dev.happier.sherpa'
 version = '0.0.0'
 
-def sherpaVersion = System.getenv("HAPPIER_SHERPA_ONNX_VERSION") ?: "v1.12.25"
+def sherpaPackage = new groovy.json.JsonSlurper().parse(new File(projectDir, "../package.json"))
+def sherpaVersion = sherpaPackage.sherpaOnnxVersion
+def requestedSherpaVersion = System.getenv("HAPPIER_SHERPA_ONNX_VERSION")
+if (requestedSherpaVersion && requestedSherpaVersion != sherpaVersion) {
+  throw new GradleException("[HappierSherpaNative] Runtime/header ABI is pinned to ${sherpaVersion}; update the vendored header and ABI checks together to change it")
+}
 def sherpaArchive = "sherpa-onnx-${sherpaVersion}-android.tar.bz2"
 def sherpaBaseUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/${sherpaVersion}"
 def sherpaDir = new File(buildDir, "sherpa-onnx/${sherpaVersion}")

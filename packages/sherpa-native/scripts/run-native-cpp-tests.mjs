@@ -27,7 +27,9 @@ function testSources() {
 function compile(compiler, source, output, extraFlags) {
   return spawnSync(
     compiler,
-    ["-std=c++17", ...extraFlags, "-I", commonCppDir, source, "-o", output],
+    ["-std=c++17", ...extraFlags, "-I", commonCppDir,
+      "-I", path.join(packageRoot, "android", "src", "main", "cpp", "include"),
+      source, "-o", output],
     { stdio: "inherit" },
   );
 }

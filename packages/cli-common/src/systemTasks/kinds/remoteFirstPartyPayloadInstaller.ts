@@ -1,4 +1,5 @@
 import { basename } from 'node:path';
+import { quoteRemotePathWithHomeExpansion } from '../../ssh/shellQuote.js';
 
 import { normalizePublicReleaseRingId, type PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 
@@ -145,7 +146,7 @@ export async function installRemoteFirstPartyComponent(params: Readonly<{
       await resolvedDeps.runRemoteText({
         ssh: params.ssh,
         knownHostsMode: params.knownHostsMode,
-        remoteCommand: `mkdir -p ${stageParent}`,
+        remoteCommand: `mkdir -p ${quoteRemotePathWithHomeExpansion(stageParent)}`,
         ...(params.signal ? { signal: params.signal } : {}),
       });
       await resolvedDeps.copyLocalDirectoryToRemote({
@@ -172,14 +173,14 @@ export async function installRemoteFirstPartyComponent(params: Readonly<{
         knownHostsMode: params.knownHostsMode,
         remoteCommand: [
           'set -eu',
-          `cleanup() { rm -rf ${stageParent}; }`,
+          `cleanup() { rm -rf ${quoteRemotePathWithHomeExpansion(stageParent)}; }`,
           'trap cleanup EXIT',
-          `rm -rf ${remoteExtractRoot}`,
-          `mkdir -p ${remoteExtractRoot}`,
-          `tar -xf ${remoteArchivePath} -C ${remoteExtractRoot}`,
+          `rm -rf ${quoteRemotePathWithHomeExpansion(remoteExtractRoot)}`,
+          `mkdir -p ${quoteRemotePathWithHomeExpansion(remoteExtractRoot)}`,
+          `tar -xf ${quoteRemotePathWithHomeExpansion(remoteArchivePath)} -C ${quoteRemotePathWithHomeExpansion(remoteExtractRoot)}`,
           buildRemoteFirstPartyPromotionCommand({
             layout,
-            payloadRootExpression: remotePayloadRoot,
+            payloadRootExpression: quoteRemotePathWithHomeExpansion(remotePayloadRoot),
           }),
         ].join('; '),
         ...(params.signal ? { signal: params.signal } : {}),

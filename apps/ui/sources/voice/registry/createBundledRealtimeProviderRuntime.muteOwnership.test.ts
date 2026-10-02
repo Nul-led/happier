@@ -282,6 +282,7 @@ describe('createBundledRealtimeProviderRuntime mute ownership', () => {
         attemptId: 1,
         reason: 'initial',
         request: {},
+        session: { config: {}, safeMetadata: null },
         connection: createOpenConnection(),
         signal: new AbortController().signal,
       });

@@ -26,6 +26,7 @@ describe('workflow Run detail actions', () => {
                 // accepted snapshot records that frozen choice. Omitting it
                 // described a Run the Protocol cannot admit.
                 executionTarget: { kind: 'session' },
+                materializedLeaves: [],
                 workspaceTarget: {
                     project: {
                         machineId: 'machine-1',
@@ -36,7 +37,6 @@ describe('workflow Run detail actions', () => {
                 origin: { kind: 'direct' },
             },
             checkpoint: null,
-            availability: createWorkflowRunSummaryFixture({}).availability,
         });
         const actions = createWorkflowRunDetailActions({ execute: execute as never });
 

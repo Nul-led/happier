@@ -363,7 +363,7 @@ describe('unread attention placement', () => {
                 })),
         });
 
-        expect(result?.attentionItems.map((item) => (item.type === 'session' ? item.sessionId : item.headerKind))).toEqual([
+        expect(result?.attentionItems.map((item) => (item.type === 'session' ? item.sessionId : item.type === 'header' ? item.headerKind : `run:${item.runId}`))).toEqual([
             'attention',
             'older-blocked',
             'recently-unread',
@@ -392,7 +392,7 @@ describe('unread attention placement', () => {
         });
 
         expect(result?.attentionItems.map((item) => (
-            item.type === 'session' ? item.sessionId : item.headerKind
+            item.type === 'session' ? item.sessionId : item.type === 'header' ? item.headerKind : `run:${item.runId}`
         ))).toEqual(['attention', 'failed', 'permission', 'action']);
     });
 
@@ -414,7 +414,7 @@ describe('unread attention placement', () => {
             }),
         });
 
-        expect(result?.attentionItems.map((item) => (item.type === 'session' ? item.sessionId : item.headerKind))).toEqual([
+        expect(result?.attentionItems.map((item) => (item.type === 'session' ? item.sessionId : item.type === 'header' ? item.headerKind : `run:${item.runId}`))).toEqual([
             'attention',
             'newer-unread',
             'older-unread',
@@ -489,7 +489,7 @@ describe('unread attention placement', () => {
             }),
         });
 
-        expect(result?.attentionItems.map((item) => (item.type === 'session' ? item.sessionId : item.headerKind))).toEqual([
+        expect(result?.attentionItems.map((item) => (item.type === 'session' ? item.sessionId : item.type === 'header' ? item.headerKind : `run:${item.runId}`))).toEqual([
             'attention',
             'newer-entry-old-activity',
             'older-entry-new-activity',
@@ -517,7 +517,7 @@ describe('unread attention placement', () => {
         });
 
         expect(result?.attentionItems.map((item) => (
-            item.type === 'session' ? item.attentionPlacementReason : item.headerKind
+            item.type === 'session' ? item.attentionPlacementReason : item.type === 'header' ? item.headerKind : `run:${item.runId}`
         ))).toEqual(['attention', 'mentioned', 'unread']);
     });
 

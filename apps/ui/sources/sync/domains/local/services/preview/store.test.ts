@@ -134,7 +134,7 @@ describe('local service preview store', () => {
             scope: 'privatePreview',
             previewId: resource.previewId,
             details: {
-                originMode: 'path',
+                originMode: 'host',
             },
         };
         const unsafeDiagnostic = {

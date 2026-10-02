@@ -2,6 +2,7 @@ import * as React from 'react';
 import { useUnistyles } from 'react-native-unistyles';
 
 import type { FitAddon } from '@xterm/addon-fit';
+import type { EmbeddedTerminalCursorRow, EmbeddedTerminalWriteOptions } from '../embedded/embeddedTerminalRendererHandle';
 import { Terminal } from '@xterm/xterm';
 
 import '@xterm/xterm/css/xterm.css';
@@ -33,7 +34,7 @@ import {
 } from './writeQueue';
 
 export type XtermTerminalHandle = Readonly<{
-    write: (data: string) => boolean;
+    write: (data: string, options?: EmbeddedTerminalWriteOptions) => boolean;
     writeBytes: (input: XtermWriteBytesInput) => boolean | Readonly<{ status: 'queued' }>;
     clear: () => void;
     focus: () => void;
@@ -50,6 +51,7 @@ export type XtermTerminalViewProps = Readonly<{
     onReady: (cols: number, rows: number) => void;
     onWriteComplete?: (event: XtermWriteCompleteEvent) => void;
     onWriteRejected?: (event: XtermRejectedWrite) => void;
+    onCursorRowChange?: (row: EmbeddedTerminalCursorRow | null) => void;
     maxPendingWriteBytes?: number;
     fontSize: number;
     testID?: string;
@@ -104,6 +106,7 @@ export const XtermTerminalView = React.forwardRef<XtermTerminalHandle, XtermTerm
     const terminalRef = React.useRef<Terminal | null>(null);
     const fitAddonRef = React.useRef<FitAddon | null>(null);
     const writeQueueRef = React.useRef<XtermWriteQueue | null>(null);
+    const replayWritesInFlightRef = React.useRef(0);
     const resizeTimeoutRef = React.useRef<number | null>(null);
     const readyFitRetryTimeoutRef = React.useRef<number | null>(null);
     const readyFitRetryCountRef = React.useRef(0);
@@ -118,6 +121,8 @@ export const XtermTerminalView = React.forwardRef<XtermTerminalHandle, XtermTerm
     const onReadyRef = React.useRef(props.onReady);
     const onWriteCompleteRef = React.useRef(props.onWriteComplete);
     const onWriteRejectedRef = React.useRef(props.onWriteRejected);
+    const onCursorRowChangeRef = React.useRef(props.onCursorRowChange);
+    onCursorRowChangeRef.current = props.onCursorRowChange;
     const maxPendingWriteBytesRef = React.useRef(props.maxPendingWriteBytes ?? DEFAULT_XTERM_MAX_PENDING_WRITE_BYTES);
     onInputRef.current = props.onInput;
     onPasteRef.current = props.onPaste;
@@ -185,8 +190,15 @@ export const XtermTerminalView = React.forwardRef<XtermTerminalHandle, XtermTerm
         }
         writeQueueRef.current = createXtermWriteQueue({
             canWrite: () => terminalRef.current !== null,
-            write: (data, callback) => {
-                terminalRef.current?.write(data, callback);
+            write: (data, callback, options) => {
+                const term = terminalRef.current;
+                if (!term) return;
+                const replay = options?.intent === 'replay';
+                if (replay) replayWritesInFlightRef.current += 1;
+                term.write(data, () => {
+                    if (replay && terminalRef.current === term) replayWritesInFlightRef.current -= 1;
+                    callback();
+                });
             },
             schedule: () => scheduleFlushWrites(),
             maxPendingBytes: maxPendingWriteBytesRef.current,
@@ -208,13 +220,14 @@ export const XtermTerminalView = React.forwardRef<XtermTerminalHandle, XtermTerm
         outputPreviewDirtyRef.current = true;
     }, []);
 
-    const enqueueWrite = React.useCallback((data: string) => {
+    const enqueueWrite = React.useCallback((data: string, options?: EmbeddedTerminalWriteOptions) => {
         if (!data) {
             return true;
         }
         const accepted = ensureWriteQueue().enqueue({
             data,
             byteLength: estimateUtf8ByteLength(data),
+            options,
         });
         if (!accepted) {
             return false;
@@ -329,7 +342,23 @@ export const XtermTerminalView = React.forwardRef<XtermTerminalHandle, XtermTerm
         loadXtermWebLinksAddon(term, (uri) => onLinkRef.current?.(uri));
         tryLoadXtermWebglAddon(term);
 
+        replayWritesInFlightRef.current = 0;
         term.open(container);
+
+        const reportCursorRow = () => {
+            if (!onCursorRowChangeRef.current) return;
+            const buffer = term.buffer.active;
+            const row = buffer.baseY + buffer.cursorY - buffer.viewportY;
+            const screen = term.element?.querySelector('.xterm-screen') ?? container;
+            const rect = screen.getBoundingClientRect();
+            const height = rect.height / term.rows;
+            onCursorRowChangeRef.current(row >= 0 && row < term.rows && height > 0
+                ? { top: rect.top - container.getBoundingClientRect().top + row * height, height }
+                : null);
+        };
+        const cursorDisposable = term.onCursorMove(reportCursorRow);
+        const scrollDisposable = term.onScroll(reportCursorRow);
+        const sizeDisposable = term.onResize(reportCursorRow);
 
         const osc52Disposable = term.parser.registerOscHandler(52, () => (
             shouldConsumeTerminalControlSequence(XTERM_INTERACTION_CONTRACT, 'osc52')
@@ -418,6 +447,7 @@ export const XtermTerminalView = React.forwardRef<XtermTerminalHandle, XtermTerm
         });
 
         const dataDisposable = term.onData((data) => {
+            if (replayWritesInFlightRef.current > 0) return;
             const committed = resolveRendererCommittedInput(data);
             if (committed) {
                 onInputRef.current(committed);
@@ -459,6 +489,7 @@ export const XtermTerminalView = React.forwardRef<XtermTerminalHandle, XtermTerm
                     ? window.setTimeout(() => {
                         resizeTimeoutRef.current = null;
                         fitTerminal('resize');
+                        reportCursorRow();
                     }, 80)
                     : null;
             })
@@ -468,6 +499,9 @@ export const XtermTerminalView = React.forwardRef<XtermTerminalHandle, XtermTerm
 
         return () => {
             dataDisposable.dispose();
+            cursorDisposable.dispose();
+            scrollDisposable.dispose();
+            sizeDisposable.dispose();
             osc52Disposable.dispose();
             itermImageDisposable.dispose();
             sixelDisposable.dispose();

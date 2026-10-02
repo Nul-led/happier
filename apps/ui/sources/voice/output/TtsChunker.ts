@@ -1,4 +1,4 @@
-import { isHardTerminatorDot } from '@/voice/shared/sentenceBoundary';
+import { isSpeechSentenceBoundary, isSpeechClauseBoundary, speechSentenceEnd, speechTextEndAtOrBefore } from '@happier-dev/protocol';
 
 export type TtsChunker = Readonly<{
     push: (textDelta: string) => string[];
@@ -19,8 +19,7 @@ export function resolveStreamingTtsChunkChars(raw: unknown): number {
 }
 
 /**
- * Aggressive first-chunk bound: how many characters the very first chunk is
- * allowed to grow to before we force a word-boundary cut. Kept small so
+ * First-chunk search window for an early sentence or complete-word cut. Kept small so
  * time-to-first-audio stays low even when the assistant opens with a long
  * uninterrupted clause. Derived from the steady-state bound but capped.
  */
@@ -32,15 +31,8 @@ const FIRST_CHUNK_MAX_WORDS = 6;
 function firstTerminatorIndex(text: string, limit: number): number {
     const scopedLen = Math.min(text.length, limit);
     for (let i = 0; i < scopedLen; i += 1) {
-        const c = text[i];
-        if (c === '\n') {
-            return i + 1;
-        }
-        if (c === '!' || c === '?') {
-            return i + 1;
-        }
-        if (c === '.' && isHardTerminatorDot(text, i)) {
-            return i + 1;
+        if (isSpeechSentenceBoundary(text, i, { streaming: true })) {
+            return speechSentenceEnd(text, i);
         }
     }
     return -1;
@@ -50,8 +42,7 @@ function firstTerminatorIndex(text: string, limit: number): number {
 function firstClauseBoundaryIndex(text: string, limit: number): number {
     const scopedLen = Math.min(text.length, limit);
     for (let i = 0; i < scopedLen; i += 1) {
-        const c = text[i];
-        if (c === ',' || c === ';' || c === ':') {
+        if (isSpeechClauseBoundary(text, i, { streaming: true })) {
             return i + 1;
         }
     }
@@ -68,6 +59,8 @@ function wordBudgetIndex(text: string, limit: number, maxWords: number): number 
     while (i < scopedLen) {
         // Consume a word.
         while (i < scopedLen && !/\s/.test(text[i])) i += 1;
+        // A partial token is not a word boundary (notably a long URL).
+        if (i === scopedLen && (i === text.length || !/\s/.test(text[i]))) return -1;
         words += 1;
         if (words >= maxWords) {
             return i;
@@ -87,18 +80,13 @@ function lastBoundaryIndex(text: string, maxChars: number): number {
     const limit = Math.min(text.length, maxChars);
 
     for (let i = limit - 1; i >= 0; i -= 1) {
-        const c = text[i];
-        if (c === '\n' || c === '!' || c === '?') {
-            return i + 1;
-        }
-        if (c === '.' && isHardTerminatorDot(text, i)) {
-            return i + 1;
+        if (isSpeechSentenceBoundary(text, i, { streaming: true })) {
+            return Math.min(limit, speechSentenceEnd(text, i));
         }
     }
 
     for (let i = limit - 1; i >= 0; i -= 1) {
-        const c = text[i];
-        if (c === ',' || c === ';' || c === ':') {
+        if (isSpeechClauseBoundary(text, i, { streaming: true })) {
             return i + 1;
         }
     }
@@ -109,7 +97,7 @@ function lastBoundaryIndex(text: string, maxChars: number): number {
         }
     }
 
-    return limit;
+    return speechTextEndAtOrBefore(text, limit);
 }
 
 /**
@@ -117,7 +105,7 @@ function lastBoundaryIndex(text: string, maxChars: number): number {
  * then the earliest clause boundary, then a small word budget. Returns -1 when
  * the buffer cannot yet justify an early cut (so we wait for more deltas).
  */
-function firstChunkCutIndex(text: string): number {
+function firstChunkCutIndex(text: string, maxChars: number): number {
     const bound = Math.min(text.length, FIRST_CHUNK_MAX_CHARS);
 
     const terminator = firstTerminatorIndex(text, bound);
@@ -129,9 +117,9 @@ function firstChunkCutIndex(text: string): number {
     const wordCut = wordBudgetIndex(text, bound, FIRST_CHUNK_MAX_WORDS);
     if (wordCut > 0) return wordCut;
 
-    // Buffer already overflowed the first-chunk bound with a single long token:
-    // fall back to the bound so audio still starts.
-    if (text.length >= FIRST_CHUNK_MAX_CHARS) return bound;
+    // A long token waits for the configured steady-state bound, rather than
+    // being cut merely because it exceeds the initial latency search window.
+    if (text.length >= maxChars) return lastBoundaryIndex(text, maxChars);
 
     return -1;
 }
@@ -148,7 +136,7 @@ export function createTtsChunker(chunkChars: number): TtsChunker {
             // The first chunk uses the aggressive small bound to minimise
             // time-to-first-audio; steady-state uses the larger configured bound.
             if (!firstChunkEmitted) {
-                const cut = force ? buffer.length : firstChunkCutIndex(buffer);
+                const cut = force ? buffer.length : firstChunkCutIndex(buffer, bounded);
                 if (cut <= 0) {
                     break;
                 }

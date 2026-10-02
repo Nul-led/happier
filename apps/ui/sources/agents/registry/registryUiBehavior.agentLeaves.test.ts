@@ -18,12 +18,13 @@ describe('agent UI behavior provider leaf ownership', () => {
     });
 
     it('keeps the generated private bridge scoped to Claude predecessor message metadata', () => {
-        expect(generatedOverridesSource).toMatch(/@happier-dev\/plugins-claude\/ui\/predecessor-message-meta/u);
+        expect(generatedOverridesSource).toContain('@happier-dev/protocol/agents/claude/predecessor-message-meta');
+        expect(generatedOverridesSource).not.toContain('@happier-dev/plugins-claude');
         expect(generatedOverridesSource).not.toMatch(/@happier-dev\/plugins-auggie\/ui/u);
         expect(generatedOverridesSource).not.toMatch(/@happier-dev\/plugins-codex\/ui/u);
         expect(generatedOverridesSource).not.toMatch(/@happier-dev\/plugins-pi\/ui/u);
         expect(generatedOverridesSource).toMatch(
-            /claude:\s*CLAUDE_PREDECESSOR_MESSAGE_META_WRITER/u,
+            /buildPredecessorMessageMeta:\s*\(settings\)\s*=>\s*buildClaudePredecessorMessageMeta\(settings,/u,
         );
         expect(generatedOverridesSource).not.toContain('UI_BEHAVIOR_OVERRIDE');
     });

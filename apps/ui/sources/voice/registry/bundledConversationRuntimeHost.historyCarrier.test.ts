@@ -127,7 +127,6 @@ describe('voice history carrier single ownership', () => {
       ).toBe(xai.conversationSessionId);
 
       const historyReaderSessionId = await discoverVoiceHistorySession({
-        prepareLookup: async () => {},
         lookupByTags: async (tags) => table.listByTags(tags),
         hydrateSession: (sessionId) => sync.ensureSessionVisibleForMessageRoute(sessionId, {
           forceRefresh: true,

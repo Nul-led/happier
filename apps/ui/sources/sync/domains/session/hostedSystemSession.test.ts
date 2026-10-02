@@ -3,24 +3,14 @@ import {
     createSessionOwnerMetadataV1,
     projectSessionSharedMetadataV1,
 } from '@happier-dev/protocol';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
-import { AccountStoredContentClientUpgradeRequiredError } from '@/sync/api/capabilities/accountStoredContentCompatibility';
 import type {
     ServerAccountRequestAuthority,
 } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 
 import { createHostedSystemSessionEnsurer } from './hostedSystemSession';
-
-const compatibilitySpies = vi.hoisted(() => ({
-    requireCurrent: vi.fn(async () => undefined),
-}));
-
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
-    ...(await importOriginal<typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')>()),
-    requireCurrentAccountStoredContentServerCompatibility: compatibilitySpies.requireCurrent,
-}));
 
 const SERVER_BASIS = Object.freeze({ serverId: 'server-a', generation: 41 });
 const ACCOUNT_A_AUTHORITY = {
@@ -101,11 +91,6 @@ function createEncryptionFixture() {
 }
 
 describe('createHostedSystemSessionEnsurer', () => {
-    beforeEach(() => {
-        compatibilitySpies.requireCurrent.mockReset();
-        compatibilitySpies.requireCurrent.mockResolvedValue(undefined);
-    });
-
     it('binds create/load dispatch to the captured account credential and server generation', async () => {
         const credentials = createDataKeyCredentials('account-a-token');
         const request = vi.fn(async (...args: unknown[]) => {
@@ -153,9 +138,6 @@ describe('createHostedSystemSessionEnsurer', () => {
 
         await expect(ensurer.ensure(input)).resolves.toEqual({
             sessionId: 'history-account-a',
-        });
-        expect(compatibilitySpies.requireCurrent).toHaveBeenCalledWith({
-            serverId: 'server-a',
         });
         expect(hydrate).toHaveBeenCalledWith(
             'history-account-a',
@@ -498,39 +480,6 @@ describe('createHostedSystemSessionEnsurer', () => {
         });
         expect(request).toHaveBeenCalledTimes(2);
     });
-
-    it.each(['missing', 'malformed', 'server-too-old'] as const)(
-        'fails %s current-format admission before Account mode lookup or create POST', async (decision) => {
-            const upgrade = new AccountStoredContentClientUpgradeRequiredError(
-                decision,
-            );
-            compatibilitySpies.requireCurrent.mockRejectedValueOnce(upgrade);
-            const fetchAccountEncryptionCurrentness = vi.fn(async () => ({ mode: 'plain' as const }));
-            const request = vi.fn();
-            const ensurer = createHostedSystemSessionEnsurer({
-                fetchAccountEncryptionCurrentness,
-                randomBytes: vi.fn((length: number) => new Uint8Array(length)),
-                request,
-                hydrate: vi.fn(),
-                isScopeCurrent: vi.fn(() => true),
-            });
-
-            await expect(ensurer.ensure({
-                scopeKey: 'server-a/account-a',
-                credentials: { token: 'token' },
-                encryption: null,
-                serverBasis: SERVER_BASIS,
-                authority: ACCOUNT_A_AUTHORITY,
-                tag: 'system:voice-transcript-history:v1',
-                metadata: {
-                    systemSessionV1: { v: 1, key: 'voice_transcript_history', hidden: true },
-                },
-            })).rejects.toBe(upgrade);
-
-            expect(fetchAccountEncryptionCurrentness).not.toHaveBeenCalled();
-            expect(request).not.toHaveBeenCalled();
-        },
-    );
 
     it('does not relabel a current invalid-params 400 as an upgrade failure', async () => {
         const ensurer = createHostedSystemSessionEnsurer({

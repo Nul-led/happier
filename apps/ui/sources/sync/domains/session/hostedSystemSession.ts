@@ -10,9 +10,6 @@ import {
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { encodeBase64 } from '@/encryption/base64';
-import {
-    requireCurrentAccountStoredContentServerCompatibility,
-} from '@/sync/api/capabilities/accountStoredContentCompatibility';
 import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
 import type { EnsureSessionVisibleForRouteResult } from '@/sync/domains/session/sessionRouteHydrationState';
 import type { Encryptor } from '@/sync/encryption/encryptor';
@@ -169,12 +166,6 @@ export function createHostedSystemSessionEnsurer(deps: HostedSystemSessionEnsure
     const ensureOnce = async (
         input: EnsureHostedSystemSessionInput,
     ): Promise<HostedSystemSessionEnsureResult> => {
-        if (!deps.isScopeCurrent(input.scopeKey)) {
-            throw new Error('Hosted system session account scope changed');
-        }
-        await requireCurrentAccountStoredContentServerCompatibility({
-            serverId: input.serverBasis.serverId,
-        });
         if (!deps.isScopeCurrent(input.scopeKey)) {
             throw new Error('Hosted system session account scope changed');
         }

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { IconButton } from '@/components/ui/buttons/IconButton';
@@ -9,6 +9,8 @@ import { t } from '@/text';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 import { openExternalUrl } from '@/utils/url/openExternalUrl';
 import { resolveTerminalErrorCopy } from '@/components/sessions/terminal/terminalErrorCopy';
+import { SurfaceFreshnessLine } from '@/components/ui/surfaces/SurfaceFreshnessLine';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { embeddedTerminalPaneStyles } from './embeddedTerminalPaneStyles';
 import type { EmbeddedTerminalPaneController } from './types';
 import { Icon } from '@/components/ui/icons/Icon';
@@ -25,7 +27,60 @@ export type EmbeddedTerminalPaneFrameProps = Readonly<{
     toolbarActionsStart?: React.ReactNode;
     testIdPrefix?: string | null;
     platformOS?: 'web' | 'ios' | 'android';
+    /**
+     * `toolbar` (default): the frame carries its own title row and address banner. `none`: an owning
+     * strip (the session bottom pane, the phone Terminal page) shows the tabs, the live address pill
+     * and the verbs, so the frame is the terminal body and its states alone (terminal lab B1/L).
+     */
+    chrome?: 'toolbar' | 'none';
+    /** The machine the terminal runs on, so an offline line can name it. */
+    machineName?: string | null;
 }>;
+
+const MACHINE_UNREACHABLE_ERROR = 'terminal_machine_unreachable';
+
+type TerminalFrameState =
+    | Readonly<{ kind: 'live' }>
+    | Readonly<{ kind: 'line'; reason: string; busy?: boolean; tone?: 'neutral' | 'warning'; action?: Readonly<{ label: string; onPress: () => void }> }>
+    | Readonly<{ kind: 'failed'; title: string; reason: string; code: string | null }>;
+
+/**
+ * Terminal lab ST: the output the person had stays readable through every state except a terminal
+ * that never started. Connecting, an exited process and an offline machine are one quiet line over the
+ * retained output with one recovery; only a start failure covers the body, with its cause.
+ */
+function resolveTerminalFrameState(props: EmbeddedTerminalPaneFrameProps): TerminalFrameState {
+    const { controller } = props;
+    switch (controller.status) {
+        case 'connected': return { kind: 'live' };
+        case 'idle':
+        case 'connecting': return { kind: 'line', reason: t('terminalWorkspace.states.connecting'), busy: true };
+        case 'exited': return {
+            kind: 'line',
+            reason: t('terminalWorkspace.states.exited', { title: props.title }),
+            action: { label: t('terminalWorkspace.states.restart'), onPress: controller.requestRestart },
+        };
+        case 'error': {
+            if (controller.error === MACHINE_UNREACHABLE_ERROR) {
+                return {
+                    kind: 'line',
+                    tone: 'warning',
+                    reason: props.machineName
+                        ? t('terminalWorkspace.states.offline', { machine: props.machineName })
+                        : t('terminalEmbedded.errors.machineUnreachable'),
+                    action: { label: t('terminalWorkspace.states.checkAgain'), onPress: controller.retryConnect },
+                };
+            }
+            const copy = resolveTerminalErrorCopy(controller.error);
+            return {
+                kind: 'failed',
+                title: t('terminalWorkspace.states.failedTitle', { title: props.title }),
+                reason: copy ? t(copy.bodyKey) : t('errors.tryAgain'),
+                code: controller.error,
+            };
+        }
+    }
+}
 
 function resolveKeyboardBottomInset(value: number | undefined): number {
     if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
@@ -38,8 +93,11 @@ export const EmbeddedTerminalPaneFrame = React.memo(function EmbeddedTerminalPan
     const keyboardBottomInset = props.platformOS === 'android'
         ? 0
         : resolveKeyboardBottomInset(props.keyboardBottomInset);
-    const terminalSurfaceStyle = keyboardBottomInset > 0
-        ? [styles.terminalSurface, { marginBottom: keyboardBottomInset }]
+    // The keyboard inset belongs to whatever sits last above the keyboard: the footer (the phone key
+    // rail, full width) when there is one, else the terminal surface.
+    const keyboardInsetStyle = keyboardBottomInset > 0 ? { marginBottom: keyboardBottomInset } : null;
+    const terminalSurfaceStyle = keyboardInsetStyle && !props.footer
+        ? [styles.terminalSurface, keyboardInsetStyle]
         : styles.terminalSurface;
 
     const testId = React.useCallback(
@@ -59,45 +117,32 @@ export const EmbeddedTerminalPaneFrame = React.memo(function EmbeddedTerminalPan
         void openExternalUrl(url, props.platformOS === 'web' ? { platformOS: 'web' } : undefined);
     }, [props.controller.detectedUrl?.url, props.platformOS]);
 
-    const shouldShowOverlay = props.controller.status !== 'connected';
-    const overlayTitle = props.controller.status === 'error'
-        ? t('common.error')
-        : props.controller.status === 'exited'
-            ? t('common.unavailable')
-            : t('common.loading');
-
-    const overlayBody = React.useMemo(() => {
-        if (props.controller.status !== 'error') {
-            if (props.controller.status === 'exited') return t('errors.tryAgain');
-            return t('common.loading');
-        }
-        const copy = resolveTerminalErrorCopy(props.controller.error);
-        if (copy) return t(copy.bodyKey);
-        return props.controller.error ? String(props.controller.error) : t('errors.tryAgain');
-    }, [props.controller.error, props.controller.status]);
+    const frameState = resolveTerminalFrameState(props);
+    const showsOwnChrome = props.chrome !== 'none';
 
     return (
         <View testID={testId('root')} style={styles.container}>
-            <View style={styles.toolbar}>
-                <View style={styles.toolbarLeft}>
-                    <Icon name="terminal" size={16} color={theme.colors.text.secondary} />
-                    <Text style={styles.toolbarTitle} numberOfLines={1}>
-                        {props.title}
-                    </Text>
-                </View>
-                <View style={styles.toolbarRight}>
-                    {props.toolbarActionsStart}
-                    {props.onCopySelection ? (
-                        <IconButton
-                            testID={testId('copy-selection')}
-                            iconName="copy"
-                            accessibilityLabel={t('common.copy')}
-                            tooltip={t('common.copy')}
-                            variant="plain"
-                            size={28}
-                            iconSize={18}
-                            onPress={props.onCopySelection}
-                        />
+            {showsOwnChrome ? (
+                <View style={styles.toolbar}>
+                    <View style={styles.toolbarLeft}>
+                        <Icon name="terminal" size={16} color={theme.colors.text.secondary} />
+                        <Text style={styles.toolbarTitle} numberOfLines={1}>
+                            {props.title}
+                        </Text>
+                    </View>
+                    <View style={styles.toolbarRight}>
+                        {props.toolbarActionsStart}
+                        {props.onCopySelection ? (
+                            <IconButton
+                                testID={testId('copy-selection')}
+                                iconName="copy"
+                                accessibilityLabel={t('common.copy')}
+                                tooltip={t('common.copy')}
+                                variant="plain"
+                                size={28}
+                                iconSize={18}
+                                onPress={props.onCopySelection}
+                            />
                     ) : null}
                     {props.onPaste ? (
                         <IconButton
@@ -145,8 +190,9 @@ export const EmbeddedTerminalPaneFrame = React.memo(function EmbeddedTerminalPan
                     ) : null}
                 </View>
             </View>
+            ) : null}
 
-            {props.controller.detectedUrl?.url ? (
+            {showsOwnChrome && props.controller.detectedUrl?.url ? (
                 <View testID={testId('url-banner')} style={styles.banner}>
                     <Text style={styles.bannerUrl} numberOfLines={1}>
                         {props.controller.detectedUrl.url}
@@ -180,22 +226,36 @@ export const EmbeddedTerminalPaneFrame = React.memo(function EmbeddedTerminalPan
                 </View>
             ) : null}
 
+            {frameState.kind === 'line' ? (
+                <SurfaceFreshnessLine
+                    testID={testId('state-line')}
+                    reason={frameState.reason}
+                    busy={frameState.busy}
+                    tone={frameState.tone}
+                    action={frameState.action}
+                />
+            ) : null}
+
             <View testID={testId('surface')} style={terminalSurfaceStyle}>
                 {props.surface}
-                {props.footer}
-                {shouldShowOverlay ? (
+                {frameState.kind === 'failed' ? (
                     <View testID={testId('overlay')} style={styles.overlay} pointerEvents="auto">
-                        <Text style={styles.overlayTitle}>{overlayTitle}</Text>
-                        <Text style={styles.overlayBody}>{overlayBody}</Text>
-
-                        {props.controller.status === 'error' ? (
-                            <Pressable testID={testId('retry')} onPress={props.controller.retryConnect} style={styles.overlayRetry}>
-                                <Text style={styles.overlayRetryLabel}>{t('common.retry')}</Text>
-                            </Pressable>
-                        ) : null}
+                        <SurfaceStateCard
+                            testID={testId('state-card')}
+                            kind="error"
+                            title={frameState.title}
+                            reason={frameState.reason}
+                            diagnosticCode={frameState.code}
+                            action={{ label: t('terminalWorkspace.states.tryAgain'), onPress: props.controller.retryConnect, testID: testId('retry') }}
+                        />
                     </View>
                 ) : null}
             </View>
+            {props.footer ? (
+                <View testID={testId('footer')} style={keyboardInsetStyle}>
+                    {props.footer}
+                </View>
+            ) : null}
         </View>
     );
 });

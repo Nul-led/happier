@@ -1,8 +1,10 @@
 import * as React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
+import { StyleSheet } from 'react-native';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { SessionMediaInlineImages } from './SessionMediaInlineImages';
 
 type TestImagePreviewState =
     | Readonly<{ status: 'loaded'; uri: string; error: null }>
@@ -60,7 +62,6 @@ afterEach(() => {
 
 describe('SessionMediaInlineImages', () => {
     it('renders public media as inert metadata without invoking a preview resolver', async () => {
-        const { SessionMediaInlineImages } = await import('./SessionMediaInlineImages');
         const path = '.happier/uploads/generated/public.png';
         const screen = await renderScreen(
             <SessionMediaInlineImages
@@ -90,7 +91,6 @@ describe('SessionMediaInlineImages', () => {
     });
 
     it('renders available video references as accessible file-opening media tiles', async () => {
-        const { SessionMediaInlineImages } = await import('./SessionMediaInlineImages');
         const { t } = await import('@/text');
         const onOpenPath = vi.fn();
 
@@ -124,7 +124,6 @@ describe('SessionMediaInlineImages', () => {
     });
 
     it('renders unavailable media failure rows with translated accessible state', async () => {
-        const { SessionMediaInlineImages } = await import('./SessionMediaInlineImages');
         const { t } = await import('@/text');
 
         const screen = await renderScreen(
@@ -153,7 +152,6 @@ describe('SessionMediaInlineImages', () => {
     });
 
     it('exposes inline image tiles as accessible translated buttons', async () => {
-        const { SessionMediaInlineImages } = await import('./SessionMediaInlineImages');
         const { t } = await import('@/text');
 
         const screen = await renderScreen(
@@ -181,7 +179,6 @@ describe('SessionMediaInlineImages', () => {
     });
 
     it('fills the tile and preserves aspect ratio when expo-image reports intrinsic dimensions', async () => {
-        const { SessionMediaInlineImages } = await import('./SessionMediaInlineImages');
         const path = '.happier/uploads/generated/session-1/message-1/wide.png';
         const screen = await renderScreen(
             <SessionMediaInlineImages
@@ -225,11 +222,10 @@ describe('SessionMediaInlineImages', () => {
         });
 
         const tile = screen.findByTestId(`message-session-media-inline-image:${path}`);
-        expect(tile?.props.style).toContainEqual({ width: 220, height: 124 });
+        expect(StyleSheet.flatten(tile?.props.style)).toMatchObject({ width: 220, height: 124 });
     });
 
     it('opens available previews using indexes that skip unavailable failure rows', async () => {
-        const { SessionMediaInlineImages } = await import('./SessionMediaInlineImages');
         const { Modal } = await import('@/modal');
 
         const screen = await renderScreen(
@@ -282,7 +278,6 @@ describe('SessionMediaInlineImages', () => {
             error: 'not found',
         };
 
-        const { SessionMediaInlineImages } = await import('./SessionMediaInlineImages');
         const { t } = await import('@/text');
 
         const screen = await renderScreen(
@@ -317,7 +312,6 @@ describe('SessionMediaInlineImages', () => {
             error: 'not found',
         };
 
-        const { SessionMediaInlineImages } = await import('./SessionMediaInlineImages');
         const path = '.happier/uploads/generated/session-1/message-1/missing.png';
         const screen = await renderScreen(
             <SessionMediaInlineImages

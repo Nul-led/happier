@@ -47,7 +47,7 @@ export function searchTier1Memory(params: Readonly<{
         }))
         .filter((hit) => hit.score >= minScore),
     };
-  } catch (e: any) {
+  } catch (e: unknown) {
     return {
       v: 1,
       ok: false,
@@ -152,9 +152,10 @@ export async function searchTier2Memory(params: Readonly<{
           summary: trimToMaxChars(hit.text, previewChars) || hit.text,
           score: hit.finalScore ?? hit.baseScore,
         }))
-        .filter((hit) => hit.score >= minScore),
+        .filter((hit) => hit.score >= minScore)
+        .slice(0, maxResults),
     };
-  } catch (e: any) {
+  } catch (e: unknown) {
     params.signal?.throwIfAborted();
     return {
       v: 1,

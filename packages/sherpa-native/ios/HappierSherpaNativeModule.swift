@@ -40,6 +40,15 @@ public class HappierSherpaNativeModule: Module {
     vadDetectors.cancelAll()
   }
 
+  private func readFrontend(_ params: [String: Any]) throws -> [String: String]? {
+    guard let raw = params["frontend"] else { return nil }
+    guard let frontend = raw as? [String: String],
+          frontend["lang"] != nil, frontend["lexicon"] != nil else {
+      throw NSError(domain: "HappierSherpaNative", code: 110, userInfo: [NSLocalizedDescriptionKey: "frontend.lang and frontend.lexicon are required"])
+    }
+    return frontend
+  }
+
   public func definition() -> ModuleDefinition {
     Name("HappierSherpaNative")
     OnDestroy {
@@ -52,6 +61,7 @@ public class HappierSherpaNativeModule: Module {
         throw NSError(domain: "HappierSherpaNative", code: 101, userInfo: [NSLocalizedDescriptionKey: "assetsDir is required"])
       }
       let initializationId = params["initializationId"] as? String
+      let frontend = try self.readFrontend(params)
       if let initializationId {
         if initializationId.isEmpty {
           throw NSError(domain: "HappierSherpaNative", code: 108, userInfo: [NSLocalizedDescriptionKey: "initializationId is required"])
@@ -66,7 +76,7 @@ public class HappierSherpaNativeModule: Module {
         }
         self.ttsQueue.async {
           do {
-            try HappierSherpaOfflineTtsEngine.prepare(assetsDir: assetsDir, admissionId: initializationId)
+            try HappierSherpaOfflineTtsEngine.prepare(assetsDir: assetsDir, admissionId: initializationId, frontend: frontend)
             promise.resolve()
           } catch {
             promise.reject(error)
@@ -77,7 +87,7 @@ public class HappierSherpaNativeModule: Module {
         // warm-up on the same cache owner; it has no request id to cancel.
         self.ttsQueue.async {
           do {
-            try HappierSherpaOfflineTtsEngine.prepare(assetsDir: assetsDir)
+            try HappierSherpaOfflineTtsEngine.prepare(assetsDir: assetsDir, frontend: frontend)
             promise.resolve()
           } catch {
             promise.reject(error)
@@ -94,8 +104,9 @@ public class HappierSherpaNativeModule: Module {
 
       // `prepare` reports a pack that cannot be loaded; the speaker count itself
       // only distinguishes a loaded engine's 0 speakers from its N.
-      try HappierSherpaOfflineTtsEngine.prepare(assetsDir: assetsDir)
-      let n = Int(HappierSherpaOfflineTtsEngine.numSpeakers(assetsDir: assetsDir))
+      let frontend = try self.readFrontend(params)
+      try HappierSherpaOfflineTtsEngine.prepare(assetsDir: assetsDir, frontend: frontend)
+      let n = Int(HappierSherpaOfflineTtsEngine.numSpeakers(assetsDir: assetsDir, frontend: frontend))
       if n <= 0 { return [] }
       return (0..<n).map { i in
         [
@@ -120,9 +131,11 @@ public class HappierSherpaNativeModule: Module {
       if outWavPath.isEmpty { throw NSError(domain: "HappierSherpaNative", code: 106, userInfo: [NSLocalizedDescriptionKey: "outWavPath is required"]) }
 
       var sampleRate: Int32 = 0
+      let frontend = try self.readFrontend(params)
       try HappierSherpaOfflineTtsEngine.synthesizeToWavFile(
         atPath: outWavPath,
         assetsDir: assetsDir,
+        frontend: frontend,
         text: text,
         sid: Int32(sid),
         speed: Float(speed),

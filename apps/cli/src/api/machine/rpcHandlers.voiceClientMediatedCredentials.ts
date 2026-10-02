@@ -1,23 +1,29 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import {
-  DaemonVoiceClientMediatedCredentialMaterializeRequestV1Schema,
-  DaemonVoiceClientMediatedCredentialMaterializeResponseV1Schema,
+  DaemonVoiceClientAccountOperationRequestV1Schema,
+  DaemonVoiceClientAccountOperationResponseV1Schema,
   deriveVoiceCredentialBindingIdentityV1,
   resolveAccountSettingsVoiceCredentialSource,
-  resolveVoiceCredentialOperationAuthorization,
   sameQualifiedConnectedAccountRef,
   type PluginContributionIdentityV1,
   type QualifiedConnectedAccountPurposeBindingTargetV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
-import { isPluginError, PluginError } from '@happier-dev/plugin-sdk';
+import { isPluginError } from '@happier-dev/plugin-sdk';
+import { classifyVoiceProviderHttpFailure } from '@happier-dev/plugin-sdk/voice';
 
 import {
   getActiveAccountSettingsSnapshot,
+  getActiveAccountSettingsSnapshotLifetimeToken,
   type ActiveAccountSettingsSnapshot,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { readStoredCredentials } from '@/persistence';
 import { warmActiveAccountSettingsSnapshotBestEffort } from '@/settings/accountSettings/warmActiveAccountSettingsSnapshot';
 import { acquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
+import { createVoiceCredentialResolver } from '@/daemon/voice/credentials/resolver';
+import { createGlobalFetchRuntime } from '@/plugins/runtime/fetch/globalFetchRuntime';
+import { createVoiceAccountOperationService } from '@/plugins/runtime/fetch/voiceAccountCredentialBinding';
 import type { RpcHandlerContext, RpcHandlerRegistrar } from '../rpc/types';
 
 export type MachineVoiceClientMediatedCredentialRpcRegistration = Readonly<{
@@ -37,16 +43,13 @@ function failure(error: unknown) {
     return Object.freeze({ ok: false as const, errorCode: 'plugin_voice_provider_result_invalid' as const });
   }
   if (isPluginError(error)
-    && error.code === 'plugin_voice_provider_operation_failed') {
+    && (error.code === 'plugin_voice_provider_operation_failed'
+      || error.code === 'plugin_fetch_voice_account_operation_failed'
+      || error.code === 'plugin_fetch_voice_client_auth_artifact_invalid'
+      || error.code === 'plugin_fetch_voice_catalog_artifact_invalid')) {
     return Object.freeze({ ok: false as const, errorCode: 'plugin_voice_provider_operation_failed' as const });
   }
   return Object.freeze({ ok: false as const, errorCode: 'plugin_voice_credential_access_unavailable' as const });
-}
-
-function targetService(
-  target: QualifiedConnectedAccountPurposeBindingTargetV1,
-): PluginContributionIdentityV1 {
-  return target.kind === 'account' ? target.account.service : target.service;
 }
 
 function sameSelectedTarget(
@@ -62,27 +65,6 @@ function sameSelectedTarget(
     && left.groupId === right.groupId;
 }
 
-function exactHeaders(
-  raw: Readonly<Record<string, string>>,
-  requiredHeaderNames: readonly string[],
-  allowedHeaderNames: readonly string[],
-): Readonly<Record<string, string>> | null {
-  const allowed = new Set(allowedHeaderNames.map((name) => name.toLowerCase()));
-  const normalized = new Map<string, string>();
-  for (const [rawName, value] of Object.entries(raw)) {
-    const name = rawName.trim().toLowerCase();
-    if (
-      !allowed.has(name)
-      || normalized.has(name)
-      || value.length === 0
-      || /[\r\n]/u.test(value)
-    ) return null;
-    normalized.set(name, value);
-  }
-  if (requiredHeaderNames.some((name) => !normalized.has(name.toLowerCase()))) return null;
-  return Object.freeze(Object.fromEntries(normalized));
-}
-
 export function registerMachineVoiceClientMediatedCredentialRpcHandlers(params: Readonly<{
   rpcHandlerManager: RpcHandlerRegistrar;
   getAccountSettingsSnapshot?: () => ActiveAccountSettingsSnapshot | null;
@@ -95,9 +77,9 @@ export function registerMachineVoiceClientMediatedCredentialRpcHandlers(params: 
     await warmActiveAccountSettingsSnapshotBestEffort({ credentials });
   });
   params.rpcHandlerManager.registerHandler(
-    RPC_METHODS.DAEMON_VOICE_CLIENT_MEDIATED_CREDENTIAL_MATERIALIZE,
+    RPC_METHODS.DAEMON_VOICE_CLIENT_ACCOUNT_OPERATION,
     async (raw: unknown, context?: RpcHandlerContext) => {
-      const request = DaemonVoiceClientMediatedCredentialMaterializeRequestV1Schema.safeParse(raw);
+      const request = DaemonVoiceClientAccountOperationRequestV1Schema.safeParse(raw);
       if (!request.success) {
         return Object.freeze({
           ok: false as const,
@@ -108,9 +90,7 @@ export function registerMachineVoiceClientMediatedCredentialRpcHandlers(params: 
       const lease = await acquireAuthoritativePluginRuntimeRegistryLease();
       try {
         signal.throwIfAborted();
-        // The caller's declaration authority is checked before any provider or
-        // Connected Account work. Artifact bytes are digest-bound; live
-        // declaration authority is resolved from the current provider slot.
+        // Resolve the exact live declaration before any credential or HTTP work.
         const provider = lease.registry.contributes.voiceProviders?.find((candidate) => (
           candidate.identity.pluginId === request.data.contribution.pluginId
           && candidate.identity.localId === request.data.contribution.localId
@@ -142,6 +122,7 @@ export function registerMachineVoiceClientMediatedCredentialRpcHandlers(params: 
           beforeSnapshot = getSnapshot();
         }
         if (!operation || !beforeSnapshot) return failure(null);
+        const capturedSnapshot = beforeSnapshot;
         const before = resolveAccountSettingsVoiceCredentialSource(beforeSnapshot.settings, {
           contribution: identity.contribution,
           credentialSlotId: identity.credentialSlotId,
@@ -156,67 +137,64 @@ export function registerMachineVoiceClientMediatedCredentialRpcHandlers(params: 
         if (!sameSelectedTarget(before.selection.target, request.data.expectedSelection)) {
           return failure(null);
         }
-        const selectedService = targetService(before.selection.target);
-        const authorization = resolveVoiceCredentialOperationAuthorization({
-          pluginId: provider.pluginId,
-          contributionId: provider.identity.localId,
-          contribution: declaration,
-          selectedSource: { kind: 'connectedAccount', service: selectedService },
-          phase: request.data.phase,
-          operationId: operation.id,
-        });
-        if (!authorization || authorization.projection.kind !== 'materializedHttpHeaders') {
-          return failure(null);
-        }
-        const projection = authorization.projection;
         const connectedAccounts = lease.registry.resolveConnectedAccountPurposeBindingOwner?.() ?? null;
         if (!connectedAccounts) return failure(null);
-        // The Account Settings snapshot read above and the Connected Account
-        // binding store the owner resolves from are separate readers. Handing
-        // the owner the exact account the caller captured makes it fence its own
-        // resolution against that authority before and after materialization.
-        const expectedSelection = request.data.expectedSelection;
-        const materialization = await connectedAccounts.materialize({
-          // The slot purpose owns both source selection and binding lookup.
-          // The distinct operation purpose was consumed above when resolving
-          // the exact operation projection and must not redirect the binding.
-          purpose: identity.purpose,
-          serviceRefs: Object.freeze([selectedService]),
-          ...(expectedSelection.kind === 'account'
-            ? { expectedAccount: expectedSelection.account }
-            : {}),
-          request: projection.request,
-          signal,
+        const snapshotLifetime = getActiveAccountSettingsSnapshotLifetimeToken();
+        const isCredentialCurrent = () => {
+          const current = getSnapshot();
+          if (!current || getActiveAccountSettingsSnapshotLifetimeToken() !== snapshotLifetime) return false;
+          if (capturedSnapshot.scopeKey === undefined || current.scopeKey === undefined) {
+            if (current !== capturedSnapshot) return false;
+          } else if (current.scopeKey !== capturedSnapshot.scopeKey) return false;
+          try {
+            return isDeepStrictEqual(before, resolveAccountSettingsVoiceCredentialSource(current.settings, {
+              contribution: identity.contribution,
+              credentialSlotId: identity.credentialSlotId,
+              purpose: identity.purpose,
+              machineId: null,
+            }));
+          } catch { return false; }
+        };
+        const operationSignal = AbortSignal.any([signal, lifecycle.retirementSignal]);
+        let httpFailure: ReturnType<typeof classifyVoiceProviderHttpFailure> = null;
+        const operations = createVoiceAccountOperationService({
+          voiceProviders: lease.registry.contributes.voiceProviders ?? [],
+          provider: provider.identity,
+          kind: 'conversation',
+          phase: request.data.phase,
+          credentialResolver: createVoiceCredentialResolver({ machineId: null, getSnapshot }),
+          connectedAccounts,
+          isCurrent: lifecycle.isCurrent,
+          isCredentialCurrent,
+          signal: operationSignal,
+          transport: createGlobalFetchRuntime(),
+          recordResponseDiagnostic: (diagnostic) => {
+            httpFailure = classifyVoiceProviderHttpFailure(diagnostic.status);
+          },
+        });
+        const response = await operations.request({
+          operationId: request.data.operationId,
+          parameters: request.data.parameters,
+          signal: operationSignal,
+        }).catch((error: unknown) => {
+          if (httpFailure === 'credential_unavailable') {
+            throw Object.assign(new Error('credential_unavailable'), { code: 'credential_unavailable' });
+          }
+          throw error;
         });
         signal.throwIfAborted();
-        if (!lifecycle.isCurrent() || materialization.kind !== 'httpHeaders') return failure(null);
-        const afterSnapshot = getSnapshot();
-        if (!afterSnapshot) return failure(null);
-        const after = resolveAccountSettingsVoiceCredentialSource(afterSnapshot.settings, {
-          contribution: identity.contribution,
-          credentialSlotId: identity.credentialSlotId,
-          purpose: identity.purpose,
-          machineId: null,
-        });
-        if (JSON.stringify(after.selection) !== JSON.stringify(before.selection)) return failure(null);
-        const headers = exactHeaders(
-          materialization.headers,
-          projection.requiredHeaderNames,
-          projection.allowedHeaderNames,
-        );
-        if (!headers) {
-          return Object.freeze({
-            ok: false as const,
-            errorCode: 'plugin_voice_provider_operation_failed' as const,
-          });
-        }
-        return DaemonVoiceClientMediatedCredentialMaterializeResponseV1Schema.parse({
+        return DaemonVoiceClientAccountOperationResponseV1Schema.parse({
           ok: true,
-          headers,
+          response: {
+            status: response.status,
+            finalUrl: response.finalUrl,
+            headers: response.headers,
+            bodyBase64: Buffer.from(response.body).toString('base64'),
+          },
         });
       } catch (error) {
         signal.throwIfAborted();
-        return DaemonVoiceClientMediatedCredentialMaterializeResponseV1Schema.parse(failure(error));
+        return DaemonVoiceClientAccountOperationResponseV1Schema.parse(failure(error));
       } finally {
         await lease.release();
       }

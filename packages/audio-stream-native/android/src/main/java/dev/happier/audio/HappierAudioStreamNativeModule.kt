@@ -136,9 +136,9 @@ private class ActivePlayback(
   val track: AudioTrack,
   val sampleRate: Int,
   val bytesPerFrame: Int,
-  val maxQueuedFrames: Long,
   val stopSignal: AudioPlaybackStopSignal,
 ) {
+  val pendingOutput = PcmPlaybackQueue()
   var queuedFrames: Long = 0
   var playedFrames: Long = 0
   var lastPlaybackHeadPosition: Long = 0
@@ -697,9 +697,23 @@ class HappierAudioStreamNativeModule : Module() {
   private fun startPlaybackMonitor(playback: ActivePlayback) {
     val monitor = Thread {
       while (!playback.stopSignal.isStopRequested()) {
-        val drained = synchronized(playbackLock) {
-          if (activePlayback !== playback) return@Thread
-          updatePlaybackProgressLocked(playback)
+        val drained = try {
+          synchronized(playbackLock) {
+            if (activePlayback !== playback) return@Thread
+            if (!playback.pausedForTransientFocusLoss) {
+              while (!playback.pendingOutput.isEmpty()) {
+                val written = playback.pendingOutput.write { data, offset, length ->
+                  playback.track.write(data, offset, length, AudioTrack.WRITE_NON_BLOCKING)
+                }
+                if (written < 0) throw IllegalStateException("native_pcm_playback_write_error")
+                if (written == 0) break
+              }
+            }
+            updatePlaybackProgressLocked(playback)
+          }
+        } catch (_: Throwable) {
+          terminatePlayback(playback, "write_error")
+          return@Thread
         }
         if (drained) {
           emitPlaybackEvent("playbackLevel", playback, mapOf("level" to 0.0))
@@ -729,6 +743,7 @@ class HappierAudioStreamNativeModule : Module() {
       }
       activePlayback = null
       current.stopSignal.requestStop()
+      current.pendingOutput.clear()
       current
     } ?: return
 
@@ -771,11 +786,10 @@ class HappierAudioStreamNativeModule : Module() {
     val generation = (params["generation"] as? Number)?.toInt() ?: 0
     val sampleRate = (params["sampleRate"] as? Number)?.toInt() ?: 0
     val channels = (params["channels"] as? Number)?.toInt() ?: 0
-    val maxBufferedMs = (params["maxBufferedMs"] as? Number)?.toInt() ?: 0
     if (streamId.isBlank() || generation <= 0 || activeStreamId != streamId || activeCaptureGeneration != generation) {
       throw IllegalStateException("playback_capture_mismatch")
     }
-    if (sampleRate <= 0 || (channels != 1 && channels != 2) || maxBufferedMs <= 0) {
+    if (sampleRate <= 0 || (channels != 1 && channels != 2)) {
       throw IllegalArgumentException("invalid_playback_format")
     }
     val channelMask = if (channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
@@ -784,11 +798,6 @@ class HappierAudioStreamNativeModule : Module() {
       throw IllegalStateException("failed_to_get_playback_buffer_size")
     }
     val bytesPerFrame = channels * 2
-    val maxQueuedFrames = ((sampleRate.toLong() * maxBufferedMs.toLong()) + 999L) / 1_000L
-    if (maxQueuedFrames <= 0 || maxQueuedFrames > Int.MAX_VALUE.toLong() / bytesPerFrame.toLong()) {
-      throw IllegalArgumentException("invalid_playback_buffer")
-    }
-    val requestedBufferBytes = (maxQueuedFrames * bytesPerFrame).toInt()
     val track = AudioTrack.Builder()
       .setAudioAttributes(
         AudioAttributes.Builder()
@@ -803,7 +812,7 @@ class HappierAudioStreamNativeModule : Module() {
           .setChannelMask(channelMask)
           .build()
       )
-      .setBufferSizeInBytes(maxOf(minBuffer, requestedBufferBytes))
+      .setBufferSizeInBytes(minBuffer)
       .setTransferMode(AudioTrack.MODE_STREAM)
       .build()
     if (track.state != AudioTrack.STATE_INITIALIZED) {
@@ -816,7 +825,6 @@ class HappierAudioStreamNativeModule : Module() {
       track = track,
       sampleRate = sampleRate,
       bytesPerFrame = bytesPerFrame,
-      maxQueuedFrames = maxQueuedFrames,
       stopSignal = AudioPlaybackStopSignal(),
     )
     val accepted = synchronized(playbackLock) {
@@ -884,7 +892,7 @@ class HappierAudioStreamNativeModule : Module() {
       return mapOf("accepted" to false, "level" to 0.0)
     }
     val frameCount = data.size / candidate.bytesPerFrame
-    val playback = synchronized(playbackLock) {
+    synchronized(playbackLock) {
       val current = activePlayback
       if (current !== candidate || !playbackIdentityMatches(current, streamId, generation)) {
         return@synchronized null
@@ -893,23 +901,13 @@ class HappierAudioStreamNativeModule : Module() {
       // post-write queue reach zero. Do not resolve a waiter from stale output
       // progress while this accepted chunk is still pending.
       updatePlaybackProgressLocked(current)
-      if (current.queuedFrames + frameCount > current.maxQueuedFrames) {
-        return@synchronized null
-      }
       current.queuedFrames += frameCount.toLong()
+      current.pendingOutput.enqueue(data)
       current
     } ?: return mapOf("accepted" to false, "level" to 0.0)
-    val wrote = try {
-      // Logical queue admission bounds this blocking call to a single admitted
-      // chunk. A true JS result therefore means all PCM bytes were accepted.
-      playback.track.write(data, 0, data.size, AudioTrack.WRITE_BLOCKING)
-    } catch (_: Throwable) {
-      AudioTrack.ERROR_INVALID_OPERATION
-    }
-    if (wrote != data.size) {
-      terminatePlayback(playback, "write_error")
-      return mapOf("accepted" to false, "level" to 0.0)
-    }
+    // Admission owns response bytes until the existing monitor hands them to
+    // AudioTrack. Its platform buffer provides backpressure without blocking
+    // the JS bridge or imposing a second response-duration policy.
     return mapOf("accepted" to true, "level" to playbackLevel(data))
   }
 
@@ -925,6 +923,7 @@ class HappierAudioStreamNativeModule : Module() {
           updatePlaybackProgressLocked(playback)
           playback.track.pause()
           playback.track.flush()
+          playback.pendingOutput.clear()
           playback.queuedFrames = 0
           playback.lastPlaybackHeadPosition = playback.track.playbackHeadPosition.toLong() and 0xffffffffL
           if (!playback.pausedForTransientFocusLoss) playback.track.play()

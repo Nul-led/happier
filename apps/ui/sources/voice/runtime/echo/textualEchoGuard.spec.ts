@@ -8,6 +8,10 @@ import {
 } from './textualEchoGuard';
 
 describe('textOverlapRatio', () => {
+    it('uses the shared word boundaries when matching unspaced spoken text', () => {
+        expect(textOverlapRatio('打开文件', '请打开文件')).toBe(1);
+        expect(textOverlapRatio('เปิดไฟล์', 'กรุณาเปิดไฟล์ล่าสุด')).toBe(1);
+    });
     it('returns 0 when either side is empty', () => {
         expect(textOverlapRatio('', 'hello world')).toBe(0);
         expect(textOverlapRatio('hello world', '')).toBe(0);

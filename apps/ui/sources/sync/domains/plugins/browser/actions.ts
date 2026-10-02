@@ -1,6 +1,5 @@
 export {
     canUsePluginBrowserProjectionEntry,
-    hasDeferredPluginBrowserPolicy,
 } from './policy';
 export {
     EMPTY_PLUGIN_BROWSER_PROJECTION,

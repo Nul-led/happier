@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   VOICE_RUNTIME_TTS_DEFAULTS,
-  VOICE_RUNTIME_TTS_LATENCY_BUDGET_BOUNDS,
-  VOICE_RUNTIME_TTS_LATENCY_DEMOTION_THRESHOLD_BOUNDS,
   VOICE_RUNTIME_WARM_DEFAULTS,
   VOICE_RUNTIME_WARM_IDLE_RESIDENCY_BOUNDS,
   VOICE_RUNTIME_PER_MODEL_CONCURRENCY_BOUNDS,
@@ -19,8 +17,6 @@ import {
 describe('voice runtime config defaults', () => {
   it('captures the canonical TTS defaults', () => {
     expect(VOICE_RUNTIME_TTS_DEFAULTS.defaultCodec).toEqual({ codec: 'wav', mimeType: 'audio/wav' });
-    expect(VOICE_RUNTIME_TTS_DEFAULTS.latencyBudgetMs).toBe(2_000);
-    expect(VOICE_RUNTIME_TTS_DEFAULTS.consecutiveSlowCallsBeforeDemotion).toBe(2);
   });
 
   it('captures the canonical warm/concurrency defaults', () => {
@@ -38,14 +34,6 @@ describe('voice runtime config defaults', () => {
 });
 
 describe('voice runtime config bounds', () => {
-  it('captures the latency budget bounds', () => {
-    expect(VOICE_RUNTIME_TTS_LATENCY_BUDGET_BOUNDS).toEqual({ min: 250, max: 60_000 });
-  });
-
-  it('captures the demotion threshold bounds', () => {
-    expect(VOICE_RUNTIME_TTS_LATENCY_DEMOTION_THRESHOLD_BOUNDS).toEqual({ min: 1, max: 10 });
-  });
-
   it('captures the idle residency bounds', () => {
     expect(VOICE_RUNTIME_WARM_IDLE_RESIDENCY_BOUNDS).toEqual({ min: 1_000, max: 60 * 60 * 1000 });
   });

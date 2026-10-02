@@ -14,6 +14,17 @@ type QueryPresentationResolver = (input: Readonly<{
     statesByServerId: Readonly<Record<string, SessionListQueryHomeState | undefined>>;
     coverageComplete: boolean;
     retainedRowCount: number;
+    sessionsEnabled?: boolean;
+    workflowRunWindow?: Readonly<{
+        status: 'loading' | 'loaded' | 'failed';
+        hasMore: boolean;
+        loadingMore: boolean;
+        loadMoreFailed: boolean;
+    }>;
+    workflowRunUnavailableHomes?: readonly Readonly<{
+        serverId: string;
+        reason: 'not_selected' | 'unsupported';
+    }>[];
 }>) => unknown;
 
 function queryState(partial: Partial<SessionListQueryHomeState>): SessionListQueryHomeState {
@@ -122,6 +133,83 @@ describe('resolveSessionListQueryPresentation', () => {
         return resolver?.(input);
     };
 
+    it('makes an empty loaded Runs-only window ready without waiting for Sessions', () => {
+        expect(resolve({
+            selectedServerIds: ['home-a'],
+            statesByServerId: {},
+            coverageComplete: false,
+            retainedRowCount: 0,
+            sessionsEnabled: false,
+            workflowRunWindow: { status: 'loaded', hasMore: false, loadingMore: false, loadMoreFailed: false },
+        })).toEqual({ kind: 'ready', complete: true });
+    });
+
+    it('keeps a failed Run read and failed next page visible with retained work', () => {
+        const input = {
+            selectedServerIds: ['home-a'],
+            statesByServerId: { 'home-a': queryState({ phase: 'ready' }) },
+            coverageComplete: true,
+            retainedRowCount: 2,
+        };
+        for (const window of [
+            { status: 'failed' as const, hasMore: false, loadingMore: false, loadMoreFailed: false },
+            { status: 'loaded' as const, hasMore: true, loadingMore: false, loadMoreFailed: true },
+        ]) {
+            expect(resolve({ ...input, workflowRunWindow: window })).toEqual({ kind: 'error', retainedRows: true });
+        }
+    });
+
+    it('does not certify a paged Run window as complete and retains rows while Runs load', () => {
+        const input = {
+            selectedServerIds: ['home-a'],
+            statesByServerId: { 'home-a': queryState({ phase: 'ready' }) },
+            coverageComplete: true,
+            retainedRowCount: 2,
+        };
+        expect(resolve({ ...input, workflowRunWindow: {
+            status: 'loaded', hasMore: true, loadingMore: false, loadMoreFailed: false,
+        } })).toEqual({ kind: 'ready', complete: false, hasMore: true });
+        expect(resolve({ ...input, workflowRunWindow: {
+            status: 'loading', hasMore: false, loadingMore: false, loadMoreFailed: false,
+        } })).toEqual({ kind: 'refreshing', retainedRows: true });
+    });
+
+    it('retains loaded Runs while the ordinary Sessions source is unresolved', () => {
+        expect(resolve({
+            selectedServerIds: [],
+            statesByServerId: {},
+            coverageComplete: false,
+            retainedRowCount: 1,
+            workflowRunWindow: { status: 'loaded', hasMore: false, loadingMore: false, loadMoreFailed: false },
+        })).toEqual({ kind: 'refreshing', retainedRows: true });
+    });
+
+    it('does not certify unserved Runs Homes as a complete empty result', () => {
+        // The active Account/Home FIN read owner names mounted Homes it cannot
+        // serve as unsupported, and selection names unmounted Homes not_selected.
+        // The presenter does not guess an offline transport state for either.
+        for (const reason of ['unsupported', 'not_selected'] as const) {
+            const unavailableHomes = [{ serverId: 'home-b', reason }];
+            expect(resolve({
+                selectedServerIds: [],
+                statesByServerId: {},
+                coverageComplete: true,
+                retainedRowCount: 0,
+                sessionsEnabled: false,
+                workflowRunUnavailableHomes: unavailableHomes,
+            })).toEqual({ kind: 'partial', unavailableHomes });
+            expect(resolve({
+                selectedServerIds: [],
+                statesByServerId: {},
+                coverageComplete: true,
+                retainedRowCount: 1,
+                sessionsEnabled: false,
+                workflowRunWindow: { status: 'loaded', hasMore: false, loadingMore: false, loadMoreFailed: false },
+                workflowRunUnavailableHomes: unavailableHomes,
+            })).toEqual({ kind: 'partial', unavailableHomes });
+        }
+    });
+
     it('keeps initial unresolved Homes in loading instead of treating zero as authoritative', () => {
         expect(resolve({
             selectedServerIds: ['home-a'],
@@ -221,7 +309,9 @@ describe('applySessionListIndexPresentation', () => {
             if (item.type === 'header') {
                 return `header:${item.headerKind ?? 'date'}:${item.title}`;
             }
-            return `session:${item.sessionId}:${item.serverId}`;
+            return item.type === 'session'
+                ? `session:${item.sessionId}:${item.serverId}`
+                : `run:${item.runId}:${item.serverId}`;
         })).toEqual([
             'header:server:Server A',
             'header:date:Today',

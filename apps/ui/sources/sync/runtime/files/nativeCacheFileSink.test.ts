@@ -6,6 +6,18 @@ describe('createNativeCacheFileSink', () => {
         vi.clearAllMocks();
     });
 
+    it('offers a local PDF to the native OS share/open boundary and reports unavailable sharing', async () => {
+        const shareAsync = vi.fn(async () => {});
+        let available = true;
+        vi.doMock('expo-sharing', () => ({ isAvailableAsync: async () => available, shareAsync }));
+        const { shareNativeCacheFile } = await import('./nativeCacheFileSink');
+        await expect(shareNativeCacheFile('file:///cache/document.pdf', 'application/pdf')).resolves.toBe(true);
+        expect(shareAsync).toHaveBeenCalledWith('file:///cache/document.pdf', { mimeType: 'application/pdf' });
+        available = false;
+        await expect(shareNativeCacheFile('file:///cache/document.pdf', 'application/pdf')).resolves.toBe(false);
+        expect(shareAsync).toHaveBeenCalledTimes(1);
+    });
+
     it('deletes a stale deterministic cache file before creating a replacement', async () => {
         const createDirectory = vi.fn();
         const deleteFile = vi.fn();

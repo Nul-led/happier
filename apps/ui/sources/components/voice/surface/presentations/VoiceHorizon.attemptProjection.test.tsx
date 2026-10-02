@@ -102,6 +102,33 @@ function flattenStyle(style: unknown): Record<string, unknown> {
  * boundary that previously let Horizon diverge from them.
  */
 describe('VoiceHorizon canonical attempt projection', () => {
+    it.each([true, false])('exposes input Send only when the admitted attempt requires it (%s)', async (canCommitInput) => {
+        const onCommitInput = vi.fn();
+        const attemptControl = { ...listeningProjection(), canCommitInput, commitInputLabel: 'common.send', onCommitInput };
+        const screen = await renderScreen(
+            <VoiceEnergyProvider
+                state={{ luminosity: 0.5, energized: true, direction: 'inward' }}
+                previewTimeMs={1_100}
+            >
+                <VoiceHorizon model={modelFor(attemptControl)} />
+            </VoiceEnergyProvider>,
+        );
+
+        try {
+            const sendControls = screen.root.findAll((node) => (
+                typeof node.type === 'string'
+                && node.props?.accessibilityLabel === 'common.send'
+                && typeof node.props?.onPress === 'function'
+            ));
+            expect(sendControls).toHaveLength(canCommitInput ? 1 : 0);
+            sendControls[0]?.props.onPress();
+            expect(onCommitInput).toHaveBeenCalledTimes(canCommitInput ? 1 : 0);
+            expect(attemptControl.onToggle).not.toHaveBeenCalled();
+        } finally {
+            await screen.unmount();
+        }
+    });
+
     it('keeps a failed diagnostics shutdown out of the sidebar Horizon', async () => {
         resetVoiceDiagnosticsRuntimeStatusForTests();
         beginVoiceDiagnosticsRevocationObligation(

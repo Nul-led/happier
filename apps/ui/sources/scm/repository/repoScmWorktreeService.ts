@@ -126,8 +126,6 @@ export class RepoScmWorktreeService {
         if (!request) {
             return {
                 success: false,
-                worktreePath: '',
-                branchName: '',
                 error: 'Invalid worktree request',
                 errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST,
             };

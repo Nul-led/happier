@@ -1891,9 +1891,13 @@ export function createCliActionDeps(params: Readonly<{
       || source.sourceSessionId !== context.actionCaller.sessionId) {
       throw Object.assign(new Error('role_rpc_origin_unavailable'), { code: 'role_rpc_origin_unavailable' });
     }
+    const permissionMode = context.callerPermissionMode ? parseAgentPermissionIntentV1Alias(context.callerPermissionMode) : null;
+    if (context.callerPermissionMode && !permissionMode) {
+      throw Object.assign(new Error('role_rpc_origin_unavailable'), { code: 'role_rpc_origin_unavailable' });
+    }
     const origin = SessionActionRpcOriginV1Schema.safeParse({
       v: 1, caller: context.actionCaller,
-      callerPermissionMode: context.callerPermissionMode ? parseAgentPermissionIntentV1Alias(context.callerPermissionMode) : null,
+      callerPermissionMode: permissionMode,
       causalPermissionAuthority: context.causalPermissionAuthority ?? null,
       sourceTurnId: source && 'sourceTurnId' in source ? source.sourceTurnId : undefined,
       requestId: context.actionRequestId,
@@ -2632,7 +2636,15 @@ export function createCliActionDeps(params: Readonly<{
     ) : undefined),
     roleActionExecute: ((createHost: (sessionId: string, readMetadata: typeof params.getCurrentSessionMetadata) =>
       NonNullable<ActionExecutorDeps['roleActionExecute']>): NonNullable<ActionExecutorDeps['roleActionExecute']> =>
-      async (request) => {
+      async (initialRequest) => {
+        const operation = async () => {
+        let request = initialRequest;
+        const input = RoleActionInputSchemasV1[request.actionId].parse(request.input);
+        if (request.context.authority !== 'present_user'
+          && (request.actionId === 'session.roles.apply_to_reports' || ('sessionId' in input && input.sessionId !== params.sessionId))
+          && (request.context.actionCaller?.kind !== 'session' || !params.sessionActionRpcTransport)) {
+          throw Object.assign(new Error('role_rpc_origin_unavailable'), { code: 'role_rpc_origin_unavailable' });
+        }
         let execute = createHost(params.sessionId, params.getCurrentSessionMetadata);
         if (request.context.actionCaller?.kind === 'session' && request.context.authority !== 'present_user') {
           const caller = await resolveActionCallerSession(request.context);
@@ -2660,8 +2672,10 @@ export function createCliActionDeps(params: Readonly<{
           if (!metadata) throw Object.assign(new Error('session_target_unavailable'), { code: 'session_target_unavailable' });
           execute = createHost(input.sessionId, () => metadata);
         }
+        return await execute(request);
+        };
         return params.serverHttpBaseUrl
-          ? runWithServerHttpBaseUrl(params.serverHttpBaseUrl, () => execute(request)) : execute(request);
+          ? runWithServerHttpBaseUrl(params.serverHttpBaseUrl, operation) : operation();
       })((sessionId, readSessionMetadata) => createRoleActionExecutor({
       sessionId,
       readSessionMetadata,

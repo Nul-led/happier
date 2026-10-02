@@ -26,6 +26,24 @@ describe('sessionAttachmentDraftStore', () => {
         clearSessionAttachmentDrafts({ serverId: 'home-a', accountId: 'account-a', sessionId: 'same-session', occurrenceId: 'run-b' });
     });
 
+    it('retains unsent bytes across more than fifty scopes until explicitly cleared', () => {
+        const scopes = Array.from({ length: 51 }, (_, index) => ({
+            serverId: 'home-retention',
+            accountId: 'account-a',
+            sessionId: `session-${index}`,
+            occurrenceId: 'run-a',
+        }));
+        try {
+            for (const scope of scopes) writeSessionAttachmentDrafts(scope, [draft]);
+            for (const scope of scopes) expect(readSessionAttachmentDrafts(scope)).toEqual([draft]);
+            clearSessionAttachmentDrafts(scopes[0]!);
+            expect(readSessionAttachmentDrafts(scopes[0]!)).toEqual([]);
+            expect(readSessionAttachmentDrafts(scopes[1]!)).toEqual([draft]);
+        } finally {
+            for (const scope of scopes) clearSessionAttachmentDrafts(scope);
+        }
+    });
+
     it('keeps transfer drafts isolated by exact Home, Account, and Run/draft occurrence', () => {
         writeSessionAttachmentDrafts(
             { serverId: 'home-a', accountId: 'account-a', sessionId: 'same-session', occurrenceId: 'run-a' },

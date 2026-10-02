@@ -12,6 +12,19 @@ import {
 import { DEFAULT_ELEVENLABS_VOICE_ID } from '../../../../../../packages/plugins/elevenlabs/src/protocol/voice/index';
 
 describe('voiceSettings', () => {
+  it('defaults fresh Local Voice to device speech and preserves explicit endpoint selections', () => {
+    const config = readLocalConversationVoiceSettings(voiceSettingsParse({}));
+    expect(config.stt.provider).toBe('device');
+    expect(config.tts.provider).toBe('device');
+    const selected = readLocalConversationVoiceSettings(voiceSettingsParse({
+      providers: { local_conversation: { schemaVersion: 1, config: {
+        stt: { provider: 'happier.voice.openai-compat/stt' },
+        tts: { provider: 'happier.voice.openai-compat/tts' },
+      } } },
+    }));
+    expect(selected.stt.provider).toBe('happier.voice.openai-compat/stt');
+    expect(selected.tts.provider).toBe('happier.voice.openai-compat/tts');
+  });
   const elevenLabsProviderId = 'happier.voice.elevenlabs/realtime-elevenlabs';
 
   it.each(['off', 'on_demand', 'automatic'] as const)(
@@ -862,7 +875,7 @@ describe('voiceSettings', () => {
 
   it('defaults include local TTS provider selection', () => {
     const tts = readLocalDirectVoiceSettings(voiceSettingsDefaults).tts;
-    expect(tts?.provider).toBe('happier.voice.openai-compat/tts');
+    expect(tts?.provider).toBe('device');
     expect(tts).not.toHaveProperty('openaiCompat');
     expect(readVoiceProviderSettingsConfig(
       voiceSettingsDefaults,
@@ -875,7 +888,7 @@ describe('voiceSettings', () => {
 
   it('defaults include local STT provider selection', () => {
     const stt = readLocalDirectVoiceSettings(voiceSettingsDefaults).stt;
-    expect(stt?.provider).toBe('happier.voice.openai-compat/stt');
+    expect(stt?.provider).toBe('device');
     expect(stt).not.toHaveProperty('openaiCompat');
     expect(readVoiceProviderSettingsConfig(
       voiceSettingsDefaults,

@@ -214,16 +214,16 @@ export function createDaemonStreamingSttController(
             endpointController?.clearSession(handle.sessionId);
         }
         handle.unlinkAbort();
-        const attempt = (async () => {
-            await handle.capture.stop().catch(() => {});
-            await handle.sender.cancel().catch(() => {});
-        })();
+        const attempt = Promise.all([
+            handle.capture.stop().catch(() => {}),
+            handle.sender.cancel().catch(() => {}),
+        ]).then(() => undefined);
         handle.cancelAttempt = attempt;
         await attempt;
     };
 
     return {
-        start: async ({ sessionId, micSession, sink, signal }: SttStartParams) => {
+        start: async ({ sessionId, micSession, sink, signal, capturePurpose }: SttStartParams) => {
             if (signal?.aborted) {
                 return;
             }
@@ -266,6 +266,7 @@ export function createDaemonStreamingSttController(
                 }
                 const capture = createPcmCapture({
                     micSession,
+                    capturePurpose,
                     signal,
                     onAudioStarted: () => {
                         if (active === handle) {
@@ -276,14 +277,29 @@ export function createDaemonStreamingSttController(
                         if (!handle || active !== handle || handle.aborted) {
                             return;
                         }
-                        const events = await sender.pushChunk(pcm16Bytes);
-                        if (active !== handle || handle.aborted) {
-                            return;
-                        }
-                        applyEvents(handle, sink, events);
+                        const admittedHandle = handle;
+                        // pushChunk admits synchronously into the sender's bounded window.
+                        // Recognition replies must not hold the browser/native capture queue.
+                        void sender.pushChunk(pcm16Bytes).then((events) => {
+                            if (active === admittedHandle && !admittedHandle.aborted) {
+                                applyEvents(admittedHandle, sink, events);
+                            }
+                        }).catch((error: unknown) => {
+                            if (active !== admittedHandle || admittedHandle.aborted) return;
+                            void cancelActive(admittedHandle).then(() => {
+                                if (active === admittedHandle) active = null;
+                                sink.onError(createVoiceMachineError({
+                                    kind: 'provider_error',
+                                    reason: error && typeof error === 'object' && 'code' in error
+                                        && error.code === 'daemon_speech_stream_backpressure'
+                                        ? 'daemon_streaming_stt_pcm_backpressure'
+                                        : 'daemon_streaming_stt_pcm_chunk_failed',
+                                }));
+                            });
+                        });
                     },
                     onError: (error) => {
-                        if (!handle || active !== handle) {
+                        if (!handle || active !== handle || handle.aborted) {
                             return;
                         }
                         const failedHandle = handle;
@@ -363,17 +379,15 @@ export function createDaemonStreamingSttController(
                     if (handle.sessionId) {
                         endpointController?.clearSession(handle.sessionId);
                     }
-                    handle.unlinkAbort();
                     if (handle.aborted) {
                         await cancelActive(handle);
                         return { finalText: handle.finalText };
                     }
-                    await handle.capture.stop().catch(() => {});
-                    await handle.capture.waitForDrain().catch(() => {});
-                    if (handle.aborted) {
-                        return { finalText: handle.finalText };
-                    }
                     try {
+                        await handle.capture.finish();
+                        if (handle.aborted) {
+                            return { finalText: handle.finalText };
+                        }
                         const response = await handle.sender.finish();
                         if (!response.ok) {
                             throw createDaemonStreamingSttFinishResponseError(response);
@@ -392,14 +406,17 @@ export function createDaemonStreamingSttController(
                             handle.finalText = finalText;
                         }
                     } catch (error) {
-                        handle.aborted = true;
-                        await handle.sender.cancel().catch(() => {});
+                        if (handle.aborted) {
+                            return { finalText: handle.finalText };
+                        }
+                        await cancelActive(handle);
                         return {
                             error: classifyDaemonStreamingSttFinalizationFailure(error),
                         };
                     }
                     return { finalText: handle.finalText };
                 } finally {
+                    handle.unlinkAbort();
                     if (active === handle) {
                         active = null;
                     }

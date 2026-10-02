@@ -81,6 +81,7 @@ describe('createDaemonMachineLiveStreamCaptureAdapter', () => {
 
   it('can resolve a registered capture source through the daemon capture adapter', async () => {
     const registry = createMachineLiveStreamCaptureRegistry();
+    let stopped = false;
     const sourceAdapter: MachineLiveStreamCaptureAdapter = {
       start: async (input) => {
         input.offerFrame({
@@ -93,7 +94,7 @@ describe('createDaemonMachineLiveStreamCaptureAdapter', () => {
           payloadBase64: 'AQID',
           payloadSizeBytes: 3,
         });
-        return { ok: true, session: { stop: () => undefined } };
+        return { ok: true, session: { stop: () => { stopped = true; } } };
       },
     };
     registry.register({
@@ -152,5 +153,7 @@ describe('createDaemonMachineLiveStreamCaptureAdapter', () => {
 
     expect(result).toMatchObject({ ok: true });
     expect(offeredFrames.map((frame) => frame.sequence)).toEqual([1]);
+    registry.unregister('source_1');
+    expect(stopped).toBe(true);
   });
 });

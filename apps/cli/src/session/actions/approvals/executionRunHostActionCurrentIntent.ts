@@ -58,9 +58,15 @@ function proposalPreview(proposal: ReviewCommentProposalV1) {
 export function createExecutionRunHostActionCurrentIntentAdapter(deps: Readonly<{
   create: (request: ExecutionRunHostActionApprovalRequestV1) => Promise<Readonly<{ artifactId: string }>>;
   read: (artifactId: string) => Promise<ExecutionRunHostActionApprovalRequestV1 | null>;
+  subscribeChanges?: (
+    artifactId: string,
+    onChange: () => void,
+    onError: (error: unknown) => void,
+  ) => Readonly<{ dispose(): void | Promise<void> }>;
   now?: () => number;
 }>): (subject: ExecutionRunHostActionCurrentIntentSubject) => Promise<ExecutionRunHostActionCurrentIntentResult> {
   const coordinator = getSharedBlockingApprovalCoordinator();
+  const subscribeChanges = deps.subscribeChanges;
   return async (subject) => {
     const now = (deps.now ?? Date.now)();
     const request = ExecutionRunHostActionApprovalRequestV1Schema.parse({
@@ -98,6 +104,9 @@ export function createExecutionRunHostActionCurrentIntentAdapter(deps: Readonly<
         artifactId: created.artifactId,
         request,
         readRequest: () => deps.read(created.artifactId),
+        ...(subscribeChanges ? {
+          subscribeChanges: (onChange, onError) => subscribeChanges(created.artifactId, onChange, onError),
+        } : {}),
       });
       const decided = ExecutionRunHostActionApprovalRequestV1Schema.safeParse(result.request);
       if (!decided.success

@@ -18,7 +18,7 @@ import {
   type TurnEndpointSignal,
 } from '@/voice/runtime/input/TurnEndpointController';
 import { createVoiceMachineError } from '@/voice/runtime/machine/voiceMachineError';
-import { VOICE_PCM_CONVERSATION_AUDIO_SESSION } from '@/voice/runtime/nativePcmAudioSession';
+import { resolveVoicePcmCaptureAudioSession } from '@/voice/runtime/nativePcmAudioSession';
 import { VOICE_RUNTIME_STT_PCM_FORMAT } from '@happier-dev/protocol';
 
 import { resolveLocalNeuralSttCaptureSettings } from './resolveLocalNeuralSttCaptureSettings';
@@ -36,9 +36,9 @@ type SherpaSttHandle = {
   captureLease: VoicePcmCaptureLease;
   transcript: string;
   abortController: AbortController;
-  pushTail: Promise<void>;
   audioStarted: boolean;
   abortCleanup: () => void;
+  nativeCancellation: Promise<void> | null;
 };
 
 export type SherpaStreamingSttController = SttController;
@@ -62,6 +62,11 @@ export function createSherpaStreamingSttController(deps: CreateSherpaStreamingSt
     onSignal: (signal) => deps.onEndpointSignal?.(signal),
   });
 
+  const cancelRecognizer = (current: SherpaSttHandle): Promise<void> => {
+    current.nativeCancellation ??= getOptionalSherpaNativeModule()?.cancel({ jobId: current.jobId }).catch(() => {}) ?? Promise.resolve();
+    return current.nativeCancellation;
+  };
+
   const clearHandle = async (expected?: SherpaSttHandle): Promise<void> => {
     if (stopping) {
       await stopping;
@@ -78,17 +83,15 @@ export function createSherpaStreamingSttController(deps: CreateSherpaStreamingSt
       endpointController.clearSession(current.sessionId);
       current.abortController.abort();
       current.abortCleanup();
-      // Signal the native cancel before waiting on the capture drain and the
-      // push tail, not after: the frame already inside the recognizer decodes for
+      // Signal native cancel before waiting on the capture drain: the frame
+      // already inside the recognizer decodes for
       // as long as it takes, and awaiting the tail first means the mark only
       // lands once the work it was meant to stop has finished. Native cancel is a
       // registry mark that runs while a decode is in flight, so this is what makes
       // the awaits below return promptly instead of what delays them.
-      const sherpa = getOptionalSherpaNativeModule();
-      const cancelled = sherpa?.cancel({ jobId: current.jobId }).catch(() => {});
+      const cancelled = cancelRecognizer(current);
       await current.captureLease.release().catch(() => {});
       await current.captureLease.waitForDrain().catch(() => {});
-      await current.pushTail.catch(() => {});
       await cancelled;
     })();
     clearHandleAttempt = attempt;
@@ -101,7 +104,7 @@ export function createSherpaStreamingSttController(deps: CreateSherpaStreamingSt
     }
   };
 
-  const start = async ({ micSession, sink, signal }: SttStartParams): Promise<void> => {
+  const start = async ({ capturePurpose = 'dictation', micSession, sink, signal }: SttStartParams): Promise<void> => {
     if (signal?.aborted) return;
     if (!micSession) throw new Error('mic_session_required');
     const normalizedSessionId = `local-neural-${Date.now()}-${Math.random()}`;
@@ -142,7 +145,16 @@ export function createSherpaStreamingSttController(deps: CreateSherpaStreamingSt
         await releaseStartupResources();
         return;
       }
-      const abortFromExternalSignal = (): void => abortController.abort();
+      const abortFromExternalSignal = (): void => {
+        abortController.abort();
+        const current = handle;
+        if (current?.sessionId !== normalizedSessionId) return;
+        // Abort remains cancellation even while graceful finish is draining a
+        // native decode: mark the job and discard queued frames immediately.
+        void cancelRecognizer(current);
+        void current.captureLease.release().catch(() => {});
+        if (!stopping) void clearHandle(current).catch(() => {});
+      };
       signal.addEventListener('abort', abortFromExternalSignal, { once: true });
       abortCleanup = () => signal.removeEventListener('abort', abortFromExternalSignal);
     }
@@ -233,16 +245,10 @@ export function createSherpaStreamingSttController(deps: CreateSherpaStreamingSt
       startupLease = await capture.acquire({
         ownerId: `sherpa-streaming-stt:${normalizedSessionId}`,
         format: { sampleRate, channels, frameMs: 20 },
-        audioSession: VOICE_PCM_CONVERSATION_AUDIO_SESSION,
+        audioSession: resolveVoicePcmCaptureAudioSession(capturePurpose),
         maxQueuedFrames: MAX_QUEUED_FRAMES,
         shouldDeliver: () => !abortController.signal.aborted && !micSession.isMuted(),
-        onFrame: async (frame) => {
-          const active = handle;
-          if (!active || active.jobId !== jobId) return;
-          const operation = active.pushTail.catch(() => {}).then(() => processFrame(frame));
-          active.pushTail = operation;
-          await operation;
-        },
+        onFrame: processFrame,
         onDroppedFrames: () => {
           const failedHandle = handle;
           if (!failedHandle || failedHandle.jobId !== jobId) return;
@@ -279,9 +285,9 @@ export function createSherpaStreamingSttController(deps: CreateSherpaStreamingSt
       captureLease,
       transcript: '',
       abortController,
-      pushTail: Promise.resolve(),
       audioStarted: false,
       abortCleanup,
+      nativeCancellation: null,
     };
     startupLease = null;
     startupRecognizerJobId = null;
@@ -300,9 +306,8 @@ export function createSherpaStreamingSttController(deps: CreateSherpaStreamingSt
     const pending = (async (): Promise<SttStopResult> => {
       try {
         endpointController.clearSession(current.sessionId);
-        await current.captureLease.release();
-        await current.captureLease.waitForDrain();
-        await current.pushTail;
+        await current.captureLease.finish();
+        if (current.abortController.signal.aborted) throw new Error('local_neural_stt_aborted');
 
         const sherpa = getOptionalSherpaNativeModule();
         if (!sherpa) {
@@ -321,8 +326,8 @@ export function createSherpaStreamingSttController(deps: CreateSherpaStreamingSt
         // A finalized empty transcript is silence, which is a successful result.
         return { finalText: current.transcript.trim() };
       } catch {
-        const sherpa = getOptionalSherpaNativeModule();
-        await sherpa?.cancel({ jobId: current.jobId }).catch(() => {});
+        await current.captureLease.release().catch(() => {});
+        await cancelRecognizer(current);
         return {
           error: createVoiceMachineError({
             kind: 'provider_error',

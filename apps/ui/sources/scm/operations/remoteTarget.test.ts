@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 
-import { inferRemoteTargetFromSnapshot, resolvePublishRemoteFromSnapshot } from './remoteTarget';
+import { inferRemoteTargetFromSnapshot, resolvePublishRemoteFromSnapshot, resolveForceWithLeaseTarget } from './remoteTarget';
 
 function makeSnapshot(partial?: Partial<ScmWorkingSnapshot['branch']>): ScmWorkingSnapshot {
     return {
@@ -114,5 +114,24 @@ describe('resolvePublishRemoteFromSnapshot', () => {
                 ],
             },
         })).toBe('upstream');
+    });
+});
+
+describe('resolveForceWithLeaseTarget', () => {
+    it('binds the observed OID to the configured tracking target, including a differently named branch', () => {
+        const observed = { ...makeSnapshot({ upstream: 'upstream/feature/x', head: 'local' }).branch, upstreamOid: 'a'.repeat(40) };
+        expect(resolveForceWithLeaseTarget({ ...makeSnapshot(), branch: observed })).toEqual({
+            remote: 'upstream', branch: 'feature/x', pushMode: 'force_with_lease', expectedRemoteOid: 'a'.repeat(40),
+        });
+    });
+
+    it('never invents a lease for absent, malformed, detached or unobserved upstreams', () => {
+        for (const branch of [
+            { ...makeSnapshot().branch, upstreamOid: undefined },
+            { ...makeSnapshot().branch, upstream: null, upstreamOid: 'a'.repeat(40) },
+            { ...makeSnapshot().branch, upstream: 'origin', upstreamOid: 'a'.repeat(40) },
+            { ...makeSnapshot().branch, upstreamOid: 'bad' },
+            { ...makeSnapshot().branch, detached: true, upstreamOid: 'a'.repeat(40) },
+        ]) expect(resolveForceWithLeaseTarget({ ...makeSnapshot(), branch })).toBeNull();
     });
 });

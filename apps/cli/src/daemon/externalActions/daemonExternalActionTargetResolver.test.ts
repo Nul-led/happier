@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import axios from 'axios';
 
 const mocks = vi.hoisted(() => ({
   fetchSessionById: vi.fn(),
@@ -13,7 +14,7 @@ vi.mock('@/api/machine/fetchAccountMachineReplacements', () => ({
   fetchAccountMachineReplacements: mocks.fetchAccountMachineReplacements,
 }));
 
-import { createDaemonExternalActionTargetResolver } from './daemonExternalActionTargetResolver';
+import { createDaemonExternalActionTargetResolver, createDaemonApprovalExecutionOriginCurrentness } from './daemonExternalActionTargetResolver';
 import { encryptSessionPayload } from '@/session/transport/encryption/sessionEncryptionContext';
 
 const ENCRYPTION_KEY = new Uint8Array(32).fill(7);
@@ -28,13 +29,15 @@ const ENCRYPTED_CREDENTIALS = {
 
 function session(machineId: string) {
   return {
-    id: 'session-1',
+    id: 'c111111111111111111111111',
     seq: 1,
     createdAt: 1,
     updatedAt: 1,
     active: true,
     activeAt: 1,
+    encryptionMode: 'plain',
     metadata: '{}',
+    share: null,
     metadataVersion: 1,
     dataEncryptionKey: null,
     machineId,
@@ -62,9 +65,42 @@ function encryptedSessionMetadata(params: Readonly<{
 }
 
 describe('createDaemonExternalActionTargetResolver', () => {
+  let accountMode: 'plain' | 'e2ee' = 'plain';
   beforeEach(() => {
+    accountMode = 'plain';
+    vi.spyOn(axios, 'get').mockResolvedValue({ status: 200, data: {
+      get mode() { return accountMode; }, version: 1,
+      get signingKeyFingerprint() { return accountMode === 'plain' ? null : 'a'.repeat(64); },
+      get contentKeyFingerprint() { return accountMode === 'plain' ? null : 'b'.repeat(64); }, updatedAt: 1,
+    } });
     mocks.fetchSessionById.mockReset();
     mocks.fetchAccountMachineReplacements.mockReset();
+  });
+
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('keeps a local Session caller approval current for an Account effect on a led remote Session', async () => {
+    mocks.fetchSessionById.mockResolvedValue({ ...session('machine-elsewhere'), id: 'led-remote' });
+    mocks.fetchAccountMachineReplacements.mockResolvedValue([]);
+    const resolveTarget = createDaemonExternalActionTargetResolver({ credentials: TOKEN_ONLY_CREDENTIALS });
+    const isCurrent = createDaemonApprovalExecutionOriginCurrentness({
+      accountId: 'account-1', machineId: 'machine-local', serverId: 'home-1', resolveTarget,
+      resolveCurrentMachineExecutionOriginContext: async () => ({ serverIdentityId: 'home-1', machineId: 'machine-local' }),
+      listAccountApiTokens: async () => ({ tokens: [] }),
+      isSessionCallerCurrent: async ({ caller }) => caller.sessionId === 'local-caller',
+      resolveCurrentPermissionMode: async () => 'default',
+    });
+    const executionOrigin = { v: 1 as const, authority: 'account_automation' as const, surface: 'agent' as const,
+      caller: { kind: 'session' as const, sessionId: 'local-caller' }, serverId: 'home-1', accountId: 'account-1',
+      machineId: 'machine-local', sessionId: 'led-remote', target: { kind: 'session' as const, sessionId: 'led-remote' },
+      callerPermissionMode: 'default' as const, actionId: 'session.trigger.add' as const, requestId: 'approved-request' };
+    await expect(isCurrent({ origin: executionOrigin })).resolves.toBe(true);
+    expect(mocks.fetchSessionById).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'led-remote' }));
+    // Explicit Machine restrictions still constrain the execution host.
+    await expect(isCurrent({ origin: { ...executionOrigin, target: { kind: 'machine', machineId: 'machine-elsewhere' } } }))
+      .resolves.toBe(false);
+    mocks.fetchSessionById.mockResolvedValue(null);
+    await expect(isCurrent({ origin: executionOrigin })).resolves.toBe(false);
   });
 
   it('defaults an omitted target to this daemon machine without an Account lookup', async () => {
@@ -98,15 +134,16 @@ describe('createDaemonExternalActionTargetResolver', () => {
 
     await expect(resolver({
       actionId: 'session.open',
-      target: { kind: 'session', sessionId: 'session-1' },
+      target: { kind: 'session', sessionId: 'c111111111111111111111111' },
       currentMachineId: 'machine-local',
       signal,
-    })).resolves.toEqual({ kind: 'session', sessionId: 'session-1' });
+    })).resolves.toEqual({ kind: 'session', sessionId: 'c111111111111111111111111' });
 
     expect(mocks.fetchSessionById).toHaveBeenCalledWith({
       token: 'daemon-token',
-      sessionId: 'session-1',
-      signal,
+      sessionId: 'c111111111111111111111111',
+      signal: expect.any(AbortSignal),
+      deadlineAtMs: expect.any(Number),
     });
     expect(mocks.fetchAccountMachineReplacements).not.toHaveBeenCalled();
   });
@@ -126,20 +163,22 @@ describe('createDaemonExternalActionTargetResolver', () => {
 
     await expect(resolver({
       actionId: 'session.open',
-      target: { kind: 'session', sessionId: 'session-1' },
+      target: { kind: 'session', sessionId: 'c111111111111111111111111' },
       currentMachineId: 'machine-local',
-    })).resolves.toEqual({ kind: 'session', sessionId: 'session-1' });
+    })).resolves.toEqual({ kind: 'session', sessionId: 'c111111111111111111111111' });
 
     expect(resolveServerFeaturesSnapshot).toHaveBeenCalledOnce();
     expect(mocks.fetchSessionById).toHaveBeenCalledWith({
       token: 'daemon-token',
-      sessionId: 'session-1',
-      serverUrl: 'https://home.example.test',
+      sessionId: 'c111111111111111111111111',
       serverFeaturesSnapshot,
+      signal: expect.any(AbortSignal),
+      deadlineAtMs: expect.any(Number),
     });
   });
 
   it('uses the encrypted Session metadata machine identity instead of a stale raw row projection', async () => {
+    accountMode = 'e2ee';
     mocks.fetchSessionById.mockResolvedValue(encryptedSessionMetadata({
       machineId: 'machine-local',
       host: 'host-local',
@@ -154,9 +193,9 @@ describe('createDaemonExternalActionTargetResolver', () => {
 
     await expect(resolver({
       actionId: 'session.open',
-      target: { kind: 'session', sessionId: 'session-1' },
+      target: { kind: 'session', sessionId: 'c111111111111111111111111' },
       currentMachineId: 'machine-local',
-    })).resolves.toEqual({ kind: 'session', sessionId: 'session-1' });
+    })).resolves.toEqual({ kind: 'session', sessionId: 'c111111111111111111111111' });
 
     expect(mocks.fetchAccountMachineReplacements).not.toHaveBeenCalled();
   });
@@ -168,7 +207,7 @@ describe('createDaemonExternalActionTargetResolver', () => {
 
     await expect(resolver({
       actionId: 'session.open',
-      target: { kind: 'session', sessionId: 'session-1' },
+      target: { kind: 'session', sessionId: 'c111111111111111111111111' },
       currentMachineId: 'machine-local',
     })).resolves.toBeNull();
   });

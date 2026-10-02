@@ -17,21 +17,12 @@ export {
 } from './policy/context';
 export {
     evaluatePluginUiPolicy,
-    evaluatePluginUiPredicate,
     isPluginUiPolicyVisible,
 } from './policy/evaluate';
 
 /**
- * Canonical render gate for a plugin-UI projection entry. Replaces the old
- * accept-and-hide behavior: declared `visibility/enabled/featureGate/
- * compatibility` (and browser `policy.*`) are EVALUATED against the host
- * context and render conditionally.
- *
- * The context is optional so the many pure selectors/components that call this
- * keep working; when omitted, gating signals that REQUIRE a resolver
- * (featureGate, required features/permissions) fail closed, while
- * context-free predicates (platform/channel compatibility, data-shaped
- * predicates) still evaluate. Supply a context to enable full evaluation.
+ * Render gate for the canonical contribution availability expression. A
+ * required fact without a host resolver fails closed.
  */
 export function canRenderPluginUiProjectionEntry(
     entry: PluginUiProjectionEntry | null | undefined,

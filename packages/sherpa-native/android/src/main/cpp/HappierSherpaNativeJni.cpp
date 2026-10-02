@@ -11,7 +11,9 @@
 
 #include "sherpa-onnx/c-api/c-api.h"
 #include "HappierSherpaAsrStreamRegistry.h"
+#include "HappierSherpaOnlineAsr.h"
 #include "HappierSherpaOfflineTtsEngineCache.h"
+#include "HappierSherpaKokoroConfig.h"
 #include "HappierSherpaTtsJobRegistry.h"
 
 namespace {
@@ -62,42 +64,22 @@ struct VadSession {
 // shared registry, so a push holds both handles for the whole decode while a
 // concurrent cancel or a pack invalidation only marks the job and drops the
 // registry's reference.
-using AsrStreams = happier_sherpa::AsrStreamRegistry<const SherpaOnnxOnlineRecognizer, SherpaOnnxOnlineStream>;
+using AsrStreams = happier_sherpa::AsrStreamRegistry<const SherpaOnnxOnlineRecognizer, const SherpaOnnxOnlineStream>;
 
 AsrStreams &AsrJobs() {
   static AsrStreams registry;
   return registry;
 }
 
-std::shared_ptr<Engine> CreateEngine(const std::string &assetsDir) {
-  const std::string modelPath = assetsDir + "/model.onnx";
-  const std::string voicesPath = assetsDir + "/voices.bin";
-  const std::string tokensPath = assetsDir + "/tokens.txt";
-  const std::string dataDirPath = assetsDir + "/espeak-ng-data";
+std::shared_ptr<Engine> CreateEngine(const std::string &assetsDir, const happier_sherpa::KokoroConfig &kokoro) {
+  const auto config = kokoro.config();
 
-  if (!SherpaOnnxFileExists(modelPath.c_str()) ||
-      !SherpaOnnxFileExists(voicesPath.c_str()) ||
-      !SherpaOnnxFileExists(tokensPath.c_str())) {
+  if (!SherpaOnnxFileExists(config.model.kokoro.model) ||
+      !SherpaOnnxFileExists(config.model.kokoro.voices) ||
+      !SherpaOnnxFileExists(config.model.kokoro.tokens)) {
     __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Missing required Kokoro assets in %s", assetsDir.c_str());
     return nullptr;
   }
-
-  SherpaOnnxOfflineTtsConfig config;
-  memset(&config, 0, sizeof(config));
-
-  config.model.num_threads = 2;
-  config.model.debug = 0;
-  config.model.provider = "cpu";
-  config.max_num_sentences = 1;
-  config.silence_scale = 0.2f;
-
-  config.model.kokoro.model = modelPath.c_str();
-  config.model.kokoro.voices = voicesPath.c_str();
-  config.model.kokoro.tokens = tokensPath.c_str();
-  config.model.kokoro.data_dir = dataDirPath.c_str();
-  config.model.kokoro.length_scale = 1.0f;
-  config.model.kokoro.lexicon = nullptr;
-  config.model.kokoro.lang = nullptr;
 
   const SherpaOnnxOfflineTts *tts = SherpaOnnxCreateOfflineTts(&config);
   if (!tts) {
@@ -125,17 +107,20 @@ EngineCache &Engines() {
  * both when creation failed and when the pack it was built from was retired
  * meanwhile; the caller treats either as a failed start.
  */
-std::shared_ptr<Engine> LeaseEngine(const std::string &assetsDir) {
-  return Engines().leaseOrCreate(assetsDir, [&] { return CreateEngine(assetsDir); });
-}
-
 std::shared_ptr<Engine> LeaseEngine(
     const std::string &assetsDir,
-    const std::string &initializationId) {
-  return Engines().leaseOrCreateInitialization(
-      assetsDir,
-      initializationId,
-      [&] { return CreateEngine(assetsDir); });
+    const happier_sherpa::KokoroFrontend *frontend,
+    const std::string *initializationId = nullptr) {
+  try {
+    const happier_sherpa::KokoroConfig kokoro(assetsDir, frontend);
+    return initializationId
+        ? Engines().leaseOrCreateInitialization(assetsDir, *initializationId,
+            [&] { return CreateEngine(assetsDir, kokoro); })
+        : Engines().leaseOrCreate(assetsDir, [&] { return CreateEngine(assetsDir, kokoro); });
+  } catch (const std::invalid_argument &error) {
+    __android_log_print(ANDROID_LOG_ERROR, kLogTag, "%s", error.what());
+    return nullptr;
+  }
 }
 
 std::shared_ptr<const SherpaOnnxOnlineRecognizer> CreateAsrRecognizer(const std::string &assetsDir) {
@@ -152,44 +137,8 @@ std::shared_ptr<const SherpaOnnxOnlineRecognizer> CreateAsrRecognizer(const std:
     return nullptr;
   }
 
-  SherpaOnnxOnlineRecognizerConfig config;
-  memset(&config, 0, sizeof(config));
-
-  config.feat_config.sample_rate = 16000;
-  config.feat_config.feature_dim = 80;
-
-  config.model_config.tokens = tokensPath.c_str();
-  config.model_config.num_threads = 2;
-  config.model_config.debug = 0;
-  config.model_config.provider = "cpu";
-  // Leave empty so Sherpa can infer from provided model fields (keeps this compatible
-  // with other streaming transducer packs without hard-coding a single model type).
-  config.model_config.model_type = "";
-  config.model_config.modeling_unit = nullptr;
-  config.model_config.bpe_vocab = nullptr;
-
-  config.model_config.transducer.encoder = encoderPath.c_str();
-  config.model_config.transducer.decoder = decoderPath.c_str();
-  config.model_config.transducer.joiner = joinerPath.c_str();
-
-  config.decoder_config.decoding_method = "greedy_search";
-  config.decoder_config.num_active_paths = 4;
-  config.decoder_config.enable_endpoint = 1;
-  config.decoder_config.hotwords_file = nullptr;
-  config.decoder_config.hotwords_score = 0.0f;
-  config.decoder_config.rule_fsts = nullptr;
-  config.decoder_config.rule_fsts_score = 0.0f;
-  config.decoder_config.blank_penalty = 0.0f;
-
-  config.endpoint_config.rule1.must_contain_nonsilence = 1;
-  config.endpoint_config.rule1.min_trailing_silence = 1.2f;
-  config.endpoint_config.rule1.min_utterance_length = 0.0f;
-  config.endpoint_config.rule2.must_contain_nonsilence = 1;
-  config.endpoint_config.rule2.min_trailing_silence = 0.6f;
-  config.endpoint_config.rule2.min_utterance_length = 2.0f;
-  config.endpoint_config.rule3.must_contain_nonsilence = 0;
-  config.endpoint_config.rule3.min_trailing_silence = 0.0f;
-  config.endpoint_config.rule3.min_utterance_length = 15.0f;
+  const auto config = happier_sherpa::OnlineTransducerConfig(
+      tokensPath.c_str(), encoderPath.c_str(), decoderPath.c_str(), joinerPath.c_str());
 
   const SherpaOnnxOnlineRecognizer *recognizer = SherpaOnnxCreateOnlineRecognizer(&config);
   if (!recognizer) {
@@ -333,8 +282,9 @@ jobject MakeFinishResult(JNIEnv *env, const char *status, const char *text) {
 }  // namespace
 
 extern "C" JNIEXPORT jint JNICALL
-Java_dev_happier_sherpa_HappierSherpaNativeJni_nativeEnsureEngine(JNIEnv *env, jclass /*clazz*/, jstring assetsDir) {
-  return LeaseEngine(JStringToUtf8(env, assetsDir)) ? 1 : 0;
+Java_dev_happier_sherpa_HappierSherpaNativeJni_nativeEnsureEngine(JNIEnv *env, jclass /*clazz*/, jstring assetsDir, jstring lang, jstring lexicon) {
+  const happier_sherpa::KokoroFrontend frontend{JStringToUtf8(env, lang), JStringToUtf8(env, lexicon)};
+  return LeaseEngine(JStringToUtf8(env, assetsDir), lang || lexicon ? &frontend : nullptr) ? 1 : 0;
 }
 
 /**
@@ -372,17 +322,23 @@ Java_dev_happier_sherpa_HappierSherpaNativeJni_nativeEnsureEngineAtInitializatio
     JNIEnv *env,
     jclass /*clazz*/,
     jstring assetsDir,
-    jstring initializationId) {
+    jstring initializationId,
+    jstring lang,
+    jstring lexicon) {
+  const happier_sherpa::KokoroFrontend frontend{JStringToUtf8(env, lang), JStringToUtf8(env, lexicon)};
+  const std::string id = JStringToUtf8(env, initializationId);
   return LeaseEngine(
              JStringToUtf8(env, assetsDir),
-             JStringToUtf8(env, initializationId))
+             lang || lexicon ? &frontend : nullptr,
+             &id)
       ? 1
       : 0;
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_dev_happier_sherpa_HappierSherpaNativeJni_nativeGetNumSpeakers(JNIEnv *env, jclass /*clazz*/, jstring assetsDir) {
-  const auto engine = LeaseEngine(JStringToUtf8(env, assetsDir));
+Java_dev_happier_sherpa_HappierSherpaNativeJni_nativeGetNumSpeakers(JNIEnv *env, jclass /*clazz*/, jstring assetsDir, jstring lang, jstring lexicon) {
+  const happier_sherpa::KokoroFrontend frontend{JStringToUtf8(env, lang), JStringToUtf8(env, lexicon)};
+  const auto engine = LeaseEngine(JStringToUtf8(env, assetsDir), lang || lexicon ? &frontend : nullptr);
   if (!engine || !engine->tts) return 0;
   return SherpaOnnxOfflineTtsNumSpeakers(engine->tts);
 }
@@ -397,7 +353,9 @@ Java_dev_happier_sherpa_HappierSherpaNativeJni_nativeSynthesizeToWavFile(
     jint sid,
     jfloat speed,
     jstring outWavPath,
-    jstring jobId) {
+    jstring jobId,
+    jstring lang,
+    jstring lexicon) {
   const std::string jobKey = JStringToUtf8(env, jobId);
   const std::string outPath = JStringToUtf8(env, outWavPath);
   const std::string inputText = JStringToUtf8(env, text);
@@ -405,7 +363,8 @@ Java_dev_happier_sherpa_HappierSherpaNativeJni_nativeSynthesizeToWavFile(
 
   // The lease is held for the whole synthesis, so an invalidation racing this
   // call retires the cache entry and cancels the job without freeing the engine.
-  const auto engine = LeaseEngine(JStringToUtf8(env, assetsDir));
+  const happier_sherpa::KokoroFrontend frontend{JStringToUtf8(env, lang), JStringToUtf8(env, lexicon)};
+  const auto engine = LeaseEngine(JStringToUtf8(env, assetsDir), lang || lexicon ? &frontend : nullptr);
   if (!engine || !engine->tts) return 0;
 
   bool wasAlreadyCancelled = false;
@@ -475,12 +434,12 @@ Java_dev_happier_sherpa_HappierSherpaNativeJni_nativeCreateStreamingRecognizer(
   auto recognizer = GetOrCreateAsrRecognizer(dir);
   if (!recognizer) return 0;
 
-  SherpaOnnxOnlineStream *stream = SherpaOnnxCreateOnlineStream(recognizer.get());
+  const SherpaOnnxOnlineStream *stream = SherpaOnnxCreateOnlineStream(recognizer.get());
   if (!stream) return 0;
 
   const auto job = AsrJobs().beginJob(
       jobKey, dir, std::move(recognizer),
-      std::shared_ptr<SherpaOnnxOnlineStream>(stream, SherpaOnnxDestroyOnlineStream));
+      std::shared_ptr<const SherpaOnnxOnlineStream>(stream, SherpaOnnxDestroyOnlineStream));
   return job ? 1 : 0;
 }
 
@@ -514,7 +473,9 @@ Java_dev_happier_sherpa_HappierSherpaNativeJni_nativePushAudioFrame(
 
   const auto mono = Pcm16LeToMonoFloats(samples16.data(), samples16.size(), channels);
   if (!mono.empty()) {
-    SherpaOnnxOnlineStreamAcceptWaveform(job->stream(), sampleRate > 0 ? sampleRate : 16000, mono.data(),
+    const int32_t inputSampleRate = sampleRate > 0 ? sampleRate : 16000;
+    job->recordInputSampleRate(inputSampleRate);
+    SherpaOnnxOnlineStreamAcceptWaveform(job->stream(), inputSampleRate, mono.data(),
                                          static_cast<int32_t>(mono.size()));
   }
 
@@ -555,11 +516,8 @@ Java_dev_happier_sherpa_HappierSherpaNativeJni_nativeFinishStreaming(JNIEnv *env
     return MakeFinishResult(env, "cancelled", nullptr);
   }
 
-  SherpaOnnxOnlineStreamInputFinished(job->stream());
-  while (!job->cancelled() && SherpaOnnxIsOnlineStreamReady(job->recognizer(), job->stream())) {
-    SherpaOnnxDecodeOnlineStream(job->recognizer(), job->stream());
-  }
-  if (job->cancelled()) {
+  if (!happier_sherpa::FinishOnlineTransducer(
+          job->recognizer(), job->stream(), [&] { return job->cancelled(); }, job->inputSampleRate())) {
     AsrJobs().endFinish(jobKey, job);
     return MakeFinishResult(env, "cancelled", nullptr);
   }

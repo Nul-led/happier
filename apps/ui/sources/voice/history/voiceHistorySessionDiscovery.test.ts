@@ -30,46 +30,18 @@ function carrierSession(input: Readonly<{
 }
 
 describe('discoverVoiceHistorySession', () => {
-  it('establishes stored-content compatibility before the cold carrier lookup', async () => {
-    let releaseCompatibility!: () => void;
-    const compatibilityReady = new Promise<void>((resolve) => {
-      releaseCompatibility = resolve;
-    });
+  it('performs the cold carrier lookup without a server-version preflight', async () => {
     const lookupByTags = vi.fn(async () => []);
     const deps = {
-      prepareLookup: vi.fn(async () => await compatibilityReady),
       lookupByTags,
       hydrateSession: vi.fn(async () => ({ kind: 'missing' })),
       readHydratedSession: vi.fn(() => null),
     };
 
-    const discovery = discoverVoiceHistorySession(deps);
-    await Promise.resolve();
-
-    expect(lookupByTags).not.toHaveBeenCalled();
-
-    releaseCompatibility();
-    await expect(discovery).resolves.toBeNull();
-    expect(deps.prepareLookup).toHaveBeenCalledTimes(1);
+    await expect(discoverVoiceHistorySession(deps)).resolves.toBeNull();
     expect(lookupByTags).toHaveBeenCalledWith([
       VOICE_TRANSCRIPT_HISTORY_SYSTEM_SESSION_TAG,
     ]);
-  });
-
-  it('propagates a real compatibility failure without issuing or retrying lookup', async () => {
-    const lookupByTags = vi.fn(async () => []);
-    const compatibilityError = new Error('client upgrade required');
-
-    await expect(discoverVoiceHistorySession({
-      prepareLookup: vi.fn(async () => {
-        throw compatibilityError;
-      }),
-      lookupByTags,
-      hydrateSession: vi.fn(async () => ({ kind: 'missing' })),
-      readHydratedSession: vi.fn(() => null),
-    })).rejects.toBe(compatibilityError);
-
-    expect(lookupByTags).not.toHaveBeenCalled();
   });
 
   it('looks up only the canonical fixed tag and accepts only its hydrated inactive hidden marker', async () => {
@@ -89,7 +61,6 @@ describe('discoverVoiceHistorySession', () => {
     }));
 
     await expect(discoverVoiceHistorySession({
-      prepareLookup: async () => undefined,
       lookupByTags,
       hydrateSession,
       readHydratedSession: (sessionId) =>
@@ -111,7 +82,6 @@ describe('discoverVoiceHistorySession', () => {
     } as unknown as Session;
 
     await expect(discoverVoiceHistorySession({
-      prepareLookup: async () => undefined,
       lookupByTags: vi.fn(async () => [{ id: 'history' }]),
       hydrateSession: vi.fn(async () => ({ kind: 'available', sessionId: 'history' })),
       readHydratedSession: () => session,
@@ -120,7 +90,6 @@ describe('discoverVoiceHistorySession', () => {
 
   it('returns empty without creating when lookup has no exact carrier or hydration is unavailable', async () => {
     const deps: VoiceHistorySessionDiscoveryDeps = {
-      prepareLookup: async () => undefined,
       lookupByTags: vi.fn(async () => [{ id: 'history' }]),
       hydrateSession: vi.fn(async () => ({ kind: 'missing', sessionId: 'history' })),
       readHydratedSession: vi.fn(() =>

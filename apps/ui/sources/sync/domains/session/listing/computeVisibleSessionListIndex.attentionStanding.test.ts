@@ -62,7 +62,7 @@ describe('computeVisibleSessionListIndex attention standing under hide-inactive'
             },
         });
 
-        expect(result?.map((item) => (item.type === 'session' ? `s:${item.sessionId}` : `h:${item.headerKind}`)))
+        expect(result?.map((item) => (item.type === 'session' ? `s:${item.sessionId}` : item.type === 'header' ? `h:${item.headerKind}` : `r:${item.runId}`)))
             .toEqual(['h:attention', 's:kept']);
     });
 

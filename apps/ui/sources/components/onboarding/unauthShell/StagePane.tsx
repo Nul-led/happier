@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { PLANET_LIGHT_RAMP } from '@happier-dev/brand/planet';
 import { Platform, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated from 'react-native-reanimated';
@@ -37,7 +38,7 @@ export const StagePane = React.memo(function StagePane(props: StagePaneProps) {
     const { theme } = useUnistyles();
     const isDark = Boolean((theme as { dark?: boolean }).dark);
     const horizon = isDark ? stageVisualTokens.horizon.dark : stageVisualTokens.horizon.light;
-    const accentHue = props.accentHue ?? (isDark ? '#6D94FF' : '#FFB14A');
+    const accentHue = props.accentHue ?? (isDark ? PLANET_LIGHT_RAMP.cool : PLANET_LIGHT_RAMP.warm);
     const planetOpacity = props.planetOpacity ?? 1;
     const planetScale = props.planetScale ?? 1;
     const isWeb = Platform.OS === 'web';

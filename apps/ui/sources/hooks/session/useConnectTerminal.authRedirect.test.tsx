@@ -37,7 +37,7 @@ const upsertActivateAndSwitchServerSpy = vi.fn(async (_params: {
 const authApproveSpy = vi.fn();
 const refreshFromActiveServerSpy = vi.fn(async () => {});
 const fetchAccountEncryptionModeSpy = vi.fn(
-    async (): Promise<{ mode: 'plain' | 'e2ee'; updatedAt: number }> => ({ mode: 'plain', updatedAt: 0 }),
+    async (): Promise<{ mode: 'plain' | 'e2ee'; updatedAt: number }> => ({ mode: 'e2ee', updatedAt: 0 }),
 );
 const isRuntimeFeatureEnabledSpy = vi.fn(async (_params: { featureId: string }) => true);
 const promptLegacyPairingUpdateRequiredSpy = vi.fn(
@@ -100,7 +100,7 @@ afterEach(() => {
     authApproveSpy.mockReset();
     refreshFromActiveServerSpy.mockReset();
     fetchAccountEncryptionModeSpy.mockReset();
-    fetchAccountEncryptionModeSpy.mockResolvedValue({ mode: 'plain', updatedAt: 0 });
+    fetchAccountEncryptionModeSpy.mockResolvedValue({ mode: 'e2ee', updatedAt: 0 });
     isRuntimeFeatureEnabledSpy.mockReset();
     isRuntimeFeatureEnabledSpy.mockResolvedValue(true);
     promptLegacyPairingUpdateRequiredSpy.mockClear();
@@ -822,6 +822,7 @@ describe('useConnectTerminal unauthenticated flow', () => {
     });
 
     it('provisions token-only credentials only as authenticated v3 after plain policy is proven', async () => {
+        fetchAccountEncryptionModeSpy.mockResolvedValue({ mode: 'plain', updatedAt: 0 });
         authApproveSpy.mockResolvedValue('approved');
         authCredentials = createTokenOnlyCredentials({ token: 'plain-token' });
         const terminalSecretKey = new Uint8Array(32).fill(5);
@@ -902,6 +903,7 @@ describe('useConnectTerminal unauthenticated flow', () => {
             supportsTokenOnly: true,
         },
     ])('fails closed for token-only pairing when $name', async ({ configure, withPairing, supportsTokenOnly }) => {
+        fetchAccountEncryptionModeSpy.mockResolvedValue({ mode: 'plain', updatedAt: 0 });
         configure();
         authCredentials = createTokenOnlyCredentials({ token: 'plain-token' });
         const terminalSecretKey = new Uint8Array(32).fill(5);

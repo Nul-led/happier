@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 
 import type { ExecutionRunHostActionApprovalRequestV1 } from '@happier-dev/protocol';
@@ -22,6 +22,31 @@ const subject = {
 };
 
 describe('createExecutionRunHostActionCurrentIntentAdapter', () => {
+  it('accepts the matching approved subject after a durable artifact invalidation', async () => {
+    const stored: { request: ExecutionRunHostActionApprovalRequestV1 | null } = { request: null };
+    let onChange = () => {};
+    let subscribedArtifactId = '';
+    const dispose = vi.fn();
+    const requestIntent = createExecutionRunHostActionCurrentIntentAdapter({
+      now: () => 10,
+      create: async (request) => { stored.request = request; return { artifactId: 'artifact-other-device' }; },
+      read: async () => stored.request,
+      subscribeChanges: (artifactId, change) => {
+        subscribedArtifactId = artifactId;
+        onChange = change;
+        return { dispose };
+      },
+    });
+    const pending = requestIntent(subject);
+    await Promise.resolve();
+    expect(subscribedArtifactId).toBe('artifact-other-device');
+    if (!stored.request) throw new Error('approval_not_created');
+    stored.request = { ...stored.request, status: 'approved', updatedAtMs: 11, decision: { kind: 'approve', decidedAtMs: 11 } };
+    onChange();
+    await expect(pending).resolves.toEqual({ status: 'approved', fingerprint: subject.subjectFingerprint });
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
   it('creates a typed durable subject and accepts only its matching approval', async () => {
     let stored: ExecutionRunHostActionApprovalRequestV1 | null = null;
     const requestIntent = createExecutionRunHostActionCurrentIntentAdapter({

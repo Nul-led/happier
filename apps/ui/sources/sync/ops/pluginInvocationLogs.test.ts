@@ -26,7 +26,7 @@ function availableResponse() {
             context: {
                 plugin: { id: 'example.plugin', version: '1.0.0' },
                 contribution: { id: 'action.run', qualifiedId: 'example.plugin/action.run' },
-                generation: 'generation-1',
+                occurrenceId: 'occurrence-1',
                 correlationId: 'correlation-1',
                 surface: 'action',
             },
@@ -35,6 +35,8 @@ function availableResponse() {
         }],
         cursor: 456,
         hasMore: false,
+        logId: 'log-1',
+        cursorReset: false,
     };
 }
 

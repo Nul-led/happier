@@ -1,4 +1,4 @@
-import { WORKSPACE_WRITE_FILE_TOO_LARGE_ERROR, workspaceWriteFile as writeWorkspaceFile } from '@/sync/ops/workspaceFileSystem';
+import { WORKSPACE_WRITE_FILE_TOO_LARGE_ERROR, workspaceWriteFile as writeWorkspaceFile } from '@/sync/ops/workspaceFileSystem/fileReadWrite';
 
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 

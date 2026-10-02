@@ -24,6 +24,21 @@ const base = {
  * same answer. This projection only routes it.
  */
 describe('resolveVoiceAttemptControl', () => {
+    it.each([
+        { status: 'connected' as const, sessionId: 'session-1', canCommitInput: true, expected: true },
+        { status: 'connected' as const, sessionId: 'session-1', canCommitInput: false, expected: false },
+        { status: 'disconnected' as const, sessionId: 'session-1', canCommitInput: true, expected: false },
+        { status: 'connected' as const, sessionId: null, canCommitInput: true, expected: false },
+    ])('publishes input submission only for an admitted connected attempt ($status, $canCommitInput, $sessionId)', ({ status, sessionId, canCommitInput, expected }) => {
+        expect(resolveVoiceAttemptControl({
+            ...base,
+            status,
+            sessionId,
+            canStop: status === 'connected',
+            canCommitInput,
+        }).canCommitInput).toBe(expected);
+    });
+
     it('is ready to start when the canonical owner admits a start', () => {
         expect(resolveVoiceAttemptControl(base)).toMatchObject({
             availability: 'ready',

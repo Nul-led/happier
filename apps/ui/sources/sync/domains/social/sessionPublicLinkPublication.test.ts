@@ -33,14 +33,14 @@ describe('session public-link cached bearer', () => {
     });
 
     it('retains the device-held bearer across a byte-identical settings refresh', () => {
-        const previous = publication({ id: 'publication-current' });
+        const previous = publication({ id: 'publication-current', publicUrl: 'https://public.example/s/lookup#k=secret' });
         const refreshed = settings({ id: 'publication-current' });
         expect(mergeSessionPublicLinkWithCachedBearer({
             previousPublication: previous,
             cachedToken: 'cached',
             outcome: { ok: true, publication: refreshed },
         })).toEqual({
-            publication: { ...refreshed, token: 'cached' },
+            publication: { ...refreshed, token: 'cached', publicUrl: previous.publicUrl },
             cachedToken: 'cached',
         });
     });

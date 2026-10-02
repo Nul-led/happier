@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 
 import { sessionTagKey } from '../sessionTagUtils';
+import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import {
     SESSION_LIST_SEARCH_IN_THIS_VIEW_GROUP_KEY,
     SESSION_LIST_SEARCH_OTHER_MATCHES_GROUP_KEY,
@@ -36,6 +38,30 @@ function sessionItem(sessionId: string): SessionListIndexItem {
 }
 
 describe('resolveSessionListSearchOutsideMatches', () => {
+    it('does not reintroduce a Run step as a top-level Other match after pane nesting', () => {
+        const step = buildSessionListRenderableFromSession(createSessionFixture({ id: 'step',
+            origin: { kind: 'run_step', runId: 'run-parent' } }));
+        const result = appendSessionListSearchOtherMatches({
+            filteredItems: [], outsideMatches: [{ sessionKey: key('step'), serverId: 'server-a', sessionId: 'step', reasons: ['transcript'] }],
+            inThisViewTitle: 'Here', otherMatchesTitle: 'Elsewhere',
+            resolveSessionRow: () => step,
+        });
+        expect(result.filter((item) => item.type === 'session')).toEqual([]);
+    });
+    it('attaches a contextual step to its exact Run while preserving the agent Run parent', () => {
+        const lead = buildSessionListRenderableFromSession(createSessionFixture({ id: 'lead' }));
+        const step = buildSessionListRenderableFromSession(createSessionFixture({ id: 'step', origin: { kind: 'run_step', runId: 'run-parent' } }));
+        const result = appendSessionListSearchOtherMatches({
+            filteredItems: [activeHeader, sessionItem('lead'), { type: 'workflow_run', runId: 'run-parent', serverId: 'server-a', groupKey: 'active', reportsDepth: 1 }],
+            outsideMatches: [{ sessionKey: key('step'), serverId: 'server-a', sessionId: 'step', reasons: ['transcript'] }],
+            inThisViewTitle: 'Here', otherMatchesTitle: 'Elsewhere',
+            resolveSessionRow: (_server, id) => id === 'step' ? step : lead,
+            resolveRunOriginSession: () => 'lead',
+        });
+        expect(result.filter((item) => item.type !== 'header').map((item) => [item.type === 'session' ? item.sessionId : item.runId, item.reportsDepth ?? 0]))
+            .toEqual([['lead', 0], ['run-parent', 1], ['step', 2]]);
+        expect(result.filter((item) => item.type === 'header' && item.groupKey?.startsWith('search:'))).toEqual([]);
+    });
     it('projects unloaded current and archived metadata matches in exact-before-metadata order', () => {
         const targets = resolveSessionListMetadataSearchTargets({
             inventoryItems: [
@@ -152,7 +178,7 @@ describe('appendSessionListSearchOtherMatches', () => {
             otherMatchesTitle: 'Other matches',
         });
 
-        expect(grouped.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(grouped.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : item.runId)).toEqual([
             'In this view',
             'Active',
             'in-view',
@@ -182,7 +208,7 @@ describe('appendSessionListSearchOtherMatches', () => {
             otherMatchesTitle: 'Other matches',
         });
 
-        expect(grouped.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(grouped.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : item.runId)).toEqual([
             'Other matches',
             'archived',
         ]);

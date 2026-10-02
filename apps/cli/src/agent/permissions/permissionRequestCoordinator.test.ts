@@ -122,6 +122,71 @@ async function settledState<T>(promise: Promise<T>): Promise<'pending' | 'fulfil
 }
 
 describe('PermissionRequestCoordinator', () => {
+    it('cancels only one plugin turn while occurrence questions and neighboring requests remain live', async () => {
+        const { coordinator, session } = createHarness();
+        const requests = [
+            { requestId: 'bound', turnId: 'turn-1', owner: { kind: 'plugin' as const, pluginId: 'plugin-a' } },
+            { requestId: 'uncorrelated', owner: { kind: 'plugin' as const, pluginId: 'plugin-a' } },
+            { requestId: 'async', turnId: 'turn-1', lifetime: 'occurrence' as const, owner: { kind: 'plugin' as const, pluginId: 'plugin-a' } },
+            { requestId: 'next-turn', turnId: 'turn-2', owner: { kind: 'plugin' as const, pluginId: 'plugin-a' } },
+            { requestId: 'other-plugin', turnId: 'turn-1', owner: { kind: 'plugin' as const, pluginId: 'plugin-b' } },
+        ];
+        const outcomes = requests.map((request) => coordinator.requestDecision({ ...bashRequest, ...request }).catch(() => null));
+        try {
+            await coordinator.cancelByPluginTurn('plugin-a', 'turn-1', 'turn ended');
+            await expect(outcomes[0]).resolves.toBeNull();
+            expect(Object.keys(session.agentState.requests ?? {}).sort()).toEqual(['async', 'next-turn', 'other-plugin']);
+            expect(session.agentState.completedRequests?.bound?.status).toBe('canceled');
+            await coordinator.cancelByPlugin('plugin-a', 'plugin retired');
+            expect(Object.keys(session.agentState.requests ?? {})).toEqual(['other-plugin']);
+            expect(session.agentState.completedRequests?.async?.status).toBe('canceled');
+        } finally {
+            await coordinator.cancelAll('test cleanup');
+            await Promise.all(outcomes);
+        }
+    });
+
+    it('rejoins occurrence questions without losing causal turn custody or surviving occurrence retirement', async () => {
+        const { coordinator, session, store } = createHarness();
+        const request = {
+            ...bashRequest,
+            requestId: 'occurrence-rejoin',
+            turnId: 'turn-1',
+            lifetime: 'occurrence',
+            owner: { kind: 'plugin', pluginId: 'plugin-a' },
+        } as const;
+        const original = coordinator.requestDecision(request).catch(() => null);
+        coordinator.cancelRequest(request.requestId, 'transport detached');
+        await original;
+        const reloaded = createPermissionRequestCoordinator<TestPermissionResult>({ store });
+        const reattached = reloaded.requestDecision(request).catch(() => null);
+        try {
+            await reloaded.cancelByPluginTurn('plugin-a', 'turn-1', 'turn ended');
+            expect(await settledState(reattached)).toBe('pending');
+            expect(session.agentState.requests?.[request.requestId]?.turnId).toBe('turn-1');
+            await reloaded.cancelByPlugin('plugin-a', 'occurrence retired');
+            await expect(reattached).resolves.toBeNull();
+            expect(session.agentState.requests?.[request.requestId]).toBeUndefined();
+            expect(session.agentState.completedRequests?.[request.requestId]?.status).toBe('canceled');
+        } finally {
+            await reloaded.cancelAll('test cleanup');
+            await reattached;
+        }
+    });
+
+    it('rejects a retry that changes the lifetime of a pending request', async () => {
+        const { coordinator } = createHarness();
+        const request = { ...bashRequest, lifetime: 'occurrence' } as const;
+        const pending = coordinator.requestDecision(request).catch(() => null);
+        try {
+            await expect(coordinator.requestDecision({ ...request, lifetime: 'turn' })).rejects.toThrow();
+            expect(await settledState(pending)).toBe('pending');
+        } finally {
+            await coordinator.cancelAll('test cleanup');
+            await pending;
+        }
+    });
+
     it('resolves the live waiter when its response target is delivered after terminal persistence', async () => {
         const { coordinator, store, session } = createHarness();
         let delivered: boolean | undefined;
@@ -1143,7 +1208,7 @@ describe('PermissionRequestCoordinator', () => {
         await expect(retry).rejects.toThrow('Permission request aborted');
     });
 
-    it('does not consume an in-flight cached decision when the same id is retried with different input', async () => {
+    it.each(['input', 'lifetime'] as const)('does not consume an in-flight cached decision when the same id is retried with different %s', async (changed) => {
         const session = new DeferredUpdateSession();
         const { coordinator } = createHarness(session);
         const abort = new AbortController();
@@ -1165,10 +1230,14 @@ describe('PermissionRequestCoordinator', () => {
         await expect(handled).resolves.toBe(true);
 
         const retryAbort = new AbortController();
+        const toolInput = changed === 'input'
+            ? { command: ['bash', '-lc', 'echo different'] }
+            : bashRequest.toolInput;
         const retry = coordinator.requestDecision(
             {
                 ...bashRequest,
-                toolInput: { command: ['bash', '-lc', 'echo different'] },
+                toolInput,
+                ...(changed === 'lifetime' ? { lifetime: 'occurrence' as const } : {}),
                 createdAt: 300,
             },
             { signal: retryAbort.signal },
@@ -1177,7 +1246,7 @@ describe('PermissionRequestCoordinator', () => {
         expect(await settledState(retry)).toBe('pending');
         expect(session.agentState.requests![bashRequest.requestId]).toEqual(
             expect.objectContaining({
-                arguments: { command: ['bash', '-lc', 'echo different'] },
+                arguments: toolInput,
                 createdAt: 300,
             }),
         );

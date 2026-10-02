@@ -100,13 +100,24 @@ class HappierSherpaNativeModule internal constructor(
     }
   }
 
-  private fun requireEngine(assetsDir: String, initializationId: String? = null) {
+  private fun readFrontend(params: Map<String, Any?>): Map<String, String>? {
+    if (!params.containsKey("frontend")) return null
+    val frontend = params["frontend"] as? Map<*, *>
+      ?: throw Exception("frontend is invalid")
+    val lang = frontend["lang"] as? String ?: throw Exception("frontend.lang is required")
+    val lexicon = frontend["lexicon"] as? String ?: throw Exception("frontend.lexicon is required")
+    return mapOf("lang" to lang, "lexicon" to lexicon)
+  }
+
+  private fun requireEngine(assetsDir: String, initializationId: String? = null, frontend: Map<String, String>? = null) {
     val initialized = if (initializationId == null) {
-      HappierSherpaNativeJni.nativeEnsureEngine(assetsDir)
+      HappierSherpaNativeJni.nativeEnsureEngine(assetsDir, frontend?.get("lang"), frontend?.get("lexicon"))
     } else {
       HappierSherpaNativeJni.nativeEnsureEngineAtInitialization(
         assetsDir,
         initializationId,
+        frontend?.get("lang"),
+        frontend?.get("lexicon"),
       )
     }
     if (initialized != 1) {
@@ -126,25 +137,27 @@ class HappierSherpaNativeModule internal constructor(
       // worker is occupied, without retiring another caller's active engine.
       val assetsDir = requireAssetsDir(params)
       val initializationId = params["initializationId"] as? String
+      val frontend = readFrontend(params)
       if (initializationId == null) {
         // `remote-dev` sends only `{ assetsDir }`. Preserve that ordinary warm-up
         // through the same cache owner; it has no immutable request id to cancel.
         ttsWorker.run {
-          requireEngine(assetsDir)
+          requireEngine(assetsDir, frontend = frontend)
         }
       } else {
         if (initializationId.isBlank()) throw Exception("initializationId is required")
         admitEngineInitialization(assetsDir, initializationId)
         ttsWorker.run {
-          requireEngine(assetsDir, initializationId)
+          requireEngine(assetsDir, initializationId, frontend)
         }
       }
     }
 
     AsyncFunction("listVoices") { params: Map<String, Any?> ->
       val assetsDir = requireAssetsDir(params)
-      requireEngine(assetsDir)
-      val n = HappierSherpaNativeJni.nativeGetNumSpeakers(assetsDir)
+      val frontend = readFrontend(params)
+      requireEngine(assetsDir, frontend = frontend)
+      val n = HappierSherpaNativeJni.nativeGetNumSpeakers(assetsDir, frontend?.get("lang"), frontend?.get("lexicon"))
       if (n <= 0) return@AsyncFunction emptyList<Map<String, Any?>>()
 
       return@AsyncFunction (0 until n).map { i ->
@@ -160,6 +173,7 @@ class HappierSherpaNativeModule internal constructor(
       val jobId = params["jobId"] as? String ?: ""
       val assetsDir = requireAssetsDir(params)
       val text = params["text"] as? String ?: ""
+      val frontend = readFrontend(params)
       val outWavPath = params["outWavPath"] as? String ?: ""
       val sid = (params["sid"] as? Number)?.toInt() ?: 0
       val speed = ((params["speed"] as? Number)?.toDouble() ?: 1.0).toFloat()
@@ -169,7 +183,7 @@ class HappierSherpaNativeModule internal constructor(
       if (outWavPath.isBlank()) throw Exception("outWavPath is required")
 
       val sampleRate =
-        HappierSherpaNativeJni.nativeSynthesizeToWavFile(assetsDir, text, sid, speed, outWavPath, jobId)
+        HappierSherpaNativeJni.nativeSynthesizeToWavFile(assetsDir, text, sid, speed, outWavPath, jobId, frontend?.get("lang"), frontend?.get("lexicon"))
       if (sampleRate <= 0) {
         throw Exception("Synthesis failed")
       }
@@ -292,13 +306,13 @@ object HappierSherpaNativeJni {
     }
   }
 
-  external fun nativeEnsureEngine(assetsDir: String): Int
+  external fun nativeEnsureEngine(assetsDir: String, lang: String?, lexicon: String?): Int
   /** Admit/cancel exactly one initializer before it yields to the TTS worker. */
   external fun nativeAdmitEngineInitialization(assetsDir: String, initializationId: String): Int
   external fun nativeCancelEngineInitialization(assetsDir: String, initializationId: String)
-  external fun nativeEnsureEngineAtInitialization(assetsDir: String, initializationId: String): Int
-  external fun nativeGetNumSpeakers(assetsDir: String): Int
-  external fun nativeSynthesizeToWavFile(assetsDir: String, text: String, sid: Int, speed: Float, outWavPath: String, jobId: String): Int
+  external fun nativeEnsureEngineAtInitialization(assetsDir: String, initializationId: String, lang: String?, lexicon: String?): Int
+  external fun nativeGetNumSpeakers(assetsDir: String, lang: String?, lexicon: String?): Int
+  external fun nativeSynthesizeToWavFile(assetsDir: String, text: String, sid: Int, speed: Float, outWavPath: String, jobId: String, lang: String?, lexicon: String?): Int
   external fun nativeCancel(jobId: String)
 
   external fun nativeCreateStreamingRecognizer(jobId: String, assetsDir: String, sampleRate: Int, channels: Int, language: String): Int

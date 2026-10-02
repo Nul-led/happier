@@ -111,6 +111,9 @@ const PRESENTATION_LOADERS: Partial<Record<ActionId, () => Promise<ActionCliPres
   'session.stop': async () => (
     await import('@/cli/commands/session/sessionLeafPresentation')
   ).SESSION_STOP_PRESENTATION,
+  wait: async () => (
+    await import('./waitPresentation')
+  ).WAIT_PRESENTATION,
   'session.wait.idle': async () => (
     await import('@/cli/commands/session/sessionLeafPresentation')
   ).SESSION_WAIT_PRESENTATION,

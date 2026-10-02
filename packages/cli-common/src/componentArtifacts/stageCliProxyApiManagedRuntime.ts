@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { ensureFileExists, type RunCommand } from './commands.js';
 import type { BinaryTarget } from './targets.js';
+import type { parseBundledPluginPublicationFailures } from '../../bundledPluginPublicationPolicy.mjs';
 
 const CLIPROXYAPI_MANAGED_RUNTIME_PACKAGE = '@happier-dev/plugins-cliproxyapi';
 const CLIPROXYAPI_MANAGED_RUNTIME_BUILD_SCRIPT = 'managed-runtime:build';
@@ -34,6 +35,7 @@ export async function stageCliProxyApiManagedRuntime({
   yarn,
   runCommand,
   prebuiltExecutablePath,
+  publicationFailures = [],
 }: {
   repoRoot: string;
   payloadDir: string;
@@ -41,7 +43,9 @@ export async function stageCliProxyApiManagedRuntime({
   yarn: Readonly<{ cmd: string; args: string[] }>;
   runCommand: RunCommand;
   prebuiltExecutablePath?: string;
-}): Promise<{ executablePath: string; licensePath: string; thirdPartyNoticesPath: string }> {
+  publicationFailures?: ReturnType<typeof parseBundledPluginPublicationFailures>;
+}): Promise<{ executablePath: string; licensePath: string; thirdPartyNoticesPath: string } | null> {
+  if (publicationFailures.some((failure) => failure.packageName === CLIPROXYAPI_MANAGED_RUNTIME_PACKAGE)) return null;
   const toolsDir = join(payloadDir, 'tools', 'unpacked');
   const executablePath = join(toolsDir, `${CLIPROXYAPI_MANAGED_RUNTIME_EXECUTABLE}${target.exeExt}`);
   const licenseSourcePath = join(

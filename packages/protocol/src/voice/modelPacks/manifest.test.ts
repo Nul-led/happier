@@ -65,4 +65,21 @@ describe('voice model pack manifest', () => {
       }),
     ).toThrow();
   });
+
+  it('retains the model frontend required before native Kokoro construction', () => {
+    const manifest = parseModelPackManifest({
+      packId: 'kokoro-multi', kind: 'tts_sherpa', model: 'kokoro', version: 'v1.1',
+      frontend: { lang: 'en', lexicon: 'lexicon-en.txt' },
+      files: [{ path: 'lexicon-en.txt', url: 'https://example.com/lexicon', sha256: 'a'.repeat(64), sizeBytes: 1 }],
+    });
+    expect(manifest).toHaveProperty('frontend', { lang: 'en', lexicon: 'lexicon-en.txt' });
+  });
+
+  it('rejects a frontend lexicon outside the integrity-declared pack files', () => {
+    expect(() => parseModelPackManifest({
+      packId: 'kokoro-multi', kind: 'tts_sherpa', model: 'kokoro', version: 'v1.1',
+      frontend: { lang: 'en', lexicon: '../other/lexicon.txt' },
+      files: [{ path: 'model.onnx', url: 'https://example.com/model', sha256: 'a'.repeat(64), sizeBytes: 1 }],
+    })).toThrow();
+  });
 });

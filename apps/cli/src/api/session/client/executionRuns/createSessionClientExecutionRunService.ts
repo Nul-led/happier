@@ -68,13 +68,14 @@ export function createSessionClientExecutionRunService(
                 ...readExecutionRunServiceContext(),
                 request,
             })),
-        wait: async (request: unknown) => {
+        wait: async (request: unknown, options?: Readonly<{ signal?: AbortSignal }>) => {
             const rawTimeoutSeconds = readUnknownRecordProperty(request, 'timeoutSeconds');
 
             return await runWithServerHttpBaseUrl(serverUrl, async () => waitForExecutionRun({
                 ...readExecutionRunServiceContext(),
                 runId: String(readUnknownRecordProperty(request, 'runId') ?? ''),
                 timeoutMs: normalizeExecutionRunWaitTimeoutMs(rawTimeoutSeconds),
+                ...(options?.signal ? { signal: options.signal } : {}),
             }));
         },
     } as const;

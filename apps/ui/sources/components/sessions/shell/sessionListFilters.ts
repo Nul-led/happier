@@ -1,4 +1,4 @@
-import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
+import { buildSessionListIndexNodeId, type SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import type { QualifiedTagAddress } from './search/sessionListViewFilters';
 
 import { sessionTagKey } from './sessionTagUtils';
@@ -19,6 +19,7 @@ export type SessionListHeaderFilterInput = Readonly<{
     /** Home-local tag ids assigned to each loaded Session, keyed by `sessionTagKey`. */
     sessionTagIdsBySessionKey?: Readonly<Record<string, readonly string[]>>;
     searchableTextBySessionKey: Readonly<Record<string, string>>;
+    searchableTextByWorkflowRunKey?: Readonly<Record<string, string>>;
     primarySearchableTextBySessionKey?: Readonly<Record<string, string>>;
     memoryMatchedSessionKeys?: ReadonlySet<string>;
 }>;
@@ -32,7 +33,8 @@ function normalizeSearchTokens(query: string): string[] {
         .filter(Boolean);
 }
 
-function buildSessionKey(item: Extract<SessionListIndexItem, { type: 'session' }>): string | null {
+function buildSessionKey(item: Exclude<SessionListIndexItem, { type: 'header' }>): string | null {
+    if (item.type === 'workflow_run') return buildSessionListIndexNodeId(item);
     const serverId = String(item.serverId ?? '').trim();
     const sessionId = String(item.sessionId ?? '').trim();
     if (!serverId || !sessionId) return null;
@@ -121,6 +123,11 @@ function rankContiguousSessionRuns(
         }
         let runEnd = runStart + 1;
         while (runEnd < next.length && next[runEnd]?.type === 'session') runEnd += 1;
+        // Relevance ranks ordinary peers, never a child independently of its tree.
+        if (next.slice(runStart, runEnd).some((item) => item.type !== 'header' && (item.reportsDepth ?? 0) > 0)) {
+            runStart = runEnd;
+            continue;
+        }
         const ranked = next.slice(runStart, runEnd).map((item, index) => {
             const session = item as Extract<SessionListIndexItem, { type: 'session' }>;
             const sessionKey = buildSessionKey(session);
@@ -194,6 +201,27 @@ export function filterSessionListItemsForHeaderControls(
     const result: SessionListIndexItem[] = [];
     let pendingHeaders: Extract<SessionListIndexItem, { type: 'header' }>[] = [];
 
+    // Keep the exact ancestor chain of a search hit, so a matching step never becomes a root.
+    const selected = new Set<SessionListIndexItem>();
+    const ancestors: Exclude<SessionListIndexItem, { type: 'header' }>[] = [];
+    for (const item of items) {
+        if (item.type === 'header') { ancestors.length = 0; continue; }
+        const depth = item.reportsDepth ?? 0;
+        while (ancestors.length > 0 && (ancestors[ancestors.length - 1]!.reportsDepth ?? 0) >= depth) ancestors.pop();
+        const key = buildSessionKey(item);
+        const tagsMatch = item.type === 'session'
+            ? sessionMatchesSelectedTags(item, key, selectedTagIdsByServerId, sessionTagIdsBySessionKey)
+            : selectedTagIdsByServerId.size === 0;
+        if (tagsMatch && resolveSessionSearchMatchClass(key, normalizedQuery, searchTokens,
+            item.type === 'workflow_run' ? input.searchableTextByWorkflowRunKey ?? {} : input.searchableTextBySessionKey,
+            item.type === 'workflow_run' ? undefined : input.primarySearchableTextBySessionKey,
+            item.type === 'workflow_run' ? undefined : input.memoryMatchedSessionKeys) !== null) {
+            selected.add(item);
+            ancestors.forEach((ancestor) => selected.add(ancestor));
+        }
+        ancestors.push(item);
+    }
+
     for (const item of items) {
         if (item.type === 'header') {
             if (isSessionListPrimaryHeaderKind(item.headerKind)) {
@@ -216,20 +244,7 @@ export function filterSessionListItemsForHeaderControls(
             continue;
         }
 
-        const key = buildSessionKey(item);
-        if (
-            !sessionMatchesSelectedTags(item, key, selectedTagIdsByServerId, sessionTagIdsBySessionKey)
-            || resolveSessionSearchMatchClass(
-                key,
-                normalizedQuery,
-                searchTokens,
-                input.searchableTextBySessionKey,
-                input.primarySearchableTextBySessionKey,
-                input.memoryMatchedSessionKeys,
-            ) === null
-        ) {
-            continue;
-        }
+        if (!selected.has(item)) continue;
 
         if (pendingHeaders.length > 0) {
             result.push(...pendingHeaders);

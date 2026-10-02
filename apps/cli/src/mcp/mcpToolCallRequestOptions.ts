@@ -39,6 +39,14 @@ function readTimeoutSeconds(args: unknown): number | null {
   return timeoutSeconds;
 }
 
+function readObservationTimeoutSeconds(toolName: string, args: unknown): number | null {
+  if (toolName !== 'wait' && !toolName.endsWith('__wait')) return null;
+  const timeout = normalizeMcpToolArguments(normalizeMcpToolArguments(args)?.timeout);
+  const durationMs = timeout?.durationMs;
+  return typeof durationMs === 'number' && Number.isSafeInteger(durationMs) && durationMs > 0
+    ? durationMs / 1000 : null;
+}
+
 function readExecutionRunStartWaitTimeoutSeconds(args: unknown): number | null {
   const record = normalizeMcpToolArguments(args);
   if (record?.waitForCompletion !== true) return null;
@@ -65,7 +73,7 @@ export function resolveMcpToolCallRequestTimeoutMs(params: Readonly<{
     ? readTimeoutSeconds(params.args)
     : isExecutionRunStartToolName(params.toolName)
       ? readExecutionRunStartWaitTimeoutSeconds(params.args)
-      : null;
+      : readObservationTimeoutSeconds(params.toolName, params.args);
   if (timeoutSeconds != null) {
     const requestedWaitMs = Math.max(1, Math.floor(timeoutSeconds * 1_000));
     return Math.min(

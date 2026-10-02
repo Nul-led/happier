@@ -6,7 +6,7 @@ import { isKokoroRuntimeSupported } from '@/voice/kokoro/runtime/kokoroSupport';
 export async function speakKokoroText(opts: {
   text: string;
   assetSetId?: string | null;
-  voiceId: string;
+  voiceId: string | null;
   speed: number;
   timeoutMs: number;
   registerPlaybackStopper: VoicePlaybackStopperRegistrar;

@@ -1,6 +1,7 @@
 import type { ChatListItemsBuildCache } from '@/components/sessions/chatListItems';
 import type { TranscriptTurnsBuildCache } from '@/components/sessions/transcript/turnGrouping/buildTranscriptTurns';
 import { LruMap } from '@/utils/cache/lruMap';
+import { registerSessionTranscriptDerivedCacheClear } from '@/sync/runtime/sessionTranscriptDerivedCaches';
 
 const TRANSCRIPT_DERIVED_ITEMS_CACHE_FALLBACK_MAX_SESSIONS = 16;
 
@@ -11,6 +12,10 @@ export type TranscriptDerivedItemsCacheEntry = {
 
 const transcriptDerivedItemsCacheBySessionId = new LruMap<string, TranscriptDerivedItemsCacheEntry>({
     maxEntries: TRANSCRIPT_DERIVED_ITEMS_CACHE_FALLBACK_MAX_SESSIONS,
+});
+
+registerSessionTranscriptDerivedCacheClear((sessionId) => {
+    transcriptDerivedItemsCacheBySessionId.delete(sessionId);
 });
 
 export function resolveTranscriptDerivedItemsCacheMaxSessions(value: unknown): number {

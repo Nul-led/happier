@@ -7,11 +7,12 @@ import {
 import { decodeBase64, VOICE_RUNTIME_DAEMON_STT_PCM_FORMAT } from '@happier-dev/protocol';
 
 import { createVoiceMachineError } from '@/voice/runtime/machine/voiceMachineError';
-import { VOICE_PCM_CONVERSATION_AUDIO_SESSION } from '@/voice/runtime/nativePcmAudioSession';
+import { resolveVoicePcmCaptureAudioSession } from '@/voice/runtime/nativePcmAudioSession';
 import type { MicSession } from '@/voice/runtime/mic/MicSession';
 
 export type DaemonSpeechPcmCaptureOptions = Readonly<{
   micSession: MicSession;
+  capturePurpose?: 'dictation' | 'conversation';
   onAudioStarted: () => void;
   onChunk: (pcm16Bytes: Uint8Array) => Promise<void>;
   onError?: (error: ReturnType<typeof createVoiceMachineError>) => void;
@@ -22,6 +23,7 @@ export type DaemonSpeechPcmCaptureOptions = Readonly<{
 export type DaemonSpeechPcmCapture = Readonly<{
   start: () => Promise<void>;
   stop: () => Promise<void>;
+  finish: () => Promise<void>;
   waitForDrain: () => Promise<void>;
   isActive: () => boolean;
 }>;
@@ -59,6 +61,7 @@ export function createDaemonSpeechPcmCapture(options: DaemonSpeechPcmCaptureOpti
   let capture: VoicePcmCapture | null = null;
   let lease: VoicePcmCaptureLease | null = null;
   let stopPromise: Promise<void> | null = null;
+  let finishPromise: Promise<void> | null = null;
   let unlinkAbort = (): void => {};
 
   const reportError = (reason: string): void => {
@@ -74,11 +77,27 @@ export function createDaemonSpeechPcmCapture(options: DaemonSpeechPcmCaptureOpti
       const currentLease = lease;
       lease = null;
       await currentLease?.release().catch(() => {});
-      await currentLease?.waitForDrain().catch(() => {});
     })().finally(() => {
       stopPromise = null;
     });
     return stopPromise;
+  };
+
+  const finish = (): Promise<void> => {
+    if (finishPromise) return finishPromise;
+    const currentLease = lease;
+    if (!currentLease) return Promise.resolve();
+    finishPromise = (async () => {
+      try {
+        await currentLease.finish();
+      } finally {
+        active = false;
+        unlinkAbort();
+        unlinkAbort = (): void => {};
+        if (lease === currentLease) lease = null;
+      }
+    })().finally(() => { finishPromise = null; });
+    return finishPromise;
   };
 
   const failAndStop = (reason: string): void => {
@@ -88,7 +107,7 @@ export function createDaemonSpeechPcmCapture(options: DaemonSpeechPcmCaptureOpti
   };
 
   const handleFrame = async (event: AudioStreamFrameEvent): Promise<void> => {
-    if (!active || options.micSession.isMuted() || !isCanonicalFrame(event)) return;
+    if (!active || !isCanonicalFrame(event)) return;
     const pcm16Bytes = decodePcm16Base64(event.pcm16leBase64);
     if (!pcm16Bytes) return;
     if (!audioStarted) {
@@ -121,7 +140,7 @@ export function createDaemonSpeechPcmCapture(options: DaemonSpeechPcmCaptureOpti
       lease = await capture.acquire({
         ownerId: 'daemon-streaming-stt',
         format: { sampleRate: TARGET_SAMPLE_RATE, channels: TARGET_CHANNELS, frameMs: FRAME_MS },
-        audioSession: VOICE_PCM_CONVERSATION_AUDIO_SESSION,
+        audioSession: resolveVoicePcmCaptureAudioSession(options.capturePurpose ?? 'dictation'),
         maxQueuedFrames: maxQueuedChunks,
         shouldDeliver: () => active && !options.micSession.isMuted(),
         onFrame: handleFrame,
@@ -139,6 +158,7 @@ export function createDaemonSpeechPcmCapture(options: DaemonSpeechPcmCaptureOpti
   return {
     start,
     stop,
+    finish,
     waitForDrain: async () => {
       await lease?.waitForDrain();
     },

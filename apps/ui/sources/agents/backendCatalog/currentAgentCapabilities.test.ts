@@ -123,6 +123,31 @@ describe('readCurrentProjectedAgentCapabilities', () => {
 });
 
 describe('supportsAgentLifecycleCapability', () => {
+    it('reads usage reporting from either provenance and honors the opened runtime declaration', () => {
+        for (const agentId of ['codex', 'acme-lifecycle']) {
+            const currentAgentCapabilities = {
+                agentId,
+                identity: { pluginId: 'reporting-agent', localId: agentId },
+                generation: 42,
+                capabilities: { sessions: {
+                    open: ['create'] as ['create'], delivery: ['newTurn'] as ['newTurn'], cancel: true,
+                    usageReporting: true as const,
+                } },
+            };
+            const query = { agentId, capability: 'usageReporting' as const, currentAgentCapabilities };
+            expect(supportsAgentLifecycleCapability(query)).toBe(true);
+            expect(supportsAgentLifecycleCapability({ ...query, metadata: {
+                agentRuntimeCapabilitiesV1: { sessionCapabilities: { usageReporting: 'unsupported' } },
+            } })).toBe(false);
+        }
+        expect(supportsAgentLifecycleCapability({ agentId: 'codex', capability: 'usageReporting' })).toBe(false);
+        expect(supportsAgentLifecycleCapability({
+            agentId: 'codex', capability: 'usageReporting', metadata: {
+                agentRuntimeCapabilitiesV1: { sessionCapabilities: { usageReporting: 'supported' } },
+            },
+        })).toBe(false);
+    });
+
     const externalAgent = readCurrentProjectedAgentCapabilities({
         projection: projection as any,
         agentId: 'acme-lifecycle',

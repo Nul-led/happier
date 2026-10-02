@@ -405,7 +405,7 @@ describe('sessionListOrderingStateV1', () => {
             ],
         });
 
-        expect(reordered.map((item) => item.type === 'header' ? item.title : item.sessionId)).toEqual([
+        expect(reordered.map((item) => item.type === 'header' ? item.title : item.type === 'session' ? item.sessionId : `run:${item.runId}`)).toEqual([
             'B', 'b', 'A', 'a',
         ]);
     });

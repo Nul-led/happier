@@ -1,6 +1,8 @@
 import { Platform } from 'react-native';
 import {
   resolveVoiceSpeechSettingsCorrespondence,
+  resolveVoiceSpeechSynthesisInputLimits,
+  batchSpeechTextForSynthesis,
   type VoiceProviderSettingsJsonValueV1,
 } from '@happier-dev/protocol';
 
@@ -124,6 +126,9 @@ export function createBundledSpeechRuntime(input: Readonly<{
         throw createRuntimeError('provider_settings_invalid');
       }
       if (!correspondence.synthesize) throw createRuntimeError('provider_settings_invalid');
+      const batches = batchSpeechTextForSynthesis(params.text, resolveVoiceSpeechSynthesisInputLimits({
+        contribution: declaration, settings: config,
+      }));
       const abortController = new AbortController();
       let stopPlayback: (() => void) | null = null;
       const stop = () => {
@@ -144,27 +149,35 @@ export function createBundledSpeechRuntime(input: Readonly<{
       try {
         clearStopper = params.registerPlaybackStopper(stop);
         if (abortController.signal.aborted) return;
-        const result = await getClient().synthesize({
-          entry: contribution,
-          input: params.text,
-          signal: abortController.signal,
-        });
-        if (abortController.signal.aborted) return;
-        const registerPlaybackOnly: VoicePlaybackStopperRegistrar = (stopper) => {
-          stopPlayback = stopper;
-          return () => {
-            if (stopPlayback === stopper) stopPlayback = null;
+        let playbackStarted = false;
+        for (const text of batches) {
+          if (abortController.signal.aborted) return;
+          const result = await getClient().synthesize({
+            entry: contribution,
+            input: text,
+            signal: abortController.signal,
+          });
+          if (abortController.signal.aborted) return;
+          const registerPlaybackOnly: VoicePlaybackStopperRegistrar = (stopper) => {
+            stopPlayback = stopper;
+            return () => {
+              if (stopPlayback === stopper) stopPlayback = null;
+            };
           };
-        };
-        await (input.play ?? playAudioBytesWithStopper)({
-          bytes: result.bytes.buffer.slice(
-            result.bytes.byteOffset,
-            result.bytes.byteOffset + result.bytes.byteLength,
-          ) as ArrayBuffer,
-          format: result.mimeType === 'audio/wav' ? 'wav' : 'mp3',
-          registerPlaybackStopper: registerPlaybackOnly,
-          onPlaybackStarted: params.onPlaybackStarted,
-        });
+          await (input.play ?? playAudioBytesWithStopper)({
+            bytes: result.bytes.buffer.slice(
+              result.bytes.byteOffset,
+              result.bytes.byteOffset + result.bytes.byteLength,
+            ) as ArrayBuffer,
+            format: result.mimeType === 'audio/wav' ? 'wav' : 'mp3',
+            registerPlaybackStopper: registerPlaybackOnly,
+            onPlaybackStarted: () => {
+              if (playbackStarted) return;
+              playbackStarted = true;
+              params.onPlaybackStarted?.();
+            },
+          });
+        }
       } finally {
         params.signal?.removeEventListener('abort', abortFromSignal);
         clearStopper();

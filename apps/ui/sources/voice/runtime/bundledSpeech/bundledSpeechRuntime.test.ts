@@ -6,6 +6,10 @@ import type { BundledSpeechDaemonClient } from '@/voice/credentials/bundledSpeec
 
 import { createBundledSpeechRuntime } from './bundledSpeechRuntime';
 
+// The default RPC client is a network boundary. Tests inject its transport and
+// keep the real registry/settings/speech orchestration beneath that boundary.
+vi.mock('@/voice/credentials/bundledSpeechClient', () => ({ bundledSpeechDaemonClient: {} }));
+
 type SpeechDeclaration = Extract<VoiceProviderContribution, Readonly<{ kind: 'speech' }>>;
 
 const CATALOG_STT_DECLARATION = Object.freeze({
@@ -110,6 +114,44 @@ function createFakeSpeechRegistry(
 }
 
 describe('bundledSpeechRuntime', () => {
+  it('batches multibyte replies by the declared UTF-8 cap through the real settings owner', async () => {
+    const declaration = { ...CATALOG_TTS_DECLARATION, limits: { synthesize: { maxInputUtf8Bytes: 9 } } };
+    const received: string[] = [];
+    const text = '😀界你好。 继续。';
+    const runtime = createBundledSpeechRuntime({
+      registry: createFakeSpeechRegistry([declaration]).registry,
+      client: { transcribe: async () => '', synthesize: async ({ input }) => {
+        received.push(input); return { bytes: new Uint8Array([1]), mimeType: 'audio/wav' as const };
+      } },
+      play: async () => {},
+    });
+    await runtime.speak(CATALOG_TTS_ID, {
+      text, providerConfig: { catalogVoice: 'voice', format: 'wav', languageCode: '', speakingRate: 1, pitch: 0 },
+      registerPlaybackStopper: () => () => {},
+    });
+    expect(received.length).toBeGreaterThan(1);
+    expect(received.every((batch) => new TextEncoder().encode(batch).byteLength <= 9)).toBe(true);
+    expect(received.join('')).toBe(text.replace(/\s/gu, ''));
+  });
+  it('batches whole replies by the selected character limit and cancels remaining batches during playback', async () => {
+    const declaration = { ...CATALOG_TTS_DECLARATION, limits: { synthesize: { maxInputCharacters: 20 } } };
+    const received: string[] = [];
+    let stop: (() => void) | undefined;
+    const runtime = createBundledSpeechRuntime({
+      registry: createFakeSpeechRegistry([declaration]).registry,
+      client: { transcribe: async () => '', synthesize: async ({ input }) => {
+        received.push(input);
+        return { bytes: new Uint8Array([1]), mimeType: 'audio/wav' as const };
+      } },
+      play: async () => { if (received.length === 2) stop?.(); },
+    });
+    await runtime.speak(CATALOG_TTS_ID, {
+      text: 'First short reply. Second short reply. Third short reply.',
+      providerConfig: { catalogVoice: 'voice', format: 'wav', languageCode: '', speakingRate: 1, pitch: 0 },
+      registerPlaybackStopper: (stopper) => { stop = stopper; return () => {}; },
+    });
+    expect(received).toEqual(['First short reply.', 'Second short reply.']);
+  });
   it('projects enabled bundled speech engines and removes them fail-closed when their package is disabled', () => {
     const declarations = [CATALOG_STT_DECLARATION, CATALOG_TTS_DECLARATION];
     const enabled = createBundledSpeechRuntime({

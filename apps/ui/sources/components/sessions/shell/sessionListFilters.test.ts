@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
+import { buildSessionListIndexNodeId, type SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 import { filterSessionListItemsForHeaderControls } from './sessionListFilters';
@@ -40,6 +40,27 @@ function key(sessionId: string): string {
 }
 
 describe('filterSessionListItemsForHeaderControls', () => {
+    it('keeps a matching reports tree in parent order instead of ranking a child above its parent', () => {
+        const items = [activeHeader, sessionItem('lead'), { ...sessionItem('step'), reportsDepth: 1 }];
+        expect(filterSessionListItemsForHeaderControls(items, {
+            searchQuery: 'invoice', selectedTagIds: [],
+            searchableTextBySessionKey: { [key('lead')]: 'invoice planning', [key('step')]: 'invoice' },
+            primarySearchableTextBySessionKey: { [key('step')]: 'invoice' },
+        })).toEqual(items);
+    });
+    it('searches private Run metadata with a kind-qualified key and retains the parent of a matching step', () => {
+        const run = { type: 'workflow_run', serverId: 'server-a', runId: 'shared-id', groupKey: 'active' } as const;
+        const items = [activeHeader, sessionItem('shared-id'), run,
+            { ...sessionItem('step'), reportsDepth: 1 }];
+        const input = { searchQuery: 'invoice', selectedTagIds: [],
+            searchableTextBySessionKey: { [key('shared-id')]: 'ordinary session', [key('step')]: 'repair invoice' },
+            searchableTextByWorkflowRunKey: { [buildSessionListIndexNodeId(run)]: 'publish report' } };
+        expect(filterSessionListItemsForHeaderControls(items, input)).toEqual([activeHeader, run, items[3]]);
+        expect(filterSessionListItemsForHeaderControls(items, { ...input, searchQuery: 'publish' }))
+            .toEqual([activeHeader, run]);
+        expect(filterSessionListItemsForHeaderControls(items, { ...input, searchQuery: 'ordinary' }))
+            .toEqual([activeHeader, items[1]]);
+    });
     it('filters sessions by indexed search text and prunes empty headers', () => {
         const result = filterSessionListItemsForHeaderControls([
             activeHeader,
@@ -54,7 +75,7 @@ describe('filterSessionListItemsForHeaderControls', () => {
             },
         });
 
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : item.runId)).toEqual([
             'Active',
             'beta',
         ]);
@@ -84,7 +105,7 @@ describe('filterSessionListItemsForHeaderControls', () => {
             },
         });
 
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : item.runId)).toEqual([
             'Yesterday',
             'yesterday-b',
         ]);
@@ -121,7 +142,7 @@ describe('filterSessionListItemsForHeaderControls', () => {
 
         // The section a row belongs to is not a sibling of its date group: Active &
         // inactive must still say which section the surviving day sits in.
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : item.runId)).toEqual([
             'Active',
             'Yesterday',
             'yesterday-a',
@@ -165,7 +186,7 @@ describe('filterSessionListItemsForHeaderControls', () => {
             },
         });
 
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : item.runId)).toEqual([
             'Active',
             'Home A',
             'Billing',
@@ -187,7 +208,7 @@ describe('filterSessionListItemsForHeaderControls', () => {
             memoryMatchedSessionKeys: new Set([key('beta')]),
         });
 
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : item.runId)).toEqual([
             'Active',
             'beta',
         ]);
@@ -217,7 +238,7 @@ describe('filterSessionListItemsForHeaderControls', () => {
             ]),
         });
 
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : item.runId)).toEqual([
             'Active',
             'exact',
             'metadata',
@@ -263,7 +284,7 @@ describe('filterSessionListItemsForHeaderControls', () => {
             searchableTextBySessionKey: {},
         });
 
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : item.runId)).toEqual([
             'Active',
             'beta',
         ]);
@@ -304,7 +325,7 @@ describe('filterSessionListItemsForHeaderControls', () => {
             searchableTextBySessionKey: {},
         });
 
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : item.runId)).toEqual([
             'Inactive',
             'beta',
         ]);
@@ -354,7 +375,7 @@ describe('filterSessionListItemsForHeaderControls', () => {
             searchableTextBySessionKey: {},
         });
 
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : item.runId)).toEqual([
             'Active',
             'alpha',
         ]);
@@ -393,7 +414,7 @@ describe('filterSessionListItemsForHeaderControls', () => {
             searchableTextBySessionKey: {},
         });
 
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
+        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.type === 'header' ? item.title : item.runId)).toEqual([
             'Active',
             'alpha',
         ]);

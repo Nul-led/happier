@@ -1,7 +1,6 @@
 import * as React from 'react';
 
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
-import { useLocalSetting } from '@/sync/domains/state/storage';
 import { useDeviceType } from '@/utils/platform/responsive';
 
 import type { EmbeddedTerminalDockLocation } from './embeddedTerminalDocking';
@@ -14,13 +13,11 @@ export function useSessionTerminalAvailability(serverId?: string | null): Readon
 }> {
     const deviceType = useDeviceType();
     const terminalEnabled = useFeatureEnabled('terminal.embeddedPty', serverId ? { scopeKind: 'spawn', serverId } : undefined);
-    const dockLocationRaw = useLocalSetting('embeddedTerminalDockLocation');
 
     return React.useMemo(() => {
-        const dockLocation =
-            deviceType === 'phone'
-                ? 'sidebar'
-                : normalizeEmbeddedTerminalDockLocation(dockLocationRaw);
+        // Terminal lab B1: the session terminal lives in the bottom pane; a phone shows it as the
+        // session's Terminal page (the cockpit destination). "Open in Details" is a per-tab move.
+        const dockLocation: EmbeddedTerminalDockLocation = deviceType === 'phone' ? 'sidebar' : 'bottom';
 
         return {
             deviceType,
@@ -28,11 +25,5 @@ export function useSessionTerminalAvailability(serverId?: string | null): Readon
             dockLocation,
             sidebarTabAvailable: terminalEnabled && dockLocation === 'sidebar',
         };
-    }, [deviceType, dockLocationRaw, terminalEnabled]);
-}
-
-function normalizeEmbeddedTerminalDockLocation(
-    value: string | null | undefined,
-): EmbeddedTerminalDockLocation {
-    return value === 'bottom' || value === 'details' ? value : 'sidebar';
+    }, [deviceType, terminalEnabled]);
 }

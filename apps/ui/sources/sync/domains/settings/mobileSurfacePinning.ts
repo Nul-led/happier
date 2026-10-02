@@ -1,9 +1,8 @@
 /**
- * Session cockpit bottom chrome reserves one slot for overflow whenever the
- * catalog is larger than its inline capacity. Keep the durable pin list below
- * that capacity so a contributor cannot crowd out the host's navigation.
+ * The person's Session bar: which tools sit on it, in order. `null` means they have not
+ * changed it, so the host's defaults apply. There is no count cap — the bar's width decides
+ * what fits, and what does not fit either scrolls or waits in More (the catalog owner decides).
  */
-export const SESSION_COCKPIT_MAX_PINNED_SURFACE_COUNT = 3;
 
 function normalizeSurfaceId(value: unknown): string | null {
     if (typeof value !== 'string') return null;
@@ -12,37 +11,25 @@ function normalizeSurfaceId(value: unknown): string | null {
 }
 
 /**
- * Retain only qualified, user-owned identifiers. Callers decide whether an id
- * is currently admitted; unavailable plugin pins remain durable so a later
- * reinstatement can restore the user's preference without becoming visible in
- * the interim.
+ * Pin or unpin one tool. The first change starts from the host defaults so pinning one more
+ * tool never empties the bar. Unavailable plugin ids stay durable, so a reinstated plugin
+ * comes back where the person put it; callers decide what is admitted right now.
  */
-export function toggleSessionCockpitPinnedSurface(
-    pinnedSurfaceIds: readonly string[] | null | undefined,
+export function toggleSessionCockpitBarSurface(
+    barSurfaceIds: readonly string[] | null | undefined,
     surfaceId: string,
+    defaultSurfaceIds: readonly string[],
 ): readonly string[] {
-    const normalizedSurfaceId = normalizeSurfaceId(surfaceId);
-    if (!normalizedSurfaceId) {
-        return Array.isArray(pinnedSurfaceIds) ? pinnedSurfaceIds : [];
-    }
-
     const seen = new Set<string>();
-    const normalizedPinned = (pinnedSurfaceIds ?? []).flatMap((candidate) => {
-        const normalizedCandidate = normalizeSurfaceId(candidate);
-        if (!normalizedCandidate || seen.has(normalizedCandidate)) return [];
-        seen.add(normalizedCandidate);
-        return [normalizedCandidate];
+    const current = (barSurfaceIds ?? defaultSurfaceIds).flatMap((candidate) => {
+        const normalized = normalizeSurfaceId(candidate);
+        if (!normalized || seen.has(normalized)) return [];
+        seen.add(normalized);
+        return [normalized];
     });
-    const existingIndex = normalizedPinned.indexOf(normalizedSurfaceId);
-    if (existingIndex >= 0) {
-        return Object.freeze(normalizedPinned.filter((candidate) => candidate !== normalizedSurfaceId));
-    }
-
-    // The newest explicit request wins at the bounded host capacity. This is
-    // deterministic and keeps the selected item visible without letting a
-    // plugin-defined rank dictate permanent chrome placement.
-    return Object.freeze([
-        ...normalizedPinned,
-        normalizedSurfaceId,
-    ].slice(-SESSION_COCKPIT_MAX_PINNED_SURFACE_COUNT));
+    const normalizedSurfaceId = normalizeSurfaceId(surfaceId);
+    if (!normalizedSurfaceId) return Object.freeze(current);
+    return Object.freeze(seen.has(normalizedSurfaceId)
+        ? current.filter((candidate) => candidate !== normalizedSurfaceId)
+        : [...current, normalizedSurfaceId]);
 }

@@ -342,6 +342,7 @@ describe('local voice engine local neural STT (streaming)', () => {
     }));
     vi.doMock('@/voice/runtime/input/LocalVoiceCaptureOwner', () => ({
       createLocalVoiceCaptureOwner: () => ({
+        isCaptureActive: vi.fn(() => false),
         resolveManualBargeInAction: vi.fn(() => ({
           kind: 'noop',
           reason: 'not_speaking',

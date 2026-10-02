@@ -34,6 +34,14 @@ export type NativeCacheFileSink = Readonly<{
     cleanup: () => Promise<void>;
 }>;
 
+/** The existing native downloaded-file handoff. False means no OS action is available. */
+export async function shareNativeCacheFile(fileUri: string, mimeType?: string, isCurrent: () => boolean = () => true): Promise<boolean> {
+    const sharing = await import('expo-sharing');
+    if (!isCurrent() || !await sharing.isAvailableAsync() || !isCurrent()) return false;
+    await sharing.shareAsync(fileUri, mimeType ? { mimeType } : undefined);
+    return true;
+}
+
 /** Removes one exact cache file after its creating component/process-local closure is gone. */
 export async function removeNativeCacheFileCustody(fileUri: string): Promise<void> {
     const FileSystem = await import('expo-file-system') as ExpoFileSystemModule;

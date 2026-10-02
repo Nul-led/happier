@@ -48,6 +48,7 @@ function resolveSurface(surface: unknown): ActionExecuteBeforeHookPayload['invoc
 function projectHookCaller(
   caller: Parameters<NonNullable<ActionExecutorDeps['interceptActionExecution']>>[0]['caller'],
 ): ActionExecuteBeforeHookPayload['invocation']['caller'] {
+  if (caller.kind === 'session') return { kind: 'session', sessionId: caller.sessionId };
   return caller.kind === 'plugin'
     ? { kind: 'plugin', pluginId: caller.pluginId }
     : { kind: 'host' };

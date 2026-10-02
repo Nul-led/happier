@@ -182,7 +182,7 @@ function resolveStateBlocker(
   ) ?? null;
 }
 
-function credentialHealthAllowsSelection(status: ConnectedServiceCredentialHealthStatusV1 | null | undefined): boolean {
+export function credentialHealthAllowsSelection(status: ConnectedServiceCredentialHealthStatusV1 | null | undefined): boolean {
   return status === null
     || status === undefined
     || isConnectedServiceCredentialHealthStatusUsable(status);
