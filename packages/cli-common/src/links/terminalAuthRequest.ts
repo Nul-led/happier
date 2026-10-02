@@ -47,7 +47,10 @@ export function parseTerminalAuthApprovalRequestPacket(
   const createdAtMs = pairing.createdAtMs as number;
   const expiresAtMs = pairing.expiresAtMs as number;
   const nowMs = Date.now();
-  if (createdAtMs > nowMs || expiresAtMs <= nowMs) throw new Error('Terminal pairing request expired or is not yet valid. Create a new auth request.');
+  // The recipient minted this window on its clock and enforces its lower bound
+  // when opening the authenticated response. The approver must not compare that
+  // lower bound with a different machine's clock.
+  if (expiresAtMs <= nowMs) throw new Error('Terminal pairing request expired. Create a new auth request.');
   return {
     publicKey,
     pairing: { secretB64Url: pairing.secretB64Url, createdAtMs, expiresAtMs },

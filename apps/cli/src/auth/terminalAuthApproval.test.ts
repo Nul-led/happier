@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import tweetnacl from 'tweetnacl';
-import { deriveAccountMachineKeyFromRecoverySecret, openTerminalProvisioningV3Response } from '@happier-dev/protocol';
+import { deriveAccountMachineKeyFromRecoverySecret, openTerminalProvisioningV3Response, sealTerminalProvisioningV3Payload } from '@happier-dev/protocol';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
@@ -183,6 +183,43 @@ describe('approveTerminalAuthRequest', () => {
         : { type: 'tokenOnly' });
     });
   });
+  it.each([1, 10_000])('approves a fresh terminal whose clock is %sms ahead without changing recipient validity checks', async (clockOffsetMs) => {
+    const approverNowMs = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(approverNowMs);
+    try {
+      const { parseTerminalAuthApprovalRequest } = await import('./terminalAuthApproval');
+      const keypair = tweetnacl.box.keyPair();
+      const secret = new Uint8Array(32).fill(11);
+      const pairing = {
+        secretB64Url: Buffer.from(secret).toString('base64url'),
+        createdAtMs: approverNowMs + clockOffsetMs,
+        expiresAtMs: approverNowMs + clockOffsetMs + 60_000,
+      };
+      const packet = { publicKey: Buffer.from(keypair.publicKey).toString('base64'), pairing };
+      const request = parseTerminalAuthApprovalRequest(packet);
+      expect(request.pairing).toEqual(pairing);
+      const context = { terminalEphemeralPublicKey: keypair.publicKey, pairingSecret: secret,
+        createdAtMs: request.pairing!.createdAtMs, expiresAtMs: request.pairing!.expiresAtMs };
+      const contentPrivateKey = new Uint8Array(32).fill(7);
+      const payload = sealTerminalProvisioningV3Payload({ ...context, contentPrivateKey,
+        randomBytes: (length) => new Uint8Array(length).fill(3) });
+      const received = { ...context, payload, recipientSecretKeyOrSeed: keypair.secretKey };
+      expect(openTerminalProvisioningV3Response({ ...received, nowMs: pairing.createdAtMs + 1 }))
+        .toEqual({ type: 'dataKey', key: contentPrivateKey });
+      expect(openTerminalProvisioningV3Response({ ...received, nowMs: pairing.createdAtMs - 1 })).toBeNull();
+      expect(openTerminalProvisioningV3Response({ ...received, nowMs: pairing.expiresAtMs + 1 })).toBeNull();
+      expect(openTerminalProvisioningV3Response({ ...received, createdAtMs: pairing.createdAtMs - 1,
+        nowMs: pairing.createdAtMs + 1 })).toBeNull();
+      expect(() => parseTerminalAuthApprovalRequest({ ...packet, pairing: { ...pairing, expiresAtMs: pairing.createdAtMs } }))
+        .toThrow('Invalid authenticated');
+      expect(() => parseTerminalAuthApprovalRequest({ ...packet, pairing: { ...pairing,
+        createdAtMs: approverNowMs - 1, expiresAtMs: approverNowMs } })).toThrow('expired');
+      expect(mockPost).not.toHaveBeenCalled();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it('normalizes private pending state and rejects malformed, expired and cross-relay request context without posting', async () => {
     const { parseTerminalAuthApprovalRequest } = await import('./terminalAuthApproval');
     const nowMs = Date.now();
