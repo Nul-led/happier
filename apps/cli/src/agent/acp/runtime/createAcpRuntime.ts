@@ -1661,7 +1661,8 @@ export function createAcpRuntime(params: {
               requireAvailableModels: true,
             });
           }
-          if (name === 'config_options_state' || name === 'config_options_update') {
+          if ((name === 'config_options_state' || name === 'config_options_update')
+            && Array.isArray(asRecord(msg.payload)?.configOptions)) {
             const payloadRecord = asRecord(msg.payload);
             const configOptions = normalizeConfigOptionsArray(payloadRecord?.configOptions);
             const derivedModels = (() => {

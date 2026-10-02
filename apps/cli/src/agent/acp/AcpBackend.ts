@@ -2785,10 +2785,11 @@ export class AcpBackend implements AgentBackend {
       });
       if (modelState) this.sessionModelState = modelState;
     }
+    if (!this.sessionConfigOptionsState) return;
     this.emit({
       type: 'event',
       name: 'config_options_update',
-      payload: { configOptions: this.sessionConfigOptionsState ?? [] },
+      payload: { configOptions: this.sessionConfigOptionsState },
     });
   }
 

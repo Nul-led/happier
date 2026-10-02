@@ -14,6 +14,7 @@ function writeFakeAcpAgentScript(params: {
   recordedParamsPath?: string;
   modelSetResponse?: 'empty' | 'staleEcho';
   includeExactOpaqueOption?: boolean;
+  omitConfigOptions?: boolean;
 }): string {
   const src = `
     import { writeFileSync } from 'node:fs';
@@ -54,6 +55,10 @@ function writeFakeAcpAgentScript(params: {
         }
 
         if (method === 'session/new') {
+          if (${JSON.stringify(params.omitConfigOptions === true)}) {
+            ok(id, { sessionId: 'test-session' });
+            continue;
+          }
           ok(id, {
             sessionId: 'test-session',
             configOptions: [
@@ -192,6 +197,26 @@ async function readRecordedParams(path: string): Promise<Record<string, unknown>
 }
 
 describe('AcpBackend session configOptions', () => {
+  it('does not fabricate an empty config snapshot when a successful setter has never observed options', async () => {
+    await withTempDir('happier-acp-config-unknown-', async (dir) => {
+      const scriptPath = writeFakeAcpAgentScript({ dir, omitConfigOptions: true });
+      const backend = new AcpBackend({ agentName: 'test', cwd: dir, command: process.execPath, args: [scriptPath] });
+      const updates: AgentMessage[] = [];
+      backend.onMessage((message) => {
+        if (message.type === 'event' && message.name === 'config_options_update') updates.push(message);
+      });
+      try {
+        const { sessionId } = await backend.startSession();
+        expect(backend.getSessionConfigOptionsState()).toBeNull();
+        await backend.setSessionConfigOption(sessionId, 'model', 'high');
+        expect(backend.getSessionConfigOptionsState()).toBeNull();
+        expect(updates).toEqual([]);
+      } finally {
+        await backend.dispose();
+      }
+    });
+  });
+
   it('suppresses mode controls and rejects both mode mutation paths when provider policy disables modes', async () => {
     await withTempDir('happier-acp-disabled-modes-', async (dir) => {
       const backend = new AcpBackend({

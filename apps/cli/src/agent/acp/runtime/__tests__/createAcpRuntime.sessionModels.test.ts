@@ -299,6 +299,33 @@ describe('createAcpRuntime (session models)', () => {
     });
   });
 
+
+  it('flattens grouped model and effort choices while preserving the selected option value', async () => {
+    const backend = createFakeAcpRuntimeBackend();
+    const { session, getMetadata } = createSessionClientWithMetadata({ initialMetadata: createTestMetadata() });
+    const runtime = createAcpRuntime({
+      provider: 'copilot', directory: '/tmp', session, messageBuffer: new MessageBuffer(),
+      mcpServers: {}, permissionHandler: createApprovedPermissionHandler(),
+      onThinkingChange: () => {}, ensureBackend: async () => backend,
+    });
+    await runtime.startOrLoad({ resumeId: null });
+    backend.emit({ type: 'event', name: 'config_options_state', payload: { configOptions: [
+      { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'model-b', options: [
+        { group: 'vendor', name: 'Vendor', options: [{ value: 'model-a', name: 'A' }, { value: 'model-b', name: 'B' }] },
+      ] },
+      { id: 'reasoning_effort', name: 'Thinking', type: 'select', currentValue: 'high', options: [
+        { group: 'compute', name: 'Compute', options: [{ value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }] },
+      ] },
+    ] } });
+    expect(getMetadata().sessionModelsV1).toMatchObject({ currentModelId: 'model-b', availableModels: [
+      { id: 'model-a', name: 'A' },
+      { id: 'model-b', name: 'B', modelOptions: [{ id: 'reasoning_effort', currentValue: 'high', options: [
+        { value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' },
+      ] }] },
+    ] });
+    expect(getMetadata().sessionModelsV1?.availableModels.map((model) => model.id)).toEqual(['model-a', 'model-b']);
+  });
+
   it('preserves independently discovered model controls across current config updates', async () => {
     const effort = {
       id: 'reasoning_effort', name: 'Thinking', category: 'thought_level', type: 'select',
