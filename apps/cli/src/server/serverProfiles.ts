@@ -1,10 +1,9 @@
 import { readSettings, updateSettings, type Settings } from '@/persistence';
 import { deriveServerIdFromName, deriveServerIdFromUrl, sanitizeServerIdForFilesystem } from '@/server/serverId';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
 import { isLocalishServerUrl } from '@/server/serverUrlClassification';
 import { createServerUrlComparableKey } from '@happier-dev/protocol';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { resolveHappyHomeDirFromEnvironment } from '@happier-dev/cli-common/providers';
 
@@ -32,8 +31,7 @@ async function maybeAdoptDerivedServerProfileState(params: Readonly<{
   const serversDir = join(resolveHappyHomeDirFromEnvironment(process.env), 'servers');
   const targetDir = join(serversDir, params.targetServerId);
   const targetKeyPath = join(targetDir, 'access.key');
-  // A missing credential file does not make a previously used account scope an alias.
-  if (hasServerScopedState(await readSettings(), params.targetServerId)) return;
+  if (existsSync(targetKeyPath)) return;
 
   const candidates = [params.serverUrl, params.localServerUrl ?? '']
     .map(normalizeServerUrlForEnvId)
@@ -44,35 +42,15 @@ async function maybeAdoptDerivedServerProfileState(params: Readonly<{
   for (const candidateId of candidates) {
     const sourceKeyPath = join(serversDir, candidateId, 'access.key');
     if (!existsSync(sourceKeyPath)) continue;
-    let sourceBytes: string;
-    let accountId: string;
-    try {
-      sourceBytes = await readFile(sourceKeyPath, 'utf8');
-      const credentials = JSON.parse(sourceBytes) as { token?: unknown };
-      if (typeof credentials.token !== 'string' || !credentials.token.trim()) return;
-      const payload = decodeJwtPayload(credentials.token);
-      accountId = typeof payload?.sub === 'string' ? payload.sub.trim() : '';
-    } catch {
-      return;
-    }
-
-    // The settings owner serializes destination history checks and identity adoption.
-    // Credentials are published without overwriting a concurrent sign-in. An identical
-    // key can resume a previous adoption whose settings write failed; failures propagate.
     await updateSettings(async (current) => {
-      if (hasServerScopedState(current, params.targetServerId)) return current;
-      const recordedAccount = current.lastTokenSubByServerId?.[candidateId]?.trim();
-      if (!accountId || recordedAccount !== accountId) return current;
-      if (existsSync(targetKeyPath)) {
-        if (await readFile(targetKeyPath, 'utf8') !== sourceBytes) return current;
-      } else {
-        try {
-          await mkdir(targetDir, { recursive: true, mode: 0o700 });
-          // Publish the already validated bytes; the source file may be re-paired concurrently.
-          await writeFile(targetKeyPath, sourceBytes, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-        } catch {
-          return current;
-        }
+      if (existsSync(targetKeyPath) || hasServerScopedState(current, params.targetServerId)) return current;
+      try {
+        await mkdir(targetDir, { recursive: true, mode: 0o700 });
+        await copyFile(sourceKeyPath, targetKeyPath);
+        await chmod(targetKeyPath, 0o600).catch(() => {});
+      } catch {
+        // Best-effort migration; the normal auth/login flow can recreate this.
+        return current;
       }
       return copyMissingServerScopedState(current, candidateId, params.targetServerId);
     });

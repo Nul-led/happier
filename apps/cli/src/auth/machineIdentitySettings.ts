@@ -1,21 +1,18 @@
 import type { Settings } from '@/persistence';
 import { resolveMachineIdForServerFromSettings } from '@/daemon/resolveMachineIdForServerFromSettings';
 
-/** The account selection used by credential publication and machine setup.
- * Publication selects existing identities only; setup supplies the allocator.
- */
+/** Select the account's machine identity during setup through the strict resolver. */
 export function selectMachineIdentityInSettings(settings: Settings, params: Readonly<{
   serverId: string;
   accountId: string | null;
   forceNew?: boolean;
-  createMachineId?: () => string;
-  legacyMachineId?: string | null;
+  createMachineId: () => string;
 }>): Settings {
   const { serverId } = params;
   const accountId = params.accountId?.trim() ?? '';
   const forceNew = params.forceNew ?? false;
   const nextMachineIdByServerId = { ...(settings.machineIdByServerId ?? {}) };
-  const prevMachineIdForServer = nextMachineIdByServerId[serverId] ?? params.legacyMachineId;
+  const prevMachineIdForServer = nextMachineIdByServerId[serverId];
   const nextLastSubByServerId = { ...(settings.lastTokenSubByServerId ?? {}) };
   const nextConfirmed = { ...(settings.machineIdConfirmedByServerByServerId ?? {}) };
   const hadLastSub = serverId in nextLastSubByServerId;
@@ -27,8 +24,7 @@ export function selectMachineIdentityInSettings(settings: Settings, params: Read
     if (hadConfirmed) delete nextConfirmed[serverId];
 
     if (forceNew || !current) {
-      const machineId = params.createMachineId?.() ?? null;
-      if (!machineId) return settings;
+      const machineId = params.createMachineId();
       nextMachineIdByServerId[serverId] = machineId;
       return {
         ...settings,
@@ -80,7 +76,7 @@ export function selectMachineIdentityInSettings(settings: Settings, params: Read
   }
 
   if (!machineId) {
-    machineId = params.createMachineId?.() ?? null;
+    machineId = params.createMachineId();
   }
 
   const normalizedPrevMachineId = typeof prevMachineIdForServer === 'string' && prevMachineIdForServer.trim()

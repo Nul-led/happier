@@ -1,4 +1,4 @@
-import { selectMachineIdentityInSettings } from '@/auth/machineIdentitySettings';
+import { resolveMachineIdForServerFromSettings } from '@/daemon/resolveMachineIdForServerFromSettings';
 import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
 import { resolveServerProfileApiUrl } from '@/server/serverProfileApiUrl';
 import { normalizeServerHttpBaseUrl, resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
@@ -73,7 +73,7 @@ export async function resolveDoctorRepairAuthContext(params: Readonly<{
   // don't see a misleading "signed in" when we couldn't verify.
   const activeToken = String(credentials?.token ?? '').trim();
   const subject = decodeJwtPayload(activeToken)?.sub;
-  let accountId = typeof subject === 'string' ? subject.trim() : '';
+  const accountId = typeof subject === 'string' ? subject.trim() : '';
   let activeExpired = false;
   let activeReachability: 'verified' | 'unreachable' | 'not-probed' = 'not-probed';
   if (activeProfile && activeToken) {
@@ -87,15 +87,10 @@ export async function resolveDoctorRepairAuthContext(params: Readonly<{
     // Valid and rejected credentials are both definitive answers from the server.
     // 'unknown' means no definitive auth result, including an unexpected response.
     activeReachability = result.state === 'unknown' ? 'unreachable' : 'verified';
-    if (result.state === 'valid' && typeof result.accountId === 'string' && result.accountId.trim()) {
-      accountId = result.accountId.trim();
-    }
   }
 
   const inspectedMachineId = activeProfile && accountId && settings
-    ? selectMachineIdentityInSettings(settings, { serverId: activeProfile.id, accountId,
-      ...(activeProfile.id === runtimeServerId ? { legacyMachineId: settings.machineId } : {}),
-    }).machineId
+    ? resolveMachineIdForServerFromSettings(settings, activeProfile.id, accountId)
     : activeProfile?.id === runtimeServerId ? settings?.machineId : activeProfile ? machineIdByServerId[activeProfile.id] : null;
 
   const signals: AuthSignalsForProfile[] = profiles.map((profile) => {

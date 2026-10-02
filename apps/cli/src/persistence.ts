@@ -4,8 +4,6 @@
  * Handles settings and private key storage in ~/.happier/ or local .happier/
  */
 
-import { selectMachineIdentityInSettings } from '@/auth/machineIdentitySettings';
-import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
 import { FileHandle } from 'node:fs/promises'
 import { readFile, writeFile, mkdir, open, unlink, rename, stat, chmod, readdir } from 'node:fs/promises'
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
@@ -708,22 +706,15 @@ export async function readCredentials(scope: CredentialReadScope = {}): Promise<
 }
 
 async function writeStoredCredentialFile(credentials: z.infer<typeof credentialsSchema>): Promise<void> {
+  await ensureHappyHomeDirExists();
   const serverId = configuration.activeServerId;
   const keyPath = configuration.privateKeyFile;
   const legacyPath = configuration.legacyPrivateKeyFile;
-  const subject = decodeJwtPayload(credentials.token)?.sub;
-  const accountId = typeof subject === 'string' ? subject.trim() : '';
-  await updateSettings(async (current) => {
-    const selected = accountId
-      ? selectMachineIdentityInSettings(current, { serverId, accountId, legacyMachineId: current.machineId })
-      : current;
-    await writeFile(keyPath, JSON.stringify(credentials, null, 2), { mode: 0o600 });
-    await bestEffortChmod(keyPath, 0o600);
-    if (serverId === 'cloud' && legacyPath !== keyPath && existsSync(legacyPath)) {
-      await unlink(legacyPath).catch(() => {});
-    }
-    return selected;
-  });
+  await writeFile(keyPath, JSON.stringify(credentials, null, 2), { mode: 0o600 });
+  await bestEffortChmod(keyPath, 0o600);
+  if (serverId === 'cloud' && legacyPath !== keyPath && existsSync(legacyPath)) {
+    await unlink(legacyPath).catch(() => {});
+  }
 }
 
 export async function writeCredentialsLegacy(credentials: { secret: Uint8Array, token: string }): Promise<void> {

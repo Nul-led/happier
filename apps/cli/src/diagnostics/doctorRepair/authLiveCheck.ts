@@ -5,9 +5,8 @@
  * timeout. We interpret the outcome conservatively so offline/network failures
  * DON'T cause a false "expired" report:
  *
- * The canonical validator owns validity and confirmed account identity.
- * Preserve that result so consumers cannot lose the verified account when
- * selecting a machine for an opaque credential.
+ * The canonical validator owns token validity. Preserve its result so
+ * diagnostics can distinguish rejection from an unavailable server.
  */
 
 import {

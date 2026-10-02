@@ -1,6 +1,6 @@
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { deriveBoxPublicKeyFromSeed } from '@happier-dev/protocol';
 import { configuration, reloadConfiguration } from '@/configuration';
 import { readCredentials, readSettings, updateSettings, writeCredentialsDataKey } from '@/persistence';
@@ -8,24 +8,16 @@ import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
 import { addServerProfile, useServerProfile } from './serverProfiles';
 
-vi.mock('node:fs/promises', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, readFile: vi.fn(actual.readFile), writeFile: vi.fn(actual.writeFile) };
-});
-
 const token = `header.${Buffer.from(JSON.stringify({ sub: 'account-a' })).toString('base64url')}.signature`;
 const scope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'HAPPIER_SERVER_URL', 'HAPPIER_WEBAPP_URL', 'HAPPIER_ACTIVE_SERVER_ID', 'HAPPIER_LOCAL_SERVER_URL', 'HAPPIER_PUBLIC_SERVER_URL']);
-afterEach(() => { vi.mocked(readFile).mockRestore(); vi.mocked(writeFile).mockRestore(); scope.restore(); reloadConfiguration(); });
+afterEach(() => { scope.restore(); reloadConfiguration(); });
 
-async function seed(home: string, invalidSource = false): Promise<string> {
+async function seed(home: string): Promise<string> {
   scope.patch({ HAPPIER_HOME_DIR: home, HAPPIER_SERVER_URL: 'https://relay.example.test', HAPPIER_WEBAPP_URL: 'https://relay.example.test', HAPPIER_ACTIVE_SERVER_ID: undefined, HAPPIER_PUBLIC_SERVER_URL: undefined, HAPPIER_LOCAL_SERVER_URL: undefined });
   reloadConfiguration();
   const sourceId = configuration.activeServerId;
-  if (invalidSource) await mkdir(configuration.privateKeyFile, { recursive: true });
-  else {
-    const machineKey = new Uint8Array(32).fill(8);
-    await writeCredentialsDataKey({ token, machineKey, publicKey: deriveBoxPublicKeyFromSeed(machineKey) });
-  }
+  const machineKey = new Uint8Array(32).fill(8);
+  await writeCredentialsDataKey({ token, machineKey, publicKey: deriveBoxPublicKeyFromSeed(machineKey) });
   await updateSettings((s) => ({ ...s,
     machineIdByServerId: { [sourceId]: 'original-machine' },
     machineIdByServerIdByAccountId: { [sourceId]: { 'account-a': 'original-machine' } },
@@ -76,92 +68,6 @@ describe('derived profile credential and machine-state adoption', () => {
       expect(after.machineIdByServerIdByAccountId?.target).toEqual({ 'account-b': 'target-machine' });
       expect(after.lastTokenSubByServerId?.target).toBe('account-b');
       expect(after.lastChangesCursorByServerIdByAccountId?.target).toBeUndefined();
-      expect(after.machineIdByServerId?.[sourceId]).toBe('original-machine');
-    });
-  });
-
-  it('reports a state-write failure and resumes the identical credential adoption on retry', async () => {
-    await withTempDir('profile-identity-persist-failure-', async (home) => {
-      await seed(home);
-      await addServerProfile({ name: 'target', serverUrl: 'https://relay.example.test', webappUrl: 'https://relay.example.test', use: false });
-      const targetKeyPath = join(home, 'servers', 'target', 'access.key');
-      const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
-      let failed = false;
-      vi.mocked(writeFile).mockImplementation(async (...args: Parameters<typeof writeFile>) => {
-        if (!failed && String(args[0]).includes('settings.json') && await readFile(targetKeyPath, 'utf8').then(() => true, () => false)) {
-          failed = true;
-          throw Object.assign(new Error('Injected state persistence failure'), { code: 'EIO' });
-        }
-        return actual.writeFile(...args);
-      });
-      await expect(useServerProfile('target')).rejects.toThrow('Injected state persistence failure');
-      expect(failed).toBe(true);
-      await useServerProfile('target');
-      reloadConfiguration();
-      expect((await readCredentials())?.token).toBe(token);
-      expect((await readSettings()).machineId).toBe('original-machine');
-    });
-  });
-
-  it('does not overwrite an existing destination credential belonging to another account', async () => {
-    await withTempDir('profile-identity-existing-key-', async (home) => {
-      await seed(home);
-      await mkdir(join(home, 'servers', 'target'), { recursive: true });
-      await writeFile(join(home, 'servers', 'target', 'access.key'), JSON.stringify({ token: 'other-account', secret: Buffer.alloc(32).toString('base64') }));
-      await addServerProfile({ name: 'target', serverUrl: 'https://relay.example.test', webappUrl: 'https://relay.example.test', use: true });
-      reloadConfiguration();
-      expect((await readCredentials())?.token).toBe('other-account');
-      expect((await readSettings()).machineIdByServerId?.target).toBeUndefined();
-    });
-  });
-
-  it.each(['different-account', undefined])('does not publish a credential without its matching recorded token subject (%s)', async (recordedSubject) => {
-    await withTempDir('profile-identity-subject-', async (home) => {
-      const sourceId = await seed(home);
-      await updateSettings((s) => ({ ...s, lastTokenSubByServerId: recordedSubject ? { [sourceId]: recordedSubject } : {} }));
-      await addServerProfile({ name: 'target', serverUrl: 'https://relay.example.test', webappUrl: 'https://relay.example.test', use: true });
-      reloadConfiguration();
-      expect((await readSettings()).machineIdByServerId?.target).toBeUndefined();
-      expect(await readCredentials()).toBeNull();
-    });
-  });
-
-
-  it('publishes the validated credential snapshot when the source is re-paired concurrently', async () => {
-    await withTempDir('profile-identity-source-race-', async (home) => {
-      const sourceId = await seed(home);
-      await addServerProfile({ name: 'target', serverUrl: 'https://relay.example.test', webappUrl: 'https://relay.example.test', use: false });
-      const sourcePath = join(home, 'servers', sourceId, 'access.key');
-      const targetPath = join(home, 'servers', 'target', 'access.key');
-      const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
-      const validatedBytes = await actual.readFile(sourcePath, 'utf8');
-      let rePaired = false;
-      vi.mocked(readFile).mockImplementation(async (...args: Parameters<typeof readFile>) => {
-        const result = await actual.readFile(...args);
-        if (!rePaired && String(args[0]) === sourcePath) {
-          rePaired = true;
-          await actual.writeFile(sourcePath, JSON.stringify({ token: 'concurrently-repaired-account', secret: Buffer.alloc(32).toString('base64') }));
-        }
-        return result;
-      });
-      await useServerProfile('target');
-      reloadConfiguration();
-      expect(rePaired).toBe(true);
-      expect(await actual.readFile(targetPath, 'utf8')).toBe(validatedBytes);
-      expect((await readCredentials())?.token).toBe(token);
-      expect((await readSettings()).machineId).toBe('original-machine');
-      if (process.platform !== 'win32') expect((await stat(targetPath)).mode & 0o777).toBe(0o600);
-    });
-  });
-
-  it('does not adopt identity when the credential copy fails', async () => {
-    await withTempDir('profile-identity-copy-failed-', async (home) => {
-      const sourceId = await seed(home, true);
-      await addServerProfile({ name: 'target', serverUrl: 'https://relay.example.test', webappUrl: 'https://relay.example.test', use: true });
-      reloadConfiguration();
-      const after = await readSettings();
-      expect(await readCredentials()).toBeNull();
-      expect(after.machineIdByServerId?.target).toBeUndefined();
       expect(after.machineIdByServerId?.[sourceId]).toBe('original-machine');
     });
   });
