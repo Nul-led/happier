@@ -129,6 +129,15 @@ describe('ActivitySpinner (web)', () => {
         expect(injectedStyles).toHaveLength(2);
     });
 
+    it('keeps distinct valid CSS inks in separate frame sheets', async () => {
+        const first = await renderSpinner({ color: '#00018f' });
+        const second = await renderSpinner({ color: '#0002d9' });
+
+        expect(frameSheetFor(first.strip)).toContain('fill="#00018f"');
+        expect(frameSheetFor(second.strip)).toContain('fill="#0002d9"');
+        expect(injectedStyles).toHaveLength(2);
+    });
+
     it('builds the frame sheet only when absent, and recovers a removed sheet on the next mount', async () => {
         const { DotSpinnerWeb } = await import('./activitySpinner/DotSpinnerWeb');
         // Observe the real renderer through its ink input: building the SVG reads color for its

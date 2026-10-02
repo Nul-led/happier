@@ -50,13 +50,6 @@ function injectFrameSheet(key: string, buildSvg: () => string): void {
     document.head.appendChild(style);
 }
 
-function hashInk(ink: DotSpinnerInk): string {
-    const source = 'color' in ink ? ink.color : ink.aurora.join('|');
-    let hash = 5381;
-    for (let i = 0; i < source.length; i++) hash = ((hash * 33) ^ source.charCodeAt(i)) >>> 0;
-    return hash.toString(36);
-}
-
 /**
  * Pins the strip's animation to the document timeline's origin, so every spinner on the page steps
  * on the same frames however far apart they mounted. Unsynced copies each make the compositor draw
@@ -79,7 +72,8 @@ export function DotSpinnerWeb(props: Readonly<{
     const { styleId, size, ink, motion, viewProps } = props;
     const frames = getDotSpinnerFrames(styleId);
     const animate = motion === 'animate';
-    const key = `${styleId}-${animate ? 'strip' : 'still'}-${hashInk(ink)}`;
+    const inkKey = encodeURIComponent(JSON.stringify('color' in ink ? { color: ink.color } : { aurora: ink.aurora }));
+    const key = `${styleId}-${animate ? 'strip' : 'still'}-${inkKey}`;
     const stripRef = React.useRef<HTMLSpanElement | null>(null);
 
     useInsertionEffectSafe(() => {
