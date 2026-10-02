@@ -292,6 +292,11 @@
       "types": "./dist/systemTasks/nativeRemoteSshBootstrap.d.ts",
       "import": "./dist/systemTasks/nativeRemoteSshBootstrap.js",
       "default": "./dist/systemTasks/nativeRemoteSshBootstrap.js"
+    },
+    "./windowsCommandInvocation": {
+      "types": "./windowsCommandInvocation.d.mts",
+      "import": "./windowsCommandInvocation.mjs",
+      "default": "./windowsCommandInvocation.mjs"
     }
   },
   "scripts": {
