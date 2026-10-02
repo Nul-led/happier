@@ -17,6 +17,10 @@ const featureGateState = vi.hoisted(() => ({
     managementEnabled: true,
     secretMaterialEnabled: false,
 }));
+
+vi.mock('@/sync/domains/features/featureBuildPolicy', () => ({
+    getFeatureBuildPolicyDecision: () => 'allow',
+}));
 type RemoteHostsRaw = AccountSettingsDefaults['remoteHostsV1'];
 
 const remoteHostsState = vi.hoisted(() => ({

@@ -46,6 +46,7 @@ vi.mock('@/sync/runtime/getSyncSingleton', () => ({
         return configuredBackendHarnessModuleState.sync;
     },
 }));
+let loadedUseCreateNewSessionOwner: typeof import('./useCreateNewSession')['useCreateNewSession'] | null = null;
 
 async function setupHarness(options?: ConfiguredBackendHarnessOptions) {
     const captured: { value: SpawnPayloadCapture } = { value: null };
@@ -138,6 +139,9 @@ async function setupHarness(options?: ConfiguredBackendHarnessOptions) {
     vi.doMock('@/sync/domains/automations/encodeAutomationTemplateCiphertextForAccount', () => ({
         encodeAutomationTemplateCiphertextForAccount: vi.fn(async ({ template }: { template: unknown }) => JSON.stringify(template)),
     }));
+    vi.doMock('@/sync/api/account/apiAccountEncryptionMode', () => ({
+        fetchAccountEncryptionMode: vi.fn(async () => ({ mode: 'plain', updatedAt: 0 })),
+    }));
     vi.doMock('@/sync/domains/input/slashCommands/resolveSessionComposerSend', () => ({
         resolveSessionComposerSend: vi.fn(({ input }: { input: string }) => ({ kind: 'send', text: input })),
     }));
@@ -182,7 +186,8 @@ async function setupHarness(options?: ConfiguredBackendHarnessOptions) {
         followUpSpawnedSessionWithServerScope: vi.fn(async () => configuredBackendHarnessModuleState.followUpPending),
     }));
 
-    const { useCreateNewSession: useCreateNewSessionOwner } = await import('./useCreateNewSession');
+    loadedUseCreateNewSessionOwner ??= (await import('./useCreateNewSession')).useCreateNewSession;
+    const useCreateNewSessionOwner = loadedUseCreateNewSessionOwner;
     const useCreateNewSession: typeof useCreateNewSessionOwner = (params) => useCreateNewSessionOwner({
         ...params,
         draftScope: params.draftScope ?? { serverId: 'server-a', accountId: 'account-a' },
@@ -197,6 +202,11 @@ async function setupHarness(options?: ConfiguredBackendHarnessOptions) {
         resolveFollowUp: () => resolveFollowUp?.(),
     };
 }
+
+// Load the production hook once during collection after the boundary mocks are installed.
+// Re-importing its large graph inside every test consumed most of the per-test timeout before
+// the behavior under test could run; all varying harness inputs are read through the hoisted state.
+await setupHarness();
 
 describe('useCreateNewSession configured ACP backend spawning', () => {
     beforeEach(() => {

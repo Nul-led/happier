@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createServer } from 'node:http';
 import test from 'node:test';
+import { parseReleaseManifestV1 } from '@happier-dev/release-runtime/releaseManifest';
+import { buildManifestRecord } from './lib/manifests.mjs';
 
 import {
   main,
@@ -423,6 +429,124 @@ test('candidate verification main rejects published manifest run substitution', 
   ]), /build workflow run ID/);
 });
 
+test('candidate verification rechecks an admitted retained product without assigning the new run to its manifest', async (t) => {
+  // This is the same buildManifestRecord -> parseReleaseManifestV1 shape emitted by publish-manifests.
+  const manifest = parseReleaseManifestV1({
+    schemaVersion: 'v1', product: 'hstack', channel: 'preview', version: '0.3.0-preview.73',
+    publishedAt: '2026-10-02T00:00:00.000Z',
+    records: [buildManifestRecord({
+      product: 'hstack', channel: 'preview', version: '0.3.0-preview.73',
+      os: 'linux', arch: 'x64', url: 'https://example.test/hstack-v0.3.0-preview.73-linux-x64.tar.gz',
+      sha256: 'c'.repeat(64), signature: 'https://example.test/checksums-hstack-v0.3.0-preview.73.txt.minisig',
+      publishedAt: '2026-10-02T00:00:00.000Z', commitSha: SOURCE_SHA,
+      buildWorkflowRunId: '123', publicationWorkflowRunId: '123',
+    })],
+  });
+  // GitHub is the boundary; real Ed25519 signatures exercise the canonical trust owner.
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  const keyId = Buffer.alloc(8, 3);
+  const comment = Buffer.from('retained release fixture');
+  const directory = await mkdtemp(join(tmpdir(), 'happier-retained-identity-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const publicKeyPath = join(directory, 'release.pub');
+  await writeFile(publicKeyPath, `untrusted comment: fixture\n${Buffer.concat([
+    Buffer.from('Ed'), keyId, publicKey.export({ type: 'spki', format: 'der' }).subarray(-32),
+  ]).toString('base64')}`);
+  let mutation = '';
+  let retainedConclusion = 'failure';
+  const server = createServer((request, response) => {
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    if (request.url?.startsWith('/assets/')) {
+      const payload = JSON.stringify({ ...manifest, ...(mutation === 'product' ? { product: 'happier' } : {}),
+            ...(mutation === 'channel' ? { channel: 'stable' } : {}),
+            ...(mutation === 'version' ? { version: '0.3.0-preview.74' } : {}),
+            ...(mutation === 'top-version' ? { version: '0.3.0-preview.74' } : {}),
+            ...(mutation === 'schema' ? { schemaVersion: 'v2' } : {}),
+            records: manifest.records.map((record) => ({ ...record,
+              ...(mutation === 'product' ? { product: 'happier' } : {}),
+              ...(mutation === 'channel' ? { channel: 'stable' } : {}),
+              ...(mutation === 'version' ? { version: '0.3.0-preview.74' } : {}),
+              ...(mutation === 'source' ? { build: { ...record.build, commitSha: 'b'.repeat(40) } } : {}),
+              ...(mutation === 'rolling' && request.url.includes('rolling') ? { publication: { workflowRunId: '999' } } : {}),
+            })) });
+      const envelope = `${createHash('sha256').update(payload).digest('hex')}  latest.json\n`;
+      const signed = sign(null, Buffer.from(envelope), privateKey);
+      const signedEnvelope = ['untrusted comment: fixture',
+        Buffer.concat([Buffer.from('Ed'), keyId, signed]).toString('base64'),
+        `trusted comment: ${comment}`, sign(null, Buffer.concat([signed, comment]), privateKey).toString('base64')].join('\n');
+      response.end(request.url.endsWith('.minisig') ? (mutation === 'signature' ? 'invalid signature' : signedEnvelope)
+        : request.url.endsWith('.txt') ? envelope : payload);
+      return;
+    }
+    const payload = request.url === '/repos/happier-dev/happier/actions/runs/456'
+      ? { id: 456, status: mutation === 'current-failed' ? 'completed' : 'in_progress',
+          conclusion: mutation === 'current-failed' ? 'failure' : null,
+          path: '.github/workflows/release.yml@preview', repository: { full_name: 'happier-dev/happier' } }
+      : request.url === '/repos/happier-dev/happier/git/ref/heads/preview'
+        || request.url === '/repos/happier-dev/happier/git/ref/tags/stack-preview'
+        || request.url === '/repos/happier-dev/happier/git/ref/tags/stack-v0.3.0-preview.73'
+        ? { object: { type: 'commit', sha: SOURCE_SHA } }
+        : request.url === '/repos/happier-dev/happier/actions/runs/123'
+          ? { id: 123, status: mutation === 'prior-active' ? 'in_progress' : 'completed', conclusion: retainedConclusion,
+              path: mutation === 'workflow' ? '.github/workflows/tests.yml'
+                : mutation === 'dedicated' ? '.github/workflows/publish-hstack-binaries.yml' : '.github/workflows/release.yml@preview',
+              repository: { full_name: mutation === 'repository' ? 'attacker/happier' : 'happier-dev/happier' } }
+          : request.url?.startsWith('/repos/happier-dev/happier/releases/tags/stack-')
+            ? { assets: ['latest.json', 'checksums-hstack-v0.3.0-preview.73.txt', 'checksums-hstack-v0.3.0-preview.73.txt.minisig']
+                .map((name) => ({ name, browser_download_url: `${origin}/assets/${request.url.endsWith('stack-preview') ? 'rolling' : 'immutable'}/${name}` })) }
+            : null;
+    response.statusCode = payload ? 200 : 404;
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify(payload));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const originalToken = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = 'test-token';
+  t.after(() => {
+    if (originalToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = originalToken;
+  });
+  const args = [
+    '--repository', 'happier-dev/happier', '--channel', 'preview',
+    '--candidate-source-sha', SOURCE_SHA,
+    '--candidate-build-run-id', '456', '--publication-run-id', '456', '--current-run-id', '456',
+    '--refs', 'heads/preview', '--tags', 'stack-preview', '--manifests', 'hstack:preview:stack-preview',
+    '--api-base-url', `http://127.0.0.1:${server.address().port}`,
+    '--retained-stack-version', '0.3.0-preview.73', '--public-key', publicKeyPath,
+  ];
+  await assert.doesNotReject(() => main(args));
+  retainedConclusion = 'cancelled';
+  await assert.doesNotReject(() => main(args),
+    'the existing v1 resume reader admits completed cancelled aggregates with a successful exact signed product');
+  retainedConclusion = 'failure';
+  for (const [failure, expected] of [
+    ['product', /manifest identity/], ['channel', /manifest identity/], ['source', /source SHA/],
+    ['version', /manifest version/], ['signature', /checksums_signature_invalid/],
+    ['workflow', /unexpected workflow path/], ['repository', /repository does not match/],
+    ['dedicated', /successful completed run/],
+    ['prior-active', /retained workflow run must be completed/],
+    ['rolling', /rolling manifest does not match/],
+  ]) {
+    mutation = failure;
+    await assert.rejects(() => main(args), expected, failure);
+  }
+  mutation = '';
+  await assert.rejects(() => main(args.slice(0, -4)), /build workflow run ID/,
+    'without an admitted retained version a fresh product must still identify the current run');
+  mutation = 'current-failed';
+  await assert.rejects(() => main(args), /current build workflow run is not active or successful/,
+    'retained product evidence must not admit a failed current orchestrator');
+  for (const [failure, expected] of [
+    ['top-version', /release manifest.*record identity mismatch/],
+    ['schema', /release manifest.*unsupported identity/],
+  ]) {
+    mutation = failure;
+    await assert.rejects(() => main(args), expected,
+      `a correctly signed ${failure} violation must be rejected by the canonical published-manifest parser`);
+  }
+});
+
 test('candidate verification uses an explicit prior build run only for the CLI manifest', async (t) => {
   const manifests = {
     '/assets/cli-latest.json': {
@@ -516,6 +640,7 @@ test('candidate verification uses an explicit prior build run only for the CLI m
     ['cross-channel head branch', { head_branch: 'other' }, /head branch/],
     ['non-dispatch event', { event: 'pull_request' }, /workflow_dispatch/],
     ['different source SHA', { head_sha: 'b'.repeat(40) }, /head SHA/],
+    ['failed dedicated CLI build', { status: 'completed', conclusion: 'failure' }, /successful completed run/],
   ]) {
     cliRun = { ...trustedCliRun, ...overrides };
     await assert.rejects(

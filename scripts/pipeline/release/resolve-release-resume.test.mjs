@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 
 import {
   inspectReleaseResumeOrigin,
+  main,
   resolveReleaseResume,
 } from './resolve-release-resume.mjs';
 import { projectReleaseStatus } from './project-release-status.mjs';
@@ -91,6 +92,108 @@ const expected = {
   channel: 'dev',
 };
 
+function standardInput(surfaces = [], extra = {}) {
+  const operationId = 'rel_resumeports37';
+  return {
+    originRun: originRun({ path: '.github/workflows/release.yml' }),
+    artifacts: [statusArtifact()], downloadedDigest: DIGEST,
+    status: status({ channel: 'preview', operationId,
+      run: { ...status().run, name: `RELEASE ${operationId}` },
+      surfaces: [{ ...status().surfaces[0], identity: { ...status().surfaces[0].identity, version: '0.3.0-preview.73' } }, ...surfaces] }),
+    expected: { repository: REPOSITORY, workflowPath: '.github/workflows/release.yml', channel: 'preview', sourceSha: SOURCE_SHA, operationId },
+    ...extra,
+  };
+}
+
+test('resume retains exact downstream completion, UI intent, Runner rolling state, and SDK integrity obligations', () => {
+  const accepted = ['deploy_ui', 'deploy_server', 'deploy_website', 'deploy_docs', 'docker', 'npm'].map((id) => ({
+    id, requested: true, state: 'published', result: 'accepted',
+    identity: { sourceSha: SOURCE_SHA, verified: false,
+      ...(id === 'deploy_ui' ? { deployWeb: true, expoAction: 'full', desktopMode: 'build_and_publish' } : {}) },
+  }));
+  const rolling = ['cli_rolling_release', 'hstack_rolling_release', 'server_rolling_release', 'runner_rolling_release', 'ui_web_rolling_release'].map((id) => ({
+    id, requested: true, state: 'complete', result: 'success', identity: { sourceSha: SOURCE_SHA, verified: true },
+  }));
+  const input = standardInput([...accepted, ...rolling]);
+  const resolved = resolveReleaseResume(input);
+  assert.deepEqual(resolved.completed, {
+    cliRolling: true, stackRolling: true, serverRolling: true, runnerRolling: true, uiWebRolling: true,
+    deployUi: true, deployServer: true, deployWebsite: true, deployDocs: true, docker: true, npm: true,
+  });
+  assert.equal(resolved.requestedDeployUi, true);
+  assert.equal(resolved.uiIntentRecorded, true);
+  assert.deepEqual(resolved.resumeInputs.deployUi, { deployWeb: true, expoAction: 'full', desktopMode: 'build_and_publish' });
+  for (const id of ['npm_plugin_sdk', 'npm_plugin_ui', 'npm_sdk']) {
+    assert.equal(resolveReleaseResume(standardInput([...accepted, { id, requested: true }])).completed.npm, false);
+  }
+  for (const bad of [
+    [...accepted, accepted[4]], [...rolling, rolling[3]],
+    [{ ...accepted[4], identity: { sourceSha: 'c'.repeat(40), verified: false } }],
+    [{ ...accepted[4], identity: { sourceSha: SOURCE_SHA, verified: true } }],
+    [{ ...rolling[3], identity: { sourceSha: SOURCE_SHA, verified: false } }],
+    [{ ...accepted[0], identity: { ...accepted[0].identity, desktopMode: 'invalid' } }],
+  ]) assert.throws(() => resolveReleaseResume(standardInput(bad)), /duplicate|source SHA|verified|desktopMode/);
+  const oldUi = { ...accepted[0], state: 'failed', result: 'failed', identity: { sourceSha: SOURCE_SHA, verified: false, expoAction: 'native_submit' } };
+  const old = resolveReleaseResume(standardInput([oldUi]));
+  assert.equal(old.uiIntentRecorded, false);
+  assert.equal(old.uiExpoAction, 'native_submit');
+});
+
+test('resume CLI emits admitted channel completion and full saved UI intent to workflow outputs', async (t) => {
+  const input = standardInput([{ id: 'deploy_ui', requested: true, state: 'published', result: 'accepted',
+    identity: { sourceSha: SOURCE_SHA, verified: false, deployWeb: true, expoAction: 'native_submit', desktopMode: 'build_and_publish' } },
+    { id: 'runner_rolling_release', requested: true, state: 'complete', result: 'success', identity: { sourceSha: SOURCE_SHA, verified: true } }]);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-outputs-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const [name, value] of [['run', input.originRun], ['artifacts', input.artifacts], ['status', input.status]]) {
+    fs.writeFileSync(path.join(root, `${name}.json`), JSON.stringify(value));
+  }
+  const output = path.join(root, 'outputs');
+  await main(['--mode', 'resolve', '--origin-run-json', path.join(root, 'run.json'), '--artifacts-json', path.join(root, 'artifacts.json'),
+    '--status-json', path.join(root, 'status.json'), '--downloaded-digest', DIGEST, '--expected-repository', REPOSITORY,
+    '--expected-workflow', '.github/workflows/release.yml', '--expected-channel', 'preview', '--expected-source-sha', SOURCE_SHA,
+    '--expected-operation-id', input.expected.operationId, '--github-output', output]);
+  const outputs = Object.fromEntries(fs.readFileSync(output, 'utf8').trim().split('\n').map((line) => {
+    const index = line.indexOf('=');
+    return [line.slice(0, index), line.slice(index + 1)];
+  }));
+  assert.equal(outputs.deploy_ui_complete, 'true');
+  assert.equal(outputs.runner_rolling_complete, 'true');
+  assert.equal(outputs.deploy_ui_requested, 'true');
+  assert.equal(outputs.deploy_ui_intent_recorded, 'true');
+  assert.equal(outputs.deploy_ui_web_requested, 'true');
+  assert.equal(outputs.deploy_ui_expo_action, 'native_submit');
+  assert.equal(outputs.deploy_ui_desktop_mode, 'build_and_publish');
+  assert.equal(outputs.desktop_artifacts, '{}');
+});
+
+test('combined resume selects one channel artifact and exact matching UI job names from the sole release authority', () => {
+  const ui = { id: 'deploy_ui', requested: true, state: 'failed', result: 'failed',
+    identity: { sourceSha: SOURCE_SHA, verified: false, deployWeb: false, expoAction: 'native_submit', desktopMode: 'none' } };
+  const input = standardInput([ui]);
+  const job = (name) => ({ id: 77, run_id: RUN_ID, head_sha: SOURCE_SHA, name, status: 'completed', conclusion: 'success',
+    steps: [{ name: 'EAS build (local runner) (pipeline)', status: 'completed', conclusion: 'success' }] });
+  const suffix = 'deploy_ui / Mobile native (local runner) / Build (ios)';
+  const scoped = { ...input, artifacts: [statusArtifact({ name: 'happier-release-status-preview' }),
+    statusArtifact({ id: 5678, name: 'happier-release-status-production' })],
+    expected: { ...input.expected, statusArtifactName: 'happier-release-status-preview' },
+    jobs: [job(`Release preview channel / ${suffix}`), job(`Release production channel / ${suffix}`)] };
+  assert.equal(resolveReleaseResume(scoped).uiCompleted.nativeIos, true);
+  const apk = { ...job('Release preview channel / deploy_ui / Mobile APK release (local runner) / Sign and publish Android APK'),
+    id: 78, steps: [{ name: 'Sign and publish APK with trusted control', status: 'completed', conclusion: 'success' }] };
+  assert.equal(resolveReleaseResume({ ...scoped, jobs: [...scoped.jobs, apk] }).uiCompleted.apk, true);
+  assert.equal(resolveReleaseResume({ ...scoped, jobs: [...scoped.jobs,
+    job('Release preview channel / deploy_ui / Mobile APK release (local runner) / Build (android)')] }).uiCompleted.apk, false);
+  assert.equal(resolveReleaseResume({ ...scoped, jobs: [scoped.jobs[1]] }).uiCompleted.nativeIos, false);
+  assert.equal(resolveReleaseResume({ ...scoped, jobs: [...scoped.jobs, scoped.jobs[0]] }).uiCompleted.nativeIos, false);
+  assert.throws(() => resolveReleaseResume({ ...scoped,
+    expected: { ...scoped.expected, statusArtifactName: 'happier-release-status-production' } }), /artifact.*channel/);
+  assert.throws(() => resolveReleaseResume({ ...scoped, originRun: { ...input.originRun, path: '.github/workflows/release-preview-and-production.yml' },
+    expected: { ...scoped.expected, workflowPath: '.github/workflows/release-preview-and-production.yml' } }), /event|workflow/);
+  assert.equal(resolveReleaseResume({ ...input, jobs: [job(`Release single channel / ${suffix}`)] }).uiCompleted.nativeIos, true);
+  assert.equal(resolveReleaseResume({ ...input, jobs: [job(suffix), job(`Release single channel / ${suffix}`)] }).uiCompleted.nativeIos, false);
+});
+
 test('standard release resume retains successful mobile flows only under their saved exact Expo action', () => {
   const operationId = 'rel_mobilereuse37';
   const releaseStatus = (expoAction) => projectReleaseStatus('standard', {
@@ -123,6 +226,8 @@ test('standard release resume retains successful mobile flows only under their s
   assert.deepEqual(resolveReleaseResume(input).uiCompleted, nativeComplete);
   assert.equal(resolveReleaseResume({ ...input, status: releaseStatus('native') }).uiExpoAction, 'native', 'build-only evidence retains its original mode');
   assert.deepEqual(resolveReleaseResume({ ...input, status: releaseStatus('ota') }).uiCompleted, { ...incomplete, ota: true });
+  assert.deepEqual(resolveReleaseResume({ ...input, status: releaseStatus('full'), jobs: jobs.slice(0, 2) }).uiCompleted,
+    { ota: true, nativeIos: true, nativeAndroid: false, apk: false }, 'full resumes only its completed components');
   assert.deepEqual(resolveReleaseResume({ ...input, status: releaseStatus(undefined) }).uiCompleted, incomplete, 'old statuses cannot prove the requested submit mode');
   assert.deepEqual(resolveReleaseResume({ ...input, status: releaseStatus('unsupported') }).uiCompleted, incomplete);
   assert.deepEqual(resolveReleaseResume({ ...input, jobs: undefined }).uiCompleted, incomplete);
@@ -216,6 +321,30 @@ test('resume inspection binds one unexpired status artifact to the exact origin 
   });
 });
 
+test('combined releases select the channel-specific status artifact from the shared run', () => {
+  const combinedExpected = {
+    repository: REPOSITORY,
+    workflowPath: '.github/workflows/release.yml',
+    channel: 'preview',
+    statusArtifactName: 'happier-release-status-preview',
+  };
+  assert.deepEqual(inspectReleaseResumeOrigin({
+    originRun: originRun({
+      path: combinedExpected.workflowPath,
+      event: 'workflow_dispatch',
+    }),
+    artifacts: [
+      statusArtifact(),
+      statusArtifact({ id: 5678, name: combinedExpected.statusArtifactName }),
+    ],
+    expected: combinedExpected,
+  }), {
+    artifactDigest: DIGEST,
+    artifactId: 5678,
+    workflowSha: SOURCE_SHA,
+  });
+});
+
 test('resume resolution reuses only successful verified immutable candidates', () => {
   assert.deepEqual(resolveReleaseResume({
     originRun: originRun(),
@@ -241,6 +370,10 @@ test('resume resolution reuses only successful verified immutable candidates', (
       server: true,
       runner: false,
       'ui-web': false,
+    },
+    completed: {
+      cliRolling: false, stackRolling: false, serverRolling: false, runnerRolling: false, uiWebRolling: false,
+      deployUi: false, deployServer: false, deployWebsite: false, deployDocs: false, docker: false, npm: false,
     },
   });
 });

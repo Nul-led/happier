@@ -300,6 +300,12 @@ describe('buildPetCompanionActivityModel', () => {
             reason: 'waiting',
             sessionId: session.id,
         });
+        expect(model.trayItems).toEqual([
+            expect.objectContaining({
+                sessionId: session.id,
+                status: 'waiting',
+            }),
+        ]);
     });
 
     it('keeps running tray items live across timestamp-only updates', () => {

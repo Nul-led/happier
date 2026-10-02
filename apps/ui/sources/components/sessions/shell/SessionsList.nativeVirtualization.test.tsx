@@ -221,19 +221,24 @@ vi.mock('react-native-worklets', () => ({
     scheduleOnRN: (fn: (...args: any[]) => void, ...args: any[]) => fn(...args),
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    FontWeights: {
-        regular: '400',
-        semiBold: '500',
-        bold: '600',
-    },
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-        pillLabel: () => ({}),
-        rowMeta: () => ({}),
-    },
-}));
+vi.mock('@/constants/Typography', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/constants/Typography')>();
+    return {
+        ...actual,
+        FontWeights: {
+            regular: '400',
+            semiBold: '500',
+            bold: '600',
+        },
+        Typography: {
+            ...actual.Typography,
+            default: () => ({}),
+            mono: () => ({}),
+            pillLabel: () => ({}),
+            rowMeta: () => ({}),
+        },
+    };
+});
 
 vi.mock('@legendapp/list/react-native', async () => {
     const legendListModule = (await import('@/dev/testkit/mocks/legendList')) as typeof import('@/dev/testkit/mocks/legendList');

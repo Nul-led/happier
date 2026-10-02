@@ -7,10 +7,8 @@ import { parse } from 'yaml';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
-const workflowPath = join(repoRoot, '.github', 'workflows', 'release.yml');
-
-async function loadWorkflow() {
-  const raw = await readFile(workflowPath, 'utf8');
+async function loadWorkflow(name = 'release.yml') {
+  const raw = await readFile(join(repoRoot, '.github', 'workflows', name), 'utf8');
   return { raw, parsed: parse(raw) };
 }
 
@@ -24,14 +22,16 @@ test('release workflow uses compact grouped inputs', async () => {
   const { parsed } = await loadWorkflow();
   const inputs = parsed?.on?.workflow_dispatch?.inputs ?? {};
 
-  for (const key of ['validation_profile', 'deploy_targets', 'force_deploy', 'ui_expo_action', 'desktop_mode', 'bump', 'confirm', 'authorized_promotion_source_sha', 'workflow_control_sha']) {
+  for (const key of ['validation_profile', 'deploy_targets', 'force_deploy', 'ui_expo_action', 'desktop_mode', 'confirm', 'authorized_promotion_source_sha', 'workflow_control_sha', 'public_sdk_release_approval']) {
     assert.ok(inputs[key], `expected grouped input ${key}`);
   }
 
   assert.equal(inputs.checks_profile, undefined, 'the public release profile owns its checks mapping');
-  assert.deepEqual(inputs.validation_profile.options, ['integrated', 'stable']);
-  assert.equal(inputs.validation_profile.default, 'integrated');
+  assert.deepEqual(inputs.validation_profile.options, ['auto', 'integrated', 'stable']);
+  assert.equal(inputs.validation_profile.default, 'auto');
   assert.equal(inputs.release_message, undefined, 'release notes come from the exact candidate changelog projection');
+  assert.equal(inputs.public_sdk_release_approval.type, 'string');
+  assert.equal(inputs.public_sdk_release_approval.default, '{}');
 
   for (const legacyKey of [
     'custom_checks',
@@ -45,13 +45,29 @@ test('release workflow uses compact grouped inputs', async () => {
     'bump_app_override',
     'bump_cli_override',
     'bump_stack_override',
+    'plugin_sdk_ready',
+    'plugin_sdk_api_classification',
+    'plugin_sdk_migration_notes',
+    'sdk_auth_readiness',
+    'sdk_auth_waiver',
+    'sdk_api_classification',
+    'sdk_migration_notes',
   ]) {
     assert.equal(inputs[legacyKey], undefined, `workflow_dispatch input ${legacyKey} should be removed from the compact manual surface`);
   }
+
+  const { parsed: channel } = await loadWorkflow('release-channel.yml');
+  const dispatch = channel.jobs.release_preflight.steps.find((step) => step?.id === 'dispatch');
+  assert.equal(dispatch.env.PUBLIC_SDK_RELEASE_APPROVAL, '${{ inputs.public_sdk_release_approval }}');
+  assert.equal(channel.jobs.release_preflight.outputs.sdk_auth_readiness, '${{ steps.dispatch.outputs.sdk_auth_readiness }}');
+  assert.equal(
+    channel.jobs.release_admission.steps.at(-1).env.SDK_AUTH_READINESS,
+    '${{ needs.release_preflight.outputs.sdk_auth_readiness }}',
+  );
 });
 
 test('release workflow resolves the public profile internally before CI and planning', async () => {
-  const { raw, parsed } = await loadWorkflow();
+  const { raw, parsed } = await loadWorkflow('release-channel.yml');
   const resolver = parsed.jobs.resolve_validation_profile;
   const resolverStep = resolver?.steps?.find((step) => step?.id === 'resolve');
 
@@ -66,8 +82,8 @@ test('release workflow resolves the public profile internally before CI and plan
   );
   assert.doesNotMatch(resolverStep?.run ?? '', /CHECKS_PROFILE/);
 
-  assert.deepEqual(parsed.jobs.ci.needs, ['resolve_validation_profile']);
-  assert.equal(parsed.jobs.ci.if, "${{ needs.resolve_validation_profile.result == 'success' }}");
+  assert.deepEqual(parsed.jobs.release_preflight.needs, ['resolve_validation_profile']);
+  assert.equal(parsed.jobs.release_preflight.if, "${{ needs.resolve_validation_profile.result == 'success' }}");
   assert.ok(parsed.jobs.plan.needs.includes('resolve_validation_profile'));
   assert.equal(parsed.jobs.plan.outputs.validation_profile, '${{ needs.resolve_validation_profile.outputs.profile }}');
   assert.equal(parsed.jobs.plan.outputs.checks_profile, '${{ needs.resolve_validation_profile.outputs.checks_profile }}');
@@ -75,7 +91,7 @@ test('release workflow resolves the public profile internally before CI and plan
 });
 
 test('release workflow derives promotion inputs from confirm and uses compact defaults for advanced options', async () => {
-  const { raw, parsed } = await loadWorkflow();
+  const { raw, parsed } = await loadWorkflow('release-channel.yml');
   const promoteMain = parsed.jobs.promote_main;
 
   assert.match(raw, /CONFIRM:\s*\$\{\{ inputs\.confirm \}\}/, 'confirm should cross the workflow boundary as environment data');
@@ -95,7 +111,8 @@ test('release workflow derives promotion inputs from confirm and uses compact de
   assert.match(raw, /contains\(format\(',\{0\},', inputs\.deploy_targets\), ',website,'\)/);
   assert.match(raw, /contains\(format\(',\{0\},', inputs\.deploy_targets\), ',docs,'\)/);
 
-  assert.match(raw, /desktop_mode:\s*\$\{\{\s*inputs\.desktop_mode\s*\}\}/);
+  assert.equal(parsed.jobs.deploy_ui.with.desktop_mode, '${{ needs.deploy_plan.outputs.deploy_ui_desktop_mode }}');
+  assert.match(String(parsed.jobs.deploy_plan.outputs.deploy_ui_desktop_mode), /inputs\.desktop_mode/);
   assert.doesNotMatch(raw, /desktop_build:\s*\$\{\{ inputs\.desktop_mode != 'none' \}\}/);
   assert.doesNotMatch(raw, /desktop_publish_release:\s*\$\{\{ inputs\.desktop_mode == 'build_and_publish' \}\}/);
   assert.doesNotMatch(raw, /expo_builder:\s*eas_cloud/);

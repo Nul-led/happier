@@ -1,5 +1,5 @@
 import React from 'react';
-import { act } from 'react-test-renderer';
+import { act, type ReactTestInstance } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { renderScreen, withPopoverWebGlobals } from '@/dev/testkit';
 import { View } from 'react-native';
@@ -148,6 +148,18 @@ describe('OptionPickerOverlay', () => {
             if (String(current.type) === 'Pressable' || current.props?.accessibilityRole === 'button') {
                 return current;
             }
+            current = current.parent;
+        }
+        return null;
+    }
+
+    function findAncestorByAccessibilityRole(
+        node: ReactTestInstance | null,
+        role: string,
+    ): ReactTestInstance | null {
+        let current = node?.parent;
+        while (current) {
+            if (current.props?.accessibilityRole === role) return current;
             current = current.parent;
         }
         return null;

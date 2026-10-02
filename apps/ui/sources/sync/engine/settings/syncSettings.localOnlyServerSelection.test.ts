@@ -301,6 +301,7 @@ vi.mock('@/utils/system/runtimeFetch', () => ({
 }));
 
 import { applySettingsLocalDelta, syncSettings } from './syncSettings';
+import { settingsDefaults } from '@/sync/domains/settings/settings';
 
 const credentials: AuthCredentials = {
     token: 'token',
@@ -957,7 +958,7 @@ describe('applySettingsLocalDelta server-selection local-only keys', () => {
     beforeEach(() => {
         vi.restoreAllMocks();
         mocks.storageState.settings = {
-            ...createBaseMockSettings(),
+            ...settingsDefaults,
             serverSelectionGroups: [],
             serverSelectionActiveTargetKind: null,
             serverSelectionActiveTargetId: null,
@@ -1127,6 +1128,10 @@ describe('applySettingsLocalDelta server-selection local-only keys', () => {
     });
 
     it('captures tracked account and derived setting changes before opting out of analytics', () => {
+        mocks.storageState.settings = {
+            ...settingsDefaults,
+            sessionListDensity: 'detailed',
+        };
         const setPendingSettings = vi.fn();
         const schedulePendingSettingsFlush = vi.fn();
 

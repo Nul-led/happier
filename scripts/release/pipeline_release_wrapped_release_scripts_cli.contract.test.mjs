@@ -1,11 +1,55 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createReleaseCliDryRunEnv } from './releaseCliDryRunTestkit.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
+
+test('release-compute-deploy-plan executes hermetic planning without accessing Keychain', () => {
+  const root = mkdtempSync(join(tmpdir(), 'happier-hermetic-deploy-plan-'));
+  const credentialAccess = join(root, 'credential-access');
+  // Substitute only Git's external remote/process boundary, not the deploy planner.
+  const fixture = createReleaseCliDryRunEnv({ ...process.env, GITHUB_OUTPUT: '', GITHUB_STEP_SUMMARY: '' });
+  writeFileSync(join(root, 'security'), String.raw`#!${process.execPath}
+require('node:fs').appendFileSync(${JSON.stringify(credentialAccess)}, 'invoked\n');
+process.stderr.write('TEST_KEYCHAIN_ACCESS_FORBIDDEN\n');
+process.exit(86);
+`, { mode: 0o755 });
+  const env = { ...fixture.env, PATH: `${root}${delimiter}${fixture.env.PATH}` };
+  try {
+    assert.equal(spawnSync('security', [], { env }).status, 86, 'credential trap must be executable');
+    assert.equal(readFileSync(credentialAccess, 'utf8'), 'invoked\n');
+    writeFileSync(credentialAccess, '');
+    const out = execFileSync(process.execPath, [
+      resolve(repoRoot, 'scripts', 'pipeline', 'run.mjs'),
+      'release-compute-deploy-plan',
+      '--deploy-environment', 'production',
+      '--source-ref', 'dev',
+      '--force-deploy', 'true',
+      '--deploy-ui', 'true',
+      '--deploy-server', 'false',
+      '--deploy-website', 'false',
+      '--deploy-docs', 'true',
+      '--secrets-source', 'keychain',
+      '--keychain-service', 'test-only-no-secret',
+    ], { cwd: repoRoot, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const plan = JSON.parse(out);
+    assert.equal(plan.source_sha, '2222222222222222222222222222222222222222');
+    assert.equal(plan.deploy_environment, 'production');
+    assert.equal(plan.deploy_ui.needed, true);
+    assert.equal(plan.deploy_server.needed, false);
+    assert.equal(plan.deploy_docs.needed, true);
+    assert.equal(readFileSync(credentialAccess, 'utf8'), '', 'hermetic planning must not access Keychain');
+  } finally {
+    fixture.cleanup();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 const cases = [
   ['release-sync-installers', 'scripts/pipeline/release/sync-installers.mjs'],

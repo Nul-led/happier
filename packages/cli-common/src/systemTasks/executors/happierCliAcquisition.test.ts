@@ -144,7 +144,6 @@ describe('ensureLocalFirstPartyComponentCommand', () => {
     const rootDir = mkdtempSync(join(tmpdir(), 'cli-common-cli-acquire-'));
     const happyHomeDir = join(rootDir, '.happier-home');
     const previousCwd = process.cwd();
-
     const preparePayload = vi.fn(async () => ({
       versionId: '1.2.3',
       payloadRoot: join(rootDir, 'payload'),

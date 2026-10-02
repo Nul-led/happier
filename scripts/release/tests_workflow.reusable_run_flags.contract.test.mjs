@@ -34,8 +34,8 @@ test('reusable tests callers explicitly select jobs without inheriting caller ev
 
   const defaultJobs = {
     'ui-e2e': 'run_ui_e2e',
-    ui: 'run_ui',
-    'shared-packages-unit': 'run_ui',
+    ui: ['run_ui', true],
+    'shared-packages-unit': 'run_shared_packages',
     'plugin-workspaces-unit': 'run_plugin_workspaces',
     server: 'run_server',
     'server-db-contract': 'run_server_db_contract',
@@ -46,6 +46,7 @@ test('reusable tests callers explicitly select jobs without inheriting caller ev
     'installers-smoke-linux': 'run_installers_smoke',
     'installers-smoke-windows': 'run_installers_smoke',
     'binary-smoke': 'run_binary_smoke',
+    'build-smoke': 'run_build_smoke',
     typecheck: 'run_typecheck',
     'cli-daemon-e2e': 'run_cli_daemon_e2e',
     'e2e-core': 'run_e2e_core',
@@ -106,7 +107,7 @@ test('reusable tests callers explicitly select jobs without inheriting caller ev
   for (const path of [
     '.github/workflows/self-host-e2e.yml',
     '.github/workflows/stress-tests.yml',
-    '.github/workflows/release.yml',
+    '.github/workflows/release-source-validation.yml',
     '.github/workflows/release-verify.yml',
     '.github/workflows/providers-contracts.yml',
     '.github/workflows/tests-dispatch.yml',

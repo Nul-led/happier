@@ -49,7 +49,11 @@ export function buildSessionFolderWorkspaceRefKey(workspace: SessionFolderWorksp
 }
 
 export function compareSessionFolderWorkspaceRefs(a: SessionFolderWorkspaceRefV1, b: SessionFolderWorkspaceRefV1): boolean {
-    return buildSessionFolderWorkspaceRefKey(a) === buildSessionFolderWorkspaceRefKey(b);
+    const normalizedA = normalizeSessionFolderWorkspaceRef(a);
+    const normalizedB = normalizeSessionFolderWorkspaceRef(b);
+    return normalizedA !== null
+        && normalizedB !== null
+        && buildSessionFolderWorkspaceRefKey(normalizedA) === buildSessionFolderWorkspaceRefKey(normalizedB);
 }
 
 export function resolveDurableWorkspaceRefForSessionListHeader(

@@ -86,13 +86,6 @@ vi.mock('@/components/sessions/work/SessionWorkView', () => ({
     SessionWorkView: () => React.createElement('AgentsView'),
 }));
 
-function findParentContaining(
-    root: renderer.ReactTestInstance,
-    child: renderer.ReactTestInstance,
-): renderer.ReactTestInstance | null {
-    return root.findAll((node) => node.children.includes(child)).at(0) ?? null;
-}
-
 function getStyleValue(node: renderer.ReactTestInstance, key: string): unknown {
     const styles = Array.isArray(node.props.style) ? node.props.style : [node.props.style];
     for (const entry of styles) {
@@ -139,7 +132,7 @@ describe('SessionRightPanel (mobile screen chrome)', () => {
             <SessionRightPanel sessionId="s1" scopeId="session:s1" presentation="screen" />,
         );
 
-        const closeButton = screen.findByTestId('session-rightpanel-close');
+        const closeButton = screen.findHostByTestId('session-rightpanel-close');
         if (!closeButton) {
             throw new Error('Expected close button to render');
         }
@@ -151,7 +144,10 @@ describe('SessionRightPanel (mobile screen chrome)', () => {
             size: 24,
         })).toBeTruthy();
 
-        const header = findParentContaining(screen.tree.root, closeButton);
+        let header = closeButton.parent;
+        while (header && getStyleValue(header, 'paddingTop') === undefined) {
+            header = header.parent;
+        }
         if (!header) {
             throw new Error('Expected close button to be inside the header');
         }

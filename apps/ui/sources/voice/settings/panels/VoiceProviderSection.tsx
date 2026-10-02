@@ -770,6 +770,7 @@ export function VoiceProviderSection(props: {
     ? selectedExternalRow.entry.declaration
     : null;
   const selectedExternalCredentials = selectedExternalDeclaration?.credentials ?? null;
+  const selectedExternalSourceSelection = selectedExternalRow?.sourceSelection ?? null;
   const selectedExternalContribution = selectedExternalDeclaration && selectedExternalRow
     ? Object.freeze({
         pluginId: selectedExternalRow.entry.pluginId,
@@ -782,7 +783,6 @@ export function VoiceProviderSection(props: {
   const selectedExternalHasConnectedAccount = selectedExternalCredentials?.sources.some(
     (source) => source.kind === 'connectedAccount',
   ) === true;
-  const selectedExternalSourceSelection = selectedExternalRow?.sourceSelection ?? null;
   const selectedExternalRawReviewGrants = (
     (platform === 'web' || platform === 'ios' || platform === 'android')
     && selectedExternalDeclaration
@@ -797,7 +797,7 @@ export function VoiceProviderSection(props: {
       })
     )).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))) : [];
   const selectedExternalCredentialAccessIsRaw = selectedExternalRawReviewGrants.length > 0;
-  const selectedExternalConnectedRawReviewEligible = selectedExternalRow?.sourceSelection?.kind === 'connectedAccount'
+  const selectedExternalConnectedRawReviewEligible = selectedExternalSourceSelection?.kind === 'connectedAccount'
     && selectedExternalRawReviewGrants.length > 0;
   const selectedExternalCredentialSlot = selectedExternalRow?.entry.accountCredentialSlot;
   const selectedDeclarativeSettingsRow = rows.find((row) => (

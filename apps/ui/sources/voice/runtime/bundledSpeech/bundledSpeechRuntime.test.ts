@@ -11,6 +11,7 @@ import { createBundledSpeechRuntime } from './bundledSpeechRuntime';
 vi.mock('@/voice/credentials/bundledSpeechClient', () => ({ bundledSpeechDaemonClient: {} }));
 
 type SpeechDeclaration = Extract<VoiceProviderContribution, Readonly<{ kind: 'speech' }>>;
+type BundledSpeechClient = NonNullable<Parameters<typeof createBundledSpeechRuntime>[0]['client']>;
 
 const CATALOG_STT_DECLARATION = Object.freeze({
   id: 'catalog-stt',

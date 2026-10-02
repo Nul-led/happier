@@ -93,8 +93,9 @@ export function shouldHideApprovalField(path: string, allPaths: readonly string[
     && (candidate.startsWith(`${path}.`) || candidate.startsWith(`${path}.[`)));
 }
 
-export function formatApprovalFieldValues(values: readonly unknown[]): string | null {
-  const formatted = values.flatMap((value) => (Array.isArray(value) ? value : [value]))
+export function formatApprovalFieldValues(values: readonly unknown[], options: Readonly<{ preserveStructuredValues?: boolean }> = {}): string | null {
+  const displayValues = options.preserveStructuredValues ? values : values.flatMap((value) => (Array.isArray(value) ? value : [value]));
+  const formatted = displayValues
     .map((value) => {
       if (typeof value === 'string') return value.trim();
       if (typeof value === 'number' || typeof value === 'boolean') return String(value);
@@ -198,7 +199,7 @@ export function describeApprovalActionFields(input: Readonly<{
       }
       continue;
     }
-    const value = formatApprovalFieldValues(values);
+    const value = formatApprovalFieldValues(values, { preserveStructuredValues: field.widget === 'json' });
     if (value === null) {
       // A required field whose schema declares `null` and that carries exactly
       // that null is present context with nothing to display, not missing context.

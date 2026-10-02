@@ -26,7 +26,7 @@ test('an Iroh transport edit is planned as a transport change, not a relay deplo
 
 test('the release plan publishes the Iroh transport decision the parity gate consumes', async () => {
   const planner = await read('scripts/pipeline/release/compute-changed-components.mjs');
-  const workflow = await read('.github/workflows/release.yml');
+  const workflow = await read('.github/workflows/release-channel.yml');
 
   assert.match(planner, /changed_iroh_transport:\s*String\(Boolean\(classified\.iroh_transport\)\)/u);
   assert.match(workflow, /changed_iroh_transport:\s*\$\{\{\s*steps\.plan\.outputs\.changed_iroh_transport\s*\}\}/u);
@@ -38,7 +38,7 @@ test('version parity runs whenever the Iroh transport component changes', async 
   // property of the source being released, so the release plan — which is the
   // job that already resolves the changed components against the authorized
   // source — proves it.
-  const workflow = await read('.github/workflows/release.yml');
+  const workflow = await read('.github/workflows/release-channel.yml');
   const plan = workflow.slice(workflow.indexOf('\n  plan:'), workflow.indexOf('\n  mysql_db_contract:'));
   assert.ok(plan.length > 0, 'expected the release plan job');
 
@@ -54,7 +54,7 @@ test('version parity runs whenever the Iroh transport component changes', async 
 test('the parity gate never turns an Iroh transport change into a relay publication', async () => {
   // A relay rebuild is a separate, digest-published deployment decision. Proving
   // the versions agree must not become a reason to republish the relay image.
-  const workflow = await read('.github/workflows/release.yml');
+  const workflow = await read('.github/workflows/release-channel.yml');
 
   assert.match(
     workflow,

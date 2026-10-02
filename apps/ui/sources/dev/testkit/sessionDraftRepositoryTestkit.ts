@@ -5,9 +5,10 @@ import {
 } from '@happier-dev/protocol';
 
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
-import type {
-    SessionDraftValueByFieldId,
-    SessionDraftValueFieldId,
+import {
+    SessionArmedAgentContinuationSchema,
+    type SessionDraftValueByFieldId,
+    type SessionDraftValueFieldId,
 } from '@/sync/domains/input/draftValues/sessionDraftValueTypes';
 import {
     deleteSessionDraft,

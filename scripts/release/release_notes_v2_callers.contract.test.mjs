@@ -14,11 +14,12 @@ async function workflow(name) {
 }
 
 test('normal release carries one required project release ID through the canonical v2 notes projection', async () => {
-  const { raw, parsed } = await workflow('release.yml');
+  const { parsed: root } = await workflow('release.yml');
+  const { raw, parsed } = await workflow('release-channel.yml');
   const prepare = parsed.jobs.prepare_release_candidate;
   const projection = prepare.steps.find((step) => step.id === 'release_notes');
 
-  assert.deepEqual(parsed.on.workflow_dispatch.inputs.release_notes_id, {
+  assert.deepEqual(root.on.workflow_dispatch.inputs.release_notes_id, {
     description: 'Release notes — Exact approved project release ID',
     required: true,
     type: 'string',
@@ -40,7 +41,7 @@ test('normal release carries one required project release ID through the canonic
 });
 
 test('normal release admits canonical v2 notes for the exact authorized source before branch mutation', async () => {
-  const { parsed } = await workflow('release.yml');
+  const { parsed } = await workflow('release-channel.yml');
   const admission = parsed.jobs.release_notes_admission;
   const mutations = [
     parsed.jobs.promote_preview,

@@ -34,6 +34,8 @@ export function resolveSessionAttentionStandingAction(params: Readonly<{
 
 export function createSessionActionTarget(params: Readonly<{
     session: SessionActionSession;
+    /** Exact same-Home Session whose owner metadata is not carried by a lightweight row. */
+    ownerSession?: Session;
     serverId?: string | null;
     currentUserId?: string | null;
     isConnected?: boolean;
@@ -51,8 +53,10 @@ export function createSessionActionTarget(params: Readonly<{
     const canUnarchive = session.access?.capabilities.archiveSession === true;
     const isActive = session.active === true;
     const isArchived = session.archivedAt != null;
-    const terminalControlServiceability = 'agentState' in session
-        ? readSessionOwnerMetadataView(session)?.terminal?.controlServiceabilityV1
+    const ownerSession = params.ownerSession ?? ('agentState' in session ? session : null);
+    const ownerMetadata = ownerSession ? readSessionOwnerMetadataView(ownerSession) : null;
+    const terminalControlServiceability = ownerSession
+        ? ownerMetadata?.terminal?.controlServiceabilityV1
         : (session.metadata as SessionListRenderableSession['metadata'])?.terminalControlServiceabilityV1;
     const hasRecoverableTerminalHost = (
         terminalControlServiceability?.v === 1
@@ -60,9 +64,6 @@ export function createSessionActionTarget(params: Readonly<{
     );
     const canStop = session.access?.capabilities.stopSession === true;
     const canArchive = session.access?.capabilities.archiveSession === true && !isArchived && (!isActive || canStop);
-    const ownerMetadata = 'agentState' in session
-        ? readSessionOwnerMetadataView(session)
-        : null;
     const hasWriteAccess = session.access?.capabilities.submitAgentInput === true;
     const canResume = !isActive
         && hasWriteAccess

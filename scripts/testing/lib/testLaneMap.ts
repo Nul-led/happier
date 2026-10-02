@@ -202,11 +202,14 @@ export function buildTestLaneContext(params: Readonly<{
       workspaceDirectory: manifest.workspaceDirectory,
       scriptName: 'test',
     };
-    const isRootUnitWorkspace = rootUnitTargets.some((target) => matchesWorkspaceScriptTarget(workspaceTarget, target));
+    const matchingRootTargets = rootUnitTargets.filter((target) => matchesWorkspaceScriptTarget(workspaceTarget, target));
+    const isRootUnitWorkspace = matchingRootTargets.length > 0;
     return {
       directory: manifest.workspaceDirectory,
       unitLane: isRootUnitWorkspace ? 'test' : 'workspace:test',
-      explicitUnitLaneTestFiles: resolveWorkspaceScriptTestFiles(manifest, 'test'),
+      explicitUnitLaneTestFiles: isRootUnitWorkspace
+        ? matchingRootTargets.flatMap((target) => resolveWorkspaceScriptTestFiles(manifest, target.scriptName))
+        : resolveWorkspaceScriptTestFiles(manifest, 'test'),
     };
   });
 
@@ -334,15 +337,6 @@ export const DECLARED_UNWIRED_TEST_FILES: Readonly<Record<string, string>> = Obj
     'Runs only in the manual `certify:activity-surfaces` command; no CI workflow invokes that lane.',
   'apps/ui/scripts/validateExpoWidgetsSimulatorBuildSmoke.test.mjs':
     'Runs only in the manual `certify:activity-surfaces` command; no CI workflow invokes that lane.',
-
-  // The other twenty files beside it are named by the `cli-common` `test:dist:local` chain and run
-  // green there (117 pass / 0 fail measured 2026-08-23). This one is red at current bytes:
-  // 33 pass / 7 fail, including `installAgentCli does not treat a system CLI as already-installed
-  // when explicitly installing a managed package-backed backend` and `resolveExistingPnpmCommand
-  // ignores a non-executable override on Unix`, which reads the real `~/.happier/tools/pnpm`
-  // instead of its fixture. Both are managed-agent-CLI install contracts, not wiring defects.
-  'packages/cli-common/tests/agents.test.mjs':
-    'Red at current bytes (33 pass / 7 fail) in the managed agent CLI install corridor.',
 
   // Retired 2026-08-19: the C9 out-of-tree channel-socket provider fixture was realigned to the
   // current definePlugin `execution.target` contract and now runs in the workspace `test` script

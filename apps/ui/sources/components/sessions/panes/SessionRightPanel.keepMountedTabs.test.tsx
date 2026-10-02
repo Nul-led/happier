@@ -2,6 +2,7 @@ import * as React from 'react';
 import type { ReactTestInstance } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
+import { AppPaneProvider } from '../../appShell/panes/AppPaneProvider';
 import { installSessionDetailsPanelCommonModuleMocks } from './sessionDetailsPanelTestHelpers';
 
 
@@ -20,17 +21,16 @@ installSessionDetailsPanelCommonModuleMocks({
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
         return createTextModuleMock({ translate: (key) => key });
     },
-    storage: async (importOriginal) => {
-        const actual = await importOriginal<typeof import('@/sync/domains/state/storage')>();
-        return {
-            ...actual,
-            useSettings: () => ({}),
-        };
+    storage: async () => {
+        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+        return createStorageModuleStub({
+            useLocalSetting: () => null,
+        });
     },
 });
 
-vi.mock('@/components/sessions/files/views/SessionRepositoryTreeBrowserView', () => ({
-    SessionRepositoryTreeBrowserView: (props: any) => React.createElement('SessionRepositoryTreeBrowserView', props),
+vi.mock('@/components/sessions/panes/surfaces/SessionBrowseFilesSurface', () => ({
+    SessionBrowseFilesSurface: (props: any) => React.createElement('SessionBrowseFilesSurface', props),
 }));
 
 vi.mock('@/components/sessions/panes/git/SessionRightPanelGitView', () => ({
@@ -60,15 +60,15 @@ describe('SessionRightPanel (keep mounted tabs)', () => {
             return undefined;
         };
 
-        expect(screen.findAllByType('SessionRightPanelGitView')).toHaveLength(1);
+        expect(screen.findAllByType('SessionGitSurface')).toHaveLength(1);
         // Lazy-mount inactive tabs for faster initial open.
-        expect(screen.findAllByType('SessionRepositoryTreeBrowserView')).toHaveLength(0);
+        expect(screen.findAllByType('SessionBrowseFilesSurface')).toHaveLength(0);
 
         await screen.pressByTestIdAsync('session-rightpanel-tab:files');
 
-        expect(screen.findAllByType('SessionRightPanelGitView')).toHaveLength(1);
-        expect(screen.findAllByType('SessionRepositoryTreeBrowserView')).toHaveLength(1);
-        expect(screen.findByType('SessionRepositoryTreeBrowserView')).toBeTruthy();
+        expect(screen.findAllByType('SessionGitSurface')).toHaveLength(1);
+        expect(screen.findAllByType('SessionBrowseFilesSurface')).toHaveLength(1);
+        expect(screen.findByType('SessionBrowseFilesSurface')).toBeTruthy();
         expect(screen.findByTestId('session-rightpanel-surface-git')!.props.pointerEvents).toBe('none');
         expect(getStyleValue(screen.findByTestId('session-rightpanel-surface-git')!, 'opacity')).toBe(0);
         expect(screen.findByTestId('session-rightpanel-surface-files')!.props.pointerEvents).toBe('auto');
@@ -76,8 +76,8 @@ describe('SessionRightPanel (keep mounted tabs)', () => {
 
         // Switching back keeps both mounted.
         await screen.pressByTestIdAsync('session-rightpanel-tab:git');
-        expect(screen.findAllByType('SessionRightPanelGitView')).toHaveLength(1);
-        expect(screen.findAllByType('SessionRepositoryTreeBrowserView')).toHaveLength(1);
+        expect(screen.findAllByType('SessionGitSurface')).toHaveLength(1);
+        expect(screen.findAllByType('SessionBrowseFilesSurface')).toHaveLength(1);
         expect(screen.findByTestId('session-rightpanel-surface-git')!.props.pointerEvents).toBe('auto');
         expect(getStyleValue(screen.findByTestId('session-rightpanel-surface-git')!, 'opacity')).toBe(1);
         expect(screen.findByTestId('session-rightpanel-surface-files')!.props.pointerEvents).toBe('none');

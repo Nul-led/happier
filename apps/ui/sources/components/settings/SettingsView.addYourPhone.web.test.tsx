@@ -216,10 +216,7 @@ describe('SettingsView (web)', () => {
     it('hides “Add your phone” on phone-sized web', async () => {
         windowDimensions = { width: 360, height: 800 };
         vi.stubGlobal('navigator', { maxTouchPoints: 5, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)' } as any);
-        vi.resetModules();
         routerPushSpy.mockClear();
-
-        const { SettingsView } = await import('./SettingsView');
 
         const screen = await renderSettingsView(<SettingsView />);
 
@@ -230,10 +227,7 @@ describe('SettingsView (web)', () => {
         windowDimensions = { width: 480, height: 700 };
         vi.stubGlobal('navigator', { maxTouchPoints: 0, userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' } as any);
         vi.stubGlobal('window', { matchMedia: () => ({ matches: false }) } as any);
-        vi.resetModules();
         routerPushSpy.mockClear();
-
-        const { SettingsView } = await import('./SettingsView');
 
         const screen = await renderSettingsView(<SettingsView />);
 

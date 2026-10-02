@@ -60,27 +60,32 @@ export function installSessionFilesViewCommonModuleMocks(
         });
     });
 
-    vi.doMock('@/constants/Typography', () => ({
-        FontWeights: {
-            regular: '400',
-            semiBold: '500',
-            bold: '600',
-        },
-        Typography: {
-            default: () => ({}),
-            mono: () => ({}),
-            tabular: () => ({}),
-            eyebrow: () => ({}),
-            rowTitle: () => ({}),
-            rowMeta: () => ({}),
-            pillLabel: () => ({}),
-            keyHint: () => ({}),
-            timestamp: () => ({}),
-            logo: () => ({}),
-            header: () => ({}),
-            body: () => ({}),
-        },
-    }));
+    vi.doMock('@/constants/Typography', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('@/constants/Typography')>();
+        return {
+            ...actual,
+            FontWeights: {
+                regular: '400',
+                semiBold: '500',
+                bold: '600',
+            },
+            Typography: {
+                ...actual.Typography,
+                default: () => ({}),
+                mono: () => ({}),
+                tabular: () => ({}),
+                eyebrow: () => ({}),
+                rowTitle: () => ({}),
+                rowMeta: () => ({}),
+                pillLabel: () => ({}),
+                keyHint: () => ({}),
+                timestamp: () => ({}),
+                logo: () => ({}),
+                header: () => ({}),
+                body: () => ({}),
+            },
+        };
+    });
 
     vi.doMock('@/components/ui/layout/layout', () => ({
         layout: { maxWidth: 1024 },

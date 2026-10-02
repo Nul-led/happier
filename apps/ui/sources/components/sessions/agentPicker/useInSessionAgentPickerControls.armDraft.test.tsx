@@ -111,13 +111,13 @@ async function renderControls(props: HookProps = {}) {
         accountScope: SCOPE,
         currentAgentId: hookProps.currentAgentId ?? 'claude',
         currentAgentLabel: 'Claude Code',
+        projectionCurrent: true,
         entries: hookProps.entries ?? [entry('claude'), entry('codex')],
         featureDecision: hookProps.featureDecision === undefined
             ? { state: 'enabled' }
             : hookProps.featureDecision,
         source: hookProps.source ?? supportedSource,
         machine: hookProps.machine ?? onlineMachine,
-        projectionCurrent: true,
         detail: {
             settings: {} as never,
             capabilityServerId: 'server-1',

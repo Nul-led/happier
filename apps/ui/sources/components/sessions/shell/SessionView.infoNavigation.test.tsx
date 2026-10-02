@@ -453,15 +453,12 @@ describe('SessionView info navigation', () => {
     it('opens session info via singular navigate using the explicit route server id for a route-owned session', async () => {
         const { SessionView } = await import('./SessionView');
 
-        await renderScreen(
+        const screen = await renderScreen(
             <SessionView id="s1" routeServerId="server-2" />,
             { wrapper: AppPaneProviderWrapper },
         );
 
-        const headerProps = chatHeaderPropsSpy.mock.calls.at(-1)?.[0];
-        expect(typeof headerProps?.onAvatarPress).toBe('function');
-
-        headerProps?.onAvatarPress?.();
+        screen.root.findByProps({ accessibilityLabel: 'sessionInfo.title' }).props.onPress();
 
         expect(routerPushSpy).not.toHaveBeenCalled();
         expect(routerNavigateSpy).toHaveBeenCalledTimes(1);
@@ -570,15 +567,12 @@ describe('SessionView info navigation', () => {
         resolveServerIdForSessionIdFromLocalCacheSpy.mockReturnValue(null);
         const { SessionView } = await import('./SessionView');
 
-        await renderScreen(
+        const screen = await renderScreen(
             <SessionView id="s1" routeServerId="server-2" />,
             { wrapper: AppPaneProviderWrapper },
         );
 
-        const headerProps = chatHeaderPropsSpy.mock.calls.at(-1)?.[0];
-        expect(typeof headerProps?.onAvatarPress).toBe('function');
-
-        headerProps?.onAvatarPress?.();
+        screen.root.findByProps({ accessibilityLabel: 'sessionInfo.title' }).props.onPress();
 
         expect(routerPushSpy).not.toHaveBeenCalled();
         expect(routerNavigateSpy).toHaveBeenCalledTimes(1);
@@ -590,15 +584,12 @@ describe('SessionView info navigation', () => {
     it('opens session info via singular navigate using the cached owning server id when the route is missing server scope', async () => {
         const { SessionView } = await import('./SessionView');
 
-        await renderScreen(
+        const screen = await renderScreen(
             <SessionView id="s1" />,
             { wrapper: AppPaneProviderWrapper },
         );
 
-        const headerProps = chatHeaderPropsSpy.mock.calls.at(-1)?.[0];
-        expect(typeof headerProps?.onAvatarPress).toBe('function');
-
-        headerProps?.onAvatarPress?.();
+        screen.root.findByProps({ accessibilityLabel: 'sessionInfo.title' }).props.onPress();
 
         expect(routerNavigateSpy).toHaveBeenCalledTimes(1);
         expect(routerNavigateSpy).toHaveBeenCalledWith('/session/s1/info?serverId=server-cache', expect.objectContaining({

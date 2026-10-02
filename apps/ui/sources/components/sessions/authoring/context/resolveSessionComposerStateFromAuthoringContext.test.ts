@@ -28,13 +28,13 @@ const BASE_SESSION = {
 } as const;
 
 describe('resolveSessionComposerStateFromAuthoringContext', () => {
-    it('resolves live-session composer state from the snapshot with fallback agent support', () => {
+    it('uses the fallback agent when the live-session snapshot agent is blank', () => {
         const context: LiveSessionAuthoringContext = {
             kind: 'liveSession',
             session: BASE_SESSION as any,
             snapshot: {
                 ...BASE_SNAPSHOT,
-                agentId: 'not-a-real-agent',
+                agentId: '   ',
             } as any,
         };
 
@@ -50,13 +50,13 @@ describe('resolveSessionComposerStateFromAuthoringContext', () => {
         expect(state.currentPath).toBe('/repo/snapshot');
     });
 
-    it('leaves the live-session agent unset when there is no valid snapshot agent and no fallback', () => {
+    it('leaves the live-session agent unset when the snapshot agent is blank and there is no fallback', () => {
         const context: LiveSessionAuthoringContext = {
             kind: 'liveSession',
             session: BASE_SESSION as any,
             snapshot: {
                 ...BASE_SNAPSHOT,
-                agentId: 'not-a-real-agent',
+                agentId: '',
             } as any,
         };
 

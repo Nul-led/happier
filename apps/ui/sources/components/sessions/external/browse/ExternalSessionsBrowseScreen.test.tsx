@@ -26,6 +26,7 @@ import type {
     MergedProviderProjectionEntry,
 } from '@/agents/backendCatalog/mergedProjectionTypes';
 import { AgentCatalogIdentityIcon } from '@/agents/presentation/AgentCatalogIdentityIcon';
+import { SessionContextChips } from '@/components/sessions/context/SessionContextChips';
 import { installNewSessionComponentsCommonModuleMocks } from '../../new/components/newSessionComponentsTestHelpers';
 
 

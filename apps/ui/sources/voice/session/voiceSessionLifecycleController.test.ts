@@ -773,7 +773,7 @@ describe('createVoiceSessionLifecycleController', () => {
         expect(replacement.stop).not.toHaveBeenCalled();
     });
 
-    it('does not stop a later same-adapter attempt after delayed unsupported output focus', async () => {
+    it('does not stop a later same-adapter attempt after unsupported output focus from the prior attempt', async () => {
         const { createVoiceSessionLifecycleController } = await import('./voiceSessionLifecycleController');
         const captureAdmission = createVoiceCaptureAdmissionController();
         const sessionId = 'session-1';

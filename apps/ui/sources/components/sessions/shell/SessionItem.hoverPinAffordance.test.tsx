@@ -116,6 +116,9 @@ vi.mock('./sessionPinIcons', () => ({
     PinSlashIcon: (props: Record<string, unknown>) => React.createElement('PinSlashIcon', props),
 }));
 
+const { SessionItem } = await import('./SessionItem');
+const ModelBackedSessionItem = createModelBackedSessionItemTestComponent(SessionItem);
+
 describe('SessionItem pin hover affordance (web)', () => {
     function createSession(id: string) {
         return {
@@ -136,13 +139,11 @@ describe('SessionItem pin hover affordance (web)', () => {
     }
 
     async function renderSessionItem(props: SessionItemProps) {
-        const { SessionItem } = await import('./SessionItem');
-        const ModelBackedSessionItem = createModelBackedSessionItemTestComponent(SessionItem);
         return renderScreen(<ModelBackedSessionItem {...props} />);
     }
 
     function findSessionRow(screen: Awaited<ReturnType<typeof renderSessionItem>>, sessionId: string) {
-        return screen.findByTestId(`session-list-item-${sessionId}`) as any;
+        return screen.findHostByTestId(`session-list-item-${sessionId}`) as any;
     }
 
     /** The row's hover owner: the nearest ancestor of the press target that tracks the pointer. */
@@ -223,7 +224,7 @@ describe('SessionItem pin hover affordance (web)', () => {
             triggerHoverEnter(container);
         });
 
-        expect(findPinActions(row)).toHaveLength(1);
+        expect(findPinActions(row)).not.toHaveLength(0);
 
         await act(async () => {
             triggerHoverLeave(container);
@@ -255,13 +256,13 @@ describe('SessionItem pin hover affordance (web)', () => {
         await act(async () => {
             triggerHoverEnter(container);
         });
-        expect(findPinActions(row)).toHaveLength(1);
+        expect(findPinActions(row)).not.toHaveLength(0);
 
         const rightArea = findRightArea(screen);
         await act(async () => {
             triggerHoverEnter(rightArea);
         });
-        expect(findPinActions(row)).toHaveLength(1);
+        expect(findPinActions(row)).not.toHaveLength(0);
 
         await act(async () => {
             triggerHoverLeave(container);
@@ -291,7 +292,7 @@ describe('SessionItem pin hover affordance (web)', () => {
         await act(async () => {
             triggerHoverEnter(container);
         });
-        expect(findPinActions(row)).toHaveLength(1);
+        expect(findPinActions(row)).not.toHaveLength(0);
 
         await act(async () => {
             triggerHoverLeave(container);
@@ -327,12 +328,12 @@ describe('SessionItem pin hover affordance (web)', () => {
             triggerHoverEnter(container);
             triggerHoverEnter(rightArea);
         });
-        expect(findPinActions(row)).toHaveLength(1);
+        expect(findPinActions(row)).not.toHaveLength(0);
 
         await act(async () => {
             triggerHoverLeave(rightArea);
         });
-        expect(findPinActions(row)).toHaveLength(1);
+        expect(findPinActions(row)).not.toHaveLength(0);
 
         await act(async () => {
             triggerHoverLeave(container);

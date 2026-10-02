@@ -12,6 +12,17 @@ export function createReleaseCliDryRunEnv(baseEnv = process.env, options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'happier-release-cli-dry-run-'));
   const binDir = path.join(dir, 'bin');
   fs.mkdirSync(binDir, { recursive: true });
+  const workflowDispatchArgsPath = path.join(dir, 'workflow-dispatch.json');
+  if (options.captureWorkflowDispatch === true) {
+    // GitHub is a genuine process/network boundary; every hosted dispatch is
+    // captured locally so this fixture can exercise the real CLI safely.
+    writeExecutable(path.join(binDir, 'gh'), [
+      `#!${process.execPath}`,
+      "import { writeFileSync } from 'node:fs';",
+      `writeFileSync(${JSON.stringify(workflowDispatchArgsPath)}, JSON.stringify(process.argv.slice(2)));`,
+      '',
+    ].join('\n'));
+  }
   const diffPaths =
     Array.isArray(options.diffPaths) && options.diffPaths.length > 0
       ? options.diffPaths
@@ -30,6 +41,14 @@ export function createReleaseCliDryRunEnv(baseEnv = process.env, options = {}) {
     [
       '#!/usr/bin/env bash',
       'set -euo pipefail',
+      ...(options.captureWorkflowDispatch === true ? [
+        'if [ "${1:-}" = "rev-parse" ] && [ "${2:-}" = "--is-inside-work-tree" ]; then',
+        '  printf "true\\n"; exit 0',
+        'fi',
+        'if [ "${1:-}" = "status" ] && [ "${2:-}" = "--porcelain=v1" ]; then',
+        '  exit 0',
+        'fi',
+      ] : []),
       'if [ "${1:-}" = "ls-remote" ]; then',
       '  if [ "$#" = 3 ] && [ "${3:-}" = "refs/heads/dev" ]; then',
       '    printf "%s\\t%s\\n" "2222222222222222222222222222222222222222" "refs/heads/dev"',
@@ -52,6 +71,15 @@ export function createReleaseCliDryRunEnv(baseEnv = process.env, options = {}) {
       '  exit 0',
       'fi',
       'if [ "${1:-}" = "fetch" ]; then',
+      ...(options.captureWorkflowDispatch === true ? [
+        '  case "${@: -1}" in',
+        '    refs/heads/dev) fetched_sha=2222222222222222222222222222222222222222 ;;',
+        '    refs/heads/preview) fetched_sha=3333333333333333333333333333333333333333 ;;',
+        '    2222222222222222222222222222222222222222|3333333333333333333333333333333333333333) fetched_sha="${@: -1}" ;;',
+        '    *) echo "unexpected hosted source fetch: $*" >&2; exit 1 ;;',
+        '  esac',
+        '  printf "%s\\n" "$fetched_sha" > "$HAPPIER_TEST_FETCH_HEAD_PATH"',
+      ] : []),
       '  exit 0',
       'fi',
       'if [ "${1:-}" = "cat-file" ] && [[ "${2:-}" == --batch-check=* ]]; then',
@@ -66,6 +94,9 @@ export function createReleaseCliDryRunEnv(baseEnv = process.env, options = {}) {
       'fi',
       'if [ "${1:-}" = "rev-parse" ]; then',
       '  case "${2:-}" in',
+      ...(options.captureWorkflowDispatch === true ? [
+        '    FETCH_HEAD) cat "$HAPPIER_TEST_FETCH_HEAD_PATH" ;;',
+      ] : []),
       '    HEAD|origin/dev) printf "dev-sha\\n" ;;',
       '    origin/main) printf "main-sha\\n" ;;',
       '    origin/preview) printf "preview-sha\\n" ;;',
@@ -124,9 +155,13 @@ export function createReleaseCliDryRunEnv(baseEnv = process.env, options = {}) {
   );
 
   return {
+    workflowDispatchArgsPath,
     env: {
       ...baseEnv,
       PATH: `${binDir}:${baseEnv.PATH ?? ''}`,
+      ...(options.captureWorkflowDispatch === true
+        ? { HAPPIER_TEST_FETCH_HEAD_PATH: path.join(dir, 'FETCH_HEAD') }
+        : {}),
     },
     cleanup() {
       fs.rmSync(dir, { recursive: true, force: true });

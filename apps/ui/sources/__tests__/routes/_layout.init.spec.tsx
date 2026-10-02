@@ -236,7 +236,6 @@ installRouteRootCommonModuleMocks({
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock(
             {
-                View: ({ children }: { children?: React.ReactNode }) => React.createElement('View', null, children),
                 Platform: {
                     get OS() {
                         return mockedPlatformOS;
@@ -348,7 +347,7 @@ vi.mock('@/components/navigation/shell/SidebarNavigator', () => {
                 });
             }
 
-            return React.createElement('SidebarNavigator');
+            return React.createElement('SidebarNavigator', { testID: 'sidebar-navigator' });
         },
     };
 });
@@ -434,6 +433,13 @@ vi.mock('@/components/appShell/commandPalette/CommandPaletteProvider', () => {
     const React = require('react');
     return {
         CommandPaletteProvider: ({ children }: { children: React.ReactNode }) => React.createElement('CommandPaletteProvider', null, children),
+    };
+});
+
+vi.mock('@/components/personalHome/bootstrap', () => {
+    const React = require('react');
+    return {
+        PersonalHomeBootstrapRuntimeMount: ({ children }: { children: React.ReactNode }) => children,
     };
 });
 
@@ -823,10 +829,10 @@ describe('app/_layout init resilience', () => {
 
         const screen = await renderSettledRootLayout();
 
-        expect(screen.findByTestId('desktop-narrow-shell-chrome')).toBeTruthy();
-        expect(screen.findAllByTestId('desktop-focus-mode-shell-chrome')).toHaveLength(0);
-        expect(screen.findByTestId('desktop-window-controls-slot')).toBeTruthy();
-        const dragSurface = screen.findByTestId('desktop-main-content-drag-surface');
+        expect(screen.findHostByTestId('desktop-narrow-shell-chrome')).toBeTruthy();
+        expect(screen.findAllHostsByTestId('desktop-focus-mode-shell-chrome')).toHaveLength(0);
+        expect(screen.findHostByTestId('desktop-window-controls-slot')).toBeTruthy();
+        const dragSurface = screen.findHostByTestId('desktop-main-content-drag-surface');
         expect(dragSurface?.props.enabled).toBe(true);
         expect(dragSurface?.props.leftOffsetPx).toBe(0);
     });

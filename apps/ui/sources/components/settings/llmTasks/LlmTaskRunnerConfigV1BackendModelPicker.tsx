@@ -6,6 +6,7 @@ import { useUnistyles } from 'react-native-unistyles';
 
 import {
   convertBackendTargetRefV2ToV1,
+  readBackendTargetRefV2,
   type AcpCatalogSettingsV1,
   type BackendTargetRefV2,
   type LlmTaskRunnerConfigV1,
@@ -104,8 +105,10 @@ export function LlmTaskRunnerConfigV1BackendModelPicker(props: Readonly<{
   }, [backendEntries, props.value?.backendTarget]);
 
   const selectedBackendTargetForModelOptions = React.useMemo(() => {
-    return selectedBackendEntry ? resolveTaskRunnerBackendTarget(selectedBackendEntry) : null;
-  }, [selectedBackendEntry]);
+    return selectedBackendEntry
+      ? resolveTaskRunnerBackendTarget(selectedBackendEntry)
+      : props.value ? readBackendTargetRefV2(props.value.backendTarget) : null;
+  }, [selectedBackendEntry, props.value?.backendTarget]);
 
   const preflightModels = useNewSessionPreflightModelsState({
     backendTarget: selectedBackendTargetForModelOptions,

@@ -49,6 +49,18 @@ test('server ordinary typecheck prepares stale ignored Prisma clients before che
   assert.doesNotMatch(packageJson.scripts['typecheck:local'], /\b(?:build|build:shared)\b/);
 });
 
+test('server build prepares generated clients through the canonical postinstall lifecycle', () => {
+  assert.equal(packageJson.scripts.prebuild, 'yarn -s postinstall:real');
+  assert.equal(packageJson.scripts['postinstall:real'], 'yarn -s generate:providers && yarn -s build:shared');
+});
+
+test('server finite typecheck verifies generated clients before checking source', () => {
+  assert.equal(
+    packageJson.scripts['typecheck:source:finite'],
+    'yarn -s generate:providers:check && node ./scripts/runTypeScriptCli.mjs --noEmit',
+  );
+});
+
 test('server ordinary integration entries route through hstack without runtime preparation', () => {
   for (const scriptName of ['test:integration', 'test:db-contract']) {
     assert.match(packageJson.scripts[scriptName], new RegExp(`--script=${scriptName}:local`));

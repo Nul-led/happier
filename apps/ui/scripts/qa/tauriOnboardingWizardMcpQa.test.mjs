@@ -13,7 +13,14 @@ test('tauri onboarding wizard QA exposes a deterministic capture plan', async ()
 
   const { stdout } = await execFileAsync(process.execPath, [scriptPath, '--json'], {
     cwd: dirname(dirname(scriptsDir)),
-    env: { ...process.env },
+    env: {
+      ...process.env,
+      HAPPIER_STACK_STACK: '',
+      HAPPIER_STACK_TAURI_IDENTIFIER: '',
+      HAPPIER_TAURI_MCP_APP_IDENTIFIER: '',
+      HAPPIER_TAURI_MCP_PORT: '',
+      HAPPIER_TAURI_APP_PORT: '',
+    },
     encoding: 'utf8',
   });
 

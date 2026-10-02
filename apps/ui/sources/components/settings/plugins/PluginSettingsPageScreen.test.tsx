@@ -23,6 +23,7 @@ import {
     type PluginUiSettingsPageProjection,
     type PluginUiSurfacePlacementProjection,
 } from '@/sync/domains/plugins/ui/projection';
+import { selectPluginDestinationSurfacePlacements } from '@/sync/domains/plugins/ui/surfacePlacementSelectors';
 
 import { usePluginSettingsPageDestinationHandler } from './pluginSettingsPageNavigation';
 

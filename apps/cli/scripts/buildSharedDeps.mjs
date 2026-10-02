@@ -2357,9 +2357,9 @@ export async function prepareBundledWorkspaceDependenciesForCli(opts = {}) {
       // identity, including deleted inputs and changed build scripts.
     },
   });
-  // Publication consumes exactly the plugin packages compiled by this run. Direct
-  // source-to-installed correspondence below owns runtime-tree currentness without
-  // a second committed output inventory.
+  // A current compiler output can still have a missing or stale installed daemon
+  // runtime. Select those packages through the same source-to-installed admission
+  // as runtime synchronization, so the canonical publisher repairs them too.
   const failedPluginWorkspaceNames = new Set(
     buildResult.failedPluginBuilds.map(({ packageName }) => packageName.replace(/^@happier-dev\//, '')),
   );
@@ -2367,7 +2367,13 @@ export async function prepareBundledWorkspaceDependenciesForCli(opts = {}) {
     repoRoot: resolvedRepoRoot,
     workspaceNames: (opts.deferPluginBuildToGenerator === true || publishesArtifact)
       ? workspaceNames
-      : buildResult.builtWorkspaceNames,
+      : [
+          ...buildResult.builtWorkspaceNames,
+          ...collectInstalledBundledPluginWorkspaceNamesDivergingFromSource({
+            repoRoot: resolvedRepoRoot,
+            workspaceNames,
+          }),
+        ],
   }).filter((workspaceName) => !failedPluginWorkspaceNames.has(workspaceName));
 
   return {

@@ -105,9 +105,9 @@ const providerProjectionSpy = vi.hoisted(() => vi.fn<(input: unknown) => Provide
     error: null,
     loading: false,
     status: 'pending',
+    refreshFailures: [],
     refresh: vi.fn(async () => {}),
     refreshWithResult: vi.fn(async () => null),
-    refreshFailures: [],
 })));
 let lastOptionPickerOverlayProps: any = null;
 
@@ -286,9 +286,9 @@ describe('NewSessionEngineOptionDetail', () => {
             error: null,
             loading: false,
             status: 'pending',
+            refreshFailures: [],
             refresh: vi.fn(async () => {}),
             refreshWithResult: vi.fn(async () => null),
-            refreshFailures: [],
         });
         probeRefreshSpies.cli.mockClear();
         probeRefreshSpies.models.mockClear();
@@ -337,9 +337,9 @@ describe('NewSessionEngineOptionDetail', () => {
             error: null,
             loading: false,
             status: 'success',
+            refreshFailures: [],
             refresh: vi.fn(async () => {}),
             refreshWithResult: vi.fn(async () => null),
-            refreshFailures: [],
         });
         const onSelectionChange = vi.fn();
 
@@ -381,9 +381,9 @@ describe('NewSessionEngineOptionDetail', () => {
                 error: null,
                 loading: true,
                 status: 'pending',
+                refreshFailures: [],
                 refresh: vi.fn(async () => {}),
                 refreshWithResult: vi.fn(async () => null),
-                refreshFailures: [],
             } satisfies ProviderProjectionResult,
         },
         {
@@ -398,9 +398,9 @@ describe('NewSessionEngineOptionDetail', () => {
                 },
                 loading: false,
                 status: 'error',
+                refreshFailures: [],
                 refresh: vi.fn(async () => {}),
                 refreshWithResult: vi.fn(async () => null),
-                refreshFailures: [],
             } satisfies ProviderProjectionResult,
         },
     ])('keeps an exact Provider selection identity without a false recovery row while projection is $state', async ({ state, projection }) => {

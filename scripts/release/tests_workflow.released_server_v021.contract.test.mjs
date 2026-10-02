@@ -39,7 +39,7 @@ test('the Ubuntu slow gate prepares and runs the two exact server-v0.2.1 regress
 });
 
 test('normal release orchestration leaves the exact published-server regressions to diff-selected validation', () => {
-  const releaseWorkflow = workflow('release.yml');
+  const releaseWorkflow = workflow('release-source-validation.yml');
   const existingCiStep = releaseWorkflow.jobs.ci.steps.find(
     (step) => step.name === 'Verify successful existing CI for exact source',
   );

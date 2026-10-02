@@ -39,7 +39,7 @@ describe('RetainedPanelSurface', () => {
                 );
             });
 
-            const inactiveSurface = tree.findByTestId('retained-panel-under-test');
+            const inactiveSurface = tree.findHostByTestId('retained-panel-under-test');
             if (!inactiveSurface) throw new Error('Expected the retained panel surface');
             expect(inactiveSurface.props.pointerEvents).toBe('none');
             expect(inactiveSurface.props.inert).toBe(true);
@@ -56,7 +56,7 @@ describe('RetainedPanelSurface', () => {
                 );
             });
 
-            const activeSurface = tree.findByTestId('retained-panel-under-test');
+            const activeSurface = tree.findHostByTestId('retained-panel-under-test');
             if (!activeSurface) throw new Error('Expected the retained panel surface');
             expect(activeSurface.props).toMatchObject({
                 pointerEvents: 'auto',
@@ -92,7 +92,7 @@ describe('RetainedPanelSurface', () => {
                 );
             });
 
-            const inactiveSurface = tree.findByTestId('retained-panel-under-test');
+            const inactiveSurface = tree.findHostByTestId('retained-panel-under-test');
             if (!inactiveSurface) throw new Error('Expected the retained panel surface');
             expect(inactiveSurface.props).toMatchObject({
                 inert: undefined,
@@ -111,7 +111,7 @@ describe('RetainedPanelSurface', () => {
                 );
             });
 
-            const activeSurface = tree.findByTestId('retained-panel-under-test');
+            const activeSurface = tree.findHostByTestId('retained-panel-under-test');
             if (!activeSurface) throw new Error('Expected the retained panel surface');
             expect(activeSurface.props).toMatchObject({
                 accessibilityElementsHidden: false,

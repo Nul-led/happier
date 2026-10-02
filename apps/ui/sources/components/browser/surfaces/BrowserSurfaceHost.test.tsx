@@ -191,6 +191,8 @@ vi.mock('@/sync/http/client', async (importOriginal) => {
     };
 });
 
+const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
+
 const target = {
     kind: 'localServicePreview',
     targetId: 'preview_1',
@@ -644,7 +646,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('does not read current context or enter a client Action handler when no Account lifetime is captured', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const composition = getInstalledPluginUiClientExecutableComposition();
         const currentUiContextReader: CurrentUiContextReader = Object.freeze({
             readCurrentUiContext: vi.fn((): CurrentUiContextSnapshotV1 => ({
@@ -713,7 +714,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('does not enter a client Action handler or read current context after its Account retires during confirmation', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const composition = getInstalledPluginUiClientExecutableComposition();
         const currentUiContextReader: CurrentUiContextReader = Object.freeze({
             readCurrentUiContext: vi.fn((): CurrentUiContextSnapshotV1 => ({
@@ -791,7 +791,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('renders a typed unavailable state before mounting shell chrome when browser policy is disabled', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const initialBrowserState = openBrowserTarget(createBrowserViewState(), target, {
             platform: 'web',
             currentUrl: 'https://preview.happier.test/',
@@ -818,7 +817,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('keeps diagnostics projections unavailable when the diagnostics policy is disabled', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const initialBrowserState = openBrowserTarget(createBrowserViewState(), target, {
             platform: 'web',
             currentUrl: 'https://preview.happier.test/',
@@ -846,7 +844,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('does not mount the injected diagnostics drawer for local-preview web iframes without a supported producer', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const initialBrowserState = openBrowserTarget(createBrowserViewState(), target, {
             platform: 'web',
             currentUrl: 'https://preview.happier.test/',
@@ -903,7 +900,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('passes browser recording state into the reusable shell chrome', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const { createBrowserRecordingState } = await import('@/sync/domains/browser/recording');
         const initialBrowserState = openBrowserTarget(createBrowserViewState(), target, {
             platform: 'web',
@@ -939,7 +935,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('fails closed for browser recording when the recording policy is not explicitly enabled', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const { createBrowserRecordingState } = await import('@/sync/domains/browser/recording');
         const initialBrowserState = openBrowserTarget(createBrowserViewState(), target, {
             platform: 'web',
@@ -973,7 +968,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('reports lifecycle against the logical browser view instead of the presentation slot', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const lifecycleSpy = vi.fn();
         const initialBrowserState = openBrowserTarget(createBrowserViewState(), target, {
             platform: 'web',
@@ -1094,7 +1088,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('reconciles lifecycle from the previous host snapshot when a presentation slot disappears', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const lifecycleSpy = vi.fn();
         const initialBrowserState = openBrowserTarget(createBrowserViewState(), target, {
             platform: 'web',
@@ -1141,7 +1134,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('routes client-local navigation and reload effects into the active frame host', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const initialBrowserState = openBrowserTarget(createBrowserViewState(), target, {
             platform: 'web',
             currentUrl: 'https://preview.happier.test/',
@@ -1220,7 +1212,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('retargets the active local-preview view when typed navigation resolves to an external URL target', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const onViewTargetChange = vi.fn();
         const initialBrowserState = openBrowserTarget(createBrowserViewState(), target, {
             platform: 'web',
@@ -1271,7 +1262,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('preserves local browser state across parent refreshes with the same surface key', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const localServicePreviewState = createLocalServicePreviewState();
         const renderHost = (initialUrl: string) => (
             <BrowserSurfaceHost
@@ -1310,7 +1300,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('renders browser panel plugin placements for the active browser target', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const initialBrowserState = openBrowserTarget(createBrowserViewState(), target, {
             platform: 'web',
             currentUrl: 'https://preview.happier.test/',
@@ -1385,8 +1374,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('does not mount browser panel plugin placements without an active browser target', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
-
         const screen = await renderScreen(
             <BrowserSurfaceHost
                 browserSessionId="browser_session_default"
@@ -1408,7 +1395,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('opens launchpad targets through the reusable host when no external opener is supplied', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const onViewTargetChange = vi.fn();
         const launchpadRows = [{
             id: 'localService:preview_1',
@@ -1459,7 +1445,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('opens desktop external URL launchpad rows through the reusable host with policy and native WebView context', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const launchpadRows = [{
             id: 'recent:external_docs',
             section: 'recent',
@@ -1509,7 +1494,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('routes annotation Select through the diagnostics element picker for the active surface view', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const {
             createBrowserContextState,
             startBrowserAnnotationMode,
@@ -1594,7 +1578,6 @@ describe('BrowserSurfaceHost', () => {
     });
 
     it('keeps the address field editable and navigates the active desktop view in place (no new tab)', async () => {
-        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const launchpadRows = [{
             id: 'recent:external_docs',
             section: 'recent',

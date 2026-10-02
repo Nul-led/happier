@@ -1,7 +1,7 @@
 import { createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { describe, expect, it } from 'vitest';
 
-import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import { buildSessionListRenderableFromSession, type SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import type { Session } from '@/sync/domains/state/storageTypes';
 
 import { createSessionActionTarget } from './sessionActionContext';
@@ -126,6 +126,30 @@ describe('session action availability', () => {
             .not.toContain(SESSION_ACTION_RESUME_ID);
         expect(listVisibleSessionActionIds({ target: nonResumableTarget, surface: 'sessionHeader' }))
             .not.toContain(SESSION_ACTION_RESUME_ID);
+    });
+
+    it('preserves Resume owner metadata while read-state actions use the current lightweight row', () => {
+        const shell = createOwnedRawSession({
+            ownerMetadataView: {
+                path: '/workspace', host: 'machine', flavor: 'claude',
+                claudeSessionId: 'claude_vendor_session',
+                claudeTranscriptPath: '/tmp/claude_vendor_session.jsonl',
+            },
+        });
+        const row = buildSessionListRenderableFromSession({
+            ...shell, seq: 6, latestReadyEventSeq: 6, lastViewedSessionSeq: 4,
+        });
+        expect('agentState' in row).toBe(false);
+        const input = {
+            session: row,
+            ownerSession: shell,
+            currentUserId: 'current_user',
+            resumeCapabilityOptions: { accountSettings: {} },
+        };
+        const target = createSessionActionTarget(input);
+        expect(target.readStateAction.kind).toBe('mark-read');
+        expect(listVisibleSessionActionIds({ target, surface: 'sessionHeader' }))
+            .toContain(SESSION_ACTION_RESUME_ID);
     });
 
     it('keeps session-info shared actions as a superset of row lifecycle actions', () => {

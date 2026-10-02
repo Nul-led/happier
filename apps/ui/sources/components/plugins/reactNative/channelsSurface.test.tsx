@@ -810,6 +810,9 @@ function createDeliveryResolutionDataClient(input: Readonly<{
     if (request.prefix?.[0] !== 'connection-1') {
       throw new Error('Expected the delivery query to stay within the expanded connection.');
     }
+    if (request.range?.lower !== true || request.range?.upper !== true) {
+      throw new Error('Expected the delivery query to select only attention rows for the expanded connection.');
+    }
     if (request.limit !== undefined && request.limit > 200) {
       throw new Error('Direct delivery query exceeded the Data-owned page limit.');
     }

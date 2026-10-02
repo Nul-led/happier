@@ -327,6 +327,8 @@ vi.mock('@/components/ui/popover', async (importOriginal) => {
     };
 });
 
+const Screen = (await import('@/app/(app)/new')).default;
+
 afterEach(() => {
     mockState.persistedDraft = null;
     mockState.tempData = null;
@@ -363,8 +365,6 @@ describe('/new (blocking guidance)', () => {
         mockState.tempData = null;
         mockState.shouldBlockNewSession = true;
 
-        const Screen = (await import('@/app/(app)/new')).default;
-
         const screen = await renderScreen(React.createElement(Screen));
 
         expect(() => screen.findByType('SessionGettingStartedGuidance')).not.toThrow();
@@ -378,8 +378,6 @@ describe('/new (blocking guidance)', () => {
         mockState.tempData = null;
         mockState.guidanceKind = 'select_session';
         mockState.shouldBlockNewSession = false;
-
-        const Screen = (await import('@/app/(app)/new')).default;
 
         await renderScreen(React.createElement(Screen));
 
@@ -409,8 +407,6 @@ describe('/new (blocking guidance)', () => {
             },
         };
 
-        const Screen = (await import('@/app/(app)/new')).default;
-
         const screen = await renderScreen(React.createElement(Screen));
 
         expect(() => screen.findByType('NewSessionWizard')).not.toThrow();
@@ -423,8 +419,6 @@ describe('/new (blocking guidance)', () => {
         mockState.tempData = {
             machineId: 'machine-1',
         };
-
-        const Screen = (await import('@/app/(app)/new')).default;
 
         await renderScreen(React.createElement(Screen));
 
@@ -461,7 +455,6 @@ describe('/new (blocking guidance)', () => {
             localSupplement: {},
         };
 
-        const Screen = (await import('@/app/(app)/new')).default;
         const screen = await renderScreen(React.createElement(Screen));
 
         expect(() => screen.findByProps({ testID: 'session-draft-context' })).toThrow();

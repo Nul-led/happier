@@ -10,6 +10,7 @@ import {
     createReactNavigationNativeMock,
     createReactNativeWebMock,
     createStorageModuleStub,
+    flushHookEffects,
     renderScreen,
     standardCleanup,
     type RenderScreenResult,
@@ -271,9 +272,8 @@ function goBack(key: string) {
 async function invokeAndFlush(callback: () => void): Promise<void> {
     await act(async () => {
         callback();
-        await Promise.resolve();
-        await Promise.resolve();
     });
+    await flushHookEffects({ cycles: 4, turns: 4 });
 }
 
 describe('Settings › Profiles detail: machine scope and unsaved navigation', () => {

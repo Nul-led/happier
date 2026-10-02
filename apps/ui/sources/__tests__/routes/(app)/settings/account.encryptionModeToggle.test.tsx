@@ -1,7 +1,7 @@
 import React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
-import { renderSettingsView } from '@/dev/testkit';
+import { flushHookEffects, renderSettingsView } from '@/dev/testkit';
 import { storage } from '@/sync/domains/state/storageStore';
 import { profileDefaults } from '@/sync/domains/profiles/profile';
 import {
@@ -15,6 +15,16 @@ import {
 import {
     invalidateAccountEncryptionModeCache,
 } from '@/sync/api/account/apiAccountEncryptionMode';
+import {
+    resetRuntimeFetch,
+    setRuntimeFetch,
+} from '@/utils/system/runtimeFetch';
+import {
+    resetServerReachabilitySupervisors,
+} from '@/sync/runtime/connectivity/serverReachabilitySupervisorPool';
+import {
+    resetEndpointSupervisorPoolForTests,
+} from '@/sync/runtime/connectivity/endpointSupervisorPool';
 import type {
     AccountEncryptionMigrationSessionRow,
 } from '@/sync/ops/account/buildAccountEncryptionMigrationStorageDirectives';
@@ -291,7 +301,16 @@ const PINNED_CONTENT_PUBLIC_KEY = Buffer.from(
 ).toString('base64');
 
 describe('Settings → Account (encryption mode toggle)', () => {
-    afterEach(() => {
+    beforeEach(async () => {
+        await Promise.all([
+            resetServerReachabilitySupervisors(),
+            resetEndpointSupervisorPoolForTests(),
+        ]);
+        setRuntimeFetch((input, init) => globalThis.fetch(input, init));
+    });
+
+    afterEach(async () => {
+        resetRuntimeFetch();
         vi.restoreAllMocks();
         vi.unstubAllGlobals();
         invalidateAccountEncryptionModeCache();
@@ -330,6 +349,10 @@ describe('Settings → Account (encryption mode toggle)', () => {
             generation: 1,
         };
         routerMockRef.current?.spies.push.mockReset();
+        await Promise.all([
+            resetServerReachabilitySupervisors(),
+            resetEndpointSupervisorPoolForTests(),
+        ]);
     });
 
     it('does not fetch account encryption mode when the feature gate is disabled', async () => {
@@ -591,6 +614,7 @@ describe('Settings → Account (encryption mode toggle)', () => {
         let screen: Awaited<ReturnType<typeof renderSettingsView>> | undefined;
         try {
             screen = await renderSettingsView(<AccountScreen />);
+            await flushHookEffects();
             await vi.waitFor(() => {
                 expect(alertSpy).toHaveBeenCalledWith(
                     'common.error',
@@ -610,12 +634,13 @@ describe('Settings → Account (encryption mode toggle)', () => {
         const authState: { credentials: { token: string } } = {
             credentials: { token: 'account-a-token' },
         };
-        useAuthMock.mockImplementation(() => ({
+        const TestAuthContext = React.createContext({
             isAuthenticated: true,
             credentials: authState.credentials,
             logout: vi.fn(),
             login: vi.fn(),
-        }));
+        });
+        useAuthMock.mockImplementation(() => React.useContext(TestAuthContext));
         storage.getState().applyProfile({
             ...profileDefaults,
             id: 'account-a',
@@ -641,6 +666,16 @@ describe('Settings → Account (encryption mode toggle)', () => {
         const TestableAccountScreen = AccountScreen as React.ComponentType<{
             testScopeRevision: number;
         }>;
+        const renderAccountScreen = (testScopeRevision: number) => (
+            <TestAuthContext.Provider value={{
+                isAuthenticated: true,
+                credentials: authState.credentials,
+                logout: vi.fn(),
+                login: vi.fn(),
+            }}>
+                <TestableAccountScreen testScopeRevision={testScopeRevision} />
+            </TestAuthContext.Provider>
+        );
         const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
             const url = getRequestUrl(input);
             const method = (init?.method ?? 'GET').toUpperCase();
@@ -654,6 +689,11 @@ describe('Settings → Account (encryption mode toggle)', () => {
                 return Response.json(createAccountFeaturesResponse({
                         encryptionAccountOptOutEnabled: true,
                     }));
+            }
+            if (url.endsWith('/v2/account/settings/history') && method === 'GET') {
+                return new Response(JSON.stringify({ snapshots: [] }), {
+                    status: 200,
+                });
             }
             if (url.endsWith('/v1/account/encryption') && method === 'GET') {
                 const authorization = new Headers(init?.headers).get('Authorization');
@@ -686,8 +726,9 @@ describe('Settings → Account (encryption mode toggle)', () => {
         let screen: Awaited<ReturnType<typeof renderSettingsView>> | undefined;
         try {
             screen = await renderSettingsView(
-                <TestableAccountScreen testScopeRevision={0} />,
+                renderAccountScreen(0),
             );
+            await flushHookEffects();
             await vi.waitFor(() => {
                 expect(
                     screen!.findByTestId('settings-account-encryption-recovery'),
@@ -695,9 +736,7 @@ describe('Settings → Account (encryption mode toggle)', () => {
             });
 
             authState.credentials = { token: 'account-a-token' };
-            await screen.update(
-                <TestableAccountScreen testScopeRevision={1} />,
-            );
+            await screen.update(renderAccountScreen(1));
 
             await vi.waitFor(() => {
                 expect(accountAModeRequests).toBe(2);
@@ -723,13 +762,14 @@ describe('Settings → Account (encryption mode toggle)', () => {
             ).toBeNull();
 
             authState.credentials = { token: 'account-b-token' };
-            await screen.update(
-                <TestableAccountScreen testScopeRevision={2} />,
-            );
+            await screen.update(renderAccountScreen(2));
 
             expect(
                 screen.findByTestId('settings-account-encryption-recovery'),
             ).toBeNull();
+            await vi.waitFor(() => {
+                expect(accountBModeRequests).toBe(1);
+            });
 
             await act(async () => {
                 resolveCredentialBMode(new Response(JSON.stringify({
@@ -748,13 +788,14 @@ describe('Settings → Account (encryption mode toggle)', () => {
                 serverUrl: 'https://server-b.example.test',
                 generation: 2,
             };
-            await screen.update(
-                <TestableAccountScreen testScopeRevision={3} />,
-            );
+            await screen.update(renderAccountScreen(3));
 
             expect(
                 screen.findByTestId('settings-account-encryption-recovery'),
             ).toBeNull();
+            await vi.waitFor(() => {
+                expect(accountBModeRequests).toBe(2);
+            });
 
             await act(async () => {
                 resolveServerBMode(new Response(JSON.stringify({
@@ -828,6 +869,7 @@ describe('Settings → Account (encryption mode toggle)', () => {
         let screen: Awaited<ReturnType<typeof renderSettingsView>> | undefined;
         try {
             screen = await renderSettingsView(<AccountScreen />);
+            await flushHookEffects();
             await vi.waitFor(() => {
                 expect(loginWithCredentials).toHaveBeenCalledWith({
                     token: 't',
@@ -890,6 +932,7 @@ describe('Settings → Account (encryption mode toggle)', () => {
         let screen: Awaited<ReturnType<typeof renderSettingsView>> | undefined;
         try {
             screen = await renderSettingsView(<AccountScreen />);
+            await flushHookEffects();
             await vi.waitFor(() => {
                 expect(alertSpy).toHaveBeenCalledWith(
                     'common.error',
@@ -1336,7 +1379,10 @@ describe('Settings → Account (encryption mode toggle)', () => {
         let screen: Awaited<ReturnType<typeof renderSettingsView>> | undefined;
         try {
             screen = await renderSettingsView(<AccountScreen />);
-            await act(async () => {});
+            await flushHookEffects();
+            await vi.waitFor(() => {
+                expect(findEncryptionModeSwitch(screen!)?.props.disabled).toBe(false);
+            });
 
             const encryptionSwitch = findEncryptionModeSwitch(screen);
             expect(encryptionSwitch).toBeTruthy();
@@ -1632,7 +1678,7 @@ describe('Settings → Account (encryption mode toggle)', () => {
         let screen: Awaited<ReturnType<typeof renderSettingsView>> | undefined;
         try {
             screen = await renderSettingsView(<AccountScreen />);
-            await act(async () => {});
+            await flushHookEffects();
             await vi.waitFor(() => {
                 expect(
                     findEncryptionModeSwitch(screen!)?.props.disabled,
@@ -2081,6 +2127,7 @@ describe('Settings → Account (encryption mode toggle)', () => {
         try {
             screen =
                 await renderSettingsView(<AccountScreen />);
+            await flushHookEffects();
             await vi.waitFor(() => {
                 expect(
                     loginWithCredentialsSpy,

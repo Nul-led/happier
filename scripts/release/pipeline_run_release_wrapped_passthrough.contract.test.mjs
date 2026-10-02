@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -198,10 +198,21 @@ exit 2
   }
 });
 
-test('run.mjs forwards the prepared CLI matrix version handoff', () => {
+test('run.mjs resolves the prepared CLI matrix version without accessing Keychain', () => {
   const tempDir = mkdtempSync(join(tmpdir(), 'happier-publish-version-'));
   const githubOutput = join(tempDir, 'github-output');
+  const credentialAccess = join(tempDir, 'credential-access');
+  // The security executable is the OS credential boundary; keep version planning real.
+  executable(join(tempDir, 'security'), String.raw`#!${process.execPath}
+require('node:fs').appendFileSync(${JSON.stringify(credentialAccess)}, 'invoked\n');
+process.stderr.write('TEST_KEYCHAIN_ACCESS_FORBIDDEN\n');
+process.exit(86);
+`);
+  const env = { ...process.env, PATH: `${tempDir}${delimiter}${process.env.PATH ?? ''}` };
   try {
+    assert.equal(spawnSync('security', [], { env }).status, 86, 'credential trap must be executable');
+    assert.equal(readFileSync(credentialAccess, 'utf8'), 'invoked\n');
+    writeFileSync(credentialAccess, '');
     const out = execFileSync(
       process.execPath,
       [
@@ -212,13 +223,17 @@ test('run.mjs forwards the prepared CLI matrix version handoff', () => {
         '--allow-dirty',
         'true',
         '--resolve-version-only',
+        '--secrets-source',
+        'keychain',
+        '--keychain-service',
+        'test-only-no-secret',
         '--github-output',
         githubOutput,
       ],
       {
         cwd: repoRoot,
         env: {
-          ...process.env,
+          ...env,
           HAPPIER_RELEASE_PUBLISHED_VERSIONS_JSON: JSON.stringify({
             github: { cli: ['cli-v0.2.10-preview.10'] },
             npm: {},
@@ -232,6 +247,7 @@ test('run.mjs forwards the prepared CLI matrix version handoff', () => {
 
     assert.match(out, /"version": "0\.2\.10-preview\.11"/);
     assert.equal(readFileSync(githubOutput, 'utf8'), 'version=0.2.10-preview.11\n');
+    assert.equal(readFileSync(credentialAccess, 'utf8'), '', 'version-only planning must not access Keychain');
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

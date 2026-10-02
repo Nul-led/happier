@@ -1561,6 +1561,8 @@ describe('SessionParticipantComposer', () => {
 
         let agentInputProps = agentInputSpy.mock.lastCall?.[0] as {
             onChangeText: (text: string) => void;
+            onStructuredInputMentionsChange: (mentions: readonly Record<string, unknown>[]) => void;
+            structuredInputMentions?: readonly Record<string, unknown>[];
             onSend: () => void;
         };
         agentInputProps = agentInputSpy.mock.lastCall?.[0] as typeof agentInputProps;
@@ -1585,7 +1587,14 @@ describe('SessionParticipantComposer', () => {
         );
 
         agentInputProps = agentInputSpy.mock.lastCall?.[0] as typeof agentInputProps;
+        const retainedMention = agentInputProps.structuredInputMentions?.[0];
+        if (!retainedMention) throw new Error('expected controlled participant mention');
         await act(async () => {
+            agentInputProps.onStructuredInputMentionsChange([{
+                ...retainedMention,
+                start: 18,
+                end: 24,
+            }]);
             agentInputProps.onChangeText('Newer participant @issue');
         });
         submission.resolve();
@@ -1600,7 +1609,7 @@ describe('SessionParticipantComposer', () => {
         });
     });
 
-    it('clears text-bound newer participant references together with unchanged accepted text', async () => {
+    it('retains text-bound newer participant references with unchanged accepted text', async () => {
         const submission = createDeferred<void>();
         syncSubmitMessageSpy.mockImplementationOnce(() => submission.promise);
         const { SessionParticipantComposer } = await import('./SessionParticipantComposer');
@@ -1644,14 +1653,20 @@ describe('SessionParticipantComposer', () => {
         });
 
         expect(readComposerPresentationSnapshot(participantComposerRef)).toMatchObject({
-            text: '',
-            references: [],
+            text: 'Captured participant @issue @new',
+            references: [
+                expect.objectContaining({ ref: 'partner:issue-42', token: '@issue' }),
+                expect.objectContaining({ ref: 'partner:issue-99', token: '@new' }),
+            ],
             attachments: [],
         });
         const currentAgentInputProps = agentInputSpy.mock.lastCall?.[0] as {
             structuredInputMentions?: readonly { ref?: string }[];
         };
-        expect(currentAgentInputProps.structuredInputMentions).toEqual([]);
+        expect(currentAgentInputProps.structuredInputMentions).toEqual([
+            expect.objectContaining({ ref: 'partner:issue-42', tokenText: '@issue' }),
+            expect.objectContaining({ ref: 'partner:issue-99', tokenText: '@new' }),
+        ]);
     });
 
     it('clears unchanged participant text and references when an attachment changes after submission', async () => {

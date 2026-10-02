@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { renderScreen } from '@/dev/testkit';
+import { findAllHostTestInstances, renderScreen } from '@/dev/testkit';
 
 import type { SelectionListOption, SelectionListProps, SelectionListStep } from '../_types';
 
@@ -139,7 +139,7 @@ describe('SelectionList accessibility contract (Phase 2.10)', () => {
         })} />);
 
         expect(screen.findByTestId('sl:empty')).not.toBeNull();
-        expect(screen.tree.root.findAll((node) => node.props?.role === 'group')).toHaveLength(1);
+        expect(findAllHostTestInstances(screen.root, (node) => node.props?.role === 'group')).toHaveLength(1);
     });
 
     it('exposes role=combobox + aria-controls + aria-expanded on the focused input element (web)', async () => {

@@ -99,7 +99,7 @@ test('publish-docker supports workflow_call and is wired from release workflow',
     'publish-docker should use repo README file for dev-box',
   );
 
-  const release = await loadWorkflow('release.yml');
+  const release = await loadWorkflow('release-channel.yml');
   assert.match(release, /publish_cli_binaries:/);
   assert.match(
     release,
@@ -108,20 +108,23 @@ test('publish-docker supports workflow_call and is wired from release workflow',
   );
   assert.match(
     release,
-    /publish_ui_web:[\s\S]*?\(needs\.resolve_resume\.outputs\.ui_web_requested == 'true' \|\| contains\(format\(',\{0\},', inputs\.deploy_targets\), ',ui,'\) \|\| inputs\.force_deploy == true \|\| needs\.plan\.outputs\.changed_ui == 'true' \|\| needs\.plan\.outputs\.changed_shared == 'true'\)/,
+    /publish_ui_web_needed:\s*\$\{\{[^\n]*needs\.resolve_resume\.outputs\.ui_web_requested == 'true'[^\n]*contains\(format\(',\{0\},', inputs\.deploy_targets\), ',ui,'\)[^\n]*inputs\.force_deploy == true[^\n]*steps\.plan\.outputs\.changed_ui == 'true'[^\n]*steps\.plan\.outputs\.changed_shared == 'true'[^\n]*\}\}[\s\S]*?publish_ui_web:[\s\S]*?needs\.plan\.outputs\.publish_ui_web_needed == 'true'/,
     'UI web artifacts should publish when relay Docker needs a fresh embedded UI bundle',
   );
   assert.match(
     release,
     /publish_cli_binaries:[\s\S]*?uses:\s+\.\/\.github\/workflows\/publish-cli-binaries\.yml/,
-    'release.yml should publish CLI binary artifacts before Docker images consume them',
+    'release-channel.yml should publish CLI binary artifacts before Docker images consume them',
   );
   assert.match(release, /publish_docker:/);
-  assert.match(
-    release,
-    /publish_docker:[\s\S]*?needs:\s*\[plan, release_admission, prepare_release_candidate, verify_release_candidates, publish_cli_binaries, publish_server_runtime, promote_cli_binaries, promote_server_runtime, promote_ui_web\]/,
-    'publish_docker should wait for candidate verification and the promoted CLI/server/UI artifacts it embeds',
-  );
+  const dockerJob = YAML.parse(release).jobs.publish_docker;
+  for (const dependency of [
+    'plan', 'release_admission', 'prepare_release_candidate',
+    'verify_release_candidates', 'publish_cli_binaries',
+    'publish_server_runtime', 'promote_cli_binaries', 'promote_server_runtime', 'promote_ui_web',
+  ]) {
+    assert.ok(dockerJob.needs.includes(dependency), 'publish_docker must wait for ' + dependency);
+  }
   assert.match(
     release,
     /publish_docker:[\s\S]*?needs\.verify_release_candidates\.result == 'success'[\s\S]*?\(needs\.promote_cli_binaries\.result == 'success' \|\| needs\.promote_cli_binaries\.result == 'skipped'\)[\s\S]*?\(needs\.promote_server_runtime\.result == 'success' \|\| needs\.promote_server_runtime\.result == 'skipped'\)[\s\S]*?\(needs\.promote_ui_web\.result == 'success' \|\| needs\.promote_ui_web\.result == 'skipped'\)/,
@@ -183,7 +186,7 @@ test('the stock Iroh relay image follows the exact release planner relay decisio
     'a manual Docker publication must opt into the stock Iroh relay instead of rebuilding it by default',
   );
 
-  const release = await loadWorkflow('release.yml');
+  const release = await loadWorkflow('release-channel.yml');
   assert.match(
     release,
     /changed_iroh_relay:\s*\${{\s*steps\.plan\.outputs\.changed_iroh_relay\s*}}/,

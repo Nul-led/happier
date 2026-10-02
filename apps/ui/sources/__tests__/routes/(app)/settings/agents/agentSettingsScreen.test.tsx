@@ -168,6 +168,12 @@ function buildExternalSessionsAgentProjection() {
                 id: 'codex',
                 identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
                 title: 'Codex',
+                subtitle: 'Codex Agent',
+                channel: 'stable',
+                isBuiltIn: true,
+                catalogAgentId: 'codex',
+                iconAgentId: 'codex',
+                providerOwnedEnvironmentKeys: [],
                 externalSessions: {
                     agent: { pluginId: 'happier.agent.codex', localId: 'codex' },
                     generation: PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE.generation,
@@ -197,6 +203,44 @@ function buildExternalSessionsAgentProjection() {
             },
         },
         diagnostics: [],
+    };
+}
+
+function buildRunnablePluginProviderProjection(): PluginProjectionV2 {
+    return {
+        ...PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
+        agentsById: {
+            'acme.review.provider': {
+                ...PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE.agentsById['acme.review.provider'],
+                capabilities: {
+                    surfaces: ['terminal'],
+                    sessions: {
+                        open: ['create', 'resume'],
+                        delivery: ['newTurn'],
+                        cancel: true,
+                    },
+                },
+                cli: {
+                    executable: {
+                        binaryName: 'acme-review',
+                        sourcePreference: 'managed-first',
+                    },
+                    install: {
+                        managed: {
+                            kind: 'managed_package',
+                            packageName: '@acme/review',
+                            binaryName: 'acme-review',
+                        },
+                        manual: { kind: 'none' },
+                        docsUrl: 'https://example.com/acme-review',
+                    },
+                    auth: {
+                        support: 'login_terminal',
+                        loginLaunches: [{ kind: 'primary', args: ['login'] }],
+                    },
+                },
+            },
+        },
     };
 }
 
@@ -1110,6 +1154,7 @@ describe('PluginAgentSettingsScreen', () => {
             }
             return {
                 agentId,
+                qualifiedId: agentId,
                 catalogAgentId: isBuiltIn ? agentId : null,
                 iconAgentId: isBuiltIn ? agentId : null,
                 title: agentId,
@@ -1349,7 +1394,7 @@ describe('PluginAgentSettingsScreen', () => {
         mockProviderId = 'acme.review.provider';
         machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
             supported: true,
-            projection: PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
+            projection: buildRunnablePluginProviderProjection(),
         });
 
         const screen = await renderPluginAgentSettingsScreen();
@@ -1537,7 +1582,7 @@ describe('PluginAgentSettingsScreen', () => {
         mockProviderId = 'acme.review.provider';
         machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
             supported: true,
-            projection: PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
+            projection: buildRunnablePluginProviderProjection(),
         });
         publishProjectedAgentUiBehaviorDescriptors({
             machineId: 'm1',
@@ -1554,6 +1599,8 @@ describe('PluginAgentSettingsScreen', () => {
         publishProjectedAgentUiBehaviorDescriptors({ machineId: 'm2', descriptorsByAgentId: {} });
         mockAgentCatalogProjection.mockImplementation((agentId: string) => ({
             agentId,
+            qualifiedId: 'acme.review.provider',
+            identity: { pluginId: 'acme.review', localId: 'provider' },
             catalogAgentId: null,
             iconAgentId: null,
             title: 'Acme Review Provider',
@@ -1562,6 +1609,21 @@ describe('PluginAgentSettingsScreen', () => {
             isBuiltIn: false,
             backendTargetKey: buildCanonicalBackendTargetKey(agentId),
             enabled: true,
+            cli: {
+                executable: {
+                    binaryName: 'acme',
+                    sourcePreference: 'system-first',
+                },
+                install: {
+                    managed: null,
+                    manual: { kind: 'none' },
+                    docsUrl: null,
+                },
+                auth: {
+                    support: 'login_terminal',
+                    loginLaunches: [{ kind: 'primary', args: ['login'] }],
+                },
+            },
             authPlugin: {
                 agentId,
                 support: 'login_terminal',
@@ -1790,7 +1852,7 @@ describe('PluginAgentSettingsScreen', () => {
         mockProviderId = 'acme.review.provider';
         machineContributionRegistryProjectionDescribeMock.mockResolvedValueOnce({
             supported: true,
-            projection: PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
+            projection: buildRunnablePluginProviderProjection(),
         });
 
         const screen = await renderPluginAgentSettingsScreen();
@@ -1839,7 +1901,7 @@ describe('PluginAgentSettingsScreen', () => {
         mockProviderId = 'acme.review.provider';
         machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
             supported: true,
-            projection: PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
+            projection: buildRunnablePluginProviderProjection(),
         });
 
         const screen = await renderPluginAgentSettingsScreen();
@@ -1862,7 +1924,7 @@ describe('PluginAgentSettingsScreen', () => {
         }));
     });
 
-    it('renders the full provider settings/auth surface for a daemon-projected plugin provider backed by a built-in provider', async () => {
+    it('renders the full provider settings/auth surface from daemon-projected runtime and CLI metadata', async () => {
         mockProviderId = 'acme.review.provider';
         machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
             supported: true,
@@ -1886,6 +1948,8 @@ describe('PluginAgentSettingsScreen', () => {
         mockProviderId = 'acme.headless.provider';
         mockAgentCatalogProjection.mockReturnValue({
             agentId: 'acme.headless.provider',
+            qualifiedId: 'acme.headless/provider',
+            identity: { pluginId: 'acme.headless', localId: 'provider' },
             catalogAgentId: null,
             iconAgentId: 'claude',
             title: 'Acme Headless Provider',
@@ -1947,7 +2011,7 @@ describe('PluginAgentSettingsScreen', () => {
         mockProviderId = 'acme.headless.provider';
         mockAgentCatalogProjection.mockReturnValue({
             agentId: 'acme.headless.provider',
-            qualifiedId: 'acme.headless.provider',
+            qualifiedId: 'acme.headless/provider',
             identity: { pluginId: 'acme.headless', localId: 'provider' },
             catalogAgentId: null,
             iconAgentId: null,
@@ -1974,7 +2038,7 @@ describe('PluginAgentSettingsScreen', () => {
         });
     });
 
-    it('does not synthesize a built-in target key for plugin-backed provider controls when projection truth is missing', async () => {
+    it('keeps plugin-backed enablement informational when projection truth has no target key', async () => {
         mockProviderId = 'acme.review.provider';
         mockAgentCatalogProjection.mockReturnValue({
             agentId: 'acme.review.provider',
@@ -2674,6 +2738,8 @@ describe('PluginAgentSettingsScreen', () => {
         });
         mockAgentCatalogProjection.mockImplementation((agentId: string) => ({
             agentId,
+            qualifiedId: 'acme.transcripts/acme.transcripts',
+            identity: { pluginId: 'acme.transcripts', localId: 'acme.transcripts' },
             catalogAgentId: null,
             iconAgentId: null,
             title: 'Acme Transcripts',

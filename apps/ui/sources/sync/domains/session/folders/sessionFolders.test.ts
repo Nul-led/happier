@@ -73,6 +73,23 @@ function folder(overrides: Partial<SessionFolderV1>): SessionFolderV1 {
 }
 
 describe('session folder domain helpers', () => {
+    it('compares normalized workspace scopes and refuses invalid scopes', () => {
+        expect(compareSessionFolderWorkspaceRefs({
+            ...workspaceA,
+            serverId: ' server-a ', machineId: ' machine-a ',
+            rootPath: '/Users/lee/project/',
+        }, workspaceA)).toBe(true);
+        expect(compareSessionFolderWorkspaceRefs({
+            t: 'workspaceRef', serverId: ' server-a ', workspaceRefId: ' workspace-a ',
+        }, {
+            t: 'workspaceRef', serverId: 'server-a', workspaceRefId: 'workspace-a',
+        })).toBe(true);
+        expect(compareSessionFolderWorkspaceRefs({ ...workspaceA, rootPath: '' }, {
+            ...workspaceA, rootPath: '',
+        })).toBe(false);
+        expect(compareSessionFolderWorkspaceRefs(workspaceA, workspaceHomeB)).toBe(false);
+    });
+
     it('preserves and mutates duplicate Home-local folder ids by exact Home', () => {
         const homeA = folder({ id: 'shared', name: 'Home A', workspace: workspaceA });
         const homeB = folder({ id: 'shared', name: 'Home B', workspace: workspaceHomeB });

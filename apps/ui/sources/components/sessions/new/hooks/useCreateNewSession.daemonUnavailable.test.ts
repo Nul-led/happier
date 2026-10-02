@@ -203,7 +203,11 @@ async function createHarness() {
   vi.spyOn(sync, 'sendMessage');
   await import('@/sync/ops/actions/defaultActionExecutor');
 
-  const { useCreateNewSession: useCreateNewSessionOwner } = await import('./useCreateNewSession');
+  loadedUseCreateNewSessionOwner ??= (await import('./useCreateNewSession')).useCreateNewSession;
+  const followUpModule = await import('@/sync/runtime/orchestration/serverScopedRpc/followUpSpawnedSession');
+  vi.mocked(followUpModule.followUpSpawnedSessionWithServerScope).mockReset();
+  vi.mocked(followUpModule.followUpSpawnedSessionWithServerScope).mockResolvedValue(undefined);
+  const useCreateNewSessionOwner = loadedUseCreateNewSessionOwner;
   const useCreateNewSession: typeof useCreateNewSessionOwner = (params) => useCreateNewSessionOwner({
     ...params,
     draftScope: params.draftScope ?? { serverId: 'server-a', accountId: 'account-a' },
@@ -679,7 +683,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
     }
   });
 
-  it('shows a daemon-unavailable alert with a Retry action', async () => {
+  it('shows the typed daemon-unavailable Action failure without a client retry', async () => {
     const { useCreateNewSession, modalAlertSpy } = await setupHarness();
 
     const setIsCreating = vi.fn();
@@ -733,12 +737,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
 
     expect(modalAlertSpy).toHaveBeenCalled();
     const args = modalAlertSpy.mock.calls[0] ?? [];
-    expect(args[0]).toBe('newSession.daemonRpcUnavailableTitle');
-    expect(String(args[1] ?? '')).toContain('newSession.daemonRpcUnavailableBody');
-    expect(String(args[1] ?? '')).toContain('status.lastSeen:time.minutesAgo:5');
-    expect(Array.isArray(args[2])).toBe(true);
-    const buttons = args[2] as any[];
-    expect(buttons.some((b) => b?.text === 'common.retry' && typeof b?.onPress === 'function')).toBe(true);
+    expect(args).toEqual(['common.error', 'newSession.daemonRpcUnavailableBody']);
     await hook.unmount();
   });
 
@@ -939,7 +938,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
     await hook.unmount();
   });
 
-  it('does not retry after unmount when the alert Retry action is pressed', async () => {
+  it('does not expose a client retry for a typed Action rejection', async () => {
     const { useCreateNewSession, modalAlertSpy, sessionSpawnNewActionBoundarySpy } = await setupHarness();
 
     const setIsCreating = vi.fn();
@@ -992,17 +991,10 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
     expect(sessionSpawnNewActionBoundarySpy).toHaveBeenCalledTimes(1);
     expect(modalAlertSpy).toHaveBeenCalled();
 
-    const buttons = (modalAlertSpy.mock.calls[0]?.[2] ?? []) as any[];
-    const retry = buttons.find((b) => b?.text === 'common.retry');
-    expect(typeof retry?.onPress).toBe('function');
+    expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'newSession.daemonRpcUnavailableBody');
+    expect(modalAlertSpy.mock.calls[0]).toHaveLength(2);
 
     await hook.unmount();
-
-    await act(async () => {
-      retry.onPress();
-    });
-    await flushHookEffects({ runAllTimers: true });
-
     expect(sessionSpawnNewActionBoundarySpy).toHaveBeenCalledTimes(1);
   });
 
@@ -1430,6 +1422,9 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
     await flushHookEffects({ runAllTimers: true });
     await secondHook.unmount();
 
+    const firstSpawnOptions = sessionSpawnNewActionBoundarySpy.mock.calls[0]?.[0] as {
+      creationKey?: string;
+    };
     const secondSpawnOptions = sessionSpawnNewActionBoundarySpy.mock.calls[1]?.[0] as {
       creationKey?: string;
     };

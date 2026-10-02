@@ -16,6 +16,7 @@ import type {
     UiSessionOrganizationTag,
 } from '@/sync/domains/session/organization';
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
+import { withPopoverWebGlobals } from '@/dev/testkit/harness/popoverHarness';
 import { SessionOrganizationContentEnvelopeSchema } from '@happier-dev/protocol';
 import { profileDefaults } from '@/sync/domains/profiles/profile';
 import { evaluatePluginUiPolicy } from '@/sync/domains/plugins/ui/policy';
@@ -1616,7 +1617,8 @@ describe('/session/[id]/info', () => {
             metadata: {},
         };
 
-        const screen = await renderInfoScreen();
+        await withPopoverWebGlobals(async () => {
+            const screen = await renderInfoScreen();
 
         await screen.pressByTestIdAsync('session-info-session-pin');
         expect(setSessionPinSpy).toHaveBeenCalledWith(expect.objectContaining({
@@ -1641,6 +1643,7 @@ describe('/session/[id]/info', () => {
             sessionId: 'session-1',
             tags: [],
         }));
+        });
     });
 
     it('surfaces the existing info-screen error when organization mutation scope is unavailable', async () => {

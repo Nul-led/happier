@@ -51,9 +51,11 @@ import {
     TemporaryComputerActivationRefV1Schema,
     MachinePoolSelectionOriginV1Schema,
     SessionOrganizationPlacementV1Schema,
+    SavedSecretSchema,
     WindowsRemoteSessionLaunchModeSchema,
     readBackendTargetRefV2,
     readPersistedAgentContributionIdentityV1,
+    writePersistedBackendTargetRefV2,
     normalizeCodexBackendMode,
     readRuntimeDescriptorV1,
     type ComposerAttachmentDraftV1,
@@ -111,11 +113,6 @@ export {
     loadLocalPetSourcesBySourceKey,
     saveLocalPetSourcesBySourceKey,
 } from './localPetSourcePersistence';
-
-const pendingSettingsSchemaByKey: Readonly<Record<string, z.ZodTypeAny>> = Object.freeze({
-    ...ACCOUNT_SETTING_ARTIFACTS.shape,
-    ...LOCAL_ACCOUNT_SETTING_ARTIFACTS.shape,
-});
 
 function deviceAnalyticsIdKey(): string {
     return 'device-analytics-id-v1';
@@ -445,7 +442,29 @@ export function parsePendingSettings(raw: unknown): Partial<Settings> {
             continue;
         }
 
-        const schema = pendingSettingsSchemaByKey[key];
+        if (key in ACCOUNT_SETTING_ARTIFACTS.definitions) {
+            const definition = ACCOUNT_SETTING_ARTIFACTS.definitions[
+                key as keyof typeof ACCOUNT_SETTING_ARTIFACTS.definitions
+            ];
+            // Account-document recovery salvages valid SavedSecret siblings, but a pending
+            // mutation is one atomic user intent. Reject the whole delta if any row is invalid
+            // so corrupted pending storage cannot turn into an empty-list deletion.
+            if (
+                key === 'secrets'
+                && (!Array.isArray(rawValue) || rawValue.some((value) => !SavedSecretSchema.safeParse(value).success))
+            ) {
+                continue;
+            }
+            const parsed = definition.parseMutationValue(rawValue);
+            if (!parsed.success) continue;
+
+            Object.assign(out, { [key]: parsed.data });
+            continue;
+        }
+
+        const schema = LOCAL_ACCOUNT_SETTING_ARTIFACTS.shape[
+            key as keyof typeof LOCAL_ACCOUNT_SETTING_ARTIFACTS.shape
+        ];
         if (!schema) continue;
 
         const parsed = schema.safeParse(rawValue);
@@ -662,7 +681,7 @@ export function loadNewSessionDraft(scope?: ServerAccountScope | null): NewSessi
             ? parsedOrganizationPlacement.data
             : { folderId: null, tagIds: [] };
         const parsedAgentTarget = AgentExecutionTargetV1Schema.safeParse((parsed as any).agentTarget);
-        const agentTarget = parsedAgentTarget.success ? parsedAgentTarget.data : null;
+        const explicitAgentTarget = parsedAgentTarget.success ? parsedAgentTarget.data : null;
         const windowsRemoteSessionLaunchModeOverride = parseWindowsRemoteSessionLaunchModeOverride(
             (parsed as any).windowsRemoteSessionLaunchModeOverride,
         );
@@ -680,8 +699,8 @@ export function loadNewSessionDraft(scope?: ServerAccountScope | null): NewSessi
         );
         const backendTarget = (() => {
             try {
-                if (agentTarget) {
-                    return readBackendTargetRefV2(agentTarget);
+                if (explicitAgentTarget) {
+                    return readBackendTargetRefV2(explicitAgentTarget);
                 }
                 if ((parsed as any).backendTarget !== undefined) {
                     return readBackendTargetRefV2((parsed as any).backendTarget);
@@ -699,6 +718,11 @@ export function loadNewSessionDraft(scope?: ServerAccountScope | null): NewSessi
             } catch {
                 return undefined;
             }
+        })();
+        const agentTarget = explicitAgentTarget ?? (() => {
+            if (!backendTarget) return null;
+            const persistedTarget = writePersistedBackendTargetRefV2(backendTarget);
+            return persistedTarget.kind === 'agent' ? persistedTarget : null;
         })();
         const agentTypeCandidate = backendTarget && isBundledAgentId(backendTarget.backendId)
             ? backendTarget.backendId

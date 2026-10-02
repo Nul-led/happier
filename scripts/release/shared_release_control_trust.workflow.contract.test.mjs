@@ -65,9 +65,10 @@ test('release shell steps receive GitHub inputs and outputs only through environ
 test('top-level release planning keeps dispatch data out of shell source and uses read-only permissions', () => {
   const release = workflow('release.yml');
   assert.deepEqual(release.jobs?.release_actor_guard?.needs, ['trusted_ref_guard']);
-  assert.doesNotMatch(JSON.stringify(release.jobs?.trusted_ref_guard), /secrets\.|environment/);
+  assert.doesNotMatch(JSON.stringify(release.jobs?.trusted_ref_guard), /secrets\./);
+  assert.equal(release.jobs?.trusted_ref_guard?.environment, undefined, 'trusted admission must not request environment credentials');
   assert.match(JSON.stringify(release.jobs?.trusted_ref_guard), /job\.workflow_ref/);
-  const plan = release.jobs?.plan;
+  const plan = workflow('release-channel.yml').jobs?.plan;
   assert.ok(plan, 'missing release plan job');
   assert.equal(plan.permissions?.contents, 'read');
 

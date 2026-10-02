@@ -21,6 +21,7 @@ import {
   syncCliRuntimeDependencies,
   withBuildSharedDepsLock,
   buildBundledWorkspaceDependenciesForCli,
+  prepareBundledWorkspaceDependenciesForCli,
   computeSourceDevSharedDepsSignature,
   inspectUsableSourceDevSharedDepsLastGreen,
   inspectSourceDevSharedDepsForSourceDev,
@@ -97,10 +98,79 @@ const cliScriptsSourceDir = resolve(dirname(fileURLToPath(import.meta.url)), '..
 const workspaceScriptsSourceDir = resolve(cliScriptsSourceDir, '..', '..', '..', 'scripts', 'workspaces');
 const sourceRepoRoot = resolve(cliScriptsSourceDir, '..', '..', '..');
 
+describe('bundled plugin preparation', () => {
+  it('selects missing and stale installed daemon runtimes even when compiler outputs are current', async () => {
+    const { repoRoot, happyCliDir, cleanup } = createPackageLayoutSandbox('happier-plugin-preparation-repair-');
+    const ids = ['current', 'missing', 'stale', 'failed'];
+    const workspaceNames = ids.map((id) => `plugins-${id}`);
+    try {
+      writeCliBundledHostPackage({
+        happyCliDir,
+        bundledDependencies: ids.map((id) => `@happier-dev/plugins-${id}`),
+      });
+      for (const id of ids) {
+        writeWorkspacePackageFixture({
+          repoRoot,
+          workspacePath: `packages/plugins/${id}`,
+          packageName: `@happier-dev/plugins-${id}`,
+          files: {
+            'tsconfig.json': '{}\n',
+            '.happier-plugin/daemon.js': 'export const generation = 2;\n',
+          },
+        });
+        writeBundledPluginSourceInputs({ repoRoot, pluginId: id, writePackageJson: false });
+        const installedDir = writeWorkspacePackageFixture({
+          repoRoot,
+          workspacePath: `apps/cli/node_modules/@happier-dev/plugins-${id}`,
+          packageName: `@happier-dev/plugins-${id}`,
+          files: id === 'missing' ? {} : {
+            '.happier-plugin/daemon.js': `export const generation = ${id === 'current' ? 2 : 1};\n`,
+          },
+        });
+        if (id === 'stale') {
+          const newer = new Date('2030-01-01T00:00:00.000Z');
+          utimesSync(join(installedDir, '.happier-plugin/daemon.js'), newer, newer);
+        }
+      }
+      const failure = {
+        packageName: '@happier-dev/plugins-failed',
+        pluginId: 'happier.failed',
+        diagnostic: { code: 'plugin_package_build_failed' as const, message: 'compile failed' },
+      };
+      const prepared = await prepareBundledWorkspaceDependenciesForCli({
+        repoRoot,
+        workspaceNames,
+        // Compilation is a genuine process boundary. Leave package selection and
+        // source-to-installed runtime admission real; no compiler emits are needed.
+        ensureWorkspacePackagesBuiltByNameImpl: async (_repoRoot: string, packageNames: string[]) => ({
+          built: [],
+          pluginFailures: packageNames.includes(failure.packageName) ? [failure] : [],
+        }),
+      });
+      expect(prepared.rebuiltPluginWorkspaceNames).toEqual(['plugins-missing', 'plugins-stale']);
+      expect(prepared.failedPluginBuilds).toEqual([failure]);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
 function writeBundledPluginSourceIntegrityInventory(
   inventoryPath: string,
   integrities: readonly unknown[],
 ): void {
+  const repoRoot = resolve(dirname(inventoryPath), '../../../..');
+  for (const integrity of integrities) {
+    const packageName = typeof integrity === 'object' && integrity !== null
+      ? String((integrity as { packageName?: unknown }).packageName ?? '')
+      : '';
+    const packageId = packageName.replace(/^@happier-dev\/plugins-/, '');
+    if (!packageId || packageId === packageName) continue;
+    const manifestPath = resolve(repoRoot, 'packages', 'plugins', packageId, 'src', 'manifest.ts');
+    if (existsSync(manifestPath)) continue;
+    mkdirSync(dirname(manifestPath), { recursive: true });
+    writeFileSync(manifestPath, 'export {};\n', 'utf8');
+  }
   mkdirSync(dirname(inventoryPath), { recursive: true });
   writeFileSync(inventoryPath, `${JSON.stringify({
     BUNDLED_FIRST_PARTY_SOURCE_ARTIFACT_INTEGRITIES: integrities,
@@ -1727,14 +1797,9 @@ describe('buildSharedDeps', () => {
   it('refuses artifact publication when an included bundled plugin fails to build', async () => {
     // Live/dev publication deliberately retains a matching last-green plugin package so a
     // watch loop stays usable. A publication build cannot: the packaging copier treats
-    // generator-owned plugin trees as immutable and verifies them against the same
-    // inventory the failed run left behind, so a successful tarball would ship the old
+    // generator-owned plugin trees as immutable, so a successful tarball would ship the old
     // plugin behaviour while current plugin source does not compile.
     const repoRoot = createTempDirSync('happier-cli-plugin-artifact-build-');
-    const inventoryPath = resolve(
-      repoRoot,
-      'retired-source-byte-ledger.json',
-    );
     const installedRoot = resolve(repoRoot, 'apps', 'cli', 'node_modules', '@happier-dev');
     const lastGreenBytes = 'export const broken = "last-green";\n';
 
@@ -1747,25 +1812,6 @@ describe('buildSharedDeps', () => {
       );
       writeFileSync(resolve(packageDir, 'dist', 'index.js'), bytes, 'utf8');
     };
-    const artifact = (packageName: string, bytes: string) => {
-      const packageJsonBytes = `${JSON.stringify({ name: packageName })}\n`;
-      return ({
-        packageName,
-        files: [
-          {
-            relativePath: 'dist/index.js',
-            byteLength: Buffer.byteLength(bytes, 'utf8'),
-            digest: `sha256:${createHash('sha256').update(Buffer.from(bytes, 'utf8')).digest('hex')}`,
-          },
-          {
-            relativePath: 'package.json',
-            byteLength: Buffer.byteLength(packageJsonBytes, 'utf8'),
-            digest: `sha256:${createHash('sha256').update(Buffer.from(packageJsonBytes, 'utf8')).digest('hex')}`,
-          },
-        ],
-      });
-    };
-
     try {
       mkdirSync(resolve(repoRoot, 'packages', 'protocol', 'dist'), { recursive: true });
       mkdirSync(resolve(repoRoot, 'apps', 'cli'), { recursive: true });
@@ -1789,10 +1835,6 @@ describe('buildSharedDeps', () => {
         '@happier-dev/plugins-broken',
         lastGreenBytes,
       );
-      writeBundledPluginSourceIntegrityInventory(inventoryPath, [
-        artifact('@happier-dev/plugins-broken', lastGreenBytes),
-      ]);
-
       const forcedBuildSelections: Array<{ names: string[]; force: boolean }> = [];
       const publishReadiness = vi.fn(() => ({ stamped: true }));
       const publishBundledPluginArtifacts = vi.fn(async (): Promise<boolean> => {
@@ -1894,6 +1936,52 @@ describe('buildSharedDeps', () => {
     }
   });
 
+  it('republishes a current plugin build when its publisher-owned runtime is missing', async () => {
+    const publishedWorkspaceNames: string[][] = [];
+    const { repoRoot, happyCliDir, cleanup } = createPackageLayoutSandbox('happier-cli-plugin-runtime-publication-repair-');
+    const packageName = '@happier-dev/plugins-kept';
+    const compiledBytes = 'export const compiled = true;\n';
+    const daemonBytes = 'export const activated = true;\n';
+
+    try {
+      writeCliBundledHostPackage({
+        happyCliDir,
+        bundledDependencies: [packageName],
+      });
+      writeWorkspacePackageFixture({
+        repoRoot,
+        workspacePath: 'packages/plugins/kept',
+        packageName,
+        files: {
+          'tsconfig.json': '{}\n',
+          'dist/index.js': compiledBytes,
+          '.happier-plugin/daemon.js': daemonBytes,
+        },
+      });
+      writeBundledPluginSourceInputs({ repoRoot, pluginId: 'kept', writePackageJson: false });
+      writeWorkspacePackageFixture({
+        repoRoot,
+        workspacePath: 'apps/cli/node_modules/@happier-dev/plugins-kept',
+        packageName,
+        files: { 'dist/index.js': compiledBytes },
+      });
+
+      await buildBundledWorkspaceDependenciesForCli({
+        repoRoot,
+        workspaceNames: ['plugins-kept'],
+        ensureWorkspacePackagesBuiltByNameImpl: async () => ({ ok: true, built: [], skipped: [packageName] }),
+        publishBundledPluginArtifactsImpl: async ({ workspaceNames = [] }: { workspaceNames?: readonly string[] }) => {
+          publishedWorkspaceNames.push([...workspaceNames]);
+          return true;
+        },
+      });
+
+      expect(publishedWorkspaceNames).toEqual([['plugins-kept']]);
+    } finally {
+      cleanup();
+    }
+  });
+
   it('delegates each workspace build to the canonical workspace owner', async () => {
     const events: string[] = [];
     const forceModes: Array<boolean | undefined> = [];
@@ -1962,6 +2050,7 @@ describe('buildSharedDeps', () => {
     const repoRoot = createTempDirSync('happier-cli-full-runtime-plugin-isolation-');
     const buildSelections: string[][] = [];
     const publishedSelections: string[][] = [];
+    const publishedFailureSelections: string[][] = [];
     try {
       mkdirSync(resolve(repoRoot, 'apps', 'cli'), { recursive: true });
       writeFileSync(resolve(repoRoot, 'apps', 'cli', 'package.json'), JSON.stringify({
@@ -1997,10 +2086,12 @@ describe('buildSharedDeps', () => {
           }
           return { ok: true, built: packageNames, skipped: [] };
         },
-        publishBundledPluginArtifactsImpl: async ({ workspaceNames }: {
+        publishBundledPluginArtifactsImpl: async ({ workspaceNames, pluginFailures }: {
           workspaceNames: readonly string[];
+          pluginFailures: readonly { packageName: string }[];
         }) => {
           publishedSelections.push([...workspaceNames]);
+          publishedFailureSelections.push(pluginFailures.map((failure) => failure.packageName));
           return true;
         },
       });
@@ -2011,7 +2102,10 @@ describe('buildSharedDeps', () => {
         ['@happier-dev/plugins-healthy'],
         ['@happier-dev/plugins-failed'],
       ]);
-      expect(publishedSelections).toEqual([['plugins-healthy']]);
+      // Failed packages remain in evaluated scope so the publisher can preserve
+      // their diagnostics while excluding their executable artifacts.
+      expect(publishedSelections).toEqual([['plugins-healthy', 'plugins-failed']]);
+      expect(publishedFailureSelections).toEqual([['@happier-dev/plugins-failed']]);
     } finally {
       removeTempDirSync(repoRoot);
     }
@@ -2033,6 +2127,10 @@ describe('buildSharedDeps', () => {
         name: '@happier-dev/plugins-pi',
       }), 'utf8');
       writeFileSync(resolve(repoRoot, 'packages', 'plugins', 'pi', 'tsconfig.json'), '{}\n', 'utf8');
+      writeBundledPluginSourceIntegrityInventory(
+        resolve(repoRoot, 'apps/cli/scripts/build-owned/generatedBundledPluginSourceIntegrities.json'),
+        [{ packageName: '@happier-dev/plugins-pi', files: [] }],
+      );
 
       await buildBundledWorkspaceDependenciesForCli({
         repoRoot,
@@ -2219,6 +2317,7 @@ describe('buildSharedDeps', () => {
         },
         syncBundledWorkspaceRuntimeDependenciesImpl: () => undefined,
         syncCliRuntimeDependenciesImpl: () => undefined,
+        assertBundledPluginArtifactsMatchInventoryImpl: () => undefined,
         publishSourceDevReadinessFromRuntimeClosureImpl: () => ({ stamped: true }),
       });
 
@@ -2428,7 +2527,7 @@ describe('buildSharedDeps', () => {
       mkdirSync(resolve(sourcePackageDir, 'src'), { recursive: true });
       mkdirSync(resolve(sourcePackageDir, 'dist'), { recursive: true });
 
-      writeFileSync(resolve(repoRoot, 'package.json'), '{"private":true}\n', 'utf8');
+      writeFileSync(resolve(repoRoot, 'package.json'), '{"private":true,"type":"module"}\n', 'utf8');
       writeFileSync(resolve(repoRoot, 'yarn.lock'), '# lock\n', 'utf8');
       writeFileSync(resolve(cliDir, 'package.json'), '{"name":"@happier-dev/cli"}\n', 'utf8');
       writeFileSync(resolve(cliDir, 'node_modules', 'tweetnacl', 'package.json'), '{"name":"tweetnacl"}\n', 'utf8');
@@ -2779,7 +2878,7 @@ describe('buildSharedDeps', () => {
       mkdirSync(resolve(repoRoot, 'packages', 'cli-common'), { recursive: true });
       mkdirSync(resolve(cliDir, 'node_modules', 'tweetnacl'), { recursive: true });
 
-      writeFileSync(resolve(repoRoot, 'package.json'), '{"private":true}\n', 'utf8');
+      writeFileSync(resolve(repoRoot, 'package.json'), '{"private":true,"type":"module"}\n', 'utf8');
       writeFileSync(resolve(repoRoot, 'yarn.lock'), '# lock\n', 'utf8');
       writeFileSync(
         resolve(cliDir, 'package.json'),

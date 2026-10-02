@@ -337,6 +337,8 @@ function createLargeChangedFilesSnapshot(count = 30): ScmWorkingSnapshot {
     };
 }
 
+const { WorkspaceSourceControlView } = await import('./WorkspaceSourceControlView');
+
 describe('WorkspaceSourceControlView', () => {
     beforeEach(() => {
         resetActiveReviewFilesForTests();
@@ -388,8 +390,6 @@ describe('WorkspaceSourceControlView', () => {
         commitSelectionPatches = [];
         scmCommitStrategySetting = 'atomic';
 
-        const { WorkspaceSourceControlView } = await import('./WorkspaceSourceControlView');
-
         const tree = (await renderScreen(
             <WorkspaceSourceControlView
                 serverId="server"
@@ -413,8 +413,6 @@ describe('WorkspaceSourceControlView', () => {
         commitSelectionPatches = [];
         scmCommitStrategySetting = 'atomic';
 
-        const { WorkspaceSourceControlView } = await import('./WorkspaceSourceControlView');
-
         const tree = (await renderScreen(
             <WorkspaceSourceControlView
                 serverId="server"
@@ -425,7 +423,7 @@ describe('WorkspaceSourceControlView', () => {
             />
         )).tree;
 
-        const changedFilesList = tree.findByType('FlatList');
+        const changedFilesList = tree.findByType('LegendList');
 
         expect(changedFilesList.props.initialNumToRender).toBe(12);
         expect(changedFilesList.props.maxToRenderPerBatch).toBe(12);
@@ -438,8 +436,6 @@ describe('WorkspaceSourceControlView', () => {
         commitSelectionPatches = [];
         scmCommitStrategySetting = 'atomic';
         const onOpenReviewAllChanges = vi.fn();
-
-        const { WorkspaceSourceControlView } = await import('./WorkspaceSourceControlView');
 
         const tree = (await renderScreen(
             <WorkspaceSourceControlView
@@ -477,8 +473,6 @@ describe('WorkspaceSourceControlView', () => {
             totalCount: 2,
         });
 
-        const { WorkspaceSourceControlView } = await import('./WorkspaceSourceControlView');
-
         const tree = (await renderScreen(
             <WorkspaceSourceControlView
                 serverId="server"
@@ -515,8 +509,6 @@ describe('WorkspaceSourceControlView', () => {
         commitSelectionPatches = [];
         scmCommitStrategySetting = 'atomic';
         scmWriteEnabledMock = true;
-
-        const { WorkspaceSourceControlView } = await import('./WorkspaceSourceControlView');
 
         const tree = (await renderScreen(
             <WorkspaceSourceControlView
@@ -558,8 +550,6 @@ describe('WorkspaceSourceControlView', () => {
         scmRemoteConfirmPolicySetting = 'always';
         scmWriteEnabledMock = true;
 
-        const { WorkspaceSourceControlView } = await import('./WorkspaceSourceControlView');
-
         const tree = (await renderScreen(
             <WorkspaceSourceControlView
                 serverId="server"
@@ -570,7 +560,8 @@ describe('WorkspaceSourceControlView', () => {
         )).tree;
 
         const pushShortcut = tree.findByProps({ testID: 'scm-commit-adjacent-push' });
-        expect(pushShortcut.props.accessibilityState).toMatchObject({ disabled: false, busy: false });
+        expect(pushShortcut.props.disabled).toBe(false);
+        expect(pushShortcut.props.onPress).toEqual(expect.any(Function));
 
         await act(async () => {
             pushShortcut.props.onPress();
@@ -596,8 +587,6 @@ describe('WorkspaceSourceControlView', () => {
         scmCommitStrategySetting = 'atomic';
         scmWriteEnabledMock = true;
 
-        const { WorkspaceSourceControlView } = await import('./WorkspaceSourceControlView');
-
         const tree = (await renderScreen(
             <WorkspaceSourceControlView
                 serverId="server"
@@ -618,7 +607,7 @@ describe('WorkspaceSourceControlView', () => {
             viewModeMenu.props.onSelect('selected');
         });
 
-        const changedFilesList = tree.findByType('FlatList' as any);
+        const changedFilesList = tree.findByType('LegendList' as any);
         expect(changedFilesList.props.data.map((file: { fullPath: string }) => file.fullPath)).toEqual(['src/b.ts']);
 
         const currentViewCount = tree.findAll((node) => node.props?.children === '1');
@@ -641,8 +630,6 @@ describe('WorkspaceSourceControlView', () => {
         commitSelectionPatches = [];
         scmCommitStrategySetting = 'atomic';
         scmWriteEnabledMock = false;
-
-        const { WorkspaceSourceControlView } = await import('./WorkspaceSourceControlView');
 
         const tree = (await renderScreen(
             <WorkspaceSourceControlView
@@ -668,8 +655,6 @@ describe('WorkspaceSourceControlView', () => {
         commitSelectionPatches = [];
         scmCommitStrategySetting = 'atomic';
         scmWriteEnabledMock = true;
-
-        const { WorkspaceSourceControlView } = await import('./WorkspaceSourceControlView');
 
         const tree = (await renderScreen(
             <WorkspaceSourceControlView
@@ -698,8 +683,6 @@ describe('WorkspaceSourceControlView', () => {
         commitSelectionPaths = [];
         commitSelectionPatches = [];
         scmCommitStrategySetting = 'atomic';
-
-        const { WorkspaceSourceControlView } = await import('./WorkspaceSourceControlView');
 
         const renderResult = await renderScreen(
             <WorkspaceSourceControlView
@@ -738,8 +721,6 @@ describe('WorkspaceSourceControlView', () => {
         scmCommitStrategySetting = 'atomic';
         scmWriteEnabledMock = true;
         machineScmChangeDiscardSpy.mockClear();
-
-        const { WorkspaceSourceControlView } = await import('./WorkspaceSourceControlView');
 
         const tree = (await renderScreen(
             <WorkspaceSourceControlView

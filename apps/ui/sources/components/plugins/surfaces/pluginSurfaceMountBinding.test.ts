@@ -6,6 +6,7 @@ import {
     normalizePluginUiInlineSurfaceBindingV1,
     type PluginUiDestinationBindingV1,
     type PluginUiInlineSurfaceBindingV1,
+    type PluginUiHostMethodV1,
     type PluginUiTargetedContributionSurfaceV1,
 } from '@happier-dev/protocol/plugins/ui';
 import type {
@@ -25,6 +26,8 @@ import {
     readPluginSurfaceMountBinding,
     readPluginSurfaceTargetedMountBinding,
 } from './pluginSurfaceMountBinding';
+
+const noRequiredHostMethods: PluginUiHostMethodV1[] = [];
 
 function eventSetupSurface(
     renderer: DaemonContributionRegistryProjectionAutomationEligibleEventSetupSurfaceV1['selectedRenderer']['renderer'],

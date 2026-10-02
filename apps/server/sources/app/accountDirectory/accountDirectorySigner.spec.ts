@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import tweetnacl from "tweetnacl";
-import * as privacyKit from "privacy-kit";
+import { encodeBase64 } from "@happier-dev/protocol";
 import {
     ACCOUNT_DIRECTORY_SIGNING_DOMAIN,
     accountDirectorySigningKeyMetadata,

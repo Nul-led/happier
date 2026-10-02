@@ -7,7 +7,6 @@ import {
     deriveAttentionDeliveryPolicyFromLegacySettings,
 } from '@happier-dev/protocol';
 import { DEFAULT_AGENT_ID } from '@/agents/registry/registryCore';
-import { buildAgentUniverseBackendTargetKey } from '@/agents/catalog/agentUniverse';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
 import {
     settingsParse,
@@ -1505,8 +1504,8 @@ describe('settings', () => {
             } as any);
 
             expect((parsed as any).backendCliSourcePreferenceByTargetKey).toEqual({
-                [buildAgentUniverseBackendTargetKey('codex')]: 'managed-first',
-                [buildAgentUniverseBackendTargetKey('gemini')]: 'system-first',
+                'backend:codex': 'managed-first',
+                'backend:gemini': 'system-first',
             });
         });
 

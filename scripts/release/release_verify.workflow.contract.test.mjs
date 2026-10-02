@@ -14,7 +14,17 @@ test('release-verify forwards canonical continuity and update suites from the re
   const profile = workflow.jobs.resolve_validation_profile;
   const verify = workflow.jobs.verify;
 
-  for (const inputName of [
+  for (const inputName of ['risk_cli_upgrade', 'risk_session_continuity', 'risk_relay_upgrade']) {
+    assert.equal(workflow.on.workflow_dispatch.inputs[inputName].default, false);
+    assert.equal(workflow.on.workflow_dispatch.inputs[inputName].type, 'boolean');
+    assert.equal(workflow.on.workflow_call.inputs[inputName].default, false);
+    assert.equal(workflow.on.workflow_call.inputs[inputName].type, 'boolean');
+  }
+  for (const inputName of ['include_validation_suites', 'waive_validation_suites']) {
+    assert.equal(workflow.on.workflow_dispatch.inputs[inputName].default, '');
+    assert.equal(workflow.on.workflow_call.inputs[inputName].default, '');
+  }
+  for (const outputName of [
     'run_cli_update_continuity',
     'run_daemon_continuity',
     'run_session_continuity',

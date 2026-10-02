@@ -128,6 +128,10 @@ vi.mock('@/components/ui/text/Text', () => ({
     TextInput: 'TextInput',
 }));
 
+vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({
+    ActivitySpinner: (props: Record<string, unknown>) => React.createElement('ActivitySpinner', props),
+}));
+
 vi.mock('@/components/ui/code/view/CodeLinesView', () => ({
     CodeLinesView: (props: any) => {
         codeLinesSpy(props);
@@ -313,7 +317,7 @@ describe('CommitScreen', () => {
         const screen = await renderCommitScreen(Screen);
 
         // Still loading; no diff call yet.
-        expect(screen.findAll((node: any) => node.props?.accessibilityRole === 'progressbar').length).toBeGreaterThan(0);
+        expect(screen.findAllByType('ActivitySpinner')).toHaveLength(1);
         expect(vi.mocked(sessionScmDiffCommit)).not.toHaveBeenCalled();
 
         // Storage rehydrates.

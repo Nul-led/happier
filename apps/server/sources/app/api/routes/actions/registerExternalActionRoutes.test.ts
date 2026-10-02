@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import type { RouteOptions } from "fastify";
 
 import { describe, expect, it, vi } from "vitest";
 

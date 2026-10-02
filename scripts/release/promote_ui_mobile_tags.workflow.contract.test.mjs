@@ -8,6 +8,21 @@ import YAML from 'yaml';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
 
+test('full mobile promotion includes OTA, native store submission, and APK with actual candidate outputs', async () => {
+  const workflow = YAML.parse(await loadWorkflow('promote-ui.yml'));
+  assert.ok(workflow.on.workflow_dispatch.inputs.expo_action.options.includes('full'));
+  assert.equal(workflow.jobs.resolve_source.outputs.candidate_sha, '${{ steps.candidate.outputs.authorized_sha }}');
+  for (const jobName of ['validate_candidate', 'promote']) {
+    for (const step of workflow.jobs[jobName].steps.filter((step) => step.run?.includes('ota-update.mjs'))) {
+      assert.match(step.if, /inputs\.expo_action == 'full'/);
+      assert.match(step.if, /!inputs\.ui_ota_complete/);
+      if (jobName === 'promote') assert.equal(step.env.UPDATE_MESSAGE, '${{ needs.validate_candidate.outputs.release_notes_expo_message }}');
+    }
+  }
+  for (const jobName of ['mobile_native', 'mobile_apk_release']) assert.match(workflow.jobs[jobName].if, /inputs\.expo_action == 'full'/);
+  assert.match(workflow.jobs.mobile_native.with.action, /inputs\.expo_action == 'full'/);
+});
+
 async function loadWorkflow(name) {
   return readFile(join(repoRoot, '.github', 'workflows', name), 'utf8');
 }

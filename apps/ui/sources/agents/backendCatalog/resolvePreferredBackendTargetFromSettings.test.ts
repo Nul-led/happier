@@ -25,6 +25,30 @@ const REVIEW_BOT_ACP_BACKEND = {
     updatedAt: 1,
 } satisfies AcpBackendDefinitionV1;
 
+function configuredAcpBackend(id: string) {
+    return {
+        id,
+        name: id,
+        title: 'Review Bot',
+        description: 'Custom review backend',
+        command: 'review-bot',
+        args: [],
+        env: {},
+        transportProfile: 'generic',
+        defaultMode: 'plan',
+        defaultModel: 'default',
+        capabilities: {
+            supportsLoadSession: false,
+            supportsModes: 'unknown',
+            supportsModels: 'unknown',
+            supportsConfigOptions: 'unknown',
+            promptImageSupport: 'unknown',
+        },
+        createdAt: 1,
+        updatedAt: 1,
+    } as const;
+}
+
 describe('resolvePreferredBackendTargetFromSettings', () => {
     it('prefers a parseable lastUsedBackendTarget from settings', () => {
         expect(resolvePreferredBackendTargetFromSettings({
@@ -114,6 +138,8 @@ describe('resolvePreferredBackendTargetFromSettings', () => {
                 mergedProviderProjectionById: {},
                 mergedBackendProjectionById: {
                     'review-bot': {
+                        backendId: 'review-bot',
+                        agentId: 'review-bot',
                         providerId: 'acp:review-bot',
                         title: 'Review Bot',
                     },

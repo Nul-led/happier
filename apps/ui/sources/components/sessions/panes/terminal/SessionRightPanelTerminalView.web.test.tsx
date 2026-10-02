@@ -296,6 +296,7 @@ describe('SessionRightPanelTerminalView.web', () => {
             cols: 80,
             rows: 24,
             launch: { kind: 'session_attach', sessionId: 's1' },
+            terminalKey: 'session-attach:s1',
         });
     });
 
@@ -639,6 +640,7 @@ describe('SessionRightPanelTerminalView.web', () => {
         expect(cached).toEqual({
             terminalId: 't1',
             cursor: 0,
+            cursorMode: 'legacy-event-cursor',
             output: '',
             detectedUrl: null,
         });

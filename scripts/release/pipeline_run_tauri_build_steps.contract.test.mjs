@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,12 +18,34 @@ function run(args, env = {}) {
   });
 }
 
+function runDryRunWithoutKeychain(args, env = {}) {
+  const root = mkdtempSync(path.join(tmpdir(), 'happier-tauri-keychain-trap-'));
+  const credentialAccess = path.join(root, 'credential-access');
+  // Reject the OS credential executable while the real CLI and Tauri dry-run execute.
+  writeFileSync(path.join(root, 'security'), String.raw`#!${process.execPath}
+require('node:fs').appendFileSync(${JSON.stringify(credentialAccess)}, 'invoked\n');
+process.stderr.write('TEST_KEYCHAIN_ACCESS_FORBIDDEN\n');
+process.exit(86);
+`, { mode: 0o755 });
+  const scopedEnv = { ...env, PATH: `${root}${path.delimiter}${process.env.PATH ?? ''}`, RUNNER_TEMP: root };
+  try {
+    assert.equal(spawnSync('security', [], { env: { ...process.env, ...scopedEnv } }).status, 86, 'credential trap must be executable');
+    assert.equal(readFileSync(credentialAccess, 'utf8'), 'invoked\n');
+    writeFileSync(credentialAccess, '');
+    const result = run([...args, '--secrets-source', 'keychain', '--keychain-service', 'test-only-no-secret'], scopedEnv);
+    assert.equal(readFileSync(credentialAccess, 'utf8'), '', 'Tauri dry-run must not access Keychain');
+    return result;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 for (const [environment, buildVersion] of [
   ['preview', '0.0.0-preview.1'],
   ['dev', '0.0.0-dev.1'],
 ]) {
   test(`pipeline run exposes tauri-build-updater-artifacts for ${environment} (dry-run)`, () => {
-    const res = run(
+    const res = runDryRunWithoutKeychain(
       [
         'tauri-build-updater-artifacts',
         '--environment',
@@ -44,7 +68,7 @@ for (const [environment, buildVersion] of [
 }
 
 test('pipeline run exposes tauri-notarize-macos-artifacts (dry-run)', () => {
-  const res = run(
+  const res = runDryRunWithoutKeychain(
     [
       'tauri-notarize-macos-artifacts',
       '--ui-dir',

@@ -26,6 +26,23 @@ const projectedExternalRollbackCapabilities: NonNullable<
     },
 };
 
+const projectedCodexRollbackCapabilities: CurrentProjectedAgentCapabilities = {
+    agentId: 'codex',
+    identity: {
+        pluginId: 'happier.agent.codex',
+        localId: 'codex',
+    },
+    generation: 42,
+    capabilities: {
+        sessions: {
+            open: ['resume', 'fork'],
+            delivery: ['newTurn'],
+            cancel: true,
+            conversationRollback: true,
+        },
+    },
+};
+
 function createActiveSession(metadata: Metadata): Session {
     return {
         id: 'session-1',
@@ -142,10 +159,12 @@ describe('resolveTranscriptRollbackActions', () => {
             messageIdsOldestFirst: ['u1', 'a1', 'u2', 'a2'],
             messagesById,
             rollbackRanges: [],
+            currentAgentCapabilities: projectedCodexRollbackCapabilities,
         })).toEqual({
             u1: {
                 target: { type: 'before_user_message', userMessageSeq: 1 },
                 restoredDraftText: 'initial prompt',
+                currentAgentCapabilities: projectedCodexRollbackCapabilities,
             },
         });
     });
@@ -178,10 +197,12 @@ describe('resolveTranscriptRollbackActions', () => {
             messageIdsOldestFirst: ['u1'],
             messagesById,
             rollbackRanges: [],
+            currentAgentCapabilities: projectedCodexRollbackCapabilities,
         })).toEqual({
             u1: {
                 target: { type: 'before_user_message', userMessageSeq: 1 },
                 restoredDraftText: 'Fix this',
+                currentAgentCapabilities: projectedCodexRollbackCapabilities,
             },
         });
     });
@@ -236,6 +257,7 @@ describe('resolveTranscriptRollbackActions', () => {
             messageIdsOldestFirst: ['active', 'interrupted', 'rolledBack', 'malformedEnd'],
             messagesById,
             rollbackRanges: [],
+            currentAgentCapabilities: projectedCodexRollbackCapabilities,
         })).toEqual({});
     });
 
@@ -261,10 +283,12 @@ describe('resolveTranscriptRollbackActions', () => {
             messageIdsOldestFirst: ['u1', 'a1', 'u2'],
             messagesById,
             rollbackRanges: [{ startSeqInclusive: 1, endSeqInclusive: 2 }],
+            currentAgentCapabilities: projectedCodexRollbackCapabilities,
         })).toEqual({
             u2: {
                 target: { type: 'before_user_message', userMessageSeq: 3 },
                 restoredDraftText: 'second prompt',
+                currentAgentCapabilities: projectedCodexRollbackCapabilities,
             },
         });
     });
@@ -290,10 +314,12 @@ describe('resolveTranscriptRollbackActions', () => {
             messageIdsOldestFirst: ['u1', 'u2'],
             messagesById,
             rollbackRanges: [],
+            currentAgentCapabilities: projectedCodexRollbackCapabilities,
         })).toEqual({
             u2: {
                 target: { type: 'before_user_message', userMessageSeq: 3 },
                 restoredDraftText: 'second prompt',
+                currentAgentCapabilities: projectedCodexRollbackCapabilities,
             },
         });
     });

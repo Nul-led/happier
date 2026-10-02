@@ -102,16 +102,6 @@ const storageStoreRef = vi.hoisted(() => ({
 const sessionFixtureRef = vi.hoisted(() => ({
     current: null as any,
 }));
-const draftHookSpies = vi.hoisted(() => ({
-    clearDraft: vi.fn(),
-    clearDraftIfCurrentValueMatches: vi.fn(),
-    clearDraftForSessionIfCurrentValueMatches: vi.fn(),
-    setDraftValue: vi.fn(),
-    restoreDraftForSessionIfCurrentValueMatches: vi.fn(),
-    restoreDraft: vi.fn(),
-    restoreComposerSnapshot: vi.fn(),
-    valuesBySessionId: new Map<string, string>(),
-}));
 const inputComposerPersistenceSpies = vi.hoisted(() => ({
     clearTransientInputState: vi.fn(),
     captureTransientInputState: vi.fn(() => ({ v: 1, expanded: true, scrollY: 12, updatedAt: 1 })),
@@ -423,6 +413,7 @@ installSessionShellCommonModuleMocks({
 
         return createStorageModuleStub({
             storage,
+            useActiveServerAccountScope: () => ({ serverId: 'legacy-test', accountId: 'legacy-test' }),
             useSession: () => storage((state) => state.sessions.s1 ?? null),
             useSessionMachineId: () => 'm-target',
             useIsDataReady: () => true,
@@ -459,6 +450,15 @@ installSessionShellCommonModuleMocks({
         });
     },
 });
+
+// Composer custody now clears through the synchronized draft repository. Keep
+// this integration suite on that canonical owner instead of the shell helper's
+// lightweight draft stub.
+vi.doUnmock('@/hooks/session/useDraft');
+vi.doMock('@/sync/store/hooks', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/store/hooks')>(),
+    useActiveServerAccountScope: () => ({ serverId: 'legacy-test', accountId: 'legacy-test' }),
+}));
 
 vi.mock('@/components/sessions/transcript/AgentContentView', () => ({
     AgentContentView: (props: any) => React.createElement('AgentContentView', props, props.input ?? null),
@@ -613,6 +613,8 @@ vi.mock('@/sync/sync', () => ({
         refreshSessions: async () => {},
         onSessionVisible: () => {},
         markSessionLiveTailIntent: () => {},
+        materializeExistingSessionDraft: async () => {},
+        patchSessionMetadataWithRetry: async () => {},
         getAcceptedExternalSessionTailCursor: () => null,
         subscribeAcceptedExternalSessionTailCursor: () => () => {},
         sendMessage: (...args: any[]) => sendMessageSpy(...args),
@@ -855,14 +857,6 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
         modalMockState.current?.spies.confirm.mockReset();
         modalMockState.current?.spies.confirm.mockResolvedValue(true);
         resolveSessionComposerSendMock.mockReset();
-        draftHookSpies.clearDraft.mockClear();
-        draftHookSpies.clearDraftIfCurrentValueMatches.mockClear();
-        draftHookSpies.clearDraftForSessionIfCurrentValueMatches.mockClear();
-        draftHookSpies.setDraftValue.mockClear();
-        draftHookSpies.restoreDraftForSessionIfCurrentValueMatches.mockClear();
-        draftHookSpies.restoreDraft.mockClear();
-        draftHookSpies.restoreComposerSnapshot.mockClear();
-        draftHookSpies.valuesBySessionId.clear();
         inputComposerPersistenceSpies.clearTransientInputState.mockClear();
         inputComposerPersistenceSpies.captureTransientInputState.mockClear();
         inputComposerPersistenceSpies.restoreTransientInputState.mockClear();
@@ -1350,7 +1344,6 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
         expect(enqueuePendingMessageSpy).toHaveBeenCalledTimes(1);
         expect(inputComposerPersistenceSpies.clearTransientInputState).toHaveBeenCalledTimes(1);
         expect(inputComposerPersistenceSpies.restoreTransientInputState).not.toHaveBeenCalled();
-        expect(draftHookSpies.restoreDraftForSessionIfCurrentValueMatches).not.toHaveBeenCalled();
         expect(findAgentInput(screen).props.value).toBe('');
 
         await screen.unmount();

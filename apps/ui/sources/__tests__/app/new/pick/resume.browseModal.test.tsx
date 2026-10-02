@@ -245,6 +245,11 @@ describe('ResumePickerScreen browse modal', () => {
             machineId: 'machine-plugin-2',
             spawnServerId: 'server-2',
         };
+        settingsState.value = {
+            backendEnabledByTargetKey: {
+                'agent:acme.review-bot/review-bot': true,
+            },
+        };
 
         machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
             supported: true,
@@ -296,6 +301,11 @@ describe('ResumePickerScreen browse modal', () => {
             currentResumeId: '',
             machineId: 'machine-plugin-3',
             spawnServerId: 'server-2',
+        };
+        settingsState.value = {
+            backendEnabledByTargetKey: {
+                'agent:acme.review-bot/review-bot': true,
+            },
         };
 
         machineContributionRegistryProjectionDescribeMock.mockResolvedValue({

@@ -213,7 +213,7 @@ describe('usePetCompanionActivityModel', () => {
         }
     });
 
-    it('does not recompute activity when a hidden system session changes', async () => {
+    it('does not recompute activity when an unrelated hidden system session changes', async () => {
         const previousState = storage.getState();
         const visibleSession = createSessionFixture({
             encryptionMode: 'plain',
@@ -356,8 +356,8 @@ describe('usePetCompanionActivityModel', () => {
                 flushOptions: { cycles: 1, turns: 4 },
             });
             expect(hook.getCurrent()).toMatchObject({
-                state: 'idle',
-                reason: 'idle',
+                state: 'running',
+                reason: 'running',
                 sessionId: session.id,
             });
             const renderCountBeforeBookkeepingUpdate = renderCount;
@@ -389,8 +389,8 @@ describe('usePetCompanionActivityModel', () => {
 
             expect(renderCount).toBeGreaterThan(renderCountBeforeMeaningfulActivityUpdate);
             expect(hook.getCurrent()).toMatchObject({
-                state: 'idle',
-                reason: 'idle',
+                state: 'running',
+                reason: 'running',
                 sessionId: session.id,
             });
 
@@ -447,8 +447,8 @@ describe('usePetCompanionActivityModel', () => {
                 flushOptions: { cycles: 1, turns: 4 },
             });
             expect(hook.getCurrent()).toMatchObject({
-                state: 'idle',
-                reason: 'idle',
+                state: 'running',
+                reason: 'running',
                 sessionId: session.id,
             });
             const renderCountBeforeBookkeepingUpdate = renderCount;
@@ -488,8 +488,8 @@ describe('usePetCompanionActivityModel', () => {
 
             expect(renderCount).toBeGreaterThan(renderCountBeforeMeaningfulActivityUpdate);
             expect(hook.getCurrent()).toMatchObject({
-                state: 'idle',
-                reason: 'idle',
+                state: 'running',
+                reason: 'running',
                 sessionId: session.id,
             });
 

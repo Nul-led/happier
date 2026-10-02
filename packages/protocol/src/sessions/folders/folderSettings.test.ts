@@ -23,7 +23,7 @@ describe('session folder settings schemas', () => {
 
     expect(typeof sessions.SessionFoldersV1Schema.safeParse).toBe('function');
     expect(typeof sessions.SetSessionFolderAssignmentRequestSchema.safeParse).toBe('function');
-  }, 30_000);
+  });
 
   it('parses a remote-dev-compatible sessionFoldersV1 fixture', () => {
     const schema = getSchema('SessionFoldersV1Schema');

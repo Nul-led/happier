@@ -1729,7 +1729,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         machineExternalSessionTranscriptReadAfterMock.mockResolvedValue({
             ok: true,
             items: [],
-            nextCursor: null,
+            nextCursor: 'tail',
             truncated: false,
         });
 
@@ -1999,7 +1999,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         machineExternalSessionTranscriptReadAfterMock.mockResolvedValueOnce({
             ok: true,
             items: [],
-            nextCursor: null,
+            nextCursor: 'tail',
             truncated: false,
         });
 
@@ -5275,7 +5275,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(texts).toEqual(['new link']);
     });
 
-    it('redrives only an existing transcript owner after relink and machine reachability changes', async () => {
+    it('redrives only an existing transcript owner after relink and ignores stale machine activity', async () => {
         const openSessionId = 'direct_session_open_relink_redrive';
         const unopenedSessionId = 'direct_session_unopened_relink_redrive';
         const initial = createExternalSession(openSessionId);
@@ -5333,7 +5333,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         (sync as any).flushMachineActivityUpdates(new Map([
             ['machine-1', { id: 'machine-1', active: true, activeAt: Date.now() }],
         ]));
-        expect(invalidateOpen).toHaveBeenCalledTimes(2);
+        expect(invalidateOpen).toHaveBeenCalledTimes(1);
+        expect(storage.getState().machines['machine-1']?.active).toBe(true);
         expect((sync as any).messagesSync.has(unopenedSessionId)).toBe(false);
     });
 
@@ -5702,8 +5703,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                     raw: { role: 'user', content: { type: 'text', text: 'followed direct' } },
                 }],
                 nextCursor: 'happier_external_cursor_v1:Y3Vyc29yLTI',
-                boundary: '2:direct-msg-2',
                 hasMore: false,
+                boundary: '2:direct-msg-2',
             },
         });
         machineExternalSessionTranscriptReadAfterMock
@@ -6142,8 +6143,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                             },
                         }],
                         nextCursor: 'happier_external_cursor_v1:Y3Vyc29yLTM',
-                        boundary: '2:direct-msg-stale-cursor',
                         hasMore: false,
+                        boundary: '2:direct-msg-stale-cursor',
                     },
                 };
             },
@@ -6200,8 +6201,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                     },
                 }],
                 nextCursor: 'happier_external_cursor_v1:Y3Vyc29yLTI',
-                boundary: '2:direct-msg-wrong-binding',
                 hasMore: false,
+                boundary: '2:direct-msg-wrong-binding',
             },
         });
 
@@ -6259,8 +6260,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                             },
                         }],
                         nextCursor: 'happier_external_cursor_v1:Y3Vyc29yLTI',
-                        boundary: '2:direct-msg-from-duplicate-invalidation',
                         hasMore: false,
+                        boundary: '2:direct-msg-from-duplicate-invalidation',
                     },
                 };
             },
@@ -6363,8 +6364,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                     raw: { role: 'user', content: { type: 'text', text: 'followed direct' } },
                 }],
                 nextCursor: 'happier_external_cursor_v1:Y3Vyc29yLTI',
-                boundary: '2:direct-msg-2',
                 hasMore: false,
+                boundary: '2:direct-msg-2',
             },
         });
         machineExternalSessionTranscriptReadAfterMock.mockResolvedValueOnce({
@@ -6496,8 +6497,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                                 raw: { role: 'user', content: { type: 'text', text: 'eligible live item' } },
                             }],
                             nextCursor: 'happier_external_cursor_v1:Y3Vyc29yLTI',
-                            boundary: '2:direct-msg-2',
                             hasMore: false,
+                            boundary: '2:direct-msg-2',
                         },
                     }), 120);
                 }),
@@ -6748,8 +6749,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                     raw: { role: string; content: { type: string; text: string } };
                 }>;
                 nextCursor: string;
-                boundary: string;
                 hasMore: boolean;
+                boundary: string;
             };
         }) => void;
         const refreshResponse = new Promise<Parameters<typeof resolveRefresh>[0]>((resolve) => {
@@ -6804,8 +6805,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                     raw: { role: 'user', content: { type: 'text', text: 'stale old source row' } },
                 }],
                 nextCursor: 'happier_external_cursor_v1:Y3Vyc29yLTI',
-                boundary: '2:direct-msg-stale',
                 hasMore: false,
+                boundary: '2:direct-msg-stale',
             },
         });
         await refresh;
@@ -6859,8 +6860,8 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                     },
                 }],
                 nextCursor: 'happier_external_cursor_v1:bm90aWZ5LTI',
-                boundary: '2:direct-agent-msg-1',
                 hasMore: false,
+                boundary: '2:direct-agent-msg-1',
             },
         });
 

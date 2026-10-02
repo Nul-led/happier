@@ -629,8 +629,10 @@ describe('ReviewCommentsSessionSurface', () => {
         }));
         expect(execute).toHaveBeenCalledWith('reviews.comments.transition', expect.objectContaining({
             commentId: 'open-1',
+            projectId: 'project-1',
             toState: 'resolved',
             expectedState: 'open',
+            expectedServerRevision: 1,
         }));
         expect(execute).toHaveBeenCalledWith('reviews.comments.redact', expect.objectContaining({
             commentId: 'open-1',

@@ -164,7 +164,14 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
     getActiveServerId: () => mockState.activeServerIdRef.current,
 }));
 vi.mock('@/sync/domains/server/activeServerSwitch', () => ({ setActiveServerAndSwitch: vi.fn(async () => true) }));
-vi.mock('@/sync/sync', () => ({ sync: { refreshMachinesThrottled: vi.fn(), refreshMachines: vi.fn(), retryNow: vi.fn() } }));
+vi.mock('@/sync/sync', () => ({
+    sync: {
+        refreshMachinesThrottled: vi.fn(),
+        refreshMachines: vi.fn(),
+        retryNow: vi.fn(),
+        acquireUserRequestLease: vi.fn(() => vi.fn()),
+    },
+}));
 vi.mock('@/utils/system/fireAndForget', () => ({
     fireAndForget: (promise: Promise<unknown>, options?: { onError?: (error: unknown) => void }) => {
         void promise.catch((error) => {

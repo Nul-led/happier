@@ -1329,20 +1329,17 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
         const previousMachines = get().machines;
         const previousDisplays = get().machineDisplayById;
 
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        saveMachineDisplayWarmCacheEntriesSpy.mockClear();
+        scheduleMachineDisplayWarmCacheSaveSpy.mockClear();
 
         domain.applyMachines([machine]);
 
         expect(get().machines).toBe(previousMachines);
         expect(get().machineDisplayById).toBe(previousDisplays);
-        expect(saveMachineDisplayWarmCacheEntriesSpy).not.toHaveBeenCalled();
+        expect(scheduleMachineDisplayWarmCacheSaveSpy).not.toHaveBeenCalled();
     });
 
-    it('debounces full-fleet machine display warm-cache persistence', async () => {
-        vi.useFakeTimers();
-        try {
-            mockMachineDomainBoundaries();
+    it('delegates each changed full-fleet snapshot to the warm-cache persistence owner', async () => {
+        mockMachineDomainBoundaries();
 
             const { createMachinesDomain } = await import('./machines');
             const machine = {
@@ -1374,16 +1371,17 @@ describe('machines domain: sessionListIndex rebuild gating', () => {
                 profile: { id: 'account_a' },
             };
 
-            const { domain } = createHarness(createMachinesDomain, initialState);
+        const { domain } = createHarness(createMachinesDomain, initialState);
 
-            domain.applyMachines([machine]);
-            domain.applyMachines([{ ...machine, updatedAt: 2, activeAt: 2 }]);
+        domain.applyMachines([machine]);
+        domain.applyMachines([{ ...machine, updatedAt: 2, activeAt: 2 }]);
 
-            expect(saveMachineDisplayWarmCacheEntriesSpy).not.toHaveBeenCalled();
-            await vi.runAllTimersAsync();
-            expect(saveMachineDisplayWarmCacheEntriesSpy).toHaveBeenCalledTimes(1);
-        } finally {
-            vi.useRealTimers();
-        }
+        expect(scheduleMachineDisplayWarmCacheSaveSpy).toHaveBeenCalledTimes(2);
+        expect(scheduleMachineDisplayWarmCacheSaveSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+            accountId: 'account_a',
+            machineDisplays: expect.objectContaining({
+                'm-debounce': expect.objectContaining({ activeAt: 2 }),
+            }),
+        }));
     });
 });

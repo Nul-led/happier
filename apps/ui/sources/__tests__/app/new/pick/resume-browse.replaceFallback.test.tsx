@@ -1,6 +1,7 @@
 import React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PluginProjectionV2Schema } from '@happier-dev/protocol';
 
 import { flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
 import type {
@@ -45,6 +46,82 @@ type ExternalSessionsBrowseScreenProps = Readonly<{
 }>;
 
 const browseScreenPropsRef = { current: null as ExternalSessionsBrowseScreenProps | null };
+
+function createReviewBotProjection() {
+    return PluginProjectionV2Schema.parse({
+        v: 2,
+        generation: 1,
+        installedPackagesById: {
+            'happier.agent.claude': {
+                id: 'happier.agent.claude',
+                displayName: 'Claude',
+                enabled: true,
+                source: { kind: 'bundled', locator: 'happier.agent.claude' },
+            },
+            'acme.review-bot': {
+                id: 'acme.review-bot',
+                displayName: 'Review Bot',
+                enabled: true,
+                source: { kind: 'local', locator: 'acme.review-bot' },
+            },
+        },
+        agentsById: {
+            claude: {
+                id: 'claude',
+                title: 'Claude',
+                catalogAgentId: 'claude',
+                iconAgentId: 'claude',
+                identity: { pluginId: 'happier.agent.claude', localId: 'claude' },
+            },
+            'plugin:review-bot': {
+                id: 'plugin:review-bot',
+                title: 'Review Bot Plugin',
+                subtitle: 'plugin agent',
+                channel: 'plugin',
+                isBuiltIn: false,
+                catalogAgentId: 'claude',
+                iconAgentId: 'claude',
+                identity: { pluginId: 'acme.review-bot', localId: 'review-bot' },
+                externalSessions: {
+                    agent: { pluginId: 'acme.review-bot', localId: 'review-bot' },
+                    generation: 1,
+                    operations: {
+                        listCandidates: true,
+                        resolveLinkIdentity: true,
+                        pageTranscript: true,
+                        readAfterTranscript: true,
+                    },
+                    sources: [{
+                        sourceKind: 'reviewBotConfig',
+                        schema: {
+                            fields: [
+                                { name: 'kind', kind: 'literal', value: 'reviewBotConfig' },
+                                { name: 'configDir', kind: 'string', min: 1, max: 10_000, nullish: true },
+                            ],
+                        },
+                        key: {
+                            segments: [
+                                { kind: 'literal', value: 'reviewBotConfig' },
+                                { kind: 'field', field: 'configDir' },
+                            ],
+                        },
+                        instances: [{ kind: 'default', constants: {} }],
+                    }],
+                },
+            },
+        },
+        backendsById: {
+            'plugin-review-bot': {
+                id: 'plugin-review-bot',
+                agentId: 'plugin:review-bot',
+                title: 'Review Bot (plugin)',
+                subtitle: 'plugin backend',
+                catalogAgentId: 'claude',
+                iconAgentId: 'claude',
+            },
+        },
+    });
+}
 
 installPickerCommonModuleMocks({
     reactNative: async () =>
@@ -246,6 +323,7 @@ describe('ResumeBrowsePickerScreen replace fallback', () => {
                 ],
             },
         };
+        externalSessionBrowseSupportState.supportedByProviderId = { 'review-bot': false };
 
         const ResumeBrowsePickerScreen = (await import('@/app/(app)/new/pick/resume-browse')).default;
 
@@ -300,6 +378,7 @@ describe('ResumeBrowsePickerScreen replace fallback', () => {
                 ],
             },
         };
+        externalSessionBrowseSupportState.supportedByProviderId = { 'review-bot': false };
 
         const ResumeBrowsePickerScreen = (await import('@/app/(app)/new/pick/resume-browse')).default;
 

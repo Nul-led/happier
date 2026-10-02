@@ -184,6 +184,15 @@ type CandidatePreparationProspectiveStage = Readonly<{
     targetProjection: Prisma.InputJsonValue;
 }>;
 
+type CandidatePreparationLiveRow = Readonly<{
+    id: string;
+    rowId: string;
+    revision: number;
+    contractId: string;
+    schemaVersion: number;
+    contractDigest: string;
+}>;
+
 type CandidatePreparationStageItemResult = PluginCollectionCandidatePreparationStageResultV1["results"][number];
 
 type CandidatePreparationErrorCode =

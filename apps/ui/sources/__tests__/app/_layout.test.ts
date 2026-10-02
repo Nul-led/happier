@@ -160,6 +160,7 @@ vi.mock('@/constants/Typography', () => {
             bold: '600',
         },
         Typography: {
+            ...actual.Typography,
             default: () => ({}),
             header: () => ({}),
             mono: () => ({}),
@@ -205,6 +206,11 @@ vi.mock('@/activity/adapters/ios/runtime/ActivitySurfacesRuntime', () => ({
 vi.mock('@/activity/notifications/runtime/ActivityLocalNotificationRuntime', () => ({
     ActivityLocalNotificationRuntime: () => null,
 }));
+
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock().module;
+});
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -343,6 +349,8 @@ vi.mock('@/utils/platform/desktopHost', () => ({
     listenDesktopHostEvent: vi.fn(async () => () => {}),
 }));
 
+const { default: RootLayout } = await import('@/app/(app)/_layout');
+
 afterEach(() => {
     vi.unstubAllGlobals();
     vi.resetModules();
@@ -366,8 +374,6 @@ afterEach(() => {
 describe('RootLayout hooks order', () => {
     it('does not throw when redirecting after a non-redirect render', async () => {
         stubFeatureFetch();
-
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
 
         isAuthenticated = true;
         segments = ['(app)'];
@@ -396,8 +402,6 @@ describe('RootLayout hooks order', () => {
     it('renders a redirect instead of a blank tree for unauthenticated protected routes', async () => {
         stubFeatureFetch();
 
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
-
         isAuthenticated = false;
         segments = ['(app)', 'settings', 'account'];
         pathname = '/settings/account';
@@ -422,8 +426,6 @@ describe('RootLayout hooks order', () => {
 describe('RootLayout stack options', () => {
     it('keeps root stack screen options stable across unchanged renders', async () => {
         stubFeatureFetch();
-
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
 
         let tree: renderer.ReactTestRenderer | undefined;
         try {
@@ -456,8 +458,6 @@ describe('RootLayout stack options', () => {
     it('keeps main tab transitions and the settings destination instant', async () => {
         stubFeatureFetch();
 
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
-
         let tree: renderer.ReactTestRenderer | undefined;
         try {
             tree = (await renderScreen(React.createElement(RootLayout))).tree;
@@ -487,8 +487,6 @@ describe('RootLayout stack options', () => {
 
     it('disables stack screen animations for session cockpit surface routes', async () => {
         stubFeatureFetch();
-
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
 
         let tree: renderer.ReactTestRenderer | undefined;
         try {
@@ -520,8 +518,6 @@ describe('RootLayout stack options', () => {
 
     it('does not freeze the native or web root index route', async () => {
         stubFeatureFetch();
-
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
 
         let tree: renderer.ReactTestRenderer | undefined;
         try {
@@ -567,8 +563,6 @@ describe('RootLayout notification routing', () => {
     it('ignores absolute URLs from notification payloads', async () => {
         stubFeatureFetch();
 
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
-
         isAuthenticated = true;
         platformState.os = 'ios';
         lastNotificationResponse = {
@@ -597,8 +591,6 @@ describe('RootLayout notification routing', () => {
 describe('RootLayout restore navigation', () => {
     it('uses coherent headers for restore flows', async () => {
         stubFeatureFetch();
-
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
 
         let tree: renderer.ReactTestRenderer | undefined;
         try {
@@ -667,7 +659,6 @@ describe('RootLayout settings routes', () => {
     it('registers only the settings navigator in the parent stack and keeps nested settings children out of it', async () => {
         stubFeatureFetch();
 
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
         const screen = await renderScreen(React.createElement(RootLayout));
 
         const screens = screen.findAllByType('StackScreen' as any);
@@ -689,7 +680,6 @@ describe('RootLayout activity surfaces', () => {
         stubFeatureFetch();
         platformState.os = 'ios';
 
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
         const screen = await renderScreen(React.createElement(RootLayout));
         await flushHookEffects();
 
@@ -705,7 +695,6 @@ describe('RootLayout desktop window sizing', () => {
         segments = ['(app)', 'settings'];
         pathname = '/settings';
 
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
         await renderScreen(React.createElement(RootLayout));
 
         expect(invokeDesktopHostSpy).toHaveBeenCalledWith('desktop_set_window_mode', { mode: 'main' });
@@ -718,7 +707,6 @@ describe('RootLayout desktop window sizing', () => {
         segments = ['(app)'];
         pathname = '/';
 
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
         await renderScreen(React.createElement(RootLayout));
 
         expect(invokeDesktopHostSpy).toHaveBeenCalledWith('desktop_set_window_mode', { mode: 'main' });
@@ -734,7 +722,6 @@ describe('RootLayout auth recovery route hold', () => {
         globalSearchParamsState = { id: 's1', serverId: 'server-active' };
         endpointConnectivityStatus = 'auth_failed';
 
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
         await renderScreen(React.createElement(RootLayout));
 
         expect(router.replace).not.toHaveBeenCalledWith('/');
@@ -749,7 +736,6 @@ describe('RootLayout auth recovery route hold', () => {
         endpointConnectivityStatus = 'online';
         syncErrorState = null;
 
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
         const screen = await renderScreen(React.createElement(RootLayout));
 
         const redirect = screen.findByType('Redirect' as never);
@@ -764,7 +750,6 @@ describe('RootLayout auth recovery route hold', () => {
         globalSearchParamsState = { id: 's1', serverId: 'server-active' };
         endpointConnectivityStatus = 'auth_failed';
 
-        const { default: RootLayout } = await import('@/app/(app)/_layout');
         await renderScreen(React.createElement(RootLayout));
 
         expect(router.replace).toHaveBeenCalledWith('/session/s1?serverId=server-active');

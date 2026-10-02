@@ -23,6 +23,7 @@ test('one trusted reusable workflow resolves prior release candidates by exact r
   assert.ok(parsed.on.workflow_call.inputs.origin_run_id);
   assert.ok(parsed.on.workflow_call.inputs.expected_workflow);
   assert.ok(parsed.on.workflow_call.inputs.expected_channel);
+  assert.equal(parsed.on.workflow_call.inputs.status_artifact_name.default, 'happier-release-status');
   for (const output of [
     'source_sha',
     'desktop_run_number',
@@ -43,6 +44,10 @@ test('one trusted reusable workflow resolves prior release candidates by exact r
     'ui_native_android_complete',
     'ui_apk_complete',
     'deploy_ui_expo_action',
+    'deploy_ui_requested', 'deploy_ui_intent_recorded', 'deploy_ui_web_requested', 'deploy_ui_desktop_mode',
+    'deploy_ui_complete', 'deploy_server_complete', 'deploy_website_complete', 'deploy_docs_complete',
+    'docker_complete', 'npm_complete', 'cli_rolling_complete', 'stack_rolling_complete',
+    'server_rolling_complete', 'runner_rolling_complete', 'ui_web_rolling_complete',
   ]) {
     assert.ok(parsed.on.workflow_call.outputs[output], `missing resume output ${output}`);
   }
@@ -57,6 +62,11 @@ test('one trusted reusable workflow resolves prior release candidates by exact r
   assert.match(source, /resolve-release-resume\.mjs[\s\S]*--mode resolve/);
   assert.equal((source.match(/\/jobs\?filter=latest&per_page=100/g) ?? []).length, 1);
   assert.match(source, /--jobs-json "\$RUNNER_TEMP\/resume-jobs.json"/);
+  for (const mode of ['Inspect exact origin run and status artifact', 'Resolve verified reusable candidate versions']) {
+    const step = resolveJob.steps.find((entry) => entry.name === mode);
+    assert.equal(step.env.STATUS_ARTIFACT_NAME, '${{ inputs.status_artifact_name }}');
+    assert.match(step.run, /--status-artifact-name "\$STATUS_ARTIFACT_NAME"/);
+  }
   const ui = workflow('promote-ui.yml');
   const mobile = workflow('build-ui-mobile-local.yml');
   for (const input of ['ui_ota_complete', 'ui_native_ios_complete', 'ui_native_android_complete', 'ui_apk_complete']) {
@@ -80,8 +90,12 @@ test('one trusted reusable workflow resolves prior release candidates by exact r
   assert.equal(mobile.jobs.build_android.name, 'Build (android)');
   assert.equal(mobile.jobs.build_ios.name, 'Build (ios)');
   assert.equal(ui.jobs.mobile_apk_release.with.publish_apk_release, 'true');
-  assert.ok(mobile.jobs.build_android.steps.find((step) => step.name === 'EAS build (local runner) (pipeline)').run.includes('--publish-apk-release "${{ inputs.publish_apk_release }}"'),
-    'the admitted APK flow publishes inside the existing Android pipeline step');
+  assert.match(mobile.jobs.build_android.steps.find((step) => step.name === 'EAS build (local runner) (pipeline)').run, /--publish-apk-release false/);
+  const apkPublisher = mobile.jobs.publish_android_apk;
+  assert.equal(apkPublisher.name, 'Sign and publish Android APK');
+  const publication = apkPublisher.steps.find((step) => step.name === 'Sign and publish APK with trusted control');
+  assert.match(publication.run, /publish-apk-release\.mjs/);
+  assert.equal(publication.env.AUTHORIZED_SHA, '${{ needs.build_android.outputs.candidate_sha }}');
   for (const job of [ui.jobs.validate_candidate, ui.jobs.promote]) {
     for (const step of job.steps.filter((step) => /^(Prepare .* OTA artifact without credentials|Upload prepared OTA artifacts|Download prepared OTA artifacts|Publish .* OTA from validated bytes)$/.test(step.name))) {
       assert.equal(evaluate(step.if, { ...fresh, expo_action: 'ota' }), true);
@@ -136,6 +150,10 @@ test('nightly resume pins the prior source, reuses completed immutable candidate
   assert.equal(parsed.jobs.release_verify.with.verify_stack_release, "${{ needs.resolve_resume.outputs.stack_version == '' }}");
   assert.equal(parsed.jobs.release_verify.with.verify_server_release, "${{ needs.resolve_resume.outputs.server_version == '' }}");
   assert.equal(parsed.jobs.release_verify.with.verify_ui_web_release, "${{ needs.resolve_resume.outputs.ui_web_version == '' }}");
+  assert.ok(
+    parsed.jobs.release_verify.needs.includes('resolve_resume'),
+    'nightly candidate verification must declare the resume evidence it reads',
+  );
   assert.equal(parsed.jobs.release_verify.with.risk_cli_upgrade, "${{ needs.resolve_validation_risk.outputs.risk_cli_upgrade == 'true' }}");
   assert.equal(parsed.jobs.release_verify.with.risk_session_continuity, "${{ needs.resolve_validation_risk.outputs.risk_session_continuity == 'true' }}");
   assert.equal(parsed.jobs.release_verify.with.risk_relay_upgrade, false);
@@ -157,10 +175,18 @@ test('nightly resume pins the prior source, reuses completed immutable candidate
 });
 
 test('full release resume binds the prior run to the same operation and authorized source', () => {
-  const parsed = workflow('release.yml');
-  assert.ok(parsed.on.workflow_dispatch.inputs.resume_run_id);
+  const root = workflow('release.yml');
+  const parsed = workflow('release-channel.yml');
+  assert.ok(root.on.workflow_dispatch.inputs.resume_run_id);
   assert.equal(parsed.jobs.resolve_resume.uses, './.github/workflows/resolve-release-resume.yml');
-  assert.equal(parsed.jobs.resolve_resume.with.expected_workflow, '.github/workflows/release.yml');
+  assert.equal(
+    parsed.jobs.resolve_resume.with.expected_workflow,
+    '.github/workflows/release.yml',
+  );
+  assert.equal(
+    parsed.jobs.resolve_resume.with.status_artifact_name,
+    "${{ inputs.combined_preview_production == true && format('happier-release-status-{0}', inputs.environment) || 'happier-release-status' }}",
+  );
   assert.equal(parsed.jobs.resolve_resume.with.expected_source_sha, '${{ inputs.authorized_promotion_source_sha }}');
   assert.equal(parsed.jobs.resolve_resume.with.expected_operation_id, '${{ inputs.hmaint_operation_id }}');
   assert.ok(needs(parsed.jobs.plan).includes('resolve_resume'));
@@ -170,7 +196,8 @@ test('full release resume binds the prior run to the same operation and authoriz
   assert.match(parsed.jobs.plan.outputs.publish_server_runtime_needed, /needs\.resolve_resume\.outputs\.server_requested/);
   assert.match(parsed.jobs.plan.outputs.publish_runner_binaries_needed, /needs\.resolve_resume\.outputs\.runner_requested/);
   assert.match(parsed.jobs.plan.outputs.publish_runner_binaries_needed, /steps\.plan\.outputs\.changed_runner/);
-  assert.match(parsed.jobs.publish_ui_web.if, /needs\.resolve_resume\.outputs\.ui_web_requested/);
+  assert.match(parsed.jobs.plan.outputs.publish_ui_web_needed, /needs\.resolve_resume\.outputs\.ui_web_requested/);
+  assert.match(parsed.jobs.publish_ui_web.if, /needs\.plan\.outputs\.publish_ui_web_needed/);
   assert.ok(needs(parsed.jobs.deploy_ui).includes('resolve_resume'));
   const uiPromotion = workflow('promote-ui.yml');
   for (const [input, output] of [
@@ -185,7 +212,7 @@ test('full release resume binds the prior run to the same operation and authoriz
   }
   for (const output of ['ui_ota_complete', 'ui_native_ios_complete', 'ui_native_android_complete', 'ui_apk_complete']) {
     assert.match(String(parsed.jobs.deploy_ui.with[output]), new RegExp(`needs\\.resolve_resume\\.outputs\\.${output} == 'true'`));
-    assert.match(String(parsed.jobs.deploy_ui.with[output]), /needs\.resolve_resume\.outputs\.deploy_ui_expo_action == inputs\.ui_expo_action/);
+    assert.match(String(parsed.jobs.deploy_ui.with[output]), /needs\.resolve_resume\.outputs\.deploy_ui_expo_action == needs\.deploy_plan\.outputs\.deploy_ui_expo_action/);
   }
   for (const [jobName, output] of [
     ['publish_cli_binaries', 'cli_version'],
@@ -197,6 +224,9 @@ test('full release resume binds the prior run to the same operation and authoriz
     assert.ok(needs(parsed.jobs[jobName]).includes('resolve_resume'));
     assert.equal(parsed.jobs[jobName].with.resume_version, `\${{ needs.resolve_resume.outputs.${output} }}`);
   }
+  assert.equal(parsed.jobs.publish_npm.with.cli_version, '${{ needs.publish_cli_binaries.outputs.version }}');
+  assert.equal(parsed.jobs.publish_npm.with.stack_version, '${{ needs.publish_hstack_binaries.outputs.version }}');
+  assert.equal(parsed.jobs.publish_npm.with.server_version, '${{ needs.publish_server_runtime.outputs.version }}');
   assert.equal(parsed.jobs.verify_release_candidates.with.verify_cli_release, "${{ needs.publish_cli_binaries.result == 'success' && needs.resolve_resume.outputs.cli_version == '' }}");
   assert.equal(parsed.jobs.verify_release_candidates.with.verify_stack_release, "${{ needs.publish_hstack_binaries.result == 'success' && needs.resolve_resume.outputs.stack_version == '' }}");
   assert.equal(parsed.jobs.verify_release_candidates.with.verify_server_release, "${{ needs.publish_server_runtime.result == 'success' && needs.resolve_resume.outputs.server_version == '' }}");
@@ -254,7 +284,7 @@ test('failed aggregate verification independently certifies successful immutable
 
   for (const [name, groupedJob, candidates] of [
     ['nightly-dev.yml', 'release_verify', ['cli', 'hstack', 'runner', 'server_runtime', 'ui_web']],
-    ['release.yml', 'verify_release_candidates', ['publish_cli_binaries', 'publish_hstack_binaries', 'publish_server_runtime', 'publish_runner_binaries', 'publish_ui_web']],
+    ['release-channel.yml', 'verify_release_candidates', ['publish_cli_binaries', 'publish_hstack_binaries', 'publish_server_runtime', 'publish_runner_binaries', 'publish_ui_web']],
   ]) {
     const parsed = workflow(name);
     const independent = parsed.jobs.verify_resume_candidates;

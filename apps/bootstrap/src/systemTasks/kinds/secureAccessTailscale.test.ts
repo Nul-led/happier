@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createSecureAccessTailscaleHandler } from './secureAccessTailscale.js';
+
 const tailscaleMocks = vi.hoisted(() => ({
     runTailscaleStatusJson: vi.fn(),
     runTailscaleServeStatus: vi.fn(),
@@ -139,7 +141,7 @@ describe('createSecureAccessTailscaleHandler', () => {
             shareableHttpsUrl: 'https://relay.tailf00.ts.net',
             requiresApproval: null,
         });
-    }, 25_000);
+    });
 
     it('delegates the secure-access serve enable step to the relay-access tailscaleServe provider', async () => {
 
@@ -210,7 +212,7 @@ describe('createSecureAccessTailscaleHandler', () => {
             serveEnabled: true,
             requiresApproval: null,
         }));
-    }, 15_000);
+    });
 
     it('delegates the secure-access enable step to the relay-access tailscaleFunnel provider when requested', async () => {
 
@@ -262,7 +264,7 @@ describe('createSecureAccessTailscaleHandler', () => {
             serveEnabled: true,
             requiresApproval: null,
         }));
-    }, 15_000);
+    });
 
     it('appends the serve path to the relay access share URL', async () => {
 

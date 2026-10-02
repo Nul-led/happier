@@ -154,6 +154,22 @@ on:
       publication_run_id:
         required: true
         type: string
+      retained_cli_version:
+        required: false
+        default: ""
+        type: string
+      retained_stack_version:
+        required: false
+        default: ""
+        type: string
+      retained_server_version:
+        required: false
+        default: ""
+        type: string
+      retained_runner_version:
+        required: false
+        default: ""
+        type: string
       candidate_cli_version:
         required: false
         default: ""
@@ -256,6 +272,10 @@ jobs:
           CLI_CANDIDATE_BUILD_RUN_ID: ${{ inputs.cli_candidate_build_run_id }}
           PUBLICATION_RUN_ID: ${{ inputs.publication_run_id }}
           CURRENT_RUN_ID: ${{ github.run_id }}
+          RETAINED_CLI_VERSION: ${{ inputs.retained_cli_version }}
+          RETAINED_STACK_VERSION: ${{ inputs.retained_stack_version }}
+          RETAINED_SERVER_VERSION: ${{ inputs.retained_server_version }}
+          RETAINED_RUNNER_VERSION: ${{ inputs.retained_runner_version }}
           CANDIDATE_CLI_VERSION: ${{ inputs.candidate_cli_version }}
           CANDIDATE_STACK_VERSION: ${{ inputs.candidate_stack_version }}
           CANDIDATE_SERVER_VERSION: ${{ inputs.candidate_server_version }}
@@ -285,6 +305,10 @@ jobs:
             --cli-candidate-build-run-id "$CLI_CANDIDATE_BUILD_RUN_ID" \
             --publication-run-id "$PUBLICATION_RUN_ID" \
             --current-run-id "$CURRENT_RUN_ID" \
+            --retained-cli-version "$RETAINED_CLI_VERSION" \
+            --retained-stack-version "$RETAINED_STACK_VERSION" \
+            --retained-server-version "$RETAINED_SERVER_VERSION" \
+            --retained-runner-version "$RETAINED_RUNNER_VERSION" \
             --derive-targets true \
             --verify-deploy-ui "$VERIFY_DEPLOY_UI" \
             --verify-deploy-server "$VERIFY_DEPLOY_SERVER" \
@@ -428,6 +452,7 @@ jobs:
     with:
       select_jobs_explicitly: true
       run_ui: false
+      run_shared_packages: false
       run_plugin_workspaces: false
       run_server: false
       run_cli: false

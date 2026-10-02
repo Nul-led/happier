@@ -24,10 +24,28 @@ const RESUMABLE_SURFACE_PRODUCTS = new Map([
   ['runner-immutable-candidate', 'runner'],
   ['ui-web-immutable-candidate', 'ui-web'],
 ]);
+const RESUMABLE_COMPLETION_SURFACES = new Map([
+  ['deploy_docs', 'deployDocs'],
+  ['deploy_server', 'deployServer'],
+  ['deploy_ui', 'deployUi'],
+  ['deploy_website', 'deployWebsite'],
+  ['docker', 'docker'],
+  ['npm', 'npm'],
+]);
+const RESUMABLE_VERIFIED_COMPLETION_SURFACES = new Map([
+  ['cli_rolling_release', 'cliRolling'],
+  ['hstack_rolling_release', 'stackRolling'],
+  ['server_rolling_release', 'serverRolling'],
+  ['runner_rolling_release', 'runnerRolling'],
+  ['ui_web_rolling_release', 'uiWebRolling'],
+]);
 const TRUSTED_RELEASE_CONTROL_BRANCHES = new Set(['dev', 'preview', 'main']);
 const RESUMABLE_WORKFLOW_EVENTS = new Map([
   ['.github/workflows/nightly-dev.yml', new Set(['schedule', 'workflow_dispatch'])],
   ['.github/workflows/release.yml', new Set(['workflow_dispatch'])],
+]);
+const STANDARD_RELEASE_WORKFLOWS = new Set([
+  '.github/workflows/release.yml',
 ]);
 
 /** @param {unknown} value @param {string} label */
@@ -51,6 +69,19 @@ function requiredSha(value, label) {
   const sha = requiredString(value, label).toLowerCase();
   if (!SHA_PATTERN.test(sha)) throw new Error(`[release] ${label} must be a full commit SHA`);
   return sha;
+}
+
+/** @param {unknown} value @param {string} label */
+function requiredBoolean(value, label) {
+  if (typeof value !== 'boolean') throw new Error(`[release] ${label} must be boolean`);
+  return value;
+}
+
+/** @param {unknown} value @param {string} label @param {readonly string[]} allowed */
+function requiredChoice(value, label, allowed) {
+  const selected = requiredString(value, label);
+  if (!allowed.includes(selected)) throw new Error(`[release] ${label} is unsupported`);
+  return selected;
 }
 
 /** @param {unknown} value @param {string} label */
@@ -84,7 +115,7 @@ function flattenArtifacts(value) {
 /**
  * Job evidence admits current-origin accepted flows, not store public availability.
  * @param {unknown} value
- * @param {{ runId: number; workflowSha: string; sourceSha: string; expectedSourceSha?: string; operationId?: string; workflowPath: string; channel: string; requested: boolean; expoAction: string }} identity
+ * @param {{ runId: number; workflowSha: string; sourceSha: string; expectedSourceSha?: string; operationId?: string; workflowPath: string; channel: string; statusArtifactName?: string; requested: boolean; expoAction: string }} identity
  */
 function resolveUiFlowCompletion(value, identity) {
   const completed = { ota: false, nativeIos: false, nativeAndroid: false, apk: false };
@@ -96,26 +127,33 @@ function resolveUiFlowCompletion(value, identity) {
     const entry = asRecord(page, 'resume jobs response');
     return Array.isArray(entry.jobs) ? entry.jobs : [entry];
   }).map((job) => asRecord(job, 'resume job'));
-  /** @param {string} name @param {string[]} stepNames */
-  const accepted = (name, stepNames) => {
-    const matches = jobs.filter((job) => job.name === `deploy_ui / ${name}`);
+  /** @param {string} name @param {string[]} stepNames @param {string} [legacyName] @param {string[]} [legacySteps] */
+  const accepted = (name, stepNames, legacyName = name, legacySteps = stepNames) => {
+    const evidence = identity.statusArtifactName === `happier-release-status-${identity.channel}`
+      ? [{ name: `Release ${identity.channel} channel / deploy_ui / ${name}`, steps: stepNames }]
+      : [{ name: `deploy_ui / ${legacyName}`, steps: legacySteps },
+        { name: `Release single channel / deploy_ui / ${name}`, steps: stepNames }];
+    const matches = jobs.flatMap((job) => evidence.filter((entry) => entry.name === job.name)
+      .map((entry) => ({ job, stepNames: entry.steps })));
     if (matches.length !== 1) return false;
-    const job = matches[0];
+    const { job, stepNames: admittedSteps } = matches[0];
     if (!Number.isSafeInteger(job.id) || Number(job.id) < 1 || job.run_id !== identity.runId || job.head_sha !== identity.workflowSha
       || job.status !== 'completed' || job.conclusion !== 'success' || !Array.isArray(job.steps)) return false;
-    return stepNames.every((stepName) => {
+    return admittedSteps.every((stepName) => {
       const matches = job.steps.filter((step) => step && typeof step === 'object' && step.name === stepName);
       return matches.length === 1 && matches[0].status === 'completed' && matches[0].conclusion === 'success';
     });
   };
-  if (identity.expoAction === 'ota') {
+  if (['ota', 'full'].includes(identity.expoAction)) {
     completed.ota = accepted('promote', ['Publish Android OTA from validated bytes', 'Publish iOS OTA from validated bytes']);
   }
-  if (['native', 'native_submit'].includes(identity.expoAction)) {
+  if (['native', 'native_submit', 'full'].includes(identity.expoAction)) {
     completed.nativeIos = accepted('Mobile native (local runner) / Build (ios)', ['EAS build (local runner) (pipeline)']);
     completed.nativeAndroid = accepted('Mobile native (local runner) / Build (android)', ['EAS build (local runner) (pipeline)']);
-    // The evolved Android pipeline step also owns APK signing/publication.
-    completed.apk = accepted('Mobile APK release (local runner) / Build (android)', ['EAS build (local runner) (pipeline)']);
+    // The historical direct workflow published within its build; current control owns publication separately.
+    completed.apk = accepted('Mobile APK release (local runner) / Sign and publish Android APK',
+      ['Sign and publish APK with trusted control'],
+      'Mobile APK release (local runner) / Build (android)', ['EAS build (local runner) (pipeline)']);
   }
   return completed;
 }
@@ -199,7 +237,7 @@ export async function downloadReleaseResumeArtifact(input) {
  * @param {{
  *   originRun: unknown;
  *   artifacts: unknown;
- *   expected: { repository: string; workflowPath: string; channel: string; sourceSha?: string; operationId?: string };
+ *   expected: { repository: string; workflowPath: string; channel: string; sourceSha?: string; operationId?: string; statusArtifactName?: string };
  * }} input
  */
 export function inspectReleaseResumeOrigin(input) {
@@ -232,11 +270,19 @@ export function inspectReleaseResumeOrigin(input) {
     throw new Error('[release] resume origin URL does not bind the expected repository and run ID');
   }
 
+  const statusArtifactName = input.expected.statusArtifactName === undefined || input.expected.statusArtifactName === ''
+    ? 'happier-release-status' : requiredString(input.expected.statusArtifactName, 'resume status artifact name');
+  if (statusArtifactName !== 'happier-release-status'
+    && (expectedWorkflowPath !== '.github/workflows/release.yml'
+      || !['preview', 'production'].includes(input.expected.channel)
+      || statusArtifactName !== `happier-release-status-${input.expected.channel}`)) {
+    throw new Error('[release] resume status artifact name must match the requested workflow and channel');
+  }
   const matches = flattenArtifacts(input.artifacts)
     .map((entry) => asRecord(entry, 'artifact'))
-    .filter((artifact) => artifact.name === 'happier-release-status');
+    .filter((artifact) => artifact.name === statusArtifactName);
   if (matches.length !== 1) {
-    throw new Error('[release] resume origin must contain exactly one happier-release-status artifact');
+    throw new Error(`[release] resume origin must contain exactly one ${statusArtifactName} artifact`);
   }
   const artifact = matches[0];
   if (artifact.expired !== false) throw new Error('[release] resume status artifact is expired');
@@ -251,7 +297,7 @@ export function inspectReleaseResumeOrigin(input) {
  *   downloadedDigest: string;
  *   status: unknown;
  *   jobs?: unknown;
- *   expected: { repository: string; workflowPath: string; channel: string; sourceSha?: string; operationId?: string };
+ *   expected: { repository: string; workflowPath: string; channel: string; sourceSha?: string; operationId?: string; statusArtifactName?: string };
  * }} input
  */
 export function resolveReleaseResume(input) {
@@ -295,11 +341,48 @@ export function resolveReleaseResume(input) {
   const versions = { cli: '', stack: '', server: '', runner: '', 'ui-web': '' };
   /** @type {Record<'cli' | 'stack' | 'server' | 'runner' | 'ui-web', boolean>} */
   const requested = { cli: false, stack: false, server: false, runner: false, 'ui-web': false };
+  const completed = {
+    cliRolling: false, stackRolling: false, serverRolling: false, runnerRolling: false, uiWebRolling: false,
+    deployUi: false, deployServer: false, deployWebsite: false, deployDocs: false, docker: false, npm: false,
+  };
+  const seenCompletionSurfaces = new Set();
+  let completedNpmAccepted = false;
+  let expandedNpmIntegrityRequested = false;
+  let uiIntentRecorded = false;
+  const resumeInputs = { deployUi: { deployWeb: false, expoAction: 'none', desktopMode: 'none' } };
   let desktopRequested = false;
   let uiExpoAction = '';
   let requestedUiSurfaces = 0;
   for (const [index, rawSurface] of status.surfaces.entries()) {
     const surface = asRecord(rawSurface, `resume status surface ${index}`);
+    const surfaceId = String(surface.id ?? '');
+    const completionKey = RESUMABLE_COMPLETION_SURFACES.get(surfaceId);
+    const verifiedCompletionKey = RESUMABLE_VERIFIED_COMPLETION_SURFACES.get(surfaceId);
+    if (completionKey || verifiedCompletionKey) {
+      if (seenCompletionSurfaces.has(surfaceId)) throw new Error(`[release] duplicate resumable completion surface: ${surfaceId}`);
+      requiredBoolean(surface.requested, `resumable completion surface ${surfaceId} requested`);
+      seenCompletionSurfaces.add(surfaceId);
+    }
+    if (verifiedCompletionKey && surface.requested === true && surface.state === 'complete' && surface.result === 'success') {
+      const identity = asRecord(surface.identity, `completed ${surfaceId} identity`);
+      if (requiredSha(identity.sourceSha, `completed ${surfaceId} source SHA`) !== statusSourceSha) {
+        throw new Error(`[release] completed ${surfaceId} source SHA does not match the release`);
+      }
+      if (identity.verified !== true) throw new Error(`[release] completed ${surfaceId} must carry verified identity evidence`);
+      completed[/** @type {'cliRolling'|'stackRolling'|'serverRolling'|'runnerRolling'|'uiWebRolling'} */ (verifiedCompletionKey)] = true;
+    }
+    if (['npm_plugin_sdk', 'npm_plugin_ui', 'npm_sdk'].includes(surfaceId) && surface.requested === true) {
+      expandedNpmIntegrityRequested = true;
+    }
+    if (completionKey && surface.requested === true && surface.state === 'published' && surface.result === 'accepted') {
+      const identity = asRecord(surface.identity, `completed ${surfaceId} identity`);
+      if (requiredSha(identity.sourceSha, `completed ${surfaceId} source SHA`) !== statusSourceSha) {
+        throw new Error(`[release] completed ${surfaceId} source SHA does not match the release`);
+      }
+      if (identity.verified !== false) throw new Error(`[release] completed ${surfaceId} must carry accepted, non-verified identity evidence`);
+      if (completionKey === 'npm') completedNpmAccepted = true;
+      else completed[/** @type {'deployDocs'|'deployServer'|'deployUi'|'deployWebsite'|'docker'} */ (completionKey)] = true;
+    }
     if (surface.id === 'deploy_ui' && surface.requested === true) {
       const identity = asRecord(surface.identity, 'requested deploy_ui identity');
       if (requiredSha(identity.sourceSha, 'requested deploy_ui source SHA') !== statusSourceSha) {
@@ -307,8 +390,17 @@ export function resolveReleaseResume(input) {
       }
       desktopRequested = true;
       requestedUiSurfaces += 1;
-      uiExpoAction = requestedUiSurfaces === 1 && ['none', 'ota', 'native', 'native_submit'].includes(String(identity.expoAction ?? ''))
+      uiExpoAction = requestedUiSurfaces === 1 && ['none', 'ota', 'native', 'native_submit', 'full'].includes(String(identity.expoAction ?? ''))
         ? String(identity.expoAction) : '';
+      // Historical statuses recorded only Expo action. They cannot restore web/desktop intent.
+      if (Object.hasOwn(identity, 'deployWeb') || Object.hasOwn(identity, 'desktopMode')) {
+        resumeInputs.deployUi = {
+          deployWeb: requiredBoolean(identity.deployWeb, 'requested deploy_ui deployWeb'),
+          expoAction: requiredChoice(identity.expoAction, 'requested deploy_ui expoAction', ['none', 'ota', 'native', 'native_submit', 'full']),
+          desktopMode: requiredChoice(identity.desktopMode, 'requested deploy_ui desktopMode', ['none', 'build_only', 'build_and_publish']),
+        };
+        uiIntentRecorded = true;
+      }
     }
     if (surface.id === 'ui_desktop' && input.expected.workflowPath === '.github/workflows/nightly-dev.yml') {
       const identity = asRecord(surface.identity, 'desktop candidate identity');
@@ -340,15 +432,19 @@ export function resolveReleaseResume(input) {
     if (versions[key]) throw new Error(`[release] duplicate resumable ${product} candidate`);
     versions[key] = requiredString(identity.version, `resumable ${product} version`);
   }
+  completed.npm = completedNpmAccepted && !expandedNpmIntegrityRequested;
   const validated = validateCandidateVersions({ channel: input.expected.channel, versions });
   if (!Object.values(validated.versions).some(Boolean)) {
     throw new Error('[release] resume origin contains no verified immutable candidates to reuse');
   }
-  return { sourceSha: statusSourceSha, versions: validated.versions, requested, uiExpoAction,
+  return { sourceSha: statusSourceSha, versions: validated.versions, requested, completed, uiExpoAction,
+    ...(STANDARD_RELEASE_WORKFLOWS.has(input.expected.workflowPath)
+      ? { requestedDeployUi: desktopRequested, uiIntentRecorded, resumeInputs } : {}),
     uiCompleted: resolveUiFlowCompletion(input.jobs, {
       runId: Number(originRun.id), workflowSha: inspected.workflowSha, sourceSha: statusSourceSha,
       expectedSourceSha: input.expected.sourceSha, operationId: expectedOperationId, workflowPath: input.expected.workflowPath,
-      channel: input.expected.channel, requested: desktopRequested && requestedUiSurfaces === 1, expoAction: uiExpoAction,
+      channel: input.expected.channel, statusArtifactName: input.expected.statusArtifactName,
+      requested: desktopRequested && requestedUiSurfaces === 1, expoAction: uiExpoAction,
     }),
     ...(input.expected.workflowPath === '.github/workflows/nightly-dev.yml' || desktopRequested
       ? { desktop: resolveDesktopArtifacts(input.artifacts, originRun, inspected.workflowSha, input.expected.channel,
@@ -386,6 +482,7 @@ export async function main(argv = process.argv.slice(2)) {
       'expected-channel': { type: 'string' },
       'expected-source-sha': { type: 'string', default: '' },
       'expected-operation-id': { type: 'string', default: '' },
+      'status-artifact-name': { type: 'string', default: 'happier-release-status' },
       'github-output': { type: 'string' },
     },
     allowPositionals: false,
@@ -407,6 +504,7 @@ export async function main(argv = process.argv.slice(2)) {
     channel: String(values['expected-channel'] ?? ''),
     sourceSha: String(values['expected-source-sha'] ?? ''),
     operationId: String(values['expected-operation-id'] ?? ''),
+    statusArtifactName: String(values['status-artifact-name'] ?? ''),
   };
   const outputPath = String(values['github-output'] ?? '');
   if (!outputPath) throw new Error('[release] --github-output is required');
@@ -431,7 +529,6 @@ export async function main(argv = process.argv.slice(2)) {
     });
     await writeOutputs(outputPath, {
       source_sha: resolved.sourceSha,
-      deploy_ui_expo_action: resolved.uiExpoAction,
       ui_ota_complete: resolved.uiCompleted.ota,
       ui_native_ios_complete: resolved.uiCompleted.nativeIos,
       ui_native_android_complete: resolved.uiCompleted.nativeAndroid,
@@ -449,6 +546,22 @@ export async function main(argv = process.argv.slice(2)) {
       server_requested: String(resolved.requested.server),
       runner_requested: String(resolved.requested.runner),
       ui_web_requested: String(resolved.requested['ui-web']),
+      deploy_ui_requested: String(resolved.requestedDeployUi ?? false),
+      deploy_docs_complete: String(resolved.completed.deployDocs),
+      deploy_server_complete: String(resolved.completed.deployServer),
+      deploy_ui_complete: String(resolved.completed.deployUi),
+      deploy_website_complete: String(resolved.completed.deployWebsite),
+      docker_complete: String(resolved.completed.docker),
+      npm_complete: String(resolved.completed.npm),
+      cli_rolling_complete: String(resolved.completed.cliRolling),
+      stack_rolling_complete: String(resolved.completed.stackRolling),
+      server_rolling_complete: String(resolved.completed.serverRolling),
+      runner_rolling_complete: String(resolved.completed.runnerRolling),
+      ui_web_rolling_complete: String(resolved.completed.uiWebRolling),
+      deploy_ui_web_requested: String(resolved.resumeInputs?.deployUi.deployWeb ?? false),
+      deploy_ui_intent_recorded: String(resolved.uiIntentRecorded ?? false),
+      deploy_ui_expo_action: resolved.uiExpoAction,
+      deploy_ui_desktop_mode: resolved.resumeInputs?.deployUi.desktopMode ?? 'none',
     });
     return resolved;
   }

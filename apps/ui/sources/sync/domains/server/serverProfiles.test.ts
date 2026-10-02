@@ -374,6 +374,7 @@ describe('serverProfiles', () => {
                     id: 'personal-home',
                     name: 'Personal Home',
                     serverUrl: 'http://127.0.0.1:3005',
+                    canonicalServerUrl: 'http://127.0.0.1:3005',
                     serverIdentityId: 'srv_personal_home_1',
                     source: 'manual',
                     personalHomeBootstrapCompleted: true,
@@ -385,6 +386,7 @@ describe('serverProfiles', () => {
                     id: 'different-home',
                     name: 'Different Home',
                     serverUrl: 'http://127.0.0.1:3005',
+                    canonicalServerUrl: 'http://127.0.0.1:3005',
                     serverIdentityId: 'srv_different_home_2',
                     source: 'manual',
                     createdAt: 2,
@@ -3314,6 +3316,27 @@ describe('serverProfiles', () => {
         expect(profiles.getServerProfileById('old-profile')?.serverIdentityId).toBe('srv_new_identity');
         expect(profiles.getServerProfileLegacyServerIds('srv_new_identity')).toEqual(
             expect.arrayContaining(['old-profile', 'new-profile']),
+        );
+    });
+
+    it('dedupes conflicting legacy identities before canonical Home URLs while retaining aliases', async () => {
+        const scope = randomScope();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+        const storage = new MMKV({ id: scopedStorageId('server-profiles', scope) });
+        storage.set('server-state-v1', JSON.stringify({
+            activeServerId: 'new-profile',
+            activeServerIdIsExplicit: true,
+            servers: {
+                'old-profile': { id: 'old-profile', name: 'Old', serverUrl: 'https://relay.example.test', serverIdentityId: 'srv_old_identity', personalHomeBootstrapCompleted: true, createdAt: 1, updatedAt: 1, lastUsedAt: 1 },
+                'new-profile': { id: 'new-profile', name: 'New', serverUrl: 'https://relay.example.test/', serverIdentityId: 'srv_new_identity', createdAt: 2, updatedAt: 2, lastUsedAt: 2 },
+            },
+        }));
+        const profiles = await importFresh();
+        expect(profiles.listServerProfiles()).toHaveLength(1);
+        expect(profiles.getServerProfileById('srv_old_identity')?.serverIdentityId).toBe('srv_new_identity');
+        expect(profiles.getServerProfileById('srv_new_identity')).not.toHaveProperty('personalHomeBootstrapCompleted');
+        expect(profiles.getServerProfileLegacyServerIds('srv_new_identity')).toEqual(
+            expect.arrayContaining(['old-profile', 'new-profile', 'srv_old_identity']),
         );
     });
 

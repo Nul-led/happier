@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES } from '@/agents/registry/generatedBundledPluginEntries';
+
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
     return createTextModuleMock({
@@ -210,7 +212,7 @@ describe('resolveExecutionRunLauncherBackendChoices', () => {
                     iconAgentId: null,
                 },
             },
-        } as any);
+        });
 
         expect(choices).toContainEqual(expect.objectContaining({
             backendTarget: {

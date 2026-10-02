@@ -36,7 +36,9 @@ export function readSessionModelSelectionV2FromMetadata(metadata: unknown): Sess
 /**
  * Returns model selection only when the Protocol owner proves it against the
  * exact current physical runner and, for Provider-bound selections, the exact
- * applied binding. Persisted intent and fallback catalogs are excluded.
+ * applied binding. The caller supplies the catalog-resolved Agent id because
+ * target keys intentionally do not resolve arbitrary host catalog identities.
+ * Persisted intent and fallback catalogs are excluded.
  */
 export function readActiveSessionModelSelectionFromMetadata(
   metadata: unknown,

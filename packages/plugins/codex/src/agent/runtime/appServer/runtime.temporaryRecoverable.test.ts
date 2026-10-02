@@ -678,7 +678,7 @@ async function waitForRequestCount(method: string, expectedCount: number): Promi
   for (let index = 0; index < 20; index += 1) {
     const count = clientState.requests.filter((request) => request.method === method).length;
     if (count >= expectedCount) return;
-    await Promise.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
   throw new Error(`Expected ${expectedCount} ${method} requests`);
 }

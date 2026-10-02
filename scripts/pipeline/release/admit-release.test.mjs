@@ -6,20 +6,63 @@ import {
   admitPublicSdkPublication,
   admitPublicSdkRelease,
   admitRelease,
+  admitReleaseFromEnvironment,
   publicSdkReleaseApprovalRequired,
 } from './admit-release.mjs';
 
 const base = {
   checksProfile: 'fast',
   environment: 'preview',
+  plannedSourceSha: 'a'.repeat(40),
+  validatedSourceSha: 'a'.repeat(40),
+  ciResult: 'success',
   publishServerRuntimeNeeded: true,
   publishCliBinariesNeeded: true,
+  publishStack: false,
+  sourceChecksWaived: false,
   risks: { mysqlContract: false, platformServices: false, trustRoots: false },
   gates: { mysql: 'skipped', platform: 'skipped', trustRoots: 'skipped', mutagenEngine: 'success' },
 };
 
+test('requires source validation for the exact planned SHA', () => {
+  assert.throws(() => admitRelease({
+    ...base,
+    validatedSourceSha: 'b'.repeat(40),
+  }), /validated source SHA.*planned source SHA/i);
+  assert.throws(() => admitRelease({
+    ...base,
+    ciResult: 'failure',
+  }), /successful exact-SHA CI evidence/i);
+  assert.deepEqual(admitRelease({
+    ...base,
+    sourceChecksWaived: true,
+    ciResult: 'skipped',
+  }), { admitted: true });
+});
+
 test('admits a preview when no heavy risk gate applies', () => {
   assert.deepEqual(admitRelease(base), { admitted: true });
+});
+
+test('Runner-only publication consumes the same selected platform gate as source validation', () => {
+  assert.throws(() => admitReleaseFromEnvironment({
+    CHECKS_PROFILE: 'fast', DEPLOY_ENVIRONMENT: 'preview',
+    PLANNED_SOURCE_SHA: base.plannedSourceSha, VALIDATED_SOURCE_SHA: base.validatedSourceSha,
+    CI_GATE_RESULT: 'success', MUTAGEN_ENGINE_GATE_RESULT: 'success',
+    PUBLISH_RUNNER_BINARIES_NEEDED: 'true', RISK_PLATFORM_SERVICES: 'true', PLATFORM_GATE_RESULT: 'skipped',
+  }), /platform gates/);
+});
+
+test('dry-run planning does not require publication evidence that it will not consume', () => {
+  assert.deepEqual(admitRelease({
+    ...base,
+    dryRun: true,
+    plannedSourceSha: 'a'.repeat(40),
+    validatedSourceSha: '',
+    ciResult: 'skipped',
+    risks: { mysqlContract: true, platformServices: true, trustRoots: true },
+    gates: { mysql: 'skipped', platform: 'skipped', trustRoots: 'skipped' },
+  }), { admitted: true });
 });
 
 test('requires full checks for production and successful selected risk gates', () => {
@@ -41,6 +84,29 @@ test('requires full checks for production and successful selected risk gates', (
   assert.throws(() => admitRelease({
     ...base,
     gates: { mysql: 'skipped', platform: 'skipped', trustRoots: 'skipped' },
+  }), /Mutagen engine release gate/);
+});
+
+test('explicit source-CI waiver skips only source-only gates and retains trust-root validation', () => {
+  assert.deepEqual(admitRelease({
+    ...base,
+    sourceChecksWaived: true,
+    publishStack: true,
+    risks: { mysqlContract: true, platformServices: true, trustRoots: false },
+    gates: { ...base.gates, mysql: 'skipped', platform: 'skipped', trustRoots: 'skipped' },
+  }), { admitted: true });
+
+  assert.throws(() => admitRelease({
+    ...base,
+    sourceChecksWaived: true,
+    risks: { mysqlContract: true, platformServices: true, trustRoots: true },
+    gates: { ...base.gates, mysql: 'skipped', platform: 'skipped', trustRoots: 'skipped' },
+  }), /trust validation/);
+  assert.throws(() => admitRelease({
+    ...base,
+    sourceChecksWaived: true,
+    ciResult: 'skipped',
+    gates: { ...base.gates, mutagenEngine: 'skipped' },
   }), /Mutagen engine release gate/);
 });
 

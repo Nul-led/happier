@@ -36,18 +36,19 @@ function flattenStyle(style: unknown): Record<string, unknown> {
     if (typeof style === 'function') {
         return flattenStyle(style({ pressed: false, hovered: false, focused: false }));
     }
-    if (!Array.isArray(style)) {
-        return (style ?? {}) as Record<string, unknown>;
+    if (Array.isArray(style)) {
+        return style.reduce<Record<string, unknown>>((acc, entry) => ({
+            ...acc,
+            ...flattenStyle(entry),
+        }), {});
     }
-
-    return style.reduce<Record<string, unknown>>((acc, entry) => ({
-        ...acc,
-        ...(entry ?? {}),
-    }), {});
+    return style !== null && typeof style === 'object'
+        ? style as Record<string, unknown>
+        : {};
 }
 
 function requireTab(screen: RenderedScreen, testID: string) {
-    const tab = screen.findByTestId(testID);
+    const tab = screen.findHostByTestId(testID);
     expect(tab).toBeTruthy();
     return tab!;
 }

@@ -76,6 +76,7 @@ env:
 
 jobs:
   trusted_ref_guard:
+    timeout-minutes: 240
     name: Trusted workflow ref guard
     permissions:
       contents: read
@@ -98,6 +99,7 @@ jobs:
           esac
 
   release_actor_guard:
+    timeout-minutes: 240
     needs: [trusted_ref_guard]
     name: Release actor guard
     permissions:
@@ -118,6 +120,7 @@ jobs:
           private_key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
 
   prepare_ota:
+    timeout-minutes: 240
     name: Prepare exact dev OTA bytes without credentials
     needs: [release_actor_guard]
     if: inputs.publish_ota
@@ -146,7 +149,7 @@ jobs:
           node-version: 22.x
           cache: yarn
           cache-dependency-path: yarn.lock
-      - name: Enable Corepack (Yarn)
+      - name: Enable Corepack Yarn
         run: |
           set -euo pipefail
           corepack enable
@@ -188,6 +191,7 @@ jobs:
           retention-days: 1
 
   publish_ota:
+    timeout-minutes: 240
     name: Publish prepared dev OTA bytes from trusted control
     needs: [release_actor_guard, prepare_ota]
     if: inputs.publish_ota
@@ -209,7 +213,7 @@ jobs:
           node-version: 22.x
           cache: yarn
           cache-dependency-path: yarn.lock
-      - name: Enable Corepack (Yarn)
+      - name: Enable Corepack Yarn
         run: |
           set -euo pipefail
           corepack enable
@@ -252,6 +256,7 @@ jobs:
             --message "$RELEASE_MESSAGE" --eas-cli-version "$EAS_CLI_VERSION"
 
   publish:
+    timeout-minutes: 240
     needs: [release_actor_guard]
     runs-on: ubuntu-latest
     environment: release-shared
@@ -281,7 +286,7 @@ jobs:
           cache: yarn
           cache-dependency-path: yarn.lock
 
-      - name: Enable Corepack (Yarn)
+      - name: Enable Corepack Yarn
         run: |
           set -euo pipefail
           corepack enable
@@ -364,6 +369,7 @@ jobs:
           echo "Triggered UI mobile dev lane: OTA + Android APK rolling release + optional TestFlight submit." >> "$GITHUB_STEP_SUMMARY"
 
   ios_cloud:
+    timeout-minutes: 240
     name: iOS TestFlight submit (dev lane) (cloud, best-effort)
     needs: [release_actor_guard]
     if: inputs.submit_ios_testflight && inputs.eas_builder == 'eas_cloud'
@@ -427,7 +433,7 @@ jobs:
             --preflight-only \
             --secrets-source env
 
-      - name: Enable Corepack (Yarn)
+      - name: Enable Corepack Yarn
         run: |
           set -euo pipefail
           corepack enable
@@ -481,6 +487,7 @@ jobs:
             --build-json "/tmp/eas_build.ios.json"
 
   ios_local:
+    timeout-minutes: 240
     name: iOS TestFlight submit (dev lane) (local, best-effort)
     needs: [release_actor_guard]
     if: inputs.submit_ios_testflight && inputs.eas_builder == 'eas_local'
@@ -544,7 +551,7 @@ jobs:
             --preflight-only \
             --secrets-source env
 
-      - name: Enable Corepack (Yarn)
+      - name: Enable Corepack Yarn
         run: |
           set -euo pipefail
           corepack enable

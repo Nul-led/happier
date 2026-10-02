@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -85,6 +86,39 @@ const ROOT_SCRIPTS = {
 const LANE_CONTEXT: TestLaneContext = buildTestLaneContext({
   workspaceManifests: workspaceManifests(REPOSITORY_WORKSPACE_DIRECTORIES),
   rootScripts: ROOT_SCRIPTS,
+});
+
+test('projects newly selected shared workspaces through the real root runner', () => {
+  const rootScripts = JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')).scripts;
+  const context = buildTestLaneContext({
+    rootScripts,
+    workspaceManifests: workspaceManifests([
+      { directory: 'packages/peer-transport', name: '@happier-dev/peer-transport' },
+      { directory: 'packages/session-core', name: '@happier-dev/session-core' },
+    ]),
+  });
+
+  assert.equal(classifyTestFile(context, 'packages/peer-transport/src/transport.test.ts'), 'test');
+  assert.equal(classifyTestFile(context, 'packages/session-core/src/session.test.ts'), 'test');
+});
+
+test('credits only the test-harness script selected by the canonical shared runner', () => {
+  const context = buildTestLaneContext({
+    rootScripts: { test: 'node --experimental-strip-types scripts/testing/runSharedPackageTests.ts' },
+    workspaceManifests: workspaceManifests([
+      {
+        directory: 'packages/tests',
+        name: '@happier-dev/tests',
+        scripts: {
+          test: 'node --test scripts/main.test.mjs',
+          'test:scripts:self': 'node --test scripts/runner.test.mjs',
+        },
+      },
+    ]),
+  });
+
+  assert.equal(classifyTestFile(context, 'packages/tests/scripts/runner.test.mjs'), 'test');
+  assert.equal(classifyTestFile(context, 'packages/tests/scripts/main.test.mjs'), null);
 });
 
 test('classifies representative lane paths', () => {

@@ -554,6 +554,7 @@ test('buildCliBinaryArtifactPayload compiles and finalizes a self-contained runt
       payloadDir,
       target,
       cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, target),
+      processCustodyRuntimeExecutablePath: writeProcessCustodyRuntimeFixture(repoRoot, target),
       commandProbe: () => true,
       runCommand: (cmd, args) => {
         materializeProcessCustodyRuntimeFromGoBuild(cmd, args);
@@ -680,6 +681,7 @@ test('buildCliBinaryArtifactPayload compiles and finalizes a self-contained runt
             payloadDir,
             target,
             cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, target),
+            processCustodyRuntimeExecutablePath: writeProcessCustodyRuntimeFixture(repoRoot, target),
             commandProbe: () => true,
             runCommand: (cmd, args) => materializeProcessCustodyRuntimeFromGoBuild(cmd, args),
             compileBinary: async ({ outfile }) => {
@@ -800,11 +802,13 @@ test('buildCliBinaryArtifactPayload removes compile-generated node_modules befor
     materializeFixtureCliWorkspaceRuntime({ repoRoot, cliDistDir });
 
     const artifacts = await import('../dist/componentArtifacts/index.js');
+    const target = resolveHostCliBinaryTarget(artifacts);
     await artifacts.buildCliBinaryArtifactPayload({
       repoRoot,
       payloadDir,
-      target: resolveHostCliBinaryTarget(artifacts),
-      cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, resolveHostCliBinaryTarget(artifacts)),
+      target,
+      cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, target),
+      processCustodyRuntimeExecutablePath: writeProcessCustodyRuntimeFixture(repoRoot, target),
       commandProbe: () => true,
       runCommand: (cmd, args) => {
         materializeProcessCustodyRuntimeFromGoBuild(cmd, args);
@@ -914,11 +918,13 @@ test('buildCliBinaryArtifactPayload snapshots CLI dist before compile/copy so la
     rmSync(join(cliDistDir, 'index.mjs'));
 
     const artifacts = await import('../dist/componentArtifacts/index.js');
+    const target = resolveHostCliBinaryTarget(artifacts);
     await artifacts.buildCliBinaryArtifactPayload({
       repoRoot,
       payloadDir,
-      target: resolveHostCliBinaryTarget(artifacts),
-      cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, resolveHostCliBinaryTarget(artifacts)),
+      target,
+      cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, target),
+      processCustodyRuntimeExecutablePath: writeProcessCustodyRuntimeFixture(repoRoot, target),
       commandProbe: () => true,
       runCommand: async (cmd, args) => {
         materializeProcessCustodyRuntimeFromGoBuild(cmd, args);
@@ -1000,11 +1006,13 @@ test('buildCliBinaryArtifactPayload derives bundled workspace packages from apps
     materializeFixtureCliWorkspaceRuntime({ repoRoot, cliDistDir });
 
     const artifacts = await import('../dist/componentArtifacts/index.js');
+    const target = resolveHostCliBinaryTarget(artifacts);
     await artifacts.buildCliBinaryArtifactPayload({
       repoRoot,
       payloadDir,
-      target: resolveHostCliBinaryTarget(artifacts),
-      cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, resolveHostCliBinaryTarget(artifacts)),
+      target,
+      cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, target),
+      processCustodyRuntimeExecutablePath: writeProcessCustodyRuntimeFixture(repoRoot, target),
       commandProbe: () => true,
       runCommand: (cmd, args) => {
         materializeProcessCustodyRuntimeFromGoBuild(cmd, args);
@@ -1083,11 +1091,13 @@ test('buildCliBinaryArtifactPayload restores runtime sidecars after compile rewr
     materializeFixtureCliWorkspaceRuntime({ repoRoot, cliDistDir });
 
     const artifacts = await import('../dist/componentArtifacts/index.js');
+    const target = resolveHostCliBinaryTarget(artifacts);
     await artifacts.buildCliBinaryArtifactPayload({
       repoRoot,
       payloadDir,
-      target: resolveHostCliBinaryTarget(artifacts),
-      cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, resolveHostCliBinaryTarget(artifacts)),
+      target,
+      cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, target),
+      processCustodyRuntimeExecutablePath: writeProcessCustodyRuntimeFixture(repoRoot, target),
       commandProbe: () => true,
       runCommand: (cmd, args) => {
         materializeProcessCustodyRuntimeFromGoBuild(cmd, args);
@@ -1187,6 +1197,7 @@ test('buildCliBinaryArtifactPayload stages embeddings runtime packages and exter
       payloadDir,
       target,
       cliProxyApiManagedRuntimeExecutablePath: writeCliProxyApiManagedRuntimeFixture(repoRoot, target),
+      processCustodyRuntimeExecutablePath: writeProcessCustodyRuntimeFixture(repoRoot, target),
       commandProbe: () => true,
       runCommand: (cmd, args) => {
         materializeProcessCustodyRuntimeFromGoBuild(cmd, args);

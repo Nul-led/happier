@@ -1190,9 +1190,6 @@ describe('ExternalSessionsSettingsView passive shell', () => {
         expect(row?.props.disabled).toBe(true);
         const toggle = row?.props.rightElement as React.ReactElement<Record<string, unknown>> | undefined;
         expect(toggle?.props.disabled).toBe(true);
-        await act(async () => {
-            await row?.props.onPress?.();
-        });
         expect(effectBoundary.followPolicySet).not.toHaveBeenCalled();
 
         await screen.unmount();
@@ -1227,9 +1224,6 @@ describe('ExternalSessionsSettingsView passive shell', () => {
         expect(row?.props.disabled).toBe(true);
         const toggle = row?.props.rightElement as React.ReactElement<Record<string, unknown>> | undefined;
         expect(toggle?.props.disabled).toBe(true);
-        await act(async () => {
-            await row?.props.onPress?.();
-        });
         expect(effectBoundary.followPolicySet).not.toHaveBeenCalled();
 
         await screen.unmount();

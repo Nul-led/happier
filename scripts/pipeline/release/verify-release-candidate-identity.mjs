@@ -4,6 +4,9 @@
 
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
+import { readFile } from 'node:fs/promises';
+import { verifyReleaseArtifactBytes } from '@happier-dev/release-runtime/releaseArtifactVerification';
+import { parseReleaseManifestV1 } from '@happier-dev/release-runtime/releaseManifest';
 
 import {
   parseWorkflowRunPath,
@@ -17,6 +20,7 @@ import { normalizePublicReleaseChannel } from './lib/public-release-rings.mjs';
 
 /** @type {readonly ('cli' | 'stack' | 'server' | 'runner' | 'ui-web')[]} */
 const CANDIDATE_VERSION_PRODUCTS = ['cli', 'stack', 'server', 'runner', 'ui-web'];
+const ORCHESTRATOR_WORKFLOW_PATHS = ['.github/workflows/release.yml', '.github/workflows/nightly-dev.yml'];
 
 const IMMUTABLE_TAG_PREFIX = Object.freeze({
   cli: 'cli-v',
@@ -273,6 +277,7 @@ export function validateRunIdentityEvidence(input) {
  *   currentRunId: number;
  *   label: 'build' | 'publication';
  *   expectedWorkflowPaths: string[];
+ *   retainedCandidate?: { product: string; version: string; sourceSha: string };
  * }} expected
  */
 export function validateActionsRun(run, expected) {
@@ -296,7 +301,8 @@ export function validateActionsRun(run, expected) {
     if (record.status !== 'in_progress' && !isSuccessfulCompleted) {
       throw new Error(`[release] current ${expected.label} workflow run is not active or successful`);
     }
-  } else if (!isSuccessfulCompleted) {
+  } else if (!isSuccessfulCompleted && !(record.status === 'completed'
+    && expected.retainedCandidate && ORCHESTRATOR_WORKFLOW_PATHS.includes(workflowPath))) {
     throw new Error(`[release] ${expected.label} workflow run is not a successful completed run`);
   }
 }
@@ -431,6 +437,38 @@ async function readRollingManifest(baseUrl, repository, tag, token) {
   return githubJson(downloadUrl, token);
 }
 
+/** Fetch adapters leave the signature and checksum decision to the shared release trust owner.
+ * @param {string} baseUrl @param {string} repository @param {string} tag
+ * @param {string} token @param {string} product @param {string} version @param {string} publicKey
+ */
+async function readAuthenticatedManifest(baseUrl, repository, tag, token, product, version, publicKey) {
+  const release = asRecord(await githubJson(`${baseUrl}/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`, token));
+  const assets = Array.isArray(release.assets) ? release.assets.map(asRecord) : [];
+  /** @param {string} name */
+  const readAsset = async (name) => {
+    const matching = assets.filter((asset) => asset.name === name);
+    if (matching.length !== 1 || !matching[0].browser_download_url) {
+      throw new Error(`[release] ${tag} must publish exactly one ${name}`);
+    }
+    const response = await fetch(String(matching[0].browser_download_url), {
+      signal: AbortSignal.timeout(30_000), headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error(`[release] candidate asset lookup failed (${response.status})`);
+    return Buffer.from(await response.arrayBuffer());
+  };
+  const checksumName = `checksums-${product}-v${version}.txt`;
+  const [bytes, checksums, signature] = await Promise.all([
+    readAsset('latest.json'), readAsset(checksumName), readAsset(`${checksumName}.minisig`),
+  ]);
+  const verified = verifyReleaseArtifactBytes({
+    artifactName: 'latest.json', artifactBytes: bytes,
+    checksumsText: checksums.toString('utf8'), checksumsSignatureFile: signature.toString('utf8'),
+    minisignPublicKeyFile: publicKey,
+  });
+  if (!verified.ok) throw new Error(`[release] retained manifest authentication failed: ${verified.reason}`);
+  return { bytes, manifest: parseReleaseManifestV1(JSON.parse(bytes.toString('utf8'))) };
+}
+
 /** @param {string[]} [argv] */
 export async function main(argv = process.argv.slice(2)) {
   const { values } = parseArgs({
@@ -444,6 +482,11 @@ export async function main(argv = process.argv.slice(2)) {
       'candidate-server-version': { type: 'string', default: '' },
       'candidate-runner-version': { type: 'string', default: '' },
       'candidate-ui-web-version': { type: 'string', default: '' },
+      'retained-cli-version': { type: 'string', default: '' },
+      'retained-stack-version': { type: 'string', default: '' },
+      'retained-server-version': { type: 'string', default: '' },
+      'retained-runner-version': { type: 'string', default: '' },
+      'public-key': { type: 'string', default: '' },
       'candidate-product': { type: 'string', default: '' },
       'candidate-version': { type: 'string', default: '' },
       'candidate-build-run-id': { type: 'string' },
@@ -570,10 +613,11 @@ export async function main(argv = process.argv.slice(2)) {
   const token = String(process.env.GITHUB_TOKEN ?? '').trim();
   if (!token) throw new Error('[release] GITHUB_TOKEN is required');
   const baseUrl = String(values['api-base-url'] ?? '').replace(/\/+$/u, '');
-  const orchestratorWorkflowPaths = [
-    '.github/workflows/release.yml',
-    '.github/workflows/nightly-dev.yml',
-  ];
+  const retained = validateCandidateVersions({ channel: String(values.channel ?? ''), versions: {
+    cli: values['retained-cli-version'], stack: values['retained-stack-version'],
+    server: values['retained-server-version'], runner: values['retained-runner-version'],
+  } }).versions;
+  const orchestratorWorkflowPaths = ORCHESTRATOR_WORKFLOW_PATHS;
   const expectedWorkflowPaths = {
     build: [
       ...orchestratorWorkflowPaths,
@@ -620,7 +664,7 @@ export async function main(argv = process.argv.slice(2)) {
     });
   }
   const cliManifest = input.manifests.find(isCliManifestSpec);
-  if (cliManifest) {
+  if (cliManifest && !retained.cli) {
     const cliRun = await readActionsRun(input.cliCandidateBuildRunId);
     const { workflowPath } = parseWorkflowRunPath(asRecord(cliRun).path);
     if (
@@ -658,6 +702,51 @@ export async function main(argv = process.argv.slice(2)) {
     resolved,
   });
   for (const manifest of input.manifests) {
+    const retainedProduct = /** @type {'cli'|'stack'|'server'|'runner'|undefined} */ (
+      CANDIDATE_VERSION_PRODUCTS.find((product) => product !== 'ui-web' && MANIFEST_PRODUCT[product] === manifest.product)
+    );
+    const retainedVersion = retainedProduct ? retained[retainedProduct] : '';
+    if (retainedProduct && retainedVersion) {
+      const immutableTag = `${IMMUTABLE_TAG_PREFIX[retainedProduct]}${retainedVersion}`;
+      const immutableSha = await resolveGitRef(baseUrl, input.repository, `tags/${immutableTag}`, token);
+      validateResolvedCandidateIdentities({ candidateSourceSha: input.candidateSourceSha,
+        resolved: [{ kind: 'tag', name: immutableTag, sha: immutableSha }] });
+      const publicKey = await readFile(values['public-key'] || new URL('../../release/installers/happier-release.pub', import.meta.url), 'utf8');
+      const immutable = await readAuthenticatedManifest(baseUrl, input.repository, immutableTag, token,
+        manifest.product, retainedVersion, publicKey);
+      const rolling = await readAuthenticatedManifest(baseUrl, input.repository, manifest.tag, token,
+        manifest.product, retainedVersion, publicKey);
+      if (!rolling.bytes.equals(immutable.bytes)) {
+        throw new Error('[release] rolling manifest does not match the authenticated retained immutable candidate');
+      }
+      const records = immutable.manifest.records;
+      if (records.length === 0 || immutable.manifest.version !== retainedVersion) {
+        throw new Error('[release] retained manifest version does not match the admitted immutable candidate');
+      }
+      const buildRunId = parseRunId(String(records[0].build.workflowRunId ?? ''), 'retained build');
+      const publicationRunId = parseRunId(String(records[0].publication.workflowRunId ?? ''), 'retained publication');
+      validateCandidateManifest(immutable.manifest, { product: manifest.product, channel: manifest.channel,
+        candidateSourceSha: input.candidateSourceSha, candidateBuildRunId: buildRunId, publicationRunId });
+      for (const [label, runId] of /** @type {const} */ ([['build', buildRunId], ['publication', publicationRunId]])) {
+        const run = asRecord(await readActionsRun(runId));
+        const { workflowPath } = parseWorkflowRunPath(run.path);
+        // A signed exact-product candidate may survive a failed aggregate release.
+        // Dedicated external CLI candidate admission remains success-only.
+        if (label === 'build' && retainedProduct === 'cli' && workflowPath === '.github/workflows/publish-cli-binaries.yml') {
+          validateCandidateRun(run, { repository: input.repository, runId,
+            expectedWorkflowPath: workflowPath, expectedHeadSha: input.candidateSourceSha,
+            expectedChannel: /** @type {'dev'|'preview'|'stable'} */ (manifest.channel) });
+        } else {
+          if (run.status !== 'completed') throw new Error('[release] retained workflow run must be completed');
+          validateActionsRun(run, {
+            repository: input.repository, runId, currentRunId: input.currentRunId, label,
+            expectedWorkflowPaths: expectedWorkflowPaths[label],
+            retainedCandidate: { product: manifest.product, version: retainedVersion, sourceSha: input.candidateSourceSha },
+          });
+        }
+      }
+      continue;
+    }
     validateCandidateManifest(
       await readRollingManifest(baseUrl, input.repository, manifest.tag, token),
       {

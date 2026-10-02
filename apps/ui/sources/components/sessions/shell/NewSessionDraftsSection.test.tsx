@@ -275,8 +275,17 @@ function draft(
                 kind: 'newSession',
                 authoring: {
                     directory: { mutationId: 'm-dir', value: '/Users/alice/private-project' },
-                    machineId: { mutationId: 'm-machine', value: 'machine-a' },
-                    agentId: { mutationId: 'm-agent', value: 'codex' },
+                    executionTarget: {
+                        mutationId: 'm-machine',
+                        value: { serverId: 'server-a', machineId: 'machine-a' },
+                    },
+                    agentTarget: {
+                        mutationId: 'm-agent',
+                        value: {
+                            kind: 'agent',
+                            identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+                        },
+                    },
                 },
             },
             extensions: {},
@@ -717,6 +726,34 @@ describe('NewSessionDraftsSection', () => {
     it('uses the first nonblank prompt line instead of treating leading whitespace as an empty prompt', () => {
         const withLeadingBlankLine = draft({}, '\n  Keep the second line  \nthird');
         expect(buildNewSessionDraftRowPresentation(withLeadingBlankLine).title).toBe('Keep the second line');
+    });
+
+    it('projects installed Agent identities from the canonical authoring target', () => {
+        const projection = draft();
+        if (projection.document.target.kind !== 'newSession') {
+            throw new Error('expected a new-session draft');
+        }
+        const installedProjection: NewSessionDraftProjection = {
+            ...projection,
+            document: {
+                ...projection.document,
+                target: {
+                    ...projection.document.target,
+                    authoring: {
+                        ...projection.document.target.authoring,
+                        agentTarget: {
+                            mutationId: 'm-agent',
+                            value: {
+                                kind: 'agent',
+                                identity: { pluginId: 'acme.agent.review', localId: 'review' },
+                            },
+                        },
+                    },
+                },
+            },
+        };
+
+        expect(resolveNewSessionDraftAgentId(installedProjection)).toBe('acme.agent.review/review');
     });
 
     it('does not infer a user-facing interrupted state from local launch-attempt metadata', () => {

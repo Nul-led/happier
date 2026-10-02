@@ -31,6 +31,7 @@ const MAIN_VIEW_PATH = join(
 const ALLOWED_SETTINGS_STACK_SCREEN_FILES = new Set([
     'app/(app)/settings/_layout.tsx',
     'components/settings/actions/ActionSettingsDetailView.tsx',
+    'components/settings/plugins/PluginSettingsPageScreen.tsx',
 ]);
 
 /** Chrome read from the registry: stack screen definitions, or the active route's registered title. */

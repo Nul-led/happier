@@ -395,7 +395,7 @@ vi.mock('@/sync/domains/actions/buildActionDraftInput', () => ({
 
 vi.mock('@/utils/system/fireAndForget', () => ({
   fireAndForget: (promise: Promise<unknown>, _opts?: unknown) => {
-    fireAndForgetMock(promise);
+    fireAndForgetMock(promise, _opts);
   },
 }));
 
@@ -1338,12 +1338,12 @@ describe('SessionHeaderActionMenu handoff', () => {
         sessionId: 'sess_1',
         executionSurface: 'ui',
       },
+      onIssued: expect.any(Function),
       signal: undefined,
       timeoutMs: undefined,
       // The canonical transport (`machinePluginStructuredMessageActionExecute`)
       // observes issuance so an ambiguous settlement is not reported as a clean
       // failure.
-      onIssued: expect.any(Function),
     };
     // A header descriptor carries no Action input, and the canonical transport
     // omits the field entirely rather than transporting an explicit `null`
@@ -2525,7 +2525,7 @@ describe('SessionHeaderActionMenu handoff', () => {
     );
   });
 
-  it('adds a teleport action for session menus when a daemon voice agent conversation already exists', async () => {
+  it('does not infer a global voice conversation from a local binding alone', async () => {
     voiceSettingState.current = {
       providerId: 'local_conversation',
       ui: { scopeDefault: 'global', surfaceLocation: 'auto', activityFeedEnabled: false },
@@ -2586,22 +2586,8 @@ describe('SessionHeaderActionMenu handoff', () => {
         />);
 
     const dropdown = screen.findByType('DropdownMenu' as any);
-    expect(dropdown.props.items).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: 'voice.teleport',
-          title: 'voiceSurface.a11y.teleport',
-        }),
-      ]),
-    );
-
-    teleportVoiceAgentToSessionRootMock.mockResolvedValue({ ok: true });
-    await act(async () => {
-      dropdown.props.onSelect('voice.teleport');
-    });
-    await flushHookEffects({ cycles: 1 });
-
-    expect(teleportVoiceAgentToSessionRootMock).toHaveBeenCalledWith({ sessionId: 'sess_1' });
+    expect(dropdown.props.items.find((item: { id: string }) => item.id === 'voice.teleport')).toBeUndefined();
+    expect(teleportVoiceAgentToSessionRootMock).not.toHaveBeenCalled();
   });
 
   it('adds a teleport action when the global daemon voice conversation exists only in shared session state', async () => {
@@ -2692,7 +2678,6 @@ describe('SessionHeaderActionMenu handoff', () => {
         },
       } as any,
     };
-
     const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
 
     const screen = await renderScreen(<SessionHeaderActionMenu
@@ -2786,8 +2771,21 @@ describe('SessionHeaderActionMenu handoff', () => {
         },
       } as any,
     };
+    machineRpcWithServerScopeMock.mockImplementation(async (request: { method?: string }) => {
+      if (request.method === RPC_METHODS.DAEMON_EXTERNAL_SESSION_BACKGROUND_FOLLOW_SET) {
+        return {
+          ok: true,
+          enabled: false,
+          leaseActive: false,
+          updatedAtMs: 2,
+        };
+      }
+      throw new Error('unreachable');
+    });
 
     const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
+    const { registerStorageStateReader } = await import('@/sync/domains/state/storageStateReaderBridge');
+    registerStorageStateReader(() => storageState.current as any);
 
     const screen = await renderScreen(<SessionHeaderActionMenu
           sessionId="s1"
@@ -2817,10 +2815,8 @@ describe('SessionHeaderActionMenu handoff', () => {
       const pending = fireAndForgetMock.mock.calls.at(-1)?.[0] as Promise<unknown> | undefined;
       await pending;
     });
-    await flushHookEffects({ cycles: 1 });
 
     expect(patchSessionMetadataWithRetryMock).not.toHaveBeenCalled();
-    expect(applySessionMetadataLocallyMock).toHaveBeenCalledWith('s1', expect.any(Function));
     expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
       machineId: 'machine-1',
       serverId: 'server_a',
@@ -2832,6 +2828,8 @@ describe('SessionHeaderActionMenu handoff', () => {
         enabled: false,
       }),
     }));
+    expect(modalAlertMock).not.toHaveBeenCalled();
+    expect(applySessionMetadataLocallyMock).toHaveBeenCalledWith('s1', expect.any(Function));
     expect((storageState.current.sessions.s1 as any).metadata.externalSessionV1.followPolicyV1).toEqual({
       v: 1,
       policy: 'attached_only',
@@ -2873,6 +2871,8 @@ describe('SessionHeaderActionMenu handoff', () => {
     };
 
     const { SessionHeaderActionMenu } = await import('./SessionHeaderActionMenu');
+    const { registerStorageStateReader } = await import('@/sync/domains/state/storageStateReaderBridge');
+    registerStorageStateReader(() => storageState.current as any);
 
     const screen = await renderScreen(<SessionHeaderActionMenu
           sessionId="s1"

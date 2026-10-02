@@ -208,6 +208,45 @@ describe('readActiveSessionModelSelectionFromMetadata', () => {
     });
   });
 
+  it('uses the caller-resolved Agent id for a canonical bundled target key and refuses mismatches', () => {
+    const agentTargetKey = 'agent:happier.agent.claude/claude';
+    const metadata = {
+      ...exactNativeMetadata,
+      sessionModelsV1: {
+        ...exactNativeMetadata.sessionModelsV1,
+        agentId: 'claude',
+        activeSelectionV1: {
+          ...exactNativeMetadata.sessionModelsV1.activeSelectionV1,
+          selection: {
+            ...exactNativeMetadata.sessionModelsV1.activeSelectionV1.selection,
+            agentTargetKey,
+          },
+        },
+      },
+    };
+    const currentRunnerProcessIdentity = {
+      pid: 123,
+      processStartTimeMs: 1_000,
+    };
+
+    expect(readActiveSessionModelSelectionFromMetadata(
+      metadata,
+      'claude',
+      agentTargetKey,
+      currentRunnerProcessIdentity,
+    )).toEqual({
+      agentTargetKey,
+      providerConnectionId: null,
+      modelId: 'active-native-model',
+    });
+    expect(readActiveSessionModelSelectionFromMetadata(
+      metadata,
+      'codex',
+      agentTargetKey,
+      currentRunnerProcessIdentity,
+    )).toBeNull();
+  });
+
   it('does not promote catalog fallback state or pending intent into active proof', () => {
     expect(readActiveSessionModelSelectionFromMetadata({
       sessionModelsV1: {

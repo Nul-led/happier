@@ -15,7 +15,7 @@ describe('agents/enabled', () => {
     });
 
     it('enables all agents by default when no explicit backend map is provided', () => {
-        const allAgents = ['claude', 'codex', 'opencode', 'antigravity', 'gemini', 'auggie', 'qwen', 'kimi', 'kilo', 'kiro', 'pi', 'ohMyPi', 'copilot'] as const;
+        const allAgents = ['claude', 'codex', 'opencode', 'antigravity', 'gemini', 'grok', 'auggie', 'qwen', 'kimi', 'kilo', 'kiro', 'cursor', 'ohMyPi', 'pi', 'copilot'] as const;
         for (const agentId of allAgents) {
             expect(isAgentEnabled({ agentId, backendEnabledByTargetKey: {} })).toBe(true);
             expect(isAgentEnabled({ agentId, backendEnabledByTargetKey: null })).toBe(true);

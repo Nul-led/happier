@@ -720,7 +720,7 @@ describe('buildCommandPaletteCommands', () => {
     expect(created?.input?.engines).toBeUndefined();
   });
 
-  it('uses UI-normalized permission defaults for execution-run drafts', async () => {
+  it('uses execution-run permission defaults for execution-run drafts', async () => {
     createSessionActionDraftSpy.mockClear();
     mockedState = { createSessionActionDraft: createSessionActionDraftSpy, settings: buildSettingsWithExecutionRunsEnabled() };
 

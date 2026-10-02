@@ -62,6 +62,8 @@ import { projectVoiceProviderSelectionRows, selectVoiceProviderOption } from './
 import { resolveVoiceRoleReadiness } from './readiness';
 import { projectVoiceSpeechEndpointReadiness } from './speechEndpointReadiness';
 
+type BundledSpeechClient = NonNullable<Parameters<typeof createBundledSpeechRuntime>[0]['client']>;
+
 const rawCredentialMachineRpc = vi.hoisted(() => vi.fn());
 const reactNativeArtifactDaemonTransport = vi.hoisted(() => ({
   fetch: vi.fn<PluginArtifactDaemonByteFetcher>(),

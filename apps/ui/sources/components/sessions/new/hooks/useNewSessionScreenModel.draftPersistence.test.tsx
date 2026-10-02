@@ -1123,7 +1123,8 @@ vi.mock('@/utils/sessions/tempDataStore', () => ({
 
 installNewSessionScreenModelStorageMock();
 
-const useNewSessionScreenModelModulePromise = import('./useNewSessionScreenModel');
+const { useNewSessionScreenModel } = await import('./useNewSessionScreenModel');
+const useNewSessionScreenModelModulePromise = Promise.resolve({ useNewSessionScreenModel });
 
 async function runFocusEffects(): Promise<Array<void | (() => void)>> {
     return await Promise.all(focusEffectRef.current.map((effect) => effect()));
@@ -1425,8 +1426,6 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
         assignModel: (nextModel: unknown) => void,
         input?: Readonly<{ draftId: string }>,
     ) {
-        const { useNewSessionScreenModel } = await useNewSessionScreenModelModulePromise;
-
         return renderHook(() => {
             const nextModel = useNewSessionScreenModel(input);
             assignModel(nextModel);

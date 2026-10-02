@@ -182,3 +182,56 @@ test('standard status records independently verified identities for each request
     },
   ]);
 });
+
+test('standard status carries successful downstream work and UI intent across a control-fixed resume', () => {
+  const status = projectReleaseStatus('standard', {
+    RELEASE_RUN: '46', RELEASE_RUN_URL: 'https://github.com/happier-dev/happier/actions/runs/46',
+    RELEASE_RUN_NAME: 'RELEASE — Publish (rel_abcdefgh)', HMAINT_OPERATION_ID: 'rel_abcdefgh',
+    RELEASE_CHANNEL: 'production', SOURCE_SHA: 'e'.repeat(40),
+    REQUEST_DEPLOY_UI: 'true', DEPLOY_UI_RESULT: 'skipped', DEPLOY_UI_RESUME_COMPLETE: 'true',
+    DEPLOY_UI_WEB: 'true', DEPLOY_UI_EXPO_ACTION: 'full', DEPLOY_UI_DESKTOP_MODE: 'build_and_publish',
+    REQUEST_DOCKER: 'true', DOCKER_RESULT: 'skipped', DOCKER_RESUME_COMPLETE: 'true',
+    REQUEST_CLI: 'true', CLI_CANDIDATE_RESULT: 'success', CLI_VERSION: '0.3.0', CLI_RESUME_VERIFIED: 'true',
+    CLI_RESULT: 'skipped', CLI_ROLLING_RESUME_COMPLETE: 'true',
+    REQUEST_RUNNER: 'true', RUNNER_CANDIDATE_RESULT: 'success', RUNNER_VERSION: '0.3.0',
+    RUNNER_RESULT: 'skipped', RUNNER_ROLLING_RESUME_COMPLETE: 'true',
+    CANDIDATE_RESULT: 'success', IMMUTABLE_VERIFICATION_RESULT: 'success', RELEASE_VERIFY_RESULT: 'success',
+  });
+  const deployUi = status.surfaces.find((surface) => surface.id === 'deploy_ui');
+  assert.equal(deployUi?.required, true);
+  assert.equal(deployUi?.state, 'published');
+  assert.deepEqual(deployUi?.identity, {
+    sourceSha: 'e'.repeat(40), verified: false, deployWeb: true,
+    expoAction: 'full', desktopMode: 'build_and_publish',
+  });
+  assert.equal(status.surfaces.find((surface) => surface.id === 'docker')?.state, 'published');
+  const rolling = status.surfaces.find((surface) => surface.id === 'cli_rolling_release');
+  assert.equal(rolling?.state, 'complete');
+  assert.equal(rolling?.identity?.verified, true);
+  assert.equal(status.surfaces.find((surface) => surface.id === 'runner_rolling_release')?.state, 'complete');
+});
+
+test('standard status fails when requested UI delivery is skipped without verified resume evidence', () => {
+  const status = projectReleaseStatus('standard', {
+    RELEASE_RUN: '462', RELEASE_RUN_URL: 'https://github.com/happier-dev/happier/actions/runs/462',
+    RELEASE_RUN_NAME: 'RELEASE — Publish (rel_abcdefgh)', HMAINT_OPERATION_ID: 'rel_abcdefgh',
+    RELEASE_CHANNEL: 'preview', SOURCE_SHA: 'd'.repeat(40), REQUEST_DEPLOY_UI: 'true',
+    DEPLOY_UI_RESULT: 'skipped', DEPLOY_UI_WEB: 'true', DEPLOY_UI_EXPO_ACTION: 'none',
+    DEPLOY_UI_DESKTOP_MODE: 'none', CANDIDATE_RESULT: 'success', IMMUTABLE_VERIFICATION_RESULT: 'success',
+    RELEASE_VERIFY_RESULT: 'success',
+  });
+  assert.equal(status.surfaces.find((surface) => surface.id === 'deploy_ui')?.state, 'failed');
+  assert.equal(status.terminal, 'failed');
+});
+
+test('resumed rolling completion still requires current owner verification before it is reusable', () => {
+  const status = projectReleaseStatus('standard', {
+    RELEASE_RUN: '463', RELEASE_RUN_URL: 'https://github.com/happier-dev/happier/actions/runs/463',
+    RELEASE_RUN_NAME: 'RELEASE — Publish (rel_abcdefgh)', HMAINT_OPERATION_ID: 'rel_abcdefgh',
+    RELEASE_CHANNEL: 'preview', SOURCE_SHA: 'd'.repeat(40), REQUEST_RUNNER: 'true',
+    RUNNER_RESULT: 'skipped', RUNNER_ROLLING_RESUME_COMPLETE: 'true', RELEASE_VERIFY_RESULT: 'failure',
+  });
+  const runner = status.surfaces.find((surface) => surface.id === 'runner_rolling_release');
+  assert.equal(runner.identity.verified, false);
+  assert.notEqual(runner.state, 'complete');
+});

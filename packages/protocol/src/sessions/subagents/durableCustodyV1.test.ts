@@ -144,7 +144,7 @@ describe('durable subagent custody v1 contract', () => {
     }).success).toBe(false);
   });
 
-  it('canonicalizes every strict JSON shape within bounds without invoking hostile values', () => {
+  it('canonicalizes every strict JSON shape without inventing an aggregate bound or invoking hostile values', () => {
     const accessor = Object.defineProperty({}, 'secret', {
       enumerable: true,
       get: () => { throw new Error('must not execute'); },

@@ -77,6 +77,13 @@ export function createModalModuleMock(options: ModalModuleMockOptions = {}) {
         prompt: vi.fn<IModal['prompt']>(promptImplementation),
         confirm: vi.fn<IModal['confirm']>(confirmImplementation),
     };
+    const context = {
+        state: { modals: [] },
+        showModal: spies.show,
+        hideModal: spies.hide,
+        hideAllModals: spies.hideAll,
+        updateCustomModalProps: spies.update,
+    };
 
     function CustomContentProvider({ active, children }: { active?: boolean; children?: React.ReactNode }) {
         const snapshot = React.useSyncExternalStore(

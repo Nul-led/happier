@@ -1,7 +1,7 @@
 import React from 'react';
 import { act } from 'react-test-renderer';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { renderScreen } from '@/dev/testkit';
+import { findNearestHostParent, renderScreen } from '@/dev/testkit';
 import { useResolvedDesktopWindowControls } from './useResolvedDesktopWindowControls';
 
 import { installNavigationShellCommonModuleMocks } from '../navigationShellTestHelpers';
@@ -111,7 +111,7 @@ describe('useResolvedDesktopWindowControls', () => {
             await Promise.resolve();
         });
 
-        const minimizeButton = screen.findByTestId('desktop-window-controls-minimize');
+        const minimizeButton = screen.findHostByTestId('desktop-window-controls-minimize');
         if (!minimizeButton) {
             throw new Error('minimize button should be present');
         }

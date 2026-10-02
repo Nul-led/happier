@@ -11,6 +11,7 @@ function requireFromAppConfig(modulePath) {
 }
 
 const { getAppEnvironmentConfig } = requireFromAppConfig('./appVariantConfig.cjs');
+const { EXPO_PROJECT_CONFIG } = requireFromAppConfig('./appProjectConfig.cjs');
 
 function normalizeVariantOverride(raw) {
     const value = String(raw ?? '').trim().toLowerCase();
@@ -87,9 +88,7 @@ if (appLocalConfigModule && typeof appLocalConfigModule === 'object') {
 }
 
 const DEFAULTS = {
-    owner: "happier-dev",
-    slug: "happier",
-    easProjectId: "2a550bd7-e4d2-4f59-ab47-dcb778775cee",
+    ...EXPO_PROJECT_CONFIG,
     linkHost: "cloud.happier.dev",
 };
 

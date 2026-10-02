@@ -19,8 +19,8 @@ import {
   ExternalSessionsSourceSchema,
 } from './daemonRpcV1';
 import * as daemonRpcV1 from './daemonRpcV1';
-import { AgentProviderIdV1Schema } from '../../generated/providers/agentProviderIdsV1';
 import { MAX_AGENT_ROUTING_ID_BYTES } from '../../agents/agentIdV1.js';
+import { AgentProviderIdV1Schema } from '../../generated/providers/agentProviderIdsV1';
 import { SessionIndexedIdentifierMaxLengthV1 } from '../idsV1';
 import { resolveExternalSessionsSourceKey } from './sourceCatalog';
 

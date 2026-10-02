@@ -235,16 +235,16 @@ describe('modelOptions', () => {
 
     it('uses authoritative session membership and capabilities for a probe-enabled Agent', () => {
         const out = getModelOptionsForSession(
-            'claude',
+            'gemini',
             withMetadata({
                 sessionModelsV1: {
                     v: 1,
-                    agentId: 'claude',
+                    agentId: 'gemini',
                     updatedAt: 1,
-                    currentModelId: 'claude-opus-4-6',
+                    currentModelId: 'gemini-2.5-pro',
                     availableModels: [
-                        { id: 'claude-opus-4-6', name: 'Opus 4.6 (From Session)' },
-                        { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6 (From Session)' },
+                        { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (From Session)' },
+                        { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (From Session)' },
                     ],
                 },
             }),
@@ -383,14 +383,14 @@ describe('modelOptions', () => {
         const metadata = withMetadata({
             sessionModelsV1: {
                 v: 1,
-                agentId: 'claude',
+                agentId: 'gemini',
                 updatedAt: 1,
-                currentModelId: 'claude-sonnet-4-6',
+                currentModelId: 'gemini-2.5-flash',
                 availableModels: [
-                    { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6 (From Session)' },
+                    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (From Session)' },
                 ],
             },
-            modelOverrideV1: { v: 1, updatedAt: 100, modelId: 'claude-custom-model' },
+            modelOverrideV1: { v: 1, updatedAt: 100, modelId: 'gemini-custom-model' },
         });
 
         expect(getSelectableModelIdsForSession('claude', metadata))
@@ -472,14 +472,14 @@ describe('modelOptions', () => {
     it('recognizes dynamic list support for a probe-enabled bundled provider', () => {
         expect(
             hasDynamicModelListForSession(
-                'claude',
+                'gemini',
                 withMetadata({
                     sessionModelsV1: {
                         v: 1,
-                        agentId: 'claude',
+                        agentId: 'gemini',
                         updatedAt: 1,
-                        currentModelId: 'claude-haiku-4-5',
-                        availableModels: [{ id: 'haiku', name: 'Haiku' }],
+                        currentModelId: 'gemini-2.5-flash',
+                        availableModels: [{ id: 'gemini-stale', name: 'Gemini Stale' }],
                     },
                 }),
             ),

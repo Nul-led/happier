@@ -2,10 +2,18 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import PluginAgentSettingsScreen from '@/app/(app)/settings/agents/[agentId]';
+import { AppCrashRecoveryBoundary } from '@/components/appShell/AppCrashRecoveryBoundary';
+import { CommandPaletteProvider } from '@/components/appShell/commandPalette/CommandPaletteProvider';
+import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
+import { AppPaneModalProvider } from '@/components/appShell/providers/AppPaneModalProvider';
+import { SidebarNavigator } from '@/components/navigation/shell/SidebarNavigator';
+import { SettingsShell } from '@/components/settings/shell/SettingsShell';
 import {
     renderScreen,
     standardCleanup,
 } from '@/dev/testkit';
+import { RealtimeProvider } from '@/realtime/RealtimeProvider.web';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -31,12 +39,18 @@ const administrationTargetState = vi.hoisted(() => ({
 
 let settingsState: Record<string, unknown> = {};
 let localSettingsState: Record<string, unknown> = {};
-let activeServerSnapshot = {
-    serverId: 'server1',
-    serverUrl: 'http://localhost:3000',
-    generation: 1,
-};
-let activeServerSubscriber: ((snapshot: typeof activeServerSnapshot) => void) | null = null;
+const activeServerState = vi.hoisted(() => ({
+    current: {
+        serverId: 'server1',
+        serverUrl: 'http://localhost:3000',
+        generation: 1,
+    },
+    subscriber: null as ((snapshot: {
+        serverId: string;
+        serverUrl: string;
+        generation: number;
+    }) => void) | null,
+}));
 
 const machinesState = [
     { id: 'm1', revokedAt: null, metadata: { displayName: 'Machine One', host: 'm1', homeDir: '/Users/m1' } },
@@ -114,7 +128,10 @@ vi.mock('expo-router', async () => ({
             setParams: vi.fn(),
         },
     }).module,
-    useLocalSearchParams: () => ({ agentId: 'codex' }),
+    useLocalSearchParams: () => ({
+        agentId: 'codex',
+        pluginId: 'happier.agent.codex',
+    }),
 }));
 
 vi.mock('@/text', async () => {
@@ -250,6 +267,69 @@ vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
         clearTarget: vi.fn(),
     }),
 }));
+
+vi.mock('@/sync/ops/machineContributionRegistryProjection', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/ops/machineContributionRegistryProjection')>();
+    const { PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE } = await import(
+        '@/dev/testkit/fixtures/pluginProviderDaemonProjection'
+    );
+    const projection = {
+        ...PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
+        installedPackagesById: {
+            'happier.agent.codex': {
+                id: 'happier.agent.codex',
+                displayName: 'Codex',
+                version: '1.0.0',
+                enabled: true,
+                source: { kind: 'bundled', locator: 'happier.agent.codex' },
+            },
+        },
+        agentsById: {
+            codex: {
+                id: 'codex',
+                identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+                title: 'Codex',
+                subtitle: 'Codex Agent',
+                channel: 'stable',
+                isBuiltIn: true,
+                catalogAgentId: 'codex',
+                iconAgentId: 'codex',
+                providerOwnedEnvironmentKeys: [],
+                cli: {
+                    executable: {
+                        binaryName: 'codex',
+                        sourcePreference: 'system-first',
+                    },
+                    install: {
+                        managed: null,
+                        manual: { kind: 'none' },
+                        docsUrl: null,
+                    },
+                    auth: {
+                        support: 'unsupported',
+                        loginLaunches: [],
+                    },
+                },
+            },
+        },
+        backendsById: {},
+    };
+    return {
+        ...actual,
+        machineContributionRegistryProjectionDescribe: async () => ({
+            supported: true,
+            projection,
+        }),
+        getMachineContributionRegistryProjectionRevision: () => 0,
+        subscribeMachineContributionRegistryProjectionInvalidation: () => () => {},
+        machinePluginSettingsGet: async () => ({ supported: false, reason: 'not-supported' }),
+        machinePluginSettingsSet: async () => ({ supported: false, reason: 'not-supported' }),
+        watchMachinePluginSettingsChanges: () => ({ dispose: () => {} }),
+        machinePluginSecretStatus: async () => ({ supported: false, reason: 'not-supported' }),
+        machinePluginSecretSet: async () => ({ supported: false, reason: 'not-supported' }),
+        machinePluginSecretDelete: async () => ({ supported: false, reason: 'not-supported' }),
+    };
+});
 
 vi.mock('@/components/settings/machines/MachineAdministrationTargetSelector', () => ({
     MachineAdministrationTargetSelector: (props: Record<string, unknown>) => (
@@ -414,12 +494,12 @@ describe('PluginAgentSettingsScreen desktop render', () => {
         localSettingsState = {
             appPaneScopesV1: undefined,
         };
-        activeServerSnapshot = {
+        activeServerState.current = {
             serverId: 'server1',
             serverUrl: 'http://localhost:3000',
             generation: 1,
         };
-        activeServerSubscriber = null;
+        activeServerState.subscriber = null;
     });
 
     afterEach(() => {
@@ -433,9 +513,6 @@ describe('PluginAgentSettingsScreen desktop render', () => {
     });
 
     it('renders the codex provider route with the canonical machine and CLI chrome', async () => {
-        const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
-        const { default: PluginAgentSettingsScreen } = await import('@/app/(app)/settings/agents/[agentId]');
-
         const screen = await renderScreen(
             <AppPaneProvider>
                 <PluginAgentSettingsScreen />
@@ -447,9 +524,6 @@ describe('PluginAgentSettingsScreen desktop render', () => {
     });
 
     it('writes the provider-scoped default permission through the canonical target-key setting', async () => {
-        const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
-        const { default: PluginAgentSettingsScreen } = await import('@/app/(app)/settings/agents/[agentId]');
-
         const screen = await renderScreen(
             <AppPaneProvider>
                 <PluginAgentSettingsScreen />
@@ -474,10 +548,6 @@ describe('PluginAgentSettingsScreen desktop render', () => {
     });
 
     it('renders the codex provider route inside the desktop settings shell without crashing', async () => {
-        const { AppPaneProvider } = await import('@/components/appShell/panes/AppPaneProvider');
-        const { SettingsShell } = await import('@/components/settings/shell/SettingsShell');
-        const { default: PluginAgentSettingsScreen } = await import('@/app/(app)/settings/agents/[agentId]');
-
         const screen = await renderScreen(
             <AppPaneProvider>
                 <SettingsShell>
@@ -485,19 +555,11 @@ describe('PluginAgentSettingsScreen desktop render', () => {
                 </SettingsShell>
             </AppPaneProvider>,
         );
-
         expect(screen.findByTestId('settings-shell.sidebarPane')).toBeTruthy();
         expect(screen.findByTestId('settings.agents.detail.header')).toBeTruthy();
     });
 
     it('renders the codex provider route inside the desktop app-shell provider stack without triggering crash recovery', async () => {
-        const { AppCrashRecoveryBoundary } = await import('@/components/appShell/AppCrashRecoveryBoundary');
-        const { AppPaneModalProvider } = await import('@/components/appShell/providers/AppPaneModalProvider');
-        const { CommandPaletteProvider } = await import('@/components/appShell/commandPalette/CommandPaletteProvider');
-        const { RealtimeProvider } = await import('@/realtime/RealtimeProvider.web');
-        const { SettingsShell } = await import('@/components/settings/shell/SettingsShell');
-        const { default: PluginAgentSettingsScreen } = await import('@/app/(app)/settings/agents/[agentId]');
-
         const screen = await renderScreen(
             <AppCrashRecoveryBoundary onRestart={() => {}}>
                 <AppPaneModalProvider>
@@ -511,21 +573,12 @@ describe('PluginAgentSettingsScreen desktop render', () => {
                 </AppPaneModalProvider>
             </AppCrashRecoveryBoundary>,
         );
-
         expect(screen.findAllByTestId('app-crash-restart')).toHaveLength(0);
         expect(screen.findByTestId('settings-shell.sidebarPane')).toBeTruthy();
         expect(screen.findByTestId('settings.agents.detail.header')).toBeTruthy();
     });
 
     it('renders the codex provider route alongside the authenticated desktop sidebar shell without triggering crash recovery', async () => {
-        const { AppCrashRecoveryBoundary } = await import('@/components/appShell/AppCrashRecoveryBoundary');
-        const { AppPaneModalProvider } = await import('@/components/appShell/providers/AppPaneModalProvider');
-        const { CommandPaletteProvider } = await import('@/components/appShell/commandPalette/CommandPaletteProvider');
-        const { RealtimeProvider } = await import('@/realtime/RealtimeProvider.web');
-        const { SidebarNavigator } = await import('@/components/navigation/shell/SidebarNavigator');
-        const { SettingsShell } = await import('@/components/settings/shell/SettingsShell');
-        const { default: PluginAgentSettingsScreen } = await import('@/app/(app)/settings/agents/[agentId]');
-
         const screen = await renderScreen(
             <AppCrashRecoveryBoundary onRestart={() => {}}>
                 <AppPaneModalProvider>
@@ -542,7 +595,6 @@ describe('PluginAgentSettingsScreen desktop render', () => {
                 </AppPaneModalProvider>
             </AppCrashRecoveryBoundary>,
         );
-
         expect(screen.findAllByTestId('app-crash-restart')).toHaveLength(0);
         expect(screen.findByTestId('main-view')).toBeTruthy();
         expect(screen.findByTestId('settings.agents.detail.header')).toBeTruthy();

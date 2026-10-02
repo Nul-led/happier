@@ -84,6 +84,7 @@ jobs:
       run_mobile_e2e_android: ${{ steps.flags.outputs.run_mobile_e2e_android }}
       run_mobile_e2e_ios: ${{ steps.flags.outputs.run_mobile_e2e_ios }}
       run_ui: ${{ steps.flags.outputs.run_ui }}
+      run_shared_packages: ${{ steps.flags.outputs.run_shared_packages }}
       run_plugin_workspaces: ${{ steps.flags.outputs.run_plugin_workspaces }}
       run_server: ${{ steps.flags.outputs.run_server }}
       run_home_iroh_real: ${{ steps.flags.outputs.run_home_iroh_real }}
@@ -99,6 +100,7 @@ jobs:
       run_release_contracts: ${{ steps.flags.outputs.run_release_contracts }}
       run_installers_smoke: ${{ steps.flags.outputs.run_installers_smoke }}
       run_binary_smoke: ${{ steps.flags.outputs.run_binary_smoke }}
+      run_build_smoke: ${{ steps.flags.outputs.run_build_smoke }}
       run_cli_update_continuity: ${{ steps.flags.outputs.run_cli_update_continuity }}
       run_daemon_continuity: ${{ steps.flags.outputs.run_daemon_continuity }}
       run_session_continuity: ${{ steps.flags.outputs.run_session_continuity }}
@@ -140,6 +142,7 @@ jobs:
       run_mobile_e2e_android: ${{ needs.resolve.outputs.run_mobile_e2e_android == 'true' }}
       run_mobile_e2e_ios: ${{ needs.resolve.outputs.run_mobile_e2e_ios == 'true' }}
       run_ui: ${{ needs.resolve.outputs.run_ui == 'true' }}
+      run_shared_packages: ${{ needs.resolve.outputs.run_shared_packages == 'true' }}
       run_plugin_workspaces: ${{ needs.resolve.outputs.run_plugin_workspaces == 'true' }}
       run_server: ${{ needs.resolve.outputs.run_server == 'true' }}
       run_home_iroh_real: ${{ needs.resolve.outputs.run_home_iroh_real == 'true' }}
@@ -160,6 +163,7 @@ jobs:
       installers_source: local-build
       installers_ref: .
       run_binary_smoke: ${{ needs.resolve.outputs.run_binary_smoke == 'true' }}
+      run_build_smoke: ${{ needs.resolve.outputs.run_build_smoke == 'true' }}
       run_cli_update_continuity: ${{ needs.resolve.outputs.run_cli_update_continuity == 'true' }}
       cli_update_to_source: ${{ inputs.cli_update_to_source }}
       cli_update_to_ref: ${{ inputs.cli_update_to_ref }}

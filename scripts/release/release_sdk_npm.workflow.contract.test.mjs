@@ -4,7 +4,7 @@ import test from 'node:test';
 
 import YAML from 'yaml';
 
-const workflowPath = new URL('../../.github/workflows/release.yml', import.meta.url);
+const workflowPath = new URL('../../.github/workflows/release-channel.yml', import.meta.url);
 
 async function loadWorkflow() {
   return YAML.parse(await readFile(workflowPath, 'utf8'));

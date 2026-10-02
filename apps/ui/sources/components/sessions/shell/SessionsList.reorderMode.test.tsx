@@ -471,6 +471,8 @@ vi.mock('./SessionItem', () => ({
     SessionItem: (props: any) => React.createElement('SessionItem', props),
 }));
 
+const { SessionsList } = await import('./SessionsList');
+
 describe('SessionsList (inline reorder)', () => {
     beforeEach(() => {
         sessionListOrderingModeV1 = 'custom';
@@ -510,7 +512,6 @@ describe('SessionsList (inline reorder)', () => {
 
     it('does not trigger store-review prompts automatically when the list renders', async () => {
         requestReviewSpy.mockClear();
-        const { SessionsList } = await import('./SessionsList');
 
         await renderScreen(<SessionsList />);
 
@@ -521,7 +522,6 @@ describe('SessionsList (inline reorder)', () => {
         pinnedSessionKeysV1 = [];
         sessionListGroupOrderV1 = {};
         sessionTagsV1 = {};
-        const { SessionsList } = await import('./SessionsList');
 
         const screen = await renderScreen(<SessionsList />);
 
@@ -539,7 +539,6 @@ describe('SessionsList (inline reorder)', () => {
     it('hides reorder drag props when ordering mode is created or updated', async () => {
         sessionListOrderingModeV1 = 'created';
 
-        const { SessionsList } = await import('./SessionsList');
         const screen = await renderScreen(<SessionsList />);
 
         const items = screen.findAll((node) => String(node.type) === 'SessionItem');
@@ -570,7 +569,6 @@ describe('SessionsList (inline reorder)', () => {
         sessionListGroupOrderV1 = {};
         sessionTagsV1 = {};
 
-        const { SessionsList } = await import('./SessionsList');
         const screen = await renderScreen(<SessionsList />);
 
         const firstRow = screen.findAll((node) => String(node.type) === 'SessionItem')[0];
@@ -580,7 +578,6 @@ describe('SessionsList (inline reorder)', () => {
 
     it('restores reorder drag props when ordering mode returns to custom', async () => {
         sessionListOrderingModeV1 = 'updated';
-        const { SessionsList } = await import('./SessionsList');
 
         const screen = await renderScreen(<SessionsList />);
         const disabledItems = screen.findAll((node) => String(node.type) === 'SessionItem');
@@ -659,7 +656,6 @@ describe('SessionsList (inline reorder)', () => {
         sessionListOrderingModeV1 = 'updated';
         sessionListFolderSortModeV1 = 'mixed';
 
-        const { SessionsList } = await import('./SessionsList');
         await renderScreen(<SessionsList />);
 
         const menuProps = dropdownMenuCaptures.find((captured) => {
@@ -698,7 +694,6 @@ describe('SessionsList (inline reorder)', () => {
                 updatedAt: 2,
             }],
         };
-        const { SessionsList } = await import('./SessionsList');
 
         const screen = await renderScreen(<SessionsList />);
         const items = screen.findAll((node) => String(node.type) === 'SessionItem');
@@ -758,7 +753,6 @@ describe('SessionsList (inline reorder)', () => {
         recoveryBannerMountSpy.mockClear();
         recoveryBannerUnmountSpy.mockClear();
 
-        const { SessionsList } = await import('./SessionsList');
         const screen = await renderScreen(<SessionsList />);
 
         expect(recoveryBannerMountSpy).toHaveBeenCalledTimes(1);

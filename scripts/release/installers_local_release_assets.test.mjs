@@ -15,6 +15,14 @@ function writeExecutable(path, source) {
   chmodSync(path, 0o755);
 }
 
+function versionedCliAssetNames(version) {
+  return [
+    `happier-v${version}-linux-x64.tar.gz`,
+    `checksums-happier-v${version}.txt`,
+    `checksums-happier-v${version}.txt.minisig`,
+  ];
+}
+
 function createLinuxInstallerVersionScenario({ channel = 'preview', assets, findOrder }) {
   const scratch = mkdtempSync(join(tmpdir(), 'happier-installers-local-assets-scenario-'));
   const fakeBinDir = join(scratch, 'bin');
@@ -83,13 +91,29 @@ printf '%s\\0' ${orderedPaths.map((path) => `'${path.replaceAll("'", "'\\''")}'`
   };
 }
 
+test('install.sh resolves the canonical unversioned rolling archive through its checksum envelope', () => {
+  const scenario = createLinuxInstallerVersionScenario({
+    channel: 'stable',
+    assets: [
+      'happier-linux-x64.tar.gz',
+      'checksums-happier-v1.2.3.txt',
+      'checksums-happier-v1.2.3.txt.minisig',
+    ],
+    findOrder: [0, 1, 2],
+  });
+  try {
+    assert.equal(scenario.status, 0, scenario.stderr);
+    assert.match(scenario.stdout, /- version: 1\.2\.3/);
+  } finally {
+    rmSync(scenario.scratch, { recursive: true, force: true });
+  }
+});
+
 test('install.sh --version resolves release assets from HAPPIER_RELEASE_ASSETS_DIR without fetching release metadata', () => {
   const scenario = createLinuxInstallerVersionScenario({
-    channel: 'preview',
-    assets: ['happier-v1.2.3-preview.4-linux-x64.tar.gz'],
-    findOrder: [0],
+    assets: versionedCliAssetNames('1.2.3-preview.4'),
+    findOrder: [0, 1, 2],
   });
-
   try {
     assert.equal(scenario.status, 0, scenario.stderr);
     assert.doesNotMatch(scenario.stderr, /curl should not be called/);
@@ -105,10 +129,10 @@ test('install.sh --version semver-sorts local release assets instead of trusting
   const scenario = createLinuxInstallerVersionScenario({
     channel: 'preview',
     assets: [
-      'happier-v1.2.3-preview.42-linux-x64.tar.gz',
-      'happier-v1.2.3-preview.7-linux-x64.tar.gz',
+      ...versionedCliAssetNames('1.2.3-preview.42'),
+      ...versionedCliAssetNames('1.2.3-preview.7'),
     ],
-    findOrder: [0, 1],
+    findOrder: [0, 3, 1, 4, 2, 5],
   });
 
   try {
@@ -139,10 +163,10 @@ test('install.sh --version keeps preview local asset lookup isolated from stable
   const scenario = createLinuxInstallerVersionScenario({
     channel: 'preview',
     assets: [
-      'happier-v9.9.9-linux-x64.tar.gz',
-      'happier-v1.2.3-preview.42-linux-x64.tar.gz',
+      ...versionedCliAssetNames('9.9.9'),
+      ...versionedCliAssetNames('1.2.3-preview.42'),
     ],
-    findOrder: [1, 0],
+    findOrder: [3, 0, 4, 1, 5, 2],
   });
 
   try {
@@ -158,10 +182,10 @@ test('install.sh --version keeps stable local asset lookup isolated from prerele
   const scenario = createLinuxInstallerVersionScenario({
     channel: 'stable',
     assets: [
-      'happier-v9.9.9-preview.42-linux-x64.tar.gz',
-      'happier-v1.2.3-linux-x64.tar.gz',
+      ...versionedCliAssetNames('9.9.9-preview.42'),
+      ...versionedCliAssetNames('1.2.3'),
     ],
-    findOrder: [1, 0],
+    findOrder: [3, 0, 4, 1, 5, 2],
   });
 
   try {
@@ -177,10 +201,10 @@ test('install.sh --version semver-sorts local build metadata assets without nume
   const scenario = createLinuxInstallerVersionScenario({
     channel: 'stable',
     assets: [
-      'happier-v1.2.10+build5-linux-x64.tar.gz',
-      'happier-v1.2.9+build7-linux-x64.tar.gz',
+      ...versionedCliAssetNames('1.2.10+build5'),
+      ...versionedCliAssetNames('1.2.9+build7'),
     ],
-    findOrder: [0, 1],
+    findOrder: [0, 3, 1, 4, 2, 5],
   });
 
   try {
@@ -196,10 +220,10 @@ test('install.sh --version orders strict-prefix prerelease identifiers for previ
   const scenario = createLinuxInstallerVersionScenario({
     channel: 'preview',
     assets: [
-      'happier-v1.0.0-preview.alpha.1-linux-x64.tar.gz',
-      'happier-v1.0.0-preview.alpha-linux-x64.tar.gz',
+      ...versionedCliAssetNames('1.0.0-preview.alpha.1'),
+      ...versionedCliAssetNames('1.0.0-preview.alpha'),
     ],
-    findOrder: [0, 1],
+    findOrder: [0, 3, 1, 4, 2, 5],
   });
 
   try {

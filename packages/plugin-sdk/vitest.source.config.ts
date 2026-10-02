@@ -28,6 +28,10 @@ const workspacePackages: readonly WorkspacePackageSpec[] = [
         packageName: '@happier-dev/cli-common',
         packageSourceRoot: resolve(packageRoot, '../cli-common/src'),
     },
+    {
+        packageName: '@happier-dev/triage-protocol',
+        packageSourceRoot: resolve(packageRoot, '../triage-protocol/src'),
+    },
 ] as const;
 
 /**
@@ -40,6 +44,8 @@ const workspacePackages: readonly WorkspacePackageSpec[] = [
  * deliberately resolves the private physical copies under its own `node_modules` (see
  * `scripts/bundleWorkspaceDeps.mjs`), so without this a source test would silently exercise
  * whatever cli-common snapshot the last bundle produced rather than the owner it imports.
+ * Triage's feature protocol is likewise resolved here so source-authoring fixtures do not
+ * install a file-local mock for another workspace's real public entrypoint.
  */
 export default defineConfig({
     plugins: [createWorkspacePackageSourcesPlugin(

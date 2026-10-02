@@ -627,7 +627,8 @@ vi.mock('@/hooks/server/useAutomationsSupport', () => ({
     useAutomationsSupport: () => ({ enabled: false }),
 }));
 
-vi.mock('@/utils/system/versionUtils', () => ({
+vi.mock('@/utils/system/versionUtils', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/utils/system/versionUtils')>(),
     isVersionSupported: () => true,
     MINIMUM_CLI_VERSION: '0.0.0',
 }));

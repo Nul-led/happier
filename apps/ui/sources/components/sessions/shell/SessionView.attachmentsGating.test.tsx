@@ -330,7 +330,8 @@ vi.mock('@/utils/system/versionUtils', () => ({
   MINIMUM_CLI_VERSION: '0.0.0',
 }));
 
-vi.mock('@/agents/catalog/catalog', () => ({
+vi.mock('@/agents/catalog/catalog', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/agents/catalog/catalog')>(),
   AGENT_IDS: ['codex'],
   DEFAULT_AGENT_ID: 'codex',
   buildResumeSessionExtrasFromUiState: () => null,

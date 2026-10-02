@@ -1,3 +1,5 @@
+import { parseSharedPackageTestMode, selectSharedPackageTestCommands } from '../runSharedPackageTests.ts';
+
 /**
  * Derives which workspaces a root script actually executes.
  *
@@ -48,6 +50,17 @@ export function scanYarnInvocations(commandText: string): YarnInvocationScan {
 
   const tokens = tokenize(commandText);
   for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index] === 'scripts/testing/runSharedPackageTests.ts') {
+      const mode = parseSharedPackageTestMode(tokens[index + 1] === '--mode'
+        ? ['--mode', tokens[index + 2] ?? '']
+        : []);
+      for (const command of selectSharedPackageTestCommands(mode)) {
+        const scan = scanYarnInvocations(['yarn', ...command.args].join(' '));
+        workspaceTargets.push(...scan.workspaceTargets);
+        rootScriptRefs.push(...scan.rootScriptRefs);
+      }
+      continue;
+    }
     if (tokens[index] === 'scripts/testing/runRootTests.ts') {
       const lane = tokens[index + 1];
       if (lane !== 'unit' && lane !== 'integration') {

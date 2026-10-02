@@ -55,7 +55,7 @@ describe('buildSpawnSessionExtrasFromUiState', () => {
     it('projects the normalized Codex backend mode into strict V2 configuration', () => {
         expect(buildSpawnSessionExtrasFromUiState({
             agentId: 'codex',
-            settings: makeSettings({ codexBackendMode: 'acp' }),
+            settings: makeAccountScopedAgentSettings({ codexBackendMode: 'acp' }),
             resumeSessionId: '',
             updatedAt: 123,
         })).toEqual({
@@ -72,7 +72,7 @@ describe('buildSpawnSessionExtrasFromUiState', () => {
     it('does not emit legacy experimentalCodexAcp when codexBackendMode is present', () => {
         expect(buildSpawnSessionExtrasFromUiState({
             agentId: 'codex',
-            settings: makeSettings({ codexBackendMode: 'acp' }),
+            settings: makeAccountScopedAgentSettings({ codexBackendMode: 'acp' }),
             resumeSessionId: '',
         })).not.toHaveProperty('experimentalCodexAcp');
     });
@@ -80,7 +80,7 @@ describe('buildSpawnSessionExtrasFromUiState', () => {
     it('maps retired codex mcp setting onto app-server', () => {
         expect(buildSpawnSessionExtrasFromUiState({
             agentId: 'codex',
-            settings: makeSettings({ codexBackendMode: 'mcp' }),
+            settings: makeAccountScopedAgentSettings({ codexBackendMode: 'mcp' }),
             resumeSessionId: 'x1',
             updatedAt: 456,
         })).toEqual({
@@ -97,7 +97,7 @@ describe('buildSpawnSessionExtrasFromUiState', () => {
     it('does not enable codex ACP when backend mode is appServer', () => {
         expect(buildSpawnSessionExtrasFromUiState({
             agentId: 'codex',
-            settings: makeSettings({ codexBackendMode: 'appServer' as any }),
+            settings: makeAccountScopedAgentSettings({ codexBackendMode: 'appServer' }),
             resumeSessionId: 'x1',
             updatedAt: 789,
         })).toEqual({
@@ -114,7 +114,7 @@ describe('buildSpawnSessionExtrasFromUiState', () => {
     it('returns an empty object for non-codex agents', () => {
         expect(buildSpawnSessionExtrasFromUiState({
             agentId: 'claude',
-            settings: makeSettings({ codexBackendMode: 'acp' }),
+            settings: makeAccountScopedAgentSettings({ codexBackendMode: 'acp' }),
             resumeSessionId: 'x1',
         })).toEqual({});
     });
@@ -134,7 +134,7 @@ describe('buildResumeSessionExtrasFromUiState', () => {
     it('does not reconstruct Codex runtime descriptors from settings or persisted metadata', () => {
         expect(buildResumeSessionExtrasFromUiState({
             agentId: 'codex',
-            settings: makeSettings({ codexBackendMode: 'acp' }),
+            settings: makeAccountScopedAgentSettings({ codexBackendMode: 'acp' }),
             session: {
                 metadata: {
                     runtimeDescriptorV1: {
@@ -150,22 +150,22 @@ describe('buildResumeSessionExtrasFromUiState', () => {
     it('does not emit legacy experimentalCodexAcp for codex resume extras', () => {
         expect(buildResumeSessionExtrasFromUiState({
             agentId: 'codex',
-            settings: makeSettings({ codexBackendMode: 'acp' }),
+            settings: makeAccountScopedAgentSettings({ codexBackendMode: 'acp' }),
         })).not.toHaveProperty('experimentalCodexAcp');
     });
 
     it('returns an empty object for non-codex agents', () => {
         expect(buildResumeSessionExtrasFromUiState({
             agentId: 'claude',
-            settings: makeSettings({ codexBackendMode: 'acp' }),
+            settings: makeAccountScopedAgentSettings({ codexBackendMode: 'acp' }),
         })).toEqual({});
     });
 
     it('uses OpenCode settings without interpreting Session runtime descriptors when resuming', () => {
         expect(buildResumeSessionExtrasFromUiState({
             agentId: 'opencode',
-            settings: makeSettings({
-                opencodeBackendMode: 'acp' as any,
+            settings: makeAccountScopedAgentSettings({
+                opencodeBackendMode: 'acp',
                 opencodeServerBaseUrl: 'http://127.0.0.1:4999/',
             }),
             session: {
@@ -187,8 +187,8 @@ describe('buildResumeSessionExtrasFromUiState', () => {
     it('ignores non-explicit OpenCode Session affinity when resuming', () => {
         expect(buildResumeSessionExtrasFromUiState({
             agentId: 'opencode',
-            settings: makeSettings({
-                opencodeBackendMode: 'acp' as any,
+            settings: makeAccountScopedAgentSettings({
+                opencodeBackendMode: 'acp',
                 opencodeServerBaseUrl: 'http://127.0.0.1:4999/',
             }),
             session: {
@@ -262,7 +262,7 @@ describe('buildWakeResumeExtras', () => {
     it('does not reconstruct Codex runtime descriptors for wake payloads', () => {
         expect(buildWakeResumeExtras({
             agentId: 'claude',
-            resumeCapabilityOptions: { accountSettings: makeSettings({ codexBackendMode: 'acp' }) },
+            resumeCapabilityOptions: { accountSettings: makeAccountScopedAgentSettings({ codexBackendMode: 'acp' }) },
             session: null,
         })).toEqual({});
         expect(buildWakeResumeExtras({
@@ -287,8 +287,8 @@ describe('buildWakeResumeExtras', () => {
         expect(buildWakeResumeExtras({
             agentId: 'opencode',
             resumeCapabilityOptions: {
-                accountSettings: makeSettings({
-                    opencodeBackendMode: 'acp' as any,
+                accountSettings: makeAccountScopedAgentSettings({
+                    opencodeBackendMode: 'acp',
                     opencodeServerBaseUrl: 'http://127.0.0.1:4999/',
                 }),
             },
@@ -313,8 +313,8 @@ describe('buildWakeResumeExtras', () => {
 
         expect(buildResumeSessionExtrasFromUiState({
             agentId: 'opencode',
-            settings: makeSettings({
-                opencodeBackendMode: 'server' as any,
+            settings: makeAccountScopedAgentSettings({
+                opencodeBackendMode: 'server',
                 opencodeServerBaseUrlByServerIdV1: {
                     'server-active': 'http://127.0.0.1:4096/',
                 },
@@ -329,8 +329,8 @@ describe('buildWakeResumeExtras', () => {
         expect(buildWakeResumeExtras({
             agentId: 'opencode',
             resumeCapabilityOptions: {
-                accountSettings: makeSettings({
-                    opencodeBackendMode: 'server' as any,
+                accountSettings: makeAccountScopedAgentSettings({
+                    opencodeBackendMode: 'server',
                     opencodeServerBaseUrlByServerIdV1: {
                         'server-active': 'http://127.0.0.1:4096/',
                     },
@@ -348,8 +348,8 @@ describe('buildWakeResumeExtras', () => {
         expect(buildWakeResumeExtras({
             agentId: 'opencode',
             resumeCapabilityOptions: {
-                accountSettings: makeSettings({
-                    opencodeBackendMode: 'acp' as any,
+                accountSettings: makeAccountScopedAgentSettings({
+                    opencodeBackendMode: 'acp',
                 }),
             },
             session: {
@@ -382,8 +382,8 @@ describe('buildSpawnEnvironmentVariablesFromUiState', () => {
 
         expect(buildSpawnEnvironmentVariablesFromUiState({
             agentId: 'opencode',
-            settings: makeSettings({
-                opencodeBackendMode: 'acp' as any,
+            settings: makeAccountScopedAgentSettings({
+                opencodeBackendMode: 'acp',
                 opencodeServerBaseUrl: ' http://127.0.0.1:4999/ ',
                 opencodeServerBaseUrlByServerIdV1: {
                     'server-1': 'http://127.0.0.1:4096/',
@@ -398,7 +398,7 @@ describe('buildSpawnEnvironmentVariablesFromUiState', () => {
 
         expect(buildSpawnEnvironmentVariablesFromUiState({
             agentId: 'opencode',
-            settings: makeSettings({ opencodeBackendMode: 'server' as any }),
+            settings: makeAccountScopedAgentSettings({ opencodeBackendMode: 'server' }),
             environmentVariables: undefined,
             newSessionOptions: null,
         })).toBeUndefined();
@@ -409,8 +409,8 @@ describe('buildSpawnEnvironmentVariablesFromUiState', () => {
 
         expect(buildSpawnSessionExtrasFromUiState({
             agentId: 'opencode',
-            settings: makeSettings({
-                opencodeBackendMode: 'server' as any,
+            settings: makeAccountScopedAgentSettings({
+                opencodeBackendMode: 'server',
                 opencodeServerBaseUrlByServerIdV1: {
                     'server-1': 'http://127.0.0.1:4096/',
                     'server-2': ' http://127.0.0.1:4097/ ',
@@ -432,8 +432,8 @@ describe('buildSpawnEnvironmentVariablesFromUiState', () => {
     it('ignores invalid OpenCode server url overrides', () => {
         expect(buildSpawnEnvironmentVariablesFromUiState({
             agentId: 'opencode',
-            settings: makeSettings({
-                opencodeBackendMode: 'server' as any,
+            settings: makeAccountScopedAgentSettings({
+                opencodeBackendMode: 'server',
                 opencodeServerBaseUrl: 'not-a-url',
             }),
             environmentVariables: { FOO: '1' },
@@ -462,7 +462,7 @@ describe('buildSpawnEnvironmentVariablesFromUiState', () => {
     it('returns the input env for non-OpenCode agents', () => {
         expect(buildSpawnEnvironmentVariablesFromUiState({
             agentId: 'claude',
-            settings: makeSettings({ opencodeBackendMode: 'acp' as any }),
+            settings: makeAccountScopedAgentSettings({ opencodeBackendMode: 'acp' }),
             environmentVariables: { FOO: '1' },
             newSessionOptions: null,
         })).toEqual({ FOO: '1' });

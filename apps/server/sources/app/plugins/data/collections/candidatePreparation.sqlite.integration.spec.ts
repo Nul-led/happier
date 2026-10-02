@@ -1713,6 +1713,11 @@ describe("plugin Collection candidate preparation", () => {
             },
         });
         const observedBatchRows: number[] = [];
+        const readProperty = (value: unknown, property: PropertyKey): unknown => (
+            typeof value === "object" && value !== null
+                ? Reflect.get(value, property)
+                : undefined
+        );
         await expect(inTx(async (tx) => {
             const delegate = <T extends object>(name: string, value: T): T => new Proxy(value, {
                 get(targetDelegate, property, receiver) {
@@ -1722,8 +1727,9 @@ describe("plugin Collection candidate preparation", () => {
                         ) => Promise<unknown>;
                         return async (...args: unknown[]) => {
                             const request = args[0];
-                            if (name === "row" && request && typeof request === "object" && "take" in request) {
-                                observedBatchRows.push(Number((request as Readonly<{ take?: unknown }>).take));
+                            if (name === "row") {
+                                const take = readProperty(request, "take");
+                                if (take !== undefined) observedBatchRows.push(Number(take));
                             }
                             if (name === "stage") {
                                 const sourceRowDbId = request && typeof request === "object"
@@ -1765,9 +1771,10 @@ describe("plugin Collection candidate preparation", () => {
                     if (property === "pluginCollectionRelation") return delegate("relation", tx.pluginCollectionRelation);
                     if (property === "$executeRawUnsafe") {
                         const executeRawUnsafe = Reflect.get(targetTx, property, targetTx);
+                        if (typeof executeRawUnsafe !== "function") return executeRawUnsafe;
                         return async (...args: unknown[]) => {
                             const query = typeof args[0] === "string" ? args[0] : "";
-                            if (query.includes("PluginCollectionRow") && query.includes("candidate")) {
+                            if (query.includes("PluginCollectionRow") && query.includes('WITH "candidate"')) {
                                 observedBatchRows.push((args.length - 1 - 4) / 7);
                             }
                             return await Reflect.apply(executeRawUnsafe, targetTx, args);

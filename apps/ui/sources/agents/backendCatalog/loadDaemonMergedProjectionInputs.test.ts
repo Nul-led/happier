@@ -72,6 +72,16 @@ function createAccountLifetime(accountId: string, serverId = 'server-1'): Readon
 
 const retainedTestAccountLifetime = createAccountLifetime('account-default').lifetime;
 
+const EMPTY_TARGET_INPUT_SCHEMA = defineProtocolObject({}, { policy: 'closed' }).jsonSchema;
+const REVIEW_ID_TARGET_INPUT_SCHEMA = defineProtocolObject(
+    { reviewId: defineProtocolString() },
+    { policy: 'closed' },
+).jsonSchema;
+const NUMERIC_REVIEW_ID_TARGET_INPUT_SCHEMA = defineProtocolObject(
+    { reviewId: defineProtocolNumber() },
+    { policy: 'closed' },
+).jsonSchema;
+
 const automationEligibleEvents = [{
     event: {
         id: 'acme.events/repository/updated',

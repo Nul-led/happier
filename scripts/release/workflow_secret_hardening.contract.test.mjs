@@ -82,11 +82,12 @@ test('release workflow keeps provider checks outside the compact manual release 
   assert.equal(inputs?.providers_preset, undefined, 'compact manual release workflow should not expose provider presets');
   assert.equal(inputs?.providers_tier, undefined, 'compact manual release workflow should not expose provider tiers');
 
-  const ciJob = parsed?.jobs?.ci;
-  assert.ok(ciJob, 'ci job should exist');
-  assert.equal(ciJob.secrets, undefined, 'ci should not inherit secrets');
-  assert.doesNotMatch(JSON.stringify(ciJob), /run_providers|providers_preset|providers_tier/, 'ci should never run providers directly');
-  assert.equal(parsed?.jobs?.providers, undefined, 'release.yml should not embed a separate providers job; provider contracts run from their dedicated workflow');
+  const { parsed: channel } = await loadWorkflow('release-channel.yml');
+  const preflightJob = channel?.jobs?.release_preflight;
+  assert.ok(preflightJob, 'release_preflight job should exist');
+  assert.equal(preflightJob.secrets, undefined, 'release_preflight should not inherit secrets');
+  assert.doesNotMatch(JSON.stringify(preflightJob), /run_providers|providers_preset|providers_tier/, 'release_preflight should never run providers directly');
+  assert.equal(channel?.jobs?.providers, undefined, 'release-channel.yml should not embed a separate providers job; provider contracts run from their dedicated workflow');
 });
 
 test('manually dispatched secret-bearing workflows enforce trusted refs', async () => {
@@ -133,6 +134,7 @@ test('release actor credentials are unavailable until secret-free workflow-ref a
     'publish-ui-web.yml',
     'release-npm.yml',
     'release.yml',
+    'release-channel.yml',
     'tests.yml',
   ];
 
@@ -197,7 +199,7 @@ test('secret-bearing workflows require release-admin actor guard before privileg
 
   const guardJob = 'release_actor_guard';
   const expectedWiring = [
-    ['release.yml', 'ci'],
+    ['release-channel.yml', 'release_preflight'],
     ['release-npm.yml', 'release'],
     ['promote-ui.yml', 'promote'],
     ['promote-server.yml', 'promote'],

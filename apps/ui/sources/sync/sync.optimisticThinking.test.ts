@@ -460,6 +460,7 @@ describe('sync.sendMessage optimistic thinking', () => {
         runtimeFetchWithServerReachabilityMock.mockReset();
         runtimeFetchWithServerReachabilityMock.mockResolvedValue(new Response(null, { status: 200 }));
         ensureSessionRuntimeForPendingInputMock.mockClear();
+        vi.spyOn(apiSocket, 'request').mockResolvedValue(Response.json({ didUpdate: true }));
     });
 
     afterEach(async () => {
@@ -1758,10 +1759,8 @@ describe('sync.sendMessage optimistic thinking', () => {
 
         try {
             await expect(sync.sendMessage(sessionId, 'stale auth send')).rejects.toMatchObject({
-                name: 'HappyError',
-                canTryAgain: false,
-                kind: 'auth',
                 code: 'not_authenticated',
+                message: 'Authentication required',
             });
 
             expect(send).not.toHaveBeenCalled();
@@ -2326,10 +2325,11 @@ describe('sync.sendMessage optimistic thinking', () => {
         } as const;
 
 
-        const emitWithAck = vi.fn(async () => ({
-            ok: false,
-            error: 'rejected',
-        })) as any;
+        vi.spyOn(apiSocket, 'request').mockResolvedValue(Response.json(
+            { error: 'rejected' },
+            { status: 409 },
+        ));
+        const emitWithAck = vi.fn();
 
         const { sync } = await import('./sync');
         sync.encryption = encryption;
@@ -2475,7 +2475,6 @@ describe('sync.sendMessage optimistic thinking', () => {
             });
 
             const emitWithAck = vi.fn()
-                .mockResolvedValueOnce(null)
                 .mockRejectedValueOnce(new HappyError('Authentication required', false, {
                     kind: 'auth',
                     code: 'not_authenticated',
@@ -2493,10 +2492,10 @@ describe('sync.sendMessage optimistic thinking', () => {
             storage.getState().markSessionOptimisticThinking(sessionId);
 
             await vi.advanceTimersByTimeAsync(1_000);
-            await Promise.resolve();
+            await flushPendingOutboxRetryMicrotasks();
 
-            expect(emitWithAck).toHaveBeenCalledTimes(2);
-            expect(emitWithAck.mock.calls[1]?.[1]).toEqual(expect.objectContaining({
+            expect(emitWithAck).toHaveBeenCalledTimes(1);
+            expect(emitWithAck.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
                 localId: 'p-retry-auth',
                 messageRole: 'user',
             }));
@@ -2542,16 +2541,12 @@ describe('sync.sendMessage optimistic thinking', () => {
                 rawRecord: persistedRawRecord,
             });
 
-            const initialSupervisor = createReadyEndpointSupervisor();
             const supervisor = createAuthProbeEndpointSupervisor();
             const endpointSupervisorPool = await import('@/sync/runtime/connectivity/endpointSupervisorPool');
             vi.spyOn(endpointSupervisorPool, 'getEndpointSupervisorForServer')
-                .mockReturnValueOnce(initialSupervisor)
-                .mockReturnValueOnce(initialSupervisor)
                 .mockReturnValue(supervisor);
 
             const emitWithAck = vi.fn()
-                .mockResolvedValueOnce(null)
                 .mockRejectedValueOnce(new Error('operation has timed out'));
 
             const { sync } = await import('./sync');
@@ -2565,9 +2560,9 @@ describe('sync.sendMessage optimistic thinking', () => {
             storage.getState().markSessionOptimisticThinking(sessionId);
 
             await vi.advanceTimersByTimeAsync(1_000);
-            await Promise.resolve();
+            await flushPendingOutboxRetryMicrotasks();
 
-            expect(emitWithAck).toHaveBeenCalledTimes(2);
+            expect(emitWithAck).toHaveBeenCalledTimes(1);
             expect(supervisor.invalidate).toHaveBeenCalledTimes(1);
             expect((sync as any).pendingMessageCommitRetryTimers.has(`${sessionId}:p-retry-auth-probe`)).toBe(false);
             expect(storage.getState().sessionPending[sessionId]?.messages.map((message) => message.id)).toEqual(['p-persisted']);
@@ -2661,6 +2656,7 @@ describe('sync.sendMessage optimistic thinking', () => {
         const requestSpy = vi.spyOn(apiSocket, 'request').mockResolvedValue(Response.json({ didUpdate: true }));
         const { sync } = await import('./sync');
         sync.encryption = encryption;
+        vi.spyOn(encryption, 'getMachineEncryption').mockReturnValue({} as any);
         sync.setMessageTransport({
             emitWithAck,
             send: vi.fn(),

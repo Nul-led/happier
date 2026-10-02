@@ -139,6 +139,13 @@ vi.mock('@/components/ui/text/Text', () => ({
     TextSelectabilityScope: ({ children }: { children: React.ReactNode }) => children,
 }));
 
+vi.mock('@/components/ui/lists/virtualized/VirtualizedList', async () => {
+    const { createCapturingLegendListMock } = await import('@/dev/testkit/mocks/legendList');
+    return {
+        VirtualizedList: createCapturingLegendListMock({ renderItems: true }).module.LegendList,
+    };
+});
+
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: () => scmWriteEnabledMock,
 }));

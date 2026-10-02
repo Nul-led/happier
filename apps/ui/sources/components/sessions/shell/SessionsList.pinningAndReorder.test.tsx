@@ -29,7 +29,6 @@ vi.mock('@/components/appShell/search/UniversalSearchRuntimeContext', () => ({
 }));
 
 let capturedRootFlatListProps: any | null = null;
-const capturedRootVirtualizedListProps = vi.hoisted(() => ({ current: null as any }));
 const routerPushSpy = vi.fn();
 const modalAlertSpy = vi.hoisted(() => vi.fn());
 let hideInactiveSessions = false;
@@ -73,43 +72,6 @@ const setWorkspaceRefsV1 = vi.fn();
 const readMachineTargetForSessionMock = vi.hoisted(() => vi.fn());
 const mockMachinesState = vi.hoisted(() => ({ current: [] as any[] }));
 const flatListMock = createCapturingFlatListMock({ renderItems: true });
-
-vi.mock('@legendapp/list/react-native', async () => {
-    const ReactModule = await import('react');
-    const renderSlot = (slot: any) => {
-        if (!slot) return null;
-        return ReactModule.isValidElement(slot) ? slot : ReactModule.createElement(slot);
-    };
-    return {
-        LegendList: ReactModule.forwardRef<any, any>((props, ref) => {
-            capturedRootVirtualizedListProps.current = props;
-            if (typeof ref === 'function') {
-                ref({
-                    scrollToOffset: () => {},
-                    scrollToIndex: () => {},
-                });
-            } else if (ref && typeof ref === 'object') {
-                ref.current = {
-                    scrollToOffset: () => {},
-                    scrollToIndex: () => {},
-                };
-            }
-            return ReactModule.createElement(
-                'LegendList',
-                props,
-                renderSlot(props.ListHeaderComponent),
-                ...(props.data ?? []).map((item: any, index: number) => (
-                    ReactModule.createElement(
-                        ReactModule.Fragment,
-                        { key: props.keyExtractor?.(item) ?? String(index) },
-                        props.renderItem({ item, index }),
-                    )
-                )),
-                renderSlot(props.ListFooterComponent),
-            );
-        }),
-    };
-});
 
 const groupKey = 'server:server_a:day:2026-02-17';
 
@@ -599,7 +561,6 @@ describe('SessionsList pinning + per-group ordering', () => {
         routerPushSpy.mockReset();
         mockAllowedServerIds = ['server_a'];
         capturedRootFlatListProps = null;
-        capturedRootVirtualizedListProps.current = null;
         hideInactiveSessions = false;
         readMachineTargetForSessionMock.mockReset();
         mockMachinesState.current = [];

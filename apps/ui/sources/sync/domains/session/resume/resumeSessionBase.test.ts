@@ -3,6 +3,46 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as catalog from '@/agents/catalog/catalog';
 import { buildResumeSessionBaseOptionsFromSession } from './resumeSessionBase';
 
+const CODEX_AGENT_TARGET = {
+    kind: 'agent',
+    identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+} as const;
+const CLAUDE_AGENT_TARGET = {
+    kind: 'agent',
+    identity: { pluginId: 'happier.agent.claude', localId: 'claude' },
+} as const;
+const EXTERNAL_AGENT_IDENTITY = {
+    pluginId: 'acme.lifecycle',
+    localId: 'acme-lifecycle',
+} as const;
+const EXTERNAL_AGENT_ID = `${EXTERNAL_AGENT_IDENTITY.pluginId}/${EXTERNAL_AGENT_IDENTITY.localId}`;
+
+function externalAgentMetadata(providerSessionId: string) {
+    return {
+        machineId: 'm1',
+        path: '/tmp',
+        runtimeDescriptorV1: {
+            v: 1,
+            agentId: EXTERNAL_AGENT_ID,
+            agent: { providerSessionId },
+        },
+        nativeResumeIdentityV1: { v: 1, vendorResumeId: providerSessionId },
+        externalSessionV1: {
+            v: 1,
+            agentId: EXTERNAL_AGENT_ID,
+            machineId: 'm1',
+            remoteSessionId: providerSessionId,
+            source: { kind: 'pluginTranscript' },
+            linkedAtMs: 1,
+            qualifiedIdentity: {
+                v: 1,
+                agent: EXTERNAL_AGENT_IDENTITY,
+                source: { kind: 'pluginTranscript', contractVersion: 1 },
+            },
+        },
+    } as const;
+}
+
 let storageState: any = {
     sessions: {},
     machines: {},
@@ -100,11 +140,24 @@ describe('buildResumeSessionBaseOptionsFromSession', () => {
         })).toBeNull();
     });
 
-    it('returns null when vendor resume is not allowed', () => {
+    it('returns null when the current Agent declaration does not allow resume', () => {
         expect(buildResumeSessionBaseOptionsFromSession({
             sessionId: 's1',
-            session: { metadata: { machineId: 'm1', path: '/tmp', flavor: 'openai', codexSessionId: 'x1' } } as any,
-            resumeCapabilityOptions: { accountSettings: { codexBackendMode: 'mcp' } }, // codex not enabled
+            session: { metadata: externalAgentMetadata('external-session-1') } as any,
+            resumeCapabilityOptions: {
+                currentAgentCapabilities: {
+                    agentId: EXTERNAL_AGENT_ID,
+                    identity: EXTERNAL_AGENT_IDENTITY,
+                    generation: 42,
+                    capabilities: {
+                        sessions: {
+                            open: ['create'],
+                            delivery: ['newTurn'],
+                            cancel: true,
+                        },
+                    },
+                },
+            },
         })).toBeNull();
     });
 
@@ -119,7 +172,7 @@ describe('buildResumeSessionBaseOptionsFromSession', () => {
             sessionId: 's1',
             machineId: 'm1',
             directory: '/tmp',
-            backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+            agentTarget: CLAUDE_AGENT_TARGET,
         });
     });
 
@@ -164,7 +217,7 @@ describe('buildResumeSessionBaseOptionsFromSession', () => {
             sessionId: 's1',
             machineId: 'm1',
             directory: '/tmp',
-            backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+            agentTarget: CODEX_AGENT_TARGET,
             resume: 'x1',
             connectedServices,
             connectedServicesUpdatedAt: 2468,
@@ -223,7 +276,7 @@ describe('buildResumeSessionBaseOptionsFromSession', () => {
             sessionId: 's1',
             machineId: 'm-target',
             directory: '/tmp/target',
-            backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+            agentTarget: CODEX_AGENT_TARGET,
             resume: 'x1',
         });
     });
@@ -277,7 +330,7 @@ describe('buildResumeSessionBaseOptionsFromSession', () => {
             sessionId: 's1',
             machineId: 'm-target',
             directory: '/tmp/target',
-            backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+            agentTarget: CODEX_AGENT_TARGET,
             resume: 'x1',
         });
     });
@@ -306,7 +359,7 @@ describe('buildResumeSessionBaseOptionsFromSession', () => {
             sessionId: 's1',
             machineId: 'm1',
             directory: '/tmp',
-            backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+            agentTarget: CODEX_AGENT_TARGET,
             resume: 'x1',
             runtimeDescriptorV1: {
                 v: 1,
@@ -351,7 +404,7 @@ describe('buildResumeSessionBaseOptionsFromSession', () => {
             sessionId: 's1',
             machineId: 'm1',
             directory: '/tmp',
-            backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+            agentTarget: CODEX_AGENT_TARGET,
             resume: 'x1',
             runtimeDescriptorV1: {
                 v: 1,
@@ -369,19 +422,13 @@ describe('buildResumeSessionBaseOptionsFromSession', () => {
             sessionId: 's1',
             session: {
                 metadata: {
-                    machineId: 'm1',
-                    path: '/tmp',
-                    runtimeDescriptorV1: {
-                        v: 1,
-                        agentId: 'acme-lifecycle',
-                        provider: { providerSessionId: 'acme-session-1' },
-                    },
+                    ...externalAgentMetadata('acme-session-1'),
                 },
             } as any,
             resumeCapabilityOptions: {
                 currentAgentCapabilities: {
-                    agentId: 'acme-lifecycle',
-                    identity: { pluginId: 'acme.lifecycle', localId: 'acme-lifecycle' },
+                    agentId: EXTERNAL_AGENT_ID,
+                    identity: EXTERNAL_AGENT_IDENTITY,
                     generation: 42,
                     capabilities: {
                         sessions: {
@@ -396,11 +443,11 @@ describe('buildResumeSessionBaseOptionsFromSession', () => {
             sessionId: 's1',
             machineId: 'm1',
             directory: '/tmp',
-            backendTarget: { kind: 'backend', backendId: 'acme-lifecycle' },
+            agentTarget: { kind: 'agent', identity: EXTERNAL_AGENT_IDENTITY },
             resume: 'acme-session-1',
             runtimeDescriptorV1: {
                 v: 1,
-                agentId: 'acme-lifecycle',
+                agentId: EXTERNAL_AGENT_ID,
                 agent: { providerSessionId: 'acme-session-1' },
             },
         });
@@ -416,7 +463,7 @@ describe('buildResumeSessionBaseOptionsFromSession', () => {
             sessionId: 's1',
             machineId: 'm1',
             directory: '/tmp',
-            backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+            agentTarget: CLAUDE_AGENT_TARGET,
             resume: 'c1',
             permissionMode: 'plan',
             permissionModeUpdatedAt: 123,

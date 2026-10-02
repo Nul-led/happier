@@ -21,6 +21,7 @@ const RELEASE_PACKAGE_FIELDS = Object.freeze({
   sdk: 'sdk',
   channelsProtocol: 'channels_protocol',
 });
+const REUSABLE_CANDIDATE_FIELDS = Object.freeze(['cli', 'stack', 'server']);
 
 const REUSABLE_CANDIDATE_FIELDS = Object.freeze(['cli', 'stack', 'server']);
 const CONTROL_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -226,6 +227,14 @@ function main() {
     pluginSdk: String(values['plugin-sdk-version'] ?? '').trim(),
     sdk: String(values['sdk-version'] ?? '').trim(),
   };
+  const { allocationRequested, reusedVersions } = resolveNpmVersionSources({
+    requested,
+    suppliedVersions: {
+      cli: String(values['cli-version'] ?? ''),
+      stack: String(values['stack-version'] ?? ''),
+      server: String(values['server-version'] ?? ''),
+    },
+  });
   /** @type {Record<string, string>} */
   let versions;
   if (channel === 'preview') {
@@ -255,6 +264,7 @@ function main() {
       );
     }
   }
+  Object.assign(versions, reusedVersions);
   const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
   const result = resolveNpmReleaseMetadata({
     channel,

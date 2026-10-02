@@ -115,14 +115,16 @@ describe('getNewSessionPreflightIssues', () => {
     });
 
     it('returns codex preflight issues based on machine results (deps missing)', () => {
-        const settings = makeSettings({ codexBackendMode: 'acp' });
+        const settings = makeSettings();
+        const pluginSettings = { account: { codexBackendMode: 'acp' } } as const;
         const issues = getNewSessionPreflightIssues({
             agentId: 'codex',
-            experiments: getAgentResumeExperimentsFromSettings('codex', settings),
+            experiments: getAgentResumeExperimentsFromSettings('codex', settings, null, pluginSettings),
             resumeSessionId: 'x1',
             results: makeResults({
                 [CODEX_ACP_DEP_ID]: okCapability({ installed: false }),
             }),
+            pluginSettings,
         });
         // Codex ACP is handled via background install + daemon fresh-session fallback, so the wizard
         // should not hard-block when the optional dependency is not installed yet.

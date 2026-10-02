@@ -22,6 +22,28 @@ Notes:
 
 ## Release flow (maintainers)
 
+Run the private conductor on the configured macOS authority. The canonical
+wrapper in this environment is
+`/Users/leeroy/Documents/Development/happier/maintainers-tools/bin/hmaint`;
+invoke it directly and prove it with
+`/Users/leeroy/Documents/Development/happier/maintainers-tools/bin/hmaint --help`.
+From the managed Linux VM, keep source work in the authoritative VM checkout
+and route the same wrapper through an existing configured 0.3 checkout:
+
+```bash
+cd <absolute-0.3-checkout>
+./apps/stack/bin/hstack-exec --target=mac-host -- \
+  /Users/leeroy/Documents/Development/happier/maintainers-tools/bin/hmaint \
+  release bootstrap --repo <absolute-macOS-checkout> --json
+```
+
+Invoke the launcher from the intended repository-relative working directory;
+it projects that directory remotely and does not accept a launcher-level
+`--cwd` option. If the launcher, configured `mac-host` target, wrapper, or
+Mac-visible target checkout cannot be proved, fail closed. Do not guess another
+checkout, copy credentials into the VM, install a VM-local conductor, or use a
+personal GitHub login.
+
 ### Preview release (dev → preview)
 
 When you want to publish/deploy a new preview build:
@@ -70,6 +92,42 @@ Notes:
   snapshotted `stage:source` and `stage:dev` issues to `stage:stable`; it does
   not claim that unrelated preview-only corrections were included.
 
+### Combined preview and production release (dev → both)
+
+When the same approved source must ship to both channels without a second
+operator cycle, use the private conductor target `preview-and-production`.
+It dispatches the canonical top-level `release.yml` with the combined target
+and `confirm=release dev to preview and main`. That owner snapshots source/dev
+issue eligibility once and invokes `release-channel.yml` for preview and
+production in parallel. Its automatic validation profile is `stable` for
+combined publication and `integrated` for a single channel; an explicit profile
+still overrides that default.
+
+The two calls share the exact source SHA, release notes, CI evidence, explicit
+approvals, and one unioned source-risk validation pass. The shared validator
+computes changes against both channel bases, then runs each applicable MySQL,
+platform-service, and trust-root gate once. Each channel independently admits
+that evidence against the same bound SHA. They do not share built artifacts:
+preview and production
+embed different feature-policy environments, so each channel must build and
+verify its own bytes. Same-channel releases still serialize; the two channel
+calls use separate non-cancelling concurrency groups. The outer workflow moves
+its source/dev issue snapshot directly to `stage:stable` only after both calls
+complete post-publication verification successfully.
+
+Use GitHub's failed-job rerun while workflow control is unchanged. After a
+control fix, resume from the prior combined run; each channel reads its own
+terminal `happier-release-status-preview` or `happier-release-status-production`
+artifact and reuses only that channel's verified work. Single-channel origins
+retain the unscoped `happier-release-status` artifact. Exact
+per-channel resume facts are not available until those child workflows resolve
+their respective status artifacts. The earlier shared source-validation pass
+therefore conservatively treats CLI, stack, server, and Runner as requested
+whenever a resume ID is present. This may run a platform-service gate that a
+website-only or otherwise non-binary resume does not ultimately consume, but it
+cannot waive or bypass a required gate. Do not duplicate the resume resolver in
+the parent workflow to remove this conservative check.
+
 Issue availability is tracked by the mutually exclusive `stage:source`,
 `stage:dev`, `stage:preview`, and `stage:stable` labels documented in
 `docs/issue-triage.md`. Ordinary current-`dev` nightlies perform `source → dev`.
@@ -81,6 +139,12 @@ post-preview dev changes to a preview candidate. Failed and dry-run releases
 move nothing. The reconciler re-reads each snapshotted issue, preserves
 unrelated labels, and skips closed or manually restaged issues. It never
 comments on or closes an issue.
+
+`website` and `docs` are independent release targets. Either may be selected
+without the other, and each has its own change decision, deploy job, status
+surface, and recovery evidence. Combined preview-and-production combines
+channels; it forwards the selected target set to both channels and does not
+couple website and docs publication.
 
 ### Public release contract and approval boundary
 
@@ -167,11 +231,20 @@ merely from the existence of a versioned candidate:
 Unrelated UI, documentation, notes-only, or internally compatible changes do
 not pay these heavy costs merely because release propagation produced a server
 or CLI version. Unnecessary checks are skipped automatically with a reason.
-An explicit maintainer may refine the heavy suite selection or waive exact-SHA
-CI with a bounded reason; the workflow records that evidence as `WAIVED`, not
-`PASS`. Candidate identity, artifact integrity, signatures, authorization, and
-irreversible-data admission remain hard target contracts rather than release
-checkboxes.
+An explicit maintainer may refine the heavy suite selection or waive supported
+evidence with a bounded reason; the workflow records that evidence as `WAIVED`,
+never `PASS`. The exact boundaries are:
+
+| Override | May waive | Does not waive |
+| --- | --- | --- |
+| `waive_ci` with a reason | exact-SHA source CI plus source-only MySQL and platform-service checks | trust-root checks, candidate identity, signing, artifact verification, binary smoke, or publication authorization |
+| `waive_validation_suites` with a reason | target-registered risk suites other than the two hard suites | `artifact-verify` and `binary-smoke` |
+
+When `plugin_sdk` or `sdk` publication is selected, exact-SHA CI cannot be
+waived at all. The external SDK authentication-readiness waiver is a separate
+named admission fact and does not waive release validation. Candidate identity,
+artifact integrity, signatures, authorization, and irreversible-data admission
+remain hard target contracts rather than release checkboxes.
 
 The public API comparator supplies mechanical facts; it does not choose SemVer
 or create a second approval workflow. The maintainer reviews those facts during
@@ -207,8 +280,9 @@ Run individual suites through `release-validate --suite ...` with their
 suite-specific sources; `release-validate --profile <id> --dry-run` only prints
 the profile's dispatchable suite IDs.
 
-Passing preparation is not a release go-ahead. A human must explicitly dispatch
-the hosted release with its confirmation phrase. A Qualified V4 activation is
+Passing preparation is not a release go-ahead. A human must explicitly
+authorize the exact candidate and confirmation phrase; the private conductor
+then owns the hosted dispatch. A Qualified V4 activation is
 an irreversible migration and requires its own explicit approval; the ordinary
 branch-promotion confirmation does not authorize it. The workflow resolves and
 records the release source SHA before it publishes or promotes release outputs;
@@ -410,6 +484,8 @@ publishes with OIDC. On this release line the top-level public-release caller is
 `release.yml`, which must be trusted in the `release-shared` environment. Do not
 document or configure a second caller unless that workflow actually exists and
 invokes the same canonical publisher.
+This follows npm's [calling-workflow validation](https://docs.npmjs.com/trusted-publishers/)
+and GitHub's [caller claims for reusable workflows](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-with-reusable-workflows).
 Register the workflow filename without `.github/workflows/`; do not add a
 long-lived `NPM_TOKEN` fallback. A cluster of otherwise-authorized `ENEEDAUTH`
 publisher failures normally indicates a missing or mismatched top-level caller.
@@ -439,8 +515,31 @@ Standard release recovery can retain accepted OTA, native iOS/Android, and APK
 flows from exact-source successful jobs and their decisive successful steps.
 The canonical status projection records the original Expo action; completion is
 reused only for that same action. Missing historical mode or ambiguous job evidence
-keeps the flow enabled. Partial native recovery builds only the missing platform.
+keeps the flow enabled. Saved status also carries the original web, Expo, and
+desktop request; historical origins without that complete intent use the new
+explicit dispatch inputs. Partial native recovery builds only the missing platform.
 These accepted workflow outcomes do not prove public App Store or Play availability.
+
+The `full` Expo action includes OTA, native store submission, and dedicated APK
+publication. Android source builds retain their profile-qualified AAB and APK
+artifacts without release-write credentials. A separate trusted-control job
+signs and publishes the APK using the admitted source and embedded app version;
+a successful build alone is not APK publication evidence. Retained-AAB retry
+admits the original source, environment, and profile before submitting the same
+artifact from a dependency-free project-identity workspace, without rebuilding.
+
+Accepted successful downstream deployments and non-SDK npm/Docker publication
+can be reused on resume. Rolling assets additionally require the origin's
+verification and fresh final verification of the current exact release refs.
+Retained CLI, stack, server, and Runner verification authenticates the exact
+immutable manifest with the existing release-signature owner and requires the
+rolling manifest to contain the same authenticated bytes. Its original build
+and publication identities may belong to a completed failed or cancelled
+aggregate; fresh products and external CLI build candidates keep their existing
+run-success requirements. UI-web has no `latest.json` provenance producer and
+continues through its existing signed-bundle and exact-ref verification path.
+Public SDK publishers still produce their individual integrity evidence and
+cannot be skipped through generic npm completion.
 
 ### Reusing an exact CLI native candidate
 
@@ -545,8 +644,10 @@ The reset option exists for rare cases where you intentionally want `target` to 
 
 For the server, database migrations should be automated as part of the deployment runtime:
 
-- Run `prisma migrate deploy` at container startup (entrypoint) or via an explicit platform “pre-deploy” hook.
-- Running migrations from *both* API and worker is acceptable as long as you expect contention and handle it (Prisma uses a DB lock to serialize migrations; the non-holder should wait/retry).
+- For a single unmanaged container, the default entrypoint may run the provider's migration deploy command before server startup.
+- For health-managed or multi-replica deployments, run `run-server --migrate-only` once in an explicit, blocking platform pre-deploy operation. Start API and worker replicas with `RUN_MIGRATIONS=0` only after it succeeds.
+- When a platform cannot run and await a blocking pre-deploy operation, designate exactly one API service as the migration owner and set `RUN_MIGRATIONS=0` on workers and all other replicas. Protect that owner with start-first rollout, rollback on failure, and sufficient health-check startup grace; webhook acceptance alone does not prove migration or deployment completion.
+- Do not rely on API and worker startup races as migration ownership. Prisma's database lock serializes contenders, but it cannot preserve the winning migration when an orchestrator terminates that container.
 - Avoid running migrations at image build-time (Dockerfile), since migrations require a live DB connection.
 
 ### Irreversible Qualified Connected Accounts V4 activation

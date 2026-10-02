@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -47,8 +47,10 @@ echo Linux
 set -euo pipefail
 
 real_awk="/usr/bin/awk"
-if [[ ! -x "$real_awk" ]]; then
-  real_awk="$(command -v gawk || true)"
+awk_flags=()
+if command -v gawk >/dev/null 2>&1; then
+  real_awk="$(command -v gawk)"
+  awk_flags=("--lint")
 fi
 if [[ -z "$real_awk" ]]; then
   echo "missing real awk" >&2
@@ -66,7 +68,7 @@ if [[ -n "$max_len" ]] && [[ "$max_len" -gt "$limit" ]]; then
   exit 0
 fi
 
-exec "$real_awk" "$@" "$tmp"
+exec "$real_awk" "\${awk_flags[@]}" "$@" "$tmp"
 `,
     'utf8',
   );
@@ -147,6 +149,7 @@ JSON_TAIL
     PATH: `${binDir}:/usr/bin:/bin:/usr/sbin:/sbin`,
     HAPPIER_CHANNEL: 'preview',
     HAPPIER_PRODUCT: 'cli',
+    HAPPIER_INSTALL_VERSION: '0.1.0-preview.1',
     HAPPIER_INSTALL_DIR: installDir,
     HAPPIER_BIN_DIR: outBinDir,
     HAPPIER_NO_PATH_UPDATE: '1',
@@ -163,12 +166,22 @@ JSON_TAIL
   assert.notEqual(res.status, 0, `expected non-zero exit:\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}\n`);
   assert.doesNotMatch(combined, /Unable to locate release assets/i, `unexpected asset lookup failure:\n${combined}`);
   assert.match(combined, /Checksum verification failed/i, `expected checksum failure after parsing assets:\n${combined}`);
+  assert.doesNotMatch(combined, /escape sequence.*not a known escape sequence/i);
 
   await rm(root, { recursive: true, force: true });
 });
 
-test('install.sh asset lookup handles compact GitHub release JSON', async () => {
+for (const scenario of [
+  { channel: 'preview', product: 'cli', alias: false },
+  { channel: 'preview', product: 'cli', alias: true },
+  { channel: 'stable', product: 'cli', alias: true },
+  { channel: 'stable', product: 'cli', alias: true, exact: true },
+  { channel: 'stable', product: 'server', alias: true, exact: true },
+  { channel: 'stable', product: 'stack', alias: true, exact: true },
+]) {
+test(`install.sh compact release lookup: ${scenario.product}/${scenario.channel}, alias=${scenario.alias}, exact=${Boolean(scenario.exact)}`, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'happier-installer-compact-asset-lookup-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
   const binDir = join(root, 'bin');
   const installDir = join(root, 'install');
   const outBinDir = join(root, 'out-bin');
@@ -195,9 +208,13 @@ echo Darwin
   );
   await chmod(unameStubPath, 0o755);
 
-  const version = '0.2.2-preview.1775586717.26498';
-  const assetName = `happier-v${version}-darwin-arm64.tar.gz`;
-  const checksumsName = `checksums-happier-v${version}.txt`;
+  const version = scenario.channel === 'preview' ? '0.2.2-preview.1775586717.26498' : '0.2.2';
+  const prefix = scenario.product === 'server' ? 'happier-server' : scenario.product === 'stack' ? 'hstack' : 'happier';
+  const checksumAssetName = `${prefix}-v${version}-darwin-arm64.tar.gz`;
+  const assetName = scenario.alias ? `${prefix}-darwin-arm64.tar.gz` : checksumAssetName;
+  const checksumsName = `checksums-${prefix}-v${version}.txt`;
+  const unrelatedSignatureName = `checksums-${prefix}-v${scenario.channel === 'preview' ? '9.9.9-preview.999' : '9.9.9'}.txt.minisig`;
+  const requestLog = join(root, 'requests.log');
   const compactReleaseJson = JSON.stringify({
     assets: [
       {
@@ -208,6 +225,10 @@ echo Darwin
         name: assetName,
         browser_download_url: `https://example.test/${assetName}`,
       },
+      ...(scenario.alias ? [{
+        name: checksumAssetName,
+        browser_download_url: `https://example.test/${checksumAssetName}`,
+      }] : []),
       {
         name: checksumsName,
         browser_download_url: `https://example.test/${checksumsName}`,
@@ -215,6 +236,10 @@ echo Darwin
       {
         name: `${checksumsName}.minisig`,
         browser_download_url: `https://example.test/${checksumsName}.minisig`,
+      },
+      {
+        name: unrelatedSignatureName,
+        browser_download_url: 'https://example.test/wrong-signature',
       },
     ],
   });
@@ -237,9 +262,11 @@ for ((i=1; i<=$#; i++)); do
     http://*|https://*) url="\${!i}" ;;
   esac
 done
+printf '%s\\n' "$url" >> "$HAPPIER_TEST_REQUEST_LOG"
 if [[ -n "$out" ]]; then
   if [[ "$url" == *"${checksumsName}" ]]; then
-    printf '%s  %s\\n' "0000000000000000000000000000000000000000000000000000000000000000" "${assetName}" > "$out"
+    printf '%s  %s\\n' "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" "${checksumAssetName}.bak" > "$out"
+    printf '%s  %s\\n' "0000000000000000000000000000000000000000000000000000000000000000" "${checksumAssetName}" >> "$out"
     exit 0
   fi
   : > "$out"
@@ -256,8 +283,10 @@ printf '%s' '${compactReleaseJson}'
   const env = {
     ...process.env,
     PATH: `${binDir}:/usr/bin:/bin:/usr/sbin:/sbin`,
-    HAPPIER_CHANNEL: 'preview',
-    HAPPIER_PRODUCT: 'cli',
+    HAPPIER_CHANNEL: scenario.channel,
+    HAPPIER_PRODUCT: scenario.product,
+    HAPPIER_INSTALL_VERSION: scenario.exact ? version : '',
+    HAPPIER_TEST_REQUEST_LOG: requestLog,
     HAPPIER_INSTALL_DIR: installDir,
     HAPPIER_BIN_DIR: outBinDir,
     HAPPIER_NO_PATH_UPDATE: '1',
@@ -274,9 +303,17 @@ printf '%s' '${compactReleaseJson}'
   assert.notEqual(res.status, 0, `expected non-zero exit:\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}\n`);
   assert.doesNotMatch(combined, /Unable to locate release assets/i, `unexpected asset lookup failure:\n${combined}`);
   assert.match(combined, /Checksum verification failed/i, `expected checksum failure after parsing compact assets:\n${combined}`);
-
-  await rm(root, { recursive: true, force: true });
+  assert.ok(combined.includes(`Expected SHA-256: ${'0'.repeat(64)}`), 'checksum lookup must match the exact immutable archive name');
+  const requests = (await readFile(requestLog, 'utf8')).trim().split('\n');
+  const expectedTag = scenario.exact ? `${scenario.product}-v${version}` : `${scenario.product}-${scenario.channel}`;
+  assert.equal(requests[0], `https://api.github.com/repos/happier-dev/happier/releases/tags/${expectedTag}`);
+  assert.deepEqual(requests.slice(1), [
+    `https://example.test/${scenario.alias && !scenario.exact ? assetName : checksumAssetName}`,
+    `https://example.test/${checksumsName}`,
+    `https://example.test/${checksumsName}.minisig`,
+  ]);
 });
+}
 
 test('install.sh --version semver-sorts rolling remote release assets instead of trusting API order', async () => {
   const root = await mkdtemp(join(tmpdir(), 'happier-installer-remote-asset-order-'));
@@ -323,6 +360,14 @@ cat <<'JSON'
     {
       "name": "happier-v${olderVersion}-linux-x64.tar.gz",
       "browser_download_url": "https://example.test/happier-v${olderVersion}-linux-x64.tar.gz"
+    },
+    {
+      "name": "checksums-happier-v${newerVersion}.txt",
+      "browser_download_url": "https://example.test/checksums-happier-v${newerVersion}.txt"
+    },
+    {
+      "name": "checksums-happier-v${olderVersion}.txt",
+      "browser_download_url": "https://example.test/checksums-happier-v${olderVersion}.txt"
     }
   ]
 }
@@ -402,6 +447,14 @@ cat <<'JSON'
     {
       "name": "happier-v${olderVersion}-linux-x64.tar.gz",
       "browser_download_url": "https://example.test/happier-v${olderVersion}-linux-x64.tar.gz"
+    },
+    {
+      "name": "checksums-happier-v${newerVersion}.txt",
+      "browser_download_url": "https://example.test/checksums-happier-v${newerVersion}.txt"
+    },
+    {
+      "name": "checksums-happier-v${olderVersion}.txt",
+      "browser_download_url": "https://example.test/checksums-happier-v${olderVersion}.txt"
     }
   ]
 }

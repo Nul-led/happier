@@ -74,8 +74,8 @@ installPickerCommonModuleMocks({
         }),
     text: async () => (await import('@/dev/testkit/mocks/text')).createTextModuleMock(),
     unistyles: async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock(),
-    expoRouter: async () =>
-        (await import('@/dev/testkit/mocks/router')).createExpoRouterMock({
+    expoRouter: async () => {
+        const module = (await import('@/dev/testkit/mocks/router')).createExpoRouterMock({
             navigation: navigationMock,
             params: () => pickerRouteBoundary.params,
             router: {
@@ -85,7 +85,12 @@ installPickerCommonModuleMocks({
                 setParams: routerMock.setParams,
             },
             stackOptionsCapture,
-        }).module,
+        }).module;
+        return {
+            ...module,
+            useLocalSearchParams: () => machineRouteParams,
+        };
+    },
     storage: async (importOriginal) =>
         (await import('@/dev/testkit/mocks/storage')).createStorageModuleMock({
             importOriginal,

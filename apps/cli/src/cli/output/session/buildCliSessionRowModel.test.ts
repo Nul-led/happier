@@ -215,7 +215,7 @@ describe('buildCliSessionRowModel', () => {
     });
   });
 
-  it('prefers canonical runtimeDescriptorV1 over legacy agentRuntimeDescriptorV1 for plugin vendor resume eligibility', () => {
+  it('uses canonical runtimeDescriptorV1 to attribute generic native resume identity over the legacy descriptor', () => {
     const rowModel = buildCliSessionRowModel({
       credentials,
       rawSession: {
@@ -336,8 +336,9 @@ describe('buildCliSessionRowModel', () => {
           runtimeDescriptorV1: {
             v: 1,
             agentId: 'acme.resume.backend',
-            agent: { backendMode: 'acp', providerSessionId: 'plugin-vendor-session-1' },
+            agent: { backendMode: 'acp', privateResumeFact: 'opaque' },
           },
+          nativeResumeIdentityV1: { v: 1, vendorResumeId: 'plugin-vendor-session-1' },
         }),
       } as any,
       contributionRegistry: {

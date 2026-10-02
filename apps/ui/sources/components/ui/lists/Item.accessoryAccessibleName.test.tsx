@@ -2,7 +2,7 @@ import React from 'react';
 import type { ReactTestInstance } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
-import { renderScreen, type RenderScreenResult } from '@/dev/testkit';
+import { findAllHostTestInstances, renderScreen, type RenderScreenResult } from '@/dev/testkit';
 
 import { installUiListsCommonModuleMocks } from './uiListsTestHelpers';
 

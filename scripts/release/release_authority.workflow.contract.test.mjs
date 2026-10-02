@@ -78,6 +78,10 @@ const signedPublishers = [
 
 test('reachable release graph has one CLI GitHub Release writer for every signed CLI tag namespace', () => {
   const reachable = reachableWorkflowNames(['release.yml', 'nightly-dev.yml']);
+  assert.ok(reachable.has('release-channel.yml'), 'root dispatch must reach the reusable channel execution owner');
+  assert.ok(workflow('release.yml').on.workflow_dispatch, 'root retains manual dispatch authority');
+  assert.ok(workflow('release-channel.yml').on.workflow_call, 'channel execution must be reusable');
+  assert.equal(workflow('release-channel.yml').on.workflow_dispatch, undefined, 'channel execution is not a competing dispatcher');
   assert.ok(reachable.has('publish-cli-binaries.yml'), 'signed CLI publisher must remain reachable');
 
   const cliTag = /^(?:cli-v|cli-(?:stable|preview|dev))(?:$|\$\{\{)/;
@@ -495,7 +499,7 @@ test('every App token reachable from full or nightly release has exact repositor
 });
 
 test('full release binds one candidate SHA for runtime publication and deployment', () => {
-  const jobs = workflow('release.yml').jobs;
+  const jobs = workflow('release-channel.yml').jobs;
   assert.ok(jobs.prepare_release_candidate);
   assert.equal(jobs.publish_server_runtime.with.authorized_sha, '${{ needs.prepare_release_candidate.outputs.source_sha }}');
   assert.equal(jobs.deploy_server.with.source_ref, '${{ needs.prepare_release_candidate.outputs.source_sha }}');
@@ -510,13 +514,13 @@ test('preview release forwards one complete CLI candidate identity and binds it 
     assert.equal(inputs[inputName]?.required, false, `${inputName} must remain optional for ordinary releases`);
     assert.equal(inputs[inputName]?.default, '', `${inputName} must preserve the ordinary fresh-build path`);
   }
-  const jobs = parsed.jobs;
+  const jobs = workflow('release-channel.yml').jobs;
   assert.match(
     jobs.plan.outputs.publish_cli_binaries_needed,
     /inputs\.candidate_run_id != ''/,
     'selecting a candidate must not be silently ignored when no CLI diff is detected',
   );
-  const inputValidation = jobs.ci.steps.find((step) => step.name === 'Validate release dispatch');
+  const inputValidation = jobs.release_preflight.steps.find((step) => step.name === 'Validate release dispatch');
   assert.ok(inputValidation, 'release input validation step');
   assert.match(inputValidation.run, /validate-release-dispatch\.mjs/);
 

@@ -648,6 +648,8 @@ vi.mock('@/sync/domains/session/resolveWorkspaceScopeForSession', () => ({
   useWorkspaceScopeForSession: () => ({ serverId: 'server-canonical', machineId: 'machine-1', rootPath: '/tmp' }),
 }));
 
+const { SessionView, projectPendingMessageComposerMentions } = await import('./SessionView');
+
 function syncShellStorageStore() {
   const shellStorageStore = shellStorageStoreState.current;
   if (!shellStorageStore) return;
@@ -672,6 +674,7 @@ describe('SessionView (direct sessions)', () => {
   }
 
   function writeCanonicalSessionDraft(input: Readonly<{
+    text?: string;
     recipient?: unknown;
     executionRunRequestedAction?: unknown;
     mentions?: readonly unknown[];
@@ -680,6 +683,7 @@ describe('SessionView (direct sessions)', () => {
       scope: canonicalDraftScope,
       sessionId: 's1',
       patch: {
+        ...(input.text === undefined ? {} : { text: input.text }),
         ...(input.mentions === undefined
           ? {}
           : { mentions: input.mentions.map((mention) => StrictJsonValueSchema.parse(mention)) }),
@@ -728,7 +732,6 @@ describe('SessionView (direct sessions)', () => {
   }
 
   async function renderSessionView() {
-    const { SessionView } = await import('./SessionView');
     return renderScreen(
       <AppPaneProvider>
         <SessionView id="s1" />
@@ -771,7 +774,7 @@ describe('SessionView (direct sessions)', () => {
   }
 
   beforeEach(() => {
-    activeServerAccountScopeState.current = null;
+    activeServerAccountScopeState.current = canonicalDraftScope;
     createDefaultActionExecutorMock.mockReset();
     chatListPropsSpy.mockReset();
     chatHeaderPropsSpy.mockReset();
@@ -968,7 +971,6 @@ describe('SessionView (direct sessions)', () => {
   });
 
   it('keeps the external control footer reference stable across unrelated shell renders', async () => {
-    const { SessionView } = await import('./SessionView');
     let forceShellRender: (() => void) | null = null;
     function ShellRenderHarness() {
       const [renderSequence, setRenderSequence] = React.useState(0);
@@ -1077,6 +1079,23 @@ describe('SessionView (direct sessions)', () => {
       });
     });
     expect(findAgentInput(screen).props.value).toBe(previousDraft);
+  });
+
+  it('places pending-message references into the editable composer document', async () => {
+    expect(projectPendingMessageComposerMentions({
+      text: 'inspect @src/a.ts',
+      references: [{
+        kind: 'file',
+        ref: 'src/a.ts',
+        token: '@src/a.ts',
+      }],
+    })).toEqual([{
+      kind: 'file',
+      ref: 'src/a.ts',
+      tokenText: '@src/a.ts',
+      start: 8,
+      end: 17,
+    }]);
   });
 
   it('renders the persistent published-snapshot banner while a linked Agent is offline', async () => {
@@ -1306,7 +1325,6 @@ describe('SessionView (direct sessions)', () => {
   });
 
   it('detaches the direct-session lease when the session screen loses focus after mounting', async () => {
-    const { SessionView } = await import('./SessionView');
     const screen = await renderSessionView();
     await settleExternalSessionView();
 
@@ -2695,7 +2713,6 @@ describe('SessionView (direct sessions)', () => {
   it('locally expires pushed external-Agent footer status without a status RPC', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
-    await import('./SessionView');
     (storageState.sessions.s1 as any).metadata.externalAgentObservationV1 = {
       v: 1,
       qualifiedLinkIdentity: {

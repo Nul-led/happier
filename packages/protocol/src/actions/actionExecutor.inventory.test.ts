@@ -836,7 +836,7 @@ describe('createActionExecutor (inventory/discovery)', () => {
   ] as const;
 
   it.each(hostStampedServerInventoryCases)(
-    'rejects caller-supplied server identity for %s',
+    'drops caller-supplied server identity and binds host-stamped identity for %s',
     async (actionId, dependencyName, actionInput) => {
       const deps = createDeps();
       const executor = createActionExecutor(deps);
@@ -845,12 +845,11 @@ describe('createActionExecutor (inventory/discovery)', () => {
         actionId,
         { ...actionInput, serverId: 'caller-controlled' },
         { serverId: 'host-stamped' },
-      )).resolves.toEqual({
-        ok: false,
-        errorCode: 'invalid_parameters',
-        error: 'invalid_parameters',
+      )).resolves.toMatchObject({ ok: true });
+      expect(deps[dependencyName]).toHaveBeenCalledWith({
+        ...actionInput,
+        serverId: 'host-stamped',
       });
-      expect(deps[dependencyName]).not.toHaveBeenCalled();
     },
   );
 

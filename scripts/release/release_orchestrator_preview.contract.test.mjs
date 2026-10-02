@@ -17,7 +17,7 @@ async function loadFile(rel) {
 }
 
 test('release workflow only promotes and publishes the exact prepared candidate source', async () => {
-  const raw = await loadWorkflow('release.yml');
+  const raw = await loadWorkflow('release-channel.yml');
 
   // If CI gate fails, checks is skipped; downstream must not treat that as OK to promote/deploy.
   assert.doesNotMatch(
@@ -53,7 +53,8 @@ test('release workflow only promotes and publishes the exact prepared candidate 
 });
 
 test('unified release records irreversible server migration admission before branch promotion', async () => {
-  const raw = await loadWorkflow('release.yml');
+  const raw = await loadWorkflow('release-channel.yml');
+  const root = await loadWorkflow('release.yml');
   const admission = raw.indexOf('qualified-connected-accounts-v4-activation-admission.mjs');
   const previewPromotion = raw.indexOf('\n  promote_preview:');
   const productionPromotion = raw.indexOf('\n  promote_main:');
@@ -61,18 +62,18 @@ test('unified release records irreversible server migration admission before bra
   assert.ok(admission >= 0, 'release planning must run the qualified V4 activation admission check');
   assert.ok(previewPromotion > admission, 'activation admission must precede preview branch promotion');
   assert.ok(productionPromotion > admission, 'activation admission must precede production branch promotion');
-  assert.match(raw, /qualified_v4_activation_approval:\s*\n\s*description: "Irreversible server migrations — explicit approval only:/);
+  assert.match(root, /qualified_v4_activation_approval:\s*\n\s*description: "?Irreversible server migrations — explicit approval only:/);
   assert.match(raw, /QUALIFIED_V4_ACTIVATION_APPROVAL:\s*\$\{\{ inputs\.qualified_v4_activation_approval \}\}/);
   assert.match(raw, /--approval-kind explicit-checkbox/);
   assert.doesNotMatch(raw, /--approval-kind release-confirm/);
   assert.match(raw, /qualified_v4_activation_approval:\s*\$\{\{ inputs\.qualified_v4_activation_approval \}\}/);
-  assert.match(raw, /backup\/restore readiness/i);
-  assert.match(raw, /old-server or old-daemon rollback/i);
-  assert.match(raw, /old API and worker writers are stopped/i);
-  assert.match(raw, /legacy read-state writers/i);
-  assert.match(raw, /remain stopped if migration fails/i);
+  assert.match(root, /backup\/restore readiness/i);
+  assert.match(root, /old-server or old-daemon rollback/i);
+  assert.match(root, /old API and worker writers are stopped/i);
+  assert.match(root, /legacy read-state writers/i);
+  assert.match(root, /remain stopped if migration fails/i);
   assert.doesNotMatch(
-    raw,
+    root,
     /Confirm — Choose the exact action\. If the plan reports Qualified V4 activation/,
     'generic branch-promotion confirmation must not authorize an irreversible migration',
   );
@@ -80,7 +81,7 @@ test('unified release records irreversible server migration admission before bra
 
 test('release workflow fans a versioned Stack target through immutable publication, staged promotion, npm, and exact signoff', async () => {
   const [raw, verifierRaw] = await Promise.all([
-    loadWorkflow('release.yml'),
+    loadWorkflow('release-channel.yml'),
     loadWorkflow('release-verify.yml'),
   ]);
   const jobs = parse(raw)?.jobs ?? {};
@@ -113,17 +114,17 @@ test('release workflow fans a versioned Stack target through immutable publicati
   assert.ok(finalVerifier?.needs?.includes('publish_hstack_binaries'));
   assert.ok(finalVerifier?.needs?.includes('promote_hstack_binaries'));
   assert.match(String(finalVerifier?.if ?? ''), /needs\.promote_hstack_binaries\.result == 'success'/);
-  assert.match(String(finalVerifier?.with?.candidate_stack_version ?? ''), /needs\.publish_hstack_binaries\.outputs\.version/);
-  assert.match(String(finalVerifier?.with?.verify_stack_release ?? ''), /needs\.promote_hstack_binaries\.result == 'success'/);
+  assert.equal(finalVerifier?.with?.candidate_stack_version, undefined, 'final signoff must re-read rolling Stack refs rather than verify only its immutable candidate');
+  assert.equal(finalVerifier?.with?.verify_stack_release, "${{ needs.plan.outputs.publish_stack == 'true' }}");
   assert.equal(verifierInputs?.verify_stack_release?.type, 'boolean');
   assert.match(verifierRaw, /VERIFY_STACK_RELEASE:\s*\$\{\{ inputs\.verify_stack_release \}\}/);
   assert.match(verifierRaw, /--verify-stack-release "\$VERIFY_STACK_RELEASE"/);
 });
 
 test('release workflow plans preview-to-main promotions from preview instead of dev', async () => {
-  const raw = await loadWorkflow('release.yml');
+  const raw = await loadWorkflow('release-channel.yml');
   const workflow = parse(raw);
-  const ci = workflow.jobs.ci;
+  const ci = workflow.jobs.release_preflight;
   const validation = ci.steps.find((step) => step.id === 'dispatch');
   const plan = workflow.jobs.plan;
   const planningCheckout = plan.steps.find((step) => step.name === 'Checkout authorized release planning source');
@@ -132,8 +133,8 @@ test('release workflow plans preview-to-main promotions from preview instead of 
   assert.equal(validation.env.CONFIRM, '${{ inputs.confirm }}');
   assert.equal(validation.env.ENVIRONMENT, '${{ inputs.environment }}');
   assert.equal(ci.outputs.source_ref, '${{ steps.dispatch.outputs.source_ref }}');
-  assert.equal(planningCheckout.with.ref, '${{ inputs.authorized_promotion_source_sha || needs.ci.outputs.source_ref }}');
-  assert.match(raw, /COMPARE_LABEL:\s*\$\{\{\s*needs\.ci\.outputs\.compare_label\s*\}\}/);
+  assert.equal(planningCheckout.with.ref, '${{ inputs.authorized_promotion_source_sha || needs.release_preflight.outputs.source_ref }}');
+  assert.match(raw, /COMPARE_LABEL:\s*\$\{\{\s*needs\.release_preflight\.outputs\.compare_label\s*\}\}/);
   assert.match(raw, /commits to release \(\$COMPARE_LABEL\)/, 'release plan summary should describe the actual compared branch range');
   assert.match(
     raw,
@@ -143,7 +144,7 @@ test('release workflow plans preview-to-main promotions from preview instead of 
 });
 
 test('release workflow publishes server runner only when explicitly requested', async () => {
-  const raw = await loadWorkflow('release.yml');
+  const raw = await loadWorkflow('release-channel.yml');
 
   // Server runner publishing must be an explicit target so server deploy remains independent.
   // The logic lives in the shared pipeline script (not inline bash).
@@ -189,7 +190,7 @@ test('release workflow publishes server runner only when explicitly requested', 
 });
 
 test('release workflow can publish self-host UI web bundle via a dedicated workflow', async () => {
-  const raw = await loadWorkflow('release.yml');
+  const raw = await loadWorkflow('release-channel.yml');
   assert.match(
     raw,
     /publish_ui_web:[\s\S]*?uses:\s*\.\/\.github\/workflows\/publish-ui-web\.yml/,
@@ -198,23 +199,23 @@ test('release workflow can publish self-host UI web bundle via a dedicated workf
 });
 
 test('release workflow delegates deploy plan computation to pipeline script', async () => {
-  const raw = await loadWorkflow('release.yml');
+  const raw = await loadWorkflow('release-channel.yml');
 
   assert.match(
     raw,
     /- name: Compute deploy plan[\s\S]*?node \.\.\/scripts\/pipeline\/release\/compute-deploy-plan\.mjs/,
-    'release.yml should delegate deploy plan computation to compute-deploy-plan.mjs',
+    'release-channel.yml should delegate deploy plan computation to compute-deploy-plan.mjs',
   );
-  assert.doesNotMatch(raw, /plan_one\(\)/, 'release.yml should not embed deploy plan logic in inline bash');
+  assert.doesNotMatch(raw, /plan_one\(\)/, 'release-channel.yml should not embed deploy plan logic in inline bash');
   assert.doesNotMatch(
     raw,
     /\/tmp\/changed_deploy_/,
-    'release.yml should not write deploy plan path lists to /tmp (logic belongs in compute-deploy-plan.mjs)',
+    'release-channel.yml should not write deploy plan path lists to /tmp (logic belongs in compute-deploy-plan.mjs)',
   );
 });
 
 test('release workflow computes deploy selection from the final candidate, with a dry-run planning-SHA fallback when preparation is skipped', async () => {
-  const raw = await loadWorkflow('release.yml');
+  const raw = await loadWorkflow('release-channel.yml');
   const workflow = parse(raw);
   const plan = workflow.jobs.plan;
   const deployPlan = workflow.jobs.deploy_plan;
@@ -234,7 +235,7 @@ test('release workflow computes deploy selection from the final candidate, with 
 });
 
 test('release workflows do not embed invalid JS escaping in node -p/-e snippets', async () => {
-  const release = await loadWorkflow('release.yml');
+  const release = await loadWorkflow('release-channel.yml');
   const releaseNpm = await loadWorkflow('release-npm.yml');
   const promoteServer = await loadWorkflow('promote-server.yml');
 
@@ -348,7 +349,7 @@ test('release-npm reuses caller-bound candidate versions instead of allocating r
   assert.match(metadata?.run ?? '', /--stack-version "\$INPUT_STACK_VERSION"/);
   assert.match(metadata?.run ?? '', /--server-version "\$INPUT_SERVER_VERSION"/);
 
-  const orchestrator = parse(await loadWorkflow('release.yml'));
+  const orchestrator = parse(await loadWorkflow('release-channel.yml'));
   const publisher = orchestrator?.jobs?.publish_npm;
   assert.ok(publisher?.needs?.includes('publish_cli_binaries'));
   assert.ok(publisher?.needs?.includes('publish_hstack_binaries'));
@@ -359,13 +360,13 @@ test('release-npm reuses caller-bound candidate versions instead of allocating r
 });
 
 test('final release workflow does not mutate component versions after candidate approval', async () => {
-  const orchestrator = await loadWorkflow('release.yml');
+  const orchestrator = await loadWorkflow('release-channel.yml');
   const releaseNpm = await loadWorkflow('release-npm.yml');
 
   assert.doesNotMatch(orchestrator, /bump-versions-dev\.mjs/);
   assert.doesNotMatch(orchestrator, /BUMP_STACK:\s*\$\{\{ needs\.plan\.outputs\.bump_stack \}\}/);
   assert.doesNotMatch(orchestrator, /--bump-stack "\$BUMP_STACK"/);
-  assert.doesNotMatch(orchestrator, /node scripts\/release\/bump-version\.mjs --component stack/, 'release.yml must not create a later Stack version commit');
+  assert.doesNotMatch(orchestrator, /node scripts\/release\/bump-version\.mjs --component stack/, 'release-channel.yml must not create a later Stack version commit');
   assert.doesNotMatch(orchestrator, /BUMP="\$\{\{ needs\.plan\.outputs\.bump_stack \}\}" node - <<'NODE'/);
 
   // Versions are materialized before final preparation, so publication must not mutate them either.
@@ -391,7 +392,7 @@ test('publish-github-release delegates release creation + asset upload to the pi
 test('promote-ui native_submit uses the shared Expo submit script (handles preview credential gaps)', async () => {
   const promoteUi = await loadWorkflow('promote-ui.yml');
   assert.match(promoteUi, /uses:\s*\.\/\.github\/workflows\/build-ui-mobile-local\.yml/);
-  assert.match(promoteUi, /action:\s*\$\{\{\s*inputs\.expo_action == 'native_submit' && 'build_and_submit' \|\| 'build_only'\s*\}\}/);
+  assert.match(promoteUi, /action:\s*\$\{\{\s*\(inputs\.expo_action == 'native_submit' \|\| inputs\.expo_action == 'full'\) && 'build_and_submit' \|\| 'build_only'\s*\}\}/);
 
   const buildUiMobileLocal = await loadWorkflow('build-ui-mobile-local.yml');
   assert.match(buildUiMobileLocal, /node scripts\/pipeline\/run\.mjs ui-mobile-release/);
@@ -445,7 +446,7 @@ test('promote-ui prepares OTA bytes without secrets and publishes the exact boun
 });
 
 test('release workflow derives Expo updates from the exact-candidate approved notes projection', async () => {
-  const raw = await loadWorkflow('release.yml');
+  const raw = await loadWorkflow('release-channel.yml');
   assert.doesNotMatch(raw, /inputs\.release_message/);
   assert.match(
     raw,

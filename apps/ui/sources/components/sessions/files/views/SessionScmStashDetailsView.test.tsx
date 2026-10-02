@@ -71,7 +71,9 @@ const readMachineTargetForSessionSpy = vi.fn<(sessionId: string) => { machineId:
     basePath: '/repo',
 }));
 
-let scmWriteEnabled = true;
+const featureState = vi.hoisted(() => ({
+    scmWriteEnabled: true,
+}));
 
 const modalAlertSpy = vi.fn();
 const modalConfirmSpy = vi.fn(async (..._args: any[]) => true);
@@ -117,7 +119,7 @@ vi.mock('@/components/ui/text/Text', () => ({
 }));
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-    useFeatureEnabled: () => scmWriteEnabled,
+    useFeatureEnabled: () => featureState.scmWriteEnabled,
 }));
 
 vi.mock('@/sync/ops', async (importOriginal) => {
@@ -161,7 +163,7 @@ vi.mock('@/components/ui/code/WrapLinesToggleButton', () => ({ WrapLinesToggleBu
 
 describe('SessionScmStashDetailsView', () => {
     beforeEach(() => {
-        scmWriteEnabled = true;
+        featureState.scmWriteEnabled = true;
         sessionScmStashListSpy.mockClear();
         sessionScmStashShowSpy.mockClear();
         sessionScmStashPopSpy.mockClear();

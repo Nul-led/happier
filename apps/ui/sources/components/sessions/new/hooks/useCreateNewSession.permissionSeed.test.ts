@@ -1394,7 +1394,6 @@ describe('useCreateNewSession permission seeding', () => {
     it('does not call the active Home when upstream rejects an explicit device-global target', async () => {
         const {
             useCreateNewSession,
-            modalAlertSpy,
             captured,
         } = await setupUseCreateNewSessionHarness();
 

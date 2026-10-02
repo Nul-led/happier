@@ -11,8 +11,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
 const WORKFLOW_CONTROL_SHA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
-async function loadReleaseWorkflow() {
-  const raw = await readFile(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8');
+async function loadReleaseWorkflow(name = 'release-channel.yml') {
+  const raw = await readFile(join(repoRoot, '.github', 'workflows', name), 'utf8');
   return parse(raw);
 }
 
@@ -71,18 +71,21 @@ function runReleaseInputValidation(env) {
 }
 
 test('release actor guard loads its local action from trusted workflow control', async () => {
-  const workflow = await loadReleaseWorkflow();
-  const job = workflow.jobs.release_actor_guard;
-  const checkouts = checkoutSteps(job);
-  const guardIndex = job.steps.findIndex((step) => step?.uses === './.github/actions/release-actor-guard');
+  for (const name of ['release.yml', 'release-channel.yml']) {
+    const workflow = await loadReleaseWorkflow(name);
+    const job = workflow.jobs.release_actor_guard;
+    const checkouts = checkoutSteps(job);
+    const guardIndex = job.steps.findIndex((step) => step?.uses === './.github/actions/release-actor-guard');
 
-  assert.equal(checkouts.length, 1);
-  assertTrustedControlCheckout(checkouts[0]);
-  assert.ok(job.steps.indexOf(checkouts[0]) < guardIndex, 'trusted checkout must precede the App-credential guard');
+    assert.equal(checkouts.length, 1);
+    assertTrustedControlCheckout(checkouts[0]);
+    assert.ok(job.steps.indexOf(checkouts[0]) < guardIndex, 'trusted checkout must precede the App-credential guard');
+  }
 });
 
 test('release workflow admits the exact dispatcher-observed workflow-control SHA before downstream work', async () => {
-  const workflow = await loadReleaseWorkflow();
+  const workflow = await loadReleaseWorkflow('release.yml');
+  const channel = await loadReleaseWorkflow();
   const input = workflow.on.workflow_dispatch.inputs.workflow_control_sha;
   const guard = workflow.jobs.trusted_ref_guard;
   const step = guard.steps.find((candidate) => candidate?.name === 'Verify workflow-control SHA');
@@ -135,7 +138,7 @@ test('release workflow admits the exact dispatcher-observed workflow-control SHA
     'sync_dev',
   ]) {
     assert.equal(
-      dependsTransitivelyOn(workflow, mutationJobName, 'trusted_ref_guard'),
+      dependsTransitivelyOn(channel, mutationJobName, 'trusted_ref_guard'),
       true,
       `${mutationJobName} must remain downstream of workflow-control SHA admission`,
     );
@@ -175,11 +178,12 @@ test('final exact-SHA release workflow has no post-admission version-bump mutati
 
 test('public exact-SHA release admission consumes already-materialized versions without a manual bump input', async () => {
   const workflow = await loadReleaseWorkflow();
-  const validation = workflow.jobs.ci.steps.find((step) => step?.name === 'Validate release dispatch');
+  const validation = workflow.jobs.release_preflight.steps.find((step) => step?.name === 'Validate release dispatch');
   assert.match(validation?.run ?? '', /validate-release-dispatch\.mjs/);
 
   assert.equal(runReleaseInputValidation({ BUMP: 'none', DRY_RUN: 'false' }).status, 0);
-  assert.equal(workflow.on.workflow_dispatch.inputs.bump, undefined);
+  const root = await loadReleaseWorkflow('release.yml');
+  assert.equal(root.on.workflow_dispatch.inputs.bump, undefined);
   assert.equal(validation?.env?.BUMP, 'none');
   const bumpPlan = workflow.jobs.plan.steps.find((step) => step?.id === 'bump_plan');
   assert.equal(

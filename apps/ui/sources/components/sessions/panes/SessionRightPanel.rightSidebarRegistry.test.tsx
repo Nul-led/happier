@@ -12,6 +12,7 @@ import {
 import { installSessionDetailsPanelCommonModuleMocks } from './sessionDetailsPanelTestHelpers';
 import {
     EMPTY_PLUGIN_UI_PROJECTION,
+    isPluginUiDestinationSurfacePlacementProjection,
     type PluginUiSurfacePlacementProjection,
     type PluginUiProjectionModel,
 } from '@/sync/domains/plugins/ui/projection';

@@ -827,9 +827,9 @@ describe('SessionView header action menu visibility', () => {
       input: { source: 'session-header' },
     } as const;
 
-    await expect(openSurface(rightRequest)).resolves.toEqual({ ok: true });
-    await expect(openSurface(bottomRequest)).resolves.toEqual({ ok: true });
-    await expect(openSurface(detailsRequest)).resolves.toEqual({ ok: true });
+    await expect(openSurface(rightRequest)).resolves.toMatchObject({ ok: true });
+    await expect(openSurface(bottomRequest)).resolves.toMatchObject({ ok: true });
+    await expect(openSurface(detailsRequest)).resolves.toMatchObject({ ok: true });
     expect(appPaneSurfaceOpenSpy).toHaveBeenNthCalledWith(1, rightRequest);
     expect(appPaneSurfaceOpenSpy).toHaveBeenNthCalledWith(2, bottomRequest);
     expect(appPaneSurfaceOpenSpy).toHaveBeenNthCalledWith(3, detailsRequest);

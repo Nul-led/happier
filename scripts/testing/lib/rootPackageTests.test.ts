@@ -5,21 +5,17 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { resolveRootScriptWorkspaceTargets } from './rootScriptWorkspaceTargets.ts';
+import { selectSharedPackageTestCommands } from './sharedPackageTestCommands.ts';
 
 const rootPackage = JSON.parse(readFileSync('package.json', 'utf8'));
 
 for (const [lane, expectedCommands] of Object.entries({
   unit: [
-    ...['privacy-kit', '@happier-dev/protocol', '@happier-dev/peer-mediation', '@happier-dev/transfers',
-      '@happier-dev/voice-modelpacks', '@happier-dev/terminal-native', '@happier-dev/sherpa-native',
-      '@happier-dev/agents', '@happier-dev/cli-common', '@happier-dev/support', '@happier-dev/connection-supervisor',
-      '@happier-dev/session-core', '@happier-dev/bootstrap', '@happier-dev/plugin-sdk', '@happier-dev/plugin-ui', '@happier-dev/sdk',
-      '@happier-dev/channels-protocol', '@happier-dev/triage-protocol', '@happier-dev/triage-sources',
-      '@happier-dev/ssh-native', '@happier-dev/audio-stream-native', 'docs', '@happier-dev/app']
+    ...selectSharedPackageTestCommands('local').map(({ args }) => args),
+    ...['@happier-dev/plugin-sdk', '@happier-dev/plugin-ui', '@happier-dev/sdk', '@happier-dev/app']
       .map((name) => ['workspace', name, 'test']),
     ['workspace', '@happier-dev/cli', 'test:unit'],
     ['--cwd', 'apps/server', 'test:unit'],
-    ['--cwd', 'packages/relay-server', 'test'],
     ['--cwd', 'apps/stack', 'test:unit'],
   ],
   integration: [
@@ -28,11 +24,13 @@ for (const [lane, expectedCommands] of Object.entries({
     ['--cwd', 'apps/server', 'test:integration'],
     ['--cwd', 'apps/stack', 'test:integration'],
   ],
+  'shared-packages': selectSharedPackageTestCommands('ci').map(({ args }) => args),
 })) {
-  test(`root ${lane} preserves dispatch and attempts every workspace after failures`, () => {
+  test(`root ${lane} preserves dispatch and attempts every selected command after failures`, () => {
     assert.equal(rootPackage.scripts[`test:${lane}`], `apps/stack/bin/hstack-exec --script=test:${lane}:local`);
+    const scriptBody = rootPackage.scripts[`test:${lane}:local`] + (lane === 'shared-packages' ? ' --mode ci' : '');
     assert.deepEqual(
-      resolveRootScriptWorkspaceTargets(rootPackage.scripts, `test:${lane}`),
+      resolveRootScriptWorkspaceTargets({ ...rootPackage.scripts, [`test:${lane}:local`]: scriptBody }, `test:${lane}`),
       expectedCommands.map(([selector, workspace, scriptName]) => ({
         packageName: selector === 'workspace' ? workspace : null,
         workspaceDirectory: selector === '--cwd' ? workspace : null,
@@ -51,7 +49,7 @@ for (const [lane, expectedCommands] of Object.entries({
       } else {
         writeFileSync(join(fixture, 'yarn'), readFileSync(yarn), { mode: 0o755 });
       }
-      const result = spawnSync(rootPackage.scripts[`test:${lane}:local`], {
+      const result = spawnSync(scriptBody, {
         shell: true,
         encoding: 'utf8',
         env: { ...process.env, PATH: `${fixture}${delimiter}${process.env.PATH}`, npm_execpath: yarn, ROOT_TEST_CALLS: log },
@@ -59,9 +57,25 @@ for (const [lane, expectedCommands] of Object.entries({
       assert.equal(result.error, undefined);
       assert.notEqual(result.status, 0, result.stdout + result.stderr);
       assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line)), expectedCommands);
-      assert.match(result.stderr, /Root .* test suite failures:/);
+      assert.match(result.stderr, lane === 'shared-packages' ? /Shared package test suite failures:/ : /Root .* test suite failures:/);
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }
   });
 }
+
+test('the shared package entry dispatches through hstack to the canonical runner', () => {
+  assert.equal(
+    rootPackage.scripts['test:shared-packages'],
+    'apps/stack/bin/hstack-exec --script=test:shared-packages:local',
+  );
+  assert.equal(
+    rootPackage.scripts['test:shared-packages:local'],
+    'node --experimental-strip-types scripts/testing/runSharedPackageTests.ts',
+  );
+  assert.deepEqual(
+    resolveRootScriptWorkspaceTargets(rootPackage.scripts, 'test:shared-packages'),
+    selectSharedPackageTestCommands('local').flatMap(({ args }) =>
+      resolveRootScriptWorkspaceTargets({ test: `yarn ${args.join(' ')}` }, 'test')),
+  );
+});

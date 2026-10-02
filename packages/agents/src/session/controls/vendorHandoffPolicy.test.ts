@@ -80,14 +80,7 @@ describe('vendorHandoffPolicy', () => {
         storageMode: 'direct',
         metadata: {
           opencodeSessionId: 'o1',
-          agentRuntimeDescriptorV1: {
-            v: 1,
-            agentId: 'opencode',
-            provider: {
-              backendMode: 'acp',
-              providerSessionId: 'o1',
-            },
-          },
+          opencodeBackendMode: 'acp',
         },
       }),
     ).toEqual({ eligible: false, reasonCode: 'handoff_unsupported' });

@@ -15,6 +15,9 @@ vi.mock('@/components/ui/text/Text', () => ({
     Text: (props: Record<string, unknown> & { children?: React.ReactNode }) =>
         React.createElement('Text', props, props.children),
 }));
+vi.mock('@/components/ui/icons/Icon', () => ({
+    Icon: (props: Record<string, unknown>) => React.createElement('Icon', props, null),
+}));
 // Focus on the git component's own logic; represent AnimatedNumber by its formatted output.
 vi.mock('@/components/instrument', () => ({
     AnimatedNumber: (props: { value: number; format: (n: number) => string; emphasisColor?: string }) =>

@@ -2,7 +2,13 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { FeatureDecision, FeatureId, RuntimeActionExecute } from '@happier-dev/protocol';
+import type {
+    FeatureDecision,
+    FeatureId,
+    LocalServicePublicExposureModeV1,
+    RuntimeActionExecute,
+} from '@happier-dev/protocol';
+import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import {
     createMachineFixture,
     createSessionFixture,
@@ -11,6 +17,7 @@ import {
     pressTestInstanceAsync,
     renderScreen,
 } from '@/dev/testkit';
+import type { IModal } from '@/modal/types';
 import {
     applyLocalServiceLauncherSnapshot,
     createLocalServiceLauncherState,
@@ -293,6 +300,7 @@ describe('SessionRightPanelServicesView', () => {
             for (let i = 0; i < 8; i += 1) await Promise.resolve();
         });
 
+        expect(modalConfirmMock).toHaveBeenCalledOnce();
         expect(runtimeActionExecute).toHaveBeenCalledExactlyOnceWith({
             actionId: 'localServices.actions.terminateDetected',
             input: {
@@ -436,6 +444,19 @@ describe('SessionRightPanelServicesView', () => {
     });
 
     it('creates public preview links through the session Services runtime action host', async () => {
+        modalShowMock.mockImplementationOnce((config) => {
+            const props = (config as unknown as Readonly<{
+                props: Readonly<{
+                    modeChoices: readonly { mode: LocalServicePublicExposureModeV1 }[];
+                    ttlChoices: readonly { ttlMs: number }[];
+                    onResolve: (decision: { mode: LocalServicePublicExposureModeV1; ttlMs: number } | null) => void;
+                }>;
+            }>).props;
+            const mode = props.modeChoices[0];
+            const ttl = props.ttlChoices[0];
+            props.onResolve(mode && ttl ? { mode: mode.mode, ttlMs: ttl.ttlMs } : null);
+            return 'modal-id';
+        });
         const runtimeActionExecute = vi.fn(async () => ({
             protocolVersion: 1,
             previewId: 'preview-session',
@@ -493,6 +514,7 @@ describe('SessionRightPanelServicesView', () => {
             screen.findByTestId('session-rightpanel-services-row:preview:session-feed-public-preview-target:preview-session-create'),
             'session-rightpanel-services-row:preview:session-feed-public-preview-target:preview-session-create',
         );
+        for (let index = 0; index < 8; index += 1) await Promise.resolve();
 
         for (let i = 0; i < 8; i += 1) await Promise.resolve();
         // The consequence sheet is the consent (one card, not a confirm plus two prompts).

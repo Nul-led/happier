@@ -605,7 +605,7 @@ describe('persistence', () => {
 
             const pending = loadPendingSettings() as any;
             expect(Object.keys(pending).sort()).toEqual(['voice']);
-            const realtimeConfig = pending.voice?.providers?.realtime_elevenlabs?.config;
+            const realtimeConfig = pending.voice?.providers?.['happier.voice.elevenlabs/realtime-elevenlabs']?.config;
             expect(realtimeConfig?.byo?.agentId).toBe('agent_1');
             expect(realtimeConfig?.byo?.apiKey).toEqual(
                 { _isSecretValue: true, encryptedValue: { t: 'enc-v1', c: 'abc' } },
@@ -635,6 +635,21 @@ describe('persistence', () => {
                 secrets: [{ id: 'k1', name: 'Missing value', encryptedValue: { _isSecretValue: true } }],
             }));
             expect(loadPendingSettings()).toEqual({});
+        });
+
+        it('rejects an entire secrets mutation with a malformed sibling while preserving other pending settings', () => {
+            store.set('pending-settings', JSON.stringify({
+                viewInline: true,
+                secrets: [{
+                    id: 'valid-secret', name: 'Valid', kind: 'apiKey',
+                    encryptedValue: { _isSecretValue: true, encryptedValue: { t: 'enc-v1', c: 'abc' } },
+                    createdAt: 1, updatedAt: 1,
+                }, { id: 'invalid-secret', name: 'Missing value' }],
+            }));
+            expect(loadPendingSettings()).toEqual({ viewInline: true });
+
+            store.set('pending-settings', JSON.stringify({ secrets: [] }));
+            expect(loadPendingSettings()).toEqual({ secrets: [] });
         });
 
         it('deletes pending-settings key when saving empty object', () => {
@@ -947,7 +962,7 @@ describe('persistence', () => {
             saveNewSessionDraft(migrated!);
             const stored = JSON.parse(store.get('new-session-draft-v1')!);
             expect(stored).not.toHaveProperty('agentType');
-            expect(stored.backendTarget).toEqual({
+            expect(stored.agentTarget).toEqual({
                 kind: 'agent',
                 identity: {
                     pluginId: 'happier.agent.ohmypi',
@@ -1599,8 +1614,15 @@ describe('persistence', () => {
 
             prepareSessionLocalStateScopeForActivation(sessionLocalScopeB);
 
+            const { modelMode: _legacyModelMode, ...canonicalLegacyDraft } = legacyDraft;
             expect(loadNewSessionDraft()).toBeNull();
-            expect(loadNewSessionDraft(sessionLocalScopeB)).toMatchObject(legacyDraft);
+            expect(loadNewSessionDraft(sessionLocalScopeB)).toMatchObject({
+                ...canonicalLegacyDraft,
+                selectedSecretIdByProfileIdByEnvVarName: null,
+                sessionOnlySecretValueEncByProfileIdByEnvVarName: null,
+                modelSelection: null,
+            });
+            expect(loadNewSessionDraft(sessionLocalScopeB)).not.toHaveProperty('modelMode');
             expect(store.get(sessionDraftValuesStorageKey())).toBeUndefined();
             expect(store.get(sessionDraftValuesStorageKey(sessionLocalScopeB))).toBe(legacyStructuredDraftValues);
         });
