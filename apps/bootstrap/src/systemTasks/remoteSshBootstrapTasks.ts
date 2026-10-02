@@ -1,3 +1,7 @@
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parseTerminalAuthApprovalRequestPacket } from '@happier-dev/cli-common/links';
 import {
   extractFirstScannedSshKnownHostLine,
   resolveSshKnownHostTrust,
@@ -103,6 +107,7 @@ export async function installRemoteCliDefault(params: Readonly<{
 
 export async function approveLocalRemoteAuthRequestDefault(params: Readonly<{
   publicKey: string;
+  requestPayload?: Readonly<Record<string, unknown>>;
   parsed: RemoteBootstrapMachineParams;
 }>, deps: Readonly<{
   runLocalHappierJsonCommand?: typeof runLocalHappierJsonCommand;
@@ -120,10 +125,25 @@ export async function approveLocalRemoteAuthRequestDefault(params: Readonly<{
     ...(localServerUrl ? [`--local-server-url=${localServerUrl}`] : []),
     `--webapp-url=${webappUrl}`,
   ];
-  await (deps.runLocalHappierJsonCommand ?? runLocalHappierJsonCommand)({
-    args: ['auth', 'approve', '--public-key', params.publicKey, '--json', '--persist', ...relayArgs],
-    releaseRing,
-  });
+  const request = params.requestPayload
+    ? parseTerminalAuthApprovalRequestPacket(params.requestPayload, [serverUrl, params.parsed.relay.relayUrl])
+    : null;
+  let privateDirectory: string | null = null;
+  try {
+    const requestArgs: string[] = [];
+    if (request?.pairing) {
+      privateDirectory = await mkdtemp(join(tmpdir(), 'happier-terminal-approval-'));
+      const requestFile = join(privateDirectory, 'request.json');
+      await writeFile(requestFile, JSON.stringify(request), { mode: 0o600 });
+      requestArgs.push('--request-file', requestFile);
+    }
+    await (deps.runLocalHappierJsonCommand ?? runLocalHappierJsonCommand)({
+      args: ['auth', 'approve', '--public-key', params.publicKey, ...requestArgs, '--json', '--persist', ...relayArgs],
+      releaseRing,
+    });
+  } finally {
+    if (privateDirectory) await rm(privateDirectory, { recursive: true, force: true });
+  }
 }
 
 export async function runRemoteBootstrapCommandDefault(params: Readonly<{

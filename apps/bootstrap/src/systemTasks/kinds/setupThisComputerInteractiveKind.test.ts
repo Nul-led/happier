@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createSystemTasksRunner, type SetupMachineRecipeExecutor } from '@happier-dev/cli-common/systemTasks';
+import { createSystemTasksRunner, createSetupMachineRecipeExecutorFromHappierJsonExecutor, type SetupMachineRecipeExecutor } from '@happier-dev/cli-common/systemTasks';
 
 import { createSetupThisComputerInteractiveTaskKind } from './setupThisComputerInteractiveKind.js';
 
@@ -861,4 +861,33 @@ describe('createSetupThisComputerInteractiveTaskKind', () => {
       },
     });
   });
+  it('preserves a current pairing request through the interactive repair wrapper and actual recipe executor', async () => {
+    let approved = false;
+    const packet = { publicKey: 'current-key', stateFile: '/private/local-pending.json', pairing: { secretB64Url: 'private-context' }, pairingRequirement: 'v3' };
+    const realExecutor = createSetupMachineRecipeExecutorFromHappierJsonExecutor({ executor: {
+      runHappierText: async () => ({ status: 0, stdout: '', stderr: '' }),
+      runHappierJson: async (args) => {
+        if (args[0] === 'server') return { ok: true };
+        if (args[1] === 'status') return { ok: true, data: { authenticated: true, machineId: null } };
+        if (args[1] === 'request') return packet;
+        if (args[1] === 'approve') { approved = args[args.indexOf('--request-file') + 1] === packet.stateFile; return { success: true }; }
+        if (args[1] === 'wait') { if (!approved) throw new Error('Current recipient rejects legacy approval'); return { machineId: 'repaired-current-machine' }; }
+        if (args[0] === 'service') return { ok: true };
+        throw new Error('Unexpected external CLI command');
+      },
+    } });
+    const kind = createSetupThisComputerInteractiveTaskKind({
+      ensureLocalHappierTools: async () => undefined,
+      readActiveRelayProfile: async () => ({ serverUrl: 'https://relay.example.test', webappUrl: 'https://app.example.test', localServerUrl: null }),
+      createRecipeExecutor: () => ({ ...realExecutor, waitForReadyDaemon: async () => ({ serviceInstalled: true, daemonRunning: true, needsAuth: false, machineId: 'repaired-current-machine' }) }),
+      readBackgroundServiceSetupGuidance: async () => ({ targetReleaseChannel: 'preview', targetServerUrl: 'https://relay.example.test', currentHappierHomeDir: null, currentDefaultReleaseChannel: 'preview', managedReleaseChannels: [], manualRelayOwner: null, conflictingServices: [], foreignHomeConflictingServices: [], exactDefaultServiceExists: true, shouldOfferDefaultReleaseChannelSwitch: false, shouldPromptForManualRelayTakeover: false, shouldPromptForServiceReplacement: false }),
+      readCurrentRelayOwner: async () => null,
+    });
+    const runner = createSystemTasksRunner({ kinds: { 'setup.thisComputer.v1': kind } });
+    await runner.start({ taskId: 'repair-context', kind: 'setup.thisComputer.v1', params: { surface: 'desktop.ui', target: 'thisComputer', channel: 'preview' } });
+    const result = await waitForResult(runner, { taskId: 'repair-context', cursor: 0 });
+    expect(result.result?.ok).toBe(true);
+    expect(approved).toBe(true);
+  });
+
 });

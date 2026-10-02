@@ -496,7 +496,7 @@ describe('useConnectTerminal unauthenticated flow', () => {
         const terminalSecretKey = new Uint8Array(32).fill(5);
         const terminalPublicKey = tweetnacl.box.keyPair.fromSecretKey(terminalSecretKey).publicKey;
         const pairingSecret = new Uint8Array(32).fill(12);
-        const createdAtMs = 1_800_000_000_000;
+        const createdAtMs = Date.now();
         const expiresAtMs = createdAtMs + 60_000;
 
         const { useConnectTerminal } = await import('./useConnectTerminal');
@@ -534,7 +534,7 @@ describe('useConnectTerminal unauthenticated flow', () => {
         const terminalSecretKey = new Uint8Array(32).fill(5);
         const terminalPublicKey = tweetnacl.box.keyPair.fromSecretKey(terminalSecretKey).publicKey;
         const pairingSecret = new Uint8Array(32).fill(12);
-        const createdAtMs = 1_800_000_000_000;
+        const createdAtMs = Date.now();
         const expiresAtMs = createdAtMs + 60_000;
 
         const { useConnectTerminal } = await import('./useConnectTerminal');
@@ -574,7 +574,7 @@ describe('useConnectTerminal unauthenticated flow', () => {
             expiresAtMs,
             nowMs: createdAtMs + 1,
         })).toEqual({ type: 'tokenOnly' });
-        expect(authApproveSpy.mock.calls[0]?.[2]).toEqual(new Uint8Array());
+        expect(authApproveSpy.mock.calls[0]?.[2]).toEqual(responseV3);
     });
 
     it.each([
@@ -622,7 +622,7 @@ describe('useConnectTerminal unauthenticated flow', () => {
             result = await hookApi!.processAuthUrl(buildTerminalConnectUrl({
                 terminalPublicKey,
                 ...(withPairing
-                    ? { pairing: { secret: pairingSecret, createdAtMs: 1_000, expiresAtMs: 61_000 } }
+                    ? { pairing: { secret: pairingSecret, createdAtMs: Date.now(), expiresAtMs: Date.now() + 60_000 } }
                     : {}),
                 supportsTokenOnly,
             }));

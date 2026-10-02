@@ -861,7 +861,7 @@ test('remote daemon smoke scripts fail closed when --public-server-url is unsupp
   );
   assert.match(
     reuseCliRaw,
-    /auth approve --json --public-key/,
+    /approve_terminal_pairing "\$remote_public_key" "\$\{HAPPIER_PREFIX\[@\]\}" <<<"\$remote_auth_request_json"/,
     'expected reuse-cli remote daemon smoke to approve remote auth request with local authenticated credentials'
   );
   assert.match(
@@ -949,7 +949,7 @@ test('remote daemon smoke scripts fail closed when --public-server-url is unsupp
   );
   assert.match(
     bootstrapRaw,
-    /auth approve --json --public-key/,
+    /approve_terminal_pairing "\$remote_public_key" "\$\{HAPPIER_PREFIX\[@\]\}" <<<"\$remote_auth_request_json"/,
     'expected bootstrap remote daemon smoke to approve remote auth request with local authenticated credentials'
   );
   assert.match(

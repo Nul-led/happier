@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/terminal-pairing.sh"
+
 export DEBIAN_FRONTEND=noninteractive
 
 # Ensure dependency installs include devDependencies; the self-host installer builds from source
@@ -185,7 +187,7 @@ bootstrap_stack_credentials() {
   fi
 
   # Approve using the bootstrap token.
-  HAPPIER_HOME_DIR="$STACK_APPROVER_HOME_DIR" "${HAPPIER_PREFIX[@]}" auth approve --json --public-key "$public_key" >/dev/null
+  HAPPIER_HOME_DIR="$STACK_APPROVER_HOME_DIR" approve_terminal_pairing "$public_key" "${HAPPIER_PREFIX[@]}" <<<"$req_json" >/dev/null
 
   # Claim and write real credentials to STACK_CLI_HOME_DIR.
   HAPPIER_HOME_DIR="$STACK_CLI_HOME_DIR" "${HAPPIER_PREFIX[@]}" auth wait --json --public-key "$public_key" >/dev/null

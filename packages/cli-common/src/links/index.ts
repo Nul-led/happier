@@ -1,3 +1,4 @@
+export { parseTerminalAuthApprovalRequestPacket, type TerminalAuthApprovalRequest } from './terminalAuthRequest.js';
 import { isLoopbackHostname, normalizeHostnameForLoopbackCheck } from '@happier-dev/protocol';
 
 export type TerminalConnectLinks = Readonly<{

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/terminal-pairing.sh"
+
 HSTACK_NPM_SPEC="${HSTACK_NPM_SPEC:-@happier-dev/stack@next}"
 HSTACK_TGZ="${HSTACK_TGZ:-}"
 
@@ -208,8 +210,7 @@ ensure_remote_auth_credentials() {
   local remote_public_key=""
   remote_public_key="$(node -e "const fs=require('fs');const raw=String(fs.readFileSync(0,'utf8')||'').trim();let key='';try{const j=JSON.parse(raw);key=String(j.publicKey||'').trim();}catch{};process.stdout.write(key);" <<<"$remote_auth_request_json")"
   if [[ -z "$remote_public_key" ]]; then
-    echo "[remote-daemon] remote auth request did not return publicKey; raw output:" >&2
-    echo "$remote_auth_request_json" >&2
+    echo "[remote-daemon] remote auth request did not return publicKey" >&2
     return 1
   fi
 
@@ -218,15 +219,14 @@ ensure_remote_auth_credentials() {
   HAPPIER_SERVER_URL="$HAPPIER_SERVER_URL" \
   HAPPIER_PUBLIC_SERVER_URL="$HAPPIER_PUBLIC_SERVER_URL" \
   HAPPIER_WEBAPP_URL="$HAPPIER_WEBAPP_URL" \
-  "${HAPPIER_PREFIX[@]}" auth approve --json --public-key "$remote_public_key" >/dev/null
+  approve_terminal_pairing "$remote_public_key" "${HAPPIER_PREFIX[@]}" <<<"$remote_auth_request_json" >/dev/null
 
   local remote_auth_wait_json=""
   remote_auth_wait_json="$(ssh "$REMOTE_SSH_TARGET" "HAPPIER_ACTIVE_SERVER_ID='$HAPPIER_ACTIVE_SERVER_ID' HAPPIER_SERVER_URL='$HAPPIER_SERVER_URL' HAPPIER_PUBLIC_SERVER_URL='$HAPPIER_PUBLIC_SERVER_URL' HAPPIER_WEBAPP_URL='$HAPPIER_WEBAPP_URL' $remote_happier_command auth wait --public-key '$remote_public_key' --json --persist" 2>/dev/null || true)"
   local remote_wait_token=""
   remote_wait_token="$(node -e "const fs=require('fs');const raw=String(fs.readFileSync(0,'utf8')||'').trim();let token='';try{const j=JSON.parse(raw);token=String(j.token||'').trim();}catch{};process.stdout.write(token);" <<<"$remote_auth_wait_json")"
   if [[ -z "$remote_wait_token" ]]; then
-    echo "[remote-daemon] remote auth wait did not return token; raw output:" >&2
-    echo "$remote_auth_wait_json" >&2
+    echo "[remote-daemon] remote auth wait did not return token" >&2
     return 1
   fi
 

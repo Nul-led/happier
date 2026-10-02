@@ -1,5 +1,5 @@
 import { systemTasks } from '@happier-dev/cli-common';
-import { createLocalHappierJsonExecutor } from '@happier-dev/cli-common/systemTasks';
+import { createLocalHappierJsonExecutor, createSetupMachineRecipeExecutorFromHappierJsonExecutor } from '@happier-dev/cli-common/systemTasks';
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 
 import { runLocalHappierJsonCommand } from './happierCli.js';
@@ -26,9 +26,7 @@ export type DaemonStatusSnapshot = Readonly<{
   daemonMachineRegistered: boolean | null;
 }>;
 
-type AuthRequestSnapshot = Readonly<{
-  publicKey: string;
-}>;
+type AuthRequestSnapshot = Readonly<{ publicKey: string } & Record<string, unknown>>;
 
 type AuthWaitSnapshot = Readonly<{
   machineId: string | null;
@@ -147,11 +145,17 @@ export async function requestAuthPairing(options: LocalDaemonCliOptions = {}): P
   if (!publicKey) {
     throw new systemTasks.SystemTaskExecutionError('invalid_cli_response', 'Received an invalid auth request response.');
   }
-  return { publicKey };
+  return { ...(parsed as Record<string, unknown>), publicKey };
 }
 
-export async function approveAuthPairing(publicKey: string, options: LocalDaemonCliOptions = {}): Promise<void> {
-  await runScopedLocalHappierJsonCommand(['auth', 'approve', '--public-key', publicKey, '--json'], options);
+export async function approveAuthPairing(request: AuthRequestSnapshot, options: LocalDaemonCliOptions = {}): Promise<void> {
+  const executor = createSetupMachineRecipeExecutorFromHappierJsonExecutor({
+    executor: {
+      runHappierJson: (args, commandOptions) => runScopedLocalHappierJsonCommand(args, { ...options, ...commandOptions }),
+      runHappierText: async () => { throw new Error('Text execution is not used for pairing approval'); },
+    },
+  });
+  await executor.approveAuthPairing!(request.publicKey, request);
 }
 
 export async function waitForAuthPairing(publicKey: string, options: LocalDaemonCliOptions = {}): Promise<AuthWaitSnapshot> {
@@ -174,7 +178,7 @@ export async function pairLocalMachineIfNeeded(authStatus: AuthStatusSnapshot, o
   }
 
   const request = await requestAuthPairing(options);
-  await approveAuthPairing(request.publicKey, options);
+  await approveAuthPairing(request, options);
   const paired = await waitForAuthPairing(request.publicKey, options);
   return paired.machineId;
 }

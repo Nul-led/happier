@@ -160,7 +160,7 @@ function createInstrumentedRecipeExecutor(
       });
       return await recipeExecutor.waitForAuthPairing(publicKey);
     },
-    async approveAuthPairing(publicKey) {
+    async approveAuthPairing(publicKey, requestPayload) {
       if (!recipeExecutor.approveAuthPairing) {
         return;
       }
@@ -173,7 +173,7 @@ function createInstrumentedRecipeExecutor(
           details: publicKey ? 'Approving the local pairing request for this computer.' : undefined,
         },
       });
-      await recipeExecutor.approveAuthPairing(publicKey);
+      await recipeExecutor.approveAuthPairing(publicKey, requestPayload);
     },
     async installDaemonService() {
       if (!recipeExecutor.installDaemonService) {

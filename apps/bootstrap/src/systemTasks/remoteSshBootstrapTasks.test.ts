@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, existsSync, statSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -314,6 +314,30 @@ describe('approveLocalRemoteAuthRequestDefault', () => {
         });
 
         expect(runLocalHappierJsonCommand).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('current remote pairing context transport', () => {
+    it.each([false, true])('passes current context in a private file and cleans it after runner failure=%s', async (fail) => {
+        const nowMs = Date.now();
+        const requestPayload = { publicKey: Buffer.alloc(32, 3).toString('base64'), pairing: { secretB64Url: Buffer.alloc(32, 4).toString('base64url'), createdAtMs: nowMs, expiresAtMs: nowMs + 60000 }, supportsTokenOnly: true, serverUrl: 'https://relay.example.test' };
+        let requestFile = '';
+        const operation = approveLocalRemoteAuthRequestDefault({ publicKey: requestPayload.publicKey, requestPayload, parsed: createParsedRemoteBootstrapParams() }, {
+            runLocalHappierJsonCommand: async ({ args }) => {
+                expect(args).toContain('--request-file');
+                requestFile = args[args.indexOf('--request-file') + 1];
+                expect(args.join(' ')).not.toContain(requestPayload.pairing.secretB64Url);
+                const filePacket = JSON.parse(readFileSync(requestFile, 'utf8'));
+                expect(filePacket.pairing).toEqual(requestPayload.pairing);
+                if (process.platform !== 'win32') expect(statSync(requestFile).mode & 0o777).toBe(0o600);
+                if (fail) throw new Error('external CLI failure');
+                return { success: true };
+            },
+        });
+        if (fail) await expect(operation).rejects.toThrow('external CLI failure');
+        else await operation;
+        expect(requestFile).not.toBe('');
+        expect(existsSync(requestFile)).toBe(false);
     });
 });
 
