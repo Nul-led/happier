@@ -262,7 +262,8 @@ const FALLBACK_DOT_INK = 'gray';
 
 /**
  * The dots of one spinner, drawn inside a host box of `model.size` that clips its overflow.
- * `HappierSpinnerHost` uses this primitive; it is also available for portable author composition.
+ * Use `HappierSpinnerHost` for a complete renderer. Portable primitive composition owns its clipped
+ * host box and calls `useHappierSpinnerKeyframes` to install the web animation definitions.
  */
 export function HappierDotSpinner(props: Readonly<{ model: HappierDotSpinnerModel }>) {
   const { styleId, size, motion, ink } = props.model;
@@ -294,6 +295,7 @@ export function HappierSpinnerHost<HostProps extends Readonly<{
   presentation: HappierSpinnerPresentation;
   hostProps: HostProps;
 }>): ReactElement {
+  useHappierSpinnerKeyframes();
   const { presentation } = props;
   // RN is the actual host boundary. The neutral carrier keeps its types out of public declarations.
   const {
@@ -375,7 +377,6 @@ export function HappierSpinnerHost<HostProps extends Readonly<{
 }
 
 export function HappierSpinner(props: HappierSpinnerProps) {
-  useHappierSpinnerKeyframes();
   const theme = useOptionalHappierUiTheme();
   const environmentAccessibility = useOptionalHappierUiAccessibility();
   const presentationActive = useHappierUiAnimationActivityInternal();

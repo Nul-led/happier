@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { HappierSpinnerHost } from '@happier-dev/plugin-ui/presentation';
 
 import { mountThroughReactNativeWebAsync, type RnwMount } from '../../rnwMount.testSupport.js';
 import { HappierSpinner, resolveHappierSpinnerPresentation, resolveHappierWebSpinnerPresentation } from './Spinner.js';
@@ -147,6 +148,29 @@ describe('HappierSpinner on web (dot styles)', () => {
     if (!payload) throw new Error(`Expected a frame-sheet rule for ${key}`);
     return decodeURIComponent(payload);
   }
+
+  it.each(['classicRing', 'wave'] as const)('installs %s keyframes when the public host renders directly without an adapter', async (indicatorStyle) => {
+    document.getElementById('happier-spinner-keyframes')?.remove();
+    const presentation = resolveHappierSpinnerPresentation({
+      platform: 'web',
+      indicatorStyle,
+      color: 'red',
+      size: 12,
+    });
+    if (!presentation) throw new Error('Expected the visible web spinner');
+
+    mount = await mountThroughReactNativeWebAsync(
+      <HappierSpinnerHost presentation={presentation} hostProps={{ size: 12, testID: 'direct-spinner' }} />,
+    );
+    const animatedNode = mount.container.querySelector<HTMLElement>(indicatorStyle === 'classicRing'
+      ? '[data-testid="direct-spinner"]'
+      : '[data-happier-activity-spinner]');
+    expect(animatedNode?.style.animationName).toBe(presentation.kind === 'webRing'
+      ? presentation.style.animationName
+      : 'happierActivitySpinnerFilmstrip');
+    expect(definedKeyframes()).toContain(animatedNode!.style.animationName);
+    expect(document.querySelectorAll('#happier-spinner-keyframes')).toHaveLength(1);
+  });
 
   it('steps a strip of pre-drawn frames with one transform animation, sharing one sheet per style and ink', async () => {
     mount = await mountThroughReactNativeWebAsync(

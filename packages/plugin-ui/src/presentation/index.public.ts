@@ -202,7 +202,7 @@ export {
 export {
   HappierDotSpinner,
   HappierSpinner,
-  HappierActivitySpinnerView,
+  HappierSpinnerHost,
   iconMatchedSpinnerSize,
   resolveHappierSpinnerPresentation,
   type HappierDotSpinnerModel,

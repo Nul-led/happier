@@ -5052,7 +5052,7 @@ export const ca = {
         loadingIndicator: "Indicador de càrrega",
         loadingIndicatorStyle: "Estil",
         loadingIndicatorDescription: "Com es veuen els indicadors mentre hi ha feina en curs",
-        loadingIndicatorFooter: "Amb Reduir el moviment activat, els estils de punts es queden quiets i s'esvaeixen suaument, i l'Anell clàssic deixa de girar.",
+        loadingIndicatorFooter: "Amb l'opció «Reduir el moviment» activada, els estils de punts es queden quiets i s'esvaeixen suaument, i l'Anell clàssic deixa de girar.",
         loadingIndicatorOptions: {
             wave: "Onada",
             handwritten: "Manuscrit",
