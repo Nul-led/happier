@@ -16,6 +16,7 @@ import {
 
 import { CompactSearchField } from '@/components/ui/forms/CompactSearchField';
 import { Item } from '@/components/ui/lists/Item';
+import { WorkspaceDestinationRow } from '@/components/appShell/workspace/WorkspaceDestinationRow';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
@@ -109,7 +110,7 @@ const collectionListHost: HappierCollectionListHost = {
             {props.children}
         </Text>
     ),
-    Scroller: (props) => <ItemList style={props.style as StyleProp<ViewStyle>}>{props.children}</ItemList>,
+    Scroller: (props) => <ItemList presentation="grouped" style={props.style as StyleProp<ViewStyle>}>{props.children}</ItemList>,
     SearchField: (props) => (
         <CompactSearchField
             value={props.value}
@@ -159,6 +160,8 @@ export function CollectionListGroupLabel(props: Readonly<{
  * the row discloses children.
  */
 export const CollectionNavigationRow = React.memo(function CollectionNavigationRow(props: Readonly<{
+    /** A navigable destination: workspace menu, pointer and drag intent share the workspace owner. */
+    href?: string | null;
     testID: string;
     title: string;
     subtitle?: string;
@@ -177,7 +180,7 @@ export const CollectionNavigationRow = React.memo(function CollectionNavigationR
     rightElement?: React.ReactNode;
     onPress: () => void;
 }>) {
-    return (
+    const row = (
         <Item
             testID={props.testID}
             {...(props.rightElement ? { rightElement: props.rightElement, rightElementOutsidePressable: true } : {})}
@@ -198,6 +201,7 @@ export const CollectionNavigationRow = React.memo(function CollectionNavigationR
             onPress={props.onPress}
         />
     );
+    return props.href ? <WorkspaceDestinationRow href={props.href}>{row}</WorkspaceDestinationRow> : row;
 });
 
 /** Host styles for rows inside a collection list. */

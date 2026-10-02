@@ -35,7 +35,7 @@ describe('session row keyboard commands', () => {
         const commands = new Map(defaultKeyboardCommands.map((command) => [command.id, command]));
 
         expect(commands.get('sessions.selection.toggleFocused')?.defaultBinding).toMatchObject({
-            binding: 'Space',
+            binding: 'x',
             conflictScope: 'sessionListSelection',
         });
         expect(commands.get('sessions.selection.extendUp')?.defaultBinding).toMatchObject({

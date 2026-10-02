@@ -18,7 +18,7 @@ owner, do not create one. Paths are under `apps/ui/sources/` unless stated.
 
 | Need | Use |
 | --- | --- |
-| A configuration or detail page | `ItemList presentation="page"` + `PageHeader` (`components/ui/layout/PageHeader.tsx`: title, description, `actions`, `leading` mark, `meta` facts with icons, and a back slot filled by the navigation chrome); settings use `SettingsPageHeader` |
+| A configuration or detail page | `ItemList` (page presentation by default) + `PageHeader` (`components/ui/layout/PageHeader.tsx`: title, description, `actions`, `leading` mark, `meta` facts with icons, and a back slot filled by the navigation chrome); settings use `SettingsPageHeader`. Non-page lists explicitly use `presentation="grouped"`. |
 | A section | `ItemGroup` with `title`, `description`, optional `action` (drops beneath the title on narrow widths); `surface="none"` for sheetless content (tiles, a button row) |
 | A row | `Item` |
 | Free content inside a sheet | `SectionContentRow` |

@@ -280,7 +280,7 @@ export function IconButton(props: Readonly<{
                 <View
                     testID={props.testID ? `${props.testID}-surface` : undefined}
                     style={[
-                        chrome(state).surface,
+                        chrome({ ...state, pressed: false }).surface,
                     ]}
                 >
                     <View

@@ -73,15 +73,12 @@ export interface ItemGroupProps {
      * for sections that are about one thing. Page sections only.
      */
     titleLeading?: React.ReactNode;
-    footer?: string;
     children: React.ReactNode;
     accessibilityRole?: 'radiogroup';
     accessibilityLabel?: string;
     style?: StyleProp<ViewStyle>;
     headerStyle?: StyleProp<ViewStyle>;
-    footerStyle?: StyleProp<ViewStyle>;
     titleStyle?: StyleProp<TextStyle>;
-    footerTextStyle?: StyleProp<TextStyle>;
     containerStyle?: StyleProp<ViewStyle>;
     constrainToContentWidth?: boolean;
     /** Clips edge-to-edge child surfaces to the rounded inner card boundary. */
@@ -538,15 +535,12 @@ export const ItemGroup = React.memo<ItemGroupProps>((props) => {
         action,
         titleAccessory,
         titleLeading,
-        footer,
         children,
         accessibilityRole,
         accessibilityLabel,
         style,
         headerStyle,
-        footerStyle,
         titleStyle,
-        footerTextStyle,
         containerStyle,
         constrainToContentWidth = true,
         selectableItemCountOverride,
@@ -579,7 +573,7 @@ export const ItemGroup = React.memo<ItemGroupProps>((props) => {
         <View style={[styles.wrapper, style]}>
             <View style={[styles.container, constrainToContentWidth ? { maxWidth } : undefined]}>
                 {/* Header */}
-                {isPage && (title || description || footer || action) ? (
+                {isPage && (title || description || action) ? (
                     <HappierPageSectionHeader
                         title={(titleAccessory || titleLeading) && typeof title === 'string' ? (
                             <View style={styles.pageTitleRow}>
@@ -588,12 +582,12 @@ export const ItemGroup = React.memo<ItemGroupProps>((props) => {
                                 {titleAccessory}
                             </View>
                         ) : title}
-                        description={description ?? footer}
+                        description={description}
                         action={action ?? undefined}
                         insetPx={(Platform.select(ITEM_GROUP_CONTENT_MARGIN_HORIZONTAL_PX) ?? 12) + PAGE_LIST_METRICS.headingOpticalInsetPx}
                         renderText={(input) => input.role === 'sectionTitle'
                             ? <Text accessibilityRole="header" style={[styles.pageTitle, titleStyle]}>{input.text}</Text>
-                            : <Text style={[styles.pageDescription, footerTextStyle]}>{input.text}</Text>}
+                            : <Text style={styles.pageDescription}>{input.text}</Text>}
                         // App callers pass React Native layout styles; the shared header keeps its own anatomy under them.
                         style={headerStyle as HappierPageSectionHeaderProps['style']}
                     />
@@ -659,10 +653,10 @@ export const ItemGroup = React.memo<ItemGroupProps>((props) => {
                 </SectionLeadingColumnProvider>
 
                 {/* Footer (grouped presentation only; a page reads it as the section description) */}
-                {!isPage && (description ?? footer) && (
-                    <View style={[styles.footer, footerStyle]}>
-                        <Text style={[styles.footerText, footerTextStyle]}>
-                            {description ?? footer}
+                {!isPage && description && (
+                    <View style={styles.footer}>
+                        <Text style={styles.footerText}>
+                            {description}
                         </Text>
                     </View>
                 )}

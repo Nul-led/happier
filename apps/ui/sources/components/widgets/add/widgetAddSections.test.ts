@@ -1,3 +1,4 @@
+import type * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createSessionSurfaceNoteDocumentV1, type SessionSurfaceItemV1 } from '@happier-dev/protocol/sessions/board';
@@ -132,7 +133,7 @@ describe('buildCompanionWidgetAddSections', () => {
     });
 
     it('previews a Board note inert, and leaves executable items on their glyph', () => {
-        const preview = vi.fn((document: unknown) => document);
+        const preview = vi.fn((_document: unknown): React.ReactNode => 'preview');
         const sections = buildCompanionWidgetAddSections({
             refs: [],
             snapshot: BOARD,

@@ -38,6 +38,14 @@ export type KeyboardCommandId =
     | 'workspace.splitDown'
     | 'workspace.splitRight'
     | 'workspace.toggleMaximize'
+    | 'workspace.tab.new'
+    | 'workspace.tab.close'
+    | 'workspace.tab.reopen'
+    | `workspace.tab.select${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`
+    | 'terminal.jump'
+    | 'terminal.toggle'
+    | 'terminal.newShell'
+    | 'terminal.split'
     | 'settings.open'
     | 'transcript.message.next'
     | 'transcript.message.previous'
@@ -102,6 +110,13 @@ export type KeyboardCommandSettingsTitleKey = Extract<
     | 'settingsKeyboard.commands.transcriptScrollTop'
     | 'settingsKeyboard.commands.workflowRun'
     | 'settingsKeyboard.commands.workflowSave'
+    | 'settingsKeyboard.commands.workspaceTabNew'
+    | 'settingsKeyboard.commands.workspaceTabClose'
+    | `settingsKeyboard.commands.workspaceTabSelect${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`
+    | 'settingsKeyboard.commands.terminalJump'
+    | 'settingsKeyboard.commands.terminalToggle'
+    | 'settingsKeyboard.commands.terminalNewShell'
+    | 'settingsKeyboard.commands.terminalSplit'
 >;
 
 export type KeyboardContext = Readonly<{

@@ -23,7 +23,7 @@ describe('ItemList + ItemGroup popover boundary', () => {
 
         await renderScreen(
             <ItemList ref={listBoundaryRef}>
-                <ItemGroup title="Group" footer="Footer">
+                <ItemGroup title="Group" description="Footer">
                     <BoundarySpy />
                 </ItemGroup>
             </ItemList>,

@@ -18,6 +18,12 @@ import { isTouchPrimaryPointer, resolveMinimumInteractiveTargetSize } from '@/co
  */
 export const COMPACT_SEARCH_FIELD_METRICS = HAPPIER_SEARCH_FIELD_METRICS;
 
+// Callers place the field; the shared owner retains its frame, colours and padding.
+type CompactSearchFieldLayoutStyle = Pick<ViewStyle,
+    | 'flex' | 'flexGrow' | 'flexShrink' | 'flexBasis' | 'minWidth' | 'width' | 'maxWidth'
+    | 'marginTop' | 'marginBottom' | 'marginLeft' | 'marginRight' | 'marginHorizontal'
+>;
+
 /** The field's height here: the touch floor where a finger is the pointer, else the compact height. */
 export function resolveCompactSearchFieldHeightPx(platform: string = Platform.OS): number {
     return isTouchPrimaryPointer(platform) ? resolveMinimumInteractiveTargetSize(platform) : COMPACT_SEARCH_FIELD_METRICS.heightPx;
@@ -38,7 +44,8 @@ export const CompactSearchField = React.memo(function CompactSearchField(props: 
     placeholder: string;
     /** Test id of the text input itself. */
     testID?: string;
-    style?: StyleProp<ViewStyle>;
+    /** Native placement geometry only; the shared field owns its frame and padding. */
+    style?: StyleProp<CompactSearchFieldLayoutStyle>;
     /**
      * Runs the search on Enter or the keyboard's search key, for lists whose query is an explicit
      * request (a remote search) rather than a filter applied as the user types.
@@ -92,7 +99,7 @@ const CompactSearchFieldFrame = React.memo(function CompactSearchFieldFrame(prop
     onChangeText: (text: string) => void;
     placeholder: string;
     testID?: string;
-    style?: StyleProp<ViewStyle>;
+    style?: StyleProp<CompactSearchFieldLayoutStyle>;
     onSubmitEditing?: () => void;
     editable?: boolean;
 }> & CompactSearchFieldInputOptions) {
@@ -105,38 +112,39 @@ const CompactSearchFieldFrame = React.memo(function CompactSearchFieldFrame(prop
     const nativeMinimumTargetSize = useHappierNativeMinimumInteractiveTargetSize();
     const focusInput = React.useCallback(() => inputRef.current?.focus?.(), []);
     return (
-        <HappierSearchFieldBox
-            testID={props.testID}
-            onFocusInput={focusInput}
-            colors={{ backgroundColor: theme.colors.surface.base, borderColor: theme.colors.border.default }}
-            radius={theme.borderRadius.lg}
-            minimumTargetSize={nativeMinimumTargetSize ?? resolveCompactSearchFieldHeightPx()}
-            style={props.style}
-            leading={
-                <Icon name="magnifying-glass" size={COMPACT_SEARCH_FIELD_METRICS.iconSizePx} color={theme.colors.text.secondary} />
-            }
-            trailing={props.trailing}
-        >
-            <TextInput
-                ref={inputRef}
+        <View testID={props.testID ? `${props.testID}.layout` : undefined} style={props.style}>
+            <HappierSearchFieldBox
                 testID={props.testID}
-                placeholder={props.placeholder}
-                placeholderTextColor={theme.colors.input.placeholder}
-                value={props.value}
-                onChangeText={props.onChangeText}
-                onSubmitEditing={props.onSubmitEditing}
-                returnKeyType={props.onSubmitEditing ? 'search' : undefined}
-                editable={props.editable}
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoFocus={props.autoFocus}
-                onKeyPress={props.onKeyPress}
-                onFocus={props.onFocus}
-                onBlur={props.onBlur}
-                accessibilityLabel={props.accessibilityLabel ?? props.placeholder}
-                style={styles.input}
-            />
-        </HappierSearchFieldBox>
+                onFocusInput={focusInput}
+                colors={{ backgroundColor: theme.colors.surface.base, borderColor: theme.colors.border.default }}
+                radius={theme.borderRadius.lg}
+                minimumTargetSize={nativeMinimumTargetSize ?? resolveCompactSearchFieldHeightPx()}
+                leading={
+                    <Icon name="magnifying-glass" size={COMPACT_SEARCH_FIELD_METRICS.iconSizePx} color={theme.colors.text.secondary} />
+                }
+                trailing={props.trailing}
+            >
+                <TextInput
+                    ref={inputRef}
+                    testID={props.testID}
+                    placeholder={props.placeholder}
+                    placeholderTextColor={theme.colors.input.placeholder}
+                    value={props.value}
+                    onChangeText={props.onChangeText}
+                    onSubmitEditing={props.onSubmitEditing}
+                    returnKeyType={props.onSubmitEditing ? 'search' : undefined}
+                    editable={props.editable}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    autoFocus={props.autoFocus}
+                    onKeyPress={props.onKeyPress}
+                    onFocus={props.onFocus}
+                    onBlur={props.onBlur}
+                    accessibilityLabel={props.accessibilityLabel ?? props.placeholder}
+                    style={styles.input}
+                />
+            </HappierSearchFieldBox>
+        </View>
     );
 });
 

@@ -9,6 +9,7 @@ import { Typography } from '@/constants/Typography';
 import { MermaidRenderer } from './MermaidRenderer';
 import { t } from '@/text';
 import { MarkdownSpansView } from './MarkdownSpansView';
+import { parseMarkdownSpans } from './parseMarkdownSpans';
 import { MarkdownCodeBlock } from './MarkdownCodeBlock';
 import type { StreamingTextRevealPreset } from './streaming/streamingTextRevealConfig';
 import { CopiedPill } from '@/components/ui/copy/CopiedPill';
@@ -81,7 +82,7 @@ export const MarkdownBlockView = React.memo((props: MarkdownBlockViewProps) => {
     } else if (block.type === 'options') {
         return <RenderOptionsBlock items={block.items} first={props.first} last={props.last} selectable={props.selectable} onOptionPress={props.onOptionPress} onOptionLongPress={props.onOptionLongPress} textStyle={props.textStyle} />;
     } else if (block.type === 'table') {
-        return <RenderTableBlock headers={block.headers} rows={block.rows} alignments={block.alignments} first={props.first} last={props.last} selectable={props.selectable} textStyle={props.textStyle} profile={props.profile} streamingReveal={props.streamingReveal} streamingRevealPreset={props.streamingRevealPreset} agentTexMath={props.agentTexMath} />;
+        return <RenderTableBlock headers={block.headers} rows={block.rows} alignments={block.alignments} first={props.first} last={props.last} selectable={props.selectable} onLinkPress={props.onLinkPress} textStyle={props.textStyle} variant={props.variant} profile={props.profile} streamingReveal={props.streamingReveal} streamingRevealPreset={props.streamingRevealPreset} agentTexMath={props.agentTexMath} />;
     }
     return null;
 }, areMarkdownBlockViewPropsEqual);
@@ -298,7 +299,9 @@ function RenderTableBlock(props: {
     first: boolean,
     last: boolean,
     selectable: boolean,
+    onLinkPress?: (url: string) => boolean | void,
     textStyle?: StyleProp<TextStyle>,
+    variant: 'default' | 'thinking',
     profile: MarkdownRenderingProfile,
     streamingReveal: boolean,
     streamingRevealPreset?: StreamingTextRevealPreset,
@@ -331,7 +334,9 @@ function RenderTableBlock(props: {
                       <RenderTableCellContent
                           markdown={header}
                           selectable={props.selectable}
+                          onLinkPress={props.onLinkPress}
                           textStyle={[style.tableHeaderText, textAlignmentStyle, props.textStyle]}
+                          variant={props.variant}
                           profile={props.profile}
                           streamingReveal={props.streamingReveal}
                           streamingRevealPreset={props.streamingRevealPreset}
@@ -351,7 +356,9 @@ function RenderTableBlock(props: {
                           <RenderTableCellContent
                               markdown={row[colIndex] ?? ''}
                               selectable={props.selectable}
+                              onLinkPress={props.onLinkPress}
                               textStyle={[style.tableCellText, textAlignmentStyle, props.textStyle]}
+                              variant={props.variant}
                               profile={props.profile}
                               streamingReveal={props.streamingReveal}
                               streamingRevealPreset={props.streamingRevealPreset}
@@ -381,14 +388,44 @@ function RenderTableBlock(props: {
 function RenderTableCellContent(props: Readonly<{
     markdown: string;
     selectable: boolean;
+    onLinkPress?: (url: string) => boolean | void;
     textStyle?: StyleProp<TextStyle>;
+    variant: 'default' | 'thinking';
     profile: MarkdownRenderingProfile;
     streamingReveal: boolean;
     streamingRevealPreset?: StreamingTextRevealPreset;
     agentTexMath: boolean;
 }>) {
-    if (!containsPotentialEnrichedMath(props.markdown, props.agentTexMath)) {
+    const spans = React.useMemo(
+        () => containsPotentialEnrichedMath(props.markdown, props.agentTexMath)
+            ? null
+            : parseMarkdownSpans(props.markdown, false),
+        [props.markdown, props.agentTexMath],
+    );
+    if (spans && (spans.length === 0 || (
+        spans.length === 1
+        && spans[0].text === props.markdown
+        && spans[0].styles.length === 0
+        && spans[0].url === null
+    ))) {
         return <Text selectable={props.selectable} style={props.textStyle}>{props.markdown}</Text>;
+    }
+
+    if (spans) {
+        return (
+            <Text selectable={props.selectable} style={props.textStyle}>
+                <MarkdownSpansView
+                    spans={spans}
+                    baseStyle={props.textStyle}
+                    linkStyle={style.link}
+                    onLinkPress={props.onLinkPress}
+                    resolveSpanStyle={(styleId) => resolveMarkdownSpanStyle(styleId, props.variant)}
+                    inlineTextSelectable={false}
+                    streamingReveal={props.streamingReveal}
+                    streamingRevealPreset={props.streamingRevealPreset}
+                />
+            </Text>
+        );
     }
 
     return (
@@ -396,6 +433,7 @@ function RenderTableCellContent(props: Readonly<{
             markdown={props.markdown}
             profile={props.profile}
             selectable={props.selectable}
+            onLinkPress={props.onLinkPress}
             textStyle={props.textStyle}
             streamingAnimated={props.streamingReveal}
             streamingRevealPreset={props.streamingRevealPreset}

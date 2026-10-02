@@ -37,6 +37,21 @@ vi.mock('@/components/ui/icons/Icon', () => ({
 await import('./CompactSearchField');
 
 describe('CompactSearchField', () => {
+    it('applies caller geometry through a native layout wrapper without restyling the shared field', async () => {
+        const { CompactSearchField } = await import('./CompactSearchField');
+        const { flattenTestStyle } = await import('@/dev/testkit');
+        const geometry = { flex: 1, minWidth: 0, marginLeft: 4, maxWidth: '100%' as const };
+        const screen = await renderScreen(
+            <CompactSearchField testID="search" value="" onChangeText={() => {}} placeholder="Search" style={geometry} />,
+        );
+        const wrapper = screen.findByTestId('search.layout');
+        expect(wrapper).not.toBeNull();
+        expect(flattenTestStyle(wrapper!.props.style)).toMatchObject(geometry);
+        const field = screen.findByTestId('search.field');
+        expect(flattenTestStyle(field!.props.style)).not.toHaveProperty('marginLeft');
+        expect(field!.props.onPress).toEqual(expect.any(Function));
+    });
+
     it('runs an explicit search on submit and stays read-only while the list cannot be searched', async () => {
         const onSubmit = vi.fn();
         const { CompactSearchField } = await import('./CompactSearchField');

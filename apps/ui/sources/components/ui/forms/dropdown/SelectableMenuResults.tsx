@@ -224,6 +224,8 @@ const stylesheet = StyleSheet.create((theme) => ({
 }));
 
 export function SelectableMenuResults(props: {
+    /** Decorated destinations must remain mounted until press so browser dragging can start. */
+    wrapItem?: (item: SelectableMenuItem, content: React.ReactNode) => React.ReactNode;
     categories: ReadonlyArray<SelectableMenuCategory>;
     selectedIndex: number;
     onSelectionChange: (index: number) => void;
@@ -306,7 +308,7 @@ export function SelectableMenuResults(props: {
                     const testIdSafeItemId = String(item.id).replace(/[^a-zA-Z0-9_-]/g, '_');
                     const optionTestID = item.testID ?? `dropdown-option-${testIdSafeItemId}`;
                     const handleOptionMouseDownCapture =
-                        Platform.OS === 'web'
+                        Platform.OS === 'web' && !props.wrapItem
                             ? ((event: unknown) => {
                                 const activationEvent = asWebMouseDownActivationEvent(event);
                                 if (item.disabled) return;
@@ -412,7 +414,7 @@ export function SelectableMenuResults(props: {
                             onPointerEnter={rowFramePointerEnter}
                             onLayout={scrollFrameLayout}
                         >
-                            {rowFrameChildren}
+                            {props.wrapItem ? props.wrapItem(item, rowFrameChildren) : rowFrameChildren}
                         </SelectableMenuRowFrame>
                     );
                 });

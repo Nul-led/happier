@@ -1,4 +1,5 @@
 import React from 'react';
+import { StyleSheet } from 'react-native';
 import { describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 import { renderScreen } from '@/dev/testkit';
@@ -262,10 +263,6 @@ describe('SelectableMenuResults', () => {
                 />);
 
         const categoryTitle = screen.findByType('Text');
-        expect(categoryTitle.props.style).toEqual(expect.arrayContaining([
-            expect.objectContaining({
-                paddingHorizontal: 16,
-            }),
-        ]));
+        expect(StyleSheet.flatten(categoryTitle.props.style)).toMatchObject({ paddingHorizontal: 16 });
     });
 });

@@ -6,6 +6,7 @@ import {
     type HappierSelectionTilesColors,
     type HappierSelectionTilesGlyphRenderer,
     type HappierSelectionTilesTextRenderer,
+    type HappierSelectionTileFooterRenderer,
 } from '@happier-dev/plugin-ui/presentation';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -144,8 +145,16 @@ export function SelectionTiles<T extends string>(props: SelectionTilesProps<T>) 
         if (glyph.kind === 'icon' && isMarkToken(glyph.name)) return marks.get(glyph.name) ?? null;
         return <Icon name={glyph.kind === 'icon' && !isMarkToken(glyph.name) ? glyph.name : 'check-circle'} size={size} color={color} />;
     }, [marks]);
+    const footer = props.variant === 'action' ? undefined : props.renderOptionFooter;
+    const renderOptionFooter = React.useCallback<HappierSelectionTileFooterRenderer<T, TileGlyphName>>((params) => {
+        const option = props.options.find((candidate) => candidate.id === params.option.id);
+        return option && footer ? footer({ ...params, option }) : null;
+    }, [props.options, footer]);
 
-    return <HappierSelectionTiles {...props} options={options} colors={colors} renderText={renderText} renderGlyph={renderGlyph} />;
+    if (props.variant === 'action') {
+        return <HappierSelectionTiles {...props} options={options} colors={colors} renderText={renderText} renderGlyph={renderGlyph} />;
+    }
+    return <HappierSelectionTiles {...props} options={options} colors={colors} renderText={renderText} renderGlyph={renderGlyph} renderOptionFooter={footer ? renderOptionFooter : undefined} />;
 }
 
 function textStyle(

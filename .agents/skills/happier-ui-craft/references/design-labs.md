@@ -6,11 +6,18 @@ its product thinking was sound. The difference was the method, not the designer.
 
 ## The rules
 
-1. **Build inside the one standard lab.** Use the same folder, tooling, chrome, variant picker and shot
-   script as the other concepts. Today that's `.happier/design-lab/app-surfaces/`: `index.html`, the
-   `?c=<concept>` pages and `shots/`. Draw frames inside the shell as it ships (rail, columns, panes). Never
-   make a one-off page or contact sheet: the user compares concepts side by side, and a different format
-   reads as a lesser design.
+1. **Build inside the standard lab format, in the feature's own lab folder.** Every lab uses the same
+   shared kit: chrome, variant picker, light/dark toggle, notes, shell helpers and shot scripts. The kit
+   lives in `.happier/design-lab/settings/` and `.happier/design-lab/app-surfaces/`.
+   - A new feature, program or plan gets its own folder, `.happier/design-lab/<feature>/`. Its small
+     `index.html` loads the shared kit and the shared lab host, plus only that feature's `screens-*.js`
+     and CSS. Its shots go in its own `shots/` folder.
+   - Don't append new features to `app-surfaces/index.html`. It already loads every past concept and has
+     become too crowded to review. Extend an existing concept page only when refining that same concept.
+   - Draw frames inside the shell as it ships (rail, columns, panes), reusing the shared shell helpers
+     instead of redrawing them.
+   - Never make a one-off page or contact sheet. The user compares concepts side by side, and a different
+     format reads as a lesser design.
 2. **Product truth before pixels.** Before drawing, read the real owner: the manifest, data model, routes,
    states and actions, and for a plugin its `src/**` and docs.
    - Design only what the system can back.

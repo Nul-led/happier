@@ -18,7 +18,7 @@ export interface ItemListProps extends ScrollViewProps {
     insetGrouped?: boolean;
     /**
      * `page` makes this list a configuration page: paper background, and every `ItemGroup`/`Item` below
-     * it uses the page anatomy. Defaults to the compact `grouped` look.
+     * it uses the page anatomy (the default). Non-page lists opt into `grouped`.
      */
     presentation?: ListPresentation;
     /** A page's column: the reading measure (default), or `wide` for a grid or dashboard page. */
@@ -68,7 +68,7 @@ export const ItemList = React.memo(React.forwardRef<ScrollView, ItemListProps>((
         style,
         containerStyle,
         insetGrouped = true,
-        presentation = 'grouped',
+        presentation = 'page',
         pageColumn = 'reading',
         onWheel,
         keyboardAware = false,

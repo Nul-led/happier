@@ -39,6 +39,21 @@ const ACCESSORY_GAP = 8;
 // centred, so an asymmetric inset would walk the bar off-centre by exactly this much.
 const ACCESSORY_EDGE_INSET = 8;
 
+/**
+ * How many tab slots of `tabMinWidth` the floating capsule holds on this window: the window less
+ * the side gutters and the capsule's own padding, capped by the content max width. Bars use it
+ * to decide what fits before they render, since a capsule that shrink-wraps its tabs cannot be
+ * measured for the room it has.
+ */
+export function resolveFloatingTabBarSlotCount(input: Readonly<{
+    windowWidth: number;
+    maxWidth: number;
+    tabMinWidth: number;
+}>): number {
+    const room = Math.min(input.windowWidth - FLOATING_SIDE_GUTTER * 2, input.maxWidth) - PILL_PADDING_HORIZONTAL * 2;
+    return input.tabMinWidth > 0 ? Math.max(0, Math.floor(room / input.tabMinWidth)) : 0;
+}
+
 const styles = StyleSheet.create({
     positioner: {
         alignItems: 'center',
@@ -49,6 +64,11 @@ const styles = StyleSheet.create({
     pill: {
         paddingHorizontal: PILL_PADDING_HORIZONTAL,
         paddingVertical: PILL_PADDING_VERTICAL,
+    },
+    // The capsule shrink-wraps its tabs, but never past the gutters: a bar whose tools overflow
+    // scrolls inside it (`CockpitTabBar layout="scroll"`) instead of running off the screen.
+    pillBounds: {
+        maxWidth: '100%',
     },
     accessoryRow: {
         flexDirection: 'row',
@@ -126,7 +146,7 @@ export const FloatingTabBarSurface = React.memo(function FloatingTabBarSurface(p
             pointerEvents="box-none"
             style={[styles.positioner, { paddingBottom: bottomPadding }]}
         >
-            {props.trailingAccessory == null ? bar : (
+            {props.trailingAccessory == null ? <View style={styles.pillBounds}>{bar}</View> : (
                 // Three cells: a content-sized leading spacer, the bar, then the accessory — so the
                 // bar stays centred on the SCREEN while the accessory rides the trailing edge.
                 // Centring the row as a whole pushes the bar left by half the accessory; the bar is

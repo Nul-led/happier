@@ -308,7 +308,7 @@ describe('ItemGroup columns', () => {
         shared.windowWidth = 1600;
         const { ItemGroup } = await import('./ItemGroup');
         const screen = await renderScreen(
-            <ItemGroup title="Group title" footer="Group footer" columns={2}>
+            <ItemGroup title="Group title" description="Group footer" columns={2}>
                 {THREE_ROWS}
             </ItemGroup>,
         );

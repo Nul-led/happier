@@ -534,10 +534,10 @@ export function BaseModal({
                             {scrollHost === 'overlay' ? (
                                 <ScrollView
                                     style={styles.scrollContainer}
-                                    contentContainerStyle={styles.scrollContent}
+                                    contentContainerStyle={[styles.scrollContent, placement === 'bottom' ? styles.scrollContentBottom : null]}
                                     showsVerticalScrollIndicator={false}
                                     keyboardShouldPersistTaps="handled"
-                                    centerContent={true}
+                                    centerContent={placement !== 'bottom'}
                                 >
                                     <View
                                         pointerEvents={interactivePointerEvents.nativePointerEvents}
@@ -547,7 +547,7 @@ export function BaseModal({
                                     </View>
                                 </ScrollView>
                             ) : (
-                                <View style={[styles.scrollContainer, styles.scrollContent]}>
+                                <View style={[styles.scrollContainer, styles.scrollContent, placement === 'bottom' ? styles.scrollContentBottom : null]}>
                                     <View
                                         pointerEvents={interactivePointerEvents.nativePointerEvents}
                                         style={[styles.scrollContentInner, interactivePointerEvents.webStyle]}
@@ -604,6 +604,10 @@ const styles = StyleSheet.create(() => ({
     scrollContent: {
         flexGrow: 1,
         alignItems: 'stretch',
+        justifyContent: 'center',
+    },
+    scrollContentBottom: {
+        justifyContent: 'flex-end',
     },
     scrollContentInner: {
         width: '100%',

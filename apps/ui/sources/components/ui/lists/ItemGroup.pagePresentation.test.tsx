@@ -32,12 +32,12 @@ function textsInOrder(screen: Awaited<ReturnType<typeof renderScreen>>): string[
     return screen.findAllByType('Text' as never).map((node) => String(node.props.children));
 }
 
-async function renderGroup(presentation: 'page' | 'grouped', props: Readonly<{ footer?: string; description?: string }>) {
+async function renderGroup(presentation: 'page' | 'grouped', props: Readonly<{ description?: string }>) {
     const { ItemGroup } = await import('./ItemGroup');
     const { ListPresentationProvider } = await import('./listPresentation');
     return renderScreen(
         <ListPresentationProvider value={presentation}>
-            <ItemGroup title="Session list" footer={props.footer} description={props.description}>
+            <ItemGroup title="Session list" description={props.description}>
                 {React.createElement('Text', null, 'ROW')}
             </ItemGroup>
         </ListPresentationProvider>,
@@ -68,13 +68,8 @@ describe('ItemGroup page presentation', () => {
         expect(textsInOrder(screen)).toEqual(['Session list', 'How sessions appear in the sidebar.', 'ROW']);
     });
 
-    it('presents a legacy footer as the section description on a page, so migration needs no footer rewrite', async () => {
-        const screen = await renderGroup('page', { footer: 'How sessions appear in the sidebar.' });
-        expect(textsInOrder(screen)).toEqual(['Session list', 'How sessions appear in the sidebar.', 'ROW']);
-    });
-
     it('keeps the footer after the rows outside page presentation (menus, pickers, sheets)', async () => {
-        const screen = await renderGroup('grouped', { footer: 'How sessions appear in the sidebar.' });
+        const screen = await renderGroup('grouped', { description: 'How sessions appear in the sidebar.' });
         const texts = textsInOrder(screen);
         expect(texts.indexOf('ROW')).toBeLessThan(texts.indexOf('How sessions appear in the sidebar.'));
     });

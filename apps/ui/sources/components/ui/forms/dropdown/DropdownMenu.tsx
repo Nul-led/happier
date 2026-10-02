@@ -125,6 +125,8 @@ export type DropdownMenuProps = Readonly<{
 
     items: ReadonlyArray<DropdownMenuItem>;
     onSelect: (itemId: string) => void;
+    /** Destination row decoration defers web activation until press, leaving mouse-down available for dragging. */
+    wrapItem?: (item: SelectableMenuItem, content: React.ReactNode) => React.ReactNode;
     /** When false, selecting an item does not close the popover (useful for multi-select menus). */
     closeOnSelect?: boolean;
     /**
@@ -653,6 +655,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
 
                             <View style={{ paddingBottom: resultsPaddingBottom }}>
                                 <SelectableMenuResults
+                                    wrapItem={props.wrapItem}
                                     categories={filteredCategories}
                                     selectedIndex={selectedIndex}
                                     onSelectionChange={setSelectedIndex}

@@ -148,7 +148,7 @@ export const defaultKeyboardCommands: readonly KeyboardCommand[] = [
     {
         id: 'sessions.selection.toggleFocused',
         settingsTitleKey: 'settingsKeyboard.commands.sessionsSelectionToggleFocused',
-        defaultBinding: { binding: 'Space', platforms: ['web'], conflictScope: 'sessionListSelection' },
+        defaultBinding: { binding: 'x', platforms: ['web'], conflictScope: 'sessionListSelection' },
         when: (context) => !context.isEditableTarget,
     },
     {
@@ -180,6 +180,95 @@ export const defaultKeyboardCommands: readonly KeyboardCommand[] = [
         settingsTitleKey: 'settingsKeyboard.commands.splitCanvasCloseLeaf',
         defaultBinding: { binding: 'Alt+Backspace' },
         when: (context) => !context.isEditableTarget,
+    },
+    // These tab commands also work while editing. Browser-reserved chords remain visible in the
+    // shared conflict diagnostics; dispatch can only act on events the host delivers to the app.
+    {
+        id: 'workspace.tab.new',
+        settingsTitleKey: 'settingsKeyboard.commands.workspaceTabNew',
+        defaultBinding: { binding: 'Mod+T', allowInEditable: true, nativeConsumable: true },
+    },
+    {
+        id: 'workspace.tab.close',
+        settingsTitleKey: 'settingsKeyboard.commands.workspaceTabClose',
+        defaultBinding: { binding: 'Mod+W', allowInEditable: true, nativeConsumable: true },
+    },
+    {
+        id: 'workspace.tab.reopen',
+        settingsTitleKey: 'settingsKeyboard.commands.workspaceTabReopen',
+        defaultBinding: { binding: 'Mod+Shift+T', allowInEditable: true, nativeConsumable: true },
+    },
+    {
+        id: 'workspace.tab.select1',
+        settingsTitleKey: 'settingsKeyboard.commands.workspaceTabSelect1',
+        defaultBinding: { binding: 'Mod+1', allowInEditable: true, nativeConsumable: true },
+    },
+    {
+        id: 'workspace.tab.select2',
+        settingsTitleKey: 'settingsKeyboard.commands.workspaceTabSelect2',
+        defaultBinding: { binding: 'Mod+2', allowInEditable: true, nativeConsumable: true },
+    },
+    {
+        id: 'workspace.tab.select3',
+        settingsTitleKey: 'settingsKeyboard.commands.workspaceTabSelect3',
+        defaultBinding: { binding: 'Mod+3', allowInEditable: true, nativeConsumable: true },
+    },
+    {
+        id: 'workspace.tab.select4',
+        settingsTitleKey: 'settingsKeyboard.commands.workspaceTabSelect4',
+        defaultBinding: { binding: 'Mod+4', allowInEditable: true, nativeConsumable: true },
+    },
+    {
+        id: 'workspace.tab.select5',
+        settingsTitleKey: 'settingsKeyboard.commands.workspaceTabSelect5',
+        defaultBinding: { binding: 'Mod+5', allowInEditable: true, nativeConsumable: true },
+    },
+    {
+        id: 'workspace.tab.select6',
+        settingsTitleKey: 'settingsKeyboard.commands.workspaceTabSelect6',
+        defaultBinding: { binding: 'Mod+6', allowInEditable: true, nativeConsumable: true },
+    },
+    {
+        id: 'workspace.tab.select7',
+        settingsTitleKey: 'settingsKeyboard.commands.workspaceTabSelect7',
+        defaultBinding: { binding: 'Mod+7', allowInEditable: true, nativeConsumable: true },
+    },
+    {
+        id: 'workspace.tab.select8',
+        settingsTitleKey: 'settingsKeyboard.commands.workspaceTabSelect8',
+        defaultBinding: { binding: 'Mod+8', allowInEditable: true, nativeConsumable: true },
+    },
+    {
+        id: 'workspace.tab.select9',
+        settingsTitleKey: 'settingsKeyboard.commands.workspaceTabSelect9',
+        defaultBinding: { binding: 'Mod+9', allowInEditable: true, nativeConsumable: true },
+    },
+    // Jump to a terminal (terminal lab B4): the command palette in its Terminals scope. Like the
+    // palette itself, the web surface (which includes the desktop app) uses Alt because the host
+    // browser keeps Mod+J for its downloads view.
+    {
+        id: 'terminal.jump',
+        settingsTitleKey: 'settingsKeyboard.commands.terminalJump',
+        defaultBindings: [
+            { binding: 'Alt+J', platforms: ['web'] },
+            { binding: 'Mod+J', nativeConsumable: true, blockedSurfaces: ['web'] },
+        ],
+        when: (context) => !context.isEditableTarget,
+    },
+    {
+        id: 'terminal.toggle',
+        settingsTitleKey: 'settingsKeyboard.commands.terminalToggle',
+        defaultBinding: { binding: 'Ctrl+`', allowInEditable: true, nativeConsumable: true },
+    },
+    {
+        id: 'terminal.newShell',
+        settingsTitleKey: 'settingsKeyboard.commands.terminalNewShell',
+        defaultBinding: { binding: 'Ctrl+Shift+`', allowInEditable: true, nativeConsumable: true },
+    },
+    {
+        id: 'terminal.split',
+        settingsTitleKey: 'settingsKeyboard.commands.terminalSplit',
+        defaultBinding: { binding: 'Mod+\\', allowInEditable: true, nativeConsumable: true },
     },
     {
         id: 'workspace.focusDown',

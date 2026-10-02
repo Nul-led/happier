@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { I18nManager, Image, Platform, Pressable, ScrollView, View } from 'react-native';
+import { I18nManager, Image, Platform, Pressable, ScrollView, View, type LayoutChangeEvent } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
@@ -11,6 +11,7 @@ import { t } from '@/text';
 import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
 import { Icon } from '@/components/ui/icons/Icon';
 import { IconButton } from '@/components/ui/buttons/IconButton';
+import { StatusDot } from '@/components/ui/status/StatusDot';
 import { resolveHappierTabKeySelection } from '@happier-dev/plugin-ui/presentation';
 import { DETAILS_TAB_STRIP_METRICS as M } from '@/components/appShell/panes/details/header/detailsTabHeaderMetrics';
 import { shadowLevelStyle } from '@/shadowElevation';
@@ -30,6 +31,7 @@ export type DocumentTabStripTestIds = Readonly<{
     tabFavicon?: (tabKey: string) => string | null | undefined;
     tabSpinner?: (tabKey: string) => string | null | undefined;
     tabUnsaved?: (tabKey: string) => string | null | undefined;
+    tabStatus?: (tabKey: string) => string | null | undefined;
 }>;
 
 /**
@@ -41,6 +43,35 @@ export type DocumentTabStripTestIds = Readonly<{
 export type DocumentTabPresentation = Readonly<{
     faviconUrl?: string | null;
     isLoading?: boolean;
+    /**
+     * Live status in the tab chrome. Close takes the bar/rail slot on the active tab and on hover;
+     * pinned marks keep a small status overlay. The label is read with the tab's name.
+     */
+    status?: DocumentTabStatus | null;
+}>;
+
+/**
+ * The dot a tab status draws: live tones (running, needs you) carry a soft halo, settled ones do not
+ * (terminal lab B1). Lists that show the same statuses use this too, so a tab and its row agree.
+ */
+export function resolveDocumentTabStatusDot(
+    theme: Readonly<{ colors: Readonly<{ state: Readonly<{ success: Readonly<{ foreground: string; background: string }>; warning: Readonly<{ foreground: string; background: string }> }>; status: Readonly<{ error: string }>; text: Readonly<{ tertiary: string }> }> }>,
+    tone: DocumentTabStatus['tone'],
+): Readonly<{ color: string; halo?: string }> {
+    switch (tone) {
+        case 'running': return { color: theme.colors.state.success.foreground, halo: theme.colors.state.success.background };
+        case 'attention': return { color: theme.colors.state.warning.foreground, halo: theme.colors.state.warning.background };
+        case 'ended': return { color: theme.colors.text.tertiary };
+        case 'working':
+        case 'offline': return { color: theme.colors.text.tertiary };
+        case 'failed': return { color: theme.colors.status.error };
+    }
+}
+
+export type DocumentTabStatus = Readonly<{
+    tone: 'running' | 'working' | 'attention' | 'ended' | 'offline' | 'failed';
+    /** Already translated: "Running", "Needs you". */
+    label: string;
 }>;
 
 export type DocumentTabItem = Readonly<{
@@ -50,6 +81,8 @@ export type DocumentTabItem = Readonly<{
     isPreview: boolean;
     isPinned: boolean;
     canPin?: boolean;
+    /** Still open, but this device cannot show it: the tab stays, quiet, and says so when opened. */
+    isUnavailable?: boolean;
 }>;
 
 export type DocumentTabStripProps<T extends DocumentTabItem> = Readonly<{
@@ -61,6 +94,8 @@ export type DocumentTabStripProps<T extends DocumentTabItem> = Readonly<{
     onUnpin: (key: string) => void;
     onClose: (key: string) => void;
     renderLeadingIcon: (tab: T, active: boolean) => React.ReactNode;
+    /** A destination owner may add its row gestures around the shared tab anatomy. */
+    wrapTab?: (tab: T, content: React.ReactNode) => React.ReactNode;
     resolveTabPresentation?: ((tab: T) => DocumentTabPresentation | null | undefined) | null;
     tabNativeId: (key: string) => string;
     panelNativeId: (key: string) => string;
@@ -71,17 +106,29 @@ export type DocumentTabStripProps<T extends DocumentTabItem> = Readonly<{
      * `bar`: the workspace bar (workspace lab T) — tabs shrink instead of scrolling (the consumer
      * passes only the tabs that fit), a pinned tab is its mark alone, and close appears on hover and
      * on the open tab in one always-reserved trailing slot. Pinning lives in the tab's menu.
+     * `rail`: the phone's open-tabs rail (phone-nav lab R) — the bar's anatomy as pills that scroll
+     * sideways: each tab rests on a hairline, the open one takes the selection fill and its close,
+     * and `subtitle` reads as a quiet count after the title (a split's panes).
      */
-    variant?: 'strip' | 'bar';
+    variant?: 'strip' | 'bar' | 'rail';
+    /** `rail` only: what follows the last tab inside the scroll (the "Synced" note). */
+    railTrailing?: React.ReactNode;
     /**
      * `bar` only. `raised`: the open tab is lifted onto paper — the focused pane's tab, the one
      * focus signal. `quiet`: the open tab of a pane that is not focused takes a selection tint.
      */
     activeEmphasis?: 'raised' | 'quiet';
-    /** `bar` only: a tab's menu, from a right click or a long press. */
+    /** `bar` and `rail`: a tab's menu, from a right click or a long press. */
     onTabMenu?: (key: string, event: unknown) => void;
     /** `bar` only: the tablist's own height (30 in the title strip, 28 in a pane's own strip). */
     barTabHeightPx?: number;
+    /**
+     * `bar` only, web: what dragging a tab carries (`text/plain`). Tabs accept a drop of any payload
+     * through `onTabDrop`, which receives the tab the drop lands before.
+     */
+    tabDragPayload?: (key: string) => string;
+    onTabDragEnd?: () => void;
+    onTabDrop?: (beforeKey: string, payload: string) => void;
 }>;
 
 /** The bar variant's measures (workspace lab T: 30 tall in the title strip, 28 in a pane strip). */
@@ -190,6 +237,9 @@ const stylesheet = StyleSheet.create((theme) => ({
         minWidth: 0,
         maxWidth: B.tabMaxWidthPx,
         flexShrink: 1,
+        // Every tab reserves the raised tab's hairline, so raising one never shifts its neighbours.
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: 'transparent',
     },
     barTabPinned: {
         minWidth: 0,
@@ -198,15 +248,25 @@ const stylesheet = StyleSheet.create((theme) => ({
     barTabOpen: {
         flexShrink: 0,
     },
+    // Hover and the open tab of a pane that is not focused take the strip's own control hover
+    // (the same fill as the back/forward buttons beside them); only the focused pane's open tab is
+    // raised (workspace lab T: "that is the whole focus indicator").
     barTabHovered: {
-        backgroundColor: theme.colors.surface.ripple,
+        backgroundColor: theme.colors.surface.selected,
     },
     barTabQuiet: {
-        backgroundColor: theme.colors.surface.ripple,
+        backgroundColor: theme.colors.surface.selected,
     },
     barTabRaised: {
-        backgroundColor: theme.colors.surface.base,
+        backgroundColor: theme.colors.surface.pressed,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: theme.colors.border.default,
         ...shadowLevelStyle(theme.colors.shadowLevels[1]),
+    },
+    /** A dragged tab will land before this one: its leading edge takes the focus accent. */
+    barTabDropTarget: {
+        borderLeftColor: theme.colors.border.focus,
+        borderLeftWidth: 2,
     },
     barTabPress: {
         flex: 1,
@@ -239,11 +299,40 @@ const stylesheet = StyleSheet.create((theme) => ({
         paddingRight: B.tabPaddingEndPx,
         paddingLeft: 2,
     },
+    railContent: {
+        alignItems: 'center',
+        gap: 6,
+        paddingHorizontal: 12,
+    },
+    railTab: {
+        borderRadius: B.tabHeightPx / 2,
+        borderColor: theme.colors.border.default,
+        maxWidth: 168,
+        flexShrink: 0,
+    },
+    railTabOpen: {
+        borderColor: 'transparent',
+        backgroundColor: theme.colors.surface.selected,
+    },
+    railCount: {
+        ...M.tabSubtitle,
+        color: theme.colors.text.tertiary,
+        fontVariant: ['tabular-nums'],
+        ...Typography.default('semiBold'),
+    },
+    tabLabelUnavailable: {
+        color: theme.colors.text.tertiary,
+    },
     barTrailingSlot: {
         width: B.trailingSlotPx,
         height: B.trailingSlotPx,
         alignItems: 'center',
         justifyContent: 'center',
+    },
+    pinnedStatus: {
+        position: 'absolute',
+        right: -2,
+        bottom: -1,
     },
 }));
 
@@ -274,6 +363,10 @@ export function DocumentTabStrip<T extends DocumentTabItem>(props: DocumentTabSt
         props.onActivate(nextTab.key);
         if (nextIndex !== currentIndex) tabFocusTargetsRef.current.get(nextTab.key)?.focus?.();
     }, [props.tabs, props.onActivate]);
+
+    if (props.variant === 'rail') {
+        return <DocumentRail strip={props} actionSize={actionSize} onKeyDown={handleKeyDown} focusTargets={tabFocusTargetsRef.current} />;
+    }
 
     if (props.variant === 'bar') {
         return (
@@ -322,7 +415,7 @@ export function DocumentTabStrip<T extends DocumentTabItem>(props: DocumentTabSt
                 const isUnsaved = props.unsavedTabKeys?.has(tab.key) === true;
                 const safeTabKey = toTestIdSafeValue(tab.key);
                 const presentation = props.resolveTabPresentation?.(tab) ?? null;
-                return (
+                const content = (
                     <View
                         key={tab.key}
                         style={[styles.tab, isActive ? styles.tabActive : null]}
@@ -342,7 +435,9 @@ export function DocumentTabStrip<T extends DocumentTabItem>(props: DocumentTabSt
                                 interactiveTargetStyle,
                             ]}
                             accessibilityRole="tab"
-                            accessibilityLabel={t('session.detailsPanel.openTabA11y', { title: tab.title })}
+                            accessibilityLabel={presentation?.status
+                                ? `${t('session.detailsPanel.openTabA11y', { title: tab.title })}, ${presentation.status.label}`
+                                : t('session.detailsPanel.openTabA11y', { title: tab.title })}
                             accessibilityState={{ selected: isActive }}
                             aria-selected={isActive}
                             nativeID={props.tabNativeId(tab.key)}
@@ -381,6 +476,14 @@ export function DocumentTabStrip<T extends DocumentTabItem>(props: DocumentTabSt
                             </View>
                         </DocumentTabWebPressable>
                         <View style={styles.tabActions}>
+                            {presentation?.status && (tab.isPinned || !isActive) ? (
+                                <DocumentTabStatusMark
+                                    status={presentation.status}
+                                    compact={tab.isPinned}
+                                    testID={props.testIds?.tabStatus?.(safeTabKey) ?? undefined}
+                                    spinnerTestID={props.testIds?.tabSpinner?.(safeTabKey) ?? undefined}
+                                />
+                            ) : null}
                             {tab.isPreview || tab.canPin ? (
                                 <IconButton
                                     onPress={(event: unknown) => {
@@ -446,7 +549,78 @@ export function DocumentTabStrip<T extends DocumentTabItem>(props: DocumentTabSt
                         </View>
                     </View>
                 );
+                return <React.Fragment key={tab.key}>{props.wrapTab ? props.wrapTab(tab, content) : content}</React.Fragment>;
             })}
+        </ScrollView>
+    );
+}
+
+/** The rail's pills are 30 tall; the press reaches the platform's comfortable touch height. */
+const RAIL_HIT_SLOP = { top: 7, bottom: 7 } as const;
+
+/**
+ * The phone's open-tabs rail: the bar's tabs as scrolling pills. The open tab is kept in view when it
+ * changes (a tab opened from elsewhere, a preview replaced), without animating on arrival.
+ */
+function DocumentRail<T extends DocumentTabItem>(props: Readonly<{
+    strip: DocumentTabStripProps<T>;
+    actionSize: number;
+    onKeyDown: (event: React.KeyboardEvent<HTMLElement>, currentIndex: number) => void;
+    focusTargets: Map<string, { focus?: () => void }>;
+}>) {
+    const styles = stylesheet;
+    const { strip } = props;
+    const scrollRef = React.useRef<ScrollView | null>(null);
+    const frames = React.useRef(new Map<string, { x: number; width: number }>());
+    const viewport = React.useRef({ x: 0, width: 0 });
+    const reveal = React.useCallback((key: string | null, animated: boolean) => {
+        const frame = key ? frames.current.get(key) : undefined;
+        const { x, width } = viewport.current;
+        if (!frame || width === 0) return;
+        if (frame.x < x + 12) scrollRef.current?.scrollTo({ x: Math.max(0, frame.x - 12), animated });
+        else if (frame.x + frame.width > x + width - 12) scrollRef.current?.scrollTo({ x: frame.x + frame.width - width + 12, animated });
+    }, []);
+    React.useEffect(() => { reveal(strip.activeTabKey, false); }, [reveal, strip.activeTabKey]);
+    return (
+        <ScrollView
+            ref={scrollRef}
+            horizontal
+            contentContainerStyle={styles.railContent}
+            showsHorizontalScrollIndicator={false}
+            onLayout={(event) => {
+                viewport.current = { ...viewport.current, width: event.nativeEvent.layout.width };
+                reveal(strip.activeTabKey, false);
+            }}
+            onScroll={(event) => { viewport.current = { ...viewport.current, x: event.nativeEvent.contentOffset.x }; }}
+            scrollEventThrottle={32}
+            accessibilityRole="tablist"
+            accessibilityLabel={strip.accessibilityLabel}
+        >
+            {strip.tabs.map((tab, tabIndex) => (
+                <DocumentBarTab
+                    key={tab.key}
+                    rail
+                    tab={tab}
+                    index={tabIndex}
+                    active={strip.activeTabKey ? tab.key === strip.activeTabKey : false}
+                    emphasis="quiet"
+                    unsaved={strip.unsavedTabKeys?.has(tab.key) === true}
+                    heightPx={B.tabHeightPx}
+                    actionSize={props.actionSize}
+                    strip={strip}
+                    onKeyDown={props.onKeyDown}
+                    onLayout={(event) => {
+                        const { x, width } = event.nativeEvent.layout;
+                        frames.current.set(tab.key, { x, width });
+                        if (tab.key === strip.activeTabKey) reveal(tab.key, false);
+                    }}
+                    registerFocusTarget={(target) => {
+                        if (target) props.focusTargets.set(tab.key, target);
+                        else props.focusTargets.delete(tab.key);
+                    }}
+                />
+            ))}
+            {strip.railTrailing ?? null}
         </ScrollView>
     );
 }
@@ -472,15 +646,25 @@ function DocumentBarTab<T extends DocumentTabItem>(props: Readonly<{
     strip: DocumentTabStripProps<T>;
     onKeyDown: (event: React.KeyboardEvent<HTMLElement>, currentIndex: number) => void;
     registerFocusTarget: (target: { focus?: () => void } | null) => void;
+    rail?: boolean;
+    onLayout?: (event: LayoutChangeEvent) => void;
 }>) {
     const styles = stylesheet;
     const { theme } = useUnistyles();
     const [hovered, setHovered] = React.useState(false);
     const { tab, strip } = props;
+    const [dropTarget, setDropTarget] = React.useState(false);
+    const dragHostRef = useWebTabDrag({
+        payload: strip.tabDragPayload ? () => strip.tabDragPayload!(tab.key) : null,
+        onDrop: strip.onTabDrop ? (payload) => strip.onTabDrop!(tab.key, payload) : null,
+        onDragEnd: () => strip.onTabDragEnd?.(),
+        onDropTargetChange: setDropTarget,
+    });
     const safeTabKey = toTestIdSafeValue(tab.key);
     const presentation = strip.resolveTabPresentation?.(tab) ?? null;
     const pinned = tab.isPinned;
-    const showClose = !pinned && (props.active || hovered || props.unsaved);
+    const status = presentation?.status ?? null;
+    const showClose = !pinned && ((hovered && !props.rail) || props.active || (!status && props.unsaved));
     const openMenu = strip.onTabMenu
         ? (event: unknown) => {
             (event as { preventDefault?: () => void } | null)?.preventDefault?.();
@@ -492,13 +676,17 @@ function DocumentBarTab<T extends DocumentTabItem>(props: Readonly<{
         : t('session.detailsPanel.closeTabA11y')}: ${tab.title}`;
     return (
         <View
+            ref={dragHostRef}
+            onLayout={props.onLayout}
             style={[
                 styles.barTab,
                 { height: props.heightPx },
                 pinned ? [styles.barTabPinned, { width: props.heightPx }] : null,
                 props.active ? styles.barTabOpen : null,
                 hovered && !props.active ? styles.barTabHovered : null,
-                props.active ? (props.emphasis === 'raised' ? styles.barTabRaised : styles.barTabQuiet) : null,
+                props.active && !props.rail ? (props.emphasis === 'raised' ? styles.barTabRaised : styles.barTabQuiet) : null,
+                props.rail ? [styles.railTab, props.active ? styles.railTabOpen : null] : null,
+                dropTarget ? styles.barTabDropTarget : null,
             ]}
             {...(Platform.OS === 'web' ? {
                 onPointerEnter: () => setHovered(true),
@@ -509,6 +697,7 @@ function DocumentBarTab<T extends DocumentTabItem>(props: Readonly<{
                 ref={(target) => props.registerFocusTarget(target as { focus?: () => void } | null)}
                 onPress={() => strip.onActivate(tab.key)}
                 onLongPress={openMenu}
+                hitSlop={props.rail ? RAIL_HIT_SLOP : undefined}
                 {...(Platform.OS === 'web' && openMenu ? { onContextMenu: openMenu } : null)}
                 onKeyDown={Platform.OS === 'web'
                     ? (event) => props.onKeyDown(event, props.index)
@@ -516,7 +705,9 @@ function DocumentBarTab<T extends DocumentTabItem>(props: Readonly<{
                 testID={strip.testIds?.tab?.(safeTabKey) ?? undefined}
                 style={[styles.barTabPress, pinned ? styles.barTabPressPinned : null, { height: props.heightPx }]}
                 accessibilityRole="tab"
-                accessibilityLabel={t('session.detailsPanel.openTabA11y', { title: tab.title })}
+                accessibilityLabel={status
+                    ? `${t('session.detailsPanel.openTabA11y', { title: tab.title })}, ${status.label}`
+                    : t('session.detailsPanel.openTabA11y', { title: tab.title })}
                 accessibilityState={{ selected: props.active }}
                 aria-selected={props.active}
                 nativeID={strip.tabNativeId(tab.key)}
@@ -537,6 +728,11 @@ function DocumentBarTab<T extends DocumentTabItem>(props: Readonly<{
                             testID={strip.testIds?.tabFavicon?.(safeTabKey) ?? undefined}
                         />
                     ) : strip.renderLeadingIcon(tab, props.active || hovered)}
+                    {pinned && status ? (
+                        <View style={styles.pinnedStatus}>
+                            <DocumentTabStatusMark status={status} compact testID={strip.testIds?.tabStatus?.(safeTabKey) ?? undefined} />
+                        </View>
+                    ) : null}
                 </View>
                 {pinned ? null : (
                     <Text
@@ -545,6 +741,7 @@ function DocumentBarTab<T extends DocumentTabItem>(props: Readonly<{
                             props.active || hovered ? { color: theme.colors.text.primary } : null,
                             props.active ? styles.tabLabelActive : null,
                             tab.isPreview ? styles.tabLabelPreview : null,
+                            tab.isUnavailable ? styles.tabLabelUnavailable : null,
                             { flexShrink: 1 },
                         ]}
                         numberOfLines={1}
@@ -552,11 +749,20 @@ function DocumentBarTab<T extends DocumentTabItem>(props: Readonly<{
                         {tab.title}
                     </Text>
                 )}
+                {props.rail && !pinned && typeof tab.subtitle === 'string' && tab.subtitle.length > 0 ? (
+                    <Text style={styles.railCount}>{tab.subtitle}</Text>
+                ) : null}
             </DocumentTabWebPressable>
-            {pinned ? null : (
+            {pinned || (props.rail && !showClose && !status) ? null : (
                 <View style={styles.barTrailing}>
                     <View style={styles.barTrailingSlot}>
-                        {showClose ? (
+                        {!showClose && status ? (
+                            <DocumentTabStatusMark
+                                status={status}
+                                testID={strip.testIds?.tabStatus?.(safeTabKey) ?? undefined}
+                                spinnerTestID={strip.testIds?.tabSpinner?.(safeTabKey) ?? undefined}
+                            />
+                        ) : showClose ? (
                             <IconButton
                                 onPress={(event: unknown) => {
                                     stopPropagation(event);
@@ -585,4 +791,75 @@ function DocumentBarTab<T extends DocumentTabItem>(props: Readonly<{
             )}
         </View>
     );
+}
+
+function DocumentTabStatusMark(props: Readonly<{
+    status: DocumentTabStatus;
+    compact?: boolean;
+    testID?: string;
+    spinnerTestID?: string;
+}>) {
+    const { theme } = useUnistyles();
+    if (props.status.tone === 'working' && !props.compact) {
+        return <ActivitySpinner size={10} color={theme.colors.text.tertiary} testID={props.spinnerTestID} />;
+    }
+    const dot = resolveDocumentTabStatusDot(theme, props.status.tone);
+    return <StatusDot testID={props.testID} color={dot.color} halo={dot.halo} size={props.compact ? 4 : 6} />;
+}
+
+/**
+ * The web drag source and drop target of one bar tab: dragging carries `payload()` as `text/plain`,
+ * and a drop of any `text/plain` payload lands before this tab. Native has no HTML drag and drop;
+ * the tab menu (Split right/down, Move) covers the same moves there.
+ */
+function useWebTabDrag(input: Readonly<{
+    payload: (() => string) | null;
+    onDrop: ((payload: string) => void) | null;
+    onDragEnd: () => void;
+    onDropTargetChange: (over: boolean) => void;
+}>): (node: unknown) => void {
+    const latest = React.useRef(input);
+    latest.current = input;
+    const detach = React.useRef<(() => void) | null>(null);
+    React.useEffect(() => () => detach.current?.(), []);
+    return React.useCallback((node: unknown) => {
+        detach.current?.();
+        detach.current = null;
+        if (Platform.OS !== 'web') return;
+        const element = node as HTMLElement | null;
+        if (!element || typeof element.addEventListener !== 'function') return;
+        const draggable = latest.current.payload !== null;
+        element.setAttribute('draggable', draggable ? 'true' : 'false');
+        type DragEventLike = Event & { dataTransfer?: DataTransfer | null };
+        const listeners: ReadonlyArray<readonly [string, (event: DragEventLike) => void]> = [
+            ['dragstart', (event) => {
+                const payload = latest.current.payload?.();
+                if (!payload || !event.dataTransfer) return;
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', payload);
+            }],
+            ['dragover', (event) => {
+                if (!latest.current.onDrop) return;
+                event.preventDefault();
+                latest.current.onDropTargetChange(true);
+            }],
+            ['dragleave', () => latest.current.onDropTargetChange(false)],
+            ['dragend', () => {
+                latest.current.onDropTargetChange(false);
+                latest.current.onDragEnd();
+            }],
+            ['drop', (event) => {
+                latest.current.onDropTargetChange(false);
+                const payload = event.dataTransfer?.getData('text/plain') ?? '';
+                if (!payload || !latest.current.onDrop) return;
+                event.preventDefault();
+                event.stopPropagation();
+                latest.current.onDrop(payload);
+            }],
+        ];
+        for (const [type, listener] of listeners) element.addEventListener(type, listener as EventListener);
+        detach.current = () => {
+            for (const [type, listener] of listeners) element.removeEventListener(type, listener as EventListener);
+        };
+    }, []);
 }

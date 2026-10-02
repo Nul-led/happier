@@ -15,3 +15,8 @@ export async function hapticsSelection(): Promise<void> {
 export async function hapticsSuccess(): Promise<void> {
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
 }
+
+/** A firmer tick for a threshold that changes what a gesture will do (a lock, a hold). */
+export async function hapticsMedium(): Promise<void> {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => undefined);
+}
