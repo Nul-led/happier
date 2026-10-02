@@ -41,6 +41,7 @@ export async function runCommandCapture(params: Readonly<{
     const invocation = resolveWindowsCommandInvocation({ command: params.command, args: [...params.args], env: params.env ?? process.env });
     const child = spawn(invocation.command, invocation.args, {
       env: params.env,
+      windowsHide: true,
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       stdio: [params.stdinText === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });

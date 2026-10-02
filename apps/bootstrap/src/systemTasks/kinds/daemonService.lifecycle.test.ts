@@ -27,15 +27,15 @@ const defaultUrl = 'https://default.example.test';
 const pinUrl = 'https://pin.example.test';
 const ownUrl = 'https://own.example.test';
 
-function fixture(options: { failure?: Readonly<Record<string, Readonly<Record<string, string>>>>; pinRunning?: boolean; sameRelay?: boolean; noServices?: boolean } = {}) {
+function fixture(options: { failure?: Readonly<Record<string, Readonly<Record<string, string>>>>; pinRunning?: boolean; sameRelay?: boolean; noServices?: boolean; hiddenManagedDefault?: boolean; userOwnedOnly?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'hsetup-service-controls-'));
   const home = join(root, 'happier-home');
   const profileStatus = (url: string, running = true) => ({ server: { serverUrl: url }, daemon: { running }, service: { installed: true, autostart: 'at-login' }, auth: { needsAuth: false, machineId: 'machine-' + url, machineRegistered: true } });
   const fake = createFakeHappierCli({
     serverList: { ok: true, data: { activeServerId: 'cloud', profiles: [
-      { id: 'cloud', serverUrl: defaultUrl, homeServerIdentityId: 'default-identity' }, { id: 'b', serverUrl: options.sameRelay ? defaultUrl : pinUrl, homeServerIdentityId: 'pin-identity' }, { id: 'own', serverUrl: ownUrl },
+      { id: 'cloud', serverUrl: defaultUrl, homeServerIdentityId: 'default-identity' }, { id: 'b', serverUrl: options.sameRelay ? defaultUrl : pinUrl, homeServerIdentityId: 'pin-identity' }, { id: 'own', serverUrl: options.hiddenManagedDefault ? defaultUrl : ownUrl },
     ] } },
-    daemonStatusesByServerId: { __default__: [profileStatus(defaultUrl)], b: [profileStatus(options.sameRelay ? defaultUrl : pinUrl, options.pinRunning ?? true)], own: [profileStatus(ownUrl)] },
+    daemonStatusesByServerId: { __default__: [profileStatus(defaultUrl, !options.hiddenManagedDefault)], b: [profileStatus(options.sameRelay ? defaultUrl : pinUrl, options.pinRunning ?? true)], own: [profileStatus(options.hiddenManagedDefault ? defaultUrl : ownUrl)] },
     serviceCommandFailuresByServerId: options.failure,
   });
   cleanups.push(() => { fake.cleanup(); rmSync(root, { recursive: true, force: true }); });
@@ -46,7 +46,8 @@ function fixture(options: { failure?: Readonly<Record<string, Readonly<Record<st
   vi.stubEnv('HAPPIER_FAKE_CLI_LOG_PATH', join(dirname(fake.cliPath), 'invocations.log'));
   if (!options.noServices) {
     for (const [id, url, owned] of [['default', defaultUrl, false], ['b', options.sameRelay ? defaultUrl : pinUrl, true], ['own', ownUrl, false]] as const) {
-      const env = { HAPPIER_HOME_DIR: home, HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable', HAPPIER_DAEMON_SERVICE_TARGET_MODE: id === 'default' ? 'default-following' : 'pinned', HAPPIER_SERVER_URL: url,
+      if ((options.userOwnedOnly && id !== 'own') || (options.hiddenManagedDefault && id === 'b')) continue;
+      const env = { HAPPIER_HOME_DIR: home, HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable', HAPPIER_DAEMON_SERVICE_TARGET_MODE: id === 'default' ? 'default-following' : 'pinned', HAPPIER_SERVER_URL: options.hiddenManagedDefault && id === 'own' ? defaultUrl : url,
         ...(id !== 'default' ? { HAPPIER_ACTIVE_SERVER_ID: id } : {}), ...(owned ? { HAPPIER_DAEMON_SERVICE_MANAGED_BY: 'desktop' } : {}) };
       if (process.platform === 'darwin') {
         const folder = join(root, 'Library', 'LaunchAgents'); mkdirSync(folder, { recursive: true });
@@ -85,6 +86,30 @@ async function setAutostart() {
     const status = await run(createDaemonServiceStatusHandler(), { ...params, relayUrl: pinUrl });
     expect(status).toMatchObject({ serviceTargetMode: 'pinned', serviceManagedBy: 'desktop', serviceServerId: 'b', serviceAutostart: 'at-login', serviceRowsComplete: true,
       serviceRows: expect.arrayContaining([expect.objectContaining({ relayUrl: ownUrl, appManaged: false, actions: [] })]) });
+  });
+
+  it('reports managed presence before serving projection hides a stopped default behind a user pin (A16-01)', async () => {
+    fixture({ hiddenManagedDefault: true });
+    expect(await run(createDaemonServiceStatusHandler())).toMatchObject({
+      managedServiceInstalled: true, serviceAutostart: 'at-login', runningManagedServiceCount: 0,
+      serviceRowsComplete: true,
+      serviceRows: [expect.objectContaining({ relayUrl: defaultUrl, appManaged: false })],
+    });
+  });
+
+  it('reports complete managed absence for user-owned-only inventory (A16-01)', async () => {
+    fixture({ userOwnedOnly: true });
+    expect(await run(createDaemonServiceStatusHandler(), { ...params, relayUrl: ownUrl })).toMatchObject({
+      managedServiceInstalled: false, serviceRowsComplete: true, serviceAutostart: null,
+    });
+  });
+
+  it('preserves unknown presence for unreadable user-only inventory (A16-01)', async () => {
+    const fake = fixture({ userOwnedOnly: true });
+    writeFileSync(join(dirname(fake.cliPath), 'scenario.json.own'), 'unreadable status');
+    expect(await run(createDaemonServiceStatusHandler())).toMatchObject({
+      managedServiceInstalled: null, serviceRowsComplete: false, serviceAutostart: null,
+    });
   });
 
   it('stops every app-managed service, leaves the user pin running and verifies each result', async () => {
@@ -160,7 +185,7 @@ async function setAutostart() {
     const fake = fixture();
     writeFileSync(join(dirname(fake.cliPath), 'scenario.json.own'), 'unreadable status');
     expect(await run(createDaemonServiceStatusHandler())).toMatchObject({
-      serviceRowsComplete: false, serviceAutostart: 'at-login', runningManagedServiceCount: 2,
+      serviceRowsComplete: false, managedServiceInstalled: true, serviceAutostart: 'at-login', runningManagedServiceCount: 2,
     });
   });
 
@@ -189,7 +214,7 @@ async function setAutostart() {
 
   it('app-open start succeeds when no managed service is installed', async () => {
     const fake = fixture({ noServices: true });
-    await expect(run(createDaemonServiceStartHandler(), { ...params, onDemandOnly: true })).resolves.toMatchObject({ daemonRunning: false, runningManagedServiceCount: 0, serviceRows: [], serviceRowsComplete: true });
+    await expect(run(createDaemonServiceStartHandler(), { ...params, onDemandOnly: true })).resolves.toMatchObject({ daemonRunning: false, managedServiceInstalled: false, runningManagedServiceCount: 0, serviceRows: [], serviceRowsComplete: true });
     expect(fake.readInvocations()).toEqual([]);
   });
 

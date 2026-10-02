@@ -75,6 +75,7 @@ async function readDaemonServiceTaskStatus(ctx: InteractiveSystemTaskContext) {
   return {
     ...status,
     serviceAutostart: commonMode,
+    managedServiceInstalled: managed.length > 0 ? true : inventory.serviceRowsComplete ? false : null,
     runningManagedServiceCount: managed.some((entry) => entry.status === null) ? null : managed.filter((entry) => entry.status?.daemonRunning).length,
     serviceRows: inventory.serviceRows, serviceRowsComplete: inventory.serviceRowsComplete,
     cliChoice: readLocalHappierCliChoiceFacts(process.env),
@@ -128,7 +129,7 @@ function createManagedServiceHandler(action: ServiceAction | 'autostart', makeKi
       }
       if (services.length === 0) {
         if (action !== 'stop' && !(action === 'start' && params.onDemandOnly)) throw new systemTasks.SystemTaskExecutionError('daemon_service_not_installed', 'No managed background service is installed on this computer.');
-        return { ...EMPTY_SERVICE_STATUS, runningManagedServiceCount: 0, serviceRows: [], serviceRowsComplete: true };
+        return { ...EMPTY_SERVICE_STATUS, managedServiceInstalled: false, runningManagedServiceCount: 0, serviceRows: [], serviceRowsComplete: true };
       }
       const failures: string[] = [];
       for (const service of services) {

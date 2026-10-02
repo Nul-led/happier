@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { RemoteBootstrapMachineParams } from '@happier-dev/cli-common/systemTasks';
+import { installRemoteFirstPartyComponent } from '@happier-dev/cli-common/systemTasks';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -229,6 +230,22 @@ describe('resolveRemoteSshHostTrustDefault', () => {
 });
 
 describe('installRemoteCliDefault', () => {
+    it('rejects cancelled setup before the real installer probes the remote host', async () => {
+        const controller = new AbortController();
+        controller.abort();
+        await expect(installRemoteCliDefault({
+            parsed: createParsedRemoteBootstrapParams(), auth: { mode: 'agent' }, knownHostsMode: 'system',
+            signal: controller.signal,
+        }, {
+            installRemoteFirstPartyComponent: (params) => installRemoteFirstPartyComponent(params, {
+                // Only the remote OS/network boundaries are replaced; installer admission is real.
+                resolveRemoteReleaseTarget: async () => { throw new Error('Remote probe reached after cancellation'); },
+                runRemoteText: async () => ({ status: 0, stdout: '', stderr: '' }),
+                copyLocalDirectoryToRemote: async () => undefined,
+            }),
+        })).rejects.toMatchObject({ name: 'AbortError' });
+    });
+
     it('delegates remote CLI installation to the shared first-party installer', async () => {
         const invocations: Array<Record<string, unknown>> = [];
 
@@ -365,7 +382,8 @@ describe('runRemoteBootstrapCommandDefault', () => {
             });
 
             const remoteCommand = fakeSsh.readInvocations().at(-1)?.at(-1) ?? '';
-            expect(remoteCommand).toContain('$HOME/.happier/cli-preview/current/happier auth status --json');
+            expect(remoteCommand).toContain('.happier/cli-preview/current/happier');
+            expect(remoteCommand).toContain('auth status --json');
             expect(remoteCommand).not.toContain('$HOME/.happier/bin/happier');
         } finally {
             fakeSsh.cleanup();

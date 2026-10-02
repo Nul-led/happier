@@ -97,6 +97,7 @@ export async function installRemoteCliDefault(params: Readonly<{
   parsed: RemoteBootstrapMachineParams;
   auth: Readonly<{ mode: 'agent' } | { mode: 'keyFile'; privateKeyPath: string } | { mode: 'password'; password: string }>;
   knownHostsMode: 'app' | 'system';
+  signal?: AbortSignal;
 }>, deps: Readonly<{
   installRemoteFirstPartyComponent?: typeof installRemoteFirstPartyComponent;
 }> = {}): Promise<void> {
@@ -106,6 +107,7 @@ export async function installRemoteCliDefault(params: Readonly<{
     channel: params.parsed.channel,
     ssh,
     knownHostsMode: params.knownHostsMode,
+    ...(params.signal ? { signal: params.signal } : {}),
   });
 }
 
