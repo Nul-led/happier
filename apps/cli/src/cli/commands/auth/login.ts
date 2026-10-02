@@ -68,13 +68,9 @@ export async function handleAuthLogin(args: string[]): Promise<void> {
     console.log(warn('Signing in again from scratch'));
     console.log(chalk.gray('  Clears the stored credentials and machine ID, stops the daemon, then signs in and registers this computer again.\n'));
 
-    try {
-      logger.debug('Stopping daemon for force auth...');
-      await stopDaemon();
-      console.log(ok('Stopped the daemon'));
-    } catch (error) {
-      logger.debug('Daemon was not running or failed to stop:', error);
-    }
+    logger.debug('Stopping daemon for force auth...');
+    const stopped = await stopDaemon();
+    console.log(ok(stopped.status === 'stopped' ? 'Stopped the daemon' : 'No daemon was running'));
 
     await clearCredentials();
     console.log(ok('Cleared credentials'));
@@ -94,13 +90,9 @@ export async function handleAuthLogin(args: string[]): Promise<void> {
     if (readiness.unusableReason === 'credentials-rejected') {
       console.log(warn('The selected relay rejected the stored credentials'));
       console.log(chalk.gray('  Clearing them before signing in again.\n'));
-      try {
-        logger.debug('Stopping daemon before auth repair...');
-        await stopDaemon();
-        console.log(ok('Stopped the daemon'));
-      } catch (error) {
-        logger.debug('Daemon was not running or failed to stop during auth repair:', error);
-      }
+      logger.debug('Stopping daemon before auth repair...');
+      const stopped = await stopDaemon();
+      console.log(ok(stopped.status === 'stopped' ? 'Stopped the daemon' : 'No daemon was running'));
       await clearCredentials();
       await clearMachineId({ preserveReplacementCandidate: true, replacementReason: 'reauth' });
       existingCreds = null;

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { DaemonRunningInspection } from '@/daemon/controlClient';
 
@@ -30,6 +30,25 @@ vi.mock('@/daemon/multiDaemon', () => ({
 import { handleDaemonCliCommand } from './daemon';
 
 describe('handleDaemonCliCommand: daemon stop --kill-sessions', () => {
+  beforeEach(() => {
+    stopDaemonMock.mockResolvedValue({ status: 'stopped', method: 'graceful' });
+    stopAllDaemonsBestEffortMock.mockResolvedValue({ status: 'stopped', stoppedCount: 1 });
+  });
+
+  it.each([false, true])('reports absence from the stop owner (all=%s)', async (all) => {
+    stopDaemonMock.mockResolvedValue({ status: 'not_running' });
+    stopAllDaemonsBestEffortMock.mockResolvedValue({ status: 'not_running' });
+    vi.spyOn(process, 'exit').mockImplementation((() => { throw new Error('exit:0'); }) as never);
+    const stdout = captureStdout();
+    try {
+      await expect(handleDaemonCliCommand({ args: ['daemon', 'stop', ...(all ? ['--all'] : [])] } as never)).rejects.toThrow('exit:0');
+      expect(stdout.text()).toContain(all ? 'No daemons were running' : 'No daemon was running');
+      expect(stdout.text()).not.toContain('Stopped daemon');
+    } finally {
+      stdout.restore();
+    }
+  });
+
   afterEach(() => {
     inspectDaemonMock.mockReset();
     inspectDaemonMock.mockImplementation(async () => ({ status: 'not-running' as const }));

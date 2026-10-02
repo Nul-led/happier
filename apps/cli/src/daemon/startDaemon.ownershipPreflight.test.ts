@@ -89,12 +89,14 @@ describe('startDaemon ownership preflight', () => {
         fetchMock.mockReset();
         fetchMock.mockImplementation(async (input: string | URL | Request) => {
             const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url);
+            if (url.pathname === '/ping' && !currentProcessDaemonFixtureAlive) {
+                throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('Control closed'), { code: 'ECONNREFUSED' }) });
+            }
             if (url.pathname === '/stop') currentProcessDaemonFixtureAlive = false;
-            return {
-                ok: true,
+            return new Response(JSON.stringify(url.pathname === '/ping' ? { status: 'ok' } : { success: true }), {
                 status: 200,
-                text: async () => JSON.stringify({ success: true }),
-            } as Response;
+                headers: { 'Content-Type': 'application/json' },
+            });
         });
         vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
             if (pid === process.pid && (signal === 0 || signal === undefined) && !currentProcessDaemonFixtureAlive) {

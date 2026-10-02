@@ -12,7 +12,7 @@ import { withTempDir } from '@/testkit/fs/tempDir';
 import { captureStderr, captureStdout, captureStdoutJsonOutput } from '@/testkit/logger/captureOutput';
 import type { DaemonLocallyPersistedState } from '@/persistence';
 import { planDaemonServiceInstall, planDaemonServiceLifecycle } from './plan';
-const stopDaemonMock = vi.fn(async () => undefined);
+const stopDaemonMock = vi.fn(async () => ({ status: 'stopped' as const, method: 'graceful' as const }));
 const restartDaemonAndWaitMock = vi.fn(async () => true);
 
 vi.mock('@/daemon/doctor', async (importOriginal) => {
@@ -2074,6 +2074,7 @@ describe('runDaemonServiceCliCommand', () => {
       vi.spyOn(controlClient, 'stopDaemon').mockImplementation(async () => {
         lifecycleEvents.push('stopDaemon');
         await clearDaemonState();
+        return { status: 'stopped', method: 'graceful' };
       });
 
       const [{ runDaemonServiceCliCommand, resolveDaemonServiceCliRuntimeFromEnv, resolveDaemonServicePaths }] = await Promise.all([
@@ -2190,6 +2191,7 @@ describe('runDaemonServiceCliCommand', () => {
       vi.spyOn(controlClient, 'stopDaemon').mockImplementation(async () => {
         lifecycleEvents.push('stopDaemon');
         await clearDaemonState();
+        return { status: 'stopped', method: 'graceful' };
       });
 
       const [{ runDaemonServiceCliCommand, resolveDaemonServiceCliRuntimeFromEnv, resolveDaemonServicePaths }] = await Promise.all([

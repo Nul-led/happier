@@ -9,7 +9,7 @@ import {
   updateSettings,
 } from '@/persistence';
 import { configuration } from '@/configuration';
-import { stopDaemon } from '@/daemon/controlClient';
+import { isDaemonStopIncompleteError, stopDaemon } from '@/daemon/controlClient';
 import { stopAllDaemonsBestEffort } from '@/daemon/multiDaemon';
 import { promptConfirmYesNo } from '@/terminal/prompts/promptConfirmYesNo';
 import { clearServerScopedAuthStateInSettings } from './clearServerScopedAuthState';
@@ -40,20 +40,18 @@ export async function handleAuthLogout(args: string[]): Promise<void> {
   if (confirmed) {
     try {
       if (logoutAll) {
-        try {
-          await stopAllDaemonsBestEffort();
-        } catch {
-          // best-effort
-        }
+        await stopAllDaemonsBestEffort();
         if (existsSync(happyDir)) {
           rmSync(happyDir, { recursive: true, force: true });
         }
       } else {
+        let daemonStopIncomplete: Error | null = null;
         try {
-          await stopDaemon();
-          console.log(ok('Stopped the daemon'));
-        } catch {
-          // ignore
+          const stopped = await stopDaemon();
+          console.log(ok(stopped.status === 'stopped' ? 'Stopped the daemon' : 'No daemon was running'));
+        } catch (error) {
+          if (isDaemonStopIncompleteError(error)) daemonStopIncomplete = error;
+          else throw error;
         }
 
         await clearCredentials();
@@ -61,6 +59,7 @@ export async function handleAuthLogout(args: string[]): Promise<void> {
         await updateSettings((settings) => {
           return clearServerScopedAuthStateInSettings(settings, targetServerId);
         });
+        if (daemonStopIncomplete) throw daemonStopIncomplete;
       }
 
       console.log(ok('Signed out'));

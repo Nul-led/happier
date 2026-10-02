@@ -145,8 +145,8 @@ export async function withConfiguredDaemonTestHome<T>(
   }
 }
 
-export function spawnSleepyDetachedProcess(): { pid: number; kill: () => Promise<boolean> } {
-  const child = spawnDetachedTestProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'])
+export function spawnSleepyDetachedProcess(args: string[] = []): { pid: number; kill: () => Promise<boolean> } {
+  const child = spawnDetachedTestProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)', ...args])
   const pid = child.pid
 
   if (!pid) {
@@ -166,15 +166,31 @@ export function spawnSleepyDetachedProcess(): { pid: number; kill: () => Promise
   }
 }
 
-export function spawnStoppableHttpDaemon(port: number): { pid: number; kill: () => Promise<boolean> } {
+export function spawnStoppableHttpDaemon(
+  port: number,
+  stopStatus = 200,
+  options: Readonly<{ controlToken?: string; exitOnStop?: boolean; pingStatus?: number; lockFile?: string; stateFile?: string; retainLockAfterControlClose?: boolean; successorLockPid?: number }> = {},
+): { pid: number; kill: () => Promise<boolean> } {
   const child = spawnDetachedInlineNodeTestProcess(
     [
       'const http = require("http");',
+      'const fs = require("fs");',
+      `const lockFile = ${JSON.stringify(options.lockFile ?? null)};`,
+      `const stateFile = ${JSON.stringify(options.stateFile ?? null)};`,
+      'if (lockFile) { fs.mkdirSync(require("path").dirname(lockFile), { recursive: true }); fs.writeFileSync(lockFile, String(process.pid)); }',
       'const server = http.createServer((req, res) => {',
+      ...(options.controlToken ? [
+        `  if (req.method === "POST" && req.headers["x-happier-daemon-token"] !== ${JSON.stringify(options.controlToken)}) { res.writeHead(401); res.end(); return; }`,
+        `  if (req.method === "POST" && req.url === "/ping") { res.writeHead(${options.pingStatus ?? 200}, { "content-type": "application/json" }); res.end(JSON.stringify({ status: "ok" })); return; }`,
+      ] : []),
       '  if (req.method === "POST" && req.url === "/stop") {',
-      '    res.writeHead(200, { "content-type": "application/json" });',
+      `    res.writeHead(${stopStatus}, { "content-type": "application/json" });`,
       '    res.end(JSON.stringify({ ok: true }));',
-      '    setTimeout(() => process.exit(0), 10);',
+      ...(stopStatus === 200 && options.exitOnStop !== false ? [
+        options.lockFile
+          ? `    setTimeout(() => { if (stateFile) { try { fs.unlinkSync(stateFile); } catch {} } server.close(() => { ${options.retainLockAfterControlClose ? 'return;' : `try { fs.unlinkSync(lockFile); } catch {} ${options.successorLockPid ? `fs.writeFileSync(lockFile, String(${options.successorLockPid}));` : ''} process.exit(0);`} }); }, 10);`
+          : '    setTimeout(() => process.exit(0), 10);',
+      ] : []),
       '    return;',
       '  }',
       '  res.writeHead(404);',
