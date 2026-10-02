@@ -159,6 +159,7 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
     rejectGoalMethods?: boolean;
     rejectGoalMethodsAsInvalidRequest?: boolean;
     omitGoalGetResponse?: boolean;
+    goalGetResult?: unknown;
     omitSessionControlsResponses?: boolean;
     emitGoalContinuationTurn?: boolean;
     emitGoalContinuationContextWindow?: boolean;
@@ -397,7 +398,7 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '            process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32601, message: "Method not found: thread/goal/get" } }) + "\\n");',
         '            continue;',
         '        }',
-        '        process.stdout.write(JSON.stringify({ id: msg.id, result: { goal: { threadId: msg.params?.threadId ?? "thread-started", objective: "Ship the Codex app-server lane", status: "active", updatedAt: "2026-05-13T10:00:00.000Z" } } }) + "\\n");',
+        `        process.stdout.write(JSON.stringify({ id: msg.id, result: ${params.goalGetResult === undefined ? '{ goal: { threadId: msg.params?.threadId ?? "thread-started", objective: "Ship the Codex app-server lane", status: "active", updatedAt: "2026-05-13T10:00:00.000Z" } }' : JSON.stringify(params.goalGetResult)} }) + "\\n");`,
         '        continue;',
         '    }',
         '    if (msg.method === "thread/goal/set") {',
@@ -1736,6 +1737,7 @@ describe('createCodexAppServerRuntime', () => {
             rejectGoalMethods?: boolean;
             rejectGoalMethodsAsInvalidRequest?: boolean;
             omitGoalGetResponse?: boolean;
+            goalGetResult?: unknown;
             omitSessionControlsResponses?: boolean;
             emitGoalContinuationTurn?: boolean;
             emitGoalContinuationContextWindow?: boolean;
@@ -1803,6 +1805,7 @@ describe('createCodexAppServerRuntime', () => {
             rejectGoalMethods: options.rejectGoalMethods,
             rejectGoalMethodsAsInvalidRequest: options.rejectGoalMethodsAsInvalidRequest,
             omitGoalGetResponse: options.omitGoalGetResponse,
+            goalGetResult: options.goalGetResult,
             omitSessionControlsResponses: options.omitSessionControlsResponses,
             emitGoalContinuationTurn: options.emitGoalContinuationTurn,
             emitGoalContinuationContextWindow: options.emitGoalContinuationContextWindow,
@@ -8728,7 +8731,6 @@ describe('createCodexAppServerRuntime', () => {
                     forcedWorkspaceId: null,
                 },
             };
-            await expect(runtimeControls.applyConnectedServiceAuthGeneration(applyRequest)).resolves.toMatchObject({ ok: false, errorCode: 'turn_in_flight' });
             (metadata as Record<string, unknown>).connectedServices = {
                 v: 1,
                 bindingsByServiceId: {
@@ -12417,16 +12419,23 @@ describe('createCodexAppServerRuntime', () => {
         expect(requestLog.map((entry) => entry.method)).not.toContain('account/login/start');
     });
 
-    it('refuses connected-service auth mutation until the provider turn reaches its boundary', async () => {
+    it.each([['success', 'soft_threshold'], ['success', 'manual'], ['auth_failure', 'soft_threshold'], ['user_abort', 'soft_threshold'], ['stale', 'soft_threshold'], ['active_goal', 'soft_threshold']] as const)('interrupts and continues an owned prompt for a connected-service auth handoff: %s (%s)', async (outcome, reason) => {
         const { root, requestLogPath } = await createRuntimeFixture('happier-codex-app-server-runtime-live-auth-busy-', {
             omitTurnCompletedForPrompt: 'auth-switch-active-turn',
+            goalGetResult: { goal: null },
+            ...(outcome === 'auth_failure' ? { loginStartError: { code: -32603, message: 'synthetic auth failure' } } : {}),
+            ...(outcome === 'user_abort' ? { loginStartResponseDelayMs: 200 } : {}),
         });
+        const lifecycleMutations: Array<{ action: string }> = [];
+        const sessionTurnLifecycle = createSessionTurnLifecycle({ sessionId: 'handoff-session', enqueueSessionTurn: async mutation => { lifecycleMutations.push(mutation); } });
         const runtime = createCodexAppServerRuntime({
             directory: root,
             initialConnectedServiceRuntimeIdentity: { serviceId: 'openai-codex', activeAccountId: 'acct_original', accountLabel: null, profileId: 'original', credentialFingerprint: 'sha256:original', source: 'spawn_selection' },
+            validateConnectedServiceGroupCurrentness: vi.fn(async () => ({ current: outcome !== 'stale' })),
             onThinkingChange: vi.fn(),
             onConnectedServiceAuthGenerationApplied: vi.fn(async () => {}),
             session: {
+                sessionTurnLifecycle,
                 updateMetadata: vi.fn(),
                 sendCodexMessage: vi.fn(),
                 sendSessionEvent: vi.fn(),
@@ -12450,8 +12459,9 @@ describe('createCodexAppServerRuntime', () => {
         });
 
         await runtime.startOrLoad({});
-        const promptPromise = runtime.sendPrompt('auth-switch-active-turn');
-        const promptOutcome = promptPromise.catch(() => undefined);
+        if (outcome === 'active_goal') await runtime.setGoal('finish native goal work');
+        const promptPromise = runtime.sendPrompt('auth-switch-active-turn', { localIds: ['accepted-input-1'], userMessageSeq: 11, trustedLocalImagePaths: new Set(['/tmp/synthetic-auth-handoff.png']) });
+        void promptPromise.catch(() => undefined);
         await waitForCondition(async () => {
             const requestLog = await readRequestLog(requestLogPath);
             return requestLog.some((entry) => {
@@ -12463,10 +12473,11 @@ describe('createCodexAppServerRuntime', () => {
             intervalMs: 10,
             label: 'Codex app-server test prompt to start before live auth apply',
         });
+        await waitForCondition(() => runtime.canSteerPrompt(), { timeoutMs: 1_000, intervalMs: 10, label: 'owned provider turn acknowledged before handoff' });
 
         const applyRequest = {
             serviceId: 'openai-codex',
-            reason: 'same_provider_account_exhausted',
+            reason,
             expected: {
                 profileId: 'target',
                 credentialRevision: 'csr_aaaaaaaaaaaaaaaaaaaaaa',
@@ -12474,10 +12485,9 @@ describe('createCodexAppServerRuntime', () => {
             authGeneration: {
                 credential: candidate,
                 forcedWorkspaceId: null,
+                ...(outcome === 'stale' ? { selection: { kind: 'group', serviceId: 'openai-codex', groupId: 'main', activeProfileId: 'target', fallbackProfileId: 'original', generation: 2 } } : {}),
             },
         };
-        await expect((runtime as any).applyConnectedServiceAuthGeneration(applyRequest)).resolves.toMatchObject({ ok: false, errorCode: 'turn_in_flight' });
-
         const identityResponse = await (runtime as any).readConnectedServiceRuntimeIdentity({
             serviceId: 'openai-codex',
             reason: 'same_provider_account_exhausted',
@@ -12496,24 +12506,59 @@ describe('createCodexAppServerRuntime', () => {
             },
             runtime: {
                 inProviderTurn: true,
-                safeToApply: false,
+                safeToApply: outcome !== 'active_goal',
                 profileId: 'original',
             },
         });
         expect(identityResponse.runtime).not.toHaveProperty('safeToDirectLiveApply');
         expect(identityResponse.runtime).not.toHaveProperty('requiresTurnBoundaryForApply');
 
-        expect(runtime.isTurnInFlight()).toBe(true);
-        const requestLog = await readRequestLog(requestLogPath);
-        expect(requestLog.map((entry) => entry.method)).not.toContain('account/login/start');
-        await runtime.cancel();
-        await promptOutcome;
-        const afterApply = await (runtime as any).applyConnectedServiceAuthGeneration(applyRequest);
-        expect(afterApply.errorCode).toBeUndefined();
-        expect(afterApply).toMatchObject({ ok: true, activeAccountId: 'acct_target' });
+        const applyPromise = (runtime as any).applyConnectedServiceAuthGeneration(applyRequest);
+        if (outcome === 'active_goal') {
+            await expect(applyPromise).resolves.toMatchObject({ ok: false, errorCode: 'turn_in_flight' });
+            const goalLog = await readRequestLog(requestLogPath);
+            expect(goalLog.filter(entry => entry.method === 'turn/interrupt' || entry.method === 'account/login/start')).toHaveLength(0);
+            await runtime.cancel();
+            await promptPromise;
+            return;
+        }
+        if (outcome === 'stale') {
+            await expect(applyPromise).resolves.toMatchObject({ ok: false, errorCode: 'credential_revision_superseded' });
+            const staleLog = await readRequestLog(requestLogPath);
+            expect(staleLog.filter(entry => entry.method === 'turn/interrupt' || entry.method === 'account/login/start')).toHaveLength(0);
+            expect(runtime.isTurnInFlight()).toBe(true);
+            await runtime.cancel();
+            await promptPromise;
+            return;
+        }
+        if (outcome === 'user_abort') {
+            await waitForCondition(async () => (await readRequestLog(requestLogPath)).some(entry => entry.method === 'account/login/start'), { timeoutMs: 1_000, intervalMs: 10, label: 'auth apply held after native interruption' });
+            await runtime.cancel();
+            await promptPromise;
+        }
+        if (outcome === 'auth_failure') {
+            await expect(applyPromise).resolves.toMatchObject({ ok: false });
+            await expect(promptPromise).rejects.toThrow('auth handoff failed');
+        } else {
+            await expect(applyPromise).resolves.toMatchObject({ ok: true, activeAccountId: 'acct_target' });
+            await promptPromise;
+        }
         const afterBoundary = await readRequestLog(requestLogPath);
+        const methods = afterBoundary.map(entry => entry.method);
+        expect(methods.indexOf('turn/interrupt')).toBeLessThan(methods.indexOf('account/login/start'));
+        const starts = afterBoundary.filter(entry => entry.method === 'turn/start');
+        expect(starts).toHaveLength(outcome === 'success' ? 2 : 1);
+        if (outcome === 'success') {
+            expect(starts[1].params).toMatchObject({ threadId: 'thread-started', input: [{ text: 'Continue where you left off' }] });
+            expect((starts[1].params as { input: unknown[] }).input).toHaveLength(1);
+            expect(starts[1].params).not.toHaveProperty('clientUserMessageId');
+        }
         expect(afterBoundary.filter(entry => entry.method === 'account/login/start')).toHaveLength(1);
         expect(afterBoundary.filter(entry => entry.method === 'initialize')).toHaveLength(1);
+        expect(lifecycleMutations.filter(mutation => mutation.action === 'begin')).toHaveLength(1);
+        expect(lifecycleMutations.filter(mutation => mutation.action === 'complete')).toHaveLength(outcome === 'success' ? 1 : 0);
+        expect(lifecycleMutations.filter(mutation => mutation.action === 'cancel')).toHaveLength(outcome === 'user_abort' ? 1 : 0);
+        expect(lifecycleMutations.filter(mutation => mutation.action === 'fail')).toHaveLength(outcome === 'auth_failure' ? 1 : 0);
     });
 
     it('retains cancellation custody after an admitted start rejection until physical native client exit', async () => {

@@ -1,3 +1,4 @@
+import { GENERIC_CONTINUATION_RESUME_PROMPT } from '@/daemon/connectedServices/continuation/continuationResumePrompt';
 import { randomUUID } from 'node:crypto';
 import type { ConnectedServiceGroupMutationTarget } from '@/daemon/connectedServices/credentials/createConnectedServiceGroupMutationCurrentnessValidator';
 import type { PermissionResult } from '@/agent/permissions/permissionResult';
@@ -334,9 +335,27 @@ function isCodexAppServerReviewStartUnavailableError(error: unknown): boolean {
     return /review\/start/i.test(message) && /method\s+(unavailable|unsupported)/i.test(message);
 }
 
+type CodexAuthHandoffIntent = {
+    state: 'pending' | 'applied' | 'failed' | 'cancelled';
+    interrupted: boolean;
+    cancelled: Promise<void>;
+    cancel: () => void;
+};
+
+function createCodexAuthHandoffIntent(): CodexAuthHandoffIntent {
+    let wakeCancellation!: () => void;
+    const cancelled = new Promise<void>(resolve => { wakeCancellation = resolve; });
+    const intent: CodexAuthHandoffIntent = {
+        state: 'pending', interrupted: false, cancelled,
+        cancel: () => { intent.state = 'cancelled'; wakeCancellation(); },
+    };
+    return intent;
+}
+
 type PendingTurn = Readonly<{
     // Activity and acknowledgement copy this owner while retaining the same cancellation intent.
-    cancellationIntent: { requested: boolean };
+    cancellationIntent: { requested: boolean; authHandoff: CodexAuthHandoffIntent | null };
+    ownsPromptContinuation: boolean;
     threadId: string;
     turnId: string | null;
     providerPrompt: CodexAppServerPendingProviderPrompt | null;
@@ -1181,6 +1200,7 @@ function createPendingTurn(
     threadId: string,
     options: Readonly<{
         providerPrompt?: CodexAppServerPendingProviderPrompt | null;
+        ownsPromptContinuation?: boolean;
         connectedServiceRuntimeIdentityAtStart?: CodexConnectedServiceRuntimeAppliedIdentity | null;
     }> = {},
 ): PendingTurn {
@@ -1191,7 +1211,8 @@ function createPendingTurn(
         rejectTurn = reject;
     });
     return {
-        cancellationIntent: { requested: false },
+        cancellationIntent: { requested: false, authHandoff: null },
+        ownsPromptContinuation: options.ownsPromptContinuation === true,
         threadId,
         turnId: null,
         providerPrompt: options.providerPrompt ?? null,
@@ -1315,8 +1336,10 @@ export function createCodexAppServerRuntime(params: Readonly<{
     const lastPublishedThreadId: { value: string | null } = { value: null };
     let threadId: string | null = null;
     let turnInFlight = false;
+    let hasActiveNativeGoal = false;
     let thinking = false;
     let pendingTurn: PendingTurn | null = null;
+    let authHandoffIntent: PendingTurn['cancellationIntent'] | null = null;
     let connectedServiceAuthApplyTail: Promise<void> = Promise.resolve();
     let connectedServiceAuthApplyCount = 0;
     const runConnectedServiceAuthApply = async <T>(apply: () => Promise<T>): Promise<T> => {
@@ -1493,6 +1516,11 @@ export function createCodexAppServerRuntime(params: Readonly<{
         || pendingTurn !== null
         || nativeTurnHandoffBarrier !== null
         || activeProviderTurnItemIds.size > 0
+    );
+
+    const canContinueAfterAuthHandoff = (): boolean => Boolean(
+        pendingTurn?.ownsPromptContinuation && pendingTurn.turnId && !pendingTurn.cancellationIntent.requested && !hasActiveNativeGoal
+        && nativeTurnHandoffBarrier === null,
     );
 
     const readRateLimitResetCreditsRaw = async (): Promise<unknown | null> => {
@@ -2162,6 +2190,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
 
     const publishGoalWorkState = async (goal: unknown): Promise<void> => {
         const record = readRecord(readGoalFromResponse(goal));
+        hasActiveNativeGoal = record?.status === 'active';
         if (!record) {
             await Promise.resolve(params.session.updateMetadata((metadata) =>
                 removeCodexGoalFromSessionWorkStateMetadata(metadata),
@@ -2174,6 +2203,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
     };
 
     const clearGoalWorkState = async (): Promise<void> => {
+        hasActiveNativeGoal = false;
         await Promise.resolve(params.session.updateMetadata((metadata) =>
             removeCodexGoalFromSessionWorkStateMetadata(metadata),
         )).catch(() => undefined);
@@ -3396,7 +3426,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
             await turnBoundaryTracker.completeActiveTurn({
                 endSeqInclusive: readLastObservedMessageSeq(params.session),
             });
-        } else if (options?.flushReason === 'abort') {
+        } else if (options?.flushReason === 'abort' && activeTurn?.cancellationIntent.authHandoff?.state !== 'pending') {
             await turnBoundaryTracker.interruptActiveTurn({
                 endSeqInclusive: readLastObservedMessageSeq(params.session),
             });
@@ -3699,6 +3729,12 @@ export function createCodexAppServerRuntime(params: Readonly<{
             return;
         }
         if (method !== 'turn/completed' || isCodexTurnInterruptedStatus(terminalStatus)) {
+            if (activeTurn?.cancellationIntent.authHandoff) activeTurn.cancellationIntent.authHandoff.interrupted = true;
+            if (activeTurn?.cancellationIntent.authHandoff?.state === 'pending') {
+                // Retire the native attempt without terminalizing its owned logical prompt.
+                schedulePendingTurnFinalization('abort');
+                return;
+            }
             await surfacePrimarySessionRuntimeIssue({
                 provider: 'codex',
                 cause: 'cancelled',
@@ -4416,6 +4452,8 @@ export function createCodexAppServerRuntime(params: Readonly<{
         if (options?.emitUndeliverablePrompts !== false) {
             emitAllPendingProviderPromptsAsUndeliverable();
         }
+        if (authHandoffIntent?.authHandoff) authHandoffIntent.authHandoff.cancel();
+        authHandoffIntent = null;
         const activeClientPromise = clientPromise;
         if (!activeClientPromise) {
             await finishPendingTurn(options?.pendingTurnError
@@ -4851,6 +4889,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
             localId?: string | null;
             userMessageSeq?: number | null;
             providerPrompt?: CodexAppServerPendingProviderPrompt | null;
+            ownsPromptContinuation?: boolean;
         }>,
     ): Promise<PendingTurn> => {
         await waitForNativeTurnHandoff();
@@ -4865,6 +4904,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
         const changeTrackingReady = beginTurnChangeTracking();
         const activeTurn = createPendingTurn(activeThreadId, {
             providerPrompt: options?.providerPrompt ?? null,
+            ownsPromptContinuation: options?.ownsPromptContinuation,
             connectedServiceRuntimeIdentityAtStart: latestConnectedServiceRuntimeIdentity,
         });
         activeTurn.promise.catch(() => undefined);
@@ -5011,6 +5051,46 @@ export function createCodexAppServerRuntime(params: Readonly<{
         return { ok: true, reviewTurnId: reviewTurnResult ?? null };
     };
 
+    const cancelActiveTurn = async (): Promise<void> => {
+        await waitForNativeTurnHandoff();
+        const activeTurn = pendingTurn;
+        if (!activeTurn) {
+            emitAllPendingProviderPromptsAsUndeliverable();
+            turnInFlight = false;
+            clearActiveTurnSteerability();
+            setThinking(false);
+            return;
+        }
+        activeTurn.cancellationIntent.requested = true;
+        emitAllPendingProviderPromptsAsUndeliverable();
+        markActiveTurnNonSteerable();
+        const client = await ensureClient();
+        const interruptTurnId = (activeTurn.turnId ?? latestPendingTurnId) ?? (await waitForActiveTurnId(
+            activeTurn,
+            readCodexAppServerRpcTimeoutMs(runtimeEnv),
+        ));
+        if (!interruptTurnId) {
+            if (pendingTurn?.promise !== activeTurn.promise) return;
+            // If we can't resolve the turn id, fall back to tearing down the runtime; this will
+            // abort the active work without relying on turn-scoped cancellation.
+            await disposeClient();
+            return;
+        }
+        const interrupt = await requestCodexTurnInterruptWithStartupRetry({
+            client,
+            threadId: activeTurn.threadId,
+            turnId: interruptTurnId,
+            waitForProviderTerminal: async (waitKind) => await waitForPromiseSettlementWithin(
+                activeTurn.promise,
+                waitKind === 'startup_gap'
+                    ? CODEX_APP_SERVER_CANCEL_STARTUP_RETRY_INTERVAL_MS
+                    : readCodexAppServerRpcTimeoutMs(runtimeEnv),
+            ),
+        });
+        if (interrupt === 'providerTerminal') return;
+        await activeTurn.promise.catch(() => undefined);
+    };
+
     return {
         getSessionId: () => threadId,
         getPublishedSessionId: () => lastPublishedThreadId.value,
@@ -5026,45 +5106,11 @@ export function createCodexAppServerRuntime(params: Readonly<{
             void beginTurnChangeTracking();
         },
         cancel: async () => {
-            await waitForNativeTurnHandoff();
-            const activeTurn = pendingTurn;
-            if (!activeTurn) {
-                emitAllPendingProviderPromptsAsUndeliverable();
-                turnInFlight = false;
-                clearActiveTurnSteerability();
-                setThinking(false);
-                return;
-            }
-            activeTurn.cancellationIntent.requested = true;
-            emitAllPendingProviderPromptsAsUndeliverable();
-            markActiveTurnNonSteerable();
-            const client = await ensureClient();
-            const interruptTurnId = (activeTurn.turnId ?? latestPendingTurnId) ?? (await waitForActiveTurnId(
-                activeTurn,
-                readCodexAppServerRpcTimeoutMs(runtimeEnv),
-            ));
-            if (!interruptTurnId) {
-                if (pendingTurn?.promise !== activeTurn.promise) return;
-                // If we can't resolve the turn id, fall back to tearing down the runtime; this will
-                // abort the active work without relying on turn-scoped cancellation.
-                await disposeClient();
-                return;
-            }
-            const interrupt = await requestCodexTurnInterruptWithStartupRetry({
-                client,
-                threadId: activeTurn.threadId,
-                turnId: interruptTurnId,
-                waitForProviderTerminal: async (waitKind) => await waitForPromiseSettlementWithin(
-                    activeTurn.promise,
-                    waitKind === 'startup_gap'
-                        ? CODEX_APP_SERVER_CANCEL_STARTUP_RETRY_INTERVAL_MS
-                        : readCodexAppServerRpcTimeoutMs(runtimeEnv),
-                ),
-            });
-            if (interrupt === 'providerTerminal') return;
-            await activeTurn.promise.catch(() => undefined);
+            if (authHandoffIntent?.authHandoff) authHandoffIntent.authHandoff.cancel();
+            await cancelActiveTurn();
         },
         reset: async () => {
+            hasActiveNativeGoal = false;
             threadId = null;
             currentModeId = null;
             currentCollaborationMode = null;
@@ -5314,6 +5360,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                     localId: optionsForAttempt?.localId ?? null,
                     userMessageSeq: optionsForAttempt?.userMessageSeq ?? null,
                     providerPrompt: pendingProviderPrompt,
+                    ownsPromptContinuation: true,
                 });
                 try {
                     const collaborationMode = currentCollaborationMode
@@ -5402,10 +5449,32 @@ export function createCodexAppServerRuntime(params: Readonly<{
                     // this explicit prompt. The session loop preserves that successor through
                     // hasActiveProviderTurn(), which includes the atomic handoff barrier.
                     await (pendingTurn ?? activeTurn).promise;
+                    const handoff = activeTurn.cancellationIntent.authHandoff;
+                    if (handoff) {
+                        while (connectedServiceAuthApplyCount > 0 && handoff.state !== 'cancelled') {
+                            await Promise.race([connectedServiceAuthApplyTail, handoff.cancelled]);
+                        }
+                        if (authHandoffIntent === activeTurn.cancellationIntent) authHandoffIntent = null;
+                        clearPendingProviderPrompt(pendingProviderPrompt);
+                        if (handoff.state === 'failed') {
+                            const failure = new Error('Codex connected-service auth handoff failed');
+                            await abortPendingTurnWithFailure(failure);
+                            throw failure;
+                        }
+                        if (handoff.state === 'cancelled' && handoff.interrupted) {
+                            await finishPendingTurn({ flushReason: 'abort' });
+                        }
+                        if (handoff.state === 'applied' && handoff.interrupted) {
+                            promptForAttempt = GENERIC_CONTINUATION_RESUME_PROMPT;
+                            optionsForAttempt = buildCodexAppServerRetryDeliveryIdentityOptions(pendingProviderPrompt);
+                            continue;
+                        }
+                    }
                     clearPendingProviderPrompt(pendingProviderPrompt);
                     return;
                 } catch (error) {
                     const failure = error instanceof Error ? error : new Error(String(error));
+                    if (authHandoffIntent === activeTurn.cancellationIntent) authHandoffIntent = null;
                     if (activeTurn.cancellationIntent.requested) {
                         // A rejected start can already have admitted native work. Retain this
                         // cancelled owner until the established client teardown observes exit.
@@ -5572,125 +5641,144 @@ export function createCodexAppServerRuntime(params: Readonly<{
                     : {}),
             });
 
-            const client = await ensureClient();
-            if (isProviderTurnInFlight()) {
-                return { ok: false, errorCode: 'turn_in_flight', error: 'turn_in_flight' };
-            }
             const groupSelection = request.selection?.kind === 'group' ? request.selection : null;
             const validateGroupCurrentness = params.validateConnectedServiceGroupCurrentness;
-            const applied = await applyCodexConnectedServiceAuthGeneration({
-                client,
-                canApplyAuth: () => !isProviderTurnInFlight(),
-                ...(validateGroupCurrentness && groupSelection
-                    ? {
-                        validateCurrentBeforeMutation: async () => (await validateGroupCurrentness({
-                            serviceId: 'openai-codex',
-                            groupId: groupSelection.groupId,
-                            profileId: groupSelection.activeProfileId,
-                            generation: groupSelection.generation,
-                            credentialRevision: request.expected?.credentialRevision ?? null,
-                        })).current,
-                    }
-                    : {}),
-                candidate: request.candidate,
-                forcedWorkspaceId: request.forcedWorkspaceId ?? null,
-                forcedLoginMethod: request.forcedLoginMethod ?? null,
-                persistAuthStore: async () => {
-                    await writeCodexAuthStoreFile({
-                        codexHome: resolveConfiguredCodexHome(runtimeEnv),
-                        record: request.candidate,
-                    });
-                },
-                refreshSelection: request.selection ?? undefined,
-                updateRefreshSelection: request.selection
-                    ? async (selection) => {
-                        if (typeof params.onConnectedServiceAuthGenerationApplied !== 'function') {
-                            throw new Error('connected_service_refresh_selection_update_unavailable');
-                        }
-                        return await params.onConnectedServiceAuthGenerationApplied({ selection });
-                    }
-                    : null,
-            });
-            if (!applied.applied) {
-                if (applied.appliedVia === 'direct_live_hot_auth' && applied.activeAccountId) {
-                    latestConnectedServiceRuntimeIdentity = buildAppliedRuntimeIdentity(applied.activeAccountId, null);
+            if (isProviderTurnInFlight() && groupSelection && validateGroupCurrentness) {
+                const current = await validateGroupCurrentness({ serviceId: 'openai-codex', groupId: groupSelection.groupId, profileId: groupSelection.activeProfileId, generation: groupSelection.generation, credentialRevision: request.expected?.credentialRevision ?? null });
+                if (!current.current) return { ok: false, errorCode: 'credential_revision_superseded', error: 'credential_revision_superseded' };
+            }
+            const handoffTurn = pendingTurn;
+            if (isProviderTurnInFlight() && !canContinueAfterAuthHandoff()) {
+                return { ok: false, errorCode: 'turn_in_flight', error: 'turn_in_flight' };
+            }
+            const handoff = isProviderTurnInFlight() && handoffTurn ? createCodexAuthHandoffIntent() : null;
+            if (handoff && handoffTurn) {
+                handoffTurn.cancellationIntent.authHandoff = handoff;
+                authHandoffIntent = handoffTurn.cancellationIntent;
+            }
+            try {
+                if (handoff) await cancelActiveTurn();
+                const client = await ensureClient();
+                if (isProviderTurnInFlight()) {
+                    return { ok: false, errorCode: 'turn_in_flight', error: 'turn_in_flight' };
                 }
-                const partialAppliedIdentity = latestConnectedServiceRuntimeIdentity;
-                return {
-                    ok: false,
-                    errorCode: applied.reason,
-                    error: applied.reason,
-                    ...(applied.appliedVia ? { appliedVia: applied.appliedVia } : {}),
-                    ...(applied.activeAccountId ? { activeAccountId: applied.activeAccountId } : {}),
-                    ...(applied.appliedVia === 'direct_live_hot_auth' && applied.activeAccountId
-                        && partialAppliedIdentity
+                const applied = await applyCodexConnectedServiceAuthGeneration({
+                    client,
+                    canApplyAuth: () => !isProviderTurnInFlight(),
+                    ...(validateGroupCurrentness && groupSelection
                         ? {
-                            partialState: 'runtime_auth_applied',
-                            verification: buildDirectLiveExactVerification(partialAppliedIdentity),
+                            validateCurrentBeforeMutation: async () => (await validateGroupCurrentness({
+                                serviceId: 'openai-codex',
+                                groupId: groupSelection.groupId,
+                                profileId: groupSelection.activeProfileId,
+                                generation: groupSelection.generation,
+                                credentialRevision: request.expected?.credentialRevision ?? null,
+                            })).current,
                         }
                         : {}),
-                };
-            }
-            const appliedRuntimeIdentity = buildAppliedRuntimeIdentity(applied.activeAccountId, null);
-            latestConnectedServiceRuntimeIdentity = appliedRuntimeIdentity;
-            if (applied.durability.persisted === false) {
-                const errorCode = applied.durability.errorCode;
+                    candidate: request.candidate,
+                    forcedWorkspaceId: request.forcedWorkspaceId ?? null,
+                    forcedLoginMethod: request.forcedLoginMethod ?? null,
+                    persistAuthStore: async () => {
+                        await writeCodexAuthStoreFile({
+                            codexHome: resolveConfiguredCodexHome(runtimeEnv),
+                            record: request.candidate,
+                        });
+                    },
+                    refreshSelection: request.selection ?? undefined,
+                    updateRefreshSelection: request.selection
+                        ? async (selection) => {
+                            if (typeof params.onConnectedServiceAuthGenerationApplied !== 'function') {
+                                throw new Error('connected_service_refresh_selection_update_unavailable');
+                            }
+                            return await params.onConnectedServiceAuthGenerationApplied({ selection });
+                        }
+                        : null,
+                });
+                if (!applied.applied) {
+                    if (applied.appliedVia === 'direct_live_hot_auth' && applied.activeAccountId) {
+                        latestConnectedServiceRuntimeIdentity = buildAppliedRuntimeIdentity(applied.activeAccountId, null);
+                    }
+                    const partialAppliedIdentity = latestConnectedServiceRuntimeIdentity;
+                    return {
+                        ok: false,
+                        errorCode: applied.reason,
+                        error: applied.reason,
+                        ...(applied.appliedVia ? { appliedVia: applied.appliedVia } : {}),
+                        ...(applied.activeAccountId ? { activeAccountId: applied.activeAccountId } : {}),
+                        ...(applied.appliedVia === 'direct_live_hot_auth' && applied.activeAccountId
+                            && partialAppliedIdentity
+                            ? {
+                                partialState: 'runtime_auth_applied',
+                                verification: buildDirectLiveExactVerification(partialAppliedIdentity),
+                            }
+                            : {}),
+                    };
+                }
+                const appliedRuntimeIdentity = buildAppliedRuntimeIdentity(applied.activeAccountId, null);
+                latestConnectedServiceRuntimeIdentity = appliedRuntimeIdentity;
+                if (applied.durability.persisted === false) {
+                    const errorCode = applied.durability.errorCode;
+                    return {
+                        ok: false,
+                        errorCode,
+                        error: errorCode,
+                        appliedVia: applied.appliedVia,
+                        activeAccountId: applied.activeAccountId,
+                        partialState: 'runtime_auth_applied',
+                        verification: buildDirectLiveExactVerification(appliedRuntimeIdentity),
+                        durability: applied.durability,
+                    };
+                }
+                unavailableConnectedServiceAuthGroup = null;
+
+                // Application settlement ends at the exact provider apply + durable auth-store
+                // boundary above. Account/quota reads are useful observations, but making the
+                // fan-out RPC wait for them turns a slow provider diagnostic into a false hot-
+                // apply failure. Keep those observations on the existing provider-owned path
+                // and fence their writes against the exact applied identity instead.
+                void (async () => {
+                    let observationIdentity = appliedRuntimeIdentity;
+                    try {
+                        const accountLabel = (await readCodexLiveAccountIdentityFromClient({
+                            request: async (_method, params) => await client.request('account/read', params),
+                        })).accountLabel;
+                        if (latestConnectedServiceRuntimeIdentity !== appliedRuntimeIdentity) return;
+                        observationIdentity = {
+                            ...appliedRuntimeIdentity,
+                            accountLabel,
+                        };
+                        latestConnectedServiceRuntimeIdentity = observationIdentity;
+                    } catch (error) {
+                        logger.debug('[codex-app-server] Failed to read account diagnostics after connected-service auth apply (non-fatal)', error);
+                    }
+
+                    try {
+                        const rawSnapshot = await readCodexRateLimitsSnapshot({
+                            request: async (_method, params) => await client.request('account/rateLimits/read', params),
+                        });
+                        await publishRateLimitSnapshot(rawSnapshot, {
+                            operationIdentityAtStart: observationIdentity,
+                        });
+                    } catch (error) {
+                        logger.debug('[codex-app-server] Failed to publish quota snapshot after connected-service auth apply (non-fatal)', error);
+                    }
+                })();
+
+                if (handoff?.state === 'pending') handoff.state = 'applied';
                 return {
-                    ok: false,
-                    errorCode,
-                    error: errorCode,
+                    ok: true,
                     appliedVia: applied.appliedVia,
                     activeAccountId: applied.activeAccountId,
-                    partialState: 'runtime_auth_applied',
-                    verification: buildDirectLiveExactVerification(appliedRuntimeIdentity),
+                    verification: {
+                        ...buildDirectLiveExactVerification(appliedRuntimeIdentity),
+                        durability: applied.durability,
+                    },
                     durability: applied.durability,
                 };
+            } finally {
+                if (handoff?.state === 'pending') handoff.state = 'failed';
             }
-            unavailableConnectedServiceAuthGroup = null;
-
-            // Application settlement ends at the exact provider apply + durable auth-store
-            // boundary above. Account/quota reads are useful observations, but making the
-            // fan-out RPC wait for them turns a slow provider diagnostic into a false hot-
-            // apply failure. Keep those observations on the existing provider-owned path
-            // and fence their writes against the exact applied identity instead.
-            void (async () => {
-                let observationIdentity = appliedRuntimeIdentity;
-                try {
-                    const accountLabel = (await readCodexLiveAccountIdentityFromClient({
-                        request: async (_method, params) => await client.request('account/read', params),
-                    })).accountLabel;
-                    if (latestConnectedServiceRuntimeIdentity !== appliedRuntimeIdentity) return;
-                    observationIdentity = {
-                        ...appliedRuntimeIdentity,
-                        accountLabel,
-                    };
-                    latestConnectedServiceRuntimeIdentity = observationIdentity;
-                } catch (error) {
-                    logger.debug('[codex-app-server] Failed to read account diagnostics after connected-service auth apply (non-fatal)', error);
-                }
-
-                try {
-                    const rawSnapshot = await readCodexRateLimitsSnapshot({
-                        request: async (_method, params) => await client.request('account/rateLimits/read', params),
-                    });
-                    await publishRateLimitSnapshot(rawSnapshot, {
-                        operationIdentityAtStart: observationIdentity,
-                    });
-                } catch (error) {
-                    logger.debug('[codex-app-server] Failed to publish quota snapshot after connected-service auth apply (non-fatal)', error);
-                }
-            })();
-
-            return {
-                ok: true,
-                appliedVia: applied.appliedVia,
-                activeAccountId: applied.activeAccountId,
-                verification: {
-                    ...buildDirectLiveExactVerification(appliedRuntimeIdentity),
-                    durability: applied.durability,
-                },
-                durability: applied.durability,
-            };
         }),
         readConnectedServiceRuntimeIdentity: async (request) => {
             if (request.serviceId !== 'openai-codex') {
@@ -5743,7 +5831,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                 },
                 runtime: {
                     safeToProbe: true,
-                    safeToApply: !isProviderTurnInFlight() && connectedServiceAuthApplyCount === 0,
+                    safeToApply: (!isProviderTurnInFlight() || canContinueAfterAuthHandoff()) && connectedServiceAuthApplyCount === 0,
                     inProviderTurn: isProviderTurnInFlight(),
                     profileId: identity.profileId,
                     ...(identity.groupId ? { groupId: identity.groupId } : {}),
