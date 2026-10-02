@@ -51,7 +51,6 @@ const settingsState = vi.hoisted(() => ({
         acpCatalogSettingsV1: null as unknown,
     },
 }));
-const lastUsedProfileWriter = vi.hoisted(() => vi.fn());
 const applyProfileSaveSpy = vi.hoisted(() => vi.fn());
 const machineContributionRegistryProjectionDescribe = createProjectionDescribeMock();
 
@@ -94,9 +93,6 @@ installPickerCommonModuleMocks({
                 useSettingMutable: createUseSettingMutableMockFromReader((key) => {
                     if (key === 'profiles') {
                         return [[], vi.fn()];
-                    }
-                    if (key === 'lastUsedProfile') {
-                        return [null, lastUsedProfileWriter];
                     }
                     return [null, vi.fn()];
                 }),
@@ -198,7 +194,6 @@ describe('ProfileEditScreen replace fallback', () => {
         }));
         machineContributionRegistryProjectionDescribe.mockReset();
         machineContributionRegistryProjectionDescribe.mockResolvedValue({ supported: false, reason: 'not-supported' });
-        lastUsedProfileWriter.mockReset();
         applyProfileSaveSpy.mockReset();
     });
 
@@ -214,10 +209,18 @@ describe('ProfileEditScreen replace fallback', () => {
             await renderScreen(React.createElement(ProfileEditScreen));
         });
         await flushHookEffects({ cycles: 1, turns: 2 });
+        await vi.waitFor(() => expect(machineContributionRegistryProjectionDescribe).toHaveBeenCalledWith('machine-2', expect.objectContaining({
+            serverId: 'server-2',
+            accountLifetime: expect.objectContaining({
+                scope: { serverId: 'server-2', accountId: 'account:server-2' },
+            }),
+        })));
 
         const onSave = capturedFormPropsRef.current?.onSave as ((profile: AiLaunchProfile) => boolean) | undefined;
         expect(typeof onSave).toBe('function');
 
+        const { storage } = await import('@/sync/domains/state/storageStore');
+        const rememberedProfile = storage.getState().authoringMemory.lastUsedProfile;
         let saved: boolean | undefined;
         await act(async () => {
             saved = onSave?.({
@@ -227,12 +230,8 @@ describe('ProfileEditScreen replace fallback', () => {
             } satisfies AiLaunchProfile);
         });
         expect(saved).toBe(true);
-        expect(lastUsedProfileWriter).not.toHaveBeenCalled();
+        expect(storage.getState().authoringMemory.lastUsedProfile).toBe(rememberedProfile);
 
-        expect(machineContributionRegistryProjectionDescribe).toHaveBeenCalledWith('machine-2', expect.objectContaining({
-            serverId: 'server-2',
-            timeoutMs: 10_000,
-        }));
         expect(routerMock.replace).toHaveBeenCalledTimes(1);
         expect(routerMock.replace).toHaveBeenCalledWith({
             pathname: '/new',

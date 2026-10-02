@@ -18,26 +18,26 @@ function flattenStyle(style: unknown): Record<string, unknown> {
     return {};
 }
 
-describe('SessionLateralSwipeContent on web', () => {
+describe('SessionSwitcherContent on web', () => {
     afterEach(() => {
         standardCleanup();
     });
 
-    it('stamps no transform where the swipe cannot exist', async () => {
-        const { SessionLateralSwipeContent } = await import('./SessionLateralSwipeContent');
+    it('stamps no transform where the switcher cannot open', async () => {
+        const { SessionSwitcherContent } = await import('./SessionSwitcherContent');
         const { SessionCockpitChromeRegistryProvider } = await import(
             '@/components/workspaceCockpit/session/SessionCockpitChromeRegistry'
         );
 
         const screen = await renderScreen(
             <SessionCockpitChromeRegistryProvider>
-                <SessionLateralSwipeContent>
+                <SessionSwitcherContent>
                     {React.createElement('SessionContentProbe', { testID: 'session-content-probe' })}
-                </SessionLateralSwipeContent>
+                </SessionSwitcherContent>
             </SessionCockpitChromeRegistryProvider>,
         );
 
-        // Mobile web renders the cockpit but has no lateral pan, and an identity transform
+        // Mobile web renders the cockpit but has no bar gesture, and an identity transform
         // there would create a containing block and defeat `backdrop-filter` on the glass
         // surfaces inside the session tree.
         const style = flattenStyle(screen.findHostByTestId('session-cockpit-swipe-content')?.props.style);

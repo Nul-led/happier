@@ -50,7 +50,7 @@ export default function ListDemoScreen() {
             </ItemGroup>
 
             {/* Interactive Items */}
-            <ItemGroup title="Interactive" footer="These items demonstrate various interactive states and elements">
+            <ItemGroup title="Interactive" description="These items demonstrate various interactive states and elements">
                 <Item 
                     title="Toggle Switch"
                     rightElement={

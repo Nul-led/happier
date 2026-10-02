@@ -111,6 +111,7 @@ export async function refreshWorkspaceFileDetails(input: Readonly<{
     snapshotSignature?: string | null;
     forceRefresh?: boolean;
     onDiffContent?: (diff: string | null) => void;
+    signal?: AbortSignal;
 }>): Promise<WorkspaceFileDetailsRefreshResult> {
     const includeDiff = input.includeDiff !== false && !isKnownBinaryPath(input.filePath) && !getImageMimeTypeFromPath(input.filePath);
     // A saved file can be refreshed before the next SCM snapshot advances.
@@ -132,6 +133,7 @@ export async function refreshWorkspaceFileDetails(input: Readonly<{
         }
         fileTask = (async (): Promise<WorkspaceFileDetailsRefreshResult> => {
             try {
+                if (input.signal?.aborted) throw new Error(t('files.fileReadFailed'));
                 const imageMime = getImageMimeTypeFromPath(input.filePath);
                 const wantsBinaryPreview = typeof imageMime === 'string' && imageMime.trim().length > 0;
                 const maxPreviewBytes = wantsBinaryPreview
@@ -146,6 +148,7 @@ export async function refreshWorkspaceFileDetails(input: Readonly<{
                         rootPath: input.scope.rootPath,
                         request: { path: input.filePath },
                     });
+                    if (input.signal?.aborted) throw new Error(t('files.fileReadFailed'));
                     if (
                         stat.success
                         && stat.exists === true
@@ -200,6 +203,7 @@ export async function refreshWorkspaceFileDetails(input: Readonly<{
                         rootPath: input.scope.rootPath,
                         path: input.filePath,
                         maxBytes: maxPreviewBytes ?? 256 * 1024,
+                        signal: input.signal,
                     }),
                     resolveFileReadTimeoutMs(),
                     () => ({

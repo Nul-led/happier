@@ -56,6 +56,45 @@ it('shows a useful patch while full content is pending', async () => {
     expect(current.fileContent).toBe(null);
     await act(async () => { finishRead({ ok: true, contentBase64: 'bmV3Cg==' }); tree.unmount(); });
 });
+it('aborts a preview transfer on hide, superseding refresh, and unmount without publishing stale content', async () => {
+    const signals: AbortSignal[] = [];
+    const finishReads: Array<(value: { ok: true; contentBase64: string }) => void> = [];
+    transport.read.mockImplementation((options: { signal?: AbortSignal }) => {
+        if (options.signal) signals.push(options.signal);
+        return new Promise(resolve => { finishReads.push(resolve); });
+    });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Harness {...input} />); });
+    expect(signals).toHaveLength(1);
+    expect(signals[0].aborted).toBe(false);
+    await act(async () => { tree.update(<Harness {...input} isActive={false} />); });
+    expect(signals[0].aborted).toBe(true);
+    await act(async () => { finishReads[0]({ ok: true, contentBase64: 'b2xkCg==' }); });
+    expect(current.fileContent).toBe(null);
+    await act(async () => { tree.update(<Harness {...input} />); });
+    expect(signals).toHaveLength(2);
+    let refresh!: Promise<void>;
+    await act(async () => { refresh = current.refreshAll(); });
+    expect(signals[1].aborted).toBe(true);
+    expect(signals[2].aborted).toBe(false);
+    await act(async () => { tree.unmount(); });
+    expect(signals[2].aborted).toBe(true);
+    await act(async () => {
+        for (const finish of finishReads.slice(1)) finish({ ok: true, contentBase64: 'bmV3Cg==' });
+        await refresh;
+    });
+});
+it('does not start a transfer when the preview hides during stat', async () => {
+    let finishStat!: (value: { success: true; exists: true; sizeBytes: number }) => void;
+    transport.stat.mockImplementationOnce(() => new Promise(resolve => { finishStat = resolve; }));
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Harness {...input} />); });
+    await act(async () => { tree.update(<Harness {...input} isActive={false} />); });
+    await act(async () => { finishStat({ success: true, exists: true, sizeBytes: 4 }); });
+    expect(transport.read).not.toHaveBeenCalled();
+    expect(current.fileContent).toBe(null);
+    await act(async () => { tree.unmount(); });
+});
 it('reuses full content for a mode-only switch but rereads on explicit refresh', async () => {
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<Harness {...input} />); });

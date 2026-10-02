@@ -90,9 +90,18 @@ export function useWorkspaceFileEditorState(input: Readonly<{
     const editorOriginalHashRef = React.useRef<string | null>(null);
     const isEditingFileRef = React.useRef(false);
     const fileChangedExternallyRef = React.useRef(false);
+    const savingRef = React.useRef(false);
+    const saveEditsRef = React.useRef<((autoSave: boolean) => void) | null>(null);
     const persistDraftRef = React.useRef(input.persistDraft);
     const latestInputRef = React.useRef(input);
     latestInputRef.current = input;
+
+    const autoSaveDebounce = React.useMemo(() => createAdvancedDebounce<boolean>(() => {
+        const latestInput = latestInputRef.current;
+        if (!latestInput.filesEditorAutoSave || !latestInput.mountedRef.current) return;
+        if (!isEditingFileRef.current || fileChangedExternallyRef.current) return;
+        saveEditsRef.current?.(true);
+    }, { delay: input.filesEditorChangeDebounceMs, immediateCount: 0 }), [input.filesEditorChangeDebounceMs]);
 
     React.useEffect(() => {
         hydratedFromPersistedRef.current = false;
@@ -155,7 +164,7 @@ export function useWorkspaceFileEditorState(input: Readonly<{
     React.useEffect(() => {
         if (typeof input.fileText !== 'string') return;
         const fileText = input.fileText;
-        if (isEditingFileRef.current || editorDirty) {
+        if (isEditingFileRef.current || editorTextRef.current !== editorOriginalTextRef.current) {
             const originalHash = editorOriginalHashRef.current;
             const nextHash = input.fileHash;
             if (typeof originalHash === 'string' && typeof nextHash === 'string') {
@@ -172,7 +181,7 @@ export function useWorkspaceFileEditorState(input: Readonly<{
         setEditorByteSize(new Blob([fileText]).size);
         setFileChangedExternally(false);
         setEditorResetKey((key) => key + 1);
-    }, [editorDirty, input.fileHash, input.fileText]);
+    }, [input.fileHash, input.fileText]);
 
     React.useEffect(() => {
         if (hydratedFromPersistedRef.current) return;
@@ -212,8 +221,8 @@ export function useWorkspaceFileEditorState(input: Readonly<{
             sizeAndPersistDebounce.flush();
             persist({
                 isEditingFile,
-                editorOriginalText,
-                editorOriginalHash,
+                editorOriginalText: editorOriginalTextRef.current,
+                editorOriginalHash: editorOriginalHashRef.current,
                 editorText: editorTextRef.current,
             });
         };
@@ -312,20 +321,26 @@ export function useWorkspaceFileEditorState(input: Readonly<{
             },
         });
         sizeAndPersistDebounce.debounced(value);
-    }, [input.filePath, isEditingFile, sizeAndPersistDebounce, workspaceCacheKey]);
+        if (latestInputRef.current.filesEditorAutoSave && isEditingFile && value !== editorOriginalTextRef.current) {
+            autoSaveDebounce.debounced(true);
+        }
+    }, [autoSaveDebounce, input.filePath, isEditingFile, sizeAndPersistDebounce, workspaceCacheKey]);
 
     const getEditorText = React.useCallback(() => {
         return editorTextRef.current;
     }, []);
 
-    const saveFileEdits = React.useCallback(() => {
+    const saveEdits = React.useCallback((autoSave: boolean) => {
         void (async () => {
             const latestInput = latestInputRef.current;
             if (!editorSurfaceEnabled) return;
             if (!latestInput.filePath) return;
             if (editorTextRef.current === editorOriginalTextRef.current) return;
+            if (savingRef.current) return;
 
+            savingRef.current = true;
             setIsSavingEdits(true);
+            let writeSucceeded = false;
             try {
                 await editorHandleRef.current?.flushPendingChange?.();
                 const latestText = editorHandleRef.current?.getValue?.() ?? editorTextRef.current;
@@ -358,7 +373,7 @@ export function useWorkspaceFileEditorState(input: Readonly<{
                             bodyKey: 'errors.daemonUnavailableBody',
                             machine: null,
                             onRetry: () => {
-                                saveFileEdits();
+                                saveEdits(autoSave);
                             },
                             shouldContinue: () => latestInputRef.current.mountedRef.current,
                         });
@@ -374,10 +389,26 @@ export function useWorkspaceFileEditorState(input: Readonly<{
                     return;
                 }
 
+                writeSucceeded = true;
+                editorOriginalTextRef.current = latestText;
+                editorOriginalHashRef.current = response.hash;
                 setEditorOriginalText(latestText);
                 setEditorOriginalHash(response.hash);
                 setFileChangedExternally(false);
                 const liveTextAfterWrite = editorHandleRef.current?.getValue?.() ?? editorTextRef.current;
+                editorTextRef.current = liveTextAfterWrite;
+                const draft = isEditingFileRef.current && (autoSave || liveTextAfterWrite !== latestText) ? {
+                    isEditingFile: true,
+                    editorOriginalText: latestText,
+                    editorOriginalHash: response.hash,
+                    editorText: liveTextAfterWrite,
+                } : null;
+                workspaceFileEditorDraftCache.setDraft({
+                    workspaceCacheKey,
+                    filePath: latestInput.filePath,
+                    draft,
+                });
+                latestInput.persistDraft?.(draft);
                 if (liveTextAfterWrite !== latestText) {
                     // The user kept typing while the write was in flight. Seeding the editor
                     // with the saved snapshot would replace the live document and reset the
@@ -387,21 +418,15 @@ export function useWorkspaceFileEditorState(input: Readonly<{
                 }
                 setEditorSeedText(latestText);
                 setEditorByteSize(() => new Blob([latestText]).size);
-                setIsEditingFile(false);
+                if (!autoSave) setIsEditingFile(false);
                 setEditorDirty(false);
-                workspaceFileEditorDraftCache.setDraft({
-                    workspaceCacheKey,
-                    filePath: latestInput.filePath,
-                    draft: null,
-                });
-                latestInput.persistDraft?.(null);
                 await latestInput.refreshAll();
             } catch (err) {
                 const shown = tryShowDaemonUnavailableAlertForRpcError({
                     error: err,
                     machine: null,
                     onRetry: () => {
-                        saveFileEdits();
+                        saveEdits(autoSave);
                     },
                     shouldContinue: () => latestInputRef.current.mountedRef.current,
                 });
@@ -410,21 +435,31 @@ export function useWorkspaceFileEditorState(input: Readonly<{
                     Modal.alert(t('common.error'), message);
                 }
             } finally {
+                savingRef.current = false;
                 setIsSavingEdits(false);
+                if (writeSucceeded && isEditingFileRef.current) {
+                    const liveText = editorHandleRef.current?.getValue?.() ?? editorTextRef.current;
+                    editorTextRef.current = liveText;
+                    if (liveText !== editorOriginalTextRef.current) {
+                        setEditorDirty(true);
+                        if (latestInputRef.current.filesEditorAutoSave) autoSaveDebounce.debounced(true);
+                    }
+                }
             }
         })();
-    }, [editorSurfaceEnabled, sizeAndPersistDebounce, workspaceCacheKey]);
+    }, [autoSaveDebounce, editorSurfaceEnabled, sizeAndPersistDebounce, workspaceCacheKey]);
+    saveEditsRef.current = saveEdits;
+
+    const saveFileEdits = React.useCallback(() => saveEdits(false), [saveEdits]);
 
     React.useEffect(() => {
-        if (!input.filesEditorAutoSave) return;
-        if (!editorDirty) return;
-        if (!isEditingFile) return;
-        if (fileChangedExternally) return;
-        const timeout = setTimeout(() => {
-            saveFileEdits();
-        }, input.filesEditorChangeDebounceMs);
-        return () => clearTimeout(timeout);
-    }, [editorDirty, fileChangedExternally, input.filesEditorAutoSave, input.filesEditorChangeDebounceMs, isEditingFile, saveFileEdits]);
+        if (input.filesEditorAutoSave && editorDirty && isEditingFile && !fileChangedExternally) {
+            autoSaveDebounce.debounced(true);
+        } else {
+            autoSaveDebounce.cancel();
+        }
+        return () => autoSaveDebounce.cancel();
+    }, [autoSaveDebounce, editorDirty, fileChangedExternally, input.filesEditorAutoSave, isEditingFile]);
 
     const editorTooLarge = editorByteSize > input.filesEditorMaxFileBytes;
     const editorChunkTooLarge = editorByteSize > input.filesEditorBridgeMaxChunkBytes;

@@ -26,9 +26,7 @@ installSessionSettingsEntryModuleMocks({
                         localSettingsState[key] = next;
                     },
                 ] as const,
-                useSetting: createUseSettingMock({
-                    values: { recentMachinePaths: [] },
-                }),
+                useSetting: createUseSettingMock(),
             },
         });
     },

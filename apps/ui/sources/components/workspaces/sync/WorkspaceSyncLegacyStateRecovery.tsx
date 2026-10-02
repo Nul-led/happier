@@ -109,7 +109,7 @@ export const WorkspaceSyncLegacyStateRecovery = React.memo(function WorkspaceSyn
     return (
         <ItemGroup
             title={t('workspaceSync.legacyRecovery.title')}
-            footer={t('workspaceSync.legacyRecovery.footer')}
+            description={t('workspaceSync.legacyRecovery.footer')}
         >
             {checking ? <Item title={t('workspaceSync.legacyRecovery.checking')} showChevron={false} /> : null}
             {outdatedMachineIds.map((machineId) => (

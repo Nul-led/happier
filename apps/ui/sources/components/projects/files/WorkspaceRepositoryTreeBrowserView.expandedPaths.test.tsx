@@ -170,8 +170,10 @@ describe('WorkspaceRepositoryTreeBrowserView (expanded paths)', () => {
             sizeBytes: 42,
             modifiedMs: 1,
             depth: 0,
+            isExpanded: false,
+            isLoadingChildren: false,
             parentDirectoryPath: 'src',
-        } as any);
+        }, { open: false, onOpenChange: () => {}, triggerHidden: false });
 
         const rowActionsElement = React.isValidElement<{ path: string; onSelect: (itemId: string) => Promise<void> }>(rowActionsNode)
             ? rowActionsNode

@@ -2,7 +2,7 @@ import * as React from 'react';
 import { t } from '@/text';
 import { refreshWorkspaceFileDetails, type WorkspaceFileDetailsFileContent } from './refreshWorkspaceFileDetails';
 
-type Input = Omit<Parameters<typeof refreshWorkspaceFileDetails>[0], 'scope'> & { scope: Parameters<typeof refreshWorkspaceFileDetails>[0]['scope'] | null } & Readonly<{ isActive: boolean; refreshFingerprint: string }>;
+type Input = Omit<Parameters<typeof refreshWorkspaceFileDetails>[0], 'scope' | 'signal'> & { scope: Parameters<typeof refreshWorkspaceFileDetails>[0]['scope'] | null } & Readonly<{ isActive: boolean; refreshFingerprint: string }>;
 
 function sameContent(a: WorkspaceFileDetailsFileContent | null, b: WorkspaceFileDetailsFileContent | null): boolean {
     return a === b || Boolean(a && b && a.content === b.content && a.isBinary === b.isBinary
@@ -22,6 +22,7 @@ export function useWorkspaceFileDetailsLoading(input: Input) {
     const [fileWriteSupported, setFileWriteSupported] = React.useState(true);
     const hydrated = React.useRef(false);
     const request = React.useRef<object | null>(null);
+    const transferAbort = React.useRef<AbortController | null>(null);
     const reusableFile = React.useRef<{ key: string; diffMode: Input['diffMode']; includeDiff: Input['includeDiff']; value: NonNullable<Input['reuseFile']> } | null>(null);
     const resourceKey = JSON.stringify([scope?.serverId, scope?.machineId, scope?.rootPath, filePath]);
     const [contentResource, setContentResource] = React.useState(resourceKey);
@@ -51,6 +52,9 @@ export function useWorkspaceFileDetailsLoading(input: Input) {
             && reusableFile.current.diffMode === diffMode
             && (includeDiff === false || reusableFile.current.includeDiff === includeDiff)) return;
         if (!options?.allowFileReuse) reusableFile.current = null;
+        transferAbort.current?.abort();
+        const abort = new AbortController();
+        transferAbort.current = abort;
         const current = {};
         request.current = current;
         setIsDiffLoading(includeDiff !== false);
@@ -60,6 +64,7 @@ export function useWorkspaceFileDetailsLoading(input: Input) {
             const result = await refreshWorkspaceFileDetails({
                 scope, filePath, diffMode, fileEntryKind, fileHasIncludedDelta,
                 maxImagePreviewBytes, includeDiff, includeFile, snapshotSignature,
+                signal: abort.signal,
                 forceRefresh: options?.allowFileReuse !== true,
                 reuseFile: options?.allowFileReuse && reusableFile.current?.key === fileKey
                     ? reusableFile.current.value : undefined,
@@ -98,7 +103,11 @@ export function useWorkspaceFileDetailsLoading(input: Input) {
     }, [scope, filePath, diffMode, fileEntryKind, fileHasIncludedDelta, maxImagePreviewBytes, includeDiff, includeFile, snapshotSignature, isActive, fileKey]);
     React.useEffect(() => {
         void refreshAll({ allowFileReuse: true });
-        return () => { request.current = null; };
+        return () => {
+            request.current = null;
+            transferAbort.current?.abort();
+            transferAbort.current = null;
+        };
     }, [refreshAll, refreshFingerprint]);
     return { fileContent, diffContent, setDiffContent, isLoading, isDiffLoading, error, fileWriteSupported, setFileWriteSupported, refreshAll };
 }

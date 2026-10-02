@@ -1,0 +1,228 @@
+import * as React from 'react';
+import { View } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+
+import { Icon } from '@/components/ui/icons/Icon';
+import { Text } from '@/components/ui/text/Text';
+import { DocumentTabStrip, type DocumentTabItem } from '@/components/ui/navigation/DocumentTabStrip';
+import { SessionAgentCatalogIdentityIcon } from '@/components/sessions/presentation/SessionAgentCatalogIdentityIcon';
+import { readSessionPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
+import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
+import { useSession } from '@/sync/domains/state/storage';
+import { Typography } from '@/constants/Typography';
+import { t } from '@/text';
+import { Modal } from '@/modal';
+import { hrefForDestinationRef, resolveCurrentAppDestination, useDestinationInstanceTitles } from '../destinations/compactAppDestinationCatalog';
+import { HappierPressable } from '@happier-dev/plugin-ui/presentation';
+import { useOptionalWorkspaceNavigation } from './WorkspaceNavigationContext';
+import { usePhoneWorkspaceTabs, type PhoneWorkspaceTab } from './usePhoneWorkspaceTabs';
+
+export const PHONE_OPEN_TABS_RAIL_TEST_ID = 'phone-open-tabs-rail';
+
+/** The rail is a set the person chose to keep, so it appears once a second tab is open (lab R). */
+const MINIMUM_TABS = 2;
+
+type RailItem = DocumentTabItem & Readonly<{ source: PhoneWorkspaceTab }>;
+
+const styles = StyleSheet.create((theme) => ({
+    root: {
+        paddingTop: 2,
+        paddingBottom: 8,
+    },
+    synced: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        paddingLeft: 4,
+        paddingRight: 2,
+    },
+    syncedLabel: {
+        fontSize: 11.5,
+        color: theme.colors.text.tertiary,
+        ...Typography.default(),
+    },
+    pager: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        minHeight: 34,
+        paddingHorizontal: 20,
+    },
+    dots: {
+        flexDirection: 'row',
+        gap: 5,
+    },
+    dot: {
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+        backgroundColor: theme.colors.surface.selected,
+    },
+    dotOn: {
+        backgroundColor: theme.colors.text.secondary,
+    },
+    pagerPosition: {
+        fontSize: 12.5,
+        color: theme.colors.text.primary,
+        fontVariant: ['tabular-nums'],
+        ...Typography.default('semiBold'),
+    },
+    pagerTitle: {
+        flex: 1,
+        minWidth: 0,
+        fontSize: 12.5,
+        color: theme.colors.text.secondary,
+        ...Typography.default(),
+    },
+    pagerNext: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 2,
+        minHeight: 34,
+    },
+    pagerNextLabel: {
+        fontSize: 12.5,
+        color: theme.colors.text.link,
+        ...Typography.default(),
+    },
+}));
+
+/**
+ * The phone's open tabs under the session header: the same tab instances as the desktop strip, as
+ * scrolling pills (pinned marks first, the preview last in italics). A tap shows the tab (never a
+ * history step); the open tab carries its close. Hidden below two tabs.
+ */
+export const PhoneOpenTabsRail = React.memo(function PhoneOpenTabsRail() {
+    const phoneTabs = usePhoneWorkspaceTabs();
+    const syncStatus = useOptionalWorkspaceNavigation()?.tabSyncStatus;
+    const { theme } = useUnistyles();
+    const items = React.useMemo((): readonly RailItem[] => phoneTabs.tabs.map((tab) => ({
+        key: tab.id,
+        title: tab.title,
+        // A desktop split is one tab here; its count says it holds more than one pane.
+        subtitle: tab.panes.length > 1 ? String(tab.panes.length) : null,
+        isPreview: tab.preview,
+        isPinned: tab.pinned,
+        isUnavailable: tab.unavailable,
+        source: tab,
+    })), [phoneTabs.tabs]);
+    const renderLeadingIcon = React.useCallback((item: RailItem, active: boolean) => {
+        const tab = item.source;
+        const color = tab.unavailable ? theme.colors.text.tertiary : active ? theme.colors.text.primary : theme.colors.text.secondary;
+        if (tab.unavailable) return <Icon name="cloud-slash" size={14} color={color} />;
+        if (tab.session) return <RailSessionMark sessionId={tab.session.sessionId} serverId={tab.session.serverId} />;
+        return <Icon name={tab.icon ?? 'file'} size={14} color={color} />;
+    }, [theme.colors.text.primary, theme.colors.text.secondary, theme.colors.text.tertiary]);
+    const synced = syncStatus === 'synced' || syncStatus === 'pending';
+    const trailing = React.useMemo(() => (synced ? (
+        <View style={styles.synced} accessible accessibilityLabel={t('phoneNav.rail.syncedA11y')}>
+            <Icon name="arrows-clockwise" size={13} color={theme.colors.text.tertiary} />
+            <Text style={styles.syncedLabel}>{t('phoneNav.rail.synced')}</Text>
+        </View>
+    ) : null), [synced, theme.colors.text.tertiary]);
+    const catalog = useOptionalWorkspaceNavigation()?.phone?.catalog ?? null;
+    const { activate: activateTab, close: closeTab } = phoneTabs;
+    // A tab this phone cannot show has nowhere to go: it says so where it is, and offers to close it.
+    const activate = React.useCallback((tabId: string) => {
+        const tab = phoneTabs.tabs.find((item) => item.id === tabId);
+        const pane = tab?.panes.find((item) => item.id === tab.activeTabId);
+        const href = pane && catalog ? hrefForDestinationRef(catalog, pane.target) : null;
+        if (tab && pane && !href) {
+            void Modal.confirm(t('phoneNav.rail.notAvailableTitle'), t('phoneNav.rail.notAvailableUnknown'), {
+                confirmText: t('phoneNav.rail.closeTab'), cancelText: t('common.done'),
+            }).then((close) => { if (close) closeTab(tab.id); });
+            return;
+        }
+        activateTab(tabId);
+    }, [activateTab, catalog, closeTab, phoneTabs.tabs]);
+    const activeTab = phoneTabs.tabs.find((tab) => tab.id === phoneTabs.activeTabId) ?? null;
+    if (!phoneTabs.available || items.length < MINIMUM_TABS) return null;
+    return (
+        <View style={styles.root} testID={PHONE_OPEN_TABS_RAIL_TEST_ID}>
+            <DocumentTabStrip
+                variant="rail"
+                tabs={items}
+                activeTabKey={phoneTabs.activeTabId}
+                accessibilityLabel={t('phoneNav.rail.label')}
+                onActivate={activate}
+                onClose={phoneTabs.close}
+                onPin={noop}
+                onUnpin={noop}
+                renderLeadingIcon={renderLeadingIcon}
+                tabNativeId={railTabNativeId}
+                panelNativeId={railPanelNativeId}
+                railTrailing={trailing}
+                testIds={RAIL_TEST_IDS}
+            />
+            {activeTab && activeTab.panes.length > 1 && catalog ? (
+                <PhoneSplitPager tab={activeTab} catalog={catalog} onShowPane={activateTab} />
+            ) : null}
+        </View>
+    );
+});
+
+/**
+ * A desktop split is one tab on a phone: its panes take turns on screen. The pager names the pane on
+ * screen and offers the next one by name (phone-nav lab K, "1 of 2 … Diff ›").
+ */
+const PhoneSplitPager = React.memo(function PhoneSplitPager(props: Readonly<{
+    tab: PhoneWorkspaceTab;
+    catalog: NonNullable<NonNullable<ReturnType<typeof useOptionalWorkspaceNavigation>>['phone']>['catalog'];
+    onShowPane: (paneId: string) => void;
+}>) {
+    const { theme } = useUnistyles();
+    const { tab } = props;
+    const entries = React.useMemo(() => tab.panes.map((pane) => ({ key: pane.id, ref: pane.target })), [tab.panes]);
+    const titles = useDestinationInstanceTitles(props.catalog, entries);
+    const index = Math.max(0, tab.panes.findIndex((pane) => pane.id === tab.activeTabId));
+    const next = tab.panes[(index + 1) % tab.panes.length];
+    const paneName = (pane: typeof next) => {
+        if (pane.target.kind === 'session') return t('phoneNav.rail.chatPane');
+        const href = hrefForDestinationRef(props.catalog, pane.target);
+        return titles.get(pane.id) ?? (href ? resolveCurrentAppDestination(props.catalog, href)?.title : null) ?? t('common.unavailable');
+    };
+    return (
+        <View style={styles.pager}>
+            <View style={styles.dots}>
+                {tab.panes.map((pane, at) => <View key={pane.id} style={[styles.dot, at === index ? styles.dotOn : null]} />)}
+            </View>
+            <Text style={styles.pagerPosition}>{t('phoneNav.rail.paneOf', { position: index + 1, total: tab.panes.length })}</Text>
+            <Text style={styles.pagerTitle} numberOfLines={1}>{titles.get(tab.panes[index].id) ?? tab.title}</Text>
+            <HappierPressable
+                style={styles.pagerNext}
+                onPress={() => props.onShowPane(next.id)}
+                accessibilityRole="button"
+                accessibilityLabel={`${t('phoneNav.rail.nextPane')}: ${paneName(next)}`}
+                hitSlop={8}
+            >
+                <Text style={styles.pagerNextLabel}>{paneName(next)}</Text>
+                <Icon name="caret-right" size={14} color={theme.colors.text.link} />
+            </HappierPressable>
+        </View>
+    );
+});
+
+const noop = () => {};
+const railTabNativeId = (key: string) => `phone-rail-tab-${key}`;
+const railPanelNativeId = (key: string) => `phone-rail-panel-${key}`;
+const RAIL_TEST_IDS = {
+    tab: (key: string) => `phone-rail-tab-${key}`,
+    tabClose: (key: string) => `phone-rail-tab-close-${key}`,
+};
+
+/** A session tab carries its agent's mark, like the session row and header do. */
+const RailSessionMark = React.memo(function RailSessionMark(props: Readonly<{ sessionId: string; serverId: string | null }>) {
+    const { theme } = useUnistyles();
+    const session = useSession(props.sessionId, props.serverId);
+    const agentId = session ? readSessionPresentationAgentId(session) ?? '' : '';
+    const machineId = session ? readSessionOwnerMetadataView(session)?.machineId ?? null : null;
+    return (
+        <SessionAgentCatalogIdentityIcon
+            agentId={agentId}
+            machineId={machineId}
+            serverId={props.serverId}
+            color={theme.colors.text.primary}
+            size={14}
+        />
+    );
+});

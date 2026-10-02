@@ -74,7 +74,7 @@ export function useSplitCanvasDnD(input: Readonly<{
     }>) => void;
 }>): Readonly<{
     enabled: boolean;
-    onHostLayout?: (event: SplitCanvasLayoutEvent) => void;
+    onHostLayout: (event: SplitCanvasLayoutEvent) => void;
     onLeafLayout: (leafId: string, event: SplitCanvasLayoutEvent) => void;
     registerLeafHost: (leafId: string, host: SplitCanvasLeafHostRef | null) => void;
     hostDropTargetProps: Readonly<{

@@ -1,3 +1,4 @@
+import { authoringMemoryDefaults } from '@/sync/store/domains/authoringMemory';
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
@@ -91,8 +92,8 @@ installPickerCommonModuleMocks({
             overrides: {
                 useAllMachines: () => [pickerMachine],
                 useAllSessionListRenderables: () => [],
+                useAuthoringMemoryField: (key) => ({ ...authoringMemoryDefaults, recentMachinePaths: [] })[key],
                 useSetting: createUseSettingMock({ fallback: (key) => {
-                    if (key === 'recentMachinePaths') return [];
                     if (key === 'usePathPickerSearch') return false;
                     return null;
                 } }),
@@ -208,7 +209,9 @@ describe('PathPickerScreen', () => {
                 ...BUNDLED_AGENT_ROUTE_PARAMS.claude,
                 dataId: 'draft-1',
                 machineId: 'm1',
+                directoryKind: 'path',
                 directory: '/home',
+                path: undefined,
                 spawnServerId: 'server-b',
             },
         });

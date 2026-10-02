@@ -271,14 +271,6 @@ describe('ResumePickerScreen browse modal', () => {
                         source: { kind: 'local', locator: 'acme.review-bot' },
                     },
                 },
-                backendsById: {
-                    'plugin-review-bot': {
-                        id: 'plugin-review-bot',
-                        agentId: 'plugin:review-bot',
-                        title: 'Review Bot (plugin)',
-                        subtitle: 'plugin backend',
-                    },
-                },
             }),
         });
 
@@ -291,11 +283,10 @@ describe('ResumePickerScreen browse modal', () => {
             expect.objectContaining({ serverId: 'server-2' }),
         );
 
-        const props = resumeSelectionContentPropsRef.current;
         // A settings-backed plugin row is titled by its Agent projection
         // (`createBuiltInTargetEntry`: settings-backed rows use the provider
         // projection title), which here can only come from the daemon inputs.
-        expect(props?.agentLabel).toBe('Review Bot Plugin');
+        await vi.waitFor(() => expect(resumeSelectionContentPropsRef.current?.agentLabel).toBe('Review Bot Plugin'));
     });
 
     it('uses the projected runtime carrier when browsing direct sessions for a plugin backend', async () => {
@@ -317,10 +308,9 @@ describe('ResumePickerScreen browse modal', () => {
         // The route candidate only becomes available once the merged projection
         // is ready (account-scope binding → describe → catalog adaptation), so
         // wait for the full async chain to settle before capturing props.
-        await flushHookEffects({ cycles: 40 });
+        await vi.waitFor(() => expect(resumeSelectionContentPropsRef.current?.agentType).toBe('plugin:review-bot'));
 
         const props = resumeSelectionContentPropsRef.current;
-        expect(props?.agentType).toBe('plugin:review-bot');
         expect(props?.resumeBrowse).toBeTruthy();
 
         const result = await props?.resumeBrowse?.onBrowse?.();

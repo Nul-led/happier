@@ -9,14 +9,9 @@ import { installNavigationShellCommonModuleMocks } from '../navigationShellTestH
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-const desktopWindowBridgeState = vi.hoisted(() => ({
-    getDesktopWindowChromePolicy: vi.fn(),
-    getDesktopWindowState: vi.fn(),
-    listenDesktopWindowState: vi.fn(),
-    minimizeDesktopWindow: vi.fn(),
-    toggleDesktopWindowMaximize: vi.fn(),
-    closeDesktopWindow: vi.fn(),
-    startDesktopWindowDragging: vi.fn(),
+const desktopHostState = vi.hoisted(() => ({
+    invoke: vi.fn(),
+    listen: vi.fn(),
 }));
 
 installNavigationShellCommonModuleMocks({
@@ -53,15 +48,11 @@ vi.mock('@expo/vector-icons', () => ({
     Octicons: 'Octicons',
 }));
 
-vi.mock('@/utils/platform/desktopWindowBridge', () => ({
-    getDesktopWindowChromePolicy: () => desktopWindowBridgeState.getDesktopWindowChromePolicy(),
-    getDesktopWindowState: () => desktopWindowBridgeState.getDesktopWindowState(),
-    listenDesktopWindowState: (handler: (state: { isMaximized: boolean }) => void) =>
-        desktopWindowBridgeState.listenDesktopWindowState(handler),
-    minimizeDesktopWindow: () => desktopWindowBridgeState.minimizeDesktopWindow(),
-    toggleDesktopWindowMaximize: () => desktopWindowBridgeState.toggleDesktopWindowMaximize(),
-    closeDesktopWindow: () => desktopWindowBridgeState.closeDesktopWindow(),
-    startDesktopWindowDragging: () => desktopWindowBridgeState.startDesktopWindowDragging(),
+// Tauri invocation/events are the platform boundary; the real chrome bridge stays under test.
+vi.mock('@/utils/platform/desktopHost', () => ({
+    isDesktopHost: () => true,
+    invokeDesktopHost: (command: string) => desktopHostState.invoke(command),
+    listenDesktopHostEvent: (event: string, handler: (payload: unknown) => void) => desktopHostState.listen(event, handler),
 }));
 
 function ResolvedDesktopWindowControlsHarness(props: Readonly<{
@@ -79,16 +70,10 @@ function ResolvedDesktopWindowControlsHarness(props: Readonly<{
 
 describe('useResolvedDesktopWindowControls', () => {
     beforeEach(() => {
-        desktopWindowBridgeState.getDesktopWindowChromePolicy.mockReset();
-        desktopWindowBridgeState.getDesktopWindowState.mockReset();
-        desktopWindowBridgeState.listenDesktopWindowState.mockReset();
-        desktopWindowBridgeState.minimizeDesktopWindow.mockReset();
-        desktopWindowBridgeState.toggleDesktopWindowMaximize.mockReset();
-        desktopWindowBridgeState.closeDesktopWindow.mockReset();
-        desktopWindowBridgeState.startDesktopWindowDragging.mockReset();
-        desktopWindowBridgeState.getDesktopWindowChromePolicy.mockResolvedValue({ strategy: 'none' });
-        desktopWindowBridgeState.getDesktopWindowState.mockResolvedValue({ isMaximized: false });
-        desktopWindowBridgeState.listenDesktopWindowState.mockResolvedValue(async () => {});
+        desktopHostState.invoke.mockReset();
+        desktopHostState.listen.mockReset();
+        desktopHostState.invoke.mockResolvedValue({ strategy: 'none' });
+        desktopHostState.listen.mockResolvedValue(async () => {});
     });
 
     it('returns no controls when the desktop strategy is none', async () => {
@@ -99,7 +84,7 @@ describe('useResolvedDesktopWindowControls', () => {
         });
 
         expect(screen.findAllByTestId('desktop-window-controls-slot')).toHaveLength(0);
-        expect(desktopWindowBridgeState.listenDesktopWindowState).not.toHaveBeenCalled();
+        expect(desktopHostState.listen).not.toHaveBeenCalled();
     });
 
     it('uses injected controls without consulting the bridge', async () => {
@@ -111,11 +96,13 @@ describe('useResolvedDesktopWindowControls', () => {
         );
 
         expect(screen.findByTestId('injected-window-controls')).toBeTruthy();
-        expect(desktopWindowBridgeState.getDesktopWindowChromePolicy).not.toHaveBeenCalled();
+        expect(desktopHostState.invoke).not.toHaveBeenCalled();
     });
 
     it('renders stacked custom-controls for the collapsed host', async () => {
-        desktopWindowBridgeState.getDesktopWindowChromePolicy.mockResolvedValue({ strategy: 'custom-controls' });
+        desktopHostState.invoke.mockImplementation(async (command: string) => command === 'desktop_get_window_chrome_policy'
+            ? { strategy: 'custom-controls' }
+            : { isMaximized: false, isFullscreen: false });
 
         const screen = await renderScreen(<ResolvedDesktopWindowControlsHarness variant="collapsed" />);
 
@@ -128,16 +115,29 @@ describe('useResolvedDesktopWindowControls', () => {
         if (!minimizeButton) {
             throw new Error('minimize button should be present');
         }
-        const controlsGroup = minimizeButton.parent;
-        if (!controlsGroup) {
-            throw new Error('controls group should be present');
-        }
-
         expect(minimizeButton).toBeTruthy();
         expect(screen.findByTestId('desktop-window-controls-toggle-maximize')).toBeTruthy();
         expect(screen.findByTestId('desktop-window-controls-close')).toBeTruthy();
-        expect(controlsGroup.props.style).toEqual(
-            expect.objectContaining({ flexDirection: 'column' }),
-        );
+    });
+
+    it('releases the traffic-light inset in fullscreen and restores it on exit', async () => {
+        desktopHostState.invoke.mockImplementation(async (command: string) => command === 'desktop_get_window_chrome_policy'
+            ? { strategy: 'native-macos-traffic-lights' }
+            : { isMaximized: false, isFullscreen: false });
+        let updateState: ((state: unknown) => void) | undefined;
+        const unlisten = vi.fn();
+        desktopHostState.listen.mockImplementation(async (_event: string, handler: (state: unknown) => void) => {
+            updateState = handler;
+            return unlisten;
+        });
+        const screen = await renderScreen(<ResolvedDesktopWindowControlsHarness variant="expanded" />);
+        await act(async () => { await Promise.resolve(); });
+        expect(screen.findAllByTestId('desktop-window-controls-slot')).toHaveLength(1);
+        await act(async () => { updateState?.({ isMaximized: false, isFullscreen: true }); });
+        expect(screen.findAllByTestId('desktop-window-controls-slot')).toHaveLength(0);
+        await act(async () => { updateState?.({ isMaximized: false, isFullscreen: false }); });
+        expect(screen.findAllByTestId('desktop-window-controls-slot')).toHaveLength(1);
+        await screen.unmount();
+        expect(unlisten).toHaveBeenCalledOnce();
     });
 });

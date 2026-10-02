@@ -6,6 +6,7 @@ import { StyleSheet } from 'react-native-unistyles';
 import { UniversalSearchController } from '@/components/appShell/search/UniversalSearchController';
 import { useUniversalSearchRuntime } from '@/components/appShell/search/UniversalSearchRuntimeContext';
 import { resolveUniversalSearchRouteInitialScope } from '@/components/appShell/search/universalSearchScope';
+import { TERMINAL_JUMP_ROUTE_PARAM } from '@/components/sessions/terminal/jump/terminalJumpTarget';
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { ConstrainedScreenContent } from '@/components/ui/layout/ConstrainedScreenContent';
 import { t } from '@/text';
@@ -31,11 +32,16 @@ const styles = StyleSheet.create((theme) => ({
 
 export default function UniversalSearchRoute(): React.ReactElement {
     const router = useRouter();
-    const params = useGlobalSearchParams<{ q?: string | string[]; sessionId?: string | string[]; accountId?: string | string[]; serverId?: string | string[]; machineId?: string | string[]; rootPath?: string | string[] }>();
+    const params = useGlobalSearchParams<{ q?: string | string[]; sessionId?: string | string[]; accountId?: string | string[]; serverId?: string | string[]; machineId?: string | string[]; rootPath?: string | string[]; [TERMINAL_JUMP_ROUTE_PARAM]?: string | string[] }>();
     const runtime = useUniversalSearchRuntime();
     const initialQuery = typeof params.q === 'string' ? params.q : '';
     const activeSessionId = typeof params.sessionId === 'string' ? params.sessionId : null;
     const initialScope = React.useMemo(() => resolveUniversalSearchRouteInitialScope(params), [params]);
+    const terminalScopeId = params[TERMINAL_JUMP_ROUTE_PARAM];
+    const terminalJump = React.useMemo(
+        () => (typeof terminalScopeId === 'string' && terminalScopeId.length > 0 ? { scopeId: terminalScopeId } : undefined),
+        [terminalScopeId],
+    );
     const commands = React.useMemo(
         () => runtime.buildCommands(activeSessionId, initialScope ?? undefined),
         [activeSessionId, initialScope, runtime],
@@ -50,6 +56,7 @@ export default function UniversalSearchRoute(): React.ReactElement {
             initialQuery={initialQuery}
             activeSessionId={activeSessionId}
             initialScope={initialScope}
+            terminalJump={terminalJump}
             presentation="route"
             onRequestClose={close}
         />

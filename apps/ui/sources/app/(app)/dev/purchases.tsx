@@ -98,7 +98,7 @@ export default function PurchasesDevScreen() {
                 {/* Active Subscriptions */}
                 <ItemGroup
                     title="Active Subscriptions"
-                    footer={purchases.activeSubscriptions.length === 0 ? "No active subscriptions" : undefined}
+                    description={purchases.activeSubscriptions.length === 0 ? "No active subscriptions" : undefined}
                 >
                     {purchases.activeSubscriptions.length > 0 ? (
                         purchases.activeSubscriptions.map((productId, index) => (
@@ -115,7 +115,7 @@ export default function PurchasesDevScreen() {
                 {/* Entitlements */}
                 <ItemGroup
                     title="Entitlements"
-                    footer={sortedEntitlements.length === 0 ? "No entitlements found" : "Green = active, Gray = inactive"}
+                    description={sortedEntitlements.length === 0 ? "No entitlements found" : "Green = active, Gray = inactive"}
                 >
                     {sortedEntitlements.length > 0 ? (
                         sortedEntitlements.map(([id, isActive]) => (
@@ -137,7 +137,7 @@ export default function PurchasesDevScreen() {
                 </ItemGroup>
 
                 {/* Purchase Product */}
-                <ItemGroup title="Purchase Product" footer="Enter a product ID to purchase">
+                <ItemGroup title="Purchase Product" description="Enter a product ID to purchase">
                     <View style={{
                         backgroundColor: '#fff',
                         paddingHorizontal: 16,
@@ -193,7 +193,7 @@ export default function PurchasesDevScreen() {
 
                 {/* Offerings Info */}
                 {offerings && (
-                    <ItemGroup title="Offerings" footer="Check console logs for full details">
+                    <ItemGroup title="Offerings" description="Check console logs for full details">
                         <Item
                             title="Current Offering"
                             detail={offerings.current?.identifier || "None"}

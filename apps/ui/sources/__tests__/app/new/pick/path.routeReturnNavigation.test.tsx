@@ -1,3 +1,4 @@
+import { authoringMemoryDefaults } from '@/sync/store/domains/authoringMemory';
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
@@ -119,8 +120,8 @@ installPickerCommonModuleMocks({
             overrides: {
                 useAllMachines: () => [pickerMachine],
                 useAllSessionListRenderables: () => [],
+                useAuthoringMemoryField: (key) => ({ ...authoringMemoryDefaults, recentMachinePaths: [] })[key],
                 useSetting: createUseSettingMock({ fallback: (key) => {
-                    if (key === 'recentMachinePaths') return [];
                     if (key === 'usePathPickerSearch') return false;
                     return null;
                 } }),
@@ -232,7 +233,9 @@ describe('PathPickerScreen', () => {
             params: {
                 ...BUNDLED_AGENT_ROUTE_PARAMS.claude,
                 machineId: 'machine-1',
+                directoryKind: 'path',
                 directory: '/repo/selected',
+                path: undefined,
             },
         });
         expect(routerMock.setParams).not.toHaveBeenCalled();
@@ -275,7 +278,9 @@ describe('PathPickerScreen', () => {
             params: {
                 ...BUNDLED_AGENT_ROUTE_PARAMS.claude,
                 machineId: 'machine-1',
+                directoryKind: 'path',
                 directory: '/repo/selected',
+                path: undefined,
             },
         });
         expect(safeRouterBack).not.toHaveBeenCalled();
@@ -320,7 +325,9 @@ describe('PathPickerScreen', () => {
             params: {
                 ...createConfiguredBackendRouteParams('review-bot'),
                 machineId: 'machine-1',
+                directoryKind: 'path',
                 directory: '/repo/selected',
+                path: undefined,
                 spawnServerId: 'server-2',
             },
         });
@@ -367,14 +374,18 @@ describe('PathPickerScreen', () => {
 
         expect(machineContributionRegistryProjectionDescribe).toHaveBeenCalledWith('machine-1', expect.objectContaining({
             serverId: 'server-2',
-            timeoutMs: 10_000,
+            accountLifetime: expect.objectContaining({
+                scope: { serverId: 'server-2', accountId: 'account:server-2' },
+            }),
         }));
         expect(routerMock.replace).toHaveBeenCalledWith({
             pathname: '/new',
             params: {
                 ...BUNDLED_AGENT_ROUTE_PARAMS.claude,
                 machineId: 'machine-1',
+                directoryKind: 'path',
                 directory: '/repo/selected',
+                path: undefined,
                 spawnServerId: 'server-2',
             },
         });
@@ -423,7 +434,9 @@ describe('PathPickerScreen', () => {
             params: {
                 ...createConfiguredBackendRouteParams('review-bot'),
                 machineId: 'machine-1',
+                directoryKind: 'path',
                 directory: '/repo/selected',
+                path: undefined,
                 spawnServerId: 'server-legacy',
             },
         });
@@ -472,7 +485,9 @@ describe('PathPickerScreen', () => {
             params: {
                 ...BUNDLED_AGENT_ROUTE_PARAMS.codex,
                 machineId: 'machine-1',
+                directoryKind: 'path',
                 directory: '/repo/selected',
+                path: undefined,
                 spawnServerId: 'server-2',
             },
         });

@@ -125,7 +125,6 @@ describe('Settings → Account (username)', () => {
         setRuntimeFetch(fetchMock as unknown as typeof fetch);
 
         await import('@/modal');
-        modalMockRef.current.spies.prompt.mockResolvedValue('alice');
 
         const { default: AccountScreen } = await import('@/app/(app)/settings/account');
         const screen = await renderSettingsView(<AccountScreen />);
@@ -135,7 +134,11 @@ describe('Settings → Account (username)', () => {
             await screen.pressRowByTitle('settingsAccount.chooseUsername');
         });
 
-        expect(modalMockRef.current.spies.prompt).toHaveBeenCalled();
+        const input = screen.findByTestId('settings-account-username-field');
+        expect(input).not.toBeNull();
+        await act(async () => { input!.props.onChangeText('alice'); });
+        await screen.pressByTestIdAsync('settings-account-username-save');
+        expect(modalMockRef.current.spies.prompt).not.toHaveBeenCalled();
         expect(fetchMock).toHaveBeenCalledWith(
             expect.stringContaining('/v1/account/username'),
             expect.objectContaining({ method: 'POST' }),

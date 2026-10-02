@@ -16,7 +16,7 @@ const contentState = vi.hoisted(() => ({
 }));
 
 /**
- * The recede is a native gesture's answer, so this runs on a native platform, and the
+ * The recede is the native switcher's answer, so this runs on a native platform, and the
  * reduced-motion preference is driven through the accessibility boundary its canonical
  * hook listens to rather than by mocking the hook itself.
  */
@@ -50,7 +50,7 @@ function SessionContentProbe(): React.ReactElement {
 }
 
 type Harness = {
-    progress?: { value: number };
+    open?: { value: number };
     rerender?: () => void;
 };
 
@@ -67,40 +67,39 @@ function readContentMotion(screen: Awaited<ReturnType<typeof renderScreen>>) {
     const style = flattenStyle(host?.props.style);
     const transform = (style.transform ?? []) as ReadonlyArray<Record<string, number>>;
     return {
-        opacity: style.opacity as number | undefined,
-        translateX: transform.find((entry) => 'translateX' in entry)?.translateX,
+        translateY: transform.find((entry) => 'translateY' in entry)?.translateY,
         scale: transform.find((entry) => 'scale' in entry)?.scale,
     };
 }
 
-async function renderSwipeContent() {
+async function renderSwitcherContent() {
     const harness: Harness = {};
-    const { SessionLateralSwipeContent } = await import('./SessionLateralSwipeContent');
-    const { SessionCockpitChromeRegistryProvider, useSessionLateralSwipe } = await import(
+    const { SessionSwitcherContent } = await import('./SessionSwitcherContent');
+    const { SessionCockpitChromeRegistryProvider, useSessionSwitcherState } = await import(
         '@/components/workspaceCockpit/session/SessionCockpitChromeRegistry'
     );
 
-    function SwipeContentHarness() {
-        const swipe = useSessionLateralSwipe();
+    function SwitcherContentHarness() {
+        const switcher = useSessionSwitcherState();
         const [, force] = React.useReducer((current: number) => current + 1, 0);
-        harness.progress = swipe.progress;
+        harness.open = switcher.open;
         harness.rerender = force;
         return (
-            <SessionLateralSwipeContent>
+            <SessionSwitcherContent>
                 <SessionContentProbe />
-            </SessionLateralSwipeContent>
+            </SessionSwitcherContent>
         );
     }
 
     const screen = await renderScreen(
         <SessionCockpitChromeRegistryProvider>
-            <SwipeContentHarness />
+            <SwitcherContentHarness />
         </SessionCockpitChromeRegistryProvider>,
     );
     return { harness, screen };
 }
 
-describe('SessionLateralSwipeContent', () => {
+describe('SessionSwitcherContent', () => {
     afterEach(() => {
         standardCleanup();
         // The preference store keeps ONE process-wide platform listener, so the
@@ -109,79 +108,54 @@ describe('SessionLateralSwipeContent', () => {
         contentState.mounts = 0;
     });
 
-    it('adds nothing to the session content at rest', async () => {
-        const { screen } = await renderSwipeContent();
+    it('adds nothing to the session content while the switcher is closed', async () => {
+        const { screen } = await renderSwitcherContent();
 
         expect(screen.findAllHostsByTestId('session-content-probe')).toHaveLength(1);
-        expect(readContentMotion(screen)).toEqual({ opacity: 1, translateX: 0, scale: 1 });
+        expect(readContentMotion(screen)).toEqual({ translateY: 0, scale: 1 });
     });
 
-    it('recedes the session while the finger travels toward the next session', async () => {
-        const { harness, screen } = await renderSwipeContent();
+    it('steps the session back while the switcher is open', async () => {
+        const { harness, screen } = await renderSwitcherContent();
 
         act(() => {
-            // Negative progress travels toward the NEXT session.
-            harness.progress!.value = -1;
+            harness.open!.value = 1;
             harness.rerender!();
         });
 
         const motion = readContentMotion(screen);
-        expect(motion.translateX).toBe(-24);
-        expect(motion.opacity).toBeCloseTo(0.45, 5);
-        expect(motion.scale).toBeCloseTo(0.985, 5);
-    });
-
-    it('recedes the other way toward the previous session', async () => {
-        const { harness, screen } = await renderSwipeContent();
-
-        act(() => {
-            harness.progress!.value = 0.5;
-            harness.rerender!();
-        });
-
-        const motion = readContentMotion(screen);
-        expect(motion.translateX).toBeCloseTo(12, 5);
-        expect(motion.opacity).toBeCloseTo(0.725, 5);
+        expect(motion.scale).toBeCloseTo(0.94, 5);
+        expect(motion.translateY).toBeLessThan(0);
     });
 
     it('keeps the session subtree mounted across the whole gesture', async () => {
-        const { harness, screen } = await renderSwipeContent();
+        const { harness, screen } = await renderSwitcherContent();
 
         expect(contentState.mounts).toBe(1);
-
-        act(() => {
-            harness.progress!.value = -0.4;
-            harness.rerender!();
-        });
-        act(() => {
-            harness.progress!.value = -1;
-            harness.rerender!();
-        });
-        act(() => {
-            harness.progress!.value = 0;
-            harness.rerender!();
-        });
+        for (const value of [0.4, 1, 0]) {
+            act(() => {
+                harness.open!.value = value;
+                harness.rerender!();
+            });
+        }
 
         // A remount here would throw away the transcript the motion exists to protect.
         expect(contentState.mounts).toBe(1);
         expect(screen.findAllHostsByTestId('session-content-probe')).toHaveLength(1);
     });
 
-    it('removes travel and scale under reduced motion, keeping the session itself intact', async () => {
-        const { harness, screen } = await renderSwipeContent();
+    it('does not move the session under reduced motion', async () => {
+        const { harness, screen } = await renderSwitcherContent();
 
         await act(async () => {
             setReducedMotion(true);
         });
         act(() => {
-            harness.progress!.value = 0.5;
+            harness.open!.value = 1;
             harness.rerender!();
         });
 
-        const motion = readContentMotion(screen);
-        expect(motion.translateX).toBe(0);
-        expect(motion.scale).toBe(1);
-        expect(motion.opacity).toBeCloseTo(0.725, 5);
+        expect(readContentMotion(screen)).toEqual({ translateY: 0, scale: 1 });
         expect(screen.findAllHostsByTestId('session-content-probe')).toHaveLength(1);
     });
 });

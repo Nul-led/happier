@@ -18,6 +18,8 @@ export const browserShortcutConflicts: readonly Readonly<{
     { binding: 'Mod+K', platforms: ['web'], reason: 'browser-reserved' },
     { binding: 'Mod+T', platforms: ['web'], reason: 'browser-reserved' },
     { binding: 'Mod+W', platforms: ['web'], reason: 'browser-reserved' },
+    // Downloads (Ctrl+J) / jump to selection (Safari ⌘J): Jump to a terminal binds Alt+J there.
+    { binding: 'Mod+J', platforms: ['web'], reason: 'browser-reserved' },
     { binding: 'Ctrl+Tab', platforms: ['web'], reason: 'browser-reserved' },
     { binding: 'Ctrl+Shift+Tab', platforms: ['web'], reason: 'browser-reserved' },
     // The host browser owns address-bar focus, reload and history on the web surface, so the
@@ -48,6 +50,8 @@ const codeByDisplayKey: Readonly<Record<string, string>> = {
     ']': 'BracketRight',
     Slash: 'Slash',
     '?': 'Slash',
+    '`': 'Backquote',
+    '\\': 'Backslash',
 };
 
 const semanticKeyFallbacks = new Set([
@@ -87,6 +91,8 @@ const labelByCode: Readonly<Record<string, string>> = {
     BracketLeft: '[',
     BracketRight: ']',
     Slash: 'Slash',
+    Backquote: '`',
+    Backslash: '\\',
 };
 
 export function resolveModModifier(platform: KeyboardPlatform): 'meta' | 'ctrl' {

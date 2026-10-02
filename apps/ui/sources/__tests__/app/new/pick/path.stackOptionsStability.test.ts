@@ -1,3 +1,4 @@
+import { authoringMemoryDefaults } from '@/sync/store/domains/authoringMemory';
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -33,7 +34,7 @@ const stableMachines = [
     }),
 ];
 const stableSessions: Session[] = [];
-const stableRecentMachinePaths: string[] = [];
+const stableRecentMachinePaths: typeof authoringMemoryDefaults.recentMachinePaths = [];
 const stableFavoriteDirectories: string[] = [];
 let localSearchParams: { machineId: string; selectedPath: string } = { machineId: 'm1', selectedPath: '' };
 const routerApi = createRouterMock();
@@ -83,9 +84,9 @@ installPickerCommonModuleMocks({
             overrides: {
                 useAllMachines: () => stableMachines,
                 useAllSessionListRenderables: () => stableSessions,
+                useAuthoringMemoryField: (key) => ({ ...authoringMemoryDefaults, recentMachinePaths: stableRecentMachinePaths })[key],
                 useSetting: createUseSettingMock({ fallback: (key) => {
                     if (key === 'usePathPickerSearch') return false;
-                    if (key === 'recentMachinePaths') return stableRecentMachinePaths;
                     return null;
                 } }),
                 useSettingMutable: createUseSettingMutableMockFromReader(() => [stableFavoriteDirectories, vi.fn()]),

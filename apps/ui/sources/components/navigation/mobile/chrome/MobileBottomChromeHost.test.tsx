@@ -313,21 +313,7 @@ const storageMock = createStorageModuleStub({
 
 vi.mock('@/sync/domains/state/storage', () => storageMock);
 
-// Stable identity: the host puts these shared values in dependency arrays, so a fresh
-// object per render would re-create the pan gesture on every commit.
-const lateralSwipeStub = {
-    progress: { value: 0 },
-    isActive: { value: false },
-    picker: {
-        direction: { value: null },
-        browseProgress: { value: 0 },
-        rowOffset: { value: 0 },
-        index: { value: 0 },
-    },
-};
-
 vi.mock('@/components/workspaceCockpit/session/SessionCockpitChromeRegistry', () => ({
-    useSessionLateralSwipe: () => lateralSwipeStub,
     useSessionCockpitChromeRegistration: () => React.useSyncExternalStore(
         (listener) => {
             cockpitRegistrationListeners.listeners.add(listener);
@@ -420,6 +406,12 @@ vi.mock('@/hooks/server/useFeatureEnabled', () => ({
 
 vi.mock('./bars/MainAppTabBar', () => ({
     MainAppTabBar: (props: Record<string, unknown>) => React.createElement('MainAppTabBar', props),
+}));
+
+// The switcher band owns the bar's gestures and has its own suites; here it only has to wrap
+// the session bar it is given, so the host's contract (which chrome, when) stays the subject.
+vi.mock('./lateralSwipe/SessionSwitcherBand', () => ({
+    SessionSwitcherBand: (props: { children: React.ReactNode }) => props.children,
 }));
 
 vi.mock('./bars/SessionCockpitTabBar', () => ({

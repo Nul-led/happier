@@ -11,8 +11,12 @@ import {
     buildTerminalConnectAuthRedirectHref,
     parseTerminalConnectRouteParams,
     resolveTerminalConnectPreAuthTarget,
+    type TerminalConnectPreAuthTargetDecision,
+    type TerminalConnectRouteParams,
 } from '@/utils/path/terminalConnectUrl';
 import { canonicalizeServerUrl } from '@/sync/domains/server/url/serverUrlCanonical';
+import { focusTerminalConnectHome } from '@/auth/terminal/focusTerminalConnectHome';
+import { fireAndForget } from '@/utils/system/fireAndForget';
 
 export default function TerminalScreen() {
     const router = useRouter();
@@ -20,22 +24,24 @@ export default function TerminalScreen() {
     const auth = useAuth();
     const authRedirectTriggeredRef = React.useRef(false);
 
-    const parsed = React.useMemo(() => parseTerminalConnectRouteParams(searchParams), [searchParams]);
+    // Expo Router creates a fresh parameter object on every render. Keep one
+    // parsed request while its values are unchanged, including the legacy key.
+    const routeParamsJson = JSON.stringify(searchParams);
+    const parsed = React.useMemo(() => parseTerminalConnectRouteParams(
+        JSON.parse(routeParamsJson) as TerminalConnectRouteParams,
+    ), [routeParamsJson]);
     const publicKey = parsed?.publicKeyB64Url ?? null;
     const serverUrl = parsed?.serverUrl ?? parsed?.homeConnectionDescriptor?.canonicalServerUrl ?? null;
     const serverIdentityId = parsed?.serverIdentityId ?? null;
     const pairing = parsed?.pairing;
     const supportsTokenOnly = parsed?.supportsTokenOnly === true;
     const homeConnectionDescriptor = parsed?.homeConnectionDescriptor;
-    const preAuthTarget = resolveTerminalConnectPreAuthTarget({
-        requestedServerUrl: serverUrl,
-        activeServerUrl: canonicalizeServerUrl(getServerUrl()),
-        ...(homeConnectionDescriptor ? { homeConnectionDescriptor } : {}),
-    });
+    const [preAuthTarget, setPreAuthTarget] = React.useState<TerminalConnectPreAuthTargetDecision | null>(null);
     const requiresUpdate = parsed?.compatibility?.admission === 'update_required';
     const compatibilityHandledRef = React.useRef(false);
 
-    const { processParsedAuthUrl, isLoading } = useConnectTerminal({
+    const { processParsedAuthUrl, isLoading, approvalDetails, retryApprovalDetails } = useConnectTerminal({
+        approvalRequest: requiresUpdate ? null : parsed,
         onSuccess: () => {
             router.back();
         },
@@ -52,23 +58,29 @@ export default function TerminalScreen() {
             return;
         }
 
-        authRedirectTriggeredRef.current = true;
-        if (!preAuthTarget) return;
-        const effectiveTarget = preAuthTarget.pendingServerUrl;
-        setPendingTerminalConnect({
-            publicKeyB64Url: publicKey,
-            serverUrl: effectiveTarget,
-            serverIdentityId: serverIdentityId ?? '',
-            ...(pairing ? { pairing } : {}),
-            ...(supportsTokenOnly ? { supportsTokenOnly: true } : {}),
-            ...(homeConnectionDescriptor ? { homeConnectionDescriptor } : {}),
-        });
-        if (preAuthTarget.canNavigateToAuth) {
-            router.replace(buildTerminalConnectAuthRedirectHref({
-                serverUrl: effectiveTarget,
-            }));
-        }
-    }, [auth.isAuthenticated, homeConnectionDescriptor, pairing, preAuthTarget, publicKey, requiresUpdate, router, serverIdentityId, supportsTokenOnly]);
+        let cancelled = false;
+        fireAndForget((async () => {
+            const target = await resolveTerminalConnectPreAuthTarget({
+                requestedServerUrl: serverUrl, activeServerUrl: canonicalizeServerUrl(getServerUrl()),
+                ...(homeConnectionDescriptor ? { homeConnectionDescriptor } : {}),
+            });
+            if (cancelled || !target) return;
+            setPreAuthTarget(target);
+            setPendingTerminalConnect({
+                publicKeyB64Url: publicKey, serverUrl: target.pendingServerUrl, serverIdentityId: serverIdentityId ?? '',
+                ...(pairing ? { pairing } : {}), ...(supportsTokenOnly ? { supportsTokenOnly: true } : {}),
+                ...(homeConnectionDescriptor ? { homeConnectionDescriptor } : {}),
+            });
+            if (!target.canNavigateToAuth) return;
+            if (homeConnectionDescriptor) {
+                const profile = await focusTerminalConnectHome({ descriptor: homeConnectionDescriptor, refreshAuth: auth.refreshFromActiveServer });
+                if (!profile || cancelled) return;
+            }
+            authRedirectTriggeredRef.current = true;
+            router.replace(buildTerminalConnectAuthRedirectHref({ serverUrl: target.pendingServerUrl }));
+        })(), { tag: 'TerminalScreen.redirectToAuth' });
+        return () => { cancelled = true; };
+    }, [auth.isAuthenticated, auth.refreshFromActiveServer, homeConnectionDescriptor, pairing, publicKey, requiresUpdate, router, serverIdentityId, serverUrl, supportsTokenOnly]);
 
     const handleConnect = React.useCallback(async () => {
         if (!publicKey) {
@@ -144,6 +156,14 @@ export default function TerminalScreen() {
                 kind: 'approval',
                 publicKey,
                 isLoading,
+                storageMode: approvalDetails.kind === 'ready' ? approvalDetails.storageMode : null,
+                homeUrl: approvalDetails.kind === 'ready' || approvalDetails.kind === 'needs_sign_in'
+                    ? approvalDetails.homeUrl : serverUrl ?? '',
+                needsSignIn: approvalDetails.kind === 'needs_sign_in',
+                ...(approvalDetails.kind === 'error' ? {
+                    errorDescription: t('modals.failedToConnectTerminal'),
+                    onRetry: retryApprovalDetails,
+                } : {}),
                 onApprove: handleConnect,
                 onReject: handleReject,
             }}

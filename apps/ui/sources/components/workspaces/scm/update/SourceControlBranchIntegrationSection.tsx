@@ -28,8 +28,8 @@ export function SourceControlBranchIntegrationSection(props: Readonly<{
     writeEnabled?: boolean;
     onMerge: (sourceRef: string) => Promise<ScmUiOperationResponse>;
     onRebase: (sourceRef: string) => Promise<ScmUiOperationResponse>;
-    onContinue: (operation: 'merge' | 'rebase') => Promise<ScmUiOperationResponse>;
-    onAbort: (operation: 'merge' | 'rebase') => Promise<ScmUiOperationResponse>;
+    onContinue: (operation: ScmOperationState['kind']) => Promise<ScmUiOperationResponse>;
+    onAbort: (operation: ScmOperationState['kind']) => Promise<ScmUiOperationResponse>;
     onRefresh: () => Promise<void>;
 }>) {
     const [sourceRef, setSourceRef] = React.useState('');

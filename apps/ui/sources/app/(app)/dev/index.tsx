@@ -287,7 +287,7 @@ export default function DevScreen() {
             <WebHmrDevSettingsSection />
 
             {/* Test Features */}
-            <ItemGroup title="Test Features" footer="These actions may affect app stability">
+            <ItemGroup title="Test Features" description="These actions may affect app stability">
                 <Item
                     title="Claude OAuth Test"
                     subtitle="Test Claude authentication flow"

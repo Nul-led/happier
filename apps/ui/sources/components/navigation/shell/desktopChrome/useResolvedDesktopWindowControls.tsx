@@ -2,12 +2,11 @@ import * as React from 'react';
 import {
     closeDesktopWindow,
     getDesktopWindowChromePolicy,
-    getDesktopWindowState,
     listenDesktopWindowState,
     minimizeDesktopWindow,
-    startDesktopWindowDragging,
     toggleDesktopWindowMaximize,
     type DesktopWindowChromeStrategy,
+    type DesktopWindowState,
 } from '@/utils/platform/desktopWindowBridge';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { DesktopWindowControlsButtons } from './DesktopWindowControlsButtons';
@@ -26,12 +25,12 @@ export function useResolvedDesktopWindowControls(
 ): React.ReactNode {
     const hasDesktopWindowControlsOverride = params.hasDesktopWindowControlsOverride === true;
     const [chromeStrategy, setChromeStrategy] = React.useState<DesktopWindowChromeStrategy>('none');
-    const [isMaximized, setIsMaximized] = React.useState(false);
+    const [windowState, setWindowState] = React.useState<DesktopWindowState>({ isMaximized: false, isFullscreen: false });
 
     React.useEffect(() => {
         if (hasDesktopWindowControlsOverride) {
             setChromeStrategy('none');
-            setIsMaximized(false);
+            setWindowState({ isMaximized: false, isFullscreen: false });
             return;
         }
 
@@ -46,22 +45,20 @@ export function useResolvedDesktopWindowControls(
 
             setChromeStrategy(policy.strategy);
 
-            if (policy.strategy !== 'custom-controls') {
-                setIsMaximized(false);
+            if (policy.strategy === 'none') {
                 return;
             }
-
-            const state = await getDesktopWindowState();
-            if (!isActive) {
-                return;
-            }
-
-            setIsMaximized(state.isMaximized);
-            disposeWindowStateListener = await listenDesktopWindowState((nextState) => {
+            const dispose = await listenDesktopWindowState((nextState) => {
                 if (isActive) {
-                    setIsMaximized(nextState.isMaximized);
+                    setWindowState((current) => current.isMaximized === nextState.isMaximized
+                        && current.isFullscreen === nextState.isFullscreen ? current : nextState);
                 }
             });
+            if (!isActive) {
+                await dispose();
+                return;
+            }
+            disposeWindowStateListener = dispose;
         };
 
         void loadWindowChrome();
@@ -73,10 +70,6 @@ export function useResolvedDesktopWindowControls(
             }
         };
     }, [hasDesktopWindowControlsOverride]);
-
-    const handleStartDragging = React.useCallback(() => {
-        fireAndForget(startDesktopWindowDragging(), { tag: 'DesktopWindowControlsSlot.startDragging' });
-    }, []);
 
     const handleMinimize = React.useCallback(() => {
         fireAndForget(minimizeDesktopWindow(), { tag: 'DesktopWindowControlsSlot.minimize' });
@@ -94,16 +87,16 @@ export function useResolvedDesktopWindowControls(
         return params.desktopWindowControls ?? null;
     }
 
-    if (chromeStrategy === 'none') {
+    if (chromeStrategy === 'none' || windowState.isFullscreen) {
         return null;
     }
 
     return (
-        <DesktopWindowControlsSlot enableDragging onStartDragging={handleStartDragging}>
+        <DesktopWindowControlsSlot enableDragging>
             {chromeStrategy === 'custom-controls' ? (
                 <DesktopWindowControlsButtons
                     layout={params.variant === 'collapsed' ? 'column' : 'row'}
-                    isMaximized={isMaximized}
+                    isMaximized={windowState.isMaximized}
                     onMinimize={handleMinimize}
                     onToggleMaximize={handleToggleMaximize}
                     onClose={handleClose}

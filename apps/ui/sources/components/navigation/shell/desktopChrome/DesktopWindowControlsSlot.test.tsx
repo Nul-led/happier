@@ -9,7 +9,7 @@ import { installNavigationShellCommonModuleMocks } from '../navigationShellTestH
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const desktopWindowBridgeState = vi.hoisted(() => ({
-    startDragging: vi.fn(),
+    invoke: vi.fn(async () => true),
 }));
 
 installNavigationShellCommonModuleMocks({
@@ -46,16 +46,19 @@ vi.mock('@expo/vector-icons', () => ({
     Octicons: 'Octicons',
 }));
 
-vi.mock('@/utils/platform/desktopWindowBridge', () => ({
-    startDesktopWindowDragging: () => desktopWindowBridgeState.startDragging(),
+vi.mock('@/utils/platform/desktopHost', () => ({
+    isDesktopHost: () => true,
+    invokeDesktopHost: (command: string) => command === 'desktop_get_window_chrome_policy'
+        ? Promise.resolve({ strategy: 'native-macos-traffic-lights' })
+        : desktopWindowBridgeState.invoke(command),
 }));
 
 describe('DesktopWindowControlsSlot', () => {
-    it('starts dragging when the drag region is pressed in', async () => {
+    it('starts dragging when the drag region receives the primary pointer', async () => {
         const { DesktopWindowControlsSlot } = await import('./DesktopWindowControlsSlot');
-        const onStartDragging = vi.fn();
+        desktopWindowBridgeState.invoke.mockClear();
         const screen = await renderScreen(
-            <DesktopWindowControlsSlot enableDragging onStartDragging={onStartDragging} />,
+            <DesktopWindowControlsSlot enableDragging />,
         );
         const dragRegion = screen.findByTestId('desktop-window-drag-region');
         if (!dragRegion) {
@@ -63,10 +66,10 @@ describe('DesktopWindowControlsSlot', () => {
         }
 
         await act(async () => {
-            dragRegion.props.onPressIn?.();
+            dragRegion.props.onPointerDown?.({ buttons: 1, target: { closest: () => null } });
         });
 
-        expect(onStartDragging).toHaveBeenCalledTimes(1);
+        expect(desktopWindowBridgeState.invoke).toHaveBeenCalledWith('desktop_start_window_dragging');
     });
 
     it('does not attach drag handlers when dragging is disabled', async () => {
@@ -78,5 +81,19 @@ describe('DesktopWindowControlsSlot', () => {
         }
 
         expect(dragRegion.props.onPressIn).toBeUndefined();
+    });
+
+    it('double-clicks the reserved traffic-light gap through the same maximize owner as the title strip', async () => {
+        const { DesktopWindowControlsSlot } = await import('./DesktopWindowControlsSlot');
+        desktopWindowBridgeState.invoke.mockClear();
+        const screen = await renderScreen(<DesktopWindowControlsSlot enableDragging />);
+        await act(async () => {
+            screen.findByTestId('desktop-window-drag-region').props.onMouseDown?.({
+                button: 0, buttons: 1, detail: 2,
+                target: { closest: () => null },
+            });
+        });
+        expect(desktopWindowBridgeState.invoke).toHaveBeenCalledWith('desktop_toggle_window_maximize');
+        expect(desktopWindowBridgeState.invoke).not.toHaveBeenCalledWith('desktop_start_window_dragging');
     });
 });

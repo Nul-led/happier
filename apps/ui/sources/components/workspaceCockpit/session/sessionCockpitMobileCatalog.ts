@@ -4,7 +4,6 @@ import { resolveSessionRightSidebarTabs } from '@/components/appShell/rightSideb
 import type { RightSidebarTabDefinition } from '@/components/appShell/rightSidebar/rightSidebarBuiltinTabs';
 import type { RightSidebarPluginTabRuntimeAdmission } from '@/components/appShell/rightSidebar/rightSidebarPluginTabs';
 import type { PluginUiSurfacePlacementProjection } from '@/sync/domains/plugins/ui/projection';
-import { SESSION_COCKPIT_MAX_PINNED_SURFACE_COUNT } from '@/sync/domains/settings/mobileSurfacePinning';
 
 import {
     isSessionPluginMobileSurface,
@@ -28,7 +27,23 @@ export type SessionCockpitMobileCatalogEntry =
         tab: RightSidebarTabDefinition;
     }>;
 
-export const SESSION_COCKPIT_MAX_INLINE_SURFACE_COUNT = 4;
+/**
+ * What sits on the bar until the person changes it (lab frame R): Files, Git, Companion and
+ * Terminal after Chat. Anything the catalog does not admit right now is simply skipped.
+ */
+export const SESSION_COCKPIT_DEFAULT_BAR_SURFACE_IDS: readonly SessionMobileSurface[] = Object.freeze([
+    'browse', 'git', 'companion', 'terminal',
+]);
+
+/**
+ * `fit`: every pinned tool is on the bar. `scroll`: they do not fit, so the bar scrolls its tools
+ * sideways (and owns the horizontal axis). `more`: they do not fit and "Always swipe between
+ * sessions" keeps the bar a swipe, so the ones that do not fit wait in More.
+ */
+export type SessionCockpitBarMode = 'fit' | 'scroll' | 'more';
+
+/** Chat and More each take one slot; everything else is a tool. */
+const RESERVED_BAR_SLOTS = 2;
 
 function entryForProjection(
     entry: RightSidebarMobileProjectionEntry,
@@ -157,36 +172,44 @@ export function resolveSessionCockpitMobileNavigatorSurfaces(input: Readonly<{
 
 export function resolveSessionCockpitMobileTabVisibility(input: Readonly<{
     catalog: readonly SessionCockpitMobileCatalogEntry[];
-    pinnedSurfaceIds: readonly string[] | null | undefined;
+    /** The person's bar, in order; `null` until they change it (host defaults apply). */
+    barSurfaceIds: readonly string[] | null | undefined;
+    /** How many 1-slot tabs the floating bar holds at this width (`resolveFloatingTabBarSlotCount`). */
+    slotCount: number;
+    /** "Always swipe between sessions" is on (and the sideways swipe with it). */
+    alwaysSwipe: boolean;
 }>): Readonly<{
+    mode: SessionCockpitBarMode;
+    /** Chat, then the bar's tools as rendered. */
     visible: readonly SessionCockpitMobileCatalogEntry[];
+    /** Pinned tools that wait in More only because "Always swipe" keeps the bar to what fits. */
+    held: readonly SessionCockpitMobileCatalogEntry[];
+    /** Every admitted tool that is not pinned to the bar. */
     overflow: readonly SessionCockpitMobileCatalogEntry[];
 }> {
     const catalogById = new Map<string, SessionCockpitMobileCatalogEntry>(
         input.catalog.map((entry) => [entry.id, entry]),
     );
-    const pinnedEntries: SessionCockpitMobileCatalogEntry[] = [];
-    const seenPinnedIds = new Set<string>();
-    for (const surfaceId of input.pinnedSurfaceIds ?? []) {
-        if (surfaceId === 'chat' || seenPinnedIds.has(surfaceId)) continue;
-        seenPinnedIds.add(surfaceId);
-        const entry = catalogById.get(surfaceId);
-        if (entry) pinnedEntries.push(entry);
+    const barTools: SessionCockpitMobileCatalogEntry[] = [];
+    for (const surfaceId of input.barSurfaceIds ?? SESSION_COCKPIT_DEFAULT_BAR_SURFACE_IDS) {
+        if (surfaceId === 'chat') continue;
+        addCatalogEntry(barTools, catalogById.get(surfaceId));
     }
+    const toolSlots = Math.max(1, Math.floor(input.slotCount) - RESERVED_BAR_SLOTS);
+    const mode: SessionCockpitBarMode = barTools.length <= toolSlots
+        ? 'fit'
+        : input.alwaysSwipe ? 'more' : 'scroll';
+    const shown = mode === 'more' ? barTools.slice(0, toolSlots) : barTools;
+    const held = mode === 'more' ? barTools.slice(toolSlots) : [];
 
     const visible: SessionCockpitMobileCatalogEntry[] = [];
     addCatalogEntry(visible, catalogById.get('chat'));
-    for (const entry of pinnedEntries.slice(-SESSION_COCKPIT_MAX_PINNED_SURFACE_COUNT)) {
-        addCatalogEntry(visible, entry);
-    }
-    for (const entry of input.catalog) {
-        if (visible.length >= SESSION_COCKPIT_MAX_INLINE_SURFACE_COUNT) break;
-        addCatalogEntry(visible, entry);
-    }
-
-    const visibleIds = new Set(visible.map((entry) => entry.id));
+    for (const entry of shown) addCatalogEntry(visible, entry);
+    const pinnedIds = new Set(barTools.map((entry) => entry.id));
     return Object.freeze({
+        mode,
         visible: Object.freeze(visible),
-        overflow: Object.freeze(input.catalog.filter((entry) => !visibleIds.has(entry.id))),
+        held: Object.freeze(held),
+        overflow: Object.freeze(input.catalog.filter((entry) => entry.id !== 'chat' && !pinnedIds.has(entry.id))),
     });
 }
