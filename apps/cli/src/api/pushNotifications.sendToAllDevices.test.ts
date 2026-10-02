@@ -6,6 +6,7 @@ import { logger } from '@/ui/logger';
 import { PushNotificationClient } from './pushNotifications';
 import { sendReadyWithPushNotification } from '@/agent/runtime/notifications/sendReadyWithPushNotification';
 import { sendAgentRequestPushNotificationAsync } from '@/settings/notifications/permissionRequestPush';
+import { dispatchActivityNotificationAsync } from '@/notifications/activity/dispatchActivityNotification';
 import { createSessionNotificationContextFixture } from '@/testkit/backends/sessionFixtures';
 import {
   HAPPIER_FOCUS_LIVE_ACTIVITY_NAME,
@@ -78,6 +79,32 @@ describe('PushNotificationClient.sendToAllDevicesAsync', () => {
     } else {
       delete process.env.HAPPIER_DEBUG_PUSH;
     }
+  });
+
+  it('reports no delivery without push tokens and permits the same Notify me request after device registration', async () => {
+    vi.mocked(axios.get).mockResolvedValueOnce({ data: { tokens: [] } });
+    const sender = new PushNotificationClient('account-token', 'https://owner-home.example.test');
+    const params = {
+      settings: accountSettingsParse({}),
+      expoPushSender: sender,
+      pluginNotifications: null,
+      channels: ['builtin:expo_push'],
+      event: { topic: 'notify_me' as const, message: 'Digest ready', actionRequestId: 'zero-token-retry' },
+      nowMs: () => 50_000,
+    };
+
+    expect(await dispatchActivityNotificationAsync(params)).toEqual({ attemptedChannels: 1, deliveredChannels: 0 });
+    expect(sendPushNotificationsAsyncSpy).not.toHaveBeenCalled();
+
+    vi.mocked(axios.get)
+      .mockResolvedValueOnce({ data: { tokens: [{ id: 'device', token: 'ExponentPushToken[registered]' }] } })
+      .mockResolvedValueOnce({ data: { badgeCount: 0 } });
+    expect(await dispatchActivityNotificationAsync(params)).toEqual({ attemptedChannels: 1, deliveredChannels: 1 });
+    expect(sendPushNotificationsAsyncSpy.mock.calls[0]?.[0]).toEqual([
+      expect.objectContaining({ to: 'ExponentPushToken[registered]', body: 'Digest ready' }),
+    ]);
+    expect(await dispatchActivityNotificationAsync(params)).toEqual({ attemptedChannels: 0, deliveredChannels: 0 });
+    expect(sendPushNotificationsAsyncSpy).toHaveBeenCalledTimes(1);
   });
 
   it.each(['ready', 'ready_without_settings', 'permission', 'user_action'] as const)('honors current owner Follow suppression for rich %s notifications', async (kind) => {

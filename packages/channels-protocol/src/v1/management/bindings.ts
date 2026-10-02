@@ -1,4 +1,5 @@
 import type { PluginJsonSchema } from '@happier-dev/plugin-sdk/protocol';
+import { AutomationIdV1Schema } from '@happier-dev/plugin-sdk/automations';
 
 import {
     defineProtocolLiteral,
@@ -320,16 +321,22 @@ export type ConversationBindingCreateInputV1 = ReturnType<
 >;
 export const ConversationBindingCreateInputV1JsonSchema: PluginJsonSchema = ConversationBindingCreateInputV1Schema.jsonSchema;
 
-/** Exact binding-scoped read input; list projections remain intentionally summary-only. */
-export const ConversationBindingReadInputV1Schema = defineProtocolObject({
-    bindingId: ConversationBindingIdV1ProtocolSchema,
-}, { policy: 'closed' });
+/** Exact retained binding or Automation association read; neither uses display summaries. */
+export const ConversationBindingReadInputV1Schema = defineProtocolUnion([
+    defineProtocolObject({ bindingId: ConversationBindingIdV1ProtocolSchema }, { policy: 'closed' }),
+    defineProtocolObject({ automationId: AutomationIdV1Schema }, { policy: 'closed' }),
+]);
 export type ConversationBindingReadInputV1 = ReturnType<typeof ConversationBindingReadInputV1Schema.parse>;
 export const ConversationBindingReadInputV1JsonSchema: PluginJsonSchema =
     ConversationBindingReadInputV1Schema.jsonSchema;
 
 /** Exact binding row projection with its current collection revision. */
 export const ConversationBindingReadResultV1Schema = defineProtocolUnion([
+    defineProtocolObject({
+        kind: defineProtocolLiteral('automationAssociation'),
+        automationId: AutomationIdV1Schema,
+        association: defineProtocolUnion([defineProtocolLiteral('absent'), defineProtocolLiteral('bound')]),
+    }, { policy: 'closed' }),
     defineProtocolObject({
         kind: defineProtocolLiteral('ready'),
         revision: collectionRowRevision,

@@ -251,7 +251,7 @@ describe('AgentStateRequestStore', () => {
 
     it('does not send a permission push for an async publish skipped by completed request coverage', async () => {
         const session = new AsyncFakeSession();
-        const sendToAllDevicesAsync = vi.fn(async () => {});
+        const sendToAllDevicesAsync = vi.fn(async () => { return true; });
         const settings = accountSettingsParse({
             notificationsSettingsV1: { v: 1, pushEnabled: true, ready: true, permissionRequest: true },
         });

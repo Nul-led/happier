@@ -2,6 +2,7 @@ import type { SessionClientPort } from '@/api/session/sessionClientPort'
 import { serializeAxiosErrorForLog } from '@/api/client/serializeAxiosErrorForLog'
 import { buildReadyNotificationContent, type AccountSettings } from '@happier-dev/protocol'
 import { dispatchActivityNotificationAsync } from '@/notifications/activity/dispatchActivityNotification'
+import type { ExpoPushActivityNotificationSender } from '@/notifications/activity/sendExpoPushActivityNotification'
 import { isSessionActivityNotificationEligible, type SessionNotificationContextReader } from '@/notifications/activity/sessionActivityNotificationEligibility'
 import {
   resolveLiveActivityRemoteSender,
@@ -12,7 +13,7 @@ import { logger } from '@/ui/logger'
 
 type PushSender = LiveActivityRemoteSenderCandidate & SessionNotificationContextReader & {
   sendToAllDevices?: (title: string, body: string, opts: { sessionId: string; activityEventLocalId?: string }) => void
-  sendToAllDevicesAsync?: (title: string, body: string, data: Record<string, unknown>) => Promise<void>
+  sendToAllDevicesAsync?: ExpoPushActivityNotificationSender['sendToAllDevicesAsync']
 }
 
 type ReadyTranscriptSession = Pick<SessionClientPort, 'sessionId'>
@@ -89,6 +90,7 @@ export async function sendReadyWithPushNotification(opts: {
               sendToAllDevicesAsync: async (title: string, body: string, data: Record<string, unknown>) => {
                 const sessionId = typeof data.sessionId === 'string' ? data.sessionId : opts.session.sessionId
                 opts.pushSender?.sendToAllDevices?.(title, body, { ...data, sessionId })
+                return true
               },
             }
           : null

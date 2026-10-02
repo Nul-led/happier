@@ -43,24 +43,29 @@ export function projectLegacyAutomationTemplateToWorkflowDefinitionV1(params: Le
     document: { text: params.template.prompt ?? '', references: [], attachments: [] }, input: [], result: { kind: 'text' } }] };
 }
 
-function convertStoredTemplate(params: LegacyStoredTemplate, machineId: string | null): LegacyAutomationWorkflowConversionResultV1 {
+function convertStoredTemplate(params: LegacyStoredTemplate, machineId: string | null,
+  session?: Readonly<{ project: WorkflowProjectTargetV1; executionSelection?: WorkflowDefinitionV1['defaults'] }>): LegacyAutomationWorkflowConversionResultV1 {
   const refuse = (reason: LegacyAutomationWorkflowConversionReasonV1): LegacyAutomationWorkflowConversionResultV1 => (
     { kind: 'unavailable', code: 'legacy_conversion_unsupported', reason }
   );
   if (machineId === null) return refuse('workspace_unrepresentable');
-  // Existing Session settings are resolved at execution, not from a stale template snapshot.
-  // Conversion needs the Session owner's actual Agent/placement witness, which this legacy boundary lacks.
-  if (params.targetType === 'existing_session' || params.template.resume) return refuse('conversation_unrepresentable');
+  if (params.template.resume) return refuse('conversation_unrepresentable');
+  if (params.targetType === 'existing_session'
+    && (!session?.executionSelection?.agentTarget || session.project.machineId !== machineId)) return refuse('conversation_unrepresentable');
   if (params.template.checkoutCreationDraft) return refuse('workspace_unrepresentable');
   if (params.template.environmentVariables || params.template.sessionEncryptionKeyBase64
     || params.template.sessionEncryptionMode || params.template.sessionEncryptionVariant
     || params.template.executionTarget || params.template.agentTarget || params.template.organizationPlacement) return refuse('spawn_unrepresentable');
-  const selection = storedTemplateSelection(params, machineId);
+  const selection = params.targetType === 'existing_session' ? WorkflowStepExecutionSelectionSchema.safeParse({
+    ...session!.executionSelection,
+    conversation: { kind: 'existing_session', sessionId: params.template.existingSessionId, machineId },
+  }) : storedTemplateSelection(params, machineId);
   if (!selection?.success || !selection.data.agentTarget) return refuse(params.template.runtimeDescriptorV1
     ? 'runtime_descriptor_unsupported' : 'settings_unrepresentable');
-  const definition = projectLegacyAutomationTemplateToWorkflowDefinitionV1({ ...params, machineId });
+  const definition = { ...projectLegacyAutomationTemplateToWorkflowDefinitionV1({ ...params, machineId }), defaults: selection.data };
   const validated = validateWorkflowDefinition(definition);
-  const project = WorkflowProjectTargetV1Schema.safeParse({ machineId, directory: params.template.directory });
+  const project = WorkflowProjectTargetV1Schema.safeParse(params.targetType === 'existing_session'
+    ? session!.project : { machineId, directory: params.template.directory });
   if (!validated.valid || !validated.normalizedDefinition) return refuse('settings_unrepresentable');
   if (!project.success) return refuse('workspace_unrepresentable');
   return { kind: 'available', definition: validated.normalizedDefinition, project: project.data, executionTarget: { kind: 'session' } };
@@ -80,7 +85,8 @@ export function convertLegacyAutomationRecipeToInlineWorkflowV1(params: Readonly
   legacyTemplate: LegacyStoredTemplate;
   machineId: string | null;
   channelReplyHandoff?: boolean;
+  session?: Readonly<{ project: WorkflowProjectTargetV1; executionSelection?: WorkflowDefinitionV1['defaults'] }>;
 }>): LegacyAutomationWorkflowConversionResultV1 {
   if (params.channelReplyHandoff) return { kind: 'unavailable', code: 'legacy_conversion_unsupported', reason: 'channel_reply_handoff' };
-  return convertStoredTemplate(params.legacyTemplate, params.machineId);
+  return convertStoredTemplate(params.legacyTemplate, params.machineId, params.session);
 }

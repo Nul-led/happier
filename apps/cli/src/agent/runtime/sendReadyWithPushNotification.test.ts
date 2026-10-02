@@ -131,7 +131,7 @@ describe('sendReadyWithPushNotification', () => {
   })
 
   it('honors unified attention policy when dispatching ready notifications', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {})
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; })
     const session = createSessionStub('session-policy')
 
     setActiveAccountSettingsSnapshot({
@@ -171,7 +171,7 @@ describe('sendReadyWithPushNotification', () => {
   })
 
   it('forwards ready notifications to the Live Activity remote sender', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {})
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; })
     const sendLiveActivityRemoteUpdateAsync = vi.fn(async (_request: LiveActivityRemoteUpdateRequestV1) => {})
     const session = createSessionStub('session-live-ready')
 
@@ -366,7 +366,7 @@ describe('sendReadyWithPushNotification', () => {
 
     await sendReadyWithPushNotification({
       session: session as any,
-      pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync: vi.fn(async () => {}) },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync: vi.fn(async () => { return true; }) },
       waitingForCommandLabel: 'Codex',
       logPrefix: '[Codex]',
       accountSettings: accountSettingsParse({

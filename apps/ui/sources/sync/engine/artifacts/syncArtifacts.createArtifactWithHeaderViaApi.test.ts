@@ -7,6 +7,20 @@ import { ArtifactBodyV1Schema, decodePlainArtifactStoredContent, type ArtifactBl
 import { ArtifactEncryption } from '@/sync/encryption/artifactEncryption';
 
 describe('createArtifactWithHeaderViaApi', () => {
+  it('refuses a reference-only create before any request can persist missing file bytes', async () => {
+    // Captured HTTP represents a server that accepts opaque legacy text bodies.
+    const request = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === '/v1/account/encryption') return new Response(JSON.stringify({ mode: 'plain', updatedAt: 0 }));
+      const input = JSON.parse(String(init?.body)) as ArtifactCreateRequest;
+      return new Response(JSON.stringify({ ...input, ownerAccountId: 'owner', access: 'owner', encryptionMode: 'plain',
+        headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 0, updatedAt: 0 }));
+    });
+    const { createArtifactWithHeaderViaApi } = await import('./syncArtifacts');
+    await expect(createArtifactWithHeaderViaApi({ credentials: { token: 't' }, header: { title: 'File' },
+      body: { blobId: 'b6a4bb92-8b93-4b18-b8b4-230041388a62', mime: 'application/zip', sizeBytes: 3, sha256: 'a'.repeat(64) },
+      encryption: null, artifactDataKeys: new Map(), request, addArtifact: () => {} })).rejects.toMatchObject({ code: 'artifact_invalid_body' });
+    expect(request).not.toHaveBeenCalled();
+  });
   it.each(['plain', 'e2ee'] as const)('uploads and reads binary bytes in %s without disclosing a mismatched or substituted payload', async (mode) => {
     const encryption = mode === 'e2ee' ? await Encryption.create(new Uint8Array(32).fill(9)) : null;
     const artifactDataKeys: ArtifactDataKeyCache = new Map();

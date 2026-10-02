@@ -16,7 +16,7 @@ describe('PermissionRequestPushNotifier', () => {
   });
 
   it('delivers full questions and choices through the notifier', async () => {
-    const sendToAllDevicesAsync = vi.fn<PermissionRequestPushSender['sendToAllDevicesAsync']>(async () => {});
+    const sendToAllDevicesAsync = vi.fn<PermissionRequestPushSender['sendToAllDevicesAsync']>(async () => { return true; });
     const notifier = new PermissionRequestPushNotifier({
       pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
       getSettings: () => accountSettingsParse({ notificationsSettingsV1: { requestIncludeMessageText: true } }),
@@ -34,7 +34,7 @@ describe('PermissionRequestPushNotifier', () => {
   });
 
   it('does not send when disabled by settings', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const notifier = new PermissionRequestPushNotifier({
       pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
       getSettings: () =>
@@ -57,7 +57,7 @@ describe('PermissionRequestPushNotifier', () => {
 
   it('does not retry when skipped by the unified attention policy', async () => {
     vi.useFakeTimers();
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const getSettings = vi.fn(() =>
       accountSettingsParse({
         attentionDeliveryPolicyV1: {
@@ -95,7 +95,7 @@ describe('PermissionRequestPushNotifier', () => {
   });
 
   it('does not send user-action requests when disabled by settings', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const notifier = new PermissionRequestPushNotifier({
       pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
       getSettings: () =>
@@ -123,7 +123,7 @@ describe('PermissionRequestPushNotifier', () => {
   });
 
   it('sends user-action requests even when permission-request pushes are disabled', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const notifier = new PermissionRequestPushNotifier({
       pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
       getSettings: () =>
@@ -158,7 +158,7 @@ describe('PermissionRequestPushNotifier', () => {
       requests.push(request);
       return { status: 202, headers: {}, contentLength: 0, read: async () => null, cancel: () => {} };
     });
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const onNotifiedAt = vi.fn();
     const notifier = new PermissionRequestPushNotifier({
       pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
@@ -215,10 +215,10 @@ describe('PermissionRequestPushNotifier', () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     const sendToAllDevicesAsync = vi
-      .fn<PermissionRequestPushSender['sendToAllDevicesAsync']>()
+      .fn<PermissionRequestPushSender['sendToAllDevicesAsync']>().mockResolvedValue(true)
       .mockRejectedValueOnce(new Error('offline'))
       .mockRejectedValueOnce(new Error('still offline'))
-      .mockResolvedValueOnce(undefined);
+      .mockResolvedValueOnce(true);
 
     const onNotifiedAt = vi.fn();
     let sessionTitle = 'Initial session title';
@@ -267,7 +267,7 @@ describe('PermissionRequestPushNotifier', () => {
   });
 
   it('still sends when maxEntries is configured to 0 (clamped to 1)', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const notifier = new PermissionRequestPushNotifier({
       pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
       getSettings: () =>
@@ -289,7 +289,7 @@ describe('PermissionRequestPushNotifier', () => {
   });
 
   it('falls back when display context callbacks throw', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const notifier = new PermissionRequestPushNotifier({
       pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync },
       getSettings: () =>

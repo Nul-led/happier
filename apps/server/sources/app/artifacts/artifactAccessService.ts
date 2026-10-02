@@ -309,7 +309,7 @@ export async function setArtifactAccessGrantInTx(tx: Tx, input: ArtifactAccessGr
     return listed.ok ? { ok: true, value: { ...listed.value, changed } } : listed;
 }
 
-/** Revocation removes unreachable envelope tuples without removing other live grants. */
+/** Revocation removes unreachable envelopes and reports success without a roster when the caller loses access. */
 export async function removeArtifactAccessGrantInTx(tx: Tx, input: ArtifactAccessGrantRemoveInputV1 & { actorAccountId: string }): Promise<AccessResult<ArtifactAccessGrantMutationResponseV1>> {
     const access = await resolveArtifactAccessInTx(tx, input);
     if (!access) return { ok: false, error: "artifact_not_found" };
@@ -333,7 +333,10 @@ export async function removeArtifactAccessGrantInTx(tx: Tx, input: ArtifactAcces
         }
     }
     const listed = await listArtifactAccessGrantsInTx(tx, input);
-    return listed.ok ? { ok: true, value: { ...listed.value, changed: deleted.count > 0 } } : listed;
+    return { ok: true, value: listed.ok
+        ? { ...listed.value, changed: deleted.count > 0 }
+        : { artifactId: input.artifactId, ownerAccountId: access.ownerAccountId,
+            access: null, grants: [], changed: deleted.count > 0 } };
 }
 
 /** Current audience plus verified binding and envelope state for a key-holding host. */

@@ -4,8 +4,9 @@ import { decodeBase64, decrypt, encodeBase64, encrypt } from '@/api/encryption';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import type { RpcRequest } from '@/api/rpc/types';
 import { registerScmHandlers } from '@/rpc/handlers/scm';
+import type { ScmBackendRegistry } from '@/scm/registry';
 
-export function createTestRpcManager(params?: { scopePrefix?: string; workingDirectory?: string }) {
+export function createTestRpcManager(params?: { scopePrefix?: string; workingDirectory?: string; registry?: ScmBackendRegistry }) {
     const encryptionKey = new Uint8Array(32).fill(7);
     const encryptionVariant = 'legacy' as const;
     const scopePrefix = params?.scopePrefix ?? 'machine-test';
@@ -18,7 +19,7 @@ export function createTestRpcManager(params?: { scopePrefix?: string; workingDir
         logger: () => undefined,
     });
 
-    registerScmHandlers(manager, workingDirectory);
+    registerScmHandlers(manager, workingDirectory, { registry: params?.registry });
 
     async function call<TResponse, TRequest>(method: string, request: TRequest): Promise<TResponse> {
         const encryptedParams = encodeBase64(encrypt(encryptionKey, encryptionVariant, request));

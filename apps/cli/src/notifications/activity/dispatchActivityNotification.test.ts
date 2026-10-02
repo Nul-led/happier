@@ -67,7 +67,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('restricts Notify me channels, applies previews and suppresses request replays', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({ attentionDeliveryPolicyV1: { v: 1 }, notificationChannelsV1: [{
       id: 'notify-hook', kind: 'webhook', enabled: true, url: 'https://hooks.example.test/happier',
     }] });
@@ -90,7 +90,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('suppresses Notify me in quiet hours and never discloses previews under status-only policy', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const event = { topic: 'notify_me' as const, title: 'Private title', message: 'Private message' };
     expect(await dispatchActivityNotificationAsync({
       settings: accountSettingsParse({ attentionDeliveryPolicyV1: { v: 1, events: { notify_me: { enabled: false } } } }),
@@ -200,7 +200,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('applies current Session candidacy before Expo, Live Activity and webhook delivery', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const sendLiveActivityRemoteUpdateAsync = vi.fn(async (_request: LiveActivityRemoteUpdateRequestV1) => {});
     const allowed = createSessionNotificationContextFixture('session-candidacy');
     const settings = accountSettingsParse({
@@ -248,7 +248,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('keeps full permission details only in channels that include request text', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({ notificationChannelsV1: [true, false, undefined].map((include, index) => ({
       v: 1, id: `hook-${index}`, kind: 'webhook', enabled: true,
       url: 'https://hooks.example.test/happier', requestIncludeMessageText: include,
@@ -269,7 +269,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('falls back to the builtin expo push channel when explicit channels are missing', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       notificationsSettingsV1: {
         v: 1,
@@ -306,7 +306,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it.each([undefined, 'session-reset'])('delivers automatic reset receipts without inventing a session (%s)', async (sessionId) => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const sendLiveActivityRemoteUpdateAsync = vi.fn(async (_request: LiveActivityRemoteUpdateRequestV1) => {});
     const event = {
       topic: 'connected_service_quota_recovered' as const,
@@ -358,7 +358,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('dispatches connected-service account switch notifications with structured quota context', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
 
     const result = await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings: accountSettingsParse({}),
@@ -422,7 +422,7 @@ describe('dispatchActivityNotificationAsync', () => {
       _body: string,
       _data: Record<string, unknown>,
       _options?: unknown,
-    ) => {});
+    ) => { return true; });
 
     const result = await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings: accountSettingsParse({}),
@@ -488,7 +488,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('dedupes connected-service account switch notifications inside the dedupe window', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const event = {
       topic: 'connected_service_account_switch' as const,
       sessionId: 'session-switch',
@@ -519,7 +519,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('does not dedupe connected-service account switches with different reasons or target profiles', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const event = {
       topic: 'connected_service_account_switch' as const,
       sessionId: 'session-switch',
@@ -555,7 +555,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('suppresses disabled connected-service account switch Expo push topics', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       notificationChannelsV1: [
         {
@@ -596,7 +596,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('dispatches connected-service quota blocked and recovered notifications', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
 
     await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings: accountSettingsParse({}),
@@ -644,7 +644,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('suppresses Expo push delivery during account quiet hours', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       attentionDeliveryPolicyV1: {
         v: 1,
@@ -677,7 +677,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('keeps webhook delivery active during account quiet hours by default', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       attentionDeliveryPolicyV1: {
         v: 1,
@@ -729,7 +729,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('suppresses webhook delivery during quiet hours when policy opts in', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       attentionDeliveryPolicyV1: {
         v: 1,
@@ -782,7 +782,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('suppresses policy-disabled Expo push channels even when legacy channel rows are enabled', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       attentionDeliveryPolicyV1: {
         v: 1,
@@ -824,7 +824,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('uses canonical Expo push policy even when legacy channel rows are stale-disabled', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       attentionDeliveryPolicyV1: {
         v: 1,
@@ -871,7 +871,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('uses canonical Expo push policy when legacy channel rows are absent', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       attentionDeliveryPolicyV1: {
         v: 1,
@@ -907,7 +907,7 @@ describe('dispatchActivityNotificationAsync', () => {
   it.each(['status_only', 'title_only', 'include_preview'] as const)(
     'preserves the %s privacy decision across rich push and webhook content',
     async (previewBehavior) => {
-      const sendToAllDevicesAsync = vi.fn(async (_title: string, _body: string, _data: Record<string, unknown>) => {});
+      const sendToAllDevicesAsync = vi.fn(async (_title: string, _body: string, _data: Record<string, unknown>) => { return true; });
       const privateTitle = 'Private acquisition plan';
       const privatePreview = 'Private release credentials review';
       const settings = accountSettingsParse({
@@ -956,7 +956,7 @@ describe('dispatchActivityNotificationAsync', () => {
   );
 
   it('retains a surface status-only override for connected-service Session titles', async () => {
-    const sendToAllDevicesAsync = vi.fn(async (_title: string, _body: string, _data: Record<string, unknown>) => {});
+    const sendToAllDevicesAsync = vi.fn(async (_title: string, _body: string, _data: Record<string, unknown>) => { return true; });
     await dispatchActivityNotificationAsync({ fetchSessionNotificationContext,
       settings: accountSettingsParse({ attentionDeliveryPolicyV1: {
         v: 1, privacy: { surfaces: { expo_push: 'status_only' } },
@@ -975,7 +975,7 @@ describe('dispatchActivityNotificationAsync', () => {
     'applies %s to connected-service details while retaining routing identities', async (previewBehavior) => {
       const privateLabel = 'private-account@example.test';
       const privateDiagnostic = 'private-provider-diagnostic';
-      const sendToAllDevicesAsync = vi.fn(async (_title: string, _body: string, _data: Record<string, unknown>) => {});
+      const sendToAllDevicesAsync = vi.fn(async (_title: string, _body: string, _data: Record<string, unknown>) => { return true; });
       const settings = accountSettingsParse({
         attentionDeliveryPolicyV1: { v: 1, privacy: { defaultPreviewBehavior: previewBehavior } },
         notificationChannelsV1: [{
@@ -1017,7 +1017,7 @@ describe('dispatchActivityNotificationAsync', () => {
   );
 
   it('passes resolved silent sound options to Expo push senders', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       attentionDeliveryPolicyV1: {
         v: 1,
@@ -1049,7 +1049,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('maps bundled policy sounds to Expo notification filenames and Android sound channels', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       attentionDeliveryPolicyV1: {
         v: 1,
@@ -1085,7 +1085,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('does not pass unsupported custom sound ids to Expo push senders', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       attentionDeliveryPolicyV1: {
         v: 1,
@@ -1118,7 +1118,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('sends a Live Activity remote update as its own delivery channel', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const sendLiveActivityRemoteUpdateAsync = vi.fn(async (_request: LiveActivityRemoteUpdateRequestV1) => {});
     const settings = accountSettingsParse({
       attentionDeliveryPolicyV1: {
@@ -1278,7 +1278,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('keeps quiet Live Activity freshness updates non-interruptive', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const sendLiveActivityRemoteUpdateAsync = vi.fn(async (_request: LiveActivityRemoteUpdateRequestV1) => {});
     const settings = accountSettingsParse({
       attentionDeliveryPolicyV1: {
@@ -1325,7 +1325,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('dispatches only to enabled explicit channels', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       notificationChannelsV1: [
         {
@@ -1393,7 +1393,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('omits request previews when the webhook explicitly disables them', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       notificationChannelsV1: [
         {
@@ -1448,7 +1448,7 @@ describe('dispatchActivityNotificationAsync', () => {
   });
 
   it('decrypts encrypted webhook signing secrets when settings secret read keys are provided', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settingsSecretsKey = deriveSettingsSecretsKeyV1(new Uint8Array(32).fill(7));
     const settings = accountSettingsParse({
       notificationChannelsV1: [

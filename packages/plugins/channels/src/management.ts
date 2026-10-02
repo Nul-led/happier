@@ -861,6 +861,12 @@ export async function readConversationBindingForInvocation(
   const readInput = admittedActionInput<ConversationBindingReadInputV1>(input);
   const collection = requireChannelsAccountStorage(context).collection(CHANNEL_STATE_COLLECTION);
   assertNotAborted(context.signal);
+  if ('automationId' in readInput) {
+    const { bindings } = await readConversationBindingManagementRows({ collection,
+      automationId: readInput.automationId, signal: context.signal });
+    return ConversationBindingReadResultV1Schema.parse({ kind: 'automationAssociation',
+      automationId: readInput.automationId, association: bindings.length === 0 ? 'absent' : 'bound' });
+  }
   const row = await collection.get(readInput.bindingId, { signal: context.signal });
   assertNotAborted(context.signal);
   if (row === null) return { kind: 'notFound' };

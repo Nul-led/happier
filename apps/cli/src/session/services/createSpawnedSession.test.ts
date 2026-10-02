@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
+import { NO_TEAM_CAPABILITIES_V1 } from '@happier-dev/protocol/teams';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -341,8 +342,15 @@ describe('createSpawnedSession settlement', () => {
     expect(spawnDaemonSession).not.toHaveBeenCalled();
   });
 
-  it('creates fresh Workflow steps with the accepted depth and frozen role workspace ceiling through the canonical creator', async () => {
+  it.each(['private_default', 'team_required', null] as const)('creates fresh Workflow steps with Team policy %s, accepted depth and frozen role workspace ceiling', async (policy) => {
     const directory = await mkdtemp(join(tmpdir(), 'workflow-frozen-role-'));
+    vi.spyOn(axios, 'request').mockResolvedValue({ status: 200, data: {
+          id: 'team-1', name: 'Team', description: null, logo: null, archivedAt: null, recovery: null,
+          policy: { v: 1, sessionCreationPolicy: policy ?? 'private_default', externalSharingPolicy: 'allowed',
+            defaultSessionHistoryAccess: 'from_membership', admissionMode: 'invite_only', authenticationPolicy: null },
+          viewerRole: 'owner', capabilities: NO_TEAM_CAPABILITIES_V1,
+          admission: { historyChoice: { admin: 'choice', member: 'choice', guest: 'hidden' } },
+        } });
     const machineRead = vi.spyOn(axios, 'get').mockResolvedValue({ status: 200, data: { machine: {
       id: 'machine-1', revokedAt: null, replacedByMachineId: null, operationProtocolCapabilitiesRevision: 1,
       operationProtocolCapabilities: { sessionSpawn: { protocolVersions: [1, 2] } },
@@ -355,6 +363,7 @@ describe('createSpawnedSession settlement', () => {
     try {
       const create = createProductionFreshWorkflowSessionConversation({ credentials, serverId: 'server-1', machineId: 'machine-1',
         workDepth: 2, originRunId: 'workflow-run', machineAdmissionTransport: async () => ({ status: 'accepted', localId: 'unused' }),
+        ...(policy ? { visibleTeamId: 'team-1' } : {}),
       });
       await expect(create({ selection: {
         agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } },
@@ -366,6 +375,14 @@ describe('createSpawnedSession settlement', () => {
       expect(transmitted).toMatchObject({ workDepth: 3, originKind: 'run_step', originRunId: 'workflow-run',
         initialSessionRolesV1: { roleId: 'reviewer', sessionRoles: { reviewer: role } },
       });
+      if (policy) {
+        expect(transmitted.initialAccess).toEqual({ grants: [{ subject: { kind: 'team', teamId: 'team-1' }, accessLevel: 'view', canApprovePermissions: false }] });
+      } else {
+        expect(transmitted).not.toHaveProperty('initialAccess');
+        expect(axios.request).not.toHaveBeenCalled();
+      }
+      if (policy === 'team_required') expect(transmitted.primaryTeamId).toBe('team-1');
+      else expect(transmitted).not.toHaveProperty('primaryTeamId');
       expect(readSessionWorkspaceWritesV1({ work: { sessionRolesV1: transmitted.initialSessionRolesV1 } })).toBe('deny');
     } finally {
       machineRead.mockRestore();

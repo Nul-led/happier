@@ -14,6 +14,10 @@ import {
     SessionTriggerUpdateRequestV1Schema,
     ScmPullRequestListResponseSchema,
     PluginProjectionV2Schema,
+    compilePluginJsonSchema,
+    encodePluginCollectionLogicalValueV1,
+    isValidPluginJsonSchemaValue,
+    normalizePluginAccountCollectionContractV1,
     type AvailableAutomationAccountEncryptionV1,
     type AutomationDefinitionCreateRequest,
     type AutomationDefinitionDetail,
@@ -39,7 +43,8 @@ import { clearDaemonMergedProjectionCacheForTests } from '@/agents/backendCatalo
 import { flushHookEffects, renderHook, renderScreen } from '@/dev/testkit';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { SessionTriggersSection } from '@/components/workflows/triggers/SessionTriggersSection';
-import { SessionPullRequestBindingInputV1Schema } from '@happier-dev/channels-protocol/v1';
+import { ConversationBindingV1Schema, SessionPullRequestBindingInputV1Schema } from '@happier-dev/channels-protocol/v1';
+import { clearPluginAccountAvailabilityProjection, replacePluginAccountAvailabilityProjection } from '@/sync/domains/plugins/availability/projection';
 import { listSessionTriggers } from '@/sync/domains/workflows/workflowTriggerActions';
 import { installDisconnectedServerSocketBoundary, restoreServerAccountForTest } from '@/dev/testkit/harness/serverAccountConnectionHarness';
 import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLoader';
@@ -149,7 +154,54 @@ function listedAutomation(row: AutomationDefinitionDetail): AutomationDefinition
     const { executionRecipe: _recipe, templateCiphertext: _template, triggers, ...item } = row;
     return { ...item, triggers: triggers.map(({ triggerDefinitionEnvelope: _envelope, ...trigger }) => trigger) } as AutomationDefinitionListItem;
 }
-afterEach(() => { runtimeFetch.mockReset(); machineRpc.mockReset(); clearDaemonMergedProjectionCacheForTests(); vi.restoreAllMocks(); });
+afterEach(() => { runtimeFetch.mockReset(); machineRpc.mockReset(); clearDaemonMergedProjectionCacheForTests(); clearPluginAccountAvailabilityProjection(); vi.restoreAllMocks(); });
+
+async function installPullRequestProjection(h: Awaited<ReturnType<typeof createHarness>>, sessionId: string) {
+    const { PLUGIN_MANIFEST } = await import('@happier-dev/plugins-channels/manifest');
+    const contribution = PLUGIN_MANIFEST.contributes?.accountCollections?.find((entry) => entry.id === 'channel-state');
+    if (!contribution) throw new Error('Missing canonical Channels collection');
+    const contract = normalizePluginAccountCollectionContractV1({ pluginId: 'happier.channels', contribution });
+    const ref = { pluginId: contract.pluginId, collectionId: contract.collectionId,
+        schemaVersion: contract.schemaVersion, contractDigest: contract.contractDigest };
+    replacePluginAccountAvailabilityProjection({ scope: h.account.accountLifetime.scope, snapshot: {
+        availabilityCursor: 1, materializations: [], snapshots: [], intentReads: [{ pluginId: contract.pluginId,
+            response: { availabilityCursor: 1, packageAssets: [],
+                hostingCapability: { enabled: true, maxArtifactBytes: 1024, maxAccountBytes: 2048 },
+                intent: { pluginId: contract.pluginId, desiredVersion: null, enabled: true, offlineUiHosting: 'enabled',
+                    writableCollections: [ref], revision: 'intent-1' }, release: null, uiArtifacts: [] } }],
+    } });
+    const validate = compilePluginJsonSchema(contract.schema);
+    let links: readonly Readonly<{ provider: 'github'; repository: string; number: number }>[] = [];
+    let failure = false;
+    const request = runtimeFetch.getMockImplementation();
+    if (!request) throw new Error('Expected the Workflow HTTP boundary');
+    runtimeFetch.mockImplementation(async (url: unknown, init?: RequestInit) => {
+        const path = new URL(String(url)).pathname;
+        if (path === '/v1/plugins/data/contract') return json({ access: 'readOnly', contract });
+        if (path !== '/v1/plugins/data/query') return request(url, init);
+        if (failure) throw new Error('Channels transport unavailable');
+        const rows = links.map((link, index) => {
+            const binding = ConversationBindingV1Schema.parse({
+                v: 1, id: `binding-${index}`, connectionId: 'connection-1', createdAt: 1, updatedAt: 1,
+                endpoint: { kind: 'githubPullRequest', audience: 'shared', id: `pr-${link.number}` },
+                target: { kind: 'session', sessionId, pullRequestLink: { repository: link.repository, number: link.number },
+                    policy: { deliveryMode: 'repliesOnly', permissionCeiling: 'read-only', approvals: { kind: 'off' }, newSession: { kind: 'off' } } },
+                allowedPrincipalIds: ['principal-1'], allowBotSenders: false, inputMode: 'directMentionsOnly', inboundDebounceMs: 0,
+                linkPreviewPolicy: 'suppress', senderFeedback: 'off', authorityEpoch: 1, enabled: false, deletionState: 'none',
+            });
+            const { v, id, connectionId, createdAt, updatedAt, ...payload } = binding;
+            const encoded = encodePluginCollectionLogicalValueV1({ contract,
+                isValidLogicalValue: (value) => isValidPluginJsonSchemaValue(validate, value),
+                value: { id, 'record-kind': 'binding', v, 'connection-id': connectionId, 'binding-id': id,
+                    'created-at': createdAt, 'updated-at': updatedAt, payload }, encryptionMode: 'plain', material: null,
+                randomBytes: (length) => new Uint8Array(length).fill(9) });
+            if (encoded.status !== 'encoded') throw new Error(`Invalid Channels fixture: ${encoded.reason}`);
+            return { rowId: encoded.rowId, revision: 1, projection: encoded.projection, content: encoded.content };
+        });
+        return json({ rows, changeCursor: 1 });
+    });
+    return { setLinks: (next: typeof links) => { links = next; }, fail: () => { failure = true; } };
+}
 
 async function createHarness(mode: 'plain' | 'e2ee' = 'plain', options: Readonly<{ malformed?: boolean; locked?: boolean; identity?: boolean; credentialKind?: 'account_directory' | 'ephemeral_session_runner'; automations?: readonly AutomationDefinitionListItem[]; cleanupFailure?: boolean; beforeAutomationDeleteResponse?: () => Promise<void>; beforeAutomationListResponse?: () => Promise<void> }> = {}) {
     const home = await upsertAndActivateServer({ serverUrl: `https://workflow-${mode}-${crypto.randomUUID()}.test`, scope: 'tab' });
@@ -326,21 +378,22 @@ describe('UI Workflow Action front door', () => {
                 [sessionId]: createSessionFixture({ id: sessionId, active: false,
                     metadata: { path: '/repo', host: 'host', homeDir: '/home', machineId: 'machine-a' } }),
             }, machines: {}, machineListByServerId: {} });
-            machineRpc.mockResolvedValue({ kind: 'links', sessionId, pullRequestLinks });
+            const projection = await installPullRequestProjection(h, sessionId);
+            projection.setLinks(pullRequestLinks);
             hook = await renderHook(() => useSessionTriggers(sessionId));
             expect(hook.getCurrent()).toMatchObject({ status: 'ready', sets: [], pullRequestLinks: [] });
             pullRequestLinks = [pullRequest];
-            machineRpc.mockResolvedValue({ kind: 'links', sessionId, pullRequestLinks });
+            projection.setLinks(pullRequestLinks);
             await act(async () => changed());
             await flushHookEffects();
             expect(hook.getCurrent().pullRequestLinks).toEqual([pullRequest]);
             expect(h.automationWrites).toEqual([]);
             await hook.unmount();
             hook = null;
-            const readsBeforeUnmountedChange = machineRpc.mock.calls.length;
+            const readsBeforeUnmountedChange = runtimeFetch.mock.calls.length;
             await act(async () => changed());
             await flushHookEffects();
-            expect(machineRpc.mock.calls.length).toBe(readsBeforeUnmountedChange);
+            expect(runtimeFetch.mock.calls.length).toBe(readsBeforeUnmountedChange);
         } finally {
             await hook?.unmount();
             await act(async () => { h.account.dispose(); await connection?.dispose(); storage.setState(previousState); });
@@ -365,6 +418,7 @@ describe('UI Workflow Action front door', () => {
                 [sessionId]: createSessionFixture({ id: sessionId, active: false,
                     metadata: { path: '/repo', host: 'host', homeDir: '/home', machineId: 'machine-a' } }),
             }, machines: {}, machineListByServerId: {} });
+            (await installPullRequestProjection(h, sessionId)).setLinks(pullRequestLinks);
             machineRpc.mockImplementation(async (request: Parameters<WorkflowActionTransport>[0]) => {
                 if (request.method === 'scm.pullRequest.list') return ScmPullRequestListResponseSchema.parse({ success: true,
                     pullRequests: [{ provider: { kind: 'github', id: 'github', displayName: 'GitHub', baseUrl: 'https://github.com',
@@ -372,7 +426,6 @@ describe('UI Workflow Action front door', () => {
                         url: 'https://github.com/happier-dev/happier/pull/42', baseBranch: 'main', headBranch: 'fix', state: 'open' }] });
                 const envelope = request.payload as { input: { input: unknown } };
                 const input = SessionPullRequestBindingInputV1Schema.parse(envelope.input.input);
-                if (input.kind === 'list') return { kind: 'links', sessionId: input.sessionId, pullRequestLinks };
                 if (input.kind === 'attach') {
                     attachments.push(input);
                     return { kind: 'attached', bindingId: 'binding-pr-form' };
@@ -683,27 +736,35 @@ describe('UI Workflow Action front door', () => {
         }
     });
 
-    it('lists real PR links through a closed session\'s stored Machine, independent of active presence', async () => {
+    it('lists session triggers through Account Channels with every daemon offline and preserves a failed link read', async () => {
+        const previousState = storage.getState();
         const h = await createHarness();
         try {
             // The Session store belongs to the active Home; make the captured Home active.
             await upsertAndActivateServer({ serverUrl: h.home.serverUrl, scope: 'device' });
             storage.getState().applySessions([createSessionFixture({ id: 'session-closed', active: false,
                 metadata: { path: '/repo', host: 'host', homeDir: '/home', machineId: 'machine-a' } as ReturnType<typeof createSessionFixture>['metadata'] })]);
-            const pullRequestLinks = [{ provider: 'github', repository: 'happier-dev/happier', number: 42 }];
-            h.transport.mockImplementation(async (request) => request.serverId === h.account.serverId
-                && request.machineId === 'machine-a' && request.method === 'action.invoke'
-                ? { kind: 'links', sessionId: 'session-closed', pullRequestLinks }
-                : { ok: false, errorCode: 'target_unavailable', error: 'target_unavailable' });
-            await expect(h.execute('session.trigger.list', { sessionId: 'session-closed' }, h.context))
-                .resolves.toEqual({ ok: true, result: { sessionId: 'session-closed', sets: [], pullRequestLinks } });
-            h.transport.mockResolvedValue({ kind: 'links', sessionId: 'different-session', pullRequestLinks });
-            await expect(h.execute('session.trigger.list', { sessionId: 'session-closed' }, h.context))
-                .resolves.toMatchObject({ ok: false, errorCode: 'target_unavailable' });
+            storage.setState({ machines: {}, machineListByServerId: {} });
             h.transport.mockResolvedValue({ ok: false, errorCode: 'target_unavailable', error: 'target_unavailable' });
+            machineRpc.mockRejectedValue(new Error('Daemon offline'));
+            const projection = await installPullRequestProjection(h, 'session-closed');
+            const target = { kind: 'inline' as const, definition };
+            const added = await h.execute('session.trigger.add', { sessionId: 'session-closed', target,
+                trigger: scheduleTrigger }, h.context);
+            expect(added).toMatchObject({ ok: true });
+            const pullRequestLinks = [{ provider: 'github' as const, repository: 'happier-dev/happier', number: 42 }];
+            projection.setLinks(pullRequestLinks);
             await expect(h.execute('session.trigger.list', { sessionId: 'session-closed' }, h.context))
-                .resolves.toMatchObject({ ok: false, errorCode: 'target_unavailable' });
-        } finally { h.account.dispose(); }
+                .resolves.toMatchObject({ ok: true, result: { sessionId: 'session-closed', sets: [expect.objectContaining({ triggers: [expect.objectContaining({ kind: 'schedule' })] })], pullRequestLinks } });
+            projection.setLinks([]);
+            await expect(h.execute('session.trigger.list', { sessionId: 'session-closed' }, h.context))
+                .resolves.toMatchObject({ ok: true, result: { pullRequestLinks: [] } });
+            projection.fail();
+            await expect(h.execute('session.trigger.list', { sessionId: 'session-closed' }, h.context))
+                .resolves.toMatchObject({ ok: false, errorCode: 'target_unavailable', details: { reason: 'transport-unavailable' } });
+            expect(h.transport).not.toHaveBeenCalled();
+            expect(machineRpc).not.toHaveBeenCalled();
+        } finally { h.account.dispose(); storage.setState(previousState); }
     });
 
     it('routes agent trigger writes to the host that owns agent policy, and refuses typed with no Machine', async () => {

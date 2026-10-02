@@ -43,6 +43,19 @@ function separators(screen: Awaited<ReturnType<typeof renderScreen>>) {
 }
 
 describe('SessionTriggersSectionView', () => {
+    it('does not claim Manual while the workflow trigger read failed, and offers Retry', async () => {
+        const retry = vi.fn();
+        const screen = await renderScreen(<WorkflowTriggerSection
+            testIDPrefix="failed-editor" set={null} draft={EMPTY_WORKFLOW_TRIGGER_DRAFT} onChangeDraft={vi.fn()}
+            status="failed" onRetry={retry}
+            runsOn={null} stepsUnsaved={false} whereTarget={null} whereSummary={null} inputs={[]}
+        />);
+        expect(screen.findByTestId('failed-editor-triggers-manual')).toBeNull();
+        const action = screen.findAll((node) => node.props.testID === 'failed-editor-triggers-read-retry' && typeof node.props.onPress === 'function')[0];
+        expect(action).toBeDefined();
+        await action?.props.onPress();
+        expect(retry).toHaveBeenCalled();
+    });
     it('does not expose legacy editing in the workflow editor', async () => {
         const set = WorkflowTriggerSetV1Schema.parse({ automationId: 'legacy', revision: 1, enabled: true,
             health: 'available', legacy: { editable: false, reason: 'created_in_0_2', placements: [{ machineId: 'm1', directory: '/repo' }] },

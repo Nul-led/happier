@@ -41,6 +41,31 @@ function fixture(templateCiphertext: string, encryption = plain, targetType: Aut
 }
 
 describe('0.2 Automation Account trigger host', () => {
+  it('converts existing-Session predecessor bytes using its actual Agent and placement instead of stale template settings', async () => {
+    const f = fixture(AUTOMATION_TEMPLATE_V02_EXISTING_PLAIN, plain, 'existingSession');
+    const host = createAccountWorkflowTriggerActions({ ...f.params,
+      observeLegacyChannelAssociation: async () => ({ kind: 'absent' as const }),
+      resolveSession: async () => ({ project: { machineId: 'machine-one', directory: '/actual-session-directory' }, nativeGoalOwner: null,
+        executionSelection: { agentTarget: { kind: 'agent' as const, identity: { pluginId: 'happier.agent.codex', localId: 'codex' } }, permissionMode: 'read-only' as const } }),
+    });
+    const result = await host.update({ automationId: 'legacy-one', expectedRevision: 3, patch: { enabled: false } });
+    expect(result.set).toMatchObject({ revision: 4, target: { definition: { defaults: {
+      agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } }, permissionMode: 'read-only',
+      conversation: { kind: 'existing_session', sessionId: 'session-old', machineId: 'machine-one' },
+    } } }, project: { machineId: 'machine-one', directory: '/actual-session-directory' } });
+    expect(f.writes()).toBe(1);
+  });
+  it('refuses existing-Session conversion if the Session Agent or assignment placement is unproven', async () => {
+    const f = fixture(AUTOMATION_TEMPLATE_V02_EXISTING_PLAIN, plain, 'existingSession');
+    const host = createAccountWorkflowTriggerActions({ ...f.params,
+      observeLegacyChannelAssociation: async () => ({ kind: 'absent' as const }),
+      resolveSession: async () => ({ project: { machineId: 'another-machine', directory: '/repo' }, nativeGoalOwner: null,
+        executionSelection: { agentTarget: { kind: 'agent' as const, identity: { pluginId: 'happier.agent.codex', localId: 'codex' } } } }),
+    });
+    await expect(host.update({ automationId: 'legacy-one', expectedRevision: 3, patch: { enabled: false } }))
+      .rejects.toMatchObject({ code: 'legacy_conversion_unsupported', details: { reason: 'conversation_unrepresentable' } });
+    expect(f.writes()).toBe(0);
+  });
   it.each([{ machines: [] }, { machines: ['machine-one', 'machine-two'] }])('reads every retained placement without assigning a canonical project: $machines', async ({ machines }) => {
     const f = fixture(AUTOMATION_TEMPLATE_V02_PLAIN);
     f.row().assignments = machines.map((machineId) => ({ machineId, enabled: true, priority: 0, updatedAt: 1 }));

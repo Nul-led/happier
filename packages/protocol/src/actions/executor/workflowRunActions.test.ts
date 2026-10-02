@@ -66,6 +66,19 @@ function ownerDeps(storage: WorkflowAccountRunActionDeps['storage']): WorkflowAc
 }
 
 describe('shared Account workflow run owner', () => {
+  it('returns the frozen child definitions with authorized Run detail rather than resolving current library content', async () => {
+    if (!acceptedSnapshotResult.ok) throw new Error('snapshot_fixture_failed');
+    const frozenChildren = { 'builtin:review': definition };
+    const nestedDefinition = { ...definition, blocks: [{ kind: 'workflow' as const, id: 'nested', workflowRef: 'builtin:review', input: {} }] };
+    const snapshot = { ...runSnapshot(), acceptedEnvelope: serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
+      mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
+      acceptedSnapshot: { ...acceptedSnapshotResult.snapshot, definition: nestedDefinition, authoredDefinition: nestedDefinition, frozenChildren },
+    })) };
+    const owner = createWorkflowAccountRunActionOwner(ownerDeps({ execute: async () => snapshot }));
+    const opened = await owner.execute({ actionId: 'workflow.run.get', input: { runId }, context: {} });
+    expect(opened).toMatchObject({ definition: nestedDefinition, acceptedContext: { frozenChildren } });
+  });
+
   it.each([
     { conditions: ['terminal'] as const, observation: 'terminal', matchedCondition: 'terminal' },
     { conditions: ['attention'] as const, observation: 'needs_attention', matchedCondition: 'attention' },

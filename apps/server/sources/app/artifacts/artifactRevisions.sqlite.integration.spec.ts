@@ -123,6 +123,43 @@ describe("Artifact revisions and storage budgets (real SQLite)", () => {
         });
     });
 
+    it('charges only remaining physical bytes after partial retired-artifact cleanup and resumes the exact remaining objects', async () => {
+        const owner = await db.account.create({ data: { encryptionMode: 'plain' } });
+        const id = crypto.randomUUID();
+        const bytes = Uint8Array.of(0, 255, 12);
+        const referenceBody = (blobId: string) => encodePlainArtifactStoredContent({ body: { blobId,
+            mime: 'application/octet-stream', sizeBytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') } });
+        const firstId = crypto.randomUUID();
+        const secondId = crypto.randomUUID();
+        await withAuthenticatedTestApp(artifactsRoutes, async app => {
+            expect((await app.inject({ method: 'POST', url: '/v1/artifacts/content/binary', headers: headers(owner.id), payload: {
+                id, header: encodePlainArtifactStoredContent({ title: 'Partial cleanup' }), dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+                body: referenceBody(firstId), blob: { blobId: firstId, content: { t: 'plain', v: privacyKit.encodeBase64(bytes) } },
+            } })).statusCode).toBe(200);
+            expect((await app.inject({ method: 'POST', url: `/v1/artifacts/${id}/content/binary`, headers: headers(owner.id), payload: {
+                body: referenceBody(secondId), expectedBodyVersion: 1,
+                blob: { blobId: secondId, content: { t: 'plain', v: privacyKit.encodeBase64(bytes) } },
+            } })).statusCode).toBe(200);
+            const blobs = await db.artifactBlob.findMany({ where: { artifactId: id }, orderBy: { id: 'asc' } });
+            expect(blobs).toHaveLength(2);
+            const usage = () => app.inject({ method: 'GET', url: '/v1/artifacts/storage/usage', headers: headers(owner.id) });
+            const initialBytes = (await usage()).json().usedBytes;
+            const realDelete = privateFiles.deletePrivateFile;
+            const deletion = vi.spyOn(privateFiles, 'deletePrivateFile')
+                .mockImplementationOnce(realDelete).mockRejectedValueOnce(new Error('Storage unavailable'));
+            try {
+                expect((await app.inject({ method: 'DELETE', url: `/v1/artifacts/${id}`, headers: headers(owner.id) })).statusCode).toBe(500);
+                expect(await db.artifactBlob.findMany({ where: { artifactId: id }, select: { id: true } })).toEqual([{ id: blobs[1]!.id }]);
+                expect((await usage()).json().usedBytes).toBe(initialBytes - Number(blobs[0]!.storedSizeBytes));
+                await expect(readPrivateFile(blobs[0]!.storageKey)).rejects.toThrow();
+                await expect(readPrivateFile(blobs[1]!.storageKey)).resolves.toBeInstanceOf(Uint8Array);
+                expect((await app.inject({ method: 'DELETE', url: `/v1/artifacts/${id}`, headers: headers(owner.id) })).statusCode).toBe(200);
+                await expect(readPrivateFile(blobs[1]!.storageKey)).rejects.toThrow();
+                expect((await usage()).json().usedBytes).toBe(0);
+            } finally { deletion.mockRestore(); }
+        });
+    });
+
     it("erases current and retained private artifact objects through physical Account erasure", async () => {
         const owner = await db.account.create({ data: { encryptionMode: "plain" } });
         const id = crypto.randomUUID();

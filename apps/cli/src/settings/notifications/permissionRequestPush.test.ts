@@ -26,7 +26,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
   });
 
   it('does not send when permissionRequest pushes are disabled', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       notificationsSettingsV1: { v: 1, pushEnabled: true, ready: true, permissionRequest: false },
     });
@@ -45,7 +45,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
   });
 
   it('does not send when the unified attention policy disables Expo push permission requests', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       attentionDeliveryPolicyV1: {
         v: 1,
@@ -73,7 +73,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
   });
 
   it('sends when enabled', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       notificationsSettingsV1: { v: 1, pushEnabled: true, ready: true, permissionRequest: true },
     });
@@ -98,7 +98,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
   });
 
   it('notifies for an actual safe-yolo permission request instead of predicting Auto approval', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       notificationsSettingsV1: { v: 1, pushEnabled: true, ready: true, permissionRequest: true },
     });
@@ -122,7 +122,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
   });
 
   it('forwards permission requests to the Live Activity remote sender', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const sendLiveActivityRemoteUpdateAsync = vi.fn(async (_request: LiveActivityRemoteUpdateRequestV1) => {});
     const settings = accountSettingsParse({
       attentionDeliveryPolicyV1: {
@@ -212,7 +212,7 @@ describe('sendPermissionRequestPushNotificationAsync', () => {
       requests.push(request);
       return { status: 202, headers: {}, contentLength: 0, read: async () => null, cancel: () => {} };
     });
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const settings = accountSettingsParse({
       attentionDeliveryPolicyV1: {
         v: 1,

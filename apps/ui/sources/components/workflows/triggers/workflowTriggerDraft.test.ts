@@ -89,6 +89,24 @@ describe('workflow trigger draft', () => {
         expect(calls).toEqual([['add', { workflow: 'wf-1', project: PROJECT, trigger: { ...schedule('0 7 * * *'), enabled: true } }]]);
     });
 
+    it('stops captured writes when the editor lifetime changes during an acknowledged write', async () => {
+        let current = true;
+        const requests: unknown[] = [];
+        const writer: WorkflowTriggerWriter = {
+            ...recordingWriter().writer,
+            add: async (request) => {
+                requests.push(request);
+                current = false;
+                return { set: triggerSet(8, []), triggerId: 'written' };
+            },
+        };
+        let draft = editWorkflowTriggerDraft(EMPTY_WORKFLOW_TRIGGER_DRAFT, { kind: 'add', clientId: 'first', trigger: { ...schedule('0 7 * * *'), enabled: true } });
+        draft = editWorkflowTriggerDraft(draft, { kind: 'add', clientId: 'second', trigger: { ...schedule('0 8 * * *'), enabled: true } });
+        const result = await saveWorkflowTriggerDraft({ workflow: 'wf-1', project: PROJECT, set: null, draft, writer, isCurrent: () => current });
+        expect(requests).toHaveLength(1);
+        expect(result.kind).toBe('stale');
+    });
+
     it('keeps exactly the edits a failed write did not apply, so Try again resumes there', async () => {
         const set = triggerSet(7, [savedTrigger('nightly', '0 2 * * *'), savedTrigger('weekly', '0 9 * * 1')]);
         let draft: WorkflowTriggerDraft = EMPTY_WORKFLOW_TRIGGER_DRAFT;
@@ -127,4 +145,3 @@ describe('workflow trigger draft', () => {
         expect(created.calls).toEqual([['add', { workflow: 'wf-1', project: other, trigger: { ...schedule('0 2 * * *'), enabled: true }, inputs: { version: '0.3' } }]]);
     });
 });
-

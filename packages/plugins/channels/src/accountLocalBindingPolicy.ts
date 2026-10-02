@@ -981,6 +981,8 @@ export async function readConversationBindingManagementRows(input: Readonly<{
    * two Sessions that share a prefix.
    */
   sessionId?: string;
+  /** Exact Automation association, including disabled and finalizing rows. */
+  automationId?: string;
 }>): Promise<Readonly<{ bindings: readonly ConversationBindingManagementRow[] }>> {
   const bindings: ConversationBindingManagementRow[] = [];
   // Scanned rows, not admitted rows: a Session filter must still bound the
@@ -1009,6 +1011,11 @@ export async function readConversationBindingManagementRows(input: Readonly<{
       if (input.sessionId !== undefined
         && (current.binding.target.kind !== 'session'
           || current.binding.target.sessionId !== input.sessionId)) {
+        continue;
+      }
+      if (input.automationId !== undefined
+        && (current.binding.target.kind !== 'automation'
+          || current.binding.target.automationId !== input.automationId)) {
         continue;
       }
       bindings.push(projectConversationBindingManagementRow(row, current));

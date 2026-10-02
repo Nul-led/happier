@@ -6,6 +6,7 @@ import {
   deriveBoxPublicKeyFromSeed,
   openEncryptedDataKeyEnvelopeV1,
   signAccountContentKeyBindingV1,
+  type PatchSessionDataKeyEnvelopesV1,
   type SessionInitialAccessDraftV1,
 } from '@happier-dev/protocol';
 import tweetnacl from 'tweetnacl';
@@ -113,6 +114,67 @@ for (const owner of ['api', 'http'] as const) {
       await create({ initialAccess: directAccess });
       expect((vi.mocked(axios.post).mock.calls[0]?.[1] as { initialAccess: unknown }).initialAccess).toEqual(directAccess);
       expect(vi.mocked(axios.get).mock.calls.some((call) => String(call[0]).includes('/v1/user/'))).toBe(false);
+    });
+
+    it.each([true, false])('prepares collective E2EE access using the returned Session key (created=%s)', async (created) => {
+      const callerMachineKey = new Uint8Array(32).fill(7);
+      const recipient = tweetnacl.box.keyPair();
+      const signing = tweetnacl.sign.keyPair();
+      const e2eeCredentials = { token: 'token-1', encryption: {
+        type: 'dataKey' as const, publicKey: deriveBoxPublicKeyFromSeed(callerMachineKey), machineKey: callerMachineKey,
+      } };
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(features(true, 'required_e2ee')))));
+      let committed: PatchSessionDataKeyEnvelopesV1 | undefined;
+      vi.mocked(axios.get).mockImplementation(async (url) => {
+        if (String(url).endsWith('/v1/account/encryption/currentness')) return { status: 200, data: {
+          mode: 'e2ee', version: 1, signingKeyFingerprint: 'signing', contentKeyFingerprint: 'content', updatedAt: 1,
+          recipientEnvelopeReadiness: { status: 'available' },
+        } };
+        if (String(url).includes('/created-session/data-key/envelopes')) return { status: 200, data: {
+          status: 'required', items: committed ? [] : [{
+            recipientAccountId: 'teammate', envelopeState: 'missing', contentKey: {
+              status: 'available', accountSigningPublicKey: Buffer.from(signing.publicKey).toString('hex'),
+              contentPublicKey: Buffer.from(recipient.publicKey).toString('base64'),
+              contentPublicKeySignature: Buffer.from(signAccountContentKeyBindingV1({
+                accountSigningSecretKey: signing.secretKey, contentPublicKey: recipient.publicKey,
+              })).toString('base64'),
+            },
+          }], nextCursor: null,
+          summary: { prepared: committed ? 1 : 0, pending: committed ? 0 : 1, invalid: 0, recipientKeyUnavailable: 0 },
+        } };
+        throw new Error(`Unexpected GET ${String(url)}`);
+      });
+      vi.spyOn(axios, 'patch').mockImplementation(async (_url, body) => {
+        committed = body as PatchSessionDataKeyEnvelopesV1;
+        return { status: 200, data: { appliedCount: committed.entries.length } };
+      });
+      // A rejoin returns the original owner's envelope, never the new request's random key.
+      let returnedOwnerEnvelope = '';
+      let originalPayload: { sharedMetadata: { ciphertext: string }; ownerMetadata: unknown; dataEncryptionKey: string; agentState: string | null } | undefined;
+      vi.mocked(axios.post).mockImplementation(async (_url, body) => {
+        originalPayload ??= body as NonNullable<typeof originalPayload>;
+        const payload = originalPayload;
+        returnedOwnerEnvelope = payload.dataEncryptionKey;
+        return { status: 200, data: { created, organizationPlacement: { folderId: null, tagIds: [] }, session: {
+          id: 'created-session', seq: 0, createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
+          encryptionMode: 'e2ee', metadataLayoutVersion: 1, metadata: payload.sharedMetadata.ciphertext,
+          share: null, ownerMetadata: payload.ownerMetadata, metadataVersion: 0,
+          agentState: payload.agentState, agentStateVersion: 0, dataEncryptionKey: returnedOwnerEnvelope,
+        } } };
+      });
+      if (!created) {
+        const privateParams = { ...creation, credentials: e2eeCredentials };
+        if (owner === 'http') await getOrCreateSessionByTag(privateParams);
+        else await (await ApiClient.create(e2eeCredentials)).getOrCreateSession(privateParams);
+      }
+      const params = { ...creation, credentials: e2eeCredentials, initialAccess };
+      if (owner === 'http') await getOrCreateSessionByTag(params);
+      else await (await ApiClient.create(e2eeCredentials)).getOrCreateSession(params);
+      expect(committed?.entries).toHaveLength(1);
+      expect(openEncryptedDataKeyEnvelopeV1({
+        envelope: decodeBase64(committed!.entries[0]!.encryptedDataKey), recipientSecretKeyOrSeed: recipient.secretKey,
+      })).toEqual(openEncryptedDataKeyEnvelopeV1({ envelope: decodeBase64(returnedOwnerEnvelope), recipientSecretKeyOrSeed: callerMachineKey }));
+      expect(vi.mocked(axios.post).mock.calls[0]?.[1]).not.toHaveProperty('primaryTeamId');
     });
 
     it('materializes a ready direct E2EE recipient envelope only at the physical create boundary', async () => {

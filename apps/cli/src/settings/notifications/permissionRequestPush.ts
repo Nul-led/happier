@@ -3,7 +3,7 @@ import {
   type AccountSettings,
 } from '@happier-dev/protocol';
 import type { PermissionMode } from '@/api/types';
-import type { PushNotificationDeliveryOptions } from '@/api/pushNotifications';
+import type { ExpoPushActivityNotificationSender } from '@/notifications/activity/sendExpoPushActivityNotification';
 import { serializeAxiosErrorForLog } from '@/api/client/serializeAxiosErrorForLog';
 import type { AgentRequestKind } from '@/agent/permissions/requestKind';
 import { dispatchActivityNotificationAsync } from '@/notifications/activity/dispatchActivityNotification';
@@ -15,14 +15,7 @@ import {
 import { logger } from '@/ui/logger';
 import { getActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 
-export type PermissionRequestPushSender = LiveActivityRemoteSenderCandidate & SessionNotificationContextReader & Readonly<{
-  sendToAllDevicesAsync: (
-    title: string,
-    body: string,
-    data: Record<string, unknown>,
-    options?: PushNotificationDeliveryOptions,
-  ) => Promise<void>;
-}>;
+export type PermissionRequestPushSender = LiveActivityRemoteSenderCandidate & SessionNotificationContextReader & ExpoPushActivityNotificationSender;
 
 export type AgentRequestPushNotificationResult = Readonly<{
   status: 'delivered' | 'skipped' | 'failed';

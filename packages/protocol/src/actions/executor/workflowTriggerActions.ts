@@ -54,6 +54,8 @@ export type WorkflowTriggerActionsDependencies = Readonly<{
   /** Session transport authorizes and opens the Session; callers cannot choose placement. */
   resolveSession?: (sessionId: string, caller?: Caller, options?: Readonly<{ checkNativeGoalOwner: boolean }>) => Promise<Readonly<{
     project: WorkflowTriggerAddRequestV1['project']; nativeGoalOwner: boolean | null;
+    /** Current Session-owned execution facts, used when converting its retained Automation. */
+    executionSelection?: WorkflowDefinitionV1['defaults'];
   }>>;
   resolveRunTrigger?: (runId: string) => Promise<Readonly<{ sessionId: string; triggerId: string }> | null>;
   /** Exact authorized Run read; no caller-created lifecycle or placement facts. */

@@ -245,8 +245,11 @@ export function createAccountWorkflowTriggerActions(params: WorkflowTriggerAccou
       const association = await params.observeLegacyChannelAssociation?.({ automationId: row.id, expectedTemplateVersion: row.templateVersion });
       if (!association || association.kind === 'unknown') unavailable('legacy_conversion_unsupported', { reason: 'channel_association_unknown' });
       const legacy = await readStoredLegacy(row);
+      if (association.kind === 'bound') unavailable('legacy_conversion_unsupported', { reason: 'channel_reply_handoff' });
+      const session = legacy.targetType === 'existing_session'
+        ? await params.resolveSession?.(legacy.template.existingSessionId!) : undefined;
       const converted = convertLegacyAutomationRecipeToInlineWorkflowV1({ legacyTemplate: legacy,
-        machineId: legacy.machineId, channelReplyHandoff: association.kind === 'bound' });
+        machineId: legacy.machineId, ...(session ? { session } : {}) });
       if (converted.kind !== 'available') unavailable(converted.code, { reason: converted.reason });
       return legacyContext(converted.definition, converted.project);
     },

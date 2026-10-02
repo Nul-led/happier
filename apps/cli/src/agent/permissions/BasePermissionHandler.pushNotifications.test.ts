@@ -87,7 +87,7 @@ describe('BasePermissionHandler push notifications', () => {
   });
 
   it('sends a permission-request push when enabled', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const session = new FakeSession();
     const settings = accountSettingsParse({
         notificationsSettingsV1: { v: 1, pushEnabled: true, ready: true, permissionRequest: true },
@@ -118,7 +118,7 @@ describe('BasePermissionHandler push notifications', () => {
   });
 
   it('does not send when permission-request pushes are disabled', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const session = new FakeSession();
     const settings = accountSettingsParse({
         notificationsSettingsV1: { v: 1, pushEnabled: true, ready: true, permissionRequest: false },
@@ -139,7 +139,7 @@ describe('BasePermissionHandler push notifications', () => {
   });
 
   it('dedupes repeated pending publications for the same request id', async () => {
-    const sendToAllDevicesAsync = vi.fn(async () => {});
+    const sendToAllDevicesAsync = vi.fn(async () => { return true; });
     const session = new FakeSession();
     const settings = accountSettingsParse({
         notificationsSettingsV1: { v: 1, pushEnabled: true, ready: true, permissionRequest: true },
@@ -164,9 +164,9 @@ describe('BasePermissionHandler push notifications', () => {
 
   it('re-attempts permission-request push after a session swap while still pending', async () => {
     const sendToAllDevicesAsync = vi
-      .fn(async () => {})
+      .fn(async () => { return true; })
       .mockRejectedValueOnce(new Error('offline'))
-      .mockResolvedValueOnce(undefined);
+      .mockResolvedValueOnce(true);
 
     const session1 = new FakeSession();
     const session2 = new FakeSession();
@@ -292,7 +292,7 @@ describe('BasePermissionHandler push notifications', () => {
       ],
     });
     const handler = new TestPermissionHandler(session as any, {
-      pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync: vi.fn(async () => {}) },
+      pushSender: { fetchSessionNotificationContext, sendToAllDevicesAsync: vi.fn(async () => { return true; }) },
       getAccountSettings: () => settings,
       getAccountSettingsSecretsReadKeys: () => [settingsSecretsKey],
     } as any);

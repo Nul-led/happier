@@ -71,6 +71,7 @@ type Fixtures = {
   usage?: number; budget?: number;
   session?: (id: string, input: Parameters<WorkflowStepExecutor>[0]['input']) => JsonValue;
   reviewFailed?: boolean;
+  reviewLaunchFailure?: string;
   comments?: () => readonly ReviewCommentV1[];
   panelCommentIds?: readonly string[];
   judgeVerdicts?: JsonValue[];
@@ -98,6 +99,9 @@ function harness(fixtures: Fixtures = {}) {
       fixtures.actionsSettings ?? ActionsSettingsV1Schema.parse({ v: 1 }), ctx),
     executionRunCheckProtocolV2: async () => ({ ok: true }),
     executionRunStart: async (sessionId, request) => {
+      if (request.intent === 'review' && request.backendTargetKey === fixtures.reviewLaunchFailure) {
+        throw Object.assign(new Error('native_review_launch_failed'), { code: 'native_review_launch_failed' });
+      }
       const runId = `native-${nativeRuns.size}`;
       launches.push({ sessionId, request });
       let value: JsonValue = 'native result';
@@ -309,6 +313,15 @@ describe('built-ins through accepted materialization and native leaf adapters', 
     expect(await h.run(builtin('review-and-converge'), { engines: [engine, otherEngine], maxRounds: 1 }))
       .toMatchObject({ state: 'succeeded', finalOutput: { kind: 'exhausted', rounds: 1 } });
     expect(String(h.launches.find(({ request }) => request.intent === 'agent')?.request.instructions)).toContain('native_review_failed');
+    expect(h.notifications).toHaveLength(1);
+  });
+  it('collects a reviewer that provably launched no run while preserving its successful sibling', async () => {
+    const h = harness({ checks: [{ verdict: 'continue' }], reviewLaunchFailure: engine });
+    expect(await h.run(builtin('review-and-converge'), { engines: [engine, otherEngine], maxRounds: 1 }))
+      .toMatchObject({ state: 'succeeded', finalOutput: { kind: 'exhausted', rounds: 1 } });
+    expect(h.store.list().some((row) => row.blockKind === 'action' && row.lifecycle === 'failed'
+      && row.reason === 'native_review_launch_failed')).toBe(true);
+    expect(h.launches.filter(({ request }) => request.intent === 'review')).toHaveLength(1);
     expect(h.notifications).toHaveLength(1);
   });
   it.each([

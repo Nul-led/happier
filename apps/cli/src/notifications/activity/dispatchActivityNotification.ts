@@ -267,14 +267,14 @@ export async function dispatchActivityNotificationAsync(params: Readonly<{
     attemptedChannels += 1;
     if (params.expoPushSender) {
       try {
-        await sendExpoPushActivityNotificationAsync({
+        const accepted = await sendExpoPushActivityNotificationAsync({
           channel: buildCanonicalExpoPushChannel(expoDecision),
           event: params.event,
           sender: params.expoPushSender,
           deliveryOptions: resolveExpoPushDeliveryOptions(expoDecision),
           previewBehavior: expoDecision.previewBehavior,
         });
-        deliveredChannels += 1;
+        if (accepted) deliveredChannels += 1;
       } catch (error) {
         logger.debug('[activityNotifications] Failed to dispatch outbound notification', serializeAxiosErrorForLog(error));
       }

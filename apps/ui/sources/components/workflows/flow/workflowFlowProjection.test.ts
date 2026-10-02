@@ -38,6 +38,40 @@ function definition(blocks: WorkflowDefinitionV1['blocks']): WorkflowDefinitionV
 }
 
 describe('definition flow projection', () => {
+  it('keeps Action, Workflow and Wait leaves in authored order and targets their owning editor', () => {
+    const projection = projectWorkflowFlow(definition([
+      { kind: 'action', id: 'notify', actionId: 'notifications.notify_me', input: {} },
+      { kind: 'workflow', id: 'review', workflowRef: 'builtin:review', input: {} },
+      { kind: 'wait', id: 'confirm', document: { text: 'Approve the release', references: [], attachments: [] } },
+    ]));
+    expect(projection.rootNodeIds).toEqual(['notify', 'review', 'confirm']);
+    expect(projection.nodes.map((node) => node.kind)).toEqual(['action', 'workflow', 'wait']);
+    for (const id of ['notify', 'review', 'confirm']) {
+      expect(resolveWorkflowFlowEditTarget(projection, id)).toEqual({ kind: 'block', blockId: id });
+    }
+  });
+
+  it('projects reused child definitions as separate containers without colliding with parent or deeper child ids', () => {
+    const call = (id: string, workflowRef: string) => ({ kind: 'workflow' as const, id, workflowRef, input: {} });
+    const projection = projectWorkflowFlow(definition([
+      step('same'), call('left', 'builtin:review'), call('right', 'builtin:review'),
+    ]), {
+      'builtin:review': definition([step('same'), call('inner', 'builtin:plan')]),
+      'builtin:plan': definition([step('same')]),
+    });
+    expect(projection.nodes).toHaveLength(9);
+    const left = projection.nodesById.get('left')!;
+    const right = projection.nodesById.get('right')!;
+    expect(left.childNodeIds).toHaveLength(2);
+    expect(right.childNodeIds).toHaveLength(2);
+    expect(new Set(projection.nodes.map((node) => node.nodeId)).size).toBe(9);
+    expect(left.childNodeIds).not.toEqual(right.childNodeIds);
+    const inner = projection.nodesById.get(left.childNodeIds[1]!)!;
+    expect(inner.childNodeIds).toHaveLength(1);
+    // Called definitions are read-only here; editing reveals the containing call.
+    expect(resolveWorkflowFlowEditTarget(projection, inner.childNodeIds[0]!)).toEqual({ kind: 'block', blockId: 'left' });
+  });
+
   it('projects ordered root steps with 1-based rail ordinals and no parent', () => {
     const projection = projectWorkflowFlow(definition([step('analyze'), step('implement')]));
     expect(projection.source).toBe('definition');

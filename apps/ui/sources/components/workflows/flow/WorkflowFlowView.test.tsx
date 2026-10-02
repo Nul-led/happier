@@ -67,6 +67,24 @@ async function renderFlow() {
 }
 
 describe('WorkflowFlowView accessibility structure', () => {
+    it('lets a held Wait node open its exact occurrence, including repeated child Waits', async () => {
+        const definition: WorkflowDefinitionV1 = { version: 1, inputs: [], defaults: {}, blocks: [
+            { kind: 'wait', id: 'wait', document: { text: 'Continue?', references: [], attachments: [] } },
+        ] };
+        const onSelectOccurrence = vi.fn();
+        const projection = projectWorkflowFlow(definition);
+        const screen = await renderScreen(React.createElement(WorkflowFlowView, {
+            projection, selectedNodeId: 'wait', selectedInvocationId: 'held-1', onSelectOccurrence,
+            runStates: new Map([['wait', [{ nodeId: 'wait', invocationId: 'held-1', lifecycle: 'waiting_for_review' as const }]]]),
+            testIDPrefix: 'flow',
+        }));
+        const node = screen.findByTestId('flow-node-wait');
+        expect(node).not.toBeNull();
+        expect(node!.props.disabled).not.toBe(true);
+        await screen.pressByTestId('flow-node-wait');
+        expect(onSelectOccurrence.mock.calls[0]?.[0]).toBe('held-1');
+    });
+
     it('exposes every node as a real list item rather than a bare button under a list', async () => {
         const screen = await renderFlow();
 

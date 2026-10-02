@@ -39,6 +39,85 @@ describe("Artifact document grants (real SQLite)", () => {
 
     const protocolHeaders = { "x-happier-account-stored-content-protocol": String(CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION) };
 
+    it.each(["account", "team", "group"] as const)("reports committed %s self-revocation without disclosing the remaining grants", async kind => {
+        const owner = await db.account.create({ data: { encryptionMode: "e2ee", ...createSignedAccountContentBinding() } });
+        const admin = await db.account.create({ data: { encryptionMode: "e2ee", ...createSignedAccountContentBinding() } });
+        const remaining = await db.account.create({ data: { encryptionMode: "e2ee", ...createSignedAccountContentBinding() } });
+        const dataKey = tweetnacl.randomBytes(32);
+        const wrap = (publicKey: Uint8Array) => new Uint8Array(sealEncryptedDataKeyEnvelopeV1({
+            dataKey, recipientPublicKey: publicKey, randomBytes: tweetnacl.randomBytes,
+        }));
+        const artifact = await db.artifact.create({ data: {
+            id: crypto.randomUUID(), accountId: owner.id, header: new Uint8Array([1]), body: new Uint8Array([2]),
+            dataEncryptionKey: wrap(owner.contentPublicKey!), headerVersion: 1, bodyVersion: 1,
+        } });
+        await db.artifactAccountGrant.create({ data: { artifactId: artifact.id, accountId: remaining.id,
+            accessLevel: "view", createdByAccountId: owner.id } });
+        const team = await db.team.create({ data: { name: "Self-revocation team" } });
+        const membership = await db.teamMembership.create({ data: { teamId: team.id, accountId: admin.id, role: "member" } });
+        const group = await db.teamGroup.create({ data: { teamId: team.id, name: "Administrators", nameKey: crypto.randomUUID() } });
+        await db.teamGroupMembership.create({ data: { teamId: team.id, teamGroupId: group.id, teamMembershipId: membership.id,
+            nativeContribution: true } });
+        const principal = kind === "account" ? { kind, accountId: admin.id }
+            : kind === "team" ? { kind, teamId: team.id } : { kind, teamId: team.id, groupId: group.id };
+        const { readArtifactRecipientCensusInTx, resolveArtifactAccessInTx, setArtifactAccessGrantInTx } = await import("./artifactAccessService");
+        expect(await inTx(tx => setArtifactAccessGrantInTx(tx, {
+            actorAccountId: owner.id, artifactId: artifact.id, principal, accessLevel: "admin",
+        }))).toMatchObject({ ok: true });
+        const census = await inTx(tx => readArtifactRecipientCensusInTx(tx, { actorAccountId: owner.id, artifactId: artifact.id }));
+        if (!census.ok) throw new Error(census.error);
+        for (const recipient of [admin, remaining]) {
+            const fingerprint = census.value.recipients.find(row => row.recipientAccountId === recipient.id)!.contentPublicKeyFingerprint!;
+            await db.artifactKeyEnvelope.create({ data: { artifactId: artifact.id, recipientAccountId: recipient.id,
+                encryptedDataKey: wrap(recipient.contentPublicKey!), recipientContentPublicKeyFingerprint: fingerprint } });
+        }
+        await withAuthenticatedTestApp(app => artifactsRoutes(app), async app => {
+            const grantsUrl = `/v1/artifacts/${artifact.id}/access/grants`;
+            const revoked = await app.inject({ method: "DELETE", url: grantsUrl, headers: { "x-test-user-id": admin.id },
+                payload: { artifactId: artifact.id, principal } });
+            expect(await inTx(tx => resolveArtifactAccessInTx(tx, { actorAccountId: admin.id, artifactId: artifact.id }))).toBeNull();
+            expect(await db.artifactKeyEnvelope.findMany({ where: { artifactId: artifact.id }, select: { recipientAccountId: true } }))
+                .toEqual([{ recipientAccountId: remaining.id }]);
+            expect(revoked.statusCode).toBe(200);
+            expect(revoked.json()).toEqual({ artifactId: artifact.id, ownerAccountId: owner.id, access: null, grants: [], changed: true });
+            for (const url of [grantsUrl, `/v1/artifacts/${artifact.id}`, `/v1/artifacts/${artifact.id}/access/recipients`]) {
+                expect((await app.inject({ method: "GET", url, headers: { "x-test-user-id": admin.id } })).statusCode).toBe(404);
+            }
+            const ownerList = await app.inject({ method: "GET", url: grantsUrl, headers: { "x-test-user-id": owner.id } });
+            expect(ownerList.json()).toMatchObject({ access: "owner", grants: [
+                { principal: { kind: "account", accountId: remaining.id }, accessLevel: "view" },
+            ] });
+        });
+    });
+
+    it("projects remaining Team access after self-revocation and refuses further grant writes", async () => {
+        const owner = await plainAccount();
+        const admin = await plainAccount();
+        const artifact = await plainArtifact(owner.id);
+        const team = await db.team.create({ data: { name: "Remaining access" } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: admin.id, role: "member" } });
+        await db.artifactTeamGrant.create({ data: { artifactId: artifact.id, teamId: team.id,
+            accessLevel: "view", createdByAccountId: owner.id } });
+        await db.artifactAccountGrant.create({ data: { artifactId: artifact.id, accountId: admin.id,
+            accessLevel: "admin", createdByAccountId: owner.id } });
+        await withAuthenticatedTestApp(app => artifactsRoutes(app), async app => {
+            const grantsUrl = `/v1/artifacts/${artifact.id}/access/grants`;
+            const payload = { artifactId: artifact.id, principal: { kind: "account", accountId: admin.id } };
+            const removed = await app.inject({ method: "DELETE", url: grantsUrl,
+                headers: { "x-test-user-id": admin.id }, payload });
+            expect(removed.statusCode).toBe(200);
+            expect(removed.json()).toMatchObject({ access: "view", changed: true, grants: [
+                { principal: { kind: "team", teamId: team.id }, accessLevel: "view" },
+            ] });
+            expect((await app.inject({ method: "DELETE", url: grantsUrl,
+                headers: { "x-test-user-id": admin.id }, payload })).statusCode).toBe(403);
+            const repeated = await app.inject({ method: "DELETE", url: grantsUrl,
+                headers: { "x-test-user-id": owner.id }, payload });
+            expect(repeated.statusCode).toBe(200);
+            expect(repeated.json()).toMatchObject({ access: "owner", changed: false });
+        });
+    });
+
     it("rotates a shared Artifact key and retains only prepared recipients with live access and current keys", async () => {
         const owner = await db.account.create({ data: { encryptionMode: "e2ee", ...createSignedAccountContentBinding() } });
         const recipients = await Promise.all([0, 1, 2].map(() => db.account.create({

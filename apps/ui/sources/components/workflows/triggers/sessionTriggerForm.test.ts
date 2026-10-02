@@ -62,6 +62,14 @@ describe('session trigger form', () => {
         expect(buildTriggerTarget({ kind: 'runWorkflow', ref: null })).toBeNull();
     });
 
+    it('keeps the trigger context inputs when a workflow reference is reopened for editing', () => {
+        const inputs = { apply: 'report', maxRounds: 5, engines: ['codex'] };
+        const then = readTriggerThen({ kind: 'workflow', ref: 'builtin:review-and-converge' }, undefined, inputs);
+        expect(then).toEqual({ kind: 'runWorkflow', ref: 'builtin:review-and-converge', inputs });
+        // Constant inputs belong to the Action request, never the strict target arm.
+        expect(buildTriggerTarget(then)).toEqual({ kind: 'workflow', ref: 'builtin:review-and-converge' });
+    });
+
     it('writes each session kind as its lifecycle events on this session, and a weekly schedule as its cron', () => {
         expect(buildTriggerDefinition({ when: { kind: 'turnEnds' }, enabled: true, sessionId: 'session-1' })).toEqual({
             kind: 'sessionLifecycle', enabled: true, sourceSessionId: 'session-1',

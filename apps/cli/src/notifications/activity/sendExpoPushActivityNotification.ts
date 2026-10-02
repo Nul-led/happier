@@ -1,17 +1,10 @@
 import type { AttentionPreviewBehavior, ExpoPushNotificationChannelV1 } from '@happier-dev/protocol';
 
-import type { PushNotificationDeliveryOptions } from '@/api/pushNotifications';
+import type { PushNotificationClient, PushNotificationDeliveryOptions } from '@/api/pushNotifications';
 import type { ActivityNotificationEvent } from './activityNotificationEvent';
 import { buildActivityNotificationContent } from './buildActivityNotificationContent';
 
-export type ExpoPushActivityNotificationSender = Readonly<{
-  sendToAllDevicesAsync: (
-    title: string,
-    body: string,
-    data: Record<string, unknown>,
-    options?: PushNotificationDeliveryOptions,
-  ) => Promise<void>;
-}>;
+export type ExpoPushActivityNotificationSender = Readonly<Pick<PushNotificationClient, 'sendToAllDevicesAsync'>>;
 
 export async function sendExpoPushActivityNotificationAsync(params: Readonly<{
   channel: ExpoPushNotificationChannelV1;
@@ -19,15 +12,14 @@ export async function sendExpoPushActivityNotificationAsync(params: Readonly<{
   sender: ExpoPushActivityNotificationSender;
   deliveryOptions?: PushNotificationDeliveryOptions;
   previewBehavior?: AttentionPreviewBehavior;
-}>): Promise<void> {
+}>): Promise<boolean> {
   const built = buildActivityNotificationContent(params.event, {
     readyIncludeMessageText: params.channel.readyIncludeMessageText !== false,
     requestIncludeMessageText: params.channel.requestIncludeMessageText !== false,
     previewBehavior: params.previewBehavior,
   });
   if (params.deliveryOptions) {
-    await params.sender.sendToAllDevicesAsync(built.title, built.body, built.data, params.deliveryOptions);
-    return;
+    return await params.sender.sendToAllDevicesAsync(built.title, built.body, built.data, params.deliveryOptions);
   }
-  await params.sender.sendToAllDevicesAsync(built.title, built.body, built.data);
+  return await params.sender.sendToAllDevicesAsync(built.title, built.body, built.data);
 }

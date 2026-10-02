@@ -425,7 +425,7 @@ export class PushNotificationClient {
         body: string,
         data?: Record<string, any>,
         options?: PushNotificationDeliveryOptions,
-    ): Promise<void> {
+    ): Promise<boolean> {
         const debugPush = isPushDebugEnabled()
         if (debugPush) {
             logger.debug('[PUSH] sendToAllDevicesAsync called', {
@@ -450,7 +450,7 @@ export class PushNotificationClient {
 
             if (tokens.length === 0) {
                 if (debugPush) logger.debug('No push tokens found for user')
-                return
+                return false
             }
 
             const badgeCount = await this.fetchAccountActivityBadgeCount()
@@ -490,6 +490,7 @@ export class PushNotificationClient {
                 throw new Error('Expo push failed: InvalidCredentials. Check the app\'s FCM V1 or APNs credentials in Expo.')
             }
             if (debugPush) logger.debug('[PUSH] Push notifications sent successfully')
+            return true
         } catch (error) {
             logger.debug('[PUSH] Error sending to all devices:', serializeAxiosErrorForLog(error))
             throw error

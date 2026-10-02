@@ -351,6 +351,26 @@ function context(
 }
 
 describe('Channels target-persisting binding management', () => {
+  it('reads exact Automation associations, including disabled and deleting bindings, without confusing display prefixes', async () => {
+    const id = 'automation-with-a-long-common-prefix-one';
+    const collection = createCollection([bindingRow({ ...automationTarget, automationId: id }, 5,
+      { enabled: false, deletionState: 'finalizingDelete' })]);
+    const invocation = context(collection, vi.fn());
+    await expect(management.readConversationBindingForInvocation({ automationId: id }, invocation))
+      .resolves.toEqual({ kind: 'automationAssociation', automationId: id, association: 'bound' });
+    await expect(management.readConversationBindingForInvocation({ automationId: 'automation-with-a-long-common-prefix-two' }, invocation))
+      .resolves.toEqual({ kind: 'automationAssociation', automationId: 'automation-with-a-long-common-prefix-two', association: 'absent' });
+    expect(collection.batches).toEqual([]);
+  });
+  it('never reports association absence after an unavailable or corrupt binding read', async () => {
+    const corrupt = createCollection([bindingRow(automationTarget, 5, { allowedPrincipalIds: [] })]);
+    await expect(management.readConversationBindingForInvocation({ automationId: 'automation-1' }, context(corrupt, vi.fn())))
+      .rejects.toMatchObject({ code: 'channels_binding_update_corrupt' });
+    const unavailable = createCollection([]);
+    unavailable.query = async () => { throw new Error('Account Data unavailable'); };
+    await expect(management.readConversationBindingForInvocation({ automationId: 'automation-1' }, context(unavailable, vi.fn())))
+      .rejects.toThrow('Account Data unavailable');
+  });
   it.each<JsonValue>([
     { kind: 'list', sessionId: 'session-outside-scope' },
     { kind: 'removeTrigger', sessionId: 'session-outside-scope', triggerId: 'trigger-1' },

@@ -6,7 +6,8 @@ import type { WorkflowProgressEnvelopeV1 } from '@happier-dev/protocol';
 import { createWorkflowInvocationIndexFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
 import { summarizeWorkflowInvocationCoverage } from '@/components/workflows/presentation/workflowLifecyclePresentation';
 
-import { projectWorkflowInvocationStructure } from './workflowInvocationStructure';
+import { projectWorkflowInvocationStructure, projectWorkflowFlowRunStates } from './workflowInvocationStructure';
+import { projectWorkflowFlow } from '../flow/workflowFlowProjection';
 
 /**
  * The public invocation index deliberately withholds authored block ids
@@ -37,6 +38,51 @@ function child(overrides: Readonly<{ id: string; parentRecordId: string; memberO
 }
 
 describe('projectWorkflowInvocationStructure', () => {
+    it('joins nested, repeated child occurrences and held Wait rows to their own Flow nodes from frozen children', () => {
+        const nested = (id: string, workflowRef: string) => ({ kind: 'workflow', id, workflowRef, input: {} });
+        const definition = definitionOf([step('same'), nested('call', 'builtin:review')]);
+        const frozenChildren = {
+            'builtin:review': definitionOf([{
+                kind: 'loop', id: 'same', repetition: { kind: 'items', items: { kind: 'literal', value: ['a', 'b'] },
+                    execution: 'parallel', failurePolicy: 'collect_outcomes' },
+                body: [nested('inner', 'builtin:plan')],
+            }]),
+            'builtin:plan': definitionOf([{ kind: 'wait', id: 'same', document: { text: 'Continue?', references: [], attachments: [] } }]),
+        };
+        const invocations = [root,
+            child({ id: 'parent', parentRecordId: 'root', memberOrdinal: '0', sequence: '1' }),
+            child({ id: 'call', parentRecordId: 'root', memberOrdinal: '1', sequence: '2' }),
+            child({ id: 'loop', parentRecordId: 'call', memberOrdinal: '0', sequence: '3' }),
+            ...[0, 1].flatMap((index) => [
+                child({ id: `frame-${index}`, parentRecordId: 'loop', memberOrdinal: String(index), sequence: String(4 + index * 3) }),
+                child({ id: `inner-${index}`, parentRecordId: `frame-${index}`, memberOrdinal: '0', sequence: String(5 + index * 3) }),
+                { ...child({ id: `wait-${index}`, parentRecordId: `inner-${index}`, memberOrdinal: '0', sequence: String(6 + index * 3) }),
+                    lifecycle: 'waiting_for_review' as const },
+            ]),
+        ];
+        const openedLoop: WorkflowProgressEnvelopeV1 = {
+            kind: 'happier.workflow-progress.v1', blockKind: 'loop',
+            invocationPath: { blockId: 'same', scope: [{ kind: 'workflow', blockId: 'call' }] },
+            attempt: '0', logicalInvocationRecordId: 'loop',
+        };
+        const projection = projectWorkflowFlow(definition, frozenChildren);
+        // Opened and unopened ancestry must make the same join even with colliding ids.
+        for (const progressByInvocationId of [undefined, new Map([['loop', openedLoop]])]) {
+            const structure = projectWorkflowInvocationStructure({ definition, frozenChildren, invocations, progressByInvocationId });
+            expect(structure.get('loop')?.nodeId).not.toBe('same');
+            const wait = structure.get('wait-1')!;
+            expect(wait).toMatchObject({ coverageKind: 'executable', occurrence: [
+                { kind: 'workflow', blockId: 'call' }, { kind: 'item', blockId: 'same', index: 1 },
+                { kind: 'workflow', blockId: 'inner' },
+            ] });
+            expect(projection.nodesById.get(wait.nodeId!)).toMatchObject({ kind: 'wait', blockId: 'same' });
+            const states = projectWorkflowFlowRunStates({ invocations, structure });
+            expect(states.get(wait.nodeId!)?.map((state) => [state.invocationId, state.lifecycle])).toEqual([
+                ['wait-0', 'waiting_for_review'], ['wait-1', 'waiting_for_review'],
+            ]);
+        }
+    });
+
     it('names a linear step row that was never opened, from parent links and member order alone', () => {
         const definition = definitionOf([step('analyze'), step('implement')]);
         const structure = projectWorkflowInvocationStructure({
