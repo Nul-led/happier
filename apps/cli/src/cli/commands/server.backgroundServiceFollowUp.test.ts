@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,7 +31,7 @@ const alternateReleaseChannel = (): DaemonServiceListEntry['releaseChannel'] =>
     (configuration.publicReleaseRing === 'stable' ? 'preview' : 'stable');
 
 vi.mock('node:readline', () => ({
-    createInterface: () => ({
+    createInterface: () => Object.assign(new EventEmitter(), {
         question: (prompt: string, cb: (answer: string) => void) => {
             promptQuestions.push(prompt);
             cb(promptAnswers.shift() ?? '');
