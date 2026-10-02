@@ -1,4 +1,5 @@
 import type { PluginJsonSchema } from '@happier-dev/plugin-sdk/protocol';
+import { ConversationPullRequestV1Schema } from '../management/sessionPullRequestBindings.js';
 
 import {
     defineProtocolLiteral,
@@ -77,6 +78,7 @@ const conversationResolvedGithubPullRequestEndpointV1 = defineProtocolObject({
     kind: defineProtocolLiteral('githubPullRequest'),
     audience: defineProtocolLiteral('shared'),
     ...endpointFields,
+    pullRequest: ConversationPullRequestV1Schema.optional(),
 }, { policy: 'closed' });
 
 /** @internal Relative-only input for composed Channels protocol schemas. */

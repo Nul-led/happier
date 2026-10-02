@@ -4,17 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDeferred, renderHook, standardCleanup } from '@/dev/testkit';
 import { createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
 import { storage } from '@/sync/domains/state/storageStore';
+import { retireActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 
 import type { WorkflowRunNowRequest } from './useWorkflowRunNowController';
 
 const executeMock = vi.hoisted(() => vi.fn());
 const modalAlertSpy = vi.hoisted(() => vi.fn(async () => {}));
 
-type AccountLifetimeState = {
-    value: { scope: { serverId: string; accountId: string }; isCurrent: () => boolean } | null;
-};
-
-const activeAccountLifetime = vi.hoisted((): AccountLifetimeState => ({ value: null }));
+const accountHost = vi.hoisted(() => ({ serverId: 'server-a', available: true }));
 
 vi.mock('@/sync/ops/actions/frontDoorRuntimeActionExecutor', () => ({
     createFrontDoorActionExecute: () => executeMock,
@@ -24,17 +21,17 @@ vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
     return createTextModuleMock({ translate: (key: string) => key });
 });
-vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
-    captureActiveServerAccountScopeLifetime: () => activeAccountLifetime.value,
+vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
+    getAppliedActiveServerSnapshot: () => ({ serverId: accountHost.serverId }),
+    isAppliedActiveServerRuntimeAvailable: () => accountHost.available,
 }));
 
-function accountLifetime(scope: { serverId: string; accountId: string }): AccountLifetimeState['value'] {
-    return Object.freeze({
-        scope,
-        isCurrent: () => activeAccountLifetime.value !== null
-            && activeAccountLifetime.value.scope.serverId === scope.serverId
-            && activeAccountLifetime.value.scope.accountId === scope.accountId,
-    });
+function setAccountScope(scope: { serverId: string; accountId: string } | null): void {
+    // Model the host reset using the real lifetime owner, not a fake generation.
+    retireActiveServerAccountScopeLifetime();
+    accountHost.serverId = scope?.serverId ?? '';
+    accountHost.available = scope !== null;
+    storage.setState({ profileScope: scope });
 }
 
 /** The one Run UUID the caller allocates for an explicit admission attempt. */
@@ -58,8 +55,18 @@ function admitted(admission: 'created' | 'existing') {
 }
 
 describe('useWorkflowRunNowController', () => {
+    it('admits the reviewed role overrides rather than silently using the Account roles', async () => {
+        executeMock.mockResolvedValueOnce(admitted('created'));
+        const { useWorkflowRunNowController } = await import('./useWorkflowRunNowController');
+        const hook = await renderHook(() => useWorkflowRunNowController());
+        const roleOverrides = [{ roleId: 'builder', runsAs: { kind: 'background_run' as const, intent: 'delegate' as const } }];
+        await act(async () => {
+            await hook.getCurrent().runNow({ runId: RUN_ID, source, roleOverrides });
+        });
+        expect(executeMock.mock.calls[0]?.[1]).toMatchObject({ roleOverrides });
+    });
     beforeEach(() => {
-        activeAccountLifetime.value = accountLifetime({ serverId: 'server-a', accountId: 'account-a' });
+        setAccountScope({ serverId: 'server-a', accountId: 'account-a' });
         storage.setState({ workflowRunsById: {} });
     });
 
@@ -67,7 +74,7 @@ describe('useWorkflowRunNowController', () => {
         vi.useRealTimers();
         executeMock.mockReset();
         modalAlertSpy.mockClear();
-        activeAccountLifetime.value = null;
+        setAccountScope(null);
         storage.setState({ workflowRunsById: {} });
         standardCleanup();
     });
@@ -192,7 +199,7 @@ describe('useWorkflowRunNowController', () => {
         });
         expect(hook.getCurrent().stateFor(RUN_ID)).toBe('submitting');
 
-        activeAccountLifetime.value = accountLifetime({ serverId: 'server-b', accountId: 'account-b' });
+        await act(async () => { setAccountScope({ serverId: 'server-b', accountId: 'account-b' }); });
         let outcome: unknown;
         await act(async () => {
             request.resolve(admitted('created'));
@@ -204,8 +211,8 @@ describe('useWorkflowRunNowController', () => {
         expect(outcome).toBeNull();
         expect(storage.getState().workflowRunsById[RUN_ID]).toBeUndefined();
         expect(modalAlertSpy).not.toHaveBeenCalled();
-        activeAccountLifetime.value = accountLifetime({ serverId: 'server-a', accountId: 'account-a' });
         await act(async () => {
+            setAccountScope({ serverId: 'server-a', accountId: 'account-a' });
             hook.rerender();
         });
         expect(hook.getCurrent().stateFor(RUN_ID)).toBe('idle');
@@ -282,7 +289,7 @@ describe('useWorkflowRunNowController', () => {
     });
 
     it('does not dispatch without an active Account', async () => {
-        activeAccountLifetime.value = null;
+        setAccountScope(null);
         const { useWorkflowRunNowController } = await import('./useWorkflowRunNowController');
         const hook = await renderHook(() => useWorkflowRunNowController());
 

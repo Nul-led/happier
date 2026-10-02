@@ -1,10 +1,8 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import {
-  homeEntries as resolveCodexHomeEntries,
-  resolveConfiguredCodexHomePath,
-} from '@happier-dev/plugins-codex/agent/rollout/discovery/homeEntries';
+import { listConnectedServiceNativeHomes, resolveConfiguredNativeHomePath } from '@happier-dev/plugin-sdk/fs';
+import { CODEX_NATIVE_HOME, CODEX_CONNECTED_SERVICE_HOME_DIRECTORY_NAME } from '@happier-dev/protocol/agents/codex/native-home-policy';
 import { configuration } from '@/configuration';
 import type { PetDiscoveryDiagnosticV1 } from '@happier-dev/protocol';
 
@@ -67,7 +65,7 @@ export async function resolveCodexPetRootsWithDiagnostics(input: Readonly<{
   let partial = false;
 
   if (input.includeUserCodexHome !== false) {
-    const codexHome = resolveConfiguredCodexHomePath(env);
+    const codexHome = resolveConfiguredNativeHomePath(CODEX_NATIVE_HOME, env);
     roots.push({
       kind: 'detectedCodexHome',
       homeKind: 'user',
@@ -103,14 +101,11 @@ export async function resolveCodexPetRootsWithDiagnostics(input: Readonly<{
         addRootLimitDiagnostic(listed.rootPath);
         break;
       }
-      const entries = await resolveCodexHomeEntries({
-        source: {
-          kind: 'codexHome',
-          home: 'connectedService',
-          connectedServiceId,
-        },
+      const entries = await listConnectedServiceNativeHomes({
+        serviceId: connectedServiceId,
+        agentId: 'codex',
+        homeDirectoryName: CODEX_CONNECTED_SERVICE_HOME_DIRECTORY_NAME,
         activeServerDir,
-        env,
       });
 
       for (const entry of entries) {
@@ -121,9 +116,9 @@ export async function resolveCodexPetRootsWithDiagnostics(input: Readonly<{
         roots.push({
           kind: 'detectedCodexHome',
           homeKind: 'connectedService',
-          homePath: entry.codexHome,
-          petsPath: join(entry.codexHome, 'pets'),
-          sourceKey: createPetSourceKey(['detectedCodexHome', 'connectedService', entry.codexHome]),
+          homePath: entry.homePath,
+          petsPath: join(entry.homePath, 'pets'),
+          sourceKey: createPetSourceKey(['detectedCodexHome', 'connectedService', entry.homePath]),
         });
         connectedServiceRootCount += 1;
       }

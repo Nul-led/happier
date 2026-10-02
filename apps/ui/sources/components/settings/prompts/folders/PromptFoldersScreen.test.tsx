@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { findTestInstanceByTypeWithProps, renderScreen } from '@/dev/testkit';
+import { findTestInstanceByTypeWithProps, renderScreen } from '@/dev/testkit/render/renderScreen';
 import { installPromptLibrarySettingsCommonModuleMocks } from '../promptLibrarySettingsTestHelpers';
 
 
@@ -44,9 +44,9 @@ installPromptLibrarySettingsCommonModuleMocks({
             },
         }).module;
     },
-    storage: async (importOriginal) => {
-        const { createPartialStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
-        return createPartialStorageModuleMock(importOriginal, {
+    storage: async () => {
+        const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+        return createStorageModuleStub({
             useArtifacts: () => artifactsState.value,
             useSettingMutable: (key: string) => {
                 if (key === 'promptFoldersV1') {
@@ -115,6 +115,8 @@ const artifactsState = vi.hoisted(() => ({
   ],
 }));
 
+const { PromptFoldersScreen } = await import('./PromptFoldersScreen');
+
 describe('PromptFoldersScreen', () => {
   beforeEach(() => {
     promptModalMock.mockReset();
@@ -137,13 +139,18 @@ describe('PromptFoldersScreen', () => {
     ];
   });
 
-  it('adds a new folder from the prompt dialog', async () => {
-    promptModalMock.mockResolvedValueOnce('Release' as string | null);
+  it('adds a folder from its inline draft only when saved', async () => {
     const { PromptFoldersScreen } = await import('./PromptFoldersScreen');
 
     const screen = await renderScreen(<PromptFoldersScreen />);
 
     await screen.pressByTestIdAsync('promptFolders.add');
+
+    expect(setPromptFoldersMock).not.toHaveBeenCalled();
+    const input = screen.findByTestId('promptFolders.draft.name');
+    expect(input).toBeTruthy();
+    await act(async () => { input?.props.onChangeText('Release'); });
+    await screen.pressByTestIdAsync('promptFolders.draft.save');
 
     expect(setPromptFoldersMock).toHaveBeenCalledWith({
       v: 1,
@@ -152,6 +159,7 @@ describe('PromptFoldersScreen', () => {
         { id: 'folder-2', name: 'Release', parentId: null },
       ],
     });
+    expect(promptModalMock).not.toHaveBeenCalled();
   });
 
   it('removes folder assignments from linked docs before deleting the folder', async () => {

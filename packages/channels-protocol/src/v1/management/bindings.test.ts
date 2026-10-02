@@ -114,6 +114,10 @@ describe('Channels V1 binding management mutation contracts', () => {
             kind: 'notVerified',
             reason: 'resultDeliveryUnsupported',
         })).toEqual({ kind: 'notVerified', reason: 'resultDeliveryUnsupported' });
+        expect(ConversationBindingMutationResultV1Schema.parse({
+            kind: 'notVerified',
+            reason: 'scopedTriggerIdentityMismatch',
+        })).toEqual({ kind: 'notVerified', reason: 'scopedTriggerIdentityMismatch' });
         expect(ConversationBindingMutationResultV1Schema.parse(updateResult)).toEqual(updateResult);
 
         expect(ConversationBindingSetEnabledInputV1Schema.safeParse({

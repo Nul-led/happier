@@ -16,7 +16,6 @@ describe('Features page search declarations', () => {
             expect(declaredTitleKeys).toContain(definition.titleKey);
         }
         expect(declaredTitleKeys).toEqual(expect.arrayContaining([
-            'terminalEmbedded.settings.locationTitle',
             'terminalEmbedded.settings.rendererTitle',
         ]));
     });

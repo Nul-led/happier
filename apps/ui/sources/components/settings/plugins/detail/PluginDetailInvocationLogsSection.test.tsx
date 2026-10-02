@@ -5,7 +5,7 @@ import type {
     PluginInvocationLogRecordV1,
 } from '@happier-dev/protocol';
 
-import { renderScreen } from '@/dev/testkit';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
 
 import type { PluginInvocationLogsControllerState } from './pluginInvocationLogsController';
 import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelpers';
@@ -42,6 +42,13 @@ installSettingsViewCommonModuleMocks({
     },
 });
 
+// Collect the real view after installing platform boundaries, rather than
+// charging the full cold application import graph to the first render test.
+const {
+    PluginDetailInvocationLogsSectionView,
+    pluginInvocationLogRowIdentity,
+} = await import('./PluginDetailInvocationLogsSection');
+
 const PLUGIN_ID = 'acme.tools';
 
 function createRecord(input: Readonly<{
@@ -59,7 +66,7 @@ function createRecord(input: Readonly<{
         context: {
             plugin: { id: PLUGIN_ID, version: '1.0.0' },
             contribution: { id: 'action.run', qualifiedId: 'acme.tools/action.run' },
-            generation: 'generation-1',
+            occurrenceId: 'occurrence-1',
             correlationId: 'correlation-1',
             surface: 'action',
         },
@@ -80,7 +87,7 @@ function createRecord(input: Readonly<{
 function expectedRowIdentity(record: PluginInvocationLogRecordV1): string {
     return [
         record.context.plugin.id,
-        record.context.generation,
+        record.context.occurrenceId,
         record.context.correlationId,
         String(record.sequence),
     ].map((part) => `${part.length}:${part}`).join('|');
@@ -111,7 +118,6 @@ function createActions() {
 
 describe('PluginDetailInvocationLogsSectionView', () => {
     it('renders canonical redacted message and stamped metadata without rendering field or diagnostic payloads', async () => {
-        const { PluginDetailInvocationLogsSectionView } = await import('./PluginDetailInvocationLogsSection');
         const screen = await renderScreen(
             <PluginDetailInvocationLogsSectionView
                 pluginId={PLUGIN_ID}
@@ -128,11 +134,22 @@ describe('PluginDetailInvocationLogsSectionView', () => {
         expect(screen.getTextContent()).not.toContain('must-not-render-diagnostic-secret');
     });
 
+    it('edits and clears the correlation filter inline', async () => {
+        const actions = createActions();
+        const screen = await renderScreen(<PluginDetailInvocationLogsSectionView
+            pluginId={PLUGIN_ID} targetStatus="ready" state={createState({ correlationId: 'old' })} {...actions}
+        />);
+        const field = screen.findByTestId(`settings.plugins.detail.${PLUGIN_ID}.invocationLogs.correlationFilter.input`);
+        expect(field).toBeTruthy();
+        await act(async () => { field?.props.onChangeText('new'); });
+        await act(async () => { field?.props.onSubmitEditing(); });
+        expect(actions.onEditCorrelationId).toHaveBeenCalledWith('new');
+        await act(async () => { field?.props.onChangeText(''); });
+        await act(async () => { field?.props.onSubmitEditing(); });
+        expect(actions.onEditCorrelationId).toHaveBeenLastCalledWith('');
+    });
+
     it('keeps same-sequence records from interleaved invocations distinct through reorder and removal', async () => {
-        const {
-            PluginDetailInvocationLogsSectionView,
-            pluginInvocationLogRowIdentity,
-        } = await import('./PluginDetailInvocationLogsSection');
         const first = createRecord({
             message: 'First invocation record',
             correlationId: 'correlation-first',
@@ -181,7 +198,6 @@ describe('PluginDetailInvocationLogsSectionView', () => {
     });
 
     it('shows the canonical selected machine and server presentation inside the log group', async () => {
-        const { PluginDetailInvocationLogsSectionView } = await import('./PluginDetailInvocationLogsSection');
         const screen = await renderScreen(
             <PluginDetailInvocationLogsSectionView
                 pluginId={PLUGIN_ID}
@@ -209,7 +225,6 @@ describe('PluginDetailInvocationLogsSectionView', () => {
     });
 
     it('keeps loading, empty, error, and exact-target admission states distinct from one another', async () => {
-        const { PluginDetailInvocationLogsSectionView } = await import('./PluginDetailInvocationLogsSection');
         const actions = createActions();
 
         const loading = await renderScreen(
@@ -256,7 +271,6 @@ describe('PluginDetailInvocationLogsSectionView', () => {
     });
 
     it('explains an unavailable selected log reader without misreporting the machine as stale', async () => {
-        const { PluginDetailInvocationLogsSectionView } = await import('./PluginDetailInvocationLogsSection');
         const state = createState({
             phase: 'unavailable',
             unavailableReason: 'readerUnavailable',
@@ -276,7 +290,6 @@ describe('PluginDetailInvocationLogsSectionView', () => {
     });
 
     it('keeps a prior redacted window visible while clearly surfacing a refresh failure', async () => {
-        const { PluginDetailInvocationLogsSectionView } = await import('./PluginDetailInvocationLogsSection');
         const screen = await renderScreen(
             <PluginDetailInvocationLogsSectionView
                 pluginId={PLUGIN_ID}
@@ -296,7 +309,6 @@ describe('PluginDetailInvocationLogsSectionView', () => {
     });
 
     it('exposes bounded pagination and a stop action for an active follow', async () => {
-        const { PluginDetailInvocationLogsSectionView } = await import('./PluginDetailInvocationLogsSection');
         const actions = createActions();
         const page = await renderScreen(
             <PluginDetailInvocationLogsSectionView

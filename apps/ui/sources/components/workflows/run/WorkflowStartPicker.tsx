@@ -31,6 +31,10 @@ export function WorkflowStartPicker(props: Readonly<{
         id: entry.id, name: tLoose(entry.titleKey), description: tLoose(entry.descriptionKey),
         definition: entry.definition, source: { kind: 'catalog', workflow: entry.id },
     })), []);
+    const pluginSelections = React.useMemo(() => library.pluginWorkflows.map((entry): WorkflowStartSelection => ({
+        id: entry.workflow, name: entry.title, description: entry.description ?? '', definition: entry.definition,
+        source: { kind: 'catalog', workflow: entry.workflow, pluginVersion: entry.version },
+    })), [library.pluginWorkflows]);
     const asks = React.useCallback((definition: WorkflowDefinitionV1) => definition.inputs.length === 0
         ? t('workflows.start.noInputs')
         : t('workflows.start.asksFor', { names: definition.inputs.map((input) => input.name).join(', ') }), []);
@@ -64,13 +68,17 @@ export function WorkflowStartPicker(props: Readonly<{
                     return { options: rows.map((entry) => ({ id: entry.id, label: entry.name, subtitle: asks(entry.definition) })) };
                 },
             },
+            { kind: 'static', id: 'plugins', title: t('workflows.plugins.fromPlugins'), options: pluginSelections.map((entry) => ({
+                id: entry.id, label: entry.name, subtitle: asks(entry.definition), testID: `workflow-choice:${entry.id}`,
+            })) },
         ],
-    }), [asks, builtinSelections, library.definitions]);
+    }), [asks, builtinSelections, library.definitions, pluginSelections]);
     return <View>
         <SelectionList rootStep={rootStep} maxHeight={props.maxHeight} heightBehavior="content" autoFocusInputOnWeb
             onSelect={(id) => {
                 const saved = savedSelections.current.get(id);
                 const selection = builtinSelections.find((entry) => entry.id === id)
+                    ?? pluginSelections.find((entry) => entry.id === id)
                     ?? (saved?.lifetime.isCurrent() ? saved.selection : undefined);
                 if (!selection) return;
                 props.onSelect(selection);

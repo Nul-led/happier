@@ -43,6 +43,24 @@ function validContribution() {
 }
 
 describe('ProviderContributionV1Schema', () => {
+  it('requires managed purpose routes to be unique members of the managed endpoint declaration', () => {
+    const runtime = {
+      kind: 'managed' as const,
+      endpointTemplateIds: ['responses'],
+      connectedAccounts: [{ purpose: 'upstream', service: 'openai', endpointTemplateIds: ['responses'] }],
+    };
+    const resolve = (managedRuntime: typeof runtime) => resolveProviderManagedRuntimeDeclarationV1({
+      implementationIdentity: { pluginId: 'acme.gateway', localId: 'gateway' },
+      managedRuntime,
+    });
+    expect(() => resolve(runtime)).not.toThrow();
+    expect(() => resolve({ ...runtime, connectedAccounts: [{ ...runtime.connectedAccounts[0]!, endpointTemplateIds: ['foreign'] }] })).toThrow();
+    expect(() => resolve({ ...runtime, connectedAccounts: [
+      runtime.connectedAccounts[0]!,
+      { purpose: 'other-upstream', service: 'other', endpointTemplateIds: ['responses'] },
+    ] })).toThrow();
+  });
+
   it('resolves relative managed connected-account references once at the public declaration owner', () => {
     const relative = resolveProviderManagedRuntimeDeclarationV1({
       implementationIdentity: {
@@ -62,6 +80,7 @@ describe('ProviderContributionV1Schema', () => {
           },
           required: true,
           materializationKinds: ['httpHeaders'],
+          endpointTemplateIds: ['responses'],
         }],
         requestAuthUses: [{
           purpose: 'upstream',
@@ -94,6 +113,7 @@ describe('ProviderContributionV1Schema', () => {
       localId: 'openai',
     });
     expect(relative.connectedAccountPurposeBindingPolicy).toEqual({ minimumBound: 1 });
+    expect(relative.connectedAccounts[0]?.endpointTemplateIds).toEqual(['responses']);
     expect(relative.connectedAccounts[0]?.title).toEqual({
       key: 'plugins.acme.gateway.connectedAccounts.upstream',
       fallback: 'OpenAI upstream account',

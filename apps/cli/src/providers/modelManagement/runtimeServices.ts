@@ -22,7 +22,7 @@ import {
   type ProviderRuntimeStateFileV1,
   type ProviderSettingsV1,
 } from '@happier-dev/protocol';
-import { projectCLIProxyAPIProviderConnectionApplication } from '@happier-dev/plugins-cliproxyapi';
+import { projectProviderConnectionBrokerApplication } from '@/providers/broker/providerConnectionCpxBridge';
 import type {
   DaemonProviderBindingStatusRequestV1,
   DaemonProviderBindingStatusResponseV1,
@@ -835,7 +835,8 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
               // broker request. Project the executable application once at
               // this owner and still bind it to the source-selected protocol.
               const application = sourceApplication && brokeredProviderConnection
-                ? projectCLIProxyAPIProviderConnectionApplication({
+                ? projectProviderConnectionBrokerApplication({
+                    registry,
                     agentTargetKey: request.agentTargetKey,
                     protocol: sourceApplication.protocol,
                   })
@@ -1060,6 +1061,7 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
     });
     request.signal.throwIfAborted();
     if (projection.status !== 'success') return null;
+    const registry = await resolveManagementRegistry();
     const candidates = projection.groups.flatMap((group) => {
       if (
         group.connectionId !== request.source.connectionId
@@ -1072,7 +1074,8 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
           || !row.application
           || !row.directMaterialization
         ) return [];
-        const brokerApplication = projectCLIProxyAPIProviderConnectionApplication({
+        const brokerApplication = projectProviderConnectionBrokerApplication({
+          registry,
           agentTargetKey: request.application.agentTargetKey,
           protocol: row.application.protocol,
         });

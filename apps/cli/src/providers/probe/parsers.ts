@@ -15,7 +15,7 @@ import {
   buildAnthropicModelOptions,
   normalizeAnthropicModelDisplayName,
   type AnthropicEffortLevel,
-} from '@happier-dev/plugins-claude/provider/catalog';
+} from '@happier-dev/protocol/providers/anthropic-models';
 
 export type ParsedProviderCatalogResponse = Readonly<{
   models: readonly ProviderCatalogProbeModelV1[];

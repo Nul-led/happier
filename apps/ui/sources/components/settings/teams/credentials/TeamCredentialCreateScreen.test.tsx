@@ -66,11 +66,6 @@ installSettingsViewCommonModuleMocks({
     storage: async (importOriginal) => providerHarness.storageModule(importOriginal),
 });
 
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')>(),
-    requireCurrentAccountStoredContentServerCompatibility: vi.fn(async () => undefined),
-}));
-
 const harness = createHomeGovernanceHarness();
 installHomeGovernanceBoundaries(harness);
 

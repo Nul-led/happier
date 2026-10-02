@@ -7,6 +7,19 @@ import { encodeBase64 } from '@/encryption/base64';
 import { resolveProvisioningMaterial } from './resolveProvisioningMaterial';
 import { buildTerminalResponseV3, buildTerminalTokenOnlyResponseV3 } from './terminalProvisioning';
 
+/** Pairing disclosure and issuance read the persisted mode from the exact target Home. */
+export async function resolveTerminalPairingStorageMode(params: Readonly<{
+    target: HomeEnrollmentTransport;
+    targetCredentials: AuthCredentials;
+}>): Promise<'plain' | 'e2ee'> {
+    const fetchAt = params.target.createRequest({ credentials: null });
+    const accountMode = await fetchAccountEncryptionMode(params.targetCredentials, {
+        retry: 'none',
+        request: async (path, init) => await fetchAt(path, init, { includeAuth: false }),
+    });
+    return accountMode.mode;
+}
+
 export async function approveTerminalPairing(params: Readonly<{
     target: HomeEnrollmentTransport;
     requesterPublicKey: Uint8Array;
@@ -14,18 +27,19 @@ export async function approveTerminalPairing(params: Readonly<{
     targetCredentials: AuthCredentials;
     supportsTokenOnly: boolean;
 }>): Promise<AuthApproveResult> {
-    const material = await resolveProvisioningMaterial(params.targetCredentials);
+    const [storageMode, material] = await Promise.all([
+        resolveTerminalPairingStorageMode(params),
+        resolveProvisioningMaterial(params.targetCredentials),
+    ]);
+    if ((storageMode === 'plain') !== (material.type === 'tokenOnly')) {
+        throw new Error('Terminal pairing credential material does not match the target Account storage mode');
+    }
     let sealedResponse: Uint8Array;
     if (material.type === 'tokenOnly') {
         if (!params.supportsTokenOnly) {
             throw new Error('Token-only terminal pairing requires an authenticated compatible reader');
         }
-        const fetchAt = params.target.createRequest({ credentials: null });
-        const [accountMode, plaintextStorageEnabled, keylessAccountsEnabled] = await Promise.all([
-            fetchAccountEncryptionMode(params.targetCredentials, {
-                retry: 'none',
-                request: async (path, init) => await fetchAt(path, init, { includeAuth: false }),
-            }),
+        const [plaintextStorageEnabled, keylessAccountsEnabled] = await Promise.all([
             isRuntimeFeatureEnabled({
                 featureId: 'encryption.plaintextStorage',
                 scope: { scopeKind: 'spawn' as const, serverId: params.target.homeServerIdentityId },
@@ -37,7 +51,7 @@ export async function approveTerminalPairing(params: Readonly<{
                 force: true,
             }),
         ]);
-        if (accountMode.mode !== 'plain' || !plaintextStorageEnabled || !keylessAccountsEnabled) {
+        if (!plaintextStorageEnabled || !keylessAccountsEnabled) {
             throw new Error('Token-only terminal pairing is not permitted by the target Home policy');
         }
         sealedResponse = buildTerminalTokenOnlyResponseV3({

@@ -24,7 +24,7 @@ export const IdentityTestDiagnosticsGroup = React.memo(function IdentityTestDiag
     return (
         <ItemGroup
             title={t('identityAdministration.diagnosticsTitle')}
-            footer={t('identityAdministration.diagnosticsFooter')}
+            description={t('identityAdministration.diagnosticsFooter')}
         >
             {rows.map((row) => (
                 <Item

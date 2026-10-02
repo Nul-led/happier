@@ -297,6 +297,35 @@ addressing, freshness, command, target, and permission policy. Providers do
 not infer addressing from text and do not supply `pluginId`, Account,
 binding, Session, or permission authority.
 
+In 0.3 development source, an observation actor may carry
+`repositoryWriteAccess: true | false | null` as authenticated evidence for
+the observation's repository. Only `true` establishes write access; null or
+an omitted field means unknown. The GitHub provider reads this for PR comments
+with the Channel's selected credential, once per commenter within a poll.
+The evidence does not itself admit a scoped PR-comment workflow; that policy
+belongs to its scoped admission owner.
+
+Development-only session PR links use retained GitHub Channel bindings. The
+`session-pull-request-binding-v1` Action attaches through the existing binding
+writer; scoped PR-comment and CI-failure bindings carry the Automation trigger's
+identity and revision. Removing a trigger disables its binding and retains the
+link. A successful SCM open/reuse with an origin Session writes through the same
+owner, while an originless operation creates no Session link.
+
+`resolveSessionPullRequestLinksV1` projects distinct links in binding creation
+order as `{ sessionId, pullRequestLinks: [{ provider: 'github', repository,
+number }] }`. Disabled retained bindings are included; bindings being deleted
+are excluded. `session.trigger.list` returns the requested Session's projection.
+Account readers use the existing `channel-state` Collection query and change
+hints, decode all pages with the Account's plain/E2EE codec, and apply this same
+projector. SCM continues to own PR publication and status.
+
+Scoped conversation admission accepts only explicit repository write access
+with matching binding, sender, Session, trigger kind and revision. It returns
+typed refusal for denied, unknown or mismatched evidence. E2EE hosts seal the
+private PR selector and message while carrying explicit public correspondence
+and permission evidence for the authenticated server admission check.
+
 Provider delivery returns strict evidence such as `delivered`, `partial`,
 `notDelivered`, `endpointArchived`, or `outcomeUnknown`. A provider must not
 collapse remote acceptance, local custody settlement, and user-visible

@@ -14,6 +14,7 @@ import {
     MAX_CONVERSATION_RETRY_AFTER_MS,
 } from '../bounds.js';
 import { ConversationIngressObservedEntryV1ProtocolSchema } from '../core/ingress.js';
+import { ConversationResolvedEndpointV1ProtocolSchema } from './resolution.js';
 import {
     ConversationProviderDiagnosticV1ProtocolSchema,
     ConversationProviderFailureV1ProtocolSchema,
@@ -28,6 +29,10 @@ import {
 /** @internal Relative-only input for the core-owned checkpointed-poll role. */
 export const ConversationPollInputV1ProtocolSchema = defineProtocolObject({
     ...ConversationProviderConnectionInputV1Fields,
+    bindings: defineProtocolArray(defineProtocolObject({
+        endpoint: ConversationResolvedEndpointV1ProtocolSchema,
+        scopedTriggerKind: defineProtocolUnion([defineProtocolLiteral('prComment'), defineProtocolLiteral('ciFailed')]),
+    }, { policy: 'closed' })).optional(),
     checkpoint: ConversationCheckpointV1ProtocolSchema.nullable(),
     limit: defineProtocolNumber({
         integer: true,

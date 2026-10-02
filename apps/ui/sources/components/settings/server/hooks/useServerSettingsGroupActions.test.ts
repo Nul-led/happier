@@ -266,7 +266,7 @@ describe('useServerSettingsGroupActions', () => {
         });
     });
 
-    it('renames the group against the current state landed while the prompt was open', async () => {
+    it('saves an inline group-name draft against the current state without prompting', async () => {
         const { useServerSettingsGroupActions } = await import('./useServerSettingsGroupActions');
         const { Modal } = await import('@/modal');
         const homeView = await seedHomeView({
@@ -274,8 +274,6 @@ describe('useServerSettingsGroupActions', () => {
             serverSelectionActiveTargetKind: 'group',
             serverSelectionActiveTargetId: 'grp',
         });
-        const prompt = createDeferred<string | null>();
-        vi.mocked(Modal.prompt).mockImplementationOnce(async () => await prompt.promise);
         const serverA = makeServerProfile('server-a', 'Server A', 'http://localhost:3013');
 
         const actions = await renderHook(() => useServerSettingsGroupActions({
@@ -296,7 +294,6 @@ describe('useServerSettingsGroupActions', () => {
         }));
         mountedHookCleanups.push(actions.__cleanup);
 
-        const pending = actions.onRenameGroup({ id: 'grp', name: 'Group', serverIds: ['server-a'], presentation: 'grouped' });
         await homeView.applyConcurrentChange((current) => ({
             ...current,
             serverSelectionGroups: [
@@ -304,8 +301,8 @@ describe('useServerSettingsGroupActions', () => {
                 { id: 'other', name: 'Other', serverIds: ['server-a'], presentation: 'grouped' },
             ],
         }));
-        prompt.resolve('Renamed');
-        await pending;
+        await actions.onRenameGroup({ id: 'grp', name: 'Group', serverIds: ['server-a'], presentation: 'grouped' }, ' Renamed ');
+        expect(Modal.prompt).not.toHaveBeenCalled();
 
         expect(homeView.getCurrent().serverSelectionGroups).toEqual([
             { id: 'grp', name: 'Renamed', serverIds: ['server-a'], presentation: 'grouped' },
@@ -786,9 +783,7 @@ describe('useServerSettingsGroupActions', () => {
             });
 
             // A later rename from the same tab also persists device-wide.
-            const { Modal } = await import('@/modal');
-            vi.mocked(Modal.prompt).mockImplementationOnce(async () => 'Renamed');
-            await actions.onRenameGroup(created as never);
+            await actions.onRenameGroup(created as never, 'Renamed');
             expect(homeView.getDevice().serverSelectionGroups).toEqual([{ ...created, name: 'Renamed' }]);
         } finally {
             vi.unstubAllGlobals();

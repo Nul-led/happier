@@ -27,7 +27,7 @@ import {
     redactDiagnosticsHeaders,
     stripUrlValuesInString,
 } from '@happier-dev/protocol';
-import { buildInjectedBrowserDiagnosticsRuntimeScript } from './injected/build';
+import { buildInjectedBrowserDiagnosticsRuntimeScript } from '@happier-dev/peer-mediation/browser/collector/build';
 
 type InjectedBrowserDiagnosticsCollectorIdentity = Readonly<{
     browserSessionId: string;

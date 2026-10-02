@@ -112,6 +112,12 @@ const conversationObservationActorV1 = defineProtocolObject({
         defineProtocolLiteral(true),
         defineProtocolLiteral(false),
     ]),
+    // Authenticated provider evidence for this observation's repository.
+    // Only true establishes write access; null or omission means unknown.
+    repositoryWriteAccess: defineProtocolUnion([
+        defineProtocolLiteral(true),
+        defineProtocolLiteral(false),
+    ]).nullable().optional(),
 }, { policy: 'closed' });
 
 const [
@@ -199,6 +205,7 @@ const conversationAuthenticatedObservationEnvelopeFields = {
     transport: conversationObservationTransportV1,
     endpoint: ConversationResolvedEndpointV1ProtocolSchema,
     actor: conversationObservationActorV1,
+    scopedTriggerKind: defineProtocolUnion([defineProtocolLiteral('prComment'), defineProtocolLiteral('ciFailed')]).optional(),
 } as const;
 
 /** @internal Relative-only input for composed Channels protocol schemas. */

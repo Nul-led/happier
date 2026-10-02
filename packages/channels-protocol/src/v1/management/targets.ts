@@ -30,6 +30,7 @@ import {
     type ConversationJsonObjectV1,
 } from '../json.js';
 import { ConversationResolvedEndpointV1ProtocolSchema } from '../provider/resolution.js';
+import { ConversationPullRequestV1Schema, ConversationScopedPullRequestTriggerV1Schema } from './sessionPullRequestBindings.js';
 
 const positiveSafeInteger = defineProtocolNumber({
     integer: true,
@@ -89,6 +90,7 @@ const conversationSessionNewSessionPolicyV1 = defineProtocolUnion([
 const conversationSessionBindingTargetV1 = defineProtocolObject({
     kind: defineProtocolLiteral('session'),
     sessionId: sessionIdV1,
+    pullRequestLink: ConversationPullRequestV1Schema.optional(),
     policy: defineProtocolObject({
         deliveryMode: defineProtocolUnion([
             defineProtocolLiteral('repliesOnly'),
@@ -103,6 +105,7 @@ const conversationSessionBindingTargetV1 = defineProtocolObject({
 const conversationAutomationBindingTargetV1 = defineProtocolObject({
     kind: defineProtocolLiteral('automation'),
     automationId: automationIdV1,
+    scopedTrigger: ConversationScopedPullRequestTriggerV1Schema.optional(),
     policy: defineProtocolObject({
         resultDelivery: defineProtocolUnion([
             defineProtocolLiteral('finalResult'),

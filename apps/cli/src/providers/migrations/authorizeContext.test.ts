@@ -54,6 +54,7 @@ const resolvedContribution = {
 function baseContext(rawSettings: Readonly<Record<string, unknown>>) {
   return buildLegacyProfileMigrationContext({
     rawSettings,
+    authoringMemory: { lastUsedProfile: null },
     providersByContributionKey: new Map([[contributionKey, resolvedContribution]]),
     allocatedConnectionIdsBySourceProfileId: { deepseek: 'pc_deepseek' },
     migratedAt: 20,

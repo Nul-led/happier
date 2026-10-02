@@ -7,7 +7,7 @@ import {
 } from '@/components/settings/machines/PluginMachineExecutionOriginSelector';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { Modal } from '@/modal';
+import { FieldValueItem } from '@/components/ui/forms/FieldValueItem';
 import {
     type PluginMachineExecutionOriginSelectionV1,
 } from '@/sync/domains/machines/administration/usePluginExecutionOriginSelection';
@@ -94,7 +94,7 @@ function describeLogRecord(record: PluginInvocationLogRecordV1): string {
 export function pluginInvocationLogRowIdentity(record: PluginInvocationLogRecordV1): string {
     return [
         record.context.plugin.id,
-        record.context.generation,
+        record.context.occurrenceId,
         record.context.correlationId,
         String(record.sequence),
     ].map((part) => `${part.length}:${part}`).join('|');
@@ -127,7 +127,7 @@ export function PluginDetailInvocationLogsSectionView(props: Readonly<{
     targetStatus: PluginInvocationLogsTargetStatus;
     targetPresentation?: PluginMachineExecutionOriginPresentation;
     state: PluginInvocationLogsControllerState;
-    onEditCorrelationId: () => void;
+    onEditCorrelationId: (value: string) => void;
     onRefresh: () => void;
     onLoadMore: () => void;
     onStartFollowing: () => void;
@@ -241,7 +241,7 @@ export function PluginDetailInvocationLogsSectionView(props: Readonly<{
     return (
         <ItemGroup
             title={t('settingsPlugins.invocationLogs.title')}
-            footer={t('settingsPlugins.invocationLogs.footer')}
+            description={t('settingsPlugins.invocationLogs.footer')}
         >
             {props.targetPresentation ? (
                 <Item
@@ -254,11 +254,15 @@ export function PluginDetailInvocationLogsSectionView(props: Readonly<{
                     showChevron={false}
                 />
             ) : null}
-            <Item
+            <FieldValueItem
                 testID={`${testIDPrefix}.correlationFilter`}
                 title={t('settingsPlugins.invocationLogs.correlationFilter')}
                 subtitle={correlationId || t('settingsPlugins.invocationLogs.correlationFilterAll')}
-                onPress={props.onEditCorrelationId}
+                value={correlationId}
+                fieldTestID={`${testIDPrefix}.correlationFilter.input`}
+                placeholder={t('settingsPlugins.invocationLogs.correlationPromptPlaceholder')}
+                onCommit={props.onEditCorrelationId}
+                allowEmpty
                 disabled={!canRead || isReading || props.state.following}
             />
             <Item
@@ -331,27 +335,13 @@ export function PluginDetailInvocationLogsSection(props: Readonly<{
         resolveTarget,
         read: readPluginInvocationLogsOnMachine,
     });
-    const editCorrelationId = React.useCallback(async () => {
-        const next = await Modal.prompt(
-            t('settingsPlugins.invocationLogs.correlationPromptTitle'),
-            t('settingsPlugins.invocationLogs.correlationPromptBody'),
-            {
-                defaultValue: controller.state.correlationId,
-                placeholder: t('settingsPlugins.invocationLogs.correlationPromptPlaceholder'),
-                confirmText: t('common.save'),
-                cancelText: t('common.cancel'),
-            },
-        );
-        if (next !== null) controller.setCorrelationId(next);
-    }, [controller]);
-
     return (
         <PluginDetailInvocationLogsSectionView
             pluginId={props.pluginId}
             targetStatus={targetStatus}
             targetPresentation={targetPresentation}
             state={controller.state}
-            onEditCorrelationId={() => { void editCorrelationId(); }}
+            onEditCorrelationId={controller.setCorrelationId}
             onRefresh={() => { void controller.refresh(); }}
             onLoadMore={() => { void controller.loadMore(); }}
             onStartFollowing={() => { void controller.startFollowing(); }}

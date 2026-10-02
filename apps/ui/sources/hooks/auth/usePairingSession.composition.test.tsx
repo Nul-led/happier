@@ -75,6 +75,7 @@ describe('trusted-Home-displayed QR two-client composition', () => {
         const { pairingRequest } = await import('@/sync/api/account/apiPairingAuth');
         const { parseHomeQrInviteDeepLink } = await import('@/auth/pairing/pairingUrl');
         const { usePairingSession } = await import('./usePairingSession');
+        const { setHomeSetupStepHidden } = await import('@/components/hub/layout/homeHubLayout');
 
         const descriptor = {
             v: 1 as const,
@@ -184,7 +185,14 @@ describe('trusted-Home-displayed QR two-client composition', () => {
             throw new Error(`Unexpected QR boundary request: ${path}`);
         });
 
-        const trusted = await renderHook(() => usePairingSession({ enabled: true, isAuthenticated: true }));
+        let setupLayout = { order: ['setup'], hidden: [] as string[] };
+        const trusted = await renderHook(() => usePairingSession({
+            enabled: true, isAuthenticated: true,
+            onCompleted: () => {
+                const next = setHomeSetupStepHidden(setupLayout, 'addPhone', true);
+                setupLayout = { order: [...next.order], hidden: [...next.hidden] };
+            },
+        }));
         await act(async () => {
             await trusted.getCurrent().startPairing();
         });
@@ -196,6 +204,7 @@ describe('trusted-Home-displayed QR two-client composition', () => {
             direction: 'trusted_home_displays',
         });
         if (!parsed) throw new Error('Expected strict current QR invite');
+        expect(setupLayout.hidden).toEqual([]);
 
         const requesterTransport = await resolveHomeEnrollmentTransport(descriptor);
         if (!requesterTransport.ok) throw new Error('Expected HTTPS enrollment transport');
@@ -239,6 +248,7 @@ describe('trusted-Home-displayed QR two-client composition', () => {
             homeServerIdentityId: descriptor.homeServerIdentityId,
         });
         await vi.waitFor(() => expect(trusted.getCurrent().presentation.phase).toBe('succeeded'));
+        expect(setupLayout.hidden).toEqual(['setup:addPhone']);
 
         expect(boundary.createRequest).toHaveBeenCalledWith(expect.objectContaining({
             endpointUrl: descriptor.canonicalServerUrl,

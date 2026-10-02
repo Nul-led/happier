@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { CODEX_ACP_INSTALLABLE_DESCRIPTOR } from '@happier-dev/plugins-codex/agent/installables/codexAcp';
 
 vi.mock('@happier-dev/cli-common/agents', async () => {
   const actual = await vi.importActual<typeof import('@happier-dev/cli-common/agents')>('@happier-dev/cli-common/agents');
@@ -121,7 +122,7 @@ describe('codexAcp release-binary installer', () => {
     await expect(readFile(binPath, 'utf8')).resolves.toContain('codex-acp');
     await expect(stat(binPath)).resolves.toEqual(expect.objectContaining({ isFile: expect.any(Function) }));
 
-    await expect(getCodexAcpDepStatus({ includeLatestVersion: true })).resolves.toEqual(
+    await expect(getCodexAcpDepStatus({ includeLatestVersion: true, descriptor: CODEX_ACP_INSTALLABLE_DESCRIPTOR })).resolves.toEqual(
       expect.objectContaining({
         installed: true,
         binPath,
@@ -173,7 +174,7 @@ describe('codexAcp release-binary installer', () => {
       lastInstallLogPath: join(dirname(codexAcpBinPath()), 'install.log'),
     }), 'utf8');
 
-    await expect(getCodexAcpDepStatus({ includeLatestVersion: true })).resolves.toEqual(
+    await expect(getCodexAcpDepStatus({ includeLatestVersion: true, descriptor: CODEX_ACP_INSTALLABLE_DESCRIPTOR })).resolves.toEqual(
       expect.objectContaining({
         installed: true,
         binPath: expect.stringMatching(/codex-acp\.exe$/),

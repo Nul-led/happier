@@ -10,16 +10,12 @@ describe('buildAccountSettingsSnapshot', () => {
     it('tracks count-only collection summaries through canonical analytics serializers', () => {
         const snapshot = buildAccountSettingsSnapshot({
             ...settingsDefaults,
-            recentMachinePaths: [
-                { machineId: 'm1', path: '/repo-one' },
-                { machineId: 'm2', path: '/repo-two' },
-            ],
             favoriteDirectories: ['/a', '/b', '/c'],
             favoriteMachines: ['m1'],
             favoriteProfiles: ['default', 'custom:work'],
         });
 
-        expect(snapshot.properties.acct_setting__recentMachinePaths).toBe(2);
+        expect(snapshot.properties).not.toHaveProperty('acct_setting__recentMachinePaths');
         expect(snapshot.properties.acct_setting__favoriteDirectories).toBe(3);
         expect(snapshot.properties.acct_setting__favoriteMachines).toBe(1);
         expect(snapshot.properties.acct_setting__favoriteProfiles).toBe(2);
@@ -328,7 +324,6 @@ describe('buildAccountSettingsSnapshot', () => {
                     envVarRequirements: [{ name: 'OPENAI_API_KEY', kind: 'secret', required: true }],
                 }),
             ],
-            lastUsedProfile: 'work',
             secrets: [
                 {
                     id: 'secret-1',
@@ -431,7 +426,7 @@ describe('buildAccountSettingsSnapshot', () => {
         expect(snapshot.properties.acct_setting__profiles__customEnvVarProfileCount).toBe(1);
         expect(snapshot.properties.acct_setting__profiles__builtInCount).toBe(1);
         expect(snapshot.properties.acct_setting__profiles__machineLoginCount).toBe(1);
-        expect(snapshot.properties.acct_setting__lastUsedProfile).toBe('custom');
+        expect(snapshot.properties).not.toHaveProperty('acct_setting__lastUsedProfile');
         expect(snapshot.properties.acct_setting__secrets).toBe(2);
         expect(snapshot.properties.acct_setting__secretBindingsByProfileId__boundProfileCount).toBe(2);
         expect(snapshot.properties.acct_setting__secretBindingsByProfileId__totalBindingCount).toBe(2);

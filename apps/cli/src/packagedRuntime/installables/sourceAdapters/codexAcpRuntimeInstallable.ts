@@ -1,6 +1,7 @@
 import { compareVersions } from '@happier-dev/cli-common/update';
 import type { CapabilityId, InstallableDependencyDescriptor, InstallableKey } from '@happier-dev/protocol';
-import { CODEX_ACP_RUNTIME_LAUNCH_HELPERS } from '@happier-dev/plugins-codex/agent/installables/codexAcp';
+import { resolveManagedDependencyCommand, validateManagedDependencyCommand, type ManagedDependencyCommand } from '@happier-dev/cli-common/agents';
+import { readRuntimeInstallableDescriptor } from '@/packagedRuntime/installables/registry';
 
 import {
   getCodexAcpDepStatus,
@@ -14,8 +15,8 @@ import type {
 } from '@/packagedRuntime/installables/registry';
 
 type DetectDeps = Readonly<{
-  resolveCodexAcpSpawn: () => ReturnType<typeof CODEX_ACP_RUNTIME_LAUNCH_HELPERS.resolveSpawnSpec>;
-  validateCodexAcpSpawnAvailability: typeof CODEX_ACP_RUNTIME_LAUNCH_HELPERS.validateAvailability;
+  resolveCodexAcpSpawn: () => ManagedDependencyCommand;
+  validateCodexAcpSpawnAvailability: (spec: ManagedDependencyCommand, opts?: Readonly<{ env?: NodeJS.ProcessEnv }>) => ReturnType<typeof validateManagedDependencyCommand>;
   resolveExistingCodexAcpManagedBinPath: typeof resolveExistingCodexAcpManagedBinPath;
 }>;
 
@@ -24,26 +25,40 @@ type BackgroundUpdateDeps = Readonly<{
   installOrUpgrade: RuntimeInstallableAdapter['installOrUpgrade'];
 }>;
 
-function hasExplicitCodexAcpOverride(env: NodeJS.ProcessEnv): boolean {
-  return typeof env.HAPPIER_CODEX_ACP_BIN === 'string' && env.HAPPIER_CODEX_ACP_BIN.trim().length > 0;
+function launchHelpers(descriptor?: InstallableDependencyDescriptor) {
+  const current = descriptor ?? readRuntimeInstallableDescriptor('codex-acp');
+  const declaration = current?.source.kind === 'github_release_binary' && current.source.launch?.kind === 'codexAcp' ? current.source.launch : undefined;
+  const binaryName = current?.binary.commands[0];
+  if (!current || !declaration || !binaryName) throw new Error('Codex ACP launch declaration is unavailable');
+  return {
+    resolveSpawnSpec: (env: NodeJS.ProcessEnv, resolveExistingManagedBinPath: typeof resolveExistingCodexAcpManagedBinPath) => resolveManagedDependencyCommand({
+      binaryName, displayName: current.display.name, declaration, env, resolveExistingManagedBinPath,
+    }),
+    validateAvailability: (spec: ManagedDependencyCommand, opts?: Readonly<{ env?: NodeJS.ProcessEnv }>) => validateManagedDependencyCommand(spec, binaryName, opts),
+  };
+}
+
+function hasExplicitCodexAcpOverride(env: NodeJS.ProcessEnv, descriptor?: InstallableDependencyDescriptor): boolean {
+  const current = descriptor ?? readRuntimeInstallableDescriptor('codex-acp');
+  const declaration = current?.source.kind === 'github_release_binary' && current.source.launch?.kind === 'codexAcp' ? current.source.launch : undefined;
+  const key = declaration?.overrideEnvironmentKey;
+  return key !== undefined && typeof env[key] === 'string' && env[key]!.trim().length > 0;
 }
 
 export async function detectCodexAcpLaunchResolution(
   params: Readonly<{ env?: NodeJS.ProcessEnv }> = {},
   depsOverrides: Partial<DetectDeps> = {},
+  descriptor?: InstallableDependencyDescriptor,
 ): Promise<RuntimeInstallableLaunchResolution> {
   const env = params.env ?? process.env;
   const resolveManagedBin =
     depsOverrides.resolveExistingCodexAcpManagedBinPath ?? resolveExistingCodexAcpManagedBinPath;
   const deps: DetectDeps = {
     resolveCodexAcpSpawn:
-      depsOverrides.resolveCodexAcpSpawn ?? (() => CODEX_ACP_RUNTIME_LAUNCH_HELPERS.resolveSpawnSpec(
-        { env },
-        { resolveExistingManagedBinPath: resolveManagedBin },
-      )),
+      depsOverrides.resolveCodexAcpSpawn ?? (() => launchHelpers(descriptor).resolveSpawnSpec(env, resolveManagedBin)),
     validateCodexAcpSpawnAvailability:
       depsOverrides.validateCodexAcpSpawnAvailability
-      ?? CODEX_ACP_RUNTIME_LAUNCH_HELPERS.validateAvailability,
+      ?? ((spec, opts) => launchHelpers(descriptor).validateAvailability(spec, opts)),
     resolveExistingCodexAcpManagedBinPath: resolveManagedBin,
   };
 
@@ -53,7 +68,7 @@ export async function detectCodexAcpLaunchResolution(
     const managedPath = deps.resolveExistingCodexAcpManagedBinPath(env);
     return {
       availability,
-      canAutoInstall: !hasExplicitCodexAcpOverride(env) && resolved.command === 'codex-acp' && !availability.ok,
+      canAutoInstall: !hasExplicitCodexAcpOverride(env, descriptor) && resolved.command === 'codex-acp' && !availability.ok,
       canBackgroundAutoUpdate: availability.ok && managedPath !== null && resolved.command === managedPath,
     };
   } catch (error) {
@@ -74,29 +89,23 @@ export async function resolveCodexAcpLaunchCommand(
     sourcePreference?: 'system-first' | 'managed-first';
   }> = {},
   depsOverrides: Partial<DetectDeps> = {},
+  descriptor?: InstallableDependencyDescriptor,
 ): Promise<RuntimeInstallableLaunchCommandResolution> {
   const env = params.env ?? process.env;
   const resolveManagedBin =
     depsOverrides.resolveExistingCodexAcpManagedBinPath ?? resolveExistingCodexAcpManagedBinPath;
   const validateAvailability =
     depsOverrides.validateCodexAcpSpawnAvailability
-    ?? CODEX_ACP_RUNTIME_LAUNCH_HELPERS.validateAvailability;
-  const explicitOverride = hasExplicitCodexAcpOverride(env);
-  const managedPath = resolveManagedBin(env);
-  const systemAvailable = validateAvailability({ command: 'codex-acp', args: [] }, { env }).ok;
+    ?? ((spec: ManagedDependencyCommand, opts?: Readonly<{ env?: NodeJS.ProcessEnv }>) => launchHelpers(descriptor).validateAvailability(spec, opts));
   const preferSystem = params.sourcePreference !== 'managed-first';
-  const resolveExistingManagedBinPath =
-    preferSystem && systemAvailable
-      ? () => null
-      : resolveManagedBin;
-
   try {
+    const explicitOverride = hasExplicitCodexAcpOverride(env, descriptor);
+    const managedPath = resolveManagedBin(env);
+    const systemAvailable = validateAvailability({ command: 'codex-acp', args: [] }, { env }).ok;
+    const resolveExistingManagedBinPath = preferSystem && systemAvailable ? () => null : resolveManagedBin;
     const resolved = depsOverrides.resolveCodexAcpSpawn
       ? depsOverrides.resolveCodexAcpSpawn()
-      : CODEX_ACP_RUNTIME_LAUNCH_HELPERS.resolveSpawnSpec(
-        { env },
-        { resolveExistingManagedBinPath },
-      );
+      : launchHelpers(descriptor).resolveSpawnSpec(env, resolveExistingManagedBinPath);
     const availability = validateAvailability(resolved, { env });
     if (!availability.ok) {
       return {
@@ -149,19 +158,19 @@ export async function runCodexAcpBackgroundAutoUpdateCheck(
 }
 
 export function createCodexAcpRuntimeInstallableAdapter(
-  descriptor: Readonly<Pick<InstallableDependencyDescriptor, 'key' | 'capabilityId'>>,
+  descriptor: InstallableDependencyDescriptor,
   hostAdapter: RuntimeInstallableAdapter,
 ): RuntimeInstallableAdapter {
   return {
     ...hostAdapter,
     key: descriptor.key as InstallableKey,
     capabilityId: descriptor.capabilityId as Extract<CapabilityId, `dep.${string}`>,
-    detectCapabilityStatus: getCodexAcpDepStatus,
-    detectLaunchResolution: (params) => detectCodexAcpLaunchResolution(params),
-    resolveLaunchCommand: (params) => resolveCodexAcpLaunchCommand(params),
+    detectCapabilityStatus: (params) => getCodexAcpDepStatus({ ...params, descriptor }),
+    detectLaunchResolution: (params) => detectCodexAcpLaunchResolution(params, {}, descriptor),
+    resolveLaunchCommand: (params) => resolveCodexAcpLaunchCommand(params, {}, descriptor),
     installOrUpgrade: hostAdapter.installOrUpgrade,
     runBackgroundAutoUpdateCheck: () => runCodexAcpBackgroundAutoUpdateCheck({
-      getCodexAcpDepStatus,
+      getCodexAcpDepStatus: (params) => getCodexAcpDepStatus({ ...params, descriptor }),
       installOrUpgrade: hostAdapter.installOrUpgrade,
     }),
   };

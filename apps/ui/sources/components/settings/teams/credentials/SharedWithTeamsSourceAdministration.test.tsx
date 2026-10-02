@@ -21,11 +21,6 @@ const CONNECTION_ID = ProviderConnectionIdSchema.parse('connection-1');
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 installSettingsViewCommonModuleMocks();
 
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')>(),
-    requireCurrentAccountStoredContentServerCompatibility: vi.fn(async () => undefined),
-}));
-
 const harness = createHomeGovernanceHarness();
 installHomeGovernanceBoundaries(harness);
 const machineSelection = createMachineAdministrationTargetSelectionMock({

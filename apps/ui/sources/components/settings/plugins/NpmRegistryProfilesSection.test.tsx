@@ -194,6 +194,17 @@ async function flush(): Promise<void> {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 
+async function submitInlineCredential(tree: ReturnType<typeof create>, profileId = 'registry_acme') {
+    await act(async () => { profileAction(tree, profileId, 'login')?.onPress(); });
+    await act(async () => {
+        tree.root.findAll((node) => node.props.testID === 'settings.plugins.registries.login.token' && typeof node.props.onChangeText === 'function')[0]!.props.onChangeText('boundary-secret');
+    });
+    await act(async () => {
+        tree.root.findAll((node) => node.props.testID === 'settings.plugins.registries.login.save' && typeof node.props.onPress === 'function')[0]!.props.onPress();
+    });
+    await flush();
+}
+
 function snapshot(profileId = 'registry_acme', displayName = 'Acme', hasCredentials = false) {
     const origin = profileId === 'registry_acme'
         ? 'https://registry.acme.test'
@@ -431,13 +442,19 @@ describe('NpmRegistryProfilesSection', () => {
         expect(setBinding).toHaveBeenCalledWith('marketplace:private', null);
     });
 
-    it('keeps the token in the secure prompt-to-mutation path only', async () => {
-        mocks.prompt.mockResolvedValueOnce('boundary-secret');
+    it('keeps the token in the inline secure editor until explicit sign-in, then clears it', async () => {
         let tree!: ReturnType<typeof create>;
         await act(async () => { tree = create(<TestSection daemonOperationsAvailable />); });
         await flush();
         await act(async () => { await profileAction(tree, 'registry_acme', 'login')?.onPress(); });
-        expect(mocks.prompt).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.objectContaining({ inputType: 'secure-text' }));
+        expect(mocks.mutate).not.toHaveBeenCalled();
+        const field = tree.root.findAll((node) => node.props.testID === 'settings.plugins.registries.login.token' && typeof node.props.onChangeText === 'function')[0];
+        expect(field).toBeDefined();
+        expect(field.props.secureTextEntry).toBe(true);
+        await act(async () => { field.props.onChangeText('boundary-secret'); });
+        await act(async () => { tree.root.findAll((node) => node.props.testID === 'settings.plugins.registries.login.save' && typeof node.props.onPress === 'function')[0]!.props.onPress(); });
+        await flush();
+        expect(mocks.prompt).not.toHaveBeenCalled();
         expect(mocks.mutate).toHaveBeenCalledWith('machine-a', expect.objectContaining({
             action: 'login', credential: { kind: 'bearer_token', secret: 'boundary-secret' }, expectedRevision: 2,
         }), { serverId: 'server-a' });
@@ -445,6 +462,7 @@ describe('NpmRegistryProfilesSection', () => {
             typeof node.props.title === 'string' || typeof node.props.subtitle === 'string'
         )).flatMap((node) => [node.props.title, node.props.subtitle]).filter((value): value is string => typeof value === 'string');
         expect(renderedText.join('\n')).not.toContain('boundary-secret');
+        expect(tree.root.findAll((node) => node.props.testID === 'settings.plugins.registries.login.token')).toHaveLength(0);
     });
 
     it('keeps removed or signed-out sources visible as paused update diagnostics', async () => {
@@ -556,7 +574,7 @@ describe('NpmRegistryProfilesSection', () => {
         await act(async () => { tree = create(<TestSection daemonOperationsAvailable />); });
         await flush();
 
-        await act(async () => { await profileAction(tree, 'registry_acme', 'login')?.onPress(); });
+        await submitInlineCredential(tree);
 
         expect(mocks.mutate).toHaveBeenCalledTimes(1);
         expect(mocks.mutate).toHaveBeenCalledWith('machine-a', expect.objectContaining({
@@ -636,9 +654,7 @@ describe('NpmRegistryProfilesSection', () => {
         let tree!: ReturnType<typeof create>;
         await act(async () => { tree = create(<TestSection daemonOperationsAvailable />); });
         await flush();
-        await act(async () => {
-            await profileAction(tree, 'registry_acme', 'login')?.onPress();
-        });
+        await submitInlineCredential(tree);
         expect(mocks.alert).toHaveBeenCalled();
         // Progress belongs to the profile row, and it is released on failure.
         expect(tree.root.findByProps({ testID: 'settings.plugins.registries.profile.registry_acme' }).props.loading)
@@ -654,9 +670,7 @@ describe('NpmRegistryProfilesSection', () => {
         await act(async () => { tree = create(<TestSection daemonOperationsAvailable />); });
         await flush();
 
-        await act(async () => {
-            await profileAction(tree, 'registry_acme', 'login')?.onPress();
-        });
+        await submitInlineCredential(tree);
         await flush();
 
         expect(mocks.mutate).toHaveBeenCalledTimes(1);
@@ -677,9 +691,7 @@ describe('NpmRegistryProfilesSection', () => {
         await act(async () => { tree = create(<TestSection daemonOperationsAvailable />); });
         await flush();
 
-        await act(async () => {
-            await profileAction(tree, 'registry_acme', 'login')?.onPress();
-        });
+        await submitInlineCredential(tree);
 
         expect(mocks.get).toHaveBeenCalledTimes(2);
         expect(mocks.alert).toHaveBeenCalledWith(
@@ -773,9 +785,7 @@ describe('NpmRegistryProfilesSection', () => {
         let tree!: ReturnType<typeof create>;
         await act(async () => { tree = create(<TestSection daemonOperationsAvailable />); });
         await flush();
-        await act(async () => {
-            void profileAction(tree, 'registry_acme', 'login')?.onPress();
-        });
+        await submitInlineCredential(tree);
         await flush();
         expect(mocks.mutate).toHaveBeenCalledTimes(1);
 

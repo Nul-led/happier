@@ -44,8 +44,8 @@ export type SavedSecretCatalogProjection = Readonly<{
     personalMutationsAvailable: boolean;
     personalMutations: Readonly<{
         create: (input: Readonly<{ name: string; value: string }>) => Promise<string | null>;
-        rename: (secret: SavedSecret) => Promise<boolean>;
-        rotate: (secret: SavedSecret) => Promise<boolean>;
+        rename: (secret: SavedSecret, name?: string) => Promise<boolean>;
+        rotate: (secret: SavedSecret, value?: string) => Promise<boolean>;
         delete: (secret: SavedSecret) => Promise<boolean>;
     }>;
     collisionMigrationStatus: 'not_required' | 'migrating' | 'failed';
@@ -262,8 +262,8 @@ export function useSavedSecretCatalog(options?: Readonly<{
         ));
         return applied ? secret.id : null;
     }, [commitPersonalMutation]);
-    const renamePersonal = React.useCallback(async (secret: SavedSecret) => {
-        const name = await Modal.prompt(
+    const renamePersonal = React.useCallback(async (secret: SavedSecret, directName?: string) => {
+        const name = directName ?? await Modal.prompt(
             t('secrets.prompts.renameTitle'),
             t('secrets.prompts.renameDescription'),
             { defaultValue: secret.name, placeholder: t('secrets.fields.name'), cancelText: t('common.cancel'), confirmText: t('common.rename') },
@@ -279,8 +279,8 @@ export function useSavedSecretCatalog(options?: Readonly<{
             updatedAt: Date.now(),
         }).settings);
     }, [commitPersonalMutation]);
-    const rotatePersonal = React.useCallback(async (secret: SavedSecret) => {
-        const value = await Modal.prompt(
+    const rotatePersonal = React.useCallback(async (secret: SavedSecret, directValue?: string) => {
+        const value = directValue ?? await Modal.prompt(
             t('secrets.prompts.replaceValueTitle'),
             t('secrets.prompts.replaceValueDescription'),
             { placeholder: 'sk-...', inputType: 'secure-text', cancelText: t('common.cancel'), confirmText: t('secrets.actions.replace') },

@@ -20,7 +20,7 @@ export type MachineReplacementPickerModalProps = CustomModalInjectedProps & Read
 
 export function MachineReplacementPickerModal(props: MachineReplacementPickerModalProps) {
     return (
-        <ItemList>
+        <ItemList presentation="grouped">
             <ItemGroup title={t('machine.replacementRepair.pickerCandidatesTitle')}>
                 {props.candidates.map((candidate) => (
                     <Item

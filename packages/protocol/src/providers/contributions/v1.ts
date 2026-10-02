@@ -28,8 +28,8 @@ import {
 import type { PluginLocalizedStringV2 } from '../../plugins/contributions/publicTypes.js';
 import type { ConnectedServiceCredentialKind } from '../../connect/connectedServiceCredentialKind.js';
 import {
+  ConnectedAccountPurposeDeclarationV1Schema,
   ConnectedAccountPurposeDeclarationsV1Schema,
-  type ConnectedAccountPurposeDeclarationV1,
   type PluginConnectedAccountMaterializationKind,
 } from '../../connect/connectedAccountPurposes.js';
 import {
@@ -121,7 +121,15 @@ export type ProviderManagedConnectedAccountPurposeBindingPolicyV1 = z.infer<
 export const ProviderManagedRuntimeDeclarationV1Schema = z.object({
   kind: z.literal('managed'),
   dependencies: z.array(asProtocolZod(PluginContributionLocalIdSchema)).max(16).optional(),
-  connectedAccounts: ConnectedAccountPurposeDeclarationsV1Schema.optional(),
+  connectedAccounts: z.array(ConnectedAccountPurposeDeclarationV1Schema.extend({
+    /** Exact managed endpoints that use this purpose; absent means no broker route. */
+    endpointTemplateIds: z.array(ProviderLocalIdSchema).min(1).optional(),
+  })).superRefine((declarations, context) => {
+    const checked = ConnectedAccountPurposeDeclarationsV1Schema.safeParse(
+      declarations.map(({ endpointTemplateIds: _endpoints, ...declaration }) => declaration),
+    );
+    if (!checked.success) checked.error.issues.forEach((issue) => context.addIssue({ ...issue }));
+  }).optional(),
   connectedAccountPurposeBindingPolicy:
     ProviderManagedConnectedAccountPurposeBindingPolicyV1Schema.optional(),
   requestAuthUses: ConnectedAccountRequestAuthUsesV1Schema.optional(),
@@ -151,6 +159,15 @@ export const ProviderManagedRuntimeDeclarationV1Schema = z.object({
       declaration,
     ]),
   );
+  const purposeByEndpoint = new Set<string>();
+  for (const [index, declaration] of (value.connectedAccounts ?? []).entries()) {
+    for (const endpointTemplateId of declaration.endpointTemplateIds ?? []) {
+      if (!value.endpointTemplateIds.includes(endpointTemplateId) || purposeByEndpoint.has(endpointTemplateId)) {
+        context.addIssue({ code: 'custom', path: ['connectedAccounts', index, 'endpointTemplateIds'], message: 'Managed purpose endpoints must be declared and select exactly one purpose' });
+      }
+      purposeByEndpoint.add(endpointTemplateId);
+    }
+  }
   for (const [index, use] of (value.requestAuthUses ?? []).entries()) {
     const declaration = declarationsByPurpose.get(use.purpose);
     if (!declaration) {
@@ -182,6 +199,7 @@ export type ResolvedProviderManagedConnectedAccountPurposeDeclarationV1 =
     required?: boolean;
     materializationKinds?: PluginConnectedAccountMaterializationKind[];
     credentialKinds?: ConnectedServiceCredentialKind[];
+    endpointTemplateIds?: string[];
   }>;
 
 export type ResolvedProviderManagedRuntimeDeclarationV1 = Readonly<{
@@ -245,7 +263,7 @@ export function resolveProviderManagedRuntimeDeclarationV1(input: Readonly<{
   const connectedAccounts:
     ResolvedProviderManagedConnectedAccountPurposeDeclarationV1[] = (
       parsed.connectedAccounts ?? []
-    ).map((declaration: ConnectedAccountPurposeDeclarationV1) => {
+    ).map((declaration) => {
       const service = PluginContributionIdentityV1Schema.parse(
         typeof declaration.service === 'string'
           ? {
@@ -264,6 +282,10 @@ export function resolveProviderManagedRuntimeDeclarationV1(input: Readonly<{
         ? [...declaration.credentialKinds].sort(compareProviderCanonicalStringsV1)
         : undefined;
       if (credentialKinds) Object.freeze(credentialKinds);
+      const purposeEndpointTemplateIds = declaration.endpointTemplateIds
+        ? [...declaration.endpointTemplateIds].sort(compareProviderCanonicalStringsV1)
+        : undefined;
+      if (purposeEndpointTemplateIds) Object.freeze(purposeEndpointTemplateIds);
       return Object.freeze({
         purpose: declaration.purpose,
         service: Object.freeze(service),
@@ -277,6 +299,7 @@ export function resolveProviderManagedRuntimeDeclarationV1(input: Readonly<{
           ? {}
           : { materializationKinds }),
         ...(credentialKinds === undefined ? {} : { credentialKinds }),
+        ...(purposeEndpointTemplateIds === undefined ? {} : { endpointTemplateIds: purposeEndpointTemplateIds }),
       });
     }).sort((left, right) =>
       compareProviderCanonicalStringsV1(left.purpose, right.purpose));

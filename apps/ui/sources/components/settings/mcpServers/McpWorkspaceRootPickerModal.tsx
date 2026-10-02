@@ -52,7 +52,7 @@ export function McpWorkspaceRootPickerModal(props: McpWorkspaceRootPickerModalPr
     }, [props.machinePlatform]);
 
     return (
-        <ItemList style={{ paddingTop: 0 }} keyboardShouldPersistTaps="handled">
+        <ItemList presentation="grouped" style={{ paddingTop: 0 }} keyboardShouldPersistTaps="handled">
             <View style={[styles.contentWrapper, maxWidthStyle]}>
                 <PathSelectionList
                     machineHomeDir={props.machineHomeDir}

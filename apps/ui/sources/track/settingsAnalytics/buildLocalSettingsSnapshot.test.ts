@@ -63,7 +63,6 @@ describe('buildLocalSettingsSnapshot', () => {
             detailsPaneWidthBasisPx: 1_400,
             bottomPaneHeightPx: 180,
             bottomPaneHeightBasisPx: 900,
-            embeddedTerminalDockLocation: 'details',
             sessionsListStorageFilter: 'direct',
             acknowledgedCliVersions: {
                 'machine-a': '1.2.3',
@@ -120,7 +119,6 @@ describe('buildLocalSettingsSnapshot', () => {
         expect(snapshot.properties.local_setting__rightPaneWidthPx).toBe('large');
         expect(snapshot.properties.local_setting__detailsPaneWidthPx).toBe('medium');
         expect(snapshot.properties.local_setting__bottomPaneHeightPx).toBe('small');
-        expect(snapshot.properties.local_setting__embeddedTerminalDockLocation).toBe('details');
         expect(snapshot.properties.local_setting__sessionsListStorageFilter).toBe('direct');
         expect(snapshot.properties.local_setting__acknowledgedCliVersions).toBe(2);
         expect(snapshot.properties.local_derived__uiFontScaleBucket).toBe('large');

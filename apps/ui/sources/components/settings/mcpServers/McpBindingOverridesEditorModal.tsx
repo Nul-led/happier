@@ -200,7 +200,7 @@ export function McpBindingOverridesEditorModal(props: McpBindingOverridesEditorM
     ]);
 
     return (
-        <ItemList style={{ paddingTop: 0 }} keyboardShouldPersistTaps="handled">
+        <ItemList presentation="grouped" style={{ paddingTop: 0 }} keyboardShouldPersistTaps="handled">
             {props.serverTransport === 'stdio' ? (
                 <ItemGroup title={t('settings.mcpServersOverridesStdioTitle')}>
                     <Item

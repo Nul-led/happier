@@ -189,7 +189,7 @@ export function PluginAccountReleaseSelectionSection(props: Readonly<{
     return (
         <ItemGroup
             title={t('settingsPlugins.accountReleaseSelection.groupTitle')}
-            footer={version === null
+            description={version === null
                 ? t('settingsPlugins.accountReleaseSelection.hostedGroupFooter')
                 : t('settingsPlugins.accountReleaseSelection.groupFooter')}
         >

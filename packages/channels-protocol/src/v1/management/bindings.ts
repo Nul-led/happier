@@ -390,6 +390,7 @@ export const ConversationAutomationTargetNotVerifiedResultV1ProtocolSchema = def
     reason: defineProtocolUnion([
         defineProtocolLiteral('notFound'),
         defineProtocolLiteral('resultDeliveryUnsupported'),
+        defineProtocolLiteral('scopedTriggerIdentityMismatch'),
     ]),
 }, { policy: 'closed' });
 

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { CODEX_ACP_INSTALLABLE_DESCRIPTOR } from '@happier-dev/plugins-codex/agent/installables/codexAcp';
 
 import {
   createCodexAcpRuntimeInstallableAdapter,
@@ -15,6 +16,7 @@ describe('codexAcpRuntimeInstallable', () => {
         validateCodexAcpSpawnAvailability: () => ({ ok: false, errorMessage: 'codex-acp is not available on PATH' }),
         resolveExistingCodexAcpManagedBinPath: () => null,
       },
+      CODEX_ACP_INSTALLABLE_DESCRIPTOR,
     );
 
     expect(result).toEqual({
@@ -32,6 +34,7 @@ describe('codexAcpRuntimeInstallable', () => {
         validateCodexAcpSpawnAvailability: () => ({ ok: false, errorMessage: 'Resolved command does not exist: /broken/codex-acp' }),
         resolveExistingCodexAcpManagedBinPath: () => null,
       },
+      CODEX_ACP_INSTALLABLE_DESCRIPTOR,
     );
 
     expect(result).toEqual({
@@ -68,7 +71,7 @@ describe('codexAcpRuntimeInstallable', () => {
     const runBackgroundAutoUpdateCheck = vi.fn(async () => {});
 
     const adapter = createCodexAcpRuntimeInstallableAdapter(
-      { key: 'codex-acp', capabilityId: 'dep.codex-acp' },
+      CODEX_ACP_INSTALLABLE_DESCRIPTOR,
       {
         key: 'codex-acp',
         capabilityId: 'dep.codex-acp',

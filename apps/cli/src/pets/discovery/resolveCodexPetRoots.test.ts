@@ -1,4 +1,4 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, symlink } from 'node:fs/promises';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,7 +29,7 @@ async function loadRootsModule() {
 }
 
 describe('resolveCodexPetRoots', () => {
-  it('uses Codex-owned home resolution instead of an Agent runtime pet-discovery contribution', async () => {
+  it('resolves the Protocol-owned native home without requiring an Agent runtime contribution', async () => {
     const root = tempRoot();
     const userCodexHome = join(root, 'custom-codex');
     await mkdir(join(userCodexHome, 'pets'), { recursive: true });
@@ -65,6 +65,13 @@ describe('resolveCodexPetRoots', () => {
     );
     await mkdir(join(userCodexHome, 'pets'), { recursive: true });
     await mkdir(join(connectedCodexHome, 'pets'), { recursive: true });
+    const serviceRoot = join(activeServerDir, 'daemon', 'connected-services', 'homes', 'openai-codex');
+    const groupHome = join(serviceRoot, '__groups', 'team', 'codex', 'codex-home');
+    await mkdir(join(groupHome, 'pets'), { recursive: true });
+    const escapedHome = join(root, 'escaped-codex');
+    await mkdir(join(escapedHome, 'codex-home', 'pets'), { recursive: true });
+    await mkdir(join(serviceRoot, 'escaped'), { recursive: true });
+    await symlink(escapedHome, join(serviceRoot, 'escaped', 'codex'), process.platform === 'win32' ? 'junction' : 'dir');
 
     const mod = await loadRootsModule();
     const roots = await mod.resolveCodexPetRoots({
@@ -80,6 +87,7 @@ describe('resolveCodexPetRoots', () => {
     }))).toEqual([
       { homeKind: 'user', petsPath: realpathSync(join(userCodexHome, 'pets')) },
       { homeKind: 'connectedService', petsPath: realpathSync(join(connectedCodexHome, 'pets')) },
+      { homeKind: 'connectedService', petsPath: realpathSync(join(groupHome, 'pets')) },
     ]);
   });
 

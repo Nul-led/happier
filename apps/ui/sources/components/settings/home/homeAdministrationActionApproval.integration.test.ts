@@ -17,13 +17,6 @@ import {
     installHomeGovernanceBoundaries,
 } from '@/dev/testkit/harness/homeGovernanceHarness';
 
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')>(),
-    // This integration owns Action approval and artifact transport. Stored-
-    // content compatibility is independently covered by its owner tests.
-    requireCurrentAccountStoredContentServerCompatibility: vi.fn(async () => undefined),
-}));
-
 const harness = createHomeGovernanceHarness();
 installHomeGovernanceBoundaries(harness);
 

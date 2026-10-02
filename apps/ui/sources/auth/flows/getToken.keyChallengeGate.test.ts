@@ -37,9 +37,6 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
 import { authGetToken } from './getToken';
 import { resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
 import {
-    AccountStoredContentClientUpgradeRequiredError,
-} from '@/sync/api/capabilities/accountStoredContentCompatibility';
-import {
     CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
 } from '@happier-dev/protocol';
 import { HappyError } from '@/utils/errors/errors';
@@ -210,7 +207,7 @@ describe('authGetToken key-challenge gate', () => {
         await expect(authGetToken(
             new Uint8Array(32),
             { expectedAccountId: 'account-expected' },
-        )).rejects.toBeInstanceOf(AccountStoredContentClientUpgradeRequiredError);
+        )).rejects.toBeInstanceOf(HappyError);
         expect(mocks.serverFetch.mock.calls.map((call) => call[0])).toEqual([
             '/v1/features',
         ]);
@@ -447,7 +444,8 @@ describe('authGetToken key-challenge gate', () => {
                 },
             },
         },
-    ])('fails Account-bound login closed with typed upgrade-required and zero auth POST when compatibility is $name', async ({
+    ])('fails Account-bound login closed independently of a $name stored-content declaration', async ({
+        name,
         capabilities,
     }) => {
         mocks.serverFetch.mockResolvedValueOnce(
@@ -470,12 +468,15 @@ describe('authGetToken key-challenge gate', () => {
             }),
         );
 
-        await expect(authGetToken(
+        const login = authGetToken(
             new Uint8Array(32).fill(9),
             { expectedAccountId: 'account-expected' },
-        )).rejects.toBeInstanceOf(
-            AccountStoredContentClientUpgradeRequiredError,
         );
+        if (name === 'malformed') {
+            await expect(login).rejects.toBeInstanceOf(HappyError);
+        } else {
+            await expect(login).rejects.toThrow(/key-challenge v2 is required/i);
+        }
         expect(mocks.serverFetch).toHaveBeenCalledTimes(1);
         expect(mocks.serverFetch.mock.calls[0]?.[0])
             .toBe('/v1/features');
