@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { recordClaudeRuntimeProviderAccountUsageSnapshot } from './accountUsage.js';
 
 describe('Claude runtime provider account usage recording', () => {
-  it('passes connected-service source context when recording runtime usage evidence', async () => {
+  it.each(['allowed', 'rejected'])('records every %s SDK window through the qualified host usage service', async (status) => {
     const accountConfig = JSON.stringify({
       oauthAccount: {
         accountUuid: 'live-claude-account',
@@ -41,12 +41,12 @@ describe('Claude runtime provider account usage recording', () => {
         logger: { debug: vi.fn() },
       },
       evidence: {
-        rate_limits: {
-          five_hour: {
-            utilization: 91,
-            resets_at: '2026-02-16T00:00:00Z',
-          },
-        },
+        type: 'rate_limit_event',
+        rate_limit_info: { status, rateLimitType: 'five_hour', unifiedWindows: {
+          five_hour: { utilization: 0.91, resetsAt: '2026-02-16T00:00:00Z' },
+          seven_day: { utilization: 0.2 },
+          seven_day_fable: { utilization: 0.61 },
+        } },
       },
       sessionId: 'happy-session-claude',
       launchEnv,
@@ -79,7 +79,8 @@ describe('Claude runtime provider account usage recording', () => {
         meters: [expect.objectContaining({
           meterId: 'five_hour',
           utilizationPct: 91,
-        })],
+        }), expect.objectContaining({ meterId: 'seven_day', utilizationPct: 20 }),
+        expect.objectContaining({ meterId: 'seven_day_fable', utilizationPct: 61 })],
       }),
     });
   });

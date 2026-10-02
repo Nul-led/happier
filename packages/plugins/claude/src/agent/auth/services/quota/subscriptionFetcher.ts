@@ -1,3 +1,4 @@
+import { CLAUDE_USAGE_WINDOW_LABELS as WINDOW_LABELS, resolveClaudeUsageWindowLabel } from '../usage/windowLabel.js';
 import type {
     AgentAccountUsageMeter,
     AgentAccountUsageSnapshot,
@@ -117,32 +118,6 @@ function parseResetAtMs(value: unknown): number | null {
     }
     return parseIsoDateMs(value);
 }
-
-const WINDOW_LABELS: Readonly<Record<string, string>> = Object.freeze({
-    five_hour: '5-hour',
-    seven_day: 'Weekly',
-    seven_day_oauth_apps: 'Weekly (OAuth apps)',
-    seven_day_sonnet: 'Weekly (Sonnet)',
-    seven_day_opus: 'Weekly (Opus)',
-    iguana_necktie: 'Unknown',
-});
-
-const WINDOW_LABEL_PREFIXES: ReadonlyArray<Readonly<{
-    prefix: string;
-    label: string;
-}>> = [
-    { prefix: 'five_hour_', label: '5-hour' },
-    { prefix: 'seven_day_', label: 'Weekly' },
-];
-
-const WINDOW_LABEL_TOKEN_OVERRIDES: Readonly<Record<string, string>> = Object.freeze({
-    api: 'API',
-    fable: 'Fable',
-    mcp: 'MCP',
-    oauth: 'OAuth',
-    opus: 'Opus',
-    sonnet: 'Sonnet',
-});
 
 const USAGE_WINDOW_CONTAINER_KEYS = new Set([
     'limits',
@@ -291,27 +266,6 @@ const QUOTA_UNITS = new Set([
     'requests',
     'unknown',
 ]);
-
-function formatWindowLabelSuffix(raw: string): string {
-    return raw
-        .split('_')
-        .map((part) => part.trim().toLowerCase())
-        .filter(Boolean)
-        .map((part) => WINDOW_LABEL_TOKEN_OVERRIDES[part] ?? `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
-        .join(' ');
-}
-
-function resolveUsageWindowLabel(meterId: string): string {
-    const known = WINDOW_LABELS[meterId];
-    if (known) return known;
-    for (const { prefix, label } of WINDOW_LABEL_PREFIXES) {
-        if (meterId.startsWith(prefix)) {
-            const suffix = formatWindowLabelSuffix(meterId.slice(prefix.length));
-            return suffix ? `${label} (${suffix})` : label;
-        }
-    }
-    return formatWindowLabelSuffix(meterId) || meterId;
-}
 
 function readNonEmptyStringProperty(
     record: Record<string, unknown>,
@@ -510,7 +464,7 @@ function buildUsageWindowMeter(
     const limit = window ? readFiniteNumberProperty(window, USAGE_WINDOW_LIMIT_KEYS) : null;
     return {
         meterId,
-        label: resolveUsageWindowLabel(meterId),
+        label: resolveClaudeUsageWindowLabel(meterId),
         providerLimitId: meterId,
         modelId: window ? readScopedUsageWindowModelId(window) : null,
         used,
