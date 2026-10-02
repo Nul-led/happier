@@ -5,6 +5,7 @@ import { parse, stringify, TomlError, type TomlTable, type TomlValue } from 'smo
 
 import type { ConnectedServiceStateSharingDescriptor, ConnectedServiceStateSharingDescriptorEntry } from '@/agent/catalog/types';
 import type { ConnectedServicesMaterializationDiagnostic } from '@/daemon/connectedServices/materialization/materializer';
+import { logger } from '@/ui/logger';
 import type {
   ConnectedServiceStateSharingManifestV1,
   ConnectedServiceStateSharingSessionFileMappingV1,
@@ -384,12 +385,11 @@ function mergeTableEntries(config: TomlTable, path: readonly string[], entries: 
   Object.assign(table, entries);
 }
 
-async function buildDescriptorCopyTransformByEntry(input: ApplyConnectedServiceStateSharingDescriptorInput): Promise<Readonly<{
-  transforms: Readonly<Record<string, (content: string) => string>>;
-  fallbackContentByEntry: Readonly<Record<string, string>>;
-}>> {
+async function buildDescriptorCopyTransformByEntry(
+  input: ApplyConnectedServiceStateSharingDescriptorInput,
+  diagnostics: ConnectedServicesMaterializationDiagnostic[],
+): Promise<Readonly<Record<string, (content: string) => string>>> {
   const transforms: Record<string, (content: string) => string> = {};
-  const fallbackContentByEntry: Record<string, string> = {};
   const effectiveRoot = resolve(input.previousMaterializedRoot ?? input.target.targetMaterializedRoot);
   for (const transform of input.descriptor.transforms ?? []) {
     if (transform.kind !== 'rewrite_toml') throw new Error(`Unsupported connected-service descriptor transform kind: ${transform.kind}`);
@@ -402,10 +402,13 @@ async function buildDescriptorCopyTransformByEntry(input: ApplyConnectedServiceS
         // A symlink does not establish profile-owned preferences.
         if ((await lstat(previousPath)).isFile()) {
           const content = await readFile(previousPath, 'utf8');
-          previous = parseConnectedServiceTomlConfig(content, previousPath);
-          // Native config remains authoritative when present. If absent, the
-          // existing regular profile config owns its other active settings too.
-          fallbackContentByEntry[transform.entry] = content;
+          try {
+            previous = parseConnectedServiceTomlConfig(content, previousPath);
+          } catch (error) {
+            diagnostics.push({ code: 'profile_config_invalid', severity: 'warning',
+              providerId: input.descriptor.providerId, entryName: transform.entry });
+            logger.infoFile('[connected-services] Rebuilding malformed profile config from native config or defaults', error);
+          }
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
@@ -435,7 +438,7 @@ async function buildDescriptorCopyTransformByEntry(input: ApplyConnectedServiceS
       return stringify(config);
     };
   }
-  return { transforms, fallbackContentByEntry };
+  return transforms;
 }
 
 function dedupeManifestEntries(entries: readonly string[]): string[] {
@@ -484,7 +487,7 @@ export async function applyConnectedServiceStateSharingDescriptor(
   const sourceRoot = resolve(input.nativeSourceContext.sourceRoot);
   const envOverrides: Record<string, string> = {};
   const diagnostics: ConnectedServicesMaterializationDiagnostic[] = [];
-  const { transforms: descriptorCopyTransformByEntry, fallbackContentByEntry } = await buildDescriptorCopyTransformByEntry(input);
+  const descriptorCopyTransformByEntry = await buildDescriptorCopyTransformByEntry(input, diagnostics);
   const previousManifest = input.existingManifest;
   const configEntryNames = input.configEntryNames ?? input.descriptor.config.entries.map((entry) => entry.path);
   const stateEntryNames = input.stateEntryNames ?? input.descriptor.state.entries.map((entry) => entry.path);
@@ -526,11 +529,11 @@ export async function applyConnectedServiceStateSharingDescriptor(
       }
       const sourceStat = await tryStatConnectedServiceHomeEntry(sourcePath);
       if (!sourceStat) {
-        const fallbackContent = fallbackContentByEntry[entryName];
-        if (fallbackContent === undefined) continue;
+        const transform = descriptorCopyTransformByEntry[entryName];
+        if (!transform) continue;
         await prepareManagedConnectedServiceHomeDestination(destinationPath);
         await mkdir(dirname(destinationPath), { recursive: true });
-        await writeFile(destinationPath, descriptorCopyTransformByEntry[entryName](fallbackContent), { encoding: 'utf8', mode: 0o600 });
+        await writeFile(destinationPath, transform(''), { encoding: 'utf8', mode: 0o600 });
         configEntries.push(entryName);
         continue;
       }

@@ -74,14 +74,14 @@ describe('applyConnectedServiceStateSharingDescriptor', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  it('rebuilds malformed profile TOML from native config with a safe diagnostic', async () => {
+  it.each([true, false])('rebuilds malformed profile TOML with a safe diagnostic (native config: %s)', async (hasNativeConfig) => {
     const root = await mkdtemp(join(tmpdir(), 'happier-profile-config-recovery-'));
     const sourceRoot = join(root, 'native');
     const previousMaterializedRoot = join(root, 'promoted');
     const targetRoot = join(root, 'stage');
     try {
       await Promise.all([sourceRoot, previousMaterializedRoot].map(home => mkdir(home, { recursive: true })));
-      await writeFile(join(sourceRoot, 'config.toml'), 'model = "native"\n');
+      if (hasNativeConfig) await writeFile(join(sourceRoot, 'config.toml'), 'model = "native"\n');
       await writeFile(join(previousMaterializedRoot, 'config.toml'), 'fixture_secret = "synthetic-sensitive-config"\n[broken\n');
       const result = await applyConnectedServiceStateSharingDescriptor({
         descriptor: {
@@ -97,7 +97,8 @@ describe('applyConnectedServiceStateSharingDescriptor', () => {
         configMode: 'copied', requestedStateMode: 'isolated', effectiveStateMode: 'isolated', cwd: root,
       });
       const config = await readFile(join(targetRoot, 'config.toml'), 'utf8');
-      expect(config).toContain('model = "native"');
+      if (hasNativeConfig) expect(config).toContain('model = "native"');
+      else expect(config).not.toContain('model =');
       expect(config).toContain('cli_auth_credentials_store = "file"');
       expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'profile_config_invalid', severity: 'warning' }));
       expect(inspect(result)).not.toContain('synthetic-sensitive-config');
