@@ -29,14 +29,14 @@ function deriveLegacyEnvServerIdFromUrl(url: string): string {
 }
 
 function copyServerScopedEntry<T>(map: Record<string, T> | undefined, sourceId: string, targetId: string): Record<string, T> | undefined {
-  return map && sourceId in map ? { ...map, [targetId]: map[sourceId] } : map;
+  return map && Object.prototype.hasOwnProperty.call(map, sourceId) ? { ...map, [targetId]: map[sourceId] } : map;
 }
 
 function hasServerScopedState(settings: Settings, serverId: string): boolean {
   return [settings.machineIdByServerId, settings.machineIdByServerIdByAccountId,
     settings.machineReplacementCandidatesByServerIdByAccountId, settings.lastTokenSubByServerId,
     settings.machineIdConfirmedByServerByServerId, settings.lastChangesCursorByServerIdByAccountId]
-    .some((map) => map && serverId in map);
+    .some((map) => map && Object.prototype.hasOwnProperty.call(map, serverId));
 }
 
 function copyMissingServerScopedState(current: Settings, sourceId: string, targetId: string): Settings {

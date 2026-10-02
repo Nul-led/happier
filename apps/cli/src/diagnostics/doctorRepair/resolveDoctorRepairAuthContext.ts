@@ -58,7 +58,12 @@ export async function resolveDoctorRepairAuthContext(params: Readonly<{
   const targetProfileExists = params.targetServerId === null
     ? null
     : activeProfile !== null;
-  const activeServerUrl = activeProfile?.serverUrl ?? configuration.serverUrl ?? null;
+  const activeServerUrl = params.targetServerId === null
+    ? configuration.serverUrl
+    : activeProfile?.serverUrl ?? configuration.serverUrl ?? null;
+  const signalProfiles = params.targetServerId === null && !activeProfile
+    ? [...profiles, { id: effectiveActiveServerId, name: effectiveActiveServerId, serverUrl: configuration.serverUrl }]
+    : profiles;
 
   // Live expiry check for the active profile only. The credentials file is
   // profile-scoped, so `credentials.token` belongs to the selected profile.
@@ -67,9 +72,11 @@ export async function resolveDoctorRepairAuthContext(params: Readonly<{
   // don't see a misleading "signed in" when we couldn't verify.
   const activeToken = String(credentials?.token ?? '').trim();
   let activeCredentialState: AuthSignalsForProfile['credentialState'] = 'missing';
-  if (activeProfile && activeToken) {
+  if ((params.targetServerId === null || activeProfile) && activeToken) {
     const result = await validateStoredAuthTokenAgainstServer({
-      baseUrl: normalizeServerHttpBaseUrl(resolveServerProfileApiUrl(activeProfile)),
+      baseUrl: normalizeServerHttpBaseUrl(params.targetServerId === null
+        ? configuration.apiServerUrl
+        : resolveServerProfileApiUrl(activeProfile!)),
       token: activeToken,
     });
     activeCredentialState = result.state;
@@ -82,7 +89,7 @@ export async function resolveDoctorRepairAuthContext(params: Readonly<{
     ] as const)),
   );
 
-  const signals: AuthSignalsForProfile[] = profiles.map((profile) => {
+  const signals: AuthSignalsForProfile[] = signalProfiles.map((profile) => {
     const lastSub = String(lastTokenSubByServerId[profile.id] ?? '').trim();
     // Unreadable settings yield no server profiles at all, so this callback only
     // runs with settings present; the empty fallback keeps the machine-id owner's
@@ -92,7 +99,7 @@ export async function resolveDoctorRepairAuthContext(params: Readonly<{
     return {
       serverId: profile.id,
       serverName: profile.name || profile.id,
-      serverUrl: profile.serverUrl,
+      serverUrl: isActive && params.targetServerId === null ? configuration.serverUrl : profile.serverUrl,
       credentialState: isActive
         ? activeCredentialState
         : inactiveCredentialStateByServerId.get(profile.id) ?? 'missing',

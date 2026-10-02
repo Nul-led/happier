@@ -602,7 +602,11 @@ describe('server profiles', () => {
     });
   });
 
-  it.each([false, true])('adopts env-derived credentials and state only into an empty named profile (destination has state: %s)', async (destinationHasState) => {
+  it.each([
+    { destinationHasState: false, name: 'VM A self-host preview' },
+    { destinationHasState: true, name: 'VM A self-host preview' },
+    { destinationHasState: false, name: 'constructor' },
+  ])('adopts env-derived credentials and state only into an empty named profile ($name, state: $destinationHasState)', async ({ destinationHasState, name }) => {
     await withTempDir('happier-cli-servers-migrate-access-key-', async (homeDir) => {
       envScope.patch({
         HAPPIER_HOME_DIR: homeDir,
@@ -633,9 +637,10 @@ describe('server profiles', () => {
         lastChangesCursorByServerIdByAccountId: { 'account-adopted': 42 },
         machineReplacementCandidatesByServerIdByAccountId: { 'account-adopted': { machineId: 'machine-before-adoption', replacementReason: 'reauth', createdAt: 1 } },
       };
-      const targetId = deriveServerIdFromName('VM A self-host preview');
+      const targetId = deriveServerIdFromName(name);
       await updateSettings((current) => ({
         ...current,
+        ...(name === 'constructor' ? { servers: { ...current.servers, [targetId]: { id: targetId, name, serverUrl: 'http://localhost:33005', localServerUrl: 'http://127.0.0.1:3005', webappUrl: 'http://localhost:33005', createdAt: 0, updatedAt: 0, lastUsedAt: 0 } } } : {}),
         machineIdByServerId: { [envDerivedServerId]: adoptedState.machineIdByServerId, ...(destinationHasState ? { [targetId]: 'machine-existing' } : {}) },
         machineIdByServerIdByAccountId: { [envDerivedServerId]: adoptedState.machineIdByServerIdByAccountId },
         lastTokenSubByServerId: { [envDerivedServerId]: adoptedState.lastTokenSubByServerId },
@@ -657,7 +662,7 @@ describe('server profiles', () => {
       const { upsertServerProfileByUrl } = await import('./serverProfiles');
 
       const created = await upsertServerProfileByUrl({
-        name: 'VM A self-host preview',
+        name,
         serverUrl: 'http://localhost:33005',
         localServerUrl: 'http://127.0.0.1:3005',
         webappUrl: 'http://localhost:33005',

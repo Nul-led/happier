@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { reloadConfiguration } from '@/configuration';
+import { configuration, reloadConfiguration } from '@/configuration';
 import { readSettings, updateSettings, writeCredentialsTokenOnly } from '@/persistence';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
@@ -23,12 +23,12 @@ describe('doctor repair auth context', () => {
       await updateSettings((current) => ({ ...current, activeServerId: 'home-a', servers: { ...current.servers, 'home-a': profile('home-a'), 'home-b': profile('home-b') } }));
       reloadConfiguration();
       await writeCredentialsTokenOnly({ token: 'token-home-a' });
-      envScope.patch({ HAPPIER_ACTIVE_SERVER_ID: 'home-b' });
+      envScope.patch({ HAPPIER_ACTIVE_SERVER_ID: 'home-b', HAPPIER_SERVER_URL: 'https://home-b.test', HAPPIER_LOCAL_SERVER_URL: 'http://localhost:43999' });
       reloadConfiguration();
       await writeCredentialsTokenOnly({ token: 'token-home-b' });
       // Explicit scoped reports can target another Home than the process's runtime selection.
       if (targetServerId) {
-        envScope.patch({ HAPPIER_ACTIVE_SERVER_ID: 'home-a' });
+        envScope.patch({ HAPPIER_ACTIVE_SERVER_ID: 'home-a', HAPPIER_SERVER_URL: 'https://home-a.test', HAPPIER_LOCAL_SERVER_URL: undefined });
         reloadConfiguration();
       }
       const fetchBoundary = vi.fn(async () => new Response(JSON.stringify({ id: 'account-b' }), { status: 200 }));
@@ -39,9 +39,26 @@ describe('doctor repair auth context', () => {
         expect.objectContaining({ serverId: 'home-a', isActive: false, credentialState: 'stored-unverified' }),
       ]));
       expect(result.activeServerUrl).toBe('https://home-b.test');
-      expect(fetchBoundary).toHaveBeenCalledWith('http://127.0.0.1:43123/v1/account/profile', expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer token-home-b' }) }));
+      expect(fetchBoundary).toHaveBeenCalledWith(`http://127.0.0.1:${targetServerId ? 43123 : 43999}/v1/account/profile`, expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer token-home-b' }) }));
       expect(fetchBoundary).toHaveBeenCalledTimes(1);
       expect((await readSettings()).activeServerId).toBe('home-a');
+    });
+  });
+
+  it('includes a runtime-only Home without persisting a profile', async () => {
+    await withTempDir('doctor-runtime-only-home-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_ACTIVE_SERVER_ID: undefined, HAPPIER_SERVER_URL: 'https://runtime-only.test', HAPPIER_LOCAL_SERVER_URL: 'http://localhost:43998', HAPPIER_WEBAPP_URL: undefined });
+      reloadConfiguration();
+      await writeCredentialsTokenOnly({ token: 'runtime-only-token' });
+      const before = await readSettings();
+      const fetchBoundary = vi.fn(async () => new Response(JSON.stringify({ id: 'runtime-account' }), { status: 200 }));
+      vi.stubGlobal('fetch', fetchBoundary);
+      const result = await resolveDoctorRepairAuthContext();
+      expect(result.authSignals).toEqual(expect.arrayContaining([
+        expect.objectContaining({ serverId: configuration.activeServerId, serverUrl: 'https://runtime-only.test', isActive: true, credentialState: 'valid' }),
+      ]));
+      expect(fetchBoundary).toHaveBeenCalledWith('http://127.0.0.1:43998/v1/account/profile', expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer runtime-only-token' }) }));
+      expect(await readSettings()).toEqual(before);
     });
   });
 });
