@@ -59,8 +59,10 @@ export const COPILOT_ACP_MODEL_CONTROLS = Object.freeze({
     if (!Array.isArray(configOptions)) return null;
     const selected = configOptions.map(record).find((option) => option?.id === 'model');
     if (selected?.currentValue !== requestedModelId) return null;
-    const retainedOptions = targetModel.modelOptions?.filter((option) => option.id !== 'reasoning_effort');
-    const modelOptions = [...(retainedOptions ?? []), ...effortOptions(configOptions)];
+    const observed = effortOptions(configOptions);
+    const retainedOptions = targetModel.modelOptions?.filter((option) => option.id !== 'reasoning_effort'
+      && !observed.some((current) => current.id === option.id));
+    const modelOptions = [...(retainedOptions ?? []), ...observed];
     const { modelOptions: _previousOptions, ...model } = targetModel;
     return { ...model, ...(modelOptions.length ? { modelOptions } : {}) };
   },

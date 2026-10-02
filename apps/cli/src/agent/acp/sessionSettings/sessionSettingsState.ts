@@ -74,20 +74,25 @@ export function normalizeSessionConfigOptions(raw: ReadonlyArray<unknown>): Sess
     const type = getString(entry, 'type');
     if (!id || !name || !type) continue;
 
-    const currentValue = normalizeConfigOptionValueId((entry as any).currentValue);
+    const currentValue = normalizeConfigOptionValueId(entry.currentValue);
     if (currentValue === null) continue;
 
     const description = getString(entry, 'description');
-    const optionsCandidate = (entry as any).options;
+    const optionsCandidate = entry.options;
     const optionsRaw = Array.isArray(optionsCandidate) ? optionsCandidate : null;
 
     let options: SessionConfigOption['options'] | undefined = undefined;
     if (optionsRaw) {
       const normalized: Array<{ value: SessionConfigOptionValueId; name: string; description?: string }> = [];
-      for (const optRaw of optionsRaw) {
+      // ACP select groups contain choices, not selectable group IDs.
+      const choices = optionsRaw.flatMap((rawOption) => {
+        const option = asRecord(rawOption);
+        return Array.isArray(option?.options) ? option.options : [rawOption];
+      });
+      for (const optRaw of choices) {
         const opt = asRecord(optRaw);
         if (!opt) continue;
-        const value = normalizeConfigOptionValueId((opt as any).value);
+        const value = normalizeConfigOptionValueId(opt.value);
         const optName = getString(opt, 'name');
         if (value === null || !optName) continue;
         const optDescription = getString(opt, 'description');

@@ -12,7 +12,7 @@ import { COPILOT_ACP_RUNTIME_DEFINITION } from '@happier-dev/plugins-copilot/age
 import type { AgentAcpRuntimeDefinition } from '@happier-dev/plugin-sdk/agents/runtime';
 import { AgentRuntimeJsonValueV1Schema } from '@happier-dev/protocol/runtime';
 
-function writeFakeAcpAgentScript(params: { dir: string; emptyModelChoices?: boolean; modelConfigEffort?: boolean; wrongConfigModel?: boolean }): string {
+function writeFakeAcpAgentScript(params: { dir: string; emptyModelChoices?: boolean; modelConfigEffort?: boolean; wrongConfigModel?: boolean; groupedModelChoices?: boolean }): string {
   const src = `
     const decoder = new TextDecoder();
     let buf = '';
@@ -128,7 +128,7 @@ function writeFakeAcpAgentScript(params: { dir: string; emptyModelChoices?: bool
         }
 
         if (method === 'session/set_config_option') {
-          ok(id, {
+          const result = {
             configOptions: [{
               id: params.configId,
               name: 'Agent model choice',
@@ -142,7 +142,11 @@ function writeFakeAcpAgentScript(params: { dir: string; emptyModelChoices?: bool
               id: 'reasoning_effort', name: 'Effort', category: 'thought_level', type: 'select',
               currentValue: 'high', options: [{ value: 'high', name: 'High' }],
             }] : [])],
-          });
+          };
+          if (${params.groupedModelChoices === true}) {
+            result.configOptions[0].options = [{ group: 'available', name: 'Available', options: result.configOptions[0].options }];
+          }
+          ok(id, result);
           continue;
         }
 
@@ -172,9 +176,9 @@ describe('AcpBackend session models', () => {
     });
   });
 
-  it('projects Copilot model controls on the real config-option path without erasing another model controls', async () => {
+  it.each([false, true])('projects Copilot controls without erasing another model controls (grouped choices: %s)', async (groupedModelChoices) => {
     await withTempDir('happier-copilot-model-controls-', async (dir) => {
-      const script = writeFakeAcpAgentScript({ dir, modelConfigEffort: true });
+      const script = writeFakeAcpAgentScript({ dir, modelConfigEffort: true, groupedModelChoices });
       const definition: AgentAcpRuntimeDefinition = COPILOT_ACP_RUNTIME_DEFINITION;
       const backend = new AcpBackend({
         agentName: 'test', cwd: dir, command: process.execPath, args: [script],
