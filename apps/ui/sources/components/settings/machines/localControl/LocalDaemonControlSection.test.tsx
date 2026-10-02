@@ -139,7 +139,18 @@ const HEALTHY_AMBIENT_STATUS_DATA = {
         machineIdMatches: true,
         cliVersionMatches: true,
     },
+    // R16 — the executor's one list of this computer's services, and its one completeness signal.
+    serviceRows: [
+        { relayUrl: 'https://relay.example.test', state: 'connected', appManaged: true, serving: 'default-following', actions: ['restart', 'stop'] },
+    ],
+    pinnedServices: { complete: true, coexistence: true, services: [], unreadable: [] },
 } as const;
+
+/** Each relay row the way it reads: `title|state|subtitle`. */
+function relayRows(screen: Awaited<ReturnType<typeof renderScreen>>): string[] {
+    return screen.findAllHostsByTestId('settings.localDaemonControl.relay')
+        .map((node) => [node.props.title, node.props.detail, node.props.subtitle ?? ''].join('|'));
+}
 
 /**
  * The one ambient read every desktop surface shares (F6). Each case sets what the CLI answers
@@ -290,7 +301,9 @@ describe('LocalDaemonControlSection', () => {
         const { LocalDaemonControlSection } = await import('./LocalDaemonControlSection');
         const screen = await renderScreen(React.createElement(LocalDaemonControlSection, { runner }));
         await settleAmbientInspection();
-        expect(screen.findByTestId('settings.localDaemonControl.status')?.props.subtitle).toBe('machine.thisComputer.connectedAs');
+        // Connected: the row says it all, naming the account it answers as; there is nothing to add.
+        expect(relayRows(screen)).toEqual(['relay.example.test|connectionStatus.thisComputerRelayConnected|machine.thisComputer.relayAccount']);
+        expect(screen.findByTestId('settings.localDaemonControl.status')).toBeNull();
 
         // The service stopped while the settings screen was open.
         ambient.data = {
@@ -303,7 +316,58 @@ describe('LocalDaemonControlSection', () => {
         await screen.pressByTestIdAsync('settings.localDaemonControl.refresh');
         await settleAmbientInspection();
 
+        expect(relayRows(screen)).toEqual(['connectionStatus.thisComputerSetUpFor|connectionStatus.thisComputerRelayOffline|machine.thisComputer.relayAccount']);
         expect(screen.findByTestId('settings.localDaemonControl.status')?.props.subtitle).toBe('server.relayDrift.bannerNotRunningDescription');
+    });
+
+    it('lists every relay this computer serves, the way the connection popover and the tray list them (C5/A11-07)', async () => {
+        // One daemon per relay: the default-following service here, a relay's own service the app
+        // installed, and one the person set up themselves — plus one the executor could not read.
+        ambient.data = {
+            ...HEALTHY_AMBIENT_STATUS_DATA,
+            serviceRows: [
+                ...HEALTHY_AMBIENT_STATUS_DATA.serviceRows,
+                { relayUrl: 'https://work.example.test', state: 'offline', appManaged: true, serving: 'pinned', actions: ['start'] },
+                { relayUrl: 'https://mine.example.test', state: 'needs_attention', appManaged: false, serving: 'pinned', actions: [] },
+            ],
+            pinnedServices: { complete: false, coexistence: true, services: [], unreadable: [{ relayUrl: 'https://lost.example.test', code: 'invalid_cli_response', message: 'x' }] },
+        };
+
+        const { LocalDaemonControlSection } = await import('./LocalDaemonControlSection');
+        const screen = await renderScreen(React.createElement(LocalDaemonControlSection));
+        await settleAmbientInspection();
+
+        expect(relayRows(screen)).toEqual([
+            'relay.example.test|connectionStatus.thisComputerRelayConnected|machine.thisComputer.relayAccount',
+            'connectionStatus.thisComputerSetUpFor|connectionStatus.thisComputerRelayOffline|',
+            'mine.example.test|connectionStatus.thisComputerRelayNeedsAttention|settingsDesktop.trayUserOwned',
+        ]);
+        // Never "that is all of them" while one could not be read (M6).
+        expect(screen.findByTestId('settings.localDaemonControl.status')?.props.subtitle).toBe('settingsDesktop.trayIncomplete');
+    });
+
+    it('names the exact command that updates the command line the person kept, copyable, never run (A11-08)', async () => {
+        ambient.data = {
+            ...HEALTHY_AMBIENT_STATUS_DATA,
+            acquisition: { command: '/usr/local/bin/happier', provenance: 'override', version: '0.2.10' },
+            cli: {
+                update: { currentVersion: '0.2.10', latestVersion: '0.2.14', updateAvailable: true, managed: false },
+                choice: {
+                    mode: 'own',
+                    otherCli: { command: '/usr/local/bin/happier', origin: 'npm', removalCommand: null, updateCommand: 'npm install -g @happier-dev/cli@latest' },
+                },
+            },
+        };
+
+        const { LocalDaemonControlSection } = await import('./LocalDaemonControlSection');
+        const screen = await renderScreen(React.createElement(LocalDaemonControlSection));
+        await settleAmbientInspection();
+
+        const row = screen.findByTestId('settings.localDaemonControl.updateKeptCli');
+        expect(row?.props.copy).toBe('npm install -g @happier-dev/cli@latest');
+        expect(row?.props.onPress).toBeUndefined();
+        // The app still never offers to run an update of a CLI it did not install.
+        expect(screen.findByTestId('settings.localDaemonControl.updateCli')).toBeNull();
     });
 
     it('repairs through the one setup executor, never the deleted relay.connectBackgroundService kind', async () => {
@@ -552,8 +616,54 @@ describe('LocalDaemonControlSection', () => {
         const screen = await renderScreen(React.createElement(LocalDaemonControlSection, { runner }));
         await settleAmbientInspection();
 
-        expect(screen.findByTestId('settings.localDaemonControl.status')?.props.subtitle).toBe('machine.daemonStatus.unknown');
+        // The list could not be read: said in the tray's words, never as an old single-service sentence.
+        expect(screen.findByTestId('settings.localDaemonControl.status')?.props.subtitle).toBe('settingsDesktop.trayReadFailed');
         expect(screen.findByProps({ subtitle: 'daemon status request failed' })).toBeTruthy();
         expect(screen.findByTestId('settings.localDaemonControl.repair')?.props.disabled).toBe(false);
+    });
+    it('shows the named reason when Start could not start a service, even though another one started (N3)', async () => {
+        const { createSystemTaskRunner } = await import('@/components/systemTasks/createSystemTaskRunner');
+        const { SystemTaskSpecSchema } = await import('@happier-dev/protocol');
+        ambient.data = {
+            ...HEALTHY_AMBIENT_STATUS_DATA,
+            serviceInstalled: true,
+            daemonRunning: false,
+            service: { installed: true, running: false },
+            runtimeConvergence: { ...HEALTHY_AMBIENT_STATUS_DATA.runtimeConvergence, controlReachable: false },
+        };
+        const runner = createSystemTaskRunner({
+            bridge: {
+                async start(spec) {
+                    return `task:${SystemTaskSpecSchema.parse(spec).kind}`;
+                },
+                async subscribe(taskId, listenerSet) {
+                    if (taskId === 'task:daemon.service.start.v1') {
+                        queueMicrotask(() => listenerSet.onResult({
+                            protocolVersion: 1,
+                            taskId,
+                            ok: true,
+                            data: {
+                                ...HEALTHY_AMBIENT_STATUS_DATA,
+                                targets: [
+                                    { target: 'default-following', outcome: 'failed', code: 'daemon_service_not_ready', message: 'Daemon service did not reach a ready state.' },
+                                    { target: 'https://relay-b.example.test', outcome: 'started' },
+                                ],
+                            },
+                        }));
+                    }
+                    return () => {};
+                },
+                async cancel() {},
+                async respond() {},
+            },
+        });
+
+        const { LocalDaemonControlSection } = await import('./LocalDaemonControlSection');
+        const screen = await renderScreen(React.createElement(LocalDaemonControlSection, { runner }));
+        await settleAmbientInspection();
+        await screen.pressByTestIdAsync('settings.localDaemonControl.start');
+        await settleAmbientInspection();
+
+        expect(screen.findAll((node) => node.props?.subtitle === 'Daemon service did not reach a ready state.').length).toBeGreaterThan(0);
     });
 });

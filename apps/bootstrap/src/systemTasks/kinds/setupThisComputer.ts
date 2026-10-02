@@ -2,6 +2,7 @@ import { systemTasks } from '@happier-dev/cli-common';
 import type { FirstPartyAcquisitionOptions } from '@happier-dev/cli-common/firstPartyRuntime';
 import { reportCliAcquisitionProgress } from '../cliAcquisitionProgress.js';
 import {
+  createServerUrlComparableKey,
   createSetupAccountConsentPromptData,
   createSetupCliChoicePromptData,
   createSetupPairingPromptData,
@@ -38,11 +39,17 @@ import {
   type LocalHappierCliInvocation,
   type RelayProfileTarget,
   type ServiceInstallApplyFlags,
+  type SetupServiceTargetMode,
   type ServiceInstallPreview,
+  createSelectedCliInvocation,
   createSetupCliScope,
+  markInstallDesktopManaged,
+  pinInvocationToServerProfile,
   previewServiceInstall,
   readAuthStatus,
   readDaemonStatus,
+  readPinnedServiceInventory,
+  relayUrlsOverlap,
 } from '../localDaemonCli.js';
 import type { LocalFirstPartyCommandProvenance } from '../localFirstPartyCommand.js';
 import { ACCEPTED_BOOTSTRAP_CHANNELS, normalizeBootstrapChannel } from '../taskRuntime.js';
@@ -64,13 +71,25 @@ export type SetupThisComputerParams = Readonly<{
    * even though this computer already answered it.
    */
   reconsiderCli?: boolean;
+  /**
+   * Which of this computer's services serves the app's relay (`SetupServiceTargetMode`). Absent is
+   * `default-following`: the released contract, which selects the relay for this Happier home.
+   * `pinned` gives the relay its own background service and never touches the persisted selection
+   * or the default-following service ("connect to this relay too").
+   */
+  serviceTargetMode?: SetupServiceTargetMode;
   surface?: string;
 }>;
 
 export type SetupThisComputerServiceAction = 'install' | 'start' | 'restart';
 
-/** The slice of the daemon status the lifecycle decision (E3) reads before the relay changes. */
-export type ServiceLifecycleObservation = Pick<DaemonStatusSnapshot, 'serviceInstalled' | 'daemonRunning' | 'serverComparableKey'>;
+/**
+ * The slice of the daemon status the lifecycle decision (E3) reads before the relay changes, and —
+ * for a pinned run — the default-following service's login-start mode, which the pinned service
+ * is installed with (one setting governs every service the app manages).
+ */
+export type ServiceLifecycleObservation = Pick<DaemonStatusSnapshot, 'serviceInstalled' | 'daemonRunning' | 'serverComparableKey'>
+  & Readonly<{ service?: Pick<DaemonStatusSnapshot['service'], 'autostart'> }>;
 
 /**
  * hsetup writes this line to stdout unredacted (only events are redacted), so it carries no URL:
@@ -126,6 +145,20 @@ export type SetupThisComputerDeps = Readonly<{
     profile: RelayProfileTarget,
     cli: LocalHappierCliInvocation,
   ) => Promise<ConfiguredRelay>;
+  /**
+   * N4/N5 — the run's own CLI's pinned-service inventory (list only): its coexistence capability and
+   * the relays that already have their own service here, readable or not. Read-only.
+   */
+  readPinnedServiceInventory: (
+    releaseRing: PublicReleaseRingId,
+    cli: LocalHappierCliInvocation,
+  ) => Promise<Readonly<{ listed: boolean; coexistence: boolean; relayUrls: readonly string[] }>>;
+  /** F1 — the relay's saved CLI profile, added without selecting it when the CLI has none. */
+  registerRelayProfile: (
+    releaseRing: PublicReleaseRingId,
+    profile: RelayProfileTarget,
+    cli: LocalHappierCliInvocation,
+  ) => Promise<Readonly<{ id: string }>>;
   readAuthStatus: (
     releaseRing: PublicReleaseRingId,
     cli: LocalHappierCliInvocation,
@@ -168,6 +201,7 @@ type MutatingSetupDepName =
   | 'removePathExposure'
   | 'ensureCli'
   | 'configureRelay'
+  | 'registerRelayProfile'
   | 'requestAuthPairing'
   | 'waitForAuthPairing'
   | 'installService'
@@ -237,6 +271,10 @@ function readRefusalReason(answer: unknown): string | null {
  * validate credentials for that relay → pair (or claim with `--replace-existing` on an account
  * mismatch) → install/start/restart through the CLI service owner. Readiness is proven by the
  * ambient `runtimeConvergence` read afterwards, never by this result (INV8).
+ *
+ * `serviceTargetMode: pinned` is the same run for the relay's own background service: every step
+ * above except configuring the relay, each addressed to that relay and its pinned service, so the
+ * persisted selection and the default-following service keep serving the relay they served.
  */
 export function createSetupThisComputerKind(
   overrides: SetupThisComputerDepsInput,
@@ -307,12 +345,58 @@ export function createSetupThisComputerKind(
       // R13 (a): the run's one relay context. The reads that must answer for the target before the
       // run may select it use `target`; every other command uses `selected`, which `server set`
       // points at the target. Neither inherits the server selection the app was launched with.
-      const scope = createSetupCliScope({ cli, target: relayTarget, processEnv: process.env, signal: ctx.signal });
+      const pinned = params.serviceTargetMode === 'pinned';
+      const scope = createSetupCliScope({
+        cli,
+        target: relayTarget,
+        processEnv: process.env,
+        signal: ctx.signal,
+        ...(pinned ? { serviceTargetMode: 'pinned' as const } : {}),
+      });
 
       ctx.emit({ type: 'progress', stepId: STEP.inspectService, message: 'Checking the background service' });
+      // The run's own CLI decides, not the app's earlier offer: the two are separate processes at
+      // separate times, and the CLI may have changed in between (the one-CLI answer above).
+      const inventory = await deps.readPinnedServiceInventory(ring, createSelectedCliInvocation({ cli, processEnv: process.env, signal: ctx.signal }));
+      throwIfCancelled(ctx.signal);
+      const observedDefaultBeforeRelay = !pinned && !inventory.listed ? await deps.readDaemonStatus(ring, scope.selected) : null;
+      throwIfCancelled(ctx.signal);
+      const sameRelay = observedDefaultBeforeRelay?.serverComparableKey != null
+        && [params.activeRelayUrl, params.activeLocalRelayUrl].some((url) => url !== null && createServerUrlComparableKey(url) === observedDefaultBeforeRelay.serverComparableKey);
+      if (!inventory.listed && (pinned || !sameRelay)) {
+        // R10-2 — a CLI at the setup floor always lists its services; one that could not leaves
+        // unknown whether the target already has its own, so nothing moves or is added blind.
+        throw new systemTasks.SystemTaskExecutionError(
+          'service_inventory_unavailable',
+          'The Happier CLI could not list this computer\'s background services, so setup left them as they are. Try again.',
+        );
+      }
+      if (pinned && !inventory.coexistence) {
+        // N4 — a CLI that cannot run one daemon per relay would reap the other relays' daemons.
+        throw new systemTasks.SystemTaskExecutionError(
+          'cli_capability_missing',
+          'This computer\'s Happier CLI cannot connect to more than one relay at a time. Update it, then try again.',
+        );
+      }
+      if (!pinned && relayUrlsOverlap(inventory.relayUrls, [params.activeRelayUrl, params.activeLocalRelayUrl])) {
+        // N5 — this relay already has its own service here (whether or not its status could be
+        // read); moving the default-following one onto it would run two daemons for one relay.
+        throw new systemTasks.SystemTaskExecutionError(
+          'relay_has_own_service',
+          'This computer already has its own background service for this relay, so the other one was left where it is.',
+        );
+      }
       const preview = await deps.previewServiceInstall(ring, scope.target);
       if (preview.installConflict?.blocking) {
         throw new systemTasks.SystemTaskExecutionError('service_install_blocked', preview.installConflict.message);
+      }
+      if (pinned && (preview.installConflict?.servicesToRemove.length ?? 0) > 0) {
+        // "Connect to this relay too" exists so every other service keeps serving its relay. An
+        // install that would remove one is not that request, whatever consent it could collect.
+        throw new systemTasks.SystemTaskExecutionError(
+          'service_install_blocked',
+          `Connecting this computer to this relay too would remove another background service: ${preview.installConflict?.message ?? ''}`.trim(),
+        );
       }
       const applyFlags: ServiceInstallApplyFlags = {
         replaceExisting: preview.installConflict !== null,
@@ -399,15 +483,30 @@ export function createSetupThisComputerKind(
         : null;
 
       ctx.emit({ type: 'progress', stepId: STEP.configureRelay, message: 'Pointing this computer at your relay' });
-      // What the default-following service serves before this run selects the target.
-      const observedBeforeRelay = await deps.readDaemonStatus(ring, scope.selected);
+      // What the service this run converges serves before it acts: the default-following one
+      // before `server set` selects the target, or the target's own pinned service.
+      // F1 — a pinned run gives the relay one saved CLI profile (added, never selected) and pins
+      // every command from here on to that id, so the service, its lifecycle and its credentials
+      // live where every `--all` path and a later `server use` of the same URL look. It is the
+      // pinned run's counterpart of `server set` and runs at the same point: after consent.
+      const selected = pinned
+        ? pinInvocationToServerProfile(
+          scope.selected,
+          (await deps.registerRelayProfile(ring, relayTarget, createSelectedCliInvocation({ cli, processEnv: process.env, signal: ctx.signal }))).id,
+        )
+        : scope.selected;
       throwIfCancelled(ctx.signal);
-      const configured = await deps.configureRelay(ring, relayTarget, scope.selected);
-      const relayChanged = observedBeforeRelay.serverComparableKey !== configured.comparableKey;
+      const observedBeforeRelay = observedDefaultBeforeRelay ?? await deps.readDaemonStatus(ring, selected);
+      throwIfCancelled(ctx.signal);
+      const configured = pinned
+        ? pinnedRelayOf(observedBeforeRelay)
+        : await deps.configureRelay(ring, relayTarget, selected);
+      // A pinned service is fixed to its relay; nothing this run does moves one.
+      const relayChanged = !pinned && observedBeforeRelay.serverComparableKey !== configured.comparableKey;
       throwIfCancelled(ctx.signal);
 
       ctx.emit({ type: 'progress', stepId: STEP.checkAuth, message: 'Checking this computer\'s sign-in' });
-      const authStatus = await deps.readAuthStatus(ring, scope.selected);
+      const authStatus = await deps.readAuthStatus(ring, selected);
       throwIfCancelled(ctx.signal);
       const sameAccount = authStatus.authenticated && authStatus.accountId === params.expectedAccountId;
       // The claim below replaces exactly the account the pre-write read saw. Credentials that
@@ -428,7 +527,7 @@ export function createSetupThisComputerKind(
       let credentialsChanged = false;
 
       if (!machineId) {
-        const request = await deps.requestAuthPairing(ring, scope.selected);
+        const request = await deps.requestAuthPairing(ring, selected);
         if (!sameAccount) {
           // Public material only (A2/INV2): the terminal public key, the relay and server identity
           // the app sent, and the CLI's pairing requirement (`compatible` or `v3`).
@@ -475,7 +574,7 @@ export function createSetupThisComputerKind(
         const claim = await deps.waitForAuthPairing(ring, {
           publicKey: request.publicKey,
           replaceExisting: !sameAccount,
-        }, scope.selected);
+        }, selected);
         if (!claim.machineId) {
           throw new systemTasks.SystemTaskExecutionError(
             'machine_id_unavailable',
@@ -499,7 +598,15 @@ export function createSetupThisComputerKind(
       // to the start path's best-effort drift refresh would drop the removal the user approved.
       if (serviceAction === 'install' || applyFlags.replaceExisting || applyFlags.takeover) {
         ctx.emit({ type: 'progress', stepId: STEP.installService, message: 'Installing the background service' });
-        await deps.installService(ring, applyFlags, scope.selected);
+        // One login-start setting governs every service the app manages: a relay's own service
+        // starts the way this computer's default-following one does (the Settings toggle's mode).
+        const autostart = pinned
+          ? (await deps.readDaemonStatus(ring, createSelectedCliInvocation({ cli, processEnv: process.env, signal: ctx.signal }))).service?.autostart ?? null
+          : null;
+        throwIfCancelled(ctx.signal);
+        // H2 — the install that creates a connect-too service stamps it as the desktop's, so the
+        // app's start, stop and login-start commands act on it (and on no service the user owns).
+        await deps.installService(ring, autostart ? { ...applyFlags, autostart } : applyFlags, pinned ? markInstallDesktopManaged(selected) : selected);
         throwIfCancelled(ctx.signal);
       }
       ctx.emit({
@@ -510,7 +617,7 @@ export function createSetupThisComputerKind(
       await deps.startService(ring, {
         action: serviceAction === 'restart' ? 'restart' : 'start',
         takeover: applyFlags.takeover,
-      }, scope.selected);
+      }, selected);
       // Cancellation stops the run, it does not undo it (INV11): whatever the CLI already installed
       // or started stays discoverable for the next run to converge on, but an abandoned run must
       // not report success.
@@ -535,6 +642,21 @@ export function createSetupThisComputerKind(
       };
     },
   };
+}
+
+/**
+ * A pinned run selects nothing, so the relay its pairing is bound to is the one the target-scoped
+ * status names (INV2) — the relay that service answers for. A status that names none cannot be
+ * paired honestly.
+ */
+function pinnedRelayOf(observed: ServiceLifecycleObservation): Readonly<{ comparableKey: string }> {
+  if (!observed.serverComparableKey) {
+    throw new systemTasks.SystemTaskExecutionError(
+      'invalid_cli_response',
+      'The Happier CLI did not say which relay this computer would connect to.',
+    );
+  }
+  return { comparableKey: observed.serverComparableKey };
 }
 
 /** The dry-run's only proposed change is switching which CLI the existing service runs. */
@@ -630,6 +752,10 @@ export function parseSetupThisComputerParams(params: unknown): SetupThisComputer
   if (record.reconsiderCli !== undefined && typeof record.reconsiderCli !== 'boolean') {
     throw new systemTasks.SystemTaskExecutionError('invalid_params', 'reconsiderCli must be a boolean when provided.');
   }
+  const serviceTargetMode = record.serviceTargetMode;
+  if (serviceTargetMode !== undefined && serviceTargetMode !== 'default-following' && serviceTargetMode !== 'pinned') {
+    throw new systemTasks.SystemTaskExecutionError('invalid_params', 'serviceTargetMode must be default-following or pinned when provided.');
+  }
 
   return {
     activeRelayUrl,
@@ -639,6 +765,7 @@ export function parseSetupThisComputerParams(params: unknown): SetupThisComputer
     expectedAccountId,
     ...(replaceAccountId ? { replaceAccountId } : {}),
     ...(record.reconsiderCli === true ? { reconsiderCli: true } : {}),
+    ...(serviceTargetMode === 'pinned' ? { serviceTargetMode } : {}),
     ...(surface ? { surface } : {}),
   };
 }
@@ -671,5 +798,6 @@ function createSetupThisComputerDeps(overrides: SetupThisComputerDepsInput): Set
     previewServiceInstall: overrides.previewServiceInstall ?? previewServiceInstall,
     readAuthStatus: overrides.readAuthStatus ?? readAuthStatus,
     readDaemonStatus: overrides.readDaemonStatus ?? readDaemonStatus,
+    readPinnedServiceInventory: overrides.readPinnedServiceInventory ?? readPinnedServiceInventory,
   };
 }

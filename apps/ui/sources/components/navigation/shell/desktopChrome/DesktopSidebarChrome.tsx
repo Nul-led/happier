@@ -70,9 +70,7 @@ export const DesktopSidebarChrome = React.memo((props: DesktopSidebarChromeProps
         const color = action.color ?? theme.colors.chrome.header.foreground;
         const isSettingsAction = action.id === 'settings';
         const icon = typeof action.icon === 'string'
-            ? action.id === 'inbox'
-                ? <Icon name="mailbox" size={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX} color={color} />
-                : <Icon name={action.icon} size={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX} color={color} />
+            ? <Icon name={action.icon} size={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX} color={color} />
             : action.icon;
 
         return (
@@ -101,6 +99,16 @@ export const DesktopSidebarChrome = React.memo((props: DesktopSidebarChromeProps
                 pinnedActionIds={compactContentActionIds}
                 leadingPinnedContent={(
                     <View style={styles.inlineUtilityRow}>
+                        {/* Without a desktop top rail, Updates joins this icon row; it leads so the
+                            icons after it stay put when it appears. */}
+                        {hasDesktopWindowControls ? null : (
+                            <UpdatesEntry
+                                variant="icon"
+                                buttonSize={32}
+                                iconSize={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX}
+                                testID="desktop-sidebar-updates-button"
+                            />
+                        )}
                         {props.inboxEnabled && props.inboxSummary ? (
                             <InboxPopoverButton
                                 summary={props.inboxSummary}
@@ -154,6 +162,14 @@ export const DesktopSidebarChrome = React.memo((props: DesktopSidebarChromeProps
                         {props.desktopWindowControls}
                     </DesktopShellWindowControlsHost>
                     <View testID="desktop-sidebar-chrome-utility-row" style={styles.utilityRow}>
+                        {/* The desktop top rail holds window-level utilities; inbox and activity stay
+                            in the sidebar's icon row. Updates leads so nothing shifts when it appears. */}
+                        <UpdatesEntry
+                            variant="icon"
+                            buttonSize={DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_BUTTON_SIZE_PX}
+                            iconSize={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX}
+                            testID="desktop-sidebar-updates-button"
+                        />
                         {props.onPressBack ? (
                             <Pressable
                                 testID="sidebar-back-button"
@@ -190,21 +206,6 @@ export const DesktopSidebarChrome = React.memo((props: DesktopSidebarChromeProps
                                 />
                             </Pressable>
                         ) : null}
-                        <>
-                                {props.inboxEnabled && props.inboxSummary ? (
-                                    <InboxPopoverButton
-                                        summary={props.inboxSummary}
-                                        testID="sidebar-inbox-button"
-                                        buttonSize={DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_BUTTON_SIZE_PX}
-                                        iconSize={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX}
-                                    />
-                                ) : null}
-                                <ActionOperationActivityButton
-                                    testID="desktop-sidebar-action-operations"
-                                    buttonSize={DESKTOP_SIDEBAR_CHROME_TOP_NAV_ICON_BUTTON_SIZE_PX}
-                                    iconSize={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX}
-                                />
-                            </>
                         {topUtilityActions.map(renderTopUtilityAction)}
                         {props.onPressCollapse ? (
                             <Pressable
@@ -248,11 +249,6 @@ export const DesktopSidebarChrome = React.memo((props: DesktopSidebarChromeProps
                                     <Text style={styles.envBadgeText}>{props.environmentBadge}</Text>
                                 </View>
                             ) : null}
-                            {/* The one Updates entry: trails the title (which truncates first), hidden at zero. */}
-                            <UpdatesEntry
-                                variant="pill"
-                                testID="desktop-sidebar-updates-pill"
-                            />
                         </View>
                         <View style={styles.statusControlWrapper}>
                             <ConnectionStatusControl

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { View } from 'react-native';
+import { useUnistyles } from 'react-native-unistyles';
 
 import { SystemTaskProgressCard } from '@/components/systemTasks';
 import type { SystemTaskRunner } from '@/components/systemTasks/types';
@@ -7,35 +7,34 @@ import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { useRelayDriftSummary } from '@/components/settings/server/useRelayDriftSummary';
 import type { RelayDriftSummary } from '@/components/settings/server/relayDriftTypes';
-import type { DesktopLocalReadinessFacts } from '@/setup/deriveDesktopLocalSetupSnapshot';
-import { formatCliChannelLabel, resolveDaemonAccountLabel } from '@/setup/thisComputerLabels';
-import { toRelayHostDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
+import { Icon } from '@/components/ui/icons/Icon';
+import { StatusDot } from '@/components/ui/status/StatusDot';
+import { readKeptCliUpdateCommand, type DesktopLocalReadinessFacts } from '@/setup/deriveDesktopLocalSetupSnapshot';
+import { describeThisComputerRelayRow, formatCliChannelLabel, resolveDaemonAccountLabel } from '@/setup/thisComputerLabels';
+import type { ThisComputerRelayRow, ThisComputerRelayRows } from '@/setup/thisComputerRelayRows';
 import { t } from '@/text';
 
 import { useCliUpdateTask } from './useCliUpdateTask';
 import { useLocalDaemonControl } from './useLocalDaemonControl';
 
 /**
- * This computer, in one sentence. When the daemon contradicts the app the drift summary says so —
- * the same words the Machines card, the sessions empty state, the sidebar and the tray use (U7).
- * Otherwise it names what the daemon is connected to (R17), or that nothing is set up yet.
+ * What Settings › This computer says beside its relay rows, when the rows alone cannot say it: the
+ * drift sentence when the daemon contradicts the app — the same words the Machines card, the sessions
+ * empty state, the sidebar and the tray use (U7) — else the state of the one list, in the tray's
+ * words (R16): still being read, unreadable, not whole, or empty. `null` when the rows say it all.
  */
-function resolveStatusSubtitle(facts: DesktopLocalReadinessFacts | null, drift: RelayDriftSummary | null): string {
-    if (!facts) {
-        return t('machine.daemonStatus.unknown');
+function resolveRelayListNotice(rows: ThisComputerRelayRows, drift: RelayDriftSummary | null, unavailable: boolean): string | null {
+    if (unavailable) return t('settings.systemTaskBridgeUnavailable');
+    if (drift) return drift.description;
+    switch (rows.status) {
+        case 'pending':
+            return t('settingsDesktop.trayChecking');
+        case 'failed':
+            return t('settingsDesktop.trayReadFailed');
+        case 'listed':
+            if (!rows.complete) return t('settingsDesktop.trayIncomplete');
+            return rows.rows.length === 0 ? t('machine.thisComputer.notSetUp') : null;
     }
-    if (drift) {
-        return drift.description;
-    }
-    const relay = facts.server.serverUrl ? toRelayHostDisplay(facts.server.serverUrl) : null;
-    const account = resolveDaemonAccountLabel(facts.auth);
-    if (!facts.service.installed && !facts.runtimeConvergence?.controlReachable) {
-        return t('machine.thisComputer.notSetUp');
-    }
-    if (relay && account && facts.runtimeConvergence?.controlReachable === true) {
-        return t('machine.thisComputer.connectedAs', { relay, account });
-    }
-    return t('machine.daemonStatus.unknown');
 }
 
 /**
@@ -88,10 +87,66 @@ function resolveOldCliCopy(facts: DesktopLocalReadinessFacts | null): Readonly<{
     };
 }
 
+/**
+ * A11-08/R12 — the command line the person kept has a newer release: the app never replaces it, so
+ * the row names the exact command that does, copyable, never run.
+ */
+function resolveKeptCliUpdate(facts: DesktopLocalReadinessFacts | null): Readonly<{ subtitle: string; command: string }> | null {
+    const command = facts ? readKeptCliUpdateCommand(facts) : null;
+    const latestVersion = facts?.cliUpdate?.updateAvailable === true ? facts.cliUpdate.latestVersion : null;
+    if (!command || !latestVersion) return null;
+    return { subtitle: t('machine.thisComputer.updateCliKept', { version: latestVersion, command }), command };
+}
+
 function canUpdateCli(facts: DesktopLocalReadinessFacts | null): facts is DesktopLocalReadinessFacts & { cliUpdate: NonNullable<DesktopLocalReadinessFacts['cliUpdate']> } {
     return facts?.acquisition.provenance === 'managed'
         && facts.cliUpdate?.managed === true
         && facts.cliUpdate.updateAvailable === true;
+}
+
+/** The relay's state as a glance: the connection chip's own status colors (the words carry the meaning). */
+function relayStateDotColor(theme: ReturnType<typeof useUnistyles>['theme'], state: ThisComputerRelayRow['state']): string {
+    switch (state) {
+        case 'connected':
+            return theme.colors.status.connected;
+        case 'offline':
+            return theme.colors.status.disconnected;
+        default:
+            return theme.colors.status.actionRequired;
+    }
+}
+
+/**
+ * One relay this computer has a service for, read the way the connection popover reads it
+ * (`describeThisComputerRelayRow`): the relay, and how this computer stands there. The account it
+ * answers as is named on the app's own relay; a service set up outside Happier says so (H2).
+ */
+const ThisComputerRelayItem = React.memo(function ThisComputerRelayItem(props: Readonly<{
+    row: ThisComputerRelayRow;
+    account: string | null;
+}>) {
+    const { theme } = useUnistyles();
+    const text = describeThisComputerRelayRow(props.row);
+    const subtitle = props.account
+        ? t('machine.thisComputer.relayAccount', { account: props.account })
+        : props.row.appManaged ? undefined : t('settingsDesktop.trayUserOwned');
+    return (
+        <Item
+            testID="settings.localDaemonControl.relay"
+            title={text.title}
+            subtitle={subtitle}
+            detail={text.state}
+            leftElement={<StatusDot color={relayStateDotColor(theme, props.row.state)} size={8} />}
+            accessibilityLabel={subtitle ? `${text.accessibilityLabel}, ${subtitle}` : text.accessibilityLabel}
+            showChevron={false}
+            mode="info"
+        />
+    );
+});
+
+function RelayNoticeIcon(): React.ReactElement {
+    const { theme } = useUnistyles();
+    return <Icon name="info" size={20} color={theme.colors.text.secondary} />;
 }
 
 export const LocalDaemonControlSection = React.memo(function LocalDaemonControlSection(props: Readonly<{
@@ -108,6 +163,8 @@ export const LocalDaemonControlSection = React.memo(function LocalDaemonControlS
         repairBackgroundService,
         startDaemonService,
         facts,
+        cliFacts,
+        relayRows,
         isBusy,
         isUnavailable,
         refreshStatus,
@@ -116,20 +173,37 @@ export const LocalDaemonControlSection = React.memo(function LocalDaemonControlS
     });
     const drift = useRelayDriftSummary();
     const cliUpdate = useCliUpdateTask(props.runner ? { runner: props.runner } : {});
-    const oldCliCopy = resolveOldCliCopy(facts);
+    const oldCliCopy = resolveOldCliCopy(cliFacts);
+    const keptCliUpdate = resolveKeptCliUpdate(cliFacts);
+    const relayNotice = resolveRelayListNotice(relayRows, drift, isUnavailable);
+    const appRelayAccount = facts ? resolveDaemonAccountLabel(facts.auth) : null;
     // There is a choice to change only when another command line exists beside the managed one.
-    const canChangeCli = facts?.cliChoice.otherCli != null;
+    const canChangeCli = cliFacts?.cliChoice.otherCli != null;
 
     return (
         <>
+            <ItemGroup title={t('settings.servers')}>
+                {relayRows.status === 'listed' && !isUnavailable ? relayRows.rows.map((row) => (
+                    <ThisComputerRelayItem
+                        key={row.relayUrl}
+                        row={row}
+                        account={row.appRelay ? appRelayAccount : null}
+                    />
+                )) : null}
+                {relayNotice ? (
+                    <Item
+                        testID="settings.localDaemonControl.status"
+                        title={t('machine.status')}
+                        subtitle={relayNotice}
+                        subtitleLines={0}
+                        leftElement={<RelayNoticeIcon />}
+                        loading={relayRows.status === 'pending' && !isUnavailable}
+                        showChevron={false}
+                        mode="info"
+                    />
+                ) : null}
+            </ItemGroup>
             <ItemGroup title={t('machine.daemon')}>
-                <Item
-                    testID="settings.localDaemonControl.status"
-                    title={t('machine.status')}
-                    subtitle={isUnavailable ? t('settings.systemTaskBridgeUnavailable') : resolveStatusSubtitle(facts, drift)}
-                    showChevron={false}
-                    mode="info"
-                />
                 {facts?.auth.machineId ? (
                     <Item
                         testID="settings.localDaemonControl.machineId"
@@ -139,12 +213,12 @@ export const LocalDaemonControlSection = React.memo(function LocalDaemonControlS
                         mode="info"
                     />
                 ) : null}
-                {facts ? (
+                {cliFacts ? (
                     <Item
                         testID="settings.localDaemonControl.cli"
                         title={t('machine.thisComputer.cliTitle')}
-                        subtitle={resolveCliSubtitle(facts)}
-                        detail={resolveCliDetail(facts)}
+                        subtitle={resolveCliSubtitle(cliFacts)}
+                        detail={resolveCliDetail(cliFacts)}
                         showChevron={false}
                         mode="info"
                     />
@@ -169,12 +243,22 @@ export const LocalDaemonControlSection = React.memo(function LocalDaemonControlS
                         disabled={!canRepair || cliUpdate.running}
                     />
                 ) : null}
-                {canUpdateCli(facts) ? (
+                {keptCliUpdate ? (
+                    <Item
+                        testID="settings.localDaemonControl.updateKeptCli"
+                        title={t('machine.thisComputer.updateCliTitle')}
+                        subtitle={keptCliUpdate.subtitle}
+                        subtitleLines={0}
+                        copy={keptCliUpdate.command}
+                        showChevron={false}
+                    />
+                ) : null}
+                {canUpdateCli(cliFacts) ? (
                     <Item
                         testID="settings.localDaemonControl.updateCli"
                         title={t('machine.thisComputer.updateCliTitle')}
-                        subtitle={cliUpdate.errorMessage ?? (facts.cliUpdate.latestVersion
-                            ? t('machine.thisComputer.updateCliAvailable', { version: facts.cliUpdate.latestVersion })
+                        subtitle={cliUpdate.errorMessage ?? (cliFacts.cliUpdate.latestVersion
+                            ? t('machine.thisComputer.updateCliAvailable', { version: cliFacts.cliUpdate.latestVersion })
                             : undefined)}
                         onPress={() => {
                             void cliUpdate.start();

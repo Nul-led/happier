@@ -12,6 +12,7 @@ import type { TerminalAttachmentInfo } from '@/terminal/attachment/terminalAttac
 import { runClaudeUnifiedTerminalSession } from './runClaudeUnifiedTerminalSession';
 import { buildClaudeUnifiedTerminalSpawn } from './buildClaudeUnifiedTerminalSpawn';
 import { requestClaudeExplicitRunnerStop } from '../claudeExplicitRunnerStop';
+import { logger } from '@/ui/logger';
 
 const attachmentId = 'attachment-adopted-resume' as TerminalAttachmentId;
 const existingHandle: TerminalHostHandle = {
@@ -81,6 +82,218 @@ function baseOptions(
 }
 
 describe('runClaudeUnifiedTerminalSession launch disposition', () => {
+  it('retains exact borrowed attachment when owned child termination cannot be verified', async () => {
+    const abortController = new AbortController();
+    let storedAttachment: TerminalAttachmentInfo | null = null;
+    const removeAttachment = vi.fn(async () => { storedAttachment = null; });
+    await runClaudeUnifiedTerminalSession({
+      ...baseOptions(createAdapter(), abortController),
+      createController: undefined,
+      currentTerminalHost: { handle: existingHandle, lifecycle: 'borrowed' },
+      launchCurrentTerminalProcess: async () => ({
+        whenExited: new Promise<never>(() => undefined),
+        terminate: async () => { throw new Error('owned-child-cleanup-unverified'); },
+      }),
+      persistTerminalHostAttachmentInfo: async ({ sessionId, attachmentId, handle, terminal }) => {
+        storedAttachment = { version: 3, lifecycle: 'borrowed', sessionId, attachmentId, handle: { ...handle, attachmentId }, terminal, updatedAt: 1 };
+      },
+      readTerminalHostAttachmentInfo: async () => storedAttachment,
+      removeTerminalHostAttachmentInfo: removeAttachment,
+      onTerminalHostReady: () => { abortController.abort(); },
+    });
+    expect(storedAttachment).toMatchObject({ version: 3, lifecycle: 'borrowed', handle: existingHandle });
+    expect(removeAttachment).not.toHaveBeenCalled();
+    logger.flushSync();
+    expect(await readFile(logger.logFilePath, 'utf8')).toContain('owned-child-cleanup-unverified');
+  });
+  it('retains borrowed-terminal cleanup failures in the default session file log', async () => {
+    logger.infoFile('Borrowed terminal cleanup regression started');
+    const abortController = new AbortController();
+    const adapter = createAdapter();
+    let storedAttachment: TerminalAttachmentInfo | null = null;
+    await runClaudeUnifiedTerminalSession({
+      ...baseOptions(adapter, abortController),
+      createController: undefined,
+      currentTerminalHost: { handle: existingHandle, lifecycle: 'borrowed' },
+      // Process termination and attachment-file writes are external boundaries.
+      launchCurrentTerminalProcess: async () => ({
+        whenExited: new Promise<never>(() => undefined),
+        terminate: async () => undefined,
+      }),
+      persistTerminalHostAttachmentInfo: async ({ sessionId, attachmentId, handle, terminal }) => {
+        storedAttachment = {
+          version: 3, lifecycle: 'borrowed', sessionId, attachmentId,
+          handle: { ...handle, attachmentId }, terminal, updatedAt: 1,
+        };
+      },
+      readTerminalHostAttachmentInfo: async () => storedAttachment,
+      removeTerminalHostAttachmentInfo: async () => { throw new Error('cleanup-attachment-boundary-failed'); },
+      onTerminalHostReady: () => { abortController.abort(); },
+    });
+    logger.flushSync();
+    const log = await readFile(logger.logFilePath, 'utf8');
+    expect(log).toContain('descriptor_retirement_failed');
+    expect(storedAttachment).toMatchObject({
+      version: 3,
+      lifecycle: 'borrowed',
+      attachmentId: existingHandle.attachmentId,
+      handle: existingHandle,
+    });
+  });
+
+  it('launches Claude in a borrowed terminal and stops the child without disposing the pane', async () => {
+    const abortController = new AbortController();
+    const createOrAttachHost = vi.fn(async () => existingHandle);
+    const dispose = vi.fn(async () => undefined);
+    const adapter = createAdapter({ createOrAttachHost, dispose });
+    const terminate = vi.fn(async () => undefined);
+    const launchBorrowedProcess = vi.fn(async () => ({
+      whenExited: new Promise<never>(() => undefined),
+      terminate,
+    }));
+    let storedAttachment: TerminalAttachmentInfo | null = null;
+
+    await runClaudeUnifiedTerminalSession({
+      ...baseOptions(adapter, abortController),
+      currentTerminalHost: { handle: existingHandle, lifecycle: 'borrowed' },
+      launchCurrentTerminalProcess: launchBorrowedProcess,
+      persistTerminalHostAttachmentInfo: async ({ sessionId, attachmentId, handle, lifecycle, terminal }) => {
+        expect(lifecycle).toBe('borrowed');
+        storedAttachment = {
+          version: 3,
+          lifecycle: 'borrowed',
+          sessionId,
+          attachmentId,
+          handle: { ...handle, attachmentId },
+          terminal,
+          updatedAt: 1,
+        };
+      },
+      readTerminalHostAttachmentInfo: async () => storedAttachment,
+      removeTerminalHostAttachmentInfo: async () => { storedAttachment = null; },
+      onTerminalHostReady: async ({ lifecycle, stopTerminalHostForExplicitStop }) => {
+        expect(lifecycle).toBe('borrowed');
+        await stopTerminalHostForExplicitStop();
+        abortController.abort();
+      },
+    });
+
+    expect(launchBorrowedProcess).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: '/workspace/project',
+      spawn: expect.objectContaining({
+        spawnArgv: ['/bin/claude', '--resume', 'claude-resume-id'],
+      }),
+    }));
+    expect(createOrAttachHost).not.toHaveBeenCalled();
+    expect(dispose).not.toHaveBeenCalled();
+    expect(terminate).toHaveBeenCalledOnce();
+    expect(storedAttachment).toBeNull();
+  });
+
+  it('launches Claude in a daemon-owned current terminal and destroys that exact host on explicit stop', async () => {
+    const abortController = new AbortController();
+    const dispose = vi.fn(async () => undefined);
+    const adapter = createAdapter({ dispose });
+    const terminate = vi.fn(async () => undefined);
+    const launchCurrentTerminalProcess = vi.fn(async () => ({
+      whenExited: new Promise<never>(() => undefined),
+      terminate,
+    }));
+    let storedAttachment: TerminalAttachmentInfo | null = null;
+
+    await runClaudeUnifiedTerminalSession({
+      ...baseOptions(adapter, abortController),
+      currentTerminalHost: { handle: existingHandle, lifecycle: 'owned' },
+      launchCurrentTerminalProcess,
+      persistTerminalHostAttachmentInfo: async ({ sessionId, attachmentId, handle, lifecycle, terminal }) => {
+        expect(lifecycle).toBe('owned');
+        storedAttachment = {
+          version: 2,
+          sessionId,
+          attachmentId,
+          handle: { ...handle, attachmentId },
+          terminal,
+          updatedAt: 1,
+        };
+      },
+      readTerminalHostAttachmentInfo: async () => storedAttachment,
+      removeTerminalHostAttachmentInfo: async () => { storedAttachment = null; },
+      onTerminalHostReady: async ({ lifecycle, stopTerminalHostForExplicitStop }) => {
+        expect(lifecycle).toBe('owned');
+        await stopTerminalHostForExplicitStop();
+        abortController.abort();
+      },
+    });
+
+    expect(launchCurrentTerminalProcess).toHaveBeenCalledOnce();
+    expect(adapter.createOrAttachHost).not.toHaveBeenCalled();
+    expect(terminate).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledExactlyOnceWith(existingHandle);
+    expect(storedAttachment).toBeNull();
+  });
+
+  it('launches in the current terminal when its attachment exactly matches the daemon-bound saved host', async () => {
+    const abortController = new AbortController();
+    const dispose = vi.fn(async () => undefined);
+    const adapter = createAdapter({ dispose });
+    const terminate = vi.fn(async () => undefined);
+    const launchCurrentTerminalProcess = vi.fn(async () => ({
+      whenExited: new Promise<never>(() => undefined),
+      terminate,
+    }));
+    let storedAttachment: TerminalAttachmentInfo | null = existingAttachment;
+
+    await runClaudeUnifiedTerminalSession({
+      ...baseOptions(adapter, abortController),
+      currentTerminalHost: { handle: existingHandle, lifecycle: 'owned' },
+      launchCurrentTerminalProcess,
+      readTerminalHostAttachmentInfo: async () => storedAttachment,
+      persistTerminalHostAttachmentInfo: async ({ sessionId, attachmentId, handle, lifecycle, terminal }) => {
+        expect(lifecycle).toBe('owned');
+        storedAttachment = {
+          version: 2,
+          sessionId,
+          attachmentId,
+          handle: { ...handle, attachmentId },
+          terminal,
+          updatedAt: 2,
+        };
+      },
+      removeTerminalHostAttachmentInfo: async () => { storedAttachment = null; },
+      onTerminalHostReady: async ({ stopTerminalHostForExplicitStop }) => {
+        await stopTerminalHostForExplicitStop();
+        abortController.abort();
+      },
+    });
+
+    expect(launchCurrentTerminalProcess).toHaveBeenCalledOnce();
+    expect(adapter.adoptExistingHost).toBeUndefined();
+    expect(adapter.createOrAttachHost).not.toHaveBeenCalled();
+    expect(terminate).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledExactlyOnceWith(existingHandle);
+    expect(storedAttachment).toBeNull();
+  });
+
+  it('does not launch in a current terminal whose attachment differs from the saved live host', async () => {
+    const abortController = new AbortController();
+    const adapter = createAdapter();
+    const launchCurrentTerminalProcess = vi.fn();
+    const mismatchedHandle: TerminalHostHandle = {
+      ...existingHandle,
+      attachmentId: 'attachment-different' as TerminalAttachmentId,
+    };
+
+    await expect(runClaudeUnifiedTerminalSession({
+      ...baseOptions(adapter, abortController),
+      currentTerminalHost: { handle: mismatchedHandle, lifecycle: 'owned' },
+      launchCurrentTerminalProcess,
+      readTerminalHostAttachmentInfo: async () => existingAttachment,
+    })).rejects.toMatchObject({ reason: 'live_attachment_adoption_unavailable' });
+
+    expect(launchCurrentTerminalProcess).not.toHaveBeenCalled();
+    expect(adapter.createOrAttachHost).not.toHaveBeenCalled();
+  });
+
   it('can stop the exact acquired host while startup metadata publication is still in progress', async () => {
     const abortController = new AbortController();
     const adapter = createAdapter();
@@ -98,15 +311,15 @@ describe('runClaudeUnifiedTerminalSession launch disposition', () => {
       },
       readTerminalHostAttachmentInfo: async () => storedAttachment,
       removeTerminalHostAttachmentInfo: async () => { storedAttachment = null; },
-      onTerminalHostReady: ({ destroyOwnedHostForExplicitStop }) => {
-        stopOwnedHost = destroyOwnedHostForExplicitStop;
+      onTerminalHostReady: ({ stopTerminalHostForExplicitStop }) => {
+        stopOwnedHost = stopTerminalHostForExplicitStop;
       },
       // The API publication boundary can remain pending during startup. Stop must already
       // own the persisted attachment without waiting for this or provider initialization.
       publishTerminalHostMetadata: async () => {
         await requestClaudeExplicitRunnerStop({
           unifiedTerminalEnabled: true,
-          destroyOwnedHostForExplicitStop: stopOwnedHost,
+          stopTerminalHostForExplicitStop: stopOwnedHost,
           requestTermination: () => abortController.abort(),
           whenTerminated: Promise.resolve(),
         });
@@ -145,20 +358,7 @@ describe('runClaudeUnifiedTerminalSession launch disposition', () => {
         dispose: async () => undefined,
       }),
     });
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        runPromise,
-        new Promise<never>((_, reject) => {
-          timeout = setTimeout(
-            () => reject(new Error('host publication did not occur before controller startup completed')),
-            1_000,
-          );
-        }),
-      ]);
-    } finally {
-      if (timeout) clearTimeout(timeout);
-    }
+    await runPromise;
 
     expect(publishTerminalHostMetadata).toHaveBeenCalledTimes(1);
     expect(publishTerminalHostMetadata).toHaveBeenCalledWith({
@@ -189,11 +389,11 @@ describe('runClaudeUnifiedTerminalSession launch disposition', () => {
       removeTerminalHostAttachmentInfo: async () => {
         storedAttachment = null;
       },
-      onTerminalHostReady: async ({ destroyOwnedHostForExplicitStop }) => {
+      onTerminalHostReady: async ({ stopTerminalHostForExplicitStop }) => {
         try {
-          expect(destroyOwnedHostForExplicitStop).toBeTypeOf('function');
-          await destroyOwnedHostForExplicitStop();
-          await destroyOwnedHostForExplicitStop();
+          expect(stopTerminalHostForExplicitStop).toBeTypeOf('function');
+          await stopTerminalHostForExplicitStop();
+          await stopTerminalHostForExplicitStop();
         } finally {
           abortController.abort();
         }

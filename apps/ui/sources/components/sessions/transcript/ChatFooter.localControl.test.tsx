@@ -135,6 +135,7 @@ describe('ChatFooter (local control)', () => {
     });
 
     it('renders a detach-local action for shared local attachment', async () => {
+        const detach = vi.fn();
         const screen = await renderFooter({
             localControl: {
                 attached: true,
@@ -143,12 +144,14 @@ describe('ChatFooter (local control)', () => {
                 canAttach: true,
                 canDetach: true,
             },
-            onRequestSwitchToRemote: vi.fn(),
+            onRequestSwitchToRemote: detach,
         } as any);
 
         expect(screen.getTextContent()).toContain('chatFooter.sessionRunningLocallyAndRemotely');
         expect(screen.findByTestId('session-chatFooter-detachLocalTerminal')).not.toBeNull();
         expect(screen.findByTestId('session-chatFooter-switchToRemote')).toBeNull();
+        await act(async () => { screen.findByTestId('session-chatFooter-detachLocalTerminal')!.props.onPress(); });
+        expect(detach).toHaveBeenCalledOnce();
     });
 
     it('hides the local-control banner for remote-writable shared attachments with no detach action', async () => {

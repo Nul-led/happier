@@ -35,26 +35,32 @@ export function buildTmuxWindowEnv(
   return { ...filteredDaemonEnv, ...extraEnv };
 }
 
-export async function buildTmuxSpawnConfig(params: {
+type HostedRunnerSpawnParams = {
   agent: TmuxSpawnAgentId;
   directory: string;
   extraEnv: Record<string, string>;
+  startingMode?: 'local' | 'remote';
   tmuxCommandEnv?: Record<string, string>;
   extraArgs?: string[];
   launchOptions?: HappyCliSubprocessLaunchOptions;
   processEnv?: NodeJS.ProcessEnv;
   homeDir?: string;
   serverSelectionEnv?: HappierRuntimeServerContext;
-}): Promise<{
+};
+
+export async function buildHostedRunnerSpawnConfig(params: HostedRunnerSpawnParams & Readonly<{
+  host: 'tmux' | 'zellij' | 'herdr';
+}>): Promise<{
   commandTokens: string[];
   tmuxEnv: Record<string, string>;
+  childEnv: Record<string, string>;
   tmuxCommandEnv: Record<string, string>;
   directory: string;
 }> {
   const args = [
     params.agent,
     '--happy-starting-mode',
-    'remote',
+    params.startingMode ?? 'remote',
     '--started-by',
     'daemon',
     ...(params.extraArgs ?? []),
@@ -74,8 +80,15 @@ export async function buildTmuxSpawnConfig(params: {
     DAEMON_DECIDED_CHILD_ENV_KEYS.map((key) => [key, childEnv[key] ?? '']),
   );
   const tmuxEnv = buildTmuxWindowEnv(processEnv, { ...extraEnv, ...daemonDecidedEnv });
+  const fullChildEnv = {
+    ...Object.fromEntries(Object.entries(childEnv).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
+    ...daemonDecidedEnv,
+  };
   const scopedLaunchSpec = process.platform === 'linux'
-    ? await buildCgroupSelfMigratingHappyCliLaunchSpec({ launchSpec, environment: tmuxEnv })
+    ? await buildCgroupSelfMigratingHappyCliLaunchSpec({
+      launchSpec,
+      environment: params.host === 'tmux' ? tmuxEnv : fullChildEnv,
+    })
     : null;
   const effectiveLaunchSpec = scopedLaunchSpec ?? launchSpec;
   const commandTokens = [effectiveLaunchSpec.filePath, ...effectiveLaunchSpec.args];
@@ -89,7 +102,12 @@ export async function buildTmuxSpawnConfig(params: {
   return {
     commandTokens,
     tmuxEnv: { ...tmuxEnv, ...(effectiveLaunchSpec.env ?? {}) },
+    childEnv: { ...fullChildEnv, ...(effectiveLaunchSpec.env ?? {}) },
     tmuxCommandEnv,
     directory: params.directory,
   };
+}
+
+export async function buildTmuxSpawnConfig(params: HostedRunnerSpawnParams) {
+  return await buildHostedRunnerSpawnConfig({ ...params, host: 'tmux' });
 }

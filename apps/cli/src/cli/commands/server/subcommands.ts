@@ -33,7 +33,10 @@ import {
   isLoopbackHttpServerUrl,
 } from '@/server/serverUrlClassification';
 import { createServerUrlComparableKey } from '@happier-dev/protocol';
-import { runServerSelectionBackgroundServiceFollowUp } from '../backgroundServiceFollowUp.js';
+import {
+  resolveServerSelectionBackgroundServiceOutcomeForCurrentRelay,
+  runServerSelectionBackgroundServiceFollowUp,
+} from '../backgroundServiceFollowUp.js';
 import { ACCENT_HEX, cmd, definitionList, fail, neutral, ok, sectionTitle } from '@happier-dev/cli-common/output';
 
 export async function runServerSubcommand(subcommand: string, args: string[]): Promise<boolean> {
@@ -398,7 +401,11 @@ async function cmdUse(args: string[]): Promise<void> {
   const active = await useServerProfile(identifier);
   reloadConfiguration();
   if (json) {
-    await printJsonEnvelope({ ok: true, kind: 'server_use', data: { active: summarizeProfile(active) } });
+    await printJsonEnvelope({
+      ok: true,
+      kind: 'server_use',
+      data: { active: summarizeProfile(active), backgroundService: await resolveServerSelectionBackgroundServiceOutcomeForCurrentRelay() },
+    });
     return;
   }
   console.log(ok(`Active relay: ${active.name} (${active.id})`));
@@ -536,7 +543,11 @@ async function cmdSet(args: string[]): Promise<void> {
     : await upsertServerProfileByUrl({ name: 'custom', serverUrl, ...(localServerUrl ? { localServerUrl } : {}), webappUrl, use: true });
   reloadConfiguration();
   if (json) {
-    await printJsonEnvelope({ ok: true, kind: 'server_set', data: { active: summarizeProfile(created) } });
+    await printJsonEnvelope({
+      ok: true,
+      kind: 'server_set',
+      data: { active: summarizeProfile(created), backgroundService: await resolveServerSelectionBackgroundServiceOutcomeForCurrentRelay() },
+    });
     return;
   }
   console.log(ok(`Active relay: ${created.name} (${created.id})`));

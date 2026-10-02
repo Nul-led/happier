@@ -9,6 +9,8 @@ import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAc
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverProfiles';
 import { presentSetupServiceConsent } from '@/setup/presentSetupServiceConsent';
 import { presentUnmanagedCliConsent } from '@/setup/presentUnmanagedCliConsent';
+import { resolveThisComputerServiceForActiveRelay } from '@/setup/desktopSetupCoordinator';
+import { listThisComputerRelayRows } from '@/setup/thisComputerRelayRows';
 import { useDesktopLocalInspection } from '@/setup/useDesktopLocalInspection';
 import { t } from '@/text';
 
@@ -21,6 +23,21 @@ function readErrorMessage(result: SystemTaskResult | null): string | null {
     }
     const message = typeof result.error?.message === 'string' ? result.error.message.trim() : '';
     return message || null;
+}
+
+/** The named reasons of `daemon.service.start.v1`'s per-service outcomes that failed, or `null`. */
+function readFailedStartTargets(data: unknown): string | null {
+    const targets = data && typeof data === 'object' ? (data as { targets?: unknown }).targets : undefined;
+    if (!Array.isArray(targets)) {
+        return null;
+    }
+    const messages = targets.flatMap((entry) => {
+        const record = entry && typeof entry === 'object' ? entry as { outcome?: unknown; message?: unknown; code?: unknown } : {};
+        if (record.outcome !== 'failed') return [];
+        const message = typeof record.message === 'string' && record.message.trim() ? record.message.trim() : typeof record.code === 'string' ? record.code : null;
+        return message ? [message] : [];
+    });
+    return messages.length > 0 ? messages.join('\n') : null;
 }
 
 export function useLocalDaemonControl(options: Readonly<{
@@ -43,11 +60,25 @@ export function useLocalDaemonControl(options: Readonly<{
     // Opening this section is looking at this computer, so it re-reads once (R17: an update the
     // daily background check found since app open shows here).
     const { inspection, refresh: refreshStatus } = useDesktopLocalInspection(!isUnavailable, { refreshOnOpen: true });
-    const facts = inspection.status === 'resolved' ? inspection.facts : null;
-    const inspectionErrorMessage = inspection.status === 'failed' ? (inspection.error.message || inspection.error.code) : null;
     // The account this repair is for, read from the same owner the executor spec is built from, so
     // the app never approves a pairing bound to a different account (INV2).
     const expectedAccountId = getActiveServerAccountScope()?.accountId ?? null;
+    // This section describes the daemon that answers for the app's relay — its own pinned service
+    // when it has one here (one daemon per relay), else the default-following one.
+    const service = resolveThisComputerServiceForActiveRelay(inspection);
+    const facts = service?.facts ?? null;
+    // This computer's one command line, whichever service reports it — still known when the app
+    // relay's own service could not be read (its machine and account then stay unknown).
+    const cliFacts = facts ?? (inspection.status === 'resolved' ? inspection.facts : null);
+    // C5 — every relay this computer has a service for, from the one projection the connection
+    // popover and the tray render, so Settings never describes this computer by a rule of its own.
+    const activeRelayUrl = activeServerSnapshot.serverUrl;
+    const activeLocalRelayUrl = activeServerSnapshot.activeLocalRelayUrl ?? null;
+    const relayRows = React.useMemo(() => listThisComputerRelayRows(
+        inspection,
+        activeRelayUrl ? { relayUrl: activeRelayUrl, localRelayUrl: activeLocalRelayUrl, accountId: expectedAccountId } : null,
+    ), [activeLocalRelayUrl, activeRelayUrl, expectedAccountId, inspection]);
+    const inspectionErrorMessage = inspection.status === 'failed' ? (inspection.error.message || inspection.error.code) : null;
     const setupTask = useThisComputerSetupTask({
         runner,
         ...(expectedAccountId
@@ -128,7 +159,9 @@ export function useLocalDaemonControl(options: Readonly<{
             return;
         }
 
-        setLastErrorMessage(null);
+        // N3 — a start that brought some service up can still have failed for another; the named
+        // reason for each one that did not start is what this row owes the person who pressed it.
+        setLastErrorMessage(readFailedStartTargets(startSnapshot.result.data));
         refreshStatus();
     }, [refreshStatus, startSnapshot]);
 
@@ -161,7 +194,11 @@ export function useLocalDaemonControl(options: Readonly<{
     // NOT a readiness test — readiness is `verifyCurrentTarget` alone (INV8/INV10), and the flat
     // `installed && running && !needsAuth` that used to live here was a third, weaker definition of
     // it that also disabled the one action that could fix an unpaired service.
-    const canStart = !isUnavailable && !isBusy && facts?.service.installed === true && facts.service.running !== true;
+    // `daemon.service.start.v1` starts the default-following service; a pinned one is brought up by
+    // the repair (the setup run for its relay), which is always offered below.
+    const canStart = !isUnavailable && !isBusy
+        && service?.serviceTargetMode === 'default-following'
+        && facts?.service.installed === true && facts.service.running !== true;
     const canRepair = !isUnavailable && !isBusy && Boolean(activeServerSnapshot.serverUrl);
 
     const cancelRepair = setupTask.cancel;
@@ -176,6 +213,8 @@ export function useLocalDaemonControl(options: Readonly<{
         changeCommandLine,
         startDaemonService,
         facts,
+        cliFacts,
+        relayRows,
         isBusy,
         isUnavailable,
         cancel: React.useCallback(() => {

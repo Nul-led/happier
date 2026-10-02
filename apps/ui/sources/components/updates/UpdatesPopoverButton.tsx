@@ -46,7 +46,7 @@ export function describeUpdatesEntry(summary: UpdatesSummary): PillCopy | null {
             return { icon: 'check', label: t('updates.pill.completed'), a11y: t('updates.a11y.pillCompleted'), warning: false };
         case 'available':
             return {
-                icon: 'arrow-circle-up',
+                icon: 'hard-drive-download',
                 label: t('updates.pill.updates', { count: summary.actionableCount }),
                 count: summary.actionableCount,
                 a11y: t('updates.a11y.pillAvailable', { count: summary.actionableCount }),
@@ -91,16 +91,17 @@ function readWebRect(event: unknown): WebRect | null {
 
 /**
  * The Updates entry in chrome. It reads only the stable summary; the detail model mounts inside the
- * open popover. `pill` sits after the sidebar title (and in the signed-out desktop shell) and `rail`
- * in the collapsed sidebar: both are the same compact mark with a count, tinted warning when
- * something failed and accent otherwise; the sentence is their accessible name and hover tooltip.
- * `header` is the phone Home header's entry and pushes Settings › Updates instead of opening a
- * popover. Hidden when there is nothing to act on.
+ * open popover. `icon` is the compact mark with a count that sits among the chrome's other icons (the
+ * desktop top rail, the sidebar icon row, the collapsed rail, the signed-out desktop shell), tinted
+ * warning when something failed and accent otherwise; the sentence is its accessible name and hover
+ * tooltip. `header` is the phone Home header's entry and pushes Settings › Updates instead of opening
+ * a popover. Hidden when there is nothing to act on.
  */
 export const UpdatesPopoverButton = React.memo(function UpdatesPopoverButton(props: Readonly<{
     summary: UpdatesSummary;
-    variant: 'pill' | 'rail' | 'header';
+    variant: 'icon' | 'header';
     buttonSize?: number;
+    iconSize?: number;
     testID?: string;
 }>) {
     const { theme } = useUnistyles();
@@ -123,10 +124,10 @@ export const UpdatesPopoverButton = React.memo(function UpdatesPopoverButton(pro
 
     const mark = (size: number, color: string) => copy?.icon === 'spinner'
         ? <ActivitySpinner size={iconMatchedSpinnerSize(size)} color={color} />
-        : <Icon name={(copy?.icon ?? 'arrow-circle-up') as IconName} size={size} color={color} />;
+        : <Icon name={(copy?.icon ?? 'hard-drive-download') as IconName} size={size} color={color} />;
 
     const buttonSize = props.buttonSize ?? 28;
-    const trigger = props.variant !== 'header' ? (
+    const trigger = props.variant === 'icon' ? (
         <PressableSurface
             testID={props.testID ?? `updates.entry.${props.variant}`}
             accessibilityRole="button"
@@ -140,7 +141,7 @@ export const UpdatesPopoverButton = React.memo(function UpdatesPopoverButton(pro
             style={[styles.railButton, { width: buttonSize, height: buttonSize, borderRadius: buttonSize / 2 }]}
         >
             <View style={styles.railGlyph}>
-                {mark(ICON_SIZE.sm, copy?.warning ? theme.colors.state.warning.foreground : theme.colors.state.info.foreground)}
+                {mark(props.iconSize ?? ICON_SIZE.sm, copy?.warning ? theme.colors.state.warning.foreground : theme.colors.state.info.foreground)}
                 {copy?.count ? (
                     <TabBadge variant="count" tone={copy.warning ? 'alert' : 'neutral'} value={copy.count} style={styles.railBadge} />
                 ) : null}
@@ -181,7 +182,7 @@ export const UpdatesPopoverButton = React.memo(function UpdatesPopoverButton(pro
                     boundaryRef={null}
                     placement="bottom"
                     edgePadding={{ horizontal: 12, vertical: 12 }}
-                    portal={{ web: { target: 'body' }, native: true, matchAnchorWidth: false, anchorAlign: props.variant === 'rail' ? 'end' : 'start' }}
+                    portal={{ web: { target: 'body' }, native: true, matchAnchorWidth: false, anchorAlign: 'end' }}
                     maxWidthCap={420}
                     maxHeightCap={560}
                     onRequestClose={close}
@@ -247,8 +248,9 @@ const styles = StyleSheet.create((theme) => ({
 
 /** Chrome mount point: reads the summary itself, so hosts pass no update plumbing. */
 export const UpdatesEntry = React.memo(function UpdatesEntry(props: Readonly<{
-    variant: 'pill' | 'rail' | 'header';
+    variant: 'icon' | 'header';
     buttonSize?: number;
+    iconSize?: number;
     testID?: string;
 }>) {
     const summary = useSharedUpdatesSummary();

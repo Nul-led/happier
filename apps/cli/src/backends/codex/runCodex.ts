@@ -870,6 +870,7 @@ export async function runCodex(opts: {
         state,
         existingSessionId: opts.existingSessionId,
         uiLogPrefix: '[codex]',
+        terminalAgentLabel: 'codex',
         startupMetadataOverrides: createStartupMetadataOverrides(opts),
         metadataKeysToUnsetOnAttach: codexBackendMode === 'acp'
             ? undefined
@@ -1748,6 +1749,7 @@ export async function runCodex(opts: {
     mcpServers = happierBridge.mcpServers;
     if (useCodexAppServer) {
         codexAppServerConfigOverrides = buildCodexAppServerConfigOverrides(mcpServers, {
+            codexArgs: opts.codexArgs,
             happierSessionId: codexProviderProcessEnv.HAPPIER_SESSION_ID,
             happierMcpToolCallTimeoutMs: configuration.codexHappierMcpToolCallTimeoutMs,
             processEnv: codexAppServerProcessEnv,
@@ -2311,13 +2313,14 @@ export async function runCodex(opts: {
                         });
                         wasCreated = true;
                         sharedThreadNeedsSystemPrompt = true;
+                        await codexAppServerRuntime!.prepareThreadForCliAttach();
                         await sessionModeSync?.flushPendingAfterStart();
                         await configOptionSync?.flushPendingAfterStart();
                         await modelSync?.flushPendingAfterStart();
                         codexAppServerDaemonReportReadiness.resolve?.();
                         codexAppServerDaemonReportReadiness.resolve = null;
                     }
-                    return codexAppServerRuntime!.getPublishedSessionId();
+                    return await codexAppServerRuntime!.prepareThreadForCliAttach();
                 },
                 directory,
                 endpoint: codexSharedAppServer.endpoint,

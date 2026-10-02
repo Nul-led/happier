@@ -24,8 +24,8 @@ import {
 } from './setupThisComputer.js';
 
 const APP_RELAY = 'https://app-relay.example.test';
-const CLI_RELAY_KEY = 'cli-relay.example.test';
-const APP_RELAY_KEY = 'app-relay.example.test';
+const CLI_RELAY_KEY = 'https://cli-relay.example.test';
+const APP_RELAY_KEY = 'https://app-relay.example.test';
 
 const baseParams = {
   activeRelayUrl: APP_RELAY,
@@ -43,6 +43,10 @@ type Scenario = Readonly<{
   targetAuthStatus?: AuthStatusSnapshot;
   authStatusAfterPairing?: AuthStatusSnapshot;
   daemonStatus?: ServiceLifecycleObservation;
+  /** What the default-following service reports when a pinned run reads it (its login-start mode). */
+  defaultServiceStatus?: ServiceLifecycleObservation;
+  /** What the run's CLI says about its pinned services (`daemon service list --json`). */
+  pinnedInventory?: Readonly<{ listed: boolean; coexistence: boolean; relayUrls: readonly string[] }>;
   cliProvenance?: 'managed' | 'override';
   /** R12 — what `inspectCliChoice` reports; defaults to no recorded choice and no question. */
   cliChoice?: LocalHappierCliChoiceInspection;
@@ -96,6 +100,14 @@ function createScenario(scenario: Scenario = {}) {
       record(`configureRelay:${profile.serverUrl}`);
       return { serverUrl: profile.serverUrl, comparableKey: APP_RELAY_KEY };
     }),
+    readPinnedServiceInventory: vi.fn(async () => {
+      record('readPinnedServiceInventory');
+      return scenario.pinnedInventory ?? { listed: true, coexistence: true, relayUrls: [] };
+    }),
+    registerRelayProfile: vi.fn(async (_ring, profile) => {
+      record(`registerRelayProfile:${profile.serverUrl}`);
+      return { id: 'relay-app-profile' };
+    }),
     // The run's scope addresses the target through the CLI's env server selection only on the
     // reads made before it may select that relay (`target`); every other read is `selected`.
     readAuthStatus: vi.fn(async (_ring, cli) => {
@@ -120,12 +132,16 @@ function createScenario(scenario: Scenario = {}) {
       authStatus = scenario.authStatusAfterPairing ?? { authenticated: true, accountId: 'acct_app', machineId: 'machine-paired' };
       return { machineId: 'machine-paired' };
     }),
-    readDaemonStatus: vi.fn(async () => {
+    readDaemonStatus: vi.fn(async (_ring, cli) => {
+      if (scenario.defaultServiceStatus && !cli.processEnv?.HAPPIER_DAEMON_SERVICE_TARGET_MODE) {
+        record('readDefaultServiceStatus');
+        return scenario.defaultServiceStatus;
+      }
       record('readDaemonStatus');
       return daemonStatus;
     }),
     installService: vi.fn(async (_ring, flags) => {
-      record(`installService:${flags.replaceExisting ? 'replace' : 'plain'}:${flags.takeover ? 'takeover' : 'noTakeover'}`);
+      record(`installService:${flags.replaceExisting ? 'replace' : 'plain'}:${flags.takeover ? 'takeover' : 'noTakeover'}${flags.autostart ? `:${flags.autostart}` : ''}`);
       scenario.onInstall?.();
     }),
     startService: vi.fn(async (_ring, params) => {
@@ -190,6 +206,29 @@ describe('setup.thisComputer.v1 (interactive executor)', () => {
     }, expect.objectContaining({ command: '/managed/happier', provenance: 'managed', version: '0.2.13' }));
     expect(result.machineId).toBe('machine-existing');
     expect(result.relayChanged).toBe(true);
+  });
+
+  it('refuses to move the default-following service when its CLI could not list this computer\'s services (R10-2)', async () => {
+    const { deps, calls } = createScenario({ pinnedInventory: { listed: false, coexistence: false, relayUrls: [] } });
+    const error = await expectExecutionError(runKind({ deps }));
+
+    expect(error.code).toBe('service_inventory_unavailable');
+    expect(calls.some((call) => call.startsWith('configureRelay') || call.startsWith('previewServiceInstall'))).toBe(false);
+  });
+
+  it('converges the same relay when its service inventory is unavailable', async () => {
+    const { deps } = createScenario({ daemonStatus: { serviceInstalled: true, daemonRunning: true, serverComparableKey: APP_RELAY_KEY }, pinnedInventory: { listed: false, coexistence: false, relayUrls: [] } });
+    const { result } = await runKind({ deps });
+    expect(result.relayChanged).toBe(false);
+    expect(result.machineId).toBe('machine-existing');
+  });
+
+  it('never moves the default-following service onto a relay that has its own service here, readable or not (N5)', async () => {
+    const { deps, calls } = createScenario({ pinnedInventory: { listed: true, coexistence: true, relayUrls: [APP_RELAY] } });
+    const error = await expectExecutionError(runKind({ deps }));
+
+    expect(error.code).toBe('relay_has_own_service');
+    expect(calls.some((call) => call.startsWith('configureRelay'))).toBe(false);
   });
 
   it('judges the service dry-run against the relay the app selected, not the CLI\'s current one', async () => {
@@ -276,7 +315,7 @@ describe('setup.thisComputer.v1 (interactive executor)', () => {
       servicesToRemove: ['happier-preview'],
       runtimeReplacement: null,
     });
-    expect(callsAtPrompt[0]).toEqual(['inspectCliChoice', 'ensureCli', 'previewServiceInstall']);
+    expect(callsAtPrompt[0]).toEqual(['inspectCliChoice', 'ensureCli', 'readPinnedServiceInventory', 'previewServiceInstall']);
     expect(calls.indexOf('ensurePathExposure')).toBeGreaterThan(calls.indexOf('previewServiceInstall'));
     expect(calls).toContain('installService:replace:takeover');
     expect(calls).toContain('startService:takeover');
@@ -368,7 +407,7 @@ describe('setup.thisComputer.v1 (interactive executor)', () => {
     const error = await expectExecutionError(runKind({ deps, answer: () => ({ approved: false }) }));
 
     expect(error.code).toBe('service_consent_declined');
-    expect(calls).toEqual(['inspectCliChoice', 'ensureCli', 'previewServiceInstall']);
+    expect(calls).toEqual(['inspectCliChoice', 'ensureCli', 'readPinnedServiceInventory', 'previewServiceInstall']);
   });
 
   it('fails with the CLI\'s blocking conflict before any mutation', async () => {
@@ -388,7 +427,7 @@ describe('setup.thisComputer.v1 (interactive executor)', () => {
 
     expect(error.code).toBe('service_install_blocked');
     expect(error.message).toContain('another Happier home');
-    expect(calls).toEqual(['inspectCliChoice', 'ensureCli', 'previewServiceInstall']);
+    expect(calls).toEqual(['inspectCliChoice', 'ensureCli', 'readPinnedServiceInventory', 'previewServiceInstall']);
   });
 
   it('installs silently when the dry-run reports nothing to consent to', async () => {
@@ -739,7 +778,7 @@ describe('setup.thisComputer.v1 (interactive executor)', () => {
     }));
     expect(daemonReadError.code).toBe('cancelled');
     expect(duringDaemonRead.deps.configureRelay).not.toHaveBeenCalled();
-    expect(duringDaemonRead.calls).toEqual(['inspectCliChoice', 'ensureCli', 'previewServiceInstall', `readTargetAuthStatus:${APP_RELAY}`, 'ensurePathExposure', 'readDaemonStatus']);
+    expect(duringDaemonRead.calls).toEqual(['inspectCliChoice', 'ensureCli', 'readPinnedServiceInventory', 'previewServiceInstall', `readTargetAuthStatus:${APP_RELAY}`, 'ensurePathExposure', 'readDaemonStatus']);
 
     // Cancelled while the credential read is in flight: no pairing request is created on the relay
     // and no pending pairing state is written on this computer.
@@ -988,5 +1027,128 @@ describe('setup.thisComputer.v1 — one CLI per computer (R12)', () => {
     expect(calls[0]).toBe('inspectCliChoice:reconsider');
     expect(prompts[0]?.kind).toBe(SETUP_CLI_CHOICE_PROMPT_KIND);
     expect(calls).toContain(`recordCliChoice:own:${NPM_CLI}`);
+  });
+});
+
+/**
+ * "Connect to this relay too": one daemon per relay on one computer. The run gives the app's relay
+ * its own pinned background service and leaves the persisted selection — and the default-following
+ * service that serves it — exactly where they are.
+ */
+describe('setup.thisComputer.v1 with a pinned service for the app relay', () => {
+  const pinnedParams = { ...baseParams, serviceTargetMode: 'pinned' } satisfies Record<string, SystemTaskJsonValue>;
+  const notSignedIn: AuthStatusSnapshot = { authenticated: false, accountId: null, machineId: null };
+
+  function readEnv(cli: unknown): NodeJS.ProcessEnv {
+    return (cli as { processEnv?: NodeJS.ProcessEnv }).processEnv ?? {};
+  }
+
+  it('never selects the relay: every command addresses the app relay and its own pinned service', async () => {
+    const { deps, calls } = createScenario({
+      authStatus: notSignedIn,
+      daemonStatus: { serviceInstalled: false, daemonRunning: false, serverComparableKey: APP_RELAY_KEY },
+    });
+    const { result, prompts } = await runKind({ deps, taskParams: pinnedParams });
+
+    expect(calls.some((call) => call.startsWith('configureRelay'))).toBe(false);
+    // The one read that is not the target's: the default-following service's login-start mode.
+    const statusReads = (deps.readDaemonStatus as ReturnType<typeof vi.fn>).mock.calls.map((call) => readEnv(call[1]));
+    expect(statusReads[0]).toMatchObject({ HAPPIER_SERVER_URL: APP_RELAY, HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'pinned' });
+    expect(statusReads.slice(1).every((env) => env.HAPPIER_SERVER_URL === undefined && env.HAPPIER_DAEMON_SERVICE_TARGET_MODE === undefined)).toBe(true);
+    // F1 — the relay gets one saved CLI profile (never selected) after consent, before anything is
+    // written for it, and every command from there on is pinned to that profile's id: `--all`
+    // paths, the lifecycle lock and a later `server use` of the URL all see the same identity.
+    expect(calls.indexOf(`registerRelayProfile:${APP_RELAY}`)).toBeGreaterThan(calls.indexOf('previewServiceInstall'));
+    expect(calls.indexOf(`registerRelayProfile:${APP_RELAY}`)).toBeLessThan(calls.indexOf('requestAuthPairing'));
+    for (const dep of [deps.requestAuthPairing, deps.waitForAuthPairing, deps.installService, deps.startService]) {
+      for (const call of (dep as ReturnType<typeof vi.fn>).mock.calls) {
+        expect(readEnv(call[call.length - 1]).HAPPIER_ACTIVE_SERVER_ID).toBe('relay-app-profile');
+      }
+    }
+    for (const dep of [deps.previewServiceInstall, deps.requestAuthPairing, deps.waitForAuthPairing, deps.installService, deps.startService]) {
+      const invocations = (dep as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[call.length - 1]);
+      expect(invocations.length).toBeGreaterThan(0);
+      for (const invocation of invocations) {
+        expect(readEnv(invocation)).toMatchObject({
+          HAPPIER_SERVER_URL: APP_RELAY,
+          HAPPIER_WEBAPP_URL: 'https://app.example.test',
+          HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'pinned',
+        });
+      }
+    }
+    expect(calls).toContain('installService:plain:noTakeover');
+    expect(calls).toContain('startService');
+    // H2 — only the install that creates the service stamps it as the desktop's.
+    const installEnv = readEnv((deps.installService as ReturnType<typeof vi.fn>).mock.calls[0]?.[2]);
+    expect(installEnv.HAPPIER_DAEMON_SERVICE_MANAGED_BY).toBe('desktop');
+    const startEnv = readEnv((deps.startService as ReturnType<typeof vi.fn>).mock.calls[0]?.[2]);
+    expect(startEnv.HAPPIER_DAEMON_SERVICE_MANAGED_BY).toBeUndefined();
+    // The pairing names the relay the pinned service answers for, read from that service's status.
+    const pairing = parseSetupPairingPromptData(prompts.find((prompt) => prompt.kind === SETUP_PAIRING_PROMPT_KIND)?.data);
+    expect(pairing?.serverIdentityKey).toBe(APP_RELAY_KEY);
+    expect(result).toMatchObject({ machineId: 'machine-paired', relayChanged: false, credentialsChanged: true, serviceAction: 'install' });
+  });
+
+  it('installs the pinned service with the login-start mode this computer\'s service already uses', async () => {
+    const { deps, calls } = createScenario({
+      authStatus: notSignedIn,
+      daemonStatus: { serviceInstalled: false, daemonRunning: false, serverComparableKey: APP_RELAY_KEY },
+      defaultServiceStatus: { serviceInstalled: true, daemonRunning: true, serverComparableKey: CLI_RELAY_KEY, service: { autostart: 'on-demand' } },
+    });
+    await runKind({ deps, taskParams: pinnedParams });
+
+    expect(calls).toContain('installService:plain:noTakeover:on-demand');
+  });
+
+  it('refuses a target status that names no relay rather than pairing for an unknown one', async () => {
+    const { deps, calls } = createScenario({
+      authStatus: notSignedIn,
+      daemonStatus: { serviceInstalled: false, daemonRunning: false, serverComparableKey: null },
+    });
+    const error = await expectExecutionError(runKind({ deps, taskParams: pinnedParams }));
+
+    expect(error.code).toBe('invalid_cli_response');
+    expect(calls).not.toContain('requestAuthPairing');
+    expect(calls.some((call) => call.startsWith('installService'))).toBe(false);
+  });
+
+  it('never removes another background service to connect this relay too', async () => {
+    const { deps, calls, } = createScenario({
+      preview: {
+        takeover: null,
+        installConflict: {
+          blocking: false,
+          message: 'Would remove competing background services before install: com.happier.cli.daemon.default.',
+          competingServices: ['com.happier.cli.daemon.default'],
+          servicesToRemove: ['com.happier.cli.daemon.default'],
+          runtimeReplacement: null,
+        },
+      },
+      daemonStatus: { serviceInstalled: false, daemonRunning: false, serverComparableKey: APP_RELAY_KEY },
+    });
+    const { prompts, error } = await runKind({ deps, taskParams: pinnedParams }).then(
+      (outcome) => ({ prompts: outcome.prompts, error: null }),
+      (thrown: unknown) => ({ prompts: [], error: thrown as SystemTaskExecutionError }),
+    );
+
+    expect(error?.code).toBe('service_install_blocked');
+    expect(prompts).toEqual([]);
+    expect(calls.some((call) => call.startsWith('installService') || call.startsWith('readAuthStatus') || call.startsWith('requestAuthPairing'))).toBe(false);
+  });
+
+  it('refuses a pinned run on a CLI without pinnedServiceCoexistence, whatever the app offered (N4)', async () => {
+    const { deps, calls } = createScenario({ pinnedInventory: { listed: true, coexistence: false, relayUrls: [] } });
+    const error = await expectExecutionError(runKind({ deps, taskParams: pinnedParams }));
+
+    expect(error.code).toBe('cli_capability_missing');
+    expect(calls.some((call) => /^(previewServiceInstall|registerRelayProfile|installService|requestAuthPairing)/.test(call))).toBe(false);
+  });
+
+  it('rejects an unknown service target mode without running anything', async () => {
+    const { deps, calls } = createScenario();
+    const error = await expectExecutionError(runKind({ deps, taskParams: { ...baseParams, serviceTargetMode: 'both' } }));
+
+    expect(error.code).toBe('invalid_params');
+    expect(calls).toEqual([]);
   });
 });

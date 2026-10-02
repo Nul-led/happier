@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { basename, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { spawnBackgroundSync } from '@happier-dev/cli-common/process';
 
 import { configuration, reloadConfiguration } from '@/configuration';
 import { readCredentials, readDaemonState, readSettings } from '@/persistence';
@@ -31,6 +32,10 @@ import {
   resolveWindowsDaemonServiceLogPaths,
   resolveWindowsDaemonTaskName,
   DAEMON_SERVICE_AUTOSTART_ENV_KEY,
+  DAEMON_SERVICE_BUNDLE_ID_ENV_KEY,
+  DAEMON_SERVICE_MANAGED_BY_ENV_KEY,
+  parseDaemonServiceBundleId,
+  parseDaemonServiceManagedBy,
   type DaemonServiceAutostartMode,
   type DaemonServiceMode,
   type DaemonServicePlannedCommand,
@@ -56,6 +61,8 @@ import { discoverInstalledDaemonServiceEntries } from './discoverInstalledDaemon
 import {
   isValidInstalledDaemonServiceFile,
   readInstalledDaemonServiceAutostartMode,
+  readInstalledDaemonServiceBundleId,
+  readInstalledDaemonServiceManagedBy,
   readInstalledDaemonServiceTargetMode,
 } from './discoverInstalledDaemonServiceEntries';
 import { createStepPrinter } from '@happier-dev/cli-common/output';
@@ -432,7 +439,7 @@ async function stopCurrentWindowsServiceOwnerIfNeeded(params: Readonly<{
 
 function runCommandCaptureBestEffort(command: Readonly<{ cmd: string; args: readonly string[] }>): { ok: boolean; out: string | null } {
   try {
-    const res = spawnSync(command.cmd, [...command.args], {
+    const res = spawnBackgroundSync(command.cmd, command.args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: buildServiceCommandEnv({ cmd: command.cmd, args: command.args, env: process.env }),
     });
@@ -975,13 +982,19 @@ export async function resolveDaemonServiceListEntries(
   // An installed service declares the autostart mode it was installed with, and the expected
   // definition has to be built with that same mode — otherwise every on-demand installation
   // reads as drifted and the repair paths keyed off this field would reinstall it at-login.
-  const buildExpectedDefaultPlan = (autostart: DaemonServiceAutostartMode) => planDaemonServiceInstall({
+  const buildExpectedDefaultPlan = (
+    autostart: DaemonServiceAutostartMode,
+    managedBy: ReturnType<typeof readInstalledDaemonServiceManagedBy> = null,
+    bundleId: string | null = null,
+  ) => planDaemonServiceInstall({
     platform: runtime.platform,
     mode: options.mode,
     systemUser: options.mode === 'system' ? String(options.systemUser ?? '').trim() : undefined,
     channel: runtime.channel,
     targetMode: 'default-following',
     autostart,
+    managedBy,
+    bundleId,
     instanceId: runtime.instanceId,
     activeServerId: runtime.activeServerId,
     uid: runtime.uid ?? undefined,
@@ -1010,8 +1023,11 @@ export async function resolveDaemonServiceListEntries(
       platform: runtime.platform,
       path: entry.path,
     });
-    const expectedFile = declaredAutostart && declaredAutostart !== 'at-login'
-      ? buildExpectedDefaultPlan(declaredAutostart).files[0] ?? null
+    // The installed marker is kept by every rewrite, so the expected definition carries it too.
+    const managedBy = readInstalledDaemonServiceManagedBy({ platform: runtime.platform, path: entry.path });
+    const bundleId = readInstalledDaemonServiceBundleId({ platform: runtime.platform, path: entry.path });
+    const expectedFile = (declaredAutostart && declaredAutostart !== 'at-login') || managedBy
+      ? buildExpectedDefaultPlan(declaredAutostart ?? 'at-login', managedBy, bundleId).files[0] ?? null
       : expectedDefaultFile;
 
     if (!expectedFile || entry.path !== expectedFile.path) {
@@ -1142,7 +1158,7 @@ function mapDaemonServiceListEntriesToInventory(
         : ['--user', 'is-active', unitName];
 
       try {
-        const res = spawnSync('systemctl', args, {
+        const res = spawnBackgroundSync('systemctl', args, {
           stdio: ['ignore', 'pipe', 'pipe'],
           timeout: runningStateTimeoutMs,
           env: buildServiceCommandEnv({ cmd: 'systemctl', args, env: process.env }),
@@ -1171,7 +1187,7 @@ function mapDaemonServiceListEntriesToInventory(
       }
       const args = ['print', `gui/${uid}/${label}`];
       try {
-        const res = spawnSync('launchctl', args, {
+        const res = spawnBackgroundSync('launchctl', args, {
           stdio: ['ignore', 'pipe', 'pipe'],
           timeout: runningStateTimeoutMs,
           env: buildServiceCommandEnv({ cmd: 'launchctl', args, env: process.env }),
@@ -1196,7 +1212,7 @@ function mapDaemonServiceListEntriesToInventory(
       });
       const args = ['/Query', '/TN', taskName, '/FO', 'LIST', '/V'];
       try {
-        const res = spawnSync('schtasks', args, {
+        const res = spawnBackgroundSync('schtasks', args, {
           stdio: ['ignore', 'pipe', 'pipe'],
           timeout: runningStateTimeoutMs,
           env: buildServiceCommandEnv({ cmd: 'schtasks', args, env: process.env }),
@@ -1300,6 +1316,15 @@ async function handleLocalRelayFlag(argv: readonly string[]): Promise<string[]> 
   return argv.filter((a) => a !== '--local-relay');
 }
 
+/**
+ * Facts `service list --json` reports about this CLI, for callers that must not rely on its version
+ * alone. `pinnedServiceCoexistence`: a daemon's start-up reap is scoped to its own lifecycle
+ * directory, a pinned install conflicts only with a service of the same relay, and repair never
+ * removes another relay's pinned service — so pinned services for several relays can run side by
+ * side. A CLI without this field must not be asked to run a second relay's service.
+ */
+export const DAEMON_SERVICE_CLI_CAPABILITIES = Object.freeze({ pinnedServiceCoexistence: true });
+
 export async function runDaemonServiceCliCommand(params: Readonly<{
   argv: readonly string[];
   commandPath?: string;
@@ -1383,6 +1408,7 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
     });
     if (flags.json) {
       printJson({
+        capabilities: DAEMON_SERVICE_CLI_CAPABILITIES,
         entries,
         services: await resolveDaemonServiceInventoryEntries({
           runtime,
@@ -1433,6 +1459,10 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
   }
 
   if (action === 'install') {
+    // Only `install` honors the request; every other rewrite keeps the installed marker.
+    const requestedManagedBy = parseDaemonServiceManagedBy(process.env[DAEMON_SERVICE_MANAGED_BY_ENV_KEY]) ?? undefined;
+    // R16 — the desktop app the managed service belongs to, requested beside the marker.
+    const requestedBundleId = parseDaemonServiceBundleId(process.env[DAEMON_SERVICE_BUNDLE_ID_ENV_KEY]) ?? undefined;
     if (runtime.platform === 'linux' && mode === 'system') {
       if (typeof process.getuid === 'function' && process.getuid() !== 0) {
         throw new Error('Root privileges are required for system mode service install');
@@ -1511,6 +1541,14 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
       channel: installRuntime.channel,
       targetMode: installRuntime.targetMode,
       autostart: effectiveAutostart,
+      managedBy: requestedManagedBy ?? readInstalledDaemonServiceManagedBy({
+        platform: installRuntime.platform,
+        path: paths.installedPath,
+      }),
+      bundleId: requestedBundleId ?? readInstalledDaemonServiceBundleId({
+        platform: installRuntime.platform,
+        path: paths.installedPath,
+      }),
       instanceId: installRuntime.instanceId,
       activeServerId: installRuntime.activeServerId,
       uid: installRuntime.uid ?? undefined,
@@ -1551,6 +1589,8 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
         channel: installRuntime.channel,
         targetMode: installRuntime.targetMode,
         autostart: effectiveAutostart,
+        managedBy: requestedManagedBy,
+        bundleId: requestedBundleId,
         darwinInstallMode: shouldKickstartCurrentDarwinInstall ? 'kickstart' : undefined,
         restartRunningDaemon,
         instanceId: installRuntime.instanceId,
@@ -1635,6 +1675,8 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
             channel: installRuntime.channel,
             targetMode: installRuntime.targetMode,
             autostart: effectiveAutostart,
+            managedBy: requestedManagedBy,
+            bundleId: requestedBundleId,
             darwinInstallMode: shouldKickstartCurrentDarwinInstall ? 'kickstart' : undefined,
             restartRunningDaemon,
             instanceId: installRuntime.instanceId,
@@ -1902,6 +1944,15 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
             platform: runtime.platform,
             path: paths.installedPath,
           }) ?? 'at-login',
+          // …and so does its management marker.
+          managedBy: readInstalledDaemonServiceManagedBy({
+            platform: runtime.platform,
+            path: paths.installedPath,
+          }),
+          bundleId: readInstalledDaemonServiceBundleId({
+            platform: runtime.platform,
+            path: paths.installedPath,
+          }),
           instanceId: runtime.instanceId,
           activeServerId: runtime.activeServerId,
           uid: runtime.uid ?? undefined,

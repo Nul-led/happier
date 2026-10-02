@@ -9,6 +9,7 @@ import {
     ClientVersionCheckResponseV1Schema,
     SESSION_USER_MESSAGE_DELIVERY_INTENT_META_KEY,
     isRecoveredHistoryTranscriptObservationProvenance,
+    projectSessionMetadataForWire,
     readPendingLocalId,
     type DirectTranscriptRawMessageV1,
     type DirectTranscriptTruncationReason,
@@ -3366,7 +3367,7 @@ class Sync {
             },
             encryptMetadata: async (metadata) => {
                 if (patchContext.sessionEncryptionMode === 'plain') {
-                    return JSON.stringify(metadata);
+                    return JSON.stringify(projectSessionMetadataForWire(metadata));
                 }
                 if (!patchContext.encryption) {
                     throw new Error(`Session ${sessionId} not found`);
@@ -5068,8 +5069,6 @@ class Sync {
                 storage.getState().replaceMachineDisplays(machines, { sourceServerId });
             },
             machineDisplayHydrationConcurrencyLimit: this.syncTuning.machineDisplayHydrationConcurrencyLimit,
-            machineDisplayEagerHydrationCount: this.syncTuning.machineDisplayEagerHydrationCount,
-            machineDisplayBackgroundHydrationMaxRows: this.syncTuning.machineDisplayBackgroundHydrationMaxRows,
             machineDisplayBackgroundHydrationApplyBatchSize: this.syncTuning.machineDisplayBackgroundHydrationApplyBatchSize,
             applyMachines: (machines, replace) => {
                 if (!shouldContinue()) return;

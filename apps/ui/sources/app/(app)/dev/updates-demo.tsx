@@ -165,9 +165,9 @@ export default function UpdatesDemoScreen() {
             <Text style={styles.caption}>Pill</Text>
             <View style={styles.pills} testID="updates-demo.pills">
                 {PILL_SUMMARIES.map((summary) => (
-                    <UpdatesPopoverButton key={summary.phase} summary={summary} variant="pill" testID={`updates-demo.pill.${summary.phase}`} />
+                    <UpdatesPopoverButton key={summary.phase} summary={summary} variant="icon" testID={`updates-demo.pill.${summary.phase}`} />
                 ))}
-                <UpdatesPopoverButton summary={PILL_SUMMARIES[0]} variant="rail" testID="updates-demo.rail" />
+                <UpdatesPopoverButton summary={PILL_SUMMARIES[0]} variant="icon" testID="updates-demo.rail" />
             </View>
             </> : null}
             {only == null || only === 'popover' ? <>

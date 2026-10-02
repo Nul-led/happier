@@ -1,5 +1,5 @@
 import { logger } from '@/ui/logger';
-import { spawnSync } from 'node:child_process';
+import { spawnBackgroundSync } from '@happier-dev/cli-common/process';
 import type { TerminalHostAdapter } from '@/integrations/terminalHost/_types';
 import type { TerminalHostRegistry } from '@/integrations/terminalHost/registry';
 import {
@@ -7,6 +7,7 @@ import {
   readTerminalAttachmentState,
   removeTerminalAttachmentInfo,
   type BoundTerminalAttachmentInfo,
+  type ExactTerminalAttachmentInfo,
   type LegacyTerminalAttachmentInfo,
   type TerminalAttachmentReadState,
 } from '@/terminal/attachment/terminalAttachmentInfo';
@@ -32,10 +33,12 @@ import {
 } from './retireTerminalControlServiceability';
 
 function mapDispositionFailureReason(
-  reason: 'legacy_attachment' | 'attachment_mismatch' | 'missing_topology_proof' | 'disposition_in_progress' | 'destroy_failed' | 'retirement_failed',
+  reason: 'legacy_attachment' | 'attachment_mismatch' | 'missing_topology_proof' | 'disposition_in_progress' | 'destroy_failed' | 'retirement_failed' | 'descriptor_retirement_failed',
 ): StopSessionIncompleteReason {
   return reason === 'retirement_failed'
     ? 'terminal_control_serviceability_retirement_failed'
+    : reason === 'descriptor_retirement_failed'
+      ? 'terminal_attachment_descriptor_retirement_failed'
     : reason;
 }
 
@@ -76,7 +79,7 @@ async function taskkillWindowsDaemonChild(params: Readonly<{
     signal: 'SIGTERM',
     callSite: 'daemon.sessions.stopSession.pid',
   });
-  const result = spawnSync('taskkill', ['/F', '/T', '/PID', String(params.pid)], { stdio: 'ignore' });
+  const result = spawnBackgroundSync('taskkill', ['/F', '/T', '/PID', String(params.pid)], { stdio: 'ignore' });
   if ((result.status ?? 1) !== 0) {
     logger.debug(`[DAEMON RUN] taskkill failed for daemon-spawned session ${params.normalizedSessionId} (pid=${params.pid})`);
     return false;
@@ -125,7 +128,7 @@ async function forceKillTrackedRunner(params: Readonly<{
   });
 
   if (process.platform === 'win32') {
-    const result = spawnSync('taskkill', ['/F', '/T', '/PID', String(params.pid)], { stdio: 'ignore' });
+    const result = spawnBackgroundSync('taskkill', ['/F', '/T', '/PID', String(params.pid)], { stdio: 'ignore' });
     if ((result.status ?? 1) !== 0) {
       logger.debug(
         `[DAEMON RUN] Forced taskkill failed for session ${params.normalizedSessionId} (pid=${params.pid})`,
@@ -181,12 +184,12 @@ export function createStopSession(params: Readonly<{
   onExactTerminalAttachmentRetired?: (input: Readonly<{
     happyHomeDir: string;
     sessionId: string;
-    attachmentInfo: BoundTerminalAttachmentInfo;
+    attachmentInfo: ExactTerminalAttachmentInfo;
   }>) => Promise<void>;
   retireExactTerminalControlServiceability?: (input: Readonly<{
     happyHomeDir: string;
     sessionId: string;
-    attachmentInfo: BoundTerminalAttachmentInfo;
+    attachmentInfo: ExactTerminalAttachmentInfo;
   }>) => Promise<ExactTerminalControlServiceabilityRetirement | void>;
   recoverStrandedTerminalControlServiceability?: (input: Readonly<{
     sessionId: string;
@@ -204,6 +207,7 @@ export function createStopSession(params: Readonly<{
 
   // Stop a session by sessionId or PID fallback
   return async (sessionId: string): Promise<StopSessionResult> => {
+    const stopStartedAtMs = Date.now();
     logger.debug(`[DAEMON RUN] Attempting to stop session ${sessionId}`);
 
     const normalizedSessionId = String(sessionId ?? '').trim();
@@ -251,7 +255,8 @@ export function createStopSession(params: Readonly<{
     if (
       params.expectedTerminalAttachmentId
       && (
-        attachmentInfo?.version !== 2
+        !attachmentInfo
+        || attachmentInfo.version === 1
         || attachmentInfo.attachmentId !== params.expectedTerminalAttachmentId
       )
     ) {
@@ -259,7 +264,7 @@ export function createStopSession(params: Readonly<{
       return incompleteStopSession('attachment_mismatch');
     }
     const notifyExactTerminalAttachmentRetired = async (
-      retiredAttachmentInfo: BoundTerminalAttachmentInfo,
+      retiredAttachmentInfo: ExactTerminalAttachmentInfo,
     ): Promise<void> => {
       if (!params.onExactTerminalAttachmentRetired) return;
       await params.onExactTerminalAttachmentRetired({
@@ -287,6 +292,7 @@ export function createStopSession(params: Readonly<{
       const matchedTerminalHost = terminalModes.some((mode) =>
         mode === 'tmux'
         || mode === 'zellij'
+        || mode === 'herdr'
         || mode === 'windows_terminal'
         || mode === 'windows_console');
       if (!attachmentInfo && matchedTerminalHost) {
@@ -386,7 +392,7 @@ export function createStopSession(params: Readonly<{
           return incompleteStopSession('missing_topology_proof');
         }
       }
-      if (attachmentInfo?.version === 2) {
+      if (attachmentInfo) {
         logWarning(`[DAEMON RUN] Refusing to destroy terminal attachment without exact tracked-runner exit proof for session ${normalizedSessionId}`);
         return incompleteStopSession('tracked_runner_absent');
       }
@@ -402,7 +408,6 @@ export function createStopSession(params: Readonly<{
         return incompleteStopSession('terminal_host_adapter_unavailable');
       }
     }
-
     const runnersAlreadyExited = params.areTrackedRunnersExited
       ? await params.areTrackedRunnersExited({
           sessionId: normalizedSessionId,
@@ -573,6 +578,53 @@ export function createStopSession(params: Readonly<{
       }
     }
 
+    logger.infoFile('[DAEMON STOP] Runner exit proven', {
+      sessionId: normalizedSessionId,
+      elapsedMs: Date.now() - stopStartedAtMs,
+      trackedRunnerCount: pidsToStop.length,
+    });
+    const retirementStartedAtMs = Date.now();
+    if (attachmentInfo?.version === 3) {
+      if (params.retireExactTerminalControlServiceability) {
+        const retirement = await params.retireExactTerminalControlServiceability({
+          happyHomeDir: configuration.happyHomeDir,
+          sessionId: normalizedSessionId,
+          attachmentInfo,
+        }).catch(() => null);
+        if (retirement === null) {
+          return incompleteStopSession('terminal_control_serviceability_retirement_failed');
+        }
+      }
+      logger.infoFile('[DAEMON STOP] Borrowed control serviceability retirement completed', {
+        sessionId: normalizedSessionId,
+        elapsedMs: Date.now() - retirementStartedAtMs,
+      });
+      const disposition = await executeTerminalHostDisposition({
+        happyHomeDir: configuration.happyHomeDir,
+        sessionId: normalizedSessionId,
+        expectedAttachmentId: attachmentInfo.attachmentId,
+        expectedAttachmentInfo: attachmentInfo,
+        intent: { kind: 'release_borrowed_host', reason: 'explicit_user_stop' },
+        readAttachmentInfo,
+        readAttachmentState,
+        removeAttachmentInfo: params.removeAttachmentInfo ?? removeTerminalAttachmentInfo,
+      });
+      if (disposition.status !== 'retired') {
+        return incompleteStopSession(
+          disposition.status === 'parked'
+            ? mapDispositionFailureReason(disposition.reason)
+            : 'terminal_attachment_descriptor_retirement_failed',
+        );
+      }
+      await notifyExactTerminalAttachmentRetired(attachmentInfo);
+      logger.infoFile('[DAEMON STOP] Borrowed attachment retirement completed', {
+        sessionId: normalizedSessionId,
+        elapsedMs: Date.now() - retirementStartedAtMs,
+        totalElapsedMs: Date.now() - stopStartedAtMs,
+      });
+      return { status: 'stopped' };
+    }
+
     if (attachmentInfo?.version === 2) {
       if (!terminalHostAdapterForDisposition) {
         return incompleteStopSession('terminal_host_adapter_unavailable');
@@ -581,22 +633,31 @@ export function createStopSession(params: Readonly<{
         happyHomeDir: configuration.happyHomeDir,
         sessionId: normalizedSessionId,
         expectedAttachmentId: attachmentInfo.attachmentId,
+        expectedAttachmentInfo: attachmentInfo,
         intent: { kind: 'destroy_owned_host', reason: 'explicit_user_stop' },
         adapter: terminalHostAdapterForDisposition,
         readAttachmentInfo,
+        readAttachmentState,
         removeAttachmentInfo: params.removeAttachmentInfo ?? removeTerminalAttachmentInfo,
-        beforeDescriptorRetirement: params.retireExactTerminalControlServiceability
-          ? async ({ attachmentInfo: currentAttachmentInfo }) => {
-              // A replacement projection already superseded this exact attachment. That is a
-              // successful fence for the old host: preserve the replacement and retire only the
-              // still-matching local descriptor.
-              await params.retireExactTerminalControlServiceability!({
-                happyHomeDir: configuration.happyHomeDir,
-                sessionId: normalizedSessionId,
-                attachmentInfo: currentAttachmentInfo,
-              });
-            }
-          : undefined,
+        beforeDescriptorRetirement: async ({ attachmentInfo: currentAttachmentInfo }) => {
+          logger.infoFile('[DAEMON STOP] Exact host disposal proven', {
+            sessionId: normalizedSessionId,
+            elapsedMs: Date.now() - retirementStartedAtMs,
+          });
+          const serviceabilityStartedAtMs = Date.now();
+          // A replacement projection already superseded this exact attachment. That is a
+          // successful fence for the old host: preserve the replacement and retire only the
+          // still-matching local descriptor.
+          await params.retireExactTerminalControlServiceability?.({
+            happyHomeDir: configuration.happyHomeDir,
+            sessionId: normalizedSessionId,
+            attachmentInfo: currentAttachmentInfo,
+          });
+          logger.infoFile('[DAEMON STOP] Control serviceability retirement completed', {
+            sessionId: normalizedSessionId,
+            elapsedMs: Date.now() - serviceabilityStartedAtMs,
+          });
+        },
       });
       if (disposition.status === 'destroyed') {
         if (disposition.retirementFailed) {
@@ -610,6 +671,11 @@ export function createStopSession(params: Readonly<{
           return incompleteStopSession('terminal_attachment_descriptor_retirement_failed');
         }
         await notifyExactTerminalAttachmentRetired(attachmentInfo);
+        logger.infoFile('[DAEMON STOP] Exact attachment retirement completed', {
+          sessionId: normalizedSessionId,
+          elapsedMs: Date.now() - retirementStartedAtMs,
+          totalElapsedMs: Date.now() - stopStartedAtMs,
+        });
         return { status: 'stopped' };
       }
       return disposition.status === 'parked'

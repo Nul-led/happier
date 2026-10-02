@@ -324,6 +324,48 @@ describe('evaluateCliSessionAttachEligibility', () => {
     });
   });
 
+  it('attaches to an existing Herdr pane for a server-backed OpenCode session', async () => {
+    const rawSession = createSessionRecordFixture({
+      id: 'sid_hosted_opencode_1',
+      active: true,
+      encryptionMode: 'plain',
+      metadata: JSON.stringify({
+        machineId: 'machine-local',
+        flavor: 'opencode',
+        path: '/tmp/opencode-workspace',
+        opencodeSessionId: 'opencode-session-1',
+        opencodeBackendMode: 'server',
+        opencodeServerBaseUrl: 'http://127.0.0.1:4096/',
+        opencodeServerBaseUrlExplicit: true,
+      }),
+    });
+
+    await expect(evaluateCliSessionAttachEligibility({
+      credentials,
+      rawSession,
+      currentMachineId: 'machine-local',
+      localAttachmentInfo: {
+        version: 1,
+        sessionId: 'sid_hosted_opencode_1',
+        terminal: {
+          mode: 'herdr',
+          requested: 'herdr',
+          herdr: {
+            sessionName: 'default',
+            socketPath: '/tmp/herdr.sock',
+            terminalId: 'term_1',
+          },
+        },
+        updatedAt: Date.now(),
+      },
+      insideTmux: false,
+    })).resolves.toMatchObject({
+      eligible: true,
+      attachStrategy: 'terminal_host',
+      plan: { type: 'herdr', terminalId: 'term_1' },
+    });
+  });
+
   it('accepts same-machine OpenCode sessions when the managed server state provides the local server URL', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'happier-opencode-attach-'));
     process.env.HAPPIER_OPENCODE_SERVER_STATE_PATH = join(stateDir, 'managed-server.json');
@@ -361,7 +403,7 @@ describe('evaluateCliSessionAttachEligibility', () => {
     });
   });
 
-  it('treats a local attachment marker as authoritative local ownership for OpenCode provider attach', async () => {
+  it('uses an existing local terminal host for an OpenCode session', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'happier-opencode-attach-local-marker-'));
     process.env.HAPPIER_OPENCODE_SERVER_STATE_PATH = join(stateDir, 'managed-server.json');
     await writeFile(process.env.HAPPIER_OPENCODE_SERVER_STATE_PATH, JSON.stringify({
@@ -401,9 +443,10 @@ describe('evaluateCliSessionAttachEligibility', () => {
       insideTmux: false,
     })).resolves.toMatchObject({
       eligible: true,
-      attachStrategy: 'provider_attach',
+      attachStrategy: 'terminal_host',
       agentId: 'opencode',
       attachScope: 'local',
+      plan: expect.objectContaining({ type: 'tmux', target: 'happy:opencode-1' }),
     });
   });
 

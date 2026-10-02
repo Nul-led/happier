@@ -91,7 +91,7 @@ export const OtaUpdateStatusSection = React.memo(function OtaUpdateStatusSection
                 testID="system-status-open-updates"
                 title={t('updates.action.openUpdates')}
                 onPress={openUpdates}
-                icon={<Icon name="arrow-circle-up" size={24} color={theme.colors.accent.indigo} />}
+                icon={<Icon name="hard-drive-download" size={24} color={theme.colors.accent.indigo} />}
             />
         </ItemGroup>
     );

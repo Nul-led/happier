@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
+import { listThisComputerRelayRows } from './thisComputerRelayRows';
+
 import {
     daemonNeedsAuthFromFacts,
     deriveDesktopLocalSetupSnapshot,
+    desktopLocalRuntimeConverged,
+    resolveThisComputerService,
+    thisComputerHasServiceToStart,
+    resolveThisComputerRelayState,
     type DesktopLocalReadinessFacts,
     type DesktopLocalSetupInput,
 } from './deriveDesktopLocalSetupSnapshot';
@@ -367,5 +373,172 @@ describe('deriveDesktopLocalSetupSnapshot', () => {
         // Once the start has had its turn, a service still stopped is a real failure again.
         expect(deriveDesktopLocalSetupSnapshot({ ...stoppedAtLogin, backgroundServiceStartAttempted: true }, { authenticatedThisRun: false, firstRunSettled: true }))
             .toEqual({ state: 'setup', presentation: 'panel', reason: 'daemon_not_converged' });
+    });
+});
+
+describe('one daemon per relay', () => {
+    const OTHER_RELAY = 'https://other-relay.example.test';
+    const defaultElsewhere = readyFacts({ server: { serverUrl: OTHER_RELAY, publicServerUrl: OTHER_RELAY, comparableKey: 'other-relay.example.test' } });
+    const settledRun = { authenticatedThisRun: false, firstRunSettled: true };
+    /** The executor's row for a relay: which service bootstrap's one rule says serves it (D11-2). */
+    const rowServedBy = (facts: DesktopLocalReadinessFacts, serving: 'pinned' | 'default-following') => ({
+        relayUrl: facts.server.serverUrl ?? '',
+        state: 'connected' as const,
+        appManaged: true,
+        serving,
+        actions: ['restart', 'stop'] as const,
+    });
+
+    it('is ready on a relay its own pinned service serves, even though the default-following one serves another', () => {
+        const pinned = readyFacts({ service: { targetMode: 'pinned' }, auth: { machineId: 'machine-pinned' } });
+        const inspection = {
+            status: 'resolved' as const,
+            facts: defaultElsewhere,
+            pinnedServices: [pinned],
+            serviceRows: [rowServedBy(defaultElsewhere, 'default-following'), rowServedBy(pinned, 'pinned')],
+        };
+
+        expect(deriveDesktopLocalSetupSnapshot(input({ inspection, reachability: 'reachable' }), settledRun))
+            .toEqual({ state: 'ready', presentation: 'hidden', reason: null });
+        expect(desktopLocalRuntimeConverged(inspection, input().expected)).toBe(true);
+        expect(resolveThisComputerService(inspection, input().expected)).toEqual({ facts: pinned, serviceTargetMode: 'pinned' });
+    });
+
+    it('reads which service serves a relay from the executor\'s row, even when both are on it (D11-2)', () => {
+        const defaultHere = readyFacts({ auth: { machineId: 'machine-default' } });
+        const pinnedHere = readyFacts({ service: { targetMode: 'pinned' }, auth: { machineId: 'machine-pinned' } });
+        const servedBy = (serving: 'pinned' | 'default-following') => ({
+            status: 'resolved' as const,
+            facts: defaultHere,
+            pinnedServices: [pinnedHere],
+            serviceRows: [rowServedBy(serving === 'pinned' ? pinnedHere : defaultHere, serving)],
+        });
+
+        expect(resolveThisComputerService(servedBy('pinned'), input().expected)).toEqual({ facts: pinnedHere, serviceTargetMode: 'pinned' });
+        expect(resolveThisComputerService(servedBy('default-following'), input().expected)).toEqual({ facts: defaultHere, serviceTargetMode: 'default-following' });
+        // No row names the relay's pinned service: the app does not decide on its own that it serves.
+        expect(resolveThisComputerService({ status: 'resolved', facts: defaultElsewhere, pinnedServices: [pinnedHere] }, input().expected))
+            .toEqual({ facts: defaultElsewhere, serviceTargetMode: 'default-following' });
+    });
+
+    it('describes the default-following daemon when no service of this computer serves the app relay', () => {
+        const inspection = {
+            status: 'resolved' as const,
+            facts: defaultElsewhere,
+            pinnedServices: [readyFacts({ server: { serverUrl: 'https://third.example.test', publicServerUrl: null, comparableKey: 'third.example.test' }, service: { targetMode: 'pinned' } })],
+        };
+        expect(deriveDesktopLocalSetupSnapshot(input({ inspection }), settledRun)).toMatchObject({ state: 'setup', reason: 'relay_mismatch' });
+        expect(resolveThisComputerService(inspection, input().expected)).toEqual({ facts: defaultElsewhere, serviceTargetMode: 'default-following' });
+    });
+
+    it('gives a stopped pinned service the same quiet start: one login-start setting governs every service here', () => {
+        const stoppedPinned = readyFacts({
+            service: { targetMode: 'pinned', running: false, managedBy: 'desktop' },
+            runtimeConvergence: { controlReachable: false, serviceOwnsRunningDaemon: false, machineIdMatches: false, cliVersionMatches: false },
+        });
+        const inspection = {
+            status: 'resolved' as const,
+            facts: defaultElsewhere,
+            pinnedServices: [stoppedPinned],
+            serviceRows: [rowServedBy(stoppedPinned, 'pinned')],
+        };
+        expect(deriveDesktopLocalSetupSnapshot(input({ inspection }), settledRun)).toMatchObject({ state: 'checking', reason: 'service_start_pending' });
+        expect(thisComputerHasServiceToStart(inspection)).toBe(true);
+    });
+
+    it('judges the app relay\'s service against the app\'s account with the readiness rule (R10-4; other relays are the executor\'s rows, R16)', () => {
+        expect(resolveThisComputerRelayState(readyFacts(), input().expected)).toBe('connected');
+        expect(resolveThisComputerRelayState(readyFacts({ auth: { validatedAccountId: null } }), input().expected)).toBe('needs_attention');
+        expect(resolveThisComputerRelayState(readyFacts({ service: { installed: false } }), input().expected)).toBe('needs_attention');
+        expect(resolveThisComputerRelayState(readyFacts(), { ...input().expected, accountId: 'acct_someone_else' })).toBe('needs_attention');
+        expect(resolveThisComputerRelayState(readyFacts({
+            runtimeConvergence: { controlReachable: false, serviceOwnsRunningDaemon: false, machineIdMatches: false, cliVersionMatches: false },
+        }), input().expected)).toBe('offline');
+    });
+
+    it('reads unverifiable credentials on the app relay as needing attention (N6)', () => {
+        const unverified = readyFacts({ auth: { credentialState: 'unknown', validatedAccountId: null } });
+        expect(resolveThisComputerRelayState(unverified, input().expected)).toBe('needs_attention');
+    });
+
+    it('names a service to start on any relay the executor lists here, never one that could not start anyway', () => {
+        const stopped = { service: { running: false }, runtimeConvergence: { controlReachable: false, serviceOwnsRunningDaemon: false, machineIdMatches: false, cliVersionMatches: false } } as const;
+        const running = readyFacts();
+        const otherRelay = { server: { serverUrl: OTHER_RELAY, publicServerUrl: OTHER_RELAY, comparableKey: null } };
+        const stoppedPin = (managedBy: 'desktop' | null) => readyFacts({ ...stopped, ...otherRelay, service: { targetMode: 'pinned', running: false, managedBy } });
+        /** The services the executor lists, one row each (R16): what "every service here" means. */
+        const listed = (facts: DesktopLocalReadinessFacts, pins: DesktopLocalReadinessFacts[]) => ({
+            status: 'resolved' as const,
+            facts,
+            pinnedServices: pins,
+            serviceRows: [rowServedBy(facts, 'default-following'), ...pins.map((pin) => rowServedBy(pin, 'pinned'))],
+        });
+        expect(thisComputerHasServiceToStart(listed(running, [stoppedPin('desktop')]))).toBe(true);
+        expect(thisComputerHasServiceToStart(listed(readyFacts(stopped), []))).toBe(true);
+        expect(thisComputerHasServiceToStart(listed(running, []))).toBe(false);
+        // Signed out: starting it would not bring it up; setup owns that.
+        expect(thisComputerHasServiceToStart(listed(readyFacts({ ...stopped, auth: { credentialState: 'missing', machineId: null } }), []))).toBe(false);
+        expect(thisComputerHasServiceToStart({ status: 'pending' })).toBe(false);
+        // H2: a relay service the user set up is theirs to start.
+        expect(thisComputerHasServiceToStart(listed(running, [stoppedPin(null)]))).toBe(false);
+        // R12-F1: only the executor's list says which services exist — facts it did not list claim none.
+        expect(thisComputerHasServiceToStart({ status: 'resolved', facts: running, pinnedServices: [stoppedPin('desktop')], serviceRows: [rowServedBy(running, 'default-following')] })).toBe(false);
+    });
+
+    it('takes the pin a row names as it is, even when its status says it is not installed (R12-F1)', () => {
+        // Bootstrap listed the relay's own service and says it serves the relay; its definition no
+        // longer reads as installed. That is this relay's service needing setup — never a reason to
+        // describe (and move) the default-following daemon instead.
+        const brokenPin = readyFacts({ service: { targetMode: 'pinned', installed: false, running: false, managedBy: 'desktop' } });
+        const inspection = {
+            status: 'resolved' as const,
+            facts: defaultElsewhere,
+            pinnedServices: [brokenPin],
+            serviceRows: [rowServedBy(defaultElsewhere, 'default-following'), rowServedBy(brokenPin, 'pinned')],
+        };
+        expect(resolveThisComputerService(inspection, input().expected)).toEqual({ facts: brokenPin, serviceTargetMode: 'pinned' });
+        expect(deriveDesktopLocalSetupSnapshot(input({ inspection }), settledRun)).toMatchObject({ state: 'setup', reason: 'service_not_installed' });
+    });
+
+    it('honors the row that names the relay exactly before any alias another daemon answers on (A12-01)', () => {
+        // The default-following daemon serves another relay but also answers on the app relay's URL
+        // (its local/public alias); the app relay has its own pin, and bootstrap's row says so.
+        const aliasingDefault = readyFacts({ server: { serverUrl: OTHER_RELAY, publicServerUrl: OTHER_RELAY, localServerUrl: RELAY_URL, comparableKey: null }, auth: { machineId: 'machine-default' } });
+        const pin = readyFacts({ service: { targetMode: 'pinned', managedBy: 'desktop' }, auth: { machineId: 'machine-pin' } });
+        const inspection = {
+            status: 'resolved' as const,
+            facts: aliasingDefault,
+            pinnedServices: [pin],
+            pinnedServicesComplete: true,
+            serviceRows: [rowServedBy(aliasingDefault, 'default-following'), rowServedBy(pin, 'pinned')],
+        };
+        expect(resolveThisComputerService(inspection, input().expected)).toEqual({ facts: pin, serviceTargetMode: 'pinned' });
+        expect(deriveDesktopLocalSetupSnapshot(input({ inspection, reachability: 'reachable' }), settledRun)).toMatchObject({ state: 'ready' });
+        const rows = listThisComputerRelayRows(inspection, input().expected);
+        expect(rows.status === 'listed' ? rows.rows.map((row) => [row.relayUrl, row.appRelay]) : null).toEqual([
+            [OTHER_RELAY, false],
+            [RELAY_URL, true],
+        ]);
+        // An unreadable pin listed for the app relay is honored before the alias, too: unknown.
+        const unreadable = { ...inspection, pinnedServices: [], pinnedServicesComplete: false, pinnedServicesUnreadable: [RELAY_URL], serviceRows: [rowServedBy(aliasingDefault, 'default-following')] };
+        expect(resolveThisComputerService(unreadable, input().expected)).toBeNull();
+    });
+
+    it('knows nothing about a relay whose own service could not be read — never the default instead (R12-F1)', () => {
+        const inspection = {
+            status: 'resolved' as const,
+            facts: defaultElsewhere,
+            pinnedServices: [],
+            pinnedServicesComplete: false,
+            pinnedServicesUnreadable: [RELAY_URL],
+            serviceRows: [rowServedBy(defaultElsewhere, 'default-following')],
+        };
+        expect(resolveThisComputerService(inspection, input().expected)).toBeNull();
+        expect(deriveDesktopLocalSetupSnapshot(input({ inspection, reachability: 'reachable' }), settledRun))
+            .toMatchObject({ state: 'blocked', reason: 'inspection_failed' });
+        expect(desktopLocalRuntimeConverged(inspection, input().expected)).toBe(false);
+        // A relay no unreadable service names is still described by the default-following daemon.
+        expect(resolveThisComputerService({ ...inspection, pinnedServicesUnreadable: ['https://elsewhere.example.test'] }, input().expected))
+            .toEqual({ facts: defaultElsewhere, serviceTargetMode: 'default-following' });
     });
 });

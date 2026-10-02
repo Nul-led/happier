@@ -9,6 +9,7 @@ import { storage, useLocalSetting } from '@/sync/domains/state/storage';
 import {
     deriveDesktopLocalSetupSnapshot,
     desktopLocalRuntimeConverged,
+    thisComputerHasServiceToStart,
     type DesktopLocalInspection,
     type DesktopLocalSetupSnapshot,
     type DesktopSetupExpectation,
@@ -43,6 +44,8 @@ export type DesktopLocalSetupGate = Readonly<{
     inspectionTaskId: string | null;
     verification: DesktopSetupVerification;
     setupTask: ReturnType<typeof useThisComputerSetupTask>;
+    /** Whether the current setup run moves this computer to another relay (the coordinator's fact for that run). */
+    setupRunMovesRelay: boolean;
     /** Re-runs a failed inspection, or a failed setup, visibly. */
     retry: () => void;
     /**
@@ -348,8 +351,17 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
     // service command is enough; the executor has nothing to configure. The surface stays the
     // Home quiet because this is a check, not maintenance, and the same readiness proof as
     // every other path decides the outcome (INV8/INV10).
+    // The same start is owed to a relay's own service stopped beside a ready app relay: the one
+    // login-start setting promised every service the app manages answers while the app is open.
+    // F5 — never beside a setup run: while the executor is being launched or runs, it owns this
+    // computer's services, and a concurrent start could be observed mid-way and mislead it.
+    const otherServiceNeedsStart = snapshot.reason !== 'service_start_pending'
+        && snapshot.state !== 'setup'
+        && inspection.status === 'resolved'
+        && thisComputerHasServiceToStart(inspection)
+        && !desktopSetupCoordinator.isSetupActive();
     React.useEffect(() => {
-        if (!options.enabled || snapshot.reason !== 'service_start_pending' || quietStartRef.current === attemptKey) {
+        if (!options.enabled || (snapshot.reason !== 'service_start_pending' && !otherServiceNeedsStart) || quietStartRef.current === attemptKey) {
             return;
         }
         quietStartRef.current = attemptKey;
@@ -367,7 +379,7 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
                 setQuietStartAttempted(key);
             },
         );
-    }, [attemptKey, options.enabled, runProof, snapshot.reason]);
+    }, [attemptKey, options.enabled, otherServiceNeedsStart, runProof, snapshot.reason]);
 
     const setupLaunch = setupTask.launch;
     React.useEffect(() => {
@@ -447,6 +459,9 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
         verification,
         inspectionTaskId,
         setupTask,
+        // Fixed when the coordinator launched the run, so it names the run consistently through
+        // its own post-setup re-read.
+        setupRunMovesRelay: desktopSetupCoordinator.readLaunchedRunMovesRelay(setupTask.activeTaskSnapshot?.taskId ?? null),
         retry,
         continueWithoutThisComputer,
     };

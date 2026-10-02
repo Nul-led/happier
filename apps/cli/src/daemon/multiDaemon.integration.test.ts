@@ -17,8 +17,9 @@ import {
 import { listDaemonStatusesForAllKnownServers, stopAllDaemonsBestEffort } from './multiDaemon';
 import { resolveDaemonServiceCliRuntimeFromEnv, resolveDaemonServicePaths } from './service/cli';
 
-function writeValidInstalledDaemonServiceForCurrentRuntime(homeDir: string, serverId: string): void {
-  const runtime = resolveDaemonServiceCliRuntimeFromEnv({ processEnv: process.env });
+/** The pinned background service that serves `serverId` (its own service, not the default-following one). */
+function writeValidPinnedDaemonServiceForCurrentRuntime(homeDir: string, serverId: string): void {
+  const runtime = resolveDaemonServiceCliRuntimeFromEnv({ processEnv: process.env, targetMode: 'pinned', instanceId: serverId });
   const paths = resolveDaemonServicePaths(runtime);
 
   mkdirSync(dirname(paths.installedPath), { recursive: true });
@@ -51,7 +52,7 @@ function writeValidInstalledDaemonServiceForCurrentRuntime(homeDir: string, serv
         execStart: ['/usr/local/bin/happier', 'daemon', 'start-sync'],
         env: {
           HAPPIER_DAEMON_STARTUP_SOURCE: 'background-service',
-          HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'default-following',
+          HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'pinned',
           HAPPIER_ACTIVE_SERVER_ID: serverId,
           HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable',
         },
@@ -71,7 +72,7 @@ function writeValidInstalledDaemonServiceForCurrentRuntime(homeDir: string, serv
         HAPPIER_HOME_DIR: homeDir,
         HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: homeDir,
         HAPPIER_DAEMON_STARTUP_SOURCE: 'background-service',
-        HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'default-following',
+        HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'pinned',
         HAPPIER_ACTIVE_SERVER_ID: serverId,
         HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable',
       },
@@ -103,7 +104,7 @@ describe('multi-daemon helpers', () => {
           pid: sleepy.pid,
           httpPort: 12345,
         });
-        writeValidInstalledDaemonServiceForCurrentRuntime(homeDir, 'company');
+        writeValidPinnedDaemonServiceForCurrentRuntime(homeDir, 'company');
 
         const serverDir = join(homeDir, 'servers', 'company');
         mkdirSync(serverDir, { recursive: true });

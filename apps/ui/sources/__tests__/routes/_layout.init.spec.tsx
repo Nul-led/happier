@@ -885,7 +885,7 @@ describe('app/_layout init resilience', () => {
 
         const screen = await renderSettledRootLayout();
 
-        expect(screen.findAllByTestId('root-shell-updates-pill')).toHaveLength(0);
+        expect(screen.findAllByTestId('root-shell-updates-button')).toHaveLength(0);
         expect(screen.findAllByTestId('desktop-fallback-shell-chrome')).toHaveLength(0);
     });
 
@@ -897,7 +897,7 @@ describe('app/_layout init resilience', () => {
 
         expect(screen.findAllByTestId('desktop-fallback-shell-chrome')).toHaveLength(1);
         expect(screen.findAllByTestId('desktop-window-controls-host')).toHaveLength(1);
-        expect(screen.findAllByTestId('root-shell-updates-pill').length).toBeGreaterThan(0);
+        expect(screen.findAllByTestId('root-shell-updates-button').length).toBeGreaterThan(0);
         const dragSurface = screen.findByTestId('desktop-main-content-drag-surface');
         expect(dragSurface?.props.enabled).toBe(true);
         expect(dragSurface?.props.leftOffsetPx).toBe(0);
@@ -926,7 +926,7 @@ describe('app/_layout init resilience', () => {
         expect(screen.tree.findAllByType('SidebarNavigator' as any)).toHaveLength(1);
 
         expect(screen.findAllByTestId('desktop-fallback-shell-chrome')).toHaveLength(0);
-        expect(screen.findAllByTestId('root-shell-updates-pill')).toHaveLength(0);
+        expect(screen.findAllByTestId('root-shell-updates-button')).toHaveLength(0);
         expect(screen.findByTestId('desktop-main-content-drag-surface')?.props.enabled).toBe(false);
     });
 
@@ -939,7 +939,7 @@ describe('app/_layout init resilience', () => {
         expect(screen.tree.findAllByType('SidebarNavigator' as any)).toHaveLength(1);
 
         expect(screen.findAllByTestId('desktop-fallback-shell-chrome')).toHaveLength(0);
-        expect(screen.findAllByTestId('root-shell-updates-pill')).toHaveLength(0);
+        expect(screen.findAllByTestId('root-shell-updates-button')).toHaveLength(0);
     });
 
     it('renders fallback desktop controls and update tag when authenticated Tauri desktop is narrow', async () => {
@@ -951,7 +951,7 @@ describe('app/_layout init resilience', () => {
 
         expect(screen.findAllByTestId('desktop-fallback-shell-chrome')).toHaveLength(1);
         expect(screen.findAllByTestId('desktop-window-controls-host')).toHaveLength(1);
-        expect(screen.findAllByTestId('root-shell-updates-pill').length).toBeGreaterThan(0);
+        expect(screen.findAllByTestId('root-shell-updates-button').length).toBeGreaterThan(0);
         const dragSurface = screen.findByTestId('desktop-main-content-drag-surface');
         expect(dragSurface?.props.enabled).toBe(true);
         expect(dragSurface?.props.leftOffsetPx).toBe(0);
@@ -966,7 +966,7 @@ describe('app/_layout init resilience', () => {
         const screen = await renderSettledRootLayout();
 
         expect(screen.findAllByTestId('desktop-fallback-shell-chrome')).toHaveLength(0);
-        expect(screen.findAllByTestId('root-shell-updates-pill')).toHaveLength(0);
+        expect(screen.findAllByTestId('root-shell-updates-button')).toHaveLength(0);
         expect(screen.findByTestId('desktop-main-content-drag-surface')?.props.enabled).toBe(false);
         expect(syncRestoreMock).toHaveBeenCalledWith({ token: 'token', secret: 'secret' });
     });

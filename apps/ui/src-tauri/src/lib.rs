@@ -2,10 +2,16 @@
 mod autostart;
 
 #[cfg(desktop)]
+mod background_command;
+
+#[cfg(desktop)]
 mod dock_icon;
 
 #[cfg(desktop)]
 mod menu;
+
+#[cfg(desktop)]
+mod menu_bar;
 
 #[cfg(desktop)]
 mod tray;
@@ -27,7 +33,18 @@ mod shutdown;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // First, as the plugin requires: a second launch hands its arguments to this process and exits
+    // before it creates anything (R16 — one app and one tray per channel).
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            menu_bar::on_second_launch(app, args);
+        }));
+    }
+
+    builder = builder
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -56,13 +73,12 @@ pub fn run() {
             .manage(pet_overlay::DesktopPetOverlayState::default())
             .manage(system_tasks::SystemTasksState::default())
             .manage(shutdown::DesktopShutdownState::default())
+            .manage(menu_bar::MenuBarState::default())
             .invoke_handler(tauri::generate_handler![
                 app_updates::desktop_fetch_update,
                 app_updates::desktop_download_update,
                 app_updates::desktop_install_update,
                 desktop_dialog::desktop_pick_ssh_identity_file,
-                autostart::desktop_get_autostart_enabled,
-                autostart::desktop_set_autostart_enabled,
                 tray::desktop_set_tray_state,
                 pet_overlay::sync_desktop_pet_overlay_state,
                 pet_overlay::desktop_pet_overlay_read_window_state,
@@ -96,11 +112,16 @@ pub fn run() {
         .setup(|app| {
             #[cfg(desktop)]
             {
+                system_tasks::set_desktop_bundle_id(&app.config().identifier);
                 autostart::register(app)?;
+                menu_bar::prepare_launch(app.handle());
+                // The main window first (unless this is a login start in menu-bar mode), so the
+                // tray can follow its theme events on Windows.
+                window_chrome::register(app)?;
                 tray::register(app)?;
                 pet_overlay::register(app)?;
-                window_chrome::register(app)?;
                 dock_icon::apply();
+                menu_bar::register(app.handle());
             }
 
             #[cfg(desktop)]
@@ -174,9 +195,11 @@ mod app_updates {
     //! The desktop app's one updater adapter. Checking, downloading and installing are three
     //! separate steps so the app can show a real download percentage and let the person choose
     //! when to restart ("Restart to update"): a download never restarts anything.
+    pub mod relaunch;
+
     use serde::Serialize;
     use std::sync::Mutex;
-    use tauri::{AppHandle, Emitter, State};
+    use tauri::{AppHandle, Emitter, Manager, State};
     use tauri_plugin_updater::{Update, UpdaterExt};
 
     /// Emitted while `desktop_download_update` runs, once per whole percent (only when the server
@@ -329,13 +352,25 @@ mod app_updates {
             None => return Ok(false),
         };
 
-        if let Err(error) = update.install(&bytes) {
+        let install_result = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())
+            .and_then(|dir| {
+                relaunch::install_with_relaunch_marker(
+                    &dir,
+                    &app.package_info().version.to_string(),
+                    || update.install(&bytes).map_err(|error| error.to_string()),
+                )
+            });
+        if let Err(error) = install_result {
             if let Ok(mut state) = pending_update.0.lock() {
                 state.downloaded = Some((update, bytes));
             }
-            return Err(error.to_string());
+            return Err(error);
         }
 
+        // On Windows the plugin already exited; other platforms reuse the args on this restart.
         app.restart()
     }
 

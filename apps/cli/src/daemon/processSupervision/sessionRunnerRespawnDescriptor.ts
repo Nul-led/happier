@@ -15,7 +15,7 @@ import {
 import { randomBytes as nodeRandomBytes } from 'node:crypto';
 import * as z from 'zod';
 
-const TERMINAL_MODES = ['plain', 'tmux', 'windows_terminal', 'windows_console'] as const satisfies readonly TerminalMode[];
+const TERMINAL_MODES = ['plain', 'tmux', 'zellij', 'herdr', 'windows_terminal', 'windows_console'] as const satisfies readonly TerminalMode[];
 const SAFE_RESPAWN_ENVIRONMENT_VARIABLE_KEYS = [
   'CLAUDE_CONFIG_DIR',
   'CODEX_HOME',
@@ -43,6 +43,7 @@ const TerminalSpawnOptionsSchema: z.ZodType<TerminalSpawnOptions> = z
   .object({
     mode: z.enum(TERMINAL_MODES).optional(),
     tmux: TerminalTmuxSpawnOptionsSchema.optional(),
+    herdr: z.object({ sessionName: z.string().optional() }).optional(),
   })
   .passthrough();
 

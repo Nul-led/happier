@@ -165,6 +165,8 @@ describe('buildSpawnChildProcessEnv', () => {
         HAPPIER_DAEMON_RUNTIME_ID: 'runtime-parent',
         HAPPIER_DAEMON_STARTUP_SOURCE: 'self-restart',
         HAPPIER_DAEMON_TAKEOVER: '1',
+        // Baked into a desktop-managed service definition; a session must not carry it into a service install.
+        HAPPIER_DAEMON_SERVICE_MANAGED_BY: 'desktop',
       },
       extraEnv: {},
     });
@@ -173,6 +175,7 @@ describe('buildSpawnChildProcessEnv', () => {
     expect(env.HAPPIER_DAEMON_RUNTIME_ID).toBeUndefined();
     expect(env.HAPPIER_DAEMON_STARTUP_SOURCE).toBeUndefined();
     expect(env.HAPPIER_DAEMON_TAKEOVER).toBeUndefined();
+    expect(env.HAPPIER_DAEMON_SERVICE_MANAGED_BY).toBeUndefined();
   });
 
   it('strips obsolete daemon-generation authority from parent and session overrides', () => {

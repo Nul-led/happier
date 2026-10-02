@@ -101,6 +101,43 @@ async function importCoordinator() {
 }
 
 describe('desktopSetupCoordinator', () => {
+    it('answers every native tray demand with a read, joining one that is already running (A12-03/N-8)', async () => {
+        // The native side owns the one pointer bound and only emits demands that pass it (N-8).
+        const { createSystemTaskRunner } = await import('@/components/systemTasks/createSystemTaskRunner');
+        const { createDesktopSetupCoordinator } = await importCoordinator();
+        const callbacks = new Map<string, import('@/components/systemTasks/types').SystemTaskBridgeListenerSet>();
+        let starts = 0;
+        const runner = createSystemTaskRunner({ bridge: {
+            start: async () => `status_${++starts}`,
+            subscribe: async (id, listeners) => { callbacks.set(id, listeners); return () => callbacks.delete(id); },
+            cancel: async () => {}, respond: async () => {},
+        } });
+        const settle = async () => {
+            for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+            for (const [id, listeners] of Array.from(callbacks)) {
+                listeners.onResult({ ...AMBIENT_RESULT, taskId: id });
+                callbacks.delete(id);
+            }
+            for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+        };
+        const coordinator = createDesktopSetupCoordinator({ runner: () => runner });
+        const opening = coordinator.inspect();
+        await settle();
+        await opening;
+        const afterOpen = starts;
+
+        // Demands while a read runs join it.
+        coordinator.refreshOnTrayPointer();
+        coordinator.refreshOnTrayPointer();
+        await settle();
+        expect(starts).toBe(afterOpen + 1);
+
+        // Every later demand the native side sends reads again — no second bound here.
+        coordinator.refreshOnTrayPointer();
+        await settle();
+        expect(starts).toBe(afterOpen + 2);
+    });
+
     it('exposes the shared ambient task to late readers and preserves settled readiness during a refresh', async () => {
         const { createSystemTaskRunner } = await import('@/components/systemTasks/createSystemTaskRunner');
         const { createDesktopSetupCoordinator } = await importCoordinator();
@@ -321,7 +358,7 @@ describe('desktopSetupCoordinator', () => {
         });
     });
 
-    it('reconciles a direct relay change silently when the app\'s own service is where it put it', async () => {
+    it('asks before a direct relay change takes the app\'s own service off the relay it serves, then moves on "Move" (N1)', async () => {
         resolveWith(AMBIENT_RESULT);
         const { desktopSetupCoordinator } = await importCoordinator();
         await desktopSetupCoordinator.inspect();
@@ -337,11 +374,28 @@ describe('desktopSetupCoordinator', () => {
 
         const outcome = await desktopSetupCoordinator.reconcile({ start: startExecutor, confirm });
 
-        expect(confirm).not.toHaveBeenCalled();
+        expect(confirm).toHaveBeenCalledWith({ kind: 'relay', fromRelayHost: 'relay.example.test', toRelayHost: 'other.example.test' });
         expect(outcome).toEqual({ taskId: 'task_setup_1' });
         expect((startExecutor.mock.calls[0]?.[0] as SystemTaskSpec).params).toMatchObject({
             activeRelayUrl: 'https://other.example.test',
         });
+    });
+
+    it('remembers, for the run it launched, whether that run moves this computer to another relay', async () => {
+        resolveWith(AMBIENT_RESULT);
+        const { desktopSetupCoordinator } = await importCoordinator();
+        await desktopSetupCoordinator.inspect();
+
+        // Same relay as the daemon: converging, not moving.
+        await desktopSetupCoordinator.startSetup({ start: async () => 'task_setup_same' });
+        expect(desktopSetupCoordinator.readLaunchedRunMovesRelay('task_setup_same')).toBe(false);
+
+        mocks.activeServer = { serverId: 'custom-3', serverUrl: 'https://other.example.test', activeLocalRelayUrl: null, generation: 2 };
+        await desktopSetupCoordinator.reconcile({ start: async () => 'task_setup_move', confirm: async () => 'move' as const });
+        expect(desktopSetupCoordinator.readLaunchedRunMovesRelay('task_setup_move')).toBe(true);
+        // The fact belongs to the run it was decided for, never to another task.
+        expect(desktopSetupCoordinator.readLaunchedRunMovesRelay('task_setup_same')).toBe(false);
+        expect(desktopSetupCoordinator.readLaunchedRunMovesRelay(null)).toBe(false);
     });
 
     it('asks before moving a service whose target mode the CLI did not prove (UD5)', async () => {
@@ -781,5 +835,176 @@ describe('desktopSetupCoordinator', () => {
 
         await expect(desktopSetupCoordinator.startSetup({ start: startExecutor })).rejects.toThrow(/account/i);
         expect(startExecutor).not.toHaveBeenCalled();
+    });
+    describe('one daemon per relay ("connect to this relay too")', () => {
+        const RELAY_B = 'https://relay-b.example.test';
+        const appOnRelayB = () => {
+            mocks.activeServer = { serverId: 'relay-b', serverUrl: RELAY_B, activeLocalRelayUrl: null, generation: 2 };
+        };
+        const pinnedOnRelayB = {
+            ...AMBIENT_RESULT.data,
+            machineId: 'machine-b',
+            server: { activeServerId: 'relay-b', serverUrl: RELAY_B, publicServerUrl: RELAY_B, localServerUrl: null, comparableKey: 'relay-b.example.test' },
+            auth: { ...AMBIENT_RESULT.data.auth, machineId: 'machine-b' },
+            service: { installed: true, running: true, targetMode: 'pinned' },
+            daemon: { ...AMBIENT_RESULT.data.daemon, serviceLabel: 'com.happier.cli.daemon.relay-b' },
+            managedBy: 'desktop',
+        };
+        /** Bootstrap's row for relay B: its own pinned service serves it (D11-2). */
+        const relayBServedByPinned = [{ relayUrl: RELAY_B, state: 'connected', appManaged: true, serving: 'pinned', actions: ['restart', 'stop'] }];
+
+        it('offers "connect too" beside the move when the executor can give the relay its own service', async () => {
+            resolveWith({ ...AMBIENT_RESULT, data: { ...AMBIENT_RESULT.data, pinnedServices: { complete: true, coexistence: true, services: [], unreadable: [] } } });
+            const { desktopSetupCoordinator } = await importCoordinator();
+            // Read while the app is on relay B: the daemon is not where the app last put it, so moving it asks.
+            appOnRelayB();
+            await desktopSetupCoordinator.inspect();
+            const confirm = vi.fn(async () => 'connectToo' as const);
+            const startExecutor = vi.fn(async (_spec: SystemTaskSpec) => 'task_setup_1');
+
+            await expect(desktopSetupCoordinator.reconcile({ start: startExecutor, confirm })).resolves.toEqual({ taskId: 'task_setup_1' });
+
+            expect(confirm).toHaveBeenCalledWith({
+                kind: 'relay',
+                fromRelayHost: 'relay.example.test',
+                toRelayHost: 'relay-b.example.test',
+                offerConnectToo: true,
+            });
+            const params = (startExecutor.mock.calls[0]?.[0] as SystemTaskSpec).params as Record<string, unknown>;
+            expect(params).toMatchObject({ activeRelayUrl: RELAY_B, expectedAccountId: 'acct_app', serviceTargetMode: 'pinned' });
+            // The daemon on the other relay keeps its account: nothing is replaced, nothing is "kept".
+            expect(params).not.toHaveProperty('replaceAccountId');
+            expect(mocks.rememberKept).not.toHaveBeenCalled();
+            expect(mocks.rememberAlwaysMove).not.toHaveBeenCalled();
+        });
+
+        it('offers it on a cross-relay account move too, where the other relay\'s account keeps this computer', async () => {
+            resolveWith({
+                ...AMBIENT_RESULT,
+                data: { ...AMBIENT_RESULT.data, auth: { ...AMBIENT_RESULT.data.auth, accountId: 'acct_a', validatedAccountId: 'acct_a', accountLabel: 'alice' }, pinnedServices: { complete: true, coexistence: true, services: [], unreadable: [] } },
+            });
+            const { desktopSetupCoordinator } = await importCoordinator();
+            await desktopSetupCoordinator.inspect();
+            appOnRelayB();
+            const confirm = vi.fn(async () => 'connectToo' as const);
+            const startExecutor = vi.fn(async (_spec: SystemTaskSpec) => 'task_setup_1');
+
+            await desktopSetupCoordinator.startSetup({ start: startExecutor, confirm });
+
+            expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ kind: 'account', fromRelayHost: 'relay.example.test', offerConnectToo: true }));
+            const params = (startExecutor.mock.calls[0]?.[0] as SystemTaskSpec).params as Record<string, unknown>;
+            expect(params).toMatchObject({ serviceTargetMode: 'pinned' });
+            expect(params).not.toHaveProperty('replaceAccountId');
+        });
+
+        it('asks on an explicit setup when the move would take this computer off another relay, unless "always move" was chosen', async () => {
+            resolveWith({ ...AMBIENT_RESULT, data: { ...AMBIENT_RESULT.data, pinnedServices: { complete: true, coexistence: true, services: [], unreadable: [] } } });
+            const { desktopSetupCoordinator } = await importCoordinator();
+            appOnRelayB();
+            await desktopSetupCoordinator.inspect();
+            const confirm = vi.fn(async () => 'move' as const);
+            const startExecutor = vi.fn(async (_spec: SystemTaskSpec) => 'task_setup_1');
+
+            await desktopSetupCoordinator.startSetup({ start: startExecutor, confirm });
+            expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ kind: 'relay', offerConnectToo: true }));
+            expect((startExecutor.mock.calls[0]?.[0] as SystemTaskSpec).params).not.toHaveProperty('serviceTargetMode');
+
+            mocks.alwaysMove = true;
+            confirm.mockClear();
+            await desktopSetupCoordinator.startSetup({ start: startExecutor, confirm });
+            expect(confirm).not.toHaveBeenCalled();
+        });
+
+        it('asks Move / Connect too / Keep when the user adds relay B, picks it and signs in as the same account (N1)', async () => {
+            // The direct pick: the app observed A (where the daemon is), then moved to B.
+            resolveWith({ ...AMBIENT_RESULT, data: { ...AMBIENT_RESULT.data, pinnedServices: { complete: true, coexistence: true, services: [], unreadable: [] } } });
+            const { desktopSetupCoordinator } = await importCoordinator();
+            await desktopSetupCoordinator.inspect();
+            appOnRelayB();
+            const confirm = vi.fn(async () => 'connectToo' as const);
+            const startExecutor = vi.fn(async (_spec: SystemTaskSpec) => 'task_setup_1');
+
+            await desktopSetupCoordinator.reconcile({ start: startExecutor, confirm });
+            expect(confirm).toHaveBeenLastCalledWith({ kind: 'relay', fromRelayHost: 'relay.example.test', toRelayHost: 'relay-b.example.test', offerConnectToo: true });
+            expect((startExecutor.mock.calls[0]?.[0] as SystemTaskSpec).params).toMatchObject({ serviceTargetMode: 'pinned' });
+
+            await desktopSetupCoordinator.startSetup({ start: startExecutor, confirm });
+            expect(confirm).toHaveBeenCalledTimes(2);
+        });
+
+        it('never offers it when the CLI cannot run a relay\'s own service beside the default one (version skew fails closed)', async () => {
+            resolveWith({ ...AMBIENT_RESULT, data: { ...AMBIENT_RESULT.data, pinnedServices: { complete: true, coexistence: false, services: [], unreadable: [] } } });
+            const { desktopSetupCoordinator } = await importCoordinator();
+            appOnRelayB();
+            await desktopSetupCoordinator.inspect();
+            const confirm = vi.fn(async () => 'keep' as const);
+
+            await desktopSetupCoordinator.reconcile({ start: vi.fn(async () => 'task_setup_1'), confirm });
+
+            expect(confirm).toHaveBeenCalledWith({ kind: 'relay', fromRelayHost: 'relay.example.test', toRelayHost: 'relay-b.example.test' });
+        });
+
+        it('never offers it while a service here could not be read (M6: unknown is not "none")', async () => {
+            resolveWith({ ...AMBIENT_RESULT, data: { ...AMBIENT_RESULT.data, pinnedServices: { complete: false, coexistence: true, services: [], unreadable: [{ relayUrl: 'https://relay-c.example.test', code: 'invalid_cli_response', message: 'x' }] } } });
+            const { desktopSetupCoordinator } = await importCoordinator();
+            appOnRelayB();
+            await desktopSetupCoordinator.inspect();
+            const confirm = vi.fn(async () => 'keep' as const);
+
+            await desktopSetupCoordinator.reconcile({ start: vi.fn(async () => 'task_setup_1'), confirm });
+
+            expect(confirm).toHaveBeenCalledWith({ kind: 'relay', fromRelayHost: 'relay.example.test', toRelayHost: 'relay-b.example.test' });
+        });
+
+        it('leaves a relay service the user set up to them: nothing is launched for it (H2)', async () => {
+            resolveWith({ ...AMBIENT_RESULT, data: { ...AMBIENT_RESULT.data, pinnedServices: { complete: true, coexistence: true, services: [{ ...pinnedOnRelayB, managedBy: null, runtimeConvergence: { ...pinnedOnRelayB.runtimeConvergence, controlReachable: false } }], unreadable: [] }, serviceRows: relayBServedByPinned } });
+            const { desktopSetupCoordinator } = await importCoordinator();
+            appOnRelayB();
+            await desktopSetupCoordinator.inspect();
+            const startExecutor = vi.fn(async (_spec: SystemTaskSpec) => 'task_setup_1');
+
+            await expect(desktopSetupCoordinator.reconcile({ start: startExecutor, confirm: vi.fn(async () => 'move' as const) })).resolves.toBeNull();
+            await expect(desktopSetupCoordinator.startSetup({ start: startExecutor, confirm: vi.fn(async () => 'move' as const) })).resolves.toBeNull();
+            expect(startExecutor).not.toHaveBeenCalled();
+        });
+
+        it('knows while a setup run it launched is active, so nothing else starts services beside it (F5)', async () => {
+            resolveWith({ ...AMBIENT_RESULT, data: { ...AMBIENT_RESULT.data, pinnedServices: { complete: true, coexistence: true, services: [], unreadable: [] } } });
+            const { desktopSetupCoordinator } = await importCoordinator();
+            await desktopSetupCoordinator.inspect();
+            mocks.runner.getSnapshot.mockImplementation((() => ({ taskId: 'task_setup_1', result: null })) as never);
+
+            expect(desktopSetupCoordinator.isSetupActive()).toBe(false);
+            await desktopSetupCoordinator.startSetup({ start: vi.fn(async () => 'task_setup_1') });
+            expect(desktopSetupCoordinator.isSetupActive()).toBe(true);
+            mocks.runner.getSnapshot.mockImplementation((() => ({ taskId: 'task_setup_1', result: { ok: true } })) as never);
+            expect(desktopSetupCoordinator.isSetupActive()).toBe(false);
+        });
+
+        it('treats a pinned service on the app relay as this computer there: no question, and setup converges that service', async () => {
+            resolveWith({ ...AMBIENT_RESULT, data: { ...AMBIENT_RESULT.data, pinnedServices: { complete: true, coexistence: true, services: [pinnedOnRelayB], unreadable: [] }, serviceRows: relayBServedByPinned } });
+            const { desktopSetupCoordinator } = await importCoordinator();
+            await desktopSetupCoordinator.inspect();
+            appOnRelayB();
+            const confirm = vi.fn(async () => 'keep' as const);
+            const startExecutor = vi.fn(async (_spec: SystemTaskSpec) => 'task_setup_1');
+
+            await desktopSetupCoordinator.reconcile({ start: startExecutor, confirm });
+
+            expect(confirm).not.toHaveBeenCalled();
+            expect((startExecutor.mock.calls[0]?.[0] as SystemTaskSpec).params).toMatchObject({ serviceTargetMode: 'pinned' });
+        });
+
+        it('proves the pinned daemon ready for its relay, and the default-following one for its own', async () => {
+            resolveWith({ ...AMBIENT_RESULT, data: { ...AMBIENT_RESULT.data, pinnedServices: { complete: true, coexistence: true, services: [pinnedOnRelayB], unreadable: [] }, serviceRows: relayBServedByPinned } });
+            const { desktopSetupCoordinator } = await importCoordinator();
+
+            appOnRelayB();
+            await expect(desktopSetupCoordinator.verifyCurrentTarget()).resolves.toMatchObject({ status: 'verified', machineId: 'machine-b' });
+            expect(mocks.machineRpc).toHaveBeenLastCalledWith(expect.objectContaining({ machineId: 'machine-b', serverId: 'relay-b' }));
+
+            mocks.activeServer = { serverId: 'custom-2', serverUrl: 'https://relay.example.test', activeLocalRelayUrl: null, generation: 3 };
+            await expect(desktopSetupCoordinator.verifyCurrentTarget()).resolves.toMatchObject({ status: 'verified', machineId: 'machine-1' });
+        });
     });
 });

@@ -97,6 +97,15 @@ export type {
   ManagedCliUpdateRestart,
 } from './runManagedCliUpdate.js';
 
+export {
+  formatPinnedDaemonServiceRestartCommand,
+  planServiceDaemonsRestartAfterCliUpdate,
+} from './serviceDaemonsToRestartAfterCliUpdate.js';
+export type {
+  ServiceDaemonBeforeCliUpdate,
+  ServiceDaemonsRestartAfterCliUpdatePlan,
+} from './serviceDaemonsToRestartAfterCliUpdate.js';
+
 export { syncInstalledFirstPartyShims } from './syncInstalledFirstPartyShims.js';
 export type { SyncInstalledFirstPartyShimsResult } from './syncInstalledFirstPartyShims.js';
 export { resolveDesiredShimTargets } from './resolveDesiredShimTargets.js';

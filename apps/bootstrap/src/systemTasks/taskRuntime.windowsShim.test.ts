@@ -12,9 +12,12 @@ vi.mock('node:child_process', async (importOriginal) => ({
 
 import { runCommandCapture } from './taskRuntime.js';
 
-function fakeChild() {
+function fakeChild(stdout = '') {
   const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn() });
-  queueMicrotask(() => child.emit('close', 0, null));
+  queueMicrotask(() => {
+    if (stdout) child.stdout.emit('data', stdout);
+    child.emit('close', 0, null);
+  });
   return child;
 }
 
@@ -38,7 +41,17 @@ describe('runCommandCapture on Windows (R12)', () => {
     const [command, args, options] = spawnMock.mock.calls[0] ?? [];
     expect(String(command).toLowerCase()).toContain('cmd.exe');
     expect((args as string[]).join(' ')).toContain('happier.cmd');
-    expect(options).toMatchObject({ windowsVerbatimArguments: true });
+    expect(options).toMatchObject({ windowsVerbatimArguments: true, windowsHide: true });
+  });
+
+  it('keeps native CLI status probes hidden without changing captured JSON output', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    spawnMock.mockImplementation(() => fakeChild('{"ok":true}'));
+
+    const result = await runCommandCapture({ command: 'C:\\happier\\happier.exe', args: ['daemon', 'service', 'status', '--json'] });
+    expect(spawnMock.mock.calls[0]?.[2]).toMatchObject({ windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('{"ok":true}');
   });
 
   it('spawns anything else exactly as before', async () => {

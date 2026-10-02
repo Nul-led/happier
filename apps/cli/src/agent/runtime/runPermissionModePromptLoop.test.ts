@@ -16,6 +16,7 @@ import { createFakeAcpRuntimeBackend } from '@/testkit/backends/acpRuntimeBacken
 import { createApprovedPermissionHandler } from '@/testkit/backends/permissionHandler';
 import { createSessionTurnLifecycle } from '@/agent/runtime/session/turn/lifecycle';
 import type { SessionTurnMutationV1 } from '@/api/session/mutations/sessionMutationTypes';
+import { createSessionProviderInputConsumer } from './sessionInput/SessionProviderInputConsumer';
 
 type PromptLoopMetadata = Metadata & {
   replaySeedV1?: any;
@@ -1132,6 +1133,8 @@ describe('runPermissionModePromptLoop', () => {
         explicitPermissionMode: undefined,
         session,
         messageQueue: queue,
+        // Match the standard runner: reuse its input consumer rather than letting the wrapper construct one.
+        inputConsumer: createSessionProviderInputConsumer({ messageQueue: queue, session }),
         permissionHandler,
         runtime,
         createOverrideSynchronizer: (isStarted) =>

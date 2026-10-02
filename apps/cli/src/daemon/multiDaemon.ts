@@ -1,16 +1,22 @@
 import { existsSync } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { createServerUrlComparableKey } from '@happier-dev/protocol';
+import { resolveServingThisComputerService } from '@happier-dev/cli-common/service';
 import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
 import { configuration } from '@/configuration';
 import { resolveDaemonStartupSourceServiceManagedState } from '@/daemon/ownership/daemonOwnershipMetadata';
-import { DaemonLocallyPersistedStateSchema, readSettings } from '@/persistence';
+import {
+  DaemonLocallyPersistedStateSchema,
+  readSettings,
+  resolveDaemonStateCandidatePathsForCurrentLifecycle,
+} from '@/persistence';
 import { logger } from '@/ui/logger';
 import { resolveDaemonServiceInstallationSnapshotFromEnv } from '@/daemon/service/cli';
 import { resolveDaemonStateCandidatePaths } from '@/daemon/ownership/daemonOwnershipPaths';
 import { resolveMachineIdForServerFromSettings } from '@/daemon/resolveMachineIdForServerFromSettings';
+import { sanitizeServerIdForFilesystem } from '@/server/serverId';
 import type { DaemonStartupSource } from '@/daemon/ownership/daemonOwnershipMetadata';
 type NormalizedDaemonState = Readonly<{
   pid: number;
@@ -26,13 +32,7 @@ type StopDaemonOptions = Readonly<{
   stopSessions?: boolean;
 }>;
 
-type SameHomeDaemonStateRecord = Readonly<{
-  serverId: string;
-  statePath: string;
-  state: NormalizedDaemonState;
-}>;
-
-export type SameHomeDaemonOrphanReapResult = Readonly<{
+export type DaemonLifecycleOrphanReapResult = Readonly<{
   stoppedPids: readonly number[];
   preservedPids: readonly number[];
   failedPids: readonly number[];
@@ -108,49 +108,28 @@ async function resolveDaemonStatePath(serverId: string): Promise<string> {
   return firstReadablePath ?? canonicalPath;
 }
 
-async function listSameHomeServerIds(): Promise<string[]> {
-  const settings = await readSettings();
-  const serverIds = new Set<string>(Object.keys(settings.servers ?? {}));
-  const activeServerId = String(configuration.activeServerId ?? '').trim();
-  if (activeServerId) {
-    serverIds.add(activeServerId);
-  }
-
-  try {
-    const entries = await readdir(configuration.serversDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory() && entry.name.trim()) {
-        serverIds.add(entry.name);
-      }
-    }
-  } catch {
-    // Missing servers dir is fine for fresh homes.
-  }
-
-  return [...serverIds].sort();
+/**
+ * The daemon published in `serverId`'s lifecycle directory (canonical or legacy ring-scoped
+ * state, live one first) and whether its pid is alive — for callers that must observe a relay's
+ * daemon other than the current scope's (the post-update restart of every relay's service daemon).
+ */
+export async function readDaemonStateForServerId(serverId: string): Promise<Readonly<{
+  state: NormalizedDaemonState;
+  running: boolean;
+}> | null> {
+  const state = await readDaemonStateFromPath(await resolveDaemonStatePath(serverId));
+  return state ? { state, running: isPidAlive(state.pid) } : null;
 }
 
-async function listSameHomeDaemonStateRecords(): Promise<SameHomeDaemonStateRecord[]> {
-  const records: SameHomeDaemonStateRecord[] = [];
-  const seenPaths = new Set<string>();
-  for (const serverId of await listSameHomeServerIds()) {
-    const serverDir = join(configuration.serversDir, serverId);
-    for (const statePath of resolveDaemonStateCandidatePaths({
-      serverDir,
-      preferredRing: configuration.publicReleaseRing,
-    })) {
-      if (seenPaths.has(statePath)) {
-        continue;
-      }
-      seenPaths.add(statePath);
-      const state = await readDaemonStateFromPath(statePath);
-      if (!state) {
-        continue;
-      }
-      records.push({ serverId, statePath, state });
+async function listCurrentLifecycleDaemonStates(): Promise<NormalizedDaemonState[]> {
+  const states: NormalizedDaemonState[] = [];
+  for (const statePath of resolveDaemonStateCandidatePathsForCurrentLifecycle()) {
+    const state = await readDaemonStateFromPath(statePath);
+    if (state) {
+      states.push(state);
     }
   }
-  return records;
+  return states;
 }
 
 export type DaemonStatusEntry = Readonly<{
@@ -229,19 +208,38 @@ function resolveAccountIdFromToken(token: string | null): string | null {
   }
 }
 
-function resolveServiceInstallationForServer(serverId: string, serverUrl: string): Readonly<{ installed: boolean }> {
-  try {
-    const snapshot = resolveDaemonServiceInstallationSnapshotFromEnv({
-      processEnv: {
-        ...process.env,
-        HAPPIER_DAEMON_SERVICE_INSTANCE_ID: serverId,
-        HAPPIER_DAEMON_SERVICE_SERVER_URL: serverUrl,
-      },
-    });
-    return { installed: snapshot.installed };
-  } catch {
-    return { installed: false };
-  }
+type ServerServiceInstallation = Readonly<{ installed: boolean; platform?: string; installedPath?: string }>;
+
+function resolveServiceInstallationSnapshot(
+  params: Readonly<{ serverId: string; serverUrl: string; targetMode: 'pinned' | 'default-following' }>,
+): ServerServiceInstallation {
+  const snapshot = resolveDaemonServiceInstallationSnapshotFromEnv({
+    processEnv: {
+      ...process.env,
+      HAPPIER_DAEMON_SERVICE_TARGET_MODE: params.targetMode,
+      HAPPIER_DAEMON_SERVICE_INSTANCE_ID: params.serverId,
+      HAPPIER_DAEMON_SERVICE_SERVER_URL: params.serverUrl,
+    },
+  });
+  return { installed: snapshot.installed, platform: snapshot.platform, installedPath: snapshot.installedPath };
+}
+
+/**
+ * The background service that serves `serverId` on this computer: its own pinned service, else —
+ * for the relay this home's persisted selection names — the default-following service, which
+ * follows that selection. Any other relay has no service unless it has a pinned one.
+ */
+function resolveServiceInstallationForServer(
+  params: Readonly<{ serverId: string; serverUrl: string; persistedActiveServerId: string }>,
+): ServerServiceInstallation {
+  const pinned = resolveServiceInstallationSnapshot({ ...params, targetMode: 'pinned' });
+  const selected = resolveServingThisComputerService({
+    defaultFollowing: { eligible: params.serverId === params.persistedActiveServerId, value: 'default-following' },
+    pinned: [{ eligible: pinned.installed, value: 'pinned' }],
+  });
+  return selected?.serving === 'default-following'
+    ? resolveServiceInstallationSnapshot({ ...params, targetMode: 'default-following' })
+    : pinned;
 }
 
 export async function listDaemonStatusesForAllKnownServers(): Promise<DaemonStatusEntry[]> {
@@ -258,6 +256,8 @@ export async function listDaemonStatusesForAllKnownServers(): Promise<DaemonStat
   const serverIds = Object.keys(servers);
   const results: DaemonStatusEntry[] = [];
   const activeComparableKey = resolveComparableKey(configuration.publicServerUrl || configuration.serverUrl);
+  // The default-following service follows the persisted selection, never this invocation's `--server`.
+  const persistedActiveServerId = sanitizeServerIdForFilesystem(settings.activeServerId ?? 'cloud', 'cloud');
 
   for (const serverId of serverIds) {
     const profile = servers[serverId];
@@ -272,7 +272,7 @@ export async function listDaemonStatusesForAllKnownServers(): Promise<DaemonStat
       && resolveDaemonStartupSourceServiceManagedState(state?.startupSource, state?.serviceLabel) === true;
     const staleStateFile = Boolean(state && !running);
     const comparableKey = resolveComparableKey(serverUrl);
-    const serviceInstallation = resolveServiceInstallationForServer(serverId, serverUrl);
+    const serviceInstallation = resolveServiceInstallationForServer({ serverId, serverUrl, persistedActiveServerId });
     const token = await readAuthTokenForServerId(serverId);
     const accountId = resolveAccountIdFromToken(token);
     const machineId = resolveMachineIdForServerFromSettings(settings, serverId, accountId);
@@ -367,11 +367,20 @@ export async function stopAllDaemonsBestEffort(opts: StopDaemonOptions = {}): Pr
   }
 }
 
-export async function reapSameHomeDaemonOrphansBeforeStart(
+/**
+ * Stops live daemons that published state in the starting daemon's own lifecycle directory but are
+ * not its preserved owner — in practice a pre-canonical CLI whose ring-scoped state and lock
+ * (`daemon.<ring>.state.json[.lock]`) sit beside the canonical ones, so the canonical lock cannot
+ * keep it from running beside this daemon for the same relay.
+ *
+ * Daemons of other relay profiles live in other lifecycle directories and are never touched: one
+ * daemon per relay on one machine is the supported topology (`happier daemon status --all`).
+ */
+export async function reapCurrentLifecycleDaemonOrphansBeforeStart(
   opts: Readonly<{
     preservePids?: readonly number[];
   }> = {},
-): Promise<SameHomeDaemonOrphanReapResult> {
+): Promise<DaemonLifecycleOrphanReapResult> {
   const preservePids = new Set(
     [process.pid, ...(opts.preservePids ?? [])]
       .filter((pid): pid is number => Number.isInteger(pid) && pid > 0),
@@ -381,8 +390,7 @@ export async function reapSameHomeDaemonOrphansBeforeStart(
   const failedPids = new Set<number>();
   const stoppedOrAttemptedPids = new Set<number>();
 
-  for (const record of await listSameHomeDaemonStateRecords()) {
-    const { state } = record;
+  for (const state of await listCurrentLifecycleDaemonStates()) {
     if (preservePids.has(state.pid)) {
       preservedPids.add(state.pid);
       continue;

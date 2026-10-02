@@ -5,6 +5,7 @@ import {
     readCliAcquisitionFailurePhase,
     type CliAcquisitionPhase,
 } from '@happier-dev/protocol';
+import { SETUP_SERVICE_STEP_STATUS_KEY } from '@/components/systemTasks/resolveSystemTaskStepLabel';
 import type { SystemTaskRunState } from '@/components/systemTasks/types';
 import { t, type TranslationKeyNoParams } from '@/text';
 import { formatByteSize } from '@/utils/files/formatByteSize';
@@ -41,6 +42,12 @@ export type SetupLocalFacts = Readonly<{
     accountLabel?: string | null;
     /** R14: post-auth unresolved facts read as "checking"; a started or failed run reads as setup. */
     entry: 'checking' | 'setup';
+    /**
+     * This run moves this computer's own background service from another relay to this one — the
+     * coordinator's fact for the run it launched (`readLaunchedRunMovesRelay`) — so the surface
+     * says "Moving this computer to …" rather than "Setting up this computer".
+     */
+    relayMove?: boolean;
     /**
      * The run never began, or the ambient inspection failed. The code chooses the calm sentence;
      * the message is the raw diagnostic, which belongs behind Details and never in the headline.
@@ -129,9 +136,8 @@ const STEP_STAGE: Readonly<Record<string, SetupStageId>> = {
 const STAGE_STATUS_KEY = {
     prepare: 'setupSurface.stagePrepareStatus',
     connect: 'setupSurface.stageConnectStatus',
-    service: 'setupSurface.stageServiceStatus',
     verify: 'setupSurface.stageVerifyStatus',
-} as const satisfies Record<SetupStageId, string>;
+} as const satisfies Record<Exclude<SetupStageId, 'service'>, string>;
 
 const ACQUISITION_STATUS_KEY = {
     resolvingRelease: 'setupSurface.acquisitionResolvingReleaseStatus',
@@ -247,7 +253,29 @@ function blockedStatus(code: string, facts: SetupLocalFacts, ownCliUpdateCommand
     return cliAcquisitionFailureStatus(code) ?? t(BLOCKED_STATUS_KEY[code] ?? 'setupSurface.blockedStatusFallback');
 }
 
-function stageStatus(stage: SetupStageId, relay: string, account: string | null): string {
+type SetupServiceStepId = keyof typeof SETUP_SERVICE_STEP_STATUS_KEY;
+
+function isSetupServiceStepId(stepId: string | null | undefined): stepId is SetupServiceStepId {
+    return typeof stepId === 'string' && Object.prototype.hasOwnProperty.call(SETUP_SERVICE_STEP_STATUS_KEY, stepId);
+}
+
+/**
+ * The service stage says what the executor is doing to the service: installing, starting or
+ * restarting it. The latest of those steps decides (install is followed by start); PATH exposure
+ * and other ancillary service-stage steps keep the sentence of the step they ran beside.
+ */
+function serviceStatus(run: SystemTaskRunState | null): string {
+    const events = run?.events ?? [];
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+        const stepId = events[index]?.stepId;
+        if (isSetupServiceStepId(stepId)) {
+            return t(SETUP_SERVICE_STEP_STATUS_KEY[stepId]);
+        }
+    }
+    return t(SETUP_SERVICE_STEP_STATUS_KEY['setup.thisComputer.installService']);
+}
+
+function stageStatus(stage: SetupStageId, run: SystemTaskRunState | null, relay: string, account: string | null): string {
     switch (stage) {
         case 'prepare':
             return t(STAGE_STATUS_KEY.prepare);
@@ -256,7 +284,7 @@ function stageStatus(stage: SetupStageId, relay: string, account: string | null)
                 ? t('setupSurface.stageConnectStatusAs', { relay, account })
                 : t(STAGE_STATUS_KEY.connect, { relay });
         case 'service':
-            return t(STAGE_STATUS_KEY.service);
+            return serviceStatus(run);
         case 'verify':
             return t(STAGE_STATUS_KEY.verify, { relay });
     }
@@ -331,8 +359,8 @@ export function deriveSetupStageModel(run: SystemTaskRunState | null, facts: Set
         currentIndex,
         completedFraction,
         blocked: null,
-        title: t('setupSurface.workingTitle'),
-        statusSentence: acquisition && currentIndex === 0 ? t(ACQUISITION_STATUS_KEY[acquisition.phase]) : stageStatus(SETUP_STAGES[currentIndex] ?? 'prepare', relay, facts.accountLabel ?? null),
+        title: facts.relayMove ? t('setupSurface.movingTitle', { relay }) : t('setupSurface.workingTitle'),
+        statusSentence: acquisition && currentIndex === 0 ? t(ACQUISITION_STATUS_KEY[acquisition.phase]) : stageStatus(SETUP_STAGES[currentIndex] ?? 'prepare', run, relay, facts.accountLabel ?? null),
         downloadProgress,
         stepAnnouncement,
     };

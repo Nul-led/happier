@@ -292,6 +292,7 @@ export const SESSION_RPC_METHODS = {
   SESSION_GOAL_SET: 'session.goal.set',
   SESSION_GOAL_CLEAR: 'session.goal.clear',
   SESSION_TERMINAL_COMPOSER_CLEAR: 'session.terminalComposer.clear',
+  SESSION_PROVIDER_CLI_ATTACH_PREPARE_V1: 'session.providerCliAttach.prepare.v1',
   SESSION_PENDING_INPUT_INTERRUPT_AND_RUN: 'session.pendingInput.interruptAndRun',
   SESSION_REVIEW_START_INLINE: 'session.review.startInline',
   SESSION_CONNECTED_SERVICE_AUTH_INVALIDATE_TRANSPORTS: 'session.connectedServiceAuth.invalidateTransports',

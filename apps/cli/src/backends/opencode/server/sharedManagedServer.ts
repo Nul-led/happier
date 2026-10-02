@@ -8,6 +8,7 @@ import {
   readProcessInstanceFingerprintSync,
 } from '@happier-dev/cli-common/processInstance';
 import { isLoopbackHostname } from '@happier-dev/protocol';
+import { readOpenCodeSessionAffinityFromMetadata } from '@happier-dev/agents';
 
 import { configuration } from '@/configuration';
 import { resolveOpenCodeCliLaunchSpec, type ProviderCliLaunchSpec } from '@/backends/opencode/utils/resolveOpenCodeCliCommand';
@@ -34,7 +35,7 @@ import {
 } from './openCodeManagedServerCredential';
 import { resolveOpenCodeServerAuthHeaders, type OpenCodeServerAuthCredential } from './openCodeServerAuth';
 import { waitForOpenCodeServerHealth } from './waitForOpenCodeServerHealth';
-import { resolveOpenCodeManagedServerLaunchFingerprint } from './openCodeManagedServerEnv';
+import { isOpenCodeManagedServerLaunchFingerprint, resolveOpenCodeManagedServerLaunchFingerprint } from './openCodeManagedServerEnv';
 import {
   terminateManagedOpenCodeServerPidBestEffort,
   terminateManagedOpenCodeServerPidBestEffortWithOptions,
@@ -709,7 +710,7 @@ function tryReadLaunchFingerprintFromSessionMarker(marker: unknown): string | nu
   const respawn = tryReadObject(markerRecord.respawn);
   const respawnEnv = tryReadObject(respawn?.environmentVariables);
   return (
-    tryReadNonEmptyString(metadata?.opencodeManagedServerLaunchFingerprint)
+    readOpenCodeSessionAffinityFromMetadata(metadata).managedServerLaunchFingerprint
     ?? tryReadNonEmptyString(metadata?.launchEnvFingerprint)
     ?? tryReadNonEmptyString(respawnEnv?.HAPPIER_OPENCODE_MANAGED_SERVER_LAUNCH_FINGERPRINT)
     ?? tryReadLaunchFingerprintFromStatePath(tryReadNonEmptyString(respawnEnv?.HAPPIER_OPENCODE_SERVER_STATE_PATH))
@@ -1260,8 +1261,10 @@ export async function readSharedManagedOpenCodeServerStateByLaunchFingerprintBes
   launchFingerprint: string,
 ): Promise<SharedManagedOpenCodeServerState | null> {
   const normalized = launchFingerprint.trim();
-  if (!normalized) return null;
-  return await readStateFile(resolveManagedServerStatePathByFingerprint(normalized));
+  if (!isOpenCodeManagedServerLaunchFingerprint(normalized)) return null;
+  const state = await readStateFile(resolveManagedServerStatePathByFingerprint(normalized));
+  return state?.launchEnvFingerprint === normalized && isLoopbackManagedOpenCodeBaseUrl(state.baseUrl)
+    && state.status !== 'starting' && state.status !== 'failed' ? state : null;
 }
 
 export async function releaseForAuthSwitchFromState(

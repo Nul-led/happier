@@ -38,6 +38,7 @@ import {
   SpawnSessionRunnerAcceptanceHooks,
 } from '@/rpc/handlers/registerSessionHandlers';
 import { resolveCanonicalCodexBackendMode } from '@/rpc/handlers/codexBackendMode';
+import { buildTrackedSpawnOptions, resolveDefaultDaemonTerminalPresentation } from '@/daemon/spawnHooks';
 import { logger } from '@/ui/logger';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import { configuration, reloadConfiguration } from '@/configuration';
@@ -124,6 +125,7 @@ import {
   resolveClaudeEndpointRecoverySpawnOptions,
 } from './sessions/claudeEndpointStateEnv';
 import { HAPPIER_CLAUDE_ENDPOINT_STATE_ENV_KEY } from '@/backends/claude/endpointRecovery/claudeEndpointArtifacts';
+import { buildTerminalAttachmentMetadataFromHostHandle } from '@/agent/runtime/terminal/attachmentMetadata';
 import { createOnHappySessionWebhook } from './sessions/onHappySessionWebhook';
 import { applyTrackedSessionTurnLifecycle } from './sessions/applyTrackedSessionTurnLifecycle';
 import { connectedServiceTurnLifecycleContinue } from './connectedServices/connectedServiceTurnLifecycleContract';
@@ -171,7 +173,7 @@ import {
   readDaemonRestartVerifyPollMs,
   readDaemonRestartVerifyTimeoutMs,
 } from './startupWaitDefaults';
-import { reapSameHomeDaemonOrphansBeforeStart } from './multiDaemon';
+import { reapCurrentLifecycleDaemonOrphansBeforeStart } from './multiDaemon';
 import {
   createSessionRunnerRespawnManager,
   type SessionRunnerRespawnTerminalReason,
@@ -199,7 +201,7 @@ import {
 import { readCliUpdateFactsForThisCli } from '@/cli/runtime/update/cliUpdateFacts';
 import { createCliUpdateMetadataPublisher, type CliUpdateMetadataPublisher } from './machine/cliUpdateMetadataPublisher';
 import { createDaemonShutdownController } from './lifecycle/shutdown';
-import { buildTmuxSpawnConfig, buildTmuxWindowEnv } from './platform/tmux/spawnConfig';
+import { buildHostedRunnerSpawnConfig, buildTmuxSpawnConfig, buildTmuxWindowEnv } from './platform/tmux/spawnConfig';
 export { buildTmuxSpawnConfig, buildTmuxWindowEnv } from './platform/tmux/spawnConfig';
 import {
   migrateTrackedSessionProcessesOutOfDaemonServiceCgroup,
@@ -428,8 +430,18 @@ import type { RuntimeAccountIdentitySelectionInput } from './connectedServices/q
 import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
 import { parseBooleanEnv, resolveConnectedServicesProviderStateSharingPolicyV1, type AccountSettings, type BackendTargetRefV1, type ConnectedServiceId } from '@happier-dev/protocol';
 import type { CatalogAgentId, ConnectedServiceSwitchEffectiveBinding } from '@/backends/types';
-import { readTerminalAttachmentInfo, writeTerminalAttachmentInfo } from '@/terminal/attachment/terminalAttachmentInfo';
+import {
+  createTerminalAttachmentId,
+  matchesLegacyTerminalAttachmentSnapshot,
+  readTerminalAttachmentInfo,
+  readTerminalAttachmentState,
+  terminalAttachmentMatchesTerminal,
+  writeTerminalAttachmentInfo,
+} from '@/terminal/attachment/terminalAttachmentInfo';
+import { executeTerminalHostDisposition } from '@/terminal/attachment/terminalHostDisposition';
 import { bindSpawnedTmuxTerminalAttachment } from './sessions/bindSpawnedTmuxTerminalAttachment';
+import { bindSpawnedTerminalHostAttachment } from './sessions/bindSpawnedTerminalHostAttachment';
+import type { TerminalHostHandle } from '@/integrations/terminalHost/_types';
 import { normalizeAccountSettingsVersionHint } from '@/settings/accountSettings/accountSettingsVersion';
 import { refreshAccountSettingsForMinimumVersion } from '@/settings/accountSettings/refreshAccountSettingsForMinimumVersion';
 import { warmActiveAccountSettingsSnapshotBestEffort } from '@/settings/accountSettings/warmActiveAccountSettingsSnapshot';
@@ -936,14 +948,14 @@ async function publishTerminalControlServiceability(params: Readonly<{
     happyHomeDir: params.happyHomeDir,
     sessionId: params.sessionId,
   });
-  if (attachmentBeforeFetch?.version !== 2 || attachmentBeforeFetch.attachmentId !== params.attachmentId) return false;
+  if (!attachmentBeforeFetch || attachmentBeforeFetch.version === 1 || attachmentBeforeFetch.attachmentId !== params.attachmentId) return false;
   const rawSession = await fetchSessionByIdCompat({ token: params.credentials.token, sessionId: params.sessionId });
   if (!rawSession) return false;
   const attachmentBeforeUpdate = await readTerminalAttachmentInfo({
     happyHomeDir: params.happyHomeDir,
     sessionId: params.sessionId,
   });
-  if (attachmentBeforeUpdate?.version !== 2 || attachmentBeforeUpdate.attachmentId !== params.attachmentId) return false;
+  if (!attachmentBeforeUpdate || attachmentBeforeUpdate.version === 1 || attachmentBeforeUpdate.attachmentId !== params.attachmentId) return false;
   await updateSessionMetadataWithRetry({
     token: params.credentials.token,
     credentials: params.credentials,
@@ -974,7 +986,7 @@ async function publishCurrentTerminalControlServiceability(params: Readonly<{
     happyHomeDir: params.happyHomeDir,
     sessionId: params.sessionId,
   });
-  if (attachment?.version !== 2) return false;
+  if (!attachment || attachment.version === 1) return false;
   return await publishTerminalControlServiceability({
     ...params,
     attachmentId: attachment.attachmentId,
@@ -1672,17 +1684,17 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
         ? [ownership.owner.state.pid]
         : [];
     try {
-      const orphanReapResult = await reapSameHomeDaemonOrphansBeforeStart({
+      const orphanReapResult = await reapCurrentLifecycleDaemonOrphansBeforeStart({
         preservePids: preservedOwnerPids,
       });
       if (
         orphanReapResult.stoppedPids.length > 0
         || orphanReapResult.failedPids.length > 0
       ) {
-        logger.debug('[DAEMON RUN] Same-home daemon orphan reap complete', orphanReapResult);
+        logger.debug('[DAEMON RUN] Lifecycle-scope daemon orphan reap complete', orphanReapResult);
       }
     } catch (error) {
-      logger.warn('[DAEMON RUN] Same-home daemon orphan reap failed', error);
+      logger.warn('[DAEMON RUN] Lifecycle-scope daemon orphan reap failed', error);
     }
 
     const credentialsGate = await waitForInitialCredentials({
@@ -2266,7 +2278,7 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
               happyHomeDir: configuration.happyHomeDir,
               sessionId,
             });
-            if (attachment?.version !== 2) return false;
+            if (!attachment || attachment.version === 1) return false;
             const evidence = resolveRunnerTerminalControlServiceabilityEvidence({
               probe,
               attachmentId: attachment.attachmentId,
@@ -2286,6 +2298,17 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
             });
             return false;
           }
+        };
+        const publishTrackedTerminalControlServiceability = async (tracked: TrackedSession): Promise<void> => {
+          await publishReportedTerminalControlServiceability({
+            tracked,
+            readTerminalAttachmentInfo: async (sessionId) => await readTerminalAttachmentInfo({
+              happyHomeDir: configuration.happyHomeDir,
+              sessionId,
+            }),
+            probeSessionRunnerServiceability,
+            publishSessionRunnerControlServiceability,
+          });
         };
         const stopSessionInFlightBySessionId = new Map<string, Promise<StopSessionResult>>();
         const completedStopSessionIds = new Set<string>();
@@ -2337,7 +2360,6 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
             await waitForExistingSessionExitIfStopRequested({
               sessionId,
               pidToTrackedSession,
-              isSessionRunnerActive,
               timeoutMs: configuration.daemonStopSessionWaitForExitMs,
               pollIntervalMs: configuration.daemonStopSessionWaitForExitPollIntervalMs,
               trackedPids,
@@ -2558,6 +2580,17 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
 
         logger.debug('[DAEMON RUN] Running startup session reattach scan');
         const startupReattachResult = await reattachTrackedSessionsFromMarkers({ pidToTrackedSession, credentials });
+        for (const tracked of pidToTrackedSession.values()) {
+          if (!tracked.reattachedFromDiskMarker) continue;
+          try {
+            await publishTrackedTerminalControlServiceability(tracked);
+          } catch (error) {
+            logger.warn('[DAEMON RUN] Failed to recover reattached terminal control serviceability', {
+              sessionId: tracked.happySessionId,
+              error: serializeAxiosErrorForLog(error),
+            });
+          }
+        }
         const pendingSessionMachineAccessBindingIds = new Set(startupReattachResult.recoveredLiveSessionIds ?? []);
         let sessionMachineAccessBindingReconcileInFlight: Promise<void> | null = null;
         const reconcileSessionMachineAccessBindings = async (): Promise<void> => {
@@ -2675,54 +2708,63 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
           if (disconnectedTerminalHostSupervisionInFlight) return disconnectedTerminalHostSupervisionInFlight;
           disconnectedTerminalHostSupervisionInFlight = (async () => {
             const terminalHostAdapters = await loadTerminalHostAdapters();
-            const results = await Promise.all(disconnectedTerminalHostCandidates.map(async (candidate) => {
-              const observedAt = nextTerminalControlServiceabilityObservation();
-              return {
-                candidate,
-                observedAt,
-                result: await superviseDisconnectedTerminalHostCandidate({
+            let candidatesToSupervise = [...disconnectedTerminalHostCandidates];
+            while (candidatesToSupervise.length > 0) {
+              const results = await Promise.all(candidatesToSupervise.map(async (candidate) => {
+                const observedAt = nextTerminalControlServiceabilityObservation();
+                return {
                   candidate,
-                  terminalHostAdapters,
-                  probeSessionServiceability: async (sessionId) => await probeSessionRunnerServiceability(sessionId),
-                  retireExactTerminalControlServiceability: async ({ sessionId, attachmentInfo }) => {
-                    return await retireTerminalControlServiceabilityForCurrentAccount({
-                      sessionId,
-                      attachmentId: attachmentInfo.attachmentId,
-                      terminalMode: attachmentInfo.terminal.mode ?? attachmentInfo.handle.kind,
+                  observedAt,
+                  result: await superviseDisconnectedTerminalHostCandidate({
+                    candidate,
+                    terminalHostAdapters,
+                    probeSessionServiceability: async (sessionId) => await probeSessionRunnerServiceability(sessionId),
+                    retireExactTerminalControlServiceability: async ({ sessionId, attachmentInfo }) => {
+                      return await retireTerminalControlServiceabilityForCurrentAccount({
+                        sessionId,
+                        attachmentId: attachmentInfo.attachmentId,
+                        terminalMode: attachmentInfo.terminal.mode ?? attachmentInfo.handle.kind,
+                      });
+                    },
+                  }),
+                };
+              }));
+              for (const { candidate, observedAt, result } of results) {
+                if (!disconnectedTerminalHostCandidates.some((current) => (
+                  current.sessionId === candidate.sessionId && current.attachmentId === candidate.attachmentId
+                ))) continue;
+                disconnectedTerminalHostResultsBySessionId.set(candidate.sessionId, result);
+                if (result.state === 'servable' || result.state === 'recoverable_unservable' || result.state === 'unknown') {
+                  try {
+                    await publishTerminalControlServiceability({
+                      credentials,
+                      happyHomeDir: configuration.happyHomeDir,
+                      sessionId: candidate.sessionId,
+                      attachmentId: candidate.attachmentId,
+                      state: result.state === 'servable' ? 'servable' : result.state === 'recoverable_unservable' ? 'recoverable_unservable' : 'unknown',
+                      observedAt,
+                      ...('reason' in result ? { reason: result.reason } : {}),
                     });
-                  },
-                }),
-              };
-            }));
-            for (const { candidate, observedAt, result } of results) {
-              disconnectedTerminalHostResultsBySessionId.set(candidate.sessionId, result);
-              if (result.state === 'servable' || result.state === 'recoverable_unservable' || result.state === 'unknown') {
-                try {
-                  await publishTerminalControlServiceability({
-                    credentials,
-                    happyHomeDir: configuration.happyHomeDir,
-                    sessionId: candidate.sessionId,
-                    attachmentId: candidate.attachmentId,
-                    state: result.state === 'servable' ? 'servable' : result.state === 'recoverable_unservable' ? 'recoverable_unservable' : 'unknown',
-                    observedAt,
-                    ...('reason' in result ? { reason: result.reason } : {}),
-                  });
-                } catch (error) {
-                  logger.debug('[DAEMON RUN] Failed to publish terminal control serviceability', {
-                    sessionId: candidate.sessionId,
-                    error: serializeAxiosErrorForLog(error),
-                  });
+                  } catch (error) {
+                    logger.debug('[DAEMON RUN] Failed to publish terminal control serviceability', {
+                      sessionId: candidate.sessionId,
+                      error: serializeAxiosErrorForLog(error),
+                    });
+                  }
                 }
+                if (result.state !== 'stopped' || terminalizedDisconnectedTerminalHostIds.has(candidate.attachmentId)) continue;
+                terminalizedDisconnectedTerminalHostIds.add(candidate.attachmentId);
+                orphanedDeadDaemonSessions.push({
+                  sessionId: candidate.sessionId,
+                  pid: candidate.pid,
+                  ...(candidate.activeTurnId ? { activeTurnId: candidate.activeTurnId } : {}),
+                });
               }
-              if (result.state !== 'stopped' || terminalizedDisconnectedTerminalHostIds.has(candidate.attachmentId)) continue;
-              terminalizedDisconnectedTerminalHostIds.add(candidate.attachmentId);
-              orphanedDeadDaemonSessions.push({
-                sessionId: candidate.sessionId,
-                pid: candidate.pid,
-                ...(candidate.activeTurnId ? { activeTurnId: candidate.activeTurnId } : {}),
-              });
+              await publishStartupOrphanedSessionEnds(apiMachine);
+              candidatesToSupervise = disconnectedTerminalHostCandidates.filter((candidate) => (
+                  !disconnectedTerminalHostResultsBySessionId.has(candidate.sessionId)
+              ));
             }
-            await publishStartupOrphanedSessionEnds(apiMachine);
           })().catch((error) => {
             logger.debug('[DAEMON RUN] Disconnected terminal-host supervision failed (non-fatal)', error);
           }).finally(() => {
@@ -2746,6 +2788,7 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
           const migratedTrackedSessionProcesses = await migrateTrackedSessionProcessesOutOfDaemonServiceCgroup({
             trackedSessions: pidToTrackedSession.values(),
             daemonPid: process.pid,
+            startupSource,
           });
           if (migratedTrackedSessionProcesses.length > 0) {
             logger.debug('[DAEMON RUN] Moved reattached session runner process(es) out of the daemon service cgroup', {
@@ -2809,15 +2852,7 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
               // reattachment before serving broker-backed provider requests.
               registerConnectedServiceTrackedSessionTargets(tracked);
             }
-            await publishReportedTerminalControlServiceability({
-              tracked,
-              readTerminalAttachmentInfo: async (sessionId) => await readTerminalAttachmentInfo({
-                happyHomeDir: configuration.happyHomeDir,
-                sessionId,
-              }),
-              probeSessionRunnerServiceability,
-              publishSessionRunnerControlServiceability,
-            });
+            await publishTrackedTerminalControlServiceability(tracked);
           },
         });
         const resolveCanonicalTrackedSessionId = (pid: number): string => {
@@ -2855,14 +2890,64 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
             ) {
               continue;
             }
+            const ownsTrackedRunner = () => pidToTrackedSession.get(pid) === tracked
+              && tracked.pid === pid && tracked.startedBy === 'daemon'
+              && normalizeSpawnNonceForAck(tracked.spawnOptions?.spawnNonce) === spawnNonce;
             const runState = await readProcessRunState(pid).catch(() => null);
-            if (runState !== 'servable') continue;
+            if (runState !== 'servable' || !ownsTrackedRunner()) continue;
             const result = buildSpawnAcceptedResult({
               pid,
               spawnNonce,
             });
             result.runnerAcceptance = 'same_request_runner';
             daemonSpawnAttemptRegistry.rememberAccepted({ spawnNonce, result });
+            const sessionId = result.sessionId;
+            if (!sessionId) return result;
+            const ownsReadyRunner = () => ownsTrackedRunner()
+              && resolveCanonicalTrackedSessionId(pid) === sessionId
+              && !tracked.startupCustody
+              && !shutdownInitiated && typeof tracked.stopRequestedAtMs !== 'number'
+              && tracked.reportMarkerCustody?.retiring !== true;
+            const markerMatchesRunner = (marker: Awaited<ReturnType<typeof readSessionMarkerForPid>>) => Boolean(
+              marker && marker.pid === pid && marker.happySessionId === sessionId
+              && marker.happyHomeDir === configuration.happyHomeDir
+              && marker.startedBy !== 'terminal'
+              && normalizeSpawnNonceForAck(marker.respawn?.spawnNonce) === spawnNonce
+              && (!marker.processInstanceFingerprint || marker.processInstanceFingerprint === tracked.processInstanceFingerprint)
+              && (!marker.processCommandHash || marker.processCommandHash === tracked.processCommandHash)
+            );
+            const marker = await readSessionMarkerForPid(pid);
+            if (!ownsReadyRunner() || !markerMatchesRunner(marker)) return result;
+            const readAttachment = () => readTerminalAttachmentState({ happyHomeDir: configuration.happyHomeDir, sessionId });
+            const attachmentMatchesRunner = (attachment: Awaited<ReturnType<typeof readAttachment>>) => {
+              if (attachment.status === 'unreadable') return false;
+              const terminal = tracked.hostedTerminal ?? tracked.happySessionMetadataFromLocalWebhook?.terminal;
+              if (terminal?.controlServiceabilityV1?.retired === true) return false;
+              const actualTerminalMode = terminal?.mode ?? tracked.spawnOptions?.terminal?.mode;
+              const needsAttachment = actualTerminalMode !== 'plain' && (
+                actualTerminalMode !== undefined || !tracked.childProcess || Boolean(tracked.tmuxSessionId)
+              );
+              if (!needsAttachment) return true;
+              const publishedId = tracked.publishedTerminalControlServiceabilityAttachmentId;
+              if (attachment.status !== 'present' || !terminal) return false;
+              return terminalAttachmentMatchesTerminal(attachment.info, terminal, publishedId);
+            };
+            const attachment = await readAttachment();
+            if (!ownsReadyRunner() || !attachmentMatchesRunner(attachment)) return result;
+            // Acceptance prevents duplicate launch. Readiness additionally needs
+            // committed hosting evidence that still belongs to this runner after RPC.
+            const probe = await probeSessionRunnerServiceability(sessionId);
+            if (probe.state !== 'runner_present' || probe.control.state !== 'servable' || !ownsReadyRunner()) return result;
+            const [currentMarker, currentAttachment] = await Promise.all([readSessionMarkerForPid(pid), readAttachment()]);
+            const attachmentUnchanged = attachment.status === 'present'
+              ? currentAttachment.status === 'present' && (attachment.info.version === 1
+                ? currentAttachment.info.version === 1 && matchesLegacyTerminalAttachmentSnapshot(currentAttachment.info, attachment.info)
+                : currentAttachment.info.version !== 1 && currentAttachment.info.attachmentId === attachment.info.attachmentId)
+              : currentAttachment.status === attachment.status;
+            if (ownsReadyRunner() && markerMatchesRunner(marker) && markerMatchesRunner(currentMarker)
+              && attachmentUnchanged && attachmentMatchesRunner(attachment) && attachmentMatchesRunner(currentAttachment)) {
+              daemonSpawnAttemptRegistry.settle(spawnNonce, { type: 'success', sessionId });
+            }
             return result;
           }
           return null;
@@ -2991,7 +3076,7 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                   return {
                     type: 'error',
                     errorCode: SPAWN_SESSION_ERROR_CODES.UNEXPECTED,
-                    errorMessage: 'This session has a preserved terminal host that cannot be controlled safely. Stop the session, then Resume again to launch a fresh host.',
+                    errorMessage: 'This session has a preserved terminal host that cannot be controlled safely. Reconnect to the original terminal host and retry Resume, or Stop the session if that action is available before resuming on a fresh host.',
                   };
                 }
               }
@@ -3045,7 +3130,6 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                   await waitForExistingSessionExitIfStopRequested({
                     sessionId: normalizedExistingSessionId,
                     pidToTrackedSession,
-                    isSessionRunnerActive,
                     timeoutMs: configuration.daemonSpawnExistingSessionWaitForExitMs,
                     pollIntervalMs: configuration.daemonSpawnExistingSessionWaitForExitPollIntervalMs,
                   });
@@ -3121,11 +3205,14 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                     });
                   }
                   await publishSessionRunnerControlServiceability(normalizedExistingSessionId, serviceabilityAfterWait);
-                  return {
+                  const result = {
                     type: 'success',
                     sessionId: normalizedExistingSessionId,
                     runnerAcceptance,
-                  };
+                  } satisfies Extract<SpawnSessionResult, { type: 'success' }>;
+                  daemonSpawnAttemptRegistry.rememberAccepted({ spawnNonce: normalizedOptions.spawnNonce, result });
+                  daemonSpawnAttemptRegistry.settle(normalizedOptions.spawnNonce ?? '', result);
+                  return result;
                 }
               }
             }
@@ -3652,36 +3739,54 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                   };
                 }
                 const extraEnv = spawnEnvironment.expandedEnvironmentVariables;
-                const extraEnvForChild = spawnEnvironment.extraEnvForChild;
+                const downgradeLegacyImplicitTmuxRequest = shouldDowngradeLegacyImplicitTmuxRequest({
+                  terminal: normalizedOptions.terminal,
+                  backendTarget,
+                });
+                const terminalRequest = resolveTerminalRequestFromSpawnOptions({
+                  happyHomeDir: configuration.happyHomeDir,
+                  terminal: downgradeLegacyImplicitTmuxRequest ? undefined : normalizedOptions.terminal,
+                  environmentVariables: extraEnv,
+                });
+                const selectedHost = terminalRequest.requested === 'tmux'
+                  || terminalRequest.requested === 'zellij'
+                  || terminalRequest.requested === 'herdr'
+                  ? terminalRequest.requested
+                  : null;
+                const terminalPresentation = selectedHost
+                  ? daemonSpawnHooks?.resolveTerminalPresentation?.({
+                    host: selectedHost,
+                    accountSettings: getActiveAccountSettingsSnapshot()?.settings ?? null,
+                    runtimeSelection: {
+                      experimentalCodexAcp,
+                      codexBackendMode,
+                      agentRuntimeDescriptorV1,
+                      directory: resolvedDirectory,
+                      environmentVariables: extraEnv,
+                    },
+                    processEnv: { ...sessionChildProcessEnv, ...spawnEnvironment.extraEnvForChild },
+                  }) ?? resolveDefaultDaemonTerminalPresentation({
+                    host: selectedHost,
+                    agentId: catalogAgentId,
+                    configuredAcpBackend: backendTarget?.kind === 'configuredAcpBackend',
+                  })
+                  : null;
+                const extraEnvForChild = {
+                  ...spawnEnvironment.extraEnvForChild,
+                  ...(terminalPresentation?.childEnv ?? {}),
+                };
                 const materializationDiagnostics = spawnEnvironment.materializationDiagnostics;
                 const trackedSessionEnvironmentVariables = buildTrackedSessionRespawnEnvironmentVariables({
                   expandedEnvironmentVariables: extraEnv,
                   extraEnvForChild,
                 });
-                const {
-                  existingSessionAttachPayload: _existingSessionAttachPayload,
-                  initialTranscriptAfterSeq: _initialTranscriptAfterSeq,
-                  executionAuthorization: _executionAuthorization,
-                  initialGoal: _initialGoal,
-                  ...trackedSpawnOptionsBase
-                } = effectiveSpawnOptionsBase;
-                const trackedSpawnOptions: SpawnSessionOptions = {
-                  ...trackedSpawnOptionsBase,
-                  ...(trackedSessionEnvironmentVariables
-                    ? { environmentVariables: trackedSessionEnvironmentVariables }
-                    : {}),
-                  ...(materializationDiagnostics ? { materializationDiagnostics } : {}),
-                };
+                const trackedSpawnOptions = buildTrackedSpawnOptions({
+                  options: effectiveSpawnOptionsBase,
+                  environmentVariables: trackedSessionEnvironmentVariables,
+                  materializationDiagnostics,
+                  terminalPresentation: terminalPresentation ?? undefined,
+                });
 
-            const downgradeLegacyImplicitTmuxRequest = shouldDowngradeLegacyImplicitTmuxRequest({
-              terminal: normalizedOptions.terminal,
-              backendTarget,
-            });
-            const terminalRequest = resolveTerminalRequestFromSpawnOptions({
-              happyHomeDir: configuration.happyHomeDir,
-              terminal: downgradeLegacyImplicitTmuxRequest ? undefined : normalizedOptions.terminal,
-              environmentVariables: extraEnv,
-            });
             let sessionAttachFilePath: string | null = null;
             if (normalizedExistingSessionId) {
               if (!sessionAttachPayload) {
@@ -3711,8 +3816,9 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
             };
 
             const tmuxRequested = terminalRequest.requested === 'tmux';
-            const tmuxAvailable = tmuxRequested ? await isTmuxAvailable() : false;
-            let useTmux = tmuxAvailable && tmuxRequested;
+            const tmuxRunnerRequested = tmuxRequested && terminalPresentation?.kind === 'runner';
+            const tmuxAvailable = tmuxRunnerRequested ? await isTmuxAvailable() : false;
+            let useTmux = tmuxAvailable && tmuxRunnerRequested;
 
             const tmuxSessionName = tmuxRequested ? terminalRequest.tmux.sessionName : undefined;
             const tmuxTmpDir = tmuxRequested ? terminalRequest.tmux.tmpDir : null;
@@ -3723,7 +3829,7 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
 
             let tmuxFallbackReason: string | null = null;
 
-            if (!tmuxAvailable && tmuxRequested) {
+            if (!tmuxAvailable && tmuxRunnerRequested) {
               tmuxFallbackReason = 'tmux is not available on this machine';
               logger.debug('[DAEMON RUN] tmux requested but tmux is not available; falling back to regular spawning');
             }
@@ -3751,6 +3857,174 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
               preferWindowsPackagedBinary: true,
               liveRunnerSnapshotFingerprints,
               ...(runtimeDecision ? { runtimeDecision } : {}),
+            };
+            const sessionControlArgs = buildHappySessionControlArgs({
+              resume: effectiveResume,
+              existingSessionId: normalizedExistingSessionId,
+              backendTarget,
+              permissionMode,
+              permissionModeUpdatedAt,
+              agentModeId,
+              agentModeUpdatedAt,
+              modelId,
+              modelUpdatedAt,
+            });
+
+            let observedSpawnExit: Parameters<typeof onChildExited>[1] | null = null;
+            let runnerWebhookCompletion: ReturnType<typeof waitForSessionWebhook> | undefined;
+            const exitedBeforeFinalizationResult = (): Extract<SpawnSessionResult, { type: 'error' }> => ({
+              type: 'error',
+              errorCode: SPAWN_SESSION_ERROR_CODES.CHILD_EXITED_BEFORE_WEBHOOK,
+              errorMessage: 'Child process exited before session startup was finalized',
+            });
+            // Launch adapters own process creation; every accepted runner has the same daemon custody.
+            const registerAcceptedRunner = async (
+              trackedSession: TrackedSession,
+              actualSpawnOptions: SpawnSessionOptions,
+              createWebhookCompletion: () => ReturnType<typeof waitForSessionWebhook>,
+            ): Promise<Readonly<{ acceptedResult: SpawnSessionResult; webhookCompletion: Promise<SpawnSessionResult> }>> => {
+              const pid = trackedSession.pid;
+              pidToTrackedSession.set(pid, trackedSession);
+              if (spawnResourceCleanupOnExit) {
+                spawnResourceCleanupByPid.set(pid, spawnResourceCleanupOnExit);
+                spawnResourceCleanupArmed = true;
+              }
+              if (sessionAttachCleanup) {
+                sessionAttachCleanupByPid.set(pid, sessionAttachCleanup);
+                sessionAttachCleanup = null;
+              }
+              // Arm before the first asynchronous custody write: a fast child's exact
+              // report must use the same finalization callback as every later report.
+              const webhookCompletion = createWebhookCompletion();
+              runnerWebhookCompletion = webhookCompletion;
+              try {
+                await persistAcceptedSpawnMarker({
+                  pid,
+                  spawnOptions: actualSpawnOptions,
+                  directory: resolvedDirectory,
+                  existingSessionId: normalizedExistingSessionId,
+                });
+              } catch (error) {
+                const currentPid = webhookCompletion.getCurrentPid();
+                const timeout = pidToSpawnWebhookTimeout.get(currentPid);
+                if (timeout) clearTimeout(timeout);
+                pidToSpawnWebhookTimeout.delete(currentPid);
+                pidToAwaiter.delete(currentPid);
+                const resolveSpawn = pidToSpawnResultResolver.get(currentPid);
+                pidToSpawnResultResolver.delete(currentPid);
+                resolveSpawn?.({ type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
+                  errorMessage: 'Accepted runner custody could not be persisted' });
+                throw error;
+              }
+              // Explicit resume supersedes Stop for every host. A stopped session cannot reach
+              // this registration through automatic respawn, which the manager already suppresses.
+              if (normalizedExistingSessionId) {
+                sessionRunnerRespawnManager.clearStopRequested(normalizedExistingSessionId);
+              }
+              if (connectedServiceAuth && effectiveConnectedServicesBindings) {
+                registerConnectedServiceRuntimeTargetForDaemon({
+                  runtimeRegistry: connectedServiceRuntimeRegistry,
+                  pid: webhookCompletion.getCurrentPid(),
+                  agentId: catalogAgentId,
+                  sessionId: connectedServiceAuthSessionId,
+                  connectedServicesBindingsRaw: effectiveConnectedServicesBindings,
+                  connectedServiceSelectionsEnv: connectedServiceAuth.env,
+                  materializationKey,
+                  connectedServiceMaterializationIdentityV1: normalizedOptions.connectedServiceMaterializationIdentityV1,
+                  sessionDirectory: resolvedDirectory,
+                  runtimeAccountIdentitySelections: connectedServiceAuth.runtimeAccountIdentitySelections,
+                  onRegisteredTarget: clearMemberRuntimeStateWithSuccessfulSpawnEvidence,
+                });
+              }
+              const acceptedResult = buildSpawnAcceptedResult({
+                pid: webhookCompletion.getCurrentPid(),
+                spawnNonce: trackedSpawnOptions.spawnNonce,
+                fallbackSessionId: normalizedExistingSessionId,
+              });
+              daemonSpawnAttemptRegistry.rememberAccepted({
+                spawnNonce: trackedSpawnOptions.spawnNonce,
+                result: acceptedResult,
+              });
+              return { acceptedResult, webhookCompletion };
+            };
+
+            // Host-specific binding/publication finishes before the common exact-session wake.
+            const monitorRunnerWebhook = (params: {
+              pid: number;
+              logLabel: string;
+              completion: Promise<SpawnSessionResult>;
+              onSuccess?: (result: Extract<SpawnSessionResult, { type: 'success' }>) => Promise<void>;
+            }): Promise<void> => {
+              return params.completion.then(async (result) => {
+                let resolved = resolveSpawnWebhookResult({
+                  pid: params.pid,
+                  result,
+                  pidToTrackedSession,
+                  warn: (message) => logger.warn(message),
+                });
+                if (resolved.type === 'success' && observedSpawnExit) resolved = exitedBeforeFinalizationResult();
+                if (resolved.type === 'success' && params.onSuccess) {
+                  try {
+                    await params.onSuccess(resolved);
+                  } catch (error) {
+                    logger.warn(`[DAEMON RUN] Failed to finalize spawned terminal attachment for PID ${params.pid} (${params.logLabel})`);
+                    resolved = {
+                      type: 'error',
+                      errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
+                      errorMessage: error instanceof Error ? error.message : String(error),
+                    };
+                  }
+                }
+                if (resolved.type === 'error' && resolved.errorCode === SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT) {
+                  logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${params.pid} (${params.logLabel})`);
+                }
+                if (resolved.type === 'success' && observedSpawnExit) resolved = exitedBeforeFinalizationResult();
+                daemonSpawnAttemptRegistry.settle(trackedSpawnOptions.spawnNonce ?? '', resolved);
+                await nudgeAttachedExistingSessionPendingQueue({
+                  requestedExistingSessionId: normalizedExistingSessionId,
+                  credentials,
+                  isShutdownRequested: () => shutdownInitiated,
+                  resolved,
+                });
+              }).catch((error) => {
+                logger.warn(`[DAEMON RUN] Session webhook monitor failed for PID ${params.pid} (${params.logLabel}): ${error instanceof Error ? error.message : String(error)}`);
+                daemonSpawnAttemptRegistry.settle(trackedSpawnOptions.spawnNonce ?? '', {
+                  type: 'error',
+                  errorCode: SPAWN_SESSION_ERROR_CODES.UNEXPECTED,
+                  errorMessage: error instanceof Error ? error.message : String(error),
+                });
+              });
+            };
+            const armRunnerWebhookFinalization = (
+              registration: ReturnType<typeof registerAcceptedRunner>,
+              params: Omit<Parameters<typeof monitorRunnerWebhook>[0], 'completion'>,
+            ): void => {
+              const finalization = registration.then(({ webhookCompletion }) => monitorRunnerWebhook({
+                ...params, completion: webhookCompletion,
+              }), () => undefined);
+              const tracked = pidToTrackedSession.get(params.pid);
+              if (!tracked) throw new Error('Accepted runner tracking is unavailable');
+              const completion = runnerWebhookCompletion;
+              if (!completion) throw new Error('Accepted runner waiter is unavailable');
+              const custody: NonNullable<TrackedSession['startupCustody']> = { finalization, promotePid: completion.promotePid, observeExit: (exit) => {
+                observedSpawnExit = exit;
+                const currentPid = completion.getCurrentPid();
+                const resolveSpawn = pidToSpawnResultResolver.get(currentPid);
+                const timeout = pidToSpawnWebhookTimeout.get(currentPid);
+                if (timeout) clearTimeout(timeout);
+                pidToSpawnResultResolver.delete(currentPid);
+                pidToSpawnWebhookTimeout.delete(currentPid);
+                pidToAwaiter.delete(currentPid);
+                resolveSpawn?.({ type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.CHILD_EXITED_BEFORE_WEBHOOK,
+                  errorMessage: `Child process exited before session startup was finalized (pid=${params.pid})` });
+              } };
+              tracked.startupCustody = custody;
+              void finalization.then(() => {
+                if (tracked.startupCustody === custody) delete tracked.startupCustody;
+                for (const current of pidToTrackedSession.values()) {
+                  if (current.startupCustody === custody) delete current.startupCustody;
+                }
+              });
             };
 
             if (useTmux && tmuxSessionName !== undefined) {
@@ -3794,6 +4068,7 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                     agent: agentSubcommand,
                     directory: resolvedDirectory,
                     extraEnv: extraEnvForChildWithMessage,
+                    startingMode: terminalPresentation?.startingMode ?? 'remote',
                     processEnv: sessionChildProcessEnv,
                     homeDir: configuration.happyHomeDir,
                     serverSelectionEnv: childServerSelectionEnv,
@@ -3801,17 +4076,7 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                     launchOptions: runnerLaunchOptions,
                     extraArgs: [
                       ...terminalRuntimeArgs,
-                  ...buildHappySessionControlArgs({
-                    resume: effectiveResume,
-                    existingSessionId: normalizedExistingSessionId,
-                    backendTarget,
-                    permissionMode,
-                    permissionModeUpdatedAt,
-                    agentModeId,
-                    agentModeUpdatedAt,
-                    modelId,
-                    modelUpdatedAt,
-                  }),
+                  ...sessionControlArgs,
                     ],
                   });
               const tmux = new TmuxUtilities(resolvedTmuxSessionName, tmuxCommandEnv);
@@ -3846,13 +4111,20 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
 
             // Resolve the actual tmux session name used (important when sessionName was empty/undefined)
             const tmuxSession = tmuxResult.sessionName ?? (resolvedTmuxSessionName || 'happy');
+            const tmuxTrackedSpawnOptions = buildTrackedSpawnOptions({
+              options: trackedSpawnOptions,
+              actualTerminal: {
+                mode: 'tmux',
+                tmux: { sessionName: tmuxSession, isolated: terminalRequest.requested === 'tmux' && terminalRequest.tmux.isolated, tmpDir: tmuxTmpDir },
+              },
+            });
 
                 // Create a tracked session for tmux windows - now we have the real PID!
                 const trackedSession: TrackedSession = {
                   startedBy: 'daemon',
                   happySessionId: normalizedExistingSessionId || undefined,
                   pid: tmuxPid, // Real PID from tmux -P flag
-                  spawnOptions: trackedSpawnOptions,
+                  spawnOptions: tmuxTrackedSpawnOptions,
                   tmuxSessionId: tmuxResult.sessionId,
                   tmuxTmpDir: typeof tmuxTmpDir === 'string' && tmuxTmpDir.trim().length > 0 ? tmuxTmpDir.trim() : undefined,
                   vendorResumeId: effectiveResume || undefined,
@@ -3862,67 +4134,27 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                     : `Spawned new session in tmux session '${tmuxSession}'. Use 'tmux attach -t ${tmuxSession}' to view the session.`
                 };
 
-                // Add to tracking map so webhook can find it later
-              pidToTrackedSession.set(tmuxPid, trackedSession);
-              await persistAcceptedSpawnMarker({
+            const registration = registerAcceptedRunner(trackedSession, tmuxTrackedSpawnOptions,
+              () => waitForSessionWebhook({
                 pid: tmuxPid,
-                spawnOptions: trackedSpawnOptions,
-                directory: resolvedDirectory,
-                existingSessionId: normalizedExistingSessionId,
-              });
-              if (connectedServiceAuth && effectiveConnectedServicesBindings) {
-                registerConnectedServiceRuntimeTargetForDaemon({
-                  runtimeRegistry: connectedServiceRuntimeRegistry,
-                  pid: tmuxPid,
-                  agentId: catalogAgentId,
-                  sessionId: connectedServiceAuthSessionId,
-                  connectedServicesBindingsRaw: effectiveConnectedServicesBindings,
-                  connectedServiceSelectionsEnv: connectedServiceAuth.env,
-                  materializationKey,
-                  // RD-MAT-6: keep refresh-driven rematerialization on the live identity root and
-                  // the session's working directory (workspace-trust projection target).
-                  connectedServiceMaterializationIdentityV1: normalizedOptions.connectedServiceMaterializationIdentityV1,
-                  sessionDirectory: resolvedDirectory,
-                  runtimeAccountIdentitySelections: connectedServiceAuth.runtimeAccountIdentitySelections,
-                  onRegisteredTarget: clearMemberRuntimeStateWithSuccessfulSpawnEvidence,
-                });
-              }
-                if (spawnResourceCleanupOnExit) {
-                  spawnResourceCleanupByPid.set(tmuxPid, spawnResourceCleanupOnExit);
-                  spawnResourceCleanupArmed = true;
-                }
-                if (sessionAttachCleanup) {
-                  sessionAttachCleanupByPid.set(tmuxPid, sessionAttachCleanup);
-                  sessionAttachCleanup = null;
-                }
-
-            const acceptedResult = buildSpawnAcceptedResult({
-              pid: tmuxPid,
-              spawnNonce: trackedSpawnOptions.spawnNonce,
-              fallbackSessionId: normalizedExistingSessionId,
-            });
-            // Preserve fast acknowledgement; the durable Pending row and server event own delivery.
-            logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${tmuxPid} (tmux)`);
-            const webhookCompletion = waitForSessionWebhook({
-              pid: tmuxPid,
-              pidToAwaiter,
+                pidToAwaiter,
                 pidToSpawnResultResolver,
                 pidToSpawnWebhookTimeout,
                 timeoutErrorMessage: `Session webhook timeout for PID ${tmuxPid} (tmux)`,
                 onTimeout: () => {
                   logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${tmuxPid} (tmux)`);
                 },
-              onSuccess: (completedSession) => {
-                logger.debug(`[DAEMON RUN] Session ${completedSession.happySessionId} fully spawned with webhook (tmux)`);
-              },
-            }).then(async (result) => {
-              const resolved = resolveSpawnWebhookResult({
-                pid: tmuxPid,
-                result,
-                pidToTrackedSession,
-                warn: (message) => logger.warn(message),
-              });
-              if (resolved.type === 'success' && resolved.sessionId) {
+                onSuccess: (completedSession) => {
+                  logger.debug(`[DAEMON RUN] Session ${completedSession.happySessionId} fully spawned with webhook (tmux)`);
+                },
+              }));
+            // Preserve fast acknowledgement; the durable Pending row and server event own delivery.
+            logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${tmuxPid} (tmux)`);
+            armRunnerWebhookFinalization(registration, {
+              pid: tmuxPid,
+              logLabel: 'tmux',
+              onSuccess: async (resolved) => {
+                if (!resolved.sessionId) return;
                 await bindSpawnedTmuxTerminalAttachment({
                   happyHomeDir: configuration.happyHomeDir,
                   sessionId: resolved.sessionId,
@@ -3936,33 +4168,9 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                     }
                   },
                 });
-              }
-              daemonSpawnAttemptRegistry.settle(trackedSpawnOptions.spawnNonce ?? '', resolved);
-              const nudgeResult = await nudgeAttachedExistingSessionPendingQueue({
-                requestedExistingSessionId: normalizedExistingSessionId,
-                credentials,
-                isShutdownRequested: () => shutdownInitiated,
-                resolved,
-              });
-              if (nudgeResult.type === 'error') {
-                logger.warn(`[DAEMON RUN] Pending queue wake failed after webhook for PID ${tmuxPid} (tmux): ${nudgeResult.errorMessage}`);
-              }
-              return nudgeResult;
-            }).catch((error) => {
-              logger.warn(`[DAEMON RUN] Session webhook monitor failed for PID ${tmuxPid} (tmux): ${error instanceof Error ? error.message : String(error)}`);
-              const result = {
-                type: 'error' as const,
-                errorCode: SPAWN_SESSION_ERROR_CODES.UNEXPECTED,
-                errorMessage: error instanceof Error ? error.message : String(error),
-              };
-              daemonSpawnAttemptRegistry.settle(trackedSpawnOptions.spawnNonce ?? '', result);
-              return result;
+              },
             });
-            daemonSpawnAttemptRegistry.rememberAccepted({
-              spawnNonce: trackedSpawnOptions.spawnNonce,
-              result: acceptedResult,
-            });
-            void webhookCompletion;
+            const { acceptedResult } = await registration;
             return acceptedResult;
               } else {
                 tmuxFallbackReason = tmuxResult.error ?? 'tmux spawn failed';
@@ -3982,7 +4190,9 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                 '--started-by', 'daemon'
               ];
 
-              if (tmuxRequested) {
+              if (selectedHost && terminalPresentation?.kind === 'provider') {
+                args.push('--happy-terminal-mode', 'plain', '--happy-terminal-requested', selectedHost);
+              } else if (tmuxRunnerRequested) {
                 const reason = tmuxFallbackReason ?? 'tmux was not used';
                 args.push(
                   '--happy-terminal-mode',
@@ -3994,73 +4204,37 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                 );
               }
 
-              args.push(...buildHappySessionControlArgs({
-                resume: effectiveResume,
-                existingSessionId: normalizedExistingSessionId,
-                backendTarget,
-                permissionMode,
-                permissionModeUpdatedAt,
-                agentModeId,
-                agentModeUpdatedAt,
-                modelId,
-                modelUpdatedAt,
-              }));
+              args.push(...sessionControlArgs);
               const windowsLaunchMode = resolveWindowsRemoteSessionConsoleMode({
                 platform: process.platform,
                 requested: normalizedOptions.windowsRemoteSessionLaunchMode ?? normalizedOptions.windowsRemoteSessionConsole,
                 env: process.env,
               });
 
-              const waitForWindowsHostedSession = async (params: {
+              const waitForHostedRunnerSession = async (params: {
                 pid: number;
                 logLabel: string;
                 terminal: NonNullable<Metadata['terminal']>;
+                handle?: TerminalHostHandle;
+                disposeUnboundHost?: () => Promise<void>;
               }): Promise<SpawnSessionResult> => {
-                if (sessionAttachCleanup) {
-                  sessionAttachCleanupByPid.set(params.pid, sessionAttachCleanup);
-                  sessionAttachCleanup = null;
-                }
-
+                const hostedTrackedSpawnOptions = buildTrackedSpawnOptions({
+                  options: trackedSpawnOptions,
+                  actualTerminal: {
+                    ...(trackedSpawnOptions.terminal?.mode === params.terminal.mode ? trackedSpawnOptions.terminal : {}),
+                    mode: params.terminal.mode,
+                  },
+                });
                 const trackedSession: TrackedSession = {
                   startedBy: 'daemon',
                   happySessionId: normalizedExistingSessionId || undefined,
                   pid: params.pid,
-                  spawnOptions: trackedSpawnOptions,
+                  spawnOptions: hostedTrackedSpawnOptions,
                   vendorResumeId: effectiveResume || undefined,
                   hostedTerminal: params.terminal,
                   directoryCreated,
                   message: directoryCreated ? `The path '${resolvedDirectory}' did not exist. We created a new folder and spawned a new session there.` : undefined,
                 };
-                pidToTrackedSession.set(params.pid, trackedSession);
-                await persistAcceptedSpawnMarker({
-                  pid: params.pid,
-                  spawnOptions: trackedSpawnOptions,
-                  directory: resolvedDirectory,
-                  existingSessionId: normalizedExistingSessionId,
-                });
-                if (connectedServiceAuth && effectiveConnectedServicesBindings) {
-                  registerConnectedServiceRuntimeTargetForDaemon({
-                    runtimeRegistry: connectedServiceRuntimeRegistry,
-                    pid: params.pid,
-                    agentId: catalogAgentId,
-                    sessionId: connectedServiceAuthSessionId,
-                    connectedServicesBindingsRaw: effectiveConnectedServicesBindings,
-                    connectedServiceSelectionsEnv: connectedServiceAuth.env,
-                    materializationKey,
-                    // RD-MAT-6: keep refresh-driven rematerialization on the live identity root and
-                    // the session's working directory (workspace-trust projection target).
-                    connectedServiceMaterializationIdentityV1: normalizedOptions.connectedServiceMaterializationIdentityV1,
-                    sessionDirectory: resolvedDirectory,
-                    runtimeAccountIdentitySelections: connectedServiceAuth.runtimeAccountIdentitySelections,
-                    onRegisteredTarget: clearMemberRuntimeStateWithSuccessfulSpawnEvidence,
-                  });
-                }
-
-                if (spawnResourceCleanupOnExit) {
-                  spawnResourceCleanupByPid.set(params.pid, spawnResourceCleanupOnExit);
-                  spawnResourceCleanupArmed = true;
-                }
-
                 const pollMsRaw = typeof process.env.HAPPIER_DAEMON_VISIBLE_CONSOLE_EXIT_POLL_MS === 'string'
                   ? process.env.HAPPIER_DAEMON_VISIBLE_CONSOLE_EXIT_POLL_MS.trim()
                   : '';
@@ -4069,47 +4243,41 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
 
                 logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${params.pid} (${params.logLabel})`);
 
-                const acceptedResult = buildSpawnAcceptedResult({
-                  pid: params.pid,
-                  spawnNonce: trackedSpawnOptions.spawnNonce,
-                  fallbackSessionId: normalizedExistingSessionId,
-                });
-                daemonSpawnAttemptRegistry.rememberAccepted({
-                  spawnNonce: trackedSpawnOptions.spawnNonce,
-                  result: acceptedResult,
-                });
-
-                const webhookCompletion = waitForVisibleConsoleSessionWebhook({
-                  pid: params.pid,
-                  pollMs,
-                  pidToAwaiter,
-                  pidToSpawnResultResolver,
-                  pidToSpawnWebhookTimeout,
-                  onChildExited,
-                }).then(async (result) => {
-                  const resolved = resolveSpawnWebhookResult({
+                const registration: ReturnType<typeof registerAcceptedRunner> = registerAcceptedRunner(trackedSession, hostedTrackedSpawnOptions,
+                  () => waitForVisibleConsoleSessionWebhook({
                     pid: params.pid,
-                    result,
-                    pidToTrackedSession,
-                    warn: (message) => logger.warn(message),
-                  });
-                  daemonSpawnAttemptRegistry.settle(trackedSpawnOptions.spawnNonce ?? '', resolved);
-                  if (resolved.type === 'success') {
+                    pollMs,
+                    pidToAwaiter,
+                    pidToSpawnResultResolver,
+                    pidToSpawnWebhookTimeout,
+                    onChildExited,
+                  }));
+                armRunnerWebhookFinalization(registration, {
+                  pid: params.pid,
+                  logLabel: params.logLabel,
+                  onSuccess: async (resolved) => {
                     logger.debug(
                       `[DAEMON RUN] Session ${resolved.sessionId} fully spawned with webhook (${params.logLabel})`,
                     );
                     const resolvedSessionId =
                       typeof resolved.sessionId === 'string' ? resolved.sessionId.trim() : '';
                     if (resolvedSessionId) {
-                      try {
+                      if (params.handle && params.disposeUnboundHost) {
+                        await bindSpawnedTerminalHostAttachment({
+                          happyHomeDir: configuration.happyHomeDir,
+                          sessionId: resolvedSessionId,
+                          handle: params.handle,
+                          disposeUnboundHost: params.disposeUnboundHost,
+                        });
+                      }
+                      if (!params.handle || !params.disposeUnboundHost) {
                         await writeTerminalAttachmentInfo({
                           happyHomeDir: configuration.happyHomeDir,
                           sessionId: resolvedSessionId,
                           terminal: params.terminal,
                         });
-                      } catch (error) {
-                        logger.debug('[DAEMON RUN] Failed to persist Windows terminal attachment info', error);
                       }
+                      if (observedSpawnExit) return;
                       try {
                         await publishCurrentTerminalControlServiceability({
                           credentials,
@@ -4124,21 +4292,9 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                         });
                       }
                     }
-                  } else if (
-                    resolved.type === 'error' &&
-                    resolved.errorCode === SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT
-                  ) {
-                    logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${params.pid} (${params.logLabel})`);
-                  }
-                }).catch((error) => {
-                  logger.warn(`[DAEMON RUN] Session webhook monitor failed for PID ${params.pid} (${params.logLabel}): ${error instanceof Error ? error.message : String(error)}`);
-                  daemonSpawnAttemptRegistry.settle(trackedSpawnOptions.spawnNonce ?? '', {
-                    type: 'error',
-                    errorCode: SPAWN_SESSION_ERROR_CODES.UNEXPECTED,
-                    errorMessage: error instanceof Error ? error.message : String(error),
-                  });
+                  },
                 });
-                void webhookCompletion;
+                const { acceptedResult } = await registration;
                 return acceptedResult;
               };
 
@@ -4152,6 +4308,96 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                   },
                   serverSelectionEnv: childServerSelectionEnv,
                 });
+
+              const launchRunnerInTerminalHost = async (params: Readonly<{
+                host: 'zellij' | 'herdr';
+                sessionName: string;
+                startingMode: 'local' | 'remote';
+              }>): Promise<SpawnSessionResult> => {
+                const adapter = (await loadTerminalHostAdapters())[params.host];
+                const displayName = params.host === 'zellij' ? 'Zellij' : 'Herdr';
+                if (!adapter) {
+                  cleanupSpawnResources();
+                  if (sessionAttachCleanup) await sessionAttachCleanup();
+                  return {
+                    type: 'error',
+                    errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
+                    errorMessage: `${displayName} hosting requires a supported ${displayName} installation on this machine.`,
+                  };
+                }
+                const attachmentId = createTerminalAttachmentId();
+                const { commandTokens, childEnv } = await buildHostedRunnerSpawnConfig({
+                  host: params.host,
+                  agent: agentCommand,
+                  directory: resolvedDirectory,
+                  extraEnv: extraEnvForChildWithMessage,
+                  startingMode: params.startingMode,
+                  processEnv: sessionChildProcessEnv,
+                  homeDir: configuration.happyHomeDir,
+                  serverSelectionEnv: childServerSelectionEnv,
+                  launchOptions: runnerLaunchOptions,
+                  extraArgs: [
+                    '--happy-terminal-mode', params.host,
+                    '--happy-terminal-requested', params.host,
+                    ...(params.host === 'herdr'
+                      ? ['--happy-herdr-session-name', params.sessionName]
+                      : []),
+                    '--happy-terminal-attachment-id', attachmentId,
+                    ...sessionControlArgs,
+                  ],
+                });
+                let handle: TerminalHostHandle | null = null;
+                try {
+                  const createdHandle = await adapter.createOrAttachHost({
+                    sessionName: params.sessionName,
+                    workingDirectory: resolvedDirectory,
+                    spawnArgv: commandTokens,
+                    spawnEnv: childEnv,
+                    isolatedEnv: true,
+                  });
+                  handle = { ...createdHandle, attachmentId };
+                  const liveness = await adapter.evaluateLiveness(handle);
+                  if (!liveness.panePid) throw new Error(`${displayName} did not report the launched runner PID`);
+                  const terminal = buildTerminalAttachmentMetadataFromHostHandle(handle);
+                  if (!terminal) throw new Error(`${displayName} did not report a complete terminal attachment`);
+                  return await waitForHostedRunnerSession({
+                    pid: liveness.panePid,
+                    logLabel: displayName,
+                    terminal,
+                    handle,
+                    disposeUnboundHost: async () => await adapter.dispose(handle!),
+                  });
+                } catch (error) {
+                  if (handle) {
+                    await adapter.dispose(handle).catch((disposalError) => {
+                      logger.warn(`[DAEMON RUN] Failed to dispose ${displayName} host after launch inspection failed`, disposalError);
+                    });
+                  }
+                  cleanupSpawnResources();
+                  if (sessionAttachCleanup) await sessionAttachCleanup();
+                  return {
+                    type: 'error',
+                    errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
+                    errorMessage: `${displayName} runner launch failed. Check ${displayName} before retrying: ${error instanceof Error ? error.message : String(error)}`,
+                  };
+                }
+              };
+
+              if (terminalRequest.requested === 'zellij' && terminalPresentation?.kind === 'runner') {
+                return await launchRunnerInTerminalHost({
+                  host: 'zellij',
+                  sessionName: `happier-${agentCommand}-${Date.now()}`,
+                  startingMode: terminalPresentation.startingMode ?? 'local',
+                });
+              }
+
+              if (terminalRequest.requested === 'herdr' && terminalPresentation?.kind === 'runner') {
+                return await launchRunnerInTerminalHost({
+                  host: 'herdr',
+                  sessionName: terminalRequest.herdr.sessionName,
+                  startingMode: terminalPresentation.startingMode ?? 'local',
+                });
+              }
 
               if (windowsLaunchMode === 'windows_terminal' || windowsLaunchMode === 'console') {
                 const windowsTerminalIdentity = buildWindowsTerminalWindowIdentity({
@@ -4197,7 +4443,7 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                   }
 
                   logger.debug(`[DAEMON RUN] Spawned visible-console session with PID ${started.pid}`);
-                  return await waitForWindowsHostedSession({
+                  return await waitForHostedRunnerSession({
                     pid: started.pid,
                     logLabel: params.requested === 'windows_terminal' ? 'windows console fallback' : 'visible console',
                     terminal: buildWindowsHostedTerminalAttachment({
@@ -4229,7 +4475,7 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
 
                   if (started.ok) {
                     logger.debug(`[DAEMON RUN] Spawned Windows Terminal session with PID ${started.pid}`);
-                    return await waitForWindowsHostedSession({
+                    return await waitForHostedRunnerSession({
                       pid: started.pid,
                       logLabel: 'windows terminal',
                       terminal: buildWindowsHostedTerminalAttachment({
@@ -4318,76 +4564,42 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
                 startupSource,
                 logDebug: (message, context) => logger.debug(message, context),
               });
-              if (sessionAttachCleanup) {
-                sessionAttachCleanupByPid.set(happyProcess.pid, sessionAttachCleanup);
-                sessionAttachCleanup = null;
-              }
-
+              const regularTrackedSpawnOptions = buildTrackedSpawnOptions({
+                options: trackedSpawnOptions,
+                ...(terminalPresentation?.kind === 'provider' ? {} : { actualTerminal: { mode: 'plain' as const } }),
+              });
                   const trackedSession: TrackedSession = {
                     startedBy: 'daemon',
                     happySessionId: normalizedExistingSessionId || undefined,
                     pid: happyProcess.pid,
                     childProcess: happyProcess,
-                    spawnOptions: trackedSpawnOptions,
+                    spawnOptions: regularTrackedSpawnOptions,
                     vendorResumeId: effectiveResume || undefined,
                     directoryCreated,
                     message: directoryCreated ? `The path '${resolvedDirectory}' did not exist. We created a new folder and spawned a new session there.` : undefined
                   };
 
-          pidToTrackedSession.set(happyProcess.pid, trackedSession);
-          await persistAcceptedSpawnMarker({
-            pid: happyProcess.pid,
-            spawnOptions: trackedSpawnOptions,
-            directory: resolvedDirectory,
-            existingSessionId: normalizedExistingSessionId,
-          });
-          // Clear any stale stop request on an explicit (re)spawn/resume of this session, so a later
-          // GENUINE crash of a resumed-after-stop session can respawn. The per-session stop flag is
-          // otherwise never cleared (clearStopRequested had no caller), which silently vetoed the
-          // respawn forever — see the exit-143 crash RCA. A user-stopped session never reaches this
-          // path via the respawn manager (its respawn is suppressed), so clearing here is safe.
-          if (normalizedExistingSessionId) {
-            sessionRunnerRespawnManager.clearStopRequested(normalizedExistingSessionId);
-          }
-          if (connectedServiceAuth && effectiveConnectedServicesBindings) {
-            registerConnectedServiceRuntimeTargetForDaemon({
-              runtimeRegistry: connectedServiceRuntimeRegistry,
-              pid: happyProcess.pid,
-              agentId: catalogAgentId,
-              sessionId: connectedServiceAuthSessionId,
-              connectedServicesBindingsRaw: effectiveConnectedServicesBindings,
-              connectedServiceSelectionsEnv: connectedServiceAuth.env,
-              materializationKey,
-              // RD-MAT-6: keep refresh-driven rematerialization on the live identity root and
-              // the session's working directory (workspace-trust projection target).
-              connectedServiceMaterializationIdentityV1: normalizedOptions.connectedServiceMaterializationIdentityV1,
-              sessionDirectory: resolvedDirectory,
-              runtimeAccountIdentitySelections: connectedServiceAuth.runtimeAccountIdentitySelections,
-              onRegisteredTarget: clearMemberRuntimeStateWithSuccessfulSpawnEvidence,
-            });
-          }
-          if (spawnResourceCleanupOnExit) {
-            spawnResourceCleanupByPid.set(happyProcess.pid, spawnResourceCleanupOnExit);
-            spawnResourceCleanupArmed = true;
-          }
+          const registration: ReturnType<typeof registerAcceptedRunner> = registerAcceptedRunner(trackedSession, regularTrackedSpawnOptions,
+            () => {
+              const completion = waitForSessionWebhook({
+              pid: happyProcess.pid!,
+              pidToAwaiter,
+              pidToSpawnResultResolver,
+              pidToSpawnWebhookTimeout,
+              timeoutErrorMessage: `Session webhook timeout for PID ${happyProcess.pid}`,
+              onTimeout: () => {
+                logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${happyProcess.pid}`);
+              },
+              onSuccess: (completedSession) => {
+                logger.debug(`[DAEMON RUN] Session ${completedSession.happySessionId} fully spawned with webhook`);
+              },
+              });
 
           happyProcess.on('exit', (code, signal) => {
             logger.debug(`[DAEMON RUN] Child PID ${happyProcess.pid} exited with code ${code}, signal ${signal}`);
             if (happyProcess.pid) {
-              const resolveSpawn = pidToSpawnResultResolver.get(happyProcess.pid);
-              if (resolveSpawn) {
-                pidToSpawnResultResolver.delete(happyProcess.pid);
-                const timeout = pidToSpawnWebhookTimeout.get(happyProcess.pid);
-                if (timeout) clearTimeout(timeout);
-                pidToSpawnWebhookTimeout.delete(happyProcess.pid);
-                pidToAwaiter.delete(happyProcess.pid);
-                resolveSpawn({
-                  type: 'error',
-                  errorCode: SPAWN_SESSION_ERROR_CODES.CHILD_EXITED_BEFORE_WEBHOOK,
-                  errorMessage: `Child process exited before session webhook (pid=${happyProcess.pid}, code=${code ?? 'null'}, signal=${signal ?? 'null'})`,
-                });
-              }
-              void onChildExited(happyProcess.pid, { reason: 'process-exited', code, signal }).catch((error) => {
+              const exit = { reason: 'process-exited', code, signal };
+              void onChildExited(happyProcess.pid, exit).catch((error) => {
                 logger.warn('[DAEMON RUN] Failed to complete child-exit lifecycle after process exit', { pid: happyProcess.pid, error });
               });
             }
@@ -4396,77 +4608,21 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
           happyProcess.on('error', (error) => {
             logger.debug(`[DAEMON RUN] Child process error:`, error);
             if (happyProcess.pid) {
-              const resolveSpawn = pidToSpawnResultResolver.get(happyProcess.pid);
-              if (resolveSpawn) {
-                pidToSpawnResultResolver.delete(happyProcess.pid);
-                const timeout = pidToSpawnWebhookTimeout.get(happyProcess.pid);
-                if (timeout) clearTimeout(timeout);
-                pidToSpawnWebhookTimeout.delete(happyProcess.pid);
-                pidToAwaiter.delete(happyProcess.pid);
-                resolveSpawn({
-                  type: 'error',
-                  errorCode: SPAWN_SESSION_ERROR_CODES.CHILD_EXITED_BEFORE_WEBHOOK,
-                  errorMessage: `Child process error before session webhook (pid=${happyProcess.pid})`,
-                });
-              }
-              void onChildExited(happyProcess.pid, { reason: 'process-error', code: null, signal: null }).catch((error) => {
+              const exit = { reason: 'process-error', code: null, signal: null };
+              void onChildExited(happyProcess.pid, exit).catch((error) => {
                 logger.warn('[DAEMON RUN] Failed to complete child-exit lifecycle after process error', { pid: happyProcess.pid, error });
               });
             }
           });
-
-          const acceptedResult = buildSpawnAcceptedResult({
-            pid: happyProcess.pid,
-            spawnNonce: trackedSpawnOptions.spawnNonce,
-            fallbackSessionId: normalizedExistingSessionId,
-          });
+              return completion;
+            });
           // The durable Pending row survives process startup and owns provider delivery.
           logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${happyProcess.pid}`);
-              const webhookCompletion = waitForSessionWebhook({
-                pid: happyProcess.pid!,
-                pidToAwaiter,
-                pidToSpawnResultResolver,
-                pidToSpawnWebhookTimeout,
-                timeoutErrorMessage: `Session webhook timeout for PID ${happyProcess.pid}`,
-                onTimeout: () => {
-                  logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${happyProcess.pid}`);
-                },
-                onSuccess: (completedSession) => {
-                  logger.debug(`[DAEMON RUN] Session ${completedSession.happySessionId} fully spawned with webhook`);
-            },
-          }).then(async (result) => {
-            const resolved = resolveSpawnWebhookResult({
-              pid: happyProcess.pid!,
-              result,
-              pidToTrackedSession,
-              warn: (message) => logger.warn(message),
-            });
-            daemonSpawnAttemptRegistry.settle(trackedSpawnOptions.spawnNonce ?? '', resolved);
-            const nudgeResult = await nudgeAttachedExistingSessionPendingQueue({
-              requestedExistingSessionId: normalizedExistingSessionId,
-              credentials,
-              isShutdownRequested: () => shutdownInitiated,
-              resolved,
-            });
-            if (nudgeResult.type === 'error') {
-              logger.warn(`[DAEMON RUN] Pending queue wake failed after webhook for PID ${happyProcess.pid}: ${nudgeResult.errorMessage}`);
-            }
-            return nudgeResult;
-          }).catch((error) => {
-            logger.warn(`[DAEMON RUN] Session webhook monitor failed for PID ${happyProcess.pid}: ${error instanceof Error ? error.message : String(error)}`);
-            const result = {
-              type: 'error' as const,
-              errorCode: SPAWN_SESSION_ERROR_CODES.UNEXPECTED,
-              errorMessage: error instanceof Error ? error.message : String(error),
-            };
-            daemonSpawnAttemptRegistry.settle(trackedSpawnOptions.spawnNonce ?? '', result);
-            return result;
+          armRunnerWebhookFinalization(registration, {
+            pid: happyProcess.pid,
+            logLabel: 'regular',
           });
-          daemonSpawnAttemptRegistry.rememberAccepted({
-            spawnNonce: trackedSpawnOptions.spawnNonce,
-            result: acceptedResult,
-          });
-          void webhookCompletion;
+          const { acceptedResult } = await registration;
           return acceptedResult;
         }
 
@@ -4955,7 +5111,6 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
               void waitForExistingSessionExitIfStopRequested({
                 sessionId: input.sessionId,
                 pidToTrackedSession,
-                isSessionRunnerActive,
                 timeoutMs: configuration.daemonSpawnExistingSessionWaitForExitMs,
                 pollIntervalMs: configuration.daemonSpawnExistingSessionWaitForExitPollIntervalMs,
                 trackedPids: [input.tracked.pid],
@@ -5029,7 +5184,6 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
               void waitForExistingSessionExitIfStopRequested({
                 sessionId: input.sessionId,
                 pidToTrackedSession,
-                isSessionRunnerActive,
                 timeoutMs: configuration.daemonSpawnExistingSessionWaitForExitMs,
                 pollIntervalMs: configuration.daemonSpawnExistingSessionWaitForExitPollIntervalMs,
                 trackedPids: [input.tracked.pid],
@@ -5447,6 +5601,9 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
           },
           shouldPreserveSessionMarkerOnExit: ({ pid, trackedSession }) => {
             if (connectedServicesRestartRequestedPids.has(pid)) return true;
+            if (trackedSession.publishedTerminalControlServiceabilityAttachmentLifecycle === 'borrowed') {
+              return false;
+            }
             const terminal = trackedSession.happySessionMetadataFromLocalWebhook?.terminal
               ?? trackedSession.hostedTerminal;
             return Boolean(trackedSession.publishedTerminalControlServiceabilityAttachmentId)
@@ -5472,6 +5629,37 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
               });
               throw error;
             });
+            const borrowedAttachmentId = trackedSession.publishedTerminalControlServiceabilityAttachmentLifecycle === 'borrowed'
+              ? trackedSession.publishedTerminalControlServiceabilityAttachmentId
+              : attachmentInfo?.version === 3
+                && (!trackedSession.publishedTerminalControlServiceabilityAttachmentId
+                  || trackedSession.publishedTerminalControlServiceabilityAttachmentId === attachmentInfo.attachmentId)
+                ? attachmentInfo.attachmentId
+                : undefined;
+            if (borrowedAttachmentId) {
+              const terminalMode = attachmentInfo?.version === 3 && attachmentInfo.attachmentId === borrowedAttachmentId
+                ? attachmentInfo.terminal.mode
+                : terminal?.mode;
+              if (terminalMode && terminalMode !== 'plain') {
+                await retireTerminalControlServiceabilityForCurrentAccount({
+                  sessionId,
+                  attachmentId: borrowedAttachmentId,
+                  terminalMode,
+                });
+              }
+              if (attachmentInfo?.version === 3 && attachmentInfo.attachmentId === borrowedAttachmentId) {
+                const disposition = await executeTerminalHostDisposition({
+                  happyHomeDir: configuration.happyHomeDir,
+                  sessionId,
+                  expectedAttachmentId: borrowedAttachmentId,
+                  intent: { kind: 'release_borrowed_host', reason: 'provider_exit' },
+                });
+                if (disposition.status !== 'retired') {
+                  throw new Error('borrowed_terminal_attachment_retirement_failed');
+                }
+              }
+              return;
+            }
             if (attachmentInfo?.version !== 2) {
               if (
                 trackedSession.publishedTerminalControlServiceabilityAttachmentId
@@ -5479,6 +5667,12 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
               ) {
                 throw new Error('terminal_attachment_unavailable_after_runner_exit');
               }
+              return;
+            }
+            if (
+              trackedSession.publishedTerminalControlServiceabilityAttachmentId
+              && trackedSession.publishedTerminalControlServiceabilityAttachmentId !== attachmentInfo.attachmentId
+            ) {
               return;
             }
 
@@ -5497,6 +5691,10 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
               handle: attachmentInfo.handle,
               controlDescriptorStatus,
             });
+            await superviseStartupDisconnectedTerminalHosts();
+            if (disconnectedTerminalHostResultsBySessionId.get(sessionId)?.state === 'stopped') {
+              await retireDisconnectedTerminalHostCandidate({ sessionId, attachmentId: attachmentInfo.attachmentId });
+            }
           },
             });
         const onChildExited = async (pid: number, exit: { reason: string; code: number | null; signal: string | null }) => {
@@ -5544,6 +5742,7 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
           if (existingStop) return await existingStop;
 
           const operation = Promise.resolve().then(async (): Promise<StopSessionResult> => {
+            const stopStartedAtMs = Date.now();
             sessionRunnerRespawnManager.markStopRequested(normalizedSessionId, { reason: 'daemon_stop_session', requestedAtMs: Date.now() });
             const automaticRecoveryCancellations = await Promise.allSettled([
               inactiveUsageLimitRecoveryCheckOwner.cancelSession({
@@ -5580,7 +5779,17 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
               });
             });
             physicallyRetiredTerminalAttachmentIdBySessionId.delete(normalizedSessionId);
+            logger.infoFile('[DAEMON STOP] Recovery cancellation completed', {
+              sessionId: normalizedSessionId,
+              elapsedMs: Date.now() - stopStartedAtMs,
+            });
             const trackedStopResult = await stopSessionCore(normalizedSessionId);
+            logger.infoFile('[DAEMON STOP] Physical stop owner completed', {
+              sessionId: normalizedSessionId,
+              elapsedMs: Date.now() - stopStartedAtMs,
+              status: trackedStopResult.status,
+              ...(trackedStopResult.status === 'incomplete' ? { reason: trackedStopResult.reason } : {}),
+            });
             const physicallyRetiredAttachmentId = physicallyRetiredTerminalAttachmentIdBySessionId.get(normalizedSessionId);
             physicallyRetiredTerminalAttachmentIdBySessionId.delete(normalizedSessionId);
             if (isTerminalHostPhysicallyRetiredStopResult(trackedStopResult) && physicallyRetiredAttachmentId) {
@@ -6487,7 +6696,12 @@ export async function startDaemon(options: Readonly<{ takeover?: boolean }> = {}
       stopSession,
       prepareStopSession: prepareStopSessionForDaemonStop,
       spawnSession,
-      resolveSpawnSessionByNonce: async (spawnNonce) => daemonSpawnAttemptRegistry.resolve(spawnNonce),
+      resolveSpawnSessionByNonce: async (spawnNonce) => {
+        const resolved = daemonSpawnAttemptRegistry.resolve(spawnNonce);
+        if (resolved.status === 'success' || resolved.status === 'error') return resolved;
+        await resolveTrackedSpawnByNonce(spawnNonce);
+        return daemonSpawnAttemptRegistry.resolve(spawnNonce);
+      },
       requestShutdown: () => requestShutdown('happier-cli'),
       beforeShutdown,
       onHappySessionWebhook,

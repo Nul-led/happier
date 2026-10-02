@@ -22,6 +22,13 @@ export type LocalMachineSetupTarget = Readonly<{
     replaceAccountId?: string | null;
     /** R12 — ask the one-CLI question again even though this computer already answered it. */
     reconsiderCli?: boolean;
+    /**
+     * One daemon per relay: `pinned` converges the relay's own background service ("connect to
+     * this relay too") and leaves this computer's selected relay and its default-following service
+     * alone. Absent is the released behaviour. Only sent to an executor whose inspection reported
+     * pinned services (`thisComputerCanConnectToo`), since an older one would run it as a move.
+     */
+    serviceTargetMode?: 'pinned';
 }>;
 
 export function buildLocalMachineSetupSystemTaskSpec(target: LocalMachineSetupTarget): SystemTaskSpec {
@@ -36,6 +43,7 @@ export function buildLocalMachineSetupSystemTaskSpec(target: LocalMachineSetupTa
             expectedAccountId: target.expectedAccountId,
             ...(target.replaceAccountId ? { replaceAccountId: target.replaceAccountId } : {}),
             ...(target.reconsiderCli ? { reconsiderCli: true } : {}),
+            ...(target.serviceTargetMode === 'pinned' ? { serviceTargetMode: 'pinned' } : {}),
             surface: 'desktop.ui',
         },
     };

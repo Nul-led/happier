@@ -16,8 +16,6 @@ pub const APP_TAURI_COMMANDS: &[&str] = &[
     "desktop_download_update",
     "desktop_install_update",
     "desktop_pick_ssh_identity_file",
-    "desktop_get_autostart_enabled",
-    "desktop_set_autostart_enabled",
     "desktop_set_tray_state",
     "sync_desktop_pet_overlay_state",
     "desktop_pet_overlay_read_window_state",

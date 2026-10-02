@@ -34,12 +34,21 @@ describe('resolveCodexStartingMode', () => {
     ).toBe('local');
   });
 
-  it('forces remote when started by daemon even with an explicit local override', () => {
+  it('honors an explicit local mode for a daemon-hosted interactive terminal', () => {
     expect(
       resolveCodexStartingMode({
         explicitStartingMode: 'local',
         startedBy: 'daemon',
         hasTtyForLocal: true,
+        localControlEnabled: true,
+      }),
+    ).toBe('local');
+
+    expect(
+      resolveCodexStartingMode({
+        explicitStartingMode: 'local',
+        startedBy: 'daemon',
+        hasTtyForLocal: false,
         localControlEnabled: true,
       }),
     ).toBe('remote');

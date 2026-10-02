@@ -209,6 +209,23 @@ changes, resume the combined operation from its prior run; each channel reads
 its own terminal status artifact and reuses only the verified work for that
 channel.
 
+Desktop recovery prefers that channel's unexpired finalized updater artifacts,
+bound to the exact origin run and SHA-256 archive digest. Restoring them does not
+rebuild, re-sign, or re-notarize their payloads. Missing finalized platforms use
+admitted unsigned candidates where available, otherwise build normally. The
+trusted recovery control still prepares the publication envelope, verifies all
+updater signatures, and runs the applicable desktop-setup gate before production
+publication. Full release callers forward the canonical resolver's admitted
+artifact maps and original run number; standalone nightly recovery retains its
+legacy single-channel artifact admission.
+
+For the same-source origin, the canonical resume resolver can also retain accepted
+OTA, native iOS/Android, and APK flows from exact channel-scoped successful jobs
+and their decisive successful steps. The original Expo action remains unchanged;
+only satisfied flows are skipped, and a partial native recovery builds only the
+missing platform. Missing, failed, skipped, or ambiguous evidence does not mark a
+flow complete. This admission is not proof of public App Store or Play availability.
+
 For a same-SHA transient failure, retain successful jobs and rerun only the
 failed jobs and their dependents:
 

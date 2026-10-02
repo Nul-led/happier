@@ -163,6 +163,29 @@ describe('sessionRunnerRespawnDescriptor', () => {
     });
   });
 
+  it('round-trips Herdr terminal placement through the respawn descriptor', () => {
+    const options = {
+      directory: '/tmp/repo',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      terminal: { mode: 'herdr', herdr: { sessionName: 'work' } },
+    } satisfies SpawnSessionOptions;
+
+    const descriptor = buildSessionRunnerRespawnDescriptorV1FromSpawnOptions(options);
+    expect(descriptor?.terminal).toEqual(options.terminal);
+    expect(buildSpawnSessionOptionsFromRespawnDescriptorV1(descriptor!).terminal).toEqual(options.terminal);
+  });
+
+  it('round-trips Zellij terminal placement through the same descriptor', () => {
+    const options = {
+      directory: '/tmp/repo',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      terminal: { mode: 'zellij' },
+    } satisfies SpawnSessionOptions;
+    const descriptor = buildSessionRunnerRespawnDescriptorV1FromSpawnOptions(options);
+    expect(descriptor?.terminal).toEqual(options.terminal);
+    expect(buildSpawnSessionOptionsFromRespawnDescriptorV1(descriptor!).terminal).toEqual(options.terminal);
+  });
+
   it('tolerates newer persisted respawn fields while preserving known ones', () => {
     const parsed = SessionRunnerRespawnDescriptorV1Schema.safeParse({
       version: 1,

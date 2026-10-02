@@ -10,12 +10,13 @@ import { join } from 'node:path';
 import {
   accountSettingsParse,
   buildConnectedServiceCredentialRecord,
+  projectSessionMetadataForWire,
   sealAccountScopedBlobCiphertext,
   sealEncryptedDataKeyEnvelopeV1,
 } from '@happier-dev/protocol';
 
 import { reloadConfiguration } from '@/configuration';
-import type { Credentials } from '@/persistence';
+import type { Credentials, Settings } from '@/persistence';
 import { encodeBase64, encrypt } from '@/api/encryption';
 import { readSessionAttachFromEnv } from '@/agent/runtime/sessionAttach';
 import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
@@ -84,6 +85,92 @@ describe('happier resume', () => {
       logSpy.mockRestore();
       errorSpy.mockRestore();
     }
+  });
+
+  it('attaches an active Happier session through the existing terminal attach path without vendor-resuming it', async () => {
+    const credentials: Credentials = {
+      token: 'token-1',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+    };
+    const terminal = {
+      mode: 'herdr' as const,
+      requested: 'herdr' as const,
+      herdr: { sessionName: 'main', socketPath: '/tmp/herdr.sock', terminalId: 'term-1' },
+    };
+    const rawSession = createSessionRecordFixture({
+      id: 'sid_active_1',
+      active: true,
+      encryptionMode: 'plain',
+      metadata: JSON.stringify(projectSessionMetadataForWire({
+        flavor: 'claude',
+        machineId: 'machine-local',
+        path: '/tmp/project',
+        terminal,
+      })),
+    });
+    const runHerdrAttachFn = vi.fn(async () => 0);
+    const resolveAgentHandlerFn = vi.fn(async () => vi.fn(async () => {}));
+
+    await handleResumeCommand(['sid_active_1'], {
+      readCredentialsFn: async () => credentials,
+      fetchSessionByIdFn: async () => rawSession,
+      readAccountSettingsFn: async () => accountSettingsParse({}),
+      resolveAgentHandlerFn,
+      attachDeps: {
+        readSettingsFn: async (): Promise<Settings> => ({ machineId: 'machine-local' } as Settings),
+        // With no local descriptor, this actual attach path must normalize the
+        // additive wire selectors rather than obtain the host from local state.
+        readTerminalAttachmentInfoFn: async () => null,
+        runHerdrAttachFn,
+      },
+    });
+
+    expect(runHerdrAttachFn).toHaveBeenCalledWith({ terminal });
+    expect(resolveAgentHandlerFn).not.toHaveBeenCalled();
+  });
+
+  it('does not start a second agent when attachment to an active session fails', async () => {
+    const credentials: Credentials = {
+      token: 'token-1',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+    };
+    const terminal = {
+      mode: 'herdr' as const,
+      requested: 'herdr' as const,
+      herdr: { sessionName: 'main', socketPath: '/tmp/herdr.sock', terminalId: 'stale-term' },
+    };
+    const rawSession = createSessionRecordFixture({
+      id: 'sid_active_stale',
+      active: true,
+      encryptionMode: 'plain',
+      metadata: JSON.stringify({
+        flavor: 'claude',
+        claudeSessionId: 'vendor-resumable-id',
+        machineId: 'machine-local',
+        path: '/tmp/project',
+        terminal,
+      }),
+    });
+    const resolveAgentHandlerFn = vi.fn(async () => vi.fn(async () => {}));
+
+    await expect(handleResumeCommand(['sid_active_stale'], {
+      readCredentialsFn: async () => credentials,
+      fetchSessionByIdFn: async () => rawSession,
+      readAccountSettingsFn: async () => accountSettingsParse({}),
+      resolveAgentHandlerFn,
+      attachDeps: {
+        readSettingsFn: async (): Promise<Settings> => ({ machineId: 'machine-local' } as Settings),
+        readTerminalAttachmentInfoFn: async () => ({
+          version: 1,
+          sessionId: 'sid_active_stale',
+          terminal,
+          updatedAt: Date.now(),
+        }),
+        runHerdrAttachFn: async () => { throw new Error('Herdr terminal is no longer available'); },
+      },
+    })).rejects.toThrow('Herdr terminal is no longer available');
+
+    expect(resolveAgentHandlerFn).not.toHaveBeenCalled();
   });
 
   it('creates an attach file and dispatches to the agent handler with --resume', async () => {
@@ -680,21 +767,21 @@ describe('happier resume', () => {
         readAccountSettingsFn: async () => accountSettingsParse({ schemaVersion: 6, codexBackendMode: 'acp' }),
         fetchSessionByIdFn,
         canUseInkSelectorFn: () => true,
-        selectResumableSessionIdFn: async () => ({ type: 'cancelled' }),
+        selectContinuableSessionIdFn: async () => ({ type: 'cancelled' }),
       });
 
       expect(fetchSessionByIdFn).not.toHaveBeenCalled();
 
       const output = logSpy.mock.calls.flat().join('\n');
       expect(output).toContain('cancel');
-      expect(output).not.toContain('No resumable sessions found.');
+      expect(output).not.toContain('No sessions available to continue from here.');
     } finally {
       logSpy.mockRestore();
       errorSpy.mockRestore();
     }
   });
 
-  it('prints a "No resumable sessions" message when there are none in interactive mode', async () => {
+  it('prints a no-sessions message when there are none in interactive mode', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -713,13 +800,13 @@ describe('happier resume', () => {
         readAccountSettingsFn: async () => accountSettingsParse({ schemaVersion: 6, codexBackendMode: 'acp' }),
         fetchSessionByIdFn,
         canUseInkSelectorFn: () => true,
-        selectResumableSessionIdFn: async () => ({ type: 'none' }),
+        selectContinuableSessionIdFn: async () => ({ type: 'none' }),
       });
 
       expect(fetchSessionByIdFn).not.toHaveBeenCalled();
 
       const output = logSpy.mock.calls.flat().join('\n');
-      expect(output).toContain('No resumable sessions found.');
+      expect(output).toContain('No sessions available to continue from here.');
     } finally {
       logSpy.mockRestore();
       errorSpy.mockRestore();

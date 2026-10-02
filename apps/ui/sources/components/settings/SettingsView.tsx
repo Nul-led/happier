@@ -266,7 +266,7 @@ export const SettingsView = React.memo(function SettingsView() {
                 testID="settings-updates-row"
                 title={t('updates.title')}
                 subtitle={updatesSubtitle}
-                icon={<Icon name="arrow-circle-up" size={29} color={theme.colors.accent.blue} />}
+                icon={<Icon name="hard-drive-download" size={29} color={theme.colors.accent.blue} />}
                 onPress={() => pushRoute('/settings/updates')}
             />
             <Item

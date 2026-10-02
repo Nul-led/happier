@@ -19,7 +19,7 @@ export function createSharedProviderLocalControl<TTarget>(params: Readonly<{
 }>): Readonly<{
   resolveKeepAliveMode: () => Mode;
   shouldRenderTerminalDisplay: () => boolean;
-  onAfterStart: () => Promise<void>;
+  onAfterStart: (options?: Readonly<{ canAttach: boolean }>) => Promise<void>;
   onSessionSwap: (session: ApiSessionClient) => Promise<void>;
   onTerminalExit: () => Promise<void>;
   switchToLocal: () => Promise<boolean>;
@@ -96,10 +96,10 @@ export function createSharedProviderLocalControl<TTarget>(params: Readonly<{
   return {
     resolveKeepAliveMode: () => currentMode,
     shouldRenderTerminalDisplay: () => currentMode === 'remote',
-    onAfterStart: async () => {
+    onAfterStart: async (options) => {
       const session = params.getSession();
       if (!session) return;
-      if (currentMode === 'local' && await attachLocal()) return;
+      if (currentMode === 'local' && options?.canAttach !== false && await attachLocal()) return;
       currentMode = 'remote';
       await publishCurrentMode(session);
     },

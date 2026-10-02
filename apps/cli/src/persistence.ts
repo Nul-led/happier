@@ -53,7 +53,11 @@ async function ensureHappyHomeDirExists(): Promise<void> {
   await bestEffortChmod(configuration.happyHomeDir, 0o700);
 }
 
-function resolveDaemonStateCandidatePathsForCurrentLifecycle(): readonly string[] {
+/**
+ * Every state file a daemon of the current lifecycle scope may have published: the canonical file
+ * plus the ring-scoped basenames of pre-canonical CLIs, all inside the one lifecycle directory.
+ */
+export function resolveDaemonStateCandidatePathsForCurrentLifecycle(): readonly string[] {
   return resolveDaemonStateCandidatePaths({
     serverDir: dirname(configuration.daemonStateFile),
     preferredRing: configuration.publicReleaseRing,

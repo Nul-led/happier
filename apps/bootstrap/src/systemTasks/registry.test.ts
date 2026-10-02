@@ -569,6 +569,8 @@ describe('createHsetupSystemTaskRegistry', () => {
       expect(fakeCli.readInvocations()).toEqual([
         ['--version'],
         ['daemon', 'status', '--json'],
+        // The pinned services the app also manages (one login-start setting), each started on its own.
+        ['daemon', 'service', 'list', '--json'],
         ['daemon', 'service', 'start', '--json'],
         ['daemon', 'status', '--json'],
       ]);

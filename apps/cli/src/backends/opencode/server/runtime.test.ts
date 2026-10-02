@@ -155,6 +155,8 @@ function createFakeClient(opts: Readonly<{
     sessionCreate: vi.fn<OpenCodeServerRuntimeClient['sessionCreate']>(async () => ({ id: 'ses_1' })),
     sessionGet: vi.fn(async ({ sessionId }: { sessionId: string }) => ({ id: sessionId })),
     sessionUpdate: vi.fn(async ({ sessionId }: { sessionId: string }) => ({ id: sessionId })),
+    sessionSetModel: vi.fn<OpenCodeServerRuntimeClient['sessionSetModel']>(async () => {}),
+    sessionSetAgent: vi.fn<OpenCodeServerRuntimeClient['sessionSetAgent']>(async () => {}),
     sessionMessagesList: vi.fn(async (_params: { sessionId: string }) => ([] as unknown[])),
     sessionDiff: vi.fn(async () => ([] as unknown[])),
     sessionPromptAsync: vi.fn<OpenCodeServerRuntimeClient['sessionPromptAsync']>(async () => {}),
@@ -1667,11 +1669,9 @@ describe('createOpenCodeServerRuntime', () => {
       },
     });
 
-    const tokenCountCall = (session.sendAgentMessage as any).mock.calls.find(
-      (call: any[]) => call?.[0] === 'opencode' && call?.[1]?.type === 'token_count',
-    );
-
-    expect(tokenCountCall?.[1]).toMatchObject({
+    await expect.poll(() => session.sendAgentMessage.mock.calls.find(
+      (call: unknown[]) => call[0] === 'opencode' && readOptionalRecord(call[1])?.type === 'token_count',
+    )?.[1]).toMatchObject({
       type: 'token_count',
       key: 'opencode-session:ses_1',
       model: 'openai/gpt-5.2',
@@ -1737,13 +1737,13 @@ describe('createOpenCodeServerRuntime', () => {
       },
     });
 
-    expect(session.sendAgentMessage).toHaveBeenCalledWith('opencode', expect.objectContaining({
+    await vi.waitFor(() => expect(session.sendAgentMessage).toHaveBeenCalledWith('opencode', expect.objectContaining({
       type: 'token_count',
       key: 'opencode-session:ses_1',
       model: 'openai/gpt-5.3-codex',
       used: 160,
       size: 400_000,
-    }));
+    })));
   });
 
   it('keeps live provider model metadata when auth is CLI-managed and provider env vars are absent', async () => {
@@ -1813,13 +1813,13 @@ describe('createOpenCodeServerRuntime', () => {
       },
     });
 
-    expect(session.sendAgentMessage).toHaveBeenCalledWith('opencode', expect.objectContaining({
+    await vi.waitFor(() => expect(session.sendAgentMessage).toHaveBeenCalledWith('opencode', expect.objectContaining({
       type: 'token_count',
       key: 'opencode-session:ses_1',
       model: 'openai/gpt-5.3-codex',
       used: 160,
       size: 400_000,
-    }));
+    })));
   });
 
   it('omits Anthropic retired models from OpenCode session model metadata even when OpenCode reports active', async () => {
@@ -2215,11 +2215,9 @@ describe('createOpenCodeServerRuntime', () => {
       },
     });
 
-    const compactionEvents = session.sendAgentMessage.mock.calls
+    await expect.poll(() => session.sendAgentMessage.mock.calls
       .map((call: unknown[]) => call[1])
-      .filter((body: any) => body?.type === 'context-compaction');
-
-    expect(compactionEvents).toEqual([
+      .filter((body: unknown) => readOptionalRecord(body)?.type === 'context-compaction')).toEqual([
       expect.objectContaining({
         type: 'context-compaction',
         phase: 'started',
@@ -2241,7 +2239,7 @@ describe('createOpenCodeServerRuntime', () => {
         providerSessionId: 'ses_1',
       }),
     ]);
-    expect(JSON.stringify(compactionEvents)).not.toContain('private summary text');
+    expect(JSON.stringify(session.sendAgentMessage.mock.calls)).not.toContain('private summary text');
   });
 
   it('maps an OpenCode compaction delta to progress when the start event was missed', async () => {
@@ -2269,7 +2267,7 @@ describe('createOpenCodeServerRuntime', () => {
       },
     });
 
-    expect(session.sendAgentMessage).toHaveBeenCalledWith('opencode', expect.objectContaining({
+    await vi.waitFor(() => expect(session.sendAgentMessage).toHaveBeenCalledWith('opencode', expect.objectContaining({
       type: 'context-compaction',
       phase: 'progress',
       provider: 'opencode',
@@ -2277,7 +2275,7 @@ describe('createOpenCodeServerRuntime', () => {
       lifecycleId: 'opencode:context-compaction:ses_1:compact_1',
       providerEventId: 'compact_1',
       providerSessionId: 'ses_1',
-    }));
+    })));
     expect(JSON.stringify(session.sendAgentMessage.mock.calls)).not.toContain('private summary text');
   });
 
@@ -2306,14 +2304,14 @@ describe('createOpenCodeServerRuntime', () => {
       },
     });
 
-    expect(session.sendAgentMessage).toHaveBeenCalledWith('opencode', expect.objectContaining({
+    await vi.waitFor(() => expect(session.sendAgentMessage).toHaveBeenCalledWith('opencode', expect.objectContaining({
       type: 'context-compaction',
       phase: 'completed',
       provider: 'opencode',
       source: 'provider-event',
       lifecycleId: 'opencode:context-compaction:ses_1',
       providerSessionId: 'ses_1',
-    }));
+    })));
   });
 
   it('triggers manual compaction through the V1 summarize endpoint and emits synchronous lifecycle events', async () => {
@@ -2393,10 +2391,9 @@ describe('createOpenCodeServerRuntime', () => {
     (session.sendAgentMessage as any).mockClear();
     await runtime.compactContext('/compact');
 
-    const compactionEvents = session.sendAgentMessage.mock.calls
+    await expect.poll(() => session.sendAgentMessage.mock.calls
       .map((call: unknown[]) => call[1])
-      .filter((body: any) => body?.type === 'context-compaction');
-    expect(compactionEvents).toEqual([
+      .filter((body: unknown) => readOptionalRecord(body)?.type === 'context-compaction')).toEqual([
       expect.objectContaining({
         type: 'context-compaction',
         phase: 'started',
@@ -2462,10 +2459,9 @@ describe('createOpenCodeServerRuntime', () => {
       },
     });
 
-    const settled = session.sendAgentMessage.mock.calls
+    await expect.poll(() => session.sendAgentMessage.mock.calls
       .map((call: unknown[]) => call[1])
-      .filter((body: any) => body?.type === 'context-compaction');
-    expect(settled).toEqual([
+      .filter((body: unknown) => readOptionalRecord(body)?.type === 'context-compaction')).toEqual([
       expect.objectContaining({
         type: 'context-compaction',
         phase: 'started',
@@ -2511,10 +2507,9 @@ describe('createOpenCodeServerRuntime', () => {
       },
     });
 
-    const compactionEvents = session.sendAgentMessage.mock.calls
+    await expect.poll(() => session.sendAgentMessage.mock.calls
       .map((call: unknown[]) => call[1])
-      .filter((body: any) => body?.type === 'context-compaction');
-    expect(compactionEvents).toEqual([
+      .filter((body: unknown) => readOptionalRecord(body)?.type === 'context-compaction')).toEqual([
       expect.objectContaining({
         type: 'context-compaction',
         phase: 'started',

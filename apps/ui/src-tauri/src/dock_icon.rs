@@ -11,9 +11,10 @@
 //! Finder, Launchpad and the Dock before launch still show the bundled
 //! `icons/AppIcon.icon`; only the running app's Dock tile changes.
 
-/// Same artwork Tauri's dev Dock icon uses: the mark on a transparent canvas.
+/// The mark in the macOS icon grid (824 of 1024, with the system icon shadow) on a transparent
+/// canvas, so it sits the same size as every bundled icon; `scripts/generateDesktopIcons.mjs`.
 #[cfg(target_os = "macos")]
-const DOCK_ICON_PNG: &[u8] = include_bytes!("../icons/icon.png");
+const DOCK_ICON_PNG: &[u8] = include_bytes!("../icons/dock/dock-icon.png");
 
 /// Must run on the main thread (Tauri's `setup` hook does).
 #[cfg(target_os = "macos")]

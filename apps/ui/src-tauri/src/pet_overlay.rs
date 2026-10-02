@@ -158,6 +158,18 @@ pub fn register<R: Runtime + 'static>(app: &mut App<R>) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Menu-bar mode releases the overlay window together with the web UI (R16 a): its hover polling
+/// must stop with it, or it would keep waking a tray-only process for a window that is gone. The
+/// rebuilt web UI re-enables it through its next overlay sync.
+pub(crate) fn stop_native_mouse_polling(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    if let Some(state) = app.try_state::<DesktopPetOverlayState>() {
+        state.1.set_enabled(false);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
+
 #[cfg(target_os = "macos")]
 fn configure_pet_overlay_native_mouse_polling<R: Runtime + 'static>(
     app: AppHandle<R>,
@@ -1692,7 +1704,6 @@ mod tests {
             "core:window:allow-set-badge-label",
             "allow-desktop-install-update",
             "allow-desktop-pick-ssh-identity-file",
-            "allow-desktop-set-autostart-enabled",
             "allow-start-system-task",
             "allow-cancel-system-task",
             "allow-respond-system-task-prompt",
@@ -1711,8 +1722,6 @@ mod tests {
             "allow-desktop-fetch-update",
             "allow-desktop-install-update",
             "allow-desktop-pick-ssh-identity-file",
-            "allow-desktop-get-autostart-enabled",
-            "allow-desktop-set-autostart-enabled",
             "allow-desktop-set-tray-state",
             "allow-sync-desktop-pet-overlay-state",
             "allow-desktop-pet-overlay-read-window-state",
@@ -1746,7 +1755,7 @@ mod tests {
             "allow-desktop-fetch-update",
             "allow-desktop-install-update",
             "allow-desktop-pick-ssh-identity-file",
-            "allow-desktop-set-autostart-enabled",
+            "allow-desktop-set-tray-state",
             "allow-sync-desktop-pet-overlay-state",
             "allow-desktop-pet-overlay-sync-element-metrics",
             "allow-desktop-pet-overlay-apply-momentum-delta",

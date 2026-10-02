@@ -4,8 +4,9 @@ import { commandRegistry } from '@/cli/commandRegistry';
 import { buildRootHelpText } from '@/cli/buildRootHelpText';
 import { isTmuxAllowedCommand } from '@/cli/commandSurfaceManifest';
 import { readStartedByArg } from '@/cli/readStartedByArg';
-import { requireCatalogEntry } from '@/backends/catalog';
+import { AGENTS, requireCatalogEntry } from '@/backends/catalog';
 import { DEFAULT_CATALOG_AGENT_ID } from '@/backends/types';
+import { resolveInheritedHerdrRuntime } from '@/terminal/runtime/inheritedHerdrRuntime';
 import { applyDaemonAutostartEnvForInvocation, shouldEnsureDaemonForInvocation } from '@/daemon/ensureDaemon';
 import { applyEphemeralServerSelectionFromPrefixArgs } from '@/server/serverSelection';
 import packageJson from '../../package.json';
@@ -87,7 +88,15 @@ export async function dispatchCli(params: Readonly<{
   }
   const commandHandler = (subcommand ? commandRegistry[subcommand] : undefined);
   if (commandHandler) {
-    await commandHandler({ args, rawArgv, terminalRuntime });
+    const startsSession = subcommand === 'resume'
+      || Object.values(AGENTS).some((entry) => entry?.cliSubcommand === subcommand);
+    await commandHandler({
+      args,
+      rawArgv,
+      terminalRuntime: startsSession
+        ? await resolveInheritedHerdrRuntime({ terminalRuntime, env: process.env })
+        : terminalRuntime,
+    });
     return;
   }
 
@@ -96,5 +105,9 @@ export async function dispatchCli(params: Readonly<{
     throw new Error(`Default agent '${DEFAULT_CATALOG_AGENT_ID}' has no CLI command handler registered`);
   }
   const defaultHandler = await defaultEntry.getCliCommandHandler();
-  await defaultHandler({ args, rawArgv, terminalRuntime });
+  await defaultHandler({
+    args,
+    rawArgv,
+    terminalRuntime: await resolveInheritedHerdrRuntime({ terminalRuntime, env: process.env }),
+  });
 }

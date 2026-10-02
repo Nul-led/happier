@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   configureRelay,
+  registerRelayProfile,
   controlDaemonService,
   installService,
   requestAuthPairing,
@@ -65,10 +66,11 @@ if (args[0] === 'server' && args[1] === 'set') {
   fs.writeFileSync(${JSON.stringify(params.settingsPath)}, JSON.stringify(settings));
   out({ ok: true, kind: 'server_set', data: { active: { serverUrl: target, comparableKey: new URL(target).host } } });
 } else if (args[0] === 'daemon' && args[1] === 'status') {
+  const installed = settings.installedByServerId?.[serverId] === true;
   out({
     server: { activeServerId: serverId, serverUrl, localServerUrl: null, publicServerUrl: serverUrl, webappUrl: serverUrl, comparableKey: key },
     daemon: { running: false, pid: null, httpPort: null },
-    service: { installed: false, running: false, targetMode: null },
+    service: { installed, running: false, targetMode: installed ? 'default-following' : null },
     auth: { authenticated: false, machineRegistered: false, machineId: null, needsAuth: true, accountId: null },
   });
 } else if (args[0] === 'auth' && args[1] === 'status') {
@@ -78,8 +80,14 @@ if (args[0] === 'server' && args[1] === 'set') {
   out({ publicKey: 'cHVibGljLWtleQ==', publicKeyB64Url: 'cHVibGljLWtleQ', pairingRequirement: 'compatible' });
 } else if (args[0] === 'auth' && args[1] === 'wait') {
   out({ machineId: 'machine-' + serverId });
+} else if (args[1] === 'service' && args[2] === 'list') {
+  out({ entries: [], services: [], capabilities: { pinnedServiceCoexistence: true } });
 } else if (args[1] === 'service' && args[2] === 'install' && has('--dry-run')) {
   out({ ok: true, plan: {} });
+} else if (args[1] === 'service' && args[2] === 'install') {
+  settings.installedByServerId = { ...settings.installedByServerId, [serverId]: true };
+  fs.writeFileSync(${JSON.stringify(params.settingsPath)}, JSON.stringify(settings));
+  out({ ok: true });
 } else {
   out({ ok: true });
 }
@@ -124,6 +132,7 @@ async function createStackLaunchedComputer() {
     removePathExposure: async () => ({ removed: false, failure: null }),
     ensureCli: async () => ({ command: cliPath, provenance: 'override', version: '0.2.13' }),
     configureRelay,
+    registerRelayProfile,
     requestAuthPairing,
     waitForAuthPairing,
     installService,
@@ -176,6 +185,8 @@ describe.skipIf(process.platform === 'win32')('setup runs against one target-sco
 
     expect(result).toMatchObject({ machineId: 'machine-relay-y', relayChanged: true, credentialsChanged: true, serviceAction: 'install' });
     expect(await computer.readLog()).toEqual([
+      // The run's own CLI's service inventory, read for this home's selection — never the launch pin.
+      { command: 'daemon service list', serverId: 'relay-z', lifecycleId: 'relay-z' },
       // Preflight: judged for Y before anything selects it.
       { command: 'daemon service install', serverId: 'relay-y', lifecycleId: 'relay-y' },
       { command: 'auth status', serverId: 'relay-y', lifecycleId: 'relay-y' },

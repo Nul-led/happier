@@ -48,6 +48,8 @@ const NON_DRAGGABLE_TARGET_SELECTOR = [
     'textarea',
     'select',
     '[role="button"]',
+    // React Native Web Pressable hosts can be focusable divs without a button role.
+    '[tabindex]:not([tabindex="-1"])',
     '[contenteditable="true"]',
     '[data-desktop-window-no-drag="true"]',
 ].join(',');

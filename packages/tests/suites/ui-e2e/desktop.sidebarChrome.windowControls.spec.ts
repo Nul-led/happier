@@ -127,7 +127,11 @@ test.describe('ui e2e: desktop sidebar chrome window controls', () => {
     await expect(page.getByTestId('desktop-window-controls-minimize')).toBeVisible({ timeout: 60_000 });
     await expect(page.getByTestId('desktop-window-controls-toggle-maximize')).toBeVisible({ timeout: 60_000 });
     await expect(page.getByTestId('desktop-window-controls-close')).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByTestId('desktop-sidebar-updates-pill')).toHaveCount(1, { timeout: 60_000 });
+    // Updates lives in the desktop top rail; activity lives only in the sidebar icon row below it.
+    const utilityRow = page.getByTestId('desktop-sidebar-chrome-utility-row');
+    await expect(utilityRow.getByTestId('desktop-sidebar-updates-button')).toHaveCount(1, { timeout: 60_000 });
+    await expect(utilityRow.getByTestId('desktop-sidebar-action-operations')).toHaveCount(0);
+    await expect(page.getByTestId('desktop-sidebar-action-operations')).toHaveCount(1);
 
     await dragFromMainContentTitlebar(page);
     await expect.poll(async () => readFakeTauriDesktopState(page), { timeout: 60_000 }).toMatchObject({
@@ -187,7 +191,7 @@ test.describe('ui e2e: desktop sidebar chrome window controls', () => {
     await expect(page.getByTestId('desktop-pet-overlay-root')).toHaveCount(1, { timeout: 120_000 });
     await expect(page.getByTestId('desktop-window-controls-host')).toHaveCount(0);
     await expect(page.getByTestId('desktop-sidebar-chrome')).toHaveCount(0);
-    await expect(page.getByTestId('root-shell-updates-pill')).toHaveCount(0);
-    await expect(page.getByTestId('desktop-sidebar-updates-pill')).toHaveCount(0);
+    await expect(page.getByTestId('root-shell-updates-button')).toHaveCount(0);
+    await expect(page.getByTestId('desktop-sidebar-updates-button')).toHaveCount(0);
   });
 });

@@ -104,11 +104,11 @@ test.describe('ui e2e: Updates surface screens (R13 e)', () => {
         await page.reload();
         await waitForInitialAppUi({ page, timeoutMs: 180_000 });
       }
-      const pill = page.getByTestId('desktop-sidebar-updates-pill');
-      await expect(pill).toBeVisible({ timeout: 120_000 });
+      const entry = page.getByTestId('desktop-sidebar-updates-button');
+      await expect(entry).toBeVisible({ timeout: 120_000 });
       await shot(page, `live-${theme}-desktop-sidebar-available`);
 
-      await pill.click();
+      await entry.click();
       await expect(page.getByTestId('updates.content.popover')).toBeVisible({ timeout: 60_000 });
       await shot(page, `live-${theme}-desktop-popover-available`);
 

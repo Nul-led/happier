@@ -49,6 +49,10 @@ gtk = "0.18"
 [target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
 tauri-plugin-autostart = "2"
 tauri-plugin-updater = "2.9"
+# One running app per channel: a second launch (Start menu, launcher, Finder) opens the running
+# app's window instead of starting a second process and tray (R16). Pinned to `=2.3.6`: 2.3.7+
+# requires tauri 2.9, and this app is locked to tauri 2.8.
+tauri-plugin-single-instance = "=2.3.6"
 
 [dev-dependencies]
 tempfile = "3.20"

@@ -10,7 +10,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join, isAbsolute, resolve as resolvePath } from 'node:path'
 import { deriveServerIdFromUrl, isServerIdFilesystemSafe, sanitizeServerIdForFilesystem } from '@/server/serverId'
 import { isLocalishServerUrl } from '@/server/serverUrlClassification'
-import { normalizeCliArgv } from '@/cli/parseArgs'
+import { readCliProcessArgs } from '@/cli/parseArgs'
+import { applyRuntimeContextPrefixEnv, parseRuntimeContextPrefixArgs } from '@/utils/env/runtimeContextArgv'
 import { expandHomeDirPath } from '@/utils/path/expandHomeDirPath'
 import {
   resolveManagedCliReleaseChannelSync,
@@ -362,7 +363,7 @@ class Configuration {
 
   constructor() {
     // Check if we're running as daemon based on process args
-    const args = normalizeCliArgv(process.argv.slice(2))
+    const { args } = parseRuntimeContextPrefixArgs(readCliProcessArgs())
     this.isDaemonProcess = isDaemonProcessArgv(args)
     normalizeDaemonProcessInheritedEnv({
       env: process.env,
@@ -1274,6 +1275,9 @@ function resolveServerSelection(params: Readonly<{
   };
 }
 
+// Apply once, before home/server selection and any configuration filesystem access.
+// Reloads honor later explicit selections rather than replaying the startup context.
+applyRuntimeContextPrefixEnv(readCliProcessArgs(), process.env)
 export let configuration: Configuration = new Configuration()
 
 export function reloadConfiguration(): void {

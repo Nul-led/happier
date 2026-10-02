@@ -137,6 +137,57 @@ const CLAUDE_2_1_170 = {
 } as const;
 
 describe('parseClaudeScreenState — usage-limit chooser', () => {
+  it('recognizes an active usage-limit wait footer without treating historical notices as current', () => {
+    const footer = [
+      '  ⚠ Usage limit reached · limit resets 5:10pm · clau.de/wrap-up',
+      '    Continuing automatically at 5:10pm · esc to cancel',
+      '  Opus 5.5',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ];
+    const composer = ['────────────────────', '❯ sounds good, proceed and contniue', '────────────────────'];
+    const active = parseClaudeScreenState([...composer, ...footer].join('\n'));
+
+    expect(active.usageLimitWaitVisible).toBe(true);
+    expect(active.usageLimitDialogVisible).toBe(false);
+    expect(active.generating).toBe(false);
+    expect(isSafeWindowForSlashControl(active)).toBe(false);
+    expect(resolveClaudeScreenInFlightSteerVeto(active)).toBe('usage_limit_wait');
+
+    const empty = parseClaudeScreenState(['────────────────────', '❯ ', '────────────────────', ...footer].join('\n'));
+    expect(empty.usageLimitWaitVisible).toBe(true);
+    expect(empty.inputBoxInteractive).toBe(true);
+    expect(isClaudeScreenReadyForInput(empty)).toBe(true);
+    expect(resolveClaudeScreenInFlightSteerVeto(empty)).toBeNull();
+
+    const historical = parseClaudeScreenState([...footer, ...composer].join('\n'));
+    expect(historical.usageLimitWaitVisible).toBe(false);
+    expect(historical.inputBoxInteractive).toBe(true);
+  });
+
+  it('treats the sparse Rewind message selector as terminal input ownership, never a composer', () => {
+    const state = parseClaudeScreenState([
+      '   Rewind',
+      '',
+      '   Restore the code and/or conversation to the point before…',
+      '',
+      '     ↑ 4 more above',
+      '     previous user message',
+      '     2 files changed +53 -4',
+      '',
+      '   ❯ (current)',
+      '',
+      '',
+      '   Enter to continue · Esc to cancel',
+    ].join('\n'));
+
+    expect(state.selectionListVisible).toBe(true);
+    expect(state.composerContent).toBeNull();
+    expect(state.userDraftPresent).toBe(false);
+    expect(isClaudeScreenReadyForInput(state)).toBe(false);
+    expect(isSafeWindowForSlashControl(state)).toBe(false);
+    expect(resolveClaudeScreenInFlightSteerVeto(state)).toBe('selection_list');
+  });
+
   it('recognizes the current chooser without pinning its paid alternatives', () => {
     const state = parseClaudeScreenState(CLAUDE_2_1_228_USAGE_LIMIT_DIALOG);
 

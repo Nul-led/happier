@@ -6,6 +6,7 @@ import {
     identifyKeptBackgroundService,
     keptBackgroundServiceApplies,
     resolveRelayReconciliationConsent,
+    thisComputerCanConnectToo,
 } from './relayReconciliationConsent';
 
 function facts(overrides: Partial<{
@@ -52,8 +53,9 @@ function facts(overrides: Partial<{
     };
 }
 
+/** A complete read of a computer with no pinned services (the executor's one completeness signal). */
 function resolved(overrides?: Parameters<typeof facts>[0]): DesktopLocalInspection {
-    return { status: 'resolved', facts: facts(overrides) };
+    return { status: 'resolved', facts: facts(overrides), pinnedServices: [], pinnedServicesComplete: true };
 }
 
 const OBSERVED = { relayUrl: 'https://old.relay.test', localRelayUrl: null, accountId: 'acct_app' };
@@ -61,13 +63,37 @@ const OBSERVED = { relayUrl: 'https://old.relay.test', localRelayUrl: null, acco
 const MOVE_TARGET = { relayUrl: 'https://new.relay.test', localRelayUrl: null, accountId: 'acct_app' };
 
 describe('resolveRelayReconciliationConsent (UD5)', () => {
-    it('is silent when the app\'s own default-following service is where the app last put it', () => {
+    it('asks before taking the app\'s own service off the relay it serves, unless "always move" was chosen (N1)', () => {
+        // Adding relay B and signing in there must not quietly take this computer off A: the
+        // person may want both ("Connect to B too"). Only their standing "always move" answers it.
         expect(resolveRelayReconciliationConsent({
             target: MOVE_TARGET,
             inspection: resolved(),
             observedExpectation: OBSERVED,
             alwaysMoveDefaultFollowingService: false,
+        })).toBe('confirm_relay');
+        expect(resolveRelayReconciliationConsent({
+            target: MOVE_TARGET,
+            inspection: resolved(),
+            observedExpectation: OBSERVED,
+            alwaysMoveDefaultFollowingService: true,
         })).toBe('start');
+    });
+
+    it('never moves silently while a relay service here could not be read, even with "always move" (N5)', () => {
+        expect(resolveRelayReconciliationConsent({
+            target: MOVE_TARGET,
+            inspection: { status: 'resolved', facts: facts(), pinnedServices: [], pinnedServicesComplete: false },
+            observedExpectation: OBSERVED,
+            alwaysMoveDefaultFollowingService: true,
+        })).toBe('confirm_relay');
+        // A result that carries no completeness signal is unknown, never "all read".
+        expect(resolveRelayReconciliationConsent({
+            target: MOVE_TARGET,
+            inspection: { status: 'resolved', facts: facts() },
+            observedExpectation: OBSERVED,
+            alwaysMoveDefaultFollowingService: true,
+        })).toBe('confirm_relay');
     });
 
     it('asks when the daemon sits on a relay the app did not put it on', () => {
@@ -219,13 +245,13 @@ describe('resolveRelayReconciliationConsent (UD5)', () => {
         })).toBe('confirm_relay');
     });
 
-    it('does not contradict an app that had no account expectation when it looked', () => {
+    it('does not contradict an app that had no account expectation when it looked — the relay move is still asked (N1)', () => {
         expect(resolveRelayReconciliationConsent({
             target: MOVE_TARGET,
             inspection: resolved(),
             observedExpectation: { ...OBSERVED, accountId: null },
             alwaysMoveDefaultFollowingService: false,
-        })).toBe('start');
+        })).toBe('confirm_relay');
     });
 
     it('never moves a pinned service silently, and never honours the remembered preference for one', () => {
@@ -381,5 +407,60 @@ describe('keptBackgroundServiceApplies (D5)', () => {
     it('holds for nothing when nothing was kept or nothing is known', () => {
         expect(keptBackgroundServiceApplies({ inspection: elsewhere, target: TARGET, kept: null })).toBe(false);
         expect(identifyKeptBackgroundService({ status: 'pending' })).toBeNull();
+    });
+});
+
+describe('one daemon per relay: a pinned service is this computer on its relay', () => {
+    const pinnedOnNewRelay = (overrides: Parameters<typeof facts>[0] = {}): DesktopLocalReadinessFacts => {
+        const pinned = facts({ serverUrl: 'https://new.relay.test', targetMode: 'pinned', ...overrides });
+        return { ...pinned, service: { ...pinned.service, managedBy: 'desktop' } };
+    };
+    /** The executor's read: each pinned service serves its relay (bootstrap's `serving`, D11-2). */
+    const withPinned = (pinned: DesktopLocalReadinessFacts[]): DesktopLocalInspection => ({
+        status: 'resolved',
+        facts: facts(),
+        pinnedServices: pinned,
+        pinnedServicesComplete: true,
+        pinnedServiceCoexistence: true,
+        serviceRows: pinned.map((service) => ({
+            relayUrl: service.server.serverUrl ?? '',
+            state: 'connected' as const,
+            appManaged: service.service.managedBy === 'desktop',
+            serving: 'pinned' as const,
+            actions: [],
+        })),
+    });
+
+    it('moves nothing and asks nothing when the app relay already has its own service here', () => {
+        const inspection = withPinned([pinnedOnNewRelay()]);
+        expect(resolveRelayReconciliationConsent({ target: MOVE_TARGET, inspection, observedExpectation: OBSERVED, alwaysMoveDefaultFollowingService: false })).toBe('start');
+        expect(daemonContradictsTarget({ inspection, target: MOVE_TARGET })).toBe(false);
+    });
+
+    it('leaves a relay service the user set up to them: nothing to converge, nothing to move (H2)', () => {
+        const userOwned = pinnedOnNewRelay();
+        const inspection = withPinned([{ ...userOwned, service: { ...userOwned.service, managedBy: null } }]);
+        expect(resolveRelayReconciliationConsent({ target: MOVE_TARGET, inspection, observedExpectation: OBSERVED, alwaysMoveDefaultFollowingService: true })).toBe('leave_user_service');
+    });
+
+    it('still asks before that service answers for another account (D1)', () => {
+        const inspection = withPinned([pinnedOnNewRelay({ validatedAccountId: 'acct_other' })]);
+        expect(resolveRelayReconciliationConsent({ target: MOVE_TARGET, inspection, observedExpectation: OBSERVED, alwaysMoveDefaultFollowingService: true })).toBe('confirm_account');
+        expect(daemonContradictsTarget({ inspection, target: MOVE_TARGET })).toBe(true);
+    });
+
+    it('offers "connect too" only when the executor can give a relay its own service and a daemon here serves another relay', () => {
+        expect(thisComputerCanConnectToo({ inspection: withPinned([]), target: MOVE_TARGET })).toBe(true);
+        // Version skew (B-03): a CLI without `pinnedServiceCoexistence` cannot run a relay's own
+        // service beside the default one, even when its services were all read.
+        expect(thisComputerCanConnectToo({ inspection: resolved(), target: MOVE_TARGET })).toBe(false);
+        expect(thisComputerCanConnectToo({ inspection: { status: 'resolved', facts: facts(), pinnedServices: null }, target: MOVE_TARGET })).toBe(false);
+        // Nothing on another relay to keep: a first install, or the daemon is already on this relay.
+        expect(thisComputerCanConnectToo({ inspection: { status: 'resolved', facts: facts({ installed: false }), pinnedServices: [], pinnedServicesComplete: true }, target: MOVE_TARGET })).toBe(false);
+        expect(thisComputerCanConnectToo({ inspection: { status: 'resolved', facts: facts({ serverUrl: 'https://new.relay.test' }), pinnedServices: [], pinnedServicesComplete: true }, target: MOVE_TARGET })).toBe(false);
+        // M6: a list with an unreadable service is not "none" — that relay may already have one.
+        expect(thisComputerCanConnectToo({ inspection: { status: 'resolved', facts: facts(), pinnedServices: [], pinnedServicesComplete: false }, target: MOVE_TARGET })).toBe(false);
+        // Already served here by its own service.
+        expect(thisComputerCanConnectToo({ inspection: withPinned([pinnedOnNewRelay()]), target: MOVE_TARGET })).toBe(false);
     });
 });

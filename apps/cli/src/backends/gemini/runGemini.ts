@@ -251,6 +251,7 @@ export async function runGemini(opts: {
     state,
     existingSessionId: opts.existingSessionId,
     uiLogPrefix: '[gemini]',
+    terminalAgentLabel: 'gemini',
     startupMetadataOverrides: createStartupMetadataOverrides(opts),
     startupSideEffectsOrder: 'persist-first',
     allowOfflineStub: true,
@@ -796,6 +797,9 @@ export async function runGemini(opts: {
 	        shouldAttemptPendingMaterialization: () => session.shouldAttemptPendingMaterialization?.() ?? true,
 	        reconcilePendingQueueState: (reconcileOpts) => session.reconcilePendingQueueState?.(reconcileOpts),
 	        waitForPendingEligibilityUpdate: (signal) => session.waitForPendingEligibilityUpdate(signal),
+	        ...(typeof session.waitForMetadataUpdate === 'function'
+	          ? { waitForMetadataUpdate: (signal?: AbortSignal) => session.waitForMetadataUpdate(signal) }
+	          : {}),
 	      },
 	      pendingDrainMaxPopPerWake: pendingQueueDrainMaxPopPerWake,
 	      resolvePendingQueueDeliveryTiming: () => resolveSessionPendingQueueDeliveryTiming(

@@ -4,7 +4,7 @@ import { delimiter, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { buildTmuxSpawnConfig } from './spawnConfig';
+import { buildHostedRunnerSpawnConfig, buildTmuxSpawnConfig } from './spawnConfig';
 
 describe('tmux session resource policy', () => {
   const originalPlatform = process.platform;
@@ -15,6 +15,43 @@ describe('tmux session resource policy', () => {
     vi.unstubAllEnvs();
     if (commandDirectory) await rm(commandDirectory, { recursive: true, force: true });
     commandDirectory = null;
+  });
+
+  it('preserves local terminal presentation for a hosted server-backed runner', async () => {
+    const config = await buildTmuxSpawnConfig({
+      agent: 'codex',
+      directory: '/tmp',
+      extraEnv: {},
+      startingMode: 'local',
+    });
+
+    expect(config.commandTokens).toEqual(expect.arrayContaining([
+      'codex', '--happy-starting-mode', 'local', '--started-by', 'daemon',
+    ]));
+  });
+
+  it('passes the complete prepared child environment to a Herdr-hosted runner', async () => {
+    const config = await buildHostedRunnerSpawnConfig({
+      host: 'herdr',
+      agent: 'codex',
+      directory: '/tmp',
+      extraEnv: { HAPPIER_CODEX_BACKEND_MODE: 'appServer' },
+      processEnv: { PATH: '/bin', XDG_CONFIG_HOME: '/test/config', HAPPIER_ACTIVE_SERVER_ID: 'stale' },
+      serverSelectionEnv: {
+        activeServerId: 'current',
+        canonicalServerUrl: 'https://relay.example.test',
+        apiServerUrl: 'https://relay.example.test',
+        webappUrl: 'https://relay.example.test',
+      },
+      startingMode: 'local',
+    });
+
+    expect(config.childEnv).toMatchObject({
+      XDG_CONFIG_HOME: '/test/config',
+      HAPPIER_ACTIVE_SERVER_ID: 'current',
+      HAPPIER_CODEX_BACKEND_MODE: 'appServer',
+    });
+    expect(config.commandTokens).toEqual(expect.arrayContaining(['codex', '--happy-starting-mode', 'local']));
   });
 
   async function provisionJobsProbe() {

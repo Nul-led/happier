@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureSetupCapableLocalHappierCli } from '../happierCli.js';
 import {
   configureRelay,
+  registerRelayProfile,
   controlDaemonService,
   installService,
   requestAuthPairing,
@@ -58,6 +59,7 @@ if (has('--version')) console.log(${JSON.stringify(params.version)});
 else if (args[0] === 'daemon' && args[1] === 'status') out(${JSON.stringify(status)});
 else if (args[0] === 'auth' && args[1] === 'status') out({ ok: true, data: { authenticated: true, accountId: 'acct_app', machineId: 'machine-1' } });
 else if (args[0] === 'server' && args[1] === 'set') out({ ok: true, data: { active: { serverUrl: ${JSON.stringify(RELAY)}, comparableKey: 'relay.example.test' } } });
+else if (args[1] === 'service' && args[2] === 'list') out({ entries: [], services: [], capabilities: { pinnedServiceCoexistence: true } });
 else if (args[1] === 'service' && args[2] === 'install' && has('--dry-run')) out(${JSON.stringify(params.dryRun)});
 else out({ ok: true });
 `;
@@ -120,6 +122,7 @@ async function createComputer(options: Readonly<{ brokenNpmCli?: boolean }> = {}
     removePathExposure: removeManagedCliPathExposureDefault,
     ensureCli: (params) => ensureSetupCapableLocalHappierCli(params, { preparePayload }),
     configureRelay,
+    registerRelayProfile,
     requestAuthPairing,
     waitForAuthPairing,
     installService,

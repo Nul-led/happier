@@ -117,6 +117,8 @@ describe('runHsetupCli (interactive system tasks)', () => {
       previewServiceInstall: async () => ({ takeover: null, installConflict: null }),
       readDaemonStatus: async () => ({ serviceInstalled: false, daemonRunning: false, serverComparableKey: null }),
       configureRelay: async (_ring, profile) => ({ serverUrl: profile.serverUrl, comparableKey: 'relay.example.test' }),
+      registerRelayProfile: async () => ({ id: 'relay-profile' }),
+      readPinnedServiceInventory: async () => ({ listed: true, coexistence: true, relayUrls: [] }),
       readAuthStatus: async () => ({ authenticated: false, accountId: null, machineId: null }),
       requestAuthPairing: async () => ({
         publicKey: 'cHVibGljLWtleQ==',

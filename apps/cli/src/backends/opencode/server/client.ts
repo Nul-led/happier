@@ -34,6 +34,7 @@ import {
   type OpenCodeManagedServerIdentityChangeReason,
 } from './openCodeManagedServerIdentity';
 import { applyOpenCodeManagedServerAuthHeaders } from './openCodeManagedServerCredential';
+import { resolveOpenCodeAttachTargetAuthHeaders } from '../localControl/openCodeAttachTargetAuth';
 
 type PermissionReply = 'once' | 'always' | 'reject';
 
@@ -288,6 +289,10 @@ export type OpenCodeServerRuntimeClient = Readonly<{
   sessionCreate: (opts?: { permission?: unknown[] }) => Promise<OpenCodeSession>;
   sessionGet: (opts: { sessionId: string }) => Promise<OpenCodeSession>;
   sessionUpdate: (opts: { sessionId: string; permission?: unknown[]; title?: string; time?: { archived?: number } }) => Promise<OpenCodeSession>;
+  /** V2 durably selects the native session model; V1 selection remains frontend-local. */
+  sessionSetModel: (opts: { sessionId: string; model?: OpenCodeModelRef; variant?: string }) => Promise<void>;
+  /** V2 durably selects the native session agent; V1 keeps its prompt-owned selection. */
+  sessionSetAgent: (opts: { sessionId: string; agent: string }) => Promise<void>;
   sessionMessagesList: (opts: { sessionId: string }) => Promise<unknown[]>;
   /** Raw provider envelope reserved for fail-closed authoritative inventory readers. */
   sessionMessagesListRaw?: (opts: { sessionId: string }) => Promise<unknown>;
@@ -515,6 +520,7 @@ export async function createOpenCodeServerRuntimeClient(params: Readonly<{
   directory: string;
   messageBuffer: MessageBuffer;
   baseUrlOverride?: string | null;
+  managedServerLaunchFingerprint?: string | null;
   env?: NodeJS.ProcessEnv;
   onManagedServerIdentityChanged?: (change: OpenCodeManagedServerIdentityChange) => void;
 }>): Promise<OpenCodeServerRuntimeClient> {
@@ -623,7 +629,14 @@ export async function createOpenCodeServerRuntimeClient(params: Readonly<{
     }
   };
 
-  if (usingManagedServer || isLoopbackManagedOpenCodeBaseUrl(baseUrl)) {
+  if (params.managedServerLaunchFingerprint != null) {
+    delete headers.Authorization;
+    Object.assign(headers, await resolveOpenCodeAttachTargetAuthHeaders({
+      baseUrl,
+      env,
+      managedServerLaunchFingerprint: params.managedServerLaunchFingerprint,
+    }));
+  } else if (usingManagedServer || isLoopbackManagedOpenCodeBaseUrl(baseUrl)) {
     // An internal caller may pass the exact managed loopback endpoint as an override. Consume its
     // retained credential only when the state owner confirms that exact normalized base URL; the
     // credential helper falls back to ambient external auth for any mismatch, so a managed secret
@@ -1213,6 +1226,49 @@ export async function createOpenCodeServerRuntimeClient(params: Readonly<{
         timeoutMs: httpTimeoutMs,
       });
     },
+    sessionSetAgent: async ({ sessionId, agent }) => {
+      const api = await ensureApiGeneration();
+      if (api.kind !== 'v2') return;
+      await fetchJson<void>({
+        url: buildUrl(baseUrl, `/api/session/${encodeURIComponent(sessionId)}/agent`),
+        method: 'POST', headers, body: { agent }, timeoutMs: httpTimeoutMs,
+      });
+    },
+    sessionSetModel: async ({ sessionId, model, variant }) => {
+      const api = await ensureApiGeneration();
+      if (api.kind !== 'v2') return;
+      let selectedModel = model;
+      if (!selectedModel) {
+        // An effort-only control refines the native session's own current model, not a global
+        // default that could replace a user's resumed selection.
+        const raw = await fetchJson<unknown>({
+          url: buildUrl(baseUrl, `/api/session/${encodeURIComponent(sessionId)}`),
+          method: 'GET', headers, timeoutMs: httpTimeoutMs,
+        });
+        const session = readWrappedOpenCodeV2Data(raw);
+        const record = session && typeof session === 'object' && !Array.isArray(session)
+          ? session as Record<string, unknown> : null;
+        const nativeModel = record?.model && typeof record.model === 'object' && !Array.isArray(record.model)
+          ? record.model as Record<string, unknown> : null;
+        if (typeof nativeModel?.id === 'string' && typeof nativeModel.providerID === 'string') {
+          selectedModel = { modelID: nativeModel.id, providerID: nativeModel.providerID };
+        }
+        if (!selectedModel) {
+          throw new Error('OpenCode session model is unavailable for reasoning selection');
+        }
+      }
+      const normalizedVariant = typeof variant === 'string' ? variant.trim() : '';
+      await fetchJson<void>({
+        url: buildUrl(baseUrl, `/api/session/${encodeURIComponent(sessionId)}/model`),
+        method: 'POST', headers, body: {
+          model: {
+            id: selectedModel.modelID,
+            providerID: selectedModel.providerID,
+            ...(normalizedVariant ? { variant: normalizedVariant } : {}),
+          },
+        }, timeoutMs: httpTimeoutMs,
+      });
+    },
     sessionPromptAsync: async ({ sessionId, messageId, parts, agent, model, variant, config, delivery }) => {
       const api = await ensureApiGeneration();
       const normalizedVariant = typeof variant === 'string' ? variant.trim() : '';
@@ -1224,22 +1280,10 @@ export async function createOpenCodeServerRuntimeClient(params: Readonly<{
           throw new Error('OpenCode V2 prompt variant requires an explicit model');
         }
         if (agent) {
-          await fetchJson<void>({
-            url: buildUrl(baseUrl, `/api/session/${encodeURIComponent(sessionId)}/agent`),
-            method: 'POST', headers, body: { agent }, timeoutMs: httpTimeoutMs,
-          });
+          await client.sessionSetAgent({ sessionId, agent });
         }
         if (model) {
-          await fetchJson<void>({
-            url: buildUrl(baseUrl, `/api/session/${encodeURIComponent(sessionId)}/model`),
-            method: 'POST', headers, body: {
-              model: {
-                id: model.modelID,
-                providerID: model.providerID,
-                ...(normalizedVariant ? { variant: normalizedVariant } : {}),
-              },
-            }, timeoutMs: httpTimeoutMs,
-          });
+          await client.sessionSetModel({ sessionId, model, variant: normalizedVariant });
         }
       } else if (delivery) {
         throw new Error('OpenCode V1 prompt delivery does not support steer or queue modes');

@@ -377,9 +377,9 @@ Important notes:
 - tmux and other terminal-host attach flows work only for sessions that are still owned by the current machine.
 - You must target the same Happier account/server profile that owns the session.
 
-Attach strategy depends on the provider:
+Attach strategy depends on the provider and terminal host:
 
-- Some providers use Happier's `tmux`-backed attach flow.
+- Terminal-hosted sessions reconnect to their existing `tmux`, zellij, or Herdr terminal.
 - OpenCode uses a provider-native attach flow for server-backed sessions.
 
 For OpenCode, the supported reattach command is still `happier attach <session-id>`. Do not rely on a raw vendor `opencode attach ...` command as your normal Happier workflow.
@@ -387,14 +387,19 @@ For OpenCode, the supported reattach command is still `happier attach <session-i
 Supported attach styles include:
 
 - **tmux-backed sessions** on machines where tmux is enabled
+- **zellij- and Herdr-hosted sessions** on supported macOS and Linux machines
 - **Windows Terminal** or **Console** hosted sessions on Windows
 - **provider-native attach** for supported provider sessions such as OpenCode
 
 For the full workflow, see [Features → Attach to a running session](/sessions/attach-to-session).
 
-## Resume an inactive session
+In current development builds, `happier herdr` opens Herdr from the terminal. Happier requires a stable Herdr release, version `0.9.2` or newer, for both the executable and the running server. If you are already inside a Herdr pane, use Herdr's pane controls instead of starting a nested client.
 
-If a Happier session is inactive but still vendor-resumable, you can resume it directly from the CLI.
+In current development builds, Herdr's saved Happier resume command retains the original local Happier home and relay profile. It also uses the session's release-channel command (`happier`, `hprev`, or `hdev`), rather than always invoking `happier`.
+
+## Continue a session
+
+`happier resume` attaches to a running, attachable session or resumes a stopped, vendor-resumable session.
 
 ### Interactive selector
 
@@ -402,7 +407,7 @@ If a Happier session is inactive but still vendor-resumable, you can resume it d
 happier resume
 ```
 
-In a supported TTY, Happier shows an interactive picker of resumable inactive sessions.
+In a supported TTY, Happier shows running sessions you can attach to and stopped sessions you can resume in one picker.
 
 ### Resume by id
 
@@ -415,8 +420,9 @@ You can use a full session id or an unambiguous prefix.
 Important behavior:
 
 - resume is strict: if the provider resume fails, Happier errors instead of starting a fresh session
-- archived or already-active sessions cannot be resumed
-- the command restores the session working directory before launching the provider again
+- active sessions use the existing attach flow; an attachment failure does not launch a second agent
+- archived sessions cannot be continued
+- for stopped sessions, the command restores the working directory before launching the agent again
 
 For the full user guide and the meaning of “resumable”, see [Features → Resume inactive sessions](/sessions/session-resume).
 
