@@ -3,8 +3,8 @@ import { deriveBoxPublicKeyFromSeed } from '@happier-dev/protocol';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
 import { configuration, reloadConfiguration } from '@/configuration';
-import { readCredentials, writeCredentialsDataKey } from '@/persistence';
-import { deriveServerIdFromUrl } from '@/server/serverId';
+import { readCredentials, readSettings, updateSettings, writeCredentialsDataKey } from '@/persistence';
+import { deriveServerIdFromName, deriveServerIdFromUrl } from '@/server/serverId';
 import { existsSync, mkdirSync, renameSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -602,7 +602,7 @@ describe('server profiles', () => {
     });
   });
 
-  it('migrates server-scoped access.key when switching from env-derived serverId to a named profile', async () => {
+  it.each([false, true])('adopts env-derived credentials and state only into an empty named profile (destination has state: %s)', async (destinationHasState) => {
     await withTempDir('happier-cli-servers-migrate-access-key-', async (homeDir) => {
       envScope.patch({
         HAPPIER_HOME_DIR: homeDir,
@@ -625,6 +625,25 @@ describe('server profiles', () => {
       expect(envDerivedServerId).toBe(deriveServerIdFromUrl('http://127.0.0.1:3005'));
       expect(existsSync(join(homeDir, 'servers', envDerivedServerId, 'access.key'))).toBe(true);
 
+      const adoptedState = {
+        machineIdByServerId: 'machine-adopted',
+        machineIdByServerIdByAccountId: { 'account-adopted': 'machine-adopted' },
+        lastTokenSubByServerId: 'account-adopted',
+        machineIdConfirmedByServerByServerId: true,
+        lastChangesCursorByServerIdByAccountId: { 'account-adopted': 42 },
+        machineReplacementCandidatesByServerIdByAccountId: { 'account-adopted': { machineId: 'machine-before-adoption', replacementReason: 'reauth', createdAt: 1 } },
+      };
+      const targetId = deriveServerIdFromName('VM A self-host preview');
+      await updateSettings((current) => ({
+        ...current,
+        machineIdByServerId: { [envDerivedServerId]: adoptedState.machineIdByServerId, ...(destinationHasState ? { [targetId]: 'machine-existing' } : {}) },
+        machineIdByServerIdByAccountId: { [envDerivedServerId]: adoptedState.machineIdByServerIdByAccountId },
+        lastTokenSubByServerId: { [envDerivedServerId]: adoptedState.lastTokenSubByServerId },
+        machineIdConfirmedByServerByServerId: { [envDerivedServerId]: adoptedState.machineIdConfirmedByServerByServerId },
+        lastChangesCursorByServerIdByAccountId: { [envDerivedServerId]: adoptedState.lastChangesCursorByServerIdByAccountId },
+        machineReplacementCandidatesByServerIdByAccountId: { [envDerivedServerId]: adoptedState.machineReplacementCandidatesByServerIdByAccountId },
+      }));
+
       envScope.patch({
         HAPPIER_HOME_DIR: homeDir,
         HAPPIER_ACTIVE_SERVER_ID: undefined,
@@ -646,9 +665,16 @@ describe('server profiles', () => {
       });
 
       expect(created.id).not.toBe(envDerivedServerId);
+      expect(created.id).toBe(targetId);
       reloadConfiguration();
-      expect(existsSync(join(homeDir, 'servers', created.id, 'access.key'))).toBe(true);
-      expect(await readCredentials()).not.toBeNull();
+      expect(existsSync(join(homeDir, 'servers', created.id, 'access.key'))).toBe(!destinationHasState);
+      const settings = await readSettings();
+      for (const key of Object.keys(adoptedState) as Array<keyof typeof adoptedState>) {
+        expect(settings[key]?.[created.id]).toEqual(destinationHasState
+          ? (key === 'machineIdByServerId' ? 'machine-existing' : undefined)
+          : adoptedState[key]);
+        expect(settings[key]?.[envDerivedServerId]).toEqual(adoptedState[key]);
+      }
     });
   });
 

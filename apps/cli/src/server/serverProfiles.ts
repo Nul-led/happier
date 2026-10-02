@@ -1,4 +1,4 @@
-import { readSettings, updateSettings } from '@/persistence';
+import { readSettings, updateSettings, type Settings } from '@/persistence';
 import { deriveServerIdFromName, deriveServerIdFromUrl, sanitizeServerIdForFilesystem } from '@/server/serverId';
 import { isLocalishServerUrl } from '@/server/serverUrlClassification';
 import {
@@ -28,7 +28,30 @@ function deriveLegacyEnvServerIdFromUrl(url: string): string {
   return `env_${(h >>> 0).toString(16)}`;
 }
 
-async function maybeCopyAccessKeyFromDerivedUrlId(params: Readonly<{
+function copyServerScopedEntry<T>(map: Record<string, T> | undefined, sourceId: string, targetId: string): Record<string, T> | undefined {
+  return map && sourceId in map ? { ...map, [targetId]: map[sourceId] } : map;
+}
+
+function hasServerScopedState(settings: Settings, serverId: string): boolean {
+  return [settings.machineIdByServerId, settings.machineIdByServerIdByAccountId,
+    settings.machineReplacementCandidatesByServerIdByAccountId, settings.lastTokenSubByServerId,
+    settings.machineIdConfirmedByServerByServerId, settings.lastChangesCursorByServerIdByAccountId]
+    .some((map) => map && serverId in map);
+}
+
+function copyMissingServerScopedState(current: Settings, sourceId: string, targetId: string): Settings {
+  return {
+    ...current,
+    machineIdByServerId: copyServerScopedEntry(current.machineIdByServerId, sourceId, targetId),
+    machineIdByServerIdByAccountId: copyServerScopedEntry(current.machineIdByServerIdByAccountId, sourceId, targetId),
+    machineReplacementCandidatesByServerIdByAccountId: copyServerScopedEntry(current.machineReplacementCandidatesByServerIdByAccountId, sourceId, targetId),
+    lastTokenSubByServerId: copyServerScopedEntry(current.lastTokenSubByServerId, sourceId, targetId),
+    machineIdConfirmedByServerByServerId: copyServerScopedEntry(current.machineIdConfirmedByServerByServerId, sourceId, targetId),
+    lastChangesCursorByServerIdByAccountId: copyServerScopedEntry(current.lastChangesCursorByServerIdByAccountId, sourceId, targetId),
+  };
+}
+
+async function maybeAdoptDerivedServerProfileState(params: Readonly<{
   targetServerId: string;
   serverUrl: string;
   localServerUrl?: string;
@@ -55,9 +78,13 @@ async function maybeCopyAccessKeyFromDerivedUrlId(params: Readonly<{
     const sourceKeyPath = join(serversDir, candidateId, 'access.key');
     if (!existsSync(sourceKeyPath)) continue;
     try {
-      await mkdir(targetDir, { recursive: true, mode: 0o700 });
-      await copyFile(sourceKeyPath, targetKeyPath);
-      await chmod(targetKeyPath, 0o600).catch(() => {});
+      await updateSettings(async (current) => {
+        if (hasServerScopedState(current, params.targetServerId)) return current;
+        await mkdir(targetDir, { recursive: true, mode: 0o700 });
+        await copyFile(sourceKeyPath, targetKeyPath);
+        await chmod(targetKeyPath, 0o600).catch(() => {});
+        return copyMissingServerScopedState(current, candidateId, params.targetServerId);
+      });
       return;
     } catch {
       // Best-effort migration; the normal auth/login flow can recreate this.
@@ -364,7 +391,7 @@ export async function useServerProfile(idRaw: string): Promise<ServerProfile> {
     };
   });
 
-  await maybeCopyAccessKeyFromDerivedUrlId({
+  await maybeAdoptDerivedServerProfileState({
     targetServerId: selectedProfile.id,
     serverUrl: selectedProfile.serverUrl,
     ...(selectedProfile.localServerUrl ? { localServerUrl: selectedProfile.localServerUrl } : {}),
@@ -438,7 +465,7 @@ export async function addServerProfile(opts: Readonly<{
   });
 
   if (shouldUse) {
-    await maybeCopyAccessKeyFromDerivedUrlId({
+    await maybeAdoptDerivedServerProfileState({
       targetServerId: id,
       serverUrl,
       ...(localServerUrl ? { localServerUrl } : {}),
@@ -673,7 +700,7 @@ export async function upsertServerProfileByUrl(opts: Readonly<{
   }
 
   if (shouldUse) {
-    await maybeCopyAccessKeyFromDerivedUrlId({
+    await maybeAdoptDerivedServerProfileState({
       targetServerId: resolvedId,
       serverUrl,
       ...(localServerUrl ? { localServerUrl } : {}),

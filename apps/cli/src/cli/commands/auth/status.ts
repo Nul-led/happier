@@ -73,6 +73,7 @@ export async function handleAuthStatus(argv: string[] = [], signal?: AbortSignal
       ok: true,
       kind: 'auth_status',
       data: {
+        serverId: configuration.activeServerId,
         authenticated: true,
         accountId: readAccountIdFromToken(credentials.token),
         credentialState: readiness.credentialState,
@@ -94,6 +95,7 @@ export async function handleAuthStatus(argv: string[] = [], signal?: AbortSignal
     accountLabel: readiness.accountLabel,
     accountId: readAccountIdFromToken(credentials.token),
   })}`));
+  console.log(definitionList([{ label: 'Server ID', value: configuration.activeServerId }], { indent: '  ' }));
 
   if (machineRegistered) {
     console.log(ok('Machine registered'));

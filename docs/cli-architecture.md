@@ -1719,6 +1719,15 @@ not assume that a source process came from `dist`. Its daemon status preserves t
 reported as stale or dead; Machine RPC readiness remains separately true, false, or unknown.
 The former diagnostic environment flags no longer bypass Machine sync or Automation worker startup.
 
+Doctor repair's auth context uses the process's selected Home unless an explicit
+`--server` target is supplied; reading a scoped report does not change the terminal's
+saved selection. It probes only that Home's API endpoint and renders other stored
+credentials as unverified. Successful `auth status --json` includes `serverId`.
+The identity-free env-derived-profile adoption path carries the credential's machine,
+account and reconnect-cursor maps into an empty named profile. It leaves existing
+destination state alone and remains disabled after a Home identity is observed;
+it does not repair an already-split installation.
+
 ## RPC and tool bridge
 
 ```mermaid
