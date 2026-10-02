@@ -151,7 +151,7 @@ export function ValueRefEditorModal(props: ValueRefEditorModalProps) {
     const deleteAllowed = typeof props.onDelete === 'function';
 
     return (
-        <ItemList keyboardShouldPersistTaps="handled">
+        <ItemList presentation="grouped" keyboardShouldPersistTaps="handled">
             <ItemGroup>
                 <View style={styles.groupContent}>
                     <Text style={styles.fieldLabel}>{props.kind === 'env' ? t('settings.mcpServersEnvKeyLabel') : t('settings.mcpServersHeaderKeyLabel')}</Text>

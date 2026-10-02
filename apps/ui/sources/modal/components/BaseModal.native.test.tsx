@@ -1,6 +1,7 @@
 import React from 'react';
-import { StyleSheet as ReactNativeStyleSheet } from 'react-native';
-import { describe, expect, it, vi } from 'vitest';
+import { StyleSheet as ReactNativeStyleSheet, View } from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
 
@@ -9,6 +10,8 @@ const reactActEnvironment = globalThis as typeof globalThis & {
 };
 
 reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
+
+const nativePlatform = vi.hoisted(() => ({ os: 'android' as 'android' | 'ios' }));
 
 const nativeBackState = vi.hoisted(() => {
     let hardwareBackPressHandler: (() => boolean) | null = null;
@@ -42,8 +45,8 @@ vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock({
         Platform: {
-            OS: 'android',
-            select: (options: Record<string, unknown>) => options?.android ?? options?.native ?? options?.default,
+            get OS() { return nativePlatform.os; },
+            select: (options: Record<string, unknown>) => options?.[nativePlatform.os] ?? options?.native ?? options?.default,
         },
         BackHandler: nativeBackState,
     });
@@ -58,9 +61,10 @@ vi.mock('react-native-safe-area-context', async () => {
     };
 });
 
-vi.mock('@/components/ui/keyboardAvoidance', () => ({
-    KeyboardAwareModalFrame: (props: React.PropsWithChildren<Record<string, unknown>>) =>
-        React.createElement('KeyboardAwareModalFrame', props, props.children),
+// The native keyboard-controller is the system boundary; keep the modal's real keyboard policy.
+vi.mock('react-native-keyboard-controller', () => ({
+    KeyboardAvoidingView: (props: React.PropsWithChildren<Record<string, unknown>>) =>
+        React.createElement('NativeKeyboardAvoidingView', props, props.children),
 }));
 
 vi.mock('@/text', async () => {
@@ -82,6 +86,7 @@ vi.mock('react-native-unistyles', async () => {
 });
 
 describe('BaseModal (native)', () => {
+    beforeEach(() => { nativePlatform.os = 'android'; });
     it('exposes a named modal-isolated dialog surface', async () => {
         const { BaseModal } = await import('./BaseModal');
 
@@ -108,12 +113,47 @@ describe('BaseModal (native)', () => {
             }),
         );
 
-        const container = screen.findAllByType('KeyboardAwareModalFrame' as any)?.[0];
+        const container = screen.findByType(KeyboardAvoidingView);
         const style = flattenStyleProp(container?.props?.style);
         expect(style.paddingTop).toBe(24);
         expect(style.paddingRight).toBe(12);
         expect(style.paddingBottom).toBe(16);
         expect(style.paddingLeft).toBe(10);
+    });
+
+    it.each([['android', 120], ['android', 1200], ['ios', 120], ['ios', 1200]] as const)(
+        'bottom-aligns a %s %i px phone sheet inside its keyboard-resized scroll viewport', async (platform, height) => {
+        nativePlatform.os = platform;
+        const { BaseModal } = await import('./BaseModal');
+        const screen = await renderScreen(
+            <BaseModal visible placement="bottom"><View style={{ height }} /></BaseModal>,
+        );
+        const keyboard = screen.findByType(KeyboardAvoidingView);
+        expect(keyboard.props.enabled).toBe(true);
+        expect(keyboard.props.behavior).toBe(platform === 'android' ? 'height' : 'padding');
+        expect(flattenStyleProp(keyboard.props.style)).toMatchObject({ paddingTop: 24, paddingLeft: 10, paddingRight: 12, paddingBottom: 0 });
+        const scroll = screen.findAll((node) => node.props.keyboardShouldPersistTaps === 'handled' && 'contentContainerStyle' in node.props)[0];
+        // flexGrow retains the viewport for short sheets; overflow remains owned by this ScrollView.
+        expect(flattenStyleProp(scroll.props.contentContainerStyle)).toMatchObject({ flexGrow: 1, justifyContent: 'flex-end' });
+        expect(scroll.props.centerContent).toBe(false);
+        expect(flattenStyleProp(scroll.props.style).flex).toBe(1);
+    });
+
+    it('keeps centered cards centered instead of applying sheet placement to every modal', async () => {
+        const { BaseModal } = await import('./BaseModal');
+        const screen = await renderScreen(<BaseModal visible><View style={{ height: 120 }} /></BaseModal>);
+        const scroll = screen.findAll((node) => node.props.keyboardShouldPersistTaps === 'handled' && 'contentContainerStyle' in node.props)[0];
+        expect(flattenStyleProp(scroll.props.contentContainerStyle).justifyContent).toBe('center');
+        const keyboard = screen.findByType(KeyboardAvoidingView);
+        expect(flattenStyleProp(keyboard.props.style).paddingBottom).toBe(16);
+    });
+
+    it('bottom-aligns a bounded sheet while leaving its body as the sole scroll owner', async () => {
+        const { BaseModal } = await import('./BaseModal');
+        const screen = await renderScreen(<BaseModal visible placement="bottom" scrollHost="body"><View /></BaseModal>);
+        expect(screen.findAll((node) => node.props.keyboardShouldPersistTaps === 'handled')).toHaveLength(0);
+        expect(screen.findAll((node) => flattenStyleProp(node.props.style).flexGrow === 1)
+            .some((node) => flattenStyleProp(node.props.style).justifyContent === 'flex-end')).toBe(true);
     });
 
     it('provides a modal-local overlay portal for popovers opened inside the native modal', async () => {

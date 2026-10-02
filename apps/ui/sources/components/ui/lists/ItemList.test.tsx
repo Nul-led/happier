@@ -16,6 +16,18 @@ vi.mock('@/components/ui/keyboardAvoidance/KeyboardAwareScrollView', () => ({
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe('ItemList', () => {
+    it('defaults a full list to page anatomy and keeps explicit grouped lists grouped', async () => {
+        const { ItemList } = await import('./ItemList');
+        const { useListPresentation } = await import('./listPresentation');
+        function PresentationProbe() {
+            return React.createElement('PresentationProbe', { value: useListPresentation() });
+        }
+        const page = await renderScreen(<ItemList><PresentationProbe /></ItemList>);
+        expect(page.findByType('PresentationProbe').props.value).toBe('page');
+        const grouped = await renderScreen(<ItemList presentation="grouped"><PresentationProbe /></ItemList>);
+        expect(grouped.findByType('PresentationProbe').props.value).toBe('grouped');
+    });
+
     it('uses the canonical keyboard-aware scroll owner when requested by a form flow', async () => {
         const { ItemList } = await import('./ItemList');
 

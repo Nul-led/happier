@@ -26,7 +26,7 @@ Description of what the section controls, above it.
 └──────────────────────────────────────────────────────────┘
 ```
 
-- Build it with `ItemList presentation="page"` + `PageHeader` (settings: `SettingsPageHeader`).
+- Build it with `ItemList` (page presentation by default) + `PageHeader` (settings: `SettingsPageHeader`). Non-page lists explicitly use `presentation="grouped"`.
   `ItemGroup` and `Item` pick up the page anatomy automatically.
 - **Header.** Title + one sentence of purpose. On phones the native header shows the title; the page
   header shows only the purpose. Page-level actions (Reset, Test, machine chip) go on the right.

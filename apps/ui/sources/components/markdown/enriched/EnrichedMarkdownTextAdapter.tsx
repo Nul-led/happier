@@ -23,9 +23,31 @@ const ENRICHED_REVEAL_DURATION_VAR = '--happier-streaming-enriched-markdown-dura
 const ENRICHED_REVEAL_EASING_VAR = '--happier-streaming-enriched-markdown-easing';
 const ENRICHED_REVEAL_TRANSLATE_Y_VAR = '--happier-streaming-enriched-markdown-y';
 const ENRICHED_LEADING_MARGIN_STYLE_ID = 'happier-enriched-markdown-leading-margin-style';
+const ENRICHED_WIDGET_STYLE_ID = 'happier-enriched-markdown-widget-style';
 
 let enrichedRevealStyleInjected = false;
 let enrichedLeadingMarginStyleInjected = false;
+let enrichedWidgetStyleInjected = false;
+
+/** Style the incumbent task checkbox; keep its native input semantics and keyboard focus. */
+function injectEnrichedWidgetStyle(): void {
+    if (enrichedWidgetStyleInjected || Platform.OS !== 'web' || typeof document === 'undefined') return;
+    enrichedWidgetStyleInjected = true;
+    if (document.getElementById(ENRICHED_WIDGET_STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = ENRICHED_WIDGET_STYLE_ID;
+    const scope = '[data-happier-enriched-markdown-profile="widget"]';
+    const task = `${scope} li:has(> span > input[type="checkbox"]) > span`;
+    style.textContent = [
+        `${scope} { min-width: 0; }`,
+        `${task} { display: flex; flex: 1; min-width: 0; align-items: flex-start; gap: 8px; }`,
+        `${task} > input { appearance: none; flex-shrink: 0; margin: 2px 0 0 !important; border: 1px solid var(--happier-widget-check-border); background: transparent; position: relative; }`,
+        `${task} > input:checked { background: var(--happier-widget-check-fill); border-color: var(--happier-widget-check-fill); }`,
+        `${task} > input:checked::after { content: ""; position: absolute; width: 25%; height: 50%; left: 35%; top: 12%; border: solid var(--happier-widget-check-mark); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }`,
+        `@media (forced-colors: active) { ${task} > input { appearance: auto; } ${task} > input::after { display: none; } }`,
+    ].join('\n');
+    document.head.appendChild(style);
+}
 
 function injectEnrichedRevealStyle(): void {
     if (enrichedRevealStyleInjected || Platform.OS !== 'web') return;
@@ -127,10 +149,13 @@ export const EnrichedMarkdownTextAdapter = React.memo((props: EnrichedMarkdownTe
         injectStyle: injectEnrichedLeadingMarginStyle,
     });
 
+    useWebRevealStyleInsertion({ enabled: props.profile === 'widget', injectStyle: injectEnrichedWidgetStyle });
+
     const platformProps = React.useMemo<Record<string, unknown>>(() => {
         if (Platform.OS === 'web') {
             const webProps: Record<string, unknown> = {
                 'data-testid': props.testID,
+                'data-happier-enriched-markdown-profile': props.profile,
             };
             if (props.streamingAnimated) {
                 // Per-word, not per-block: the package stamps
@@ -154,23 +179,30 @@ export const EnrichedMarkdownTextAdapter = React.memo((props: EnrichedMarkdownTe
             allowFontScaling: true,
             streamingAnimation: props.streamingAnimated && flavor === 'commonmark',
         };
-    }, [flavor, props.streamingAnimated, props.suppressLeadingTopMargin, props.testID]);
+    }, [flavor, props.profile, props.streamingAnimated, props.suppressLeadingTopMargin, props.testID]);
 
     const containerStyle = React.useMemo(() => {
         const baseContainerStyle = props.fillContainer === false
             ? { ...styleBundle.containerStyle, width: undefined }
             : styleBundle.containerStyle;
-        if (Platform.OS !== 'web' || revealConfig == null) {
+        if (Platform.OS !== 'web') {
             return baseContainerStyle;
         }
 
         return ({
             ...baseContainerStyle,
-            [ENRICHED_REVEAL_DURATION_VAR]: `${revealConfig.durationMs}ms`,
-            [ENRICHED_REVEAL_EASING_VAR]: revealConfig.easing,
-            [ENRICHED_REVEAL_TRANSLATE_Y_VAR]: `${revealConfig.translateYPx}px`,
+            ...(props.profile === 'widget' ? {
+                '--happier-widget-check-border': styleBundle.markdownStyle.taskList?.borderColor,
+                '--happier-widget-check-fill': styleBundle.markdownStyle.taskList?.checkedColor,
+                '--happier-widget-check-mark': styleBundle.markdownStyle.taskList?.checkmarkColor,
+            } : {}),
+            ...(revealConfig ? {
+                [ENRICHED_REVEAL_DURATION_VAR]: `${revealConfig.durationMs}ms`,
+                [ENRICHED_REVEAL_EASING_VAR]: revealConfig.easing,
+                [ENRICHED_REVEAL_TRANSLATE_Y_VAR]: `${revealConfig.translateYPx}px`,
+            } : {}),
         } as unknown) as EnrichedMarkdownTextProps['containerStyle'];
-    }, [props.fillContainer, revealConfig, styleBundle.containerStyle]);
+    }, [props.fillContainer, props.profile, revealConfig, styleBundle]);
 
     return (
         <EnrichedMarkdownText

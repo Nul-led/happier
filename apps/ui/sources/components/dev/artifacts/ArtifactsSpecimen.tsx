@@ -1,0 +1,74 @@
+import * as React from 'react';
+import type { ArtifactStorageUsageV1 } from '@happier-dev/protocol';
+
+import { ArtifactsBrowser } from '@/components/artifacts/ArtifactsBrowserScreen';
+import type { DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
+
+/**
+ * Dev-only specimen of the Artifacts browser (lab `app-surfaces/artifacts`, frames A1–A8) drawn
+ * through the real `ArtifactsBrowser` with the lab's fixtures, so lab and app compare side by side.
+ * `state`: `grid` (A1, the root-cause document open beside the grid), `empty` (A3), `loading` (A4),
+ * `quota` (A8, an operator budget that is full), `failed` (first load failed).
+ */
+export type ArtifactsSpecimenState = 'grid' | 'empty' | 'loading' | 'quota' | 'failed';
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+const ROOT_CAUSE = `## Root cause
+
+\`SettingsPage\` is declared inside a \`useMemo\` whose dependencies include the clock tick. Every recompute mints a new component *type*, so React unmounts the old subtree and mounts a fresh one.
+
+## Fix
+
+1. Hoist \`SettingsPage\` to module scope.
+2. Pass \`scope\` and \`onClose\` as props instead of closing over them.
+3. Keep the tick inside the clock leaf that renders it.
+
+Verified with React DevTools: one mount across 60 ticks, focus retained.`;
+
+const HANDSHAKE = `export async function retryHandshake(relay) {
+  for (let n = 0; n < 5; n++) {
+    const res = await relay.open();
+    if (res.status !== 503) return res;
+    await sleep(250 * 2 ** n);
+  }
+}`;
+
+function fixture(id: string, header: Record<string, unknown>, ageMs: number, body: string | undefined, now: number): DecryptedArtifact {
+    const title = typeof header.title === 'string' ? header.title : null;
+    return {
+        id, title, header: { title, ...header }, body, headerVersion: 1, bodyVersion: 4, seq: 1,
+        createdAt: now - ageMs, updatedAt: now - ageMs, isDecrypted: true, access: 'owner',
+    };
+}
+
+function specimenArtifacts(now: number): readonly DecryptedArtifact[] {
+    return [
+        fixture('a1', { title: 'Settings modal remount — root cause', source: { sessionId: 'specimen-s1', machineId: 'specimen-m1', path: 'notes/settings-remount.md' } }, 12 * MINUTE, ROOT_CAUSE, now),
+        fixture('a2', { title: 'relayHandshake.ts', source: { sessionId: 'specimen-s2', machineId: 'specimen-m2', path: 'src/relay/relayHandshake.ts' } }, HOUR, HANDSHAKE, now),
+        fixture('a3', { title: 'Release checklist 0.3' }, DAY, '# Release checklist 0.3\n- [x] Desktop builds signed\n- [x] Relay migration rehearsed\n- [ ] Changelog reviewed by Design\n- [ ] Status page drafted', now),
+        fixture('a4', { title: 'Onboarding hero, dark', mime: 'image/png', source: { sessionId: 'specimen-s3', machineId: 'specimen-m1', path: 'design/hero-dark.png' } }, 2 * DAY, undefined, now),
+        fixture('a5', { kind: 'work-board.v1', title: 'Q4 launch' }, 3 * DAY, undefined, now),
+        fixture('a6', { kind: 'prompt_doc.v2', title: 'Code review' }, 5 * DAY, 'Review the diff like a senior engineer on this team. Lead with correctness, then the canonical owner, then tests that would fail without the change.\n\n> Skip style nits the formatter owns.', now),
+        fixture('a7', { kind: 'workflow-definition.v1', title: 'Morning triage' }, 7 * DAY, undefined, now),
+        fixture('a8', { title: 'Weekly digest · Sep 29', source: { sessionId: 'specimen-s4', machineId: 'specimen-m2', path: 'digest/2026-09-29.md' } }, 8 * DAY, '## Weekly digest · Sep 29\n14 sessions finished, 3 PRs merged. **#2493** fixed the relay 503 loop; the settings remount is ready for review.', now),
+    ];
+}
+
+const BUDGET: ArtifactStorageUsageV1 = { usedBytes: 18_400_000, limitBytes: 50_000_000, documentLimitBytes: 1_048_576, revisionRetentionCount: 10 };
+const FULL: ArtifactStorageUsageV1 = { usedBytes: 50_000_000, limitBytes: 50_000_000, documentLimitBytes: 1_048_576, revisionRetentionCount: 10 };
+const NOOP = () => {};
+
+export function ArtifactsSpecimen(props: Readonly<{ state: ArtifactsSpecimenState }>): React.ReactElement {
+    const [now] = React.useState(() => Date.now());
+    const artifacts = React.useMemo(() => specimenArtifacts(now), [now]);
+    switch (props.state) {
+        case 'empty': return <ArtifactsBrowser artifacts={[]} loaded loadFailed={false} onRetry={NOOP} usage={null} />;
+        case 'loading': return <ArtifactsBrowser artifacts={[]} loaded={false} loadFailed={false} onRetry={NOOP} usage={null} />;
+        case 'failed': return <ArtifactsBrowser artifacts={[]} loaded={false} loadFailed onRetry={NOOP} usage={null} />;
+        case 'quota': return <ArtifactsBrowser artifacts={artifacts} loaded loadFailed={false} onRetry={NOOP} usage={FULL} />;
+        case 'grid': return <ArtifactsBrowser artifacts={artifacts} loaded loadFailed={false} onRetry={NOOP} usage={BUDGET} initialOpenId="a1" />;
+    }
+}

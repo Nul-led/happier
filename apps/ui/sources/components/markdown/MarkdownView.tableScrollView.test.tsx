@@ -1,8 +1,11 @@
 import React from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderScreen } from '@/dev/testkit';
+import { describe, expect, it, vi } from 'vitest';
+import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
 import { findNearestHostParent, flattenTestStyle } from '@/dev/testkit/harness/popoverHarness';
 import { installMarkdownCommonModuleMocks } from './markdownTestHelpers';
+import { MarkdownView } from './MarkdownView';
+import { MarkdownBlockView } from './MarkdownBlockView';
+import { parseMarkdown } from './parseMarkdown';
 
 
 declare global {
@@ -14,25 +17,33 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 installMarkdownCommonModuleMocks();
 
-function mockPlatform(os: 'android' | 'web') {
-    vi.doMock('react-native', async () => {
-        const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-        return createReactNativeWebMock({
-            Platform: {
-                OS: os,
-            },
-        });
-    });
+async function mockPlatform(os: 'android' | 'web') {
+    // The canonical boundary mock is shared by the real renderers. Changing its
+    // platform avoids resetting and reloading the entire UI graph for each cell case.
+    const { Platform } = await import('react-native');
+    Platform.OS = os;
+}
+
+async function renderTable(markdown: string, onLinkPress?: (url: string) => boolean | void) {
+    const block = parseMarkdown(markdown)[0];
+    if (block?.type !== 'table') throw new Error('Expected a Markdown table fixture');
+
+    return renderScreen(<MarkdownBlockView
+        block={block}
+        first
+        last
+        selectable
+        onLinkPress={onLinkPress}
+        variant="default"
+        profile="default"
+        streamingReveal={false}
+        agentTexMath={false}
+    />);
 }
 
 describe('MarkdownView (tables)', () => {
-    beforeEach(() => {
-        vi.resetModules();
-    });
-
     it('renders tables inside a gesture-handler ScrollView so horizontal scrolling works reliably on Android', async () => {
-        mockPlatform('android');
-        const { MarkdownView } = await import('./MarkdownView');
+        await mockPlatform('android');
 
         const markdown = [
             '| A | B | C |',
@@ -50,8 +61,7 @@ describe('MarkdownView (tables)', () => {
     }, 60_000);
 
     it('uses a visible horizontal scrollbar on web and does not clip the scroll shell', async () => {
-        mockPlatform('web');
-        const { MarkdownView } = await import('./MarkdownView');
+        await mockPlatform('web');
 
         const markdown = [
             '| Name | Reliability | Notes |',
@@ -77,8 +87,7 @@ describe('MarkdownView (tables)', () => {
     }, 60_000);
 
     it('renders table header/cell text as selectable so users can copy values from transcripts', async () => {
-        mockPlatform('android');
-        const { MarkdownView } = await import('./MarkdownView');
+        await mockPlatform('android');
 
         const markdown = [
             '| A | B |',
@@ -96,8 +105,7 @@ describe('MarkdownView (tables)', () => {
     }, 60_000);
 
     it('applies GitHub table column alignment to header and body cells', async () => {
-        mockPlatform('web');
-        const { MarkdownView } = await import('./MarkdownView');
+        await mockPlatform('web');
 
         const markdown = [
             '| Left | Center | Right |',
@@ -118,9 +126,52 @@ describe('MarkdownView (tables)', () => {
         expect(flattenTestStyle(rightCell?.props?.style).alignItems).toBe('flex-end');
     }, 60_000);
 
+    it.each(['android', 'web'] as const)('renders inline table formatting and handles header/body links on %s', async (os) => {
+        await mockPlatform(os);
+        const onLinkPress = vi.fn(() => true);
+        const markdown = [
+            '| **Name** | [Docs](https://example.com/docs) | Plain |',
+            '|---|---|---|',
+            '| *Claude* `git diff` | [File](./src/index.ts:12) | ordinary |',
+        ].join('\n');
+
+        const screen = await renderTable(markdown, onLinkPress);
+        const textNodes = screen.findAllByType('Text');
+        const findText = (value: string) => textNodes.find((node) => node.props.children === value);
+
+        expect(findText('Name')).toBeDefined();
+        expect(findText('Claude')).toBeDefined();
+        expect(findText('git diff')).toBeDefined();
+        expect(textNodes.filter((node) => node.props.children === 'ordinary')).toHaveLength(1);
+        expect(findText('ordinary')?.props.selectable).toBe(true);
+
+        const docsLink = findText('Docs');
+        const fileLink = findText('File');
+        expect(docsLink?.props.accessibilityRole).toBe('link');
+        expect(fileLink?.props.accessibilityRole).toBe('link');
+        await pressTestInstanceAsync(docsLink, 'table header link');
+        await pressTestInstanceAsync(fileLink, 'table body link');
+        expect(onLinkPress.mock.calls).toEqual([
+            ['https://example.com/docs'],
+            ['./src/index.ts:12'],
+        ]);
+    });
+
+    it.each(['android', 'web'] as const)('uses canonical link navigation for table autolinks on %s', async (os) => {
+        await mockPlatform(os);
+        const markdown = '| Site |\n|---|\n| www.example.com |';
+
+        const screen = await renderTable(markdown);
+
+        const link = screen.findByType('Link');
+        expect(link.props.href).toBe('https://www.example.com');
+        expect(link.props.target).toBe('_blank');
+        expect(link.props.rel).toBe('noopener noreferrer');
+        expect(link.props.asChild).toBe(os !== 'web');
+    });
+
     it('routes agent TeX table cells through the enriched parser without changing generic cells', async () => {
-        mockPlatform('web');
-        const { MarkdownView } = await import('./MarkdownView');
+        await mockPlatform('web');
         const markdown = [
             '| Symbol | Meaning |',
             '|---|---|',
@@ -135,4 +186,16 @@ describe('MarkdownView (tables)', () => {
         expect(enrichedCells).toHaveLength(1);
         expect(enrichedCells[0]!.props.md4cFlags).toMatchObject({ texMathBackslashDelimiters: true });
     }, 60_000);
+
+    it('handles links in math-bearing cells through the enriched renderer', async () => {
+        await mockPlatform('web');
+        const onLinkPress = vi.fn(() => true);
+        const markdown = '| Formula |\n|---|\n| $x$ [Docs](https://example.com/math) |';
+
+        const screen = await renderTable(markdown, onLinkPress);
+
+        const cell = screen.findByType('EnrichedMarkdownText');
+        cell.props.onLinkPress({ url: 'https://example.com/math' });
+        expect(onLinkPress).toHaveBeenCalledWith('https://example.com/math');
+    });
 });

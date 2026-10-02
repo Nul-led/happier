@@ -1,4 +1,4 @@
-export type MarkdownRenderingProfile = 'default' | 'transcript' | 'thinking';
+export type MarkdownRenderingProfile = 'default' | 'transcript' | 'thinking' | 'widget';
 
 export function normalizeMarkdownRenderingProfile(params: Readonly<{
     profile?: MarkdownRenderingProfile;

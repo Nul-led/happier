@@ -92,6 +92,12 @@ export function listScopeFiles({ tsxOnly = true } = {}) {
     return files.sort();
 }
 
+/** U10 sweeps page owners outside Settings too, including shared component consumers. */
+export function listUiFiles({ includeTests = false } = {}) {
+    return [...walk(SOURCES_ROOT)].map(relOf).filter((rel) => /\.tsx$/.test(rel)
+        && (includeTests || !/\.(test|spec)\.tsx$/.test(rel))).sort();
+}
+
 export function isInScope(rel) {
     return SCOPE_DIRS.some((dir) => rel.startsWith(`${dir}/`));
 }
@@ -406,12 +412,22 @@ export function localImports(rel, text) {
 }
 
 /**
- * Files rendered under a page-presented `ItemList`: files containing `presentation="page"` plus the
+ * Files rendered under a page-presented `ItemList`: default or explicit page lists plus the
  * settings-scope files they import, transitively. Floating surfaces are excluded (I1).
  */
 export function pagePresentedFiles() {
     const scope = listScopeFiles();
-    const seeds = scope.filter((rel) => /presentation="page"/.test(readFileSync(absOf(rel), 'utf8')));
+    const seeds = scope.filter((rel) => {
+        const sf = parseSource(rel, readFileSync(absOf(rel), 'utf8'));
+        let page = false;
+        forEachDescendant(sf, (node) => {
+            if (!isJsx(node) || tagNameOf(node) !== 'ItemList') return;
+            const presentation = getAttr(node, 'presentation');
+            const value = attrExpression(presentation);
+            if (!presentation || (value && ts.isStringLiteral(value) && value.text === 'page')) page = true;
+        });
+        return page;
+    });
     const seen = new Set();
     const queue = [...seeds];
     while (queue.length) {
@@ -692,4 +708,3 @@ export function removeUnusedLocals(text, rel, names) {
     }
     return current;
 }
-

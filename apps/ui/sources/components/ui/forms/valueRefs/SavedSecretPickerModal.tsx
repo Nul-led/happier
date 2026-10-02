@@ -37,7 +37,7 @@ export function SavedSecretPickerModal(props: SavedSecretPickerModalProps) {
     }, [catalog.reload]);
 
     return (
-        <ItemList keyboardShouldPersistTaps="handled">
+        <ItemList presentation="grouped" keyboardShouldPersistTaps="handled">
             <SecretsList
                 wrapInItemList={false}
                 secrets={catalog.personalSecrets}

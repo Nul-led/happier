@@ -2,6 +2,7 @@ import * as React from 'react';
 import type { StyleProp, TextStyle } from 'react-native';
 import type { EnrichedMarkdownTextProps, MarkdownStyle } from 'react-native-enriched-markdown';
 import { useUnistyles } from 'react-native-unistyles';
+import { happierPageTextMetrics } from '@happier-dev/plugin-ui/presentation';
 
 import { Typography } from '@/constants/Typography';
 import { useLocalSetting } from '@/sync/domains/state/storage';
@@ -97,8 +98,10 @@ export function buildEnrichedMarkdownStyle(params: Readonly<{
     const scaledTextStyle = scaleTextStyle(params.textStyle, uiFontScale);
     const flattenedTextStyle = flattenTextStyle(scaledTextStyle);
 
-    const baseFontSize = readNumber(flattenedTextStyle.fontSize, roundTo2(16 * uiFontScale));
-    const baseLineHeight = readNumber(flattenedTextStyle.lineHeight, roundTo2(24 * uiFontScale));
+    const widget = params.profile === 'widget';
+    const widgetText = happierPageTextMetrics('sectionDescription');
+    const baseFontSize = readNumber(flattenedTextStyle.fontSize, roundTo2((widget ? widgetText.fontSize : 16) * uiFontScale));
+    const baseLineHeight = readNumber(flattenedTextStyle.lineHeight, roundTo2((widget ? widgetText.lineHeight : 24) * uiFontScale));
     const inlineCodeFontSize = roundTo2(baseFontSize * 0.88);
     const baseColor = readString(flattenedTextStyle.color, params.colors.text.primary);
     const h1FontSize = scaledMetric(baseFontSize, 1.5);
@@ -261,11 +264,11 @@ export function buildEnrichedMarkdownStyle(params: Readonly<{
             cellPaddingVertical: 10,
         },
         taskList: {
-            checkedColor: params.colors.text.link,
-            borderColor: params.colors.border.default,
-            checkboxSize: roundTo2(18 * uiFontScale),
+            checkedColor: widget ? params.colors.text.secondary : params.colors.text.link,
+            borderColor: widget ? params.colors.text.secondary : params.colors.border.default,
+            checkboxSize: roundTo2((widget ? 14 : 18) * uiFontScale),
             checkboxBorderRadius: 4,
-            checkmarkColor: params.colors.text.primary,
+            checkmarkColor: widget ? params.colors.surface.elevated : params.colors.text.primary,
             checkedTextColor: params.colors.text.secondary,
             checkedStrikethrough: true,
         },

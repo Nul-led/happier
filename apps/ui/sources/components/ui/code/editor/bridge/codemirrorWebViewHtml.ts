@@ -244,6 +244,16 @@ export function buildCodeMirrorWebViewHtml(params: Readonly<{
       let applyingRemote = false;
       let currentLanguage = null;
       let currentReadOnly = false;
+      let lineSeparator = '\\n';
+
+      function detectLineSeparator(doc) {
+        const match = doc.match(/\\r\\n|\\r|\\n/);
+        return match ? match[0] : '\\n';
+      }
+
+      function serializeDoc(doc) {
+        return doc.sliceString(0, doc.length, lineSeparator);
+      }
 
       function cancelPendingDocChange() {
         if (changeTimer) {
@@ -256,7 +266,7 @@ export function buildCodeMirrorWebViewHtml(params: Readonly<{
         if (!changeTimer) return;
         cancelPendingDocChange();
         try {
-          sendEnvelope({ v: 1, type: 'docChanged', payload: { doc: view.state.doc.toString() } });
+          sendEnvelope({ v: 1, type: 'docChanged', payload: { doc: serializeDoc(view.state.doc) } });
         } catch (e) {}
       }
 
@@ -416,6 +426,7 @@ export function buildCodeMirrorWebViewHtml(params: Readonly<{
         }, { dark: Boolean(theme.isDark) });
 
         function createView(doc, language, readOnly) {
+          lineSeparator = detectLineSeparator(doc || '');
           const langExt = resolveLanguageExtension(language, {
             javascript: langJavascript && (langJavascript.javascript ?? langJavascript),
             json: langJson && (langJson.json ?? langJson),
@@ -456,7 +467,7 @@ export function buildCodeMirrorWebViewHtml(params: Readonly<{
                 changeTimer = setTimeout(() => {
                   changeTimer = null;
                   try {
-                    sendEnvelope({ v: 1, type: 'docChanged', payload: { doc: update.state.doc.toString() } });
+                    sendEnvelope({ v: 1, type: 'docChanged', payload: { doc: serializeDoc(update.state.doc) } });
                   } catch (e) {}
                 }, CHANGE_DEBOUNCE_MS);
               }),
@@ -480,7 +491,7 @@ export function buildCodeMirrorWebViewHtml(params: Readonly<{
         function setDoc(nextDoc) {
           if (!view) return;
           const normalizedDoc = nextDoc || '';
-          if (view.state.doc.toString() === normalizedDoc) {
+          if (serializeDoc(view.state.doc) === normalizedDoc) {
             // Editor and host agree; any still-pending change is a settled echo.
             cancelPendingDocChange();
             return;
@@ -497,6 +508,7 @@ export function buildCodeMirrorWebViewHtml(params: Readonly<{
           const previousScrollTop = scrollDOM ? scrollDOM.scrollTop : null;
           const previousScrollLeft = scrollDOM ? scrollDOM.scrollLeft : null;
           const changes = { from: 0, to: view.state.doc.length, insert: normalizedDoc };
+          lineSeparator = detectLineSeparator(normalizedDoc);
           applyingRemote = true;
           try {
             try {
@@ -540,7 +552,7 @@ export function buildCodeMirrorWebViewHtml(params: Readonly<{
           if (envelope.type === 'requestDoc') {
             const payload = envelope.payload || {};
             const requestId = typeof payload.requestId === 'string' ? payload.requestId : '';
-            const doc = view ? view.state.doc.toString() : '';
+            const doc = view ? serializeDoc(view.state.doc) : '';
             try {
               sendEnvelope({ v: 1, type: 'docSnapshot', payload: { requestId, doc } });
             } catch (e) {}

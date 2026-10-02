@@ -61,6 +61,34 @@ vi.mock('@/components/ui/text/Text', async () => {
 });
 
 describe('SelectableMenuResults (React Native Web Pressable)', () => {
+    it('leaves decorated destination rows mounted through mouse-down and drag, while ordinary clicks still select', async () => {
+        const { SelectableMenuResults } = await import('./SelectableMenuResults');
+        const selected: string[] = [];
+        const dragged: string[] = [];
+        const container = document.createElement('div');
+        document.body.appendChild(container);
+        const root = createRoot(container);
+        try {
+            await act(async () => { root.render(<SelectableMenuResults
+                categories={[{ id: 'destinations', title: '', items: [{ id: 'triage', title: 'PRs & Issues' }] }]}
+                selectedIndex={0}
+                onSelectionChange={() => {}}
+                onPressItem={item => selected.push(item.id)}
+                rowVariant="slim"
+                wrapItem={(item, children) => <div draggable onDragStart={() => dragged.push(item.id)}>{children}</div>}
+            />); });
+            const option = container.querySelector<HTMLElement>('[data-testid="dropdown-option-triage"]')!;
+            await act(async () => { option.dispatchEvent(new MouseEvent('mousedown', { button: 0, bubbles: true, cancelable: true })); });
+            expect(selected).toEqual([]);
+            await act(async () => { option.dispatchEvent(new Event('dragstart', { bubbles: true })); });
+            expect(dragged).toEqual(['triage']);
+            await act(async () => { option.click(); });
+            expect(selected).toEqual(['triage']);
+        } finally {
+            await act(async () => { root.unmount(); });
+            container.remove();
+        }
+    });
     it('exposes the chosen option independently of keyboard highlight', async () => {
         const { SelectableMenuResults } = await import('./SelectableMenuResults');
         const container = document.createElement('div');

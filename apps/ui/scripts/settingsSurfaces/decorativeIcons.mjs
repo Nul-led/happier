@@ -15,10 +15,10 @@
  *   into state banners). A decorative glyph merely painted in a state colour is removed;
  * - rows rendered by a `.map()` callback (collection rows: whether their glyph is an identity mark is
  *   decided per collection in U8);
- * - hand-migrated pages, and non-page files (settings shell and rail, catalog, overview navigation,
+ * - hand-migrated pages (unless `--contract`), and non-page files (settings shell and rail, catalog, overview navigation,
  *   menus, pickers, popovers, sheets: I1).
  *
- *   node scripts/settingsSurfaces/decorativeIcons.mjs [--write] [--only <path-part>]
+ *   node scripts/settingsSurfaces/decorativeIcons.mjs [--write] [--contract] [--only <path-part>]
  */
 import { readFileSync } from 'node:fs';
 
@@ -29,6 +29,7 @@ import {
     createRunner,
     forEachDescendant,
     getAttr,
+    hasSpreadAttr,
     importBindings,
     isHandMigrated,
     isJsx,
@@ -59,6 +60,7 @@ const STATUS_COLOR = /\.(state|status)\.|warningColor|dangerColor|errorColor/;
 const OVERVIEW = /^sources\/components\/settings\/Settings[A-Za-z]*\.tsx$/;
 
 const runner = createRunner('decorativeIcons');
+const contraction = process.argv.includes('--contract');
 
 function isDynamic(expr) {
     const node = expr && unwrap(expr);
@@ -134,7 +136,7 @@ for (const rel of listScopeFiles()) {
     if (!runner.selected(rel)) continue;
     const initial = readFileSync(absOf(rel), 'utf8');
     if (!/\bicon[=:]/.test(initial)) continue;
-    const blocked = isHandMigrated(rel)
+    const blocked = !contraction && isHandMigrated(rel)
         ? 'hand-migrated page'
         : OVERVIEW.test(rel)
             ? 'overview navigation (catalog glyphs, U8 f)'
@@ -149,6 +151,29 @@ for (const rel of listScopeFiles()) {
         const helpers = new Set();
         const consider = (host, valueExpr, removal, line, where) => {
             if (blocked) { runner.skip(rel, line, blocked); return; }
+            if (isJsx(host) && ROW_TAGS.has(tagNameOf(host))) {
+                const mode = attrExpression(getAttr(host, 'mode'));
+                const role = attrExpression(getAttr(host, 'accessibilityRole'));
+                if (mode && ts.isStringLiteral(mode) && mode.text === 'info') {
+                    runner.skip(rel, line, 'information/state row, not a preference');
+                    return;
+                }
+                if (role && ts.isStringLiteral(role) && role.text === 'radio') {
+                    runner.skip(rel, line, 'identity choice row, not a preference');
+                    return;
+                }
+                if (hasSpreadAttr(host)) {
+                    runner.skip(rel, line, 'spread row behavior (classify at its owner)');
+                    return;
+                }
+            }
+            // U8 rule b: destination rows keep their glyph. A callback alone cannot establish
+            // whether it opens a page, so keep it unless an explicit preference control is present.
+            if (isJsx(host) && ROW_TAGS.has(tagNameOf(host)) && getAttr(host, 'onPress')
+                && !getAttr(host, 'rightElement') && !getAttr(host, 'accessory')) {
+                runner.skip(rel, line, 'destination or action row (U8 rule b)');
+                return;
+            }
             if (!iconLocalName) { runner.skip(rel, line, 'not a plain Icon (identity mark or custom element)', 'no Icon import'); return; }
             const verdict = classifyIcon(valueExpr, iconLocalName, sf);
             if (!verdict.plain) { runner.skip(rel, line, verdict.keep, verdict.detail); return; }

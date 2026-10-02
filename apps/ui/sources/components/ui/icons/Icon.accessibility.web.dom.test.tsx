@@ -19,26 +19,10 @@ const renderedSvgState = vi.hoisted(() => ({
 
 vi.unmock('@/components/ui/icons/Icon');
 
-// Keep this owner test focused on Icon's forwarding policy instead of loading both generated
-// third-party catalogues. The catalog entries are data fixtures; Icon's branch logic stays real.
-vi.mock('./iconRegistry.generated', async () => {
-    const ReactModule = await import('react');
-    const Glyph = (props: Record<string, unknown>) => {
-        renderedSvgState.props = props;
-        const { testID, children, ...svgProps } = props;
-        return ReactModule.createElement('svg', {
-            ...svgProps,
-            'data-testid': testID,
-        }, children as React.ReactNode);
-    };
-    return { ICON_REGISTRY: { laptop: Glyph } };
-});
-
-vi.mock('./iconRegistryHuge.generated', () => ({
-    HUGE_ICON_REGISTRY: {
-        laptop: [['path', { d: 'M0 0' }]],
-    },
-}));
+// Exercise the generated registries and third-party glyphs through the real Icon owner.
+// Only the native SVG boundary below is substituted for a DOM rendering surface.
+vi.unmock('./iconRegistry.generated');
+vi.unmock('./iconRegistryHuge.generated');
 
 // SVG is the third-party render boundary; preserve the props it receives while mapping its
 // React Native testID to a real DOM selector for the web assertion.

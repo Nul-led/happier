@@ -78,7 +78,7 @@ export function StoryDeckPreviewDevSection() {
     return (
         <ItemGroup
             title="Story Deck Preview"
-            footer="Preview surfaces without changing onboarding or release-note seen state."
+            description="Preview surfaces without changing onboarding or release-note seen state."
             selectableItemCountOverride={releases.length === 0 ? 1 : releases.length}
         >
             {releases.length === 0 ? (
