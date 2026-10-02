@@ -172,8 +172,10 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
       return { machineId: machineId || null };
     },
 
-    async approveAuthPairing(publicKey: string) {
-      await params.executor.runHappierJson(['auth', 'approve', '--public-key', publicKey, '--json']);
+    async approveAuthPairing(publicKey: string, requestPayload: Record<string, unknown>) {
+      const stateFile = typeof requestPayload.stateFile === 'string' ? requestPayload.stateFile : '';
+      if (!stateFile && requestPayload.pairing) throw new Error('Authenticated pairing request is missing its private state file');
+      await params.executor.runHappierJson(['auth', 'approve', '--public-key', publicKey, ...(stateFile ? ['--request-file', stateFile] : []), '--json']);
     },
 
     async installDaemonService() {

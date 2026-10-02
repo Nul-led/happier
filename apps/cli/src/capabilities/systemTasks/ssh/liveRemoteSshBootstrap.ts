@@ -11,7 +11,7 @@ import type {
 } from '@happier-dev/cli-common/systemTasks';
 import { redactBugReportSensitiveText, sanitizeBugReportArtifactPath } from '@happier-dev/protocol';
 
-import { approveTerminalAuthRequest } from '@/auth/terminalAuthApproval';
+import { approveTerminalAuthRequest, parseTerminalAuthApprovalRequest } from '@/auth/terminalAuthApproval';
 import { findAvailableLoopbackPort, isLoopbackPortAvailable } from '@/cloud/loopbackPort';
 import { configuration, reloadConfiguration } from '@/configuration';
 import { isLoopbackServerHost } from '@/server/serverUrlClassification';
@@ -787,14 +787,15 @@ export function createLiveRemoteSshBootstrapTaskKind() {
         },
       });
     },
-    approveLocalAuthRequest: async ({ publicKey, parsed }) => {
+    approveLocalAuthRequest: async ({ publicKey, requestPayload, parsed }) => {
+      const request = parseTerminalAuthApprovalRequest(requestPayload ?? { publicKey }, [parsed.relay.relayUrl, ...(parsed.relay.publicRelayUrl ? [parsed.relay.publicRelayUrl] : [])]);
       const knownHostsMode = parsed.knownHostsMode ?? 'app';
       const knownHostsPath = resolveKnownHostsPath(parsed.ssh, knownHostsMode);
       const loopbackPort = parseLoopbackPort(parsed.relay.relayUrl);
       if (loopbackPort) {
         const tunnelAuth = resolveSshAuthForTunnel(parsed.ssh);
         if (!tunnelAuth) {
-          await approveTerminalAuthRequest({ publicKey });
+          await approveTerminalAuthRequest(request);
           return;
         }
         const requestedPort = Number(loopbackPort);
@@ -818,7 +819,7 @@ export function createLiveRemoteSshBootstrapTaskKind() {
               serverAliveIntervalSec: 15,
               serverAliveCountMax: 2,
             }, async () => {
-              await approveTerminalAuthRequest({ publicKey });
+              await approveTerminalAuthRequest(request);
             });
           },
         });
@@ -830,7 +831,7 @@ export function createLiveRemoteSshBootstrapTaskKind() {
         publicRelayUrl: parsed.relay.publicRelayUrl,
         webappUrl: parsed.relay.webappUrl,
         fn: async () => {
-          await approveTerminalAuthRequest({ publicKey });
+          await approveTerminalAuthRequest(request);
         },
       });
     },

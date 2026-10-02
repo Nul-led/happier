@@ -1,7 +1,8 @@
+import tweetnacl from 'tweetnacl';
+import { approvePrintedTerminalPairing } from '@/testkit/auth/terminalPairing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fastify from 'fastify';
-import { randomBytes, createHash } from 'node:crypto';
-import tweetnacl from 'tweetnacl';
+import { createHash } from 'node:crypto';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
@@ -14,11 +15,7 @@ function sha256Base64Url(input: Buffer): string {
 }
 
 function encryptForTerminal(recipientPublicKey: Uint8Array, plaintext: Uint8Array): string {
-  const ephemeral = tweetnacl.box.keyPair();
-  const nonce = randomBytes(tweetnacl.box.nonceLength);
-  const cipher = tweetnacl.box(plaintext, nonce, recipientPublicKey, ephemeral.secretKey);
-  const bundle = Buffer.concat([Buffer.from(ephemeral.publicKey), Buffer.from(nonce), Buffer.from(cipher)]);
-  return bundle.toString('base64');
+  return approvePrintedTerminalPairing(recipientPublicKey, plaintext.length === 33 ? plaintext.slice(1) : plaintext);
 }
 
 type ClaimRequestRow = { claimSecretHash: string; response: string | null; statusChecks: number };
@@ -133,9 +130,9 @@ describe('authAndSetupMachineIfNeeded (non-TTY) (status+claim)', () => {
 
       expect(result.credentials.token).toBe('token-1');
       if (!result.credentials.encryption) {
-        throw new Error('Expected legacy encryption credentials');
+        throw new Error('Expected data-key encryption credentials');
       }
-      expect(result.credentials.encryption.type).toBe('legacy');
+      expect(result.credentials.encryption.type).toBe('dataKey');
     } finally {
       output.restore();
       restoreAxios();
@@ -202,7 +199,7 @@ describe('authAndSetupMachineIfNeeded (non-TTY) (status+claim)', () => {
     }
   }, 15_000);
 
-  it('stores dataKey credentials using the private key from the v2 response', async () => {
+  it('stores dataKey credentials using the private key from the authenticated v3 response', async () => {
     const requests = new Map<string, ClaimRequestRow>();
     const app = fastify({ logger: false });
 

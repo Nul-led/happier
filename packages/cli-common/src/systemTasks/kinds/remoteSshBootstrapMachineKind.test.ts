@@ -537,7 +537,8 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
         invocations.push('installRemoteCli');
         remoteCliInstalled = true;
       },
-      approveLocalAuthRequest: async ({ publicKey }) => {
+      approveLocalAuthRequest: async ({ publicKey, requestPayload }) => {
+        expect(requestPayload.pairing).toEqual({ secretB64Url: 'pairing-secret', createdAtMs: 1000, expiresAtMs: 60000 });
         invocations.push(`approveLocalAuthRequest:${publicKey}`);
       },
       runRemoteCommand: async ({ label, data }) => {
@@ -557,6 +558,8 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
             data: {
               publicKey: 'pub-key',
               claimSecret: 'secret-value',
+              pairing: { secretB64Url: 'pairing-secret', createdAtMs: 1000, expiresAtMs: 60000 },
+              links: { mobileUrl: 'happier://terminal?key=pub-key&pairingSecret=pairing-secret', webUrl: 'https://relay.example.test/terminal/connect#key=pub-key&pairingSecret=pairing-secret' },
               stateFile: '/tmp/claim-state.json',
               supportsV2: true,
               webappUrl: 'https://relay.example.test',
@@ -622,6 +625,7 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
       kind: 'auth.approveRemoteProvisioning',
       data: {
         publicKey: 'pub-key',
+        pairing: { createdAtMs: 1000, expiresAtMs: 60000 },
         supportsV2: true,
         webappUrl: 'https://relay.example.test',
       },

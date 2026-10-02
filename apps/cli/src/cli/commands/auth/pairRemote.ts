@@ -1,7 +1,7 @@
 import spawn from 'cross-spawn';
 import { createServerUrlComparableKey } from '@happier-dev/protocol';
 
-import { approveTerminalAuthRequest } from '@/auth/terminalAuthApproval';
+import { approveTerminalAuthRequest, parseTerminalAuthApprovalRequest } from '@/auth/terminalAuthApproval';
 import { writeJsonStdout } from '@/cli/output/jsonEnvelope';
 import { safeBashSingleQuote } from '@/capabilities/systemTasks/ssh/sshTransport';
 import { configuration } from '@/configuration';
@@ -337,7 +337,7 @@ export async function handleAuthPairRemote(argsRaw: string[], deps: Partial<Pair
     if (!json) {
       console.log('Approving remote authentication request...');
     }
-    await approveTerminalAuthRequest({ publicKey });
+    await approveTerminalAuthRequest(parseTerminalAuthApprovalRequest(request, [remoteSelection.serverUrl, ...(remoteSelection.localServerUrl ? [remoteSelection.localServerUrl] : [])]));
   } catch (error) {
     console.error(error instanceof Error ? error.message : 'Failed to approve auth request.');
     process.exit(1);

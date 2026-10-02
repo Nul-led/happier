@@ -38,11 +38,15 @@ describe('openTerminalProvisioningResponse', () => {
     });
   });
 
-  it('reads the opt-in v3 requirement and rejects unknown values', () => {
-    expect(readTerminalPairingRequirement({})).toBeNull();
+  it('requires authenticated v3 pairing by default and rejects downgrade configuration', () => {
+    expect(readTerminalPairingRequirement({})).toBe('v3');
+    expect(readTerminalPairingRequirement({ HAPPIER_TERMINAL_PAIRING_REQUIRE: ' ' })).toBe('v3');
     expect(readTerminalPairingRequirement({ HAPPIER_TERMINAL_PAIRING_REQUIRE: ' v3 ' })).toBe('v3');
     expect(() => readTerminalPairingRequirement({
       HAPPIER_TERMINAL_PAIRING_REQUIRE: 'future',
+    })).toThrow('HAPPIER_TERMINAL_PAIRING_REQUIRE');
+    expect(() => readTerminalPairingRequirement({
+      HAPPIER_TERMINAL_PAIRING_REQUIRE: 'compatible',
     })).toThrow('HAPPIER_TERMINAL_PAIRING_REQUIRE');
   });
 
@@ -62,7 +66,7 @@ describe('openTerminalProvisioningResponse', () => {
       terminalSecretKey,
       terminalPublicKey,
       pairing,
-      requirement: null,
+      requirement: readTerminalPairingRequirement({}),
       nowMs: 2_000,
     })).toEqual({ type: 'dataKey', key: machineKey, authenticated: true });
   });
@@ -95,7 +99,7 @@ describe('openTerminalProvisioningResponse', () => {
     })).toBeNull();
   });
 
-  it('continues to accept legacy v2 and v1 responses during the expansion window', () => {
+  it('retains explicit compatibility parsing for older protocol consumers', () => {
     const v2Plaintext = new Uint8Array(33);
     v2Plaintext[0] = 0;
     v2Plaintext.set(new Uint8Array(32).fill(7), 1);
@@ -128,21 +132,22 @@ describe('openTerminalProvisioningResponse', () => {
     })).toEqual({ type: 'legacy', key: new Uint8Array(32).fill(5), authenticated: false });
   });
 
-  it('rejects legacy responses when authenticated v3 pairing is required', () => {
-    const legacyPayload = sealBoxBundle({
-      plaintext: new Uint8Array(32).fill(5),
-      recipientPublicKey: terminalPublicKey,
-      randomBytes: deterministicRandomBytes,
-    });
-
-    expect(openTerminalProvisioningResponse({
-      payload: legacyPayload,
-      terminalSecretKey,
-      terminalPublicKey,
-      pairing,
-      nowMs: 2_000,
-      requirement: 'v3',
-    })).toBeNull();
+  it('rejects both legacy provisioning formats under the default requirement', () => {
+    for (const plaintext of [new Uint8Array(32).fill(5), new Uint8Array([0, ...new Uint8Array(32).fill(7)])]) {
+      const payload = sealBoxBundle({
+        plaintext,
+        recipientPublicKey: terminalPublicKey,
+        randomBytes: deterministicRandomBytes,
+      });
+      expect(openTerminalProvisioningResponse({
+        payload,
+        terminalSecretKey,
+        terminalPublicKey,
+        pairing,
+        nowMs: 2_000,
+        requirement: readTerminalPairingRequirement({}),
+      })).toBeNull();
+    }
   });
 
   it('returns an authenticated token-only result without account E2EE material', () => {

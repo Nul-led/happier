@@ -197,6 +197,7 @@ export type RemoteSshBootstrapMachineDeps = Readonly<{
   }>) => Promise<void>;
   approveLocalAuthRequest: (params: Readonly<{
     publicKey: string;
+    requestPayload: Record<string, unknown>;
     parsed: RemoteBootstrapMachineParams;
   }>) => Promise<void>;
   createHappierJsonExecutor?: (params: Readonly<{
@@ -484,6 +485,7 @@ export function createRemoteSshBootstrapMachineTaskKind(
           try {
             await deps.approveLocalAuthRequest({
               publicKey,
+              requestPayload,
               parsed: parsedLocalForApproval,
             });
           } catch (error) {
@@ -583,7 +585,9 @@ export function parseRemoteBootstrapMachineParams(params: unknown): RemoteBootst
 }
 
 export function redactRemoteBootstrapPayload(params: Record<string, unknown>): SystemTaskJsonObject {
-  return redactSensitiveSystemTaskJsonValue(params) as SystemTaskJsonObject;
+  // Terminal connect links embed pairing secrets; keep them out of approval prompt events.
+  const { links: _privatePairingLinks, ...promptData } = params;
+  return redactSensitiveSystemTaskJsonValue(promptData) as SystemTaskJsonObject;
 }
 
 function normalizeRemoteSshAuth(ssh: SystemTaskSshConnectionConfig): RemoteSshAuth {

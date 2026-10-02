@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fastify from 'fastify';
 import tweetnacl from 'tweetnacl';
-import { deriveAccountMachineKeyFromRecoverySecret } from '@happier-dev/protocol';
+import { deriveAccountMachineKeyFromRecoverySecret, openTerminalProvisioningV3Response } from '@happier-dev/protocol';
 
 import { decodeBase64 } from '@/api/encryption';
 import { safeBashSingleQuote } from '@/capabilities/systemTasks/ssh/sshTransport';
@@ -118,7 +118,10 @@ describe('auth pair-remote (ssh)', () => {
 
       const remoteKeypair = tweetnacl.box.keyPair();
       const remotePublicKey = Buffer.from(remoteKeypair.publicKey).toString('base64');
-      const remoteRequestJson = JSON.stringify({ publicKey: remotePublicKey, claimSecret: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url') });
+      const pairingSecret = new Uint8Array(32).fill(5);
+      const createdAtMs = Date.now();
+      const expiresAtMs = createdAtMs + 60000;
+      const remoteRequestJson = JSON.stringify({ publicKey: remotePublicKey, claimSecret: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url'), pairing: { secretB64Url: Buffer.from(pairingSecret).toString('base64url'), createdAtMs, expiresAtMs }, supportsTokenOnly: true });
 
       spawnSyncMock
         // remote request
@@ -136,7 +139,6 @@ describe('auth pair-remote (ssh)', () => {
 
       vi.resetModules();
       const { handleAuthPairRemote } = await import('./auth/pairRemote');
-      const { decryptWithEphemeralKey } = await import('@/ui/auth');
       const output = captureConsoleLogAndMuteStdout();
       try {
         await handleAuthPairRemote(['--ssh', 'user@host', '--json', '--no-post-check']);
@@ -184,11 +186,11 @@ describe('auth pair-remote (ssh)', () => {
       expect(requests.has(remotePublicKey)).toBe(true);
       const response = requests.get(remotePublicKey)?.response;
       expect(typeof response).toBe('string');
-      const decrypted = decryptWithEphemeralKey(decodeBase64(String(response)), remoteKeypair.secretKey);
       const expectedMachineKey = deriveAccountMachineKeyFromRecoverySecret(legacySecret);
-      expect(decrypted).not.toBeNull();
-      expect(decrypted?.[0]).toBe(0);
-      expect(Array.from(decrypted?.slice(1, 33) ?? [])).toEqual(Array.from(expectedMachineKey));
+      expect(openTerminalProvisioningV3Response({
+        payload: decodeBase64(String(response)), recipientSecretKeyOrSeed: remoteKeypair.secretKey,
+        terminalEphemeralPublicKey: remoteKeypair.publicKey, pairingSecret, createdAtMs, expiresAtMs, nowMs: Date.now(),
+      })).toEqual({ type: 'dataKey', key: expectedMachineKey });
     } finally {
       restoreAxios();
       await app.close().catch(() => {});

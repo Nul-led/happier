@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fastify from 'fastify';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import {
   deriveAccountMachineKeyFromRecoverySecret,
+  sealBoxBundle,
   sealTerminalProvisioningV3TokenOnlyPayload,
 } from '@happier-dev/protocol';
 
@@ -60,7 +62,7 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
     await removeTempDir(localHomeDir);
   });
 
-  it('persists an opt-in v3 requirement with split request/wait state', async () => {
+  it('persists the default v3 requirement with split request/wait state', async () => {
     const app = fastify({ logger: false });
     app.post('/v1/auth/request', async (_req, reply) => reply.send({ state: 'requested' }));
     await app.ready();
@@ -72,7 +74,7 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
         HAPPIER_SERVER_URL: 'http://happier-auth.test',
         HAPPIER_PUBLIC_SERVER_URL: 'http://happier-auth.test',
         HAPPIER_WEBAPP_URL: 'http://webapp.test',
-        HAPPIER_TERMINAL_PAIRING_REQUIRE: 'v3',
+        HAPPIER_TERMINAL_PAIRING_REQUIRE: undefined,
       });
       vi.resetModules();
 
@@ -113,6 +115,7 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
     const app = fastify({ logger: false });
 
     app.post('/v1/auth/request', async (req, reply) => {
+      expect(Object.keys(req.body as object).sort()).toEqual(['claimSecretHash', 'publicKey', 'supportsV2']);
       const body = req.body as { publicKey?: unknown; claimSecretHash?: unknown; supportsV2?: unknown } | undefined;
       const publicKey = typeof body?.publicKey === 'string' ? body.publicKey : '';
       const claimSecretHash = typeof body?.claimSecretHash === 'string' ? body.claimSecretHash : '';
@@ -135,6 +138,7 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
     app.post('/v1/auth/response', async (req, reply) => {
       const authHeader = String((req.headers as any)?.authorization ?? '');
       if (authHeader !== 'Bearer local-token') return reply.code(401).send({ error: 'unauthorized' });
+      expect(Object.keys(req.body as object).sort()).toEqual(['publicKey', 'response']);
       const body = req.body as { publicKey?: unknown; response?: unknown } | undefined;
       const publicKey = typeof body?.publicKey === 'string' ? body.publicKey : '';
       const response = typeof body?.response === 'string' ? body.response : '';
@@ -162,15 +166,14 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       return reply.send({ state: 'authorized', token: 'issued-token', response: row.response });
     });
 
-    await app.ready();
-    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://happier-auth.test' });
+    const origin = await app.listen({ host: '127.0.0.1', port: 0 });
 
     try {
       // 1) Remote: create pairing request (json output should be clean even in dev variant)
       envScope.patch({
         HAPPIER_HOME_DIR: remoteHomeDir,
-        HAPPIER_SERVER_URL: 'http://happier-auth.test',
-        HAPPIER_PUBLIC_SERVER_URL: 'http://happier-auth.test',
+        HAPPIER_SERVER_URL: origin,
+        HAPPIER_PUBLIC_SERVER_URL: origin,
         HAPPIER_WEBAPP_URL: 'http://webapp.test',
         HAPPIER_NO_BROWSER_OPEN: '1',
         HAPPIER_AUTH_METHOD: 'web',
@@ -200,8 +203,8 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       // 2) Local: approve using existing local credentials (token never leaves local machine)
       envScope.patch({
         HAPPIER_HOME_DIR: localHomeDir,
-        HAPPIER_SERVER_URL: 'http://happier-auth.test',
-        HAPPIER_PUBLIC_SERVER_URL: 'http://happier-auth.test',
+        HAPPIER_SERVER_URL: origin,
+        HAPPIER_PUBLIC_SERVER_URL: origin,
         HAPPIER_WEBAPP_URL: 'http://webapp.test',
         HAPPIER_VARIANT: 'stable',
       });
@@ -214,7 +217,9 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       const { handleAuthApprove } = await import('./auth/approve');
       const approveOut = captureConsoleLogAndMuteStdout();
       try {
-        await handleAuthApprove(['--public-key', requestJson.publicKey, '--json']);
+        const requestFile = join(localHomeDir, 'remote-auth-request.json');
+        await writeFile(requestFile, JSON.stringify(requestJson), { mode: 0o600 });
+        await handleAuthApprove(['--public-key', requestJson.publicKey, '--request-file', requestFile, '--json']);
         expect(approveOut.logs.length).toBe(1);
         expect(JSON.parse(approveOut.logs[0] ?? '')).toEqual({ success: true });
       } finally {
@@ -224,8 +229,8 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       // 3) Remote: wait + claim, then write credentials (dataKey)
       envScope.patch({
         HAPPIER_HOME_DIR: remoteHomeDir,
-        HAPPIER_SERVER_URL: 'http://happier-auth.test',
-        HAPPIER_PUBLIC_SERVER_URL: 'http://happier-auth.test',
+        HAPPIER_SERVER_URL: origin,
+        HAPPIER_PUBLIC_SERVER_URL: origin,
         HAPPIER_WEBAPP_URL: 'http://webapp.test',
         HAPPIER_AUTH_POLL_INTERVAL_MS: '1',
         HAPPIER_VARIANT: 'stable',
@@ -240,7 +245,7 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
         expect(parsed.success).toBe(true);
         expect(parsed.token).toBe('issued-token');
         expect(parsed.encryptionType).toBe('dataKey');
-        expect(parsed.pairingAuthentication).toBe('legacy');
+        expect(parsed.pairingAuthentication).toBe('v3');
       } finally {
         waitOut.restore();
       }
@@ -253,10 +258,78 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
         Array.from(deriveAccountMachineKeyFromRecoverySecret(legacySecret)),
       );
     } finally {
-      restoreAxios();
       await app.close().catch(() => {});
     }
-  }, 20_000);
+  }, 60_000);
+
+  it.each(['legacy-v1', 'legacy-v2', 'missing-pairing-context'] as const)(
+    'rejects %s from a historical pending request without a recorded requirement',
+    async (scenario) => {
+      const app = fastify({ logger: false });
+      let response = '';
+      let statusReads = 0;
+      app.post('/v1/auth/request', async (_req, reply) => reply.send({ state: 'requested' }));
+      app.get('/v1/auth/request/status', async (_req, reply) => {
+        statusReads += 1;
+        return reply.send({ status: 'authorized', supportsV2: true });
+      });
+      app.post('/v1/auth/request/claim', async (_req, reply) => reply.send({
+        state: 'authorized', token: 'legacy-issued-token', response,
+      }));
+      await app.ready();
+      const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://happier-auth.test' });
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code): never => {
+        throw new Error(`process.exit:${String(code)}`);
+      });
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        envScope.patch({
+          HAPPIER_HOME_DIR: remoteHomeDir,
+          HAPPIER_SERVER_URL: 'http://happier-auth.test',
+          HAPPIER_PUBLIC_SERVER_URL: 'http://happier-auth.test',
+          HAPPIER_WEBAPP_URL: 'http://webapp.test',
+          HAPPIER_TERMINAL_PAIRING_REQUIRE: undefined,
+        });
+        vi.resetModules();
+        const { handleAuthRequest } = await import('./auth/request');
+        const output = captureConsoleLogAndMuteStdout();
+        let request: { publicKey: string; stateFile: string };
+        try {
+          await handleAuthRequest(['--json']);
+          request = JSON.parse(output.logs[0] ?? '');
+        } finally {
+          output.restore();
+        }
+        const state = JSON.parse(await readFile(request.stateFile, 'utf8'));
+        delete state.pairingRequirement;
+        if (scenario === 'missing-pairing-context') {
+          delete state.pairingSecret;
+          delete state.pairingCreatedAtMs;
+          delete state.pairingExpiresAtMs;
+        }
+        await writeFile(request.stateFile, JSON.stringify(state), { mode: 0o600 });
+        response = Buffer.from(sealBoxBundle({
+          plaintext: scenario === 'legacy-v2'
+            ? new Uint8Array([0, ...new Uint8Array(32).fill(7)])
+            : new Uint8Array(32).fill(5),
+          recipientPublicKey: new Uint8Array(Buffer.from(request.publicKey, 'base64')),
+          randomBytes: (length) => new Uint8Array(length).fill(17),
+        })).toString('base64');
+        const { handleAuthWait } = await import('./auth/wait');
+        await expect(handleAuthWait(['--public-key', request.publicKey, '--json'])).rejects.toThrow('process.exit:1');
+        const { readStoredCredentials } = await import('@/persistence');
+        await expect(readStoredCredentials()).resolves.toBeNull();
+        expect(errorSpy.mock.calls.flat().join(' ')).toContain('Authenticated terminal pairing v3 is required');
+        if (scenario === 'missing-pairing-context') expect(statusReads).toBe(0);
+      } finally {
+        errorSpy.mockRestore();
+        exitSpy.mockRestore();
+        restoreAxios();
+        await app.close().catch(() => {});
+      }
+    },
+    30_000,
+  );
 
   it('writes exact token-only credentials from an authenticated token-only pairing response', async () => {
     const app = fastify({ logger: false });
@@ -335,13 +408,14 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       await expect(readStoredCredentials()).resolves.toEqual({
         token: 'plain-issued-token',
         encryption: null,
+        credentialProvenance: 'stored_session',
       });
       await expect(readCredentials()).resolves.toBeNull();
     } finally {
       restoreAxios();
       await app.close().catch(() => {});
     }
-  }, 20_000);
+  }, 60_000);
 
   it('recognizes stored token-only credentials idempotently without polling or fabricating a key', async () => {
     const requests = new Map<string, RequestRow>();
@@ -412,10 +486,11 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       await expect(readStoredCredentials()).resolves.toEqual({
         token: `header.${tokenPayload}.sig`,
         encryption: null,
+        credentialProvenance: 'stored_session',
       });
     } finally {
       restoreAxios();
       await app.close().catch(() => {});
     }
-  }, 20_000);
+  }, 60_000);
 });

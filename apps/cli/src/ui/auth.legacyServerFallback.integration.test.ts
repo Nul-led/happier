@@ -1,8 +1,7 @@
+import { approvePrintedTerminalPairing } from '@/testkit/auth/terminalPairing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fastify from 'fastify';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { randomBytes } from 'node:crypto';
-import tweetnacl from 'tweetnacl';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
@@ -13,11 +12,7 @@ import { setStdioTtyForTest } from '@/testkit/process/stdio';
 type LegacyRequestRow = { response: string | null; pollCount: number };
 
 function encryptForTerminal(recipientPublicKey: Uint8Array, plaintext: Uint8Array): string {
-  const ephemeral = tweetnacl.box.keyPair();
-  const nonce = randomBytes(tweetnacl.box.nonceLength);
-  const cipher = tweetnacl.box(plaintext, nonce, recipientPublicKey, ephemeral.secretKey);
-  const bundle = Buffer.concat([Buffer.from(ephemeral.publicKey), Buffer.from(nonce), Buffer.from(cipher)]);
-  return bundle.toString('base64');
+  return approvePrintedTerminalPairing(recipientPublicKey, plaintext.length === 33 ? plaintext.slice(1) : plaintext);
 }
 
 function parsePublicKey(body: unknown): string | null {
@@ -139,9 +134,9 @@ describe('authAndSetupMachineIfNeeded (legacy server fallback) (integration)', (
       const result = await authAndSetupMachineIfNeeded();
       expect(result.credentials.token).toBe('token-legacy');
       if (!result.credentials.encryption) {
-        throw new Error('Expected legacy encryption credentials');
+        throw new Error('Expected data-key encryption credentials');
       }
-      expect(result.credentials.encryption.type).toBe('legacy');
+      expect(result.credentials.encryption.type).toBe('dataKey');
     } finally {
       output.restore();
       restoreAxios();
@@ -171,9 +166,9 @@ describe('authAndSetupMachineIfNeeded (legacy server fallback) (integration)', (
       const result = await authAndSetupMachineIfNeeded();
       expect(result.credentials.token).toBe('token-legacy-2');
       if (!result.credentials.encryption) {
-        throw new Error('Expected legacy encryption credentials');
+        throw new Error('Expected data-key encryption credentials');
       }
-      expect(result.credentials.encryption.type).toBe('legacy');
+      expect(result.credentials.encryption.type).toBe('dataKey');
     } finally {
       output.restore();
       restoreAxios();
@@ -204,9 +199,9 @@ describe('authAndSetupMachineIfNeeded (legacy server fallback) (integration)', (
       const result = await authAndSetupMachineIfNeeded();
       expect(result.credentials.token).toBe('token-legacy-strict');
       if (!result.credentials.encryption) {
-        throw new Error('Expected legacy encryption credentials');
+        throw new Error('Expected data-key encryption credentials');
       }
-      expect(result.credentials.encryption.type).toBe('legacy');
+      expect(result.credentials.encryption.type).toBe('dataKey');
     } finally {
       output.restore();
       restoreAxios();

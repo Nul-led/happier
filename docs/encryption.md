@@ -977,23 +977,29 @@ Terminal pairing v3 adds a 32-byte secret to the QR/deep link and authenticates 
 content-key response with HMAC-SHA-256. The terminal keeps that secret local and does not include it
 in the relay auth request.
 
-The current rollout is an **expansion phase**: new native clients produce v3 responses, while the
-terminal still accepts legacy v1/v2 responses for compatibility. Until a later release activates
-v3 enforcement, a malicious relay can still downgrade the exchange to a forged legacy response.
+Happier 0.3 requires authenticated v3 responses by default. Legacy v1/v2 responses are
+rejected before credentials are written. Older native pairing clients must update and scan a new
+QR code. Already paired credentials are unaffected; this boundary applies to new pairing exchanges.
 
-Users who want to opt into enforcement during the expansion phase can require the current
-authenticated protocol locally:
+`HAPPIER_TERMINAL_PAIRING_REQUIRE=v3` remains supported as an explicit minimum. Empty configuration
+uses the same minimum; unknown values fail closed. `auth request --json` persists the requirement,
+and `auth wait` also applies the 0.3 minimum to historical pending state. A pending request without
+complete authenticated context must be restarted with `auth request`.
+
+For manual CLI approval, transfer the requesting terminal's JSON output through a trusted channel
+and save it as a private file, then run:
 
 ```bash
-HAPPIER_TERMINAL_PAIRING_REQUIRE=v3 happier auth
+happier auth approve --request-file /path/to/private-request.json --json
 ```
 
-`v3` is a minimum accepted pairing-protocol requirement: legacy v1/v2 responses are rejected, and
-future supported versions may satisfy the same or a stronger requirement. Unknown values fail
-closed with a configuration error. For `auth request --json` plus `auth wait`, the requirement is
-persisted in the private pending-auth state so the wait process cannot accidentally lose it.
+The file contains the pairing secret: protect it like the QR code and remove it after use. Approval
+checks any relay URLs in the request against the selected server. The existing private pending
+state file is also accepted for local setup. `auth pair-remote` and SSH setup forward the existing
+request context automatically. Public-key-only approval remains available for older recipients,
+but its legacy response cannot pair a 0.3 terminal. There is no receiver downgrade override.
 
-Native-app QR pairing can provide relay-independent authentication once enforcement is active
+Native-app QR pairing provides relay-independent response authentication in 0.3
 because the secret travels camera-to-app. Web pairing cannot make the same guarantee against a
 hostile self-hosted relay: that relay also serves the JavaScript which receives the secret, so the
 web flow necessarily trusts its web origin.
@@ -1007,8 +1013,8 @@ exports or reuses its own bearer. The terminal composes those two authenticated 
 The requesting terminal advertises token-only reader support as `supportsTokenOnly=1` only alongside
 complete v3 pairing context. The approver requires that capability plus confirmed plain Account mode
 and enabled `encryption.plaintextStorage` and `e2ee.keylessAccounts` decisions. Missing capability,
-legacy links, malformed context, older readers, and CLI-to-remote approval from token-only
-credentials fail closed; keyed v1/v2/v3 behavior remains unchanged.
+legacy links, malformed context, and older readers fail closed for token-only approval. Current
+CLI-to-remote approval uses the same authenticated v3 producer and capability check.
 
 ## External Sessions secure refresh and publication
 

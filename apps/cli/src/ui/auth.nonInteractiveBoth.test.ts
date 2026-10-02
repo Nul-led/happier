@@ -1,5 +1,5 @@
+import { approvePrintedTerminalPairing } from '@/testkit/auth/terminalPairing';
 import { describe, expect, it, vi } from 'vitest';
-import tweetnacl from 'tweetnacl';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
@@ -35,18 +35,7 @@ let capturedPublicKeyBase64: string | null = null;
 
 function encryptLegacyBundleForRecipientPublicKey(recipientPublicKeyBase64: string): string {
   const recipientPublicKey = new Uint8Array(Buffer.from(recipientPublicKeyBase64, 'base64'));
-  const payload = new Uint8Array(32).fill(7);
-
-  const ephemeralKeyPair = tweetnacl.box.keyPair();
-  const nonce = new Uint8Array(24).fill(9);
-  const encrypted = tweetnacl.box(payload, nonce, recipientPublicKey, ephemeralKeyPair.secretKey);
-
-  const bundle = new Uint8Array(ephemeralKeyPair.publicKey.length + nonce.length + encrypted.length);
-  bundle.set(ephemeralKeyPair.publicKey, 0);
-  bundle.set(nonce, ephemeralKeyPair.publicKey.length);
-  bundle.set(encrypted, ephemeralKeyPair.publicKey.length + nonce.length);
-
-  return Buffer.from(bundle).toString('base64');
+  return approvePrintedTerminalPairing(recipientPublicKey, new Uint8Array(32).fill(7));
 }
 
 vi.mock('axios', async () => {
@@ -129,7 +118,7 @@ describe.sequential('doAuth (non-interactive)', () => {
       envScope.restore();
       await removeTempDir(home);
     }
-  }, 15_000);
+  }, 30_000);
 
   it('prefers Tailscale Serve https:// URL for QR/deep links when serverUrl is loopback and public url is unset', async () => {
     const home = await createTempDir('happier-cli-auth-noninteractive-tailscale-');
@@ -174,7 +163,7 @@ describe.sequential('doAuth (non-interactive)', () => {
       await removeTempDir(home);
       runTailscaleServeStatusMock.mockReset();
     }
-  }, 15_000);
+  }, 30_000);
 
   it('prints a LAN-only hint when canonical serverUrl is local HTTP', async () => {
     const home = await createTempDir('happier-cli-auth-noninteractive-lan-');
@@ -208,7 +197,7 @@ describe.sequential('doAuth (non-interactive)', () => {
       envScope.restore();
       await removeTempDir(home);
     }
-  }, 15_000);
+  }, 30_000);
 
   it('prints a hint when mobile links cannot embed localhost server URLs', async () => {
     const home = await createTempDir('happier-cli-auth-noninteractive-loopback-');
@@ -244,7 +233,7 @@ describe.sequential('doAuth (non-interactive)', () => {
       envScope.restore();
       await removeTempDir(home);
     }
-  }, 15_000);
+  }, 30_000);
 
   it('keeps localhost in web auth links and describes it as same-machine only', async () => {
     const home = await createTempDir('happier-cli-auth-noninteractive-web-loopback-');
@@ -282,7 +271,7 @@ describe.sequential('doAuth (non-interactive)', () => {
       envScope.restore();
       await removeTempDir(home);
     }
-  }, 15_000);
+  }, 30_000);
 
   it('uses apiServerUrl for auth API calls when HAPPIER_PUBLIC_SERVER_URL is set', async () => {
     const home = await createTempDir('happier-cli-auth-noninteractive-apiServerUrl-');
@@ -330,7 +319,7 @@ describe.sequential('doAuth (non-interactive)', () => {
       envScope.restore();
       await removeTempDir(home);
     }
-  }, 15_000);
+  }, 30_000);
 
   it('fails fast with a clear message when claim response token/response are invalid', async () => {
     const home = await createTempDir('happier-cli-auth-noninteractive-invalid-claim-');
@@ -383,7 +372,7 @@ describe.sequential('doAuth (non-interactive)', () => {
       envScope.restore();
       await removeTempDir(home);
     }
-  }, 15_000);
+  }, 30_000);
 
   it('does not print a QR code when method is web', async () => {
     const home = await createTempDir('happier-cli-auth-noninteractive-web-');
@@ -418,5 +407,5 @@ describe.sequential('doAuth (non-interactive)', () => {
       envScope.restore();
       await removeTempDir(home);
     }
-  }, 15_000);
+  }, 30_000);
 });

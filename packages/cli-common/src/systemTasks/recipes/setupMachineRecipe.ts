@@ -30,7 +30,7 @@ export type SetupMachineRecipeExecutor = Readonly<{
   readAuthStatus: () => Promise<SetupMachineAuthStatus>;
   requestAuthPairing: () => Promise<Readonly<{ publicKey: string } & Record<string, unknown>>>;
   waitForAuthPairing: (publicKey: string) => Promise<Readonly<{ machineId: string | null }>>;
-  approveAuthPairing?: (publicKey: string) => Promise<void>;
+  approveAuthPairing?: (publicKey: string, requestPayload: Record<string, unknown>) => Promise<void>;
   installDaemonService?: () => Promise<void>;
   startDaemonService?: () => Promise<void>;
   waitForReadyDaemon?: (params: Readonly<{ signal?: AbortSignal }>) => Promise<SetupMachineDaemonStatus>;
@@ -113,7 +113,7 @@ export async function runSetupMachineRecipe(params: Readonly<{
 
     if (authStatus.authenticated === true && !statusMachineId) {
       if (params.executor.approveAuthPairing) {
-        await params.executor.approveAuthPairing(publicKey);
+        await params.executor.approveAuthPairing(publicKey, payload);
       } else if (params.approvePairingRequest) {
         await params.approvePairingRequest({ publicKey, requestPayload: payload });
       } else {

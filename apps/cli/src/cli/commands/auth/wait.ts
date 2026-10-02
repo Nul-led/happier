@@ -36,7 +36,7 @@ type PendingAuthState = Readonly<{
 }>;
 
 const V3_REQUIRED_ERROR =
-  'Authenticated terminal pairing v3 is required. Update the Happier mobile app and scan a new QR code.';
+  'Authenticated terminal pairing v3 is required. Update the approving client and create a new QR code or CLI auth request.';
 
 function pendingAuthStateDir(): string {
   return join(configuration.activeServerDir, 'auth', 'pending');
