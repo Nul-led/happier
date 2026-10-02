@@ -102,6 +102,10 @@ function resolveExpoNodeModuleStub(id: string, importer?: string): string | null
 
 const workspacePackages: readonly WorkspacePackageSpec[] = [
   {
+    packageName: 'privacy-kit',
+    packageSourceRoot: resolve(repoRoot, 'packages/privacy-kit/src'),
+  },
+  {
     packageName: '@happier-dev/protocol',
     packageSourceRoot: resolve(repoRoot, 'packages/protocol/src'),
   },
@@ -112,6 +116,10 @@ const workspacePackages: readonly WorkspacePackageSpec[] = [
   {
     packageName: '@happier-dev/cli-common',
     packageSourceRoot: resolve(repoRoot, 'packages/cli-common/src'),
+  },
+  {
+    packageName: '@happier-dev/release-runtime',
+    packageSourceRoot: resolve(repoRoot, 'packages/release-runtime/src'),
   },
   {
     packageName: '@happier-dev/connection-supervisor',
@@ -145,6 +153,7 @@ const appSourceAliasesPlugin: Plugin = {
   name: 'happier-tests-app-source-aliases',
   enforce: 'pre',
   resolveId(id, importer) {
+    if (id === 'privacy-kit') return resolve(repoRoot, 'packages/privacy-kit/src/index.ts');
     // SDK source consumers use the same Node exchange as its package import map.
     if (id === '#http' && importer && isPathInsideDirectory(importer, resolve(repoRoot, 'packages/sdk/src'))) {
       return resolve(repoRoot, 'packages/sdk/src/http/undiciHttp.ts');

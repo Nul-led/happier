@@ -11,12 +11,13 @@ describe('providers: capability probe RPC ack timeouts', () => {
       await expect(
         invokeRpcAcrossMachineIds({
           ui: {
-            rpcCall: async (_method: string, _payload: string, timeoutMs: number) => {
+            emit: () => {},
+            emitWithAck: async <T = unknown>(_event: string, _payload: unknown, timeoutMs = 10_000): Promise<T> => {
               // Simulate an RPC layer that blocks until its own timeout.
               await new Promise((resolve) => setTimeout(resolve, timeoutMs));
-              return { errorCode: 'RPC_METHOD_NOT_AVAILABLE' };
+              return { ok: false, errorCode: 'RPC_METHOD_NOT_AVAILABLE' } as T;
             },
-          } as any,
+          },
           machineIds: ['machine-1'],
           method: 'capabilities.detect',
           payload: { hello: 'world' },
@@ -38,11 +39,9 @@ describe('providers: capability probe RPC ack timeouts', () => {
       await expect(
         invokeRpcAcrossMachineIds({
           ui: {
-            rpcCall: async () => {
-              await new Promise(() => {});
-              return { errorCode: 'RPC_METHOD_NOT_AVAILABLE' };
-            },
-          } as any,
+            emit: () => {},
+            emitWithAck: async <T = unknown>(): Promise<T> => await new Promise<T>(() => {}),
+          },
           machineIds: ['machine-1'],
           method: 'capabilities.detect',
           payload: { hello: 'world' },

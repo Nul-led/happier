@@ -14,16 +14,13 @@ import { createRunDirs } from '../../src/testkit/runDir';
 import { startServerLight, type StartedServer } from '../../src/testkit/process/serverLight';
 import { createTestAuth } from '../../src/testkit/auth';
 import { createUserScopedSocketCollector } from '../../src/testkit/socketClient';
-import { encryptLegacyBase64, decryptLegacyBase64 } from '../../src/testkit/messageCrypto';
+import { createLegacyRpcClient } from '../../src/testkit/syntheticAgent/rpcClient';
 import { startTestDaemon, type StartedDaemon } from '../../src/testkit/daemon/daemon';
 import { daemonControlPostJson } from '../../src/testkit/daemon/controlServerClient';
 import { waitFor } from '../../src/testkit/timing';
 import { seedCliAuthForTestAccount } from '../../src/testkit/cliAuth';
 import { fakeClaudeFixturePath } from '../../src/testkit/fakeClaude';
 import { callLegacyEncryptedSessionRpc as callSessionRpc } from '../../src/testkit/sessionRpc';
-import { unwrapSerializedJsonValue } from '../../src/testkit/unwrapSerializedJsonValue';
-
-type RpcAck = { ok: boolean; result?: string; error?: string; errorCode?: string };
 
 const run = createRunDirs({ runLabel: 'core' });
 
@@ -130,25 +127,18 @@ describe('core e2e: execution runs (resumable) enforce backend resume support', 
     });
     expect(stopped.ok).toBe(true);
 
-    const sendNoResumeAck = await ui.rpcCall<RpcAck>(
+    const rpc = createLegacyRpcClient(ui, secret, 'session');
+    const sendNoResumeAck = await rpc.call(
       `${sessionId}:${SESSION_RPC_METHODS.EXECUTION_RUN_SEND}`,
-      encryptLegacyBase64({ runId: started.runId, message: 'hello again' }, secret),
+      { runId: started.runId, message: 'hello again' },
     );
-    expect(sendNoResumeAck?.ok).toBe(true);
-    expect(typeof sendNoResumeAck?.result).toBe('string');
-    const sendNoResumeResult = unwrapSerializedJsonValue(decryptLegacyBase64(String(sendNoResumeAck?.result ?? ''), secret)) as any;
-    expect(sendNoResumeResult?.ok).toBe(false);
-    expect(sendNoResumeResult?.errorCode).toBe('execution_run_not_allowed');
+    expect(sendNoResumeAck).toMatchObject({ ok: true, result: { ok: false, errorCode: 'execution_run_not_allowed' } });
 
-    const resumeAck = await ui.rpcCall<RpcAck>(
+    const resumeAck = await rpc.call(
       `${sessionId}:${SESSION_RPC_METHODS.EXECUTION_RUN_SEND}`,
-      encryptLegacyBase64({ runId: started.runId, message: 'hello again', resume: true }, secret),
+      { runId: started.runId, message: 'hello again', resume: true },
     );
-    expect(resumeAck?.ok).toBe(true);
-    expect(typeof resumeAck?.result).toBe('string');
-    const resumeResult = unwrapSerializedJsonValue(decryptLegacyBase64(String(resumeAck?.result ?? ''), secret)) as any;
-    expect(resumeResult?.ok).toBe(false);
-    expect(resumeResult?.errorCode).toBe('execution_run_not_allowed');
+    expect(resumeAck).toMatchObject({ ok: true, result: { ok: false, errorCode: 'execution_run_not_allowed' } });
 
     const got = await callSessionRpc({
       ui,

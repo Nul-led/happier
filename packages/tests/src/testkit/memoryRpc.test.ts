@@ -1,7 +1,28 @@
 import { describe, expect, it } from 'vitest';
+import { socketRpcCodec } from '@happier-dev/sync-client';
 
 import { callEncryptedMachineRpc, type MemoryRpcSchema } from './memoryRpc';
-import { encryptLegacyBase64 } from './messageCrypto';
+import { decryptLegacyBase64, encryptLegacyBase64 } from './messageCrypto';
+
+function responder(secret: Uint8Array, result: unknown, onCall?: () => void) {
+  const content = { mode: 'e2ee' as const, cipher: {
+    encryptRaw: async (value: unknown) => encryptLegacyBase64(value, secret),
+    decryptRaw: async (value: string) => decryptLegacyBase64(value, secret),
+  } };
+  const rpcCall = async (method: string, params: unknown) => {
+    onCall?.();
+    const request = await socketRpcCodec.decodeRequestParams(content, params, method);
+    return { ok: true, result: await socketRpcCodec.encodeResponse(content, result, request.callId) };
+  };
+  return {
+    rpcCall,
+    emit: () => undefined,
+    emitWithAck: async <T = unknown>(_event: string, payload: unknown): Promise<T> => {
+      const request = payload as { method: string; params: unknown };
+      return await rpcCall(request.method, request.params) as T;
+    },
+  };
+}
 
 const passthroughSchema: MemoryRpcSchema<unknown> = {
   safeParse: (input: unknown) => ({ success: true, data: input }),
@@ -14,13 +35,10 @@ describe('callEncryptedMachineRpc', () => {
     await expect(
       callEncryptedMachineRpc({
         ui: {
-          rpcCall: async () => {
+          emit: () => undefined,
+          emitWithAck: async <T = unknown>() => {
             calls += 1;
-            return {
-              ok: false,
-              errorCode: 'memory_index_unavailable',
-              error: 'index is disabled',
-            };
+            return { ok: false, errorCode: 'memory_index_unavailable', error: 'index is disabled' } as T;
           },
         },
         machineId: 'machine-1',
@@ -41,18 +59,7 @@ describe('callEncryptedMachineRpc', () => {
 
     await expect(
       callEncryptedMachineRpc({
-        ui: {
-          rpcCall: async () => {
-            calls += 1;
-            return {
-              ok: true,
-              result: encryptLegacyBase64({
-                errorCode: 'projection_unavailable',
-                error: 'projection failed',
-              }, secret),
-            };
-          },
-        },
+        ui: responder(secret, { errorCode: 'projection_unavailable', error: 'projection failed' }, () => { calls += 1; }),
         machineId: 'machine-1',
         method: 'daemon.extensions.contributionRegistryProjection.describe',
         req: {},
@@ -72,12 +79,7 @@ describe('callEncryptedMachineRpc', () => {
 
     await expect(
       callEncryptedMachineRpc({
-        ui: {
-          rpcCall: async () => ({
-            ok: true,
-            result: encryptLegacyBase64({ unexpected: 'shape' }, secret),
-          }),
-        },
+        ui: responder(secret, { unexpected: 'shape' }),
         machineId: 'machine-1',
         method: 'memory.search',
         req: {},

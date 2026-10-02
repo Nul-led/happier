@@ -13,7 +13,7 @@ import {
   type MachineLiveStreamFrameV1,
   type MachineLiveStreamRelayEnvelopeV1,
 } from '@happier-dev/protocol';
-import { RPC_ERROR_CODES, RPC_ERROR_MESSAGES, RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 
 import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
@@ -33,7 +33,7 @@ import { createRunDirs } from '../../src/testkit/runDir';
 import { waitFor } from '../../src/testkit/timing';
 
 import { registerDaemonLiveStreamRelayHandlers } from '../../../../apps/cli/src/rpc/handlers/daemonLiveStreamRelay';
-import { decodeBase64, decrypt, encodeBase64, encrypt } from '../../../../apps/cli/src/api/encryption';
+import { RpcHandlerManager } from '../../../../apps/cli/src/api/rpc/RpcHandlerManager';
 import type {
   MachineLiveStreamCaptureAdapter,
   MachineLiveStreamCaptureStartInput,
@@ -60,23 +60,6 @@ type ControlledCaptureSession = Readonly<{
   offerFrames: (count: number) => void;
   isStopped: () => boolean;
   stopCount: () => number;
-}>;
-
-type MachineRpcRequest = Readonly<{
-  method: string;
-  params: unknown;
-  authorization?: unknown;
-}>;
-
-type MachineRpcHandler = (data: unknown) => unknown | Promise<unknown>;
-
-type MachineRpcHarness = Readonly<{
-  registerHandler: <TRequest = unknown, TResponse = unknown>(
-    method: string,
-    handler: (data: TRequest) => TResponse | Promise<TResponse>,
-  ) => void;
-  registerSocket: (socket: SocketIoClient) => void;
-  handleRequest: (request: MachineRpcRequest) => Promise<unknown>;
 }>;
 
 function toBase64Url(bytes: Uint8Array): string {
@@ -138,46 +121,6 @@ function createControlledCaptureAdapter(): Readonly<{
     },
   };
   return { adapter, sessions };
-}
-
-function createMachineRpcHarness(params: Readonly<{
-  scopePrefix: string;
-  encryptionKey: Uint8Array;
-}>): MachineRpcHarness {
-  const handlers = new Map<string, MachineRpcHandler>();
-  const prefixedMethod = (method: string) => `${params.scopePrefix}:${method}`;
-  const encodeResponse = (response: unknown) => encodeBase64(encrypt(params.encryptionKey, 'dataKey', response));
-
-  return {
-    registerHandler: (method, handler) => {
-      handlers.set(prefixedMethod(method), handler as MachineRpcHandler);
-    },
-    registerSocket: (socket) => {
-      for (const [method] of handlers) {
-        socket.emit(SOCKET_RPC_EVENTS.REGISTER, { method });
-      }
-    },
-    handleRequest: async (request) => {
-      const handler = handlers.get(request.method);
-      if (!handler) {
-        return encodeResponse({
-          error: RPC_ERROR_MESSAGES.METHOD_NOT_FOUND,
-          errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND,
-        });
-      }
-      const decryptedParams = typeof request.params === 'string'
-        ? decrypt(params.encryptionKey, 'dataKey', decodeBase64(request.params))
-        : null;
-      if (decryptedParams === null) {
-        return encodeResponse({ error: 'Invalid RPC params' });
-      }
-      try {
-        return encodeResponse(await handler(decryptedParams));
-      } catch (error) {
-        return encodeResponse({ error: error instanceof Error ? error.message : 'Unknown error' });
-      }
-    },
-  };
 }
 
 async function connectSocket(params: Readonly<{
@@ -405,9 +348,11 @@ describe('core e2e: simulator relay RPC and production UI ingestion (L6 transpor
         machineSocket.emit(MACHINE_LIVE_STREAM_SOCKET_EVENT, envelope);
       },
     });
-    const rpc = createMachineRpcHarness({
+    const rpc = new RpcHandlerManager({
       scopePrefix: sourceMachineId,
       encryptionKey: machineDataKey,
+      encryptionVariant: 'dataKey',
+      logger: () => {},
     });
     registerDaemonLiveStreamRelayHandlers(rpc, {
       relay: {
@@ -425,7 +370,7 @@ describe('core e2e: simulator relay RPC and production UI ingestion (L6 transpor
     });
     const registeredMethod = `${sourceMachineId}:${RPC_METHODS.DAEMON_LIVE_STREAM_RELAY_START}`;
     const registered = waitForMachineRpcRegistration(machineSocket, registeredMethod);
-    rpc.registerSocket(machineSocket);
+    rpc.onSocketConnect(machineSocket);
     await registered;
 
     const simulatorA = `sim_${randomUUID()}`;

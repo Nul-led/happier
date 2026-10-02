@@ -1,4 +1,4 @@
-import type { SocketCollector } from './socketClient';
+import type { RpcSocket } from './syntheticAgent/rpcClient';
 import { callLegacyEncryptedSessionRpc } from './sessionRpc';
 
 const BooleanRpcResultSchema = {
@@ -11,7 +11,7 @@ const BooleanRpcResultSchema = {
 };
 
 export async function requestSessionSwitchRpc(opts: {
-  ui: SocketCollector;
+  ui: RpcSocket;
   sessionId: string;
   to: 'local' | 'remote';
   secret: Uint8Array;

@@ -6,7 +6,6 @@ import {
   HOST_PRIVATE_PLUGIN_INSTALL_DECISION_RPC_METHOD,
 } from '@happier-dev/protocol/marketplace/internal';
 import { readCliAccessKey, type CliAccessKey } from '../cliAccessKey';
-import { decryptLegacyBase64, encryptLegacyBase64 } from '../messageCrypto';
 import { type MemoryRpcSchema } from '../memoryRpc';
 import {
   createUserScopedSocketCollector,
@@ -14,7 +13,7 @@ import {
   type SocketConnectivityState,
   type SocketConnectivityTransition,
 } from '../socketClient';
-import { createDataKeyRpcClient, unwrapDataKeyRpcResult } from '../syntheticAgent/rpcClient';
+import { createDataKeyRpcClient, createLegacyRpcClient, unwrapDataKeyRpcResult } from '../syntheticAgent/rpcClient';
 import { waitFor } from '../timing';
 import { waitForDaemonMachineIdFromCliSettings } from '../uiE2e/daemonMachineId';
 export {
@@ -53,7 +52,7 @@ const PluginInstallDecisionOutcomeSchema: MemoryRpcSchema<PluginInstallDecisionO
 };
 
 type ReviewSocket =
-  & Pick<SocketCollector, 'connect' | 'close' | 'isConnected' | 'rpcCall'>
+  & Pick<SocketCollector, 'connect' | 'close' | 'isConnected' | 'emitWithAck' | 'emit'>
   & Partial<Pick<SocketCollector, 'getConnectivityState'>>;
 
 export type AuthenticatedPluginInstallReviewTimeoutDiagnostic = Readonly<{
@@ -131,34 +130,6 @@ type AuthenticatedInstallReviewDeps = Readonly<{
 
 const AUTHENTICATED_INSTALL_DECISION_TIMEOUT_MS = 5 * 60_000;
 
-function normalizeLegacyPrivateRpcResult(
-  raw: unknown,
-  secret: Uint8Array,
-): PrivateRpcTransportResult {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ok: false, error: 'invalid-rpc-response' };
-  }
-  const envelope = raw as Readonly<Record<string, unknown>>;
-  if (envelope.ok === true) {
-    if (typeof envelope.result !== 'string') {
-      return { ok: false, error: 'invalid-rpc-result' };
-    }
-    return {
-      ok: true,
-      result: decryptLegacyBase64(envelope.result, secret),
-    };
-  }
-  return {
-    ok: false,
-    error: typeof envelope.error === 'string'
-      ? envelope.error
-      : 'rpc-failed',
-    ...(typeof envelope.errorCode === 'string'
-      ? { errorCode: envelope.errorCode }
-      : {}),
-  };
-}
-
 async function callLegacyPrivateRpcOnce(params: Readonly<{
   socket: ReviewSocket;
   machineId: string;
@@ -167,13 +138,10 @@ async function callLegacyPrivateRpcOnce(params: Readonly<{
   secret: Uint8Array;
   timeoutMs: number;
 }>): Promise<PrivateRpcTransportResult> {
-  return normalizeLegacyPrivateRpcResult(
-    await params.socket.rpcCall(
-      `${params.machineId}:${params.method}`,
-      encryptLegacyBase64(params.payload, params.secret),
-      params.timeoutMs,
-    ),
-    params.secret,
+  return createLegacyRpcClient(params.socket, params.secret).call(
+    `${params.machineId}:${params.method}`,
+    params.payload,
+    params.timeoutMs,
   );
 }
 

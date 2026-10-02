@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { socketRpcCodec } from '@happier-dev/sync-client';
 
 import {
   decideAuthenticatedPluginInstallReview,
@@ -13,12 +14,27 @@ import {
   encryptDataKeyBase64,
 } from '../rpcCrypto';
 
+function boundResponse(mode: 'legacy' | 'dataKey', key: Uint8Array, result: unknown) {
+  const content = { mode: 'e2ee' as const, cipher: {
+    encryptRaw: async (value: unknown) => mode === 'legacy'
+      ? encryptLegacyBase64(value, key) : encryptDataKeyBase64(value, key),
+    decryptRaw: async (value: string) => mode === 'legacy'
+      ? decryptLegacyBase64(value, key) : decryptDataKeyBase64(value, key),
+  } };
+  return async (_event: string, payload: unknown) => {
+    const { method, params } = payload as { method: string; params: unknown };
+    const request = await socketRpcCodec.decodeRequestParams(content, params, method);
+    return { ok: true, result: await socketRpcCodec.encodeResponse(content, result, request.callId) };
+  };
+}
+
 function socket() {
   return {
     connect: vi.fn(),
     close: vi.fn(),
     isConnected: vi.fn(() => true),
-    rpcCall: vi.fn(),
+    emit: vi.fn(),
+    emitWithAck: vi.fn(),
   };
 }
 
@@ -353,19 +369,16 @@ describe('decideAuthenticatedPluginInstallReview', () => {
   it('waits for the exact private legacy handler before confirmation and sends one decision', async () => {
     const reviewSocket = socket();
     const legacySecret = Uint8Array.from(Buffer.alloc(32, 1));
-    reviewSocket.rpcCall
+    reviewSocket.emitWithAck
       .mockResolvedValueOnce({
         ok: false,
         errorCode: 'RPC_METHOD_NOT_AVAILABLE',
       })
-      .mockResolvedValueOnce({
-        ok: true,
-        result: encryptLegacyBase64({
+      .mockImplementationOnce(boundResponse('legacy', legacySecret, {
           ok: false,
           errorCode: 'invalid_request',
           error: 'invalid_request',
-        }, legacySecret),
-      });
+        }));
     const events: string[] = [];
     const callLegacy = vi.fn(async () => {
       events.push('send');
@@ -397,14 +410,15 @@ describe('decideAuthenticatedPluginInstallReview', () => {
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.plugin' });
 
     expect(events).toEqual(['confirm', 'send']);
-    expect(reviewSocket.rpcCall).toHaveBeenCalledTimes(2);
-    expect(reviewSocket.rpcCall).toHaveBeenCalledWith(
-      'machine-1:daemon.plugins.install.review.decide',
-      expect.any(String),
+    expect(reviewSocket.emitWithAck).toHaveBeenCalledTimes(2);
+    expect(reviewSocket.emitWithAck).toHaveBeenCalledWith(
+      'rpc-call',
+      expect.objectContaining({ method: 'machine-1:daemon.plugins.install.review.decide', params: expect.any(String) }),
       expect.any(Number),
     );
-    for (const [, encryptedProbe] of reviewSocket.rpcCall.mock.calls) {
-      expect(decryptLegacyBase64(encryptedProbe, legacySecret)).toEqual({});
+    for (const [, payload] of reviewSocket.emitWithAck.mock.calls) {
+      const encryptedProbe = (payload as { params: string }).params;
+      expect(decryptLegacyBase64(encryptedProbe, legacySecret)).toMatchObject({ v: 2, k: 'req', p: {} });
     }
     expect(callLegacy).toHaveBeenCalledWith(expect.objectContaining({
       machineId: 'machine-1',
@@ -424,19 +438,16 @@ describe('decideAuthenticatedPluginInstallReview', () => {
   it('uses the authenticated data-key authority after malformed readiness probes with zero decision effect', async () => {
     const reviewSocket = socket();
     const machineKey = Uint8Array.from(Buffer.alloc(32, 3));
-    reviewSocket.rpcCall
+    reviewSocket.emitWithAck
       .mockResolvedValueOnce({
         ok: false,
         errorCode: 'RPC_METHOD_NOT_AVAILABLE',
       })
-      .mockResolvedValueOnce({
-        ok: true,
-        result: encryptDataKeyBase64({
+      .mockImplementationOnce(boundResponse('dataKey', machineKey, {
           ok: false,
           errorCode: 'invalid_request',
           error: 'invalid_request',
-        }, machineKey),
-      });
+        }));
     const callDataKey = vi.fn(async () => ({
       kind: 'committed' as const,
       pluginId: 'acme.plugin',
@@ -468,9 +479,10 @@ describe('decideAuthenticatedPluginInstallReview', () => {
       pluginId: 'acme.plugin',
     });
 
-    expect(reviewSocket.rpcCall).toHaveBeenCalledTimes(2);
-    for (const [, encryptedProbe] of reviewSocket.rpcCall.mock.calls) {
-      expect(decryptDataKeyBase64(encryptedProbe, machineKey)).toEqual({});
+    expect(reviewSocket.emitWithAck).toHaveBeenCalledTimes(2);
+    for (const [, payload] of reviewSocket.emitWithAck.mock.calls) {
+      const encryptedProbe = (payload as { params: string }).params;
+      expect(decryptDataKeyBase64(encryptedProbe, machineKey)).toMatchObject({ v: 2, k: 'req', p: {} });
     }
     expect(callDataKey).toHaveBeenCalledOnce();
     expect(callDataKey).toHaveBeenCalledWith(expect.objectContaining({
@@ -552,14 +564,11 @@ describe('decideAuthenticatedPluginInstallReview', () => {
   it('fails closed when the socket disconnects after readiness and before the decision', async () => {
     const reviewSocket = socket();
     const legacySecret = Uint8Array.from(Buffer.alloc(32, 1));
-    reviewSocket.rpcCall.mockResolvedValueOnce({
-      ok: true,
-      result: encryptLegacyBase64({
+    reviewSocket.emitWithAck.mockImplementationOnce(boundResponse('legacy', legacySecret, {
         ok: false,
         errorCode: 'invalid_request',
         error: 'invalid_request',
-      }, legacySecret),
-    });
+      }));
     const callLegacy = vi.fn();
 
     await expect(decideAuthenticatedPluginInstallReview({
@@ -584,7 +593,7 @@ describe('decideAuthenticatedPluginInstallReview', () => {
       },
     })).rejects.toThrow(/authority changed/);
 
-    expect(reviewSocket.rpcCall).toHaveBeenCalledOnce();
+    expect(reviewSocket.emitWithAck).toHaveBeenCalledOnce();
     expect(callLegacy).not.toHaveBeenCalled();
     expect(reviewSocket.close).toHaveBeenCalledOnce();
   });
@@ -592,15 +601,12 @@ describe('decideAuthenticatedPluginInstallReview', () => {
   it('does not replay a decision when the exact route disappears after readiness', async () => {
     const reviewSocket = socket();
     const legacySecret = Uint8Array.from(Buffer.alloc(32, 1));
-    reviewSocket.rpcCall
-      .mockResolvedValueOnce({
-        ok: true,
-        result: encryptLegacyBase64({
+    reviewSocket.emitWithAck
+      .mockImplementationOnce(boundResponse('legacy', legacySecret, {
           ok: false,
           errorCode: 'invalid_request',
           error: 'invalid_request',
-        }, legacySecret),
-      })
+        }))
       .mockResolvedValueOnce({
         ok: false,
         errorCode: 'RPC_METHOD_NOT_AVAILABLE',
@@ -624,13 +630,15 @@ describe('decideAuthenticatedPluginInstallReview', () => {
       },
     })).rejects.toThrow(/RPC_METHOD_NOT_AVAILABLE/);
 
-    expect(reviewSocket.rpcCall).toHaveBeenCalledTimes(2);
-    expect(decryptLegacyBase64(reviewSocket.rpcCall.mock.calls[0]?.[1], legacySecret)).toEqual({});
-    expect(decryptLegacyBase64(reviewSocket.rpcCall.mock.calls[1]?.[1], legacySecret)).toEqual({
-      v: 1,
-      pendingChangeId: 'pending-1',
-      decision: 'installAndTrust',
-      optionalSelections: [],
+    expect(reviewSocket.emitWithAck).toHaveBeenCalledTimes(2);
+    expect(decryptLegacyBase64(reviewSocket.emitWithAck.mock.calls[0]?.[1].params, legacySecret)).toMatchObject({ v: 2, k: 'req', p: {} });
+    expect(decryptLegacyBase64(reviewSocket.emitWithAck.mock.calls[1]?.[1].params, legacySecret)).toMatchObject({
+      v: 2, k: 'req', p: {
+        v: 1,
+        pendingChangeId: 'pending-1',
+        decision: 'installAndTrust',
+        optionalSelections: [],
+      },
     });
     expect(reviewSocket.close).toHaveBeenCalledOnce();
   });
@@ -640,14 +648,11 @@ describe('decideAuthenticatedPluginInstallReview', () => {
       getConnectivityState: ReturnType<typeof vi.fn>;
     };
     const legacySecret = Uint8Array.from(Buffer.alloc(32, 1));
-    reviewSocket.rpcCall.mockResolvedValueOnce({
-      ok: true,
-      result: encryptLegacyBase64({
+    reviewSocket.emitWithAck.mockImplementationOnce(boundResponse('legacy', legacySecret, {
         ok: false,
         errorCode: 'invalid_request',
         error: 'invalid_request',
-      }, legacySecret),
-    });
+      }));
     reviewSocket.getConnectivityState = vi.fn()
       .mockReturnValueOnce({
         connected: true,
@@ -732,15 +737,12 @@ describe('decideAuthenticatedPluginInstallReview', () => {
   it('classifies the Socket.IO timeout envelope as an acknowledgement timeout', async () => {
     const reviewSocket = socket();
     const legacySecret = Uint8Array.from(Buffer.alloc(32, 1));
-    reviewSocket.rpcCall
-      .mockResolvedValueOnce({
-        ok: true,
-        result: encryptLegacyBase64({
+    reviewSocket.emitWithAck
+      .mockImplementationOnce(boundResponse('legacy', legacySecret, {
           ok: false,
           errorCode: 'invalid_request',
           error: 'invalid_request',
-        }, legacySecret),
-      })
+        }))
       .mockResolvedValueOnce({
         ok: false,
         error: 'operation has timed out',
@@ -782,21 +784,18 @@ describe('decideAuthenticatedPluginInstallReview', () => {
       },
     });
 
-    expect(reviewSocket.rpcCall).toHaveBeenCalledTimes(2);
+    expect(reviewSocket.emitWithAck).toHaveBeenCalledTimes(2);
     expect(reviewSocket.close).toHaveBeenCalledOnce();
   });
 
   it('fails closed before data-key RPC when the authenticated authority changes', async () => {
     const reviewSocket = socket();
     const machineKey = Uint8Array.from(Buffer.alloc(32, 3));
-    reviewSocket.rpcCall.mockResolvedValueOnce({
-      ok: true,
-      result: encryptDataKeyBase64({
+    reviewSocket.emitWithAck.mockImplementationOnce(boundResponse('dataKey', machineKey, {
         ok: false,
         errorCode: 'invalid_request',
         error: 'invalid_request',
-      }, machineKey),
-    });
+      }));
     const callDataKey = vi.fn();
     const readAccessKey = vi.fn()
       .mockResolvedValueOnce({

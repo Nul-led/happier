@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises';
 
-import { decryptLegacyBase64, encryptLegacyBase64 } from '../../messageCrypto';
-import { createUserScopedSocketCollector } from '../../socketClient';
+import { createLegacyRpcClient, type RpcSocket } from '../../syntheticAgent/rpcClient';
 import { sleep } from '../../timing';
 import { withTimeoutMs } from '../../timing/withTimeout';
 
@@ -63,14 +62,14 @@ export async function resolveMachineIdsFromSettings(params: {
 }
 
 export async function invokeRpcAcrossMachineIds(params: {
-  ui: ReturnType<typeof createUserScopedSocketCollector>;
+  ui: RpcSocket;
   machineIds: string[];
   method: string;
   payload: unknown;
   secret: Uint8Array;
   timeoutMs: number;
 }): Promise<unknown> {
-  const encrypted = encryptLegacyBase64(params.payload, params.secret);
+  const rpc = createLegacyRpcClient(params.ui, params.secret);
   const deadline = Date.now() + params.timeoutMs;
   let lastMethodUnavailable: unknown = null;
 
@@ -82,19 +81,15 @@ export async function invokeRpcAcrossMachineIds(params: {
       const rpcMethod = `${machineId}:${params.method}`;
       try {
         const candidate = await withTimeoutMs({
-          promise: params.ui.rpcCall<any>(rpcMethod, encrypted, rpcAckTimeoutMs),
+          promise: rpc.call(rpcMethod, params.payload, rpcAckTimeoutMs),
           timeoutMs: rpcAckTimeoutMs,
           label: `rpcCall ${rpcMethod}`,
         });
         if (candidate && typeof candidate === 'object' && candidate.ok === true) {
-          const decrypted = decryptLegacyBase64(String((candidate as any).result ?? ''), params.secret);
-          return decrypted;
+          return candidate.result;
         }
 
-        const errorCode =
-          candidate && typeof candidate === 'object' && typeof (candidate as any).errorCode === 'string'
-            ? String((candidate as any).errorCode)
-            : '';
+        const errorCode = candidate.ok === false ? candidate.errorCode : undefined;
         if (errorCode === 'RPC_METHOD_NOT_AVAILABLE') {
           lastMethodUnavailable = { machineId, candidate };
           continue;

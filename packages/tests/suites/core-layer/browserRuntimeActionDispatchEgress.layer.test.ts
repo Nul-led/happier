@@ -9,7 +9,7 @@ import {
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { dispatchRuntimeActionE2E } from '../../src/testkit/liveQa/runtimeActionE2E';
-import type { SocketCollector } from '../../src/testkit/socketClient';
+import type { RpcSocket } from '../../src/testkit/syntheticAgent/rpcClient';
 
 import { resolveExecutionRunPolicy } from '../../../../apps/cli/src/agent/executionRuns/policy/executionRunPolicy';
 import type { ExecutionRunHostBridgeContract } from '../../../../apps/cli/src/agent/runtime/bridges/executionRun/executionRunBridgeContract';
@@ -35,7 +35,7 @@ import { registerExecutionRunRpcHandlers } from '../../../../apps/cli/src/rpc/ha
  *
  * WHAT THIS DOES NOT PROVE — read this before citing it. The diagnostic event is HAND-AUTHORED
  * and injected straight into the daemon store; no collector, page, or browser produced it. The
- * "socket" is a fake whose `rpcCall` calls `rpc.handleRequest` in the same process, and the
+ * "socket" is a fake whose `emitWithAck` calls `rpc.handleRequest` in the same process, and the
  * execution-run bridge is a stub whose non-read methods throw. So this closes the dispatch and
  * redaction half of BRW-F9 and says nothing about the producer half — that is
  * `suites/core-e2e/browserAutomationProducer.slow.e2e.test.ts`, which is still unimplemented.
@@ -139,7 +139,7 @@ const BROWSER_DIAGNOSTICS_RUNTIME_ACTIONS_ENABLED = readyServerFeatures({
 function createRuntimeActionSocket(params: Readonly<{
   secret: Uint8Array;
   diagnostics: ReturnType<typeof createBrowserDiagnosticsActionRoutes>;
-}>): SocketCollector {
+}>): RpcSocket {
   const policy = resolveExecutionRunPolicy({
     defaults: {
       maxConcurrentRuns: null,
@@ -176,8 +176,11 @@ function createRuntimeActionSocket(params: Readonly<{
   });
 
   const ui = {
-    rpcCall: async <TResponse = unknown>(method: string, encryptedParams: string): Promise<TResponse> => {
-      const encryptedResponse = await rpc.handleRequest({ method, params: encryptedParams });
+    emit: () => {},
+    emitWithAck: async <TResponse = unknown>(_event: string, data: unknown): Promise<TResponse> => {
+      // The fake network accepts the canonical caller's request payload.
+      const request = data as { method: string; params: unknown };
+      const encryptedResponse = await rpc.handleRequest(request);
       if (typeof encryptedResponse !== 'string') {
         throw new Error('Expected encrypted execution-run RPC response');
       }
@@ -185,8 +188,8 @@ function createRuntimeActionSocket(params: Readonly<{
     },
   };
 
-  // The L6 helper only needs rpcCall; RpcHandlerManager still owns decryption and handler dispatch.
-  return ui as unknown as SocketCollector;
+  // Only the network boundary is replaced; canonical caller/codec and real responder still run.
+  return ui;
 }
 
 describe('core layer: browser runtime-action dispatch and agent-egress redaction', () => {

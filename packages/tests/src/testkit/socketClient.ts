@@ -156,8 +156,8 @@ export class SocketCollector {
     return (await this.socket.timeout(timeoutMs).emitWithAck(event as any, data)) as T;
   }
 
-  onRpcRequest(handler: (data: RpcRequestPayload) => string | Promise<string>): () => void {
-    const listener = async (data: RpcRequestPayload, callback: (response: string) => void) => {
+  onRpcRequest(handler: (data: RpcRequestPayload) => unknown | Promise<unknown>): () => void {
+    const listener = async (data: RpcRequestPayload, callback: (response: unknown) => void) => {
       try {
         const out = await handler(data);
         callback(out);

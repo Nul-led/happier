@@ -22,6 +22,7 @@ import { writeCliSessionAttachFile } from '../../cliAttachFile';
 import { startTestDaemon, stopDaemonFromHomeDir, type StartedDaemon } from '../../daemon/daemon';
 import { sleep } from '../../timing';
 import { createUserScopedSocketCollector } from '../../socketClient';
+import { createLegacyRpcClient, type RpcSocket } from '../../syntheticAgent/rpcClient';
 import { which, yarnCommand } from '../../process/commands';
 import { ensureCliDistBuilt, ensureCliSharedDepsBuilt } from '../../process/cliDist';
 import {
@@ -204,10 +205,6 @@ function findPermissionRequestIdsFromTrace(events: ToolTraceEventV1[]): Array<{ 
   return out;
 }
 
-type PermissionRpcSocket = {
-  rpcCall: <T = unknown>(method: string, payload: string) => Promise<T>;
-};
-
 export async function autoResolvePendingPermissionRequests(params: {
   pendingPermissionIds: Array<{ id: string; toolName: string | null }>;
   approvedPermissionIds: Set<string>;
@@ -217,7 +214,7 @@ export async function autoResolvePendingPermissionRequests(params: {
   answers?: Readonly<Record<string, string | readonly string[]>>;
   sessionId: string;
   secret: Uint8Array;
-  uiSocket: PermissionRpcSocket;
+  uiSocket: RpcSocket;
   rpcTimeoutMs?: number;
 }): Promise<{
   blockedInYolo: Array<{ id: string; toolName: string | null }>;
@@ -230,6 +227,7 @@ export async function autoResolvePendingPermissionRequests(params: {
   const blockedInYolo: Array<{ id: string; toolName: string | null }> = [];
   const approvedIds: string[] = [];
   const rpcTimeoutMs = Math.max(1_000, Math.min(params.rpcTimeoutMs ?? 10_000, 60_000));
+  const rpc = createLegacyRpcClient(params.uiSocket, params.secret, 'session');
 
   for (const req of params.pendingPermissionIds) {
     if (!req?.id) continue;
@@ -245,18 +243,18 @@ export async function autoResolvePendingPermissionRequests(params: {
       continue;
     }
 
-    const payload = encryptLegacyBase64({
+    const payload = {
       id: req.id,
       approved,
       decision: params.decision,
       ...(params.answers === undefined ? null : { answers: params.answers }),
-    }, params.secret);
+    };
     try {
       const result = await Promise.race([
-        params.uiSocket.rpcCall<any>(`${params.sessionId}:permission`, payload),
+        rpc.call(`${params.sessionId}:permission`, payload),
         sleep(rpcTimeoutMs).then(() => ({ ok: false, error: 'timeout' })),
       ]);
-      if (result && typeof result === 'object' && (result as any).ok === true) {
+      if (result.ok === true) {
         params.approvedPermissionIds.add(req.id);
         approvedIds.push(req.id);
       }

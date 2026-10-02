@@ -4,7 +4,9 @@ import { decryptDataKeyBase64, encryptDataKeyBase64 } from '../rpcCrypto';
 import { fetchSessionV2, patchSessionAgentState } from '../sessions';
 import { sleep, waitFor } from '../timing';
 import { createMachineBoundSessionScopedSocketCollector } from '../sessionSocketBinding';
-import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { RPC_ERROR_CODES, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
+import { socketRpcCodec, type SocketRpcContent } from '@happier-dev/sync-client';
 
 type PermissionRequest = {
   id: string;
@@ -100,26 +102,40 @@ export class SyntheticAgent {
 
     const permissionMethod = `${this.sessionId}:permission`;
     const userMessageMethod = `${this.sessionId}:${SESSION_RPC_METHODS.SESSION_USER_MESSAGE_SEND}`;
+    const content: SocketRpcContent = { mode: 'e2ee', cipher: {
+      encryptRaw: async (value) => encryptDataKeyBase64(value, this.dataKey),
+      decryptRaw: async (ciphertext) => decryptDataKeyBase64(ciphertext, this.dataKey),
+    } };
     socket.onRpcRequest(async (req) => {
+      let request: Awaited<ReturnType<typeof socketRpcCodec.decodeRequestParams>>;
+      try {
+        request = await socketRpcCodec.decodeRequestParams(content, req.params, req.method);
+      } catch (error) {
+        return socketRpcCodec.encodeResponse(content, {
+          error: error instanceof Error ? error.message : String(error),
+          errorCode: readRpcErrorCode(error) ?? RPC_ERROR_CODES.UPDATE_REQUIRED,
+        }, null);
+      }
+      const respond = (result: unknown) => socketRpcCodec.encodeResponse(content, result, request.callId);
       if (req.method === userMessageMethod) {
-        const message = decryptDataKeyBase64(req.params, this.dataKey) as Record<string, unknown> | null;
+        const message = request.params as Record<string, unknown> | null;
         if (!message || typeof message.text !== 'string' || typeof message.localId !== 'string') {
-          return encryptDataKeyBase64({ error: 'invalid-request' }, this.dataKey);
+          return respond({ error: 'invalid-request' });
         }
-        return encryptDataKeyBase64({ ok: true }, this.dataKey);
+        return respond({ ok: true });
       }
       if (req.method !== permissionMethod) {
         // Return an encrypted METHOD_NOT_FOUND-like response; server also guards this.
-        return encryptDataKeyBase64({ error: 'method-not-found' }, this.dataKey);
+        return respond({ error: 'method-not-found' });
       }
 
-      const decision = decryptDataKeyBase64(req.params, this.dataKey) as PermissionDecision | null;
+      const decision = request.params as PermissionDecision | null;
       if (!decision || typeof decision.id !== 'string') {
-        return encryptDataKeyBase64({ error: 'invalid-request' }, this.dataKey);
+        return respond({ error: 'invalid-request' });
       }
 
       await this.applyPermissionDecision(decision);
-      return encryptDataKeyBase64({ ok: true }, this.dataKey);
+      return respond({ ok: true });
     });
 
     await socket.rpcRegister(permissionMethod);

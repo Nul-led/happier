@@ -24,10 +24,10 @@ import { seedCliAuthForTestAccount } from '../../src/testkit/cliAuth';
 import { fetchJson } from '../../src/testkit/http';
 import { decryptDataKeyBase64, encryptDataKeyBase64 } from '../../src/testkit/rpcCrypto';
 import { unwrapSerializedJsonValue } from '../../src/testkit/unwrapSerializedJsonValue';
+import { createEncryptedRpcClient } from '../../src/testkit/syntheticAgent/rpcClient';
 
 const run = createRunDirs({ runLabel: 'core' });
 
-type RpcAck = { ok: boolean; result?: string; error?: string; errorCode?: string };
 type SafeParseResult<T> = { success: true; data: T } | { success: false };
 type ParseSchema<T> = { safeParse: (input: unknown) => SafeParseResult<T> };
 
@@ -102,19 +102,22 @@ async function callMachineRpc<TReq, TRes>(params: {
   timeoutMs?: number;
 }): Promise<TRes> {
   let out: TRes | null = null;
-  const encryptedParams = params.encryptParams(params.req);
+  const rpc = createEncryptedRpcClient(params.ui, {
+    encryptRaw: async value => params.encryptParams(value),
+    decryptRaw: async value => params.decryptResult(value),
+  });
   const fullMethod = `${params.machineId}:${params.method}`;
 
   await waitFor(
     async () => {
-      const res = await params.ui.rpcCall<RpcAck>(fullMethod, encryptedParams);
+      const res = await rpc.call(fullMethod, params.req);
       if (!res) throw new Error('rpcCall returned null/undefined');
-      if (res.ok !== true || typeof res.result !== 'string') {
+      if (res.ok !== true) {
         const errorCode = typeof res.errorCode === 'string' ? res.errorCode : '';
         const error = typeof res.error === 'string' ? res.error : '';
         throw new Error(`rpc ack not ok (errorCode=${errorCode || 'none'} error=${truncate(error) || 'none'})`);
       }
-      const decrypted = unwrapSerializedJsonValue(params.decryptResult(res.result));
+      const decrypted = unwrapSerializedJsonValue(res.result);
       if (!decrypted) throw new Error('failed to decrypt rpc result');
       const parsed = params.schema.safeParse(decrypted);
       if (!parsed.success) {

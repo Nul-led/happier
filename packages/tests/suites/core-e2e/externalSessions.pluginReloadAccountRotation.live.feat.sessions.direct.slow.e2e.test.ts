@@ -64,6 +64,7 @@ import {
 import { createUserScopedSocketCollector } from '../../src/testkit/socketClient';
 import {
   createDataKeyRpcClient,
+  createEncryptedRpcClient,
   unwrapDataKeyRpcResult,
 } from '../../src/testkit/syntheticAgent/rpcClient';
 import { waitFor } from '../../src/testkit/timing';
@@ -263,30 +264,30 @@ async function callRawEncryptedMachineRpc(params: Readonly<{
   responseCiphertext: string;
   result: unknown;
 }>> {
-  const requestCiphertext = encryptDataKeyBase64(
-    params.payload,
-    params.machineKey,
-  );
-  const response = await params.socket.rpcCall<{
-    ok?: unknown;
-    result?: unknown;
-    error?: unknown;
-    errorCode?: unknown;
-  }>(params.method, requestCiphertext, 30_000);
-  if (response?.ok !== true || typeof response.result !== 'string') {
+  let requestCiphertext = '';
+  let responseCiphertext = '';
+  const rpc = createEncryptedRpcClient(params.socket, {
+    encryptRaw: async (value) => {
+      requestCiphertext = encryptDataKeyBase64(value, params.machineKey);
+      return requestCiphertext;
+    },
+    decryptRaw: async (ciphertext) => {
+      responseCiphertext = ciphertext;
+      return decryptDataKeyBase64(ciphertext, params.machineKey);
+    },
+  });
+  const response = await rpc.call(params.method, params.payload, 30_000);
+  if (response.ok !== true) {
     throw new Error(
       `Raw encrypted machine RPC failed (${String(
-        response?.errorCode ?? response?.error ?? 'invalid-response',
+        response.errorCode ?? response.error ?? 'invalid-response',
       )})`,
     );
   }
-  const responseCiphertext = response.result;
   return {
     requestCiphertext,
     responseCiphertext,
-    result: unwrapSerializedJsonValue(
-      decryptDataKeyBase64(responseCiphertext, params.machineKey),
-    ),
+    result: unwrapSerializedJsonValue(response.result),
   };
 }
 

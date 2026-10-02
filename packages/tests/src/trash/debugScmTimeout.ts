@@ -22,6 +22,7 @@ import { seedCliAuthForTestAccount } from '../testkit/cliAuth';
 import { fetchJson } from '../testkit/http';
 import { decryptDataKeyBase64, encryptDataKeyBase64 } from '../testkit/rpcCrypto';
 import { unwrapSerializedJsonValue } from '../testkit/unwrapSerializedJsonValue';
+import { createEncryptedRpcClient } from '../testkit/syntheticAgent/rpcClient';
 
 async function main(): Promise<void> {
     const run = createRunDirs({ runLabel: 'core-debug-scm' });
@@ -83,18 +84,22 @@ async function main(): Promise<void> {
     const ui = createUserScopedSocketCollector(serverBaseUrl, auth.token);
     ui.connect();
     await waitFor(() => ui.isConnected(), { timeoutMs: 20_000 });
+    const rpc = createEncryptedRpcClient(ui, {
+        encryptRaw: async value => encryptParams(value),
+        decryptRaw: async value => decryptResult(value),
+    });
     console.log('socket connected');
 
     async function call<T>(method: string, req: unknown, schema: { safeParse: (value: unknown) => { success: true; data: T } | { success: false } }): Promise<T> {
         const fullMethod = `${machineId}:${method}`;
         const startedAt = Date.now();
         console.log('call start', method);
-        const res = await ui.rpcCall(fullMethod, encryptParams(req), 20_000);
+        const res = await rpc.call(fullMethod, req, 20_000);
         console.log('call ack', method, Date.now() - startedAt, res?.ok, typeof res?.result === 'string' ? res.result.slice(0, 80) : res);
-        if (!res || res.ok !== true || typeof res.result !== 'string') {
+        if (!res || res.ok !== true) {
             throw new Error(`bad ack for ${method}`);
         }
-        const decrypted = unwrapSerializedJsonValue(decryptResult(res.result));
+        const decrypted = unwrapSerializedJsonValue(res.result);
         const parsed = schema.safeParse(decrypted);
         console.log('parsed', method, parsed.success);
         if (!parsed.success) throw new Error(`parse failed ${method}`);
