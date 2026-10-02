@@ -2,6 +2,7 @@ import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import type { LocalSettings } from '@/sync/domains/settings/localSettings';
+import type { ActivityIndicatorProps } from 'react-native';
 
 /**
  * `animationEnabled` shipped as a web-only branch, and the native path spread the whole prop bag
@@ -14,12 +15,20 @@ import type { LocalSettings } from '@/sync/domains/settings/localSettings';
 const reducedMotionBoundary = vi.hoisted(() => ({
     listener: null as ((enabled: boolean) => void) | null,
 }));
+const nativeBoundary = vi.hoisted(() => ({ os: 'ios' as 'ios' | 'android' }));
 
 vi.mock('react-native', async () => {
     const { createReactNativeNativeMock } = await import('@/dev/testkit/mocks/reactNative');
+    const React = await import('react');
     return createReactNativeNativeMock({ platformOS: 'ios' }, {
+        Platform: { get OS() { return nativeBoundary.os; } },
         View: 'View',
-        ActivityIndicator: 'ActivityIndicator',
+        // RN 0.81 Android ProgressBarContainerView.apply() hides every animating=false widget;
+        // hidesWhenStopped is iOS-only. Observe that OS output, rather than just incoming props.
+        ActivityIndicator: (props: ActivityIndicatorProps) => React.createElement('ActivityIndicator', {
+            ...props,
+            nativeVisibility: nativeBoundary.os === 'android' && props.animating === false ? 'invisible' : 'visible',
+        }),
         AccessibilityInfo: {
             isReduceMotionEnabled: async () => false,
             addEventListener: (_event: string, listener: (enabled: boolean) => void) => {
@@ -58,6 +67,7 @@ vi.mock('@/sync/store/hooks', async () => {
 });
 
 beforeEach(() => {
+    nativeBoundary.os = 'ios';
     for (const key of Object.keys(localSettingValues)) delete localSettingValues[key as keyof LocalSettings];
 });
 
@@ -202,6 +212,48 @@ describe('ActivitySpinner (native)', () => {
     });
 
     describe('classic ring', () => {
+        it.each([
+            { pause: 'ambient', size: 'small', expectedSize: 20 },
+            { pause: 'reduced motion', size: 'large', expectedSize: 36 },
+            { pause: 'explicit stop', size: 16, expectedSize: 16 },
+        ] as const)('keeps a visible still Android ring during $pause', async ({ pause, size, expectedSize }) => {
+            nativeBoundary.os = 'android';
+            localSettingValues.loadingIndicatorStyle = 'classicRing';
+            const { ActivitySpinner } = await import('./ActivitySpinner');
+            const { act } = await import('react-test-renderer');
+            const screen = await renderScreen(<ActivitySpinner
+                testID="spinner"
+                accessibilityLabel="Working"
+                size={size}
+                color="#2468ab"
+                style={{ marginLeft: 7 }}
+                animationEnabled={pause !== 'ambient'}
+                {...(pause === 'explicit stop' ? { animating: false, hidesWhenStopped: false } : {})}
+            />);
+            mountedScreens.push(screen);
+            try {
+                if (pause === 'reduced motion') await act(async () => reducedMotionBoundary.listener?.(true));
+                const nativeWidgets = screen.findAllByType('ActivityIndicator' as never);
+                const rings = screen.findAllByType('View' as never).filter((node) => flattenStyle(node.props.style).borderWidth);
+                expect(nativeWidgets.some((node) => node.props.nativeVisibility === 'visible') || rings.length > 0).toBe(true);
+                expect(nativeWidgets).toHaveLength(0);
+                expect(rings).toHaveLength(1);
+                const ring = rings[0]!;
+                expect(flattenStyle(ring.props.style)).toMatchObject({ width: expectedSize, height: expectedSize, borderColor: '#2468ab', marginLeft: 7, opacity: 1 });
+                expect(flattenStyle(ring.props.style)).not.toHaveProperty('animationName');
+                expect(ring.props).toMatchObject({ testID: 'spinner', accessibilityRole: 'progressbar', accessibilityLabel: 'Working' });
+            } finally {
+                if (pause === 'reduced motion') await act(async () => reducedMotionBoundary.listener?.(false));
+            }
+        });
+
+        it('retains the Android platform widget when turning or explicitly stopped and hidden', async () => {
+            nativeBoundary.os = 'android';
+            expect((await renderClassicSpinner({})).nativeVisibility).toBe('visible');
+            expect((await renderClassicSpinner({ animating: false })).nativeVisibility).toBe('invisible');
+            expect((await renderClassicSpinner({ animating: false, hidesWhenStopped: true })).nativeVisibility).toBe('invisible');
+        });
+
         it('animates by default and never hands the platform component an unknown prop', async () => {
             const props = await renderClassicSpinner({});
 

@@ -152,16 +152,20 @@ function ClassicRingSpinner(props: ActivitySpinnerProps & { reduceMotion: boolea
     if (Platform.OS !== 'web') {
         const { animationEnabled: nativeAnimationEnabled = true, ...nativeProps } = spinnerProps;
         const pauseForMotion = nativeProps.animating !== false && (!nativeAnimationEnabled || reduceMotion);
-        return (
-            <NativeActivityIndicator
-                {...nativeProps}
-                color={resolvedColor}
-                // Only when the caller asked for a pause (or reduced motion is on). A caller that set
-                // `animating={false}` itself keeps the default `hidesWhenStopped`, because hiding a
-                // stopped spinner is a legitimate thing to want and is not this flag's business.
-                {...(pauseForMotion ? { animating: false, hidesWhenStopped: false } : null)}
-            />
-        );
+        // Android hides its stopped widget regardless of hidesWhenStopped. Draw a still ring
+        // through the same renderer as web when the stopped mark needs to remain visible.
+        const needsStillAndroidRing = Platform.OS === 'android'
+            && (pauseForMotion || (nativeProps.animating === false && nativeProps.hidesWhenStopped === false));
+        if (!needsStillAndroidRing) {
+            return (
+                <NativeActivityIndicator
+                    {...nativeProps}
+                    color={resolvedColor}
+                    // Explicit stops retain the caller's hiding choice; motion pauses stay visible.
+                    {...(pauseForMotion ? { animating: false, hidesWhenStopped: false } : null)}
+                />
+            );
+        }
     }
 
     const {
@@ -185,9 +189,11 @@ function ClassicRingSpinner(props: ActivitySpinnerProps & { reduceMotion: boolea
         alignSelf: 'center',
         borderRadius: resolvedSize / 2,
         borderWidth: resolveSpinnerBorderWidth(resolvedSize),
-        borderColor: typeof resolvedColor === 'string' ? resolvedColor : 'currentColor',
+        borderColor: Platform.OS === 'web'
+            ? (typeof resolvedColor === 'string' ? resolvedColor : 'currentColor')
+            : resolvedColor,
         borderTopColor: 'transparent',
-        ...(animating && animationEnabled && !reduceMotion && hostVisible ? {
+        ...(Platform.OS === 'web' && animating && animationEnabled && !reduceMotion && hostVisible ? {
             animationDuration: '850ms',
             animationIterationCount: 'infinite',
             animationName: SPINNER_ANIMATION_NAME,
