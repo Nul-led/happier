@@ -10,6 +10,26 @@ async function readWorkflow(path) {
   return readFile(new URL(path, root), 'utf8');
 }
 
+test('setup-package changes select the composed real-hsetup UI E2E suite', async () => {
+  const workflow = YAML.parse(await readWorkflow('.github/workflows/tests.yml'));
+  const job = workflow.jobs['ui-e2e'];
+  const changes = job.steps.find((step) => step.id === 'changes');
+  const filters = YAML.parse(changes.with.filters);
+  for (const owner of ['apps/bootstrap/**', 'packages/cli-common/**']) {
+    assert.ok(filters.ui_e2e.includes(owner), `${owner} must select the real-hsetup browser lane`);
+  }
+  const run = job.steps.find((step) => step.name === 'Run UI E2E');
+  assert.match(run.if, /steps\.changes\.outputs\.ui_e2e == 'true'/);
+  assert.match(run.run, /select-ui-e2e-shard\.mjs/);
+  const { partitionUiE2eSpecs } = await import('../ci/select-ui-e2e-shard.mjs');
+  const { readdir } = await import('node:fs/promises');
+  const specs = (await readdir(new URL('packages/tests/suites/ui-e2e/', root)))
+    .filter((name) => name.endsWith('.spec.ts'))
+    .map((name) => `packages/tests/suites/ui-e2e/${name}`);
+  const composedSpec = 'packages/tests/suites/ui-e2e/desktop.personalHome.realHsetup.spec.ts';
+  assert.equal(partitionUiE2eSpecs({ specs, shardTotal: 18 }).flat().filter((spec) => spec === composedSpec).length, 1);
+});
+
 test('reusable tests callers explicitly select jobs without inheriting caller event defaults', async () => {
   const testsSource = await readWorkflow('.github/workflows/tests.yml');
   const parsed = YAML.parse(testsSource);

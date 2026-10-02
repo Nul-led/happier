@@ -326,8 +326,10 @@ jobs:
           filters: |
             ui_e2e:
               - 'apps/ui/**'
+              - 'apps/bootstrap/**'
               - 'apps/server/**'
               - 'apps/cli/**'
+              - 'packages/cli-common/**'
               - 'packages/tests/**'
               - 'packages/protocol/**'
               - 'packages/plugin-sdk/**'
