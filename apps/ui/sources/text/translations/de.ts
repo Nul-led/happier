@@ -8385,7 +8385,7 @@ export const de: TranslationStructure = {
         dropToAttach: 'Zum Anhängen hierher ziehen',
         providerUsage: {
             title: 'Provider-Nutzung',
-            accessibilityLabel: ({ value }: { value: string }) => `Provider-Nutzung: ${value} übrig`,
+            accessibilityLabel: ({ value }: { value: string }) => `Provider-Nutzung: ${value}`,
             remaining: ({ percent }: { percent: string }) => `${percent} übrig`,
             remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) => `${percent} übrig · Reset in ${reset}`,
             usedCount: ({ used, limit }: { used: string; limit: string }) => `${used}/${limit} genutzt`,
@@ -8519,6 +8519,7 @@ export const de: TranslationStructure = {
             },
         },
         context: {
+            badgeLabel: 'Kontext',
             remaining: ({ percent }: { percent: number }) => `${percent}% übrig`,
             windowTitle: 'Kontextfenster',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
@@ -10799,8 +10800,10 @@ settingsSession: {
           },
           providerUsageGauge: {
               title: 'Provider-Nutzung',
-              footer: 'Steuert die Kontingentanzeige neben dem Composer, wenn verlässliche Provider-Nutzungsdaten vorliegen.',
+              footer: 'Steuert die Kontingentanzeige neben dem Composer, wenn verlässliche Provider-Nutzungsdaten vorliegen. Hefte ein Nutzungsfenster an einem verbundenen Konto an, um es als zusätzliche Anzeige zu zeigen.',
               visibilityTitle: 'Nutzungsanzeige des Providers zeigen',
+              labelsTitle: 'Beschriftungen zeigen',
+              labelsSubtitle: 'Benennt die Kontext- und Nutzungsanzeigen neben dem Composer.',
               visibilityEnabledSubtitle: 'Das verbleibende Provider-Kontingent neben dem Composer zeigen, wenn verfügbar.',
               visibilityHiddenSubtitle: 'Das Provider-Kontingent im Composer ausblenden.',
               windowTitle: 'Anzeigefenster',

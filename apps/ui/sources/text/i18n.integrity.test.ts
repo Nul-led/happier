@@ -993,6 +993,8 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'settingsProvidersCollection.endpointsTitle',
     ]),
     ca: new Set([
+        // "Context" is also the Catalan noun.
+        'agentInput.context.badgeLabel',
         // Boards (INT §5.1): the ordinary words these locales use (Board, Canvas, Offline, Online, Workflow, Session(s), Machine(s), Name, Layout).
         'boards.sections.filter.title',
         'boards.add.groups.sessions',

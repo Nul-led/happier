@@ -8089,7 +8089,7 @@ export const es = {
     providerUsage: {
       title: "Uso del proveedor",
       accessibilityLabel: ({ value }: { value: string }) =>
-        `Uso del proveedor: queda ${value}`,
+        `Uso del proveedor: ${value}`,
       remaining: ({ percent }: { percent: string }) => `queda ${percent}`,
       remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) =>
         `queda ${percent} · se restablece en ${reset}`,
@@ -8233,6 +8233,7 @@ export const es = {
       },
     },
     context: {
+      badgeLabel: "Contexto",
       remaining: ({ percent }: { percent: number }) => `${percent}% restante`,
       windowTitle: "Ventana de contexto",
       usedDetail: ({
@@ -10560,8 +10561,10 @@ settingsSession: {
       providerUsageGauge: {
         title: "Uso del proveedor",
         footer:
-          "Controla el indicador de cuota mostrado junto al compositor cuando hay uso fiable del proveedor.",
+          "Controla el indicador de cuota mostrado junto al compositor cuando hay uso fiable del proveedor. Fija una ventana de uso en una cuenta conectada para mostrarla como indicador adicional.",
         visibilityTitle: "Mostrar indicador de uso del proveedor",
+        labelsTitle: "Mostrar etiquetas",
+        labelsSubtitle: "Nombra los indicadores de contexto y de uso junto al compositor.",
         visibilityEnabledSubtitle:
           "Muestra la cuota restante del proveedor junto al compositor cuando esté disponible.",
         visibilityHiddenSubtitle: "Oculta la cuota del proveedor en el compositor.",

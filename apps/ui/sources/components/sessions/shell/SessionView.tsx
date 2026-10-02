@@ -711,6 +711,7 @@ import {
     type ConnectedServiceQuotaGaugeLabelFormatter,
     type ConnectedServiceQuotaGaugeWindowMode,
 } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
+import { resolveQualifiedConnectedAccountProfilePreference } from '@/sync/domains/connectedServices/connectedServiceProfilePreferences';
 import { resolveConnectedServiceQuotaRecoveryCreditReceiptNoticeKey } from '@/sync/domains/connectedServices/connectedServiceQuotaRecoveryCreditReceiptPresentation';
 import { projectConnectedServiceQuotaSnapshotForLimitSelection } from '@/sync/domains/connectedServices/projectConnectedServiceQuotaSnapshotForLimitSelection';
 import { useConnectedServiceQuotaSnapshots } from '@/hooks/server/connectedServices/useConnectedServiceQuotaSnapshots';
@@ -4040,6 +4041,7 @@ function SessionViewLoadedContent({
     const accountProfile = useProfile();
     const sessionProviderUsageGaugeMode = useSetting('sessionProviderUsageGaugeMode');
     const sessionProviderUsageGaugeWindowModeSetting = useSetting('sessionProviderUsageGaugeWindowMode');
+    const connectedServicesQuotaPinnedMeterIdsByKey = useSetting('connectedServicesQuotaPinnedMeterIdsByKey');
     const sessionProviderUsageGaugeWindowMode: ConnectedServiceQuotaGaugeWindowMode =
         sessionProviderUsageGaugeWindowModeSetting === 'daily'
         || sessionProviderUsageGaugeWindowModeSetting === 'weekly'
@@ -4385,8 +4387,21 @@ function SessionViewLoadedContent({
             if (providerUsageDisplaySource?.kind !== 'connected_service_quota_view') {
                 return null;
             }
+            // The account's pinned meters become extra rings, only on that account's own snapshot.
+            const pinnedService = providerUsageConnectedServiceQuotaProfileRef
+                ? parseQualifiedPluginContributionKey(connectedServiceQuotaProfileRef.serviceKey)
+                : null;
+            const additionalMeterIds = pinnedService
+                ? resolveQualifiedConnectedAccountProfilePreference({
+                    valuesByKey: connectedServicesQuotaPinnedMeterIdsByKey,
+                    service: pinnedService,
+                    legacyServiceId: connectedServiceQuotaProfileRef.legacyServiceId,
+                    accountId: connectedServiceQuotaProfileRef.profileId,
+                })
+                : undefined;
             return computeConnectedServiceQuotaGaugeViewModel({
                 snapshot: providerUsageConnectedServiceQuotaSnapshot,
+                additionalMeterIds,
                 windowMode: sessionProviderUsageGaugeWindowMode,
                 nowMs: Date.now(),
                 formatter: connectedServiceQuotaGaugeFormatter,
@@ -4415,6 +4430,8 @@ function SessionViewLoadedContent({
         connectedServiceQuotaProfileIdentity,
         connectedServiceQuotaProfileRef,
         connectedServiceQuotasEnabled,
+        connectedServicesQuotaPinnedMeterIdsByKey,
+        providerUsageConnectedServiceQuotaProfileRef,
         providerUsageDisplaySource?.kind,
         providerUsageConnectedServiceQuotaSnapshot,
         providerAccountUsageSnapshot,

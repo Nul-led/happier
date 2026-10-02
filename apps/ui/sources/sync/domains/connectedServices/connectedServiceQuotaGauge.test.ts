@@ -158,6 +158,55 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
         expect(weekly?.badgeLabel).toBe('w. 95% left');
     });
 
+    it('reads Claude seven_day windows as weekly, not daily', () => {
+        const viewModel = computeConnectedServiceQuotaGaugeViewModel({
+            snapshot: snapshot([
+                meter({ meterId: 'five_hour', label: '5-hour', used: 10, limit: 100 }),
+                meter({ meterId: 'seven_day', label: 'Weekly', used: 40, limit: 100 }),
+            ]),
+            windowMode: 'weekly',
+            nowMs: 2_000,
+            formatter,
+        });
+
+        expect(viewModel?.effectiveMeter.meterId).toBe('seven_day');
+        expect(viewModel?.badgeLabel).toBe('w. 60% left');
+    });
+
+    it('shows one remaining-first ring, then the pinned meters the snapshot reports', () => {
+        const quotaSnapshot = snapshot([
+            meter({ meterId: 'five_hour', label: '5-hour', used: 82, limit: 100 }),
+            meter({ meterId: 'seven_day', label: 'Weekly', used: 30, limit: 100 }),
+            meter({ meterId: 'requests', label: 'Requests', used: 50, limit: 100, unit: 'requests', details: { limitCategory: 'rate_limit' } }),
+        ]);
+
+        const single = computeConnectedServiceQuotaGaugeViewModel({
+            snapshot: quotaSnapshot,
+            windowMode: 'most_constrained',
+            nowMs: 2_000,
+            formatter,
+        });
+        expect(single?.ringValueLabel).toBe('18');
+        expect(single?.usageRings.map((ring) => [ring.meterId, ring.ringValueLabel, ring.valueLabel])).toEqual([
+            ['five_hour', '18', '18% left'],
+        ]);
+
+        const pinned = computeConnectedServiceQuotaGaugeViewModel({
+            snapshot: quotaSnapshot,
+            windowMode: 'most_constrained',
+            additionalMeterIds: ['requests', 'five_hour', 'missing', 'seven_day'],
+            nowMs: 2_000,
+            formatter,
+        });
+        expect(pinned?.usageRings.map((ring) => [ring.meterId, ring.ringValueLabel])).toEqual([
+            ['five_hour', '18'],
+            ['requests', '50'],
+            ['seven_day', '70'],
+        ]);
+        // The popover lists every ring the composer shows.
+        expect(pinned?.allMeterRows.map((row) => row.meterId)).toEqual(['five_hour', 'seven_day', 'requests']);
+    });
+
     it('formats remaining-first detail rows with reset and usage labels', () => {
         const viewModel = computeConnectedServiceQuotaGaugeViewModel({
             snapshot: snapshot([

@@ -6858,7 +6858,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         dropToAttach: '拖放以附加檔案',
         providerUsage: {
             title: '提供者使用量',
-            accessibilityLabel: ({ value }: { value: string }) => `提供者使用量：剩餘 ${value}`,
+            accessibilityLabel: ({ value }: { value: string }) => `提供者使用量：${value}`,
             remaining: ({ percent }: { percent: string }) => `剩餘 ${percent}`,
             remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) => `剩餘 ${percent} · ${reset} 後重設`,
             usedCount: ({ used, limit }: { used: string; limit: string }) => `已用 ${used}/${limit}`,
@@ -6942,6 +6942,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
             badgeYolo: 'YOLO',
         },
         context: {
+            badgeLabel: '上下文',
             remaining: ({ percent }: { percent: number }) => `剩餘 ${percent}%`,
             windowTitle: '上下文視窗',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
@@ -9089,8 +9090,10 @@ settingsSession: {
           },
         providerUsageGauge: {
             title: '提供者使用量',
-            footer: '當有可靠的提供者使用量資料時，控制輸入框旁顯示的配額儀表。',
+            footer: '當有可靠的提供者使用量資料時，控制輸入框旁顯示的配額儀表。在已連接的帳號上釘選一個用量窗口，即可將其顯示為額外的儀表。',
             visibilityTitle: '顯示提供者使用量儀表',
+            labelsTitle: '顯示標籤',
+            labelsSubtitle: '為輸入框旁的上下文和用量儀表加上名稱。',
             visibilityEnabledSubtitle: '可用時在輸入框旁顯示提供者剩餘配額。',
             visibilityHiddenSubtitle: '在輸入框旁隱藏提供者配額。',
             windowTitle: '儀表視窗',

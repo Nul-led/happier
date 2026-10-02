@@ -8445,7 +8445,7 @@ export const it = {
     providerUsage: {
       title: "Utilizzo provider",
       accessibilityLabel: ({ value }: { value: string }) =>
-        `Utilizzo provider: ${value} rimanente`,
+        `Utilizzo provider: ${value}`,
       remaining: ({ percent }: { percent: string }) => `${percent} rimanente`,
       remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) =>
         `${percent} rimanente · si reimposta tra ${reset}`,
@@ -8588,6 +8588,7 @@ export const it = {
       },
     },
     context: {
+      badgeLabel: "Contesto",
       remaining: ({ percent }: { percent: number }) => `${percent}% restante`,
       windowTitle: "Finestra di contesto",
       usedDetail: ({
@@ -10915,8 +10916,10 @@ settingsSession: {
       providerUsageGauge: {
         title: "Uso del provider",
         footer:
-          "Controlla l'indicatore di quota mostrato accanto al compositore quando è disponibile un uso affidabile del provider.",
+          "Controlla l'indicatore di quota mostrato accanto al compositore quando è disponibile un uso affidabile del provider. Fissa una finestra di utilizzo su un account collegato per mostrarla come indicatore aggiuntivo.",
         visibilityTitle: "Mostra l'indicatore di uso del provider",
+        labelsTitle: "Mostra etichette",
+        labelsSubtitle: "Dà un nome agli indicatori di contesto e di utilizzo accanto al compositore.",
         visibilityEnabledSubtitle:
           "Mostra la quota restante del provider accanto al compositore quando disponibile.",
         visibilityHiddenSubtitle: "Nascondi la quota del provider dal compositore.",

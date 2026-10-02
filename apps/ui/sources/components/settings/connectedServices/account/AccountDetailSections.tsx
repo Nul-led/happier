@@ -12,6 +12,7 @@ import {
 
 import { AgentIcon } from '@/agents/registry/AgentIcon';
 import { SurfaceAsOfLabel } from '@/components/ui/surfaces/SurfaceAsOfLabel';
+import { IconButton } from '@/components/ui/buttons/IconButton';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
@@ -38,6 +39,7 @@ import { projectIndexMeters, type ConnectedAccountIndexMeter } from '../index/Co
 import { useConnectedServicesIndex } from '../model/useConnectedServicesIndex';
 import { useConnectedAccountSubscription } from '../usage/AccountUsageFacts';
 import { useAccountUsageResetAction } from '../usage/useAccountUsageResetAction';
+import { useConnectedAccountPinnedMeters } from '../usage/useConnectedAccountPinnedMeters';
 import { UsageMeterRow, UsageMeterStack } from '../usage/UsageMeterRow';
 
 /** What the detail's usage sections show (read once for the three of them). */
@@ -63,6 +65,8 @@ export const AccountDetailUsageSectionView = React.memo(function AccountDetailUs
     facts: AccountDetailUsageFacts;
     signedOut: boolean;
     now: number;
+    /** Each window can be pinned: pinned windows show as extra gauges beside the composer. */
+    pins?: Readonly<{ pinnedMeterIds: readonly string[]; onToggle: (meterId: string) => void }>;
     testID?: string;
 }>) {
     const styles = stylesheet;
@@ -97,19 +101,41 @@ export const AccountDetailUsageSectionView = React.memo(function AccountDetailUs
             {facts.meters.length > 0 ? (
                 <SectionContentRow testID={`${testID}:meters`}>
                     <UsageMeterStack>
-                        {facts.meters.map((meter) => (
-                            <UsageMeterRow
-                                key={meter.meterId}
-                                testID={`${testID}:meter:${meter.meterId}`}
-                                label={meter.label}
-                                remainingPct={meter.remainingPct}
-                                resetsAt={meter.resetsAt}
-                                tone={resolveQuotaMeterTone(meter)}
-                                estimated={meter.status === 'estimated'}
-                                size="wide"
-                                now={props.now}
-                            />
-                        ))}
+                        {facts.meters.map((meter) => {
+                            const row = (
+                                <UsageMeterRow
+                                    key={meter.meterId}
+                                    testID={`${testID}:meter:${meter.meterId}`}
+                                    label={meter.label}
+                                    remainingPct={meter.remainingPct}
+                                    resetsAt={meter.resetsAt}
+                                    tone={resolveQuotaMeterTone(meter)}
+                                    estimated={meter.status === 'estimated'}
+                                    size="wide"
+                                    now={props.now}
+                                />
+                            );
+                            const pins = props.pins;
+                            if (!pins) return row;
+                            const pinned = pins.pinnedMeterIds.includes(meter.meterId);
+                            const pinLabel = t('connectedServicesSettings.usageWindowPin', { meter: meter.label });
+                            return (
+                                <View key={meter.meterId} style={styles.pinnableMeter}>
+                                    <View style={styles.pinnableMeterRow}>{row}</View>
+                                    <IconButton
+                                        testID={`${testID}:pin:${meter.meterId}`}
+                                        iconName="push-pin"
+                                        size={24}
+                                        iconSize={14}
+                                        variant="plain"
+                                        selected={pinned}
+                                        accessibilityLabel={pinLabel}
+                                        tooltip={pinLabel}
+                                        onPress={() => pins.onToggle(meter.meterId)}
+                                    />
+                                </View>
+                            );
+                        })}
                     </UsageMeterStack>
                 </SectionContentRow>
             ) : facts.loading ? (
@@ -252,6 +278,7 @@ export const AccountDetailFactsSections = React.memo(function AccountDetailFacts
 }>) {
     const quota = useQualifiedConnectedAccountQuota(props.account);
     const subscription = useConnectedAccountSubscription(quota.usageRecordId);
+    const pins = useConnectedAccountPinnedMeters({ account: props.account, legacyServiceId: props.legacyServiceId });
     const refresh = quota.refresh;
     const retry = React.useCallback(() => { void refresh(); }, [refresh]);
     const snapshot = quota.snapshot;
@@ -269,7 +296,7 @@ export const AccountDetailFactsSections = React.memo(function AccountDetailFacts
     const now = Date.now();
     return (
         <>
-            <AccountDetailUsageSectionView facts={facts} signedOut={props.signedOut} now={now} />
+            <AccountDetailUsageSectionView facts={facts} signedOut={props.signedOut} now={now} pins={pins} />
             <AccountDetailSubscriptionSectionView
                 subscription={subscription}
                 serviceLabel={props.serviceLabel}
@@ -496,6 +523,15 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     machineOffline: {
         opacity: 0.7,
+    },
+    pinnableMeter: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+    },
+    pinnableMeterRow: {
+        flex: 1,
+        minWidth: 0,
     },
     machineName: {
         ...Typography.default(),

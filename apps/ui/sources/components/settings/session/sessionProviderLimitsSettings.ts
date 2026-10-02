@@ -22,6 +22,7 @@ export const SESSION_PROVIDER_LIMITS_SETTINGS = defineSettingsPage({
             featureId: 'connectedServices.quotas',
             settings: {
                 gaugeVisible: { storage: { scope: 'account', key: 'sessionProviderUsageGaugeMode', access: 'read_write' }, titleKey: 'settingsSession.providerUsageGauge.visibilityTitle' },
+                gaugeLabels: { storage: { scope: 'account', key: 'sessionUsageGaugeLabels', access: 'read_write' }, titleKey: 'settingsSession.providerUsageGauge.labelsTitle' },
                 gaugeWindow: { storage: { scope: 'account', key: 'sessionProviderUsageGaugeWindowMode', access: 'read_write' },
                     titleKey: 'settingsSession.providerUsageGauge.windowTitle',
                     keywordKeys: [

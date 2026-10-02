@@ -3,14 +3,11 @@ import * as React from 'react';
 import { useAuth } from '@/auth/context/AuthContext';
 import { resolveAuthCredentialsScopeKey } from '@/auth/storage/resolveAuthCredentialsScopeKey';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
-import { connectedServiceProfileKey } from '@/sync/domains/connectedServices/connectedServiceProfilePreferences';
 import { shouldHideQuotaForCredentialStatus } from '@/sync/domains/connectedServices/shouldHideQuotaForCredentialStatus';
 import {
     summarizeConnectedServiceQuotaRecoveryCredits,
     type ConnectedServiceQuotaRecoveryCreditSummary,
 } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
-import { useSetting } from '@/sync/store/hooks';
-import { useApplySettings } from '@/sync/store/settingsWriters';
 import {
     type ConnectedServiceId,
 } from '@happier-dev/protocol';
@@ -53,8 +50,6 @@ export type UseConnectedServiceQuotaSnapshotResult = Readonly<{
     consumeRecoveryCredit: (providerCreditId?: string | null) => Promise<void>;
     consumeRecoveryCreditPending: boolean;
     consumeRecoveryCreditPendingTarget: Readonly<{ providerCreditId: string | null }> | null;
-    pinnedMeterIds: ReadonlyArray<string>;
-    togglePinnedMeter: (meterId: string) => void;
 }>;
 
 /**
@@ -62,7 +57,7 @@ export type UseConnectedServiceQuotaSnapshotResult = Readonly<{
  * the same account in multiple mounted blocks performs ONE network read.
  * This is the centralized choke point (load-scope guards, plain/sealed
  * resolution, refresh/backoff poll, recovery-credit consume) consumed by
- * `AccountBlock`; it additionally owns the per-account pinned-meter preference.
+ * `AccountBlock`.
  */
 export function useConnectedServiceQuotaSnapshot(params: Readonly<{
     serviceId: ConnectedServiceId;
@@ -190,24 +185,6 @@ export function useConnectedServiceQuotaSnapshot(params: Readonly<{
         }
     }, [key, loadContext, recoveryCreditMachineId, recoveryCreditSummary]);
 
-    const pinnedByKey = useSetting('connectedServicesQuotaPinnedMeterIdsByKey');
-    const applySettings = useApplySettings();
-    const settingKey = connectedServiceProfileKey({ serviceId, profileId });
-    const pinnedMeterIds = pinnedByKey[settingKey] ?? [];
-    const togglePinnedMeter = React.useCallback((meterId: string) => {
-        const existing = pinnedByKey[settingKey] ?? [];
-        const nextPinned = existing.includes(meterId)
-            ? existing.filter((id) => id !== meterId)
-            : [...existing, meterId];
-        const nextMap = { ...pinnedByKey };
-        if (nextPinned.length === 0) {
-            delete nextMap[settingKey];
-        } else {
-            nextMap[settingKey] = nextPinned;
-        }
-        applySettings({ connectedServicesQuotaPinnedMeterIdsByKey: nextMap });
-    }, [applySettings, pinnedByKey, settingKey]);
-
     return {
         snapshot,
         loading: entry.loading,
@@ -221,7 +198,5 @@ export function useConnectedServiceQuotaSnapshot(params: Readonly<{
         consumeRecoveryCredit,
         consumeRecoveryCreditPending: consumeRecoveryCreditPendingTarget !== null,
         consumeRecoveryCreditPendingTarget,
-        pinnedMeterIds,
-        togglePinnedMeter,
     };
 }

@@ -21,6 +21,7 @@ export const SessionProviderLimitsSettingsView = React.memo(function SessionProv
     const [usageLimitRecoverySettings, setUsageLimitRecoverySettings] = useSettingMutable('usageLimitRecoverySettingsV1');
     const [sessionProviderUsageGaugeMode, setSessionProviderUsageGaugeMode] = useSettingMutable('sessionProviderUsageGaugeMode');
     const [sessionProviderUsageGaugeWindowMode, setSessionProviderUsageGaugeWindowMode] = useSettingMutable('sessionProviderUsageGaugeWindowMode');
+    const [sessionUsageGaugeLabels, setSessionUsageGaugeLabels] = useSettingMutable('sessionUsageGaugeLabels');
     const [openProviderUsageGaugeWindowMenu, setOpenProviderUsageGaugeWindowMenu] = React.useState(false);
     const usageLimitRecoveryMode = usageLimitRecoverySettings?.mode === 'auto_wait' ? 'auto_wait' : 'ask';
     const usageLimitRecoveryAutoWait = usageLimitRecoveryMode === 'auto_wait';
@@ -172,6 +173,14 @@ export const SessionProviderLimitsSettingsView = React.memo(function SessionProv
                             }}
                         />
                     </SettingAnchor>
+                    <SettingRow
+                        setting={SESSION_PROVIDER_LIMITS_SETTINGS.settings.gaugeLabels}
+                        testID="settings-session-providerUsageGauge-labels"
+                        subtitle={t('settingsSession.providerUsageGauge.labelsSubtitle')}
+                        rightElement={<Switch testID="settings-session-providerUsageGauge-labels-toggle" value={sessionUsageGaugeLabels === true} onValueChange={setSessionUsageGaugeLabels} />}
+                        showChevron={false}
+                        onPress={() => setSessionUsageGaugeLabels(sessionUsageGaugeLabels !== true)}
+                    />
                 </ItemGroup>
             ) : null}
             {!usageLimitRecoveryEnabled && !connectedServiceQuotasEnabled ? (

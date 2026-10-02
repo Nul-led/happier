@@ -41,15 +41,16 @@ const VIEW_MODEL = {
     isStale: false,
     effectiveMeter: {} as ViewModel['effectiveMeter'],
     allMeterRows: [],
+    usageRings: [],
     recoveryCreditSummary: null,
 } satisfies ViewModel;
 
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 
-async function renderRing() {
+async function renderRing(props: Partial<React.ComponentProps<typeof QuotaRingInstrument>> = {}) {
     await act(async () => {
-        root.render(<QuotaRingInstrument viewModel={VIEW_MODEL} showProviderGlyph={false} />);
+        root.render(<QuotaRingInstrument viewModel={VIEW_MODEL} showProviderGlyph={false} {...props} />);
     });
     return container.querySelector<HTMLElement>('[data-testid="session-instrument-quota-ring"]')!;
 }
@@ -77,6 +78,35 @@ describe('QuotaRingInstrument', () => {
         container.remove();
         vi.useRealTimers();
         vi.restoreAllMocks();
+    });
+
+    it('shows one remaining-first ring, then each pinned meter as its own ring with optional labels', async () => {
+        const pinnedViewModel: ViewModel = {
+            ...VIEW_MODEL,
+            usageRings: [
+                { meterId: 'five_hour', label: '5-hour', usedPct: 40, ringValueLabel: '60', valueLabel: '60% left', tone: 'neutral' },
+                { meterId: 'seven_day', label: 'Weekly', usedPct: 90, ringValueLabel: '10', valueLabel: '10% left', tone: 'critical' },
+            ],
+        };
+        const text = (testID: string) => container.querySelector(`[data-testid="${testID}"]`)?.textContent ?? null;
+
+        await renderRing({ showProviderGlyph: true });
+        expect(text('session-instrument-quota-ring-value')).toBe('60');
+        expect(container.querySelector('[data-testid^="session-instrument-quota-ring-value:"]')).toBeNull();
+        expect(container.textContent).toContain('Claude');
+
+        await renderRing({ viewModel: pinnedViewModel, showProviderGlyph: true });
+        expect(text('session-instrument-quota-ring-value')).toBe('60');
+        expect(text('session-instrument-quota-ring-value:seven_day')).toBe('10');
+        expect(container.querySelector('[data-testid="session-instrument-quota-ring"]')!.getAttribute('aria-label'))
+            .toContain('Weekly 10% left');
+        // Labels are opt-in; the provider caption under the ring stays.
+        expect(container.querySelector('[data-testid^="session-instrument-quota-meter-label"]')).toBeNull();
+        expect(container.textContent).toContain('Claude');
+
+        await renderRing({ viewModel: pinnedViewModel, showLabels: true });
+        expect(text('session-instrument-quota-meter-label')).toBe('5-hour');
+        expect(text('session-instrument-quota-meter-label:seven_day')).toBe('Weekly');
     });
 
     it('previews after the pointer rests on the ring, not while it passes over it', async () => {

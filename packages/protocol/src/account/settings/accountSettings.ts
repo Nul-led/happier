@@ -996,6 +996,7 @@ const ACCOUNT_CORE_CATALOG_DEFINITIONS = {
   ),
   sessionNonSteerableSendPrompt: accountPreference(z.enum(['on', 'off']), 'on', 'message delivery'),
   sessionProviderUsageGaugeMode: accountPreference(z.enum(['auto', 'hidden']), 'auto', 'usage presentation'),
+  sessionUsageGaugeLabels: accountPreference(z.boolean(), false, 'usage presentation'),
   sessionProviderUsageGaugeWindowMode: accountPreference(
     z.enum(['most_constrained', 'daily', 'weekly', 'primary', 'secondary', 'session']),
     'most_constrained',

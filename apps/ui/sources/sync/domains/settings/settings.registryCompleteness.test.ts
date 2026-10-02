@@ -99,6 +99,7 @@ describe('settings registry completeness', () => {
         expect(ACCOUNT_SETTING_ARTIFACTS.defaults).toHaveProperty('sessionProviderUsageGaugeMode', 'auto');
         expect(ACCOUNT_SETTING_ARTIFACTS.definitions.sessionProviderUsageGaugeWindowMode.storageScope).toBe('account');
         expect(ACCOUNT_SETTING_ARTIFACTS.defaults).toHaveProperty('sessionProviderUsageGaugeWindowMode', 'most_constrained');
+        expect(ACCOUNT_SETTING_ARTIFACTS.defaults).toHaveProperty('sessionUsageGaugeLabels', false);
         expect(LOCAL_SETTING_ARTIFACTS.definitions).not.toHaveProperty('sessionProviderUsageGaugeMode');
         expect(LOCAL_SETTING_ARTIFACTS.definitions).not.toHaveProperty('sessionProviderUsageGaugeWindowMode');
     });

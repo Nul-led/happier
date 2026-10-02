@@ -8107,7 +8107,7 @@ export const pl = {
     providerUsage: {
       title: "Użycie dostawcy",
       accessibilityLabel: ({ value }: { value: string }) =>
-        `Użycie dostawcy: pozostało ${value}`,
+        `Użycie dostawcy: ${value}`,
       remaining: ({ percent }: { percent: string }) => `pozostało ${percent}`,
       remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) =>
         `pozostało ${percent} · reset za ${reset}`,
@@ -8251,6 +8251,7 @@ export const pl = {
       },
     },
     context: {
+      badgeLabel: "Kontekst",
       remaining: ({ percent }: { percent: number }) => `Pozostało ${percent}%`,
       windowTitle: "Okno kontekstu",
       usedDetail: ({
@@ -10572,8 +10573,10 @@ settingsSession: {
       providerUsageGauge: {
         title: "Użycie dostawcy",
         footer:
-          "Steruje wskaźnikiem limitu obok pola wpisywania, gdy dostępne są wiarygodne dane użycia dostawcy.",
+          "Steruje wskaźnikiem limitu obok pola wpisywania, gdy dostępne są wiarygodne dane użycia dostawcy. Przypnij okno użycia na połączonym koncie, aby pokazać je jako dodatkowy wskaźnik.",
         visibilityTitle: "Pokaż wskaźnik użycia dostawcy",
+        labelsTitle: "Pokaż etykiety",
+        labelsSubtitle: "Podpisuje wskaźniki kontekstu i użycia obok pola wpisywania.",
         visibilityEnabledSubtitle:
           "Pokazuj pozostały limit dostawcy obok pola wpisywania, gdy jest dostępny.",
         visibilityHiddenSubtitle: "Ukryj limit dostawcy przy polu wpisywania.",
