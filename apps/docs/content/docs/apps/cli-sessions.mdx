@@ -134,20 +134,9 @@ Development builds let CLI coordinators choose the message's `localId` before se
 happier session send <session-id-or-prefix> "ping" --local-id 'board-wake-42' --json
 ```
 
-Keep that exact ID when correlating the send result with session history. IDs are opaque:
-leading and trailing spaces are part of the ID, so quote them when supplying the flag.
-Blank IDs and IDs beginning with `agent-transition:` are rejected before authentication.
+Keep that exact ID when correlating the send result with session history or retrying a send.
+IDs must be nonblank and cannot begin with `-`. The relay rejects the reserved `agent-transition:` prefix.
 This override belongs to the CLI; MCP and voice tools continue using host-generated IDs.
-IDs can begin with `-`. If an ID equals an option name or `--`, use inline syntax to
-keep it unambiguous: `--local-id=--json` supplies the ID `--json`.
-
-Put `--` before a message that looks like an option:
-
-```bash
-happier session send --json <session-id-or-prefix> -- --help
-```
-
-That sends the literal text `--help`. Put all options before `--`.
 
 ## History
 

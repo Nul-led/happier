@@ -53,12 +53,12 @@ describe('happier session send (action executor)', () => {
     }
   });
 
-  it.each(['--local-id', '--help', '--json'])('treats %s after the option terminator as the literal message', async (message) => {
+  it('treats --local-id after the option terminator as the literal message', async () => {
     const readCredentialsFn = vi.fn(async () => null);
     const { handleSessionCommand } = await import('./handleSessionCommand');
     const output = captureConsoleJsonOutput();
     try {
-      await handleSessionCommand(['send', '--json', 'sess-1', '--', message], { readCredentialsFn });
+      await handleSessionCommand(['send', '--json', 'sess-1', '--', '--local-id'], { readCredentialsFn });
       expect(readCredentialsFn).toHaveBeenCalledOnce();
       expect(output.json()).toMatchObject({ ok: false, error: { code: 'not_authenticated' } });
     } finally {
@@ -85,21 +85,11 @@ describe('happier session send (action executor)', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it.each(['--wait', '--timeout', '--json', '--model', '--model=x', '--permission-mode', '--local-id', '--', '--help', '-h'])('rejects %s as a missing local id value', async (nextFlag) => {
+  it.each(['--json', '-claim-1'])('rejects %s as a missing local id value', async (nextFlag) => {
     execute.mockClear();
     const readCredentialsFn = vi.fn(async () => null);
     const { cmdSessionSend } = await import('./send');
     await expect(cmdSessionSend(['send', 'sess-1', 'Hello', '--local-id', nextFlag], { readCredentialsFn }))
-      .rejects.toMatchObject({ code: 'invalid_arguments' });
-    expect(readCredentialsFn).not.toHaveBeenCalled();
-    expect(execute).not.toHaveBeenCalled();
-  });
-
-  it('rejects the reserved transition local id before sending', async () => {
-    execute.mockClear();
-    const readCredentialsFn = vi.fn(async () => null);
-    const { cmdSessionSend } = await import('./send');
-    await expect(cmdSessionSend(['send', 'sess-1', 'Hello', '--local-id', 'agent-transition:claim-1'], { readCredentialsFn }))
       .rejects.toMatchObject({ code: 'invalid_arguments' });
     expect(readCredentialsFn).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();

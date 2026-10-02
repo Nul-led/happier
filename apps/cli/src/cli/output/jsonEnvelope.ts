@@ -1,11 +1,9 @@
-import { hasFlag } from '@/cli/commands/shared/argvFlags';
-
 export type SessionControlJsonEnvelope =
   | Readonly<{ v: 1; ok: true; kind: string; data: unknown }>
   | Readonly<{ v: 1; ok: false; kind: string; error: unknown }>;
 
 export function wantsJson(argv: readonly string[]): boolean {
-  return hasFlag(argv, '--json');
+  return argv.includes('--json');
 }
 
 async function writeLineAndWaitForStdout(line: string): Promise<void> {

@@ -41,7 +41,6 @@ import {
 } from './permissionPrivilege.js';
 import type { ActionsSettingsV1 } from './actionSettings.js';
 import { readPendingLocalId } from '../sessionMessages/pendingLocalId.js';
-import { isSessionAgentTransitionDividerLocalId } from '../sessionAgentTransitionDivider.js';
 import type { ReviewStartInput } from '../reviews/reviewStart.js';
 import type { AcpConfigOptionOverridesV1 } from '../sessionMetadata/metadataOverridesV1.js';
 import type { ConnectedServiceBindingsV1 } from '../connect/connectedServiceBindings.js';
@@ -2231,7 +2230,6 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           if (localIdRaw !== undefined && (
             ctx.surface !== 'cli'
             || localId === null
-            || isSessionAgentTransitionDividerLocalId(localId)
           )) {
             return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
           }

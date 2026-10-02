@@ -110,18 +110,6 @@ describe('createActionExecutor (session control)', () => {
     expect(sessionSendMessage).not.toHaveBeenCalled();
   });
 
-  it('rejects a reserved transition local id on the CLI surface', async () => {
-    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
-    const executor = createExecutor({ sessionSendMessage });
-
-    await expect(executor.execute(
-      'session.message.send' as any,
-      { sessionId: 's1', message: 'Hello', localId: 'agent-transition:claim-1' },
-      { surface: 'cli', defaultSessionId: null },
-    )).resolves.toEqual({ ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' });
-    expect(sessionSendMessage).not.toHaveBeenCalled();
-  });
-
   it('preserves exact nonblank opaque model override bytes when sending a message', async () => {
     const sessionSendMessage = vi.fn(async () => ({ ok: true }));
     const executor = createExecutor({ sessionSendMessage });

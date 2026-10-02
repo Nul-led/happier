@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { hasFlag, hasFlagValue, readRawFlagValue, readFlagValue, readCommandPositionals, readIntFlagValue } from './argvFlags';
+import { readCommandPositionals, readIntFlagValue } from './argvFlags';
 
 describe('readCommandPositionals', () => {
   it('excludes flags and their declared values from positional arguments', () => {
@@ -35,37 +35,5 @@ describe('readIntFlagValue', () => {
   ])('rejects %s', (_label, argv) => {
     expect(() => readIntFlagValue(argv, '--limit', { min: 1, max: 200 }))
       .toThrow(expect.objectContaining({ code: 'invalid_arguments' }));
-  });
-});
-
-describe('option terminator', () => {
-  it('keeps the standalone terminator out of a preceding option value', () => {
-    const argv = ['send', 'session-id', '--model', '--', '--json'];
-    expect(readCommandPositionals(argv, { startIndex: 1, valueFlags: ['--model'] }))
-      .toEqual(['session-id', '--json']);
-    expect(readFlagValue(argv, '--model')).toBeNull();
-    expect(hasFlag(argv, '--json')).toBe(false);
-  });
-
-  it('recognizes flags only before the positional-only boundary', () => {
-    const argv = ['send', '--local-id', ' chosen-id ', 'session-id', '--', '--local-id', '--timeout', 'oops'];
-    expect(readFlagValue(argv, '--local-id')).toBe('chosen-id');
-    expect(hasFlag(argv, '--timeout')).toBe(false);
-    expect(readIntFlagValue(argv, '--timeout')).toBeNull();
-    expect(readFlagValue(['send', 'session-id', '--', '--model', 'gpt-4o'], '--model')).toBeNull();
-  });
-});
-
-describe('opaque option values', () => {
-  const optionFlags = ['--local-id', '--json', '--model'];
-  it.each(['-claim-1', '--claim-1', ' ID '])('preserves separate opaque value %j', (value) => {
-    expect(readRawFlagValue(['--local-id', value], '--local-id', { optionFlags })).toBe(value);
-  });
-  it.each(['--json', '--model=x', '--'])('requires inline syntax for option token %j', (value) => {
-    expect(readRawFlagValue(['--local-id', value], '--local-id', { optionFlags })).toBeNull();
-    const argv = [`--local-id=${value}`];
-    expect(hasFlagValue(argv, '--local-id')).toBe(true);
-    expect(readRawFlagValue(argv, '--local-id', { optionFlags })).toBe(value);
-    expect(hasFlag(argv, '--json')).toBe(false);
   });
 });

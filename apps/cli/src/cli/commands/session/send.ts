@@ -2,16 +2,13 @@ import chalk from 'chalk';
 
 import { parsePermissionIntentAlias } from '@happier-dev/agents';
 import type { PermissionIntent } from '@happier-dev/agents';
-import { isSessionAgentTransitionDividerLocalId, readPendingLocalId } from '@happier-dev/protocol';
+import { readPendingLocalId } from '@happier-dev/protocol';
 
 import type { Credentials } from '@/persistence';
 import { wantsJson, printJsonEnvelope, writeJsonStdout } from '@/cli/output/jsonEnvelope';
-import { hasFlag, hasFlagValue, readCommandPositionals, readIntFlagValue, readFlagValue, readRawFlagValue } from '@/cli/commands/shared/argvFlags';
+import { hasFlag, readCommandPositionals, readIntFlagValue, readFlagValue } from '@/cli/commands/shared/argvFlags';
 import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import { tryHandleApprovalRequestCreated } from './shared/tryHandleApprovalRequestCreated';
-
-const SEND_VALUE_FLAGS = ['--permission-mode', '--model', '--timeout', '--local-id'] as const;
-const SEND_OPTION_FLAGS = [...SEND_VALUE_FLAGS, '--wait', '--json', '--help', '-h'];
 
 function parsePermissionIntentOrThrow(raw: string): PermissionIntent {
   const parsed = parsePermissionIntentAlias(raw);
@@ -30,17 +27,19 @@ export async function cmdSessionSend(
   const json = wantsJson(argv);
   const [idOrPrefix = '', message = ''] = readCommandPositionals(argv, {
     startIndex: 1,
-    valueFlags: SEND_VALUE_FLAGS,
+    valueFlags: ['--permission-mode', '--model', '--timeout', '--local-id'],
   });
   const wait = hasFlag(argv, '--wait');
   const timeoutSecondsRaw = readIntFlagValue(argv, '--timeout', { min: 1 });
   const permissionModeFlag = (readFlagValue(argv, '--permission-mode') ?? '').trim();
   const modelFlagRaw = readFlagValue(argv, '--model');
-  const localIdRaw = readRawFlagValue(argv, '--local-id', { optionFlags: SEND_OPTION_FLAGS });
+  const optionTerminatorIndex = argv.indexOf('--');
+  const localIdFlagIndex = argv.slice(0, optionTerminatorIndex < 0 ? argv.length : optionTerminatorIndex).indexOf('--local-id');
+  const localIdRaw = localIdFlagIndex >= 0 ? argv[localIdFlagIndex + 1] : undefined;
   const localId = readPendingLocalId(localIdRaw);
-  if (hasFlagValue(argv, '--local-id') && (
+  if (localIdFlagIndex >= 0 && (
     localId === null
-    || isSessionAgentTransitionDividerLocalId(localId)
+    || localId.startsWith('-')
   )) {
     const err = new Error('Invalid --local-id');
     (err as Error & { code?: string }).code = 'invalid_arguments';

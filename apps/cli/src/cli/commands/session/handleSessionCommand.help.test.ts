@@ -2,21 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { captureConsoleText } from '@/testkit/logger/captureOutput';
 import { SESSION_CREATE_USAGE } from './create/parseSessionCreateSpawnOptions';
+import { handleSessionCommand } from './handleSessionCommand';
 
 describe('handleSessionCommand help output', () => {
-  it('handles explicit help without authenticating a malformed send', async () => {
-    const { handleSessionCommand } = await import('./handleSessionCommand');
-    const readCredentialsFn = vi.fn(async () => null);
-    const output = captureConsoleText();
-    try {
-      await handleSessionCommand(['send', 'sess-1', 'Hello', '--local-id', '--help'], { readCredentialsFn });
-      expect(output.text()).toContain('happier session send');
-      expect(readCredentialsFn).not.toHaveBeenCalled();
-    } finally { output.restore(); }
-  });
-
   it('lists the direct session control subcommands and run subcommands', async () => {
-    const { handleSessionCommand } = await import('./handleSessionCommand');
     const output = captureConsoleText();
 
     try {
@@ -90,7 +79,6 @@ describe('handleSessionCommand help output', () => {
     [['run', 'stream-read', '--help'], 'happier session run stream-read <session-id-or-prefix-or-tag> <run-id> <stream-id>'],
     [['run', 'stream-cancel', '--help'], 'happier session run stream-cancel <session-id-or-prefix-or-tag> <run-id> <stream-id>'],
   ] as const)('prints usage for `%s` without prompting for credentials', async (argv, expectedUsage) => {
-    const { handleSessionCommand } = await import('./handleSessionCommand');
     const output = captureConsoleText();
     const readCredentialsFn = vi.fn(async () => {
       throw new Error('credentials must not be read for session help');
