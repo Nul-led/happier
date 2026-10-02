@@ -262,7 +262,7 @@ function inheritedPipeHolderScript(descendantPidPath) {
   ].join('\n');
 }
 
-async function readDescendantPid(path) {
+async function readDescendantPid(path, scheduleTimeout = globalThis.setTimeout) {
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
     try {
@@ -271,7 +271,7 @@ async function readDescendantPid(path) {
     } catch {
       // The leader has not spawned its pipe-holding descendant yet.
     }
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => scheduleTimeout(resolve, 20));
   }
   throw new Error(`Timed out waiting for descendant pid at ${path}`);
 }
@@ -610,14 +610,23 @@ test('runCapture timeout cleans up a descendant holding capture pipes before rej
     }
   });
 
+  const scheduleTimeout = globalThis.setTimeout;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const pending = runCapture(
     process.execPath,
     ['-e', inheritedPipeHolderScript(descendantPidPath)],
     { env: process.env, timeoutMs: 150 },
   );
-  descendantPid = await readDescendantPid(descendantPidPath);
-
-  await assert.rejects(pending, (error) => error?.code === 'ETIMEDOUT');
+  const rejected = assert.rejects(pending, (error) => error?.code === 'ETIMEDOUT');
+  try {
+    // Advance the operation deadline only after its real descendant is ready.
+    descendantPid = await readDescendantPid(descendantPidPath, scheduleTimeout);
+    assert.equal(isPidAlive(descendantPid), true);
+  } finally {
+    t.mock.timers.tick(150);
+    t.mock.timers.reset();
+  }
+  await rejected;
   assert.equal(
     await waitForPidToExit(descendantPid, 500),
     true,
@@ -713,6 +722,7 @@ test('spawnProc can filter redraw lines before streaming and persistence', async
   const root = await withTempRoot(t);
   const teeFile = join(root, 'filtered.log');
   const emitted = [];
+  let previousLine = null;
   const child = spawnProc(
     'filtered',
     process.execPath,
@@ -721,7 +731,11 @@ test('spawnProc can filter redraw lines before streaming and persistence', async
     {
       silent: true,
       teeFile,
-      lineFilter: ({ line }) => line !== 'same' || emitted.length === 0,
+      lineFilter: ({ line }) => {
+        if (line === previousLine) return false;
+        previousLine = line;
+        return true;
+      },
       onLine: ({ line }) => emitted.push(line),
     },
   );
