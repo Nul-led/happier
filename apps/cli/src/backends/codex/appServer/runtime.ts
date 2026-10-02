@@ -356,6 +356,7 @@ type PendingTurn = Readonly<{
     // Activity and acknowledgement copy this owner while retaining the same cancellation intent.
     cancellationIntent: { requested: boolean; authHandoff: CodexAuthHandoffIntent | null };
     ownsPromptContinuation: boolean;
+    ownsAuthContinuation: boolean;
     threadId: string;
     turnId: string | null;
     providerPrompt: CodexAppServerPendingProviderPrompt | null;
@@ -1201,6 +1202,8 @@ function createPendingTurn(
     options: Readonly<{
         providerPrompt?: CodexAppServerPendingProviderPrompt | null;
         ownsPromptContinuation?: boolean;
+        ownsAuthContinuation?: boolean;
+        cancellationIntent?: PendingTurn['cancellationIntent'];
         connectedServiceRuntimeIdentityAtStart?: CodexConnectedServiceRuntimeAppliedIdentity | null;
     }> = {},
 ): PendingTurn {
@@ -1211,8 +1214,9 @@ function createPendingTurn(
         rejectTurn = reject;
     });
     return {
-        cancellationIntent: { requested: false, authHandoff: null },
+        cancellationIntent: options.cancellationIntent ?? { requested: false, authHandoff: null },
         ownsPromptContinuation: options.ownsPromptContinuation === true,
+        ownsAuthContinuation: options.ownsAuthContinuation === true,
         threadId,
         turnId: null,
         providerPrompt: options.providerPrompt ?? null,
@@ -1337,6 +1341,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
     let threadId: string | null = null;
     let turnInFlight = false;
     let hasActiveNativeGoal = false;
+    let nativeGoalStateKnown = false;
     let thinking = false;
     let pendingTurn: PendingTurn | null = null;
     let authHandoffIntent: PendingTurn['cancellationIntent'] | null = null;
@@ -1519,7 +1524,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
     );
 
     const canContinueAfterAuthHandoff = (): boolean => Boolean(
-        pendingTurn?.ownsPromptContinuation && pendingTurn.turnId && !pendingTurn.cancellationIntent.requested && !hasActiveNativeGoal
+        pendingTurn?.ownsPromptContinuation && pendingTurn.turnId && !pendingTurn.cancellationIntent.requested && nativeGoalStateKnown && !hasActiveNativeGoal
         && nativeTurnHandoffBarrier === null,
     );
 
@@ -2190,6 +2195,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
 
     const publishGoalWorkState = async (goal: unknown): Promise<void> => {
         const record = readRecord(readGoalFromResponse(goal));
+        nativeGoalStateKnown = true;
         hasActiveNativeGoal = record?.status === 'active';
         if (!record) {
             await Promise.resolve(params.session.updateMetadata((metadata) =>
@@ -2203,6 +2209,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
     };
 
     const clearGoalWorkState = async (): Promise<void> => {
+        nativeGoalStateKnown = true;
         hasActiveNativeGoal = false;
         await Promise.resolve(params.session.updateMetadata((metadata) =>
             removeCodexGoalFromSessionWorkStateMetadata(metadata),
@@ -2221,6 +2228,10 @@ export function createCodexAppServerRuntime(params: Readonly<{
             return true;
         } catch (error) {
             if (isCodexAppServerGoalMethodUnavailableError(error, 'thread/goal/get')) {
+                if (shouldPublish?.() !== false) {
+                    nativeGoalStateKnown = true;
+                    hasActiveNativeGoal = false;
+                }
                 return false;
             }
             throw error;
@@ -3339,6 +3350,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
         emitUndeliverablePrompt?: boolean;
         failureIssue?: SessionRuntimeIssueV1 | null;
         flushReason?: 'turn-end' | 'abort' | 'failure';
+        preserveLogicalTurn?: boolean;
         insideBridgeWork?: boolean;
     }>): Promise<void> => {
         if (pendingTurnFinalizationTimer) {
@@ -3422,11 +3434,13 @@ export function createCodexAppServerRuntime(params: Readonly<{
         } else {
             turnChangeCollector.beginTurn();
         }
-        if (options?.flushReason === 'turn-end') {
+        const preserveLogicalTurn = options?.preserveLogicalTurn === true
+            || (activeTurn?.ownsAuthContinuation === true && !activeTurn.ownsPromptContinuation && !activeTurn.cancellationIntent.requested && options?.flushReason !== 'failure');
+        if (options?.flushReason === 'turn-end' && !preserveLogicalTurn) {
             await turnBoundaryTracker.completeActiveTurn({
                 endSeqInclusive: readLastObservedMessageSeq(params.session),
             });
-        } else if (options?.flushReason === 'abort' && activeTurn?.cancellationIntent.authHandoff?.state !== 'pending') {
+        } else if (options?.flushReason === 'abort' && !preserveLogicalTurn && activeTurn?.cancellationIntent.authHandoff?.state !== 'pending') {
             await turnBoundaryTracker.interruptActiveTurn({
                 endSeqInclusive: readLastObservedMessageSeq(params.session),
             });
@@ -3707,10 +3721,13 @@ export function createCodexAppServerRuntime(params: Readonly<{
                 notificationParams,
                 activeTurn?.connectedServiceRuntimeIdentityAtStart ?? null,
             );
-            if (shouldDeferCodexAppServerTurnFailureToPromptLoop(failure)) {
+            if (shouldDeferCodexAppServerTurnFailureToPromptLoop(failure)
+                && !activeTurn?.cancellationIntent.authHandoff
+                && (!activeTurn?.ownsAuthContinuation || isCodexAppServerContextWindowExhaustedError(failure))) {
                 await finishPendingTurn({
                     error: failure,
                     flushReason: 'abort',
+                    preserveLogicalTurn: activeTurn?.ownsAuthContinuation,
                     insideBridgeWork: true,
                 });
                 return;
@@ -4609,7 +4626,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
         client: DisposableCodexAppServerClient,
         nextThreadId: string,
         startOrLoadResponse: unknown,
-        options: Readonly<{ publishThreadIdImmediately?: boolean; hydrateRollbackTurns?: boolean }> = {},
+        options: Readonly<{ publishThreadIdImmediately?: boolean; hydrateRollbackTurns?: boolean; preserveLogicalTurn?: boolean }> = {},
     ): Promise<void> => {
         const activeProviderTurn = pendingTurn;
         threadId = nextThreadId;
@@ -4622,7 +4639,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
         } else if (!hasServiceTierOverride) {
             currentServiceTier = null;
         }
-        if (!activeProviderTurn || activeProviderTurn.threadId !== nextThreadId) {
+        if ((!activeProviderTurn || activeProviderTurn.threadId !== nextThreadId) && options.preserveLogicalTurn !== true) {
             turnBoundaryTracker.initializeFromCurrentMetadata();
             if (options.hydrateRollbackTurns) {
                 try {
@@ -4650,6 +4667,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
         // attached at this point, so slow or unavailable discovery endpoints must not keep the
         // session-opening hot path pending. The generation guard prevents a late response from an
         // older attach from overwriting the current thread's metadata.
+        nativeGoalStateKnown = false;
         void refreshGoalForThread(client, nextThreadId, shouldPublishAttachmentProjection).catch((error) => {
             logger.debug('[codex-app-server] Failed to refresh native goal state (non-fatal)', {
                 threadId: nextThreadId,
@@ -4783,7 +4801,8 @@ export function createCodexAppServerRuntime(params: Readonly<{
         startDetachedProviderProjection('async-user-input-recovery', recoverPersistedCodexAsyncQuestionAnswers);
     };
 
-    const compactActiveThread = async (activeThreadId: string): Promise<void> => {
+    const compactActiveThread = async (activeThreadId: string, ownedPromptTurn?: PendingTurn): Promise<void> => {
+        const preserveLogicalTurn = ownedPromptTurn?.ownsAuthContinuation === true;
         await waitForNativeTurnHandoff();
         while (connectedServiceAuthApplyCount > 0) {
             await connectedServiceAuthApplyTail;
@@ -4803,6 +4822,8 @@ export function createCodexAppServerRuntime(params: Readonly<{
         activeTurnHasMeaningfulContextWindowRecoveryActivity = false;
         const changeTrackingReady = beginTurnChangeTracking();
         const activeTurn = createPendingTurn(activeThreadId, {
+            ownsAuthContinuation: preserveLogicalTurn,
+            ...(preserveLogicalTurn ? { cancellationIntent: ownedPromptTurn.cancellationIntent } : {}),
             connectedServiceRuntimeIdentityAtStart: latestConnectedServiceRuntimeIdentity,
         });
         activeTurn.promise.catch(() => undefined);
@@ -4835,6 +4856,9 @@ export function createCodexAppServerRuntime(params: Readonly<{
                 );
             }
             await (pendingTurn ?? activeTurn).promise;
+            if (preserveLogicalTurn && activeTurn.cancellationIntent.requested) {
+                throw new Error('Codex context recovery cancelled');
+            }
         } catch (error) {
             const failure = error instanceof Error ? error : new Error(String(error));
             await finishPendingTurn({ error: failure, flushReason: 'abort' });
@@ -4845,12 +4869,14 @@ export function createCodexAppServerRuntime(params: Readonly<{
     const recoverFromCodexContextWindowExhaustion = async (
         activeThreadId: string,
         originalFailure: Error,
+        ownedPromptTurn?: PendingTurn,
     ): Promise<void> => {
+        const preserveLogicalTurn = ownedPromptTurn?.ownsAuthContinuation === true;
         logger.debug('[codex-app-server] Codex context window exhausted; compacting thread before recovery', {
             threadId: activeThreadId,
             error: originalFailure.message,
         });
-        await compactActiveThread(activeThreadId);
+        await compactActiveThread(activeThreadId, ownedPromptTurn);
         const client = await ensureClient();
         const resumedThread = await resumeThread(client, activeThreadId, {
             preserveRequestedThreadId: true,
@@ -4859,6 +4885,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
             client,
             resumedThread.nextThreadId,
             resumedThread.response,
+            { preserveLogicalTurn },
         );
     };
 
@@ -4890,6 +4917,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
             userMessageSeq?: number | null;
             providerPrompt?: CodexAppServerPendingProviderPrompt | null;
             ownsPromptContinuation?: boolean;
+            ownsAuthContinuation?: boolean;
         }>,
     ): Promise<PendingTurn> => {
         await waitForNativeTurnHandoff();
@@ -4905,6 +4933,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
         const activeTurn = createPendingTurn(activeThreadId, {
             providerPrompt: options?.providerPrompt ?? null,
             ownsPromptContinuation: options?.ownsPromptContinuation,
+            ownsAuthContinuation: options?.ownsAuthContinuation,
             connectedServiceRuntimeIdentityAtStart: latestConnectedServiceRuntimeIdentity,
         });
         activeTurn.promise.catch(() => undefined);
@@ -5111,6 +5140,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
         },
         reset: async () => {
             hasActiveNativeGoal = false;
+            nativeGoalStateKnown = false;
             threadId = null;
             currentModeId = null;
             currentCollaborationMode = null;
@@ -5342,211 +5372,245 @@ export function createCodexAppServerRuntime(params: Readonly<{
             let originalContextWindowExhaustionFailure: Error | null = null;
             let promptForAttempt = prompt;
             let optionsForAttempt: CodexAppServerPromptOptions | undefined = options;
-            while (true) {
-                const activeThreadId = threadId;
-                if (!activeThreadId) {
-                    throw new Error('Codex app-server sendPrompt requires an active thread');
-                }
-                if (pendingTurn) {
-                    throw new Error('Codex app-server already has a turn in flight');
-                }
-                assertConnectedServiceAuthGroupAvailable();
-                const client = await ensureClient();
-                const pendingProviderPrompt = trackPendingProviderPrompt(promptForAttempt, optionsForAttempt);
-                const clientUserMessageId = pendingProviderPrompt.localIds?.length === 1
-                    ? pendingProviderPrompt.localIds[0]
-                    : null;
-                const activeTurn = await beginPendingTurnForThread(activeThreadId, {
-                    localId: optionsForAttempt?.localId ?? null,
-                    userMessageSeq: optionsForAttempt?.userMessageSeq ?? null,
-                    providerPrompt: pendingProviderPrompt,
-                    ownsPromptContinuation: true,
-                });
-                try {
-                    const collaborationMode = currentCollaborationMode
-                        ? {
-                            ...currentCollaborationMode,
-                            settings: {
-                                ...currentCollaborationMode.settings,
-                                model: currentModelId ?? currentCollaborationMode.settings.model,
-                                reasoning_effort:
-                                    currentReasoningEffort
-                                    ?? currentCollaborationMode.settings.reasoning_effort,
-                            },
-                        }
+            let ownsAuthContinuation = false;
+            let needsAuthContinuationFinalization = false;
+            try {
+                while (true) {
+                    const activeThreadId = threadId;
+                    if (!activeThreadId) {
+                        throw new Error('Codex app-server sendPrompt requires an active thread');
+                    }
+                    if (pendingTurn) {
+                        throw new Error('Codex app-server already has a turn in flight');
+                    }
+                    assertConnectedServiceAuthGroupAvailable();
+                    const client = await ensureClient();
+                    const pendingProviderPrompt = trackPendingProviderPrompt(promptForAttempt, optionsForAttempt);
+                    const clientUserMessageId = pendingProviderPrompt.localIds?.length === 1
+                        ? pendingProviderPrompt.localIds[0]
                         : null;
-                    const input = await buildCodexTurnInputForPrompt(promptForAttempt, params.directory, optionsForAttempt);
-                    const textOnlyInput = [{ type: 'text', text: promptForAttempt }] satisfies CodexAppServerTurnInputItem[];
-                    const baseTurnStartParams = {
-                        threadId: activeThreadId,
-                        input,
-                        ...(clientUserMessageId ? { clientUserMessageId } : {}),
-                        ...(currentModelId ? { model: currentModelId } : {}),
-                        ...(currentReasoningEffort ? { effort: currentReasoningEffort } : {}),
-                        ...(hasServiceTierOverride ? (currentServiceTier === 'fast' ? { serviceTier: 'fast' } : { serviceTier: null }) : {}),
-                        ...(collaborationMode ? { collaborationMode } : {}),
-                    };
-                    let turnStartParams = {
-                        ...baseTurnStartParams,
-                        ...buildCurrentPermissionParams('turn'),
-                    };
-                    let response: unknown;
-                    try {
-                        response = await client.request('turn/start', turnStartParams);
-                        if (Object.prototype.hasOwnProperty.call(turnStartParams, 'permissions')) {
-                            permissionSupport = 'supported';
-                        }
-                    } catch (error) {
-                        if (shouldRetryWithoutPermissionProfile(error, turnStartParams)) {
-                            permissionSupport = 'legacy';
-                            turnStartParams = {
-                                ...baseTurnStartParams,
-                                ...buildCurrentLegacyPermissionParams('turn'),
-                            };
-                            try {
-                                response = await client.request('turn/start', turnStartParams);
-                            } catch (legacyError) {
-                                if (input.length > 1 && isCodexAppServerInvalidParamsError(legacyError)) {
-                                    response = await client.request('turn/start', {
-                                        ...turnStartParams,
-                                        input: textOnlyInput,
-                                    });
-                                } else {
-                                    throw legacyError;
-                                }
-                            }
-                        } else if (input.length > 1 && isCodexAppServerInvalidParamsError(error)) {
-                            response = await client.request('turn/start', {
-                                ...turnStartParams,
-                                input: textOnlyInput,
-                            });
-                        } else {
-                            throw error;
-                        }
-                    }
-                    const startedTurnId = readTurnId(response);
-                    if (startedTurnId) {
-                        pendingTurn = { ...activeTurn, turnId: startedTurnId };
-                        latestPendingTurnId = startedTurnId;
-                        notifyActiveTurnLifecycleChanged();
-                        recordInProgressBestEffort(startedTurnId);
-                        await turnBoundaryTracker.updateActiveTurnId(startedTurnId);
-                    }
-                    const deferredTerminal = acknowledgePendingTurnStart(activeTurn, startedTurnId);
-                    if (deferredTerminal) {
-                        await settleTerminalPendingTurn(
-                            deferredTerminal.method,
-                            deferredTerminal.notificationParams,
-                            deferredTerminal.terminalTurnId,
-                        );
-                    } else {
-                        markActiveTurnSteerable();
-                    }
-                    markPendingProviderPromptAccepted(pendingProviderPrompt, startedTurnId, {
-                        retainUntilProviderUserMessageProjection: true,
+                    const activeTurn = await beginPendingTurnForThread(activeThreadId, {
+                        localId: optionsForAttempt?.localId ?? null,
+                        userMessageSeq: optionsForAttempt?.userMessageSeq ?? null,
+                        providerPrompt: pendingProviderPrompt,
+                        ownsPromptContinuation: true,
+                        ownsAuthContinuation,
                     });
-                    // A native goal successor is a distinct provider turn, not an extension of
-                    // this explicit prompt. The session loop preserves that successor through
-                    // hasActiveProviderTurn(), which includes the atomic handoff barrier.
-                    await (pendingTurn ?? activeTurn).promise;
-                    const handoff = activeTurn.cancellationIntent.authHandoff;
-                    if (handoff) {
-                        while (connectedServiceAuthApplyCount > 0 && handoff.state !== 'cancelled') {
-                            await Promise.race([connectedServiceAuthApplyTail, handoff.cancelled]);
+                    needsAuthContinuationFinalization = false;
+                    try {
+                        const collaborationMode = currentCollaborationMode
+                            ? {
+                                ...currentCollaborationMode,
+                                settings: {
+                                    ...currentCollaborationMode.settings,
+                                    model: currentModelId ?? currentCollaborationMode.settings.model,
+                                    reasoning_effort:
+                                        currentReasoningEffort
+                                        ?? currentCollaborationMode.settings.reasoning_effort,
+                                },
+                            }
+                            : null;
+                        const input = await buildCodexTurnInputForPrompt(promptForAttempt, params.directory, optionsForAttempt);
+                        const textOnlyInput = [{ type: 'text', text: promptForAttempt }] satisfies CodexAppServerTurnInputItem[];
+                        const baseTurnStartParams = {
+                            threadId: activeThreadId,
+                            input,
+                            ...(clientUserMessageId ? { clientUserMessageId } : {}),
+                            ...(currentModelId ? { model: currentModelId } : {}),
+                            ...(currentReasoningEffort ? { effort: currentReasoningEffort } : {}),
+                            ...(hasServiceTierOverride ? (currentServiceTier === 'fast' ? { serviceTier: 'fast' } : { serviceTier: null }) : {}),
+                            ...(collaborationMode ? { collaborationMode } : {}),
+                        };
+                        let turnStartParams = {
+                            ...baseTurnStartParams,
+                            ...buildCurrentPermissionParams('turn'),
+                        };
+                        let response: unknown;
+                        try {
+                            response = await client.request('turn/start', turnStartParams);
+                            if (Object.prototype.hasOwnProperty.call(turnStartParams, 'permissions')) {
+                                permissionSupport = 'supported';
+                            }
+                        } catch (error) {
+                            if (shouldRetryWithoutPermissionProfile(error, turnStartParams)) {
+                                permissionSupport = 'legacy';
+                                turnStartParams = {
+                                    ...baseTurnStartParams,
+                                    ...buildCurrentLegacyPermissionParams('turn'),
+                                };
+                                try {
+                                    response = await client.request('turn/start', turnStartParams);
+                                } catch (legacyError) {
+                                    if (input.length > 1 && isCodexAppServerInvalidParamsError(legacyError)) {
+                                        response = await client.request('turn/start', {
+                                            ...turnStartParams,
+                                            input: textOnlyInput,
+                                        });
+                                    } else {
+                                        throw legacyError;
+                                    }
+                                }
+                            } else if (input.length > 1 && isCodexAppServerInvalidParamsError(error)) {
+                                response = await client.request('turn/start', {
+                                    ...turnStartParams,
+                                    input: textOnlyInput,
+                                });
+                            } else {
+                                throw error;
+                            }
                         }
-                        if (authHandoffIntent === activeTurn.cancellationIntent) authHandoffIntent = null;
+                        const startedTurnId = readTurnId(response);
+                        if (startedTurnId) {
+                            pendingTurn = { ...activeTurn, turnId: startedTurnId };
+                            latestPendingTurnId = startedTurnId;
+                            notifyActiveTurnLifecycleChanged();
+                            recordInProgressBestEffort(startedTurnId);
+                            await turnBoundaryTracker.updateActiveTurnId(startedTurnId);
+                        }
+                        const deferredTerminal = acknowledgePendingTurnStart(activeTurn, startedTurnId);
+                        if (deferredTerminal) {
+                            await settleTerminalPendingTurn(
+                                deferredTerminal.method,
+                                deferredTerminal.notificationParams,
+                                deferredTerminal.terminalTurnId,
+                            );
+                        } else {
+                            markActiveTurnSteerable();
+                        }
+                        markPendingProviderPromptAccepted(pendingProviderPrompt, startedTurnId, {
+                            retainUntilProviderUserMessageProjection: true,
+                        });
+                        // A native goal successor is a distinct provider turn, not an extension of
+                        // this explicit prompt. The session loop preserves that successor through
+                        // hasActiveProviderTurn(), which includes the atomic handoff barrier.
+                        await (pendingTurn ?? activeTurn).promise;
+                        const handoff = activeTurn.cancellationIntent.authHandoff;
+                        if (handoff) {
+                            // A natural native completion has already completed the logical prompt.
+                            // The independently queued auth result cannot turn that success into failure.
+                            if (!handoff.interrupted) {
+                                if (authHandoffIntent === activeTurn.cancellationIntent) authHandoffIntent = null;
+                                clearPendingProviderPrompt(pendingProviderPrompt);
+                                return;
+                            }
+                            while (connectedServiceAuthApplyCount > 0 && handoff.state !== 'cancelled') {
+                                await Promise.race([connectedServiceAuthApplyTail, handoff.cancelled]);
+                            }
+                            if (authHandoffIntent === activeTurn.cancellationIntent) authHandoffIntent = null;
+                            clearPendingProviderPrompt(pendingProviderPrompt);
+                            if (handoff.state === 'failed') {
+                                const failure = new Error('Codex connected-service auth handoff failed');
+                                await abortPendingTurnWithFailure(failure);
+                                throw failure;
+                            }
+                            if (handoff.state === 'cancelled' && handoff.interrupted) {
+                                await finishPendingTurn({ flushReason: 'abort' });
+                            }
+                            if (handoff.state === 'applied' && handoff.interrupted) {
+                                ownsAuthContinuation = true;
+                                needsAuthContinuationFinalization = true;
+                                promptForAttempt = GENERIC_CONTINUATION_RESUME_PROMPT;
+                                optionsForAttempt = buildCodexAppServerRetryDeliveryIdentityOptions(pendingProviderPrompt);
+                                continue;
+                            }
+                        }
                         clearPendingProviderPrompt(pendingProviderPrompt);
-                        if (handoff.state === 'failed') {
-                            const failure = new Error('Codex connected-service auth handoff failed');
-                            await abortPendingTurnWithFailure(failure);
+                        return;
+                    } catch (error) {
+                        const failure = error instanceof Error ? error : new Error(String(error));
+                        if (authHandoffIntent === activeTurn.cancellationIntent) authHandoffIntent = null;
+                        if (activeTurn.cancellationIntent.requested) {
+                            // A rejected start can already have admitted native work. Retain this
+                            // cancelled owner until the established client teardown observes exit.
+                            // Exact terminal proof may already have retired it; never finish or
+                            // dispose a successor on behalf of this old request.
+                            if (pendingTurn?.promise === activeTurn.promise) {
+                                await disposeClient({ pendingTurnError: failure });
+                            }
                             throw failure;
                         }
-                        if (handoff.state === 'cancelled' && handoff.interrupted) {
-                            await finishPendingTurn({ flushReason: 'abort' });
+                        if (activeTurn.ownsAuthContinuation && !isCodexAppServerContextWindowExhaustedError(failure)) {
+                            // This attempt continues already accepted work. Do not route its failure
+                            // through ordinary prompt retry, which starts another logical turn.
+                            if (pendingTurn?.promise === activeTurn.promise) await abortPendingTurnWithFailure(failure);
+                            clearPendingProviderPrompt(pendingProviderPrompt);
+                            throw failure;
                         }
-                        if (handoff.state === 'applied' && handoff.interrupted) {
-                            promptForAttempt = GENERIC_CONTINUATION_RESUME_PROMPT;
-                            optionsForAttempt = buildCodexAppServerRetryDeliveryIdentityOptions(pendingProviderPrompt);
-                            continue;
-                        }
-                    }
-                    clearPendingProviderPrompt(pendingProviderPrompt);
-                    return;
-                } catch (error) {
-                    const failure = error instanceof Error ? error : new Error(String(error));
-                    if (authHandoffIntent === activeTurn.cancellationIntent) authHandoffIntent = null;
-                    if (activeTurn.cancellationIntent.requested) {
-                        // A rejected start can already have admitted native work. Retain this
-                        // cancelled owner until the established client teardown observes exit.
-                        // Exact terminal proof may already have retired it; never finish or
-                        // dispose a successor on behalf of this old request.
-                        if (pendingTurn?.promise === activeTurn.promise) {
-                            await disposeClient({ pendingTurnError: failure });
-                        }
-                        throw failure;
-                    }
-                    const failedTurnHadMeaningfulActivity = activeTurnHasMeaningfulContextWindowRecoveryActivity;
-                    await finishPendingTurn({
-                        error: failure,
-                        flushReason: 'abort',
-                    });
-                    if (isCodexAppServerTemporaryRecoverableTurnFailureError(failure)) {
-                        clearPendingProviderPrompt(pendingProviderPrompt);
-                        throw failure;
-                    }
-                    if (isCodexAppServerContextWindowExhaustedError(failure)) {
-                        const originalFailure: Error = originalContextWindowExhaustionFailure ?? failure;
-                        originalContextWindowExhaustionFailure = originalFailure;
-                        const retryDecision = resolveRecoverableTurnFailureRetryDecision({
-                            attemptCount: recoveredContextWindowExhaustion ? 1 : 0,
-                            maxRetries: 1,
-                            providerWillRetry: false,
-                            failureRetryAfterMs: null,
-                            failedTurnHadMeaningfulActivity,
-                            promptMode: contextWindowRecoveryConfig.mode,
-                            originalPrompt: prompt,
-                            continuationPrompt: contextWindowRecoveryConfig.continuationPrompt,
+                        if (activeTurn.ownsAuthContinuation) needsAuthContinuationFinalization = true;
+                        const failedTurnHadMeaningfulActivity = activeTurnHasMeaningfulContextWindowRecoveryActivity;
+                        await finishPendingTurn({
+                            error: failure,
+                            flushReason: 'abort',
+                            preserveLogicalTurn: activeTurn.ownsAuthContinuation,
                         });
-                        if (retryDecision.action === 'retry') {
-                            recoveredContextWindowExhaustion = true;
-                            try {
-                                await recoverFromCodexContextWindowExhaustion(activeThreadId, originalFailure);
-                            } catch (recoveryError) {
-                                await surfaceOriginalContextWindowFailureAfterRecoveryError(originalFailure, recoveryError);
+                        if (isCodexAppServerTemporaryRecoverableTurnFailureError(failure)) {
+                            clearPendingProviderPrompt(pendingProviderPrompt);
+                            throw failure;
+                        }
+                        if (isCodexAppServerContextWindowExhaustedError(failure)) {
+                            const originalFailure: Error = originalContextWindowExhaustionFailure ?? failure;
+                            originalContextWindowExhaustionFailure = originalFailure;
+                            const retryDecision = resolveRecoverableTurnFailureRetryDecision({
+                                attemptCount: recoveredContextWindowExhaustion ? 1 : 0,
+                                maxRetries: 1,
+                                providerWillRetry: false,
+                                failureRetryAfterMs: null,
+                                failedTurnHadMeaningfulActivity,
+                                promptMode: contextWindowRecoveryConfig.mode,
+                                originalPrompt: activeTurn.ownsAuthContinuation ? GENERIC_CONTINUATION_RESUME_PROMPT : prompt,
+                                continuationPrompt: contextWindowRecoveryConfig.continuationPrompt,
+                            });
+                            if (retryDecision.action === 'retry') {
+                                recoveredContextWindowExhaustion = true;
+                                try {
+                                    await recoverFromCodexContextWindowExhaustion(activeThreadId, originalFailure, activeTurn);
+                                } catch (recoveryError) {
+                                    if (activeTurn.cancellationIntent.requested) {
+                                        clearPendingProviderPrompt(pendingProviderPrompt);
+                                        return;
+                                    }
+                                    await surfaceOriginalContextWindowFailureAfterRecoveryError(originalFailure, recoveryError);
+                                    throw originalFailure;
+                                }
+                                promptForAttempt = retryDecision.prompt;
+                                if (retryDecision.promptKind === 'continuation') {
+                                    optionsForAttempt = buildCodexAppServerRetryDeliveryIdentityOptions(pendingProviderPrompt);
+                                } else {
+                                    optionsForAttempt = activeTurn.ownsAuthContinuation ? buildCodexAppServerRetryDeliveryIdentityOptions(pendingProviderPrompt) : options;
+                                }
+                                continue;
+                            }
+                            if (retryDecision.action === 'disabled') {
+                                await surfaceOriginalContextWindowFailure(
+                                    originalFailure,
+                                    '[codex-app-server] Codex context-window recovery disabled; surfacing original turn failure',
+                                    { mode: contextWindowRecoveryConfig.mode },
+                                );
+                                clearPendingProviderPrompt(pendingProviderPrompt);
                                 throw originalFailure;
                             }
-                            promptForAttempt = retryDecision.prompt;
-                            if (retryDecision.promptKind === 'continuation') {
-                                optionsForAttempt = buildCodexAppServerRetryDeliveryIdentityOptions(pendingProviderPrompt);
-                            } else {
-                                optionsForAttempt = options;
+                            if (retryDecision.action === 'budget_exhausted') {
+                                const secondFailureDecision = resolveRecoverableTurnFailureSecondFailure({
+                                    originalFailure,
+                                    latestFailure: failure,
+                                });
+                                await surfaceOriginalContextWindowFailureAfterRecoveryError(secondFailureDecision.failure, failure);
+                                clearPendingProviderPrompt(pendingProviderPrompt);
+                                throw secondFailureDecision.failure;
                             }
-                            continue;
-                        }
-                        if (retryDecision.action === 'disabled') {
-                            await surfaceOriginalContextWindowFailure(
-                                originalFailure,
-                                '[codex-app-server] Codex context-window recovery disabled; surfacing original turn failure',
-                                { mode: contextWindowRecoveryConfig.mode },
-                            );
                             clearPendingProviderPrompt(pendingProviderPrompt);
                             throw originalFailure;
                         }
-                        if (retryDecision.action === 'budget_exhausted') {
-                            const secondFailureDecision = resolveRecoverableTurnFailureSecondFailure({
-                                originalFailure,
-                                latestFailure: failure,
-                            });
-                            await surfaceOriginalContextWindowFailureAfterRecoveryError(secondFailureDecision.failure, failure);
-                            clearPendingProviderPrompt(pendingProviderPrompt);
-                            throw secondFailureDecision.failure;
-                        }
                         clearPendingProviderPrompt(pendingProviderPrompt);
-                        throw originalFailure;
+                        throw failure;
                     }
-                    clearPendingProviderPrompt(pendingProviderPrompt);
-                    throw failure;
                 }
+            } catch (error) {
+                if (needsAuthContinuationFinalization && (!params.session.sessionTurnLifecycle || params.session.sessionTurnLifecycle.hasActiveTurn())) {
+                    const failure = error instanceof Error ? error : new Error(String(error));
+                    await abortPendingTurnWithFailure(failure);
+                }
+                throw error;
             }
         },
         setOnPromptAcceptedByProvider: (callback) => {

@@ -154,12 +154,16 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
     rejectFirstInterruptAsNoActiveTurn?: boolean;
     interruptTerminalWithoutResponse?: boolean;
     interruptTerminalDelayMs?: number;
+    interruptTerminalResult?: Readonly<Record<string, unknown>>;
+    authContinuationContextFailures?: number;
+    compactCompletionDelayMs?: number;
     rejectSteerAsNoActiveTurn?: boolean;
     rejectPermissionsProfile?: boolean;
     rejectGoalMethods?: boolean;
     rejectGoalMethodsAsInvalidRequest?: boolean;
     omitGoalGetResponse?: boolean;
     goalGetResult?: unknown;
+    goalGetResponseDelayMs?: number;
     omitSessionControlsResponses?: boolean;
     emitGoalContinuationTurn?: boolean;
     emitGoalContinuationContextWindow?: boolean;
@@ -398,7 +402,9 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '            process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32601, message: "Method not found: thread/goal/get" } }) + "\\n");',
         '            continue;',
         '        }',
+        '        setTimeout(() => {',
         `        process.stdout.write(JSON.stringify({ id: msg.id, result: ${params.goalGetResult === undefined ? '{ goal: { threadId: msg.params?.threadId ?? "thread-started", objective: "Ship the Codex app-server lane", status: "active", updatedAt: "2026-05-13T10:00:00.000Z" } }' : JSON.stringify(params.goalGetResult)} }) + "\\n");`,
+        `        }, ${JSON.stringify(params.goalGetResponseDelayMs ?? 0)});`,
         '        continue;',
         '    }',
         '    if (msg.method === "thread/goal/set") {',
@@ -503,7 +509,7 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '        continue;',
         '    }',
         '    if (msg.method === "thread/compact/start") {',
-        '        process.stdout.write(JSON.stringify({ id: msg.id, result: {} }) + "\\n");',
+        `        process.stdout.write(JSON.stringify({ id: msg.id, result: ${JSON.stringify(params.compactCompletionDelayMs ? { turn: { id: 'turn-manual-compact' } } : {})} }) + "\\n");`,
         '        setTimeout(() => {',
         '            process.stdout.write(JSON.stringify({ method: "item/started", params: { item: { id: "manual_compact_1", type: "contextCompaction" } } }) + "\\n");',
         '        }, 8);',
@@ -512,7 +518,7 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '        }, 12);',
         '        setTimeout(() => {',
         '            process.stdout.write(JSON.stringify({ method: "turn/completed", params: { threadId: msg.params?.threadId ?? null, turn: { id: "turn-manual-compact" } } }) + "\\n");',
-        '        }, 16);',
+        `        }, ${JSON.stringify(params.compactCompletionDelayMs ?? 16)});`,
         '        continue;',
         '    }',
         '    if (msg.method === "review/start") {',
@@ -1342,6 +1348,12 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '            }, 14);',
         '            continue;',
         '        }',
+        `        if (text === "Continue where you left off" && matchingTurnStartCount <= ${JSON.stringify(params.authContinuationContextFailures ?? 0)}) {`,
+        '            setTimeout(() => {',
+        '                process.stdout.write(JSON.stringify({ method: "turn/completed", params: { threadId: msg.params?.threadId ?? null, turn: { id: turnId, status: "failed", error: { message: "upstream provider rejected the request", codexErrorInfo: "ContextWindowExceeded", additionalDetails: null } } } }) + "\\n");',
+        '            }, 14);',
+        '            continue;',
+        '        }',
         '        if (text === "context-window-exhausted-once" && matchingTurnStartCount === 1) {',
         '            const contextWindowError = { message: "upstream provider rejected the request", codexErrorInfo: "ContextWindowExceeded", additionalDetails: null };',
         '            setTimeout(() => {',
@@ -1598,6 +1610,11 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '            continue;',
         '        }',
         '        const turnId = msg.params?.turnId ?? null;',
+        `        if (${JSON.stringify(params.interruptTerminalResult !== undefined)}) {`,
+        '            process.stdout.write(JSON.stringify({ id: msg.id, result: { ok: true } }) + "\\n");',
+        `            process.stdout.write(JSON.stringify({ method: "turn/completed", params: { threadId: msg.params?.threadId, turn: { id: turnId, ...${JSON.stringify(params.interruptTerminalResult ?? {})} } } }) + "\\n");`,
+        '            continue;',
+        '        }',
         `        if (${JSON.stringify(params.interruptTerminalWithoutResponse === true)}) {`,
         '            setTimeout(() => {',
         '                process.stdout.write(JSON.stringify({ method: "turn/interrupted", params: { threadId: msg.params?.threadId ?? null, turn: turnId ? { id: turnId } : undefined } }) + "\\n");',
@@ -1732,12 +1749,16 @@ describe('createCodexAppServerRuntime', () => {
             rejectFirstInterruptAsNoActiveTurn?: boolean;
             interruptTerminalWithoutResponse?: boolean;
             interruptTerminalDelayMs?: number;
+            interruptTerminalResult?: Readonly<Record<string, unknown>>;
+    authContinuationContextFailures?: number;
+    compactCompletionDelayMs?: number;
             rejectSteerAsNoActiveTurn?: boolean;
             rejectPermissionsProfile?: boolean;
             rejectGoalMethods?: boolean;
             rejectGoalMethodsAsInvalidRequest?: boolean;
             omitGoalGetResponse?: boolean;
             goalGetResult?: unknown;
+            goalGetResponseDelayMs?: number;
             omitSessionControlsResponses?: boolean;
             emitGoalContinuationTurn?: boolean;
             emitGoalContinuationContextWindow?: boolean;
@@ -1800,12 +1821,16 @@ describe('createCodexAppServerRuntime', () => {
             rejectFirstInterruptAsNoActiveTurn: options.rejectFirstInterruptAsNoActiveTurn,
             interruptTerminalWithoutResponse: options.interruptTerminalWithoutResponse,
             interruptTerminalDelayMs: options.interruptTerminalDelayMs,
+            interruptTerminalResult: options.interruptTerminalResult,
+            authContinuationContextFailures: options.authContinuationContextFailures,
+            compactCompletionDelayMs: options.compactCompletionDelayMs,
             rejectSteerAsNoActiveTurn: options.rejectSteerAsNoActiveTurn,
             rejectPermissionsProfile: options.rejectPermissionsProfile,
             rejectGoalMethods: options.rejectGoalMethods,
             rejectGoalMethodsAsInvalidRequest: options.rejectGoalMethodsAsInvalidRequest,
             omitGoalGetResponse: options.omitGoalGetResponse,
             goalGetResult: options.goalGetResult,
+            goalGetResponseDelayMs: options.goalGetResponseDelayMs,
             omitSessionControlsResponses: options.omitSessionControlsResponses,
             emitGoalContinuationTurn: options.emitGoalContinuationTurn,
             emitGoalContinuationContextWindow: options.emitGoalContinuationContextWindow,
@@ -12419,21 +12444,27 @@ describe('createCodexAppServerRuntime', () => {
         expect(requestLog.map((entry) => entry.method)).not.toContain('account/login/start');
     });
 
-    it.each([['success', 'soft_threshold'], ['success', 'manual'], ['auth_failure', 'soft_threshold'], ['user_abort', 'soft_threshold'], ['stale', 'soft_threshold'], ['active_goal', 'soft_threshold']] as const)('interrupts and continues an owned prompt for a connected-service auth handoff: %s (%s)', async (outcome, reason) => {
+    it.each([['success', 'soft_threshold'], ['success', 'manual'], ['auth_failure', 'soft_threshold'], ['user_abort', 'soft_threshold'], ['stale', 'soft_threshold'], ['active_goal', 'soft_threshold'], ['goal_discovery_pending', 'soft_threshold'], ['natural_complete_auth_failure', 'soft_threshold'], ['deferred_terminal_failure', 'soft_threshold'], ['continuation_setup_failure', 'soft_threshold'], ['context_recovery', 'soft_threshold'], ['context_budget_exhausted', 'soft_threshold'], ['context_user_abort', 'soft_threshold']] as const)('interrupts and continues an owned prompt for a connected-service auth handoff: %s (%s)', async (outcome, reason) => {
         const { root, requestLogPath } = await createRuntimeFixture('happier-codex-app-server-runtime-live-auth-busy-', {
             omitTurnCompletedForPrompt: 'auth-switch-active-turn',
-            goalGetResult: { goal: null },
-            ...(outcome === 'auth_failure' ? { loginStartError: { code: -32603, message: 'synthetic auth failure' } } : {}),
+            goalGetResult: outcome === 'goal_discovery_pending' ? { goal: { status: 'active', objective: 'native goal already active' } } : { goal: null },
+            ...(['context_recovery', 'context_budget_exhausted', 'context_user_abort'].includes(outcome) ? { authContinuationContextFailures: outcome === 'context_budget_exhausted' ? 2 : 1 } : {}),
+            ...(outcome === 'context_user_abort' ? { compactCompletionDelayMs: 1000 } : {}),
+            ...(outcome === 'goal_discovery_pending' ? { goalGetResponseDelayMs: 500 } : {}),
+            ...(outcome === 'natural_complete_auth_failure' ? { interruptTerminalResult: { status: 'completed' } } : {}),
+            ...(outcome === 'deferred_terminal_failure' ? { interruptTerminalResult: { status: 'failed', error: { message: 'Context window exceeded', codexErrorInfo: 'ContextWindowExceeded', additionalDetails: null } } } : {}),
+            ...(outcome === 'auth_failure' || outcome === 'natural_complete_auth_failure' ? { loginStartError: { code: -32603, message: 'synthetic auth failure' } } : {}),
             ...(outcome === 'user_abort' ? { loginStartResponseDelayMs: 200 } : {}),
         });
         const lifecycleMutations: Array<{ action: string }> = [];
         const sessionTurnLifecycle = createSessionTurnLifecycle({ sessionId: 'handoff-session', enqueueSessionTurn: async mutation => { lifecycleMutations.push(mutation); } });
+        let fenceGroupAfterApply: (() => void) | null = null;
         const runtime = createCodexAppServerRuntime({
             directory: root,
             initialConnectedServiceRuntimeIdentity: { serviceId: 'openai-codex', activeAccountId: 'acct_original', accountLabel: null, profileId: 'original', credentialFingerprint: 'sha256:original', source: 'spawn_selection' },
             validateConnectedServiceGroupCurrentness: vi.fn(async () => ({ current: outcome !== 'stale' })),
             onThinkingChange: vi.fn(),
-            onConnectedServiceAuthGenerationApplied: vi.fn(async () => {}),
+            onConnectedServiceAuthGenerationApplied: vi.fn(async () => { fenceGroupAfterApply?.(); }),
             session: {
                 sessionTurnLifecycle,
                 updateMetadata: vi.fn(),
@@ -12458,6 +12489,9 @@ describe('createCodexAppServerRuntime', () => {
             },
         });
 
+        if (outcome === 'continuation_setup_failure') fenceGroupAfterApply = () => {
+            void runtime.applyConnectedServiceAuthGeneration({ serviceId: 'openai-codex', reason: 'manual', authGeneration: { kind: 'current_auth_group_unavailable', groupId: 'main', unavailableReason: 'group_missing' } }).catch(() => undefined);
+        };
         await runtime.startOrLoad({});
         if (outcome === 'active_goal') await runtime.setGoal('finish native goal work');
         const promptPromise = runtime.sendPrompt('auth-switch-active-turn', { localIds: ['accepted-input-1'], userMessageSeq: 11, trustedLocalImagePaths: new Set(['/tmp/synthetic-auth-handoff.png']) });
@@ -12506,7 +12540,7 @@ describe('createCodexAppServerRuntime', () => {
             },
             runtime: {
                 inProviderTurn: true,
-                safeToApply: outcome !== 'active_goal',
+                safeToApply: outcome !== 'active_goal' && outcome !== 'goal_discovery_pending',
                 profileId: 'original',
             },
         });
@@ -12514,7 +12548,7 @@ describe('createCodexAppServerRuntime', () => {
         expect(identityResponse.runtime).not.toHaveProperty('requiresTurnBoundaryForApply');
 
         const applyPromise = (runtime as any).applyConnectedServiceAuthGeneration(applyRequest);
-        if (outcome === 'active_goal') {
+        if (outcome === 'active_goal' || outcome === 'goal_discovery_pending') {
             await expect(applyPromise).resolves.toMatchObject({ ok: false, errorCode: 'turn_in_flight' });
             const goalLog = await readRequestLog(requestLogPath);
             expect(goalLog.filter(entry => entry.method === 'turn/interrupt' || entry.method === 'account/login/start')).toHaveLength(0);
@@ -12536,7 +12570,17 @@ describe('createCodexAppServerRuntime', () => {
             await runtime.cancel();
             await promptPromise;
         }
-        if (outcome === 'auth_failure') {
+        if (outcome === 'context_user_abort') {
+            await waitForCondition(async () => (await readRequestLog(requestLogPath)).some(entry => entry.method === 'thread/compact/start'), { timeoutMs: 2000, intervalMs: 10, label: 'owned context recovery compaction starts' });
+            await runtime.cancel();
+        }
+        if (outcome === 'natural_complete_auth_failure') {
+            await expect(applyPromise).resolves.toMatchObject({ ok: false });
+            await expect(promptPromise).resolves.toBeUndefined();
+        } else if (outcome === 'deferred_terminal_failure' || outcome === 'continuation_setup_failure' || outcome === 'context_budget_exhausted') {
+            await expect(applyPromise).resolves.toMatchObject({ ok: true });
+            await expect(promptPromise).rejects.toBeInstanceOf(Error);
+        } else if (outcome === 'auth_failure') {
             await expect(applyPromise).resolves.toMatchObject({ ok: false });
             await expect(promptPromise).rejects.toThrow('auth handoff failed');
         } else {
@@ -12547,7 +12591,15 @@ describe('createCodexAppServerRuntime', () => {
         const methods = afterBoundary.map(entry => entry.method);
         expect(methods.indexOf('turn/interrupt')).toBeLessThan(methods.indexOf('account/login/start'));
         const starts = afterBoundary.filter(entry => entry.method === 'turn/start');
-        expect(starts).toHaveLength(outcome === 'success' ? 2 : 1);
+        expect(starts).toHaveLength(['context_recovery', 'context_budget_exhausted'].includes(outcome) ? 3 : outcome === 'success' || outcome === 'context_user_abort' ? 2 : 1);
+        if (['context_recovery', 'context_budget_exhausted'].includes(outcome)) {
+            expect(afterBoundary.filter(entry => entry.method === 'thread/compact/start')).toHaveLength(1);
+            expect(afterBoundary.filter(entry => entry.method === 'thread/resume')).toHaveLength(1);
+            for (const start of starts.slice(1)) {
+                expect(start.params).toMatchObject({ input: [{ type: 'text', text: 'Continue where you left off' }] });
+                expect(start.params).not.toHaveProperty('clientUserMessageId');
+            }
+        }
         if (outcome === 'success') {
             expect(starts[1].params).toMatchObject({ threadId: 'thread-started', input: [{ text: 'Continue where you left off' }] });
             expect((starts[1].params as { input: unknown[] }).input).toHaveLength(1);
@@ -12555,10 +12607,11 @@ describe('createCodexAppServerRuntime', () => {
         }
         expect(afterBoundary.filter(entry => entry.method === 'account/login/start')).toHaveLength(1);
         expect(afterBoundary.filter(entry => entry.method === 'initialize')).toHaveLength(1);
+        expect(sessionTurnLifecycle.getActiveTurnId()).toBeNull();
         expect(lifecycleMutations.filter(mutation => mutation.action === 'begin')).toHaveLength(1);
-        expect(lifecycleMutations.filter(mutation => mutation.action === 'complete')).toHaveLength(outcome === 'success' ? 1 : 0);
-        expect(lifecycleMutations.filter(mutation => mutation.action === 'cancel')).toHaveLength(outcome === 'user_abort' ? 1 : 0);
-        expect(lifecycleMutations.filter(mutation => mutation.action === 'fail')).toHaveLength(outcome === 'auth_failure' ? 1 : 0);
+        expect(lifecycleMutations.filter(mutation => mutation.action === 'complete')).toHaveLength(outcome === 'success' || outcome === 'context_recovery' || outcome === 'natural_complete_auth_failure' ? 1 : 0);
+        expect(lifecycleMutations.filter(mutation => mutation.action === 'cancel')).toHaveLength(outcome === 'user_abort' || outcome === 'context_user_abort' ? 1 : 0);
+        expect(lifecycleMutations.filter(mutation => mutation.action === 'fail')).toHaveLength(['auth_failure', 'deferred_terminal_failure', 'continuation_setup_failure', 'context_budget_exhausted'].includes(outcome) ? 1 : 0);
     });
 
     it('retains cancellation custody after an admitted start rejection until physical native client exit', async () => {
