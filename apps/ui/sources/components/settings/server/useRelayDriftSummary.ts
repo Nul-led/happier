@@ -2,7 +2,12 @@ import * as React from 'react';
 
 import { usePrimaryMachineFromActiveSelection } from '@/components/settings/server/hooks/usePrimaryMachineFromActiveSelection';
 import { readCachedMachineDoctorSnapshot } from '@/components/settings/systemStatus/cache/machineDoctorSnapshotCache';
-import { daemonNeedsAuthFromFacts, type DesktopLocalInspection } from '@/setup/deriveDesktopLocalSetupSnapshot';
+import {
+    daemonNeedsAuthFromFacts,
+    resolveThisComputerService,
+    type DesktopLocalInspection,
+    type DesktopSetupExpectation,
+} from '@/setup/deriveDesktopLocalSetupSnapshot';
 import { resolveAppAccountLabel, resolveDaemonAccountLabel } from '@/setup/thisComputerLabels';
 import { useDesktopLocalInspection } from '@/setup/useDesktopLocalInspection';
 import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
@@ -46,12 +51,22 @@ type DaemonDriftFacts = Readonly<{
 
 function daemonFactsFromLocalInspection(
     inspection: DesktopLocalInspection,
-    appAccountId: string | null,
+    appRelay: DesktopSetupExpectation,
 ): DaemonDriftFacts | null {
     if (inspection.status !== 'resolved') {
         return null;
     }
-    const facts = inspection.facts;
+    const appAccountId = appRelay.accountId;
+    // The daemon that answers for the app's relay: the relay's own pinned service when it has one
+    // here (one daemon per relay), else the default-following one — the same answer readiness and
+    // the move question use, so a relay this computer also serves never reads as drift.
+    const service = resolveThisComputerService(inspection, appRelay);
+    if (!service) {
+        // R12-F1 — the relay's own service here could not be read: no drift is claimed about it;
+        // the setup panel says the read failed.
+        return null;
+    }
+    const facts = service.facts;
     const controlReachable = facts.runtimeConvergence?.controlReachable ?? false;
     // R10 — knowing a daemon means one exists here: an installed background service, or a daemon
     // answering control. A computer with neither has nothing that could have drifted, and the
@@ -247,11 +262,14 @@ function useThisComputerDriftSummary(): RelayDriftSummary | null {
     // The account the app is on, read from the same owner the executor spec is built from, and
     // what the daemon's own validated account is compared against (F7).
     const expectedAccountId = getActiveServerAccountScope()?.accountId ?? null;
-    return React.useMemo(() => describeRelayDrift(
-        daemonFactsFromLocalInspection(inspection, expectedAccountId),
-        serverUrl,
-        readActiveLocalRelayUrl({ activeLocalRelayUrl }) ?? resolveSameOriginLocalRelayUrl(serverUrl),
-    ), [activeLocalRelayUrl, expectedAccountId, inspection, serverUrl]);
+    return React.useMemo(() => {
+        const localRelayUrl = readActiveLocalRelayUrl({ activeLocalRelayUrl }) ?? resolveSameOriginLocalRelayUrl(serverUrl);
+        return describeRelayDrift(
+            daemonFactsFromLocalInspection(inspection, { relayUrl: serverUrl, localRelayUrl, accountId: expectedAccountId }),
+            serverUrl,
+            localRelayUrl,
+        );
+    }, [activeLocalRelayUrl, expectedAccountId, inspection, serverUrl]);
 }
 
 /** Web and phone: the primary machine's cached doctor snapshot (SB2) — another machine's daemon. */

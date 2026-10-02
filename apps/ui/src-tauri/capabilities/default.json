@@ -25,8 +25,6 @@
     "allow-desktop-download-update",
     "allow-desktop-install-update",
     "allow-desktop-pick-ssh-identity-file",
-    "allow-desktop-get-autostart-enabled",
-    "allow-desktop-set-autostart-enabled",
     "allow-desktop-set-tray-state",
     "allow-sync-desktop-pet-overlay-state",
     "allow-desktop-pet-overlay-read-window-state",

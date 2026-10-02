@@ -1,7 +1,12 @@
 /**
- * Generates the desktop tray icons from the vector Happier mark (the same sources as the app
- * icon, `apps/ui/src-tauri/icons/AppIcon.icon/Assets/{HappierBag,HappierSmile}.svg`):
+ * Generates the desktop shell's raster icons from the vector Happier mark (the same sources as the
+ * app icon, `apps/ui/src-tauri/icons/AppIcon.icon/Assets/{HappierBag,HappierSmile}.svg`):
  *
+ *   apps/ui/src-tauri/icons/dock/dock-icon.png — the running app's macOS Dock image, 1024×1024.
+ *     `NSApplication.applicationIconImage` is drawn into the whole Dock cell as-is, while macOS
+ *     draws every bundled icon as an 824-point tile centered in its 1024-point cell with a soft
+ *     shadow. So the mark carries that grid itself — 824 px, 100 px margins, the system icon
+ *     shadow — and matches its neighbours; the notch stays transparent. `src/dock_icon.rs` embeds it.
  *   apps/ui/src-tauri/icons/tray/tray-template.png — macOS menu-bar template: black bag with
  *     the smile knocked out (transparent). 36×36 px because tray-icon draws the status-item
  *     image 18 pt tall, so this is its @2x; the glyph is 32 px (16 pt) with 2 px padding.
@@ -13,10 +18,10 @@
  * Each PNG is rasterized directly at its final size (librsvg via the repo's `sharp`), no
  * resampling. `apps/ui/src-tauri/src/tray.rs` embeds them with `tauri::include_image!`.
  *
- * Regenerate with:  node scripts/generateTrayIcons.mjs
+ * Regenerate with:  node scripts/generateDesktopIcons.mjs
  */
 
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,6 +56,12 @@ function frame({ canvasPx, glyphPx, defs, body }) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasPx}" height="${canvasPx}" viewBox="${-pad} ${-pad} ${box} ${box}"><defs>${defs}</defs>${body}</svg>`;
 }
 
+// macOS app icon grid: an 824-point tile centered in a 1024-point cell, with the system's icon
+// shadow (black at 30%, 10 points down, 10 points of blur) inside the margin.
+const DOCK_CELL_PX = 1024;
+const DOCK_TILE_PX = 824;
+const DOCK_SHADOW = { opacity: 0.3, offsetPx: 10, blurPx: 10 };
+
 async function main() {
   const bagSvg = await readSvg('HappierBag.svg');
   const smileSvg = await readSvg('HappierSmile.svg');
@@ -73,9 +84,25 @@ async function main() {
     body: `<path fill="url(#g)" d="${bag}"/><path fill="#FFFFFF" d="${smile}"/>`,
   });
 
+  // Shadow lengths are in the mark's 90-unit space, like everything else inside the frame.
+  const unitsPerPx = MARK_UNITS / DOCK_TILE_PX;
+  const shadow = `<filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur in="SourceAlpha" stdDeviation="${(DOCK_SHADOW.blurPx / 2) * unitsPerPx}"/><feOffset dy="${DOCK_SHADOW.offsetPx * unitsPerPx}" result="blur"/><feFlood flood-color="#000" flood-opacity="${DOCK_SHADOW.opacity}"/><feComposite in2="blur" operator="in"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>`;
+  const dock = frame({
+    canvasPx: DOCK_CELL_PX,
+    glyphPx: DOCK_TILE_PX,
+    defs: `${gradientDef(bagSvg, 'HappierBag.svg')}${shadow}`,
+    body: `<g filter="url(#shadow)"><path fill="url(#g)" d="${bag}"/><path fill="#FFFFFF" d="${smile}"/></g>`,
+  });
+
   const sharp = createRequire(path.join(repoRoot, 'package.json'))('sharp');
-  for (const [file, svg] of [['tray-template.png', template], ['tray.png', colour], ['tray-dark.png', dark]]) {
-    const out = path.join(iconsDir, 'tray', file);
+  for (const [file, svg] of [
+    ['dock/dock-icon.png', dock],
+    ['tray/tray-template.png', template],
+    ['tray/tray.png', colour],
+    ['tray/tray-dark.png', dark],
+  ]) {
+    const out = path.join(iconsDir, file);
+    await mkdir(path.dirname(out), { recursive: true });
     // include_image! needs 8-bit RGBA.
     await sharp(Buffer.from(svg)).ensureAlpha().png({ compressionLevel: 9 }).toFile(out);
     console.log(`wrote ${path.relative(repoRoot, out)}`);

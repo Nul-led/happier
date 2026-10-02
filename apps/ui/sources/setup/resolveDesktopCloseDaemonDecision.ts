@@ -1,4 +1,10 @@
-import type { DesktopBackgroundServiceAutostartMode } from '@/setup/deriveDesktopLocalSetupSnapshot';
+import {
+    daemonRelayMatchesExpectation,
+    resolveThisComputerService,
+    type DesktopBackgroundServiceAutostartMode,
+    type DesktopLocalInspection,
+    type DesktopSetupExpectation,
+} from '@/setup/deriveDesktopLocalSetupSnapshot';
 import { readDisplayMachineIdForSession } from '@/sync/ops/sessionMachineTarget';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { isSessionActive } from '@/utils/sessions/sessionUtils';
@@ -18,11 +24,20 @@ import { isSessionActive } from '@/utils/sessions/sessionUtils';
 /**
  * `ask` — agent sessions are running here. `askUnknown` — the app cannot see this daemon's
  * sessions at all (another account, or signed out), so it asks without claiming any are running
- * (U11).
+ * (U11). `keepInMenuBar` — R16 (a): the services start at login, so quitting releases the window
+ * and the web UI and keeps the tray, with the services running. `leaveRunning` — quit outright and
+ * touch nothing (the mode is unknown).
  */
-export type DesktopCloseDaemonDecision = 'stop' | 'ask' | 'askUnknown' | 'leaveRunning';
+export type DesktopCloseDaemonDecision = 'stop' | 'ask' | 'askUnknown' | 'leaveRunning' | 'keepInMenuBar';
+
+/**
+ * Which Quit was chosen: "Quit Happier" follows the login-start setting; "Stop background
+ * services and quit" (the tray's second Quit) stops them whatever it says.
+ */
+export type DesktopQuitIntent = 'quit' | 'stopServices';
 
 export function resolveDesktopCloseDaemonDecision(input: Readonly<{
+    intent?: DesktopQuitIntent;
     /**
      * The installed service's autostart mode, as the CLI reports it. `null` means the CLI that
      * answered proved no mode — unknown, never `on-demand`.
@@ -38,10 +53,12 @@ export function resolveDesktopCloseDaemonDecision(input: Readonly<{
      */
     canSeeDaemonSessions: boolean;
 }>): DesktopCloseDaemonDecision {
-    if (input.autostart !== 'on-demand') {
+    const stopRequested = input.intent === 'stopServices' || input.autostart === 'on-demand';
+    if (!stopRequested) {
         // The service is meant to outlive the app, or nothing proved otherwise. Quitting the app
-        // is not a reason to take the computer off the air on a guess.
-        return 'leaveRunning';
+        // is not a reason to take the computer off the air on a guess. When it is meant to outlive
+        // it, the tray outlives it too, so this computer stays one click from its services.
+        return input.autostart === 'at-login' ? 'keepInMenuBar' : 'leaveRunning';
     }
     if (!input.canSeeDaemonSessions) {
         // Zero-because-invisible is not "nothing to lose", so it is put to the user rather than
@@ -72,4 +89,30 @@ export function countActiveLocalAgentSessions(params: Readonly<{
     return params.sessions.filter((session) => isSessionActive(session)
         && readDisplayMachineIdForSession({ sessionId: session.id, metadata: session.metadata ?? null }) === params.machineId
     ).length;
+}
+
+/**
+ * The machine whose agent sessions the app can actually see on this computer: the daemon serving
+ * the app's relay, when its service owns the reachable daemon with the inspected machine id, on the
+ * app's relay, validated for the app's account. `null` when the app cannot see them — zero sessions
+ * there would only mean unseen. The quit question and the tray's session count read this one rule.
+ */
+export function resolveVisibleSessionMachineId(params: Readonly<{
+    inspection: DesktopLocalInspection;
+    appRelay: DesktopSetupExpectation;
+}>): string | null {
+    if (params.inspection.status !== 'resolved' || !params.appRelay.accountId) {
+        return null;
+    }
+    const facts = resolveThisComputerService(params.inspection, params.appRelay)?.facts ?? null;
+    const convergence = facts?.runtimeConvergence;
+    if (!facts || !facts.auth.machineId || !convergence) {
+        return null;
+    }
+    const visible = facts.auth.validatedAccountId === params.appRelay.accountId
+        && convergence.controlReachable
+        && convergence.serviceOwnsRunningDaemon
+        && convergence.machineIdMatches
+        && daemonRelayMatchesExpectation(facts, params.appRelay);
+    return visible ? facts.auth.machineId : null;
 }

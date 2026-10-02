@@ -6,6 +6,7 @@ import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAc
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { toRelayHostDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 
+import { readKeptCliUpdateCommand } from './deriveDesktopLocalSetupSnapshot';
 import { resolveAppAccountLabel } from './thisComputerLabels';
 import type { SetupLocalFacts } from './setupStageModel';
 import { useDesktopLocalSetupGate } from './useDesktopLocalSetupGate';
@@ -124,12 +125,11 @@ export function DesktopLocalSetupRuntime(): null {
     // instead of spinning on a run that already finished (INV8/INV10).
     const verification = gate.verification.status === 'blocked' ? gate.verification.code : 'pending';
     const visible = gate.snapshot.presentation === 'panel';
+    const relayMove = run != null && gate.setupRunMovesRelay === true;
     const inspectionTaskId = gate.inspection.status !== 'resolved' ? gate.inspectionTaskId ?? null : null;
     const cliChannel = gate.inspection.status === 'resolved' ? gate.inspection.facts.acquisition.channel : null;
     const cliLatestVersion = gate.inspection.status === 'resolved' ? gate.inspection.facts.cliUpdate?.latestVersion ?? null : null;
-    const ownCliUpdateCommand = gate.inspection.status === 'resolved' && gate.inspection.facts.cliChoice.mode === 'own'
-        ? gate.inspection.facts.cliChoice.otherCli?.updateCommand ?? null
-        : null;
+    const ownCliUpdateCommand = gate.inspection.status === 'resolved' ? readKeptCliUpdateCommand(gate.inspection.facts) : null;
 
     const model = React.useMemo<DesktopLocalSetupPanelModel>(() => ({
         visible,
@@ -139,6 +139,7 @@ export function DesktopLocalSetupRuntime(): null {
             relayDisplayName,
             accountLabel,
             entry: run == null ? 'checking' : 'setup',
+            relayMove,
             verification,
             startFailure: inspectionError
                 ?? (startError ? { code: 'system_task_start_failed', message: startError } : null),
@@ -157,6 +158,7 @@ export function DesktopLocalSetupRuntime(): null {
         cliChannel,
         cliLatestVersion,
         ownCliUpdateCommand,
+        relayMove,
         cliUpdate.errorMessage,
         cliUpdate.running,
         cliUpdate.start,

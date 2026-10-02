@@ -413,6 +413,36 @@ describe('deriveSetupStageModel copy and announcements', () => {
         expect(connect.statusSentence).toEqual({ key: 'setupSurface.stageConnectStatusAs', params: { relay: RELAY, account: 'alice' } });
     });
 
+    it('names the service step the executor is actually on: install, start and restart differ', () => {
+        const sentence = (...stepIds: string[]) => deriveSetupStageModel(
+            runState({ events: stepIds.map((stepId, index) => progress(stepId, 100 + index)) }),
+            facts(),
+        ).statusSentence;
+
+        expect(sentence('setup.thisComputer.installService')).toBe('setupSurface.stageServiceStatus');
+        expect(sentence('setup.thisComputer.installService', 'setup.thisComputer.startService')).toBe('setupSurface.stageServiceStartStatus');
+        // A relay move only reconfigures and restarts an existing service; it installs nothing.
+        expect(sentence('setup.thisComputer.configureRelay', 'setup.thisComputer.restartService')).toBe('setupSurface.stageServiceRestartStatus');
+        // The ancillary PATH report keeps the sentence of the service step it ran beside.
+        expect(sentence('setup.thisComputer.restartService', 'setup.thisComputer.pathExposure')).toBe('setupSurface.stageServiceRestartStatus');
+    });
+
+    it('titles a run that moves this computer to another relay as a move, not a first setup', () => {
+        const run = runState({ events: [progress('setup.thisComputer.restartService', 100)] });
+
+        expect(deriveSetupStageModel(run, facts()).title).toBe('setupSurface.workingTitle');
+        expect(deriveSetupStageModel(run, facts({ relayMove: true })).title).toEqual({
+            key: 'setupSurface.movingTitle', params: { relay: RELAY },
+        });
+        // A failure keeps its own honest title whatever the run was for.
+        const failed = runState({
+            status: 'failed',
+            events: [progress('setup.thisComputer.restartService', 100)],
+            result: { protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION, taskId: 'task_1', ok: false, error: { code: 'cli_command_failed', message: 'x' } },
+        });
+        expect(deriveSetupStageModel(failed, facts({ relayMove: true })).title).toBe('setupSurface.blockedTitle');
+    });
+
     it('announces the step position, never a percentage', () => {
         for (const stepId of ['setup.thisComputer.ensureCli', 'setup.thisComputer.configureRelay', 'setup.thisComputer.installService', 'setup.thisComputer.restartService']) {
             const model = deriveSetupStageModel(runState({ events: [progress(stepId, 10)] }), facts());

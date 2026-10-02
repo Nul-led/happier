@@ -111,7 +111,7 @@ describe('CollapsedSidebarView desktop chrome', () => {
         expect(screen.findByTestId('injected-collapsed-window-controls')).toBeTruthy();
         // The logo stays; Updates is its own rail entry (R13 (e)), never a replacement for the logo.
         expect(screen.findAllByTestId('collapsed-sidebar-home-button').length).toBeGreaterThan(0);
-        expect(screen.findByTestId('collapsed-sidebar-updates-button')?.props.variant).toBe('rail');
+        expect(screen.findByTestId('collapsed-sidebar-updates-button')?.props.variant).toBe('icon');
 
         await act(async () => {
             await pressTestInstanceAsync(screen.findByTestId('sidebar-expand-button'));

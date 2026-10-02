@@ -4,7 +4,7 @@ import { getSystemTasksRunner } from '@/components/systemTasks/systemTasksRuntim
 import { useSystemTaskSnapshot } from '@/components/systemTasks/useSystemTaskSnapshot';
 import { isSystemTaskBridgeUnavailableError, readSystemTaskStartErrorMessage } from '@/components/systemTasks/systemTaskStartError';
 import type { SystemTaskRunState, SystemTaskRunner } from '@/components/systemTasks/types';
-import { desktopSetupCoordinator } from '@/setup/desktopSetupCoordinator';
+import { desktopSetupCoordinator, resolveThisComputerServiceForActiveRelay } from '@/setup/desktopSetupCoordinator';
 import { cliAcquisitionFailureStatus } from '@/setup/setupStageModel';
 import { t } from '@/text';
 import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
@@ -75,7 +75,7 @@ function createCliUpdateAction(runner: SystemTaskRunner): CliUpdateAction {
             // The initiating account owns completion even if every observing surface unmounts.
             const scope = getActiveServerAccountScope();
             const inspection = desktopSetupCoordinator.readInspectionSnapshot();
-            const machineId = inspection.status === 'resolved' ? inspection.facts.auth.machineId : null;
+            const machineId = resolveThisComputerServiceForActiveRelay(inspection)?.facts.auth.machineId ?? null;
             set({ ...state, starting: true, startError: null });
             try {
                 const taskId = await runner.start(buildLocalDaemonServiceSystemTaskSpec('cli.update.v1'));

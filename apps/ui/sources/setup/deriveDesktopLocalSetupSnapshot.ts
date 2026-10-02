@@ -63,6 +63,13 @@ export type DesktopLocalReadinessFacts = Readonly<{
          * default and never evidence that this service is the app's to move.
          */
         targetMode: 'default-following' | 'pinned' | null;
+        /**
+         * H2 — who manages a pinned service: `desktop` when this app installed it ("connect to this
+         * relay too"), `null` when the user set it up. Only a desktop-managed service is ever
+         * started, stopped or rewritten by the app. Absent for the default-following service,
+         * which the app manages as this computer's one default (D2).
+         */
+        managedBy?: 'desktop' | null;
     }>;
     runtimeConvergence: Readonly<{
         controlReachable: boolean;
@@ -95,6 +102,15 @@ export type DesktopCliChoiceFacts = Readonly<{
     }> | null;
 }>;
 
+/**
+ * R12 — the exact command that updates the command line the person kept ("Keep my own"). The app
+ * never replaces that CLI, so every surface that offers its update shows this command instead —
+ * the setup panel, the Updates row and Settings › This computer — and none reads it another way.
+ */
+export function readKeptCliUpdateCommand(facts: DesktopLocalReadinessFacts): string | null {
+    return facts.cliChoice.mode === 'own' ? facts.cliChoice.otherCli?.updateCommand ?? null : null;
+}
+
 /** The public release channels a managed CLI can belong to (`@happier-dev/release-runtime`). */
 export type DesktopCliChannel = 'stable' | 'preview' | 'publicdev';
 
@@ -108,7 +124,82 @@ export type DesktopCliUpdateFacts = Readonly<{
 export type DesktopLocalInspection =
     | Readonly<{ status: 'pending' }>
     | Readonly<{ status: 'failed'; error: Readonly<{ code: string; message: string }> }>
-    | Readonly<{ status: 'resolved'; facts: DesktopLocalReadinessFacts }>;
+    | Readonly<{
+        status: 'resolved';
+        /** The default-following service's daemon: the relay this Happier home's selection names. */
+        facts: DesktopLocalReadinessFacts;
+        /**
+         * One daemon per relay (`apps/docs/.../accounts/multi-server.mdx`): each pinned service of
+         * this home and ring — a relay this computer ALSO serves — with its own facts. `null` or
+         * absent is UNKNOWN: the executor that answered (an older hsetup or CLI) could not say, so
+         * nothing beyond `facts` is claimed and nothing that needs the list is offered.
+         */
+        pinnedServices?: readonly DesktopLocalReadinessFacts[] | null;
+        /**
+         * M6 — THE one completeness signal of this computer's services (`pinnedServices.complete`):
+         * `true` only when the executor listed every service here and read each one. Anything else —
+         * a list failure, an unreadable service, or an older result without it — is unknown: a relay
+         * may have a service here the app cannot see, so nothing that depends on "this relay has
+         * none" is offered and no list claims to be whole.
+         */
+        pinnedServicesComplete?: boolean;
+        /**
+         * B-03 — the CLI's `pinnedServiceCoexistence` capability: it can install a relay's own
+         * service beside the default-following one. It gates only offering "Connect to … too";
+         * services already listed are shown whatever it says. Absent is `false` (fail closed).
+         */
+        pinnedServiceCoexistence?: boolean;
+        /**
+         * The relays whose own pinned service is listed here but could not be read
+         * (`pinnedServices.unreadable[].relayUrl`). A relay named here has a service the app cannot
+         * see, so which daemon serves it is UNKNOWN — never the default-following one by elimination.
+         */
+        pinnedServicesUnreadable?: readonly string[];
+        /**
+         * A14-02 — the one login-start mode of every service the app manages, computed by the status
+         * producer: `null` when they disagree or one could not be read. Settings, the tray and quit
+         * read this (`readManagedLoginStartMode`), never the default-following service's own mode.
+         */
+        managedServiceAutostart?: DesktopBackgroundServiceAutostartMode | null;
+        /**
+         * A14-01 — how many managed services are running here, counted by the status producer;
+         * `null` when some could not be read. Absent is unknown.
+         */
+        runningManagedServiceCount?: number | null;
+        /**
+         * R16 — the executor's one list of this computer's services, one row per relay
+         * (`listThisComputerServiceRows` in bootstrap), each judged against its relay's own
+         * account. `null`/absent: the executor sent none, so no row is claimed.
+         */
+        serviceRows?: readonly ThisComputerServiceRowFacts[] | null;
+    }>;
+
+/** One row of the executor's service list (`daemon.service.status.v1` → `serviceRows`). */
+export type ThisComputerServiceRowFacts = Readonly<{
+    relayUrl: string;
+    state: ThisComputerRelayState;
+    appManaged: boolean;
+    /**
+     * D11-2 — which of this computer's services answers for the relay, decided once by bootstrap's
+     * one rule (the relay's installed pinned service wins, else the default-following one when it
+     * is on that relay). `resolveThisComputerService` reads it; nothing in the app re-derives it.
+     * R12-S1 — the row's only service field (`serviceTargetMode` was always the same value).
+     */
+    serving: 'default-following' | 'pinned';
+    actions: readonly ('start' | 'restart' | 'stop')[];
+}>;
+
+type ResolvedDesktopLocalInspection = Extract<DesktopLocalInspection, { status: 'resolved' }>;
+
+/**
+ * One of this computer's background services and the daemon it runs: the default-following one,
+ * or a pinned one that serves exactly one relay. `serviceTargetMode` is the CLI's own vocabulary,
+ * and it is also what a setup run for that relay is told to converge.
+ */
+export type ThisComputerRelayService = Readonly<{
+    facts: DesktopLocalReadinessFacts;
+    serviceTargetMode: 'default-following' | 'pinned';
+}>;
 
 /** The identity the app selected. Compared against the immutable ambient facts; a change re-runs nothing. */
 export type DesktopSetupExpectation = Readonly<{
@@ -192,11 +283,7 @@ export type DesktopLocalSetupSnapshot = Readonly<{
  * check cannot disagree about what "same relay" means.
  */
 export function daemonRelayMatchesExpectation(facts: DesktopLocalReadinessFacts, expected: DesktopSetupExpectation): boolean {
-    const accepted = new Set<string>();
-    for (const url of [expected.relayUrl, expected.localRelayUrl]) {
-        const key = createRelayUrlComparableKeySafe(url);
-        if (key) accepted.add(key);
-    }
+    const accepted = expectedRelayKeys(expected);
     if (accepted.size === 0) {
         return false;
     }
@@ -207,6 +294,132 @@ export function daemonRelayMatchesExpectation(facts: DesktopLocalReadinessFacts,
         createRelayUrlComparableKeySafe(facts.server.localServerUrl),
     ].filter((key): key is string => typeof key === 'string' && key.length > 0);
     return daemonKeys.some((key) => accepted.has(key));
+}
+
+function expectedRelayKeys(expected: DesktopSetupExpectation): ReadonlySet<string> {
+    const accepted = new Set<string>();
+    for (const url of [expected.relayUrl, expected.localRelayUrl]) {
+        const key = createRelayUrlComparableKeySafe(url);
+        if (key) accepted.add(key);
+    }
+    return accepted;
+}
+
+/** Whether a relay URL the executor reported (a service row's) is the relay the app expects — same comparer. */
+export function relayUrlMatchesExpectation(relayUrl: string, expected: DesktopSetupExpectation): boolean {
+    const key = createRelayUrlComparableKeySafe(relayUrl);
+    return key !== null && expectedRelayKeys(expected).has(key);
+}
+
+/**
+ * The service behind one of the executor's rows: the relay's pinned service when the row names it
+ * (whatever its own status says — bootstrap listed it and chose it), else the default-following
+ * daemon. `null` when the row names a pin whose facts did not come with it.
+ */
+function readRowService(inspection: ResolvedDesktopLocalInspection, row: ThisComputerServiceRowFacts): ThisComputerRelayService | null {
+    if (row.serving !== 'pinned') {
+        return { facts: inspection.facts, serviceTargetMode: 'default-following' };
+    }
+    const key = createRelayUrlComparableKeySafe(row.relayUrl);
+    const pinned = key ? inspection.pinnedServices?.find((candidate) => createRelayUrlComparableKeySafe(candidate.server.serverUrl) === key) : undefined;
+    return pinned ? { facts: pinned, serviceTargetMode: 'pinned' } : null;
+}
+
+/**
+ * THE answer to "which of this computer's daemons answers for this relay?" — asked by readiness,
+ * the readiness proof, the move question and every surface describing this computer, so "this
+ * computer is connected here" cannot mean two things.
+ *
+ * D11-2/R12-F1 — the rule is bootstrap's, not the app's, and the app applies no filter of its own
+ * before it: the executor's row for the relay names the service that serves it (`serving`) and the
+ * app reads the facts that row designates — the row named by the relay's own URL first (A12-01),
+ * an alias match only when no row or unreadable service names it. With no row for the relay nothing here serves it, and the
+ * default-following daemon is the one a move would take there and the one every mismatch describes —
+ * unless the relay's own service is listed but unreadable. That is `null`: UNKNOWN, never the default.
+ */
+export function resolveThisComputerService(
+    inspection: ResolvedDesktopLocalInspection,
+    expected: DesktopSetupExpectation,
+): ThisComputerRelayService | null {
+    const rows = inspection.serviceRows ?? [];
+    // A12-01 — the row that names the relay itself comes first, and so does a listed service for
+    // it that could not be read: another daemon also answering on that URL (its public or local
+    // alias) never outranks the service bootstrap designated for the relay.
+    const exact = rows.find((row) => relayUrlMatchesExpectation(row.relayUrl, expected));
+    if (exact) {
+        return readRowService(inspection, exact);
+    }
+    if (inspection.pinnedServicesUnreadable?.some((relayUrl) => relayUrlMatchesExpectation(relayUrl, expected))) {
+        return null;
+    }
+    // Only then a row whose service answers on the relay under another of its URLs.
+    for (const row of rows) {
+        const service = readRowService(inspection, row);
+        if (service && daemonRelayMatchesExpectation(service.facts, expected)) {
+            return service;
+        }
+    }
+    return { facts: inspection.facts, serviceTargetMode: 'default-following' };
+}
+
+/**
+ * Every relay this computer has a service for: the services the executor lists, one per row
+ * (R16 — the same list the popover, Settings and the tray show). A computer with none lists nothing
+ * (R10: a relay in a config file is not a daemon); a pin that could not be read is not claimed.
+ */
+export function listThisComputerRelayServices(inspection: DesktopLocalInspection): readonly ThisComputerRelayService[] {
+    if (inspection.status !== 'resolved') {
+        return [];
+    }
+    return (inspection.serviceRows ?? []).flatMap((row) => {
+        const service = readRowService(inspection, row);
+        return service ? [service] : [];
+    });
+}
+
+/**
+ * H6/D6 across relays — some service this computer runs for any relay is installed, signed in and
+ * simply stopped (on-demand after the last quit, or at-login stopped by something else). One
+ * login-start setting governs every service the app manages, so the quiet start is owed to each of
+ * them, not only to the one serving the app's relay. A service that is not signed in would not come
+ * up by starting it; setup owns that.
+ */
+export function thisComputerHasServiceToStart(inspection: DesktopLocalInspection): boolean {
+    return listThisComputerRelayServices(inspection).some((service) => (
+        thisComputerAppManagesService(service)
+        && installedServiceNeedsStart(service.facts)
+        && !daemonNeedsAuthFromFacts(service.facts)
+        && service.facts.auth.credentialState !== 'unknown'
+    ));
+}
+
+/**
+ * H2 — whether the app starts, stops and sets login start for this service: the default-following
+ * one (D2), and a pinned one only when the app installed it. A service the user set up is shown,
+ * never driven.
+ */
+export function thisComputerAppManagesService(service: ThisComputerRelayService): boolean {
+    return service.serviceTargetMode === 'default-following' || service.facts.service.managedBy === 'desktop';
+}
+
+/**
+ * M4 — how a daemon here stands for its relay: `connected` (it answers, is signed in and its
+ * service runs it converged), `offline` (set up, but no daemon answers) or `needs_attention` (it
+ * answers but needs sign-in, runs as another account, or has not converged). The executor judges
+ * every relay against the account that relay validated (`serviceRows`); only the app's own relay is
+ * judged again here, against the account the app is on (R16: one owner per judgement).
+ */
+export type ThisComputerRelayState = 'connected' | 'offline' | 'needs_attention';
+
+/** The app relay's service, judged against the app's account by the readiness owner. */
+export function resolveThisComputerRelayState(
+    facts: DesktopLocalReadinessFacts,
+    appRelay: DesktopSetupExpectation,
+): ThisComputerRelayState {
+    if (!facts.runtimeConvergence?.controlReachable) {
+        return 'offline';
+    }
+    return appRelay.accountId !== null && resolveSetupReason(facts, appRelay) === null ? 'connected' : 'needs_attention';
 }
 
 function resolveSetupReason(facts: DesktopLocalReadinessFacts, expected: DesktopSetupExpectation): DesktopLocalSetupReason | null {
@@ -277,6 +490,15 @@ function installedServiceNeedsStart(facts: DesktopLocalReadinessFacts): boolean 
 }
 
 /**
+ * A14-02 — the one login-start setting as the person sees it: the status producer's common mode of
+ * every managed service. `null` (unknown) before a read, after a failed one, when the producer sent
+ * none, and when the managed services disagree.
+ */
+export function readManagedLoginStartMode(inspection: DesktopLocalInspection): DesktopBackgroundServiceAutostartMode | null {
+    return inspection.status === 'resolved' ? inspection.managedServiceAutostart ?? null : null;
+}
+
+/**
  * Whether the app's re-read facts already describe a converged local runtime for this identity
  * (INV8). It is the same private reason resolver the snapshot uses, so the gate cannot disagree
  * with the snapshot about when the reachability proof is worth issuing.
@@ -285,9 +507,11 @@ export function desktopLocalRuntimeConverged(
     inspection: DesktopLocalInspection,
     expected: DesktopSetupExpectation,
 ): boolean {
-    return inspection.status === 'resolved'
-        && !!expected.accountId
-        && resolveSetupReason(inspection.facts, expected) === null;
+    if (inspection.status !== 'resolved' || !expected.accountId) {
+        return false;
+    }
+    const service = resolveThisComputerService(inspection, expected);
+    return service !== null && resolveSetupReason(service.facts, expected) === null;
 }
 
 /**
@@ -329,7 +553,13 @@ export function deriveDesktopLocalSetupSnapshot(
         return { state: 'blocked', presentation: settled, reason: 'inspection_failed' };
     }
 
-    const reason = resolveSetupReason(input.inspection.facts, input.expected);
+    const service = resolveThisComputerService(input.inspection, input.expected);
+    if (!service) {
+        // R12-F1 — the relay's own service is listed but could not be read: nothing can be proven
+        // about it and nothing may be set up over it; the read is what failed.
+        return { state: 'blocked', presentation: settled, reason: 'inspection_failed' };
+    }
+    const reason = resolveSetupReason(service.facts, input.expected);
     if (reason === null) {
         if (input.reachability === 'reachable') {
             return { state: 'ready', presentation: 'hidden', reason: null };
@@ -353,9 +583,11 @@ export function deriveDesktopLocalSetupSnapshot(
             ? { state: 'setup', presentation: settled, reason }
             : { state: 'blocked', presentation: unsettled, reason };
     }
+    // The quiet start starts every service the app manages (one login-start setting governs them
+    // all), so a stopped relay-own service gets it exactly like the default-following one.
     if (reason === 'daemon_not_converged'
         && !input.backgroundServiceStartAttempted
-        && installedServiceNeedsStart(input.inspection.facts)) {
+        && installedServiceNeedsStart(service.facts)) {
         return { state: 'checking', presentation: unsettled, reason: 'service_start_pending' };
     }
     return { state: 'setup', presentation: settled, reason };

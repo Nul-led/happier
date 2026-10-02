@@ -4,6 +4,7 @@ import { createRelayUrlComparableKeySafe } from '@/sync/domains/server/relayDrif
 
 import {
     daemonRelayMatchesExpectation,
+    resolveThisComputerService,
     type DesktopLocalInspection,
     type DesktopLocalReadinessFacts,
     type DesktopSetupExpectation,
@@ -14,7 +15,7 @@ import {
  * background service to another Relay (UD5). `confirm_account`: ask before the app moves it to
  * another ACCOUNT (D1) — always asked, and never covered by the relay-only "always move".
  */
-export type RelayReconciliationDecision = 'start' | 'confirm_relay' | 'confirm_account';
+export type RelayReconciliationDecision = 'start' | 'confirm_relay' | 'confirm_account' | 'leave_user_service';
 
 export type RelayReconciliationInput = Readonly<{
     /** The one ambient inspection (plan §3.3) — immutable for this app open. */
@@ -72,6 +73,21 @@ function daemonAccountContradictsTarget(facts: DesktopLocalReadinessFacts, targe
  * second, weaker decision in the UI.
  */
 export function resolveRelayReconciliationConsent(input: RelayReconciliationInput): RelayReconciliationDecision {
+    // R12-F1 — the relay's own service here could not be read: nothing is moved or converged on a
+    // guess; the question is asked and bootstrap refuses to fall through to the default service.
+    if (input.inspection.status === 'resolved' && resolveThisComputerService(input.inspection, input.target) === null) {
+        return 'confirm_relay';
+    }
+    // One daemon per relay: the relay already has its own pinned service here, so nothing moves.
+    // That service still answers for an account, and D1 holds for it exactly as for any other.
+    const pinned = pinnedServiceServing(input.inspection, input.target);
+    if (pinned) {
+        // H2 — a relay service the user set up is theirs: the app shows it, never converges it.
+        if (pinned.service.managedBy !== 'desktop') {
+            return 'leave_user_service';
+        }
+        return daemonAccountContradictsTarget(pinned, input.target) ? 'confirm_account' : 'start';
+    }
     if (input.inspection.status === 'resolved' && daemonAccountContradictsTarget(input.inspection.facts, input.target)) {
         return 'confirm_account';
     }
@@ -105,11 +121,63 @@ export function resolveRelayReconciliationConsent(input: RelayReconciliationInpu
         return 'confirm_relay';
     }
 
-    const relayAligned = daemonRelayMatchesExpectation(facts, input.observedExpectation);
-    if (relayAligned && facts.auth.validatedAccountId !== null) {
-        return 'start';
+    // N1 — this is the app's own service, on another relay: converging it takes this computer OFF
+    // the relay it serves. That is always asked (Move / Connect … too / Keep) — the person may want
+    // both relays — unless they chose "Always move". Nothing is taken off a served relay silently,
+    // however the app got here (a direct pick, sign-in after adding a relay, a relaunch).
+    //
+    // N5 — and never on the preference either while a relay service here could not be read: the
+    // target may already have its own, and moving the default-following one onto it would run two
+    // daemons for one relay.
+    if (inspectionIsIncomplete(input.inspection)) {
+        return 'confirm_relay';
     }
     return input.alwaysMoveDefaultFollowingService ? 'start' : 'confirm_relay';
+}
+
+/** M6 — the executor could not read every pinned service here, so "this relay has none" is unknown. */
+function inspectionIsIncomplete(inspection: DesktopLocalInspection): boolean {
+    return inspection.status === 'resolved' && inspection.pinnedServicesComplete !== true;
+}
+
+/** The facts of the pinned service that serves `target` here, if the relay has its own. */
+function pinnedServiceServing(inspection: DesktopLocalInspection, target: DesktopSetupExpectation): DesktopLocalReadinessFacts | null {
+    if (inspection.status !== 'resolved') {
+        return null;
+    }
+    const service = resolveThisComputerService(inspection, target);
+    return service?.serviceTargetMode === 'pinned' ? service.facts : null;
+}
+
+/**
+ * Whether the move question may also offer "Connect to {relay} too": give the app's relay its own
+ * pinned service and leave the daemon that serves another relay where it is.
+ *
+ * Only when the CLI that answered says it can run a relay's own service beside the default one
+ * (`pinnedServiceCoexistence`): an older one would silently run the request as a move, so it never
+ * gets it (fail closed). And only when there is
+ * something to keep: the default-following service is installed and serves ANOTHER relay, and this
+ * relay has no service of its own yet.
+ */
+export function thisComputerCanConnectToo(input: Readonly<{
+    inspection: DesktopLocalInspection;
+    target: DesktopSetupExpectation;
+}>): boolean {
+    const inspection = input.inspection;
+    // Offered only when this CLI can add a relay's own service beside the default one (B-03), and
+    // the executor reported this computer's pinned services completely (M6): an unreadable one may
+    // already serve this relay, and "none here" must never be a guess.
+    if (inspection.status !== 'resolved'
+        || inspection.pinnedServiceCoexistence !== true
+        || !Array.isArray(inspection.pinnedServices)
+        || inspection.pinnedServicesComplete !== true) {
+        return false;
+    }
+    const facts = inspection.facts;
+    return facts.service.installed
+        && facts.server.serverUrl !== null
+        && !daemonRelayMatchesExpectation(facts, input.target)
+        && pinnedServiceServing(inspection, input.target) === null;
 }
 
 /**
@@ -157,11 +225,31 @@ export function daemonContradictsTarget(input: Readonly<{
     if (input.inspection.status !== 'resolved') {
         return false;
     }
-    const facts = input.inspection.facts;
-    if (daemonAccountContradictsTarget(facts, input.target)) {
+    // A relay with its own pinned service here is not a move; only its account can contradict.
+    const pinned = pinnedServiceServing(input.inspection, input.target);
+    if (pinned) {
+        return daemonAccountContradictsTarget(pinned, input.target);
+    }
+    if (daemonAccountContradictsTarget(input.inspection.facts, input.target)) {
         return true;
     }
-    return installationOwnsService(facts) && !daemonRelayMatchesExpectation(facts, input.target);
+    return daemonMovesToAnotherRelay(input);
+}
+
+/**
+ * The relay half of `daemonContradictsTarget`: this installation's own service is on a relay other
+ * than the target, so converging it MOVES this computer there. It is also what the setup surface
+ * names a run for ("Moving this computer to …"), so the title and the trigger cannot disagree
+ * about what a move is. A first install is not a move.
+ */
+export function daemonMovesToAnotherRelay(input: Readonly<{
+    inspection: DesktopLocalInspection;
+    target: DesktopSetupExpectation;
+}>): boolean {
+    return input.inspection.status === 'resolved'
+        && pinnedServiceServing(input.inspection, input.target) === null
+        && installationOwnsService(input.inspection.facts)
+        && !daemonRelayMatchesExpectation(input.inspection.facts, input.target);
 }
 
 /**

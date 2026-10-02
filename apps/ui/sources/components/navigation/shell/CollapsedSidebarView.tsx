@@ -125,7 +125,7 @@ export const CollapsedSidebarView = React.memo((props: CollapsedSidebarViewProps
                         testID="collapsed-sidebar-inbox-button"
                     />
                 ) : null}
-                <UpdatesEntry variant="rail" buttonSize={32} testID="collapsed-sidebar-updates-button" />
+                <UpdatesEntry variant="icon" buttonSize={32} iconSize={DESKTOP_SIDEBAR_CHROME_ICON_GLYPH_SIZE_PX} testID="collapsed-sidebar-updates-button" />
                 <ActionOperationActivityButton
                     testID="collapsed-sidebar-action-operations"
                     buttonSize={32}

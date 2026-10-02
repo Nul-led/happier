@@ -3,9 +3,11 @@ import { t } from '@/text';
 
 /**
  * `move`: reconcile once. `always`: reconcile and remember the choice on this device (relay moves
- * only). `keep`: leave the background service where it is — remembered on this device (D5).
+ * only). `connectToo`: give the app's relay its own background service and leave this computer's
+ * other daemon where it is (one daemon per relay; offered only through `offerConnectToo`). `keep`:
+ * leave the background service where it is — remembered on this device (D5).
  */
-export type RelayReconciliationConsentAnswer = 'move' | 'always' | 'keep';
+export type RelayReconciliationConsentAnswer = 'move' | 'always' | 'connectToo' | 'keep';
 
 /**
  * What the app is about to do to this computer's background service, named the way a person reads
@@ -13,7 +15,13 @@ export type RelayReconciliationConsentAnswer = 'move' | 'always' | 'keep';
  * this computer away from the account it is signed in as (D1).
  */
 export type ThisComputerMoveRequest =
-    | Readonly<{ kind: 'relay'; fromRelayHost: string | null; toRelayHost: string }>
+    | Readonly<{
+        kind: 'relay';
+        fromRelayHost: string | null;
+        toRelayHost: string;
+        /** Offer "Connect to {toRelayHost} too" (`thisComputerCanConnectToo`). */
+        offerConnectToo?: true;
+    }>
     | Readonly<{
         kind: 'account';
         fromAccountLabel: string;
@@ -22,6 +30,8 @@ export type ThisComputerMoveRequest =
         relayHost: string;
         /** Set only when the daemon is signed in on ANOTHER relay than `relayHost`. */
         fromRelayHost: string | null;
+        /** Offer "Connect to {relayHost} too": the other relay's account keeps this computer. */
+        offerConnectToo?: true;
     }>;
 
 /**
@@ -35,6 +45,13 @@ export type ThisComputerMoveRequest =
 export async function presentRelayReconciliationConsent(request: ThisComputerMoveRequest): Promise<RelayReconciliationConsentAnswer> {
     let answer: RelayReconciliationConsentAnswer = 'keep';
     const keep = { text: t('setupSurface.relayMoveKeep'), style: 'cancel' as const, onPress: () => { answer = 'keep'; } };
+    // The move stays the primary (last) action; "too" sits beside it, never in its place.
+    const connectToo = request.offerConnectToo
+        ? [{
+            text: t('setupSurface.relayConnectToo', { relay: request.kind === 'account' ? request.relayHost : request.toRelayHost }),
+            onPress: () => { answer = 'connectToo'; },
+        }]
+        : [];
     if (request.kind === 'account') {
         await Modal.alertAsync(
             t('setupSurface.accountMoveTitle', { account: request.toAccountLabel }),
@@ -52,6 +69,7 @@ export async function presentRelayReconciliationConsent(request: ThisComputerMov
                 }),
             [
                 keep,
+                ...connectToo,
                 { text: t('setupSurface.accountMoveConfirm'), onPress: () => { answer = 'move'; } },
             ],
         );
@@ -64,6 +82,7 @@ export async function presentRelayReconciliationConsent(request: ThisComputerMov
             : t('setupSurface.relayMoveBody', { relay: request.toRelayHost }),
         [
             keep,
+            ...connectToo,
             { text: t('setupSurface.relayMoveAlways'), onPress: () => { answer = 'always'; } },
             { text: t('setupSurface.relayMoveConfirm'), onPress: () => { answer = 'move'; } },
         ],

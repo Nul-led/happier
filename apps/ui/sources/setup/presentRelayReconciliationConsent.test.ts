@@ -94,4 +94,26 @@ describe('presentRelayReconciliationConsent (UD5)', () => {
             'setupSurface.relayMoveConfirm',
         ]);
     });
+    it('offers "connect too" only when asked to, naming the relay, with the move still last (primary)', async () => {
+        const CONNECT_TOO = 'setupSurface.relayConnectToo:{"relay":"new.example.test"}';
+        alertAsyncSpy.mockImplementationOnce(async () => {
+            pressButtonLabelled(CONNECT_TOO);
+        });
+        await expect(presentRelayReconciliationConsent({ ...RELAY_MOVE, offerConnectToo: true })).resolves.toBe('connectToo');
+        const relayButtons = (alertAsyncSpy.mock.calls[0] as unknown as [string, string, AlertButton[]])[2].map((button) => button.text);
+        expect(relayButtons.at(-1)).toBe('setupSurface.relayMoveConfirm');
+
+        alertAsyncSpy.mockClear();
+        alertAsyncSpy.mockImplementationOnce(async () => {
+            pressButtonLabelled(CONNECT_TOO);
+        });
+        await expect(presentRelayReconciliationConsent({ ...ACCOUNT_MOVE, fromRelayHost: 'self.example.test', offerConnectToo: true })).resolves.toBe('connectToo');
+        const accountButtons = (alertAsyncSpy.mock.calls[0] as unknown as [string, string, AlertButton[]])[2].map((button) => button.text);
+        expect(accountButtons.at(-1)).toBe('setupSurface.accountMoveConfirm');
+
+        alertAsyncSpy.mockClear();
+        await presentRelayReconciliationConsent(RELAY_MOVE);
+        const plainButtons = (alertAsyncSpy.mock.calls[0] as unknown as [string, string, AlertButton[]])[2].map((button) => button.text);
+        expect(plainButtons).not.toContain(CONNECT_TOO);
+    });
 });
