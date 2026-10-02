@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES, measureExternalActionResultResponseEnvelopeUtf8BytesV1 } from "@happier-dev/protocol";
-import { serializeWorkflowStoredContentEnvelopeV1, sealWorkflowAcceptedSnapshotStoredEnvelopeV1 } from "@happier-dev/protocol/workflows";
+import { serializeWorkflowStoredContentEnvelopeV1, sealWorkflowAcceptedSnapshotStoredEnvelopeV1, sealWorkflowProgressStoredEnvelopeV1, type WorkflowDefinitionV1 } from "@happier-dev/protocol/workflows";
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { materializeWorkflowAcceptedSnapshotFixture } from "@/testkit/workflowAcceptedSnapshot";
 import { automationAccountCurrentnessSelect, deriveAutomationAccountCurrentnessWitness } from "@/app/automations/automationAccountCurrentness";
 import * as service from "./workflowRunService";
 
@@ -50,15 +51,15 @@ describe("workflow Run live state", () => {
             }
         }
         const runId = randomUUID();
+        const definition: WorkflowDefinitionV1 = { version: 1, inputs: [], defaults: { agentTarget: { kind: "agent", identity: { pluginId: "happier.agent.test", localId: "test" } } }, blocks: [{ kind: "step", id: "work", document: { text: "Work", references: [], attachments: [] }, input: [], result: { kind: "text" } }] };
         const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
             mode: "plain", binding: { v: 1, purpose: "accepted_snapshot", accountId: seeded.accountId, runId },
-            acceptedSnapshot: {
-                definition: { version: 1, inputs: [], defaults: { agentTarget: { kind: "agent", identity: { pluginId: "happier.agent.test", localId: "test" } } }, blocks: [{ kind: "step", id: "work", document: { text: "Work", references: [], attachments: [] }, input: [], result: { kind: "text" } }] },
-                source: sourceArtifactId ? { kind: "saved", definitionId: sourceArtifactId, revision: { headerVersion: 0, bodyVersion: 0 } } : { kind: "inline" },
+            acceptedSnapshot: await materializeWorkflowAcceptedSnapshotFixture({ definition, context: {
+                source: sourceArtifactId ? { kind: "saved", definitionId: sourceArtifactId, revision: { headerVersion: 0, bodyVersion: 0 }, savedBy: null } : { kind: "inline" },
                 inputs: {}, machineId: seeded.machineId, executionTarget: { kind: "session" },
                 workspaceTarget: { project: { machineId: seeded.machineId, directory: "/repo", checkoutRootPath: "/repo" } },
-                origin: { kind: "direct" }, authorization: { admittedPermissionCeiling: "default", principal: { kind: "host" } },
-            },
+                origin: { kind: "direct" }, authorization: { principal: { kind: "host" } },
+            } }),
         }));
         const input = { ...seeded, runId, origin: { kind: "direct" as const }, acceptedEnvelope, sourceArtifactId: sourceArtifactId ?? null };
         return { input, admitted: await service.admitWorkflowRun(input) };
@@ -71,6 +72,62 @@ describe("workflow Run live state", () => {
         expect(admitted.run).toMatchObject({ sourceArtifactId, ownerAccountId: seeded.accountId });
         expect(await service.admitWorkflowRun(input)).toMatchObject({ kind: "existing", run: { sourceArtifactId } });
         await expect(service.admitWorkflowRun({ ...input, sourceArtifactId: randomUUID() })).rejects.toMatchObject({ code: "currentness_conflict" });
+    });
+
+    it("returns the exact opaque root progress with the lean page and excludes child progress", async () => {
+        const seeded = await seed();
+        const { input } = await admit(seeded);
+        const rootId = randomUUID();
+        const contentEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowProgressStoredEnvelopeV1({
+            mode: "plain", binding: { v: 1, purpose: "invocation_progress", accountId: seeded.accountId, runId: input.runId,
+                recordId: rootId, sequence: "0", parentRecordId: null, memberOrdinal: "0", attempt: "0" },
+            progress: { kind: "happier.workflow-progress.v1", invocationPath: { blockId: "$root", scope: [] },
+                blockKind: "root", attempt: "0", logicalInvocationRecordId: rootId },
+        }));
+        await db.workflowRunInvocation.create({ data: { id: rootId, runId: input.runId, sequence: 0n,
+            parentRecordId: null, memberOrdinal: 0n, attempt: 0n, lifecycle: "running", contentEnvelope } });
+        await db.workflowRunInvocation.create({ data: { id: randomUUID(), runId: input.runId, sequence: 1n,
+            parentRecordId: rootId, memberOrdinal: 0n, attempt: 0n, lifecycle: "completed", contentEnvelope: "private-child-result" } });
+        const page = await service.listWorkflowRuns({ accountId: seeded.accountId, runId: input.runId, pageByteLimit: 16_384 });
+        expect(page).toMatchObject({ rootProgressByRunId: { [input.runId]: {
+            index: { id: rootId, runId: input.runId, sequence: "0", parentRecordId: null, memberOrdinal: "0", attempt: "0" },
+            contentEnvelope,
+        } } });
+        expect(JSON.stringify(page)).not.toContain("private-child-result");
+        const stranger = await seed();
+        expect(await service.listWorkflowRuns({ accountId: stranger.accountId, pageByteLimit: 16_384 }))
+            .toMatchObject({ runs: [], rootProgressByRunId: {} });
+    });
+
+    it("refreshes interrupted root list progress without granting child or lifecycle authority", async () => {
+        const seeded = await seed();
+        const { input } = await admit(seeded);
+        const rootId = randomUUID();
+        const childId = randomUUID();
+        const envelope = (id: string, root: boolean, completed: number) => serializeWorkflowStoredContentEnvelopeV1(sealWorkflowProgressStoredEnvelopeV1({
+            mode: "plain", binding: { v: 1, purpose: "invocation_progress", accountId: seeded.accountId, runId: input.runId,
+                recordId: id, sequence: root ? "0" : "1", parentRecordId: root ? null : rootId, memberOrdinal: "0", attempt: "0" },
+            progress: { kind: "happier.workflow-progress.v1", invocationPath: { blockId: root ? "$root" : "work", scope: [] },
+                blockKind: root ? "root" : "step", attempt: "0", logicalInvocationRecordId: id,
+                ...(root ? { stepProgress: { completed, total: 1 } } : {}) },
+        }));
+        for (const [id, root] of [[rootId, true], [childId, false]] as const) {
+            await db.workflowRunInvocation.create({ data: { id, runId: input.runId, sequence: root ? 0n : 1n,
+                parentRecordId: root ? null : rootId, memberOrdinal: 0n, attempt: 0n, lifecycle: "running", contentEnvelope: envelope(id, root, 0) } });
+        }
+        await db.automationRun.update({ where: { id: input.runId }, data: { state: "interrupted" } });
+        const fact = { ...seeded, runId: input.runId, expectedRevision: 0, resolution: "root_list_progress" as const,
+            invocationId: rootId, invocationAttempt: 0n, expectedContentRevision: 0n,
+            expectedLifecycle: "running" as const, lifecycle: "running" as const, contentEnvelope: envelope(rootId, true, 1) };
+        // New request value crosses the real storage owner, not a mocked domain helper.
+        await expect(Reflect.apply(service.commitWorkflowInvocationFact, undefined, [fact]))
+            .resolves.toMatchObject({ id: rootId, lifecycle: "running", contentRevision: "1" });
+        await expect(Reflect.apply(service.commitWorkflowInvocationFact, undefined, [{ ...fact,
+            invocationId: childId, contentEnvelope: envelope(childId, false, 0) }])).rejects.toMatchObject({ code: "invalid_input" });
+        await expect(Reflect.apply(service.commitWorkflowInvocationFact, undefined, [{ ...fact,
+            expectedContentRevision: 1n, lifecycle: "completed" }])).rejects.toMatchObject({ code: "invalid_input" });
+        expect(await db.automationRun.findUniqueOrThrow({ where: { id: input.runId }, select: { state: true, revision: true } }))
+            .toEqual({ state: "interrupted", revision: 0 });
     });
 
     it("freezes the resolved Automation source once and rejoins after its trigger target changes", async () => {
@@ -115,7 +172,7 @@ describe("workflow Run live state", () => {
     it("projects current attention on lean exact Run cards without opening invocation content", async () => {
         const seeded = await seed();
         const { input } = await admit(seeded);
-        const request = { accountId: seeded.accountId, runId: input.runId, pageByteLimit: 4096 };
+        const request = { accountId: seeded.accountId, runId: input.runId, pageByteLimit: EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES };
         expect((await service.listWorkflowRuns(request)).runs[0]).toMatchObject({ attentionRequired: false });
         await db.workflowRunInvocation.create({ data: {
             id: randomUUID(), runId: input.runId, sequence: 0n, memberOrdinal: 0n,
@@ -137,7 +194,7 @@ describe("workflow Run live state", () => {
         const second = await admit(seeded, sourceArtifactId);
         await admit(seeded, randomUUID());
         await admit(stranger, sourceArtifactId);
-        const request = { accountId: seeded.accountId, sourceArtifactId, limit: 1, pageByteLimit: 4096 };
+        const request = { accountId: seeded.accountId, sourceArtifactId, limit: 1, pageByteLimit: EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES };
         const page = await service.listWorkflowRuns(request);
         expect(page.runs).toHaveLength(1);
         expect([first.input.runId, second.input.runId]).toContain(page.runs[0].id);
@@ -146,7 +203,7 @@ describe("workflow Run live state", () => {
         await expect(service.listWorkflowRuns({ ...request, accountId: stranger.accountId, cursor: page.nextCursor })).rejects.toMatchObject({ code: "invalid_input" });
         const next = await service.listWorkflowRuns({ ...request, cursor: page.nextCursor });
         expect(new Set([...page.runs, ...next.runs].map((run) => run.id))).toEqual(new Set([first.input.runId, second.input.runId]));
-        expect((await service.listWorkflowRuns({ accountId: stranger.accountId, pageByteLimit: 4096 })).runs).toHaveLength(1);
+        expect((await service.listWorkflowRuns({ accountId: stranger.accountId, pageByteLimit: EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES })).runs).toHaveLength(1);
     });
 
     it("summarizes three workflow histories with the same attention membership and byte continuation", async () => {

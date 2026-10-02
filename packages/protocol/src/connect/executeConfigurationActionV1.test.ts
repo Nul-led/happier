@@ -13,6 +13,50 @@ const agent = { agentId: 'codex', title: 'Codex', identity: { pluginId: 'happier
 const target = { kind: 'group' as const, service, groupId: 'work' };
 
 describe('connected-service configuration Action owner', () => {
+    it('lets an agent refresh the exact qualified account and rejects an unacknowledged refresh', async () => {
+        const account = { service, accountId: 'work-account' };
+        const requests: unknown[] = [];
+        let response: unknown = { success: true };
+        const describedAdmission = { status: 'described', service,
+            descriptor: { id: 'openai-codex', title: 'Codex', authentication: { defaultModeId: 'oauth', modes: [{ id: 'oauth', kind: 'oauthAuthorizationCode', pkce: 'required', outcomeReconciliation: 'none' }] } },
+            occurrenceId: 'occurrence-1', sourceCustody: { kind: 'bundled_first_party', packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-1' } },
+            accounts: [], operationTransport: { kind: 'v4' },
+        };
+        let admission: unknown = describedAdmission;
+        const host: ConnectedServiceConfigurationActionHostV1 = {
+            assertCurrent() {},
+            async request(request) { requests.push(request); return response; },
+            async mutateSettings() { throw new Error('unexpected_settings'); },
+            async resolveAgent() { throw new Error('unexpected_catalog'); },
+            async resetQuota() { throw new Error('unexpected_reset'); },
+            async controlCommand(machineId, command) { requests.push({ machineId, command }); return admission; },
+        };
+        // HTTP is substituted; Action admission, input parsing and execution remain real.
+        const executor = createActionExecutor({ connectedServiceAction: ({ actionId, input }) => executeConnectedServiceConfigurationActionV1(host, actionId, input) } as unknown as ActionExecutorDeps);
+        const context = { surface: 'agent' as const, authority: 'account_automation' as const, actionCaller: { kind: 'host' as const } };
+        const actionId = 'connectedServices.quota.refresh';
+        const input = { account, machineId: 'machine-work' };
+        expect(await executor.execute(actionId, input, context)).toEqual({ ok: true, result: { applied: true } });
+        expect(requests).toEqual([{ machineId: 'machine-work', command: { operation: 'describeService', service, requiredOperation: 'quota_refresh' } },
+            { method: 'POST', path: '/v4/connect/qualified/quotas/refresh', body: { ref: account } }]);
+        response = { success: false };
+        expect(await executor.execute(actionId, input, context)).toMatchObject({ ok: false });
+        admission = { status: 'unavailable', code: 'quota_refresh_unavailable' };
+        response = { success: true };
+        expect(await executor.execute(actionId, input, context)).toMatchObject({ ok: false, errorCode: 'quota_refresh_unavailable' });
+        for (const invalidAdmission of [
+            { ...describedAdmission, service: { ...service, pluginId: 'other.plugin' } },
+            { ...describedAdmission, operationTransport: { kind: 'legacy', peerClass: 'revisioned_v2_v3', serviceId: 'openai-codex' } },
+            { ...describedAdmission, operationTransport: undefined },
+        ]) {
+            admission = invalidAdmission;
+            expect(await executor.execute(actionId, input, context)).toMatchObject({ ok: false, errorCode: 'connected_account_v4_operation_unsupported' });
+        }
+        expect(requests.filter((request) => typeof request === 'object' && request !== null && 'method' in request)).toHaveLength(2);
+        const beforeInvalid = requests.length;
+        expect(await executor.execute(actionId, { ...input, accountId: 'foreign' }, context)).toMatchObject({ ok: false });
+        expect(requests).toHaveLength(beforeInvalid);
+    });
     it('refuses a switch response for another pool rather than reporting success', async () => {
         const group = QualifiedConnectedAccountGroupV4Schema.parse({ v: 1, ref: { service, groupId: 'foreign' }, incarnation: 'life', displayName: null,
             policy: ConnectedServiceAuthGroupPolicyV1Schema.parse({}), activeConnectedAccountId: null, generation: 1, runtimeStateRevision: 0,

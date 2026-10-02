@@ -35,29 +35,35 @@ export const AUTOMATION_TRIGGER_DEFINITION_ACCOUNT_SCOPED_BLOB_KIND_V1 =
   'automation_trigger_definition' as const;
 
 /**
- * Durable definition binding. Event source identity remains public on the
- * AutomationTrigger row, while this exact tuple prevents its private definition from
- * being replayed onto another definition or revision.
+ * Durable private definition binding. Event routing identity remains public on its
+ * AutomationTrigger row; PR selectors need only the common identity tuple. This
+ * prevents private content replay onto another trigger kind, definition or revision.
  */
-export const AutomationTriggerDefinitionBindingV1Schema = z.object({
+const AutomationTriggerDefinitionBindingBaseV1Schema = z.object({
   v: z.literal(1),
   automationId: z.string().min(1).max(256),
   triggerId: AutomationTriggerIdSchema,
   triggerRevision: AutomationTriggerRevisionSchema,
-  triggerKind: z.literal('pluginEvent'),
-  eventRef: asProtocolZod(AutomationQualifiedPluginContributionRefV1Schema),
-  sourceSelectorId: AutomationSourceSelectorIdV1Schema,
 }).strict();
+export const AutomationTriggerDefinitionBindingV1Schema = z.discriminatedUnion('triggerKind', [
+  AutomationTriggerDefinitionBindingBaseV1Schema.extend({
+    triggerKind: z.literal('pluginEvent'),
+    eventRef: asProtocolZod(AutomationQualifiedPluginContributionRefV1Schema),
+    sourceSelectorId: AutomationSourceSelectorIdV1Schema,
+  }).strict(),
+  AutomationTriggerDefinitionBindingBaseV1Schema.extend({ triggerKind: z.literal('prComment') }).strict(),
+  AutomationTriggerDefinitionBindingBaseV1Schema.extend({ triggerKind: z.literal('ciFailed') }).strict(),
+]);
 export type AutomationTriggerDefinitionBindingV1 = z.infer<
   typeof AutomationTriggerDefinitionBindingV1Schema
 >;
 
 /** Canonical mapping from caller-owned Event facts to a revision-bound private definition. */
 export function sealAutomationPluginEventTriggerInputV1(params: Readonly<{
-  binding: AutomationTriggerDefinitionBindingV1;
+  binding: Extract<AutomationTriggerDefinitionBindingV1, { triggerKind: 'pluginEvent' }>;
   trigger: AutomationPluginEventDefinitionTrigger & Readonly<{ enabled: boolean }>;
   seal: (params: Readonly<{
-    binding: AutomationTriggerDefinitionBindingV1;
+    binding: Extract<AutomationTriggerDefinitionBindingV1, { triggerKind: 'pluginEvent' }>;
     definition: AutomationEventTriggerDefinitionStoredPayloadV1;
   }>) => AutomationEncryptedTriggerDefinitionEnvelopeV1;
 }>): AutomationPluginEventEncryptedDefinitionTrigger & Readonly<{ enabled: boolean }> {
@@ -132,9 +138,10 @@ function sameBinding(
     && left.triggerId === right.triggerId
     && left.triggerRevision === right.triggerRevision
     && left.triggerKind === right.triggerKind
-    && left.eventRef.pluginId === right.eventRef.pluginId
-    && left.eventRef.localId === right.eventRef.localId
-    && left.sourceSelectorId === right.sourceSelectorId;
+    && (left.triggerKind !== 'pluginEvent' || (right.triggerKind === 'pluginEvent'
+      && left.eventRef.pluginId === right.eventRef.pluginId
+      && left.eventRef.localId === right.eventRef.localId
+      && left.sourceSelectorId === right.sourceSelectorId));
 }
 
 /**

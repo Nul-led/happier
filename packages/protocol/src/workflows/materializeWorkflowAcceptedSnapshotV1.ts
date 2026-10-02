@@ -3,15 +3,17 @@ import type { AgentStartAdmissionV1, AgentStartRefusalV1, MaterializedWorkflowLe
 import { isAgentStartActionV1, resolveActionAgentStartRequestsV1 } from '../actions/executor/agentStartAdmission.js';
 import { MAX_AUTOMATION_STORED_ENVELOPE_UTF8_BYTES } from '../automations/automationStoredContentEnvelopeV1.js';
 import type { JsonValue } from '../json/strictJsonValue.js';
+import type { ActionCaller } from '../actions/executor/types.js';
 import { compilePluginJsonSchema, describePluginJsonSchemaValueIssues } from '../plugins/actions/jsonSchemaValidation.js';
 import { isLaunchProfileV2, type AiLaunchProfile } from '../profiles/read.js';
 import type { ResolveRoleSelectionV1Input } from '../prompts/roles/resolveRoleSelectionV1.js';
 import type { ResolvedRoleV1 } from '../prompts/roles/rolesV1.js';
 import { parseAgentPermissionIntentV1Alias, type AgentPermissionIntentV1 } from '../runtime/permissionIntentV1.js';
 import { formatWorkflowDefinitionRefV1, parseWorkflowDefinitionRefV1, type WorkflowDefinitionRefV1 } from './workflowDefinitionRefV1.js';
-import { WorkflowAcceptedSnapshotV1Schema, WorkflowMaterializedLeafV1Schema, WorkflowRoleOverridesV1Schema, deriveWorkflowAcceptedPermissionCeilingV1,
+import { WorkflowAcceptedSnapshotV1Schema, WorkflowMaterializedLeafV1Schema, WorkflowRoleOverridesV1Schema, WorkflowReplayAgentOverrideV1Schema, deriveWorkflowAcceptedPermissionCeilingV1,
   type WorkflowAcceptedAuthorizationV1, type WorkflowAcceptedSnapshotV1, type WorkflowDefinitionMetadataV1,
   type WorkflowMaterializedLeafV1, type WorkflowResolvedInputsV1, type WorkflowRoleOverridesV1,
+  type WorkflowReplayAgentOverrideV1,
   type WorkflowRunExecutionTargetV1 } from './workflowDefinitionV1.js';
 import { resolveWorkflowStepSelectionV1, WorkflowStepSelectionErrorV1, type WorkflowResolvedStepSelectionV1 } from './workflowStepSelectionV1.js';
 import { validateWorkflowDefinition } from './workflowValidationV1.js';
@@ -23,6 +25,8 @@ import type { WorkflowAcceptedWorkspaceTargetV1 } from './workflowWorkspaceV1.js
 import { collectWorkflowConditionValueReferences, type WorkflowValueReference } from './workflowReferenceV1.js';
 
 export type WorkflowMaterializationContextV1 = Readonly<{
+  /** Host-stamped admitting caller; private input, never authored Workflow content. */
+  actionCaller?: ActionCaller;
   source: WorkflowAcceptedSnapshotV1['source']; inputs: WorkflowResolvedInputsV1;
   machineId: string; executionTarget: WorkflowRunExecutionTargetV1; workspaceTarget: WorkflowAcceptedWorkspaceTargetV1;
   metadata?: WorkflowDefinitionMetadataV1;
@@ -30,6 +34,19 @@ export type WorkflowMaterializationContextV1 = Readonly<{
   resultDelivery?: WorkflowAcceptedSnapshotV1['resultDelivery'];
   authorization: Omit<WorkflowAcceptedAuthorizationV1, 'admittedPermissionCeiling'>;
 }>;
+
+/** Admission and durable approval capture share this descriptive classification, never an authorization decision. */
+export function resolveWorkflowRunStartedByForActionCallerV1(caller: ActionCaller): WorkflowAcceptedSnapshotV1['startedBy'] {
+  switch (caller.kind) {
+    case 'host': return 'user';
+    case 'session':
+    case 'workflowRun': return 'agent';
+    case 'automationRun': return caller.cause.kind === 'manual' ? 'user' : 'trigger';
+    case 'plugin': return caller.initiatingCaller
+      ? resolveWorkflowRunStartedByForActionCallerV1(caller.initiatingCaller)
+      : caller.startedBy ?? 'trigger';
+  }
+}
 export type WorkflowMaterializationEffectsV1 = Readonly<{
   readWorkflowDefinition?: (ref: WorkflowDefinitionRefV1) => Promise<Readonly<{ definition: unknown; sourceKey: string; version?: number | string }> | null>;
   readLaunchProfile?: (profileId: string) => Promise<AiLaunchProfile | null>;
@@ -48,6 +65,8 @@ export type WorkflowMaterializationAdmissionV1 =
 export type MaterializeWorkflowAcceptedSnapshotV1Input = Readonly<{
   definition: unknown; context: WorkflowMaterializationContextV1; ingressContext?: WorkflowIngressContextV1;
   roleOverrides?: WorkflowRoleOverridesV1;
+  /** Host-opened immutable source, never an authored/client-supplied snapshot. */
+  replay?: Readonly<{ snapshot: WorkflowAcceptedSnapshotV1; agentOverride?: WorkflowReplayAgentOverrideV1 }>;
   roleSelection?: Omit<ResolveRoleSelectionV1Input, 'roleId' | 'workflowRoles' | 'runOverrides'>;
   admission: WorkflowMaterializationAdmissionV1; effects: WorkflowMaterializationEffectsV1;
 }>;
@@ -302,6 +321,17 @@ export async function materializeWorkflowDefinitionAuthorityV1(
 function materializeWorkflowV1(input: MaterializeWorkflowAcceptedSnapshotV1Input, purpose: 'run'): Promise<MaterializeWorkflowAcceptedSnapshotV1Result>;
 function materializeWorkflowV1(input: MaterializeWorkflowAcceptedSnapshotV1Input, purpose: 'definition'): Promise<MaterializeWorkflowDefinitionAuthorityV1Result>;
 async function materializeWorkflowV1(input: MaterializeWorkflowAcceptedSnapshotV1Input, purpose: 'run' | 'definition'): Promise<MaterializeWorkflowAcceptedSnapshotV1Result | MaterializeWorkflowDefinitionAuthorityV1Result> {
+  const replay = input.replay;
+  if (replay) {
+    if (purpose !== 'run') return invalidInput();
+    const override = replay.agentOverride && WorkflowReplayAgentOverrideV1Schema.safeParse(replay.agentOverride);
+    if (override && !override.success) return invalidInput();
+    if (replay.agentOverride && !replay.snapshot.materializedLeaves.some(leaf => leaf.kind === 'step'
+      && leaf.sourceKey === replay.agentOverride!.sourceKey && leaf.blockId === replay.agentOverride!.blockId)) return invalidInput();
+    input = { ...input, definition: replay.snapshot.authoredDefinition, roleOverrides: replay.snapshot.roleOverrides,
+      context: { ...input.context, machineId: replay.snapshot.machineId,
+        workspaceTarget: replay.snapshot.workspaceTarget, executionTarget: replay.snapshot.executionTarget } };
+  }
   const overrides = WorkflowRoleOverridesV1Schema.safeParse(input.roleOverrides ?? []);
   if (!overrides.success) return invalidInput(undefined, overrides.error.issues.map((issue) => ({
     code: 'invalid_input', path: `/roleOverrides/${issue.path.map(String).join('/')}`, message: issue.message, severity: 'error',
@@ -329,7 +359,8 @@ async function materializeWorkflowV1(input: MaterializeWorkflowAcceptedSnapshotV
     if (visiting.has(key)) return invalidInput(task.leaf.id, [{ code: 'invalid_input', blockId: task.leaf.id,
       path: `/blocks/${task.leaf.id}/workflowRef`, severity: 'error', message: 'Workflow composition cannot contain a cycle.' }]);
     if (definitions.has(key)) continue;
-    const source = await input.effects.readWorkflowDefinition?.(ref);
+    const source = replay ? (replay.snapshot.frozenChildren[key]
+      ? { definition: replay.snapshot.frozenChildren[key] } : null) : await input.effects.readWorkflowDefinition?.(ref);
     if (!source) return { ok: false, error: { code: 'source_unavailable', blockId: task.leaf.id } };
     const child = validateWorkflowDefinition(source.definition, { context: input.ingressContext });
     if (!child.valid || !child.normalizedDefinition) return invalidDefinition(child.issues, task.leaf.id);
@@ -357,10 +388,20 @@ async function materializeWorkflowV1(input: MaterializeWorkflowAcceptedSnapshotV
     const targetById = new Map<string, WorkflowRunExecutionTargetV1>();
     // Semantic validation already proves producer order and lexical visibility.
     for (const leaf of leaves) {
+      const frozen = replay?.snapshot.materializedLeaves.find(entry => entry.sourceKey === sourceKey && entry.blockId === leaf.id);
+      if (replay && (!frozen || frozen.kind !== leaf.kind)) return invalidInput(leaf.id);
+      const agentOverride = replay?.agentOverride?.sourceKey === sourceKey && replay.agentOverride.blockId === leaf.id
+        ? replay.agentOverride : undefined;
       let resolved: ReturnType<typeof resolveWorkflowStepSelectionV1>;
       try {
         const conversation = leaf.execution?.conversation ?? definition.defaults.conversation;
-        resolved = resolveWorkflowStepSelectionV1({ defaults: definition.defaults, step: leaf.execution,
+        resolved = frozen ? { selection: agentOverride
+          ? resolveWorkflowStepSelectionV1({ defaults: frozen.selection, step: { engine: agentOverride.engine },
+            roleSelection: input.roleSelection,
+            ...(frozen.selection.conversation?.kind === 'from_step'
+              ? { producerExecutionTarget: frozen.executionTarget } : {}) }).selection
+          : structuredClone(frozen.selection), executionTarget: frozen.executionTarget, role: frozen.role }
+          : resolveWorkflowStepSelectionV1({ defaults: definition.defaults, step: leaf.execution,
           runExecutionTarget: input.context.executionTarget,
           ...(conversation?.kind === 'from_step' ? { producerExecutionTarget: targetById.get(conversation.producer.blockId) } : {}),
           roleSelection: { ...input.roleSelection, workflowRoles: definition.roles, runOverrides: overrides.data },
@@ -371,8 +412,10 @@ async function materializeWorkflowV1(input: MaterializeWorkflowAcceptedSnapshotV
       }
       const executionTarget = resolved.executionTarget ?? input.context.executionTarget;
       let selection = resolved.selection;
+      // Choosing a role's engine does not also choose that role's profile.
+      if (frozen && agentOverride && frozen.selection.profileId === undefined) delete selection.profileId;
       if (purpose === 'run' && selection.conversation?.kind === 'origin_session' && !input.context.origin?.originSessionId) return invalidInput(leaf.id);
-      if (selection.profileId) {
+      if (!frozen && selection.profileId) {
         if (!profiles.has(selection.profileId)) profiles.set(selection.profileId, await input.effects.readLaunchProfile?.(selection.profileId) ?? null);
         const profile = profiles.get(selection.profileId);
         if (!profile) return unavailable(leaf.id);
@@ -384,13 +427,13 @@ async function materializeWorkflowV1(input: MaterializeWorkflowAcceptedSnapshotV
       if (!parsedSelection.success) return invalidInput(leaf.id);
       selection = parsedSelection.data;
       const sidecar: WorkflowMaterializedLeafV1 = { sourceKey, blockId: leaf.id, kind: leaf.kind, selection, executionTarget,
-        authoredWorkspace: leaf.execution?.workspace ?? { kind: 'inherit' },
+        authoredWorkspace: frozen?.authoredWorkspace ?? leaf.execution?.workspace ?? { kind: 'inherit' },
         ...(resolved.role === undefined ? {} : { role: { ...structuredClone(resolved.role),
           ...(selection.profileId === null ? { profileUnavailable: false } : {}) } }),
-        ...(leaf.kind === 'workflow' ? { childRef: leaf.workflowRef } : {}),
+        ...(leaf.kind === 'workflow' ? { childRef: frozen?.childRef ?? leaf.workflowRef } : {}),
       };
       if (leaf.kind === 'action') {
-        const contract = await input.effects.readActionContract?.(leaf.actionId);
+        const contract = frozen ? frozen.actionContract : await input.effects.readActionContract?.(leaf.actionId);
         if (!contract) return unavailable(leaf.id);
         sidecar.actionId = leaf.actionId;
         sidecar.actionContract = structuredClone(contract);
@@ -400,7 +443,10 @@ async function materializeWorkflowV1(input: MaterializeWorkflowAcceptedSnapshotV
             reference.kind !== 'literal' && reference.kind !== 'origin_session_id'
             && (reference.kind !== 'input' || !Object.hasOwn(bindingContext.inputs, reference.name))));
         try {
-          sidecar.actionInput = Object.fromEntries(Object.entries(leaf.input).map(([field, binding]) => [field,
+          // Child frame inputs bind at invocation. Keep its already-projected
+          // Action engine rather than rebuilding it from the concrete carrier.
+          sidecar.actionInput = frozen && sourceKey !== '$root' ? structuredClone(frozen.actionInput)
+            : Object.fromEntries(Object.entries(leaf.input).map(([field, binding]) => [field,
             binding.kind === 'list' ? binding.items.map((reference) => boundValue(reference, bindingContext, leaf.id, purpose))
               : boundValue(binding, bindingContext, leaf.id, purpose)]));
         } catch (error) {
@@ -409,7 +455,8 @@ async function materializeWorkflowV1(input: MaterializeWorkflowAcceptedSnapshotV
         }
         try {
           const projected = projectActionStart(input.context, sidecar,
-            (leaf.execution?.engine ?? definition.defaults.engine) !== undefined, hasDeferredBinding);
+            (sourceKey === '$root' ? root : authored).defaults.engine !== undefined || leaf.execution?.engine !== undefined || frozen?.role !== undefined,
+            hasDeferredBinding);
           if (projected.effectiveInput) sidecar.actionInput = projected.effectiveInput;
         } catch (error) {
           if (error instanceof WorkflowMaterializationFailureV1) return { ok: false, error: error.error };
@@ -473,11 +520,12 @@ async function materializeWorkflowV1(input: MaterializeWorkflowAcceptedSnapshotV
   }
   const frozenChildren = Object.fromEntries([...concrete].filter(([key]) => key !== '$root'));
   if (purpose === 'definition') return { ok: true, agentStartLeaves, materializedLeaves };
-  const { origin, resultDelivery, ...sharedContext } = input.context;
+  const { origin, resultDelivery, actionCaller, ...sharedContext } = input.context;
   const snapshot = WorkflowAcceptedSnapshotV1Schema.safeParse({
     ...sharedContext, ...(origin ? { origin } : input.context.source.kind === 'automation' ? {} : { origin: { kind: 'direct' } }),
     ...(resultDelivery ? { resultDelivery } : {}),
     definition: concrete.get('$root'), authoredDefinition: root, materializedLeaves, frozenChildren, workDepth,
+    startedBy: actionCaller ? resolveWorkflowRunStartedByForActionCallerV1(actionCaller) : input.admission.kind,
     metadata: sharedContext.metadata ?? null,
     roleOverrides: overrides.data,
     authorization: { ...input.context.authorization, admittedPermissionCeiling: permissionCeiling },

@@ -14,6 +14,17 @@ import {
 } from './index.js';
 
 describe('workflow Action contracts', () => {
+  it('accepts omitted wait conditions or a nonempty unique set, never a host snapshot sink', () => {
+    const schema = WorkflowActionInputSchemasV1['workflow.run.wait'];
+    const runId = '11111111-1111-4111-8111-111111111111';
+    expect(schema.parse({ runId })).toEqual({ runId });
+    expect(schema.parse({ runId, conditions: ['terminal', 'attention', 'paused'] }).conditions)
+      .toEqual(['terminal', 'attention', 'paused']);
+    for (const conditions of [[], ['terminal', 'terminal'], ['needs_attention']]) {
+      expect(schema.safeParse({ runId, conditions }).success).toBe(false);
+    }
+    expect(schema.safeParse({ runId, onWaitSnapshot: () => {} }).success).toBe(false);
+  });
   it('requires the current list metadata map while preserving sparse untitled Runs', () => {
     const schema = WorkflowActionOutputSchemasV1['workflow.run.list'];
     expect(schema.safeParse({ runs: [] }).success).toBe(false);
@@ -244,9 +255,11 @@ describe('workflow Action contracts', () => {
       blocks: [{ kind: 'step', id: 'work', document: { text: 'Work', references: [], attachments: [] }, input: [], result: { kind: 'text' } }],
     } as const;
     const acceptedContext = {
+      startedBy: 'user',
       source: { kind: 'inline' }, inputs: {}, machineId: 'machine-1',
       metadata: { title: 'Frozen title' },
       executionTarget: { kind: 'session' },
+      materializedLeaves: [],
       workspaceTarget: { project: { machineId: 'machine-1', directory: '/workspace', checkoutRootPath: '/workspace' } },
       origin: { kind: 'direct' },
     } as const;

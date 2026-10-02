@@ -40,10 +40,12 @@ import {
     SocketRpcRequestIdSchema,
     SessionTransferRoutingV1Schema,
     SessionTransferRpcMethodV1Schema,
+    isSessionActionRpcMethodV1,
+    type SessionActionRpcOriginV1,
 } from "@happier-dev/protocol/socketRpc";
 
 import { observeRpcCall, recordRpcCallFailure, recordRpcRegistration, recordRpcUnregistration } from "@/app/monitoring/metrics/index";
-import { readMachineAvailabilityState } from "@/app/machines/machineStateGuards";
+import { classifyMachineAvailabilityState, readMachineAvailabilityState } from "@/app/machines/machineStateGuards";
 import { resolveSessionAccessForOperation, type SessionAccessOperationDecision } from "@/app/session/access/sessionAccess";
 import { readSessionAccessAuthenticationFromSocket } from "@/app/session/access/sessionAccessAuthentication";
 import { db } from "@/storage/db";
@@ -346,6 +348,37 @@ function readMachineScopedSocketMachineId(socket: SocketDataCarrier): string | n
     if (typeof machineId !== "string") return null;
     const trimmed = machineId.trim();
     return trimmed ? trimmed : null;
+}
+
+/** The credentialed daemon attests original Session facts only while it hosts that Session. */
+async function hasCurrentSessionActionRpcSource(params: Readonly<{
+    accountId: string;
+    socket: Socket;
+    io: Server;
+    presence?: SessionPublisherPresenceForRpc;
+    sourceSessionId: string;
+    targetSessionId: string;
+}>): Promise<boolean> {
+    const data = readSocketData(params.socket);
+    const machineId = readMachineScopedSocketMachineId(params.socket);
+    const installationId = readVerifiedMachineSocketInstallationIdFromSocketData(data);
+    if (!machineId || !installationId || params.socket.connected !== true
+        || data.authTokenKind !== "account" || data.ephemeralRunnerAdmission != null
+        || data.apiTokenPrincipal != null
+        || !await hasCurrentSocketCredential(params.accountId, params.socket)) return false;
+    const machine = await db.machine.findFirst({
+        where: { accountId: params.accountId, id: machineId },
+        select: { installationId: true, kind: true, revokedAt: true, replacedByMachineId: true },
+    });
+    if (classifyMachineAvailabilityState(machine) !== "available"
+        || machine?.kind === "ephemeral_session_runner" || machine?.installationId !== installationId) return false;
+    for (const sessionId of new Set([params.sourceSessionId, params.targetSessionId])) {
+        const session = await db.session.findUnique({ where: { id: sessionId }, select: { accountId: true } });
+        if (session?.accountId !== params.accountId) return false;
+    }
+    return await resolveCurrentSessionMachineFromServer({
+        io: params.io, presence: params.presence, accountId: params.accountId, sessionId: params.sourceSessionId,
+    }) === machineId;
 }
 
 function readMachineIdPrefix(method: string): string | null {
@@ -944,6 +977,8 @@ export function registerSocketRpcHandlers(params: Readonly<{
             const timeoutMs = (data as { timeoutMs?: unknown } | undefined)?.timeoutMs;
             let authorization: SocketRpcAuthorizationContext | undefined;
             let sessionWriteTargetUserId: string | null = null;
+            let sessionActionOrigin: SessionActionRpcOriginV1 | undefined;
+            let sessionActionSourceGuard: RpcForwardTargetGuard | null = null;
 
             if (!method) {
                 callback?.({
@@ -1016,6 +1051,32 @@ export function registerSocketRpcHandlers(params: Readonly<{
             // The same transfer methods also serve the incumbent Machine carrier.
             // Only the routing header selects the Session-owned encrypted carrier.
             const methodSessionAuthorization = isTransferMethod && !transferRouting ? null : resolveSocketRpcSessionAuthorization(method);
+            const rawSessionAuthorization = (data as { authorization?: unknown } | undefined)?.authorization;
+            if (rawSessionAuthorization && typeof rawSessionAuthorization === "object"
+                && "kind" in rawSessionAuthorization && rawSessionAuthorization.kind === "session.action") {
+                const parsed = parseSocketRpcAuthorizationContext(rawSessionAuthorization);
+                if (parsed?.kind !== "session.action" || !methodSessionAuthorization?.routeToSessionOwnerDaemon
+                    || !isSessionActionRpcMethodV1(method) || parsed.sessionId !== method.slice(0, method.lastIndexOf(":"))
+                    || viewer || rawExternalActionExecution !== undefined || transferRouting) {
+                    callback?.(buildForbiddenRpcResponse());
+                    return;
+                }
+                const source = {
+                    accountId: params.userId, socket: params.socket, io: params.io, presence: params.sessionPublisherPresence,
+                    sourceSessionId: parsed.origin.caller.sessionId, targetSessionId: parsed.sessionId,
+                };
+                if (!await hasCurrentSessionActionRpcSource(source)) {
+                    callback?.(buildForbiddenRpcResponse());
+                    return;
+                }
+                sessionActionOrigin = parsed.origin;
+                sessionActionSourceGuard = {
+                    filterTargets: async (targets) => targets,
+                    runOperation: async ({ operation }) => await hasCurrentSessionActionRpcSource(source)
+                        ? { status: "current", value: await operation() }
+                        : { status: "refused", response: buildForbiddenRpcResponse() },
+                };
+            }
             const isPermissionDecisionMethod = methodSessionAuthorization?.serverMintedContext === "session.permission.respond";
             if (viewer && isTransferMethod && !transferRouting) {
                 callback?.(buildForbiddenRpcResponse());
@@ -1134,7 +1195,8 @@ export function registerSocketRpcHandlers(params: Readonly<{
                         && !isPermissionDecisionMethod
                         && rawAuthorization !== undefined
                         && (
-                            suppliedAuthorization?.kind !== "session.write"
+                            (suppliedAuthorization?.kind !== "session.write"
+                                && !(suppliedAuthorization?.kind === "session.action" && sessionActionOrigin))
                             || suppliedAuthorization.sessionId !== sessionId
                         )
                     )
@@ -1308,6 +1370,7 @@ export function registerSocketRpcHandlers(params: Readonly<{
             const targetGuard = composeRpcForwardTargetGuards([
                 targetSpecificGuard,
                 sessionAccessTargetGuard,
+                sessionActionSourceGuard,
             ]);
             const verifiedCallerGrant = verifiedExternalAction?.binding.grant ?? viewer?.principal.grant;
             const forwarded = await forwardRpcCall({
@@ -1323,6 +1386,7 @@ export function registerSocketRpcHandlers(params: Readonly<{
                     : {}),
                 callerSocketId: params.socket.id,
                 callerSocket: params.socket,
+                ...(sessionActionOrigin ? { sessionActionOrigin } : {}),
                 ...(callerInputViewer ? { createCallerInputAuthorization: async ({ target, requestId }) => {
                     const projection = readSessionPublisherAuthorityProjection(target.data);
                     if (!projection || projection.accountId !== targetUserId || projection.sessionId !== callerInputViewer.sessionId) {

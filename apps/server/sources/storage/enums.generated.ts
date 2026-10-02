@@ -245,6 +245,9 @@ export const AutomationTriggerKind = {
     schedule: "schedule",
     pluginEvent: "pluginEvent",
     sessionLifecycle: "sessionLifecycle",
+    runLifecycle: "runLifecycle",
+    prComment: "prComment",
+    ciFailed: "ciFailed",
 } as const;
 
 export type AutomationTriggerKind = (typeof AutomationTriggerKind)[keyof typeof AutomationTriggerKind];

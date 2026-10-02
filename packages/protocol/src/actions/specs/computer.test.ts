@@ -16,17 +16,28 @@ function nativeSpec(id: string) {
 }
 
 describe('native computer Action contracts', () => {
-  it('admits agent discovery and selection while retaining human-only Privacy launch', () => {
-    for (const id of ['computer.targets.list', 'computer.target.select']) {
+  it('admits agent discovery, selection and approved Privacy launch', () => {
+    for (const id of ['computer.targets.list', 'computer.target.select', 'computer.permissions.openSettings']) {
       expect(nativeSpec(id).requiredAuthority, id).toBe('account_automation');
       expect(nativeSpec(id).surfaces.agent, id).toBe(true);
     }
-    expect(nativeSpec('computer.permissions.openSettings').requiredAuthority).toBe('present_user');
-    expect(nativeSpec('computer.permissions.openSettings').surfaces.agent).toBe(false);
+    expect(isApprovalRequiredByActionsSettings(ActionIdSchema.parse('computer.permissions.openSettings'),
+      ActionsSettingsV1Schema.parse({ v: 1 }), { surface: 'agent' })).toBe(true);
     expect(nativeSpec('computer.capture').inputSchema.safeParse({ machineId: 'machine_1' }).success).toBe(true);
     expect(nativeSpec('computer.target.select').inputSchema.safeParse({ machineId: 'machine_1' }).success).toBe(false);
     expect(nativeSpec('computer.target.select').inputSchema.safeParse({ machineId: 'machine_1', requestedTarget: 'Editor' }).success).toBe(true);
     expect(nativeSpec('computer.target.select').inputSchema.safeParse({ machineId: 'machine_1', requestedTarget: ' ' }).success).toBe(false);
+  });
+
+  it('admits sandbox recovery as a machine Action with default approval and no caller-authored executable', () => {
+    const id = ActionIdSchema.parse('browser.sandbox.install');
+    const spec = getActionSpec(id);
+    expect(spec.surfaces.agent).toBe(true);
+    expect(spec.requiredAuthority).toBe('account_automation');
+    expect(spec.executionPlacement).toBe('machine');
+    expect(spec.inputSchema.safeParse({ machineId: 'machine_1' }).success).toBe(true);
+    expect(spec.inputSchema.safeParse({ machineId: 'machine_1', executablePath: '/other/chrome' }).success).toBe(false);
+    expect(isApprovalRequiredByActionsSettings(id, ActionsSettingsV1Schema.parse({ v: 1 }), { surface: 'agent' })).toBe(true);
   });
 
   it('treats choosing the target as selection, not another approval', () => {

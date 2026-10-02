@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 export { resolveScmBackendCapabilities } from './resolveScmBackendCapabilities.js';
+export { scmPathMatchesScopePath } from './pathScope.js';
 export { buildWorktreeRelativePath, hasForbiddenGitRefName, normalizeWorktreeDisplayName } from './worktreeName.js';
 import {
   ProviderRefreshPolicySchema,
@@ -106,6 +107,7 @@ export {
 export * from './workingSnapshot.js';
 export {
   admitScmCommitPolicy,
+  admitScmCommitUndoLast,
   createScmCapabilities,
   createScmCapabilitiesFromBackendCapabilities,
 } from './capabilities.js';
@@ -310,6 +312,21 @@ export const ScmCommitCreateResponseSchema = z.object({
   errorCode: ScmOperationErrorCodeSchema.optional(),
 });
 export type ScmCommitCreateResponse = z.infer<typeof ScmCommitCreateResponseSchema>;
+
+export const ScmCommitUndoLastRequestSchema = ScmRequestBaseSchema.extend({
+  expectedHeadOid: z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/),
+}).strict();
+export type ScmCommitUndoLastRequest = z.infer<typeof ScmCommitUndoLastRequestSchema>;
+
+export const ScmCommitUndoLastResponseSchema = z.object({
+  success: z.boolean(),
+  outcome: ScmOperationOutcomeSchema.optional(),
+  undoneCommitSha: z.string().optional(),
+  headOid: z.string().optional(),
+  error: z.string().optional(),
+  errorCode: ScmOperationErrorCodeSchema.optional(),
+});
+export type ScmCommitUndoLastResponse = z.infer<typeof ScmCommitUndoLastResponseSchema>;
 
 function normalizeScmPatchPathToken(raw: string): string | null {
   let value = raw.trim();
@@ -673,6 +690,10 @@ export function classifyScmOperationErrorCode(
     case SCM_OPERATION_ERROR_CODES.COMMIT_IDENTITY_REQUIRED:
     case SCM_OPERATION_ERROR_CODES.COMMIT_EMPTY:
     case SCM_OPERATION_ERROR_CODES.COMMIT_AMEND_PUBLISHED:
+    case SCM_OPERATION_ERROR_CODES.COMMIT_UNDO_PUBLISHED:
+    case SCM_OPERATION_ERROR_CODES.COMMIT_UNDO_MERGE:
+    case SCM_OPERATION_ERROR_CODES.COMMIT_UNDO_NO_PARENT:
+    case SCM_OPERATION_ERROR_CODES.COMMIT_UNDO_HEAD_CHANGED:
     case SCM_OPERATION_ERROR_CODES.INDEX_RECONCILIATION_FAILED:
       return 'commit';
     case SCM_OPERATION_ERROR_CODES.CONFLICTING_WORKTREE:

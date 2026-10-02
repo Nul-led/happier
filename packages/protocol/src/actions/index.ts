@@ -1,11 +1,12 @@
 export * from './invocationAuthority.js';
-export { WORKSPACE_ACTION_IDS, WORKSPACE_ACTION_INPUT_SCHEMAS, WORKSPACE_ACTION_OUTPUT_SCHEMAS, isWorkspaceActionId, type WorkspaceActionId, type WorkspaceTabsListOutput } from './workspaceActionFamily.js';
+export { WORKSPACE_ACTION_IDS, WORKSPACE_ACTION_INPUT_SCHEMAS, WORKSPACE_ACTION_OUTPUT_SCHEMAS, isWorkspaceActionId, type WorkspaceActionId, type WorkspaceTabsListOutput, type WorkspaceClosedTabsListOutput } from './workspaceActionFamily.js';
 export * from './scopeActionFamily.js';
 export * from './specs/homeHub.js';
 export * from '../connect/configurationActionsV1.js';
 export * from '../connect/executeConfigurationActionV1.js';
 export * from './settingsDeclarationActionFamily.js';
 export * from './appShellActionFamily.js';
+export * from './executor/artifactPublicLinkActions.js';
 export * from './decisionAuthority.js';
 export { createWorkflowDefinitionActions, type WorkflowDefinitionArtifactOperations, type WorkflowDefinitionArtifactHeaderRow } from './executor/workflowDefinitions.js';
 export {
@@ -20,7 +21,7 @@ export { createWorkflowActionExecutor, normalizeWorkflowActionThrownError, type 
 export { createWorkflowTriggerActions, removeWorkflowTriggersForDefinition, type WorkflowTriggerActions, type WorkflowTriggerActionsDependencies, type WorkflowTriggerAutomationOperations } from './executor/workflowTriggerActions.js';
 export { createAccountWorkflowTriggerActions, type WorkflowTriggerAccountHostParams } from './executor/workflowTriggerAccountHost.js';
 export { assertControllerDominates, createWorkflowAccountRunActionOwner, type WorkflowAccountRunActionDeps, type WorkflowAccountRunEncryption } from './executor/workflowRunActions.js';
-export { resolveActionAgentStartContextV1 } from './executor/agentStartAdmission.js';
+export { resolveActionAgentStartContextV1, requiresActionAgentStartDepthV1 } from './executor/agentStartAdmission.js';
 export {
   computeExternalActionRequestEnvelopeDigestV1,
   computeExternalActionSocketRpcRequestDigestV1,
@@ -343,6 +344,8 @@ export {
   TranscriptOpenedSharedMetadataV1Schema,
   type TranscriptOpenedSharedMetadataV1,
   TranscriptOpenedFollowOutputV1Schema,
+  TranscriptFollowChangeV1Schema,
+  type TranscriptFollowChangeV1,
   type TranscriptOpenedFollowOutputV1,
   listActionCliCommandDeclarations,
   type ActionCliCommandDeclaration,

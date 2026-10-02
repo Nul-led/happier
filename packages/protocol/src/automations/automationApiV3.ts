@@ -24,7 +24,7 @@ import {
   AutomationStoredDefinitionExecutionRecipeV1Schema,
 } from './automationRunExecutionRecipeV1.js';
 import { AutomationStoredWorkflowDefinitionRecipeV2Schema } from './automationWorkflowRecipeV2.js';
-import { ExecutionRunWaitResultSchema } from '../execution/runs/index.js';
+import { ExecutionRunWaitResultSchema } from '../execution/runs/responseSchemas.js';
 import { AUTOMATION_TEMPLATE_CIPHERTEXT_MAX_CHARS } from './automationTemplateEnvelope.js';
 import {
   AutomationTriggerIdSchema,
@@ -44,6 +44,7 @@ import {
   AutomationTriggerDefinitionInputSchema,
 } from './automationTriggerDefinition.js';
 import { AutomationSessionLifecycleConfigurationSchema } from './automationSessionLifecycle.js';
+export * from './automationRunLifecycle.js';
 import type { AutomationTriggerDetail, AutomationTriggerListItem } from './automationTriggerProjectionV1.js';
 import { WorkflowDefinitionRefV1StringSchema } from '../workflows/workflowDefinitionRefV1.js';
 
@@ -53,6 +54,9 @@ export {
   AutomationPluginEventEncryptedDefinitionTriggerSchema,
   AutomationPluginEventDefinitionTriggerSchema,
   AutomationPluginEventObservationTransportInputSchema,
+  AutomationPullRequestTriggerSchema,
+  AutomationPullRequestEncryptedTriggerSchema,
+  AutomationPullRequestTriggerInputSchema,
   AutomationScheduleTriggerInputSchema,
   AutomationScheduleTriggerSchema,
   AutomationSessionLifecycleRegistrationErrorCodeSchema,
@@ -67,6 +71,8 @@ export type {
   AutomationPluginEventDefinitionTriggerInput,
   AutomationPluginEventEncryptedDefinitionTrigger,
   AutomationPluginEventObservationTransportInput,
+  AutomationPullRequestTrigger,
+  AutomationPullRequestTriggerInput,
   AutomationScheduleTrigger,
   AutomationScheduleTriggerInput,
   AutomationSessionLifecycleRegistrationErrorCode,
@@ -76,7 +82,6 @@ export type {
   AutomationTriggerDefinitionInput,
 } from './automationTriggerDefinition.js';
 
-const PREDECESSOR_TIMESTAMP_SCHEMA = z.number().int();
 const TIMESTAMP_SCHEMA = z.number().int().nonnegative().safe();
 const IDENTIFIER_SCHEMA = z.string().min(1);
 const UTF8_ENCODER = new TextEncoder();
@@ -85,6 +90,7 @@ import { AutomationEventSourceCatalogStatusSchema, AutomationPluginEventRefSchem
 export { AutomationEventSourceCatalogStatusSchema, AutomationPluginEventRefSchema, AutomationCheckpointedPullObservationSchema, AutomationSocketObservationSchema, AutomationDurablePushObservationSchema, AutomationPluginEventTriggerSchema, AutomationScheduleTriggerProjectionSchema, AutomationPluginEventTriggerProjectionSchema, AutomationSessionLifecycleTriggerStatusSchema, AutomationSessionLifecycleTriggerProjectionSchema, AutomationTriggerListItemSchema, AutomationTriggerDetailSchema } from './automationTriggerProjectionV1.js';
 export type { AutomationEventSourceCatalogStatus, AutomationPluginEventRef, AutomationCheckpointedPullObservation, AutomationSocketObservation, AutomationDurablePushObservation, AutomationPluginEventTrigger, AutomationSessionLifecycleTriggerStatus, AutomationTriggerListItem, AutomationTriggerDetail } from './automationTriggerProjectionV1.js';
 
+/** Target vocabulary retained for 0.2-created frozen execution-input data. */
 export const AutomationTargetTypeV2Schema = z.enum(['new_session', 'existing_session']);
 export type AutomationTargetTypeV2 = z.infer<typeof AutomationTargetTypeV2Schema>;
 
@@ -95,17 +101,6 @@ export const AutomationTargetTypeV3Schema = z.enum([
 ]);
 export type AutomationTargetTypeV3 = z.infer<typeof AutomationTargetTypeV3Schema>;
 
-export const AutomationRunStateV2Schema = z.enum([
-  'queued',
-  'claimed',
-  'running',
-  'succeeded',
-  'failed',
-  'cancelled',
-  'expired',
-]);
-export type AutomationRunStateV2 = z.infer<typeof AutomationRunStateV2Schema>;
-
 /**
  * The currently published V3 state vocabulary. The additional terminal states
  * are intentionally accepted by the reader before their producer migration so
@@ -114,74 +109,10 @@ export type AutomationRunStateV2 = z.infer<typeof AutomationRunStateV2Schema>;
 export {
   AutomationRunStateV3Schema,
   type AutomationRunStateV3,
+  AUTOMATION_RUN_TERMINAL_STATES_V3,
+  isTerminalAutomationRunStateV3,
+  type AutomationRunTerminalStateV3,
 } from './automationRunStateV3.js';
-
-export const AutomationV2ScheduleSchema = z.object({
-  kind: z.enum(['cron', 'interval', 'manual']),
-  scheduleExpr: z.string().nullable(),
-  everyMs: z.number().int().nullable(),
-  timezone: z.string().nullable(),
-}).strict();
-export type AutomationV2Schedule = z.infer<typeof AutomationV2ScheduleSchema>;
-
-export const AutomationV2AssignmentSchema = z.object({
-  machineId: z.string(),
-  enabled: z.boolean(),
-  priority: z.number().int(),
-  updatedAt: PREDECESSOR_TIMESTAMP_SCHEMA.nullable(),
-}).strict();
-export type AutomationV2Assignment = z.infer<typeof AutomationV2AssignmentSchema>;
-
-/** Exact released V2 definition wire shape. Do not add Event/Conversation fields. */
-export const AutomationApiV2Schema = z.object({
-  id: z.string(),
-  name: z.string(),
-  description: z.string().nullable(),
-  enabled: z.boolean(),
-  schedule: AutomationV2ScheduleSchema,
-  targetType: AutomationTargetTypeV2Schema,
-  templateCiphertext: z.string(),
-  templateVersion: z.number().int(),
-  nextRunAt: PREDECESSOR_TIMESTAMP_SCHEMA.nullable(),
-  lastRunAt: PREDECESSOR_TIMESTAMP_SCHEMA.nullable(),
-  createdAt: PREDECESSOR_TIMESTAMP_SCHEMA,
-  updatedAt: PREDECESSOR_TIMESTAMP_SCHEMA,
-  assignments: z.array(AutomationV2AssignmentSchema),
-}).strict();
-export type AutomationApiV2 = z.infer<typeof AutomationApiV2Schema>;
-
-/** Exact released V2 Run wire shape. Do not add cause or private-envelope fields. */
-export const AutomationRunApiV2Schema = z.object({
-  id: z.string(),
-  automationId: z.string(),
-  state: AutomationRunStateV2Schema,
-  scheduledAt: PREDECESSOR_TIMESTAMP_SCHEMA,
-  dueAt: PREDECESSOR_TIMESTAMP_SCHEMA,
-  claimedAt: PREDECESSOR_TIMESTAMP_SCHEMA.nullable(),
-  startedAt: PREDECESSOR_TIMESTAMP_SCHEMA.nullable(),
-  finishedAt: PREDECESSOR_TIMESTAMP_SCHEMA.nullable(),
-  claimedByMachineId: z.string().nullable(),
-  leaseExpiresAt: PREDECESSOR_TIMESTAMP_SCHEMA.nullable(),
-  attempt: z.number().int(),
-  summaryCiphertext: z.string().nullable(),
-  errorCode: z.string().nullable(),
-  errorMessage: z.string().nullable(),
-  producedSessionId: z.string().nullable(),
-  createdAt: PREDECESSOR_TIMESTAMP_SCHEMA,
-  updatedAt: PREDECESSOR_TIMESTAMP_SCHEMA,
-}).strict();
-export type AutomationRunApiV2 = z.infer<typeof AutomationRunApiV2Schema>;
-
-export const AutomationV2RunListResponseSchema = z.object({
-  runs: z.array(AutomationRunApiV2Schema),
-  nextCursor: z.string().nullable(),
-}).strict();
-export type AutomationV2RunListResponse = z.infer<typeof AutomationV2RunListResponseSchema>;
-
-export const AutomationV2RunMutationResponseSchema = z.object({
-  run: AutomationRunApiV2Schema,
-}).strict();
-export type AutomationV2RunMutationResponse = z.infer<typeof AutomationV2RunMutationResponseSchema>;
 
 export const AutomationAssignmentSchema = z.object({
   machineId: IDENTIFIER_SCHEMA,
@@ -593,8 +524,8 @@ export const AutomationRunExecutionInputV1Schema = z.object({
 export type AutomationRunExecutionInputV1 = z.infer<typeof AutomationRunExecutionInputV1Schema>;
 
 /**
- * The one current-cause to released-V2 frozen-input adapter. `null` means the
- * Run cause cannot be represented on the released schedule/manual wire.
+ * Project a current cause into the retained frozen-input data carrier.
+ * `null` means the cause has no legacy stored representation.
  */
 export function toAutomationRunExecutionInputV1Origin(
   cause: AutomationRunCause,

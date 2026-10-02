@@ -1,10 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { withAuthenticatedTestApp } from "../../testkit/sqliteFastify";
 import { automationRoutes } from "./automationRoutes";
-import { AUTOMATION_TEMPLATE_V02_PLAIN } from "../../../../../../../packages/protocol/src/automations/automationTemplateV02.testFixtures";
+import { AUTOMATION_TEMPLATE_V02_PLAIN } from "@happier-dev/protocol/testing/accountScopedCipherFixtures";
 
 describe("Automation current transport and retained 0.2 data", () => {
     let harness: LightSqliteHarness;
@@ -17,6 +18,64 @@ describe("Automation current transport and retained 0.2 data", () => {
     }, 120_000);
 
     afterAll(async () => await harness.close());
+
+    it("pages Account attention including pre-session failures without per-run history reads, and clears settled attention", async () => {
+        const account = await db.account.create({ data: { encryptionMode: "plain" } });
+        const other = await db.account.create({ data: { encryptionMode: "plain" } });
+        const automation = await db.automation.create({ data: {
+            accountId: account.id, name: "One shot", targetType: "new_session",
+            templateCiphertext: AUTOMATION_TEMPLATE_V02_PLAIN,
+        } });
+        const otherAutomation = await db.automation.create({ data: {
+            accountId: other.id, name: "Private", targetType: "new_session",
+            templateCiphertext: AUTOMATION_TEMPLATE_V02_PLAIN,
+        } });
+        const now = new Date("2026-10-02T00:00:00Z");
+        const data = { accountId: account.id, automationId: automation.id, originKind: "automation",
+            causeKind: "manual" as const, causeOccurredAt: now, scheduledAt: now, dueAt: now, createdAt: now };
+        await db.automationRun.createMany({ data: [
+            { ...data, id: "attention-z", state: "failed", errorCode: "machine_unavailable" },
+            { ...data, id: "attention-y", state: "dispatch_failed" },
+            { ...data, id: "attention-x", state: "succeeded", causeKind: "conversation",
+                occurrenceKey: createHash("sha256").update("conversation-attention").digest("base64url"), triggerEvidenceEnvelope: '{"t":"plain","v":{}}',
+                replyHandoffState: "blocked", replyContextEnvelope: '{"t":"plain","v":{}}',
+                replyHandoffActionPluginId: "example.reply", replyHandoffActionLocalId: "deliver",
+                replyHandoffTargetMachineId: "machine", replyHandoffTargetMachineInstallationId: "installation",
+                replyHandoffTargetMaterializationId: "materialization", replyHandoffId: "delivery" },
+            { ...data, id: "attention-normal", state: "succeeded" },
+            { ...data, id: "attention-managed", state: "failed", workflowAcceptedSnapshotEnvelope: "private", workflowCustodyState: "settled" },
+            { ...data, id: "attention-foreign", accountId: other.id, automationId: otherAutomation.id, state: "failed" },
+        ] });
+        const events = vi.spyOn(db.automationRunEvent, "findMany");
+        const exact = vi.spyOn(db.automationRun, "findFirst");
+        // Prisma delegates expose generated functions; explicitly retain the real database read.
+        const readPage = db.automationRun.findMany.bind(db.automationRun);
+        const pages = vi.spyOn(db.automationRun, "findMany").mockImplementation(readPage);
+        try {
+            await withAuthenticatedTestApp(automationRoutes, async (app) => {
+                const headers = { "x-test-user-id": account.id };
+                const first = await app.inject({ method: "GET", url: "/v3/automations/runs?attention=required&limit=2", headers });
+                expect(first.statusCode, first.body).toBe(200);
+                expect(first.json().runs.map((run: { id: string }) => run.id)).toEqual(["attention-z", "attention-y"]);
+                expect(first.json().runs[0]).toMatchObject({ producedSessionId: null, errorCode: "machine_unavailable" });
+                expect(first.json().runs[0]).not.toHaveProperty("workflowAcceptedSnapshotEnvelope");
+                // The cursor row can leave attention between pages without changing traversal order.
+                await db.automationRun.update({ where: { id: "attention-y" }, data: { state: "cancelled", revision: { increment: 1 } } });
+                const second = await app.inject({ method: "GET", url: `/v3/automations/runs?attention=required&limit=2&cursor=${encodeURIComponent(first.json().nextCursor)}`, headers });
+                expect(second.statusCode, second.body).toBe(200);
+                expect(second.json().runs.map((run: { id: string }) => run.id)).toEqual(["attention-x"]);
+                expect(second.json().nextCursor).toBeNull();
+                await db.automationRun.update({ where: { id: "attention-x" }, data: { replyHandoffState: "accepted", revision: { increment: 1 } } });
+                const refreshed = await app.inject({ method: "GET", url: "/v3/automations/runs?attention=required&limit=2", headers });
+                expect(refreshed.json().runs.map((run: { id: string }) => run.id)).toEqual(["attention-z"]);
+            });
+            expect(events).not.toHaveBeenCalled();
+            expect(exact).not.toHaveBeenCalled();
+            expect(pages).toHaveBeenCalledTimes(3);
+        } finally {
+            events.mockRestore(); exact.mockRestore(); pages.mockRestore();
+        }
+    });
 
     it("reads unchanged 0.2-created templates and schedules through V3 while V2 routes are absent", async () => {
         const account = await db.account.create({ data: { encryptionMode: "plain" } });

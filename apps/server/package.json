@@ -9,6 +9,7 @@
   "scripts": {
     "tsc": "node ../../scripts/workspaces/runTypeScriptCli.mjs",
     "build:shared": "node ./scripts/buildSharedDeps.mjs",
+    "build:public-viewer": "node ./scripts/buildPublicShareViewer.mjs",
     "prebuild": "yarn -s build:shared",
     "test:prepare": "node ./scripts/runTsx.mjs --tsconfig ./tsconfig.json ./scripts/schemaSync.ts --check --quiet",
     "build": "node ./scripts/runTypeScriptCli.mjs --noEmit",
@@ -129,6 +130,7 @@
     "openid-client": "^6.0.0",
     "pino": "^9.9.0",
     "pino-pretty": "^13.0.0",
+    "parse5": "^7.2.1",
     "prisma": "^6.11.1",
     "prisma-json-types-generator": "^3.5.1",
     "privacy-kit": "^0.0.25",

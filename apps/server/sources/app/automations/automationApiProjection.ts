@@ -35,6 +35,7 @@ import type {
     AutomationTriggerItem,
 } from "./automationTypes";
 import { decodeAutomationSessionLifecycleConfiguration } from "./automationSessionLifecycleConfigurationCodec";
+import { decodeAutomationRunLifecycleConfiguration } from "./automationRunLifecycleConfigurationCodec";
 import {
     assertAutomationTemplateEnvelopeForAccountMode,
     AutomationValidationError,
@@ -70,6 +71,10 @@ function triggerProjection(
         id: trigger.id, revision: trigger.revision, enabled: trigger.enabled,
         createdAt: trigger.createdAt.getTime(), updatedAt: trigger.updatedAt.getTime(),
     };
+    if (trigger.kind === "prComment" || trigger.kind === "ciFailed") {
+        return { ...common, kind: trigger.kind, sourceSessionId: required(trigger.sourceSessionId, "sourceSessionId"),
+            ...(includeDefinition ? { triggerDefinitionEnvelope: required(trigger.definitionEnvelope, "definitionEnvelope") } : {}) };
+    }
     if (trigger.kind === "schedule") {
         return {
             ...common, kind: "schedule" as const,
@@ -90,6 +95,11 @@ function triggerProjection(
             status: required(lifecycleStatuses.get(trigger.id), "sessionLifecycle status"),
             ...(includeDefinition ? { triggerDefinitionEnvelope: null } : {}),
         };
+    }
+    if (trigger.kind === "runLifecycle") {
+        return { ...common, ...decodeAutomationRunLifecycleConfiguration(trigger), remainingOccurrences: trigger.remainingOccurrences,
+            status: { state: !trigger.enabled ? "paused" as const : trigger.remainingOccurrences === 1 ? "waiting" as const : "finished" as const, runId: null },
+            ...(includeDefinition ? { triggerDefinitionEnvelope: null } : {}) };
     }
     const status = statuses.get(trigger.id);
     const watcherObservation = () => ({
@@ -176,7 +186,7 @@ export function toAutomationDefinitionDetailApiDto(
     lifecycleStatuses: ReadonlyMap<string, AutomationSessionLifecycleTriggerStatus> = new Map(),
 ) {
     for (const trigger of item.triggers) {
-        if (trigger.kind !== "pluginEvent") continue;
+        if (trigger.kind !== "pluginEvent" && trigger.kind !== "prComment" && trigger.kind !== "ciFailed") continue;
         const binding = readAutomationTriggerDefinitionBinding({
             automationId: item.id, triggerId: trigger.id, triggerRevision: trigger.revision,
             triggerKind: trigger.kind,

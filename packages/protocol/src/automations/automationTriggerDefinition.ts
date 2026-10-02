@@ -22,6 +22,8 @@ import {
   addAutomationStoredEnvelopeUtf8LimitIssue,
 } from './automationStoredContentEnvelopeV1.js';
 import { AutomationSessionLifecycleConfigurationSchema } from './automationSessionLifecycle.js';
+import { AutomationRunLifecycleTriggerSchema, AutomationRunLifecycleTriggerInputSchema } from './automationRunLifecycle.js';
+export * from './automationRunLifecycle.js';
 
 const AutomationScheduleSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -126,6 +128,27 @@ export type AutomationEncryptedTriggerDefinitionEnvelopeV1 = z.infer<
   typeof AutomationEncryptedTriggerDefinitionEnvelopeV1Schema
 >;
 
+/** The private PR selector shared by comment and failed-check triggers. */
+export const AutomationPullRequestTriggerSchema = z.object({
+  kind: z.enum(['prComment', 'ciFailed']),
+  pullRequest: z.object({
+    repository: z.string().min(1),
+    number: z.number().int().positive().safe(),
+  }).strict(),
+}).strict();
+export type AutomationPullRequestTrigger = z.infer<typeof AutomationPullRequestTriggerSchema>;
+
+export const AutomationPullRequestEncryptedTriggerSchema = z.object({
+  kind: z.enum(['prComment', 'ciFailed']),
+  triggerDefinitionEnvelope: AutomationEncryptedTriggerDefinitionEnvelopeV1Schema,
+}).strict();
+
+export const AutomationPullRequestTriggerInputSchema = z.union([
+  AutomationPullRequestTriggerSchema.extend({ enabled: z.boolean() }).strict(),
+  AutomationPullRequestEncryptedTriggerSchema.extend({ enabled: z.boolean() }).strict(),
+]);
+export type AutomationPullRequestTriggerInput = z.infer<typeof AutomationPullRequestTriggerInputSchema>;
+
 /**
  * Ciphertext-blind Event authoring arm. Public routing/currentness facts remain
  * on AutomationTrigger; the exact private definition is sealed to the
@@ -158,6 +181,9 @@ export const AutomationTriggerDefinitionSchema = z.union([
   AutomationPluginEventDefinitionTriggerSchema,
   AutomationPluginEventEncryptedDefinitionTriggerSchema,
   AutomationSessionLifecycleTriggerSchema,
+  AutomationRunLifecycleTriggerSchema,
+  AutomationPullRequestTriggerSchema,
+  AutomationPullRequestEncryptedTriggerSchema,
 ]);
 export type AutomationTriggerDefinition = z.infer<typeof AutomationTriggerDefinitionSchema>;
 
@@ -165,6 +191,8 @@ export const AutomationTriggerDefinitionInputSchema = z.union([
   AutomationScheduleTriggerInputSchema,
   AutomationPluginEventDefinitionTriggerInputSchema,
   AutomationSessionLifecycleTriggerInputSchema,
+  AutomationRunLifecycleTriggerInputSchema,
+  AutomationPullRequestTriggerInputSchema,
 ]);
 export type AutomationTriggerDefinitionInput = z.infer<
   typeof AutomationTriggerDefinitionInputSchema

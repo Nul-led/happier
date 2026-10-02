@@ -54,6 +54,7 @@ export * from './hostedWebEndpoint.js';
 export * from './hostRuntimeExternals.js';
 export * from './reactNativeCompatibility.js';
 export * from './subscriptions.js';
+export * from './storedImage.js';
 export * from './surfaceContext.js';
 export * from './targetedContributions.js';
 export * from './uiArtifactsManifest.js';
@@ -222,3 +223,4 @@ export {
   isRuntimeActionIdV1,
   type RuntimeActionIdV1,
 } from '../../actions/actionIds.js';
+export * from './liveStream.js';

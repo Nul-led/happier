@@ -2,8 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { WorkflowActionIdV1Schema } from '../../actions/actionIds.js';
 import { WorkflowActionInputSchemasV1 } from '../actionsV1.js';
 import { WorkflowActionFailureV1Schema } from '../workflowProgressV1.js';
+import { SessionTriggerListResultV1Schema } from './workflowTriggerActionsV1.js';
 
 describe('workflow trigger Action boundary', () => {
+  it('qualifies session PR-link reads instead of accepting an unaddressed list', () => {
+    const pullRequestLinks = [{ provider: 'github', repository: 'happier-dev/happier', number: 42 }];
+    expect(SessionTriggerListResultV1Schema.safeParse({ sets: [], pullRequestLinks }).success).toBe(false);
+    expect(SessionTriggerListResultV1Schema.parse({ sessionId: 'session-one', sets: [], pullRequestLinks }))
+      .toEqual({ sessionId: 'session-one', sets: [], pullRequestLinks });
+  });
   it('preserves closed conversion and currentness refusal details', () => {
     expect(WorkflowActionFailureV1Schema.safeParse({ ok: false, errorCode: 'legacy_conversion_unsupported',
       error: 'legacy_conversion_unsupported', details: { reason: 'settings_unrepresentable' } }).success).toBe(true);

@@ -36,6 +36,8 @@ export const PluginAgentSessionCapabilitiesV2Schema = z.object({
   compaction: z.object({ events: z.literal(true), manual: z.literal(true).optional() }).strict().optional(),
   conversationRollback: z.literal(true).optional(),
   goals: PluginAgentGoalsV2Schema.optional(),
+  /** Publishes token usage to Happier's Session accounting. Omission is undeclared. */
+  usageReporting: z.literal(true).optional(),
   catalog: activity(z.array(z.enum(['vendorPlugins', 'skills'])).min(1).refine((values) => new Set(values).size === values.length, 'Entries must be unique.')).optional(),
   usageLimitRecovery: activity(z.array(z.enum(['checkNow', 'consumeResetCredit'])).min(1).refine((values) => new Set(values).size === values.length, 'Entries must be unique.')).optional(),
   continuationVerification: z.object({ intents: z.array(z.enum(['resume', 'fork'])).min(1).refine((values) => new Set(values).size === values.length, 'Entries must be unique.'), requirement: z.enum(['required', 'advisory']) }).strict().optional(),

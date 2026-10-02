@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DaemonVoiceClientAccountOperationResponseV1Schema,
   DaemonVoiceClientRawCredentialAuthorizationInspectResponseV1Schema,
   DaemonVoiceClientRawCredentialAuthorizationRequestV1Schema,
   DaemonVoiceClientRawCredentialMaterializeRequestV1Schema,
@@ -19,6 +20,19 @@ const rawGrant = {
 };
 
 describe('daemon Voice raw credential authorization wire', () => {
+  it('admits the ephemeral operation response but rejects a credential-header export', () => {
+    const response = { ok: true, response: {
+      status: 200, finalUrl: 'https://voice.example.test/client-secret',
+      headers: { 'content-type': 'application/json' }, bodyBase64: 'e30=',
+    } };
+    expect(DaemonVoiceClientAccountOperationResponseV1Schema.parse(response)).toEqual(response);
+    expect(DaemonVoiceClientAccountOperationResponseV1Schema.safeParse({
+      ok: true, headers: { authorization: 'Bearer source-credential' },
+    }).success).toBe(false);
+    expect(DaemonVoiceClientAccountOperationResponseV1Schema.safeParse({
+      ...response, headers: { authorization: 'Bearer source-credential' },
+    }).success).toBe(false);
+  });
   it('preserves the legacy raw-materialization shape while carrying an optional host callback receipt', () => {
     const cacheIdentity = {
       artifactDigest: `sha256:${'b'.repeat(64)}`,

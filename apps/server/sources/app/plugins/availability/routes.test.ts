@@ -461,7 +461,7 @@ describe("plugin Availability routes", () => {
         });
     });
 
-    it("adapts qualified Artifact publish/read through the incumbent stored-content compatibility boundary", async () => {
+    it("adapts qualified Artifact publish/read without a component-version declaration", async () => {
         const app = createFakeRouteApp();
         const operations = createOperations();
         registerPluginAvailabilityRoutes(app as never, { operations });
@@ -470,13 +470,6 @@ describe("plugin Availability routes", () => {
             userId: "account-present-user",
             method: "POST",
             headers: {},
-            accountStoredContentCompatibility: {
-                supportsCurrentProtocol: true,
-                supportsPluginDataProtocol: true,
-                outcome: "accepted" as const,
-                declaration: null,
-                upgradeRequired: null,
-            },
         };
 
         const uiArtifactPublishInput = {
@@ -497,26 +490,24 @@ describe("plugin Availability routes", () => {
         }, publishReply);
         expect(operations.publishUiArtifact).toHaveBeenCalledWith({
             accountId: publishRequest.userId,
-            supportsCurrentStoredContentProtocol: true,
             input: expect.objectContaining({
                 accountArtifactId: uiArtifactLink.accountArtifactId,
                 slot: expect.objectContaining({ artifactId: uiArtifactLink.artifactId }),
             }),
         });
 
-        const legacyReadReply = replyHarness();
-        await app.routes.get(`POST ${PluginAvailabilityActionHttpPathsV1[
+        const currentReadReply = replyHarness();
+        const currentRead = await app.routes.get(`POST ${PluginAvailabilityActionHttpPathsV1[
             "account.plugins.availability.uiArtifact.read"
         ]}`)!.handler({
             userId: publishRequest.userId,
             method: "POST",
             headers: {},
             body: uiArtifactReadInput,
-        }, legacyReadReply);
-        expect(legacyReadReply.code).toHaveBeenCalledWith(426);
-        expect(legacyReadReply.send).toHaveBeenCalledWith(expect.objectContaining({
-            error: "client-upgrade-required",
-        }));
+        }, currentReadReply);
+        expect(currentRead).toEqual({ link: uiArtifactLink, artifact: expect.objectContaining({
+            dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+        }) });
 
         const packageAssetPublishInput = {
             release: releasePublishInput.facts.ref,
@@ -535,24 +526,25 @@ describe("plugin Availability routes", () => {
         }, replyHarness());
         expect(operations.publishPackageAsset).toHaveBeenCalledWith({
             accountId: publishRequest.userId,
-            supportsCurrentStoredContentProtocol: true,
             input: packageAssetPublishInput,
         });
 
-        const packageAssetLegacyReadReply = replyHarness();
-        await app.routes.get(`POST ${PluginAvailabilityActionHttpPathsV1[
+        const currentPackageReadReply = replyHarness();
+        const currentPackageRead = await app.routes.get(`POST ${PluginAvailabilityActionHttpPathsV1[
             "account.plugins.availability.packageAsset.read"
         ]}`)!.handler({
             userId: publishRequest.userId,
             method: "POST",
             headers: {},
             body: { release: releasePublishInput.facts.ref },
-        }, packageAssetLegacyReadReply);
+        }, currentPackageReadReply);
         expect(operations.readPackageAsset).toHaveBeenCalledWith({
             accountId: publishRequest.userId,
             input: { release: releasePublishInput.facts.ref },
         });
-        expect(packageAssetLegacyReadReply.code).toHaveBeenCalledWith(426);
+        expect(currentPackageRead).toEqual({ link: packageAssetLink, artifact: expect.objectContaining({
+            dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+        }) });
         const removal = await app.routes.get(`POST ${PluginAvailabilityActionHttpPathsV1[
             "account.plugins.availability.packageAsset.remove"
         ]}`)!.handler({

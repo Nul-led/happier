@@ -4,6 +4,7 @@ import tweetnacl from "tweetnacl";
 import * as privacyKit from "privacy-kit";
 import { buildAccountStoredContentCompatibilityHttpHeadersV1, sealEncryptedDataKeyEnvelopeV1 } from "@happier-dev/protocol";
 import {
+    materializeWorkflowAcceptedSnapshotV1,
     sealWorkflowAcceptedSnapshotStoredEnvelopeV1,
     sealWorkflowProgressStoredEnvelopeV1,
     serializeWorkflowStoredContentEnvelopeV1,
@@ -44,16 +45,24 @@ describe("active Account migration of current Workflow content (real SQLite)", (
         const runDataKey = tweetnacl.randomBytes(32);
         const mode = { mode: "e2ee" as const, runDataKey, randomBytes: tweetnacl.randomBytes };
         const acceptedBinding = { v: 1 as const, purpose: "accepted_snapshot" as const, accountId: account.id, runId };
-        const acceptedSnapshot = {
-            definition: { version: 1 as const, inputs: [], defaults: {}, blocks: [
+        const materialized = await materializeWorkflowAcceptedSnapshotV1({
+            definition: { version: 1, inputs: [], defaults: {
+                agentTarget: { kind: "agent", identity: { pluginId: "happier.agent.codex", localId: "codex" } },
+            }, blocks: [
                 { kind: "step" as const, id: "work", document: { text: "Work", references: [], attachments: [] }, input: [], result: { kind: "text" as const } },
             ] },
-            source: { kind: "inline" as const }, inputs: {}, machineId: machine.id,
-            executionTarget: { kind: "session" as const },
-            workspaceTarget: { project: { machineId: machine.id, directory: "/repo", checkoutRootPath: "/repo" } },
-            origin: { kind: "direct" as const },
-            authorization: { admittedPermissionCeiling: "default" as const, principal: { kind: "host" as const } },
-        };
+            context: {
+                source: { kind: "inline" }, inputs: {}, machineId: machine.id,
+                executionTarget: { kind: "session" },
+                workspaceTarget: { project: { machineId: machine.id, directory: "/repo", checkoutRootPath: "/repo" } },
+                origin: { kind: "direct" }, authorization: { principal: { kind: "host" } },
+            },
+            admission: { kind: "user" },
+            // Installed-target availability is the Machine boundary; materialization stays real.
+            effects: { resolveTargetAvailability: async () => true },
+        });
+        if (!materialized.ok) throw new Error(`Workflow fixture admission failed: ${materialized.error.code}`);
+        const acceptedSnapshot = materialized.snapshot;
         const sourceAccepted = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
             mode: "plain", binding: acceptedBinding, acceptedSnapshot,
         }));

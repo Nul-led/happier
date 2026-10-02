@@ -51,6 +51,7 @@ export {
   SESSION_AWARENESS_TERMINAL_ACTIVITY_SKEW_MS,
   hasActivityClearlyAfterTerminalProjectionV1,
   hasProjectedActiveTurnV1,
+  isProjectedSessionStalledV1,
   hasSessionAwarenessReadyEvidenceV1,
   hasTerminalPrimaryTurnStatusV1,
   isFreshAwarenessTimestampV1,

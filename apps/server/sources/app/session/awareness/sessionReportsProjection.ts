@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import {
+    isProjectedSessionStalledV1,
     parseSessionRuntimeActivityProjectionFields,
     projectSessionAwarenessOperationalV1,
     projectSessionAwarenessRuntimeV1,
@@ -81,8 +82,6 @@ function projectReportOperational(row: ReportSessionRow, nowMs: number) {
         nowMs,
         lifecycle,
         runtime: {
-            // Session.active is not machine presence. No server acquisition seam
-            // currently binds this row to observed machine-offline evidence.
             presence: 'unknown',
             active: liveFacts && row.active,
             lastObservedAtMs: liveFacts ? row.lastActiveAt.getTime() : null,
@@ -99,7 +98,11 @@ function projectReportOperational(row: ReportSessionRow, nowMs: number) {
             blockedInputCount: row.pendingBlockedCount,
         } : {},
     });
-    return projectSessionAwarenessOperationalV1({ runtime, lifecycle });
+    return {
+        operational: projectSessionAwarenessOperationalV1({ runtime, lifecycle }),
+        // The existing presence publisher/timeout owns Session.active; only its own turn can stall it.
+        stalled: liveFacts && isProjectedSessionStalledV1({ active: row.active, latestTurnStatus: lifecycle.latestTurnStatus }),
+    };
 }
 
 /** One batch acquires authorized relation facts for every returned list/detail row. */
@@ -140,10 +143,10 @@ export async function projectSessionReportsForRowsInTx(tx: Tx, input: Readonly<{
         const counts = reports.get(edge.leadSessionId) ?? { total: 0, working: 0, needsYou: 0, stalled: 0 };
         counts.total += 1;
         const child = readable.get(edge.sessionId)!;
-        const operational = projectReportOperational(child, input.nowMs);
-        if (operational.primary === 'working') counts.working += 1;
+        const { operational, stalled } = projectReportOperational(child, input.nowMs);
+        if (operational.primary === 'working' && !stalled) counts.working += 1;
         if (operational.primary === 'failed' || operational.primary === 'permission_required' || operational.primary === 'action_required') counts.needsYou += 1;
-        // Stalled requires observed machine-offline mid-turn evidence, not a timer.
+        if (stalled) counts.stalled += 1;
         reports.set(edge.leadSessionId, counts);
     }
     return input.sessions.map((session) => {

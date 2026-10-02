@@ -68,7 +68,7 @@ function createOwnedSessionAccessRow(sessionId = "sess_1") {
     };
 }
 
-const machineFindFirstMock = vi.hoisted(() => vi.fn(async (): Promise<{ revokedAt: Date | null; replacedByMachineId: string | null; installationPublicKey?: Uint8Array; kind?: string }> => ({
+const machineFindFirstMock = vi.hoisted(() => vi.fn(async (): Promise<{ revokedAt: Date | null; replacedByMachineId: string | null; installationId?: string; installationPublicKey?: Uint8Array; kind?: string }> => ({
     revokedAt: null,
     replacedByMachineId: null,
 })));
@@ -207,6 +207,83 @@ function createRoomAwareIo() {
 }
 
 describe("registerSocketRpcHandlers", () => {
+    const sessionActionOrigin = {
+        v: 1, caller: { kind: 'session', sessionId: 'lead', starterDepth: 2, turnDepth: 4 },
+        callerPermissionMode: 'read-only', sourceTurnId: 'turn-original', requestId: 'action-original', workspaceWrites: 'deny',
+        causalPermissionAuthority: { kind: 'admittedSessionInputV1', admittedPermissionCeiling: 'read-only' },
+    };
+    async function createSessionActionFixture() {
+        sessionFindUniqueMock.mockImplementation(async (args?: { where?: { id?: string } }) => createOwnedSessionAccessRow(args?.where?.id));
+        accessKeyFindUniqueMock.mockResolvedValue({ session: { accountId: 'user-1' }, machine: { revokedAt: null, replacedByMachineId: null } });
+        machineFindFirstMock.mockResolvedValue({ revokedAt: null, replacedByMachineId: null, installationId: 'installation-source', kind: 'regular' });
+        const source = createFakeSocket({ id: 'source-daemon', data: {
+            clientType: 'machine-scoped', machineId: 'machine-source', authTokenKind: 'account', verifiedMachineInstallationId: 'installation-source',
+        }, handshake: { auth: { token: await auth.createToken('user-1', undefined, { kind: 'account', authority: 'present_user' }) } } });
+        const effect = vi.fn(async (_event: string, _request: unknown) => ({ updated: true }));
+        const target = { id: 'target-runtime', data: { clientType: 'session-scoped', sessionPublisherAuthority: {
+            v: 1, accountId: 'user-1', sessionId: 'report', machineId: 'machine-target', committedFenceMs: 2,
+        } }, timeout: () => ({ emitWithAck: effect }) };
+        const publisher = { data: { sessionPublisherAuthority: {
+            v: 1, accountId: 'user-1', sessionId: 'lead', machineId: 'machine-source', committedFenceMs: 2,
+        } } };
+        const rooms: Record<string, unknown[]> = { 'session:lead:user-1': [publisher],
+            'rpc:user-1:report:session.notes.set': [target], [target.id]: [target] };
+        const { io } = createTargetRoutingIo(rooms);
+        return { source, effect, rooms, io, target, publisher };
+    }
+    it('forwards authenticated Session Action facts as automation through real ingress and relay', async () => {
+        const { source, effect, io } = await createSessionActionFixture();
+        registerSocketRpcHandlers({ userId: 'user-1', socket: source as unknown as Socket, io, sessionPublisherPresence: createSessionPublisherPresence() });
+        const ack = vi.fn();
+        await triggerSocketHandler(source, SOCKET_RPC_EVENTS.CALL, { method: 'report:session.notes.set', params: 'sealed-role-input',
+            authorization: { kind: 'session.action', sessionId: 'report', origin: sessionActionOrigin },
+            sessionActionOrigin: { ...sessionActionOrigin, callerPermissionMode: 'yolo' }, callerAuthority: 'present_user',
+        }, ack);
+        expect(ack).toHaveBeenCalledWith({ ok: true, result: { updated: true } });
+        expect(effect).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.REQUEST, expect.objectContaining({
+            callerAuthority: 'account_automation', sessionActionOrigin, params: 'sealed-role-input',
+            authorization: { kind: 'session.write', sessionId: 'report' },
+        }));
+    });
+    it.each(['user', 'session', 'unverified', 'wrong-installation', 'wrong-host', 'foreign-caller', 'foreign-target', 'restricted', 'unknown-origin-field', 'wrong-target', 'unrelated-method', 'roles.create', 'roles.list'])('refuses forged Session Action source: %s', async (scenario) => {
+        const { source, effect, io, publisher } = await createSessionActionFixture();
+        if (scenario === 'user') source.data!.clientType = 'user-scoped';
+        if (scenario === 'session') source.data!.clientType = 'session-scoped';
+        if (scenario === 'unverified') delete source.data!.verifiedMachineInstallationId;
+        if (scenario === 'wrong-installation') source.data!.verifiedMachineInstallationId = 'other';
+        if (scenario === 'wrong-host') publisher.data.sessionPublisherAuthority.machineId = 'other';
+        if (scenario === 'foreign-caller') sessionFindUniqueMock.mockImplementation(async (args?: { where?: { id?: string } }) => ({ ...createOwnedSessionAccessRow(args?.where?.id), accountId: args?.where?.id === 'lead' ? 'foreign' : 'user-1' }));
+        if (scenario === 'foreign-target') sessionFindUniqueMock.mockImplementation(async (args?: { where?: { id?: string } }) => ({ ...createOwnedSessionAccessRow(args?.where?.id), accountId: args?.where?.id === 'report' ? 'foreign' : 'user-1' }));
+        if (scenario === 'restricted') source.data!.ephemeralRunnerAdmission = { kind: 'machine-runtime' };
+        registerSocketRpcHandlers({ userId: 'user-1', socket: source as unknown as Socket, io, sessionPublisherPresence: createSessionPublisherPresence() });
+        const ack = vi.fn();
+        const method = scenario.startsWith('roles.') ? `report:${scenario}`
+            : scenario === 'unrelated-method' ? 'report:session.goal.set' : 'report:session.notes.set';
+        await triggerSocketHandler(source, SOCKET_RPC_EVENTS.CALL, { method, params: 'sealed-role-input',
+            authorization: { kind: 'session.action', sessionId: scenario === 'wrong-target' ? 'other' : 'report',
+                origin: scenario === 'unknown-origin-field' ? { ...sessionActionOrigin, authority: 'present_user' } : sessionActionOrigin },
+        }, ack);
+        expect(ack).toHaveBeenCalledWith(expect.objectContaining({ ok: false, errorCode: RPC_ERROR_CODES.FORBIDDEN }));
+        expect(effect).not.toHaveBeenCalled();
+    });
+    it.each(['installation', 'hosting-machine'])('rechecks Session Action source %s immediately before target dispatch', async (scenario) => {
+        const { source, effect, io, publisher } = await createSessionActionFixture();
+        const originalIn = io.in.bind(io);
+        io.in = ((room: string) => {
+            if (room === 'rpc:user-1:report:session.notes.set') {
+                if (scenario === 'installation') machineFindFirstMock.mockResolvedValue({ revokedAt: null, replacedByMachineId: null, installationId: 'replacement', kind: 'regular' });
+                else publisher.data.sessionPublisherAuthority.machineId = 'replacement';
+            }
+            return originalIn(room);
+        }) as typeof io.in;
+        registerSocketRpcHandlers({ userId: 'user-1', socket: source as unknown as Socket, io, sessionPublisherPresence: createSessionPublisherPresence() });
+        const ack = vi.fn();
+        await triggerSocketHandler(source, SOCKET_RPC_EVENTS.CALL, { method: 'report:session.notes.set', params: 'sealed-role-input',
+            authorization: { kind: 'session.action', sessionId: 'report', origin: sessionActionOrigin },
+        }, ack);
+        expect(ack).toHaveBeenCalledWith(expect.objectContaining({ ok: false }));
+        expect(effect).not.toHaveBeenCalled();
+    });
     it("admits UI browser automation only from the authenticated exact Machine", async () => {
         const method = `machine-1:${uiBrowserAutomationDispatchMethod({ browserSessionId: 'visible-session', viewId: 'visible-view' })}`;
         const effect = vi.fn(async () => 'encrypted-page-result');

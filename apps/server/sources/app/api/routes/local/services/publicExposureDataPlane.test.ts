@@ -44,7 +44,7 @@ const preview: LocalServicePreviewResourceV1 = {
         title: "Vite App",
         addressLabel: `127.0.0.1:${PREVIEW_PORT}`,
     },
-    originMode: "path",
+    originMode: "host",
 };
 
 function publicPreviewEnv(): NodeJS.ProcessEnv {

@@ -3,6 +3,7 @@ import tweetnacl from "tweetnacl";
 import {
     computeAccountEncryptionMigrateKeyFingerprintV1,
     sealAccountScopedBlobCiphertext,
+    type AutomationDefinitionCreateRequest,
 } from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
@@ -10,7 +11,7 @@ import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lig
 import { withAuthenticatedTestApp } from "../../testkit/sqliteFastify";
 import { registerConnectedServiceCredentialRoutesV2 } from "../connect/connectedServicesV2/registerConnectedServiceCredentialRoutesV2";
 import { registerConnectedServiceCredentialRoutesV3 } from "../connect/connectedServicesV3/registerConnectedServiceCredentialRoutesV3";
-import { registerAutomationCrudRoutes } from "../automations/registerAutomationCrudRoutes";
+import { registerAutomationV3Routes } from "../automations/registerAutomationV3Routes";
 import {
     createUsageSnapshot,
 } from "../connect/providerAccountUsageTestkit";
@@ -1470,31 +1471,44 @@ describe("accountRoutes (encryption mode integration)", () => {
             },
             select: { id: true },
         });
-        const plainTemplateCiphertext = JSON.stringify({
-            kind: "happier_automation_template_plain_v1",
-            payload: { prompt: "must not survive an e2ee flip" },
-        });
+        const automationInput = {
+            automationId: "plain-snapshot-race",
+            name: "Plain snapshot race",
+            enabled: false,
+            executionRecipe: {
+                v: 1,
+                templateVersion: 1,
+                template: { t: "plain", v: { v: 1, prompt: "must not survive an e2ee flip" } },
+                triggerEvidence: null,
+                target: {
+                    kind: "newSession",
+                    spawn: {
+                        executionTarget: { serverId: "server-1", machineId: "machine-1" },
+                        directory: { kind: "path", path: "/repo" },
+                        agentTarget: {
+                            kind: "agent",
+                            identity: { pluginId: "happier.agent.codex", localId: "codex" },
+                        },
+                    },
+                },
+            },
+            triggers: [],
+            assignments: [],
+        } satisfies AutomationDefinitionCreateRequest;
 
         await withAuthenticatedTestApp(
             (app) => {
                 accountRoutes(app as any);
-                registerAutomationCrudRoutes(app as any);
+                registerAutomationV3Routes(app);
             },
             async (app) => {
                 const barrier = installAccountModeReadBarrier(account.id);
                 try {
                     const automationCreate = app.inject({
                         method: "POST",
-                        url: "/v2/automations",
+                        url: "/v3/automations",
                         headers: { "content-type": "application/json", "x-test-user-id": account.id },
-                        payload: {
-                            name: "Plain snapshot race",
-                            enabled: false,
-                            schedule: { kind: "interval", everyMs: 60_000 },
-                            targetType: "new_session",
-                            templateCiphertext: plainTemplateCiphertext,
-                            assignments: [],
-                        },
+                        payload: automationInput,
                     });
                     await barrier.modeObserved;
 

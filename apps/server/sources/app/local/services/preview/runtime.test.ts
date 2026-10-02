@@ -147,14 +147,13 @@ describe("local service preview runtime", () => {
         expect(runtime.validateAccess({ previewId: resource.previewId, rawToken: 'not-issued', sessionId: resource.sessionId, machineId: resource.machineId }).ok).toBe(false);
         expect(runtime.registerPreview({ resource, accountId: 'other_account' })).toEqual({ ok: false, reasonCode: 'invalid_preview_resource' });
     });
-    it('normalizes daemon path-mode requests to the server-owned isolated origin, including hosted assets', () => {
+    it('refuses retired path-mode registrations without granting preview access', () => {
         const runtime = createLocalServicePreviewRuntime({ tokenSecret: 'secret', publicBaseUrl: 'https://app.happier.test', hostOriginBaseDomain: 'preview.happier.test' });
+        // @ts-expect-error Retired wire input must fail closed at runtime too.
         const result = runtime.registerPreview({ resource: { ...hostResource, originMode: 'path' }, accountId: 'account_1' });
-        expect(result.ok).toBe(true);
-        if (!result.ok) return;
-        expect(result.resource.originMode).toBe('host');
-        expect(new URL(result.accessUrl ?? '').hostname).toBe('alpha-beta.preview.happier.test');
-        expect(runtime.resolvePreview(hostResource.previewId)?.originMode).toBe('host');
+        expect(result).toEqual({ ok: false, reasonCode: 'invalid_preview_resource' });
+        expect(runtime.resolvePreview(hostResource.previewId)).toBeNull();
+        expect(runtime.resolvePreviewByHost('alpha-beta.preview.happier.test')).toBeNull();
     });
     it("keeps an existing viewer authorized when another viewer opens the same resource", () => {
         let serial = 0;

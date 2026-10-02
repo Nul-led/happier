@@ -19,6 +19,16 @@ export function admitScmCommitPolicy(
   return { success: true };
 }
 
+/** Undo is a separate mutation; ordinary commit support cannot authorize it. */
+export function admitScmCommitUndoLast(
+  capabilities?: Partial<Pick<ScmCapabilities, 'writeCommitUndoLast'>>,
+): Readonly<{ success: true }> | Readonly<{ success: false; errorCode: 'FEATURE_UNSUPPORTED'; error: string; outcome: ScmOperationOutcome }> {
+  if (capabilities?.writeCommitUndoLast === true) return { success: true };
+  const error = 'The selected SCM backend does not support undoing the last commit';
+  return { success: false, errorCode: 'FEATURE_UNSUPPORTED', error,
+    outcome: { v: 1, kind: 'failed', errorCode: 'FEATURE_UNSUPPORTED', nextActions: [], message: error } };
+}
+
 export function createScmCapabilities(input?: Partial<ScmCapabilities>): ScmCapabilities {
   const changeSetModel = input?.changeSetModel ?? 'working-copy';
   const supportedDiffAreas =
@@ -37,6 +47,7 @@ export function createScmCapabilities(input?: Partial<ScmCapabilities>): ScmCapa
     writeExclude: input?.writeExclude ?? false,
     writeDiscard: input?.writeDiscard ?? false,
     writeCommit: input?.writeCommit ?? false,
+    writeCommitUndoLast: input?.writeCommitUndoLast ?? false,
     writeCommitAmend: input?.writeCommitAmend ?? false,
     writeCommitSignOff: input?.writeCommitSignOff ?? false,
     writeCommitPathSelection: input?.writeCommitPathSelection ?? false,
@@ -137,6 +148,7 @@ export function createScmCapabilitiesFromBackendCapabilities(
     writeExclude: isCapabilityEnabled(input.changeSet.exclude),
     writeDiscard: isCapabilityEnabled(input.changeSet.discard),
     writeCommit: isCapabilityEnabled(input.commit.create),
+    writeCommitUndoLast: isCapabilityEnabled(input.commit.undoLast),
     writeCommitAmend: isCapabilityEnabled(input.commit.amend),
     writeCommitSignOff: isCapabilityEnabled(input.commit.signOff),
     writeCommitPathSelection: isCapabilityEnabled(input.commit.pathSelection),

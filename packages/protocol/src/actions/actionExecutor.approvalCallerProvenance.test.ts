@@ -9,9 +9,13 @@ import {
   type ApprovalRequestV1,
 } from '../approvals/approvalRequestV1.js';
 import { createActionExecutor } from './actionExecutor.js';
+import { createWorkflowAccountRunActionOwner, type WorkflowAccountRunActionDeps } from './executor/workflowRunActions.js';
+import { WorkflowRunSummaryV1Schema } from '../workflows/workflowProgressV1.js';
+import { openWorkflowAcceptedSnapshotStoredEnvelopeV1, parseWorkflowStoredContentEnvelopeV1 } from '../workflows/workflowStoredContentV1.js';
 import type { ActionExecutorContext, ActionExecutorDeps } from './executor/types.js';
 import type { ExternalActionTargetV1 } from './externalActionApi.js';
 import { SessionAgentSpawnPolicyV1Schema } from '../account/settings/accountSettings.js';
+import type { AgentStartContextV1 } from '../account/settings/admitAgentStartV1.js';
 import {
   signExternalActionApprovalInputV1,
   verifyExternalActionApprovalInputV1,
@@ -30,6 +34,144 @@ const sessionSpawnInput = {
 } as const;
 
 describe('createActionExecutor (durable plugin approval caller provenance)', () => {
+  it('persists the complete authenticated Session caller for an approved Account mutation', async () => {
+    let stored: ApprovalRequest | null = null;
+    const caller = { kind: 'session', sessionId: 'parent-1', starterDepth: 2, turnDepth: 3 } as const;
+    const deps = {
+      approvalsCreate: async ({ request }) => { stored = ApprovalRequestV2Schema.parse(JSON.parse(JSON.stringify(request))); return { artifactId: 'session-mutation' }; },
+      isActionApprovalRequired: () => true,
+    } satisfies Pick<ActionExecutorDeps, 'approvalsCreate' | 'isActionApprovalRequired'>;
+    const executor = createActionExecutor(deps as unknown as ActionExecutorDeps);
+    expect(await executor.execute('teams.update', { v: 1, teamId: 'team-1', name: 'Session proposal' }, {
+      surface: 'agent', authority: 'account_automation', serverId: 'server-1', runtimeAccountId: 'account-1',
+      actionRequestId: 'session-mutation', actionCaller: caller, defaultSessionId: caller.sessionId,
+      callerPermissionMode: 'default',
+    })).toMatchObject({ ok: true, result: { kind: 'approval_request_created' } });
+    expect(stored).toMatchObject({ executionOriginV1: { caller } });
+  });
+
+  it.each([false, true])('replays original Session depths while rechecking current depth policy (tightened=%s)', async (tightened) => {
+    let stored: ApprovalRequest | null = null;
+    const caller = { kind: 'session', sessionId: 'parent-1', starterDepth: 2, turnDepth: 3 } as const;
+    let current: AgentStartContextV1 = { caller, baseline: { machineId: 'machine-1', directory: '/workspace/project' },
+      ledSubtreeSessionIds: [], workDepthLimit: 4, roles: {}, callerPermissionCeiling: 'default' };
+    const createdSessions: Parameters<ActionExecutorDeps['sessionSpawnNew']>[0][] = [];
+    const deps = {
+      approvalsCreate: async ({ request }) => { stored = ApprovalRequestV2Schema.parse(JSON.parse(JSON.stringify(request))); return { artifactId: 'session-start' }; },
+      approvalsGet: async () => stored,
+      approvalsUpdate: async ({ request }) => { stored = ApprovalRequestV2Schema.parse(JSON.parse(JSON.stringify(request))); return { ok: true }; },
+      isApprovalExecutionOriginCurrent: async () => true,
+      isActionApprovalRequired: actionId => actionId === 'session.spawn_new',
+      resolveAgentStartContext: async () => current,
+      sessionSpawnNew: async (args) => { createdSessions.push(args); return { type: 'success', disposition: 'created', sessionId: 'child-1',
+        executionTarget: sessionSpawnInput.executionTarget, organizationPlacement: sessionSpawnInput.organizationPlacement,
+        initialInput: { status: 'accepted', localId: 'initial-1' } }; },
+    } satisfies Pick<ActionExecutorDeps, 'approvalsCreate' | 'approvalsGet' | 'approvalsUpdate'
+      | 'isApprovalExecutionOriginCurrent' | 'isActionApprovalRequired' | 'resolveAgentStartContext' | 'sessionSpawnNew'>;
+    const executor = createActionExecutor(deps as unknown as ActionExecutorDeps);
+    expect(await executor.execute('session.spawn_new', sessionSpawnInput, {
+      surface: 'agent', authority: 'account_automation', serverId: 'server-1', runtimeAccountId: 'account-1',
+      defaultSessionId: caller.sessionId, actionRequestId: 'session-start', actionCaller: caller, callerPermissionMode: 'default',
+    })).toMatchObject({ ok: true, result: { kind: 'approval_request_created' } });
+    expect(stored).toMatchObject({ executionOriginV1: { caller } });
+    expect(createdSessions).toEqual([]);
+    current = { ...current, caller: { ...caller, starterDepth: 0, turnDepth: 0 }, workDepthLimit: tightened ? 3 : 4 };
+    expect(await executor.execute('approval.request.decide', { artifactId: 'session-start', decision: 'approve' }, {
+      surface: 'ui', authority: 'present_user', serverId: 'server-1', runtimeAccountId: 'account-1',
+      agentStartContext: { ...current, caller: { ...caller, sessionId: 'approver-session' } }, callerPermissionMode: 'yolo',
+    })).toMatchObject({ ok: true, result: tightened
+      ? { status: 'failed', execution: { ok: false, errorCode: 'work_depth_exceeded' } }
+      : { status: 'executed', execution: { ok: true } } });
+    expect(createdSessions).toMatchObject(tightened ? [] : [{ actionCaller: caller, workDepth: 4, originSessionId: caller.sessionId }]);
+  });
+
+  it.each([
+    { kind: 'session', sessionId: 'parent-1' },
+    { kind: 'session', sessionId: 'parent-1', starterDepth: 0, turnDepth: -1 },
+    { kind: 'session', sessionId: 'parent-1', starterDepth: 0, turnDepth: 0, workDepth: 0 },
+  ])('refuses malformed Session provenance before durable capture: %j', async (caller) => {
+    const requests: ApprovalRequest[] = [];
+    const deps = { approvalsCreate: async ({ request }) => { requests.push(request); return { artifactId: 'invalid' }; },
+      isActionApprovalRequired: () => true } satisfies Pick<ActionExecutorDeps, 'approvalsCreate' | 'isActionApprovalRequired'>;
+    const executor = createActionExecutor(deps as unknown as ActionExecutorDeps);
+    expect(await executor.execute('teams.update', { v: 1, teamId: 'team-1', name: 'Forged' }, {
+      surface: 'agent', authority: 'account_automation', serverId: 'server-1', runtimeAccountId: 'account-1',
+      actionRequestId: 'invalid', actionCaller: caller as unknown as NonNullable<ActionExecutorContext['actionCaller']>, callerPermissionMode: 'default',
+    })).toMatchObject({ ok: false, errorCode: 'approval_origin_unavailable' });
+    expect(requests).toEqual([]);
+  });
+
+  it.each([
+    { initiatingCaller: { kind: 'host' }, startedBy: 'user' },
+    { initiatingCaller: { kind: 'session', sessionId: 'agent-origin', starterDepth: 1, turnDepth: 2 }, startedBy: 'agent' },
+  ] as const)('freezes $startedBy starter through durable plugin Workflow approval and replay', async ({ initiatingCaller, startedBy }) => {
+    const runId = '99999999-9999-4999-8999-999999999999';
+    let acceptedEnvelope: string | undefined;
+    let storedRequest: ApprovalRequest | null = null;
+    const run = WorkflowRunSummaryV1Schema.parse({ id: runId, sourceArtifactId: null,
+      ownerAccountId: 'account-1', visibleTeamId: null, origin: { kind: 'direct' }, state: 'queued', revision: 0,
+      machineId: 'machine-1', workflowCustodyState: 'pending', originDeliveryAckRevision: null,
+      availability: { pause: true, resumeBoundary: false, restoreWorkspace: false, cancel: true, inspectExecution: false, disabledReasons: [] },
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' });
+    const workflowDeps: WorkflowAccountRunActionDeps = {
+      resolveAccountId: async () => 'account-1',
+      storage: { execute: async operation => {
+        if (operation.operation === 'get') throw Object.assign(new Error('run_not_found'), { code: 'run_not_found' });
+        if (operation.operation !== 'admit') throw new Error('unexpected_storage_operation');
+        acceptedEnvelope = String(operation.acceptedEnvelope);
+        return { kind: 'created', run };
+      } },
+      definitions: { get: async () => { throw new Error('inline_definition_only'); } },
+      resolveEncryption: async () => ({ kind: 'available', witness: { mode: 'plain', version: 1, contentKeyFingerprint: null } }),
+      normalizeAbsolutePath: directory => directory.startsWith('/') ? directory : null,
+      randomBytes: () => { throw new Error('plain_account_does_not_need_keys'); },
+      prepareWorkspace: async () => ({ ok: true, workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } } }),
+      resolveMaterializationContext: async () => ({ effects: { resolveTargetAvailability: async () => true } }),
+    };
+    const owner = createWorkflowAccountRunActionOwner(workflowDeps);
+    const approvalDeps = {
+      approvalsCreate: async ({ request }) => {
+        storedRequest = ApprovalRequestV2Schema.parse(JSON.parse(JSON.stringify(request)));
+        return { artifactId: 'workflow-starter-approval' };
+      },
+      approvalsGet: async () => storedRequest,
+      approvalsUpdate: async ({ request }) => {
+        storedRequest = ApprovalRequestV2Schema.parse(JSON.parse(JSON.stringify(request)));
+        return { ok: true };
+      },
+      isApprovalExecutionOriginCurrent: async () => true,
+      isActionApprovalRequired: actionId => actionId === 'workflow.run.start',
+      workflowAction: args => {
+        if (args.actionId !== 'workflow.run.start') throw new Error('unexpected_workflow_action');
+        return owner.execute(args);
+      },
+    } satisfies Pick<ActionExecutorDeps, 'approvalsCreate' | 'approvalsGet' | 'approvalsUpdate'
+      | 'isApprovalExecutionOriginCurrent' | 'isActionApprovalRequired' | 'workflowAction'>;
+    // Only Artifact persistence/currentness and the Account storage are process boundaries; real capture, parsing, replay and admission run.
+    const executor = createActionExecutor(approvalDeps as unknown as ActionExecutorDeps);
+    const created = await executor.execute('workflow.run.start', { runId, source: { kind: 'inline', definition: {
+      version: 1, blocks: [{ kind: 'wait', id: 'wait', document: { text: 'Review', references: [], attachments: [] } }],
+    } } }, {
+      surface: 'cli', serverId: 'home-1', runtimeAccountId: 'account-1', callerPermissionMode: 'default',
+      actionRequestId: 'workflow-starter-request',
+      externalActionTarget: { kind: 'machine', machineId: 'machine-1', project: { machineId: 'machine-1', directory: '/repo' } },
+      actionCaller: { kind: 'plugin', pluginId: 'acme.background', contributionLocalId: 'job',
+        sourceCustody: { kind: 'development', registeredRootId: 'background-root' }, initiatingCaller },
+    });
+    expect(created, JSON.stringify(created)).toMatchObject({ ok: true, result: { kind: 'approval_request_created' } });
+    expect(acceptedEnvelope).toBeUndefined();
+    const approved = await executor.execute('approval.request.decide', { artifactId: 'workflow-starter-approval', decision: 'approve' }, {
+      surface: 'ui', authority: 'present_user', serverId: 'home-1', runtimeAccountId: 'account-1',
+    });
+    expect(approved, JSON.stringify(approved)).toMatchObject({ ok: true, result: { status: 'executed', execution: { ok: true } } });
+    expect(openWorkflowAcceptedSnapshotStoredEnvelopeV1({ mode: 'plain',
+      binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
+      envelope: parseWorkflowStoredContentEnvelopeV1(acceptedEnvelope),
+    })).toMatchObject({ kind: 'available', content: { startedBy,
+      authorization: { principal: { kind: 'plugin', pluginId: 'acme.background', contributionLocalId: 'job',
+        sourceCustody: { kind: 'development', registeredRootId: 'background-root' } } } } });
+  });
+
   it('defers teams.update and replays its exact mutation once after approval', async () => {
     let storedRequest: ApprovalRequest | null = null;
     const updatedTeam = {
@@ -758,6 +900,7 @@ describe('createActionExecutor (durable plugin approval caller provenance)', () 
         pluginId: 'plugin.example',
         contributionLocalId: 'session-spawn',
         sourceCustody: { kind: 'development', registeredRootId: 'plugin-root-1' },
+        startedBy: 'trigger',
       },
     }));
   });

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
@@ -8,9 +8,6 @@ import { listSessionsForAccount } from "./service";
 import { createV2SessionListServerTiming } from "./timing";
 import { withAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
 import { registerSessionListingRoutes } from "@/app/api/routes/session/registerSessionListingRoutes";
-import { createSessionPublisherPresence } from "@/app/presence/sessionPublisherPresence";
-import { runPresenceTimeoutTick } from "@/app/presence/timeout";
-import { resolveWorkStatusTone } from "../../../../../ui/sources/components/work/status/resolveWorkStatusTone";
 
 const authentication = createPresentUserSessionAccessAuthentication();
 
@@ -151,7 +148,7 @@ describe("Reports-to listing (SQLite)", () => {
         expect(page?.sessions[0]).toMatchObject({ id: lead.id, reports: { total: 1 } });
     });
 
-    it("does not invent stalled machine evidence from an inactive session or elapsed turn time", async () => {
+    it("counts an inactive report whose own latest turn is still in flight as stalled", async () => {
         const { owner, lead, create } = await fixture();
         const child = await create();
         await db.session.update({ where: { id: child.id }, data: {
@@ -161,41 +158,55 @@ describe("Reports-to listing (SQLite)", () => {
         await db.sessionReportsTo.create({ data: { sessionId: child.id, leadSessionId: lead.id } });
         const page = await list(owner.id, lead.id);
         expect(page?.sessions.find((row) => row.id === lead.id)).toMatchObject({ reports: {
-            total: 1, working: 1, needsYou: 0, stalled: 0,
+            total: 1, working: 0, needsYou: 0, stalled: 1,
         } });
     });
 
-    it("counts a timed-out publisher mid-turn without mistaking another authorized machine for its publisher", async () => {
+    it("does not count an inactive report with a completed turn as stalled", async () => {
         const { owner, lead, create } = await fixture();
         const child = await create();
-        const otherMachineId = randomUUID();
-        const publisherMachineId = randomUUID();
-        const now = Date.now();
-        await db.machine.createMany({ data: [
-            { id: otherMachineId, accountId: owner.id, metadata: "{}", active: true, lastActiveAt: new Date(now) },
-            { id: publisherMachineId, accountId: owner.id, metadata: "{}", active: true, lastActiveAt: new Date(now - 600_001) },
-        ] });
-        await db.accessKey.createMany({ data: [otherMachineId, publisherMachineId].map((machineId) => ({
-            accountId: owner.id, machineId, sessionId: child.id, data: "opaque-access-key",
-        })) });
-        const presence = createSessionPublisherPresence();
-        const socket = { data: {} };
-        const registration = await presence.registerPublisher({
-            socket, binding: { accountId: owner.id, machineId: publisherMachineId, sessionId: child.id },
-            completeActivitySnapshot: { state: "active", activeCount: 1 },
-        });
-        expect(registration.status).toBe("registered");
-        await db.session.update({ where: { id: child.id }, data: { latestTurnStatus: "in_progress" } });
+        await db.session.update({ where: { id: child.id }, data: {
+            active: false, latestTurnStatus: "completed", latestTurnStatusObservedAt: BigInt(Date.now()),
+        } });
         await db.sessionReportsTo.create({ data: { sessionId: child.id, leadSessionId: lead.id } });
-        // The existing timeout owner commits Machine.active=false; no projection-local clock decides presence.
-        await runPresenceTimeoutTick({ machineTimeoutMs: 600_000, sessionTimeoutMs: 600_000, tickMs: 60_000 });
-        expect(await db.machine.findUniqueOrThrow({ where: { id: publisherMachineId }, select: { active: true } }))
-            .toEqual({ active: false });
-        expect(await db.machine.findUniqueOrThrow({ where: { id: otherMachineId }, select: { active: true } }))
-            .toEqual({ active: true });
         const page = await list(owner.id, lead.id);
         expect(page?.sessions.find((row) => row.id === lead.id)?.reports)
+            .toEqual({ total: 1, working: 0, needsYou: 0, stalled: 0 });
+    });
+
+    it("counts an active mid-turn report as working rather than stalled", async () => {
+        const { owner, lead, create } = await fixture();
+        const child = await create();
+        await db.session.update({ where: { id: child.id }, data: {
+            active: true, latestTurnStatus: "in_progress", latestTurnStatusObservedAt: BigInt(0),
+            lastActiveAt: new Date(0),
+        } });
+        await db.sessionReportsTo.create({ data: { sessionId: child.id, leadSessionId: lead.id } });
+        const page = await list(owner.id, lead.id);
+        expect(page?.sessions.find((row) => row.id === lead.id)?.reports)
+            .toEqual({ total: 1, working: 1, needsYou: 0, stalled: 0 });
+    });
+
+    it("omits a hidden stalled report from list and detail counts and ids", async () => {
+        const { owner, lead, create } = await fixture();
+        const child = await create();
+        const foreign = await fixture();
+        for (const sessionId of [child.id, foreign.lead.id]) {
+            await db.session.update({ where: { id: sessionId }, data: { active: false, latestTurnStatus: "in_progress" } });
+            await db.sessionReportsTo.create({ data: { sessionId, leadSessionId: lead.id } });
+        }
+        const page = await list(owner.id, lead.id);
+        expect(page?.sessions.map((row) => row.id).sort()).toEqual([lead.id, child.id].sort());
+        expect(page?.sessions.find((row) => row.id === lead.id)?.reports)
             .toEqual({ total: 1, working: 0, needsYou: 0, stalled: 1 });
+        await withAuthenticatedTestApp(registerSessionListingRoutes, async (app) => {
+            const headers = { "x-test-user-id": owner.id, "x-happier-account-stored-content-protocol": "2" };
+            const detail = await app.inject({ method: "GET", url: `/v2/sessions/${lead.id}?accessProjectionVersion=1`, headers });
+            expect(detail.statusCode, detail.body).toBe(200);
+            expect(detail.json().session.reports).toEqual({ total: 1, working: 0, needsYou: 0, stalled: 1 });
+            const denied = await app.inject({ method: "GET", url: `/v2/sessions/${foreign.lead.id}?accessProjectionVersion=1`, headers });
+            expect(denied.statusCode).toBe(404);
+        });
     });
 
     it("counts needs-you by I3's session buckets and suppresses unreadable reports in every bucket", async () => {
@@ -216,6 +227,14 @@ describe("Reports-to listing (SQLite)", () => {
         const foreign = await fixture();
         await db.session.update({ where: { id: foreign.lead.id }, data: { active: true, latestTurnStatus: "failed" } });
         await db.sessionReportsTo.create({ data: { sessionId: foreign.lead.id, leadSessionId: lead.id } });
+        // Preserve the real UI parity assertion without compiling UI aliases
+        // and DOM declarations inside the server's TypeScript project.
+        const { resolveWorkStatusTone } = await vi.importActual<{
+            resolveWorkStatusTone: (input: { kind: "session"; facts: {
+                word: typeof primaries[number]; awareness: { runtime: "unknown";
+                    operational: { primary: typeof primaries[number]; reasons: [] } };
+            } }) => { bucket: string };
+        }>("../../../../../ui/sources/components/work/status/resolveWorkStatusTone");
         const needsYou = primaries.filter((primary) => resolveWorkStatusTone({ kind: "session", facts: {
             word: primary, awareness: { runtime: "unknown", operational: { primary, reasons: [] } },
         } }).bucket === "needs_you").length;

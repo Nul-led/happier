@@ -6,6 +6,10 @@ export const FEATURE_ENV_KEYS = Object.freeze({
   automationsEnabled: 'HAPPIER_FEATURE_AUTOMATIONS__ENABLED',
   workflowsEnabled: 'HAPPIER_FEATURE_WORKFLOWS__ENABLED',
 
+  artifactRevisionRetentionCount: 'HAPPIER_ARTIFACT_REVISION_RETENTION_COUNT',
+  artifactDocumentLimitBytes: 'HAPPIER_ARTIFACT_DOCUMENT_LIMIT_BYTES',
+  artifactAccountLimitBytes: 'HAPPIER_ARTIFACT_ACCOUNT_LIMIT_BYTES',
+
   bugReportsEnabled: 'HAPPIER_FEATURE_BUG_REPORTS__ENABLED',
   bugReportsProviderUrl: 'HAPPIER_FEATURE_BUG_REPORTS__PROVIDER_URL',
   bugReportsDefaultIncludeDiagnostics: 'HAPPIER_FEATURE_BUG_REPORTS__DEFAULT_INCLUDE_DIAGNOSTICS',

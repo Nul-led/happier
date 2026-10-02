@@ -2418,6 +2418,9 @@ enum AutomationTriggerKind {
     schedule
     pluginEvent
     sessionLifecycle
+    runLifecycle
+    prComment
+    ciFailed
 }
 
 enum AutomationSessionLifecycleEvent {
@@ -2543,6 +2546,9 @@ model AutomationTrigger {
     remainingOccurrences        Int?
     sourceSessionId              String?
     sourceTurnId                 String?
+    sourceRunId                  String?
+    sourceRunMachineId           String?
+    runLifecycleConfigurationJson String?
     createdAt                    DateTime @default(now())
     updatedAt                    DateTime @updatedAt
     eventSourceStatus            AutomationEventSourceStatus?
@@ -2552,6 +2558,7 @@ model AutomationTrigger {
     @@index([enabled, watcherMachineId, watcherMaterializationId], map: "AutomationTrigger_watcher_lookup_idx")
     @@index([kind, enabled, deletedAt, nextRunAt, id], map: "AutomationTrigger_schedule_due_idx")
     @@index([sourceSessionId, sourceTurnId], map: "AutomationTrigger_session_lifecycle_lookup_idx")
+    @@index([sourceRunId, kind, deletedAt], map: "AutomationTrigger_run_lifecycle_lookup_idx")
 }
 
 model AutomationAssignment {
@@ -2599,6 +2606,7 @@ model AutomationRun {
     causeSessionLifecycleEvent AutomationSessionLifecycleEvent?
     causeSourceSessionId String?
     causeSourceTurnId String?
+    causeRunLifecycleEvidenceJson String?
     causeSessionLifecycleRequestId String?
     causeSessionLifecycleRequestKind AutomationSessionLifecycleRequestKind?
     causeSessionLifecyclePolicyKind AutomationSessionLifecyclePolicyKind?
@@ -3030,6 +3038,9 @@ model ConnectedServiceAuthGroupMember {
 //
 
 model Artifact {
+    publicShare PublicSessionShare?
+    revisions ArtifactRevision[]
+    blobs ArtifactBlob[]
     accountGrants ArtifactAccountGrant[]
     teamGrants ArtifactTeamGrant[]
     groupGrants ArtifactGroupGrant[]
@@ -3041,6 +3052,8 @@ model Artifact {
     headerVersion     Int      @default(0)
     body              Bytes // Encrypted body
     bodyVersion       Int      @default(0)
+    currentBlobId     String?
+    deletedAt         DateTime?
     dataEncryptionKey Bytes // Encryption key for this artifact
     seq               Int      @default(0)
     createdAt         DateTime @default(now())
@@ -3051,6 +3064,29 @@ model Artifact {
 
     @@index([accountId])
     @@index([accountId, updatedAt(sort: Desc)])
+}
+
+model ArtifactRevision {
+    artifactId String
+    bodyVersion Int
+    body Bytes
+    blobId String?
+    createdAt DateTime @default(now())
+    artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+    @@id([artifactId, bodyVersion])
+}
+
+// Sensitive file metadata stays in the ordinary Artifact body envelope.
+model ArtifactBlob {
+    id String @id
+    artifactId String
+    storageKey String @unique
+    encryptionMode String
+    storedSizeBytes BigInt
+    artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+    @@index([artifactId])
 }
 
 model ArtifactAccountGrant {
@@ -3971,11 +4007,14 @@ model SessionShareAccessLog {
     @@index([accessedAt])
 }
 
-/// Public session share via shareable link (always view-only for security)
+/// Public stored-content share; the physical name preserves released Session rows.
 model PublicSessionShare {
     id                String                    @id @default(cuid())
-    sessionId         String                    @unique
-    session           Session                   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+    sessionId         String?                   @unique
+    session           Session?                  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+    artifactId        String?                   @unique
+    artifact          Artifact?                 @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+    keyDerivation     String                    @default("legacy_token_v1")
     createdByUserId   String
     createdByUser     Account                   @relation("PublicSessionShares", fields: [createdByUserId], references: [id])
     /// sha256(token) (32 bytes)

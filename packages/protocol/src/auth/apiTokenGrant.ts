@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { CallerInputConstraintsV1Schema, type CallerInputConstraintsV1 } from './callerInputConstraintsV1.js';
+export { CallerInputConstraintsV1Schema, type CallerInputConstraintsV1 } from './callerInputConstraintsV1.js';
 import { ACTION_ID_FAMILIES_V1, ActionIdFamilyV1Schema, type ActionIdFamilyV1 } from '../actions/actionIds.js';
 import { DECISION_ACTION_IDS } from '../actions/decisionAuthority.js';
 import type { ExternalActionTargetV1 } from '../actions/externalActionApi.js';
@@ -6,12 +8,12 @@ import { AgentExecutionTargetV1Schema } from '../agents/executionTargetV1.js';
 import { buildBackendTargetKeyV2 } from '../backends/targets/backendTargetRefV2.js';
 import { CanonicalHttpOriginSchema } from '../http/canonicalHttpOrigin.js';
 import { ProviderAgentTargetKeySchema } from '../providers/ids.js';
-import { isNativeAutomaticModelSelectionInputV1, ProviderBoundModelRefSchema, type ProviderBoundModelRef } from '../providers/selection/v1.js';
+import { isNativeAutomaticModelSelectionInputV1, type ProviderBoundModelRef } from '../providers/selection/v1.js';
 import type { SocketRpcSessionWriteAuthorityV1 } from '../rpc/index.js';
 import { SessionDirectoryIntentV1Schema } from '../sessions/creation/sessionDirectoryIntentV1.js';
 import { SessionExecutionTargetV1Schema } from '../sessions/creation/sessionExecutionTargetV1.js';
 import { SessionOrganizationPlacementV1Schema, type SessionOrganizationPlacementV1 } from '../sessions/creation/sessionSpawnNewResultV1.js';
-import { SESSION_PERMISSION_MODES, type SessionPermissionMode } from '../sessions/metadata/sessionPermissionModes.js';
+import type { SessionPermissionMode } from '../sessions/metadata/sessionPermissionModes.js';
 import { parseAgentPermissionIntentV1Alias, type AgentPermissionIntentV1 } from '../runtime/permissionIntentV1.js';
 import { parseQualifiedPluginActionId } from '../plugins/actions/qualifiedActionId.js';
 
@@ -24,13 +26,6 @@ export const ApiTokenGrantOriginV1Schema = CanonicalHttpOriginSchema.refine((val
 
 const GrantIdSchema = z.string().min(1).max(512);
 const modelKey = (ref: ProviderBoundModelRef) => JSON.stringify([ref.agentTargetKey, ref.providerConnectionId, ref.modelId]);
-
-export const CallerInputConstraintsV1Schema = z.object({
-  models: z.array(ProviderBoundModelRefSchema).min(1).nullable(),
-  // Permission grants must reject unknown modes; the metadata reader's catch(default) is not admission.
-  permissionModes: z.array(z.enum(SESSION_PERMISSION_MODES)).min(1).nullable(),
-}).strict();
-export type CallerInputConstraintsV1 = z.infer<typeof CallerInputConstraintsV1Schema>;
 
 export const ApiTokenGrantV1Schema = z.object({
   v: z.literal(1),

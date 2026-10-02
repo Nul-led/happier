@@ -702,6 +702,25 @@ describe('session metadata privacy envelopes v1', () => {
     }).success).toBe(false);
   });
 
+  it('preserves opened-runtime usage reporting through the owner envelope and compatibility projection', () => {
+    for (const usageReporting of ['supported', 'unsupported'] as const) {
+      const created = createSessionOwnerMetadataV1({ metadata: { agentRuntimeCapabilitiesV1: {
+        sessionCapabilities: {
+          sessionListing: 'unsupported',
+          sessionFork: { conversation: 'unsupported', fromMessage: 'unsupported' },
+          sessionRollback: { conversation: 'unsupported' },
+          usageReporting,
+        },
+      } } });
+      expect(created.ok).toBe(true);
+      if (!created.ok) throw new Error('Runtime publication rejected');
+      const projected = projectSessionOwnerCompatibilityViewV1({
+        sharedMetadata: projectSessionSharedMetadataV1({ metadata: {} }), ownerMetadata: created.ownerMetadata,
+      });
+      expect(projected.agentRuntimeCapabilitiesV1?.sessionCapabilities?.usageReporting).toBe(usageReporting);
+    }
+  });
+
   it('uses Account mode, independently of Session mode, as owner-envelope authority', () => {
     const ownerMetadata = SessionOwnerMetadataV1Schema.parse({
       v: 1,

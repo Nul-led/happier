@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { classifyAccountJsonKvKey } from './accountJsonKv.js';
 import { AuthoringMemoryContentV1Schema, AuthoringMemoryKeyV1Schema, AuthoringMemoryRowV1Schema } from './authoringMemory.js';
 import { ArtifactRecipientKeyEnvelopesV1Schema } from '../artifacts/artifactAccessV1.js';
+import { ArtifactQuotaExceededV1Schema } from '../artifacts/artifactActionsV1.js';
+import { ArtifactBlobStoredContentV1Schema } from '../artifacts/artifactBinaryV1.js';
 import { sha256 } from '@noble/hashes/sha2';
 import { utf8ToBytes } from '@noble/hashes/utils';
 
@@ -483,6 +485,23 @@ const AccountEncryptionMigrateArtifactItemSchema = z
     dataEncryptionKey: z.string().min(1).max(16_384),
     expectedDataEncryptionKey: z.string().min(1).max(16_384),
     recipientKeyEnvelopes: ArtifactRecipientKeyEnvelopesV1Schema,
+    blobs: z.array(z.object({
+      blobId: z.string().uuid(), expectedContentSha256: z.string().regex(/^[a-f0-9]{64}$/),
+      content: ArtifactBlobStoredContentV1Schema,
+    }).strict()).superRefine((blobs, ctx) => {
+      if (new Set(blobs.map(blob => blob.blobId)).size !== blobs.length) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Artifact blob ids must be unique' });
+      }
+    }),
+    revisions: z.array(z.object({
+      bodyVersion: NonNegativeSafeIntegerSchema.min(1),
+      expectedBody: z.string().min(1),
+      body: z.string().min(1),
+    }).strict()).superRefine((revisions, ctx) => {
+      if (new Set(revisions.map(revision => revision.bodyVersion)).size !== revisions.length) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Artifact revision body versions must be unique' });
+      }
+    }),
   })
   .strict();
 
@@ -673,6 +692,10 @@ function refineAccountEncryptionMigrateRequest(
         ownerMetadata: { t: string };
       }>;
     };
+    artifacts?: {
+      action: string;
+      items?: Array<{ blobs: Array<{ content: { t: string } }> }>;
+    };
     reviewComments?: {
       action: string;
       items?: Array<{
@@ -720,8 +743,8 @@ function refineAccountEncryptionMigrateRequest(
         || (
           request.keyProof
           && (
-        !request.keyProof?.contentPublicKey
-        || !request.keyProof.contentPublicKeySig
+            !request.keyProof.contentPublicKey
+            || !request.keyProof.contentPublicKeySig
           )
         )
       )
@@ -735,6 +758,13 @@ function refineAccountEncryptionMigrateRequest(
     }
     const targetEnvelopeKind =
       request.toMode === 'plain' ? 'plain' : 'encrypted';
+    if (request.artifacts?.action === 'migrate' && request.artifacts.items) {
+      request.artifacts.items.forEach((item, index) => item.blobs.forEach((blob, blobIndex) => {
+        if (blob.content.t !== targetEnvelopeKind) context.addIssue({ code: 'custom',
+          path: ['artifacts', 'items', index, 'blobs', blobIndex, 'content'],
+          message: 'Artifact blob replacement must match the target account encryption mode' });
+      }));
+    }
     if (
       request.connectedServices.action === 'migrate'
       && request.connectedServices.qualifiedCredentials
@@ -2006,6 +2036,7 @@ export type AccountEncryptionMigrateInternalResponse = z.infer<
 >;
 
 export const AccountEncryptionMigrateAnyErrorResponseSchema = z.union([
+  ArtifactQuotaExceededV1Schema,
   AccountEncryptionMigrateBadRequestResponseSchema,
   AccountEncryptionMigrateForbiddenResponseSchema,
   AccountEncryptionMigrateNotFoundResponseSchema,

@@ -4,14 +4,42 @@ import {
   exportPromptLibraryArtifact,
   installPromptRegistryItemInLibrary,
   updatePromptDocInLibrary,
+  updatePromptBundleInLibrary,
   readPromptDocInLibrary,
 } from './promptLibraryActionOperations.js';
 
 describe('prompt library action operations', () => {
+  it.each(['doc', 'bundle'] as const)('refuses a stale %s update and preserves the concurrent write', async (kind) => {
+    const body = kind === 'doc'
+      ? { v: 1, markdown: 'original', createdAtMs: 1, updatedAtMs: 1 }
+      : { v: 1, entries: [{ path: 'SKILL.md', contentBase64: 'b3JpZ2luYWw=', contentKind: 'utf8' }], createdAtMs: 1, updatedAtMs: 1 };
+    let stored = { id: 'prompt-1', revision: { headerVersion: 1, bodyVersion: 1 },
+      header: { v: 1, kind: `prompt_${kind}.v2`, title: 'Original' }, body: JSON.stringify(body) };
+    const concurrent = { ...stored, revision: { headerVersion: 2, bodyVersion: 2 },
+      header: { ...stored.header, title: 'Concurrent' }, body: JSON.stringify({ ...body, updatedAtMs: 2 }) };
+    const params = {
+      store: {
+        read: async () => stored,
+        update: async (input: { header: Readonly<Record<string, unknown>>; body: string; expectedRevision?: { headerVersion: number; bodyVersion: number } }) => {
+          if (input.expectedRevision && (input.expectedRevision.headerVersion !== stored.revision.headerVersion
+            || input.expectedRevision.bodyVersion !== stored.revision.bodyVersion)) {
+            throw Object.assign(new Error('artifact_version_mismatch'), { code: 'version_mismatch' });
+          }
+          stored = { ...stored, header: { ...stored.header, ...input.header }, body: input.body };
+        },
+      },
+      nowMs: () => { stored = concurrent; return 3; },
+    };
+    const update = kind === 'doc'
+      ? updatePromptDocInLibrary({ ...params, request: { artifactId: 'prompt-1', title: 'Stale', markdown: 'stale' } })
+      : updatePromptBundleInLibrary({ ...params, request: { artifactId: 'prompt-1', title: 'Stale', skillMarkdown: 'stale' } });
+    await expect(update).rejects.toMatchObject({ code: 'version_mismatch' });
+    expect(stored).toEqual(concurrent);
+  });
   it('refuses non-doc Artifacts and unreadable bodies without disclosing content', async () => {
     for (const artifact of [
-      { id: 'memory', header: { kind: 'role.v1', title: 'Private' }, body: JSON.stringify({ v: 1, markdown: 'private', createdAtMs: 1, updatedAtMs: 1 }) },
-      { id: 'memory', header: { kind: 'prompt_doc.v2', title: 'Private' }, body: null },
+      { id: 'memory', revision: { headerVersion: 1, bodyVersion: 1 }, header: { kind: 'role.v1', title: 'Private' }, body: JSON.stringify({ v: 1, markdown: 'private', createdAtMs: 1, updatedAtMs: 1 }) },
+      { id: 'memory', revision: { headerVersion: 1, bodyVersion: 1 }, header: { kind: 'prompt_doc.v2', title: 'Private' }, body: null },
     ]) {
       expect(await readPromptDocInLibrary({ artifactId: 'memory', store: {
         read: async () => artifact, update: async () => {},
@@ -26,6 +54,7 @@ describe('prompt library action operations', () => {
       store: {
         read: async () => ({
           id: 'doc-1',
+          revision: { headerVersion: 1, bodyVersion: 1 },
           header: { v: 1, kind: 'prompt_doc.v2', title: 'Old', tags: ['old'] },
           body: JSON.stringify({ v: 1, markdown: 'old', createdAtMs: 1, updatedAtMs: 1 }),
         }),
@@ -43,6 +72,7 @@ describe('prompt library action operations', () => {
 
     expect(update).toHaveBeenCalledWith({
       artifactId: 'doc-1',
+      expectedRevision: { headerVersion: 1, bodyVersion: 1 },
       header: expect.objectContaining({
         kind: 'prompt_doc.v2',
         title: 'New',
@@ -65,6 +95,7 @@ describe('prompt library action operations', () => {
       store: {
         read: async () => ({
           id: 'doc-1',
+          revision: { headerVersion: 1, bodyVersion: 1 },
           header: { v: 1, kind: 'prompt_doc.v2', title: 'Prompt' },
           body: JSON.stringify({ v: 1, markdown: '# Prompt', createdAtMs: 1, updatedAtMs: 1 }),
         }),
@@ -166,6 +197,7 @@ describe('prompt library action operations', () => {
       store: {
         read: async () => ({
           id: 'doc-1',
+          revision: { headerVersion: 1, bodyVersion: 1 },
           header: { title: 'Old' },
           body: JSON.stringify({ v: 1, markdown: 'old', createdAtMs: 1, updatedAtMs: 1 }),
         }),

@@ -93,10 +93,10 @@ describe('plugin contribution catalog', () => {
     expect(PLUGIN_CORE_CONTRIBUTION_FAMILIES_V2.map((entry) => entry.family)).toEqual([
       'agents', 'providers', 'actions', 'commands', 'tools', 'resources', 'transcriptActivities', 'sessionInfoSections',
       'sessionHeaderActions', 'browserTargets', 'browserActions', 'settings', 'events',
-      'executionRunProfiles', 'roles', 'notifications', 'notificationChannels', 'scmHostingProviders',
+      'executionRunProfiles', 'roles', 'workflows', 'notifications', 'notificationChannels', 'scmHostingProviders',
       'scmBackends', 'connectedAccountDescriptors', 'managedDependencies', 'systemTools',
       'promptAssets', 'hooks', 'requestInterceptors', 'voiceModelPacks', 'voiceProviders',
-      'backgroundServices', 'daemonDatabases', 'composerReferences', 'searchProviders',
+      'backgroundServices', 'captureSources', 'daemonDatabases', 'composerReferences', 'searchProviders',
       'composerAttachments', 'composerControls',
       'composerRegions', 'openableContentViewers',
       'accountCollections', 'webhooks', 'pluginContributionPoints', 'targetedPluginContributions',
@@ -144,6 +144,7 @@ describe('plugin contribution catalog', () => {
       'pluginUi',
       'pluginBrowser',
       'roles',
+      'workflows',
       'scmHostingProviders',
       'scmBackends',
       'connectedAccounts',
@@ -189,9 +190,13 @@ describe('plugin contribution catalog', () => {
 
   it('projects an input JSON Schema for every authoritative contribution family', () => {
     for (const catalogEntry of PLUGIN_CONTRIBUTION_CATALOG_V2) {
-      expect(catalogEntry.projectJsonSchema()).toMatchObject({
-        $schema: 'https://json-schema.org/draft/2020-12/schema',
-      });
+      try {
+        expect(catalogEntry.projectJsonSchema()).toMatchObject({
+          $schema: 'https://json-schema.org/draft/2020-12/schema',
+        });
+      } catch (cause) {
+        throw new Error(`Contribution JSON Schema projection failed for '${catalogEntry.manifestKey}'`, { cause });
+      }
     }
   });
 

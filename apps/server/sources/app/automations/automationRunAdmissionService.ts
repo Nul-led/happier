@@ -13,6 +13,7 @@ import {
     toAutomationRunExecutionInputV1Origin,
     automationReplyHandoffIdForRunV1,
     type AutomationRunCause,
+    type AutomationConversationScopedTriggerRefV1,
 } from "@happier-dev/protocol";
 
 import { afterTx, type Tx } from "@/storage/inTx";
@@ -28,6 +29,7 @@ import {
 import { automationRunItemSelect } from "./automationPersistenceSelect";
 import { automationPortableQueryChunks } from "./automationPortableQueryChunks";
 import { lockScopedAutomationTriggerInTx } from "./automationScopedTrigger";
+import { matchesScopedAutomationConversationTriggerTx } from "./automationConversationTargetVerificationService";
 import { applyAutomationRunTerminalEffectsTx } from "./automationRunSucceeded";
 import {
     decodeAutomationRunCause,
@@ -95,6 +97,8 @@ export type AutomationRunAdmissionRequest = Readonly<{
     /** Current V3 manual retry identity, projected to the canonical occurrence key. */
     manualIdempotencyKey?: string;
     replyHandoff?: AutomationRunReplyHandoffAdmission;
+    /** Host-authenticated PR correspondence, revalidated after the existing scoped lock. */
+    scopedConversationTrigger?: AutomationConversationScopedTriggerRefV1 | Omit<AutomationConversationScopedTriggerRefV1, 'pullRequest'>;
 }>;
 
 function parseTriggerEvidenceEnvelope(raw: string | null | undefined): unknown | null {
@@ -247,6 +251,7 @@ function prepareAutomationRunAdmission(params: Readonly<{
     automationsById: ReadonlyMap<string, AutomationAdmissionDefinition>;
     triggersById: ReadonlyMap<string, AutomationAdmissionTrigger>;
     recipeFeaturePolicy: AutomationRecipeFeaturePolicy;
+    scopedConversationMatches: boolean;
 }>): PreparedAutomationRunAdmissionResult {
     const cause = params.cause;
     const existing = findExistingRun({
@@ -277,16 +282,20 @@ function prepareAutomationRunAdmission(params: Readonly<{
     if (admissionAutomation.assignments.length === 0) {
         return { kind: "ineligible", reason: "noEnabledAssignment" };
     }
-    if (cause.kind === "trigger") {
-        const trigger = params.triggersById.get(cause.triggerId);
+    const sourceTriggerId = cause.kind === "manual" ? undefined : cause.triggerId;
+    if (sourceTriggerId) {
+        // Conversation preflight is not admission authority: CRUD may commit
+        // while this transaction waits for the trigger's existing row lock.
+        const trigger = params.triggersById.get(sourceTriggerId);
         if (!trigger || trigger.automationId !== params.request.automationId) {
             return { kind: "ineligible", reason: "triggerNotFound" };
         }
         if (!trigger.enabled) return { kind: "ineligible", reason: "triggerDisabled" };
-        if (trigger.revision !== cause.triggerRevision) {
+        if (cause.kind === "trigger" && trigger.revision !== cause.triggerRevision) {
             return { kind: "ineligible", reason: "triggerRevisionMismatch" };
         }
-        if (trigger.kind !== cause.triggerKind) {
+        if ((cause.kind === "trigger" && trigger.kind !== cause.triggerKind)
+            || (cause.kind === "conversation" && !params.scopedConversationMatches)) {
             return { kind: "ineligible", reason: "triggerKindMismatch" };
         }
     }
@@ -560,7 +569,7 @@ export async function admitAutomationRunsTx(params: Readonly<{
     });
     const automationIds = [...new Set(parsedAdmissions.map(({ request }) => request.automationId))];
     const triggerIds = [...new Set(parsedAdmissions.flatMap(({ cause }) => (
-        cause.kind === "trigger" ? [cause.triggerId] : []
+        cause.kind !== "manual" && cause.triggerId ? [cause.triggerId] : []
     )))];
     const automations = (await Promise.all(automationPortableQueryChunks({
         values: automationIds,
@@ -602,13 +611,23 @@ export async function admitAutomationRunsTx(params: Readonly<{
         },
     ]));
     const triggersById = new Map(triggers.map((trigger) => [trigger.id, trigger]));
-    const prepared = parsedAdmissions.map(({ request, cause }) => prepareAutomationRunAdmission({
+    const scopedConversationMatches = await Promise.all(parsedAdmissions.map(async ({ request, cause }) => {
+        if (cause.kind !== "conversation" || !cause.triggerId) return true;
+        if (request.scopedConversationTrigger?.triggerId !== cause.triggerId) return false;
+        const automation = automationsById.get(request.automationId);
+        if (!automation) return false;
+        return await matchesScopedAutomationConversationTriggerTx({ tx: params.tx, accountId: params.accountId,
+            automationId: automation.id, scopeSessionId: automation.scopeSessionId,
+            scopedTrigger: request.scopedConversationTrigger });
+    }));
+    const prepared = parsedAdmissions.map(({ request, cause }, index) => prepareAutomationRunAdmission({
         request,
         cause,
         existingRuns,
         automationsById,
         triggersById,
         recipeFeaturePolicy,
+        scopedConversationMatches: scopedConversationMatches[index] === true,
     }));
 
     // Capacity is deterministic prefix admission in request order. Exact

@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { PluginCaptureSourceContributionV1Schema } from './captureSources.js';
+export { PluginCaptureSourceContributionV1Schema, type PluginCaptureSourceContributionV1 } from './captureSources.js';
 import { asProtocolZod } from "../actions/internalProtocolZodAdapter.js";
 
 import {
@@ -64,18 +66,12 @@ import {
   PluginPromptAssetContributionV1Schema,
 } from './promptAssets.js';
 import {
-  PluginUiTranslationsContributionV1Schema,
-} from './ui/i18n.js';
-import {
   PluginUiInstanceKeyV1Schema,
   PluginUiLaunchInputV1Schema,
 } from '../ui/semanticCommands.js';
 import {
   PluginSessionHeaderActionDescriptorV1Schema,
 } from './ui/sessionHeaderActions.js';
-import {
-  PluginHostedWebContributionV1Schema,
-} from './ui/hostedWeb.js';
 import {
   PluginTranscriptActivityContributionV1Schema,
 } from './ui/transcriptActivities.js';
@@ -105,6 +101,7 @@ import { findAgentResumeOnlyExternalSourceContractIssue } from './agentResumeOnl
 import { PluginUiContributionsV2Schema } from './ui/v2.js';
 import { PluginContributionLocalIdSchema } from '../contributionIdentity.js';
 import { PluginRoleDeclarationV1Schema } from './roles.js';
+import { PluginWorkflowContributionV1Schema } from './workflows.js';
 import {
   PluginAvailabilityDescriptorV2Schema,
   PluginJsonValueV2Schema,
@@ -830,6 +827,7 @@ export const PLUGIN_CORE_CONTRIBUTION_FAMILIES_V2 = [
   definePluginContributionFamilyV2({ family: 'events', schema: PluginEventContributionV1Schema }),
   definePluginContributionFamilyV2({ family: 'executionRunProfiles', schema: PluginExecutionRunProfileContributionV2Schema }),
   definePluginContributionFamilyV2({ family: 'roles', schema: PluginRoleDeclarationV1Schema }),
+  definePluginContributionFamilyV2({ family: 'workflows', schema: PluginWorkflowContributionV1Schema }),
   definePluginContributionFamilyV2({ family: 'notifications', schema: PluginNotificationCategoryContributionV2Schema }),
   definePluginContributionFamilyV2({ family: 'notificationChannels', schema: PluginNotificationChannelContributionV2Schema }),
   definePluginContributionFamilyV2({ family: 'scmHostingProviders', schema: ScmHostingProviderContributionSchema }),
@@ -843,6 +841,7 @@ export const PLUGIN_CORE_CONTRIBUTION_FAMILIES_V2 = [
   definePluginContributionFamilyV2({ family: 'voiceModelPacks', schema: PluginVoiceModelPackContributionV2Schema }),
   definePluginContributionFamilyV2({ family: 'voiceProviders', schema: VoiceProviderContributionSchema }),
   definePluginContributionFamilyV2({ family: 'backgroundServices', schema: BackgroundServiceContributionSchema }),
+  definePluginContributionFamilyV2({ family: 'captureSources', schema: PluginCaptureSourceContributionV1Schema }),
   definePluginContributionFamilyV2({ family: 'daemonDatabases', schema: PluginDaemonDatabaseContributionV1Schema }),
   definePluginContributionFamilyV2({ family: 'composerReferences', schema: PluginComposerReferenceProviderContributionV1Schema }),
   definePluginContributionFamilyV2({ family: 'searchProviders', schema: PluginSearchProviderContributionV1Schema }),
@@ -956,6 +955,7 @@ export {
   type PluginPromptAssetContributionV1,
 } from './promptAssets.js';
 export { PluginRoleDeclarationV1Schema, type PluginRoleDeclarationV1 } from './roles.js';
+export { PluginWorkflowContributionV1Schema, type PluginWorkflowContributionV1 } from './workflows.js';
 export {
   PluginWebhookContributionV1Schema,
   PluginWebhookVerifierV1Schema,

@@ -136,6 +136,10 @@ if (false) {
 }
 
 describe('protocol package root exports', () => {
+    it('exports the consumed terminal-host setup detail schema through the public root', () => {
+        const detail = { kind: 'terminal_host_unavailable', host: 'herdr', reason: 'server_version_unsupported' };
+        expect(protocol.TerminalHostUnavailableSpawnErrorDetailSchema.parse(detail)).toEqual(detail);
+    });
     it('exports Session discussion contracts through both public Session barrels', () => {
         expect(protocol.SessionDiscussionIdSchema).toBe(canonicalSessionDiscussionIdSchema);
         expect(sessionProtocol.SessionDiscussionIdSchema).toBe(canonicalSessionDiscussionIdSchema);

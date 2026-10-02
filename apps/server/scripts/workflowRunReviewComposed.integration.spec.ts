@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import Fastify from 'fastify';
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fastify-type-provider-zod';
 import tweetnacl from 'tweetnacl';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import {
     deriveWorkflowSessionInputLocalIdV2,
     materializeWorkflowAcceptedSnapshotV1,
@@ -67,6 +67,9 @@ describe('review across the real worker, coordinator, opaque store and SQLite ow
         const releasePark = deferred<void>();
         const secondHeartbeat = deferred<void>();
         const thirdFinished = deferred<void>();
+        const parkReached = deferred<void>();
+        const parked = deferred<void>();
+        const terminal = deferred<void>();
         const heartbeatRuns: string[] = [];
         const completionOrder: string[] = [];
         const capacityTransport: { path: string; status: number; maxActive?: number; runId?: string; scope?: string }[] = [];
@@ -90,6 +93,30 @@ describe('review across the real worker, coordinator, opaque store and SQLite ow
             capacityFailures.push(failure);
         };
         const app = Fastify().withTypeProvider<ZodTypeProvider>();
+        const previousEnv = { home: process.env.HAPPIER_HOME_DIR, server: process.env.HAPPIER_SERVER_URL,
+            webapp: process.env.HAPPIER_WEBAPP_URL };
+        let worker: ReturnType<typeof startAutomationWorker> | undefined;
+        let cleanupPromise: Promise<void> | undefined;
+        const cleanup = () => cleanupPromise ??= (async () => {
+            worker?.stop();
+            const finished = new Error('Review composition test finished');
+            for (const gate of [parkReached, parked, terminal, secondStarted, secondHeartbeat, thirdFinished]) {
+                gate.reject(finished);
+            }
+            releasePark.resolve();
+            releaseSecond.resolve();
+            try {
+                await app.close();
+            } finally {
+                for (const [name, value] of [['HAPPIER_HOME_DIR', previousEnv.home], ['HAPPIER_SERVER_URL', previousEnv.server], ['HAPPIER_WEBAPP_URL', previousEnv.webapp]] as const) {
+                    if (value === undefined) delete process.env[name]; else process.env[name] = value;
+                }
+                reloadConfiguration();
+            }
+        })();
+        // Vitest timeouts leave the test body's awaited promise pending.
+        onTestFinished(cleanup);
+        try {
         app.setValidatorCompiler(validatorCompiler);
         app.setSerializerCompiler(serializerCompiler);
         await enableAuthentication(app);
@@ -120,10 +147,6 @@ describe('review across the real worker, coordinator, opaque store and SQLite ow
             }
         });
         const baseUrl = await app.listen({ host: '127.0.0.1', port: 0 });
-        const previousEnv = { home: process.env.HAPPIER_HOME_DIR, server: process.env.HAPPIER_SERVER_URL,
-            webapp: process.env.HAPPIER_WEBAPP_URL };
-        let worker: ReturnType<typeof startAutomationWorker> | undefined;
-        try {
         process.env.HAPPIER_HOME_DIR = join(harness.baseDir, `cli-${randomUUID()}`);
         process.env.HAPPIER_SERVER_URL = baseUrl;
         process.env.HAPPIER_WEBAPP_URL = baseUrl;
@@ -171,9 +194,6 @@ describe('review across the real worker, coordinator, opaque store and SQLite ow
         const storage = createWorkflowRunStorageClient({ token, machineId, serverHttpBaseUrl: baseUrl });
         await storage.execute({ operation: 'admit', runId, machineId, origin: { kind: 'direct' },
             accountCurrentness: witness, recipientKeyEnvelopes: [], acceptedEnvelope });
-        const parkReached = deferred<void>();
-        const parked = deferred<void>();
-        const terminal = deferred<void>();
         let firstPark = true;
         let reviewEntries = 0;
         const inputs: { runId: string; localId: string; text: string }[] = [];
@@ -350,14 +370,7 @@ describe('review across the real worker, coordinator, opaque store and SQLite ow
                 expect(reviewedInputs[1]!.text).not.toContain('workflow.run.invocations.publish_draft');
             }
         } finally {
-            releasePark.resolve();
-            releaseSecond.resolve();
-            worker?.stop();
-            await app.close();
-            for (const [name, value] of [['HAPPIER_HOME_DIR', previousEnv.home], ['HAPPIER_SERVER_URL', previousEnv.server], ['HAPPIER_WEBAPP_URL', previousEnv.webapp]] as const) {
-                if (value === undefined) delete process.env[name]; else process.env[name] = value;
-            }
-            reloadConfiguration();
+            await cleanup();
         }
     }, 120_000);
 });

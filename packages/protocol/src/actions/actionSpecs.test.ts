@@ -177,6 +177,9 @@ const WORKFLOW_READ_ACTION_ID_SET = new Set([
 
 const RESULT_REQUIRED_BLOCKING_ACTION_IDS = [
   ...ROLE_ACTION_IDS_V1,
+  'artifact.public_link.create',
+  'artifact.public_link.list',
+  'artifact.public_link.revoke',
   'launch_profiles.publish',
   'prompt_doc.get',
   'agents.acp.backends.upsert',

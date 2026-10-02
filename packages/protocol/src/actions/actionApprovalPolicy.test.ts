@@ -13,6 +13,8 @@ import {
 } from './actionApprovalPolicy.js';
 
 const EMPTY_SETTINGS: ActionsSettingsV1 = { v: 1, actions: {} as any };
+// Approved FIN 03 §5.4/§5.7 exception; every other danger row retains its floor.
+const DIRECT_SCOPED_SESSION_TRIGGER_REMOVAL = 'session.trigger.remove' satisfies ActionId;
 type ApprovalContext = Pick<ActionExecutorContext, 'surface'>;
 
 function approvalContext(surface: unknown): ApprovalContext {
@@ -43,7 +45,8 @@ describe('isApprovalRequiredByActionsSettings', () => {
   });
   it('defaults safe controller transitions and window enumeration to approval but honors per-action waivers', () => {
     for (const actionId of ['browser.control.takeControl', 'browser.control.handBack', 'computer.targets.list',
-      'computer.target.select', 'computer.control.interrupt', 'computer.control.handBack'] as const) {
+      'computer.target.select', 'computer.control.interrupt', 'computer.control.handBack',
+      'computer.permissions.openSettings'] as const) {
       const context = { surface: 'agent' as const, authority: 'account_automation' as const };
       expect(getActionSpec(actionId).surfaces.agent, actionId).toBe(true);
       expect(isApprovalRequiredByActionsSettings(actionId, EMPTY_SETTINGS, context), actionId).toBe(true);
@@ -68,6 +71,30 @@ describe('isApprovalRequiredByActionsSettings', () => {
     }
     expect(resolveActionApprovalRouting({ actionId: 'workflow.trigger.list', spec: getActionSpec('workflow.trigger.list'),
       context: { surface: 'agent' }, requiredByPolicy: false }).required).toBe(false);
+  });
+  it('keeps scoped Session trigger removal out of the advertised default while preserving confirmation authority', () => {
+    const actionId = DIRECT_SCOPED_SESSION_TRIGGER_REMOVAL;
+    const spec = getActionSpec(actionId);
+    const context = { surface: 'agent' as const, authority: 'account_automation' as const };
+    // Own/led Session admission belongs to the trigger owner; this owner decides
+    // the approval default for a scoped removal after that policy (FIN 03 §5.4).
+    expect(spec.safety).toBe('danger');
+    expect.soft(isAgentInitiatedApprovalRequiredByDefault(actionId)).toBe(false);
+    expect.soft(AGENT_INITIATED_APPROVAL_REQUIRED_ACTION_IDS).not.toContain(actionId);
+    expect.soft(isApprovalRequiredByActionsSettings(actionId, EMPTY_SETTINGS, context)).toBe(false);
+    expect.soft(resolveActionApprovalRouting({ actionId, spec, context }).required).toBe(false);
+
+    for (const ambiguousContext of [undefined, null, approvalContext('session_agent')] as const) {
+      expect.soft(isApprovalRequiredByActionsSettings(actionId, EMPTY_SETTINGS, ambiguousContext)).toBe(true);
+      expect.soft(resolveActionApprovalRouting({ actionId, spec, context: ambiguousContext }).required).toBe(true);
+    }
+
+    const required = normalizeActionsSettingsV1({ v: 1,
+      actions: { [actionId]: { approvalRequiredSurfaces: ['agent'] } },
+      approvalWaivedSurfaces: { [actionId]: ['agent'] },
+    });
+    expect.soft(isApprovalRequiredByActionsSettings(actionId, required, context)).toBe(true);
+    expect.soft(resolveActionApprovalRouting({ actionId, spec, settings: required, context }).required).toBe(true);
   });
   it('defaults the five identity test and Admin Portal Actions to approval while honoring waiver and require', () => {
     const actionIds = [
@@ -114,8 +141,7 @@ describe('isApprovalRequiredByActionsSettings', () => {
     }
   });
 
-  it('honors an explicit waiver, require wins, and reset restores the dangerous default', () => {
-    const actionId = 'browser.automation.click';
+  it.each(['browser.automation.click', 'browser.sandbox.install'] as const)('honors an explicit waiver, require wins, and reset restores the dangerous default for %s', (actionId) => {
     const settings = normalizeActionsSettingsV1({ v: 1, actions: {},
       approvalWaivedSurfaces: { [actionId]: ['agent'] },
     });
@@ -837,16 +863,17 @@ describe('agent approval floor is derived from the danger SSOT (CON-1..3/6)', ()
     }).required).toBe(true);
   });
 
-  it('SUBSET invariant: every danger ∩ agent action is floored (CON-1/6, never equality)', () => {
+  it('SUBSET invariant: every danger ∩ agent action except approved scoped removal is floored (CON-1/6, never equality)', () => {
     const dangerAgentIds = ACTION_IDS.filter((id) => {
       const spec = getActionSpec(id);
-      return spec.safety === 'danger' && spec.surfaces.agent === true;
+      return spec.safety === 'danger' && spec.surfaces.agent === true
+        && id !== DIRECT_SCOPED_SESSION_TRIGGER_REMOVAL;
     });
     expect(dangerAgentIds.length).toBeGreaterThan(0);
     for (const id of dangerAgentIds) {
       expect(isAgentInitiatedApprovalRequiredByDefault(id)).toBe(true);
     }
-    // The floor legitimately exceeds {danger ∩ agent} via the non-danger egress floor
+    // The floor exceeds the non-exempt danger ∩ agent subset via the non-danger egress floor
     // (context captures + copyUrl). Assert at least one such non-danger egress id is floored so the
     // invariant is a strict subset (⊊), never equality.
     const nonDangerFloored = AGENT_INITIATED_APPROVAL_REQUIRED_ACTION_IDS.filter(
@@ -916,30 +943,32 @@ describe('plugin-surface approval posture (§4.1)', () => {
     ).toBeGreaterThan(0);
   });
 
-  it('routes dangerous plugin-surfaced ActionSpecs through approval by default', () => {
+  it('routes dangerous plugin Actions and host capture viewing through approval by default', () => {
     const promptedOnPluginSurface = pluginSurfacedActionIds
       .filter((id) => routingRequired(id, 'plugin'));
 
     expect(promptedOnPluginSurface).toEqual(
-      pluginSurfacedActionIds.filter((id) => getActionSpec(id).safety === 'danger'
-        && !id.startsWith('approval.request.')),
+      pluginSurfacedActionIds.filter((id) => (getActionSpec(id).safety === 'danger' || id === 'capture.view')
+        && !id.startsWith('approval.request.')
+        && id !== DIRECT_SCOPED_SESSION_TRIGGER_REMOVAL),
     );
   });
 
-  it('keeps safe plugin-surfaced ActionSpecs unprompted on plugin', () => {
+  it('keeps ordinary safe plugin Actions unprompted while host viewing requires consent', () => {
     const safePluginActionIds = pluginSurfacedActionIds
-      .filter((id) => getActionSpec(id).safety !== 'danger');
+      .filter((id) => getActionSpec(id).safety !== 'danger' && id !== 'capture.view');
 
     for (const actionId of safePluginActionIds) {
       expect(routingRequired(actionId, 'plugin')).toBe(false);
     }
   });
 
-  it('prompts the same danger-class rows on the agent surface', () => {
+  it('prompts the same non-exempt danger-class rows on the agent surface', () => {
     const dangerAgentAndPluginActionIds = pluginSurfacedActionIds.filter((id) => {
       const spec = getActionSpec(id);
       return spec.safety === 'danger'
         && spec.surfaces.agent === true
+        && id !== DIRECT_SCOPED_SESSION_TRIGGER_REMOVAL
         // Approval requests are intentionally unprompted, so a request cannot
         // recursively create another request before the existing flow decides it.
         && id !== 'approval.request.create';

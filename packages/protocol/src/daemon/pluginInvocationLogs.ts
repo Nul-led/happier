@@ -34,7 +34,7 @@ export const PluginInvocationLogRecordV1Schema = z.object({
       id: PluginInvocationLogRecordIdentitySchema,
       qualifiedId: PluginInvocationLogRecordIdentitySchema,
     }).strict(),
-    generation: PluginInvocationLogRecordIdentitySchema,
+    occurrenceId: PluginInvocationLogRecordIdentitySchema,
     correlationId: PluginInvocationLogRecordIdentitySchema,
     // New invocation surfaces remain readable without weakening the record's
     // strict top-level shape.
@@ -48,9 +48,10 @@ export type PluginInvocationLogRecordV1 = z.infer<typeof PluginInvocationLogReco
 
 export const PluginInvocationLogReadQueryV1Schema = z.object({
   pluginId: z.string().trim().min(1).max(256),
-  generation: PluginInvocationLogIdentifierSchema.optional(),
+  occurrenceId: PluginInvocationLogIdentifierSchema.optional(),
   correlationId: PluginInvocationLogIdentifierSchema.optional(),
   cursor: z.number().int().nonnegative().safe().optional(),
+  logId: PluginInvocationLogIdentifierSchema.optional(),
   limit: z.number().int().min(1).max(500).optional(),
 }).strict();
 export type PluginInvocationLogReadQueryV1 = z.infer<typeof PluginInvocationLogReadQueryV1Schema>;
@@ -69,6 +70,7 @@ export const DaemonPluginInvocationLogReadRequestV1Schema = z.object({
   version: z.literal(1),
   target: PluginInvocationLogTargetV1Schema,
   query: PluginInvocationLogReadQueryV1Schema,
+  waitForChanges: z.literal(true).optional(),
 }).strict();
 export type DaemonPluginInvocationLogReadRequestV1 = z.infer<
   typeof DaemonPluginInvocationLogReadRequestV1Schema
@@ -81,6 +83,8 @@ export const DaemonPluginInvocationLogReadResponseV1Schema = z.discriminatedUnio
     records: z.array(PluginInvocationLogRecordV1Schema).max(500),
     cursor: z.number().int().nonnegative().safe(),
     hasMore: z.boolean(),
+    logId: PluginInvocationLogIdentifierSchema,
+    cursorReset: z.boolean(),
   }).strict(),
   z.object({
     version: z.literal(1),

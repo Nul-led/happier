@@ -27,8 +27,6 @@ import {
   AnyClientUpgradeRequiredV1Schema,
   buildAccountStoredContentCompatibilityHttpHeadersV1,
   buildAccountStoredContentCompatibilitySocketAuthV1,
-  classifyCurrentAccountStoredContentServerCompatibility,
-  classifyAccountEncryptionMigrateTransitionServerCompatibility,
   parseAccountStoredContentCompatibilityHttpHeadersV1,
   parseAccountStoredContentCompatibilitySocketAuthV1,
 } from './index.js';
@@ -137,49 +135,5 @@ describe('compatibility protocol contracts', () => {
         minimumSessionSyncProtocolVersion: 3,
       },
     }).success).toBe(false);
-  });
-
-  it('classifies account server support without feature-bit or app-version inference', () => {
-    const current = {
-      v: 1,
-      minimumProtocolVersion: 2,
-      currentProtocolVersion: 3,
-      declarationTransport: 'http-header-and-socket-auth-v1',
-    } as const;
-    expect(classifyCurrentAccountStoredContentServerCompatibility(undefined)).toBe('missing');
-    expect(classifyCurrentAccountStoredContentServerCompatibility({})).toBe('malformed');
-    expect(classifyCurrentAccountStoredContentServerCompatibility(current)).toBe('compatible');
-    expect(classifyCurrentAccountStoredContentServerCompatibility({
-      ...current,
-      currentProtocolVersion: 1,
-      minimumProtocolVersion: 1,
-    })).toBe('server-too-old');
-    expect(classifyCurrentAccountStoredContentServerCompatibility({
-      ...current,
-      minimumProtocolVersion: 4,
-      currentProtocolVersion: 4,
-    })).toBe('client-too-old');
-  });
-
-  it('keeps V5 Account-transition support separate from the general V3 requirement', () => {
-    const v3Server = {
-      v: 1,
-      minimumProtocolVersion: 2,
-      currentProtocolVersion: 3,
-      declarationTransport: 'http-header-and-socket-auth-v1',
-    } as const;
-    const v5TransitionServer = {
-      ...v3Server,
-      minimumProtocolVersion: 5,
-      currentProtocolVersion: 5,
-    } as const;
-
-    expect(classifyCurrentAccountStoredContentServerCompatibility(v3Server))
-      .toBe('compatible');
-    expect(classifyAccountEncryptionMigrateTransitionServerCompatibility(v3Server))
-      .toBe('server-too-old');
-    expect(classifyAccountEncryptionMigrateTransitionServerCompatibility(
-      v5TransitionServer,
-    )).toBe('compatible');
   });
 });

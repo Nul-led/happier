@@ -1,9 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { resolveWorkflowDefinitionRefV1 } from './workflowDefinitionResolverV1.js';
+import { validateWorkflowDefinition } from './workflowValidationV1.js';
 
 const artifactId = '11111111-1111-4111-8111-111111111111';
 
 describe('workflow reference resolution', () => {
+  it('reads a qualified plugin source at its current version through the shared resolver', async () => {
+    const workflow = 'plugin:com.acme.workflows/review';
+    const definition = validateWorkflowDefinition({ blocks: ['Review carefully'] }).normalizedDefinition!;
+    const source = { workflow, pluginId: 'com.acme.workflows', version: '1.2.3', title: 'Review', definition };
+    await expect(resolveWorkflowDefinitionRefV1(workflow, {
+      readPluginWorkflows: () => [source],
+      readArtifact: async () => { throw new Error('plugin_is_not_an_artifact'); },
+    })).resolves.toMatchObject({ kind: 'catalog', ref: workflow, sourceKey: workflow, version: '1.2.3', definition });
+    await expect(resolveWorkflowDefinitionRefV1(workflow, { readPluginWorkflows: () => [] })).resolves.toBeNull();
+    await expect(resolveWorkflowDefinitionRefV1('plugin:com.acme.workflows/other', { readPluginWorkflows: () => [source] })).resolves.toBeNull();
+  });
   it('retains the authorized Artifact reader definition and revision as one saved source', async () => {
     const saved = { definition: { version: 1, blocks: [] }, definitionId: artifactId,
       revision: { headerVersion: 2, bodyVersion: 3 }, metadata: { name: 'Saved workflow' } };

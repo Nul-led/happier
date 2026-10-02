@@ -237,6 +237,14 @@ export const BrowserAutomationActionResultV1Schema = z
   .strict();
 export type BrowserAutomationActionResultV1 = z.infer<typeof BrowserAutomationActionResultV1Schema>;
 
+/** An issued effect lost its acknowledgement; engine result metadata is not known. */
+export const BrowserAutomationInterruptedResultV1Schema = z.object({
+  v: z.literal(1),
+  status: z.literal('interrupted'),
+  completion: z.literal('unknown'),
+  automationRequestId: IdSchema.optional(),
+}).strict();
+
 /**
  * Canceling is a command over the active automation set, not a result for one
  * request. Caller provenance remains host-stamped at the action admission

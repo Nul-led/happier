@@ -11,6 +11,7 @@ export const CONNECTED_SERVICE_CONFIGURATION_ACTION_IDS_V1 = [
   'connectedServices.pools.reorder',
   'connectedServices.pools.default.set',
   'connectedServices.quota.reset',
+  'connectedServices.quota.refresh',
   'connectedServices.identityPrivacy.set',
 ] as const;
 export const ConnectedServiceConfigurationActionIdV1Schema = z.enum(CONNECTED_SERVICE_CONFIGURATION_ACTION_IDS_V1);
@@ -23,6 +24,7 @@ export const CONNECTED_SERVICE_CONFIGURATION_ACTION_INPUT_SCHEMAS_V1 = {
   'connectedServices.pools.reorder': z.object({ group: QualifiedConnectedAccountGroupRefSchema, accountIds: z.array(z.string().min(1)) }).strict(),
   'connectedServices.pools.default.set': z.object({ group: QualifiedConnectedAccountGroupRefSchema, agentId: z.string().trim().min(1), makeDefault: z.boolean(), machineId: z.string().trim().min(1).optional() }).strict(),
   'connectedServices.quota.reset': z.object({ machineId: z.string().trim().min(1), serviceId: ConnectedServiceIdSchema, profileId: ConnectedServiceProfileIdSchema, providerCreditId: z.string().trim().min(1).optional(), sourceSnapshotFetchedAtMs: z.number().int().nonnegative().nullable().optional() }).strict(),
+  'connectedServices.quota.refresh': z.object({ account: asProtocolZod(QualifiedConnectedAccountRefSchema), machineId: z.string().trim().min(1) }).strict(),
   'connectedServices.identityPrivacy.set': z.object({ hidden: z.boolean() }).strict(),
 } as const;
 export const CONNECTED_SERVICE_CONFIGURATION_ACTION_OUTPUT_SCHEMAS_V1 = {
@@ -31,6 +33,7 @@ export const CONNECTED_SERVICE_CONFIGURATION_ACTION_OUTPUT_SCHEMAS_V1 = {
   'connectedServices.pools.reorder': Success,
   'connectedServices.pools.default.set': Success,
   'connectedServices.quota.reset': ConnectedServiceQuotaRecoveryCreditConsumeResponseV1Schema,
+  'connectedServices.quota.refresh': Success,
   'connectedServices.identityPrivacy.set': Success,
 } as const;
 

@@ -10,7 +10,7 @@ function harness() {
   let approval: ApprovalRequest | null = null;
   const store: PromptLibraryArtifactStore = {
     read: async (artifactId) => artifactId === 'memory' ? {
-      id: artifactId, header: { v: 1, kind: 'prompt_doc.v2', title: 'Memory' },
+      id: artifactId, revision: { headerVersion: 1, bodyVersion: 1 }, header: { v: 1, kind: 'prompt_doc.v2', title: 'Memory' },
       body: JSON.stringify({ v: 1, markdown, createdAtMs: 1, updatedAtMs: 1 }),
     } : null,
     update: async ({ body }) => { markdown = PromptDocBodyV1Schema.parse(JSON.parse(body)).markdown; },

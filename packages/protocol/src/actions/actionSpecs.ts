@@ -20,6 +20,8 @@ import {
   SessionResponsibilityCandidatesRequestSchema, SessionResponsibilityCandidatesResponseSchema,
 } from '../sessions/access/sessionResponsibilityV1.js';
 import { z } from 'zod';
+import { ExecutionRunWaitConditionSchema } from '../execution/runs/waitForTerminal.js';
+import { WaitActionInputV1Schema, WaitActionResultV1Schema, WAIT_CLI_PROJECTION } from './specs/wait.js';
 import { ComputerAccessV1Schema, ComputerTargetV1Schema } from '../computer/v1.js';
 import { WORK_BOARD_ACTION_IDS_V1, type WorkBoardActionIdV1 } from '../boards/actionIdsV1.js';
 import { WorkBoardActionInputSchemasV1, WorkBoardActionOutputSchemasV1 } from '../boards/actionsV1.js';
@@ -58,6 +60,7 @@ import { ROLE_ACTION_IDS_V1, type RoleActionIdV1 } from '../prompts/roles/roleAc
 import { LaunchProfilePublishInputV1Schema, LaunchProfilePublishOutputV1Schema } from '../launchProfiles/publishLaunchProfile.js';
 import { RoleActionInputSchemasV1, RoleActionOutputSchemasV1, isAccountRoleMutationV1 } from '../prompts/roles/roleActionsV1.js';
 import { ARTIFACT_ACCESS_ACTION_IDS_V1, ArtifactAccessActionInputSchemasV1, ArtifactAccessActionOutputSchemasV1, type ArtifactAccessActionIdV1 } from '../artifacts/artifactAccessV1.js';
+import { ARTIFACT_ACTION_IDS_V1, ArtifactActionInputSchemasV1, ArtifactActionOutputSchemasV1, type ArtifactActionIdV1 } from '../artifacts/artifactActionsV1.js';
 import { SessionListQueryV1Schema } from '../sessions/listing/query.js';
 import { SessionReportsToSetActionInputV1Schema, SessionReportsToSetResultV1Schema } from '../sessions/relations/sessionReportsToV1.js';
 import {
@@ -1765,6 +1768,8 @@ const ExecutionRunActionInputSchema = ExecutionRunIdInputSchema.extend({
 
 const ExecutionRunWaitInputSchema = ExecutionRunIdInputSchema.extend({
   timeoutSeconds: z.number().int().min(1).optional(),
+  condition: ExecutionRunWaitConditionSchema.optional(),
+  after: ExecutionRunGetResponseSchema.optional(),
 }).passthrough();
 
 const ExecutionRunWaitPublicInputSchema = ExecutionRunWaitInputSchema.strict();
@@ -2511,6 +2516,7 @@ const TranscriptReadAfterInputSchema = z.object({
 }).passthrough();
 
 const TranscriptFollowInputSchema = TranscriptReadAfterInputSchema.extend({
+  waitForChanges: z.boolean().optional(),
   leaseId: z.string().min(1).optional(),
   idleTtlMs: z.number().int().min(1).max(3_600_000).optional(),
   projection: z.literal('openedMessagesV1').optional(),
@@ -2584,6 +2590,14 @@ const TranscriptOpenedMessageV1Schema = z.union([
 ]);
 
 /** Closed follow/cursor envelope; its canonical rows drop unknown presentation fields. */
+export const TranscriptFollowChangeV1Schema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('append') }).strict(),
+  z.object({ kind: z.literal('revision'), messageId: z.string().min(1), seq: z.number().int().min(1) }).strict(),
+  z.object({ kind: z.literal('session') }).strict(),
+  z.object({ kind: z.literal('reset') }).strict(),
+]);
+export type TranscriptFollowChangeV1 = z.infer<typeof TranscriptFollowChangeV1Schema>;
+
 export const TranscriptOpenedFollowOutputV1Schema = z.object({
   ok: z.literal(true),
   leaseId: z.string().min(1),
@@ -2593,10 +2607,12 @@ export const TranscriptOpenedFollowOutputV1Schema = z.object({
   truncated: z.boolean(),
   agentState: TranscriptOpenedAgentStateV1Schema.nullable(),
   sharedMetadata: TranscriptOpenedSharedMetadataV1Schema.nullable(),
+  changes: z.array(TranscriptFollowChangeV1Schema).optional(),
 }).strict();
 export type TranscriptOpenedFollowOutputV1 = z.infer<typeof TranscriptOpenedFollowOutputV1Schema>;
 
 const TranscriptFollowOutputSchema = z.union([TranscriptReadAfterOutputSchema.extend({
+  changes: z.array(TranscriptFollowChangeV1Schema).optional(),
   leaseId: z.string().min(1).optional(),
   projection: z.never().optional(),
 }).passthrough(), TranscriptOpenedFollowOutputV1Schema]);
@@ -2857,6 +2873,7 @@ const RESULT_REQUIRED_DEFERRED_APPROVAL_ACTION_IDS = [
 ] as const satisfies readonly ActionId[];
 
 const RESULT_REQUIRED_APPROVAL_ACTION_IDS = [
+  'capture.view',
   ...ACTION_ID_FAMILIES_V1.session_terminals,
   ...ACTION_ID_FAMILIES_V1.workspace_layout,
   ...APP_SHELL_ACTION_IDS,
@@ -2868,6 +2885,7 @@ const RESULT_REQUIRED_APPROVAL_ACTION_IDS = [
   // Native observations and input outcomes must return to the invoking Session after consent.
   ...ACTION_ID_FAMILIES_V1.computer,
   ...ARTIFACT_ACCESS_ACTION_IDS_V1,
+  ...ARTIFACT_ACTION_IDS_V1,
   // Sharing's continuation needs the published Artifact id, including after approval replay.
   ...ACTION_ID_FAMILIES_V1.launch_profiles,
   ...ACTION_ID_FAMILIES_V1.notifications,
@@ -2909,6 +2927,7 @@ const RESULT_REQUIRED_APPROVAL_ACTION_IDS = [
   'execution.run.get',
   'execution.run.stream.read',
   'execution.run.wait',
+  'wait',
   'session.handoff.prepare_target_result.get',
   'session.handoff.status.get',
   'workspace.sync.relationships.list',
@@ -3000,6 +3019,7 @@ const RESULT_REQUIRED_APPROVAL_ACTION_IDS = [
   'scm.pullRequest.openCompose',
   'scm.hostingRepository.describePublishTargets',
   'scm.diffSummary.generate',
+  'browser.sandbox.install',
   'browser.view.open',
   'browser.view.close',
   'browser.view.focus',
@@ -3118,6 +3138,7 @@ const RESULT_REQUIRED_APPROVAL_ACTION_IDS = [
 ] as const satisfies readonly ActionId[];
 
 const RESULT_NONE_APPROVAL_ACTION_IDS = [
+  'wait',
   'machines.agents.signIn.start',
   'machines.agents.signIn.status',
   'session.read_state.set',
@@ -4838,6 +4859,22 @@ const ARTIFACT_ACCESS_ACTION_SPECS: readonly (PreNormalizedActionSpec & Readonly
   cli: { acceptsServerId: true, commands: [{ path: id.split('.'), visibility: 'canonical' }] },
 }));
 
+const ARTIFACT_ACTION_SPECS: readonly (PreNormalizedActionSpec & Readonly<{
+  requiredAuthority: 'account_automation';
+}>)[] = ARTIFACT_ACTION_IDS_V1.map((id) => {
+  const read = id === 'artifact.get' || id === 'artifact.list' || id === 'artifact.revisions.list' || id === 'artifact.storage.usage';
+  return {
+    id, title: id, description: 'Read, publish and manage ordinary Account Artifacts through their mode-aware store.',
+    safety: read ? 'safe' : 'danger', sideEffectClass: read || id === 'artifact.public_link.list' ? 'read' : 'write',
+    requiredAuthority: 'account_automation', executionPlacement: id === 'artifact.publish_from_file' ? 'machine' : 'account',
+    placements: [], bindings: { rpcMethod: id, mcpToolName: id.replaceAll('.', '_') },
+    surfaces: { ui: true, cli: true, rpc: true, agent: true, mcp: true, voice: false },
+    inputSchema: ArtifactActionInputSchemasV1[id], outputSchema: ArtifactActionOutputSchemasV1[id],
+    inputHints: { title: 'Artifact', fields: [] },
+    cli: { acceptsServerId: true, commands: [{ path: id.split('.').map((segment) => segment.replaceAll('_', '-')), visibility: 'canonical' }] },
+  };
+});
+
 // Reference family declarations so this aggregate preserves literal ids and
 // schemas without serializing every Zod schema into the inline tuple type.
 const ACTION_SPECS_WITHOUT_APPROVAL_FAMILIES: readonly (
@@ -4891,6 +4928,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX_LEAD = Object.freeze(defineActionSpec
   ...WORK_BOARD_ACTION_SPECS_V1,
   ...HOME_HUB_LAYOUT_ACTION_SPECS,
   ...ARTIFACT_ACCESS_ACTION_SPECS,
+  ...ARTIFACT_ACTION_SPECS,
   {
     id: 'launch_profiles.publish', title: 'Publish launch profile', safety: 'safe',
     placements: [], bindings: { rpcMethod: 'launch_profiles.publish' },
@@ -4964,6 +5002,20 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX_LEAD = Object.freeze(defineActionSpec
     };
   }),
   ...PLUGIN_DEV_LOOP_ACTION_IDS_V1.map(createPluginDevLoopActionSpec),
+  {
+    id: 'capture.view',
+    title: 'View host capture',
+    description: 'Allow one mounted plugin viewer to view the exact current host capture source. Approval is required by default and may be waived for that plugin in Actions settings.',
+    safety: 'safe',
+    approvalResultCustody: 'live_only',
+    projectObservationOutput: () => ({ admitted: true }),
+    placements: [],
+    surfaces: { ui: false, voice: false, agent: false, mcp: false, cli: false, rpc: false },
+    sideEffectClass: 'read',
+    inputSchema: z.object({ sourceId: z.string().min(1), sourceOccurrenceId: z.string().min(1) }).strict(),
+    outputSchema: z.object({ admitted: z.literal(true), sourceId: z.string().min(1), sourceOccurrenceId: z.string().min(1) }).strict(),
+    inputHints: { fields: [] },
+  },
   ...PLUGIN_SETTINGS_ADMINISTRATION_ACTION_IDS_V1.map(createPluginSettingsAdministrationActionSpec),
   ...PLUGIN_PERMISSION_GRANT_ACTION_IDS_V1.map(createPluginPermissionGrantActionSpec),
   ...PLUGIN_WEBHOOK_ACTION_IDS_V1.map(createPluginWebhookActionSpec),
@@ -5412,6 +5464,20 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX = Object.freeze(defineActionSpecs([
     inputSchema: ActionSpecGetInputSchema,
   },
   {
+    id: 'wait',
+    title: 'Wait for work',
+    description: 'Observe an existing Home-qualified handle without polling or stopping its work. Prefer notifyParentOnCompletion or Follow for parent delivery. Reuse the same handle after an observation timeout.',
+    sideEffectClass: 'read',
+    safety: 'safe',
+    executionPlacement: 'account',
+    placements: [],
+    bindings: { mcpToolName: 'wait' },
+    surfaces: { ui: false, voice: false, agent: true, mcp: true, cli: true, rpc: false },
+    cli: WAIT_CLI_PROJECTION,
+    inputSchema: WaitActionInputV1Schema,
+    outputSchema: WaitActionResultV1Schema,
+  },
+  {
     id: 'notifications.notify_me',
     title: 'Notify me',
     description: "Send a notification to your Account's configured channels, following your delivery policy.",
@@ -5489,17 +5555,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX = Object.freeze(defineActionSpecs([
     sideEffectClass: 'external',
     safety: 'safe',
     placements: [],
-    bindings: { voiceClientToolName: 'invokeAction' },
+    bindings: { voiceClientToolName: 'invokeAction', rpcMethod: 'action.invoke' },
     examples: {
       voice: { argsExample: '{"action":{"pluginId":"acme.plugin","localId":"open-details"},"input":{"source":"voice"}}' },
     },
     surfaces: {
-      ui: false,
+      ui: true,
       voice: true,
       agent: false,
       mcp: false,
       cli: false,
-      rpc: false,
+      rpc: true,
     },
     inputHints: {
       title: 'Invoke contributed action',
@@ -6451,7 +6517,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX = Object.freeze(defineActionSpecs([
   {
     id: 'execution.run.wait',
     title: 'Wait for execution run',
-    description: `Wait until an execution run reaches a terminal status. Pass timeoutSeconds to bound the wait; omit it for no Happier-side deadline. ${EXECUTION_RUN_WAIT_OBSERVATION_DESCRIPTION} ${EXECUTION_RUN_SESSION_SCOPE_DESCRIPTION}`,
+    description: `Observe an execution run until terminal by default, or select permission attention, either condition, or a changed snapshot. Pass timeoutSeconds to bound the observation; omit it for no Happier-side deadline. ${EXECUTION_RUN_WAIT_OBSERVATION_DESCRIPTION} ${EXECUTION_RUN_SESSION_SCOPE_DESCRIPTION}`,
     safety: 'safe',
     placements: [],
     bindings: {
@@ -8629,7 +8695,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX = Object.freeze(defineActionSpecs([
     inputHints: { fields: [] },
     inputSchema: SessionPublicLinkCreateActionInputV1Schema,
     outputSchema: SessionPublicLinkSettingsV1Schema,
-    serverTransport: { method: 'POST', path: '/v1/sessions/:sessionId/public-share' },
+    serverTransport: { method: 'POST', path: '/v1/public-shares' },
   },
   {
     id: 'session.public_link.remove',
@@ -11124,6 +11190,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly (
  * owner-local user contract exists.
  */
 export const PLUGIN_PROVENANCE_ONLY_API_EXCLUSION_REASONS = Object.freeze({
+  'capture.view': 'Viewing requires an exact mounted plugin caller and a live viewer occurrence.',
   'automation.event.sources.list': 'Automation source identity is selected from the host-stamped plugin caller.',
   'automation.event.admit': 'Automation event admission persists the host-stamped plugin source identity.',
   'automation.event.source.status.report': 'Automation source status is attributed to the host-stamped plugin caller.',
@@ -11223,7 +11290,6 @@ const PRESENT_USER_REQUIRED_ACTION_ID_VALUES = [
   'plugins.permissions.grants.dismissRequest',
   'browser.automation.cancelActive',
   ...(Object.keys(PluginWebhookActionHttpPathsV1) as PluginWebhookPresentUserActionIdV1[]),
-  'computer.permissions.openSettings',
   'computer.target.close',
 ] as const satisfies readonly ActionId[];
 
@@ -11272,9 +11338,11 @@ const ACTION_EXECUTION_PLACEMENT_BY_ID: ReadonlyMap<ActionId, ActionExecutionPla
 
   // Account/server data can run before an exact machine is known.
   register('account', [
+    ...ACTION_ID_FAMILIES_V1.observation,
     ...ACTION_ID_FAMILIES_V1.connected_services_configuration.filter((id) => id !== 'connectedServices.identityPrivacy.set' && id !== 'connectedServices.quota.reset'),
     ...WORK_BOARD_ACTION_IDS_V1,
     ...ARTIFACT_ACCESS_ACTION_IDS_V1,
+    ...ARTIFACT_ACTION_IDS_V1.filter((id) => id !== 'artifact.publish_from_file'),
     ...ACTION_ID_FAMILIES_V1.notifications,
     ...ACTION_ID_FAMILIES_V1.session_attention,
     'action.spec.search',
@@ -11323,6 +11391,7 @@ const ACTION_EXECUTION_PLACEMENT_BY_ID: ReadonlyMap<ActionId, ActionExecutionPla
   // discovery remains placement-neutral; a non-client executor returns the
   // canonical typed placement-unavailable outcome instead of hiding the Action.
   register('client', CLIENT_EXECUTION_PLACEMENT_ACTION_IDS);
+  register('client', ACTION_ID_FAMILIES_V1.capture_viewing);
   register('client', ACTION_ID_FAMILIES_V1.scope);
   register('client', ACTION_ID_FAMILIES_V1.command_palette);
 
@@ -11359,6 +11428,7 @@ const ACTION_EXECUTION_PLACEMENT_BY_ID: ReadonlyMap<ActionId, ActionExecutionPla
   // execution runs, local indexes/filesystem/plugin/scm owners, and external
   // session operations whose request selects a concrete daemon runtime.
   register('machine', [
+    'artifact.publish_from_file',
     'connectedServices.quota.reset',
     'machines.terminal.open',
     'machines.terminal.list',
@@ -11506,7 +11576,9 @@ type DirectActionSpecDefinition = LiteralActionSpecDefinition<
 type NonRuntimeActionSpecDefinition<TSpec> = TSpec extends Readonly<{
   id: infer TActionId;
 }>
-  ? TActionId extends RuntimeActionIdV1
+  // These families have exact per-ID schema definitions below. Their generic
+  // row factories must not reintroduce widened schema unions into the catalog.
+  ? TActionId extends RuntimeActionIdV1 | SessionTerminalActionId | WorkspaceActionId
     ? never
     : TSpec
   : never;
@@ -11641,6 +11713,16 @@ type ArtifactAccessActionSpecDefinition = {
   >;
 }[ArtifactAccessActionIdV1];
 
+type ArtifactActionSpecDefinition = {
+  [TActionId in ArtifactActionIdV1]: CanonicalActionSchemaDefinition<
+    TActionId,
+    (typeof ArtifactActionInputSchemasV1)[TActionId],
+    (typeof ArtifactActionOutputSchemasV1)[TActionId],
+    never,
+    (typeof ARTIFACT_ACTION_SPECS)[number]['requiredAuthority']
+  >;
+}[ArtifactActionIdV1];
+
 type SettingsDeclarationActionSpecDefinition = {
   [TActionId in SettingsDeclarationActionIdV1]: CanonicalActionSchemaDefinition<
     TActionId,
@@ -11760,6 +11842,7 @@ export type CanonicalActionSpecDefinition =
   | SettingsDeclarationActionSpecDefinition
   | WorkBoardActionSpecDefinition
   | ArtifactAccessActionSpecDefinition
+  | ArtifactActionSpecDefinition
   | RoleActionSpecDefinition
   | ScmGitActionSpecDefinition
   | NonRuntimeDirectActionSpecDefinition
@@ -12149,6 +12232,7 @@ const PLUGIN_RELOAD_CALLER_POLICY: ActionPluginCallerPolicy = {
 const ACTION_PLUGIN_CALLER_POLICY_BY_ID: Readonly<
   Partial<Record<ActionId, ActionPluginCallerPolicy>>
 > = Object.freeze({
+  'capture.view': HOST_DOMAIN_PLUGIN_CALLER_POLICY,
   'plugins.reload': PLUGIN_RELOAD_CALLER_POLICY,
   'plugins.permissions.grants.request': HOST_DOMAIN_PLUGIN_CALLER_POLICY,
   'plugins.permissions.grants.revoke': HOST_DOMAIN_PLUGIN_CALLER_POLICY,

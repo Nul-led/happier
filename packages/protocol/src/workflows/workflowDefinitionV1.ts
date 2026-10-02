@@ -6,6 +6,7 @@ import {
   type WorkflowBlock,
   type WorkflowDefinitionV1,
   WorkflowStepExecutionSelectionSchema,
+  WorkflowEngineSelectionV1Schema,
 } from './workflowV1.js';
 import { WorkflowDefinitionIdV1Schema } from './workflowIdsV1.js';
 import { preservedBoundedNfcString } from '../strings/preservedBoundedNfcString.js';
@@ -14,11 +15,20 @@ import { AgentPermissionIntentV1Schema, type AgentPermissionIntentV1 } from '../
 import { resolvePermissionPrivilegeOrdinal } from '../actions/permissionPrivilege.js';
 import { asProtocolZod } from '../plugins/actions/internalProtocolZodAdapter.js';
 import { SessionInputSourceAuthorityV1Schema } from '../sessions/messages/sessionInputAdmission.js';
-import { WorkflowInputNameSchema } from './workflowReferenceV1.js';
+import { WorkflowBlockIdSchema, WorkflowInputNameSchema } from './workflowReferenceV1.js';
 import { WorkflowAcceptedWorkspaceTargetV1Schema } from './workflowWorkspaceV1.js';
 import { resolveWorkflowStepSelectionV1 } from './workflowStepSelectionV1.js';
 import { RoleOverrideV1Schema, ResolvedRoleV1Schema } from '../prompts/roles/rolesV1.js';
 import { WorkflowDefinitionRefV1StringSchema } from './workflowDefinitionRefV1.js';
+import { ARTIFACT_EXCERPT_MAX_CHARS_V1 } from '../artifacts/artifactExcerptV1.js';
+
+/** One deliberate engine edit; replay retains every other accepted leaf fact. */
+export const WorkflowReplayAgentOverrideV1Schema = z.object({
+  sourceKey: z.union([z.literal('$root'), WorkflowDefinitionRefV1StringSchema]),
+  blockId: WorkflowBlockIdSchema,
+  engine: WorkflowEngineSelectionV1Schema,
+}).strict();
+export type WorkflowReplayAgentOverrideV1 = z.infer<typeof WorkflowReplayAgentOverrideV1Schema>;
 
 export const WorkflowRoleOverridesV1Schema = z.array(RoleOverrideV1Schema).superRefine((overrides, context) => {
   const seen = new Set<string>();
@@ -56,8 +66,26 @@ export const WorkflowDefinitionArtifactHeaderV1Schema = z.object({
   revision: WorkflowArtifactRevisionV1Schema,
   metadata: WorkflowDefinitionMetadataV1Schema,
   savedBy: WorkflowDefinitionSavedByV1Schema.optional(),
+  excerpt: z.string().max(ARTIFACT_EXCERPT_MAX_CHARS_V1).optional(),
 }).strict();
 export type WorkflowDefinitionArtifactHeaderV1 = z.infer<typeof WorkflowDefinitionArtifactHeaderV1Schema>;
+
+/** A restored body is a new physical revision, not a rewrite of its historical row. */
+export function retargetWorkflowDefinitionArtifactHeaderV1(input: Readonly<{
+  artifactId: string;
+  header: Readonly<Record<string, unknown>>;
+  expectedRevision: WorkflowArtifactRevisionV1;
+  nextRevision: WorkflowArtifactRevisionV1;
+}>): WorkflowDefinitionArtifactHeaderV1 {
+  const parsed = WorkflowDefinitionArtifactHeaderV1Schema.safeParse(input.header);
+  if (!parsed.success || parsed.data.definitionId !== input.artifactId
+    || parsed.data.revision.headerVersion !== input.expectedRevision.headerVersion
+    || parsed.data.revision.bodyVersion !== input.expectedRevision.bodyVersion) {
+    throw Object.assign(new Error('artifact_content_unavailable'), { code: 'content_unavailable' });
+  }
+  // Validation may normalize display text; advancing a revision must not rewrite stored metadata.
+  return { ...parsed.data, ...input.header, revision: WorkflowArtifactRevisionV1Schema.parse(input.nextRevision) };
+}
 
 export const WorkflowDefinitionArtifactBodyV1Schema = z.object({
   kind: z.literal('workflow-definition.v1'),
@@ -105,7 +133,11 @@ export const WorkflowMaterializedLeafV1Schema = z.object({
   actionInput: z.record(z.string(), StrictJsonValueSchema).optional(),
 }).strict();
 export type WorkflowMaterializedLeafV1 = z.infer<typeof WorkflowMaterializedLeafV1Schema>;
+export const WorkflowRunStartedByV1Schema = z.enum(['user', 'agent', 'trigger']);
+export type WorkflowRunStartedByV1 = z.infer<typeof WorkflowRunStartedByV1Schema>;
+
 const workflowMaterializationFields = {
+  startedBy: WorkflowRunStartedByV1Schema,
   workDepth: z.number().int().nonnegative().safe(),
   roleOverrides: WorkflowRoleOverridesV1Schema.optional(),
   authoredDefinition: WorkflowDefinitionV1Schema,
@@ -152,6 +184,7 @@ export const WorkflowAcceptedAuthorizationV1Schema = z.object({
   admittedPermissionCeiling: asProtocolZod(AgentPermissionIntentV1Schema),
   principal: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('host') }).strict(),
+    z.object({ kind: z.literal('session'), sessionId: preservedBoundedNfcString(191, 'Session ids') }).strict(),
     z.object({
       kind: z.literal('plugin'),
       pluginId: preservedBoundedNfcString(191, 'Plugin ids'),

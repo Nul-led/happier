@@ -29,6 +29,15 @@ describe('Session creation Agent preconditions', () => {
 });
 
 describe('Session creation Provider recovery', () => {
+  it('retains terminal-host setup recovery only for nonretryable incompatible targets', () => {
+    const terminalHostError = { kind: 'terminal_host_unavailable', host: 'herdr', reason: 'installation_unavailable' };
+    const result = { type: 'error', code: 'incompatible_target', retryable: false, terminalHostError };
+    expect(SessionSpawnNewResultV1Schema.safeParse(result)).toMatchObject({ success: true, data: result });
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, retryable: true }).success).toBe(false);
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, code: 'spawn_failed' }).success).toBe(false);
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, terminalHostError: { ...terminalHostError, localPath: '/private' } }).success).toBe(false);
+    expect(SessionSpawnNewResultV1Schema.safeParse({ type: 'error', code: 'incompatible_target', retryable: false }).success).toBe(true);
+  });
   it('preserves bounded Provider details and their canonical retryability', () => {
     const providerError = createProviderErrorV1('provider_not_enabled_on_machine', {
       connectionId: 'pc_work', machineId: 'machine-1',

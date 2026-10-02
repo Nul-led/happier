@@ -12,6 +12,7 @@ export const automationTriggerSelect = {
     sessionLifecycleEventsJson: true, sessionLifecyclePolicyKind: true,
     sessionLifecycleMatchCount: true, remainingOccurrences: true,
     sourceSessionId: true, sourceTurnId: true,
+    sourceRunId: true, sourceRunMachineId: true, runLifecycleConfigurationJson: true,
     createdAt: true, updatedAt: true,
 } satisfies Prisma.AutomationTriggerSelect;
 
@@ -31,6 +32,7 @@ export const automationTriggerListItemSelect = {
     sessionLifecycleEventsJson: true, sessionLifecyclePolicyKind: true,
     sessionLifecycleMatchCount: true, remainingOccurrences: true,
     sourceSessionId: true, sourceTurnId: true,
+    sourceRunId: true, sourceRunMachineId: true, runLifecycleConfigurationJson: true,
     createdAt: true, updatedAt: true,
 } satisfies Prisma.AutomationTriggerSelect;
 
@@ -76,6 +78,7 @@ export const automationRunCauseSelect = {
     causeKind: true, causeTriggerKind: true, causeTriggerRevision: true, causeOccurredAt: true,
     causeEventPluginId: true, causeEventLocalId: true, causeScheduledFor: true,
     causeSessionLifecycleEvent: true, causeSourceSessionId: true, causeSourceTurnId: true,
+    causeRunLifecycleEvidenceJson: true,
     causeSessionLifecycleRequestId: true, causeSessionLifecycleRequestKind: true,
     causeSessionLifecyclePolicyKind: true, causeSessionLifecycleConfiguredCount: true,
     occurrenceKey: true, causeSourceSelectorId: true, createdAt: true,

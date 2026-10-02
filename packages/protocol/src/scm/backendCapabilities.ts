@@ -89,6 +89,7 @@ export const ScmBackendChangeSetCapabilitiesSchema = capabilityLeafMap([
 
 export const ScmBackendCommitCapabilitiesSchema = capabilityLeafMap([
   'create',
+  'undoLast',
   'amend',
   'signOff',
   'pathSelection',

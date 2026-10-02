@@ -1,4 +1,6 @@
 import type { SessionFollowActionIdV1 } from '../../sessions/follow/actions.js';
+import type { SessionWorkerPublishInputV1 } from '../../sessions/relations/workerUpdateV1.js';
+import type { AgentStartContextV1, AgentStartSessionCallerV1 } from '../../account/settings/admitAgentStartV1.js';
 import type { HomeHubLayoutActionId } from '../specs/homeHub.js';
 import type { MachinesAgentsSignInStartInput, MachinesAgentsSignInStatusInput, MachinesAgentsSignInStartOutput, AgentSignInStatusResponse } from '../../daemon/agentSignIn.js';
 import type { z } from 'zod';
@@ -13,6 +15,7 @@ import type {
 import type { RoleActionIdV1 } from '../../prompts/roles/roleActionIdsV1.js';
 import type { WorkBoardArtifactPortV1 } from '../../boards/workBoardArtifactV1.js';
 import type { ArtifactAccessActionIdV1 } from '../../artifacts/artifactAccessV1.js';
+import type { ArtifactActionIdV1 } from '../../artifacts/artifactActionsV1.js';
 import type { SessionRoleConfigurationV1, SessionRolesV1 } from '../../prompts/roles/sessionRolesSnapshot.js';
 import type { ExecutionRunSendRequest, ExecutionRunCancelTurnRequest } from '../../execution/runs/index.js';
 import type { ActionsSettingsV1 } from '../actionSettings.js';
@@ -74,6 +77,8 @@ import type { SessionRollbackTarget } from '../../sessions/rollback.js';
 import type { SessionListQueryV1 } from '../../sessions/listing/query.js';
 import type { SessionReportsToSetActionInputV1, SessionReportsToSetResultV1 } from '../../sessions/relations/sessionReportsToV1.js';
 import type { SessionListViewV1 } from '../../sessions/awareness/action.js';
+import type { WaitActionInputV1, WaitOwnerResultV1 } from '../specs/wait.js';
+import type { WaitOwnerOptionsV1 } from './waitAction.js';
 import type { ReviewCommentActionIdV1 } from '../../reviews/comments/actions.js';
 import type { ReviewCommentPrincipalHeaderV1 } from '../../reviews/comments/actions.js';
 import type {
@@ -166,7 +171,6 @@ import type {
 import type {
   SessionSpawnNewInputV2,
 } from '../../sessions/creation/sessionSpawnNewInputV2.js';
-import type { AgentStartContextV1 } from '../../account/settings/admitAgentStartV1.js';
 import type { SessionCreateOriginFieldsV1 } from '../../sessions/creation/sessionCreateOriginV1.js';
 import type {
   SessionCreationDirectoryApprovalV1,
@@ -218,7 +222,7 @@ import type {
   WorkflowActionInputSchemasV1,
   WorkflowActionOutputSchemasV1,
 } from '../../workflows/actionsV1.js';
-import type { WorkflowAcceptedAuthorizationV1 } from '../../workflows/workflowDefinitionV1.js';
+import type { WorkflowAcceptedAuthorizationV1, WorkflowRunStartedByV1 } from '../../workflows/workflowDefinitionV1.js';
 import type { WorkflowActionFailureV1 } from '../../workflows/workflowProgressV1.js';
 import type { WorkflowActionIdV1 } from '../actionIds.js';
 
@@ -301,6 +305,10 @@ export type ActionPluginCaller = Readonly<{
    * it never persists or substitutes a materialization reference.
    */
   materialization?: PluginMachineMaterializationRefV1;
+  /** Descriptive host-stamped initiating provenance; never plugin authorization or Action input. */
+  initiatingCaller?: ActionCaller;
+  /** Bounded admitting starter frozen for durable approval replay; never authorization. */
+  startedBy?: WorkflowRunStartedByV1;
 }>;
 
 /**
@@ -329,6 +337,8 @@ export type ActionWorkflowRunCaller = Readonly<{
 
 export type ActionCaller =
   | Readonly<{ kind: 'host' }>
+  /** Host-stamped authenticated Session agent; never supplied as Action input. */
+  | AgentStartSessionCallerV1
   | ActionPluginCaller
   | ActionAutomationRunCaller
   | ActionWorkflowRunCaller;
@@ -344,6 +354,7 @@ export type InvokeContributedAction = (request: Readonly<{
   context: ActionExecutorContext;
   approvalExecutionOrigin?: ApprovalExecutionOriginV1;
   signal?: AbortSignal;
+
 }>) => Promise<ActionExecuteResult>;
 
 /**
@@ -456,6 +467,9 @@ export type ActionExecutorContext = Readonly<{
 
   /** Caller cancellation for execution and interception. */
   signal?: AbortSignal;
+
+  /** Host-only passive observation sink, never serialized as Action input. */
+  onWaitSnapshot?: (snapshot: unknown) => void | Promise<void>;
 
   /** Host-stamped caller identity. Never accepted from plugin action input. */
   actionCaller?: ActionCaller;
@@ -1401,6 +1415,12 @@ export type ActionExecutorDeps = Readonly<{
     serverId?: string | null;
   }>) => Promise<unknown>;
   sessionWaitIdle?: (args: Readonly<{ sessionId: string; timeoutSeconds?: number; serverId?: string | null }>) => Promise<unknown>;
+  sessionAwarenessWait?: (args: Readonly<{
+    context: ActionExecutorContext;
+    input: WaitActionInputV1;
+    options: WaitOwnerOptionsV1;
+    readAwareness: () => Promise<unknown>;
+  }>) => Promise<WaitOwnerResultV1>;
   sessionWorkStateGet?: (args: Readonly<{ sessionId: string; serverId?: string | null }>) => Promise<unknown>;
   sessionGoalGet?: (args: Readonly<{ sessionId: string; serverId?: string | null }>) => Promise<unknown>;
   sessionGoalSet?: (args: Readonly<{
@@ -1513,7 +1533,7 @@ export type ActionExecutorDeps = Readonly<{
     serverId?: string | null;
     signal?: AbortSignal;
   }>) => Promise<SessionReportsToSetResultV1 | ActionExecuteFailure>;
-  sessionWorkerPublish?: (args: Readonly<{ context: ActionExecutorContext; summary: string }>) => Promise<unknown>;
+  sessionWorkerPublish?: (args: SessionWorkerPublishInputV1 & Readonly<{ context: ActionExecutorContext }>) => Promise<unknown>;
   sessionActivityGet: (args: Readonly<{ context: ActionExecutorContext; sessionId: string; view?: SessionListViewV1; windowSeconds?: number; serverId?: string; signal?: AbortSignal }>) => Promise<unknown>;
   sessionRecentMessagesGet: (args: Readonly<{
     sessionId: string;
@@ -1969,6 +1989,14 @@ export type ActionExecutorDeps = Readonly<{
   /** Document kind validation and key preparation at the authenticated key-holding host. */
   artifactAccessAction?: (args: Readonly<{
     actionId: ArtifactAccessActionIdV1;
+    input: unknown;
+    context: ActionExecutorContext;
+    signal?: AbortSignal;
+  }>) => Promise<unknown>;
+
+  /** Ordinary Account content; authenticated storage and workspace copying remain host-owned. */
+  artifactAction?: (args: Readonly<{
+    actionId: ArtifactActionIdV1;
     input: unknown;
     context: ActionExecutorContext;
     signal?: AbortSignal;

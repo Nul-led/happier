@@ -84,6 +84,17 @@ describe("voiceSessionLeaseRetentionRule", () => {
             },
             select: { id: true },
         });
+        const unsettled = await db.voiceSessionLease.create({
+            data: {
+                accountId: account.id,
+                periodKey: "2026-07",
+                grantedBy: "free",
+                elevenLabsAgentId: "agent_dev",
+                createdAt: new Date("2026-07-27T10:00:00.000Z"),
+                expiresAt: new Date("2026-07-27T10:01:00.000Z"),
+            },
+            select: { id: true },
+        });
 
         const rule = createVoiceSessionLeaseRetentionRule();
         const concurrentResults = await Promise.all([
@@ -119,6 +130,12 @@ describe("voiceSessionLeaseRetentionRule", () => {
             now,
         });
         expect(repeated).toEqual({ id: "voiceSessionLeases", deleted: 0 });
+        expect(await db.voiceSessionLease.findUnique({ where: { id: unsettled.id } })).not.toBeNull();
+        const nextPeriod = { policy: createPolicy(), batchSize: 100, maxDeletesPerRulePerRun: 100, now: new Date("2026-08-01T00:00:00.000Z") };
+        await expect(rule.run({ ...nextPeriod, dryRun: true })).resolves.toEqual({ id: "voiceSessionLeases", deleted: 1 });
+        expect(await db.voiceSessionLease.findUnique({ where: { id: unsettled.id } })).not.toBeNull();
+        await expect(rule.run({ ...nextPeriod, dryRun: false })).resolves.toEqual({ id: "voiceSessionLeases", deleted: 1 });
+        expect(await db.voiceSessionLease.findUnique({ where: { id: unsettled.id } })).toBeNull();
         expect(
             await db.voiceConversation.findUnique({
                 where: { id: conversation.id },

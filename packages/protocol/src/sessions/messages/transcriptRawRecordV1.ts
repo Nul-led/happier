@@ -16,8 +16,7 @@ import {
 import { createSessionMessageMetaSchema } from './sessionMessageMeta.js';
 import type { SessionMessageMeta } from './sessionMessageMeta.js';
 import { AgentIdV1Schema } from '../../agents/agentIdV1.js';
-import { WorkerUpdateV1Schema } from '../relations/workerUpdateV1.js';
-import { ExecutionRunCompletionV1Schema } from '../../execution/runs/completionInputV1.js';
+import { WorkerUpdateV1Schema, SessionWorkerPublishInputV1Schema, refineWorkerDeliverableResultV1 } from '../relations/workerUpdateV1.js';
 
 const UsageDataSchema = z
   .object({
@@ -817,9 +816,10 @@ const AgentEventSchema = z.discriminatedUnion('type', [
     .passthrough(),
   z.object({ type: z.literal('ready') }).passthrough(),
   z.object({ type: z.literal('worker-update'), update: WorkerUpdateV1Schema }).strict(),
-  z.object({ type: z.literal('worker-report'), summary: ExecutionRunCompletionV1Schema.shape.summary.unwrap() }).strict(),
+  z.object({ type: z.literal('worker-report'), ...SessionWorkerPublishInputV1Schema.shape }).strict(),
 ])
   .superRefine((event, ctx) => {
+    if (event.type === 'worker-report') refineWorkerDeliverableResultV1(event.summary, event.deliverables, ctx, 'summary');
     if (event.type === 'context-compaction') {
       addContextCompactionEventContinuationIssues(event as Record<string, unknown>, ctx, []);
     }

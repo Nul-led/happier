@@ -5,6 +5,8 @@ import { db } from "@/storage/db";
 import { type VoiceSessionReleaseBody, voiceSessionReleaseBodySchema } from "./voiceSessionLifecycleSchemas";
 import { type Fastify } from "../../types";
 import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
+import { completeVoiceSession } from "./voiceSessionComplete";
+import { createVoiceRouteAbortScope } from "./voiceRouteAbortScope";
 
 export function registerVoiceSessionReleaseRoute(app: Fastify): void {
     app.post("/v1/voice/session/release", {
@@ -29,16 +31,30 @@ export function registerVoiceSessionReleaseRoute(app: Fastify): void {
 
         const { leaseId } = request.body as VoiceSessionReleaseBody;
         try {
-            await db.voiceSessionLease.updateMany({
+            const lease = await db.voiceSessionLease.findFirst({
                 where: { id: leaseId, accountId: request.userId },
-                data: { expiresAt: new Date() },
+                select: { providerConversationId: true },
             });
+            if (lease?.providerConversationId) {
+                const abortScope = createVoiceRouteAbortScope(reply);
+                const result = await completeVoiceSession({
+                    requestHomeEnv,
+                    userId: request.userId,
+                    leaseId,
+                    providerConversationId: lease.providerConversationId,
+                    signal: abortScope.signal,
+                }).finally(() => abortScope.dispose());
+                if (!result.ok && result.reason === "upstream_error") {
+                    return reply.code(503).send({ ok: false, reason: "upstream_error" as const });
+                }
+            }
         } catch {
             return reply.code(503).send({ ok: false, reason: "upstream_error" as const });
         }
 
         // Deliberately existence-oblivious: release is idempotent and must not
         // disclose whether another Account owns the supplied lease id.
+        // Without provider-attested completion, leave the reservation and quota intact.
         return reply.send({ ok: true as const });
     });
 }

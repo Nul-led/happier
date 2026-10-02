@@ -3,7 +3,7 @@ import {
     deriveSessionFollowWakeEventLocalIdV1,
     isPlainMachineDataKeyMarker,
     isSessionFollowFrontierEqualV1,
-    isSessionFollowTerminalTurnEqualV1,
+    isSessionFollowTurnEqualV1,
     isSessionFollowConsumptionWithinCurrentV1,
     type SessionFollowFrontierV1,
     type SessionFollowAcknowledgeRequestV1,
@@ -65,6 +65,7 @@ const SESSION_SELECT = {
     agentStateVersion: true,
     latestTurnId: true,
     latestTurnStatus: true,
+    active: true,
 } as const;
 
 const EDGE_SELECT = {
@@ -227,6 +228,7 @@ type SessionRow = Readonly<{
     agentStateVersion: number;
     latestTurnId: string | null;
     latestTurnStatus: string | null;
+    active: boolean;
 }>;
 
 type EdgeRow = Readonly<{
@@ -675,7 +677,7 @@ export async function observePendingSessionFollowForDestinationInTx(tx: Tx, inpu
         })).ok) continue;
         currentSourceSessionIds.push(edge.sourceSessionId);
         const delivered = readStoredSessionFollowFrontier(edge);
-        const observed = readCurrentSourceSessionFollowFrontier(source);
+        const observed = readCurrentSourceSessionFollowFrontier(source, edge.edgeKind === 'reports_to');
         if (compareSessionFollowFrontierProgressV1(delivered, observed) !== "ahead") continue;
         pending.push({
             sourceSessionId: edge.sourceSessionId,
@@ -848,7 +850,7 @@ export async function acknowledgeSessionFollowFrontierInTx(tx: Tx, input: Readon
         return { ok: false, rejection: "provider_acceptance_unverified" };
     }
 
-    const current = readCurrentSourceSessionFollowFrontier(source);
+    const current = readCurrentSourceSessionFollowFrontier(source, edge.edgeKind === 'reports_to');
     if (!isSessionFollowConsumptionWithinCurrentV1({
         expected: input.expected,
         observed: input.observed,
@@ -857,17 +859,11 @@ export async function acknowledgeSessionFollowFrontierInTx(tx: Tx, input: Readon
     })) {
         return { ok: false, rejection: "invalid_consumed_frontier" };
     }
-    if (!isSessionFollowTerminalTurnEqualV1(current.turn, input.consumed.turn)) {
+    if (!isSessionFollowTurnEqualV1(current.turn, input.consumed.turn)) {
         return { ok: false, rejection: "stale_terminal_turn" };
     }
 
-    const frontierWhere = {
-            deliveredTranscriptSeq: input.expected.transcriptSeq,
-            deliveredReadyEventSeq: input.expected.readyEventSeq,
-            deliveredAgentStateVersion: input.expected.agentStateVersion,
-            deliveredTurnId: input.expected.turn?.id ?? null,
-            deliveredTurnStatus: input.expected.turn?.status ?? null,
-    };
+    const frontierWhere = writeSessionFollowFrontierColumns(input.expected);
     const written = edge.edgeKind === 'reports_to' ? await tx.sessionReportsTo.updateMany({
         where: { sessionId: input.sourceSessionId, leadSessionId: input.destinationSessionId,
             attachedAt: edge.attachedAt!, ...frontierWhere },

@@ -251,6 +251,26 @@ const SCM_GIT_ACTION_SPECS_PREFIX = [
     },
   }),
   defineScmActionSpec({
+    id: 'scm.commit.undoLast',
+    workspaceWrite: true,
+    title: 'Undo last commit',
+    description: 'Undo the observed unpushed HEAD commit and keep all changes staged.',
+    safety: 'danger',
+    placements: [],
+    bindings: { rpcMethod: 'scm.commit.undoLast' },
+    surfaces: { ui: true, voice: false, agent: true, mcp: true, cli: true, rpc: true },
+    sideEffectClass: 'write',
+    inputSchema: scm.ScmCommitUndoLastRequestSchema,
+    outputSchema: scm.ScmCommitUndoLastResponseSchema,
+    inputHints: {
+      title: 'Undo last commit',
+      fields: [
+        { path: 'cwd', title: 'cwd', widget: 'text' },
+        { path: 'expectedHeadOid', title: 'Observed HEAD commit', widget: 'text' },
+      ],
+    },
+  }),
+  defineScmActionSpec({
     id: 'scm.commit.backout',
     workspaceWrite: true,
     title: 'Commit backout',

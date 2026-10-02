@@ -132,6 +132,10 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
             });
 
             if (!result.ok) {
+                if (result.error === 'quota_exceeded') {
+                    callback?.({ result: 'error', error: result.error, budget: result.budget, limitBytes: result.limitBytes, usedBytes: result.usedBytes });
+                    return;
+                }
 
                 if (result.error === 'invalid-params') {
                     callback?.({ result: 'error', message: 'Invalid parameters' });
@@ -237,6 +241,10 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
             });
 
             if (!result.ok) {
+                if (result.error === 'quota_exceeded') {
+                    callback?.({ result: 'error', error: result.error, budget: result.budget, limitBytes: result.limitBytes, usedBytes: result.usedBytes });
+                    return;
+                }
 
                 if (result.error === 'invalid-params') {
                     callback?.({ result: 'error', message: 'Invalid parameters' });

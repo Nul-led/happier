@@ -5,7 +5,8 @@ import {
   renderSessionInputContextPromptV1,
   renderWorkerUpdatePromptBlockV1,
 } from '../messages/sessionInputPromptContextV1.js';
-import { WorkerUpdateV1Schema } from './workerUpdateV1.js';
+import { SessionWorkerPublishInputV1Schema, WorkerUpdateV1Schema } from './workerUpdateV1.js';
+import { TranscriptRawAgentEventV1Schema } from '../messages/transcriptRawRecordV1.js';
 
 const sessionUpdate = {
   v: 1,
@@ -19,6 +20,37 @@ const sessionUpdate = {
 };
 
 describe('WorkerUpdateV1', () => {
+  it('carries strict scoped deliverable references through publication and the host envelope', () => {
+    const deliverables = [
+      { kind: 'workspace_file', sessionId: 'worker-session', path: 'docs/result.md' },
+      { kind: 'artifact', artifactId: 'document-1' },
+    ];
+    const report = { summary: 'Ready for review', deliverables };
+    expect(SessionWorkerPublishInputV1Schema.parse(report)).toEqual(report);
+    expect(TranscriptRawAgentEventV1Schema.parse({ type: 'worker-report', ...report })).toEqual({ type: 'worker-report', ...report });
+    expect(WorkerUpdateV1Schema.parse({ ...sessionUpdate, deliverables })).toEqual({ ...sessionUpdate, deliverables });
+    for (const reference of [
+      { ...deliverables[0], contents: 'retained copy' },
+      { kind: 'workspace_file', path: 'docs/result.md' },
+      { kind: 'artifact', artifactId: '' },
+      { kind: 'artifact', artifactId: 'document-1', serverId: 'another-home' },
+      ...['../secret', '/secret', 'C:\\secret', 'folder/../secret', 'folder\\secret', '~/secret', 'secret\0'].map(path => ({ kind: 'workspace_file', sessionId: 'worker-session', path })),
+    ]) {
+      expect(SessionWorkerPublishInputV1Schema.safeParse({ ...report, deliverables: [reference] }).success).toBe(false);
+    }
+    expect(SessionWorkerPublishInputV1Schema.safeParse({ ...report, deliverables: Array(32).fill(deliverables[1]) }).success).toBe(true);
+    expect(SessionWorkerPublishInputV1Schema.safeParse({ ...report, deliverables: Array(33).fill(deliverables[1]) }).success).toBe(false);
+    expect(WorkerUpdateV1Schema.safeParse({ ...sessionUpdate, deliverables: Array(33).fill(deliverables[1]) }).success).toBe(false);
+    expect(WorkerUpdateV1Schema.safeParse({ ...sessionUpdate, deliverables: [{ ...deliverables[0], sessionId: 'another-session' }] }).success).toBe(false);
+    expect(WorkerUpdateV1Schema.safeParse({ ...sessionUpdate, deliverables: [{ kind: 'artifact', artifactId: 'x'.repeat(8_001) }] }).success).toBe(false);
+    const referenceBytes = JSON.stringify(deliverables).length;
+    expect(SessionWorkerPublishInputV1Schema.safeParse({ summary: 'x'.repeat(8_000 - referenceBytes), deliverables }).success).toBe(true);
+    expect(SessionWorkerPublishInputV1Schema.safeParse({ summary: 'x'.repeat(8_000), deliverables }).success).toBe(false);
+    expect(WorkerUpdateV1Schema.safeParse({ ...sessionUpdate, result: 'x'.repeat(8_000), deliverables }).success).toBe(false);
+    const rendered = renderWorkerUpdatePromptBlockV1(WorkerUpdateV1Schema.parse({ ...sessionUpdate, deliverables }));
+    expect(rendered).toContain('docs/result.md');
+    expect(rendered).toContain('document-1');
+  });
   it('requires the version, worker identity, owner state, wake, headline and inspection fact', () => {
     for (const field of Object.keys(sessionUpdate).filter((field) => field !== 'result')) {
       const update: Record<string, unknown> = { ...sessionUpdate };

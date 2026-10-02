@@ -27,6 +27,14 @@ import { FEATURE_CONFIG } from './featureServerConfig';
 
 export { FEATURE_READER_DEFAULTS };
 
+export function readArtifactStorageEnv(env: NodeJS.ProcessEnv) {
+  return {
+    revisionRetentionCount: readFeatureConfig(env, 'artifactRevisionRetentionCount'),
+    documentLimitBytes: readFeatureConfig(env, 'artifactDocumentLimitBytes') ?? null,
+    accountLimitBytes: readFeatureConfig(env, 'artifactAccountLimitBytes') ?? null,
+  };
+}
+
 /**
  * Reads one feature key through the server configuration registry codec, with the default and
  * bounds `FEATURE_READER_DEFAULTS` declares (the same parse `parseBooleanEnv`/`parseIntEnv` did).

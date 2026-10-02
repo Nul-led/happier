@@ -12,7 +12,7 @@ import {
     type PeerTcpTunnelRelayAuthorizationV2,
     type ProviderBrokerRelayApplicationBindingV1,
     type TcpTunnelGrantScopeV1,
-    type VoiceMediaApplicationAuthorityV1,
+    type VoiceMediaGrantScopeV1,
 } from "@happier-dev/protocol";
 import tweetnacl from "tweetnacl";
 
@@ -39,7 +39,7 @@ export type MintPeerTcpTunnelRelayAuthorizationV2Input = Readonly<{
     targetMachineId: string;
     relaySocketId: string;
     destination: PeerTcpTunnelDestinationV1;
-    scope: TcpTunnelGrantScopeV1;
+    scope: TcpTunnelGrantScopeV1 | VoiceMediaGrantScopeV1;
     nowMs: number;
     ttlMs: number;
     serverGateEnabled: boolean;
@@ -52,8 +52,6 @@ export type MintPeerTcpTunnelRelayAuthorizationV2Input = Readonly<{
     }>;
     capProfileId?: string;
     flowKind?: PeerTcpTunnelRelayAuthorizationFlowKindV1;
-    applicationAuthority?: VoiceMediaApplicationAuthorityV1;
-    applicationBudgets?: Readonly<{ maxIdleMs: number; maxDurationMs: number; maxTotalBytes?: number }>;
     signingKey: Readonly<{
         keyId: string;
         secretKey: Uint8Array;
@@ -158,19 +156,8 @@ export function mintPeerTcpTunnelRelayAuthorizationV2(
             receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
         };
     }
-    if (input.scope.kind !== "tcp_tunnel") {
-        return {
-            ok: false,
-            reasonCode: "invalid_scope",
-            receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
-        };
-    }
-    const flowKind = input.flowKind ?? "tcp_tunnel";
-    if (
-        (flowKind === "voice_media" && (!input.applicationAuthority || !input.applicationBudgets))
-        || (flowKind === "tcp_tunnel" && (input.applicationAuthority || input.applicationBudgets))
-        || flowKind === "provider_broker"
-    ) {
+    const flowKind = input.flowKind ?? input.scope.kind;
+    if (flowKind !== input.scope.kind) {
         return {
             ok: false,
             reasonCode: "invalid_scope",
@@ -185,8 +172,10 @@ export function mintPeerTcpTunnelRelayAuthorizationV2(
         };
     }
     if (
-        !input.scope.allowedPorts.includes(input.destination.port)
-        || !input.serverCaps.allowedPorts.includes(input.destination.port)
+        input.scope.kind === "tcp_tunnel" && (
+            !input.scope.allowedPorts.includes(input.destination.port)
+            || !input.serverCaps.allowedPorts.includes(input.destination.port)
+        )
     ) {
         return {
             ok: false,
@@ -194,11 +183,11 @@ export function mintPeerTcpTunnelRelayAuthorizationV2(
             receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
         };
     }
-    const budgets = input.applicationBudgets;
+    const budgets = input.scope.kind === "voice_media" ? input.scope : undefined;
     if (
         budgets && (
-            (input.serverCaps.maxIdleMs !== undefined && budgets.maxIdleMs > input.serverCaps.maxIdleMs)
-            || (input.serverCaps.maxDurationMs !== undefined && budgets.maxDurationMs > input.serverCaps.maxDurationMs)
+            (input.serverCaps.maxIdleMs !== undefined && budgets.maxIdleMs !== undefined && budgets.maxIdleMs > input.serverCaps.maxIdleMs)
+            || (input.serverCaps.maxDurationMs !== undefined && budgets.maxDurationMs !== undefined && budgets.maxDurationMs > input.serverCaps.maxDurationMs)
             || (input.serverCaps.maxBytes !== undefined && budgets.maxTotalBytes !== undefined && budgets.maxTotalBytes > input.serverCaps.maxBytes)
         )
     ) {
@@ -209,6 +198,9 @@ export function mintPeerTcpTunnelRelayAuthorizationV2(
         };
     }
 
+    const maxIdleMs = budgets?.maxIdleMs ?? input.serverCaps.maxIdleMs;
+    const maxDurationMs = budgets?.maxDurationMs ?? input.serverCaps.maxDurationMs;
+    const maxTotalBytes = budgets?.maxTotalBytes ?? input.serverCaps.maxBytes;
     const payload: PeerTcpTunnelRelayAuthorizationPayloadV2 = PeerTcpTunnelRelayAuthorizationPayloadV2Schema.parse({
         v: 2,
         grantId: `relay_grant_${randomUUID()}`,
@@ -217,19 +209,19 @@ export function mintPeerTcpTunnelRelayAuthorizationV2(
         flowKind,
         routeKind: "server_relay",
         tunnelId: input.scope.tunnelId,
-        ...(input.applicationAuthority ? {
-            applicationKind: input.applicationAuthority.applicationKind,
-            applicationAttemptId: input.applicationAuthority.applicationAttemptId,
-            applicationAuthorityDigest: input.applicationAuthority.applicationAuthorityDigest,
+        ...(budgets ? {
+            applicationKind: budgets.applicationKind,
+            applicationAttemptId: budgets.applicationAttemptId,
+            applicationAuthorityDigest: budgets.applicationAuthorityDigest,
         } : {}),
         relaySocketId: input.relaySocketId,
         destination: input.destination,
         capProfileId: input.capProfileId ?? "default",
         maxFrameBytes: input.serverCaps.maxFrameBytes,
         ...(budgets ? {
-            maxIdleMs: budgets.maxIdleMs,
-            maxDurationMs: budgets.maxDurationMs,
-            ...(budgets.maxTotalBytes !== undefined ? { maxTotalBytes: budgets.maxTotalBytes } : {}),
+            ...(maxIdleMs !== undefined ? { maxIdleMs } : {}),
+            ...(maxDurationMs !== undefined ? { maxDurationMs } : {}),
+            ...(maxTotalBytes !== undefined ? { maxTotalBytes } : {}),
         } : {}),
         iat: input.nowMs,
         exp: input.nowMs + input.ttlMs,

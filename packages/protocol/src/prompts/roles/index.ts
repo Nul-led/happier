@@ -7,3 +7,4 @@ export * from './renderSessionRoleBlockV1.js';
 export * from './roleActionsV1.js';
 export * from './roleArtifactSharingV1.js';
 export * from './roleActionIdsV1.js';
+export * from './accountRoleActions.js';

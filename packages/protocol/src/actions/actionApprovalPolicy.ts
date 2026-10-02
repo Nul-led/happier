@@ -1,5 +1,5 @@
 import { ACTION_IDS } from './actionIds.js';
-import { isAgentApprovalRequestSurface, isAgentRequestablePresentUserActionId, requiresPresentUserDecisionForActionInputV1 } from './decisionAuthority.js';
+import { isAgentApprovalRequestSurface, isAgentRequestablePresentUserActionId, requiresPresentUserExecutionAuthorityForActionInputV1 } from './decisionAuthority.js';
 import { ActionIdSchema, type ActionId } from './actionIds.js';
 import type { ActionExecutorContext } from './actionExecutor.js';
 import type {
@@ -21,7 +21,7 @@ export type ResolveActionApprovalRoutingArgs = Readonly<{
   spec: ActionSpec;
   input?: unknown;
   settings?: ActionsSettingsV1 | null;
-  context?: Pick<ActionExecutorContext, 'surface' | 'authority' | 'presentUserConfirmation' | 'bypassApprovals'> | null;
+  context?: Pick<ActionExecutorContext, 'surface' | 'authority' | 'presentUserConfirmation' | 'bypassApprovals' | 'actionCaller'> | null;
   requiredByPolicy?: boolean;
   /** Host-proved contextual classification; overrides cannot waive mandatory Agent trigger approval. */
   defaultSafety?: ActionSpec['safety'];
@@ -70,6 +70,7 @@ export const EGRESS_SENSITIVE_AGENT_FLOOR = [
 
 /** Safe authority transitions still require a human decision by default on the agent surface. */
 export const SURFACE_AUTHORITY_AGENT_FLOOR = [
+  'computer.permissions.openSettings',
   'browser.control.takeControl',
   'browser.control.handBack',
   'computer.target.select',
@@ -77,11 +78,16 @@ export const SURFACE_AUTHORITY_AGENT_FLOOR = [
   'computer.control.handBack',
 ] as const satisfies readonly ActionId[];
 
+// FIN 03 §5.4/§5.7: scoped removal is direct after own/led Session or exact
+// originating-trigger admission. Its danger metadata still fails ambiguous callers closed.
+const SCOPED_SESSION_TRIGGER_APPROVAL_EXEMPT_ACTION_ID = 'session.trigger.remove' satisfies ActionId;
+
 /**
  * The danger floor, DERIVED from the actionSpecs danger SSOT: every action that is both
  * `safety: 'danger'` and surfaced on `agent` requires human consent by default when
- * initiated through the agent surface. This is the single source of truth — marking an
- * `agent` action as `safety: 'danger'` floors it automatically (CON-1/CON-2/CON-3).
+ * initiated through the agent surface, except the approved scoped Session-trigger removal.
+ * Marking any other `agent` action as `safety: 'danger'` floors it automatically
+ * (CON-1/CON-2/CON-3).
  *
  * This intentionally uses the full action catalog, not only `RUNTIME_ACTION_IDS_V1`: LIVE-1 caught
  * `prompt_doc.update`, a dangerous Session agent prompt-library action that still needs the same
@@ -90,20 +96,21 @@ export const SURFACE_AUTHORITY_AGENT_FLOOR = [
 const DERIVED_DANGER_AGENT_FLOOR_IDS: readonly ActionId[] = ACTION_IDS.filter(
   (id) => {
     const spec = getActionSpec(id);
-    return spec.safety === 'danger' && spec.surfaces.agent === true;
+    return spec.safety === 'danger' && spec.surfaces.agent === true
+      && id !== SCOPED_SESSION_TRIGGER_APPROVAL_EXEMPT_ACTION_ID;
   },
 );
 
 /**
  * The effective agent-initiated approval floor: the derived danger floor UNIONED with the
- * non-danger egress floor. The floor legitimately ⊋ {danger ∩ agent}; the closure
- * invariant is a SUBSET test ({danger ∩ agent} ⊆ floor), NEVER equality.
+ * non-danger egress floor. Excluding the approved scoped-removal exception, the
+ * danger ∩ agent subset is contained in the floor, which also includes safe egress.
  *
  * Per FINALIZATION-PLAN §4.2 / §12.8 / §15-Δ1 / §16-Δ1 this is a SURFACE-KEYED default — NOT a
  * global `RESULT_REQUIRED_APPROVAL_ACTION_IDS` addition (that set is a blocking-result contract,
  * not a human-approval gate). Human approval is decided here, via the persisted
  * surface-keyed ActionsSettings policy: dangerous exposed Actions prompt by default on every
- * user-configurable surface, while non-danger egress forms remain agent-gated.
+ * user-configurable surface except scoped removal, while non-danger egress forms remain agent-gated.
  *
  * Persisted overrides may require or explicitly waive default confirmation on a known surface;
  * Agent Workflow trigger writes retain the mandatory rule below.
@@ -239,9 +246,10 @@ function requiresDefaultApprovalFloor(
   defaultSafety?: ActionSpec['safety'],
 ): boolean {
   const surface = resolveApprovalSurface(ctx);
+  if (actionId === 'capture.view') return true;
   // Scoped removal is dangerous metadata, but its own/led Session policy owns
-  // admission (FIN 03 §5.7); it does not acquire the Account trigger approval floor.
-  if (actionId === 'session.trigger.remove' && surface.kind !== 'ambiguous') return false;
+  // admission (FIN 03 §5.4/§5.7); it does not acquire the Account trigger approval floor.
+  if (actionId === SCOPED_SESSION_TRIGGER_APPROVAL_EXEMPT_ACTION_ID && surface.kind !== 'ambiguous') return false;
   // UI owns a direct present-user confirmation host for its ordinary dangerous
   // Actions, except the rows whose confirmation is this policy's own default.
   // CLI suppresses the duplicate default only when its host records a completed
@@ -282,7 +290,7 @@ function requiresDefaultApprovalFloor(
 export function isApprovalRequiredByActionsSettings(
   actionId: ActionSettingsActionId,
   settings: ActionsSettingsV1,
-  ctx?: Pick<ActionExecutorContext, 'surface' | 'authority' | 'presentUserConfirmation'> | null,
+  ctx?: Pick<ActionExecutorContext, 'surface' | 'authority' | 'presentUserConfirmation' | 'actionCaller'> | null,
   defaultSafety?: ActionSpec['safety'],
 ): boolean {
   if (isAgentApprovalRequestSurface(ctx?.surface) && isAgentRequestablePresentUserActionId(actionId)) return true;
@@ -292,6 +300,10 @@ export function isApprovalRequiredByActionsSettings(
   const override: ActionSettingsOverride | undefined = settings.actions?.[actionId];
   const required = Array.isArray(override?.approvalRequiredSurfaces) ? override.approvalRequiredSurfaces : [];
   if (typeof rawSurface === 'string' && required.some((requiredSurface) => requiredSurface === rawSurface)) return true;
+  if (actionId === 'capture.view') {
+    return ctx?.surface !== 'plugin' || ctx.actionCaller?.kind !== 'plugin'
+      || settings.pluginHostCaptureApprovalWaived?.includes(ctx.actionCaller.pluginId) !== true;
+  }
   const waived = Array.isArray(settings.approvalWaivedSurfaces?.[actionId])
     ? settings.approvalWaivedSurfaces[actionId]
     : [];
@@ -321,7 +333,7 @@ function resolveUnwiredApprovalDefault(
 export function resolveActionApprovalRouting(args: ResolveActionApprovalRoutingArgs): ActionApprovalRoutingDecision {
   const presentUserRequest = isAgentApprovalRequestSurface(args.context?.surface)
     && (isAgentRequestablePresentUserActionId(args.actionId)
-      || (args.actionId === 'session.open' && requiresPresentUserDecisionForActionInputV1(args.spec, args.input)));
+      || (args.actionId === 'session.open' && requiresPresentUserExecutionAuthorityForActionInputV1(args.spec, args.input)));
   const computerAction = args.actionId === 'computer.capture' || args.actionId === 'computer.query' || args.actionId === 'computer.input';
   const computerConsent = computerAction && args.computerConsentGranted === true
     && args.context?.authority !== 'present_user' && args.context?.bypassApprovals !== true;

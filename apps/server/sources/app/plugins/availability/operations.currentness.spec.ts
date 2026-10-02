@@ -1,4 +1,20 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+    ARTIFACT_PLAIN_DATA_KEY_MARKER,
+    encodePlainArtifactStoredContent,
+    PluginAvailabilityActionHttpPathsV1,
+} from "@happier-dev/protocol";
+import { createPackageAssetArchiveV1, encodePackageAssetArchiveBodyV1 } from "@happier-dev/protocol/plugins/availability";
+import {
+    computePluginUiArtifactFileSetSha256DigestV1,
+    computePluginUiArtifactSha256DigestV1,
+    createPluginUiArtifactArchiveV1,
+    encodePluginUiArtifactArchiveBodyV1,
+} from "@happier-dev/protocol/plugins/ui";
+import * as privacyKit from "privacy-kit";
+import { createInTxHarness } from "@/app/api/testkit/txHarness";
+import { withAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
+import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 
 const accountId = "account-availability-currentness";
 const pluginId = "com.acme.currentness";
@@ -84,12 +100,16 @@ const boundary = vi.hoisted(() => {
         account: { findUnique: vi.fn() },
         accountPluginIntent: { findUnique: vi.fn() },
         accountPluginRelease: { findUnique: vi.fn() },
+        accountPluginUiArtifact: { findUnique: vi.fn() },
+        artifact: { findUnique: vi.fn() },
         machine: { findMany: vi.fn() },
     };
     const transactionSnapshot = {
         account: { findUnique: vi.fn() },
         accountPluginIntent: { findUnique: vi.fn() },
         accountPluginRelease: { findUnique: vi.fn() },
+        accountPluginUiArtifact: { findUnique: vi.fn() },
+        artifact: { findUnique: vi.fn() },
         machine: { findMany: vi.fn() },
     };
     return { directDb, transactionSnapshot };
@@ -100,13 +120,10 @@ vi.mock("@/storage/db", () => ({
     isPrismaErrorCode: () => false,
 }));
 
-vi.mock("@/storage/inTx", () => ({
-    inTx: async <T>(run: (tx: typeof boundary.transactionSnapshot) => Promise<T>): Promise<T> => (
-        await run(boundary.transactionSnapshot)
-    ),
-}));
+vi.mock("@/storage/inTx", () => createInTxHarness(() => boundary.transactionSnapshot));
 
 import { createPluginAvailabilityOperations } from "./operations";
+import { registerPluginAvailabilityRoutes } from "./routes";
 
 describe("plugin Availability read currentness", () => {
     beforeEach(() => {
@@ -206,4 +223,163 @@ describe("plugin Availability read currentness", () => {
             }],
         });
     });
+});
+
+function currentHostedArchiveFixture() {
+    const files = [{
+        relativePath: "hosted-web/hosted/index.html",
+        bytes: new TextEncoder().encode("<main>Current archive</main>"),
+    }];
+    const graph = {
+        artifactId: "hosted",
+        tier: "hostedWeb" as const,
+        entry: files[0]!.relativePath,
+        files: files.map((file) => ({
+            relativePath: file.relativePath,
+            digest: computePluginUiArtifactSha256DigestV1(file.bytes),
+            byteSize: file.bytes.byteLength,
+        })),
+        digest: computePluginUiArtifactFileSetSha256DigestV1(files),
+        builtWith: { staging: "staticDirectory" as const },
+        hostUiApiRange: "^1.0.0",
+    };
+    const uiArchive = createPluginUiArtifactArchiveV1({ pluginId, artifactGraph: graph, files });
+    const release = releaseRow({
+        artifactId: "00000000-0000-4000-8000-000000000001",
+        archiveDigestSha256: `sha256:${"a".repeat(64)}`,
+        artifactDigest: graph.digest,
+        displayName: "Current hosted archives",
+    });
+    const manifest = {
+        ...release.normalizedManifest,
+        contributes: { resources: [{
+            id: "brand-icon", kind: "asset", path: "assets/brand.png", contentType: "image/png",
+        }] },
+    };
+    const packageArchive = createPackageAssetArchiveV1({
+        manifest,
+        files: [{ path: "assets/brand.png", bytes: new Uint8Array([137, 80, 78, 71]) }],
+    });
+    if (!uiArchive || !packageArchive) throw new Error("Expected current hosted archive fixture");
+    const uiEnvelope = {
+        header: encodePlainArtifactStoredContent(uiArchive.header),
+        body: encodePlainArtifactStoredContent({ body: encodePluginUiArtifactArchiveBodyV1(uiArchive.body) }),
+        dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+    };
+    const packageEnvelope = {
+        header: encodePlainArtifactStoredContent(packageArchive.header),
+        body: encodePlainArtifactStoredContent({ body: encodePackageAssetArchiveBodyV1(packageArchive.body) }),
+        dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+    };
+    const storedArtifact = (id: string, envelope: typeof uiEnvelope) => ({
+        id, accountId,
+        header: privacyKit.decodeBase64(envelope.header), headerVersion: 1,
+        body: privacyKit.decodeBase64(envelope.body), bodyVersion: 1,
+        dataEncryptionKey: privacyKit.decodeBase64(envelope.dataEncryptionKey), seq: 0,
+    });
+    const uiArtifact = storedArtifact(release.uiArtifacts[0]!.artifactId, uiEnvelope);
+    const packageArtifact = storedArtifact("00000000-0000-4000-8000-000000000002", packageEnvelope);
+    const qualifiedRelease = {
+        ...release,
+        normalizedManifest: manifest,
+        packageAssetArchive: packageArchive.descriptor,
+        packageAssetArtifactId: packageArtifact.id,
+        packageAssetArtifact: packageArtifact,
+    };
+    const foreignAccountId = "account-availability-foreign";
+    type AccountRow = Readonly<{
+        encryptionMode: "plain" | "e2ee";
+        publicKey: string | null;
+        contentPublicKey: string | null;
+        contentPublicKeySig: string | null;
+        seq: number;
+    }>;
+    let owner: AccountRow = {
+        encryptionMode: "plain", publicKey: null, contentPublicKey: null, contentPublicKeySig: null, seq: 8,
+    };
+    const foreign: AccountRow = { ...owner };
+    // Only persistent reads are simulated. Archive, Account-mode, currentness,
+    // rejoin, hosting-policy and HTTP admission logic all run through their owners.
+    for (const database of [boundary.directDb, boundary.transactionSnapshot]) {
+        database.account.findUnique.mockImplementation(async (query: { where: { id: string } }) => (
+            query.where.id === accountId ? owner : query.where.id === foreignAccountId ? foreign : null
+        ));
+        database.accountPluginRelease.findUnique.mockImplementation(async (query: { where: {
+            id?: string;
+            accountId_pluginId_version?: { accountId: string; pluginId: string; version: string };
+        } }) => {
+            const coordinate = query.where.accountId_pluginId_version;
+            return query.where.id === qualifiedRelease.id || (
+                coordinate?.accountId === accountId
+                && coordinate.pluginId === pluginId
+                && coordinate.version === qualifiedRelease.version
+            ) ? qualifiedRelease : null;
+        });
+        database.accountPluginIntent.findUnique.mockResolvedValue({
+            pluginId, desiredVersion: qualifiedRelease.version, enabled: true,
+            offlineUiHosting: "enabled", writableCollections: [], revision: 1n,
+        });
+        database.accountPluginUiArtifact.findUnique.mockResolvedValue({
+            ...qualifiedRelease.uiArtifacts[0], artifact: uiArtifact,
+        });
+        database.artifact.findUnique.mockImplementation(async (query: { where: { id: string } }) => (
+            query.where.id === uiArtifact.id ? uiArtifact : query.where.id === packageArtifact.id ? packageArtifact : null
+        ));
+    }
+    return {
+        release: { pluginId, version: qualifiedRelease.version },
+        slot: qualifiedRelease.uiSlots[0]!,
+        uiArtifact, packageArtifact, uiEnvelope, packageEnvelope, foreignAccountId,
+        changeOwnerMode() {
+            owner = { ...owner, ...createSignedAccountContentBinding(), encryptionMode: "e2ee" };
+        },
+    };
+}
+
+describe("plugin Availability hosted Artifact current transport", () => {
+    beforeEach(() => {
+        vi.resetAllMocks();
+        vi.stubEnv("HAPPIER_FEATURE_PLUGINS_UI_ARTIFACT_HOSTING__ENABLED", "1");
+        vi.stubEnv("HAPPIER_FEATURE_PLUGINS_UI_ARTIFACT_HOSTING__MAX_ARTIFACT_BYTES", "1048576");
+        vi.stubEnv("HAPPIER_FEATURE_PLUGINS_UI_ARTIFACT_HOSTING__MAX_ACCOUNT_BYTES", "4194304");
+    });
+    afterEach(() => vi.unstubAllEnvs());
+
+    it.each(["ui", "packageAsset"] as const)(
+        "rejoins and publicly reads a current plain %s archive without a declaration, retaining Account and mode admission",
+        async (kind) => {
+            const fixture = currentHostedArchiveFixture();
+            const operations = createPluginAvailabilityOperations();
+            const freshArtifactId = "00000000-0000-4000-8000-000000000099";
+            const rejoined = kind === "ui"
+                ? await operations.publishUiArtifact({ accountId, input: {
+                    release: fixture.release, slot: fixture.slot,
+                    accountArtifactId: freshArtifactId, artifact: fixture.uiEnvelope,
+                } })
+                : await operations.publishPackageAsset({ accountId, input: {
+                    release: fixture.release, artifactId: freshArtifactId, artifact: fixture.packageEnvelope,
+                } });
+            expect(rejoined).toMatchObject({ outcome: "rejoined", link: kind === "ui"
+                ? { accountArtifactId: fixture.uiArtifact.id } : { artifactId: fixture.packageArtifact.id } });
+            const path = PluginAvailabilityActionHttpPathsV1[kind === "ui"
+                ? "account.plugins.availability.uiArtifact.read" : "account.plugins.availability.packageAsset.read"];
+            const payload = kind === "ui"
+                ? { release: fixture.release, contributionId: fixture.slot.contributionId,
+                    artifactId: fixture.slot.artifactId, tier: fixture.slot.tier, platform: fixture.slot.platform }
+                : { release: fixture.release };
+            await withAuthenticatedTestApp((app) => registerPluginAvailabilityRoutes(app, { operations }), async (app) => {
+                const read = (userId: string) => app.inject({ method: "POST", url: path,
+                    headers: { "x-test-user-id": userId }, payload });
+                const response = await read(accountId);
+                expect(response.statusCode, response.body).toBe(200);
+                expect(response.json()).toMatchObject({ artifact: kind === "ui" ? fixture.uiEnvelope : fixture.packageEnvelope });
+                expect((await read(fixture.foreignAccountId)).statusCode).toBe(404);
+                fixture.changeOwnerMode();
+                const wrongMode = await read(accountId);
+                expect(wrongMode.statusCode).toBe(400);
+                expect(wrongMode.json()).toEqual({ error: kind === "ui"
+                    ? "plugin_ui_artifact_invalid_content" : "plugin_package_asset_invalid_content" });
+            });
+        },
+    );
 });

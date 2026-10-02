@@ -19,12 +19,12 @@ const preview: LocalServicePreviewResourceV1 = {
         title: "Vite App",
         addressLabel: "127.0.0.1:5173",
     },
-    originMode: "path",
+    originMode: "host",
     policy: {
         allowedMethods: ["GET", "HEAD", "POST", "OPTIONS"],
         cookiePolicy: "drop",
         compressionPolicy: "identity",
-        redirectPolicy: "rewrite_path_mode",
+        redirectPolicy: "preserve_host_origin",
         maxRequestBodyBytes: 1024 * 1024,
         maxResponseBodyBytes: 1024 * 1024,
     },
@@ -374,13 +374,13 @@ describe("local service preview HTTP adapter", () => {
         });
 
         expect(sink.writeHead).toHaveBeenCalledWith(200, "OK", expect.objectContaining({
-            "set-cookie": "sid=raw; Path=/v1/local-services/preview/preview_1/; SameSite=Lax; HttpOnly",
+            "set-cookie": "sid=raw; Path=/; SameSite=Lax; HttpOnly",
         }));
         expect(JSON.stringify(sink.writeHead.mock.calls[0]?.[2])).not.toContain("Domain=");
         expect(JSON.stringify(sink.writeHead.mock.calls[0]?.[2])).not.toContain("SameSite=None");
     });
 
-    it("rewrites upstream cookie paths under the path-mode preview route", async () => {
+    it("rewrites upstream cookie paths on the isolated preview origin", async () => {
         const mod = await loadHttpAdapterModule();
         expect(mod?.proxyLocalServicePreviewHttpRequest).toBeTypeOf("function");
         if (!mod?.proxyLocalServicePreviewHttpRequest) return;
@@ -419,7 +419,7 @@ describe("local service preview HTTP adapter", () => {
         });
 
         expect(sink.writeHead).toHaveBeenCalledWith(200, "OK", expect.objectContaining({
-            "set-cookie": "sid=raw; Path=/v1/local-services/preview/preview_1/api; SameSite=Lax; Secure",
+            "set-cookie": "sid=raw; Path=/api; SameSite=Lax; Secure",
         }));
         expect(JSON.stringify(sink.writeHead.mock.calls[0]?.[2])).not.toContain("Domain=");
     });
@@ -465,14 +465,14 @@ describe("local service preview HTTP adapter", () => {
 
         expect(sink.writeHead).toHaveBeenCalledWith(200, "OK", expect.objectContaining({
             "set-cookie": [
-                "sid=raw; Path=/v1/local-services/preview/preview_1/api; SameSite=Lax; HttpOnly",
-                "theme=dark; Path=/v1/local-services/preview/preview_1/prefs; SameSite=Lax; Secure",
+                "sid=raw; Path=/api; SameSite=Lax; HttpOnly",
+                "theme=dark; Path=/prefs; SameSite=Lax; Secure",
             ],
         }));
         expect(JSON.stringify(sink.writeHead.mock.calls[0]?.[2])).not.toContain("Domain=");
     });
 
-    it("rewrites same-local-service redirect locations into path-mode preview URLs", async () => {
+    it("rewrites same-local-service redirect locations to the isolated preview origin", async () => {
         const mod = await loadHttpAdapterModule();
         expect(mod?.proxyLocalServicePreviewHttpRequest).toBeTypeOf("function");
         if (!mod?.proxyLocalServicePreviewHttpRequest) return;
@@ -504,11 +504,11 @@ describe("local service preview HTTP adapter", () => {
         });
 
         expect(sink.writeHead).toHaveBeenCalledWith(302, "Found", expect.objectContaining({
-            location: "/v1/local-services/preview/preview_1/login?next=%2Fdashboard",
+            location: "/login?next=%2Fdashboard",
         }));
     });
 
-    it("preserves external redirect locations even when path-mode redirect rewriting is enabled", async () => {
+    it("preserves external redirect locations", async () => {
         const mod = await loadHttpAdapterModule();
         expect(mod?.proxyLocalServicePreviewHttpRequest).toBeTypeOf("function");
         if (!mod?.proxyLocalServicePreviewHttpRequest) return;

@@ -149,6 +149,11 @@ describe('canonical Voice provider declarations', () => {
             operation: 'catalog',
             phase: 'connection',
             format: 'bearer',
+          }, {
+            kind: 'recipientCredential',
+            operation: 'catalog',
+            phase: 'settings',
+            format: 'bearer',
           }],
         }, {
           kind: 'connectedAccount',
@@ -188,6 +193,13 @@ describe('canonical Voice provider declarations', () => {
       phase: 'connection',
     })).toMatchObject({
       projection: { kind: 'recipientCredential', phase: 'connection' },
+    });
+    expect(resolveVoiceCredentialOperationAuthorization({
+      ...input,
+      selectedSource: { kind: 'savedSecret' },
+      phase: 'settings',
+    })).toMatchObject({
+      projection: { kind: 'recipientCredential', phase: 'settings' },
     });
     expect(resolveVoiceCredentialOperationAuthorization({
       ...input,
@@ -608,7 +620,7 @@ describe('canonical Voice provider declarations', () => {
         readiness: [{ kind: 'setting_nonempty', settingId: 'voice' }],
       },
       catalogs: [{ kind: 'voices', settingFieldId: 'voice', allowCustom: false }],
-      limits: { synthesize: { maxInputCharacters: 5_000, maxOutputBytes: 8_000_000 } },
+      limits: { synthesize: { maxInputUtf8Bytes: 5_000, maxOutputBytes: 8_000_000 } },
     });
 
     expect(stt.id).toBe('gemini-stt');

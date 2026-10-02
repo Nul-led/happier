@@ -9,7 +9,7 @@ import {
     encodePersistedSessionFollowFrontierV1,
     isSessionFollowConsumptionWithinCurrentV1,
     isSessionFollowFrontierEqualV1,
-    isSessionFollowTerminalTurnEqualV1,
+    isSessionFollowTurnEqualV1,
     parsePersistedSessionFollowFrontierV1,
     projectSessionFollowFrontierFromSourceV1,
     isActiveHomeAccountStatus,
@@ -570,7 +570,7 @@ export async function acknowledgeAccountVoiceFollowInTx(tx: Tx, input: Readonly<
     })) {
         return { ok: false, rejection: 'invalid_consumed_frontier' };
     }
-    if (!isSessionFollowTerminalTurnEqualV1(current.turn, input.consumed.turn)) {
+    if (!isSessionFollowTurnEqualV1(current.turn, input.consumed.turn)) {
         return { ok: false, rejection: 'stale_terminal_turn' };
     }
     const written = await tx.accountSessionFollow.updateMany({

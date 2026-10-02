@@ -4,6 +4,7 @@ import { readAiLaunchProfileCollection } from '../profiles/read.js';
 import {
   LaunchProfileArtifactReferenceV1Schema, LaunchProfileArtifactV1Schema,
   PublishableLaunchProfileV1Schema, readLaunchProfileArtifactV1,
+  buildLaunchProfileArtifactHeaderV1,
 } from './launchProfileArtifactV1.js';
 
 export const LaunchProfilePublishInputV1Schema = z.object({ profileId: z.string().min(1) }).strict();
@@ -77,7 +78,7 @@ export function createLaunchProfilePublisherV1(deps: LaunchProfilePublisherDepsV
         secretBindings: bindings[profileId] ?? {},
       });
       const artifact = await deps.artifactStore.create({
-        header: { kind: content.kind, profileId, name: profile.name, title: profile.name }, body: JSON.stringify(content),
+        header: buildLaunchProfileArtifactHeaderV1(content), body: JSON.stringify(content),
         ...(signal ? { signal } : {}),
       });
       if (!artifact) fail('profile_publish_failed');

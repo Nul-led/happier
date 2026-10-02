@@ -93,6 +93,7 @@ export type SpawnSessionErrorCode = (typeof SPAWN_SESSION_ERROR_CODES)[keyof typ
  * result. Existing consumers that only read `errorCode`/`errorMessage` keep working unchanged.
  */
 export const SPAWN_SESSION_ERROR_DETAIL_KINDS = {
+  TERMINAL_HOST_UNAVAILABLE: 'terminal_host_unavailable',
   /**
    * A connected-service auth switch/resume fail-closed because the resumed session could not be
    * proven reachable in the materialized target before the vendor launched (K1 §2 gate). Surfaced
@@ -216,7 +217,15 @@ export type SessionCreationTerminalSpawnErrorDetail = z.infer<
   typeof SessionCreationTerminalSpawnErrorDetailSchema
 >;
 
+export const TerminalHostUnavailableSpawnErrorDetailSchema = z.object({
+  kind: z.literal(SPAWN_SESSION_ERROR_DETAIL_KINDS.TERMINAL_HOST_UNAVAILABLE),
+  host: z.enum(['herdr', 'zellij']),
+  reason: z.enum(['installation_unavailable', 'server_version_unsupported']),
+}).strict();
+export type TerminalHostUnavailableSpawnErrorDetail = z.infer<typeof TerminalHostUnavailableSpawnErrorDetailSchema>;
+
 export type SpawnSessionErrorDetail =
+  | TerminalHostUnavailableSpawnErrorDetail
   | ConnectedServiceResumeUnreachableSpawnErrorDetail
   | ConnectedServiceUxDiagnosticSpawnErrorDetail
   | ProviderSpawnErrorDetail
@@ -477,7 +486,8 @@ export function isSessionCreationTerminalSpawnErrorDetail(
 }
 
 export function isSpawnSessionErrorDetail(value: unknown): value is SpawnSessionErrorDetail {
-  return isConnectedServiceResumeUnreachableSpawnErrorDetail(value)
+  return TerminalHostUnavailableSpawnErrorDetailSchema.safeParse(value).success
+    || isConnectedServiceResumeUnreachableSpawnErrorDetail(value)
     || isConnectedServiceUxDiagnosticSpawnErrorDetail(value)
     || normalizeProviderSpawnErrorDetail(asRecord(value) ?? {}) !== undefined
     || isSessionCreationTerminalSpawnErrorDetail(value);
@@ -486,7 +496,8 @@ export function isSpawnSessionErrorDetail(value: unknown): value is SpawnSession
 export function normalizeSpawnSessionErrorDetail(value: unknown): SpawnSessionErrorDetail | undefined {
   const detail = asRecord(value);
   if (!detail) return undefined;
-  return normalizeConnectedServiceResumeUnreachableDetail(detail)
+  return TerminalHostUnavailableSpawnErrorDetailSchema.safeParse(detail).data
+    ?? normalizeConnectedServiceResumeUnreachableDetail(detail)
     ?? normalizeConnectedServiceUxDiagnosticDetail(detail)
     ?? normalizeProviderSpawnErrorDetail(detail)
     ?? SessionCreationTerminalSpawnErrorDetailSchema.safeParse(detail).data;

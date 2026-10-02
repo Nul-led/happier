@@ -714,7 +714,7 @@ async function createMigrationFixture() {
             dataEncryptionKey:
                 new Uint8Array([4, 5, 6]),
         },
-        select: { id: true },
+        select: { id: true, dataEncryptionKey: true },
     });
     const activeSession = await db.session.create({
         data: {
@@ -951,6 +951,8 @@ function buildMigrationRequest(
                 expectedBodyVersion: 6,
                 expectedDataEncryptionKey: privacyKit.encodeBase64(new Uint8Array(fixture.artifact.dataEncryptionKey)),
                 recipientKeyEnvelopes: [],
+                revisions: [],
+                blobs: [],
                 header:
                     fixture.target.artifactHeader,
                 body: fixture.target.artifactBody,

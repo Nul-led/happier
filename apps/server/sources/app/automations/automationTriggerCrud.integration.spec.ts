@@ -34,7 +34,7 @@ function executionRecipe(templateVersion: number) {
             kind: "newSession",
             spawn: {
                 executionTarget: { serverId: "server", machineId: "machine" },
-                directory: "/tmp/automation-trigger-set",
+                directory: { kind: "path", path: "/tmp/automation-trigger-set" },
                 agentTarget: {
                     kind: "agent",
                     identity: {

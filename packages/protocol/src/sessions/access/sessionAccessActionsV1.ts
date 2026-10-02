@@ -44,6 +44,8 @@ export const SessionPublicLinkSettingsV1Schema = z.object({
   useCount: z.number().int().nonnegative(),
   isConsentRequired: z.boolean(),
   updatedAt: z.number(),
+  keyDerivation: z.enum(['fragment_v1', 'legacy_token_v1']).optional(),
+  isolatedOrigin: z.string().url().optional(),
 }).strict();
 export type SessionPublicLinkSettingsV1 = z.infer<typeof SessionPublicLinkSettingsV1Schema>;
 export const SessionPublicLinkGetActionResultV1Schema = SessionPublicLinkSettingsV1Schema.nullable();
@@ -53,8 +55,12 @@ export const SessionPublicLinkRemoveActionResultV1Schema = z.object({ changed: z
 export function projectSessionPublicLinkActionResultV1(value: unknown): SessionPublicLinkSettingsV1 | null {
   const response = z.object({
     publicShare: SessionPublicLinkSettingsV1Schema.loose().nullable(),
+    isolatedOrigin: z.string().url().optional(),
   }).loose().parse(value);
   if (response.publicShare === null) return null;
-  const { id, expiresAt, maxUses, useCount, isConsentRequired, updatedAt } = response.publicShare;
-  return { id, expiresAt, maxUses, useCount, isConsentRequired, updatedAt };
+  const { id, expiresAt, maxUses, useCount, isConsentRequired, updatedAt, keyDerivation } = response.publicShare;
+  return { id, expiresAt, maxUses, useCount, isConsentRequired, updatedAt,
+    ...(keyDerivation ? { keyDerivation } : {}),
+    ...(response.isolatedOrigin ? { isolatedOrigin: response.isolatedOrigin } : {}),
+  };
 }

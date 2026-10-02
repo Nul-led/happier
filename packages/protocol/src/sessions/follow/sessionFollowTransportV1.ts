@@ -122,7 +122,6 @@ export const SessionFollowPendingObservationV1Schema = z.object({
   destinationSessionId: SessionIdZodSchema,
   edgeKind: z.literal('reports_to').optional(),
   attachedAt: z.number().int().nonnegative().optional(),
-  machineOffline: z.boolean().optional(),
   delivered: SessionFollowFrontierV1Schema,
   observed: SessionFollowFrontierV1Schema,
   mode: z.enum(['next_turn', 'wake_on_human_change']).default('next_turn'),

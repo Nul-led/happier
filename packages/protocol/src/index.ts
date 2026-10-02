@@ -1,6 +1,9 @@
 export const HAPPY_PROTOCOL_PACKAGE = '@happier-dev/protocol';
+export * from './actions/specs/wait.js';
+export * from './sessions/awareness/waitV1.js';
 export * from './sessions/messages/emptyCanonicalTurnDiffSuppression.js';
 export * from './embed/index.js';
+export * from './daemon/pluginStoredImage.js';
 export {
   hasCanonicalTurnDiffEvidence,
   isCanonicalTurnDiffPayload,
@@ -44,6 +47,12 @@ export {
   SessionWorkerPublishInputV1Schema,
   SessionWorkerPublishOutputV1Schema,
   WorkerUpdateTranscriptPointerV1Schema,
+  WorkerDeliverableReferenceV1Schema,
+  WORKER_DELIVERABLE_REFERENCE_MAX_COUNT_V1,
+  workerDeliverableResultMaxLengthV1,
+  workerDeliverablesBelongToSessionV1,
+  type WorkerDeliverableReferenceV1,
+  type SessionWorkerPublishInputV1,
   type WorkerUpdateV1,
   type WorkerUpdateTranscriptPointerV1,
 } from './sessions/relations/workerUpdateV1.js';
@@ -1198,6 +1207,10 @@ export {
   type PluginSystemToolContributionV1,
   type PluginTranscriptActivityContributionV1,
   type PluginUiTranslationsContributionV1,
+  PluginRoleDeclarationV1Schema,
+  type PluginRoleDeclarationV1,
+  PluginWorkflowContributionV1Schema,
+  type PluginWorkflowContributionV1,
 } from './plugins/contributions/v2.js';
 export {
   PluginSystemToolAcpFingerprintV1Schema,
@@ -2221,6 +2234,7 @@ export {
   LegacyRecentMachinePathsSchema,
   LegacyLastUsedProfileSchema,
   LegacyRememberedEngineSelectionsByScopeV1Schema,
+  type LegacyAuthoringMemorySettingsKey,
   type RetainedRememberedEngineSelectionsByScopeV1,
 } from './account/settings/legacyAuthoringMemorySettingsV1.js';
 export {
@@ -2503,6 +2517,7 @@ export {
   ConnectedAccountDaemonCommandSchema,
   ConnectedAccountDaemonControlCommandSchema,
   ConnectedAccountDaemonControlResponseSchema,
+  assertConnectedAccountOperationTransportV1,
   ConnectedAccountPeerOperationTransportSchema,
   type ConnectedAccountAttemptResponse,
   type ConnectedAccountAuthenticationCommandRequest,
@@ -2512,6 +2527,7 @@ export {
   type ConnectedAccountDaemonCommand,
   type ConnectedAccountDaemonControlCommand,
   type ConnectedAccountDaemonControlResponse,
+  type ConnectedAccountExpectedOperationTransport,
   type ConnectedAccountPeerOperationTransport,
 } from './connect/connectedAccountDaemonRpcV1.js';
 
@@ -3104,6 +3120,9 @@ export {
   type VerifiedAccountContentKeyBindingV1,
 } from './crypto/accountContentKeyBindingV1.js';
 export {
+  derivePublicShareWrappingKeyV1,
+  sealPublicShareDataKeyV1,
+  openPublicShareDataKeyV1,
   openPublicShareEncryptedDataKeyEnvelopeV0,
   parsePublicShareEncryptedDataKeyEnvelopeV0,
   PUBLIC_SHARE_DATA_ENCRYPTION_KEY_BYTES,
@@ -3116,6 +3135,7 @@ export {
   type PublicShareEncryptedDataKeyEnvelopeV0,
 } from './crypto/publicShareEncryptedDataKeyEnvelopeV0.js';
 export { redactPublicShareCapabilityUrl } from './crypto/publicShareCapabilityUrl.js';
+export * from './sharing/storedContentPublicShareV1.js';
 export * from './machines/peer/mediation/peerApplicationEncryptionV1.js';
 export {
   CRYPTO_GOLDEN_VECTORS,
@@ -3298,6 +3318,7 @@ export {
   SessionCreationCorrespondenceConflictSpawnErrorDetailSchema,
   SessionCreationOrganizationInvalidSpawnErrorDetailSchema,
   SessionCreationTerminalSpawnErrorDetailSchema,
+  TerminalHostUnavailableSpawnErrorDetailSchema,
   SpawnSessionErrorCodeSchema,
   SpawnSessionExecutionAuthorizationSchema,
   isConnectedServiceUxDiagnosticSpawnErrorDetail,
@@ -3315,6 +3336,7 @@ export {
   type SessionCreationTerminalSpawnErrorDetail,
   type SpawnSessionErrorCode,
   type SpawnSessionErrorDetail,
+  type TerminalHostUnavailableSpawnErrorDetail,
   type SpawnSessionErrorDetailKind,
   type SpawnSessionExecutionAuthorization,
   type SpawnSessionResult,
@@ -3657,6 +3679,18 @@ export type {
   VoiceSpeechTranscribeRequest,
   VoiceSpeechTranscribeResult,
 } from './voice/speech.js';
+export { resolveVoiceSpeechSynthesisInputLimits, isVoiceSpeechSynthesisInputWithinLimits } from './voice/speech.js';
+export type { VoiceSpeechSynthesisInputLimits } from './voice/speech.js';
+export {
+  isHardTerminatorDot,
+  isSpeechSentenceBoundary,
+  isSpeechClauseBoundary,
+  speechSentenceEnd,
+  speechTextEndAtOrBefore,
+  segmentSentencesForSynthesis,
+  resolveVoiceSpeechSegmentLength,
+  batchSpeechTextForSynthesis,
+} from './voice/speechText.js';
 export {
   normalizePredecessorVoiceProviderIdV1,
   resolvePredecessorVoiceProviderContributionIdentityV1,
@@ -3710,6 +3744,12 @@ export {
   type ModelPackVoiceCatalogEntry,
 } from './voice/modelPacks/manifest.js';
 export {
+  resolveKokoroModelConfig,
+  getKokoroVoiceCatalog,
+  resolveKokoroVoiceSid,
+  type KokoroModelConfig,
+} from './voice/modelPacks/kokoro.js';
+export {
   assertManifestPathsSafe,
   assertPackIdFilesystemSafe,
   filePathParts,
@@ -3734,8 +3774,6 @@ export {
   VOICE_RUNTIME_STT_MAX_UPLOAD_BYTES_BOUNDS,
   VOICE_RUNTIME_STT_PCM_FORMAT,
   VOICE_RUNTIME_TTS_DEFAULTS,
-  VOICE_RUNTIME_TTS_LATENCY_BUDGET_BOUNDS,
-  VOICE_RUNTIME_TTS_LATENCY_DEMOTION_THRESHOLD_BOUNDS,
   VOICE_RUNTIME_WARM_DEFAULTS,
   VOICE_RUNTIME_WARM_IDLE_RESIDENCY_BOUNDS,
   type VoiceRuntimeBounds,
@@ -4801,6 +4839,7 @@ export {
   buildSessionAwarenessListResultV1,
   hasActivityClearlyAfterTerminalProjectionV1,
   hasProjectedActiveTurnV1,
+  isProjectedSessionStalledV1,
   hasSessionAwarenessReadyEvidenceV1,
   hasTerminalPrimaryTurnStatusV1,
   hasUnavailableAwarenessComponentV1,
@@ -4857,8 +4896,12 @@ export {
 } from './sessions/awareness/index.js';
 export {
   AGENT_START_REFUSAL_CODES_V1,
+  AgentStartSessionCallerV1Schema,
   admitAgentStartV1,
+  readAgentStartCallerWorkDepthV1,
+  type AgentStartCallerV1,
   type AgentStartContextV1,
+  type AgentStartSessionCallerV1,
 } from './account/settings/admitAgentStartV1.js';
 export { isAgentStartActionV1 } from './actions/executor/agentStartAdmission.js';
 export {
@@ -5890,8 +5933,8 @@ export {
   DaemonVoiceClientMediatedCredentialDeclarationAuthorityV1Schema,
   DaemonVoiceClientRawCredentialMaterializeRequestV1Schema,
   DaemonVoiceClientRawCredentialMaterializeResponseV1Schema,
-  DaemonVoiceClientMediatedCredentialMaterializeRequestV1Schema,
-  DaemonVoiceClientMediatedCredentialMaterializeResponseV1Schema,
+  DaemonVoiceClientAccountOperationRequestV1Schema,
+  DaemonVoiceClientAccountOperationResponseV1Schema,
   DaemonVoiceClientRawCredentialAuthorizationRequestV1Schema,
   DaemonVoiceClientRawCredentialAuthorizationV1Schema,
   DaemonVoiceClientRawCredentialDisclosureV1Schema,
@@ -5902,8 +5945,8 @@ export {
   type DaemonVoiceClientMediatedCredentialDeclarationAuthorityV1,
   type DaemonVoiceClientRawCredentialMaterializeRequestV1,
   type DaemonVoiceClientRawCredentialMaterializeResponseV1,
-  type DaemonVoiceClientMediatedCredentialMaterializeRequestV1,
-  type DaemonVoiceClientMediatedCredentialMaterializeResponseV1,
+  type DaemonVoiceClientAccountOperationRequestV1,
+  type DaemonVoiceClientAccountOperationResponseV1,
   type DaemonVoiceClientRawCredentialAuthorizationRequestV1,
   type DaemonVoiceClientRawCredentialAuthorizationV1,
   type DaemonVoiceClientRawCredentialDisclosureV1,
@@ -8419,6 +8462,13 @@ export {
   type AutomationTemplateEnvelope,
 } from './automations/automationTemplateEnvelope.js';
 export * from './automations/automationOccurrenceV1.js';
+export {
+  isAutomationConversationAdmitScopedCorrespondenceV1,
+  AutomationConversationScopedTriggerEvidenceV1Schema,
+  AutomationConversationScopedTriggerRefV1Schema,
+  type AutomationConversationScopedTriggerEvidenceV1,
+  type AutomationConversationScopedTriggerRefV1,
+} from './automations/automationResultDeliveryV1.js';
 export * from './automations/automationAccountCurrentnessV1.js';
 export * from './automations/automationSessionLifecycle.js';
 export * from './automations/automationEventV1.js';
@@ -8495,8 +8545,10 @@ export {
 export * from './automations/automationColumnBoundsV1.js';
 export {
   AutomationTriggerIdSchema,
+  AutomationTriggerKindSchema,
   AutomationTriggerRevisionSchema,
   type AutomationTriggerId,
+  type AutomationTriggerKind,
   type AutomationTriggerRevision,
 } from './automations/automationTriggerIdentity.js';
 export * from './automations/automationApiV3.js';
@@ -9293,6 +9345,10 @@ export { SESSION_TRANSCRIPT_MAX_PAGE_ROWS_V1 } from './sessions/messages/session
 export * from './sessions/listFilter/index.js';
 export * from './boards/index.js';
 export * from './artifacts/artifactAccessV1.js';
+export * from './artifacts/artifactActionsV1.js';
+export * from './artifacts/artifactBinaryV1.js';
+export * from './artifacts/artifactHeaderRestorationV1.js';
+export * from './artifacts/artifactExcerptV1.js';
 export * from './artifacts/artifactSharingV1.js';
 export * from './launchProfiles/launchProfileArtifactV1.js';
 export * from './launchProfiles/publishLaunchProfile.js';
@@ -9309,3 +9365,4 @@ export { SessionTerminalLayoutV1Schema } from './terminal/workspace.js';
 export type { SessionTerminalTargetV1, SessionTerminalLayoutV1, SessionTerminalMemberV1, SessionTerminalTabV1, SessionTerminalWorkspaceV1 } from './terminal/workspace.js';
 export * from './account/authoringMemory.js';
 export * from './account/authoringMemoryImport.js';
+export * from './daemon/pluginCaptureSources.js';

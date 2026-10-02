@@ -809,6 +809,7 @@ const SessionOwnerAgentRuntimeCapabilitiesV1Schema = z.object({
     sessionRollback: z.object({
       conversation: SessionOwnerAgentRuntimeCapabilitySupportLevelV1Schema,
     }).strict(),
+    usageReporting: SessionOwnerAgentRuntimeCapabilitySupportLevelV1Schema.optional(),
   }).strict().nullable().optional(),
   tools: z.object({
     delivery: z.enum([

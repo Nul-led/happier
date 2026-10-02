@@ -14,6 +14,7 @@ import { AutomationStoredContentEnvelopeV1Schema } from '../../automations/autom
 import {
   AutomationEncryptedTriggerDefinitionEnvelopeV1Schema,
   AutomationTriggerDefinitionSchema,
+  AutomationPullRequestTriggerSchema,
   type AutomationTriggerDefinitionInput,
 } from '../../automations/automationTriggerDefinition.js';
 import {
@@ -48,11 +49,11 @@ export type WorkflowTriggerAccountHostParams = Readonly<{
   /** Channels-owned Account-scoped observation; eligibility/listing is not association evidence. */
   observeLegacyChannelAssociation?: (input: Readonly<{ automationId: string; expectedTemplateVersion: number }>) => Promise<
     Readonly<{ kind: 'absent' | 'bound' | 'unknown' }>>;
-}> & Pick<WorkflowTriggerActionsDependencies, 'resolveWorkflow' | 'resolveWorkflowTeamIds' | 'resolveSession' | 'resolveRunTrigger' | 'resolveMaterializer'>;
+}> & Pick<WorkflowTriggerActionsDependencies, 'resolveWorkflow' | 'resolveWorkflowTeamIds' | 'resolveSession' | 'resolveRunTrigger' | 'resolveRunSource' | 'resolveMaterializer' | 'pullRequests'>;
 
 /**
  * Every Account host (CLI/daemon and the UI front door) composes the one trigger owner through
- * this adapter: Automation recipe/context and Event trigger envelopes are opened and sealed with
+ * this adapter: Automation recipe/context and private trigger envelopes are opened and sealed with
  * the caller Account's current material. Hosts supply only transport, crypto material and ids.
  */
 export function createAccountWorkflowTriggerActions(params: WorkflowTriggerAccountHostParams) {
@@ -89,10 +90,14 @@ export function createAccountWorkflowTriggerActions(params: WorkflowTriggerAccou
     return opened.value;
   };
   const eventBinding = (automationId: string, triggerId: string, triggerRevision: number,
-    eventRef: AutomationTriggerDefinitionBindingV1['eventRef'], sourceSelectorId: string) => (
-    AutomationTriggerDefinitionBindingV1Schema.parse({ v: 1, automationId, triggerId, triggerRevision,
+    eventRef: Extract<AutomationTriggerDefinitionBindingV1, { triggerKind: 'pluginEvent' }>['eventRef'], sourceSelectorId: string) => (
+    AutomationTriggerDefinitionBindingV1Schema.options[0].parse({ v: 1, automationId, triggerId, triggerRevision,
       triggerKind: 'pluginEvent', eventRef, sourceSelectorId })
   );
+  const pullRequestBinding = (automationId: string, triggerId: string, triggerRevision: number,
+    triggerKind: 'prComment' | 'ciFailed') => AutomationTriggerDefinitionBindingV1Schema.parse({
+      v: 1, automationId, triggerId, triggerRevision, triggerKind,
+    });
   const openEvent = (binding: AutomationTriggerDefinitionBindingV1, envelope: unknown, current: AvailableAutomationAccountEncryptionV1) => {
     const opened = openAutomationTriggerDefinitionStoredEnvelopeV1({ binding, envelope,
       ...(isAvailableE2eeAutomationAccountEncryptionV1(current)
@@ -107,6 +112,24 @@ export function createAccountWorkflowTriggerActions(params: WorkflowTriggerAccou
     try { envelope = JSON.parse(trigger.triggerDefinitionEnvelope); } catch { unavailable(); }
     const binding = eventBinding(row.id, trigger.id, trigger.revision, trigger.eventRef, trigger.sourceSelectorId);
     return { trigger, binding, definition: openEvent(binding, envelope, current) };
+  };
+  const openPullRequest = (binding: AutomationTriggerDefinitionBindingV1, envelope: unknown,
+    current: AvailableAutomationAccountEncryptionV1) => {
+    const opened = openAutomationTriggerDefinitionStoredEnvelopeV1({ binding, envelope,
+      ...(isAvailableE2eeAutomationAccountEncryptionV1(current)
+        ? { mode: 'e2ee' as const, material: current.material.material } : { mode: 'plain' as const }) });
+    if (opened.kind !== 'available') unavailable();
+    const parsed = AutomationPullRequestTriggerSchema.safeParse(opened.definition);
+    if (!parsed.success || parsed.data.kind !== binding.triggerKind) unavailable();
+    return parsed.data;
+  };
+  const storedPullRequest = (row: AutomationDefinitionDetail, triggerId: string, current: AvailableAutomationAccountEncryptionV1) => {
+    const trigger = row.triggers.find((item) => item.id === triggerId);
+    if (!trigger || (trigger.kind !== 'prComment' && trigger.kind !== 'ciFailed')) unavailable();
+    let envelope: unknown;
+    try { envelope = JSON.parse(trigger.triggerDefinitionEnvelope); } catch { unavailable(); }
+    const binding = pullRequestBinding(row.id, trigger.id, trigger.revision, trigger.kind);
+    return { trigger, binding, definition: openPullRequest(binding, envelope, current) };
   };
   const prepareEvent = (automationId: string, triggerId: string, triggerRevision: number,
     trigger: AutomationTriggerDefinitionInput, current: AvailableAutomationAccountEncryptionV1,
@@ -127,36 +150,52 @@ export function createAccountWorkflowTriggerActions(params: WorkflowTriggerAccou
           randomBytes: params.randomBytes, binding, definition })),
     });
   };
+  const preparePrivateTrigger = (automationId: string, triggerId: string, triggerRevision: number,
+    trigger: AutomationTriggerDefinitionInput, current: AvailableAutomationAccountEncryptionV1,
+    previous?: ReturnType<typeof storedEvent>): AutomationTriggerDefinitionInput => {
+    if (trigger.kind !== 'prComment' && trigger.kind !== 'ciFailed') return prepareEvent(automationId, triggerId, triggerRevision, trigger, current, previous);
+    const binding = pullRequestBinding(automationId, triggerId, triggerRevision, trigger.kind);
+    if ('triggerDefinitionEnvelope' in trigger) {
+      openPullRequest(binding, trigger.triggerDefinitionEnvelope, current);
+      return trigger;
+    }
+    if (!isAvailableE2eeAutomationAccountEncryptionV1(current)) return trigger;
+    return { kind: trigger.kind, enabled: trigger.enabled,
+      triggerDefinitionEnvelope: AutomationEncryptedTriggerDefinitionEnvelopeV1Schema.parse(
+        sealAutomationTriggerDefinitionStoredEnvelopeV1({ mode: 'e2ee', material: current.material.material,
+          randomBytes: params.randomBytes, binding, definition: { kind: trigger.kind, pullRequest: trigger.pullRequest } })) };
+  };
+  const isPrivateTrigger = (trigger: { kind: string }) => trigger.kind === 'pluginEvent' || trigger.kind === 'prComment' || trigger.kind === 'ciFailed';
   return createWorkflowTriggerActions({
     automations: {
       list: (input) => params.automations.list(input),
       get: (automationId) => params.automations.get(automationId),
       create: async (input) => {
-        const current = input.triggers.some((item) => item.trigger.kind === 'pluginEvent') ? await params.resolveEncryption() : null;
+        const current = input.triggers.some((item) => isPrivateTrigger(item.trigger)) ? await params.resolveEncryption() : null;
         const triggers = input.triggers.map((item) => current ? { ...item,
-          trigger: prepareEvent(input.automationId, item.triggerId, 0, item.trigger, current) } : item);
+          trigger: preparePrivateTrigger(input.automationId, item.triggerId, 0, item.trigger, current) } : item);
         return params.automations.create({ ...input, triggers });
       },
       reconcile: async (automationId, input, row) => {
         if (!row || row.id !== automationId || row.templateVersion !== input.expectedTemplateVersion) unavailable('currentness_conflict');
-        const needsEventWrite = input.triggers.some((item) => item.kind === 'new'
-          ? item.trigger.kind === 'pluginEvent'
-          : item.trigger?.kind === 'pluginEvent' || (item.enabled !== undefined && row.triggers.some((trigger) => trigger.id === item.triggerId && trigger.kind === 'pluginEvent')));
-        const current = needsEventWrite ? await params.resolveEncryption() : null;
+        const needsPrivateWrite = input.triggers.some((item) => item.kind === 'new'
+          ? isPrivateTrigger(item.trigger)
+          : (item.trigger !== undefined && isPrivateTrigger(item.trigger)) || (item.enabled !== undefined && row.triggers.some((trigger) => trigger.id === item.triggerId && isPrivateTrigger(trigger))));
+        const current = needsPrivateWrite ? await params.resolveEncryption() : null;
         const triggers = input.triggers.map((item) => {
           if (item.kind === 'new') return current ? { ...item,
-            trigger: prepareEvent(automationId, item.triggerId, 0, item.trigger, current) } : item;
+            trigger: preparePrivateTrigger(automationId, item.triggerId, 0, item.trigger, current) } : item;
           const retained = row.triggers.find((trigger) => trigger.id === item.triggerId);
           if (!retained || retained.revision !== item.expectedRevision) unavailable('currentness_conflict');
           if (!current) return item;
           if (item.trigger !== undefined) {
             const previous = retained.kind === 'pluginEvent' ? storedEvent(row, item.triggerId, current) : undefined;
-            const { enabled: _enabled, ...trigger } = prepareEvent(automationId, item.triggerId, item.expectedRevision + 1,
+            const { enabled: _enabled, ...trigger } = preparePrivateTrigger(automationId, item.triggerId, item.expectedRevision + 1,
               { ...item.trigger, enabled: item.enabled ?? retained.enabled }, current, previous);
             return { ...item, trigger: AutomationTriggerDefinitionSchema.parse(trigger) };
           }
-          if (item.enabled === undefined || retained.kind !== 'pluginEvent' || !isAvailableE2eeAutomationAccountEncryptionV1(current)) return item;
-          const previous = storedEvent(row, item.triggerId, current);
+          if (item.enabled === undefined || !isPrivateTrigger(retained) || !isAvailableE2eeAutomationAccountEncryptionV1(current)) return item;
+          const previous = retained.kind === 'pluginEvent' ? storedEvent(row, item.triggerId, current) : storedPullRequest(row, item.triggerId, current);
           return { ...item, triggerDefinitionEnvelope: AutomationEncryptedTriggerDefinitionEnvelopeV1Schema.parse(
             sealAutomationTriggerDefinitionStoredEnvelopeV1({ mode: 'e2ee', material: current.material.material,
               randomBytes: params.randomBytes, binding: { ...previous.binding, triggerRevision: item.expectedRevision + 1 },
@@ -169,7 +208,10 @@ export function createAccountWorkflowTriggerActions(params: WorkflowTriggerAccou
     newId: () => params.newId(),
     ...(params.resolveSession ? { resolveSession: params.resolveSession } : {}),
     ...(params.resolveRunTrigger ? { resolveRunTrigger: params.resolveRunTrigger } : {}),
+    ...(params.resolveRunSource ? { resolveRunSource: params.resolveRunSource } : {}),
     ...(params.resolveMaterializer ? { resolveMaterializer: params.resolveMaterializer } : {}),
+    ...(params.pullRequests ? { pullRequests: params.pullRequests } : {}),
+    openPullRequestTrigger: async (row, trigger) => storedPullRequest(row, trigger.id, await params.resolveEncryption()).definition,
     resolveWorkflow: params.resolveWorkflow,
     ...(params.resolveWorkflowTeamIds ? { resolveWorkflowTeamIds: params.resolveWorkflowTeamIds } : {}),
     openContext: async (row) => {

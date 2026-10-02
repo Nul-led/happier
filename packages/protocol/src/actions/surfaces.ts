@@ -88,9 +88,6 @@ export function isRuntimeActionExecutorReal(actionId: RuntimeActionIdV1): boolea
 }
 
 export function resolveRuntimeActionSurfaces(actionId: RuntimeActionIdV1): PreNormalizedActionSurfaces {
-  if (actionId === 'computer.permissions.openSettings') {
-    return { ...RUNTIME_ACTION_ENABLED_SURFACES, agent: false };
-  }
   return isRuntimeActionExecutorReal(actionId)
     ? RUNTIME_ACTION_ENABLED_SURFACES
     : RUNTIME_ACTION_DISABLED_SURFACES;

@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ApprovalRequestV1 } from '../approvals/approvalRequestV1.js';
+import type { ApprovalRequest } from '../approvals/approvalRequestV1.js';
 import { createActionExecutor } from './actionExecutor.js';
-import type { ActionExecutorDeps } from './executor/types.js';
+import { getActionSpec } from './actionSpecs.js';
+import type { ActionExecutorContext, ActionExecutorDeps } from './executor/types.js';
+import { markSessionListQueryResultV1 } from '../sessions/awareness/action.js';
+import { projectSessionAwarenessV1 } from '../sessions/awareness/projectV1.js';
+import { SessionAwarenessProjectionV1Schema } from '../sessions/awareness/projectionV1.js';
+import { waitForSessionAwarenessV1 } from '../sessions/awareness/waitV1.js';
 
 function createExecutor(overrides: Partial<ActionExecutorDeps> = {}) {
   return createActionExecutor({
@@ -13,6 +18,161 @@ function createExecutor(overrides: Partial<ActionExecutorDeps> = {}) {
 }
 
 describe('ActionExecutor prepared invocation', () => {
+  function sessionReadHarness() {
+    // Substitute Home reads only; caller resolution, subtree admission and the
+    // generic wait's nested activity admission remain real.
+    const sessionList = vi.fn<ActionExecutorDeps['sessionList']>(async ({ query }) => markSessionListQueryResultV1({
+      sessions: query?.underSessionId === 'parent' ? [{ id: 'child', active: false, presence: 'offline', updatedAt: 10 }] : [],
+      nextCursor: null, hasNext: false, attentionNextCursor: null, attentionHasNext: false,
+    }));
+    const sessionActivityGet = vi.fn<ActionExecutorDeps['sessionActivityGet']>(async ({ sessionId }) => projectSessionAwarenessV1({
+      nowMs: 10, sessionId, lifecycle: { archivedAtMs: 9 }, runtime: { presence: 'unknown' }, pending: {}, content: { mode: 'plain' },
+      currentness: { lifecycle: 'observed', runtime: 'unavailable', pending: 'unavailable' },
+    }));
+    const executor = createExecutor({ sessionList, sessionActivityGet, isActionApprovalRequired: () => false,
+      sessionAwarenessWait: async ({ input, options, readAwareness }) => waitForSessionAwarenessV1({
+        condition: input.condition, deadlineMs: options.deadlineMs, signal: options.signal,
+        read: async () => {
+          const awareness = await readAwareness();
+          return awareness ? { awareness: SessionAwarenessProjectionV1Schema.parse(awareness) } : null;
+        },
+        open: () => { throw new Error('Archived Session must match without subscribing'); },
+      }),
+    });
+    const caller = (sessionId: string): ActionExecutorContext => ({
+      surface: 'agent', authority: 'account_automation', serverId: 'home', defaultSessionId: sessionId,
+      callerPermissionMode: 'read-only',
+      sessionListAccess: 'led_subtree',
+      actionCaller: { kind: 'session', sessionId, starterDepth: 1, turnDepth: 2 },
+      agentStartContext: {
+        caller: { kind: 'session', sessionId, starterDepth: 1, turnDepth: 2 },
+        baseline: { machineId: 'machine', directory: '/repo' }, ledSubtreeSessionIds: [], roles: {},
+        callerPermissionCeiling: 'read-only', workDepthLimit: 0,
+      },
+    });
+    return { executor, sessionList, sessionActivityGet, caller };
+  }
+
+  it('admits a parent reading its server-proved led child before interception and preparation', async () => {
+    const harness = sessionReadHarness();
+    // The interceptor is the real plugin boundary; both sides use the same admission owner.
+    const executor = createExecutor({
+      sessionList: harness.sessionList, sessionActivityGet: harness.sessionActivityGet,
+      isActionApprovalRequired: () => false,
+      interceptActionExecution: async ({ input }) => ({ status: 'continue', input }),
+    });
+    const prepared = await executor.prepare('session.activity.get', { sessionId: 'child', view: 'awareness' }, harness.caller('parent'));
+    if (prepared.kind !== 'ready') throw new Error(`Expected admitted led-child read: ${JSON.stringify(prepared.result)}`);
+    expect(prepared.kind).toBe('ready');
+    expect(harness.sessionActivityGet).not.toHaveBeenCalled();
+    await expect(prepared.invocation.run()).resolves.toMatchObject({ ok: true, result: { sessionId: 'child' } });
+    expect(harness.sessionList).toHaveBeenCalledWith(expect.objectContaining({ query: expect.objectContaining({ underSessionId: 'parent' }) }));
+  });
+
+  it('observes a led child through generic wait and nested activity admission', async () => {
+    const { executor, caller } = sessionReadHarness();
+    const result = await executor.execute('wait', {
+      target: { kind: 'session', serverId: 'home', sessionId: 'child' }, condition: { kind: 'terminal' },
+    }, caller('parent'));
+    if (!result.ok) throw new Error(`Expected admitted child observation: ${JSON.stringify(result)}`);
+    expect(result).toMatchObject({ ok: true, result: { disposition: 'matched', snapshot: { awareness: { sessionId: 'child' } } } });
+  });
+
+  it('uses the existing host admission Session caller while FIN converges the Action caller', async () => {
+    const { executor, caller } = sessionReadHarness();
+    await expect(executor.execute('session.activity.get', { sessionId: 'child', view: 'awareness' }, {
+      ...caller('parent'), actionCaller: undefined,
+    })).resolves.toMatchObject({ ok: true, result: { sessionId: 'child' } });
+  });
+
+  it('keeps an explicit led-subtree MCP corpus bounded by the same host Session caller', async () => {
+    const { executor, caller, sessionActivityGet } = sessionReadHarness();
+    const context: ActionExecutorContext = { ...caller('parent'), surface: 'mcp', actionCaller: undefined };
+    await expect(executor.execute('session.activity.get', { sessionId: 'unrelated', view: 'awareness' }, context))
+      .resolves.toMatchObject({ ok: false });
+    expect(sessionActivityGet).not.toHaveBeenCalled();
+    await expect(executor.execute('session.activity.get', { sessionId: 'child', view: 'awareness' }, context))
+      .resolves.toMatchObject({ ok: true, result: { sessionId: 'child' } });
+  });
+
+  it.each([['parent', 'unrelated'], ['child', 'parent']] as const)('refuses %s reading non-led %s before disclosure', async (source, target) => {
+    const { executor, sessionActivityGet, caller } = sessionReadHarness();
+    await expect(executor.execute('session.activity.get', { sessionId: target }, caller(source)))
+      .resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
+    expect(sessionActivityGet).not.toHaveBeenCalled();
+    await expect(executor.execute('wait', {
+      target: { kind: 'session', serverId: 'home', sessionId: target }, condition: { kind: 'terminal' },
+    }, caller(source))).resolves.toMatchObject({ ok: false });
+    expect(sessionActivityGet).not.toHaveBeenCalled();
+    await expect(executor.execute('session.activity.get', { sessionId: source, view: 'awareness' }, caller(source)))
+      .resolves.toMatchObject({ ok: true, result: { sessionId: source } });
+  });
+
+  it.each(['current_session', 'unavailable'] as const)('keeps the host %s restriction despite a led relation', async (sessionListAccess) => {
+    const { executor, caller, sessionList, sessionActivityGet } = sessionReadHarness();
+    await expect(executor.execute('session.activity.get', { sessionId: 'child' }, { ...caller('parent'), sessionListAccess }))
+      .resolves.toMatchObject({ ok: false });
+    expect(sessionList).not.toHaveBeenCalled();
+    expect(sessionActivityGet).not.toHaveBeenCalled();
+  });
+
+  it('cannot forge a subtree read grant through Agent input or a foreign host caller', async () => {
+    const { executor, caller, sessionActivityGet } = sessionReadHarness();
+    await expect(executor.execute('session.activity.get', {
+      sessionId: 'unrelated', sessionListAccess: 'led_subtree', ledSubtreeSessionIds: ['unrelated'],
+      actionCaller: { kind: 'session', sessionId: 'parent', starterDepth: 0, turnDepth: 0 },
+    }, caller('child'))).resolves.toMatchObject({ ok: false, errorCode: 'invalid_parameters' });
+    await expect(executor.execute('session.activity.get', { sessionId: 'child' }, {
+      ...caller('parent'), actionCaller: { kind: 'session', sessionId: 'foreign', starterDepth: 0, turnDepth: 0 },
+    })).resolves.toMatchObject({ ok: false });
+    expect(sessionActivityGet).not.toHaveBeenCalled();
+  });
+
+  it('refuses missing host caller facts and an unproved subtree without disclosing the target', async () => {
+    const { caller, sessionActivityGet } = sessionReadHarness();
+    const executor = createExecutor({ sessionActivityGet, isActionApprovalRequired: () => false });
+    await expect(executor.execute('session.activity.get', { sessionId: 'child' }, caller('parent'))).resolves.toMatchObject({ ok: false });
+    await expect(executor.execute('session.activity.get', { sessionId: 'child' }, {
+      ...caller('parent'), agentStartContext: undefined,
+    })).resolves.toMatchObject({ ok: false });
+    expect(sessionActivityGet).not.toHaveBeenCalled();
+  });
+
+  it('does not turn the led read grant into permission to mutate a child', async () => {
+    const { executor, caller } = sessionReadHarness();
+    const input = { sessionId: 'child', modeId: 'plan' };
+    expect(getActionSpec('session.mode.set').inputSchema.safeParse(input).success).toBe(true);
+    await expect(executor.execute('session.mode.set', input, caller('parent')))
+      .resolves.toMatchObject({ ok: false });
+  });
+
+  it('rechecks the same read admission after interception changes the target', async () => {
+    const { sessionList, sessionActivityGet, caller } = sessionReadHarness();
+    const executor = createExecutor({ sessionList, sessionActivityGet, isActionApprovalRequired: () => false,
+      interceptActionExecution: async () => ({ status: 'continue', input: { sessionId: 'unrelated', view: 'awareness' } }),
+    });
+    await expect(executor.prepare('session.activity.get', { sessionId: 'child', view: 'awareness' }, caller('parent')))
+      .resolves.toMatchObject({ kind: 'settled', result: { ok: false } });
+    expect(sessionActivityGet).not.toHaveBeenCalled();
+  });
+
+  it('rechecks led membership when a prepared read runs after the child is detached', async () => {
+    const { caller, sessionActivityGet } = sessionReadHarness();
+    let attached = true;
+    const executor = createExecutor({ isActionApprovalRequired: () => false, sessionActivityGet,
+      sessionList: async () => markSessionListQueryResultV1({
+        sessions: attached ? [{ id: 'child', active: false, presence: 'offline', updatedAt: 10 }] : [],
+        nextCursor: null, hasNext: false, attentionNextCursor: null, attentionHasNext: false,
+      }),
+    });
+    const prepared = await executor.prepare('session.activity.get', { sessionId: 'child', view: 'awareness' }, caller('parent'));
+    expect(prepared.kind).toBe('ready');
+    if (prepared.kind !== 'ready') throw new Error('Expected admitted child read');
+    attached = false;
+    await expect(prepared.invocation.run()).resolves.toMatchObject({ ok: false });
+    expect(sessionActivityGet).not.toHaveBeenCalled();
+  });
+
   it('refuses unavailable host list access before approval or a prepared continuation', async () => {
     const sessionList = vi.fn(async () => ({ sessions: [{ id: 'private-session' }] }));
     const approvalsCreate = vi.fn(async () => ({ artifactId: 'must-not-exist' }));
@@ -270,17 +430,17 @@ describe('ActionExecutor prepared invocation', () => {
   });
 
   it('completes blocking approval admission before ready and dispatches only from run', async () => {
-    let storedRequest: ApprovalRequestV1 | null = null;
-    const approvalsCreate = vi.fn(async ({ request }: { request: ApprovalRequestV1 }) => {
+    let storedRequest: ApprovalRequest | null = null;
+    const approvalsCreate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
       storedRequest = request;
       return { artifactId: 'approval-1' };
     });
     const approvalsGet = vi.fn(async () => storedRequest);
-    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequestV1 }) => {
+    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
       storedRequest = request;
       return { ok: true as const };
     });
-    const approvalsWaitForDecision = vi.fn(async ({ request }: { request: ApprovalRequestV1 }) => ({
+    const approvalsWaitForDecision = vi.fn(async ({ request }: { request: ApprovalRequest }) => ({
       decision: 'approve' as const,
       request: {
         ...request,
@@ -326,29 +486,29 @@ describe('ActionExecutor prepared invocation', () => {
   });
 
   it('keeps blocking waiter ownership when approval is decided concurrently', async () => {
-    let storedRequest: ApprovalRequestV1 | null = null;
-    let resolveWaiter: ((request: ApprovalRequestV1) => void) | null = null;
+    let storedRequest: ApprovalRequest | null = null;
+    let resolveWaiter: ((request: ApprovalRequest) => void) | null = null;
     let markWaiterReady: (() => void) | null = null;
     const waiterReady = new Promise<void>((resolve) => {
       markWaiterReady = resolve;
     });
-    const approvalsCreate = vi.fn(async ({ request }: { request: ApprovalRequestV1 }) => {
+    const approvalsCreate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
       storedRequest = request;
       return { artifactId: 'approval-concurrent-1' };
     });
     const approvalsGet = vi.fn(async () => storedRequest);
-    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequestV1 }) => {
+    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
       storedRequest = request;
       if (request.status === 'approved') resolveWaiter?.(request);
       return { ok: true as const };
     });
-    const approvalsResolveBlockingDecision = vi.fn(async ({ request }: { request: ApprovalRequestV1 }) => {
+    const approvalsResolveBlockingDecision = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
       resolveWaiter?.(request);
       return { resolved: true };
     });
     const approvalsWaitForDecision = vi.fn(async () => {
       markWaiterReady?.();
-      const request = await new Promise<ApprovalRequestV1>((resolveDecision) => {
+      const request = await new Promise<ApprovalRequest>((resolveDecision) => {
         resolveWaiter = resolveDecision;
       });
       return { decision: 'approve' as const, request };

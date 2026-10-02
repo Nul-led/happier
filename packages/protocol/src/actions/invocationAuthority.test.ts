@@ -23,6 +23,14 @@ describe('verified invocation authority', () => {
     expect(resolveCredentialActionAdmissionV1({ spec: getActionSpec('approval.request.decide'), authority: 'account_automation', grant })).toEqual({ ok: true });
     expect(resolveCredentialActionAdmissionV1({ spec: getActionSpec('account.apiTokens.create'), authority: 'account_automation', grant })).toEqual({ ok: false, errorCode: 'present_user_required' });
   });
+  it('admits surface-control automation without granting human decision authority', () => {
+    for (const actionId of ['browser.control.takeControl', 'browser.control.handBack', 'computer.targets.list',
+      'computer.target.select', 'computer.control.interrupt', 'computer.control.handBack',
+      'computer.permissions.openSettings', 'browser.sandbox.install'] as const) {
+      expect(resolveCredentialActionAdmissionV1({ spec: getActionSpec(actionId),
+        authority: 'account_automation', grant: null, surface: 'agent' }), actionId).toEqual({ ok: true });
+    }
+  });
   it('admits automation only to request fresh-folder consent, never to supply it as human authority', () => {
     const spec = getActionSpec('session.open');
     const actionInput = { sessionId: 's1', approvedNewDirectoryCreation: true };

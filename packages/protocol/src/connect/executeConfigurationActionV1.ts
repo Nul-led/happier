@@ -3,7 +3,8 @@ import { writeAgentDefaultChoice, type AgentDefaultChoiceAgent } from './agentDe
 import { readBuiltInLegacyConnectedServiceIdForQualifiedService } from './connectedServiceBindings.js';
 import { updateQualifiedConnectedAccountLabel } from './connectedServiceProfilePreferences.js';
 import { encodeQualifiedConnectedAccountV4StructuredQueryValue } from './qualifiedConnectedAccountsV4QueryCodec.js';
-import { QualifiedConnectedAccountGroupRefSchema, QualifiedConnectedAccountGroupResponseV4Schema, QualifiedConnectedAccountGroupMemberMutationV4Schema, sameQualifiedConnectedAccountGroupRef, type QualifiedConnectedAccountGroupRef } from './qualifiedConnectedAccountsV4.js';
+import { QualifiedConnectedAccountGroupRefSchema, QualifiedConnectedAccountGroupResponseV4Schema, QualifiedConnectedAccountGroupMemberMutationV4Schema, QualifiedConnectedAccountSuccessV4Schema, sameQualifiedConnectedAccountGroupRef, type QualifiedConnectedAccountGroupRef } from './qualifiedConnectedAccountsV4.js';
+import { assertConnectedAccountOperationTransportV1, ConnectedAccountDaemonControlResponseSchema, type ConnectedAccountDaemonControlCommand } from './connectedAccountDaemonRpcV1.js';
 import {
   CONNECTED_SERVICE_CONFIGURATION_ACTION_INPUT_SCHEMAS_V1 as inputs,
   reorderConnectedServicePoolMembersV1,
@@ -17,6 +18,7 @@ export type ConnectedServiceConfigurationActionHostV1 = Readonly<{
   mutateSettings(mutate: (raw: Readonly<Record<string, unknown>>) => Record<string, unknown>): Promise<void>;
   resolveAgent(agentId: string, machineId?: string): Promise<AgentDefaultChoiceAgent | null>;
   resetQuota(input: QuotaResetInput): Promise<unknown>;
+  controlCommand?(machineId: string, command: ConnectedAccountDaemonControlCommand): Promise<unknown>;
   setIdentityPrivacy?: (hidden: boolean) => void;
   assertCurrent(): void;
 }>;
@@ -86,6 +88,24 @@ export async function executeConnectedServiceConfigurationActionV1(
     }
     case 'connectedServices.quota.reset':
       return await host.resetQuota(inputs[actionId].parse(input));
+    case 'connectedServices.quota.refresh': {
+      const { account, machineId } = inputs[actionId].parse(input);
+      if (!host.controlCommand) return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action' };
+      const admission = ConnectedAccountDaemonControlResponseSchema.parse(await host.controlCommand(machineId, {
+        operation: 'describeService', service: account.service, requiredOperation: 'quota_refresh',
+      }));
+      host.assertCurrent();
+      try {
+        assertConnectedAccountOperationTransportV1(admission, account.service, { kind: 'v4' });
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && typeof error.code === 'string') {
+          return { ok: false, errorCode: error.code, error: error.message };
+        }
+        throw error;
+      }
+      QualifiedConnectedAccountSuccessV4Schema.parse(await host.request({ method: 'POST', path: '/v4/connect/qualified/quotas/refresh', body: { ref: account } }));
+      break;
+    }
     case 'connectedServices.identityPrivacy.set': {
       if (!host.setIdentityPrivacy) return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action' };
       host.setIdentityPrivacy(inputs[actionId].parse(input).hidden);

@@ -9,6 +9,7 @@ import {
 import type { WorkflowCondition } from './workflowReferenceV1.js';
 import type {
   WorkflowBlock,
+  WorkflowDefinitionV1,
   WorkflowInputDefinition,
   WorkflowLeafExecutionTargetV1,
   WorkflowParallelBranch,
@@ -23,6 +24,7 @@ export type WorkflowDefinitionDraftV1 = Readonly<{
   inputs: readonly WorkflowInputDefinition[];
   defaults: WorkflowStepExecutionSelection;
   blocks: readonly WorkflowBlock[];
+  roles?: WorkflowDefinitionV1['roles'];
   finalOutput?: WorkflowAuthoredResultReference;
 }>;
 

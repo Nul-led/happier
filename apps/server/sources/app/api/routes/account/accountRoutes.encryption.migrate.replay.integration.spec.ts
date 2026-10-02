@@ -178,7 +178,7 @@ describe("Account encryption migration exact replay", () => {
     });
 
     afterAll(async () => {
-        await harness.close();
+        await harness?.close();
     });
 
     it("returns capable drafts and migrates workspace rows atomically with exact read-only replay", async () => {

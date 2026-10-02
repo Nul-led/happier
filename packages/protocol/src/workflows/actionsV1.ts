@@ -21,6 +21,9 @@ import {
   WorkflowArtifactRevisionV1Schema,
   WorkflowRunExecutionTargetV1Schema,
   WorkflowRoleOverridesV1Schema,
+  WorkflowMaterializedLeafV1Schema,
+  WorkflowRunStartedByV1Schema,
+  WorkflowReplayAgentOverrideV1Schema,
 } from './workflowDefinitionV1.js';
 import { WorkflowAcceptedWorkspaceTargetV1Schema } from './workflowWorkspaceV1.js';
 import {
@@ -53,6 +56,7 @@ import {
 import { WorkflowInputNameSchema } from './workflowReferenceV1.js';
 import { WorkflowDefinitionEditRequestV1Schema, WorkflowDefinitionEditResultV1Schema } from './workflowDefinitionEditV1.js';
 import { WorkflowDefinitionRefV1StringSchema, parseWorkflowDefinitionRefV1 } from './workflowDefinitionRefV1.js';
+import { WorkflowPluginSourceV1Schema } from './workflowPluginSourceV1.js';
 export { WorkflowDefinitionEditRequestV1Schema, WorkflowDefinitionEditResultV1Schema } from './workflowDefinitionEditV1.js';
 
 const CursorSchema = OPAQUE_CURSOR_SCHEMA;
@@ -67,6 +71,7 @@ const WorkflowIngressCarrierV1Schema = z.object({
   version: z.literal(1).optional(),
   inputs: z.array(z.unknown()).optional(),
   defaults: z.unknown().optional(),
+  roles: z.unknown().optional(),
   blocks: z.array(z.unknown()).min(1),
   finalOutput: z.unknown().optional(),
 }).strict();
@@ -96,12 +101,16 @@ export const WorkflowValidateResultV1Schema = z.object({
 }).strict();
 
 export const WorkflowRunSourceV1Schema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('inline'), definition: WorkflowIngressCarrierV1Schema }).strict(),
+  z.object({ kind: z.literal('inline'), definition: WorkflowIngressCarrierV1Schema,
+    /** Replay reopens this Run at the owner; the reviewed carrier cannot replace its frozen graph. */
+    replay: z.object({ runId: WorkflowRunIdV1Schema,
+      agentOverride: WorkflowReplayAgentOverrideV1Schema.optional() }).strict().optional(),
+  }).strict(),
   z.object({ kind: z.literal('saved'), definitionId: WorkflowDefinitionIdV1Schema, revision: WorkflowArtifactRevisionV1Schema,
     visibleTeamId: preservedBoundedNfcString(191, 'Team ids').optional() }).strict(),
   z.object({ kind: z.literal('catalog'), workflow: WorkflowDefinitionRefV1StringSchema.refine(
     (ref) => parseWorkflowDefinitionRefV1(ref)?.kind !== 'artifact', 'Catalog sources must name a built-in or plugin workflow',
-  ) }).strict(),
+  ), pluginVersion: z.string().min(1).optional() }).strict(),
 ]);
 export const WorkflowRunStartRequestV1Schema = z.object({
   runId: WorkflowDirectRunAdmissionIdV1Schema,
@@ -199,29 +208,41 @@ export const WorkflowRunSummariesResultV1Schema = z.object({
   remainingSourceArtifactIds: z.array(WorkflowDefinitionIdV1Schema),
 }).strict();
 export type WorkflowRunSummariesResultV1 = z.infer<typeof WorkflowRunSummariesResultV1Schema>;
+const WorkflowRunAcceptedAutomationSourceV1Schema = z.object({
+  kind: z.literal('automation'),
+  automationId: preservedBoundedNfcString(191, 'Automation ids'),
+  definitionId: WorkflowDefinitionIdV1Schema.optional(),
+  revision: WorkflowArtifactRevisionV1Schema.optional(),
+  savedBy: WorkflowDefinitionSavedByV1Schema.nullable().optional(),
+}).strict();
 export const WorkflowRunAcceptedContextV1Schema = z.union([
   z.object({
-    source: z.object({
-      kind: z.literal('automation'),
-      automationId: preservedBoundedNfcString(191, 'Automation ids'),
-      definitionId: WorkflowDefinitionIdV1Schema.optional(),
-      revision: WorkflowArtifactRevisionV1Schema.optional(),
-    }).strict(),
+    startedBy: WorkflowRunStartedByV1Schema,
+    source: WorkflowRunAcceptedAutomationSourceV1Schema,
     metadata: WorkflowDefinitionMetadataV1Schema.optional(),
     inputs: WorkflowInputsV1Schema,
     machineId: WorkflowMachineIdV1Schema,
     executionTarget: WorkflowRunExecutionTargetV1Schema,
+    roleOverrides: WorkflowRoleOverridesV1Schema.optional(),
+    materializedLeaves: z.array(WorkflowMaterializedLeafV1Schema),
     workspaceTarget: WorkflowAcceptedWorkspaceTargetV1Schema,
   }).strict(),
   z.object({
+    startedBy: WorkflowRunStartedByV1Schema,
     source: z.discriminatedUnion('kind', [
+      WorkflowRunAcceptedAutomationSourceV1Schema,
       z.object({ kind: z.literal('inline') }).strict(),
-      z.object({ kind: z.literal('saved'), definitionId: WorkflowDefinitionIdV1Schema, revision: WorkflowArtifactRevisionV1Schema }).strict(),
+      z.object({ kind: z.literal('saved'), definitionId: WorkflowDefinitionIdV1Schema, revision: WorkflowArtifactRevisionV1Schema,
+        savedBy: WorkflowDefinitionSavedByV1Schema.nullable() }).strict(),
+      z.object({ kind: z.literal('catalog'), ref: WorkflowDefinitionRefV1StringSchema,
+        version: z.union([z.number().int().nonnegative().safe(), z.string().min(1)]) }).strict(),
     ]),
     metadata: WorkflowDefinitionMetadataV1Schema.optional(),
     inputs: WorkflowInputsV1Schema,
     machineId: WorkflowMachineIdV1Schema,
     executionTarget: WorkflowRunExecutionTargetV1Schema,
+    roleOverrides: WorkflowRoleOverridesV1Schema.optional(),
+    materializedLeaves: z.array(WorkflowMaterializedLeafV1Schema),
     workspaceTarget: WorkflowAcceptedWorkspaceTargetV1Schema,
     origin: z.object({
       kind: z.literal('direct'),
@@ -258,11 +279,26 @@ export const WorkflowRunGetResultV1Schema = z.object({
       : 'Workflow Run producer invocation requires a result',
   });
 });
-export const WorkflowRunWaitRequestV1Schema = z.object({ runId: WorkflowRunIdV1Schema, timeoutSeconds: z.number().positive().safe().optional() }).strict();
-export const WorkflowRunWaitResultV1Schema = z.object({
-  observation: z.enum(['terminal', 'paused', 'needs_attention', 'timeout']),
+export const WorkflowRunWaitConditionV1Schema = z.enum(['terminal', 'attention', 'paused']);
+export const WorkflowRunWaitConditionsV1Schema = z.array(WorkflowRunWaitConditionV1Schema).min(1)
+  .refine(conditions => new Set(conditions).size === conditions.length, 'Wait conditions must be unique');
+export const WorkflowRunWaitRequestV1Schema = z.object({
+  runId: WorkflowRunIdV1Schema,
+  conditions: WorkflowRunWaitConditionsV1Schema.optional(),
+  timeoutSeconds: z.number().positive().safe().optional(),
+}).strict();
+/** Passive host sink: public summary only, including the canonical attention projection. */
+export const WorkflowRunWaitSnapshotV1Schema = z.object({ run: WorkflowRunSummaryV1Schema }).strict();
+const WorkflowRunWaitResultBaseV1Schema = z.object({
   run: WorkflowRunSummaryV1Schema, result: StrictJsonValueSchema.optional(),
 }).strict();
+export const WorkflowRunWaitResultV1Schema = z.discriminatedUnion('observation', [
+  WorkflowRunWaitResultBaseV1Schema.extend({ observation: z.literal('terminal'), matchedCondition: z.literal('terminal') }).strict(),
+  WorkflowRunWaitResultBaseV1Schema.extend({ observation: z.literal('paused'), matchedCondition: z.literal('paused') }).strict(),
+  WorkflowRunWaitResultBaseV1Schema.extend({ observation: z.literal('needs_attention'), matchedCondition: z.literal('attention') }).strict(),
+  WorkflowRunWaitResultBaseV1Schema.extend({ observation: z.literal('timeout') }).strict(),
+  WorkflowRunWaitResultBaseV1Schema.extend({ observation: z.literal('not_matched_terminal') }).strict(),
+]);
 export const WorkflowRunPauseRequestV1Schema = z.object({ runId: WorkflowRunIdV1Schema, expectedRevision: RevisionSchema }).strict();
 export const WorkflowRunCancelRequestV1Schema = WorkflowRunPauseRequestV1Schema;
 export const WorkflowRunControlResultV1Schema = z.object({
@@ -309,7 +345,7 @@ export const WorkflowRunDeleteResultV1Schema = z.object({ deleted: z.literal(tru
 export const WorkflowDefinitionListRequestV1Schema = z.object({ cursor: CursorSchema.optional(), limit: PositivePagePreferenceSchema.optional() }).strict();
 export const WorkflowDefinitionListResultV1Schema = z.object({ definitions: z.array(WorkflowDefinitionArtifactHeaderV1Schema.extend({
   ownerAccountId: z.string().min(1).optional(), access: ArtifactCallerAccessV1Schema.optional(),
-}).strict()), nextCursor: CursorSchema.optional() }).strict();
+}).strict()), pluginWorkflows: z.array(WorkflowPluginSourceV1Schema).optional(), nextCursor: CursorSchema.optional() }).strict();
 export const WorkflowDefinitionGetRequestV1Schema = z.object({ definitionId: WorkflowDefinitionIdV1Schema }).strict();
 export const WorkflowDefinitionGetResultV1Schema = z.object({ definitionId: WorkflowDefinitionIdV1Schema, revision: WorkflowArtifactRevisionV1Schema, definition: WorkflowDefinitionV1Schema, metadata: WorkflowDefinitionMetadataV1Schema, savedBy: WorkflowDefinitionSavedByV1Schema.optional() }).strict();
 export const WorkflowDefinitionCreateRequestV1Schema = z.object({ definitionId: WorkflowDefinitionIdV1Schema, definition: WorkflowIngressCarrierV1Schema, metadata: WorkflowDefinitionMetadataV1Schema }).strict();
@@ -395,6 +431,8 @@ export type WorkflowRunListResultV1 = z.infer<typeof WorkflowRunListResultV1Sche
 export type WorkflowRunGetRequestV1 = z.infer<typeof WorkflowRunGetRequestV1Schema>;
 export type WorkflowRunGetResultV1 = z.infer<typeof WorkflowRunGetResultV1Schema>;
 export type WorkflowRunWaitRequestV1 = z.infer<typeof WorkflowRunWaitRequestV1Schema>;
+export type WorkflowRunWaitConditionV1 = z.infer<typeof WorkflowRunWaitConditionV1Schema>;
+export type WorkflowRunWaitSnapshotV1 = z.infer<typeof WorkflowRunWaitSnapshotV1Schema>;
 export type WorkflowRunWaitResultV1 = z.infer<typeof WorkflowRunWaitResultV1Schema>;
 export type WorkflowRunPauseRequestV1 = z.infer<typeof WorkflowRunPauseRequestV1Schema>;
 export type WorkflowRunCancelRequestV1 = z.infer<typeof WorkflowRunCancelRequestV1Schema>;

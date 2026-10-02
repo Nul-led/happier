@@ -73,6 +73,7 @@ describe("registerWorkflowRunStorageRoutes", () => {
         const operations = [
             { operation: "get", runId: "run-1" },
             { operation: "wait", runId: "run-1" },
+            { operation: "wait", runId: "run-1", conditions: ["terminal", "attention"], timeoutSeconds: 0 },
             { operation: "list", request: {}, pageByteLimit: 4096 },
             { operation: "invocations.list", runId: "run-1", pageByteLimit: 4096 },
             { operation: "invocations.get", runId: "run-1", invocationId: "row-1" },
@@ -84,6 +85,12 @@ describe("registerWorkflowRunStorageRoutes", () => {
             expect(schema.safeParse({ ...operation, publisherMachineId: "machine-1" }).success).toBe(true);
             expect(schema.safeParse({ ...operation, authorized: true }).success).toBe(false);
         }
+        for (const conditions of [[], ["terminal", "terminal"], ["needs_attention"]]) {
+            expect(schema.safeParse({ operation: "wait", runId: "run-1", conditions }).success).toBe(false);
+        }
+        // Only the host owns the authored deadline; the storage read accepts
+        // its deadline-expired marker, never a server-side waiting budget.
+        expect(schema.safeParse({ operation: "wait", runId: "run-1", timeoutSeconds: 1 }).success).toBe(false);
         expect(schema.safeParse({ operation: "recovery.list", pageByteLimit: 4096 }).success).toBe(false);
     });
 

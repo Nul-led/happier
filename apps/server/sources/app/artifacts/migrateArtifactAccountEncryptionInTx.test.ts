@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
     ARTIFACT_PLAIN_DATA_KEY_MARKER,
     encodePlainArtifactStoredContent,
+    type AccountEncryptionMigrateArtifactsDirective,
 } from "@happier-dev/protocol";
 
 import {
@@ -21,6 +22,46 @@ describe("migrateArtifactAccountEncryptionInTx", () => {
         markAccountChanged.mockClear();
     });
 
+    it("rewrites every retained body with the head and rejects changed history before writes", async () => {
+        const artifactId = "00000000-0000-4000-8000-000000000001";
+        const retained = { bodyVersion: 1, body: Buffer.from([2, 9, 10]) };
+        const row = { id: artifactId, headerVersion: 1, bodyVersion: 3, seq: 3,
+            header: Buffer.from([2, 1, 2]), body: Buffer.from([2, 3, 4]),
+            dataEncryptionKey: Buffer.from([3, 4, 5]), revisions: [retained], blobs: [] };
+        const replacement = encodePlainArtifactStoredContent({ body: "Retained body" });
+        const item = { artifactId, expectedHeaderVersion: 1, expectedBodyVersion: 3,
+            expectedDataEncryptionKey: row.dataEncryptionKey.toString("base64"),
+            header: encodePlainArtifactStoredContent({ title: "Plain" }), body: encodePlainArtifactStoredContent({ body: "Head" }),
+            dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, recipientKeyEnvelopes: [], blobs: [],
+            revisions: [{ bodyVersion: 1, expectedBody: retained.body.toString("base64"), body: replacement }] };
+        const updateMany = vi.fn(async () => ({ count: 1 }));
+        const updateRevision = vi.fn(async (input: { data: { body: Uint8Array } }) => {
+            retained.body = Buffer.from(input.data.body);
+            return { count: 1 };
+        });
+        // Prisma is the genuine persistence boundary; the migration and codecs remain real.
+        const tx = { artifact: { findMany: vi.fn(async () => [row]), updateMany, findFirst: vi.fn(async () => null) },
+            artifactRevision: { count: vi.fn(async () => row.revisions.length), updateMany: updateRevision },
+            artifactKeyEnvelope: { deleteMany: vi.fn(async () => ({ count: 0 })) } } as unknown as Parameters<typeof migrateArtifactAccountEncryptionInTx>[0]["tx"];
+        await expect(migrateArtifactAccountEncryptionInTx({ tx, accountId: "account-1", fromMode: "e2ee", toMode: "plain",
+            directive: { action: "migrate", items: [item] }, markChanged: async () => 1 })).resolves.toEqual({ status: "applied" });
+        expect(retained.body.toString("base64")).toBe(replacement);
+        updateMany.mockClear();
+        updateRevision.mockClear();
+        for (const revisions of [[{ ...retained, body: Buffer.from([2, 11, 12]) }], [retained, { bodyVersion: 2, body: Buffer.from([2, 13, 14]) }]]) {
+            row.revisions = revisions;
+            await expect(migrateArtifactAccountEncryptionInTx({ tx, accountId: "account-1", fromMode: "e2ee", toMode: "plain",
+                directive: { action: "migrate", items: [item] }, markChanged: async () => 1 })).resolves.toEqual({ status: "migration_incomplete" });
+            expect(updateMany).not.toHaveBeenCalled();
+            expect(updateRevision).not.toHaveBeenCalled();
+        }
+        // Persisted Account mode, not an opaque key's presence, owns admission.
+        await expect(migrateArtifactAccountEncryptionInTx({ tx, accountId: "account-1", fromMode: "plain", toMode: "plain",
+            directive: { action: "migrate", items: [item] }, markChanged: async () => 1 })).resolves.toEqual({ status: "invalid_content" });
+        expect(updateMany).not.toHaveBeenCalled();
+        expect(updateRevision).not.toHaveBeenCalled();
+    });
+
     it("rejects an incomplete inventory before writing", async () => {
         const updateMany = vi.fn();
         await expect(migrateArtifactAccountEncryptionInTx({
@@ -36,6 +77,7 @@ describe("migrateArtifactAccountEncryptionInTx", () => {
                 },
             } as any,
             accountId: "account-1",
+            fromMode: "plain",
             toMode: "plain",
             directive: { action: "migrate", items: [] },
         })).resolves.toEqual({ status: "migration_incomplete" });
@@ -55,14 +97,19 @@ describe("migrateArtifactAccountEncryptionInTx", () => {
                         headerVersion: 1,
                         bodyVersion: 2,
                         dataEncryptionKey: Buffer.from(ARTIFACT_PLAIN_DATA_KEY_MARKER, "base64"),
+                        header: Buffer.from(encodePlainArtifactStoredContent({ title: "Plain" }), "base64"),
+                        body: Buffer.from(encodePlainArtifactStoredContent({ body: "Body" }), "base64"),
+                        revisions: [], blobs: [],
                         seq: 3,
                     }]),
                     updateMany,
                     findFirst: vi.fn(async () => null),
                 },
                 artifactKeyEnvelope: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+                artifactRevision: { count: vi.fn(async () => 0) },
             } as any,
             accountId: "account-1",
+            fromMode: "plain",
             toMode: "plain",
             directive: {
                 action: "migrate",
@@ -72,6 +119,7 @@ describe("migrateArtifactAccountEncryptionInTx", () => {
                     expectedBodyVersion: 2,
                     expectedDataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
                     recipientKeyEnvelopes: [],
+                    revisions: [], blobs: [],
                     header: encodePlainArtifactStoredContent({ title: "Plain" }),
                     body: encodePlainArtifactStoredContent({ body: "Body" }),
                     dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
@@ -113,6 +161,9 @@ describe("migrateArtifactAccountEncryptionInTx", () => {
                         headerVersion: 1,
                         bodyVersion: 2,
                         dataEncryptionKey: Buffer.from(ARTIFACT_PLAIN_DATA_KEY_MARKER, "base64"),
+                        header: Buffer.from(encodePlainArtifactStoredContent({ title: "Plain" }), "base64"),
+                        body: Buffer.from(encodePlainArtifactStoredContent({ body: "Body" }), "base64"),
+                        revisions: [], blobs: [],
                         seq: 3,
                         pluginUiArtifact: {
                             release: {
@@ -126,8 +177,10 @@ describe("migrateArtifactAccountEncryptionInTx", () => {
                     findFirst: vi.fn(async () => null),
                 },
                 artifactKeyEnvelope: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+                artifactRevision: { count: vi.fn(async () => 0) },
             } as any,
             accountId: "account-1",
+            fromMode: "plain",
             toMode: "plain",
             directive: {
                 action: "migrate",
@@ -137,6 +190,7 @@ describe("migrateArtifactAccountEncryptionInTx", () => {
                     expectedBodyVersion: 2,
                     expectedDataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
                     recipientKeyEnvelopes: [],
+                    revisions: [], blobs: [],
                     header: encodePlainArtifactStoredContent({ title: "Plain" }),
                     body: encodePlainArtifactStoredContent({ body: "Body" }),
                     dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
@@ -168,6 +222,9 @@ describe("migrateArtifactAccountEncryptionInTx", () => {
                         headerVersion: 1,
                         bodyVersion: 2,
                         dataEncryptionKey: Buffer.from(ARTIFACT_PLAIN_DATA_KEY_MARKER, "base64"),
+                        header: Buffer.from(encodePlainArtifactStoredContent({ title: "Plain" }), "base64"),
+                        body: Buffer.from(encodePlainArtifactStoredContent({ body: "Body" }), "base64"),
+                        revisions: [], blobs: [],
                         seq: 3,
                         pluginUiArtifact: null,
                         packageAssetRelease: {
@@ -179,8 +236,10 @@ describe("migrateArtifactAccountEncryptionInTx", () => {
                     findFirst: vi.fn(async () => null),
                 },
                 artifactKeyEnvelope: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+                artifactRevision: { count: vi.fn(async () => 0) },
             } as any,
             accountId: "account-1",
+            fromMode: "plain",
             toMode: "plain",
             directive: {
                 action: "migrate",
@@ -190,6 +249,7 @@ describe("migrateArtifactAccountEncryptionInTx", () => {
                     expectedBodyVersion: 2,
                     expectedDataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
                     recipientKeyEnvelopes: [],
+                    revisions: [], blobs: [],
                     header: encodePlainArtifactStoredContent({ title: "Plain" }),
                     body: encodePlainArtifactStoredContent({ body: "Body" }),
                     dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
@@ -217,10 +277,11 @@ describe("migrateArtifactAccountEncryptionInTx", () => {
             expectedBodyVersion: 2,
             expectedDataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
             recipientKeyEnvelopes: [],
+            revisions: [], blobs: [],
             header: encodePlainArtifactStoredContent({ title: "Plain" }),
             body: encodePlainArtifactStoredContent({ body: "Body" }),
             dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
-        } as const;
+        } satisfies Extract<AccountEncryptionMigrateArtifactsDirective, { action: "migrate" }>['items'][number];
         const row = {
             id: artifactId,
             headerVersion: 2,
@@ -231,6 +292,7 @@ describe("migrateArtifactAccountEncryptionInTx", () => {
                 Buffer.from(item.dataEncryptionKey, "base64"),
             ),
             pluginUiArtifact: null,
+            revisions: [], blobs: [],
         };
         const findMany = vi.fn(async () => [row]);
         const tx = {

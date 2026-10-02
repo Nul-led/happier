@@ -9,6 +9,7 @@ import { WorkflowProjectTargetV1Schema } from '../workflowWorkspaceV1.js';
 import { WorkflowDefinitionRefV1StringSchema } from '../workflowDefinitionRefV1.js';
 import { TriggerTargetV1Schema } from './triggerTargetV1.js';
 import { SessionIdSchema } from '../../sessions/idsV1.js';
+import { AutomationPullRequestTriggerSchema } from '../../automations/automationTriggerDefinition.js';
 
 const Revision = z.number().int().nonnegative().safe();
 const ContextFields = AutomationStoredWorkflowDefinitionV2Schema.omit({ workspace: true, inlineDefinition: true, onComplete: true });
@@ -52,6 +53,12 @@ export const WorkflowTriggerUpdateRequestV1Schema = z.object({
 export const WorkflowTriggerRemoveRequestV1Schema = z.object({
   automationId: asProtocolZod(AutomationIdV1Schema), triggerId: AutomationTriggerIdSchema,
 }).strict();
+const OpenedPullRequestTriggerDetailSchema = z.object({
+  id: AutomationTriggerIdSchema, revision: Revision, enabled: z.boolean(),
+  createdAt: z.number().int().nonnegative().safe(), updatedAt: z.number().int().nonnegative().safe(),
+  sourceSessionId: asProtocolZod(SessionIdSchema), triggerDefinitionEnvelope: z.string().min(1),
+  ...AutomationPullRequestTriggerSchema.shape,
+}).strict();
 export const WorkflowTriggerSetV1Schema = z.object({
   automationId: asProtocolZod(AutomationIdV1Schema), revision: Revision, enabled: z.boolean(),
   health: z.enum(['available', 'source_unavailable']),
@@ -61,7 +68,11 @@ export const WorkflowTriggerSetV1Schema = z.object({
   target: TriggerTargetV1Schema.optional(),
   project: WorkflowProjectTargetV1Schema.optional(),
   context: AutomationStoredWorkflowDefinitionV2Schema.optional(),
-  triggers: z.array(AutomationTriggerDetailSchema),
+  triggers: z.array(z.union([
+    AutomationTriggerDetailSchema.options[2], AutomationTriggerDetailSchema.options[3],
+    AutomationTriggerDetailSchema.options[4], AutomationTriggerDetailSchema.options[5],
+    OpenedPullRequestTriggerDetailSchema,
+  ])),
 }).strict();
 export const WorkflowTriggerListResultV1Schema = z.object({ sets: z.array(WorkflowTriggerSetV1Schema) }).strict();
 export const WorkflowTriggerWriteResultV1Schema = z.object({
@@ -77,10 +88,19 @@ export type WorkflowTriggerSetV1 = z.infer<typeof WorkflowTriggerSetV1Schema>;
 
 const SessionId = asProtocolZod(SessionIdSchema);
 const SessionContextFields = AutomationStoredWorkflowDefinitionV2Schema.omit({ workspace: true, inlineDefinition: true });
+const SessionPullRequestTriggerSchema = AutomationPullRequestTriggerSchema.extend({
+  pullRequest: AutomationPullRequestTriggerSchema.shape.pullRequest.optional(),
+}).strict();
+export const SessionTriggerDefinitionV1Schema = z.union([AutomationTriggerDefinitionSchema, SessionPullRequestTriggerSchema]);
+export const SessionTriggerDefinitionInputV1Schema = z.union([
+  AutomationTriggerDefinitionInputSchema, SessionPullRequestTriggerSchema.extend({ enabled: z.boolean() }).strict(),
+]);
+export type SessionTriggerDefinitionV1 = z.infer<typeof SessionTriggerDefinitionV1Schema>;
+export type SessionTriggerDefinitionInputV1 = z.infer<typeof SessionTriggerDefinitionInputV1Schema>;
 export const SessionTriggerListRequestV1Schema = z.object({ sessionId: SessionId }).strict();
 export const SessionTriggerAddRequestV1Schema = z.object({
   sessionId: SessionId, target: TriggerTargetV1Schema,
-  ...SessionContextFields.partial().shape, trigger: AutomationTriggerDefinitionInputSchema,
+  ...SessionContextFields.partial().shape, trigger: SessionTriggerDefinitionInputV1Schema,
 }).strict().superRefine((value, ctx) => {
   if (value.target.kind === 'inline' && value.visibleTeamId !== undefined) {
     ctx.addIssue({ code: 'custom', path: ['visibleTeamId'], message: 'Inline triggers are private' });
@@ -89,14 +109,16 @@ export const SessionTriggerAddRequestV1Schema = z.object({
 export const SessionTriggerUpdateRequestV1Schema = z.object({
   sessionId: SessionId, triggerId: AutomationTriggerIdSchema, expectedRevision: Revision,
   patch: z.object({ ...SessionContextFields.partial().shape, target: TriggerTargetV1Schema.optional(),
-    enabled: z.boolean().optional(), trigger: AutomationTriggerDefinitionSchema.optional() }).strict()
+    enabled: z.boolean().optional(), trigger: SessionTriggerDefinitionV1Schema.optional() }).strict()
     .refine((patch) => Object.keys(patch).length > 0, 'A trigger update needs a change'),
 }).strict();
 export const SessionTriggerRemoveRequestV1Schema = z.object({ sessionId: SessionId, triggerId: AutomationTriggerIdSchema }).strict();
 export const SessionPullRequestLinkV1Schema = z.object({
   provider: z.literal('github'), repository: z.string().min(1), number: z.number().int().positive().safe(),
 }).strict();
+export type SessionPullRequestLinkV1 = z.infer<typeof SessionPullRequestLinkV1Schema>;
 export const SessionTriggerListResultV1Schema = WorkflowTriggerListResultV1Schema.extend({
+  sessionId: SessionId,
   pullRequestLinks: z.array(SessionPullRequestLinkV1Schema),
 }).strict();
 export type SessionTriggerListRequestV1 = z.infer<typeof SessionTriggerListRequestV1Schema>;

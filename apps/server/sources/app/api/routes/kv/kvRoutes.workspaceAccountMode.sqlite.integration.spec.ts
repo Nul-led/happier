@@ -50,7 +50,9 @@ describe('workspace Account-mode KV admission', () => {
             await db.userKVStore.create({ data: { accountId: account.id, key, version: 5, value: plain } });
             const update = await app.inject({ method: 'POST', url: '/v1/kv', headers, payload: { mutations: [{ key, version: 5, value: staleCiphertext }] } });
             expect(update.statusCode, update.body).toBe(400);
-            expect(await db.userKVStore.findUniqueOrThrow({ where: { accountId_key: { accountId: account.id, key } } })).toMatchObject({ value: plain, version: 5 });
+            const persisted = await db.userKVStore.findUniqueOrThrow({ where: { accountId_key: { accountId: account.id, key } } });
+            expect(persisted.version).toBe(5);
+            expect(persisted.value === null ? null : new Uint8Array(persisted.value)).toEqual(new Uint8Array(plain));
         });
         expect(await db.accountChange.count({ where: { accountId: account.id } })).toBe(0);
         expect(socketEmit).not.toHaveBeenCalled();

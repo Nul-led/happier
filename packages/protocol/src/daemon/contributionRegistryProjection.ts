@@ -60,6 +60,7 @@ import {
   AgentUiProjectedDeclarationV1Schema,
   PluginResourceContextV1Schema,
   PluginResourceKindV2Schema,
+  PluginWorkflowContributionV1Schema,
 } from '../plugins/contributions/v2.js';
 import {
   PluginDescriptorClearWhenEmptyV1Schema,
@@ -1647,6 +1648,11 @@ const PluginProjectedDefinitionEntryV2Schema = strictProjectedFamilyEntrySchema(
   'contributionKey',
   'definition',
 ] as const);
+const PluginProjectedWorkflowEntryV1Schema = z.object({
+  ...PluginProjectedFamilyEntryBaseV2Shape,
+  pluginVersion: z.string().trim().min(1),
+  definition: PluginWorkflowContributionV1Schema,
+}).strict();
 const PluginProjectedVoiceProviderEntryV2Schema = strictProjectedFamilyEntrySchema([
   'generation',
   'contributionKey',
@@ -2400,6 +2406,7 @@ export function readDaemonPluginUiTargetedSurfaceMountV1<
 
 export const PluginProjectedFamilyEntryV2Schema = z.union([
   PluginProjectedDefinitionEntryV2Schema,
+  PluginProjectedWorkflowEntryV1Schema,
   PluginProjectedVoiceProviderEntryV2Schema,
   PluginProjectedComposerAttachmentEntryV1Schema,
   PluginProjectedComposerControlEntryV1Schema,
@@ -2439,6 +2446,7 @@ const PluginProjectedUiFamilyV2Schema = projectedFamilySchema('pluginUi', Plugin
 const PluginProjectedBrowserFamilyV2Schema = projectedFamilySchema('pluginBrowser', PluginProjectedBrowserEntryV2Schema);
 const PluginProjectedVoiceModelPacksFamilyV2Schema = projectedFamilySchema('voiceModelPacks', PluginProjectedDefinitionEntryV2Schema);
 const PluginProjectedRolesFamilyV1Schema = projectedFamilySchema('roles', PluginProjectedDefinitionEntryV2Schema);
+const PluginProjectedWorkflowsFamilyV1Schema = projectedFamilySchema('workflows', PluginProjectedWorkflowEntryV1Schema);
 const PluginProjectedVoiceProvidersFamilyV2Schema = projectedFamilySchema('voiceProviders', PluginProjectedVoiceProviderEntryV2Schema);
 const PluginProjectedComposerAttachmentsFamilyV1Schema = projectedFamilySchema('composerAttachments', PluginProjectedComposerAttachmentEntryV1Schema);
 const PluginProjectedComposerControlsFamilyV1Schema = projectedFamilySchema('composerControls', PluginProjectedComposerControlEntryV1Schema);
@@ -2456,6 +2464,7 @@ const PluginProjectedFamiliesByIdV2Schema = z.object({
   pluginBrowser: PluginProjectedBrowserFamilyV2Schema.optional(),
   voiceModelPacks: PluginProjectedVoiceModelPacksFamilyV2Schema.optional(),
   roles: PluginProjectedRolesFamilyV1Schema.optional(),
+  workflows: PluginProjectedWorkflowsFamilyV1Schema.optional(),
   voiceProviders: PluginProjectedVoiceProvidersFamilyV2Schema.optional(),
   composerAttachments: PluginProjectedComposerAttachmentsFamilyV1Schema.optional(),
   composerControls: PluginProjectedComposerControlsFamilyV1Schema.optional(),
@@ -2475,6 +2484,7 @@ export const PluginProjectedFamilyV2Schema = z.union([
   PluginProjectedBrowserFamilyV2Schema,
   PluginProjectedVoiceModelPacksFamilyV2Schema,
   PluginProjectedRolesFamilyV1Schema,
+  PluginProjectedWorkflowsFamilyV1Schema,
   PluginProjectedVoiceProvidersFamilyV2Schema,
   PluginProjectedComposerAttachmentsFamilyV1Schema,
   PluginProjectedComposerControlsFamilyV1Schema,

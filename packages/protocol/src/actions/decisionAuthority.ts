@@ -1,6 +1,7 @@
 import { evaluateApiTokenGrantV1, type ApiTokenGrantV1 } from '../auth/apiTokenGrant.js';
 import type { ActionRequiredAuthority } from './metadata.js';
 import type { ActionSpec } from './actionSpecs.js';
+import type { ActionId } from './actionIds.js';
 
 export const DECISION_ACTION_IDS = ['approval.request.decide', 'session.permission.respond'] as const;
 export const TOKEN_CONVERSATIONAL_INPUT_ACTION_IDS = ['session.user_action.answer'] as const;
@@ -23,14 +24,31 @@ export function canCredentialDecideV1(input: Readonly<{ authority: ActionRequire
   return input.authority === 'present_user' || input.grant?.approve === true;
 }
 
-/** Directory recovery consent is a human decision, unlike an ordinary Session open. */
-export function requiresPresentUserDecisionForActionInputV1(
+/** Execution authority is separate from who may decide a requested approval. */
+export function requiresPresentUserExecutionAuthorityForActionInputV1(
   spec: Pick<ActionSpec, 'id' | 'requiredAuthority'>,
   input?: unknown,
 ): boolean {
   return spec.requiredAuthority === 'present_user'
     || (spec.id === 'session.open' && typeof input === 'object' && input !== null
       && 'approvedNewDirectoryCreation' in input && input.approvedNewDirectoryCreation === true);
+}
+
+/** Agent-callable control/recovery requests remain human-decided, including rejection. */
+const HUMAN_DECIDED_SURFACE_ACTION_IDS = [
+  'browser.control.takeControl', 'browser.control.handBack',
+  'computer.targets.list', 'computer.target.select',
+  'computer.control.interrupt', 'computer.control.handBack',
+  'computer.permissions.openSettings', 'browser.sandbox.install',
+] as const satisfies readonly ActionId[];
+
+export function requiresPresentUserDecisionForActionInputV1(
+  spec: Pick<ActionSpec, 'id' | 'requiredAuthority'>,
+  input?: unknown,
+  decision: 'approve' | 'reject' = 'approve',
+): boolean {
+  return (HUMAN_DECIDED_SURFACE_ACTION_IDS as readonly string[]).includes(spec.id)
+    || (decision === 'approve' && requiresPresentUserExecutionAuthorityForActionInputV1(spec, input));
 }
 
 /** Decisions are opt-in; they never grant token, security, trust or policy authority. */
@@ -42,7 +60,7 @@ export function resolveCredentialActionAdmissionV1(input: Readonly<{
   hasExternalCredential?: boolean;
   actionInput?: unknown;
 }>): { ok: true } | { ok: false; errorCode: 'present_user_required' } {
-  if (!requiresPresentUserDecisionForActionInputV1(input.spec, input.actionInput) || input.authority === 'present_user') return { ok: true };
+  if (!requiresPresentUserExecutionAuthorityForActionInputV1(input.spec, input.actionInput) || input.authority === 'present_user') return { ok: true };
   // Admission here permits requesting consent, never automatic execution.
   // The approval owner enforces a mandatory floor, including persisted waivers.
   if (isAgentApprovalRequestSurface(input.surface) && !input.hasExternalCredential && !input.grant

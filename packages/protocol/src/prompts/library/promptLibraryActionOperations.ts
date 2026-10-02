@@ -23,6 +23,7 @@ import type { PromptExternalLinkEntryV1, PromptExternalLinksV1 } from './promptE
 
 export type PromptLibraryStoredArtifact = Readonly<{
   id: string;
+  revision: Readonly<{ headerVersion: number; bodyVersion: number }>;
   header: Readonly<Record<string, unknown>> | null;
   body: string | null;
 }>;
@@ -31,6 +32,8 @@ export type PromptLibraryArtifactStore = Readonly<{
   read(artifactId: string, options?: Readonly<{ signal?: AbortSignal }>): Promise<PromptLibraryStoredArtifact | null>;
   update(input: Readonly<{
     artifactId: string;
+    /** The revision returned by the read used to derive this mutation. */
+    expectedRevision: PromptLibraryStoredArtifact['revision'];
     header: Readonly<Record<string, unknown>>;
     body: string;
     signal?: AbortSignal;
@@ -130,6 +133,7 @@ export async function updatePromptDocInLibrary(params: Readonly<{
   throwIfAborted(params.signal);
   await params.store.update({
     artifactId: params.request.artifactId,
+    expectedRevision: artifact.revision,
     header: nextHeader,
     body: JSON.stringify(PromptDocBodyV1Schema.parse(nextBody)),
     ...(params.signal ? { signal: params.signal } : {}),
@@ -205,6 +209,7 @@ export async function updatePromptBundleInLibrary(params: Readonly<{
   throwIfAborted(params.signal);
   await params.store.update({
     artifactId: params.request.artifactId,
+    expectedRevision: artifact.revision,
     header: nextHeader,
     body: JSON.stringify(PromptBundleBodyV1Schema.parse(nextBody)),
     ...(params.signal ? { signal: params.signal } : {}),

@@ -13,6 +13,7 @@ describe('explicit commit modes', () => {
     expect(ScmCommitCreateRequestSchema.parse(request)).toEqual(request);
     expect(ScmOperationErrorCodeSchema.safeParse('COMMIT_AMEND_PUBLISHED').success).toBe(true);
     expect(classifyScmOperationErrorCode('COMMIT_AMEND_PUBLISHED')).toBe('commit');
+    expect(classifyScmOperationErrorCode('COMMIT_UNDO_PUBLISHED')).toBe('commit');
     expect(ScmCommitCreateRequestSchema.safeParse({ message: 'New commit', allowPublishedAmend: true }).success).toBe(false);
     expect(ScmCommitCreateRequestSchema.safeParse({ message: 'New commit', mode: 'automatic' }).success).toBe(false);
   });

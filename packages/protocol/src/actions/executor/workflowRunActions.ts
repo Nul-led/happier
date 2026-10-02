@@ -8,6 +8,7 @@ import {
   WorkflowProgressEnvelopeV1Schema,
   WorkflowRunInvocationIndexV1Schema,
   WorkflowRunSummaryV1Schema,
+  WorkflowRunWaitSnapshotV1Schema,
   WorkflowRunListResultV1Schema,
   WorkflowRunAcceptedContextV1Schema,
   materializeWorkflowAcceptedSnapshotV1,
@@ -63,6 +64,7 @@ import {
 import type { ActionExecutorDeps, WorkflowActionExecuteArgs } from './types.js';
 import type { WorkflowRunActionOwner } from './workflowAccountActions.js';
 import { admitActionAgentStartV1, resolveActionAgentStartContextV1 } from './agentStartAdmission.js';
+import type { WorkflowPluginSourceReaderV1 } from '../../workflows/workflowPluginSourceV1.js';
 
 export type WorkflowAccountRunEncryption = AvailableAutomationAccountEncryptionV1;
 
@@ -190,6 +192,8 @@ function normalizeProjectTargetForComparison(target: NonNullable<WorkflowMachine
 }
 
 type Storage = Readonly<{
+  /** Existing Account feed, including a current-facts invalidation on reconnect. */
+  observeChanges?: (runId: string, onChange: () => void, onError: (error: unknown) => void) => Readonly<{ dispose(): void | Promise<void> }>;
   execute: (operation: Readonly<Record<string, unknown>>, options?: Readonly<{
     signal?: AbortSignal;
     /** Exact daemon machine that is authorized to publish this operation. */
@@ -304,6 +308,9 @@ function parseSnapshot(value: unknown) {
 
 function principal(args: RunArgs) {
   if (args.context.actionCaller?.kind === 'workflowRun') return args.context.actionCaller.authorization.principal;
+  if (args.context.actionCaller?.kind === 'session') {
+    return { kind: 'session' as const, sessionId: args.context.actionCaller.sessionId };
+  }
   if (args.context.externalActionCredential) {
     // The live grant remains on the caller context; the accepted principal
     // stores identity only, as required by its canonical strict schema.
@@ -356,23 +363,30 @@ function currentControllerAuthorization(args: RunArgs) {
 }
 
 function projectAcceptedContext(accepted: ReturnType<typeof WorkflowAcceptedSnapshotV1Schema.parse>) {
+  const source = accepted.source;
   return WorkflowRunAcceptedContextV1Schema.parse('origin' in accepted
     ? {
-        source: accepted.source,
+        startedBy: accepted.startedBy,
+        source,
         ...(accepted.metadata ? { metadata: accepted.metadata } : {}),
         inputs: accepted.inputs,
         machineId: accepted.machineId,
         executionTarget: accepted.executionTarget,
         workspaceTarget: accepted.workspaceTarget,
+        ...(accepted.roleOverrides === undefined ? {} : { roleOverrides: accepted.roleOverrides }),
+        materializedLeaves: accepted.materializedLeaves,
         origin: accepted.origin,
       }
     : {
-        source: accepted.source,
+        startedBy: accepted.startedBy,
+        source,
         ...(accepted.metadata ? { metadata: accepted.metadata } : {}),
         inputs: accepted.inputs,
         machineId: accepted.machineId,
         executionTarget: accepted.executionTarget,
         workspaceTarget: accepted.workspaceTarget,
+        ...(accepted.roleOverrides === undefined ? {} : { roleOverrides: accepted.roleOverrides }),
+        materializedLeaves: accepted.materializedLeaves,
       });
 }
 
@@ -443,7 +457,10 @@ async function assertAcceptedAuthorizationCurrent(
   signal: AbortSignal | undefined,
   isAcceptedAuthorizationCurrent: WorkflowAcceptedAuthorizationCurrentness | undefined,
 ): Promise<void> {
-  const hasRevocableAuthority = authorization.principal.kind !== 'host' || authorization.sourceAuthority !== undefined;
+  // Session attribution freezes the accepted principal and ceiling, not the
+  // origin's lifetime. Independent Runs remain controllable after its deletion.
+  const hasRevocableAuthority = (authorization.principal.kind !== 'host' && authorization.principal.kind !== 'session')
+    || authorization.sourceAuthority !== undefined;
   if ((isAcceptedAuthorizationCurrent && !(await isAcceptedAuthorizationCurrent({ authorization, signal })))
     || (!isAcceptedAuthorizationCurrent && hasRevocableAuthority)) {
     throw workflowError('run_access_denied');
@@ -464,6 +481,7 @@ export type WorkflowAccountRunActionDeps = Readonly<{
   resolveAccountId: (signal?: AbortSignal) => Promise<string>;
   storage: Storage;
   definitions: DefinitionReader;
+  readPluginWorkflows?: WorkflowPluginSourceReaderV1;
   resolveEncryption: (signal?: AbortSignal) => Promise<AvailableAutomationAccountEncryptionV1>;
   normalizeAbsolutePath: (directory: string) => string | null;
   resolveAgentStartContext?: ActionExecutorDeps['resolveAgentStartContext'];
@@ -498,6 +516,7 @@ export function createWorkflowAccountRunActionOwner(deps: WorkflowAccountRunActi
   deps = {
     ...deps,
     storage: {
+      ...storage,
       execute: async (operation, options) => {
         deps.assertCurrent?.();
         const result = await storage.execute(operation, options);
@@ -614,32 +633,52 @@ export function createWorkflowAccountRunActionOwner(deps: WorkflowAccountRunActi
 
   const start = async (args: WorkflowActionExecuteArgs<'workflow.run.start'>, ingressContext?: WorkflowIngressContextV1) => {
     const input = args.input;
-    const originSessionId = args.context.defaultSessionId ?? undefined;
-    const resultDelivery = input.onComplete ?? (args.context.surface === 'agent'
+    const replayRequest = input.source.kind === 'inline' ? input.source.replay : undefined;
+    if (replayRequest?.runId === input.runId) throw workflowError('invalid_input');
+    const replaySource = replayRequest ? await openAccepted(replayRequest.runId, args.context.signal) : undefined;
+    if (replaySource) {
+      assertRunResourceRestriction(args.context, { machineId: replaySource.accepted.machineId,
+        project: replaySource.accepted.workspaceTarget.project }, deps.normalizeAbsolutePath);
+      if ((input.roleOverrides !== undefined && !sameStrictJsonValue(input.roleOverrides, replaySource.accepted.roleOverrides ?? []))
+        || (input.executionTarget !== undefined && !sameStrictJsonValue(input.executionTarget, replaySource.accepted.executionTarget))
+        || (input.metadata !== undefined && !sameStrictJsonValue(input.metadata, replaySource.accepted.metadata))) throw workflowError('invalid_input');
+    }
+    const originSessionId = replaySource ? replaySource.accepted.origin?.originSessionId : args.context.defaultSessionId ?? undefined;
+    if (replaySource && args.context.defaultSessionId && args.context.defaultSessionId !== originSessionId) throw workflowError('invalid_input');
+    const resultDelivery = input.onComplete ?? (replaySource?.accepted.resultDelivery ? { kind: 'originating_session' as const } : undefined) ?? (args.context.surface === 'agent'
       && args.context.authority !== 'present_user' && originSessionId
       ? { kind: 'originating_session' as const }
       : undefined);
     if (resultDelivery && !originSessionId) throw workflowError('invalid_input');
     const inputSource = input.source;
     if (inputSource.kind === 'catalog' && !deps.resolveMaterializationContext) throw workflowError('source_unavailable');
-    const executionTarget = input.executionTarget ?? { kind: 'session' as const };
-    const checkedInline = input.source.kind === 'inline'
+    const executionTarget = replaySource?.accepted.executionTarget ?? input.executionTarget ?? { kind: 'session' as const };
+    const checkedInline = input.source.kind === 'inline' && !replaySource
       ? validateWorkflowDefinition(
           input.source.definition,
           ingressContext ? { context: ingressContext } : {},
         )
       : undefined;
     const normalizedInline = checkedInline?.normalizedDefinition;
-    if (input.source.kind === 'inline' && (!checkedInline?.valid || !normalizedInline)) {
+    if (input.source.kind === 'inline' && !replaySource && (!checkedInline?.valid || !normalizedInline)) {
       throw workflowError('invalid_input');
     }
+    let replayAccepted: ReturnType<typeof WorkflowAcceptedSnapshotV1Schema.parse> | undefined;
     const projectExisting = async () => {
       const existing = await openAccepted(
         input.runId,
         args.context.signal,
         workflowProjectTarget(args.context)?.machineId,
       );
-      const sameSource = inputSource.kind === 'inline'
+      const sameSource = replaySource
+        ? replayAccepted !== undefined
+          && sameStrictJsonValue(existing.accepted.source, replayAccepted.source)
+          && sameStrictJsonValue(existing.accepted.authoredDefinition, replayAccepted.authoredDefinition)
+          && sameStrictJsonValue(existing.accepted.definition, replayAccepted.definition)
+          && sameStrictJsonValue(existing.accepted.frozenChildren, replayAccepted.frozenChildren)
+          && sameStrictJsonValue(existing.accepted.materializedLeaves, replayAccepted.materializedLeaves)
+          && sameStrictJsonValue(existing.accepted.workspaceTarget, replayAccepted.workspaceTarget)
+        : inputSource.kind === 'inline'
         ? existing.accepted.source.kind === 'inline'
           && normalizedInline !== undefined
           && sameStrictJsonValue(existing.accepted.authoredDefinition, normalizedInline)
@@ -663,7 +702,7 @@ export function createWorkflowAccountRunActionOwner(deps: WorkflowAccountRunActi
       if (!sameSource
         || (inputSource.kind === 'saved' && inputSource.visibleTeamId !== undefined
           && inputSource.visibleTeamId !== existing.snapshot.keyCensus.visibleTeamId)
-        || !sameStrictJsonValue(existing.accepted.roleOverrides ?? [], input.roleOverrides ?? [])
+        || !sameStrictJsonValue(existing.accepted.roleOverrides ?? [], replaySource?.accepted.roleOverrides ?? input.roleOverrides ?? [])
         || (expectedMetadata !== undefined && !sameStrictJsonValue(existing.accepted.metadata, expectedMetadata))
         || !sameStrictJsonValue(existing.accepted.inputs, resolveInputs(existing.accepted.definition, input.inputs))
         || existing.accepted.executionTarget.kind !== executionTarget.kind
@@ -679,19 +718,24 @@ export function createWorkflowAccountRunActionOwner(deps: WorkflowAccountRunActi
       await assertAcceptedAuthorizationCurrent(existing.accepted.authorization, args.context.signal, deps.isAcceptedAuthorizationCurrent);
       return WorkflowActionOutputSchemasV1['workflow.run.start'].parse({ run: existing.snapshot.run, admission: 'existing' });
     };
-    try {
-      return await projectExisting();
-    } catch (error) {
-      if (!isNotFound(error)) throw error;
+    if (!replaySource) {
+      try {
+        return await projectExisting();
+      } catch (error) {
+        if (!isNotFound(error)) throw error;
+      }
     }
 
     let definition: WorkflowDefinitionV1;
-    let metadata = input.metadata;
+    let metadata = replaySource ? replaySource.accepted.metadata ?? undefined : input.metadata;
     let source: Parameters<typeof materializeWorkflowAcceptedSnapshotV1>[0]['context']['source'];
     const projectTarget = workflowProjectTarget(args.context);
     if (!projectTarget) throw workflowError('target_unavailable');
     let materialization: Awaited<ReturnType<NonNullable<WorkflowAccountRunActionDeps['resolveMaterializationContext']>>> | undefined;
-    if (inputSource.kind === 'inline') {
+    if (replaySource) {
+      definition = replaySource.accepted.authoredDefinition;
+      source = replaySource.accepted.source;
+    } else if (inputSource.kind === 'inline') {
       definition = normalizedInline!;
       source = { kind: 'inline' };
     } else if (inputSource.kind === 'saved') {
@@ -725,12 +769,16 @@ export function createWorkflowAccountRunActionOwner(deps: WorkflowAccountRunActi
       if (!deps.resolveMaterializationContext) throw workflowError('source_unavailable');
       materialization = await deps.resolveMaterializationContext(args, projectTarget);
       const resolved = await resolveWorkflowDefinitionRefV1(inputSource.workflow, {
+        readPluginWorkflows: deps.readPluginWorkflows,
         ...(args.context.signal ? { signal: args.context.signal } : {}),
       });
       if (!resolved || resolved.kind !== 'catalog') throw workflowError('source_unavailable');
+      if (typeof resolved.version === 'string' && inputSource.pluginVersion !== undefined
+        && inputSource.pluginVersion !== resolved.version) throw workflowError('currentness_conflict');
       const checked = validateWorkflowDefinition(resolved.definition, ingressContext ? { context: ingressContext } : {});
       if (!checked.valid || !checked.normalizedDefinition) throw workflowError('invalid_input', { issues: checked.issues });
       definition = checked.normalizedDefinition;
+      metadata = resolved.metadata ?? metadata;
       source = { kind: 'catalog', ref: inputSource.workflow, version: resolved.version };
     }
     if (!materialization) {
@@ -740,12 +788,14 @@ export function createWorkflowAccountRunActionOwner(deps: WorkflowAccountRunActi
     const readArtifactDefinition = materialization.effects.readWorkflowDefinition;
     materialization = { ...materialization, effects: { ...materialization.effects,
       readWorkflowDefinition: (ref) => resolveWorkflowDefinitionRefV1(formatWorkflowDefinitionRefV1(ref), {
+        readPluginWorkflows: deps.readPluginWorkflows,
         readArtifact: async (artifactId) => await readArtifactDefinition?.({ kind: 'artifact', artifactId }) ?? null,
         ...(args.context.signal ? { signal: args.context.signal } : {}),
       }),
     } };
-    if (!deps.prepareWorkspace) throw workflowError('target_unavailable');
-    const preparedWorkspace = await deps.prepareWorkspace({ projectTarget, definition });
+    if (!replaySource && !deps.prepareWorkspace) throw workflowError('target_unavailable');
+    const preparedWorkspace = replaySource ? { ok: true as const, workspaceTarget: replaySource.accepted.workspaceTarget }
+      : await deps.prepareWorkspace!({ projectTarget, definition });
     if (!preparedWorkspace.ok) throw workflowError('target_unavailable');
     const controller = currentControllerAuthorization(args);
     const resolvedAgentContext = args.context.surface === 'agent'
@@ -754,6 +804,8 @@ export function createWorkflowAccountRunActionOwner(deps: WorkflowAccountRunActi
       definition, ...materialization,
       ...(ingressContext ? { ingressContext } : {}),
       roleOverrides: input.roleOverrides,
+      ...(replaySource && replayRequest ? { replay: { snapshot: replaySource.accepted,
+        ...(replayRequest.agentOverride ? { agentOverride: replayRequest.agentOverride } : {}) } } : {}),
       admission: args.context.surface === 'agent' ? { kind: 'agent',
       admitLeaf: async (leaf, facts) => {
         if (!assertNonEscalatingPermissionMode({ requestedMode: facts.permissionCeiling,
@@ -762,7 +814,9 @@ export function createWorkflowAccountRunActionOwner(deps: WorkflowAccountRunActi
           roles: { ...resolvedAgentContext.roles, [facts.role.roleId]: facts.role } } : resolvedAgentContext;
         return admitActionAgentStartV1(args.context, { kind: 'workflow_run_leaf', leaf }, resolved);
       } } : { kind: 'user' },
-      context: { ...(metadata ? { metadata } : {}), source, inputs: resolveInputs(definition, input.inputs), machineId: projectTarget.machineId,
+      context: {
+      actionCaller: args.context.actionCaller ?? { kind: 'host' },
+      ...(metadata ? { metadata } : {}), source, inputs: resolveInputs(definition, input.inputs), machineId: projectTarget.machineId,
       executionTarget,
       workspaceTarget: preparedWorkspace.workspaceTarget,
       origin: { kind: 'direct', ...(originSessionId ? { originSessionId } : {}) },
@@ -781,10 +835,17 @@ export function createWorkflowAccountRunActionOwner(deps: WorkflowAccountRunActi
     if (!('origin' in accepted)) throw workflowError('invalid_input');
     if (!assertNonEscalatingPermissionMode({ requestedMode: accepted.authorization.admittedPermissionCeiling,
       callerMode: controller.effectivePermissionMode }).ok) throw workflowError('run_access_denied');
+    if (replaySource) {
+      replayAccepted = accepted;
+      try { return await projectExisting(); }
+      catch (error) { if (!isNotFound(error)) throw error; }
+    }
     const enc = await encryption(args.context.signal);
     const accountId = await deps.resolveAccountId(args.context.signal);
-    const sourceArtifactId = input.source.kind === 'saved' ? input.source.definitionId : null;
-    const visibleTeamId = input.source.kind === 'saved' ? input.source.visibleTeamId : undefined;
+    const sourceArtifactId = accepted.source.kind === 'saved' || accepted.source.kind === 'automation'
+      ? accepted.source.definitionId ?? null : null;
+    const visibleTeamId = replaySource ? replaySource.snapshot.keyCensus.visibleTeamId ?? undefined
+      : input.source.kind === 'saved' ? input.source.visibleTeamId : undefined;
     const census = enc.witness.mode === 'e2ee'
       ? WorkflowRunRecipientCensusResponseV1Schema.parse(await deps.storage.execute({ operation: 'run-key.census', runId: input.runId, sourceArtifactId, ...(visibleTeamId ? { visibleTeamId } : {}) }, args.context.signal ? { signal: args.context.signal } : {}))
       : undefined;
@@ -1914,18 +1975,52 @@ export function createWorkflowAccountRunActionOwner(deps: WorkflowAccountRunActi
           };
           const callerEncryption = await encryption(args.context.signal);
           const keyCensusByRunId = record(storagePage.keyCensusByRunId);
+          const rootProgressByRunId = record(storagePage.rootProgressByRunId ?? {});
           const metadataByRunId: Record<string, WorkflowRunPrivateMetadataV1> = {};
+          const runs: WorkflowRunSummaryV1[] = [];
           for (const run of page.runs) {
             let projected: WorkflowRunPrivateMetadataV1 | null;
+            let where: WorkflowRunSummaryV1['where'] = null;
+            let startedBy: WorkflowRunSummaryV1['startedBy'] = null;
+            let stepProgress: WorkflowRunSummaryV1['stepProgress'] = null;
+            let stepProgressCurrentness: WorkflowRunSummaryV1['stepProgressCurrentness'] = null;
+            let rootIndex: WorkflowRunInvocationIndexV1 | undefined;
+            const root = record(rootProgressByRunId[run.id] ?? {});
             try {
-              const rawEnvelope = acceptedEnvelopesByRunId[run.id];
-              if (typeof rawEnvelope !== 'string') throw workflowError('content_unavailable');
-              const envelope = parseWorkflowStoredContentEnvelopeV1(rawEnvelope);
-              if (!envelope) throw workflowError('content_unavailable');
+              const index = WorkflowRunInvocationIndexV1Schema.parse(root.index);
+              if (index.runId === run.id && index.parentRecordId === null
+                && index.sequence === '0' && index.memberOrdinal === '0' && index.attempt === '0') {
+                rootIndex = index;
+                stepProgressCurrentness = { recordId: index.id, attempt: index.attempt, contentRevision: index.contentRevision };
+              }
+            } catch {
+              // An absent or malformed root index is not an observation token.
+            }
+            try {
               const census = WorkflowRunRecipientCensusResponseV1Schema.parse(keyCensusByRunId[run.id]);
               const resolved = resolveWorkflowRunDataKeyV1({ encryption: callerEncryption, census });
               if (resolved.kind !== 'available') throw workflowError('content_unavailable');
               await prepareRunRecipients(run.id, resolved.encryption, census, args.context.signal);
+              if (rootIndex) {
+                const index = rootIndex;
+                const openedProgress = openWorkflowProgressStoredEnvelopeV1({
+                  ...openMode(resolved.encryption),
+                  binding: { v: 1, purpose: 'invocation_progress', accountId: census.ownerAccountId, runId: run.id,
+                    recordId: index.id, sequence: index.sequence, parentRecordId: index.parentRecordId,
+                    memberOrdinal: index.memberOrdinal, attempt: index.attempt },
+                  envelope: parseWorkflowStoredContentEnvelopeV1(root.contentEnvelope),
+                });
+                if (openedProgress.kind === 'bindingMismatch' || openedProgress.kind === 'modeMismatch'
+                  || (openedProgress.kind === 'available' && openedProgress.content.blockKind !== 'root')) {
+                  stepProgressCurrentness = null;
+                } else if (openedProgress.kind === 'available') {
+                  stepProgress = openedProgress.content.stepProgress ?? null;
+                }
+              }
+              const rawEnvelope = acceptedEnvelopesByRunId[run.id];
+              if (typeof rawEnvelope !== 'string') throw workflowError('content_unavailable');
+              const envelope = parseWorkflowStoredContentEnvelopeV1(rawEnvelope);
+              if (!envelope) throw workflowError('content_unavailable');
               const opened = openWorkflowAcceptedSnapshotStoredEnvelopeV1({
                 ...openMode(resolved.encryption),
                 binding: { v: 1, purpose: 'accepted_snapshot', accountId: census.ownerAccountId, runId: run.id },
@@ -1933,6 +2028,10 @@ export function createWorkflowAccountRunActionOwner(deps: WorkflowAccountRunActi
               });
               if (opened.kind !== 'available') throw workflowError('content_unavailable');
               const accepted = WorkflowAcceptedSnapshotV1Schema.parse(opened.content);
+              startedBy = accepted.startedBy;
+              const project = accepted.workspaceTarget.project;
+              where = { machineId: project.machineId, directory: project.directory,
+                ...(project.workspaceRefId ? { workspaceRefId: project.workspaceRefId } : {}) };
               // An opened snapshot with no authored metadata is an untitled
               // Run, not unreadable private content. The sidecar omits its
               // key so the consumer keeps its ordinary unknown-name state
@@ -1945,10 +2044,11 @@ export function createWorkflowAccountRunActionOwner(deps: WorkflowAccountRunActi
               // open its private accepted content on the current host.
               projected = { kind: 'unavailable' };
             }
+            runs.push({ ...run, where, startedBy, stepProgress, stepProgressCurrentness });
             if (projected) metadataByRunId[run.id] = projected;
           }
           return WorkflowActionOutputSchemasV1[args.actionId].parse({
-            runs: page.runs,
+            runs,
             metadataByRunId,
             ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
           });
@@ -2035,15 +2135,37 @@ export function createWorkflowAccountRunActionOwner(deps: WorkflowAccountRunActi
         ? undefined
         : Date.now() + args.input.timeoutSeconds * 1_000;
       let stored: unknown;
-      for (;;) {
+      let revision = 0;
+      let wake: (() => void) | undefined;
+      let failure: unknown;
+      let lastSnapshot: ReturnType<typeof WorkflowRunWaitSnapshotV1Schema.parse> | undefined;
+      const armDeadline = (finish: () => void) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const schedule = () => {
+          if (deadline === undefined) return;
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) finish();
+          // Re-arm at JavaScript's signed timer boundary against the same
+          // authored budget, whether waiting for output or a feed change.
+          else timer = setTimeout(schedule, Math.min(remaining, 2_147_483_647));
+        };
+        schedule();
+        return () => { if (timer !== undefined) clearTimeout(timer); };
+      };
+      args.context.signal?.throwIfAborted();
+      const observation = deps.storage.observeChanges?.(args.input.runId,
+        () => { revision += 1; wake?.(); },
+        (error) => { failure = error; wake?.(); });
+      try { for (;;) {
+        args.context.signal?.throwIfAborted();
+        if (failure !== undefined) throw failure;
+        const observedRevision = revision;
         const afterRevision = await assertWaitDoesNotOccupyTargetConversation(waitArgs);
-        const timeoutSeconds = deadline === undefined
-          ? undefined
-          : Math.max(Number.EPSILON, (deadline - Date.now()) / 1_000);
         try {
           stored = await deps.storage.execute({
             operation: 'wait', runId: args.input.runId,
-            ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+            ...(args.input.conditions === undefined ? {} : { conditions: args.input.conditions }),
+            ...(deadline !== undefined && Date.now() >= deadline ? { timeoutSeconds: 0 } : {}),
             ...(afterRevision === undefined ? {} : { afterRevision }),
           }, args.context.signal ? { signal: args.context.signal } : {});
         } catch (error) {
@@ -2051,8 +2173,61 @@ export function createWorkflowAccountRunActionOwner(deps: WorkflowAccountRunActi
           translateStorageError(error);
         }
         await assertWaitDoesNotOccupyTargetConversation(waitArgs);
-        if (record(stored).observation !== 'changed') break;
-      }
+        args.context.signal?.throwIfAborted();
+        if (failure !== undefined) throw failure;
+        const raw = record(stored);
+        const onSnapshot = args.context.onWaitSnapshot;
+        if (onSnapshot) {
+          const snapshot = WorkflowRunWaitSnapshotV1Schema.parse({ run: raw.run });
+          if (!lastSnapshot || !sameStrictJsonValue(lastSnapshot, snapshot)) {
+            // Output backpressure preserves order, but must not retain an
+            // observer after the caller cancels or its deadline expires.
+            await new Promise<void>((resolve, reject) => {
+              const signal = args.context.signal;
+              let cancelDeadline = () => {};
+              const cleanup = () => { cancelDeadline(); signal?.removeEventListener('abort', abort); wake = undefined; };
+              const finish = () => { cleanup(); resolve(); };
+              const fail = (error: unknown) => { cleanup(); reject(error); };
+              const abort = () => fail(signal?.reason);
+              wake = () => { if (failure !== undefined) fail(failure); };
+              signal?.addEventListener('abort', abort, { once: true });
+              if (signal?.aborted) { abort(); return; }
+              cancelDeadline = armDeadline(finish);
+              void Promise.resolve().then(() => {
+                signal?.throwIfAborted();
+                if (deadline === undefined || Date.now() < deadline) return onSnapshot(snapshot);
+              }).then(finish, fail);
+            });
+            lastSnapshot = snapshot;
+          }
+          args.context.signal?.throwIfAborted();
+          if (failure !== undefined) throw failure;
+        }
+        if (raw.observation === 'changed') continue;
+        // A passive observer does not settle when a condition or terminal state
+        // is seen. Keep the same feed until its cancellation/authored deadline.
+        if (!args.context.onWaitSnapshot && raw.observation !== 'waiting') break;
+        if (deadline !== undefined && Date.now() >= deadline) {
+          stored = { observation: 'timeout', run: raw.run };
+          break;
+        }
+        if (!observation) throw workflowError('target_unavailable');
+        // Register after the read, but compare the feed revision captured before it:
+        // a wake during an in-flight read cannot be lost between read and sleep.
+        await new Promise<void>((resolve) => {
+          let cancelDeadline = () => {};
+          const finish = () => {
+            cancelDeadline();
+            args.context.signal?.removeEventListener('abort', finish);
+            wake = undefined;
+            resolve();
+          };
+          wake = finish;
+          args.context.signal?.addEventListener('abort', finish, { once: true });
+          cancelDeadline = armDeadline(finish);
+          if (revision !== observedRevision || failure !== undefined || args.context.signal?.aborted) finish();
+        });
+      } } finally { await observation?.dispose(); }
       const raw = record(stored);
       const { resultEnvelope: _ignored, keyCensus: _keyCensus, ...base } = raw;
       if (typeof raw.resultEnvelope !== 'string') return WorkflowActionOutputSchemasV1[args.actionId].parse(base);

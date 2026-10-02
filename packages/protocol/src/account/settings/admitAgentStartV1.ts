@@ -88,9 +88,22 @@ export type AgentStartRequestV1 =
   // Role writes consume check 1 only; keeping them here avoids a second subtree policy owner.
   | Readonly<{ kind: 'session_target'; targetSessionId: string }>;
 
+export const AgentStartSessionCallerV1Schema = z.object({
+  kind: z.literal('session'),
+  sessionId: z.string().trim().min(1).max(512),
+  starterDepth: z.number().int().nonnegative().safe(),
+  turnDepth: z.number().int().nonnegative().safe(),
+}).strict();
+export type AgentStartSessionCallerV1 = Readonly<z.infer<typeof AgentStartSessionCallerV1Schema>>;
+
 export type AgentStartCallerV1 =
-  | Readonly<{ kind: 'session'; sessionId: string; starterDepth: number; turnDepth: number }>
+  | AgentStartSessionCallerV1
   | Readonly<{ kind: 'originless'; runId: string; runDepth: number; runOriginSessionId?: string }>;
+
+/** Host caller depth projection shared by admission and authenticated Session witnesses. */
+export function readAgentStartCallerWorkDepthV1(caller: AgentStartCallerV1): number {
+  return caller.kind === 'session' ? Math.max(caller.starterDepth, caller.turnDepth) : caller.runDepth;
+}
 
 export type AgentStartContextV1 = Readonly<{
   /** Host-only present-user start; role binding still runs, agent restrictions do not. */
@@ -172,9 +185,7 @@ export function admitAgentStartV1(
   context: AgentStartContextV1,
 ): AgentStartAdmissionV1 {
   const allowLists = context.allowLists ?? DEFAULT_SESSION_AGENT_START_ALLOW_LISTS_V1;
-  const workDepth = context.initiator === 'user' ? 0 : context.caller.kind === 'session'
-    ? Math.max(context.caller.starterDepth, context.caller.turnDepth) + 1
-    : context.caller.runDepth + 1;
+  const workDepth = context.initiator === 'user' ? 0 : readAgentStartCallerWorkDepthV1(context.caller) + 1;
   const refuse = (refusal: AgentStartRefusalV1): AgentStartAdmissionV1 => ({ ok: false, refusal });
   const targetSessionId = 'targetSessionId' in request ? request.targetSessionId : undefined;
   if (targetSessionId !== undefined && context.initiator !== 'user') {

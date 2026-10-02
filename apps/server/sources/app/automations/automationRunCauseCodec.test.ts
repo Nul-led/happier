@@ -31,6 +31,7 @@ describe("automationRunCauseCodec", () => {
             causeSessionLifecycleEvent: null,
             causeSourceSessionId: null,
             causeSourceTurnId: null,
+            causeRunLifecycleEvidenceJson: null,
             causeSessionLifecycleRequestId: null,
             causeSessionLifecycleRequestKind: null,
             causeSessionLifecyclePolicyKind: null,
@@ -42,5 +43,17 @@ describe("automationRunCauseCodec", () => {
 
         expect(decodeAutomationRunCause(direct)).toBeNull();
         expect(retainedV2OriginKindForRun(direct)).toBeUndefined();
+    });
+
+    it("round-trips exact Run evidence and refuses an unavailable persisted fact", () => {
+        const cause = AutomationRunCauseSchema.parse({ kind: "trigger", triggerKind: "runLifecycle",
+            triggerId: randomUUID(), triggerRevision: 2, occurredAt: 123,
+            occurrenceKey: createHash("sha256").update("run-lifecycle").digest("base64url"),
+            evidence: { source: { kind: "execution_run", machineId: "machine-one", runId: "run-one" },
+                condition: "terminal", sourceRevision: 123 } });
+        const persisted = { ...encodeAutomationRunCause(cause), originKind: "automation" as const, createdAt: new Date(0) };
+        expect(decodeAutomationRunCause(persisted)).toEqual(cause);
+        expect(retainedV2OriginKindForRun(persisted)).toBeUndefined();
+        expect(() => decodeAutomationRunCause({ ...persisted, causeRunLifecycleEvidenceJson: null })).toThrow();
     });
 });

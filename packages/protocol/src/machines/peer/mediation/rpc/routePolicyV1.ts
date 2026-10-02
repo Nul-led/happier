@@ -256,6 +256,7 @@ const DIRECT_EPHEMERAL_POLICIES = Object.freeze([
   directEphemeral(RPC_METHODS.DAEMON_PLUGIN_COMPOSER_REFERENCE_SEARCH, 'Daemon-local generation-leased composer-reference picker search returns bounded candidates through the canonical registered reference; no durable resolved context, server persistence, or cross-device fanout.'),
   directEphemeral(RPC_METHODS.DAEMON_PLUGIN_UI_TARGETED_CONTRIBUTIONS_READ, 'Daemon-local read of the current contributions to one mounted plugin target; no server persistence or cross-device fanout.'),
   directEphemeral(RPC_METHODS.DAEMON_PLUGIN_UI_RESOURCE_READ, 'Daemon-local generation-leased plugin resource snapshot read for a mounted plugin UI surface; no server persistence or cross-device fanout.'),
+  directEphemeral(RPC_METHODS.DAEMON_PLUGIN_STORED_IMAGE_READ, 'Exact plugin occurrence Session READ-scoped image disclosure; no server persistence or mutation.'),
   directEphemeral(RPC_METHODS.DAEMON_PLUGIN_UI_RESOURCE_WATCH_OPEN, 'Daemon-local plugin resource invalidation subscription open; establishes one bounded daemon-side observer and returns its current digest without server persistence or cross-device fanout.'),
   directEphemeral(RPC_METHODS.DAEMON_PLUGIN_UI_RESOURCE_WATCH_NEXT, 'Daemon-local plugin resource invalidation long-poll; returns one bounded signal carrying no resource bytes, without server persistence or cross-device fanout.'),
   directEphemeral(RPC_METHODS.DAEMON_PLUGIN_UI_RESOURCE_WATCH_CLOSE, 'Daemon-local plugin resource invalidation subscription retirement with no server persistence or cross-device fanout.'),
@@ -680,7 +681,7 @@ const ACCOUNT_QUOTA_RECOVERY_METHODS = [
 
 const VOICE_CLIENT_CREDENTIAL_METHODS = [
   RPC_METHODS.DAEMON_VOICE_CLIENT_RAW_CREDENTIAL_MATERIALIZE,
-  RPC_METHODS.DAEMON_VOICE_CLIENT_MEDIATED_CREDENTIAL_MATERIALIZE,
+  RPC_METHODS.DAEMON_VOICE_CLIENT_ACCOUNT_OPERATION,
   RPC_METHODS.DAEMON_VOICE_CLIENT_RAW_CREDENTIAL_AUTHORIZATION_INSPECT,
   RPC_METHODS.DAEMON_VOICE_CLIENT_RAW_CREDENTIAL_AUTHORIZATION_REQUEST,
 ] as const;

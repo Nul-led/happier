@@ -745,9 +745,9 @@ describe("registerPeerMediationGrantRoutes", () => {
             },
         });
 
-        const relayAuthorization = (response as {
+        const relayAuthorization = PeerTcpTunnelRelayAuthorizationV2Schema.parse((response as {
             relayAuthorization?: unknown;
-        }).relayAuthorization;
+        }).relayAuthorization);
         const handlers = new Map<string, (payload?: unknown) => void | Promise<void>>();
         const forwarded: unknown[] = [];
         const socket = {
@@ -777,14 +777,14 @@ describe("registerPeerMediationGrantRoutes", () => {
             coordinator: createRelayTestCoordinator(relayIo, "account_1"),
             nowMs: () => 1_000,
             serverRoutedEnabled: true,
-            allowedPorts: [3000],
+            allowedPorts: [],
             relayAuthorizationTrustRoots: [{
                 keyId: "grant-key-1",
                 publicKeyBase64Url: toBase64Url(keyPair.publicKey),
             }],
         });
 
-        await handlers.get(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT)?.({
+        const openEnvelope = {
             v: 1,
             scopeUserId: "account_1",
             sender: { kind: "user", socketId: "relay_socket_1" },
@@ -802,7 +802,28 @@ describe("registerPeerMediationGrantRoutes", () => {
                     relayAuthorization,
                 },
             },
-        });
+        };
+
+        for (const change of [
+            { accountId: "other-account" },
+            { targetMachineId: "other-machine" },
+            { relaySocketId: "other-socket" },
+            { applicationAttemptId: "other-attempt" },
+            { applicationAuthorityDigest: `sha256:${"cd".repeat(32)}` },
+        ]) {
+            await handlers.get(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT)?.({
+                ...openEnvelope,
+                frame: { ...openEnvelope.frame, open: {
+                    ...openEnvelope.frame.open,
+                    relayAuthorization: { ...relayAuthorization, payload: { ...relayAuthorization.payload, ...change } },
+                } },
+            });
+            expect(forwarded).not.toContainEqual(expect.objectContaining({ frame: expect.objectContaining({ kind: "open" }) }));
+            expect(forwarded).toContainEqual(expect.objectContaining({ frame: expect.objectContaining({
+                kind: "abort", reasonCode: "relay_authorization_invalid",
+            }) }));
+        }
+        await handlers.get(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT)?.(openEnvelope);
 
         expect(forwarded).toContainEqual(expect.objectContaining({
             frame: expect.objectContaining({
@@ -815,7 +836,7 @@ describe("registerPeerMediationGrantRoutes", () => {
         await handlers.get("disconnect")?.();
     });
 
-    it("authorizes daemon voice STT tunnel relay destinations with server-owned tunnel allowed ports", async () => {
+    it("admits speech with empty TCP ports and optional voice caps while refusing generic TCP and foreign authority", async () => {
         const keyPair = tweetnacl.sign.keyPair();
         const route = createRouteTestBuilder({
             method: "POST",
@@ -835,16 +856,13 @@ describe("registerPeerMediationGrantRoutes", () => {
                         applicationKind: "speech_transcription",
                         applicationAttemptId: "request_1",
                         applicationAuthorityDigest: `sha256:${"ab".repeat(32)}`,
-                        maxIdleMs: 30_000,
-                        maxDurationMs: 60_000,
-                        maxTotalBytes: 64_000,
                     },
                 },
             },
             registerRoutes: (app) => registerPeerMediationGrantRoutes(app, {
                 env: {
                     [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: "true",
-                    [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "3000",
+                    [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "",
                     [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes]: `${64 * 1024}`,
                     [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedEnabled]: "true",
                     [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedMaxBitrateBps]: "64000",
@@ -859,7 +877,8 @@ describe("registerPeerMediationGrantRoutes", () => {
                     [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningPrivateKey]: toBase64Url(keyPair.secretKey),
                 },
                 nowMs: () => 1_000,
-                readMachineOwnershipState: async () => "available",
+                readMachineOwnershipState: async ({ accountId, machineId }) =>
+                    accountId === "account_1" && machineId === "machine_1" ? "available" : "missing",
                 verifyViewerSocketOwnership: async ({ socketId }) => socketId === "relay_socket_1",
             }),
         });
@@ -867,10 +886,21 @@ describe("registerPeerMediationGrantRoutes", () => {
         const { response } = await route.invoke({ userId: "account_1" });
 
         expect(response).toMatchObject({
-            ok: false,
-            reasonCode: "destination_port_not_allowed",
-            receipt: "peer.route_grant.rejected",
+            ok: true,
+            relayAuthorization: { payload: {
+                accountId: "account_1", targetMachineId: "machine_1", flowKind: "voice_media",
+                applicationAttemptId: "request_1", applicationAuthorityDigest: `sha256:${"ab".repeat(32)}`,
+                maxDurationMs: 60_000, maxTotalBytes: 128_000,
+            } },
         });
+        const tcp = await route.invoke({ userId: "account_1", body: {
+            v: 2, machineId: "machine_1", flowKind: "tcp_tunnel", routeKind: "server_relay",
+            ttlMs: 30_000, destination: { host: "127.0.0.1", port: 4444 }, relaySocketId: "relay_socket_1",
+            scope: { kind: "tcp_tunnel", tunnelId: "tcp-1", allowedPorts: [4444] },
+        } });
+        expect(tcp.response).toMatchObject({ ok: false, reasonCode: "destination_port_not_allowed" });
+        const foreignAccount = await route.invoke({ userId: "account_2" });
+        expect(foreignAccount.response).toMatchObject({ ok: false, reasonCode: "machine_not_owned" });
     });
 
     it("rejects machine RPC grants for server-required methods", async () => {

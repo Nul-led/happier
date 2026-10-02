@@ -5,6 +5,7 @@ import {
     signAccountContentKeyBindingV1,
     MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT,
     AutomationConversationAdmitInputV1Schema,
+    AutomationTriggerIdSchema,
     automationReplyHandoffIdForRunV1,
     buildAutomationConversationOccurrenceEvidenceV1,
     convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1,
@@ -23,6 +24,7 @@ import {
     serializeAutomationRunExecutionRecipeV1,
     serializeAutomationStoredDefinitionExecutionRecipeV1,
     type AutomationConversationResultDeliveryV1,
+    type AutomationConversationScopedTriggerEvidenceV1,
     type PluginJsonValueV2,
 } from "@happier-dev/protocol";
 
@@ -314,24 +316,31 @@ function encryptedConversationHostEvidence(params: Readonly<{
     text?: string;
     occurredAt?: number;
     resultDelivery?: AutomationConversationResultDeliveryV1;
+    scopedTrigger?: AutomationConversationScopedTriggerEvidenceV1;
+    occurrenceId?: string;
 }>) {
     const resultDelivery = params.resultDelivery ?? { kind: "none" };
     const input = conversationInput({ resultDelivery });
     const evidence = buildAutomationConversationOccurrenceEvidenceV1({
         accountMode: "e2ee",
         bindingId: input.bindingId,
-        occurrenceId: input.occurrenceId,
+        occurrenceId: params.occurrenceId ?? input.occurrenceId,
         occurredAt: params.occurredAt ?? input.occurredAt,
         caller: {
             pluginId: caller.pluginId,
             contributionLocalId: caller.contributionLocalId,
             machineId: caller.machineId,
         },
-        sender: input.sender,
+        sender: params.scopedTrigger === undefined ? input.sender : { principalId: params.scopedTrigger.observationActorPrincipalId },
         text: params.text ?? input.text,
         resultDelivery,
+        hostEvidence: params.scopedTrigger,
     });
     const occurrenceKey = deriveAutomationOccurrenceKeyV1(evidence);
+    const scopedTrigger = params.scopedTrigger === undefined ? undefined : (() => {
+        const { pullRequest: _privateSelection, ...correspondence } = params.scopedTrigger;
+        return correspondence;
+    })();
     const replyHandoff = resultDelivery.kind === "none"
         ? undefined
         : {
@@ -377,6 +386,7 @@ function encryptedConversationHostEvidence(params: Readonly<{
             evidence,
         }),
         ...(replyHandoff === undefined ? {} : { replyHandoff }),
+        ...(scopedTrigger === undefined ? {} : { scopedTrigger }),
     };
 }
 
@@ -454,6 +464,124 @@ function conversationCapacityRunSeed(params: Readonly<{
 describe("Automation Conversation admission database boundary", () => {
     let harness: LightSqliteHarness | undefined;
 
+    it.each(['prComment', 'ciFailed'] as const)('refuses %s unknown, reader, and mismatched actor evidence without a Run', async (triggerKind) => {
+        await db.automation.update({ where: { id: AUTOMATION_ID }, data: { scopeSessionId: 'session-scoped-pr' } });
+        const hostEvidence = { bindingId: BINDING_ID, sessionId: 'session-scoped-pr', triggerId: 'trigger-scoped-pr', triggerRevision: 0,
+            triggerKind, pullRequest: { repository: 'happier-dev/happier', number: 42 },
+            observationActorPrincipalId: 'github:user:7', actor: { principalId: 'github:user:7', repositoryWriteAccess: null } };
+        for (const [repositoryWriteAccess, reason] of [[null, 'repositoryWriteAccessUnknown'], [false, 'repositoryWriteAccessDenied']] as const) {
+            const outcome = await admitPlainAutomationConversationV1({ accountId: ACCOUNT_ID, caller,
+                input: { ...conversationInput({ resultDelivery: { kind: 'none' } }), sender: { principalId: hostEvidence.observationActorPrincipalId }, hostEvidence: { ...hostEvidence,
+                    actor: { ...hostEvidence.actor, repositoryWriteAccess } } } });
+            expect(outcome).toEqual({ kind: 'refused', reason, checkpointSafe: true });
+        }
+        expect(await admitPlainAutomationConversationV1({ accountId: ACCOUNT_ID, caller,
+            input: { ...conversationInput({ resultDelivery: { kind: 'none' } }), sender: { principalId: hostEvidence.observationActorPrincipalId }, hostEvidence: { ...hostEvidence,
+                actor: { principalId: 'github:user:8', repositoryWriteAccess: true } } } })).toEqual({
+            kind: 'refused', reason: 'scopedTriggerIdentityMismatch', checkpointSafe: true,
+        });
+        expect(await db.automationRun.count()).toBe(0);
+    });
+
+    it('fails closed on a scoped Conversation that omits its host permission evidence', async () => {
+        await db.automation.update({ where: { id: AUTOMATION_ID }, data: { scopeSessionId: 'session-scoped-pr' } });
+        expect(await admitPlainAutomationConversationV1({ accountId: ACCOUNT_ID, caller,
+            input: conversationInput({ resultDelivery: { kind: 'none' } }) })).toEqual({
+            kind: 'refused', reason: 'repositoryWriteAccessUnknown', checkpointSafe: true,
+        });
+        expect(await db.automationRun.count()).toBe(0);
+    });
+
+    it.each(['prComment', 'ciFailed'] as const)('refuses %s sealed unknown, reader, and mismatched actor evidence', async (triggerKind) => {
+        const account = await configureE2eeAccount();
+        await db.automation.update({ where: { id: AUTOMATION_ID }, data: { scopeSessionId: 'session-scoped-pr' } });
+        const scopedTrigger: AutomationConversationScopedTriggerEvidenceV1 = { bindingId: BINDING_ID,
+            sessionId: 'session-scoped-pr', triggerId: AutomationTriggerIdSchema.parse('trigger-scoped-pr'), triggerRevision: 0, triggerKind,
+            pullRequest: { repository: 'happier-dev/happier', number: 42 }, observationActorPrincipalId: 'github:user:7',
+            actor: { principalId: 'github:user:7', repositoryWriteAccess: true } };
+        for (const [repositoryWriteAccess, reason] of [[null, 'repositoryWriteAccessUnknown'], [false, 'repositoryWriteAccessDenied']] as const) {
+            expect(await admitEncryptedAutomationConversationV1({ accountId: ACCOUNT_ID, caller,
+                hostEvidence: encryptedConversationHostEvidence({ account, nonceSeed: 23, scopedTrigger: { ...scopedTrigger,
+                    actor: { ...scopedTrigger.actor, repositoryWriteAccess } } }) })).toEqual({ kind: 'refused', reason, checkpointSafe: true });
+        }
+        expect(await admitEncryptedAutomationConversationV1({ accountId: ACCOUNT_ID, caller,
+            hostEvidence: encryptedConversationHostEvidence({ account, nonceSeed: 23, scopedTrigger: { ...scopedTrigger,
+                actor: { principalId: 'github:user:8', repositoryWriteAccess: true } } }) })).toEqual({
+            kind: 'refused', reason: 'scopedTriggerIdentityMismatch', checkpointSafe: true });
+        expect(await admitEncryptedAutomationConversationV1({ accountId: ACCOUNT_ID, caller,
+            hostEvidence: encryptedConversationHostEvidence({ account, nonceSeed: 23 }) })).toEqual({
+            kind: 'refused', reason: 'repositoryWriteAccessUnknown', checkpointSafe: true });
+        expect(await db.automationRun.count()).toBe(0);
+    });
+
+    it.each([
+        ['prComment', 'plain'], ['ciFailed', 'plain'], ['prComment', 'e2ee'], ['ciFailed', 'e2ee'],
+    ] as const)('admits %s writers in %s and retains one newest queued occurrence per trigger', async (triggerKind, mode) => {
+        const account = mode === 'e2ee' ? await configureE2eeAccount() : undefined;
+        const scopedTrigger: AutomationConversationScopedTriggerEvidenceV1 = {
+            bindingId: BINDING_ID, sessionId: 'session-scoped-pr', triggerId: AutomationTriggerIdSchema.parse('trigger-scoped-pr'), triggerRevision: 0, triggerKind,
+            pullRequest: { repository: 'happier-dev/happier', number: 42 },
+            observationActorPrincipalId: 'github:user:7', actor: { principalId: 'github:user:7', repositoryWriteAccess: true },
+        };
+        await db.automation.update({ where: { id: AUTOMATION_ID }, data: { scopeSessionId: scopedTrigger.sessionId } });
+        const binding = { v: 1 as const, automationId: AUTOMATION_ID, triggerId: scopedTrigger.triggerId,
+            triggerRevision: 0, triggerKind };
+        const definition = { kind: triggerKind, pullRequest: scopedTrigger.pullRequest };
+        const envelope = account ? sealAutomationTriggerDefinitionStoredEnvelopeV1({ mode: 'e2ee',
+            material: account.snapshot.material, randomBytes: (length) => new Uint8Array(length).fill(17), binding, definition })
+            : sealAutomationTriggerDefinitionStoredEnvelopeV1({ mode: 'plain', binding, definition });
+        await db.automationTrigger.create({ data: { id: scopedTrigger.triggerId, automationId: AUTOMATION_ID,
+            kind: triggerKind, enabled: true, sourceSessionId: scopedTrigger.sessionId, definitionEnvelope: JSON.stringify(envelope) } });
+        const admit = async (evidence: AutomationConversationScopedTriggerEvidenceV1, occurrenceId = 'scoped-pr-first',
+            sender: unknown = { principalId: evidence.observationActorPrincipalId }) => {
+            if (!account) return await admitPlainAutomationConversationV1({ accountId: ACCOUNT_ID, caller,
+                input: { ...conversationInput({ resultDelivery: { kind: 'none' } }), occurrenceId, sender, hostEvidence: evidence } });
+            // The real admission host fetches currentness for each new effect;
+            // admitting the previous occurrence advanced the Account sequence.
+            const { seq: version } = await db.account.findUniqueOrThrow({ where: { id: ACCOUNT_ID }, select: { seq: true } });
+            return await admitEncryptedAutomationConversationV1({ accountId: ACCOUNT_ID, caller,
+                hostEvidence: encryptedConversationHostEvidence({ account: { ...account,
+                    accountCurrentness: { ...account.accountCurrentness, version } }, nonceSeed: 19, scopedTrigger: evidence, occurrenceId }) });
+        };
+        for (const [repositoryWriteAccess, reason] of [[null, 'repositoryWriteAccessUnknown'], [false, 'repositoryWriteAccessDenied']] as const) {
+            expect(await admit({ ...scopedTrigger, actor: { ...scopedTrigger.actor, repositoryWriteAccess } })).toEqual({
+                kind: 'refused', reason, checkpointSafe: true });
+        }
+        expect(await admit({ ...scopedTrigger, actor: { principalId: 'github:user:8', repositoryWriteAccess: true } })).toEqual({
+            kind: 'refused', reason: 'scopedTriggerIdentityMismatch', checkpointSafe: true });
+        for (const mismatch of [
+            { ...scopedTrigger, sessionId: 'another-session' },
+            { ...scopedTrigger, triggerId: AutomationTriggerIdSchema.parse('another-trigger') },
+            { ...scopedTrigger, triggerRevision: 1 },
+            { ...scopedTrigger, triggerKind: triggerKind === 'prComment' ? 'ciFailed' as const : 'prComment' as const },
+            ...(account ? [] : [
+                { ...scopedTrigger, bindingId: 'another-binding' },
+                { ...scopedTrigger, pullRequest: { ...scopedTrigger.pullRequest, number: 43 } },
+            ]),
+        ]) {
+            expect(await admit(mismatch)).toEqual({
+                kind: 'refused', reason: 'scopedTriggerIdentityMismatch', checkpointSafe: true,
+            });
+        }
+        expect(await db.automationRun.count()).toBe(0);
+        if (!account) {
+            for (const sender of [{ principalId: 'github:user:8' }, { id: 'sender-1' }]) {
+                expect(await admit(scopedTrigger, 'scoped-pr-unattributed', sender)).toEqual({
+                    kind: 'refused', reason: 'scopedTriggerIdentityMismatch', checkpointSafe: true,
+                });
+            }
+        }
+        const first = await admit(scopedTrigger);
+        expect(first).toMatchObject({ kind: 'admitted', checkpointSafe: true });
+        if (first.kind !== 'admitted') throw new Error('Expected scoped writer admission');
+        expect(await admit(scopedTrigger)).toEqual({ kind: 'rejoined', runId: first.runId, checkpointSafe: true });
+        expect(await admit(scopedTrigger, 'scoped-pr-second')).toMatchObject({ kind: 'admitted', checkpointSafe: true });
+        const runs = await db.automationRun.findMany({ where: { triggerId: scopedTrigger.triggerId } });
+        expect(runs).toHaveLength(2);
+        expect(runs.find((run) => run.id === first.runId)).toMatchObject({ state: 'skipped', errorCode: 'superseded_by_newer_occurrence' });
+        expect(runs.filter((run) => run.state === 'queued')).toHaveLength(1);
+    });
+
     beforeAll(async () => {
         harness = await createLightSqliteHarness({
             tempDirPrefix: "happier-conversation-admission-",
@@ -470,6 +598,7 @@ describe("Automation Conversation admission database boundary", () => {
             () => db.accountChange.deleteMany(),
             () => db.automationRunEvent.deleteMany(),
             () => db.automationRun.deleteMany(),
+            () => db.automationTrigger.deleteMany(),
             () => db.automationAssignment.deleteMany(),
             () => db.automation.deleteMany(),
             () => db.pluginMachineMaterialization.deleteMany(),

@@ -143,7 +143,6 @@ export type PluginAvailabilityOperationErrorCode =
     | "plugin_ui_artifact_hosting_not_opted_in"
     | "plugin_ui_artifact_hosting_limit_exceeded"
     | "plugin_ui_artifact_invalid_content"
-    | "plugin_ui_artifact_client_upgrade_required"
     | "plugin_ui_artifact_conflict"
     | "plugin_ui_artifact_not_found"
     | "plugin_ui_artifact_browser_e2ee_unavailable"
@@ -151,7 +150,6 @@ export type PluginAvailabilityOperationErrorCode =
     | "plugin_package_asset_hosting_not_opted_in"
     | "plugin_package_asset_hosting_limit_exceeded"
     | "plugin_package_asset_invalid_content"
-    | "plugin_package_asset_client_upgrade_required"
     | "plugin_package_asset_conflict"
     | "plugin_package_asset_not_found";
 
@@ -763,9 +761,7 @@ async function isStoredHostedArtifactRejoin(input: Readonly<{
     tx: Tx;
     accountId: string;
     artifactId: string;
-    supportsCurrentStoredContentProtocol: boolean;
     link: Readonly<{ artifactId: string; artifact: StoredPackageAssetArtifactRow }>;
-    kind: "ui" | "packageAsset";
     envelope: Readonly<{ header: Uint8Array; body: Uint8Array; dataEncryptionKey: Uint8Array }>;
 }>): Promise<boolean> {
     if (input.link.artifact.accountId !== input.accountId) return false;
@@ -799,12 +795,6 @@ async function isStoredHostedArtifactRejoin(input: Readonly<{
             dataEncryptionKey: input.link.artifact.dataEncryptionKey,
         })
     ) return false;
-    if (isPlainArtifactDataKeyBytes(input.envelope.dataEncryptionKey)
-        && !input.supportsCurrentStoredContentProtocol) {
-        throw new PluginAvailabilityOperationError(input.kind === "ui"
-            ? "plugin_ui_artifact_client_upgrade_required"
-            : "plugin_package_asset_client_upgrade_required");
-    }
     if (input.link.artifactId === input.artifactId) {
         return storedArtifactMatchesEnvelope({
             accountId: input.accountId,
@@ -1578,7 +1568,6 @@ export type PluginAvailabilityOperations = Readonly<{
     }>): Promise<PluginAvailabilityCollectionWritersClaimActionOutputV1>;
     publishUiArtifact(input: Readonly<{
         accountId: string;
-        supportsCurrentStoredContentProtocol: boolean;
         input: unknown;
     }>): Promise<PluginAvailabilityUiArtifactPublishActionOutputV1>;
     readUiArtifact(input: Readonly<{
@@ -1587,7 +1576,6 @@ export type PluginAvailabilityOperations = Readonly<{
     }>): Promise<PluginAvailabilityUiArtifactReadActionOutputV1>;
     publishPackageAsset(input: Readonly<{
         accountId: string;
-        supportsCurrentStoredContentProtocol: boolean;
         input: unknown;
     }>): Promise<PluginAvailabilityPackageAssetPublishActionOutputV1>;
     readPackageAsset(input: Readonly<{
@@ -2332,7 +2320,6 @@ export function createPluginAvailabilityOperations(options: Readonly<{
 
     async function publishUiArtifact(params: Readonly<{
         accountId: string;
-        supportsCurrentStoredContentProtocol: boolean;
         input: unknown;
     }>): Promise<PluginAvailabilityUiArtifactPublishActionOutputV1> {
         const input = PluginAvailabilityUiArtifactPublishActionInputV1Schema.parse(params.input);
@@ -2387,11 +2374,9 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                 }
                 if (
                     !await isStoredHostedArtifactRejoin({
-                        kind: "ui",
                         tx,
                         accountId: params.accountId,
                         artifactId: input.accountArtifactId,
-                        supportsCurrentStoredContentProtocol: params.supportsCurrentStoredContentProtocol,
                         link: existingLink,
                         envelope: artifact,
                     })
@@ -2627,7 +2612,6 @@ export function createPluginAvailabilityOperations(options: Readonly<{
      */
     async function publishPackageAsset(params: Readonly<{
         accountId: string;
-        supportsCurrentStoredContentProtocol: boolean;
         input: unknown;
     }>): Promise<PluginAvailabilityPackageAssetPublishActionOutputV1> {
         const input = PluginAvailabilityPackageAssetPublishActionInputV1Schema.parse(params.input);
@@ -2673,10 +2657,8 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                     !link
                     || !await isStoredHostedArtifactRejoin({
                         tx,
-                        kind: "packageAsset",
                         accountId: params.accountId,
                         artifactId: input.artifactId,
-                        supportsCurrentStoredContentProtocol: params.supportsCurrentStoredContentProtocol,
                         link: { artifactId: link.artifactId, artifact: existing.packageAssetArtifact! },
                         envelope,
                     })

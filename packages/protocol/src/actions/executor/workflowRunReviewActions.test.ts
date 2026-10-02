@@ -85,7 +85,10 @@ function harness(options: Readonly<{
     dataEncryptionKey: ownerKeyEnvelope, callerDataEncryptionKey: callerKeyEnvelope, visibleTeamId: null, recipients: [] },
     acceptedEnvelope: serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({ ...crypto,
       binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'owner', runId }, acceptedSnapshot: {
-        definition, ...(options.materializedLeaves ? { materializedLeaves: options.materializedLeaves } : {}),
+        definition, authoredDefinition: definition, workDepth: 0, metadata: null, frozenChildren: {},
+        materializedLeaves: options.materializedLeaves ?? [{ sourceKey: '$root', blockId: leaf.id,
+          kind: leaf.kind === 'wait' ? 'wait' : 'step', selection: definition.defaults ?? {},
+          authoredWorkspace: { kind: 'inherit' }, executionTarget: { kind: 'session' } }],
         source: { kind: 'inline' }, inputs: {}, machineId: 'machine-a', executionTarget: { kind: 'session' },
         workspaceTarget: { project: { machineId: 'machine-a', directory: '/repo', checkoutRootPath: '/repo' } },
         origin: { kind: 'direct' }, authorization: options.authorization ?? { admittedPermissionCeiling: 'safe-yolo', principal: { kind: 'host' } },
@@ -373,7 +376,7 @@ describe('Account review Actions', () => {
       { kind: 'action', id: 'draft', actionId: 'notify_me', input: {}, pauseForReview: true },
     ] });
     const h = harness({ definition, progress: { result: terminal ? 'terminal' : 'frozen', resultContract: { kind: 'text' } }, materializedLeaves: [{
-      sourceKey: '$root', blockId: 'draft', kind: 'action', selection: {}, executionTarget: { kind: 'session' }, actionId: 'notify_me',
+      sourceKey: '$root', blockId: 'draft', kind: 'action', selection: {}, authoredWorkspace: { kind: 'inherit' }, executionTarget: { kind: 'session' }, actionId: 'notify_me',
       actionContract: { inputSchema: { type: 'object' }, outputSchema: { type: 'string', enum: ['frozen'] },
         ...(terminal ? { completion: { awaits: 'execution_runs', terminalOutputSchema: { type: 'string', enum: ['terminal'] } } } : {}) },
     }] });

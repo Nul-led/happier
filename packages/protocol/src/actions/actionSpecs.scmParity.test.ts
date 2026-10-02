@@ -11,7 +11,7 @@ const reads = [
 ] as const;
 const mutations = [
   'scm.change.include', 'scm.change.exclude', 'scm.change.discard',
-  'scm.commit.create', 'scm.commit.backout', 'scm.branch.create', 'scm.branch.checkout',
+  'scm.commit.create', 'scm.commit.backout', 'scm.commit.undoLast', 'scm.branch.create', 'scm.branch.checkout',
   'scm.branch.merge', 'scm.branch.rebase', 'scm.branch.operation.continue',
   'scm.branch.operation.skip', 'scm.branch.operation.abort',
   'scm.conflict.acceptSide', 'scm.conflict.markResolved',
@@ -54,6 +54,19 @@ describe('SCM Action parity', () => {
     }
   });
 
+  it('advertises the PR workflow leaf input with an optional current-branch head', async () => {
+    const { getActionSpec } = await import('./actionSpecs.js');
+    const { zodSchemaToJsonSchemaObject } = await import('./actionInputJsonSchema.js');
+    const { validateWorkflowDefinition } = await import('../workflows/workflowValidationV1.js');
+    const { resolveBuiltinWorkflowDefinitionV1 } = await import('../workflows/builtins/catalog.js');
+    const spec = getActionSpec('scm.pullRequest.openOrReuse');
+    const input = { cwd: '/repo', base: 'main', title: 'A pull request', body: 'Details' };
+    expect(spec.inputSchema.safeParse(input).success).toBe(true);
+    const projected = zodSchemaToJsonSchemaObject(spec.inputSchema, { target: 'draft-7' });
+    expect(projected.required).not.toContain('head');
+    expect(validateWorkflowDefinition(resolveBuiltinWorkflowDefinitionV1('open-a-pull-request')?.definition).issues).toEqual([]);
+  });
+
   it('uses the canonical path, history-range and remote-policy schemas instead of a separate Action shape', async () => {
     const schema = (id: string) => {
       const spec = SCM_GIT_ACTION_SPECS.find((row) => row.id === id);
@@ -63,6 +76,9 @@ describe('SCM Action parity', () => {
     expect(schema('scm.change.include').safeParse({ paths: ['../outside'] }).success).toBe(false);
     expect(schema('scm.log.list').parse({ range: 'incoming' })).toMatchObject({ range: 'incoming' });
     expect(schema('scm.remote.push').safeParse({ pushMode: 'force_with_lease' }).success).toBe(false);
+    expect(schema('scm.commit.undoLast').safeParse({}).success).toBe(false);
+    expect(schema('scm.commit.undoLast').safeParse({ expectedHeadOid: 'HEAD' }).success).toBe(false);
+    expect(schema('scm.commit.undoLast').parse({ expectedHeadOid: 'a'.repeat(40) })).toMatchObject({ expectedHeadOid: 'a'.repeat(40) });
     expect(schema('scm.remote.push').parse({ remote: 'origin', branch: 'main', pushMode: 'force_with_lease', expectedRemoteOid: 'a'.repeat(40) })).toMatchObject({ pushMode: 'force_with_lease', expectedRemoteOid: 'a'.repeat(40) });
   });
 

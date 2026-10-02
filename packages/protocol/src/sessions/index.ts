@@ -16,6 +16,7 @@ export * from './access/index.js';
 export * from './subagents/index.js';
 export * from './slashCommands.js';
 export * from './media/imageReferenceV1.js';
+export * from './pluginAccess.js';
 export * from './runtimeModeV1.js';
 export * from './runtimeModeSetRpcV1.js';
 export * from './runtime/index.js';

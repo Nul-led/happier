@@ -171,9 +171,7 @@ export function createLocalServicePreviewRuntime(
         if (!accountId) {
             return { ok: false, reasonCode: "invalid_preview_resource" };
         }
-        // The server owns browser isolation, including older daemon/hosted-asset
-        // registrations that requested path mode. Never expose them on the API origin.
-        const resource: LocalServicePreviewResourceV1 = { ...parsed.data, originMode: "host" };
+        const resource = parsed.data;
         const nativeDirect: LocalServicePreviewNativeDirectDescriptorV1 | undefined = input.nativeDirectSupported
             ? { v: 1, kind: 'iroh_preview', previewId: resource.previewId, machineId: resource.machineId } : undefined;
         const previous = resources.get(parsed.data.previewId);

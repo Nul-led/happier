@@ -2,13 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as privacyKit from "privacy-kit";
 import { ARTIFACT_PLAIN_DATA_KEY_MARKER, encodePlainArtifactStoredContent, sealEncryptedDataKeyEnvelopeV1 } from "@happier-dev/protocol";
 import tweetnacl from "tweetnacl";
-import { sealWorkflowAcceptedSnapshotStoredEnvelopeV1, serializeWorkflowStoredContentEnvelopeV1 } from "@happier-dev/protocol/workflows";
+import { sealWorkflowAcceptedSnapshotStoredEnvelopeV1, serializeWorkflowStoredContentEnvelopeV1, type WorkflowDefinitionV1 } from "@happier-dev/protocol/workflows";
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { admitWorkflowRun, getWorkflowRun, listWorkflowRuns, pauseWorkflowRun, resolveAutomationWorkflowAcceptedSnapshot, summarizeWorkflowRuns } from "./workflowRunService";
 import { withAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
 import { registerWorkflowRunStorageRoutes } from "@/app/api/routes/automations/registerWorkflowRunStorageRoutes";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
+import { materializeWorkflowAcceptedSnapshotFixture } from "@/testkit/workflowAcceptedSnapshot";
 import { deriveAccountRecipientEnvelopeReadinessFromRow } from "@/app/encryption/accountRecipientEnvelopeReadiness";
 
 describe("Workflow Run live Team access (real SQLite)", () => {
@@ -28,13 +29,15 @@ describe("Workflow Run live Team access (real SQLite)", () => {
         await db.artifactTeamGrant.create({ data: { artifactId: artifact.id, teamId: team.id, accessLevel: "view", createdByAccountId: owner.id } });
         const machine = await db.machine.create({ data: { id: crypto.randomUUID(), accountId: owner.id, metadata: "test", metadataVersion: 1 } });
         const runId = crypto.randomUUID();
+        const definition: WorkflowDefinitionV1 = { version: 1, inputs: [], defaults: {}, blocks: [
+            { kind: "wait", id: "answer", document: { text: "Answer", references: [], attachments: [] }, result: { kind: "text" } },
+        ] };
         const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({ mode: "plain",
             binding: { v: 1, purpose: "accepted_snapshot", accountId: owner.id, runId },
-            acceptedSnapshot: { definition: { version: 1, inputs: [], defaults: {}, blocks: [
-                { kind: "wait", id: "answer", document: { text: "Answer", references: [], attachments: [] }, result: { kind: "text" } },
-            ] }, source: { kind: "inline" }, inputs: {}, machineId: machine.id, executionTarget: { kind: "session" },
+            acceptedSnapshot: await materializeWorkflowAcceptedSnapshotFixture({ definition, context: {
+                source: { kind: "inline" }, inputs: {}, machineId: machine.id, executionTarget: { kind: "session" },
                 workspaceTarget: { project: { machineId: machine.id, directory: "/repo", checkoutRootPath: "/repo" } },
-                origin: { kind: "direct" }, authorization: { admittedPermissionCeiling: "default", principal: { kind: "host" } } },
+                origin: { kind: "direct" }, authorization: { principal: { kind: "host" } } } }),
         }));
         await db.automationRun.create({ data: { id: runId, accountId: owner.id, originKind: "direct", causeKind: null,
             sourceArtifactId: artifact.id, visibleTeamId: team.id, state: "queued", scheduledAt: new Date(), dueAt: new Date(),

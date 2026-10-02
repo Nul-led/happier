@@ -198,7 +198,7 @@ export const ScmOptionalBranchSourceRefSchema = z.preprocess((value) => {
     return value;
   }
   return value.trim() ? value : undefined;
-}, ScmBranchSourceRefSchema.optional());
+}, ScmBranchSourceRefSchema.optional()).optional();
 export type ScmOptionalBranchSourceRef = z.infer<typeof ScmOptionalBranchSourceRefSchema>;
 
 export function normalizeScmRemoteRequest(

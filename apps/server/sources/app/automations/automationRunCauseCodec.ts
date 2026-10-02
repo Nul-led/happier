@@ -148,6 +148,10 @@ export function decodeAutomationRunCause(row: CauseRow): AutomationRunCause | nu
             },
         });
     }
+    if (row.causeTriggerKind === "runLifecycle") {
+        return AutomationRunCauseSchema.parse({ ...common, triggerKind: "runLifecycle",
+            evidence: JSON.parse(required(row.causeRunLifecycleEvidenceJson, "causeRunLifecycleEvidenceJson")) });
+    }
     throw new Error("Automation trigger cause has no valid trigger kind");
 }
 
@@ -181,6 +185,7 @@ export function encodeAutomationRunCause(causeInput: AutomationRunCause) {
             causeSessionLifecycleEvent: null,
             causeSourceSessionId: null,
             causeSourceTurnId: null,
+            causeRunLifecycleEvidenceJson: null,
             causeSessionLifecycleRequestId: null,
             causeSessionLifecycleRequestKind: null,
             causeSessionLifecyclePolicyKind: null,
@@ -202,6 +207,7 @@ export function encodeAutomationRunCause(causeInput: AutomationRunCause) {
             causeSessionLifecycleEvent: null,
             causeSourceSessionId: null,
             causeSourceTurnId: null,
+            causeRunLifecycleEvidenceJson: null,
             causeSessionLifecycleRequestId: null,
             causeSessionLifecycleRequestKind: null,
             causeSessionLifecyclePolicyKind: null,
@@ -215,6 +221,7 @@ export function encodeAutomationRunCause(causeInput: AutomationRunCause) {
         causeKind: "trigger" as const,
         causeTriggerKind: cause.triggerKind,
         causeTriggerRevision: cause.triggerRevision,
+        causeRunLifecycleEvidenceJson: cause.triggerKind === "runLifecycle" ? JSON.stringify(cause.evidence) : null,
         causeOccurredAt: new Date(cause.occurredAt),
         causeScheduledFor: cause.triggerKind === "schedule" ? new Date(cause.evidence.scheduledFor) : null,
         causeEventPluginId: cause.triggerKind === "pluginEvent"

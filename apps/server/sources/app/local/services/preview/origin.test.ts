@@ -30,6 +30,7 @@ describe("local service preview origin policy", () => {
         const mod = await loadPreviewOriginModule();
 
         const result = mod?.resolveLocalServicePreviewUrl({
+            // @ts-expect-error Retired wire input must never expose the API origin.
             originMode: "path",
             publicBaseUrl: "https://app.happier.test",
             hostOriginBaseDomain: null,
@@ -57,6 +58,7 @@ describe("local service preview origin policy", () => {
         const mod = await loadPreviewOriginModule();
 
         expect(mod?.resolveLocalServicePreviewUrl({
+            // @ts-expect-error Retired wire input must not enable a fallback.
             originMode: "path",
             publicBaseUrl: "ftp://app.happier.test",
             hostOriginBaseDomain: null,

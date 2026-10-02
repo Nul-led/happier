@@ -933,8 +933,6 @@ export async function claimAutomationRun(params: {
                 continue;
             }
 
-                })
-                : null;
             const parsedCandidateRecipe = parseAutomationRunExecutionRecipeV1(candidate.executionInputEnvelope);
             const isExecutionRun = parsedCandidateRecipe.kind === "available"
                 && parsedCandidateRecipe.recipe.target.kind === "executionRun";

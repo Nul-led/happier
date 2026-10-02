@@ -11,6 +11,7 @@ describe('connected-service configuration Action parity', () => {
     ['connectedServices.pools.reorder', { group: { service, groupId: 'pool' }, accountIds: ['work', 'personal'] }],
     ['connectedServices.pools.default.set', { group: { service, groupId: 'pool' }, agentId: 'codex', makeDefault: true }],
     ['connectedServices.quota.reset', { machineId: 'machine-1', serviceId: 'openai-codex', profileId: 'work' }],
+    ['connectedServices.quota.refresh', { account: { service, accountId: 'work' }, machineId: 'machine-1' }],
     ['connectedServices.identityPrivacy.set', { hidden: true }],
   ])('admits %s through a closed Action input', (id, input) => {
     const spec = getActionSpec(id as ActionId);

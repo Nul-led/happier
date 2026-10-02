@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { PluginContributionIdentityV1Schema } from '../plugins/contributionIdentity.js';
+import { PluginContributionIdentityV1Schema, type PluginContributionIdentityV1 } from '../plugins/contributionIdentity.js';
 import {
   PluginJsonValueV2Schema,
 } from '../plugins/contributions/publicTypes.js';
@@ -16,7 +16,7 @@ import {
   QualifiedConnectedAccountProfileV4Schema,
 } from './qualifiedConnectedAccountProjectionsV4.js';
 import { QualifiedConnectedAccountRefSchema } from './qualifiedConnectedAccountPersistence.js';
-import { ConnectedServiceIdSchema } from './connectedServiceBindings.js';
+import { ConnectedServiceIdSchema, type ConnectedServiceId } from './connectedServiceBindings.js';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
 import { PluginSourceCustodyV1Schema } from '../plugins/runtime/sourceCustody.js';
 
@@ -450,3 +450,30 @@ export type ConnectedAccountDaemonControlResponse =
   ReadonlyControlResponse<
     z.infer<typeof ConnectedAccountDaemonControlResponseSchema>
   >;
+
+export type ConnectedAccountExpectedOperationTransport =
+  | Readonly<{ kind: 'v4' }>
+  | Readonly<{ kind: 'legacy'; serviceId: ConnectedServiceId }>;
+
+/** Shared admission for quota readers, refreshers and Action callers. */
+export function assertConnectedAccountOperationTransportV1(
+  result: ConnectedAccountDaemonControlResponse,
+  service: PluginContributionIdentityV1,
+  expectedTransport: ConnectedAccountExpectedOperationTransport,
+): void {
+  const fail = (code: string): never => { throw Object.assign(new Error(code), { code }); };
+  if (result.status !== 'described') {
+    return fail(result.status === 'unavailable' || result.status === 'conflict'
+      ? result.code : 'connected_account_peer_operation_admission_unavailable');
+  }
+  const unsupported = expectedTransport.kind === 'v4'
+    ? 'connected_account_v4_operation_unsupported' : 'connected_account_legacy_operation_unsupported';
+  if (result.service.pluginId !== service.pluginId || result.service.localId !== service.localId) fail(unsupported);
+  if (expectedTransport.kind === 'v4') {
+    if (result.operationTransport?.kind !== 'v4') fail(unsupported);
+    return;
+  }
+  if (result.operationTransport?.kind !== 'legacy'
+    || result.operationTransport.peerClass !== 'revisioned_v2_v3'
+    || result.operationTransport.serviceId !== expectedTransport.serviceId) fail(unsupported);
+}

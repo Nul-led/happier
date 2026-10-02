@@ -21,6 +21,7 @@ import {
 import { PluginPermissionCapabilityV1Schema } from '../plugins/permissions/capabilityV1.js';
 import { DaemonPluginReactNativeBundleCacheIdentityV1Schema } from './contributionRegistryProjection.js';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
+import { VoiceRealtimeJsonValueSchema } from '../voice/realtime/events.js';
 
 export const DaemonVoiceClientCredentialSelectionV1Schema = z.object({
   contribution: asProtocolZod(PluginContributionIdentityV1Schema),
@@ -74,14 +75,9 @@ export type DaemonVoiceClientRawCredentialMaterializeResponseV1 = z.infer<
 >;
 
 /**
- * The exact contribution declaration the calling Voice runtime was activated
- * from.
- *
- * A projected external plugin names the daemon registry generation its
- * declaration was projected at, so the daemon can refuse to materialize under a
- * declaration the caller never saw. A first-party provider compiled into this
- * client has no daemon projection to name: its declaration ships in the calling
- * binary, so there is no generation for it to assert and none is invented.
+ * The calling runtime's activation descriptor. This retained client wire field
+ * is not an attestation: account-operation authorization belongs to the machine's
+ * current registered declaration, exact operation/phase, binding and lifecycle.
  */
 export const DaemonVoiceClientMediatedCredentialDeclarationAuthorityV1Schema = z.discriminatedUnion('kind', [
   z.object({
@@ -96,37 +92,43 @@ export type DaemonVoiceClientMediatedCredentialDeclarationAuthorityV1 = z.infer<
   typeof DaemonVoiceClientMediatedCredentialDeclarationAuthorityV1Schema
 >;
 
-export const DaemonVoiceClientMediatedCredentialMaterializeRequestV1Schema = z.object({
+export const DaemonVoiceClientAccountOperationRequestV1Schema = z.object({
   contribution: asProtocolZod(PluginContributionIdentityV1Schema),
   platform: z.enum(['web', 'ios', 'android']),
   phase: z.enum(['settings', 'prepare', 'connection']),
   operationId: asProtocolZod(PluginContributionLocalIdSchema),
+  parameters: z.record(z.string(), VoiceRealtimeJsonValueSchema).default({}),
   declarationAuthority: DaemonVoiceClientMediatedCredentialDeclarationAuthorityV1Schema,
   /**
    * The Connected Account selection the caller captured with the credential
    * authority this operation runs under. The daemon resolves its own current
    * selection independently, so without it a daemon that has already moved to
    * Account B answers a caller still holding Account A and both sides stay
-   * internally consistent while the wrong account's headers are used.
+   * internally consistent while minting with the wrong account's credentials.
    */
   expectedSelection: QualifiedConnectedAccountPurposeBindingTargetV1Schema,
 }).strict();
-export type DaemonVoiceClientMediatedCredentialMaterializeRequestV1 = z.infer<
-  typeof DaemonVoiceClientMediatedCredentialMaterializeRequestV1Schema
+export type DaemonVoiceClientAccountOperationRequestV1 = z.infer<
+  typeof DaemonVoiceClientAccountOperationRequestV1Schema
 >;
 
-export const DaemonVoiceClientMediatedCredentialMaterializeResponseV1Schema = z.discriminatedUnion('ok', [
+export const DaemonVoiceClientAccountOperationResponseV1Schema = z.discriminatedUnion('ok', [
   z.object({
     ok: z.literal(true),
-    headers: z.record(z.string(), z.string()),
+    response: z.object({
+      status: z.number().int().min(200).max(299),
+      finalUrl: z.string().url(),
+      headers: z.record(z.string(), z.string()),
+      bodyBase64: z.string(),
+    }).strict(),
   }).strict(),
   z.object({
     ok: z.literal(false),
     errorCode: DaemonVoiceCredentialErrorCodeV1Schema,
   }).strict(),
 ]);
-export type DaemonVoiceClientMediatedCredentialMaterializeResponseV1 = z.infer<
-  typeof DaemonVoiceClientMediatedCredentialMaterializeResponseV1Schema
+export type DaemonVoiceClientAccountOperationResponseV1 = z.infer<
+  typeof DaemonVoiceClientAccountOperationResponseV1Schema
 >;
 
 export const DaemonVoiceClientRawCredentialAuthorizationRequestV1Schema = z.object({

@@ -11,6 +11,9 @@ import { createWorkflowTriggerActions } from './executor/workflowTriggerActions.
 import { createWorkflowDefinitionActions } from './executor/workflowDefinitions.js';
 import { createWorkflowActionExecutor } from './executor/workflowAccountActions.js';
 import { AutomationDefinitionReconcileRequestSchema, type AutomationDefinitionDetail } from '../automations/automationApiV3.js';
+import { serializeAutomationStoredWorkflowDefinitionRecipeV2 } from '../automations/automationWorkflowRecipeV2.js';
+import { resolveWorkflowDefinitionRefV1 } from '../workflows/workflowDefinitionResolverV1.js';
+import { decideApprovalRequestTransition } from '../approvals/approvalRequestTransition.js';
 
 const defaultActionsSettings = ActionsSettingsV1Schema.parse({ v: 1 });
 const securityTokenSummary = {
@@ -161,7 +164,15 @@ describe('createActionExecutor (approvals)', () => {
     });
     const executor = createExecutor({
       approvalsGet: async () => request,
-      approvalsUpdate: async ({ request: value }) => { request = value; return { ok: true }; },
+      approvalsUpdate: async ({ request: value }) => {
+        const transition = decideApprovalRequestTransition(request, value);
+        if (!transition.ok) return transition;
+        request = value;
+        return { ok: true };
+      },
+      // Native enumeration is a Machine transport boundary; the admission and
+      // Artifact transition below it remain real.
+      runtimeActionExecute: async () => ({ targets: [{ target }], grants: { capture: 'granted', input: 'granted' } }),
       // The live Session waiter is outside this executor; storage/admission stay real.
       approvalsResolveBlockingDecision: async () => ({ resolved: true }),
     });
@@ -170,7 +181,7 @@ describe('createActionExecutor (approvals)', () => {
     })).toMatchObject({ ok: true, result: { status: 'approved' } });
     expect(request).toMatchObject({ status: 'approved', actionArgs: {
       machineId: 'machine', requestedTarget: 'Editor', target, access: 'see',
-    }, executionOriginV1: { authority: 'account_automation', surface: 'mcp' } });
+    }, executionOriginV1: { authority: 'account_automation', surface: 'mcp' }, decision: { authority: 'present_user' } });
   });
 
   it('accepts a computer access choice only while approving an open computer selection', async () => {
@@ -230,20 +241,48 @@ describe('createActionExecutor (approvals)', () => {
 
   it('keeps surface control approval decisions human even for a credential with an approve grant', async () => {
     for (const actionId of ['browser.control.takeControl', 'browser.control.handBack', 'computer.targets.list',
-      'computer.target.select', 'computer.control.interrupt', 'computer.control.handBack'] as const) {
+      'computer.target.select', 'computer.control.interrupt', 'computer.control.handBack',
+      'computer.permissions.openSettings', 'browser.sandbox.install'] as const) {
       let request = createApprovalRequest('open', { actionId, actionArgs: { machineId: 'machine', requestedTarget: 'Editor' } });
       const executor = createExecutor({
         approvalsGet: async () => request,
         approvalsUpdate: async ({ request: value }) => { request = value; return { ok: true }; },
         isApprovalExecutionOriginCurrent: async () => true,
       });
-      expect(await executor.execute('approval.request.decide', { artifactId: 'surface-approval', decision: 'approve' }, {
-        surface: 'api', authority: 'account_automation', externalActionCredential: {
-          accountId: 'account', principalId: 'token', credentialId: 'token', grant: { ...API_TOKEN_FULL_GRANT_V1, approve: true },
-        },
+      for (const decision of ['approve', 'reject'] as const) {
+        expect(await executor.execute('approval.request.decide', { artifactId: 'surface-approval', decision }, {
+          surface: 'api', authority: 'account_automation', externalActionCredential: {
+            accountId: 'account', principalId: 'token', credentialId: 'token', grant: { ...API_TOKEN_FULL_GRANT_V1, approve: true },
+          },
+        }), `${actionId}:${decision}`).toMatchObject({ ok: false, errorCode: 'present_user_required' });
+        expect(request.status).toBe('open');
+      }
+      request = { ...request, status: 'approved', decision: { kind: 'approve', decidedAtMs: 2 } };
+      expect(await executor.replayApprovedApprovalRequest({
+        artifactId: 'surface-approval', callerAuthority: 'account_automation',
       }), actionId).toMatchObject({ ok: false, errorCode: 'present_user_required' });
-      expect(request.status).toBe('open');
+      expect(request.status).toBe('approved');
     }
+  });
+
+  it('allows an approval-granted credential to decide an ordinary approved Action', async () => {
+    let request = createApprovalRequest();
+    const messages: string[] = [];
+    const executor = createExecutor({
+      approvalsGet: async () => request,
+      approvalsUpdate: async ({ request: value }) => { request = value; return { ok: true }; },
+      sessionSendMessage: async ({ message }) => {
+        messages.push(message);
+        return { status: 'accepted', localId: 'ordinary-message' };
+      },
+    });
+    expect(await executor.execute('approval.request.decide', { artifactId: 'ordinary-approval', decision: 'approve' }, {
+      surface: 'api', authority: 'account_automation', externalActionCredential: {
+        accountId: 'account', principalId: 'token', credentialId: 'token', grant: { ...API_TOKEN_FULL_GRANT_V1, approve: true },
+      },
+    })).toMatchObject({ ok: true, result: { status: 'executed' } });
+    expect(request.status).toBe('executed');
+    expect(messages).toEqual(['hello']);
   });
   it('requires present-user approval for automated fresh-folder consent without changing ordinary open', async () => {
     let request: ApprovalRequest | null = null;
@@ -406,15 +445,25 @@ describe('createActionExecutor (approvals)', () => {
   });
   it('requires approval before an agent trigger removal and replays the approved write without another approval', async () => {
     let request: ApprovalRequest | null = null;
+    const workflow = '11111111-1111-4111-8111-111111111111';
+    const recipe = serializeAutomationStoredWorkflowDefinitionRecipeV2({
+      v: 2, templateVersion: 1, triggerEvidence: null,
+      workflow: { t: 'plain', v: { workspace: { directory: '/repo' }, executionTarget: { kind: 'session' } } },
+    });
+    if (recipe.kind !== 'available') throw new Error('Invalid workflow recipe fixture');
     let row: AutomationDefinitionDetail = { id: 'automation', name: 'Triggers', description: null,
       enabled: true, targetType: null, existingSessionId: null, templateVersion: 1,
-      lastRunAt: null, createdAt: 1, updatedAt: 1, workflowDefinitionId: null, scopeSessionId: null,
+      lastRunAt: null, createdAt: 1, updatedAt: 1, workflowDefinitionId: workflow, scopeSessionId: null,
+      executionRecipe: recipe.recipe,
       assignments: [{ machineId: 'machine', enabled: true, priority: 0, updatedAt: 1 }],
       triggers: [{ id: 'trigger', revision: 0, enabled: true, createdAt: 1, updatedAt: 1,
         kind: 'schedule', schedule: { kind: 'interval', scheduleExpr: null, everyMs: 60_000, timezone: null },
         nextRunAt: 2, triggerDefinitionEnvelope: null }] };
     const unused = async (): Promise<never> => { throw new Error('Unexpected boundary operation'); };
     // Persistent Automation/Artifact and approval transports are the fake system boundaries.
+    const definitions = createWorkflowDefinitionActions({ artifactStore: {
+      read: async () => null, list: async () => ({ items: [] }), create: unused, update: unused, delete: unused,
+    }, encodeListCursor: (row) => row.artifactId, assertDefinitionWriteAllowed: unused });
     const triggers = createWorkflowTriggerActions({ automations: {
       list: async () => ({ automations: [row], nextCursor: null }), get: async () => row,
       create: unused, delete: unused,
@@ -423,10 +472,16 @@ describe('createActionExecutor (approvals)', () => {
         row = { ...row, triggers: row.triggers.filter((trigger) => input.triggers.some((item) => item.triggerId === trigger.id)) };
         return row;
       },
-    }, openContext: async () => null, sealContext: unused, newId: () => 'unused', resolveWorkflow: unused });
-    const definitions = createWorkflowDefinitionActions({ artifactStore: {
-      read: async () => null, list: async () => ({ items: [] }), create: unused, update: unused, delete: unused,
-    }, encodeListCursor: (row) => row.artifactId, assertDefinitionWriteAllowed: unused });
+    },
+      openContext: async (row) => row.executionRecipe?.v === 2 && row.executionRecipe.workflow.t === 'plain'
+        ? row.executionRecipe.workflow.v : null,
+      sealContext: unused, newId: () => 'unused',
+      resolveWorkflow: async (ref) => {
+        const source = await resolveWorkflowDefinitionRefV1(ref, { readArtifact: (definitionId) => definitions.get({ definitionId }) });
+        if (!source) throw Object.assign(new Error('source_unavailable'), { code: 'source_unavailable' });
+        return source.definition;
+      },
+    });
     const settings = ActionsSettingsV1Schema.parse({ v: 1,
       approvalWaivedSurfaces: { 'workflow.trigger.remove': ['agent'] } });
     const executor = createExecutor({

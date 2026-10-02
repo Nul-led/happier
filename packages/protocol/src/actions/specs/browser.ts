@@ -3,9 +3,10 @@ import { z } from 'zod';
 import type { RuntimeActionIdV1 } from '../actionIds.js';
 import {
   BrowserAutomationActionRequestV1Schema,
-  BrowserAutomationActionResultV1Schema,
+  BrowserAutomationActionResultV1Schema as BrowserAutomationEngineActionResultV1Schema,
   BrowserAutomationCancelActiveInputV1Schema,
-  BrowserAutomationCancelActiveResultV1Schema,
+  BrowserAutomationCancelActiveResultV1Schema as BrowserAutomationEngineCancelActiveResultV1Schema,
+  BrowserAutomationInterruptedResultV1Schema,
   BrowserAutomationTimelineV1Schema,
 } from '../../browser/automation/v1.js';
 import type { BrowserAutomationActionKindV1 } from '../../browser/automation/v1.js';
@@ -55,6 +56,13 @@ import {
 } from '../../browser/recording/v1.js';
 import type { RuntimeActionSpecFamily } from './common.js';
 
+const BrowserAutomationActionResultV1Schema = z.union([
+  BrowserAutomationEngineActionResultV1Schema, BrowserAutomationInterruptedResultV1Schema,
+]);
+const BrowserAutomationCancelActiveResultV1Schema = z.union([
+  BrowserAutomationEngineCancelActiveResultV1Schema, BrowserAutomationInterruptedResultV1Schema,
+]);
+
 const BrowserDiagnosticsClearResultV1Schema = z.object({
   ok: z.literal(true),
 }).strict();
@@ -77,6 +85,15 @@ const BrowserRecordingAttachToComposerResultV1Schema = z.object({
 }).strict();
 
 const BrowserRecordingListResultV1Schema = z.array(BrowserRecordingSessionV1Schema);
+
+const BrowserSandboxInstallInputV1Schema = z.object({ machineId: z.string().trim().min(1) }).strict();
+const BrowserSandboxInstallResultV1Schema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('installed') }).strict(),
+  z.object({ status: z.literal('failed'), code: z.enum([
+    'platform_unsupported', 'managed_browser_unavailable', 'managed_browser_install_failed',
+    'os_authorization_required', 'sandbox_install_failed', 'cancelled',
+  ]) }).strict(),
+]);
 
 type BrowserRuntimeActionId = Extract<RuntimeActionIdV1, `browser.${string}`>;
 
@@ -113,6 +130,7 @@ const RuntimeBrowserRecordingAttachInputSchema = z
   .passthrough();
 
 export const BROWSER_RUNTIME_ACTION_TITLES: Readonly<Partial<Record<RuntimeActionIdV1, string>>> = Object.freeze({
+  'browser.sandbox.install': 'Install managed browser sandbox permission',
   'browser.control.takeControl': 'Yield browser control to the human',
   'browser.control.handBack': 'Return browser control to the Session',
   'browser.view.open': 'Open browser view',
@@ -181,6 +199,7 @@ export const BROWSER_RUNTIME_ACTION_TITLES: Readonly<Partial<Record<RuntimeActio
 });
 
 export const BROWSER_RUNTIME_ACTION_DESCRIPTIONS: Readonly<Partial<Record<RuntimeActionIdV1, string>>> = Object.freeze({
+  'browser.sandbox.install': 'Install an executable-scoped AppArmor userns profile for this machine’s managed Chromium. Approval is required by default; the human must separately authorize sudo on that machine.',
   'browser.control.takeControl': 'Interrupt browser automation and yield control to the human through the existing controller owner.',
   'browser.control.handBack': 'Return browser control to the Session after accepted input settles. The agent must observe again before its next mutation.',
   'browser.view.open': 'Open a browser view inside an existing browser session.',
@@ -235,6 +254,7 @@ export const BROWSER_RUNTIME_ACTION_DESCRIPTIONS: Readonly<Partial<Record<Runtim
  * its exact Zod input/output carrier in generated API and Plugin maps.
  */
 export const BROWSER_RUNTIME_ACTION_INPUT_SCHEMAS = Object.freeze({
+  'browser.sandbox.install': BrowserSandboxInstallInputV1Schema,
   'browser.control.takeControl': BrowserTakeControlCommandV1Schema,
   'browser.control.handBack': BrowserHandBackCommandV1Schema,
   'browser.view.open': BrowserOpenViewCommandV1Schema,
@@ -303,6 +323,7 @@ export const BROWSER_RUNTIME_ACTION_INPUT_SCHEMAS = Object.freeze({
 } as const satisfies Readonly<Record<BrowserRuntimeActionId, z.ZodTypeAny>>);
 
 export const BROWSER_RUNTIME_ACTION_OUTPUT_SCHEMAS = Object.freeze({
+  'browser.sandbox.install': BrowserSandboxInstallResultV1Schema,
   'browser.control.takeControl': BrowserCommandDispatchResultV1Schema,
   'browser.control.handBack': BrowserCommandDispatchResultV1Schema,
   'browser.view.open': BrowserCommandDispatchResultV1Schema,

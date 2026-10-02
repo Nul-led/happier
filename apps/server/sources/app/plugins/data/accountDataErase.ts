@@ -27,7 +27,7 @@ import {
     buildPluginDeclarativeSettingsPhysicalKey,
 } from "@/app/kv/accountScopedKv";
 import { applyUserKvMutationsInTx, type KVMutation } from "@/app/kv/kvMutate";
-import { deletePublicFile } from "@/storage/blob/files";
+import { deletePublicFile, deletePrivateFile } from "@/storage/blob/files";
 import { inTx, type Tx } from "@/storage/inTx";
 import { getActivePrismaRuntime } from "@/storage/prisma";
 
@@ -509,6 +509,7 @@ type AccountErasurePrivateBlobLocator = Readonly<{
 type AccountErasureBlobLocators = Readonly<{
     publicFiles: readonly AccountErasurePublicBlobLocator[];
     privatePetAssets: readonly AccountErasurePrivateBlobLocator[];
+    privateArtifactBlobs: readonly AccountErasurePrivateBlobLocator[];
 }>;
 
 function sameOrderedLocators<T>(
@@ -524,14 +525,15 @@ function sameAccountErasureBlobLocators(
     right: AccountErasureBlobLocators,
 ): boolean {
     return sameOrderedLocators(left.publicFiles, right.publicFiles, (l, r) => l.id === r.id && l.path === r.path)
-        && sameOrderedLocators(left.privatePetAssets, right.privatePetAssets, (l, r) => l.id === r.id && l.objectKey === r.objectKey);
+        && sameOrderedLocators(left.privatePetAssets, right.privatePetAssets, (l, r) => l.id === r.id && l.objectKey === r.objectKey)
+        && sameOrderedLocators(left.privateArtifactBlobs, right.privateArtifactBlobs, (l, r) => l.id === r.id && l.objectKey === r.objectKey);
 }
 
 async function captureAccountErasureBlobLocatorsInTx(
     tx: Tx,
     accountId: string,
 ): Promise<AccountErasureBlobLocators> {
-    const [uploadedFiles, privatePetAssets] = await Promise.all([
+    const [uploadedFiles, privatePetAssets, privateArtifactBlobs] = await Promise.all([
         tx.uploadedFile.findMany({
             where: { accountId },
             select: { id: true, path: true },
@@ -542,22 +544,29 @@ async function captureAccountErasureBlobLocatorsInTx(
             select: { id: true, objectKey: true },
             orderBy: [{ objectKey: "asc" }, { id: "asc" }],
         }),
+        tx.artifactBlob.findMany({
+            where: { artifact: { accountId } }, select: { id: true, storageKey: true },
+            orderBy: [{ storageKey: 'asc' }, { id: 'asc' }],
+        }),
     ]);
     return Object.freeze({
         publicFiles: Object.freeze(uploadedFiles.map(({ id, path }) => Object.freeze({ id, path }))),
         privatePetAssets: Object.freeze(privatePetAssets.map(({ id, objectKey }) => Object.freeze({ id, objectKey }))),
+        privateArtifactBlobs: Object.freeze(privateArtifactBlobs.map(({ id, storageKey }) => Object.freeze({ id, objectKey: storageKey }))),
     });
 }
 
 async function deleteAccountErasureBlobLocators(
     locators: AccountErasureBlobLocators,
 ): Promise<boolean> {
-    const [publicResults, privateResults] = await Promise.all([
+    const [publicResults, privateResults, artifactResults] = await Promise.all([
         Promise.allSettled(locators.publicFiles.map(async ({ path }) => await deletePublicFile(path))),
         Promise.allSettled(locators.privatePetAssets.map(async ({ objectKey }) => await deleteDefaultAccountPetPrivateObject(objectKey))),
+        Promise.allSettled(locators.privateArtifactBlobs.map(async ({ objectKey }) => await deletePrivateFile(objectKey))),
     ]);
     return publicResults.every((result) => result.status === "fulfilled")
-        && privateResults.every((result) => result.status === "fulfilled");
+        && privateResults.every((result) => result.status === "fulfilled")
+        && artifactResults.every((result) => result.status === 'fulfilled');
 }
 
 /**

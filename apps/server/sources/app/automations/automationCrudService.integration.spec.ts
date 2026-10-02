@@ -11,6 +11,12 @@ import {
     AutomationTriggerIdSchema,
     WorkflowTriggerRemoveRequestV1Schema,
     createWorkflowTriggerActions,
+    AutomationTriggerDefinitionInputSchema,
+    AutomationEncryptedTriggerDefinitionEnvelopeV1Schema,
+    AutomationPullRequestTriggerSchema,
+    openAutomationTriggerDefinitionStoredEnvelopeV1,
+    sealAutomationTriggerDefinitionStoredEnvelopeV1,
+    createAccountScopedCryptoMaterialSnapshotV1,
     type WorkflowTriggerSetV1,
 } from "@happier-dev/protocol";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -278,6 +284,84 @@ describe("automationCrudService (integration)", () => {
             expect(patchedResponse.statusCode).toBe(200);
             expect(patchedResponse.json()).toMatchObject({ workflowDefinitionId: "builtin:review-converge", scopeSessionId: null });
         });
+    });
+
+    it.each(["prComment", "ciFailed"] as const)("persists scoped %s selectors through CRUD without Event routing", async (kind) => {
+        const account = await db.account.create({ data: { encryptionMode: "plain" } });
+        const machineId = await seedExecutionMachine(account.id);
+        const session = await db.session.create({ data: {
+            accountId: account.id, tag: randomUUID(), metadata: "{}", agentState: "{}",
+        } });
+        const automation = await createAutomation({ accountId: account.id, input: {
+            automationId: randomUUID(), name: "PR trigger", enabled: true,
+            scopeSessionId: session.id, workflowDefinitionId: null,
+            executionRecipe: workflowRecipe(1, machineId), assignments: [{ machineId }], triggers: [],
+        } });
+        const triggerId = AutomationTriggerIdSchema.parse(randomUUID());
+        const trigger = AutomationTriggerDefinitionInputSchema.parse({
+            kind, enabled: true, pullRequest: { repository: "owner/repo", number: 42 },
+        });
+        const write = () => createAutomationTrigger({ accountId: account.id,
+            automationId: automation.id, triggerId, trigger });
+        const created = await write();
+        if (!created) throw new Error("Missing created Automation");
+        expect(created.triggers[0]).toMatchObject({ kind, sourceSessionId: session.id,
+            eventPluginId: null, eventLocalId: null, sourceSelectorId: null });
+        await expect(write()).resolves.toMatchObject({ id: automation.id });
+        await expect(updateAutomation({ accountId: account.id, automationId: automation.id,
+            input: { scopeSessionId: null } })).rejects.toBeInstanceOf(AutomationValidationError);
+        const paused = await updateAutomationTrigger({ accountId: account.id, automationId: automation.id,
+            triggerId, expectedRevision: 0, enabled: false });
+        if (!paused) throw new Error("Missing paused Automation");
+        const stored = paused.triggers[0];
+        const opened = openAutomationTriggerDefinitionStoredEnvelopeV1({ mode: "plain",
+            binding: { v: 1, automationId: automation.id, triggerId, triggerRevision: 1, triggerKind: kind },
+            envelope: JSON.parse(stored.definitionEnvelope!),
+        });
+        expect(opened.kind).toBe("available");
+        if (opened.kind !== "available") throw new Error("PR selection unavailable");
+        expect(AutomationPullRequestTriggerSchema.parse(opened.definition)).toEqual({ kind,
+            pullRequest: { repository: "owner/repo", number: 42 } });
+        await deleteAutomationTrigger({ accountId: account.id, automationId: automation.id, triggerId, expectedRevision: 1 });
+        expect((await getAutomation({ accountId: account.id, automationId: automation.id }))?.triggers).toEqual([]);
+    });
+
+    it("keeps encrypted PR selection opaque and requires a resealed enablement revision", async () => {
+        const account = await db.account.create({ data: { encryptionMode: "e2ee", ...createSignedAccountContentBinding() } });
+        const machineId = await seedExecutionMachine(account.id);
+        const session = await db.session.create({ data: {
+            accountId: account.id, tag: randomUUID(), metadata: "{}", agentState: "{}",
+        } });
+        const automation = await createAutomation({ accountId: account.id, input: {
+            automationId: randomUUID(), name: "Private PR", enabled: true, scopeSessionId: session.id,
+            executionRecipe: AutomationStoredWorkflowDefinitionRecipeV2Schema.parse({ ...workflowRecipe(1, machineId),
+                workflow: { t: "encrypted", c: "opaque-workflow-context" } }),
+            assignments: [{ machineId }], triggers: [],
+        } });
+        const triggerId = AutomationTriggerIdSchema.parse(randomUUID());
+        const material = createAccountScopedCryptoMaterialSnapshotV1({ accountEncryptionMode: "e2ee",
+            material: { type: "legacy", secret: new Uint8Array(32).fill(7) } }).material;
+        const envelope = (triggerRevision: number) => sealAutomationTriggerDefinitionStoredEnvelopeV1({
+            mode: "e2ee", material, randomBytes: (length) => new Uint8Array(length).fill(1),
+            binding: { v: 1, automationId: automation.id, triggerId, triggerRevision, triggerKind: "prComment" },
+            definition: { kind: "prComment", pullRequest: { repository: "private/repo", number: 42 } },
+        });
+        const trigger = AutomationTriggerDefinitionInputSchema.parse({ kind: "prComment", enabled: true,
+            triggerDefinitionEnvelope: envelope(0) });
+        const created = await createAutomationTrigger({ accountId: account.id, automationId: automation.id, triggerId, trigger });
+        expect(created?.triggers[0]?.definitionEnvelope).not.toContain("private/repo");
+        await expect(updateAutomationTrigger({ accountId: account.id, automationId: automation.id,
+            triggerId, expectedRevision: 0, enabled: false })).rejects.toBeInstanceOf(AutomationValidationError);
+        const paused = await updateAutomationTrigger({ accountId: account.id, automationId: automation.id,
+            triggerId, expectedRevision: 0, enabled: false,
+            triggerDefinitionEnvelope: AutomationEncryptedTriggerDefinitionEnvelopeV1Schema.parse(envelope(1)),
+        });
+        expect(paused?.triggers[0]).toMatchObject({ kind: "prComment", revision: 1, enabled: false, sourceSessionId: session.id });
+        const opened = openAutomationTriggerDefinitionStoredEnvelopeV1({ mode: "e2ee", material,
+            binding: { v: 1, automationId: automation.id, triggerId, triggerRevision: 1, triggerKind: "prComment" },
+            envelope: JSON.parse(paused!.triggers[0]!.definitionEnvelope!),
+        });
+        expect(opened).toMatchObject({ kind: "available", definition: { kind: "prComment", pullRequest: { repository: "private/repo", number: 42 } } });
     });
 
     it.each(["plain", "e2ee", "legacy"] as const)("advances the exposed revision on recipe-free trigger changes (%s)", async (mode) => {

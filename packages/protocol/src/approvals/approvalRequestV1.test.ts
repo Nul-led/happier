@@ -702,12 +702,15 @@ describe('requiresExactDaemonApprovalReplay', () => {
     const host = ApprovalRequestV2Schema.parse(approvalWithCaller({ kind: 'host' }));
     expect(requiresExactDaemonApprovalReplay(host)).toBe(false);
 
-    const sessionCaller = { kind: 'session', sessionId: 'session-caller' };
+    const sessionCaller = { kind: 'session', sessionId: 'session-caller', starterDepth: 2, turnDepth: 3 };
     const session = ApprovalRequestV2Schema.parse(approvalWithCaller(sessionCaller));
     expect(session.executionOriginV1.caller).toEqual(sessionCaller);
     expect(requiresExactDaemonApprovalReplay(session)).toBe(true);
     expect(ApprovalRequestV2Schema.safeParse(approvalWithCaller({ ...sessionCaller, capability: 'secret' })).success).toBe(false);
     expect(ApprovalRequestV2Schema.safeParse(approvalWithCaller({ ...sessionCaller, sessionId: ' ' })).success).toBe(false);
+    expect(ApprovalRequestV2Schema.safeParse(approvalWithCaller({ kind: 'session', sessionId: 'session-caller' })).success).toBe(false);
+    expect(ApprovalRequestV2Schema.safeParse(approvalWithCaller({ ...sessionCaller, starterDepth: undefined })).success).toBe(false);
+    expect(ApprovalRequestV2Schema.safeParse(approvalWithCaller({ ...sessionCaller, turnDepth: -1 })).success).toBe(false);
 
     const workflowRun = ApprovalRequestV2Schema.parse(approvalWithCaller({
       kind: 'workflowRun',

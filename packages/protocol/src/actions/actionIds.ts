@@ -17,6 +17,7 @@ import { MANAGED_IDENTITY_PROVIDER_ACTION_IDS_V1 } from '../identity/providers.j
 import { EPHEMERAL_RUNNER_ACTION_IDS_V1 } from '../ephemeralRunner/actionIdsV1.js';
 import { SHARED_SAVED_SECRET_ACTION_IDS_V1 } from '../account/settings/savedSecretResourceActionsV1.js';
 import { ARTIFACT_ACCESS_ACTION_IDS_V1 } from '../artifacts/artifactAccessV1.js';
+import { ARTIFACT_ACTION_IDS_V1 } from '../artifacts/artifactActionsV1.js';
 import { WORKSPACE_ACTION_IDS } from './workspaceActionFamily.js';
 import { CONNECTED_SERVICE_CONFIGURATION_ACTION_IDS_V1 } from '../connect/configurationActionsV1.js';
 import { SETTINGS_DECLARATION_ACTION_IDS_V1 } from './settingsDeclarationActionFamily.js';
@@ -66,6 +67,8 @@ export function isPluginDevLoopActionIdV1(value: string): value is PluginDevLoop
 // Action ids remain protocol-owned and closed in this wave.
 // Plugin/runtime unification must not imply plugin-defined action-id authoring parity yet.
 export const ACTION_ID_FAMILIES_V1 = Object.freeze({
+  observation: ['wait'],
+  capture_viewing: ['capture.view'],
   session_terminals: SESSION_TERMINAL_ACTION_IDS,
   workspace_layout: WORKSPACE_ACTION_IDS,
   scope: SCOPE_ACTION_IDS,
@@ -81,10 +84,11 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
   ],
   workflows: WORKFLOW_ACTION_IDS_V1,
   artifact_access: ARTIFACT_ACCESS_ACTION_IDS_V1,
+  artifacts: ARTIFACT_ACTION_IDS_V1,
   settings_declarations: SETTINGS_DECLARATION_ACTION_IDS_V1,
   app_shell: APP_SHELL_ACTION_IDS,
   notifications: ['notifications.notify_me'],
-  home_hub_layout: ['home.hub.layout.get', 'home.hub.layout.update'],
+  home_hub_layout: ['home.hub.layout.get', 'home.hub.layout.update', 'home.reachNudge.dismiss'],
   machine_agent_install: [
     'machines.agents.install',
     'machines.agents.install.status',
@@ -347,6 +351,7 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'bugreport.uploadArtifact',
   ],
   browser_control: [
+    'browser.sandbox.install',
     'browser.control.takeControl',
     'browser.control.handBack',
     'browser.view.open',
@@ -569,6 +574,7 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'scm.change.discard',
     'scm.commit.create',
     'scm.commit.backout',
+    'scm.commit.undoLast',
     'scm.log.list',
     'scm.branch.list',
     'scm.branch.create',
@@ -628,6 +634,8 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
 } as const);
 
 export const ACTION_IDS = [
+  ...ACTION_ID_FAMILIES_V1.observation,
+  ...ACTION_ID_FAMILIES_V1.capture_viewing,
   ...ACTION_ID_FAMILIES_V1.session_terminals,
   ...ACTION_ID_FAMILIES_V1.connected_services_configuration,
   ...ACTION_ID_FAMILIES_V1.workspace_layout,
@@ -641,6 +649,7 @@ export const ACTION_IDS = [
   ...ACTION_ID_FAMILIES_V1.roles,
   ...ACTION_ID_FAMILIES_V1.launch_profiles,
   ...ACTION_ID_FAMILIES_V1.artifact_access,
+  ...ACTION_ID_FAMILIES_V1.artifacts,
   ...ACTION_ID_FAMILIES_V1.settings_declarations,
   ...ACTION_ID_FAMILIES_V1.app_shell,
   ...ACTION_ID_FAMILIES_V1.discovery,

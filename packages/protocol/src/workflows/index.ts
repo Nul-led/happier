@@ -4,6 +4,7 @@ export * from './workflowInvocationIdentityV1.js';
 export * from './workflowInvocationStructureV1.js';
 export * from './workflowDefinitionRefV1.js';
 export * from './workflowDefinitionResolverV1.js';
+export * from './workflowPluginSourceV1.js';
 export * from './builtins/catalog.js';
 export * from './triggers/triggerTargetV1.js';
 export * from './workflowWorkspaceV1.js';

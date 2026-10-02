@@ -76,29 +76,29 @@ describe("Artifact document grants (real SQLite)", () => {
             expectedHeaderVersion: 1, expectedBodyVersion: 1,
             expectedDataEncryptionKey: sourceOwnerEnvelope,
             header: privacyKit.encodeBase64(new Uint8Array([7, 8, 9])), body: privacyKit.encodeBase64(new Uint8Array([10, 11, 12])),
-            dataEncryptionKey: wrap(replacementKey, owner.contentPublicKey!), recipientKeyEnvelopes: prepared,
+            dataEncryptionKey: wrap(replacementKey, owner.contentPublicKey!), recipientKeyEnvelopes: prepared, revisions: [], blobs: [],
         }] };
-        expect(await inTx(tx => migrateArtifactAccountEncryptionInTx({ tx, accountId: owner.id, toMode: "e2ee",
+        expect(await inTx(tx => migrateArtifactAccountEncryptionInTx({ tx, accountId: owner.id, fromMode: "e2ee", toMode: "e2ee",
             directive: { ...directive, items: [{ ...directive.items[0]!, expectedDataEncryptionKey: wrap(oldKey, owner.contentPublicKey!) }] } })))
             .toEqual({ status: "migration_incomplete" });
         const invalidEnvelope = Buffer.from(prepared[0]!.encryptedDataKey, 'base64');
         invalidEnvelope[0] = 255; // An unsupported format, not a well-sized legacy V0 envelope.
-        expect(await inTx(tx => migrateArtifactAccountEncryptionInTx({ tx, accountId: owner.id, toMode: "e2ee",
+        expect(await inTx(tx => migrateArtifactAccountEncryptionInTx({ tx, accountId: owner.id, fromMode: "e2ee", toMode: "e2ee",
             directive: { ...directive, items: [{ ...directive.items[0]!, recipientKeyEnvelopes: [{ ...prepared[0]!,
                 encryptedDataKey: invalidEnvelope.toString('base64') }] }] } })))
             .toEqual({ status: "invalid_content" });
-        expect(await inTx(tx => migrateArtifactAccountEncryptionInTx({ tx, accountId: owner.id, toMode: "e2ee", directive })))
+        expect(await inTx(tx => migrateArtifactAccountEncryptionInTx({ tx, accountId: owner.id, fromMode: "e2ee", toMode: "e2ee", directive })))
             .toEqual({ status: "applied" });
         const envelopes = await db.artifactKeyEnvelope.findMany({ where: { artifactId: artifact.id } });
         expect(envelopes.map(row => row.recipientAccountId)).toEqual([recipients[0]!.id]);
         expect(privacyKit.encodeBase64(new Uint8Array(envelopes[0]!.encryptedDataKey))).toBe(prepared[0]!.encryptedDataKey);
         expect(await db.accountChange.count({ where: { accountId: recipients[1]!.id, kind: 'artifact', entityId: artifact.id } })).toBe(1);
         expect(await db.accountChange.count({ where: { accountId: recipients[2]!.id, kind: 'artifact', entityId: artifact.id } })).toBe(0);
-        expect(await inTx(tx => migrateArtifactAccountEncryptionInTx({ tx, accountId: owner.id, toMode: "plain", directive: {
+        expect(await inTx(tx => migrateArtifactAccountEncryptionInTx({ tx, accountId: owner.id, fromMode: "e2ee", toMode: "plain", directive: {
             action: "migrate", items: [{ artifactId: artifact.id, expectedHeaderVersion: 2, expectedBodyVersion: 2,
                 expectedDataEncryptionKey: directive.items[0]!.dataEncryptionKey,
                 header: encodePlainArtifactStoredContent({ title: 'Shared' }), body: encodePlainArtifactStoredContent({ body: 'Content' }),
-                dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, recipientKeyEnvelopes: [] }],
+                dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, recipientKeyEnvelopes: [], revisions: [], blobs: [] }],
         } }))).toEqual({ status: "applied" });
         expect(await db.artifactKeyEnvelope.count({ where: { artifactId: artifact.id } })).toBe(0);
     });
@@ -276,13 +276,18 @@ describe("Artifact document grants (real SQLite)", () => {
             expect(await inTx(tx => updateArtifactTx(tx, { actorUserId: editor.id, artifactId: artifact.id,
                 body: { bytes: editedCiphertext, expectedVersion: 2 } })))
                 .toMatchObject({ ok: false, error: "not-found" });
-            const transition = await inTx(tx => migrateArtifactAccountEncryptionInTx({
-                tx, accountId: owner.id, toMode: "plain", directive: { action: "migrate", items: [{
+            const transition = await inTx(async tx => migrateArtifactAccountEncryptionInTx({
+                tx, accountId: owner.id, fromMode: "e2ee", toMode: "plain", directive: { action: "migrate", items: [{
                     artifactId: artifact.id, expectedHeaderVersion: 1, expectedBodyVersion: 2,
                     expectedDataEncryptionKey: privacyKit.encodeBase64(ownerKey), recipientKeyEnvelopes: [],
                     header: encodePlainArtifactStoredContent({ kind: "workflow-definition.v1" }),
                     body: encodePlainArtifactStoredContent({ value: "plain replacement" }),
                     dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+                    blobs: [],
+                    revisions: (await tx.artifactRevision.findMany({ where: { artifactId: artifact.id } })).map(revision => ({
+                        bodyVersion: revision.bodyVersion, expectedBody: privacyKit.encodeBase64(new Uint8Array(revision.body)),
+                        body: encodePlainArtifactStoredContent({ body: "Retained content" }),
+                    })),
                 }] },
             }));
             expect(transition).toEqual({ status: "applied" });

@@ -409,18 +409,7 @@ export function registerPeerMediationGrantRoutes(
                         targetMachineId: parsed.data.machineId,
                         relaySocketId: parsed.data.relaySocketId,
                         destination: parsed.data.destination,
-                        scope: {
-                            kind: "tcp_tunnel",
-                            tunnelId: parsed.data.scope.tunnelId,
-                            allowedPorts: [parsed.data.destination.port],
-                        },
-                        applicationBudgets: {
-                            maxIdleMs: parsed.data.scope.maxIdleMs,
-                            maxDurationMs: parsed.data.scope.maxDurationMs,
-                            ...(parsed.data.scope.maxTotalBytes !== undefined
-                                ? { maxTotalBytes: parsed.data.scope.maxTotalBytes }
-                                : {}),
-                        },
+                        scope: parsed.data.scope,
                         nowMs: nowMs(),
                         ttlMs: resolveServerRelayedTcpTunnelTtlMs(parsed.data.ttlMs),
                         serverGateEnabled: liveStreamFeatureEnv.serverRoutedEnabled,
@@ -432,12 +421,6 @@ export function registerPeerMediationGrantRoutes(
                         },
                         capProfileId: DAEMON_VOICE_AUDIO_RELAY_CAP_PROFILE_ID,
                         flowKind: "voice_media",
-                        applicationAuthority: {
-                            v: 1,
-                            applicationKind: parsed.data.scope.applicationKind,
-                            applicationAttemptId: parsed.data.scope.applicationAttemptId,
-                            applicationAuthorityDigest: parsed.data.scope.applicationAuthorityDigest,
-                        },
                         signingKey: {
                             keyId: signing.keyId,
                             secretKey: signing.secretKey,

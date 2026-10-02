@@ -25,7 +25,7 @@ import {
 } from "@/testkit/pluginInstallationPublisherTestkit";
 import { withAuthenticatedTestApp } from "../../testkit/sqliteFastify";
 import { automationRoutes } from "./automationRoutes";
-import { AUTOMATION_TEMPLATE_V02_PLAIN } from "../../../../../../../packages/protocol/src/automations/automationTemplateV02.testFixtures";
+import { AUTOMATION_TEMPLATE_V02_PLAIN } from "@happier-dev/protocol/testing/accountScopedCipherFixtures";
 
 function buildTemplateEnvelope(existingSessionId?: string): string {
     return JSON.stringify({
@@ -66,7 +66,7 @@ function strictV3RecipeShape(templateVersion: number) {
             kind: "newSession",
             spawn: {
                 executionTarget: { serverId: "server", machineId: "machine-1" },
-                directory: "/tmp/strict-v3-automation",
+                directory: { kind: "path", path: "/tmp/strict-v3-automation" },
                 agentTarget: {
                     kind: "agent",
                     identity: { pluginId: "happier.agent.codex", localId: "codex" },
@@ -561,6 +561,8 @@ describe("automation daemon routes (integration)", () => {
                         id: automation.id,
                         name: "Released V2 frozen input",
                         enabled: true,
+                        scopeSessionId: null,
+                        workflowDefinitionId: null,
                     },
                     accountCurrentness: expect.objectContaining({ mode: "plain" }),
                 }));

@@ -22,6 +22,8 @@ const ActionCliFlagNameSchema = z
 
 export const ActionCliCommandBindingSchema = z.object({
   path: z.array(ActionCliCommandSegmentSchema).min(1),
+  /** Passive observation uses the same Action and its owner's change source. */
+  observation: z.enum(['condition', 'changes']).optional(),
   /**
    * Caller-input paths supplied positionally, in argv order. They name fields of
    * the *effective CLI caller* schema — the `inputSchema` below when the Action

@@ -14,6 +14,9 @@ import { createVoiceRouteAbortScope } from "./voiceRouteAbortScope";
 import { voiceSessionCorrelationIdSchema } from "./voiceSessionLifecycleSchemas";
 import { type Fastify } from "../../types";
 import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
+import { createVoiceProviderConversationIdentity } from "./voiceProviderConversationIdentity";
+import { elevenLabsAgentsVoiceProviderId } from "./voiceProviderIds";
+import { resolveVoiceQuotaWindow } from "@/app/voice/voiceQuotaWindow";
 
 type VoiceDenyReason =
     | "voice_disabled"
@@ -22,11 +25,6 @@ type VoiceDenyReason =
     | "too_many_sessions"
     | "misconfigured"
     | "upstream_error";
-
-function getPeriodKey(date: Date): string {
-    // YYYY-MM in UTC
-    return date.toISOString().slice(0, 7);
-}
 
 function createVoiceProviderBindingNonce(): string {
     return randomBytes(32).toString("base64url");
@@ -160,7 +158,7 @@ export function registerVoiceMintRoute(
 
         const now = new Date();
         const expiresAt = new Date(now.getTime() + maxSessionSeconds * 1000);
-        const periodKey = getPeriodKey(now);
+        const { periodKey, dayStart } = resolveVoiceQuotaWindow(now);
         const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
 
         // Global cost guardrail: cap voice minutes per day (UTC). The daily/monthly minute reads
@@ -168,13 +166,12 @@ export function registerVoiceMintRoute(
         // monthly free-session quota), counting the candidate lease, so concurrent mints cannot all
         // observe the same pre-burst budget and over-grant (FIND-019 / X-L3).
         const maxMinutesPerDay = Math.max(0, parseIntEnv(env.VOICE_MAX_MINUTES_PER_DAY, 0));
-        const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
 
         // Opportunistic per-user cleanup to avoid unbounded growth for long-running servers.
         // Best-effort only: never block token minting on cleanup failures.
         try {
             const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-            await pruneExpiredVoiceSessionLeases({ accountId: userId, cutoff });
+            await pruneExpiredVoiceSessionLeases({ accountId: userId, cutoff, now });
         } catch {
             // ignore
         }
@@ -443,6 +440,25 @@ export function registerVoiceMintRoute(
                 "Hosted voice token mint failed",
             );
             return reply.code(503).send({ allowed: false, reason: "upstream_error" satisfies VoiceDenyReason });
+        }
+
+        if (mintResult.providerConversationId) {
+            // Provider-issued identity permits release to reconcile usage even if the client
+            // never starts or never delivers its completion callback. Persist before disclosure.
+            const identity = createVoiceProviderConversationIdentity({
+                providerId: elevenLabsAgentsVoiceProviderId,
+                providerConversationId: mintResult.providerConversationId,
+            });
+            try {
+                const bound = await db.voiceSessionLease.updateMany({
+                    where: { id: leaseId!, accountId: userId, providerBindingNonce: bindingNonce! },
+                    data: identity,
+                });
+                if (bound.count !== 1) throw new Error("voice_mint_binding_conflict");
+            } catch {
+                // An upstream token exists: retain its reservation, but do not disclose it.
+                return reply.code(503).send({ allowed: false, reason: "upstream_error" satisfies VoiceDenyReason });
+            }
         }
 
         log({ module: "voice" }, "Voice token issued");

@@ -12,6 +12,7 @@ export {
   type PluginUiHostSubscriptionMethodV1,
   type PluginUiHostTransportOperationV1,
 } from './hostApiDefinition.js';
+export * from './storedImage.js';
 export {
   PLUGIN_UI_HOST_API_WIRE_VERSION_V1,
   PluginUiHostApiWireEnvelopeV1Schema,
@@ -330,3 +331,4 @@ export type {
   PluginUiHostApiSurfaceThemeV1,
   PluginUiMountContextV1,
 } from './surfaceContext.js';
+export * from './liveStream.js';

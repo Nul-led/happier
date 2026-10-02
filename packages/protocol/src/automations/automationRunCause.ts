@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AutomationRunLifecycleConfigurationSchema, type AutomationRunLifecycleSource } from './automationRunLifecycle.js';
 
 import { asProtocolZod } from '../plugins/actions/internalProtocolZodAdapter.js';
 import {
@@ -103,6 +104,13 @@ const AutomationManualRunCauseSchema = z.object({
   invokedAt: AutomationOccurredAtV1Schema,
 }).strict();
 
+const AutomationRunLifecycleRunCauseSchema = z.object({
+  kind: z.literal('trigger'), triggerId: AutomationTriggerIdSchema,
+  triggerRevision: AutomationTriggerRevisionSchema, triggerKind: z.literal('runLifecycle'),
+  occurrenceKey: AutomationOccurrenceKeyV1Schema, occurredAt: AutomationOccurredAtV1Schema,
+  evidence: AutomationRunLifecycleConfigurationSchema.extend({ sourceRevision: z.number().int().nonnegative().safe() }).strict(),
+}).strict();
+
 const AutomationConversationRunCauseSchema = z.object({
   kind: z.literal('conversation'),
   triggerId: AutomationTriggerIdSchema.optional(),
@@ -167,6 +175,9 @@ export type AutomationRunCause = Readonly<
       policy: AutomationSessionLifecyclePolicySnapshot;
     }>;
   }
+  | { kind: 'trigger'; triggerId: AutomationTriggerId; triggerRevision: AutomationTriggerRevision;
+    triggerKind: 'runLifecycle'; occurrenceKey: AutomationOccurrenceKeyV1; occurredAt: AutomationOccurredAtV1;
+    evidence: Readonly<{ source: AutomationRunLifecycleSource; condition: 'terminal' | 'needs_attention'; sourceRevision: number }> }
   | { kind: 'manual'; invokedAt: AutomationOccurredAtV1 }
   | {
     kind: 'conversation';
@@ -246,6 +257,11 @@ export type AutomationRunCauseDeclarationV1 = Readonly<
         | Readonly<{ kind: 'everyMatch' }>;
     }>;
   }
+  | { kind: 'trigger'; triggerId: string; triggerRevision: number;
+    triggerKind: 'runLifecycle'; occurrenceKey: string; occurredAt: number;
+    evidence: Readonly<{ source: Readonly<{ kind: 'workflow_run'; runId: string }>
+      | Readonly<{ kind: 'execution_run'; machineId: string; runId: string; sessionId?: string }>;
+      condition: 'terminal' | 'needs_attention'; sourceRevision: number }> }
   | { kind: 'manual'; invokedAt: number }
   | {
     kind: 'conversation';
@@ -259,6 +275,7 @@ export const AutomationRunCauseSchema = z.union([
   AutomationScheduleRunCauseSchema,
   AutomationPluginEventRunCauseSchema,
   AutomationSessionLifecycleRunCauseSchema,
+  AutomationRunLifecycleRunCauseSchema,
   AutomationManualRunCauseSchema,
   AutomationConversationRunCauseSchema,
 ]) satisfies z.ZodType<AutomationRunCause>;

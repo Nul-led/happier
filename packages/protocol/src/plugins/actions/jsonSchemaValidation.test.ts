@@ -7,6 +7,9 @@ import { AutomationIdV1Schema } from '../../automations/automationIdV1.js';
 import { QualifiedConnectedAccountRefSchema } from '../../connect/qualifiedConnectedAccountPersistence.js';
 import { AgentPermissionIntentV1Schema } from '../../runtime/permissionIntentV1.js';
 import { SessionIdSchema } from '../../sessions/idsV1.js';
+import { zodSchemaToJsonSchemaObject } from '../../actions/actionInputJsonSchema.js';
+import { validateExecutionRunProfileResult } from '../../execution/runs/resultContract.js';
+import { WorkflowActionOutputSchemasV1 } from '../../workflows/actionsV1.js';
 import { PluginContributionIdentityV1Schema } from '../contributionIdentity.js';
 import { PluginTargetedContributionSelectionV1Schema } from '../ui/targetedContributions.js';
 import * as protocolComposableKernel from './jsonSchemaValidation.js';
@@ -40,6 +43,61 @@ function deepSortObjectKeys(value: unknown): unknown {
 }
 
 describe('plugin JSON Schema validation policy', () => {
+  it('validates the real trigger-removal output against its frozen recursive Action projection', () => {
+    const outputSchema = WorkflowActionOutputSchemasV1['session.trigger.remove'];
+    const result = outputSchema.parse({ set: {
+      automationId: 'origin-automation', revision: 1, enabled: false, health: 'available', triggers: [],
+    } });
+    const projected = zodSchemaToJsonSchemaObject(outputSchema, { target: 'draft-7' });
+    expect(JSON.stringify(projected)).toContain('"$ref"');
+    const frozen = normalizePluginJsonSchema(JSON.parse(JSON.stringify(projected)));
+    expect(validateExecutionRunProfileResult(result, { kind: 'json', schema: frozen }))
+      .toEqual({ ok: true, value: result });
+    expect(validateExecutionRunProfileResult({ set: { ...result.set, health: 'invalid' } }, { kind: 'json', schema: frozen }))
+      .toMatchObject({ ok: false, reason: 'schema_mismatch' });
+  });
+
+  it.each(['definitions', '$defs'])('validates recursive local %s and escaped JSON Pointer names', (keyword) => {
+    const schema = { [keyword]: { 'node/name~': {
+      type: 'object', properties: { value: { type: 'string' }, children: {
+        type: 'array', items: { $ref: `#/${keyword}/node~1name~0` },
+      } }, required: ['value', 'children'], additionalProperties: false,
+    } }, $ref: `#/${keyword}/node~1name~0` };
+    const validate = compilePluginJsonSchema(schema);
+    expect(validate({ value: 'root', children: [{ value: 'child', children: [] }] })).toBe(true);
+    expect(validate({ value: 'root', children: [{ value: 1, children: [] }] })).toBe(false);
+    expect(validate({ value: 'root', children: [], extra: true })).toBe(false);
+  });
+
+  it('validates root recursion without dereferencing the schema into a cyclic JSON value', () => {
+    const validate = compilePluginJsonSchema({ type: 'object', properties: {
+      child: { $ref: '#' }, value: { type: 'string' },
+    }, required: ['value'], additionalProperties: false });
+    expect(validate({ value: 'root', child: { value: 'child' } })).toBe(true);
+    expect(validate({ value: 'root', child: { value: 1 } })).toBe(false);
+  });
+
+  it.each(['https://example.test/schema.json#/node', 'file:///schema.json', 'other.json#/node', '#anchor'])
+  ('refuses non-document-local JSON Pointer references (%s), even in unused definitions', ($ref) => {
+    expect(() => normalizePluginJsonSchema({ definitions: { unused: { $ref } }, type: 'string' })).toThrow();
+    expect(() => compilePluginJsonSchema({ $ref })).toThrow();
+  });
+
+  it('refuses unresolved local references and malformed definition schemas', () => {
+    expect(() => compilePluginJsonSchema({ $ref: '#/definitions/missing' })).toThrow();
+    expect(() => compilePluginJsonSchema({ definitions: { unused: { anyOf: [] } }, type: 'string' })).toThrow();
+  });
+
+  it('enforces negation projected by forbidden Action fields, including local references', () => {
+    const validate = compilePluginJsonSchema({ definitions: { denied: { const: 'denied' } },
+      type: 'object', properties: { value: { type: 'string', not: { $ref: '#/definitions/denied' } },
+        forbidden: { not: {} } }, required: ['value'], additionalProperties: false });
+    expect(validate({ value: 'allowed' })).toBe(true);
+    expect(validate({ value: 'denied' })).toBe(false);
+    expect(validate({ value: 'allowed', forbidden: null })).toBe(false);
+    expect(() => normalizePluginJsonSchema({ not: { anyOf: [] } })).toThrow();
+  });
+
   it('validates Action-projected exclusive numeric boundaries without weakening them', () => {
     const validate = compilePluginJsonSchema({ type: 'number', exclusiveMinimum: 0, exclusiveMaximum: 2 });
     expect([0, 1, 2].map((value) => validate(value))).toEqual([false, true, false]);

@@ -104,6 +104,11 @@ function generateProviderSchemaFromPostgres(
     }
 
     if (opts.provider === "mysql") {
+        // Artifact migrations use LONGBLOB for stored content and wrapped keys;
+        // Prisma's default Bytes mapping is BLOB and would disagree with that storage contract.
+        body = body.replace(/^model\s+(?:Artifact|ArtifactRevision|ArtifactKeyEnvelope)\s+\{[\s\S]*?^\}/gm,
+            (model) => model.replace(/^([ \t]*\w+\s+Bytes)(?![^\n]*@db\.)/gm, "$1 @db.LongBlob"));
+
         // MySQL cannot create UNIQUE/INDEX keys on BLOB/TEXT columns without a key length.
         // `PublicSessionShare.tokenHash` stores a sha256 digest (32 bytes) and must be indexed.
         body = body.replace(/^(\s*tokenHash\s+Bytes\s+)@unique\b/gm, "$1@db.VarBinary(32) @unique");
@@ -132,6 +137,7 @@ function generateProviderSchemaFromPostgres(
 	        body = body.replace(/^(\s*policyJson\s+String\b)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
 	        body = body.replace(/^(\s*stateJson\s+String\?)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
             body = body.replace(/^(\s*workspaceJson\s+String\?)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
+            body = body.replace(/^(\s*(?:runLifecycleConfigurationJson|causeRunLifecycleEvidenceJson)\s+String\?)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
 	        body = body.replace(/^(\s*workflowAcceptedSnapshotEnvelope\s+String\?)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
 	        body = body.replace(/^(\s*workflowCheckpointEnvelope\s+String\?)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
 	        body = body.replace(/^(\s*workflowInvocationJson\s+String\?)(?![^\n]*@db\.)/gm, "$1 @db.LongText");

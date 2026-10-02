@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { RPC_METHODS, SESSION_RPC_METHODS } from './methods.js';
+import { isSessionActionRpcMethodV1 } from './socket.js';
 import {
   CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD,
   CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD,
@@ -21,6 +22,24 @@ import {
  * "run mutation" family, or read projection may inherit write authority.
  */
 describe('Session-control RPC write classification', () => {
+  it('accepts only the full strict Session Action caller origin', () => {
+    const origin = { v: 1, caller: { kind: 'session', sessionId: 'lead', starterDepth: 2, turnDepth: 4 },
+      callerPermissionMode: 'read-only', sourceTurnId: 'turn-original', requestId: 'action-original' };
+    const authorization = { kind: 'session.action', sessionId: 'report', origin };
+    expect(parseSocketRpcAuthorizationContext(authorization)).toEqual(authorization);
+    for (const invalidOrigin of [
+      { ...origin, v: 2 }, { ...origin, authority: 'present_user' },
+      { ...origin, caller: { kind: 'session', sessionId: 'lead' } },
+      { ...origin, callerPermissionMode: 'bypassPermissions' },
+      { ...origin, sourceTurnId: '' },
+    ]) expect(parseSocketRpcAuthorizationContext({ ...authorization, origin: invalidOrigin })).toBeNull();
+    expect(parseSocketRpcAuthorizationContext({ ...authorization, extra: true })).toBeNull();
+    for (const unrelated of ['roles.create', 'roles.list', 'session.goal.set', 'session.permission.respond']) {
+      expect(isSessionActionRpcMethodV1(`report:${unrelated}`)).toBe(false);
+    }
+    expect(isSessionActionRpcMethodV1('report:session.roles.configuration.set')).toBe(true);
+    expect(isSessionActionRpcMethodV1('report:session.notes.set')).toBe(true);
+  });
   it('requires input authority for role configuration writes on the owner daemon', () => {
     expect(resolveSocketRpcSessionWriteAuthorization('session-1:session.roles.configuration.set')).toMatchObject({
       authority: 'submitAgentInput', routeToSessionOwnerDaemon: true,
@@ -139,6 +158,7 @@ describe('Session-control RPC write classification', () => {
       RPC_METHODS.TRANSCRIPT_PAGE,
       RPC_METHODS.TRANSCRIPT_READ_AFTER,
       RPC_METHODS.TRANSCRIPT_FOLLOW,
+      RPC_METHODS.TRANSCRIPT_UNFOLLOW,
       RPC_METHODS.TRANSCRIPT_SEARCH,
     ]) {
       expect(resolveSocketRpcSessionAuthorization(`session-1:${method}`)).toMatchObject({

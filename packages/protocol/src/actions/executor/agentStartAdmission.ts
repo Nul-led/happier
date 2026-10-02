@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { admitAgentStartV1, type AgentStartFactsV1, type AgentStartContextV1, type AgentStartRequestV1, type Unresolved } from '../../account/settings/admitAgentStartV1.js';
+import { admitAgentStartV1, AgentStartSessionCallerV1Schema, type AgentStartFactsV1, type AgentStartContextV1, type AgentStartRequestV1, type Unresolved } from '../../account/settings/admitAgentStartV1.js';
 import { SessionAgentSpawnPolicyV1StrictSchema } from '../../account/settings/sessionAgentSpawnPolicyV1.js';
 import { BackendTargetKeyV2Schema, PersistedBackendTargetRefV2Schema, buildBackendTargetKeyV2, parseBackendTargetKeyV2, type PersistedBackendTargetRefV2 } from '../../backends/targets/backendTargetRefV2.js';
 import { normalizeConnectedServiceSelectionInput } from '../../connect/normalizeConnectedServiceSelectionInput.js';
@@ -11,6 +11,7 @@ import { SessionSpawnNewInputV2BaseSchema, SessionSpawnNewInputV2Schema } from '
 import type { ActionExecuteFailure } from '../actionExecutionResult.js';
 import type { ActionExecutorContext, ActionExecutorDeps } from './types.js';
 import { readActionCallerLedSubtreeSessionIds } from './sessionLedSubtree.js';
+
 import { findSpawnConfigOptionAliasConflicts, mergeSpawnConfigOptionAliases } from '../sessionSpawnConfigOptions.js';
 import { resolveExecutionBackendTargetSelectionForValue } from '../resolveActionBackendTargetSelection.js';
 import { TeamCredentialProviderModelSelectionV1Schema } from '../../teams/credentials/resourceV1.js';
@@ -19,6 +20,11 @@ import type { WorkflowResolvedStepSelectionV1 } from '../../workflows/workflowSt
 import type { RoleEngineV1 } from '../../prompts/roles/roleArtifactV1.js';
 import { parseQualifiedPluginContributionKey } from '../../plugins/contributionIdentity.js';
 import { sameStrictJsonValue } from '../../json/strictJsonValue.js';
+
+/** Authenticated Session identity itself proves its own-target relation. */
+export function isActionCallerOwnSessionV1(context: ActionExecutorContext | undefined, sessionId: unknown): boolean {
+  return context?.actionCaller?.kind === 'session' && context.actionCaller.sessionId === sessionId;
+}
 
 const unresolved = { kind: 'unresolved' } as const;
 // Admission needs authoritative selection facts, not a dynamically bound task
@@ -38,6 +44,15 @@ export function isAgentStartActionV1(actionId: string): boolean {
   return actionId === 'session.spawn_new' || actionId === 'execution.run.start'
     || actionId === 'review.start' || actionId === 'subagents.plan.start'
     || actionId === 'subagents.delegate.start' || actionId === 'voice_agent.start';
+}
+
+/** Action policies that may admit new Agent work, unlike observation and own-Session controls. */
+export function requiresActionAgentStartDepthV1(actionId: string): boolean {
+  return isAgentStartActionV1(actionId) || actionId === 'workflow.run.start'
+    || actionId === 'workflow.definition.create' || actionId === 'workflow.definition.update'
+    || actionId === 'workflow.definition.edit'
+    || actionId === 'workflow.trigger.add' || actionId === 'workflow.trigger.update'
+    || actionId === 'session.trigger.add' || actionId === 'session.trigger.update';
 }
 
 export function resolveRunStartModelAndConfig(data: Readonly<Record<string, unknown>>) {
@@ -299,7 +314,14 @@ export async function resolveActionAgentStartContextV1(
   deps: Pick<ActionExecutorDeps, 'resolveAgentStartContext'> & Partial<Pick<ActionExecutorDeps, 'sessionList'>>,
   context: ActionExecutorContext, targetSessionId?: string,
 ) {
-  const resolved = context.agentStartContext ?? await deps.resolveAgentStartContext?.(context) ?? null;
+  let resolved = context.agentStartContext ?? await deps.resolveAgentStartContext?.(context) ?? null;
+  if (context.actionCaller?.kind === 'session') {
+    const caller = context.actionCaller;
+    if (!resolved || resolved.caller.kind !== 'session' || resolved.caller.sessionId !== caller.sessionId) return null;
+    const original = AgentStartSessionCallerV1Schema.safeParse(caller);
+    if (!original.success) return null;
+    resolved = { ...resolved, caller: original.data };
+  }
   if (!resolved || targetSessionId === undefined) return resolved;
   const origin = resolved.caller.kind === 'session' ? resolved.caller.sessionId : resolved.caller.runOriginSessionId;
   if (!origin || targetSessionId === origin || resolved.ledSubtreeSessionIds.includes(targetSessionId)) return resolved;

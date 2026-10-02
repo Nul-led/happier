@@ -29,6 +29,7 @@ export type SessionFollowSourceFrontierRow = Readonly<{
     agentStateVersion: number;
     latestTurnId: string | null;
     latestTurnStatus: string | null;
+    active?: boolean;
 }>;
 
 export function readStoredSessionFollowFrontier(row: SessionFollowDeliveredColumns): SessionFollowFrontierV1 {
@@ -36,17 +37,19 @@ export function readStoredSessionFollowFrontier(row: SessionFollowDeliveredColum
         transcriptSeq: row.deliveredTranscriptSeq,
         readyEventSeq: row.deliveredReadyEventSeq,
         agentStateVersion: row.deliveredAgentStateVersion,
-        turn: { id: row.deliveredTurnId, status: row.deliveredTurnStatus },
+        turn: { id: row.deliveredTurnId,
+            status: row.deliveredTurnId !== null && row.deliveredTurnStatus === null ? 'stalled' : row.deliveredTurnStatus },
     });
 }
 
-export function readCurrentSourceSessionFollowFrontier(row: SessionFollowSourceFrontierRow): SessionFollowFrontierV1 {
-    return projectSessionFollowFrontierFromSourceV1(row);
+export function readCurrentSourceSessionFollowFrontier(row: SessionFollowSourceFrontierRow, includeStalled = false): SessionFollowFrontierV1 {
+    return projectSessionFollowFrontierFromSourceV1({ ...row, active: includeStalled ? row.active : undefined });
 }
 
 /**
- * Writes a frontier back as columns. Turn identity and status are always
- * written together, so a partial terminal-turn state can never be persisted.
+ * Writes one deliverable turn fact into the existing pair: terminal facts use
+ * the terminal enum; a stalled turn uses its exact id with a null terminal
+ * status. Both null means no consumed turn. No new presence cursor is needed.
  */
 export function writeSessionFollowFrontierColumns(frontier: SessionFollowFrontierV1): {
     deliveredTranscriptSeq: number;
@@ -60,6 +63,6 @@ export function writeSessionFollowFrontierColumns(frontier: SessionFollowFrontie
         deliveredReadyEventSeq: frontier.readyEventSeq,
         deliveredAgentStateVersion: frontier.agentStateVersion,
         deliveredTurnId: frontier.turn?.id ?? null,
-        deliveredTurnStatus: frontier.turn?.status ?? null,
+        deliveredTurnStatus: frontier.turn?.status === 'stalled' ? null : frontier.turn?.status ?? null,
     };
 }

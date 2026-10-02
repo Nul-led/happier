@@ -28,8 +28,8 @@ import {
   type WorkflowSessionAuthoringSelection,
   type WorkflowStepExecutionSelection,
 } from './workflowV1.js';
-import { WorkflowWorkspaceProgressV1Schema } from './workflowWorkspaceV1.js';
-import { WorkflowResolvedInputsV1Schema } from './workflowDefinitionV1.js';
+import { WorkflowProjectTargetV1Schema, WorkflowWorkspaceProgressV1Schema } from './workflowWorkspaceV1.js';
+import { WorkflowResolvedInputsV1Schema, WorkflowRunStartedByV1Schema } from './workflowDefinitionV1.js';
 
 export {
   WorkflowDefinitionIdV1Schema,
@@ -151,7 +151,31 @@ export const WorkflowInvocationRecoveryAvailabilityV1Schema = z.object({
 }).strict();
 export type WorkflowInvocationRecoveryAvailabilityV1 = z.infer<typeof WorkflowInvocationRecoveryAvailabilityV1Schema>;
 
+export const WorkflowRunStepProgressV1Schema = z.object({
+  completed: z.number().int().nonnegative().safe(),
+  total: z.number().int().nonnegative().safe(),
+  currentLoop: z.object({
+    completed: z.number().int().nonnegative().safe(),
+    total: z.number().int().nonnegative().safe(),
+  }).strict().refine((value) => value.completed <= value.total).optional(),
+}).strict().refine((value) => value.completed <= value.total);
+export type WorkflowRunStepProgressV1 = z.infer<typeof WorkflowRunStepProgressV1Schema>;
+
+/** Existing root row observation; counts can decrease when the current attempt changes. */
+export const WorkflowRunStepProgressCurrentnessV1Schema = z.object({
+  recordId: WorkflowInvocationRecordIdSchema,
+  attempt: WorkflowDecimalV1Schema,
+  contentRevision: WorkflowDecimalV1Schema,
+}).strict();
+export type WorkflowRunStepProgressCurrentnessV1 = z.infer<typeof WorkflowRunStepProgressCurrentnessV1Schema>;
+
 export const WorkflowRunSummaryV1Schema = z.object({
+  /** Opened private projections; null is unavailable, omission is a control-only response. */
+  startedBy: WorkflowRunStartedByV1Schema.nullable().optional(),
+  stepProgress: WorkflowRunStepProgressV1Schema.nullable().optional(),
+  stepProgressCurrentness: WorkflowRunStepProgressCurrentnessV1Schema.nullable().optional(),
+  /** Opened by the authorized list host; null is unreadable, omission is an operation that did not open it. */
+  where: WorkflowProjectTargetV1Schema.nullable().optional(),
   /** Current server attention membership; absent on projections that did not read it. */
   attentionRequired: z.boolean().optional(),
   sourceArtifactId: WorkflowDefinitionIdV1Schema.nullable(),
@@ -438,6 +462,8 @@ export const WorkflowProgressEnvelopeV1Schema = z.object({
   invocationPath: WorkflowInvocationPathV1Schema,
   frame: WorkflowInvocationFrameV1Schema.optional(),
   blockKind: z.enum(['root', 'step', 'action', 'wait', 'workflow', 'parallel', 'loop', 'if']),
+  /** Executing worker's private authored-step projection, retained on the root row only. */
+  stepProgress: WorkflowRunStepProgressV1Schema.optional(),
   container: WorkflowContainerProgressV1Schema.optional(),
   attempt: WorkflowDecimalV1Schema,
   input: StrictJsonValueSchema.optional(),
@@ -468,6 +494,10 @@ export const WorkflowProgressEnvelopeV1Schema = z.object({
   logicalInvocationRecordId: WorkflowInvocationRecordIdSchema,
 }).strict().superRefine((value, context) => {
   const isRoot = value.blockKind === 'root';
+  if (value.stepProgress !== undefined && !isRoot) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['stepProgress'],
+      message: 'Authored Run progress belongs only to the root frame' });
+  }
   if (isRoot !== (value.invocationPath.blockId === '$root')) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -524,7 +554,7 @@ export function classifyWorkflowReviewEntryV1(params: Readonly<{
   if (!params.mayEnterReview) return 'not_required';
   if (!params.isGeneration) return params.inputCompleted && params.pauseForReview ? 'waiting_for_review' : 'not_required';
   if (params.observation.kind === 'failed'
-    || (params.observation.kind === 'cancelled' && params.observation.code !== 'session_input_turn_cancel_requested')
+    || params.observation.kind === 'cancelled'
     || (params.observation.kind === 'needs_attention' && params.continuationRefusedBeforeAdmission)) {
     return 'waiting_for_review';
   }

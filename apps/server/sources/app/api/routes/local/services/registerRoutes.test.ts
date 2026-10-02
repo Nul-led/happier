@@ -48,7 +48,7 @@ const preview: LocalServicePreviewResourceV1 = {
         title: "Vite App",
         addressLabel: "127.0.0.1:5173",
     },
-    originMode: "path",
+    originMode: "host",
 };
 
 const ROUTE_WEBSOCKET_KEY = "client-key";

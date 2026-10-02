@@ -177,7 +177,6 @@ export function bindSessionWaitIdleCliInput(
 export const SESSION_WAIT_IDLE_CLI_PROJECTION: ActionCliProjection = {
   commands: [
     { path: ['session', 'wait'], positionals: ['sessionId'], visibility: 'canonical' },
-    { path: ['wait'], positionals: ['sessionId'], visibility: 'alias' },
   ],
   inputSchema: SessionWaitIdleCliInputSchema,
   inputHints: {

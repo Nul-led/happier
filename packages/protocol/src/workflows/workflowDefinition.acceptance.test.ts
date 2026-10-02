@@ -22,6 +22,7 @@ describe('workflow definition acceptance contract', () => {
     const project = { machineId: 'machine-1', directory: '/repo' };
     const automation = AutomationStoredWorkflowDefinitionV2Schema.parse({ inlineDefinition: definition, workspace: { directory: project.directory }, executionTarget: { kind: 'session' } });
     const snapshot = WorkflowAcceptedSnapshotV1Schema.parse({
+      startedBy: 'user',
       authoredDefinition: definition, materializedLeaves: [], frozenChildren: {}, workDepth: 0, metadata: null,
       definition, inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
       workspaceTarget: { project: { ...project, checkoutRootPath: '/repo' } }, source: { kind: 'inline' }, origin: { kind: 'direct' },

@@ -1,4 +1,8 @@
 import { inTx, type Tx } from "@/storage/inTx";
+import { db } from '@/storage/db';
+import { deletePrivateFile } from '@/storage/blob/files';
+import type { ArtifactBlobWriteV1 } from '@happier-dev/protocol';
+import { prepareArtifactBlobWrite, admitArtifactBlobWriteInTx, discardArtifactBlobCandidate, cleanupArtifactOrphanBlobs, type PreparedArtifactBlobWrite } from './artifactBlobService';
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import {
     deriveAccountEncryptionCurrentnessFromRow,
@@ -8,17 +12,20 @@ import type {
 } from "@happier-dev/protocol";
 import { ArtifactRecipientKeyEnvelopesV1Schema, parseEncryptedDataKeyEnvelopeV1 } from "@happier-dev/protocol";
 import { buildPluginDomainAccountChangeEntityId } from "@happier-dev/protocol/changes";
+import { checkArtifactStorageBudgetInTx, retainArtifactBodyRevisionInTx, type ArtifactQuotaExceeded } from "./artifactStorageService";
 import {
     artifactDataKeyMatchesAccountMode,
     artifactStoredContentMatchesAccountMode,
     artifactUpdateMatchesStoredMode,
     isPlainArtifactDataKeyBytes,
+    openArtifactStoredContentBytes,
     openArtifactStoredContentPair,
     storePlainArtifactDbBytes,
 } from "./artifactStoredContent";
 import {
     artifactClassificationFromRelations,
     artifactOrdinaryWhere,
+    artifactVisibleWhere,
 } from "./artifactClassification";
 import {
     readArtifactForCallerInTx,
@@ -33,6 +40,13 @@ export class ArtifactAccountEncryptionMigrationConflictError extends Error {
     constructor() {
         super("Artifact account-encryption migration lost its version precondition");
         this.name = "ArtifactAccountEncryptionMigrationConflictError";
+    }
+}
+
+export class ArtifactAccountEncryptionMigrationQuotaExceededError extends Error {
+    constructor(readonly quota: ArtifactQuotaExceeded) {
+        super("Artifact account-encryption migration exceeds its configured storage budget");
+        this.name = "ArtifactAccountEncryptionMigrationQuotaExceededError";
     }
 }
 
@@ -55,6 +69,8 @@ type ArtifactAccountEncryptionMigrationRow = Readonly<{
     bodyVersion: number;
     dataEncryptionKey: Uint8Array;
     seq: number;
+    revisions: readonly Readonly<{ bodyVersion: number; body: Uint8Array }>[];
+    blobs: readonly Readonly<{ id: string; storageKey: string; encryptionMode: string; storedSizeBytes: bigint }>[];
     pluginUiArtifact: Readonly<{
         release: Readonly<{
             accountId: string;
@@ -81,6 +97,8 @@ async function readArtifactAccountEncryptionMigrationRowsInTx(
             bodyVersion: true,
             dataEncryptionKey: true,
             seq: true,
+            revisions: { select: { bodyVersion: true, body: true } },
+            blobs: { select: { id: true, storageKey: true, encryptionMode: true, storedSizeBytes: true } },
             pluginUiArtifact: {
                 select: {
                     release: {
@@ -155,6 +173,19 @@ export async function matchArtifactAccountEncryptionMigrationPostStateInTx(
     for (const row of rows) {
         const item = itemsById.get(row.id);
         if (!item) return { status: "mismatch" };
+        if (row.blobs.length > 0 || item.blobs.length > 0) return { status: 'mismatch' };
+        const revisionsByVersion = new Map(item.revisions.map(revision => [revision.bodyVersion, revision]));
+        if (revisionsByVersion.size !== item.revisions.length || revisionsByVersion.size !== row.revisions.length) {
+            return { status: "mismatch" };
+        }
+        for (const revision of row.revisions) {
+            const expected = revisionsByVersion.get(revision.bodyVersion);
+            const openedBody = openArtifactStoredContentBytes({ accountId: params.accountId, artifactId: row.id,
+                mode: params.toMode, field: "body", dataEncryptionKey: row.dataEncryptionKey, content: revision.body });
+            if (!expected || !openedBody || !artifactBytesEqual(openedBody, Buffer.from(expected.body, "base64"))) {
+                return { status: "mismatch" };
+            }
+        }
         const expectedHeader =
             new Uint8Array(Buffer.from(item.header, "base64"));
         const expectedBody =
@@ -205,6 +236,7 @@ export async function matchArtifactAccountEncryptionMigrationPostStateInTx(
 export async function migrateArtifactAccountEncryptionInTx(params: Readonly<{
     tx: Tx;
     accountId: string;
+    fromMode: "plain" | "e2ee";
     toMode: "plain" | "e2ee";
     directive: AccountEncryptionMigrateArtifactsDirective;
     markChanged?: (artifactId: string) => Promise<unknown>;
@@ -241,6 +273,10 @@ export async function migrateArtifactAccountEncryptionInTx(params: Readonly<{
         body: Uint8Array;
         dataEncryptionKey: Uint8Array;
         seq: number;
+        currentHeaderBytes: number;
+        currentBodyBytes: number;
+        ordinary: boolean;
+        revisions: readonly Readonly<{ bodyVersion: number; expectedStoredBody: Uint8Array; body: Uint8Array }>[];
     }>>();
     for (const row of rows) {
         const item = itemsById.get(row.id);
@@ -253,6 +289,12 @@ export async function migrateArtifactAccountEncryptionInTx(params: Readonly<{
             )
         ) {
             return { status: "migration_incomplete" };
+        }
+        // A document key transition must never reinterpret unconverted private bytes.
+        // Complete binary conversion is admitted only by the private-storage lifecycle preparation.
+        if (row.blobs.length > 0 || item.blobs.length > 0) return { status: 'migration_incomplete' };
+        if (!artifactDataKeyMatchesAccountMode({ mode: params.fromMode, dataEncryptionKey: row.dataEncryptionKey })) {
+            return { status: "invalid_content" };
         }
         if (!ArtifactRecipientKeyEnvelopesV1Schema.safeParse(item.recipientKeyEnvelopes).success
             || item.recipientKeyEnvelopes.some(envelope => !parseEncryptedDataKeyEnvelopeV1(new Uint8Array(Buffer.from(envelope.encryptedDataKey, "base64"))))
@@ -293,11 +335,37 @@ export async function migrateArtifactAccountEncryptionInTx(params: Readonly<{
         if (!storedHeader || !storedBody) {
             return { status: "invalid_content" };
         }
+        const revisionsByVersion = new Map(item.revisions.map(revision => [revision.bodyVersion, revision]));
+        if (revisionsByVersion.size !== item.revisions.length || revisionsByVersion.size !== row.revisions.length) {
+            return { status: "migration_incomplete" };
+        }
+        const revisions = [];
+        for (const revision of row.revisions) {
+            const target = revisionsByVersion.get(revision.bodyVersion);
+            const sourceBody = openArtifactStoredContentBytes({ accountId: params.accountId, artifactId: row.id,
+                mode: params.fromMode,
+                field: "body", dataEncryptionKey: row.dataEncryptionKey, content: revision.body });
+            if (!target || !sourceBody || !artifactBytesEqual(sourceBody, Buffer.from(target.expectedBody, "base64"))) {
+                return { status: "migration_incomplete" };
+            }
+            const body = Buffer.from(target.body, "base64");
+            if (!artifactUpdateMatchesStoredMode({ dataEncryptionKey, body })) return { status: "invalid_content" };
+            const stored = params.toMode === "plain" ? storePlainArtifactDbBytes({
+                accountId: params.accountId, artifactId: row.id, field: "body", content: body,
+            }) : body;
+            if (!stored) return { status: "invalid_content" };
+            revisions.push({ bodyVersion: revision.bodyVersion, expectedStoredBody: revision.body, body: stored });
+        }
         prepared.set(row.id, {
             header: storedHeader,
             body: storedBody,
             dataEncryptionKey,
             seq: row.seq,
+            currentHeaderBytes: row.header.byteLength,
+            currentBodyBytes: row.body.byteLength,
+            ordinary: artifactClassificationFromRelations({ pluginUiArtifact: row.pluginUiArtifact,
+                packageAssetRelease: row.packageAssetRelease }, params.accountId).kind === "ordinary",
+            revisions,
         });
     }
 
@@ -336,6 +404,15 @@ export async function migrateArtifactAccountEncryptionInTx(params: Readonly<{
         });
     for (const item of params.directive.items) {
         const replacement = prepared.get(item.artifactId)!;
+        if (replacement.ordinary) {
+            const quota = await checkArtifactStorageBudgetInTx(params.tx, {
+                accountId: params.accountId, artifactId: item.artifactId,
+                nextHeaderBytes: replacement.header.byteLength, nextBodyBytes: replacement.body.byteLength,
+                currentHeaderBytes: replacement.currentHeaderBytes, currentBodyBytes: replacement.currentBodyBytes,
+                revisionBytesDelta: replacement.revisions.reduce((sum, revision) => sum + revision.body.byteLength - revision.expectedStoredBody.byteLength, 0),
+            });
+            if (quota) throw new ArtifactAccountEncryptionMigrationQuotaExceededError(quota);
+        }
         const updated = await params.tx.artifact.updateMany({
             where: {
                 accountId: params.accountId,
@@ -359,6 +436,18 @@ export async function migrateArtifactAccountEncryptionInTx(params: Readonly<{
         if (updated.count !== 1) {
             throw new ArtifactAccountEncryptionMigrationConflictError();
         }
+        // Ordinary body writers acquire this same parent CAS before retaining
+        // or pruning history. Recheck the whole set after acquiring that fence.
+        if (await params.tx.artifactRevision.count({ where: { artifactId: item.artifactId } }) !== replacement.revisions.length) {
+            throw new ArtifactAccountEncryptionMigrationConflictError();
+        }
+        for (const revision of replacement.revisions) {
+            const migrated = await params.tx.artifactRevision.updateMany({
+                where: { artifactId: item.artifactId, bodyVersion: revision.bodyVersion, body: Buffer.from(revision.expectedStoredBody) },
+                data: { body: Buffer.from(revision.body) },
+            });
+            if (migrated.count !== 1) throw new ArtifactAccountEncryptionMigrationConflictError();
+        }
         // A replacement resource key invalidates every previously wrapped key.
         await params.tx.artifactKeyEnvelope.deleteMany({ where: { artifactId: item.artifactId } });
         const notifiedRecipients = new Set<string>();
@@ -380,6 +469,7 @@ export async function migrateArtifactAccountEncryptionInTx(params: Readonly<{
 }
 
 export type CreateArtifactResult =
+    | ({ ok: false } & ArtifactQuotaExceeded)
     | { ok: true; didWrite: true; cursor: Cursor; artifact: ArtifactRow }
     | { ok: true; didWrite: false; artifact: ArtifactRow }
     | {
@@ -408,6 +498,7 @@ export async function createArtifact(params: {
     header: Uint8Array;
     body: Uint8Array;
     dataEncryptionKey: Uint8Array;
+    blob?: ArtifactBlobWriteV1;
 }): Promise<CreateArtifactResult> {
     const actorUserId = typeof params.actorUserId === "string" ? params.actorUserId : "";
     const artifactId = typeof params.artifactId === "string" ? params.artifactId : "";
@@ -419,16 +510,27 @@ export async function createArtifact(params: {
         return { ok: false, error: "invalid-params" };
     }
 
+    let preparedBlob: PreparedArtifactBlobWrite | undefined;
+    let admitted = false;
     try {
-        return await inTx(async (tx) => await createArtifactTx(tx, {
+        if (params.blob) {
+            if (!params.blob.content) return { ok: false, error: 'invalid-params' };
+            preparedBlob = await prepareArtifactBlobWrite({ accountId: actorUserId, artifactId, blob: params.blob }) ?? undefined;
+        }
+        const result = await inTx(async (tx) => await createArtifactTx(tx, {
             actorUserId,
             artifactId,
             header,
             body,
             dataEncryptionKey,
+            blob: params.blob, preparedBlob,
         }));
+        admitted = result.ok && result.didWrite;
+        return result;
     } catch {
         return { ok: false, error: "internal" };
+    } finally {
+        if (!admitted) await discardArtifactBlobCandidate(preparedBlob);
     }
 }
 
@@ -440,6 +542,8 @@ export async function createArtifactTx(
         header: Uint8Array;
         body: Uint8Array;
         dataEncryptionKey: Uint8Array;
+        blob?: ArtifactBlobWriteV1;
+        preparedBlob?: PreparedArtifactBlobWrite;
         /**
          * A qualified owner may replace the generic Artifact invalidation only
          * while composing its classification in this same transaction.
@@ -475,6 +579,7 @@ export async function createArtifactTx(
             seq: true,
             createdAt: true,
             updatedAt: true,
+            deletedAt: true,
             pluginUiArtifact: {
                 select: {
                     release: {
@@ -497,6 +602,7 @@ export async function createArtifactTx(
     if (existing) {
         if (
             existing.accountId !== params.actorUserId
+            || existing.deletedAt
             || artifactClassificationFromRelations({
                 pluginUiArtifact: existing.pluginUiArtifact,
                 packageAssetRelease: existing.packageAssetRelease,
@@ -520,6 +626,7 @@ export async function createArtifactTx(
             accountId: _accountId,
             pluginUiArtifact: _pluginUiArtifact,
             packageAssetRelease: _packageAssetRelease,
+            deletedAt: _deletedAt,
             ...artifact
         } = existing;
         return {
@@ -565,6 +672,20 @@ export async function createArtifactTx(
         return { ok: false, error: "internal" };
     }
 
+    if (params.markChanged && params.blob) return { ok: false, error: 'invalid-params' };
+    if (!params.markChanged && !await admitArtifactBlobWriteInTx(tx, { artifactId: params.artifactId,
+        mode: currentness.currentness.encryptionMode, body: params.body, blob: params.blob, prepared: params.preparedBlob })) {
+        return { ok: false, error: 'invalid-params' };
+    }
+
+    // Qualified plugin publication is governed by its own availability budgets.
+    if (!params.markChanged) {
+        const quota = await checkArtifactStorageBudgetInTx(tx, { accountId: params.actorUserId,
+            artifactId: params.artifactId, nextHeaderBytes: storedHeader.byteLength, nextBodyBytes: storedBody.byteLength,
+            nextBlobId: params.blob?.blobId ?? null, candidateBlobBytes: Number(params.preparedBlob?.row.storedSizeBytes ?? 0) });
+        if (quota) return { ok: false, ...quota };
+    }
+
     const created = await tx.artifact.create({
         data: {
             id: params.artifactId,
@@ -573,6 +694,7 @@ export async function createArtifactTx(
             headerVersion: 1,
             body: Buffer.from(storedBody),
             bodyVersion: 1,
+            currentBlobId: params.blob?.blobId ?? null,
             dataEncryptionKey: Buffer.from(params.dataEncryptionKey),
             seq: 0,
         },
@@ -588,6 +710,8 @@ export async function createArtifactTx(
             updatedAt: true,
         },
     });
+
+    if (params.preparedBlob?.candidate) await tx.artifactBlob.create({ data: params.preparedBlob.row });
 
     const cursor = await (
         params.markChanged
@@ -611,6 +735,7 @@ export async function createArtifactTx(
 }
 
 export type UpdateArtifactResult =
+    | ({ ok: false } & ArtifactQuotaExceeded)
     | {
         ok: true;
         cursor: Cursor;
@@ -638,6 +763,7 @@ export async function updateArtifact(params: {
     artifactId: string;
     header?: { bytes: Uint8Array; expectedVersion: number };
     body?: { bytes: Uint8Array; expectedVersion: number };
+    blob?: ArtifactBlobWriteV1;
 }): Promise<UpdateArtifactResult> {
     const actorUserId = typeof params.actorUserId === "string" ? params.actorUserId : "";
     const artifactId = typeof params.artifactId === "string" ? params.artifactId : "";
@@ -657,15 +783,32 @@ export async function updateArtifact(params: {
         return { ok: false, error: "invalid-params" };
     }
 
+    let preparedBlob: PreparedArtifactBlobWrite | undefined;
+    let admitted = false;
     try {
-        return await inTx(async (tx) => await updateArtifactTx(tx, {
+        const access = await inTx(tx => resolveArtifactAccessInTx(tx, { actorAccountId: actorUserId, artifactId }));
+        if (!access || access.level === 'view') return { ok: false, error: 'not-found' };
+        await cleanupArtifactOrphanBlobs(artifactId);
+        if (params.blob) {
+            if (!body) return { ok: false, error: 'invalid-params' };
+            const owner = await db.artifact.findUnique({ where: { id: artifactId }, select: { accountId: true } });
+            if (!owner) return { ok: false, error: 'not-found' };
+            preparedBlob = await prepareArtifactBlobWrite({ accountId: owner.accountId, artifactId, blob: params.blob }) ?? undefined;
+        }
+        const result = await inTx(async (tx) => await updateArtifactTx(tx, {
             actorUserId,
             artifactId,
             header,
             body,
+            blob: params.blob, preparedBlob,
         }));
+        admitted = result.ok;
+        if (result.ok) await cleanupArtifactOrphanBlobs(artifactId);
+        return result;
     } catch {
         return { ok: false, error: "internal" };
+    } finally {
+        if (!admitted) await discardArtifactBlobCandidate(preparedBlob);
     }
 }
 
@@ -676,6 +819,10 @@ export async function updateArtifactTx(
         artifactId: string;
         header?: { bytes: Uint8Array; expectedVersion: number };
         body?: { bytes: Uint8Array; expectedVersion: number };
+        expectedRevision?: Readonly<{ headerVersion: number; bodyVersion: number }>;
+        blob?: ArtifactBlobWriteV1;
+        preparedBlob?: PreparedArtifactBlobWrite;
+        restoredBlobId?: string | null;
     },
 ): Promise<UpdateArtifactResult> {
     const access = await resolveArtifactAccessInTx(tx, {
@@ -710,7 +857,7 @@ export async function updateArtifactTx(
         where: {
             id: params.artifactId,
             accountId: ownerAccountId,
-            ...artifactOrdinaryWhere,
+            ...artifactVisibleWhere,
         },
         select: {
             id: true,
@@ -720,6 +867,7 @@ export async function updateArtifactTx(
             body: true,
             bodyVersion: true,
             dataEncryptionKey: true,
+            currentBlobId: true,
         },
     });
 
@@ -746,8 +894,10 @@ export async function updateArtifactTx(
         return { ok: false, error: "internal" };
     }
 
-    const headerMismatch = params.header && current.headerVersion !== params.header.expectedVersion;
-    const bodyMismatch = params.body && current.bodyVersion !== params.body.expectedVersion;
+    const headerMismatch = (params.header && current.headerVersion !== params.header.expectedVersion)
+        || (params.expectedRevision && current.headerVersion !== params.expectedRevision.headerVersion);
+    const bodyMismatch = (params.body && current.bodyVersion !== params.body.expectedVersion)
+        || (params.expectedRevision && current.bodyVersion !== params.expectedRevision.bodyVersion);
     if (headerMismatch || bodyMismatch) {
         return {
             ok: false,
@@ -768,6 +918,7 @@ export async function updateArtifactTx(
         headerVersion?: number;
         body?: Uint8Array<ArrayBuffer>;
         bodyVersion?: number;
+        currentBlobId?: string | null;
     } = {
         updatedAt: new Date(),
         seq: current.seq + 1,
@@ -791,6 +942,12 @@ export async function updateArtifactTx(
         headerUpdate = { bytes: params.header.bytes, version: params.header.expectedVersion + 1 };
     }
     if (params.body) {
+        if (params.restoredBlobId === undefined && !await admitArtifactBlobWriteInTx(tx, {
+            artifactId: current.id, mode: currentness.currentness.encryptionMode, body: params.body.bytes,
+            blob: params.blob, prepared: params.preparedBlob, currentBlobId: current.currentBlobId,
+        })) return { ok: false, error: 'invalid-params' };
+        if (params.restoredBlobId && !await tx.artifactBlob.findFirst({ where: { id: params.restoredBlobId,
+            artifactId: current.id, encryptionMode: currentness.currentness.encryptionMode } })) return { ok: false, error: 'invalid-params' };
         const storedBody = isPlainArtifactDataKeyBytes(current.dataEncryptionKey)
             ? storePlainArtifactDbBytes({
                 accountId: ownerAccountId,
@@ -802,8 +959,17 @@ export async function updateArtifactTx(
         if (!storedBody) return { ok: false, error: "internal" };
         updateData.body = Buffer.from(storedBody);
         updateData.bodyVersion = params.body.expectedVersion + 1;
+        updateData.currentBlobId = params.restoredBlobId ?? params.blob?.blobId ?? null;
         bodyUpdate = { bytes: params.body.bytes, version: params.body.expectedVersion + 1 };
     }
+
+    const quota = await checkArtifactStorageBudgetInTx(tx, { accountId: ownerAccountId, artifactId: current.id,
+        nextHeaderBytes: (updateData.header ?? current.header).byteLength,
+        nextBodyBytes: (updateData.body ?? current.body).byteLength,
+        currentHeaderBytes: current.header.byteLength, currentBodyBytes: current.body.byteLength, retainCurrentBody: Boolean(params.body),
+        currentBlobId: current.currentBlobId, nextBlobId: params.body ? updateData.currentBlobId : current.currentBlobId,
+        candidateBlobBytes: params.preparedBlob?.candidate ? Number(params.preparedBlob.row.storedSizeBytes) : 0 });
+    if (quota) return { ok: false, ...quota };
 
     const { count } = await tx.artifact.updateMany({
         where: {
@@ -811,7 +977,8 @@ export async function updateArtifactTx(
             accountId: ownerAccountId,
             ...(params.header && { headerVersion: params.header.expectedVersion }),
             ...(params.body && { bodyVersion: params.body.expectedVersion }),
-            ...artifactOrdinaryWhere,
+            ...(params.expectedRevision && { headerVersion: params.expectedRevision.headerVersion, bodyVersion: params.expectedRevision.bodyVersion }),
+            ...artifactVisibleWhere,
         },
         data: updateData,
     });
@@ -859,6 +1026,11 @@ export async function updateArtifactTx(
         };
     }
 
+    if (params.preparedBlob?.candidate) await tx.artifactBlob.create({ data: params.preparedBlob.row });
+    if (params.body) await retainArtifactBodyRevisionInTx(tx, {
+        artifactId: current.id, bodyVersion: current.bodyVersion, body: current.body, blobId: current.currentBlobId,
+    });
+
     const recipients = await resolveArtifactAudienceInTx(tx, params.artifactId);
     const recipientCursors = [];
     for (const accountId of recipients) {
@@ -900,7 +1072,7 @@ export async function deleteArtifact(params: {
     }
 
     try {
-        return await inTx(async (tx) => {
+        const retirement = await inTx(async (tx) => {
             const artifact = await tx.artifact.findFirst({
                 where: {
                     id: artifactId,
@@ -910,6 +1082,10 @@ export async function deleteArtifact(params: {
                 select: {
                     id: true,
                     dataEncryptionKey: true,
+                    deletedAt: true,
+                    headerVersion: true,
+                    bodyVersion: true,
+                    blobs: { select: { id: true, storageKey: true }, orderBy: { id: 'asc' } },
                 },
             });
             if (!artifact) {
@@ -937,7 +1113,11 @@ export async function deleteArtifact(params: {
                 return { ok: false, error: "internal" };
             }
 
-            const audience = await resolveArtifactAudienceInTx(tx, artifactId);
+            if (params.expectedRevision && (artifact.headerVersion !== params.expectedRevision.headerVersion
+                || artifact.bodyVersion !== params.expectedRevision.bodyVersion)) {
+                return { ok: false as const, error: 'version-mismatch' as const };
+            }
+            const audience = artifact.deletedAt ? [actorUserId] : await resolveArtifactAudienceInTx(tx, artifactId);
             let cursor: Cursor | undefined;
             // Write changes while the FK target still exists; deletion nulls the
             // projection link, retaining the entity id for a removal refresh.
@@ -946,17 +1126,35 @@ export async function deleteArtifact(params: {
                 if (accountId === actorUserId) cursor = recipientCursor;
             }
             if (cursor === undefined) throw new Error("Artifact owner is missing from its authorized audience");
-            if (params.expectedRevision) {
-                const deleted = await tx.artifact.deleteMany({ where: {
-                    id: artifactId, accountId: actorUserId, ...artifactOrdinaryWhere,
-                    headerVersion: params.expectedRevision.headerVersion,
-                    bodyVersion: params.expectedRevision.bodyVersion,
-                } });
-                if (deleted.count !== 1) throw new ArtifactDeleteVersionConflictError();
-            } else {
-                await tx.artifact.delete({ where: { id: artifactId } });
+            const deletedAt = artifact.deletedAt ?? new Date();
+            if (!artifact.deletedAt) {
+                const retired = await tx.artifact.updateMany({ where: {
+                    id: artifactId, accountId: actorUserId, deletedAt: null, ...artifactOrdinaryWhere,
+                    headerVersion: artifact.headerVersion, bodyVersion: artifact.bodyVersion,
+                }, data: { deletedAt } });
+                if (retired.count !== 1) throw new ArtifactDeleteVersionConflictError();
             }
-            return { ok: true, cursor };
+            return { ok: true as const, cursor, deletedAt, artifact };
+        });
+        if (!retirement.ok) return retirement;
+        // Retired rows keep exact custody until every idempotent physical delete succeeds.
+        for (const blob of retirement.artifact.blobs) await deletePrivateFile(blob.storageKey);
+        return await inTx(async tx => {
+            const current = await tx.artifact.findFirst({ where: {
+                id: artifactId, accountId: actorUserId, deletedAt: retirement.deletedAt, ...artifactOrdinaryWhere,
+                headerVersion: retirement.artifact.headerVersion, bodyVersion: retirement.artifact.bodyVersion,
+            }, select: { blobs: { select: { id: true, storageKey: true }, orderBy: { id: 'asc' } } } });
+            if (!current || current.blobs.length !== retirement.artifact.blobs.length
+                || current.blobs.some((blob, index) => blob.id !== retirement.artifact.blobs[index]?.id
+                    || blob.storageKey !== retirement.artifact.blobs[index]?.storageKey)) {
+                return { ok: false as const, error: 'internal' as const };
+            }
+            const removed = await tx.artifact.deleteMany({ where: {
+                id: artifactId, accountId: actorUserId, deletedAt: retirement.deletedAt,
+                headerVersion: retirement.artifact.headerVersion, bodyVersion: retirement.artifact.bodyVersion,
+            } });
+            return removed.count === 1 ? { ok: true as const, cursor: retirement.cursor }
+                : { ok: false as const, error: 'internal' as const };
         });
     } catch (error) {
         if (error instanceof ArtifactDeleteVersionConflictError) return { ok: false, error: "version-mismatch" };

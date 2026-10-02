@@ -6,6 +6,7 @@ import {
     AutomationRunExecutionInputV1Schema,
     AutomationTriggerIdSchema,
     deriveAutomationOccurrenceKeyV1,
+    materializeWorkflowAcceptedSnapshotV1,
     sealWorkflowAcceptedSnapshotStoredEnvelopeV1,
     sealWorkflowCheckpointStoredEnvelopeV1,
     sealWorkflowProgressStoredEnvelopeV1,
@@ -125,7 +126,9 @@ const WORKFLOW_TRANSITION_RUN_DATA_KEY = new Uint8Array(32).fill(91);
 const WORKFLOW_TRANSITION_DEFINITION = {
     version: 1 as const,
     inputs: [],
-    defaults: {},
+    defaults: {
+        agentTarget: { kind: "agent" as const, identity: { pluginId: "happier.agent.codex", localId: "codex" } },
+    },
     blocks: [{
         kind: "step" as const,
         id: "restart-step",
@@ -149,11 +152,33 @@ function workflowSealMode(mode: "plain" | "e2ee") {
         } as const;
 }
 
-function workflowAcceptedSnapshotEnvelope(params: Readonly<{
+async function workflowAcceptedSnapshotEnvelope(params: Readonly<{
     accountId: string;
     runId: string;
     mode: "plain" | "e2ee";
-}>): string {
+}>): Promise<string> {
+    const materialized = await materializeWorkflowAcceptedSnapshotV1({
+        definition: WORKFLOW_TRANSITION_DEFINITION,
+        context: {
+            source: { kind: "inline" },
+            inputs: {},
+            machineId: "workflow-transition-machine",
+            executionTarget: { kind: "session" },
+            workspaceTarget: {
+                project: {
+                    machineId: "workflow-transition-machine",
+                    directory: "/repo/workflow-transition",
+                    checkoutRootPath: "/repo/workflow-transition",
+                },
+            },
+            origin: { kind: "direct" },
+            authorization: { principal: { kind: "host" } },
+        },
+        admission: { kind: "user" },
+        // Installed-target availability is the Machine boundary; materialization stays real.
+        effects: { resolveTargetAvailability: async () => true },
+    });
+    if (!materialized.ok) throw new Error(`Workflow fixture admission failed: ${materialized.error.code}`);
     return serializeWorkflowStoredContentEnvelopeV1(
         sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
             ...workflowSealMode(params.mode),
@@ -163,25 +188,7 @@ function workflowAcceptedSnapshotEnvelope(params: Readonly<{
                 accountId: params.accountId,
                 runId: params.runId,
             },
-            acceptedSnapshot: {
-                definition: WORKFLOW_TRANSITION_DEFINITION,
-                source: { kind: "inline" },
-                inputs: {},
-                machineId: "workflow-transition-machine",
-                executionTarget: { kind: "session" },
-                workspaceTarget: {
-                    project: {
-                        machineId: "workflow-transition-machine",
-                        directory: "/repo/workflow-transition",
-                        checkoutRootPath: "/repo/workflow-transition",
-                    },
-                },
-                origin: { kind: "direct" },
-                authorization: {
-                    admittedPermissionCeiling: "default",
-                    principal: { kind: "host" },
-                },
-            },
+            acceptedSnapshot: materialized.snapshot,
         }),
     );
 }
@@ -725,7 +732,7 @@ describe("Account encryption transition coordinator Collection participant", () 
         const binding = createSignedAccountContentBinding();
         const runId = "workflow-transition-restart-run";
         const invocationRecordId = "workflow-transition-restart-root";
-        const sourceAcceptedSnapshot = workflowAcceptedSnapshotEnvelope({
+        const sourceAcceptedSnapshot = await workflowAcceptedSnapshotEnvelope({
             accountId: ACCOUNT_ID,
             runId,
             mode: "e2ee",
@@ -742,7 +749,7 @@ describe("Account encryption transition coordinator Collection participant", () 
             invocationRecordId,
             mode: "e2ee",
         });
-        const targetAcceptedSnapshot = workflowAcceptedSnapshotEnvelope({
+        const targetAcceptedSnapshot = await workflowAcceptedSnapshotEnvelope({
             accountId: ACCOUNT_ID,
             runId,
             mode: "plain",

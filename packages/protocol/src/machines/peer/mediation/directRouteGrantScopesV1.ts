@@ -36,8 +36,8 @@ export const VoiceMediaGrantScopeV1Schema = z.object({
   applicationKind: VoiceMediaApplicationKindV1Schema,
   applicationAttemptId: z.string().min(1).max(256),
   applicationAuthorityDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/u),
-  maxIdleMs: PositiveIntSchema,
-  maxDurationMs: PositiveIntSchema,
+  maxIdleMs: PositiveIntSchema.optional(),
+  maxDurationMs: PositiveIntSchema.optional(),
   maxTotalBytes: PositiveIntSchema.optional(),
 }).strict();
 

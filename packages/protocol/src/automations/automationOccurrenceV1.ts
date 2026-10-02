@@ -31,7 +31,9 @@ import {
 } from './automationOccurredAtV1.js';
 // Type-only: the reply-context identity commits to the admitted delivery arm
 // without this occurrence owner depending on the delivery module at runtime.
-import type { AutomationConversationResultDeliveryV1 } from './automationResultDeliveryV1.js';
+import { AutomationConversationScopedTriggerEvidenceV1Schema,
+  type AutomationConversationScopedTriggerEvidenceV1,
+  type AutomationConversationResultDeliveryV1 } from './automationResultDeliveryV1.js';
 import {
   AutomationSourceSelectorIdV1JsonSchema,
   AutomationSourceSelectorIdV1Schema,
@@ -45,6 +47,7 @@ import {
   AutomationSessionLifecycleEventSchema,
   AutomationSessionLifecycleRequestKindSchema,
 } from './automationSessionLifecycle.js';
+import { AutomationRunLifecycleOccurrenceEvidenceV1Schema } from './automationRunLifecycle.js';
 
 export {
   AutomationSourceSelectorIdV1JsonSchema,
@@ -202,6 +205,7 @@ export const AutomationTriggerOccurrenceEvidenceV1Schema = z.discriminatedUnion(
   AutomationScheduleOccurrenceEvidenceV1Schema,
   AutomationPluginEventOccurrenceEvidenceV1Schema,
   AutomationSessionLifecycleOccurrenceEvidenceV1Schema,
+  AutomationRunLifecycleOccurrenceEvidenceV1Schema,
 ]);
 export type AutomationTriggerOccurrenceEvidenceV1 = z.infer<
   typeof AutomationTriggerOccurrenceEvidenceV1Schema
@@ -235,6 +239,7 @@ export const AutomationConversationOccurrenceEvidenceV1Schema = z.object({
   caller: AutomationConversationAdmissionCallerIdentityV1Schema,
   input: PluginJsonValueV2Schema,
   replyContextIdentity: boundedNfcString(512, 'Reply-context identities'),
+  hostEvidence: AutomationConversationScopedTriggerEvidenceV1Schema.optional(),
 }).strict();
 export type AutomationConversationOccurrenceEvidenceV1 = z.infer<
   typeof AutomationConversationOccurrenceEvidenceV1Schema
@@ -278,6 +283,7 @@ export function buildAutomationConversationOccurrenceEvidenceV1(params: Readonly
   sender: unknown;
   text: string;
   resultDelivery: AutomationConversationResultDeliveryV1;
+  hostEvidence?: AutomationConversationScopedTriggerEvidenceV1;
 }>): AutomationConversationOccurrenceEvidenceV1 {
   return AutomationConversationOccurrenceEvidenceV1Schema.parse({
     v: 1,
@@ -286,6 +292,7 @@ export function buildAutomationConversationOccurrenceEvidenceV1(params: Readonly
     occurrenceId: params.occurrenceId,
     occurredAt: params.occurredAt,
     caller: params.caller,
+    ...(params.hostEvidence ? { hostEvidence: params.hostEvidence } : {}),
     input: {
       sender: params.sender,
       text: params.text,
@@ -301,6 +308,7 @@ export const AutomationOccurrenceEvidenceV1Schema = z.discriminatedUnion('kind',
   AutomationScheduleOccurrenceEvidenceV1Schema,
   AutomationPluginEventOccurrenceEvidenceV1Schema,
   AutomationSessionLifecycleOccurrenceEvidenceV1Schema,
+  AutomationRunLifecycleOccurrenceEvidenceV1Schema,
   AutomationConversationOccurrenceEvidenceV1Schema,
 ]);
 export type AutomationOccurrenceEvidenceV1 = z.infer<
@@ -351,6 +359,10 @@ function occurrenceKeyParts(input:
         input.evidence.sourceTurnId,
         input.evidence.event === 'userActionRequired' ? input.evidence.requestId ?? '' : '',
       ];
+    }
+    if (input.evidence.kind === 'runLifecycle') {
+      return ['1', input.evidence.kind, input.triggerId, createCanonicalJsonSigningInput(input.evidence.source),
+        input.evidence.condition, String(input.evidence.sourceRevision)];
     }
     return [
       '1',

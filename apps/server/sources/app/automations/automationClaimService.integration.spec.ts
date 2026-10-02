@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
     AutomationRunCauseSchema,
     deriveSessionCreationTagV1,
+    materializeWorkflowAcceptedSnapshotV1,
     sealWorkflowAcceptedSnapshotStoredEnvelopeV1,
     serializeAutomationRunExecutionRecipeV1,
 } from "@happier-dev/protocol";
@@ -400,22 +401,22 @@ describe("automationClaimService (integration)", () => {
         const machineId = "machine-direct-workflow-claim";
         const { accountId } = await createAccountWithMachine(machineId, "plain");
         const runId = randomUUID();
-        const acceptedSnapshotEnvelope = JSON.stringify(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
-            mode: "plain",
-            binding: { v: 1, purpose: "accepted_snapshot", accountId, runId },
-            acceptedSnapshot: {
-                definition: {
-                    version: 1,
-                    inputs: [],
-                    defaults: {},
-                    blocks: [{
-                        kind: "step",
-                        id: "step-1",
-                        document: { text: "Do it", references: [], attachments: [] },
-                        input: [],
-                        result: { kind: "text" },
-                    }],
+        const materialized = await materializeWorkflowAcceptedSnapshotV1({
+            definition: {
+                version: 1,
+                inputs: [],
+                defaults: {
+                    agentTarget: { kind: "agent", identity: { pluginId: "happier.agent.codex", localId: "codex" } },
                 },
+                blocks: [{
+                    kind: "step",
+                    id: "step-1",
+                    document: { text: "Do it", references: [], attachments: [] },
+                    input: [],
+                    result: { kind: "text" },
+                }],
+            },
+            context: {
                 source: { kind: "inline" },
                 inputs: {},
                 machineId,
@@ -424,11 +425,17 @@ describe("automationClaimService (integration)", () => {
                     project: { machineId, directory: "/repo", checkoutRootPath: "/repo" },
                 },
                 origin: { kind: "direct" },
-                authorization: {
-                    admittedPermissionCeiling: "default",
-                    principal: { kind: "host" },
-                },
+                authorization: { principal: { kind: "host" } },
             },
+            admission: { kind: "user" },
+            // Installed-target availability is the Machine boundary; materialization stays real.
+            effects: { resolveTargetAvailability: async () => true },
+        });
+        if (!materialized.ok) throw new Error(`Workflow fixture admission failed: ${materialized.error.code}`);
+        const acceptedSnapshotEnvelope = JSON.stringify(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
+            mode: "plain",
+            binding: { v: 1, purpose: "accepted_snapshot", accountId, runId },
+            acceptedSnapshot: materialized.snapshot,
         }));
         await db.automationRun.create({
             data: {

@@ -1,6 +1,5 @@
 import type { Fastify } from "@/app/api/types";
 import {
-    CLIENT_UPGRADE_REQUIRED_HTTP_STATUS,
     PluginAvailabilityActionHttpPathsV1,
     PluginAvailabilityIntentReadActionInputV1Schema,
     PluginAvailabilityIntentsListActionInputV1Schema,
@@ -18,17 +17,10 @@ import {
     PluginAvailabilityUiArtifactReadActionInputV1Schema,
     PluginAvailabilityUiArtifactRemoveActionInputV1Schema,
 } from "@happier-dev/protocol";
-import * as privacyKit from "privacy-kit";
-import type { FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyReply } from "fastify";
 import type { z } from "zod";
 import { EPHEMERAL_HOSTED_WEB_ASSET_DELIVERY_HEADERS_V1 } from "@happier-dev/protocol/plugins/ui";
 
-import {
-    buildAccountStoredContentUpgradeRequired,
-    enforceCurrentAccountStoredContentCompatibilityForHttpRequest,
-    readAccountStoredContentCompatibilityForHttpRequest,
-} from "@/app/clientCompatibility/accountStoredContentCompatibility";
-import { isPlainArtifactDataKeyBytes } from "@/app/artifacts/artifactStoredContent";
 import {
     PluginInstallationPublisherProofError,
     verifyPluginInstallationPublisherHeader,
@@ -68,26 +60,10 @@ function parseOperationInput<TSchema extends z.ZodType>(
 }
 
 async function sendOperationError(
-    request: FastifyRequest,
     reply: FastifyReply,
     error: unknown,
 ): Promise<void> {
     if (error instanceof PluginAvailabilityOperationError) {
-        if (
-            error.code === "plugin_ui_artifact_client_upgrade_required"
-            || error.code === "plugin_package_asset_client_upgrade_required"
-        ) {
-            if (!await enforceCurrentAccountStoredContentCompatibilityForHttpRequest(
-                request,
-                reply,
-            )) {
-                return;
-            }
-            reply.code(CLIENT_UPGRADE_REQUIRED_HTTP_STATUS).send(
-                buildAccountStoredContentUpgradeRequired(),
-            );
-            return;
-        }
         const statusCode = error.code.endsWith("_not_found")
             ? 404
             : error.code === "plugin_availability_authentication_required"
@@ -231,7 +207,7 @@ export function registerPluginAvailabilityRoutes(
                 ),
             });
         } catch (error) {
-            await sendOperationError(request, reply, error);
+            await sendOperationError(reply, error);
             return;
         }
     });
@@ -248,7 +224,7 @@ export function registerPluginAvailabilityRoutes(
                 ),
             });
         } catch (error) {
-            await sendOperationError(request, reply, error);
+            await sendOperationError(reply, error);
             return;
         }
     });
@@ -265,7 +241,7 @@ export function registerPluginAvailabilityRoutes(
                 ),
             });
         } catch (error) {
-            await sendOperationError(request, reply, error);
+            await sendOperationError(reply, error);
             return;
         }
     });
@@ -282,7 +258,7 @@ export function registerPluginAvailabilityRoutes(
                 ),
             });
         } catch (error) {
-            await sendOperationError(request, reply, error);
+            await sendOperationError(reply, error);
             return;
         }
     });
@@ -299,7 +275,7 @@ export function registerPluginAvailabilityRoutes(
                 ),
             });
         } catch (error) {
-            await sendOperationError(request, reply, error);
+            await sendOperationError(reply, error);
             return;
         }
     });
@@ -316,7 +292,7 @@ export function registerPluginAvailabilityRoutes(
                 ),
             });
         } catch (error) {
-            await sendOperationError(request, reply, error);
+            await sendOperationError(reply, error);
             return;
         }
     });
@@ -327,17 +303,13 @@ export function registerPluginAvailabilityRoutes(
         try {
             return await operations.publishUiArtifact({
                 accountId: requestUserId(request),
-                supportsCurrentStoredContentProtocol:
-                    readAccountStoredContentCompatibilityForHttpRequest(
-                        request,
-                    ).supportsCurrentProtocol,
                 input: parseOperationInput(
                     PluginAvailabilityUiArtifactPublishActionInputV1Schema,
                     request.body,
                 ),
             });
         } catch (error) {
-            await sendOperationError(request, reply, error);
+            await sendOperationError(reply, error);
             return;
         }
     });
@@ -353,20 +325,9 @@ export function registerPluginAvailabilityRoutes(
                     request.body,
                 ),
             });
-            if (
-                isPlainArtifactDataKeyBytes(
-                    privacyKit.decodeBase64(result.artifact.dataEncryptionKey),
-                )
-                && !await enforceCurrentAccountStoredContentCompatibilityForHttpRequest(
-                    request,
-                    reply,
-                )
-            ) {
-                return;
-            }
             return result;
         } catch (error) {
-            await sendOperationError(request, reply, error);
+            await sendOperationError(reply, error);
             return;
         }
     });
@@ -377,17 +338,13 @@ export function registerPluginAvailabilityRoutes(
         try {
             return await operations.publishPackageAsset({
                 accountId: requestUserId(request),
-                supportsCurrentStoredContentProtocol:
-                    readAccountStoredContentCompatibilityForHttpRequest(
-                        request,
-                    ).supportsCurrentProtocol,
                 input: parseOperationInput(
                     PluginAvailabilityPackageAssetPublishActionInputV1Schema,
                     request.body,
                 ),
             });
         } catch (error) {
-            await sendOperationError(request, reply, error);
+            await sendOperationError(reply, error);
             return;
         }
     });
@@ -403,20 +360,9 @@ export function registerPluginAvailabilityRoutes(
                     request.body,
                 ),
             });
-            if (
-                isPlainArtifactDataKeyBytes(
-                    privacyKit.decodeBase64(result.artifact.dataEncryptionKey),
-                )
-                && !await enforceCurrentAccountStoredContentCompatibilityForHttpRequest(
-                    request,
-                    reply,
-                )
-            ) {
-                return;
-            }
             return result;
         } catch (error) {
-            await sendOperationError(request, reply, error);
+            await sendOperationError(reply, error);
             return;
         }
     });
@@ -430,7 +376,7 @@ export function registerPluginAvailabilityRoutes(
                 input: parseOperationInput(PluginAvailabilityPackageAssetRemoveActionInputV1Schema, request.body),
             });
         } catch (error) {
-            await sendOperationError(request, reply, error);
+            await sendOperationError(reply, error);
             return;
         }
     });
@@ -447,7 +393,7 @@ export function registerPluginAvailabilityRoutes(
                 ),
             });
         } catch (error) {
-            await sendOperationError(request, reply, error);
+            await sendOperationError(reply, error);
             return;
         }
     });
@@ -464,7 +410,7 @@ export function registerPluginAvailabilityRoutes(
                 ),
             });
         } catch (error) {
-            await sendOperationError(request, reply, error);
+            await sendOperationError(reply, error);
             return;
         }
     });
@@ -488,7 +434,7 @@ export function registerPluginAvailabilityRoutes(
                 ),
             });
         } catch (error) {
-            await sendOperationError(request, reply, error);
+            await sendOperationError(reply, error);
             return;
         }
     });
@@ -518,7 +464,7 @@ export function registerPluginAvailabilityRoutes(
                 ),
             });
         } catch (error) {
-            await sendOperationError(request, reply, error);
+            await sendOperationError(reply, error);
             return;
         }
     });

@@ -5,31 +5,25 @@ import { getActionSpec } from './actionSpecs.js';
 import type { ActionId } from './actionIds.js';
 import { buildWorkBoardItemKeyV1, WorkBoardsV1Schema, type BoardItemRefV1, type WorkBoardIntentV1 } from '../boards/workBoardV1.js';
 import { normalizeSessionListFilterV1 } from '../sessions/listFilter/sessionListFilterV1.js';
-import { createWorkBoardRecordPortV1 } from '../boards/workBoardRecordV1.js';
+import { createWorkBoardArtifactPortV1 } from '../boards/workBoardArtifactV1.js';
+import { createWorkBoardArtifactBoundary } from '../boards/workBoardArtifactV1.testkit.js';
 
 const ref = (serverId: string, id: string): BoardItemRefV1 => ({ kind: 'session', qualifiedId: { serverId, id } });
 
-/** Account KV CAS is the system boundary; all Board logic and Action admission stay real. */
+/** Artifact persistence is the system boundary; Board logic and Action admission stay real. */
 function createBoundary(initial: unknown = null) {
-  let raw = initial;
-  let version = -1;
-  const workBoardSettings = createWorkBoardRecordPortV1({
-    read: async () => ({ value: raw, version }),
-    compareAndSet: async (value, expectedVersion) => {
-      if (expectedVersion !== version) return { success: false, value: raw, version };
-      raw = value;
-      return { success: true, version: ++version };
-    },
-  });
+  const rawBoards = initial && typeof initial === 'object' && 'boards' in initial && Array.isArray(initial.boards) ? initial.boards : [];
+  const boundary = createWorkBoardArtifactBoundary(rawBoards);
+  const workBoardArtifacts = createWorkBoardArtifactPortV1(boundary.transport);
   // This focused persistence harness supplies only ports the Board Action corridor can reach.
-  const executor = createActionExecutor({ workBoardSettings } as unknown as ActionExecutorDeps);
+  const executor = createActionExecutor({ workBoardArtifacts } as unknown as ActionExecutorDeps);
   const execute = (id: string, input: unknown = {}) => executor.execute(id as ActionId, input, { surface: 'mcp', bypassApprovals: true });
   const apply = (intent: WorkBoardIntentV1) => execute('boards.apply', { intent });
-  return { execute, apply, read: () => raw, workBoardSettings };
+  return { execute, apply, read: boundary.readCollection, workBoardArtifacts };
 }
 
 describe('Boards through the canonical Action executor', () => {
-  it('round-trips every existing intent through the dedicated Board record', async () => {
+  it('round-trips every existing intent through individual Board Artifacts', async () => {
     const b = createBoundary();
     expect(await b.execute('boards.list')).toEqual({ ok: true, result: { boards: [] } });
     expect(await b.apply({ kind: 'create', board: { id: 'b1', name: 'Overview' } }))
@@ -70,17 +64,18 @@ describe('Boards through the canonical Action executor', () => {
     expect(b.read()).toBeNull();
   });
 
-  it('preserves existing picks for a source-only update and refuses malformed stored roots', async () => {
+  it('preserves existing picks for a source-only update and refuses editing an unreadable Board', async () => {
     const b = createBoundary();
     await b.apply({ kind: 'create', board: { id: 'b1', name: 'Overview' } });
     await b.apply({ kind: 'add_items', boardId: 'b1', refs: [ref('a', 's1')] });
     await b.apply({ kind: 'update', boardId: 'b1', patch: { source: { sections: ['my_machines'] } } });
     expect(WorkBoardsV1Schema.parse(b.read()).boards[0]?.source.picked).toEqual([ref('a', 's1')]);
-    const malformed = createBoundary({ broken: true });
-    expect(await malformed.execute('boards.list')).toMatchObject({ ok: false, errorCode: 'invalid_board_record' });
-    expect(await malformed.apply({ kind: 'create', board: { id: 'b1', name: 'Overview' } }))
+    const unreadable = { id: 'b1', broken: true };
+    const malformed = createBoundary({ boards: [unreadable] });
+    expect(await malformed.execute('boards.list')).toMatchObject({ ok: true, result: { boards: [] } });
+    expect(await malformed.apply({ kind: 'update', boardId: 'b1', patch: { name: 'Overview' } }))
       .toMatchObject({ ok: false, errorCode: 'invalid_board_record' });
-    expect(malformed.read()).toEqual({ broken: true });
+    expect(malformed.read()).toEqual({ v: 1, boards: [unreadable] });
   });
 
   it('keeps every existing position when an agent moves one item, even with stale membership', async () => {
@@ -138,7 +133,7 @@ describe('Boards through the canonical Action executor', () => {
     }
     const b = createBoundary();
     // Unlike the round-trip cases, this uses the real unwired-policy default.
-    const executor = createActionExecutor({ workBoardSettings: b.workBoardSettings } as unknown as ActionExecutorDeps);
+    const executor = createActionExecutor({ workBoardArtifacts: b.workBoardArtifacts } as unknown as ActionExecutorDeps);
     expect(await executor.execute('boards.apply' as ActionId, { intent: { kind: 'create', board: { id: 'b1', name: 'Overview' } } }, { surface: 'agent' }))
       .toMatchObject({ ok: false, errorCode: 'approvals_not_supported' });
     expect(b.read()).toBeNull();

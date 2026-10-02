@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { CallerInputConstraintsV1Schema } from '../../auth/apiTokenGrant.js';
+import { CallerInputConstraintsV1Schema } from '../../auth/callerInputConstraintsV1.js';
 import { sha256 } from '@noble/hashes/sha2';
 
 import {

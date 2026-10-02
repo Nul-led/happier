@@ -31,12 +31,9 @@ export {
   AccountStoredContentCompatibilityDeclarationV1Schema,
   AccountStoredContentCompatibilityServerRequirementsV1Schema,
   AccountStoredContentCompatibilitySocketAuthV1Schema,
-  AccountStoredContentServerCompatibilityDecisionSchema,
   AccountStoredContentProtocolVersionSchema,
   buildAccountStoredContentCompatibilityHttpHeadersV1,
   buildAccountStoredContentCompatibilitySocketAuthV1,
-  classifyCurrentAccountStoredContentServerCompatibility,
-  classifyAccountEncryptionMigrateTransitionServerCompatibility,
   parseAccountStoredContentCompatibilityHttpHeadersV1,
   parseAccountStoredContentCompatibilitySocketAuthV1,
   type AccountStoredContentCompatibilityDeclarationParseResult,
@@ -44,7 +41,6 @@ export {
   type AccountStoredContentCompatibilityHttpHeadersV1,
   type AccountStoredContentCompatibilityServerRequirementsV1,
   type AccountStoredContentCompatibilitySocketAuthV1,
-  type AccountStoredContentServerCompatibilityDecision,
 } from './accountStoredContentCompatibilityV1.js';
 export {
   CLIENT_UPGRADE_REQUIRED_ERROR_CODE,

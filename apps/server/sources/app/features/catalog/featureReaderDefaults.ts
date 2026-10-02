@@ -60,6 +60,19 @@ export const FEATURE_READER_DEFAULTS = {
     automationsEnabled: { ...ON, ...HOME },
     workflowsEnabled: { ...ON, ...HOME },
 
+    artifactRevisionRetentionCount: {
+        type: 'int', default: 10, bounds: { min: 0 }, ...POLICY,
+        description: 'Number of prior bodies retained for each ordinary Account Artifact.',
+    },
+    artifactDocumentLimitBytes: {
+        type: 'int', bounds: { min: 0 }, ...POLICY,
+        description: 'Optional byte cap for an ordinary Artifact stored header, body and retained bodies; unset means unlimited.',
+    },
+    artifactAccountLimitBytes: {
+        type: 'int', bounds: { min: 0 }, ...POLICY,
+        description: 'Optional Account byte budget for ordinary Artifact stored headers, bodies and retained bodies; unset means unlimited.',
+    },
+
     bugReportsEnabled: { ...ON, ...HOME },
     bugReportsProviderUrl: {
         type: 'string',

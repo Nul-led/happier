@@ -17,6 +17,7 @@ import {
     SocketRpcTransportResponseEnvelopeV1Schema,
     type SocketRpcRequestPayload,
     type SessionTransferRoutingV1,
+    type SessionActionRpcOriginV1,
     type SocketRpcTransportAcknowledgementV1,
 } from "@happier-dev/protocol/socketRpc";
 
@@ -112,6 +113,8 @@ export async function forwardRpcCall(params: Readonly<{
     transportResponseEnvelopeVersion?: 1;
     callerSocketId?: string;
     callerSocket?: Pick<Socket, "data">;
+    /** Trusted ingress stamp admitted by the source Machine/current Session guard. */
+    sessionActionOrigin?: SessionActionRpcOriginV1;
     /** Verified credential constraints; inbound RPC fields are never authoritative. */
     callerInputConstraints?: CallerInputConstraintsV1;
     transferRouting?: SessionTransferRoutingV1;
@@ -258,9 +261,10 @@ export async function forwardRpcCall(params: Readonly<{
         const request: SocketRpcRequestPayload = {
             method: params.method,
             params: params.callParams,
-            callerAuthority: params.callerSocket?.data?.authAuthority === "present_user"
+            callerAuthority: !params.sessionActionOrigin && params.callerSocket?.data?.authAuthority === "present_user"
                 ? "present_user"
                 : "account_automation",
+            ...(params.sessionActionOrigin ? { sessionActionOrigin: params.sessionActionOrigin } : {}),
             ...(params.callerInputConstraints ? { callerInputConstraints: params.callerInputConstraints } : {}),
             ...(params.transferRouting ? { transferRouting: params.transferRouting } : {}),
             timeoutMs,

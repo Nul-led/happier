@@ -11,6 +11,7 @@ import {
     WorkflowRunRecipientCensusInputV1Schema,
     WorkflowRunRecipientKeyEnvelopeCommitInputV1Schema,
     WorkflowRunRecipientKeyEnvelopesV1Schema,
+    WorkflowRunWaitConditionsV1Schema,
 } from "@happier-dev/protocol/workflows";
 
 import {
@@ -68,12 +69,12 @@ const InvocationFactOperationSchema = z.object({
     invocationAttempt: z.string().regex(/^(0|[1-9][0-9]*)$/),
     expectedContentRevision: z.string().regex(/^(0|[1-9][0-9]*)$/),
     expectedLifecycle: WorkflowInvocationLifecycleV1Schema, lifecycle: WorkflowInvocationLifecycleV1Schema,
-    contentEnvelope: z.string().min(1), resolution: z.literal("observed_terminal_execution").optional(),
+    contentEnvelope: z.string().min(1), resolution: z.enum(["observed_terminal_execution", "root_list_progress"]).optional(),
 }).strict().superRefine((value, context) => {
     const observation = value.expectedRevision !== undefined;
     if (observation
-        ? value.parentAttempt !== undefined || value.resolution !== "observed_terminal_execution"
-        : value.parentAttempt === undefined) {
+        ? value.parentAttempt !== undefined || value.resolution === undefined
+        : value.parentAttempt === undefined || value.resolution === "root_list_progress") {
         context.addIssue({ code: "custom", message: "Invocation facts require one exact worker attempt or terminal observation revision" });
     }
 });
@@ -84,7 +85,7 @@ const OperationSchema = z.discriminatedUnion("operation", [
     z.object({ operation: z.literal("initialize"), publisherMachineId: z.string().min(1), runId: z.string().min(1), parentAttempt: z.number().int().nonnegative().safe(), expectedRevision: z.number().int().nonnegative(), accountCurrentness: AutomationAccountCurrentnessWitnessV1Schema, checkpointEnvelope: z.string().min(1), rootInvocation: z.object({ id: z.string().min(1), contentEnvelope: z.string().min(1) }).strict() }).strict(),
     z.object({ operation: z.literal("accepted-snapshot.resolve"), publisherMachineId: z.string().min(1), runId: z.string().min(1), automationId: z.string().min(1), originSessionId: z.string().min(1).optional(), resultDelivery: z.object({ kind: z.literal("originating_session") }).strict().optional(), sourceArtifactId: WorkflowDefinitionIdV1Schema.nullable().optional(), visibleTeamId: z.string().min(1).nullable().optional(), recipientKeyEnvelopes: WorkflowRunRecipientKeyEnvelopesV1Schema.optional(), expectedAttempt: z.number().int().nonnegative(), expectedRevision: z.number().int().nonnegative(), accountCurrentness: AutomationAccountCurrentnessWitnessV1Schema, definitionEnvelope: z.string().min(1), acceptedEnvelope: z.string().min(1) }).strict(),
     z.object({ operation: z.literal("get"), publisherMachineId: z.string().min(1).optional(), runId: z.string().min(1) }).strict(),
-    z.object({ operation: z.literal("wait"), publisherMachineId: z.string().min(1).optional(), runId: z.string().min(1), timeoutSeconds: z.number().positive().safe().optional(), afterRevision: z.number().int().nonnegative().safe().optional() }).strict(),
+    z.object({ operation: z.literal("wait"), publisherMachineId: z.string().min(1).optional(), runId: z.string().min(1), conditions: WorkflowRunWaitConditionsV1Schema.optional(), timeoutSeconds: z.literal(0).optional(), afterRevision: z.number().int().nonnegative().safe().optional() }).strict(),
     z.object({ operation: z.enum(["pause", "resume", "cancel"]), publisherMachineId: z.string().min(1).optional(), runId: z.string().min(1), expectedRevision: z.number().int().nonnegative() }).strict(),
     z.object({ operation: z.literal("list"), publisherMachineId: z.string().min(1).optional(), request: WorkflowRunListRequestV1Schema, pageByteLimit: PageByteLimitSchema }).strict(),
     z.object({ operation: z.literal("summaries"), publisherMachineId: z.string().min(1).optional(), request: WorkflowRunSummariesRequestV1Schema, pageByteLimit: PageByteLimitSchema }).strict(),
@@ -126,7 +127,6 @@ export function registerWorkflowRunStorageRoutes(
                 request,
                 path: PATH,
                 machineId: body.publisherMachineId,
-                allowReleasedV2MissingProof: false,
             });
             if (!publisher) return reply.code(401).send(null);
             if (body.operation === "admit" && body.machineId !== publisher.machineId) {
@@ -150,6 +150,7 @@ export function registerWorkflowRunStorageRoutes(
                         return await waitWorkflowRun({
                             accountId: request.userId,
                             runId: body.runId,
+                            ...(body.conditions === undefined ? {} : { conditions: body.conditions }),
                             ...(body.timeoutSeconds === undefined ? {} : { timeoutSeconds: body.timeoutSeconds }),
                             ...(body.afterRevision === undefined ? {} : { afterRevision: body.afterRevision }),
                             signal: controller.signal,
@@ -177,10 +178,10 @@ export function registerWorkflowRunStorageRoutes(
                         accountCurrentness: body.accountCurrentness, invocationId: body.invocationId,
                         invocationAttempt: BigInt(body.invocationAttempt), expectedContentRevision: BigInt(body.expectedContentRevision), expectedLifecycle: body.expectedLifecycle,
                         lifecycle: body.lifecycle, contentEnvelope: body.contentEnvelope };
-                    if (body.expectedRevision !== undefined && body.resolution === "observed_terminal_execution") {
+                    if (body.expectedRevision !== undefined && body.resolution !== undefined) {
                         return await commitWorkflowInvocationFact({ ...fact, expectedRevision: body.expectedRevision, resolution: body.resolution });
                     }
-                    if (body.parentAttempt === undefined) throw new WorkflowRunServiceError("invalid_input");
+                    if (body.parentAttempt === undefined || body.resolution === "root_list_progress") throw new WorkflowRunServiceError("invalid_input");
                     return await commitWorkflowInvocationFact({ ...fact, parentAttempt: body.parentAttempt, ...(body.resolution ? { resolution: body.resolution } : {}) });
                 }
                 case "invocations.publish_draft": return await publishWorkflowInvocationDraft({ ...body, accountId: request.userId, invocationAttempt: BigInt(body.invocationAttempt), expectedContentRevision: BigInt(body.expectedContentRevision) });

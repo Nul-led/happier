@@ -41,6 +41,12 @@ export const LaunchProfileArtifactV1Schema = z.object({
   if (variables.length > 0) ctx.addIssue({ code: 'custom', path: ['profile'], message: 'Shared launch profiles carry requirements, never environment values' });
 });
 export type LaunchProfileArtifactV1 = z.infer<typeof LaunchProfileArtifactV1Schema>;
+
+/** The profile owner supplies the header projection used by opening and sharing. */
+export function buildLaunchProfileArtifactHeaderV1(content: LaunchProfileArtifactV1): Readonly<Record<string, unknown>> {
+  return { kind: content.kind, profileId: content.profile.id, name: content.profile.name, title: content.profile.name };
+}
+
 export type SharedLaunchProfileArtifactV1 = Readonly<LaunchProfileArtifactV1 & {
   artifactId: string;
   revision: Readonly<{ headerVersion: number; bodyVersion: number }>;

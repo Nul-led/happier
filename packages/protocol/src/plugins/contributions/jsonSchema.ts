@@ -86,6 +86,10 @@ PluginJsonValueV2Schema._zod.processJSONSchema = (context, _json, params) => {
 
 export type PluginJsonSchemaV2 = {
   $schema?: 'http://json-schema.org/draft-07/schema#';
+  /** Self-contained root/JSON Pointer references only; no external schema loading. */
+  $ref?: string;
+  definitions?: Record<string, PluginJsonSchemaV2>;
+  $defs?: Record<string, PluginJsonSchemaV2>;
   type?: 'null' | 'boolean' | 'number' | 'integer' | 'string' | 'array' | 'object';
   format?: 'date-time' | 'time' | 'date' | 'duration' | 'uri' | 'uri-reference' | 'uri-template' | 'url' | 'email' | 'hostname' | 'ipv4' | 'ipv6' | 'regex' | 'uuid' | 'json-pointer' | 'relative-json-pointer';
   title?: string;
@@ -113,10 +117,14 @@ export type PluginJsonSchemaV2 = {
   anyOf?: PluginJsonSchemaV2[];
   oneOf?: PluginJsonSchemaV2[];
   allOf?: PluginJsonSchemaV2[];
+  not?: PluginJsonSchemaV2;
 };
 
 export const PluginJsonSchemaV2Schema: z.ZodType<PluginJsonSchemaV2> = z.lazy(() => z.object({
   $schema: z.literal('http://json-schema.org/draft-07/schema#').optional(),
+  $ref: z.string().regex(/^#(?:\/.*)?$/u, 'Schema references must be document-local JSON Pointers').optional(),
+  definitions: z.record(z.string(), PluginJsonSchemaV2Schema).optional(),
+  $defs: z.record(z.string(), PluginJsonSchemaV2Schema).optional(),
   type: z.enum(['null', 'boolean', 'number', 'integer', 'string', 'array', 'object']).optional(),
   format: z.enum(['date-time', 'time', 'date', 'duration', 'uri', 'uri-reference', 'uri-template', 'url', 'email', 'hostname', 'ipv4', 'ipv6', 'regex', 'uuid', 'json-pointer', 'relative-json-pointer']).optional(),
   title: z.string().optional(), description: z.string().optional(),
@@ -132,4 +140,5 @@ export const PluginJsonSchemaV2Schema: z.ZodType<PluginJsonSchemaV2> = z.lazy(()
   'x-happier-max-utf8-bytes': z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   'x-happier-max-serialized-utf8-bytes': z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   anyOf: z.array(PluginJsonSchemaV2Schema).optional(), oneOf: z.array(PluginJsonSchemaV2Schema).optional(), allOf: z.array(PluginJsonSchemaV2Schema).optional(),
+  not: PluginJsonSchemaV2Schema.optional(),
 }).strict());

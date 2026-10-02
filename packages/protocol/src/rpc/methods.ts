@@ -83,7 +83,7 @@ export const RPC_METHODS = {
   DAEMON_VOICE_SPEECH_CATALOG: 'daemon.voice.speech.catalog',
   DAEMON_VOICE_SPEECH_SETTINGS_ACTION_EXECUTE: 'daemon.voice.speech.settingsAction.execute',
   DAEMON_VOICE_CLIENT_RAW_CREDENTIAL_MATERIALIZE: 'daemon.voice.client.rawCredential.materialize',
-  DAEMON_VOICE_CLIENT_MEDIATED_CREDENTIAL_MATERIALIZE: 'daemon.voice.client.mediatedCredential.materialize',
+  DAEMON_VOICE_CLIENT_ACCOUNT_OPERATION: 'daemon.voice.client.accountOperation.request',
   DAEMON_VOICE_CLIENT_RAW_CREDENTIAL_AUTHORIZATION_INSPECT: 'daemon.voice.client.rawCredential.authorization.inspect',
   DAEMON_VOICE_CLIENT_RAW_CREDENTIAL_AUTHORIZATION_REQUEST: 'daemon.voice.client.rawCredential.authorization.request',
   DAEMON_MCP_SERVERS_TEST: 'daemon.mcpServers.test',
@@ -123,6 +123,8 @@ export const RPC_METHODS = {
   DAEMON_PLUGIN_COMPOSER_REFERENCE_SEARCH: 'daemon.plugins.composerReferences.search',
   DAEMON_PLUGIN_UI_ARTIFACT_BYTES_READ: 'daemon.plugins.uiArtifacts.bytes.read',
   DAEMON_PLUGIN_UI_RESOURCE_READ: 'daemon.plugins.ui.resources.read',
+  DAEMON_PLUGIN_UI_CAPTURE_SOURCE_READ: 'daemon.plugins.ui.captureSource.read',
+  DAEMON_PLUGIN_STORED_IMAGE_READ: 'daemon.plugins.ui.storedImage.read',
   DAEMON_PLUGIN_UI_TARGETED_CONTRIBUTIONS_READ: 'daemon.plugins.ui.targetedContributions.read',
   // EU-4b live resource invalidation. A client-owned long-poll triple over this
   // same forward machine RPC channel: `open` establishes one daemon-side
@@ -387,6 +389,7 @@ export const RPC_METHODS = {
   SCM_CHANGE_DISCARD: 'scm.change.discard',
   SCM_COMMIT_CREATE: 'scm.commit.create',
   SCM_COMMIT_BACKOUT: 'scm.commit.backout',
+  SCM_COMMIT_UNDO_LAST: 'scm.commit.undoLast',
   SCM_LOG_LIST: 'scm.log.list',
   SCM_BRANCH_LIST: 'scm.branch.list',
   SCM_BRANCH_CREATE: 'scm.branch.create',

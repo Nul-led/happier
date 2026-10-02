@@ -16,6 +16,7 @@ import { proxyLocalServicePreviewHttpRequest, type OpenLocalServicePreviewTunnel
 import { registerLocalServicePreviewRoutes } from "@/app/api/routes/local/services/preview/registerRoutes";
 import { registerLocalServicePublicRoutes } from "@/app/api/routes/local/services/public/registerRoutes";
 import { proxyLocalServicePreviewWebSocketUpgrade } from "./websocketAdapter";
+import { runInNewContext } from 'node:vm';
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -117,11 +118,18 @@ describe("preview native HTTP transport", () => {
         expect((await proxy(fixture)).body.equals(gzipSync(html))).toBe(true);
     });
 
-    it("reports a typed cooperative collector refusal without weakening a restrictive CSP", async () => {
+    it.each([
+        { policy: "script-src 'none'", meta: '' },
+        { policy: "default-src 'none'", meta: '' },
+        { policy: "script-src 'self'; script-src-elem 'none'", meta: '' },
+        { policy: "script-src 'self'; sandbox allow-scripts", meta: '' },
+        { policy: "script-src 'nonce-page' 'strict-dynamic' 'self'", meta: '' },
+        { policy: "script-src 'self'", meta: '<meta http-equiv="Content-Security-Policy" content="script-src &#39;none&#39;">' },
+    ])("reports a typed cooperative collector refusal without weakening CSP: $policy $meta", async ({ policy, meta }) => {
         const fixture = await upstream((_request, response) => {
             response.setHeader("Content-Type", "text/html");
-            response.setHeader("Content-Security-Policy", "script-src 'none'");
-            response.end("<html><head></head><body>blocked</body></html>");
+            response.setHeader("Content-Security-Policy", policy);
+            response.end(`<html><head>${meta}</head><body>blocked</body></html>`);
         });
         const config = { browserSessionId: "bs", viewId: "v", navigationGeneration: 1,
             collector: { collectorId: "c", nonce: "nonce", version: "1.0.0" }, webPostMessageTargetOrigin: "https://app.example.test" };
@@ -132,8 +140,131 @@ describe("preview native HTTP transport", () => {
             response: { writeHead(_code, _message, value) { headers = value; }, write(chunk) { bytes.push(chunk); }, end() {}, destroy() {} },
         });
         expect(headers["x-happier-collector-state"]).toBe("collector_blocked_by_csp");
-        expect(headers["content-security-policy"]).toBe("script-src 'none'");
+        expect(headers["content-security-policy"]).toBe(policy);
         expect(Buffer.concat(bytes).toString()).not.toContain("collector-loader.js");
+        expect(Buffer.concat(bytes).toString()).toContain(meta);
+    });
+
+    it('serves cooperative real loader bytes behind preview access, executes the shared collector and probes CSP state', async () => {
+        let requests = 0;
+        const fixture = await upstream((_request, response) => {
+            requests += 1;
+            response.setHeader('Content-Type', 'text/html');
+            response.setHeader('Content-Security-Policy', "script-src 'self'");
+            response.end('<html><head></head><body><button id="button">Click</button></body></html>');
+        });
+        const config = { browserSessionId: 'bs', viewId: 'v', navigationGeneration: 1,
+            collector: { collectorId: 'c', nonce: 'pane_nonce', version: '1.0.0' }, webPostMessageTargetOrigin: 'https://app.example.test' };
+        const query = `__happierCollector=${encodeURIComponent(JSON.stringify(config))}`;
+        const app = Fastify();
+        app.decorate('authenticate', async () => {});
+        registerLocalServicePreviewRoutes(app as never, { ...fixture, resolvePreview: () => fixture.preview,
+            resolvePreviewByHost: (host) => host === 'preview.example.test' ? fixture.preview : null,
+            hostOriginBaseDomain: 'example.test', validateAccess: ({ rawToken }) => rawToken === 'authorized' ? { ok: true } : { ok: false, reasonCode: 'token_invalid' } });
+        const headers = { host: 'preview.example.test', cookie: 'happier_preview_token=authorized' };
+        try {
+            const navigation = await app.inject({ method: 'GET', url: `/?${query}`, headers });
+            expect(navigation.statusCode).toBe(200);
+            const { parse } = await import('parse5');
+            const tree = parse(navigation.body);
+            const html = tree.childNodes.find((node) => 'tagName' in node && node.tagName === 'html');
+            if (!html || !('childNodes' in html)) throw new Error('HTML missing');
+            const head = html.childNodes.find((node) => 'tagName' in node && node.tagName === 'head');
+            if (!head || !('childNodes' in head)) throw new Error('head missing');
+            const script = head.childNodes.find((node) => 'tagName' in node && node.tagName === 'script');
+            if (!script || !('attrs' in script)) throw new Error('cooperative loader missing');
+            const src = script.attrs.find((attr) => attr.name === 'src')?.value;
+            if (!src) throw new Error('loader src missing');
+            const loaderUrl = new URL(src, 'http://preview.example.test');
+            expect(loaderUrl.origin).toBe('http://preview.example.test');
+            const loader = await app.inject({ method: 'GET', url: loaderUrl.pathname + loaderUrl.search, headers });
+            expect(loader.statusCode).toBe(200);
+            expect(loader.headers['content-type']).toContain('javascript');
+            expect(requests).toBe(1);
+            const button = Object.assign(new EventTarget(), { getAttribute: () => null, innerText: 'Click' });
+            let clicks = 0;
+            button.addEventListener('click', () => { clicks += 1; });
+            const parent = { postMessage: (data: string) => messages.push(JSON.parse(data)) };
+            const messages: Array<Record<string, unknown>> = [];
+            const guest = Object.assign(new EventTarget(), { parent, location: { href: 'http://preview.example.test/' },
+                localStorage: { length: 0 }, sessionStorage: { length: 0 } });
+            runInNewContext(loader.body, { window: guest, document: { title: 'Preview', readyState: 'complete',
+                documentElement: { nodeType: 1 }, querySelectorAll: (selector: string) => selector === '#button' ? [button] : [] },
+                console: { log() {}, info() {}, warn() {}, error() {}, debug() {} }, performance: { getEntriesByType: () => [] }, Event });
+            expect(messages).toContainEqual({ v: 1, kind: 'browser.collector.ready', browserSessionId: 'bs', viewId: 'v', navigationGeneration: 1, collectorId: 'c', nonce: 'pane_nonce' });
+            const command = { v: 1, kind: 'browser.injectedRuntime.command', runtimeId: 'bs:v:1', browserSessionId: 'bs', viewId: 'v', navigationGeneration: 1,
+                collectorId: 'c', nonce: 'pane_nonce', module: 'automation', capabilityVersion: '1.0.0', commandId: 'click', commandName: 'click', payload: { locator: { kind: 'css', value: '#button' } } };
+            const send = (origin: string, source: unknown) => {
+                const event = new Event('message');
+                Object.defineProperties(event, { data: { value: JSON.stringify(command) }, origin: { value: origin }, source: { value: source } });
+                guest.dispatchEvent(event);
+            };
+            send('https://evil.example.test', parent);
+            send(config.webPostMessageTargetOrigin, guest);
+            expect(clicks).toBe(0);
+            send(config.webPostMessageTargetOrigin, parent);
+            expect(clicks).toBe(1);
+            const denied = await app.inject({ method: 'GET', url: loaderUrl.pathname + loaderUrl.search, headers: { host: headers.host } });
+            expect(denied.statusCode).toBe(401);
+            const mismatch = new URL(loaderUrl); mismatch.searchParams.set('n', 'wrong');
+            expect((await app.inject({ method: 'GET', url: mismatch.pathname + mismatch.search, headers })).statusCode).toBe(400);
+            const probe = await app.inject({ method: 'GET', url: `/?${query}&__happierCollectorState=1`, headers: { ...headers, origin: config.webPostMessageTargetOrigin } });
+            expect(probe.json()).toEqual({ state: 'collector_available' });
+            expect(probe.headers['access-control-allow-origin']).toBe(config.webPostMessageTargetOrigin);
+            expect(probe.body).not.toContain('button');
+        } finally { await app.close(); }
+    });
+
+    it('keeps cooperative identity across same-preview redirects only and preserves application query bytes and non-HTML bytes', async () => {
+        const seen: string[] = [];
+        const fixture = await upstream((request, response) => {
+            seen.push(request.url!);
+            if (request.url?.startsWith('/redirect')) { response.writeHead(302, { location: '/asset?app=a%20b' }); response.end(); }
+            else if (request.url?.startsWith('/external')) { response.writeHead(302, { location: 'https://external.example.test/' }); response.end(); }
+            else if (request.url?.startsWith('/html-fetch')) { response.setHeader('content-type', 'text/html'); response.end('<html><head></head><body>Fetched</body></html>'); }
+            else { response.setHeader('content-type', 'application/javascript'); response.end(Buffer.from([0, 255, 12])); }
+        });
+        const config = { browserSessionId: 'bs', viewId: 'v', navigationGeneration: 1, collector: { collectorId: 'c', nonce: 'n', version: '1.0.0' }, webPostMessageTargetOrigin: 'https://app.example.test' };
+        const query = `__happierCollector=${encodeURIComponent(JSON.stringify(config))}`;
+        const request = async (path: string, method = 'GET', probe = false, destination?: string) => {
+            let headers: Readonly<Record<string, string | readonly string[]>> = {};
+            const chunks: Uint8Array[] = [];
+            let status = 0;
+            const result = await proxyLocalServicePreviewHttpRequest({ ...fixture, request: { method, path, search: `?app=a%20b&${query}${probe ? '&__happierCollectorState=1' : ''}`, headers: { host: 'preview.example.test', ...(probe ? { origin: config.webPostMessageTargetOrigin } : {}), ...(destination ? { 'sec-fetch-dest': destination } : {}) } },
+                response: { writeHead(code, _message, value) { status = code; headers = value; }, write(chunk) { chunks.push(chunk); }, end() {}, destroy() {} } });
+            expect(result.ok).toBe(true);
+            return { status, headers, body: Buffer.concat(chunks) };
+        };
+        const redirect = new URL(String((await request('/redirect')).headers.location), 'http://preview.example.test');
+        expect(redirect.searchParams.get('__happierCollector')).toBe(JSON.stringify(config));
+        expect((await request('/external')).headers.location).toBe('https://external.example.test/');
+        expect((await request('/asset')).body).toEqual(Buffer.from([0, 255, 12]));
+        expect((await request('/post', 'POST')).body).toEqual(Buffer.from([0, 255, 12]));
+        expect(seen).toEqual(['/redirect?app=a%20b', '/external?app=a%20b', '/asset?app=a%20b', '/post?app=a%20b']);
+        const probeRedirect = await request('/redirect', 'GET', true);
+        expect(probeRedirect.status).toBe(302);
+        expect(new URL(String(probeRedirect.headers.location), 'http://preview.example.test').searchParams.get('__happierCollectorState')).toBe('1');
+        expect(probeRedirect.headers['access-control-allow-origin']).toBe(config.webPostMessageTargetOrigin);
+        expect(probeRedirect.body.length).toBe(0);
+        expect((await request('/html-fetch', 'GET', false, 'empty')).body.toString()).toBe('<html><head></head><body>Fetched</body></html>');
+    });
+
+    it('enforces the preview response budget on cooperative decompression, not just the compressed bytes', async () => {
+        const { gzipSync } = await import('node:zlib');
+        const fixture = await upstream((_request, response) => {
+            response.setHeader('content-type', 'text/html'); response.setHeader('content-encoding', 'gzip');
+            response.end(gzipSync(`<html><head></head><body>${'x'.repeat(4096)}</body></html>`));
+        });
+        fixture.preview.policy = { allowedMethods: ['GET'], cookiePolicy: 'rewrite', compressionPolicy: 'identity', redirectPolicy: 'preserve_host_origin', maxRequestBodyBytes: 1024, maxResponseBodyBytes: 1024 };
+        const config = { browserSessionId: 'bs', viewId: 'v', navigationGeneration: 1, collector: { collectorId: 'c', nonce: 'n', version: '1.0.0' }, webPostMessageTargetOrigin: 'https://app.example.test' };
+        let failure: unknown;
+        let bytes = 0;
+        const result = await proxyLocalServicePreviewHttpRequest({ ...fixture,
+            request: { method: 'GET', path: '/', search: `?__happierCollector=${encodeURIComponent(JSON.stringify(config))}`, headers: { host: 'preview.example.test' } },
+            response: { writeHead() {}, write(chunk) { bytes += chunk.length; }, end() {}, destroy(error) { failure = error; } } });
+        expect(result).toEqual({ ok: false, reasonCode: 'response_body_too_large' });
+        expect(failure).toBeInstanceOf(Error);
+        expect(bytes).toBe(0);
     });
 
     it("preserves the IPv6 loopback authority for HTTP and same-preview Origin", async () => {
@@ -144,7 +275,7 @@ describe("preview native HTTP transport", () => {
             response.end("ipv6");
         }), "http", "::1");
         fixture.preview.policy = {
-            allowedMethods: ["GET"], cookiePolicy: "rewrite", compressionPolicy: "identity", redirectPolicy: "rewrite_path_mode",
+            allowedMethods: ["GET"], cookiePolicy: "rewrite", compressionPolicy: "identity", redirectPolicy: "preserve_host_origin",
             maxRequestBodyBytes: 1024, maxResponseBodyBytes: 1024,
         };
         const result = await proxy(fixture, { host: "preview.example.test", origin: "https://preview.example.test" }, "https");
@@ -231,7 +362,7 @@ describe("preview native HTTP transport", () => {
             response.end("ok");
         });
         fixture.preview.policy = {
-            allowedMethods: ["GET"], cookiePolicy: "rewrite", compressionPolicy: "identity", redirectPolicy: "rewrite_path_mode",
+            allowedMethods: ["GET"], cookiePolicy: "rewrite", compressionPolicy: "identity", redirectPolicy: "preserve_host_origin",
             maxRequestBodyBytes: 1024, maxResponseBodyBytes: 1024,
         };
         await proxy(fixture, { host: "app.preview.test", origin: "https://app.preview.test", referer: "https://app.preview.test/page?q=1",
@@ -301,7 +432,7 @@ describe("preview native HTTP transport", () => {
         const fixture = await upstream((_request, response) => response.end());
         const server = servers.at(-1)!;
         fixture.preview.policy = {
-            allowedMethods: ["GET"], cookiePolicy: "rewrite", compressionPolicy: "identity", redirectPolicy: "rewrite_path_mode",
+            allowedMethods: ["GET"], cookiePolicy: "rewrite", compressionPolicy: "identity", redirectPolicy: "preserve_host_origin",
             maxRequestBodyBytes: 1024, maxResponseBodyBytes: 1024,
         };
         server.on("upgrade", (request, socket) => {

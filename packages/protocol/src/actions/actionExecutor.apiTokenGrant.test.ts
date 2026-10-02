@@ -85,6 +85,24 @@ describe('ActionExecutor API token grant admission', () => {
     expect(invokeContributedAction).toHaveBeenCalledOnce();
   });
 
+  it('does not let generic plugin wait bypass the exact contributed Action grant', async () => {
+    let admitted = false;
+    const executor = createActionExecutor({ invokeContributedAction: async () => {
+      if (!admitted) throw new Error('Unadmitted plugin handler reached');
+      return { ok: true, result: { disposition: 'matched' } };
+    } } as unknown as ActionExecutorDeps);
+    const ctx = { ...context(['wait']), serverId: 'home' };
+    const input = {
+      target: { kind: 'plugin_source', serverId: 'home', pluginId: 'acme.checks', sourceId: 'source' },
+      condition: { kind: 'plugin', actionLocalId: 'wait/checks', condition: 'checks_passed' },
+    };
+    expect(await executor.execute('wait', input, ctx)).toMatchObject({ ok: true, result: { disposition: 'permission_denied' } });
+    if (!ctx.externalActionCredential?.grant) throw new Error('expected grant');
+    ctx.externalActionCredential.grant.actions.ids.push('acme.checks/actions/wait/checks');
+    admitted = true;
+    expect(await executor.execute('wait', input, ctx)).toMatchObject({ ok: true, result: { disposition: 'matched' } });
+  });
+
   it('refuses an ungranted action at prepare and execute before any host dependency', async () => {
     const sessionTitleSet = vi.fn(async () => ({}));
     // Dependencies model host transports. Unused required ports are unreachable in these slices.

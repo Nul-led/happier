@@ -5,6 +5,7 @@ import { afterTx, inTx, type Tx } from "@/storage/inTx";
 import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import {
     AccountEncryptionMigrateRequestSchema,
+    ArtifactQuotaExceededV1Schema,
     AccountEncryptionMigrateSuccessResponseSchema,
     AccountEncryptionMigrateBadRequestResponseSchema,
     AccountEncryptionMigrateForbiddenResponseSchema,
@@ -85,6 +86,7 @@ import {
 } from "@/app/machines/migrateMachineAccountEncryptionInTx";
 import {
     ArtifactAccountEncryptionMigrationConflictError,
+    ArtifactAccountEncryptionMigrationQuotaExceededError,
     matchArtifactAccountEncryptionMigrationPostStateInTx,
     migrateArtifactAccountEncryptionInTx,
 } from "@/app/artifacts/artifactWriteService";
@@ -856,6 +858,7 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                 ]),
                 404: AccountEncryptionMigrateNotFoundResponseSchema,
                 409: AccountEncryptionMigrateConflictResponseSchema,
+                413: ArtifactQuotaExceededV1Schema,
                 500: AccountEncryptionMigrateInternalResponseSchema,
             },
         },
@@ -1594,6 +1597,7 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                     await migrateArtifactAccountEncryptionInTx({
                         tx,
                         accountId: userId,
+                        fromMode: currentMode,
                         toMode,
                         directive: artifacts,
                     });
@@ -1955,6 +1959,9 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                         AccountEncryptionMigrateInvalidParamsReasonSchema.enum
                             .migration_inventory_changed,
                 });
+            }
+            if (error instanceof ArtifactAccountEncryptionMigrationQuotaExceededError) {
+                return reply.code(413).send(error.quota);
             }
             if (
                 error

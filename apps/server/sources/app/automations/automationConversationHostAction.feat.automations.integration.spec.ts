@@ -228,7 +228,7 @@ describe("Conversation admission through the real host Action executor (integrat
                         kind: "newSession",
                         spawn: {
                             executionTarget: { serverId: SERVER_IDENTITY_ID, machineId: MACHINE_ID },
-                            directory: "/tmp/conversation-host-action",
+                            directory: { kind: "path", path: "/tmp/conversation-host-action" },
                             agentTarget: {
                                 kind: "agent",
                                 identity: { pluginId: "happier.agent.codex", localId: "codex" },

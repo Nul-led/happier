@@ -7,6 +7,8 @@ import {
     AutomationV3SettingsUpdateRequestSchema,
     AutomationV3WorkerClaimRequestSchema,
     AutomationV3WorkerAssignmentsResponseSchema,
+    AutomationExecutionRunLifecycleReportRequestSchema,
+    AutomationExecutionRunLifecycleSourcesResponseSchema,
     AutomationV3WorkerExecutionDispatchSettlementRequestSchema,
     AutomationV3WorkerFailRequestSchema,
     AutomationV3WorkerHeartbeatRequestSchema,
@@ -32,6 +34,9 @@ import {
 } from "@happier-dev/protocol";
 import { type Fastify } from "../../types";
 import { db } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
+import { admitExecutionRunLifecycleAutomationRunsTx } from "@/app/automations/automationRunLifecycleAdmission";
+import { decodeAutomationRunLifecycleConfiguration } from "@/app/automations/automationRunLifecycleConfigurationCodec";
 import {
     automationAccountCurrentnessSelect,
     deriveAutomationAccountCurrentnessWitness,
@@ -622,6 +627,40 @@ export function registerAutomationV3Routes(
         });
     });
 
+    app.get("/v3/automations/worker/run-lifecycle", {
+        preHandler: app.authenticate,
+        schema: { querystring: z.object({ machineId: z.string().trim().min(1) }) },
+    }, async (request, reply) => {
+        if (!await resolveExactAutomationWorkerPublisher({ dependencies: workerPublisherDependencies,
+            accountId: request.userId, request, path: "/v3/automations/worker/run-lifecycle",
+            machineId: request.query.machineId })) return reply.code(401).send(null);
+        const rows = await db.automationTrigger.findMany({ where: { kind: "runLifecycle", enabled: true,
+            deletedAt: null, remainingOccurrences: 1, sourceRunMachineId: request.query.machineId,
+            automation: { accountId: request.userId, enabled: true, deletedAt: null } },
+            select: { runLifecycleConfigurationJson: true } });
+        const sources = rows.map(decodeAutomationRunLifecycleConfiguration).flatMap(definition =>
+            definition.source.kind === "execution_run" ? [definition.source] : []);
+        return AutomationExecutionRunLifecycleSourcesResponseSchema.parse({ sources });
+    });
+
+    app.post("/v3/automations/worker/run-lifecycle", {
+        preHandler: app.authenticate,
+        schema: { body: AutomationExecutionRunLifecycleReportRequestSchema },
+    }, async (request, reply) => {
+        const body = AutomationExecutionRunLifecycleReportRequestSchema.parse(request.body);
+        if (!await resolveExactAutomationWorkerPublisher({ dependencies: workerPublisherDependencies,
+            accountId: request.userId, request, path: "/v3/automations/worker/run-lifecycle",
+            machineId: body.machineId })) return reply.code(401).send(null);
+        try {
+            const results = await inTx(tx => admitExecutionRunLifecycleAutomationRunsTx({ tx, accountId: request.userId,
+                machineId: body.machineId, occurrence: body.occurrence }));
+            return { ok: true, consumed: results.every(result => result.result.kind !== "ineligible") };
+        } catch (error) {
+            if (!isAutomationDefinitionValidationError(error)) throw error;
+            return reply.code(400).send({ error: automationDefinitionValidationMessage(error) });
+        }
+    });
+
     app.post("/v3/automations/runs/claim", {
         preHandler: app.authenticate,
         schema: { body: AutomationV3WorkerClaimRequestSchema },
@@ -874,6 +913,26 @@ export function registerAutomationV3Routes(
         }
     });
 
+    app.get("/v3/automations/runs", {
+        preHandler: [app.authenticate, requirePresentUser],
+        schema: {
+            querystring: z.object({
+                attention: z.literal("required"),
+                limit: z.coerce.number().int().min(1).max(AUTOMATION_V3_RUN_LIST_MAX_ITEMS).optional(),
+                cursor: z.string().optional(),
+            }).strict(),
+        },
+    }, async (request) => {
+        const result = await listAutomationRuns({
+            accountId: request.userId, attention: request.query.attention,
+            limit: request.query.limit ?? 20, cursor: request.query.cursor,
+        });
+        return AutomationV3RunListResponseSchema.parse({
+            runs: result.runs.map(toAutomationRunV3ListApiDto),
+            nextCursor: result.nextCursor,
+        });
+    });
+
     app.get("/v3/automations/:id/runs", {
         preHandler: [app.authenticate, requirePresentUser],
         schema: {
@@ -881,6 +940,7 @@ export function registerAutomationV3Routes(
             querystring: z.object({
                 limit: z.coerce.number().int().min(1).max(AUTOMATION_V3_RUN_LIST_MAX_ITEMS).optional(),
                 cursor: z.string().optional(),
+                attention: z.literal("required").optional(),
             }).optional(),
         },
     }, async (request, reply) => {
@@ -889,6 +949,7 @@ export function registerAutomationV3Routes(
             automationId: request.params.id,
             limit: request.query?.limit ?? 20,
             cursor: request.query?.cursor,
+            attention: request.query?.attention,
         });
         if (!result) return reply.code(404).send({ error: "automation_not_found" });
         return AutomationV3RunListResponseSchema.parse({

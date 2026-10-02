@@ -5553,6 +5553,7 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
                             expectedBodyVersion: 6,
                             expectedDataEncryptionKey: privacyKit.encodeBase64(new Uint8Array([4, 5, 6])),
                             recipientKeyEnvelopes: [],
+                            revisions: [],
                             header: artifactHeader,
                             body: artifactBody,
                             dataEncryptionKey:

@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { WorkflowDefinitionV1Schema } from '../../workflows/workflowV1.js';
 import { createWorkflowDefinitionActions, type WorkflowDefinitionArtifactOperations } from './workflowDefinitions.js';
+import { createWorkflowActionExecutor } from './workflowAccountActions.js';
+import { createWorkflowAccountRunActionOwner } from './workflowRunActions.js';
+import { WorkflowDefinitionListResultV1Schema } from '../../workflows/actionsV1.js';
+import { EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES, measureExternalActionResultResponseEnvelopeUtf8BytesV1 } from '../externalActionLimits.js';
 
 const definitionId = '11111111-1111-4111-8111-111111111111';
 const definition = WorkflowDefinitionV1Schema.parse({ version: 1,
@@ -10,6 +14,50 @@ const definition = WorkflowDefinitionV1Schema.parse({ version: 1,
 });
 
 describe('shared workflow definition create', () => {
+  it('pages plugin definitions within the existing Action response boundary without hiding saved workflows', async () => {
+    const plugins = [0, 1].map((index) => ({ workflow: `plugin:com.acme.workflows/review-${index}`,
+      pluginId: 'com.acme.workflows', version: '1.2.3', title: `Review ${index}`,
+      definition: { ...definition, blocks: [{ ...definition.blocks[0]!,
+        document: { text: 'x'.repeat(EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES / 2), references: [], attachments: [] } }] },
+    }));
+    const saved = { artifactId: definitionId, headerVersion: 1, updatedAt: 1, ownerAccountId: 'account', access: 'owner' as const,
+      header: { kind: 'workflow-definition.v1', definitionId, revision: { headerVersion: 1, bodyVersion: 1 }, metadata: { title: 'Saved' } } };
+    const owner = createWorkflowDefinitionActions({ artifactStore: {
+      list: async ({ cursor }) => { expect(cursor).toBeUndefined(); return { items: [saved] }; },
+      read: async () => { throw new Error('list_needs_no_artifact_body'); }, create: async () => {},
+      update: async () => ({ ok: false, errorCode: 'unused', error: 'unused' }), delete: async () => ({ ok: true }),
+    }, encodeListCursor: () => 'artifact-cursor', assertDefinitionWriteAllowed: () => {}, readPluginWorkflows: () => plugins });
+    const first = WorkflowDefinitionListResultV1Schema.parse(await owner.list({}));
+    expect(first.definitions.map((entry) => entry.definitionId)).toEqual([definitionId]);
+    expect(first.pluginWorkflows?.map((entry) => entry.workflow)).toEqual([plugins[0]!.workflow]);
+    expect(measureExternalActionResultResponseEnvelopeUtf8BytesV1(first)).toBeLessThanOrEqual(EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES);
+    expect(first.nextCursor).toBeDefined();
+    const next = WorkflowDefinitionListResultV1Schema.parse(await owner.list({ cursor: first.nextCursor }));
+    expect(next.definitions).toEqual([]);
+    expect(next.pluginWorkflows?.map((entry) => entry.workflow)).toEqual([plugins[1]!.workflow]);
+    expect(next.nextCursor).toBeUndefined();
+    expect(measureExternalActionResultResponseEnvelopeUtf8BytesV1(next)).toBeLessThanOrEqual(EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES);
+  });
+  it('lists read-only plugin workflows through the same Action without reading or writing Artifacts', async () => {
+    const plugin = { workflow: 'plugin:com.acme.workflows/review', pluginId: 'com.acme.workflows',
+      version: '1.2.3', title: 'Review from plugin', definition };
+    const store: WorkflowDefinitionArtifactOperations = {
+      read: async () => { throw new Error('no_plugin_artifact'); }, list: async () => ({ items: [] }),
+      create: async () => { throw new Error('read_only'); }, update: async () => { throw new Error('read_only'); },
+      delete: async () => { throw new Error('read_only'); },
+    };
+    const definitions = createWorkflowDefinitionActions({ artifactStore: store, encodeListCursor: () => 'cursor',
+      assertDefinitionWriteAllowed: () => {}, readPluginWorkflows: () => [plugin] });
+    const execute = createWorkflowActionExecutor({ isWorkflowFeatureEnabled: () => true, definitions,
+      runs: createWorkflowAccountRunActionOwner({ definitions, storage: { execute: async () => { throw new Error('no_run_read'); } },
+        resolveAccountId: async () => 'account', resolveEncryption: async () => ({ kind: 'available',
+          witness: { mode: 'plain', version: 1, contentKeyFingerprint: null } }),
+        normalizeAbsolutePath: () => null, randomBytes: () => { throw new Error('no_keys'); } }),
+    });
+    const result = await execute({ actionId: 'workflow.definition.list', input: {}, context: { surface: 'agent' } });
+    expect(result).toEqual({ definitions: [], pluginWorkflows: [plugin] });
+    expect(WorkflowDefinitionListResultV1Schema.parse(result)).toEqual(result);
+  });
   it.each(['edit', 'admin'] as const)('refuses deletion by a %s grantee before removing personal triggers', async (access) => {
     const writes: string[] = [];
     const artifactStore: WorkflowDefinitionArtifactOperations = {

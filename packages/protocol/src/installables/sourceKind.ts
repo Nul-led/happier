@@ -27,6 +27,15 @@ export const GitHubReleaseBinaryInstallableSourceSchema = z.object({
   kind: z.literal('github_release_binary'),
   repo: z.string().trim().regex(/^[^/\s]+\/[^/\s]+$/),
   distTag: z.string().trim().min(1).optional(),
+  archiveLayout: z.enum(['bin_directory', 'single_executable']).optional(),
+  assetNamePrefix: z.string().trim().min(1).optional(),
+  targetByPlatform: z.record(z.string(), z.string().trim().min(1)).optional(),
+  launch: z.object({
+    kind: z.literal('codexAcp'),
+    overrideEnvironmentKey: z.string().trim().min(1),
+    configOverridesEnvironmentKey: z.string().trim().min(1),
+    configOverrideArgument: z.string().trim().min(1),
+  }).strict().optional(),
 }).strict();
 
 export const ManagedPackageInstallableSourceSchema = z.object({

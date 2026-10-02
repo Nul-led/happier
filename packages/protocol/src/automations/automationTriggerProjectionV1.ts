@@ -4,6 +4,7 @@ import { AutomationEventPositiveSafeIntegerV1Schema } from './automationColumnBo
 import { AutomationTriggerIdSchema, AutomationTriggerRevisionSchema } from './automationTriggerIdentity.js';
 import { AutomationScheduleTriggerSchema } from './automationTriggerDefinition.js';
 import { AutomationSessionLifecycleConfigurationSchema } from './automationSessionLifecycle.js';
+import { AutomationRunLifecycleTriggerSchema } from './automationRunLifecycle.js';
 import { PluginMachineMaterializationRefV1Schema } from '../plugins/availability/materializationRefV1.js';
 const TIMESTAMP_SCHEMA = z.number().int().nonnegative().safe();
 const IDENTIFIER_SCHEMA = z.string().min(1);
@@ -125,13 +126,21 @@ export const AutomationSessionLifecycleTriggerProjectionSchema = AutomationTrigg
 }).strict();
 
 export const AutomationTriggerListItemSchema = z.discriminatedUnion('kind', [
+  AutomationTriggerProjectionBaseSchema.extend({ kind: z.literal('prComment'), sourceSessionId: IDENTIFIER_SCHEMA }).strict(),
+  AutomationTriggerProjectionBaseSchema.extend({ kind: z.literal('ciFailed'), sourceSessionId: IDENTIFIER_SCHEMA }).strict(),
   AutomationScheduleTriggerProjectionSchema,
   AutomationPluginEventTriggerProjectionSchema,
   AutomationSessionLifecycleTriggerProjectionSchema,
+  AutomationTriggerProjectionBaseSchema.extend({ ...AutomationRunLifecycleTriggerSchema.shape,
+    remainingOccurrences: z.number().int().min(0).max(1), status: AutomationSessionLifecycleTriggerStatusSchema }).strict(),
 ]);
 export type AutomationTriggerListItem = z.infer<typeof AutomationTriggerListItemSchema>;
 
 export const AutomationTriggerDetailSchema = z.discriminatedUnion('kind', [
+  AutomationTriggerProjectionBaseSchema.extend({ kind: z.literal('prComment'), sourceSessionId: IDENTIFIER_SCHEMA,
+    triggerDefinitionEnvelope: z.string().min(1) }).strict(),
+  AutomationTriggerProjectionBaseSchema.extend({ kind: z.literal('ciFailed'), sourceSessionId: IDENTIFIER_SCHEMA,
+    triggerDefinitionEnvelope: z.string().min(1) }).strict(),
   AutomationScheduleTriggerProjectionSchema.extend({ triggerDefinitionEnvelope: z.null() }).strict(),
   AutomationPluginEventTriggerProjectionSchema.extend({
     triggerDefinitionEnvelope: z.string().min(1),
@@ -139,5 +148,8 @@ export const AutomationTriggerDetailSchema = z.discriminatedUnion('kind', [
   AutomationSessionLifecycleTriggerProjectionSchema.extend({
     triggerDefinitionEnvelope: z.null(),
   }).strict(),
+  AutomationTriggerProjectionBaseSchema.extend({ ...AutomationRunLifecycleTriggerSchema.shape,
+    remainingOccurrences: z.number().int().min(0).max(1), status: AutomationSessionLifecycleTriggerStatusSchema,
+    triggerDefinitionEnvelope: z.null() }).strict(),
 ]);
 export type AutomationTriggerDetail = z.infer<typeof AutomationTriggerDetailSchema>;

@@ -15,6 +15,9 @@ import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import { log } from "@/utils/logging/log";
 import * as privacyKit from "privacy-kit";
 import { createArtifact, deleteArtifact, updateArtifact } from "@/app/artifacts/artifactWriteService";
+import { listArtifactBodyRevisionsInTx, restoreArtifactBodyRevision } from "@/app/artifacts/artifactRevisionService";
+import { ArtifactStorageSizeUnavailableError, readArtifactStorageUsageInTx } from "@/app/artifacts/artifactStorageService";
+import { readArtifactBlob } from '@/app/artifacts/artifactBlobService';
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import {
     ArtifactCallerAccessV1Schema,
@@ -26,6 +29,10 @@ import {
     ArtifactRecipientKeyEnvelopeCommitInputV1Schema,
     ArtifactRecipientKeyEnvelopeCommitResponseV1Schema,
     ArtifactAccessErrorCodeV1Schema,
+    ArtifactRevisionListResponseV1Schema,
+    ArtifactStorageUsageV1Schema,
+    ArtifactQuotaExceededV1Schema,
+    ArtifactBlobWriteV1Schema, ArtifactBlobReadResponseV1Schema,
 } from "@happier-dev/protocol";
 
 const DEFAULT_ARTIFACT_LIST_LIMIT = 500;
@@ -46,6 +53,94 @@ function parseArtifactListCursor(value: string | undefined): { updatedAt: Date; 
 }
 
 export function artifactsRoutes(app: Fastify) {
+    app.get('/v1/artifacts/:id/blobs/:blobId', {
+        preHandler: app.authenticate,
+        config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, 'artifacts') },
+        schema: { params: z.object({ id: z.string(), blobId: z.string().uuid() }), response: {
+            200: ArtifactBlobReadResponseV1Schema,
+            404: z.object({ error: z.literal('Artifact not found') }),
+            503: z.object({ error: z.literal('artifact_content_unavailable') }),
+        } },
+    }, async (request, reply) => {
+        try {
+            const result = await readArtifactBlob({ actorAccountId: request.userId, artifactId: request.params.id, blobId: request.params.blobId });
+            if (!result.ok) return result.error === 'artifact_not_found'
+                ? reply.code(404).send({ error: 'Artifact not found' }) : reply.code(503).send({ error: 'artifact_content_unavailable' });
+            return reply.send(result.value);
+        } catch { return reply.code(503).send({ error: 'artifact_content_unavailable' }); }
+    });
+    app.get('/v1/artifacts/storage/usage', {
+        preHandler: app.authenticate,
+        config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "artifacts") },
+        schema: { response: { 200: ArtifactStorageUsageV1Schema,
+            503: z.object({ error: z.literal('storage_size_out_of_range') }) } },
+    }, async (request, reply) => {
+        try { return reply.send(await inTx(tx => readArtifactStorageUsageInTx(tx, request.userId))); }
+        catch (error) {
+            if (error instanceof ArtifactStorageSizeUnavailableError) return reply.code(503).send({ error: error.code });
+            throw error;
+        }
+    });
+
+    app.get('/v1/artifacts/:id/revisions', {
+        preHandler: app.authenticate,
+        config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "artifacts") },
+        schema: { params: z.object({ id: z.string() }), response: {
+            200: ArtifactRevisionListResponseV1Schema,
+            404: z.object({ error: z.literal('Artifact not found') }),
+            503: z.object({ error: z.literal('artifact_content_unavailable') }),
+        } },
+    }, async (request, reply) => {
+        const result = await inTx(tx => listArtifactBodyRevisionsInTx(tx, { actorAccountId: request.userId, artifactId: request.params.id }));
+        if (!result.ok) return result.error === 'artifact_not_found'
+            ? reply.code(404).send({ error: 'Artifact not found' })
+            : reply.code(503).send({ error: 'artifact_content_unavailable' });
+        return reply.send({ retentionCount: result.retentionCount, revisions: result.revisions.map(revision => ({
+            ...revision, body: privacyKit.encodeBase64(revision.body), createdAt: revision.createdAt.getTime(),
+        })) });
+    });
+
+    app.post('/v1/artifacts/:id/revisions/:bodyVersion/restore', {
+        preHandler: app.authenticate,
+        schema: {
+            params: z.object({ id: z.string(), bodyVersion: z.coerce.number().int().min(1) }),
+            body: z.object({ header: z.string(), expectedHeaderVersion: z.number().int().min(1), expectedBodyVersion: z.number().int().min(1) }).strict(),
+            response: {
+                200: z.union([
+                    z.object({ success: z.literal(true), headerVersion: z.number(), bodyVersion: z.number() }),
+                    z.object({ success: z.literal(false), error: z.literal('version-mismatch'), currentHeaderVersion: z.number(),
+                        currentBodyVersion: z.number(), currentHeader: z.string(), currentBody: z.string() }),
+                ]),
+                400: z.object({ error: z.string() }),
+                404: z.object({ error: z.literal('Artifact not found') }),
+                413: ArtifactQuotaExceededV1Schema,
+                500: z.object({ error: z.literal('Failed to restore artifact') }),
+            },
+        },
+    }, async (request, reply) => {
+        const result = await restoreArtifactBodyRevision({ actorUserId: request.userId, artifactId: request.params.id,
+            bodyVersion: request.params.bodyVersion, header: privacyKit.decodeBase64(request.body.header),
+            expectedRevision: { headerVersion: request.body.expectedHeaderVersion,
+                bodyVersion: request.body.expectedBodyVersion } });
+        if (!result.ok) {
+            if (result.error === 'quota_exceeded') return reply.code(413).send({ error: result.error, budget: result.budget, limitBytes: result.limitBytes, usedBytes: result.usedBytes });
+            if (result.error === 'not-found') return reply.code(404).send({ error: 'Artifact not found' });
+            if (result.error === 'invalid-params') return reply.code(400).send({ error: 'Invalid parameters' });
+            if (result.error === 'version-mismatch' && result.current) return reply.send({ success: false as const,
+                error: 'version-mismatch' as const, currentHeaderVersion: result.current.headerVersion, currentBodyVersion: result.current.bodyVersion,
+                currentHeader: privacyKit.encodeBase64(new Uint8Array(result.current.header)), currentBody: privacyKit.encodeBase64(new Uint8Array(result.current.body)) });
+            return reply.code(500).send({ error: 'Failed to restore artifact' });
+        }
+        if (!result.header || !result.body) return reply.code(500).send({ error: 'Failed to restore artifact' });
+        const recipient = result.ownerUpdate ?? { accountId: request.userId, cursor: result.cursor };
+        eventRouter.emitUpdate({ userId: recipient.accountId,
+            payload: buildUpdateArtifactUpdate(request.params.id, recipient.cursor, randomKeyNaked(12),
+                { value: privacyKit.encodeBase64(new Uint8Array(result.header.bytes)), version: result.header.version },
+                { value: privacyKit.encodeBase64(new Uint8Array(result.body.bytes)), version: result.body.version }),
+            recipientFilter: { type: 'user-scoped-only' } });
+        return reply.send({ success: true as const, headerVersion: result.header.version, bodyVersion: result.body.version });
+    });
+
     // GET /v1/artifacts - List all artifacts for the account
     app.get('/v1/artifacts', {
         preHandler: app.authenticate,
@@ -224,15 +319,16 @@ export function artifactsRoutes(app: Fastify) {
     });
 
     // POST /v1/artifacts - Create new artifact
-    app.post('/v1/artifacts', {
+    const registerCreateArtifactRoute = (url: string, requiresBlob: boolean) => app.post(url, {
         preHandler: app.authenticate,
         schema: {
             body: z.object({
                 id: z.string().uuid(),
                 header: z.string(),
                 body: z.string(),
-                dataEncryptionKey: z.string()
-            }),
+                dataEncryptionKey: z.string(),
+                blob: ArtifactBlobWriteV1Schema.optional(),
+            }).strict().refine(value => requiresBlob ? value.blob !== undefined : value.blob === undefined),
             response: {
                 200: z.object({
                     id: z.string(),
@@ -251,6 +347,7 @@ export function artifactsRoutes(app: Fastify) {
                 409: z.object({
                     error: z.literal('Artifact with this ID already exists for another account')
                 }),
+                413: ArtifactQuotaExceededV1Schema,
                 400: z.object({
                     error: z.literal('Invalid parameters')
                 }),
@@ -261,7 +358,7 @@ export function artifactsRoutes(app: Fastify) {
         }
     }, async (request, reply) => {
         const userId = request.userId;
-        const { id, header, body, dataEncryptionKey } = request.body;
+        const { id, header, body, dataEncryptionKey, blob } = request.body;
 
         try {
             log({ module: 'api', artifactId: id, userId }, 'Creating artifact');
@@ -271,9 +368,11 @@ export function artifactsRoutes(app: Fastify) {
                 header: privacyKit.decodeBase64(header),
                 body: privacyKit.decodeBase64(body),
                 dataEncryptionKey: privacyKit.decodeBase64(dataEncryptionKey),
+                blob,
             });
 
             if (!result.ok) {
+                if (result.error === 'quota_exceeded') return reply.code(413).send({ error: result.error, budget: result.budget, limitBytes: result.limitBytes, usedBytes: result.usedBytes });
                 if (result.error === 'invalid-params') {
                     return reply.code(400).send({ error: 'Invalid parameters' });
                 }
@@ -320,8 +419,11 @@ export function artifactsRoutes(app: Fastify) {
         }
     });
 
-    // POST /v1/artifacts/:id - Update artifact with version control
-    app.post('/v1/artifacts/:id', {
+    registerCreateArtifactRoute('/v1/artifacts', false);
+    registerCreateArtifactRoute('/v1/artifacts/content/binary', true);
+
+    // Both transports use the same canonical body-version mutation owner.
+    const registerUpdateArtifactRoute = (url: string, requiresBlob: boolean) => app.post(url, {
         preHandler: app.authenticate,
         schema: {
             params: z.object({
@@ -331,8 +433,9 @@ export function artifactsRoutes(app: Fastify) {
                 header: z.string().optional(),
                 expectedHeaderVersion: z.number().int().min(0).optional(),
                 body: z.string().optional(),
-                expectedBodyVersion: z.number().int().min(0).optional()
-            }),
+                expectedBodyVersion: z.number().int().min(0).optional(),
+                blob: ArtifactBlobWriteV1Schema.optional(),
+            }).strict().refine(value => requiresBlob ? value.blob !== undefined : value.blob === undefined),
             response: {
                 200: z.union([
                     z.object({
@@ -355,6 +458,7 @@ export function artifactsRoutes(app: Fastify) {
                 404: z.object({
                     error: z.literal('Artifact not found')
                 }),
+                413: ArtifactQuotaExceededV1Schema,
                 500: z.object({
                     error: z.literal('Failed to update artifact')
                 })
@@ -363,7 +467,7 @@ export function artifactsRoutes(app: Fastify) {
     }, async (request, reply) => {
         const userId = request.userId;
         const { id } = request.params;
-        const { header, expectedHeaderVersion, body, expectedBodyVersion } = request.body;
+        const { header, expectedHeaderVersion, body, expectedBodyVersion, blob } = request.body;
 
         try {
             if (header !== undefined && expectedHeaderVersion === undefined) {
@@ -389,9 +493,11 @@ export function artifactsRoutes(app: Fastify) {
                 artifactId: id,
                 header: headerParam,
                 body: bodyParam,
+                blob,
             });
 
             if (!result.ok) {
+                if (result.error === 'quota_exceeded') return reply.code(413).send({ error: result.error, budget: result.budget, limitBytes: result.limitBytes, usedBytes: result.usedBytes });
                 if (result.error === 'invalid-params') {
                     return reply.code(400).send({ error: 'Invalid parameters' });
                 }
@@ -441,6 +547,9 @@ export function artifactsRoutes(app: Fastify) {
             return reply.code(500).send({ error: 'Failed to update artifact' });
         }
     });
+
+    registerUpdateArtifactRoute('/v1/artifacts/:id', false);
+    registerUpdateArtifactRoute('/v1/artifacts/:id/content/binary', true);
 
     // DELETE /v1/artifacts/:id - Delete artifact
     const registerDeleteArtifactRoute = (url: string, requiresRevision: boolean) => app.delete(url, {

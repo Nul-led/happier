@@ -35,16 +35,22 @@ const input = { sessionId: 'worker', leadSessionId: 'lead', expectedLeadSessionI
 const context = { surface: 'cli', authority: 'present_user', serverId: 'home', bypassApprovals: true } as const;
 
 describe('session.worker.publish', () => {
-  it('admits only the caller-bound summary and preserves typed producer refusals', async () => {
+  it('admits a caller-bound report with references and preserves typed producer refusals', async () => {
+    const reports: unknown[] = [];
+    const deliverables = [{ kind: 'workspace_file', sessionId: 'worker', path: 'result.md' }, { kind: 'artifact', artifactId: 'report' }];
     const executor = createTransportExecutor({
-      sessionWorkerPublish: async ({ summary }) => summary === 'allowed'
+      sessionWorkerPublish: async ({ context: _context, ...report }) => {
+        reports.push(report);
+        return report.summary === 'allowed'
         ? { sessionId: 'worker', leadSessionId: 'lead', localId: 'report-1' }
-        : { ok: false, errorCode: 'session_worker_requires_reports_to', error: 'session_worker_requires_reports_to' },
+        : { ok: false, errorCode: 'session_worker_requires_reports_to', error: 'session_worker_requires_reports_to' };
+      },
     });
     const agent = { surface: 'agent', authority: 'account_automation', defaultSessionId: 'worker' } as const;
-    await expect(executor.execute('session.worker.publish', { summary: 'allowed' }, agent)).resolves.toMatchObject({
+    await expect(executor.execute('session.worker.publish', { summary: 'allowed', deliverables }, agent)).resolves.toMatchObject({
       ok: true, result: { sessionId: 'worker', leadSessionId: 'lead', localId: 'report-1' },
     });
+    expect(reports).toEqual([{ summary: 'allowed', deliverables }]);
     await expect(executor.execute('session.worker.publish', { summary: 'allowed', leadSessionId: 'forged' }, agent)).resolves.toMatchObject({ ok: false });
     await expect(executor.execute('session.worker.publish', { summary: 'refused' }, agent)).resolves.toMatchObject({ ok: false, errorCode: 'session_worker_requires_reports_to' });
     expect(getActionSpec('session.worker.publish').surfaces.cli).toBe(false);

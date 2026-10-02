@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
     ARTIFACT_PLAIN_DATA_KEY_MARKER,
     encodePlainArtifactStoredContent,
+    PluginAvailabilityActionHttpPathsV1,
     PluginAccountCollectionContributionV1Schema,
     PluginAvailabilityReleaseReadActionOutputV1Schema,
     normalizePluginAccountCollectionContractsV1,
@@ -22,6 +23,7 @@ import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { withAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
 import {
     retirePluginCollectionCandidatePreparation,
     stagePluginCollectionCandidatePreparation,
@@ -40,6 +42,7 @@ import {
     createPluginAvailabilityOperations,
     resolveCurrentClaimablePluginMachineMaterializationTx,
 } from "./operations";
+import { registerPluginAvailabilityRoutes } from "./routes";
 
 const ACCOUNT_ID = "account-plugin-availability";
 const MACHINE_ID = "machine-plugin-availability";
@@ -316,7 +319,6 @@ describe("plugin Availability operations", () => {
     ) {
         await service.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: fixture.ref,
                 slot: fixture.slot,
@@ -326,7 +328,6 @@ describe("plugin Availability operations", () => {
         });
         await service.publishPackageAsset({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: fixture.ref,
                 artifactId: fixture.packageArtifactId,
@@ -334,6 +335,107 @@ describe("plugin Availability operations", () => {
             },
         });
     }
+
+    async function seedCurrentPlainHostedArchives() {
+        harness.resetEnv({
+            HAPPIER_FEATURE_PLUGINS_UI_ARTIFACT_HOSTING__ENABLED: "1",
+            HAPPIER_FEATURE_PLUGINS_UI_ARTIFACT_HOSTING__MAX_ARTIFACT_BYTES: "1048576",
+            HAPPIER_FEATURE_PLUGINS_UI_ARTIFACT_HOSTING__MAX_ACCOUNT_BYTES: "4194304",
+        });
+        await seedAccountAndMachine();
+        const service = createPluginAvailabilityOperations();
+        const fixture = createHostedReleaseFixture({ version: RELEASE.version, ordinal: 1 });
+        await publishHostedRelease(service, fixture);
+        await selectHostedRelease(service, fixture, null);
+        await hostReleaseArchives(service, fixture);
+        return { service, fixture };
+    }
+
+    it.each(["ui", "packageAsset"] as const)(
+        "rejoins a current plain %s archive without a stored-content declaration",
+        async (kind) => {
+            const { service, fixture } = await seedCurrentPlainHostedArchives();
+            const artifactId = "00000000-0000-4000-8000-000000000099";
+            const result = kind === "ui"
+                ? await service.publishUiArtifact({
+                    accountId: ACCOUNT_ID,
+                    input: {
+                        release: fixture.ref,
+                        slot: fixture.slot,
+                        accountArtifactId: artifactId,
+                        artifact: fixture.uiArtifact,
+                    },
+                })
+                : await service.publishPackageAsset({
+                    accountId: ACCOUNT_ID,
+                    input: {
+                        release: fixture.ref,
+                        artifactId,
+                        artifact: fixture.packageArtifact,
+                    },
+                });
+            expect(result).toMatchObject({
+                outcome: "rejoined",
+                link: kind === "ui"
+                    ? { accountArtifactId: fixture.uiArtifactId }
+                    : { artifactId: fixture.packageArtifactId },
+            });
+            await expect(db.artifact.findUnique({ where: { id: artifactId } })).resolves.toBeNull();
+            await expect(db.artifact.count({ where: { accountId: ACCOUNT_ID } })).resolves.toBe(2);
+        },
+    );
+
+    it.each(["ui", "packageAsset"] as const)(
+        "reads a current plain %s archive without a declaration while preserving Account and mode admission",
+        async (kind) => {
+            const { service, fixture } = await seedCurrentPlainHostedArchives();
+            const path = PluginAvailabilityActionHttpPathsV1[kind === "ui"
+                ? "account.plugins.availability.uiArtifact.read"
+                : "account.plugins.availability.packageAsset.read"];
+            const payload = kind === "ui"
+                ? {
+                    release: fixture.ref,
+                    contributionId: fixture.slot.contributionId,
+                    artifactId: fixture.slot.artifactId,
+                    tier: fixture.slot.tier,
+                    platform: fixture.slot.platform,
+                }
+                : { release: fixture.ref };
+            await withAuthenticatedTestApp(
+                (app) => registerPluginAvailabilityRoutes(app, { operations: service }),
+                async (app) => {
+                    const read = (accountId: string) => app.inject({
+                        method: "POST",
+                        url: path,
+                        headers: { "x-test-user-id": accountId },
+                        payload,
+                    });
+                    const current = await read(ACCOUNT_ID);
+                    expect(current.statusCode, current.body).toBe(200);
+                    expect(current.json()).toMatchObject({
+                        artifact: kind === "ui" ? fixture.uiArtifact : fixture.packageArtifact,
+                    });
+                    const foreignAccount = await db.account.create({
+                        data: { encryptionMode: "plain" },
+                        select: { id: true },
+                    });
+                    const foreign = await read(foreignAccount.id);
+                    expect(foreign.statusCode).toBe(404);
+                    await db.account.update({
+                        where: { id: ACCOUNT_ID },
+                        data: { ...createSignedAccountContentBinding(), encryptionMode: "e2ee" },
+                    });
+                    const wrongMode = await read(ACCOUNT_ID);
+                    expect(wrongMode.statusCode).toBe(400);
+                    expect(wrongMode.json()).toEqual({
+                        error: kind === "ui"
+                            ? "plugin_ui_artifact_invalid_content"
+                            : "plugin_package_asset_invalid_content",
+                    });
+                },
+            );
+        },
+    );
 
     it("uses the operator-owned hosting capability when no test override is supplied", async () => {
         await seedAccountAndMachine();
@@ -2627,7 +2729,6 @@ describe("plugin Availability operations", () => {
 
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 slot,
@@ -2643,7 +2744,6 @@ describe("plugin Availability operations", () => {
 
         const published = await service.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 slot,
@@ -2704,7 +2804,6 @@ describe("plugin Availability operations", () => {
         }]);
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 slot,
@@ -2720,7 +2819,6 @@ describe("plugin Availability operations", () => {
         })).resolves.toBeNull();
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 slot,
@@ -2730,17 +2828,6 @@ describe("plugin Availability operations", () => {
         })).resolves.toMatchObject({ outcome: "rejoined", link: { accountArtifactId: artifactId } });
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: false,
-            input: {
-                release: RELEASE,
-                slot,
-                accountArtifactId: "00000000-0000-4000-8000-000000000002",
-                artifact,
-            },
-        })).rejects.toMatchObject({ code: "plugin_ui_artifact_client_upgrade_required" });
-        await expect(service.publishUiArtifact({
-            accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 slot,
@@ -2754,7 +2841,6 @@ describe("plugin Availability operations", () => {
         })).rejects.toMatchObject({ code: "plugin_ui_artifact_conflict" });
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 slot,
@@ -2764,7 +2850,6 @@ describe("plugin Availability operations", () => {
         })).resolves.toMatchObject({ outcome: "rejoined", link: { accountArtifactId: artifactId } });
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 slot,
@@ -2880,7 +2965,6 @@ describe("plugin Availability operations", () => {
         // Present-user hosting intent is enabled; only the operator capability is off.
         await expect(hostingDisabled.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: publishInput,
         })).rejects.toMatchObject({ code: "plugin_ui_artifact_hosting_unsupported" });
         await expect(db.artifact.count()).resolves.toBe(0);
@@ -2889,7 +2973,6 @@ describe("plugin Availability operations", () => {
         // Positive twin: the identical envelope commits once the operator supports hosting.
         await expect(hostingEnabled.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: publishInput,
         })).resolves.toMatchObject({ outcome: "created", link: { accountArtifactId: artifactId } });
 
@@ -2938,7 +3021,6 @@ describe("plugin Availability operations", () => {
 
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 slot,
@@ -2960,7 +3042,6 @@ describe("plugin Availability operations", () => {
         // the classified slot even when the client reseals equivalent bytes.
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 slot,
@@ -2973,7 +3054,6 @@ describe("plugin Availability operations", () => {
         });
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 slot,
@@ -2990,7 +3070,6 @@ describe("plugin Availability operations", () => {
         });
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 slot,
@@ -3063,7 +3142,6 @@ describe("plugin Availability operations", () => {
         if (occupied) {
             await service.publishUiArtifact({
                 accountId: ACCOUNT_ID,
-                supportsCurrentStoredContentProtocol: true,
                 input: {
                     release: RELEASE,
                     slot,
@@ -3078,7 +3156,6 @@ describe("plugin Availability operations", () => {
         }
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 slot,
@@ -3104,7 +3181,6 @@ describe("plugin Availability operations", () => {
         await selectHostedRelease(service, fixture, null);
         const request = {
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: fixture.ref,
                 slot: fixture.slot,
@@ -3200,7 +3276,6 @@ describe("plugin Availability operations", () => {
         };
         await expect(service.publishPackageAsset({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: { release: RELEASE, artifactId, artifact },
         })).resolves.toMatchObject({
             outcome: "created",
@@ -3223,14 +3298,12 @@ describe("plugin Availability operations", () => {
         });
         await expect(service.publishPackageAsset({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: { release: RELEASE, artifactId, artifact },
         })).resolves.toMatchObject({ outcome: "rejoined" });
         // A fresh publisher rejoins the immutable release link without
         // repointing it or persisting another Artifact.
         await expect(service.publishPackageAsset({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 artifactId: "00000000-0000-4000-8000-000000000005",
@@ -3242,7 +3315,6 @@ describe("plugin Availability operations", () => {
             .resolves.toMatchObject({ packageAssets: [{ release: RELEASE, artifactId, descriptor: archive.descriptor }] });
         await expect(service.publishPackageAsset({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 artifactId: "00000000-0000-4000-8000-000000000005",
@@ -3251,7 +3323,6 @@ describe("plugin Availability operations", () => {
         })).rejects.toMatchObject({ code: "plugin_package_asset_invalid_content" });
         await expect(service.publishPackageAsset({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 artifactId,
@@ -3307,7 +3378,6 @@ describe("plugin Availability operations", () => {
 
         await expect(service.publishPackageAsset({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 artifactId: "00000000-0000-4000-8000-000000000005",
@@ -3325,7 +3395,6 @@ describe("plugin Availability operations", () => {
         };
         await expect(service.publishPackageAsset({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: { release: RELEASE, artifactId: "00000000-0000-4000-8000-000000000006", artifact: freshArtifact },
         })).resolves.toMatchObject({ outcome: "rejoined", link: { artifactId: "00000000-0000-4000-8000-000000000005" } });
         expect(await db.artifact.count({ where: { accountId: ACCOUNT_ID } })).toBe(1);
@@ -3333,7 +3402,6 @@ describe("plugin Availability operations", () => {
             .resolves.toMatchObject({ artifact });
         await expect(service.publishPackageAsset({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 artifactId: "00000000-0000-4000-8000-000000000006",
@@ -3613,7 +3681,6 @@ describe("plugin Availability operations", () => {
         });
         await service.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 slot,
@@ -3623,7 +3690,6 @@ describe("plugin Availability operations", () => {
         });
         await service.publishPackageAsset({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 artifactId: packageArtifactId,
@@ -3806,7 +3872,6 @@ describe("plugin Availability operations", () => {
         });
         await service.publishUiArtifact({
             accountId: ACCOUNT_ID,
-            supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 slot,

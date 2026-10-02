@@ -5,7 +5,8 @@ import {
   type WorkflowArtifactRevisionV1,
   type WorkflowDefinitionSavedByV1,
 } from '../../workflows/workflowDefinitionV1.js';
-import { WorkflowDefinitionCreateRequestV1Schema, WorkflowDefinitionUpdateRequestV1Schema } from '../../workflows/actionsV1.js';
+import { WorkflowDefinitionCreateRequestV1Schema, WorkflowDefinitionUpdateRequestV1Schema,
+  type WorkflowDefinitionListResultV1 } from '../../workflows/actionsV1.js';
 import { applyWorkflowDefinitionEditsV1, type WorkflowDefinitionEditRequestV1 } from '../../workflows/workflowDefinitionEditV1.js';
 import { EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES, measureExternalActionResultResponseEnvelopeUtf8BytesV1 } from '../externalActionLimits.js';
 import { validateWorkflowDefinition } from '../../workflows/workflowValidationV1.js';
@@ -15,6 +16,7 @@ import type { z } from 'zod';
 import type { ArtifactCallerAccessV1 } from '../../artifacts/artifactAccessV1.js';
 import { workflowDefinitionArtifactSharingAdapterV1 } from '../../artifacts/artifactSharingV1.js';
 import { sameStrictJsonValue } from '../../json/strictJsonValue.js';
+import type { WorkflowPluginSourceReaderV1, WorkflowPluginSourceV1 } from '../../workflows/workflowPluginSourceV1.js';
 
 export type WorkflowDefinitionArtifactHeaderRow = Readonly<{
   artifactId: string; header: Readonly<Record<string, unknown>>; headerVersion: number; updatedAt: number;
@@ -25,13 +27,13 @@ export type WorkflowDefinitionArtifactOperations = Readonly<{
     artifactId: string; header: Readonly<Record<string, unknown>>; body: string | null; revision: WorkflowArtifactRevisionV1;
     ownerAccountId: string; access: ArtifactCallerAccessV1;
   }> | null>;
-  list: (options: Readonly<{ limit?: number; cursor?: string }>) => Promise<Readonly<{
+  list: (options: Readonly<{ limit?: number; cursor?: string; signal?: AbortSignal }>) => Promise<Readonly<{
     items: readonly WorkflowDefinitionArtifactHeaderRow[]; nextCursor?: string;
   }>>;
-  create: (input: Readonly<{ artifactId: string; header: Readonly<Record<string, unknown>>; body: string }>) => Promise<unknown>;
-  update: (input: Readonly<{ artifactId: string; expectedRevision: WorkflowArtifactRevisionV1; header: Readonly<Record<string, unknown>>; body: string }>) => Promise<
+  create: (input: Readonly<{ artifactId: string; header: Readonly<Record<string, unknown>>; body: string; signal?: AbortSignal }>) => Promise<unknown>;
+  update: (input: Readonly<{ artifactId: string; expectedRevision: WorkflowArtifactRevisionV1; header: Readonly<Record<string, unknown>>; body: string; signal?: AbortSignal }>) => Promise<
     Readonly<{ ok: true; revision: WorkflowArtifactRevisionV1 }> | Readonly<{ ok: false; errorCode: string; error: string }>>;
-  delete: (artifactId: string) => Promise<Readonly<{ ok: true }> | Readonly<{ ok: false; errorCode: string; error: string }>>;
+  delete: (artifactId: string, options?: Readonly<{ expectedRevision?: WorkflowArtifactRevisionV1; signal?: AbortSignal }>) => Promise<Readonly<{ ok: true }> | Readonly<{ ok: false; errorCode: string; error: string }>>;
 }>;
 type Store = WorkflowDefinitionArtifactOperations;
 type CreateInput = z.infer<typeof WorkflowDefinitionCreateRequestV1Schema>;
@@ -40,6 +42,9 @@ type Metadata = z.infer<typeof WorkflowDefinitionMetadataV1Schema>;
 type ArtifactHeader = z.infer<typeof WorkflowDefinitionArtifactHeaderV1Schema>;
 
 type DefinitionCaller = WorkflowActionExecuteArgs['context'];
+// Account Artifact cursors encode a JSON object as base64url (and start `ey`).
+// This reserved base64url-safe phase continues the same list after its headers.
+const PLUGIN_WORKFLOW_CURSOR_PREFIX = 'plugin-workflows_';
 
 function normalize(definition: unknown, context?: WorkflowIngressContextV1) {
   const validated = validateWorkflowDefinition(definition, context ? { context } : {});
@@ -83,7 +88,9 @@ export function createWorkflowDefinitionActions(params: Readonly<{
   encodeListCursor: (row: WorkflowDefinitionArtifactHeaderRow) => string;
   assertDefinitionWriteAllowed: (definition: WorkflowDefinitionV1, context?: WorkflowIngressContextV1, caller?: DefinitionCaller) => void | Promise<void>;
   removeWorkflowTriggers?: (definitionId: string) => Promise<void>;
+  readPluginWorkflows?: WorkflowPluginSourceReaderV1;
 }>) {
+  const readPluginWorkflows: WorkflowPluginSourceReaderV1 = params.readPluginWorkflows ?? (() => []);
   const get = async ({ definitionId, signal }: Readonly<{ definitionId: string; signal?: AbortSignal }>) => {
     const artifact = await params.artifactStore.read(definitionId, signal ? { signal } : undefined);
     if (!artifact) throw Object.assign(new Error('workflow_definition_not_found'), { code: 'content_unavailable' });
@@ -119,8 +126,33 @@ export function createWorkflowDefinitionActions(params: Readonly<{
       ...(actor ? { savedBy: actor } : {}) };
   };
   return {
-    list: async ({ limit, cursor: inputCursor }: Readonly<{ cursor?: string; limit?: number }>) => {
+    readPluginWorkflows,
+    list: async ({ limit, cursor: inputCursor }: Readonly<{ cursor?: string; limit?: number }>): Promise<WorkflowDefinitionListResultV1> => {
+      const sources = await readPluginWorkflows();
       const definitions: Array<ArtifactHeader & Readonly<{ ownerAccountId: string; access: ArtifactCallerAccessV1 }>> = [];
+      const pluginPage = (start: number) => {
+        const pluginWorkflows: WorkflowPluginSourceV1[] = [];
+        for (let index = start; index < sources.length; index += 1) {
+          const candidate = { definitions, pluginWorkflows: [...pluginWorkflows, sources[index]!],
+            ...(index + 1 < sources.length ? { nextCursor: `${PLUGIN_WORKFLOW_CURSOR_PREFIX}${index + 1}` } : {}) };
+          if (measureExternalActionResultResponseEnvelopeUtf8BytesV1(candidate) > EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES) {
+            if (definitions.length === 0 && pluginWorkflows.length === 0) {
+              throw Object.assign(new Error('workflow_definition_exceeds_action_response'), { code: 'content_unavailable' });
+            }
+            return { definitions, ...(pluginWorkflows.length ? { pluginWorkflows } : {}),
+              nextCursor: `${PLUGIN_WORKFLOW_CURSOR_PREFIX}${index}` };
+          }
+          pluginWorkflows.push(sources[index]!);
+        }
+        return { definitions, ...(pluginWorkflows.length ? { pluginWorkflows } : {}) };
+      };
+      if (inputCursor?.startsWith(PLUGIN_WORKFLOW_CURSOR_PREFIX)) {
+        const offset = inputCursor.slice(PLUGIN_WORKFLOW_CURSOR_PREFIX.length);
+        if (!/^(0|[1-9]\d*)$/u.test(offset) || !Number.isSafeInteger(Number(offset))) {
+          throw Object.assign(new Error('workflow_definition_cursor_invalid'), { code: 'invalid_input' });
+        }
+        return pluginPage(Number(offset));
+      }
       // Opaque Artifact cursor of the last returned row. A page shortened by the
       // response ceiling resumes here, so the first omitted row is read next.
       let replayCursor: string | undefined;
@@ -148,7 +180,9 @@ export function createWorkflowDefinitionActions(params: Readonly<{
           // Size the exact page this row could close, inside the complete public
           // response framing, so the outer envelope owner never has to replace a
           // completed list with `result_too_large`.
-          const candidate = { definitions: [...definitions, definition], ...(isExhaustedAtPageEnd ? {} : { nextCursor: rowCursor }) };
+          const nextCursor = isExhaustedAtPageEnd
+            ? (sources.length ? `${PLUGIN_WORKFLOW_CURSOR_PREFIX}0` : undefined) : rowCursor;
+          const candidate = { definitions: [...definitions, definition], ...(nextCursor ? { nextCursor } : {}) };
           if (measureExternalActionResultResponseEnvelopeUtf8BytesV1(candidate) > EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES) {
             if (replayCursor === undefined) {
               throw Object.assign(new Error('workflow_definition_header_exceeds_action_response'), { code: 'content_unavailable' });
@@ -161,7 +195,7 @@ export function createWorkflowDefinitionActions(params: Readonly<{
         }
         cursor = page.nextCursor;
       } while (cursor);
-      return { definitions };
+      return pluginPage(0);
     },
     get,
     create: async (input: CreateInput, context?: WorkflowIngressContextV1, caller?: DefinitionCaller) => {

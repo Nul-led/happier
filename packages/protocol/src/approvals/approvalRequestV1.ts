@@ -24,7 +24,8 @@ import {
   SessionInputSourceSessionV1Schema,
 } from '../sessions/messages/sessionInputAdmission.js';
 import { PluginSourceCustodyV1Schema } from '../plugins/runtime/sourceCustody.js';
-import { WorkflowAcceptedAuthorizationV1Schema } from '../workflows/workflowDefinitionV1.js';
+import { WorkflowAcceptedAuthorizationV1Schema, WorkflowRunStartedByV1Schema } from '../workflows/workflowDefinitionV1.js';
+import { AgentStartSessionCallerV1Schema } from '../account/settings/admitAgentStartV1.js';
 
 export const ApprovalRequestStatusSchema = z.enum(['open', 'approved', 'rejected', 'executed', 'failed', 'canceled']);
 export type ApprovalRequestStatus = z.infer<typeof ApprovalRequestStatusSchema>;
@@ -82,6 +83,12 @@ export const ApprovalDecisionV1Schema = z.object({
 }).passthrough();
 export type ApprovalDecisionV1 = z.infer<typeof ApprovalDecisionV1Schema>;
 
+// Current decision authority is host-stamped. Released V1 history retains its
+// original passthrough schema and never authorizes current operand edits.
+const ApprovalDecisionV2Schema = ApprovalDecisionV1Schema.extend({
+  authority: z.literal('present_user').optional(),
+}).strict();
+
 export const ApprovalExecutionV1Schema = z.object({
   executedAtMs: z.number().int().min(0),
   ok: z.boolean(),
@@ -118,11 +125,14 @@ const ApprovalExecutionOriginSurfaceV1Schema = z.enum([
 
 export const ApprovalExecutionOriginCallerV1Schema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('host') }).strict(),
+  AgentStartSessionCallerV1Schema,
   z.object({
     kind: z.literal('plugin'),
     pluginId: asProtocolZod(PluginIdSchema),
     contributionLocalId: asProtocolZod(PluginContributionLocalIdSchema),
     sourceCustody: PluginSourceCustodyV1Schema,
+    /** Bounded descriptive admission fact for durable replay, never recursive authority. */
+    startedBy: WorkflowRunStartedByV1Schema.optional(),
   }).strict(),
   z.object({
     kind: z.literal('automationRun'),
@@ -337,7 +347,7 @@ export const ApprovalRequestV2Schema = z.object({
   preview: z.unknown().optional(),
   sessionCreationDirectoryApproval: SessionCreationDirectoryApprovalV1Schema.optional(),
   handoffTargetReplacementApproval: HandoffTargetReplacementApprovalV1Schema.optional(),
-  decision: ApprovalDecisionV1Schema.optional(),
+  decision: ApprovalDecisionV2Schema.optional(),
   execution: ApprovalExecutionV2Schema.optional(),
 }).strict().superRefine((value, ctx) => {
   validateApprovalRequestLifecycle(value, ctx);
@@ -389,6 +399,7 @@ export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>;
  */
 const CALLER_REQUIRES_EXACT_DAEMON_REPLAY_RECORD = {
   host: false,
+  session: true,
   plugin: true,
   automationRun: true,
   workflowRun: true,

@@ -16,6 +16,8 @@ vi.mock("@/storage/inTx", () => ({
             accountId: "account-1",
             originKind: "direct",
             automationId: null,
+            sourceArtifactId: null,
+            visibleTeamId: null,
             originSessionId: null,
             state: "queued",
             revision: 0,

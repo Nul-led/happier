@@ -4,7 +4,7 @@ import type { LocalServicePublicRateLimitDependencyEnv } from "@/app/features/ca
 
 export type LocalServicePublicRateLimitCheck = (
     input: Readonly<{
-        exposure: LocalServicePublicExposureV1;
+        exposure: Pick<LocalServicePublicExposureV1, "exposureId" | "rateLimitProfileId">;
         clientKey: string;
         nowMs: number;
     }>,

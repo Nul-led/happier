@@ -14,7 +14,7 @@ import {
     type ArtifactRecipientKeyEnvelopeInputV1,
 } from "@happier-dev/protocol";
 import type { Tx } from "@/storage/inTx";
-import { artifactOrdinaryWhere } from "./artifactClassification";
+import { artifactVisibleWhere } from "./artifactClassification";
 import { openArtifactStoredContentBytes } from "./artifactStoredContent";
 import { resolveEffectiveAccountEncryptionModeFromAccountRow } from "@/app/encryption/accountEncryptionMode";
 import { deriveAccountRecipientEnvelopeReadinessFromRow } from "@/app/encryption/accountRecipientEnvelopeReadiness";
@@ -31,7 +31,7 @@ export interface ArtifactAccess {
 }
 
 const accessRank = { view: 1, edit: 2, admin: 3, owner: 4 } as const;
-const artifactAddress = (artifactId: string) => ({ id: artifactId, ...artifactOrdinaryWhere });
+const artifactAddress = (artifactId: string) => ({ id: artifactId, ...artifactVisibleWhere });
 
 function artifactAccessFactsSelect(actorAccountId?: string) {
     const accountFilter = actorAccountId === undefined ? {} : { accountId: actorAccountId };
@@ -92,7 +92,7 @@ export async function resolveArtifactAccessInTx(tx: Tx, input: Readonly<{
 /** Candidate discovery starts at grant relations, then the access owner decides. */
 export async function listArtifactCandidatesInTx(tx: Tx, actorAccountId: string): Promise<string[]> {
     const [owned, direct, memberships, groupMemberships] = await Promise.all([
-        tx.artifact.findMany({ where: { accountId: actorAccountId, ...artifactOrdinaryWhere }, select: { id: true } }),
+        tx.artifact.findMany({ where: { accountId: actorAccountId, ...artifactVisibleWhere }, select: { id: true } }),
         tx.artifactAccountGrant.findMany({ where: { accountId: actorAccountId }, select: { artifactId: true } }),
         tx.teamMembership.findMany({ where: { accountId: actorAccountId }, select: { teamId: true } }),
         tx.teamGroupMembership.findMany({ where: { teamMembership: { accountId: actorAccountId } }, select: { teamGroupId: true } }),
@@ -209,7 +209,7 @@ export async function listArtifactHeadersForCallerInTx(tx: Tx, input: Readonly<{
     let cursor = input.cursor;
     while (result.length < input.limit) {
         const rows = await tx.artifact.findMany({ where: {
-            id: { in: candidates }, ...artifactOrdinaryWhere,
+            id: { in: candidates }, ...artifactVisibleWhere,
             ...(cursor ? { OR: [
                 { updatedAt: { lt: cursor.updatedAt } },
                 { updatedAt: cursor.updatedAt, id: { lt: cursor.id } },

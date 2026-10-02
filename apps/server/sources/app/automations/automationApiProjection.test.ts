@@ -6,7 +6,6 @@ import {
     serializeAutomationRunExecutionRecipeV1,
     serializeAutomationStoredDefinitionExecutionRecipeV1,
 } from "@happier-dev/protocol";
-import releasedV2Wire from "../../../../../packages/protocol/src/automations/fixtures/automation-v2.0.2.11-wire.json";
 
 import {
     toAutomationDefinitionDetailApiDto,
@@ -254,6 +253,7 @@ function eventRun() {
         causeSessionLifecycleEvent: null,
         causeSourceSessionId: null,
         causeSourceTurnId: null,
+        causeRunLifecycleEvidenceJson: null,
         causeSessionLifecycleRequestId: null,
         causeSessionLifecycleRequestKind: null,
         causeSessionLifecyclePolicyKind: null,
@@ -372,6 +372,26 @@ function conversationRun() {
 }
 
 describe("Automation API projections", () => {
+    it.each(["prComment", "ciFailed"] as const)("projects %s selection privately through detail only", (kind) => {
+        const base = scheduleAutomation();
+        const triggerId = AutomationTriggerIdSchema.parse("pr-trigger");
+        const envelope = JSON.stringify(sealAutomationTriggerDefinitionStoredEnvelopeV1({ mode: "plain",
+            binding: { v: 1, automationId: base.id, triggerId, triggerRevision: 1, triggerKind: kind },
+            definition: { kind, pullRequest: { repository: "owner/repo", number: 42 } },
+        }));
+        const item = { ...base, scopeSessionId: "session-1", triggers: [{ ...base.triggers[0],
+            id: triggerId, kind, scheduleKind: null, everyMs: null, nextRunAt: null,
+            sourceSessionId: "session-1", definitionEnvelope: envelope,
+        }] };
+        const listed = toAutomationDefinitionListItemApiDto(item);
+        expect(listed.triggers[0]).toMatchObject({ kind, sourceSessionId: "session-1" });
+        expect(JSON.stringify(listed)).not.toContain("owner/repo");
+        expect(listed.triggers[0]).not.toHaveProperty("triggerDefinitionEnvelope");
+        expect(toAutomationDefinitionDetailApiDto(item, ACCOUNT_CURRENTNESS).triggers[0])
+            .toMatchObject({ kind, sourceSessionId: "session-1", triggerDefinitionEnvelope: envelope });
+        expect(() => toAutomationDefinitionDetailApiDto(item, { mode: "e2ee", version: 7,
+            contentKeyFingerprint: "f".repeat(43) })).toThrow();
+    });
     it("projects the current trigger union without source leakage", () => {
         const schedule = scheduleAutomation();
         const event = eventAutomation();

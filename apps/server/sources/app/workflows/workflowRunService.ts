@@ -15,7 +15,7 @@ import {
     type WorkflowRunSummariesResultV1,
 } from "@happier-dev/protocol";
 import type { Prisma } from "@prisma/client";
-import { isWorkflowDraftPublicationLifecycleV1, type WorkflowRunRecipientKeyEnvelopeV1 } from "@happier-dev/protocol/workflows";
+import { isWorkflowDraftPublicationLifecycleV1, type WorkflowRunRecipientKeyEnvelopeV1, type WorkflowRunWaitConditionV1 } from "@happier-dev/protocol/workflows";
 import { resolveWorkflowRunAdmissionVisibilityInTx, storeWorkflowRunInitialKeyEnvelopesInTx, resolveWorkflowRunRecipientAccountIdsInTx } from "./workflowRunAccess";
 
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
@@ -34,6 +34,7 @@ import { isPrismaErrorCode, prismaRuntime } from "@/storage/prisma";
 
 import { assertWorkflowStoredEnvelopeOuterForMode, WorkflowStoredContentError } from "./runs/storedContent";
 import { workflowRunAttentionWhere, workflowRunAttentionSql, workflowRunSqlIdentifier } from "./workflowRunAttention";
+import { admitWorkflowRunLifecycleAutomationRunsTx } from "@/app/automations/automationRunLifecycleAdmission";
 import {
     WorkflowRunAccessError, resolveWorkflowRunAccessInTx, readWorkflowRunKeyProjectionInTx,
     resolveWorkflowRunVisibilityScopesInTx, type WorkflowRunAccess,
@@ -267,6 +268,7 @@ async function markWorkflowRunChangedTx(tx: Tx, accountId: string, runId: string
         if (recipientAccountId === accountId) ownerCursor = cursor;
     }
     if (deliveryBefore !== undefined) await reconcileWorkflowRunAttentionAndHintTx(tx, accountId, runId, deliveryBefore, inputDeliverable);
+    await admitWorkflowRunLifecycleAutomationRunsTx(tx, runId);
     return ownerCursor;
 }
 
@@ -865,8 +867,8 @@ export async function listWorkflowRuns(params: PageOptions & Readonly<{
     // The exact-Run selection is part of the cursor binding like every other
     // filter, so a cursor minted for a collection page cannot be replayed as
     // an exact read or vice versa. The lookup itself stays the lean list
-    // projection — one indexed row plus its accepted sidecar — with uniform
-    // keyset pagination and no invocation or usage reads.
+    // projection with exact opaque accepted/root sidecars, uniform keyset
+    // pagination, and no child content or usage reads.
     const queryKey = JSON.stringify({ accountId: params.accountId, sourceArtifactId: params.sourceArtifactId ?? null, runId: params.runId ?? null, origin: params.origin ?? null, states: [...(params.states ?? [])].sort(), attention: params.attention ?? null, originSessionId: params.originSessionId ?? null, automationId: params.automationId ?? null, machineId: params.machineId ?? null });
     const decoded = params.cursor ? decodeKeysetCursorV1(params.cursor, queryKey) : null;
     const afterDate = decoded?.status === "ok" ? readKeysetCursorTextV1(decoded.parts[0]) : null;
@@ -877,7 +879,8 @@ export async function listWorkflowRuns(params: PageOptions & Readonly<{
         const wanted = params.limit ?? Number.POSITIVE_INFINITY;
         let pageAfterDate = afterDate;
         let pageAfterId = afterId;
-        let collected: Array<WorkflowRunListRow & { keyCensus: WorkflowRunRecipientCensusResponseV1 }> = [];
+        let collected: Array<WorkflowRunListRow & { keyCensus: WorkflowRunRecipientCensusResponseV1;
+            rootProgress: { index: ReturnType<typeof projectInvocation>; contentEnvelope: string } | null }> = [];
         let collectedBytes = 2;
         for (;;) {
             const batchSize = Math.min(wanted - collected.length, WORKFLOW_PAGE_DATABASE_BATCH_ROWS);
@@ -908,7 +911,12 @@ export async function listWorkflowRuns(params: PageOptions & Readonly<{
         orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: batchSize + 1, select: workflowRunListSelect,
             }) as WorkflowRunListRow[];
             const candidateRows = rows.slice(0, batchSize);
-            // Cards read this lean fact, never invocation content. Reuse the
+            const roots = candidateRows.length === 0 ? [] : await tx.workflowRunInvocation.findMany({
+                where: { runId: { in: candidateRows.map((row) => row.id) }, parentRecordId: null,
+                    sequence: 0n, memberOrdinal: 0n, attempt: 0n }, select: invocationSelect,
+            });
+            const rootsByRunId = new Map(roots.map((row) => [row.runId, row]));
+            // Cards read this lean fact, never child invocation content. Reuse the
             // membership already selected by an attention-filtered query;
             // otherwise batch the same predicate over this page's exact ids.
             const attentionIds = new Set(params.attention === "required"
@@ -919,7 +927,19 @@ export async function listWorkflowRuns(params: PageOptions & Readonly<{
                 })).map((row) => row.id));
             const candidates = await Promise.all(candidateRows.map(async (candidate) => {
                 const keyCensus = await withWorkflowRunAccess(() => readWorkflowRunKeyProjectionInTx(tx, { actorAccountId: params.accountId, runId: candidate.id }));
-                const row = { ...candidate, attentionRequired: attentionIds.has(candidate.id), keyCensus };
+                const root = rootsByRunId.get(candidate.id);
+                let rootProgress: { index: ReturnType<typeof projectInvocation>; contentEnvelope: string } | null = null;
+                if (root) {
+                    try {
+                        assertWorkflowStoredEnvelopeOuterForMode({ raw: root.contentEnvelope, mode: keyCensus.encryptionMode,
+                            binding: { v: 1, purpose: "invocation_progress", accountId: keyCensus.ownerAccountId, runId: candidate.id,
+                                recordId: root.id, sequence: "0", parentRecordId: null, memberOrdinal: "0", attempt: "0" } });
+                        rootProgress = { index: projectInvocation(root), contentEnvelope: root.contentEnvelope };
+                    } catch (error) {
+                        if (!(error instanceof WorkflowStoredContentError)) throw error;
+                    }
+                }
+                const row = { ...candidate, attentionRequired: attentionIds.has(candidate.id), keyCensus, rootProgress };
                 if (row.workflowAcceptedSnapshotEnvelope === null) return row;
                 try {
                     assertWorkflowStoredEnvelopeOuterForMode({
@@ -945,8 +965,9 @@ export async function listWorkflowRuns(params: PageOptions & Readonly<{
                     JSON.stringify(projectRun(row)),
                     `${JSON.stringify(row.id)}:${JSON.stringify(row.workflowAcceptedSnapshotEnvelope)}`,
                     `${JSON.stringify(row.id)}:${JSON.stringify(row.keyCensus)}`,
+                    `${JSON.stringify(row.id)}:${JSON.stringify(row.rootProgress)}`,
                 ],
-                emptyPage: (nextCursor) => ({ runs: [], acceptedEnvelopesByRunId: {}, keyCensusByRunId: {}, ...(nextCursor ? { nextCursor } : {}) }),
+                emptyPage: (nextCursor) => ({ runs: [], acceptedEnvelopesByRunId: {}, keyCensusByRunId: {}, rootProgressByRunId: {}, ...(nextCursor ? { nextCursor } : {}) }),
                 nextCursorFor: (row) => encodeKeysetCursorV1({ queryKey, parts: [row.createdAt.toISOString(), row.id] }),
                 hasMoreAfter: (candidateIndex) => candidateIndex < candidates.length - 1 || batchHasMore,
             });
@@ -965,6 +986,7 @@ export async function listWorkflowRuns(params: PageOptions & Readonly<{
         runs: page.rows.map(projectRun),
         acceptedEnvelopesByRunId: Object.fromEntries(page.rows.map((row) => [row.id, row.workflowAcceptedSnapshotEnvelope])),
         keyCensusByRunId: Object.fromEntries(page.rows.map((row) => [row.id, row.keyCensus])),
+        rootProgressByRunId: Object.fromEntries(page.rows.map((row) => [row.id, row.rootProgress])),
         ...(page.hasMore && last ? { nextCursor: encodeKeysetCursorV1({ queryKey, parts: [last.createdAt.toISOString(), last.id] }) } : {}),
     };
 }
@@ -1506,13 +1528,14 @@ type WorkflowInvocationFactParams = Readonly<{
     accountCurrentness: AutomationAccountCurrentnessWitnessV1;
 } & (
     | { parentAttempt: number; expectedRevision?: never; resolution?: "observed_terminal_execution" }
-    | { expectedRevision: number; parentAttempt?: never; resolution: "observed_terminal_execution" }
+    | { expectedRevision: number; parentAttempt?: never; resolution: "observed_terminal_execution" | "root_list_progress" }
 )>;
 
-/** Commit an exact claimed-worker fact, or settle an observed row on the assigned interrupted Run. */
+/** Commit a claimed fact, terminal observation, or exact root projection on the assigned interrupted Run. */
 export async function commitWorkflowInvocationFact(params: WorkflowInvocationFactParams) {
     return await inTx(async (tx) => {
         const observation = params.expectedRevision !== undefined;
+        const rootProjection = params.resolution === "root_list_progress";
         const parentCurrentness = observation ? params.expectedRevision : params.parentAttempt;
         if (typeof parentCurrentness !== "number" || !Number.isSafeInteger(parentCurrentness)
             || parentCurrentness < 0
@@ -1523,8 +1546,9 @@ export async function commitWorkflowInvocationFact(params: WorkflowInvocationFac
         }
         const observedSettlement = params.lifecycle === "completed" || params.lifecycle === "failed"
             || params.lifecycle === "cancelled" || params.lifecycle === "needs_attention";
-        if (observation && (params.parentAttempt !== undefined
-            || params.resolution !== "observed_terminal_execution" || !observedSettlement)) {
+        if ((rootProjection && !observation) || (observation && (params.parentAttempt !== undefined
+            || (rootProjection ? params.lifecycle !== params.expectedLifecycle
+                : params.resolution !== "observed_terminal_execution" || !observedSettlement)))) {
             throw new WorkflowRunServiceError("invalid_input");
         }
         const resolvesObservedTerminal = params.resolution === "observed_terminal_execution"
@@ -1564,6 +1588,8 @@ export async function commitWorkflowInvocationFact(params: WorkflowInvocationFac
             return { ...projectInvocation(row), parentRevision: parent.revision };
         };
         if (!current || current.contentRevision !== params.expectedContentRevision) throw new WorkflowRunServiceError("currentness_conflict");
+        if (rootProjection && (current.parentRecordId !== null || current.sequence !== 0n
+            || current.memberOrdinal !== 0n || current.attempt !== 0n)) throw new WorkflowRunServiceError("invalid_input");
         await assertCurrentWorkflowInvocationTx(tx, current);
         assertWorkflowStoredEnvelopeOuterForMode({ raw: params.contentEnvelope, mode, binding: { v: 1, purpose: "invocation_progress", accountId: params.accountId, runId: params.runId, recordId: current.id, sequence: current.sequence.toString(), parentRecordId: current.parentRecordId, memberOrdinal: current.memberOrdinal.toString(), attempt: current.attempt.toString() } });
         if (current.lifecycle !== params.expectedLifecycle) {
@@ -1984,39 +2010,6 @@ const workflowRunWaitSelect = {
     resultEnvelope: true,
 } satisfies Prisma.AutomationRunSelect;
 
-/**
- * Lean per-poll projection for the wait loop below. Intermediate polls only
- * need the plaintext control columns that decide the observation; joins,
- * envelopes and the Account encryption fence are reserved for the single
- * full read on the exiting iteration.
- */
-const workflowRunWaitPollSelect = {
-    id: true,
-    accountId: true,
-    state: true,
-    revision: true,
-    workflowCustodyState: true,
-} satisfies Prisma.AutomationRunSelect;
-
-type WorkflowRunWaitPollRow = NarrowedWorkflowRunRow<typeof workflowRunWaitPollSelect>;
-
-async function readWorkflowRunWaitPoll(accountId: string, runId: string): Promise<WorkflowRunWaitPollRow> {
-    return inTx(async tx => {
-        const access = await resolveWorkflowRunAccessTx(tx, { actorAccountId: accountId, runId });
-        const row = await tx.automationRun.findFirst({
-            where: {
-                id: runId,
-                accountId: access.ownerAccountId,
-                workflowCustodyState: { not: null },
-                workflowAcceptedSnapshotEnvelope: { not: null },
-            },
-            select: workflowRunWaitPollSelect,
-        });
-        if (!row) throw new WorkflowRunServiceError("run_not_found");
-        return row as WorkflowRunWaitPollRow;
-    }, { isolationLevel: "ReadCommitted" });
-}
-
 async function readWorkflowRunWaitObservation(accountId: string, runId: string) {
     return await inTx(async (tx) => {
         const keyCensus = await withWorkflowRunAccess(() => readWorkflowRunKeyProjectionInTx(tx, { actorAccountId: accountId, runId }));
@@ -2039,90 +2032,41 @@ async function readWorkflowRunWaitObservation(accountId: string, runId: string) 
             });
         }
         const attention = await tx.automationRun.findFirst({ where: { id: runId, accountId: keyCensus.ownerAccountId, AND: [workflowRunAttentionWhere()] }, select: { id: true } });
-        return { run: projectRun(row as WorkflowRunRow), resultEnvelope: row.resultEnvelope, attention: attention !== null, keyCensus };
+        return { run: projectRun({ ...row, attentionRequired: attention !== null } as WorkflowRunRow), resultEnvelope: row.resultEnvelope, attention: attention !== null, keyCensus };
     }, { isolationLevel: "ReadCommitted" });
-}
-
-async function waitForWorkflowObservationPoll(signal?: AbortSignal): Promise<void> {
-    if (signal?.aborted) throw signal.reason;
-    await new Promise<void>((resolve, reject) => {
-        const finish = () => {
-            signal?.removeEventListener("abort", abort);
-            resolve();
-        };
-        const timer = setTimeout(finish, 250);
-        const abort = () => {
-            clearTimeout(timer);
-            signal?.removeEventListener("abort", abort);
-            reject(signal?.reason);
-        };
-        signal?.addEventListener("abort", abort, { once: true });
-    });
 }
 
 export async function waitWorkflowRun(params: Readonly<{
     accountId: string;
     runId: string;
-    timeoutSeconds?: number;
+    conditions?: readonly WorkflowRunWaitConditionV1[];
+    timeoutSeconds?: 0;
     afterRevision?: number;
     signal?: AbortSignal;
 }>) {
-    // No awaitable in-process wake hook exists for Workflow Runs. The
-    // process-local `automationScheduleWake` listener set is schedule-queue
-    // domain only (emitted solely by `automationRunQueueService` trigger
-    // scheduling, never by Workflow Run transitions), so parking a Workflow
-    // wait on it would miss every Run update while waking spuriously on
-    // unrelated scheduling. Workflow transitions publish outward Socket.IO
-    // fanout through `eventRouter`/`connectionEventRouter` plus a
-    // content-free Account wake, neither of which offers an in-process
-    // subscribe primitive; adding a listener/subscription registry or a new
-    // lifecycle owner just to wake this loop is explicitly rejected as
-    // overengineering. This loop therefore retains its 250 ms safety poll
-    // (`waitForWorkflowObservationPoll`), but each non-exiting iteration now
-    // performs only the lean indexed control-column reread above plus the
-    // already-lean attention existence check. The full projection (joins,
-    // checkpoint/result envelopes, encryption fence) is fetched once on the
-    // exiting iteration for the return contract.
-    const deadline = params.timeoutSeconds === undefined ? null : Date.now() + params.timeoutSeconds * 1_000;
-    for (;;) {
-        if (params.signal?.aborted) throw params.signal.reason;
-        const poll = await readWorkflowRunWaitPoll(params.accountId, params.runId);
-        const pollState = poll.state as WorkflowRunState;
-        const pollExit = pollState === "interrupted"
-            || AUTOMATION_RUN_TERMINAL_STATES.some((candidate) => candidate === pollState)
-            || pollState === "paused"
-            || (params.afterRevision !== undefined && poll.revision !== params.afterRevision)
-            || (deadline !== null && Date.now() >= deadline);
-        let attention: { id: string } | null = null;
-        if (!pollExit) {
-            attention = await db.automationRun.findFirst({
-                where: { id: params.runId, accountId: poll.accountId, AND: [workflowRunAttentionWhere()] },
-                select: { id: true },
-            });
-        }
-        if (!pollExit && !attention) {
-            await waitForWorkflowObservationPoll(params.signal);
-            continue;
-        }
-        // Single full projection for the return contract, including the
-        // result-envelope mode validation. The observation is re-derived
-        // from these fresh bytes (preserving the incumbent precedence) so a
-        // light/full race cannot return a stale observation with fresh bytes.
-        // Attention is re-read at the same canonical predicate on exit.
-        const current = await readWorkflowRunWaitObservation(params.accountId, params.runId);
-        const state = current.run.state;
-        if (current.attention) return { observation: "needs_attention" as const, run: current.run };
-        if (AUTOMATION_RUN_TERMINAL_STATES.some((candidate) => candidate === state)) return { observation: "terminal" as const, run: current.run, ...(current.resultEnvelope ? { resultEnvelope: current.resultEnvelope, keyCensus: current.keyCensus } : {}) };
-        if (state === "paused") return { observation: "paused" as const, run: current.run };
-        if (params.afterRevision !== undefined && current.run.revision !== params.afterRevision) {
-            return { observation: "changed" as const, run: current.run };
-        }
-        if (deadline !== null && Date.now() >= deadline) return { observation: "timeout" as const, run: current.run };
-        // A light/full race resolved back to running with no attention (e.g.
-        // the hint revision was superseded between the two reads, which
-        // cannot un-happen for monotonic revisions, but fail safe anyway).
-        await waitForWorkflowObservationPoll(params.signal);
+    // Exact durable observation only. Hosts park on the existing Account feed
+    // and re-read here on changes/reconnect or their authored deadline. No
+    // process-local server listener could cover another cluster node's writes.
+    params.signal?.throwIfAborted();
+    const current = await readWorkflowRunWaitObservation(params.accountId, params.runId);
+    params.signal?.throwIfAborted();
+    const state = current.run.state;
+    const conditions = params.conditions ?? ["terminal", "attention", "paused"];
+    if (current.attention && conditions.includes("attention")) return { observation: "needs_attention" as const, matchedCondition: "attention" as const, run: current.run };
+    if (AUTOMATION_RUN_TERMINAL_STATES.some((candidate) => candidate === state)) {
+        // A settled Run cannot reach an unselected pause/attention condition
+        // during this observation. Preserve terminal evidence as a typed non-match.
+        const terminal = conditions.includes("terminal")
+            ? { observation: "terminal" as const, matchedCondition: "terminal" as const }
+            : { observation: "not_matched_terminal" as const };
+        return { ...terminal, run: current.run, ...(current.resultEnvelope ? { resultEnvelope: current.resultEnvelope, keyCensus: current.keyCensus } : {}) };
     }
+    if (state === "paused" && conditions.includes("paused")) return { observation: "paused" as const, matchedCondition: "paused" as const, run: current.run };
+    if (params.afterRevision !== undefined && current.run.revision !== params.afterRevision) {
+        return { observation: "changed" as const, run: current.run };
+    }
+    if (params.timeoutSeconds === 0) return { observation: "timeout" as const, run: current.run };
+    return { observation: "waiting" as const, run: current.run };
 }
 
 export async function recoverWorkflowInvocations(params: Readonly<{

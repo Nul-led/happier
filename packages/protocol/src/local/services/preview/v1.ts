@@ -57,14 +57,14 @@ export const LocalServicePreviewPolicyV1Schema = z
       .default(['GET', 'HEAD', 'OPTIONS']),
     cookiePolicy: z.enum(['drop', 'isolate', 'rewrite']).default('drop'),
     compressionPolicy: z.enum(['identity', 'decode_reencode']).default('identity'),
-    redirectPolicy: z.enum(['preserve_host_origin', 'rewrite_path_mode']).default('preserve_host_origin'),
+    redirectPolicy: z.enum(['preserve_host_origin']).default('preserve_host_origin'),
     maxRequestBodyBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     maxResponseBodyBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   })
   .strict();
 export type LocalServicePreviewPolicyV1 = z.infer<typeof LocalServicePreviewPolicyV1Schema>;
 
-export const LocalServicePreviewOriginModeV1Schema = z.enum(['host', 'path']);
+export const LocalServicePreviewOriginModeV1Schema = z.enum(['host']);
 export type LocalServicePreviewOriginModeV1 = z.infer<typeof LocalServicePreviewOriginModeV1Schema>;
 
 export const LocalServicePreviewResourceV1Schema = z

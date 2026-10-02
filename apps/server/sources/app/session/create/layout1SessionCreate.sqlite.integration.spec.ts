@@ -10,6 +10,7 @@ import {
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { materializeWorkflowAcceptedSnapshotFixture } from "@/testkit/workflowAcceptedSnapshot";
 import { eventRouter } from "@/app/events/eventRouter";
 import { publishSessionArchiveTransition } from "@/app/session/archive/publishSessionArchiveTransition";
 import { createQualifiedConnectedAccountGroupDigest, createQualifiedConnectedAccountServiceDigest } from "@/app/api/routes/connect/qualifiedConnectedAccounts/identity";
@@ -248,16 +249,16 @@ describe("Layout-1 Session constructor (SQLite integration)", () => {
         const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
             mode: "plain",
             binding: { v: 1, purpose: "accepted_snapshot", accountId: owner.id, runId },
-            acceptedSnapshot: {
+            acceptedSnapshot: await materializeWorkflowAcceptedSnapshotFixture({
                 definition: { version: 1, inputs: [],
                     defaults: { agentTarget: { kind: "agent", identity: { pluginId: "happier.agent.test", localId: "test" } } },
                     blocks: [{ kind: "step", id: "step", document: { text: "Work", references: [], attachments: [] }, input: [], result: { kind: "text" } }] },
-                source: { kind: "inline" }, inputs: {},
+                context: { source: { kind: "inline" }, inputs: {},
                 machineId: machine.id, executionTarget: { kind: "session" },
                 workspaceTarget: { project: { machineId: machine.id, directory: "/repo", checkoutRootPath: "/repo" } },
                 origin: { kind: "direct" },
-                authorization: { admittedPermissionCeiling: "default", principal: { kind: "host" } },
-            },
+                authorization: { principal: { kind: "host" } } },
+            }),
         }));
         await admitWorkflowRun({ accountId: owner.id, runId, machineId: machine.id,
             origin: { kind: "direct" }, acceptedEnvelope, accountCurrentness });

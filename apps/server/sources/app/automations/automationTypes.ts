@@ -6,6 +6,8 @@ import {
     type AutomationReplyHandoffStateV1,
     type AutomationExecutionDispatchStateV3,
     AutomationRunStateV3Schema,
+    AUTOMATION_RUN_TERMINAL_STATES_V3,
+    isTerminalAutomationRunStateV3,
     type AutomationRunStateV3,
     type AutomationPluginEventDefinitionTriggerInput,
     type AutomationTriggerCreateRequest,
@@ -13,6 +15,7 @@ import {
     type AutomationRunCause,
     type AutomationSessionLifecycleEvent,
 } from '@happier-dev/protocol';
+import type { automationRunCauseSelect } from './automationPersistenceSelect';
 
 export type AutomationScheduleKind = 'cron' | 'interval';
 export type AutomationTargetType = 'new_session' | 'existing_session' | 'execution_run';
@@ -31,26 +34,17 @@ export function isAutomationRunState(state: string): state is AutomationRunState
 }
 
 /** States whose lifecycle is complete and therefore cannot hold Run capacity. */
-export const AUTOMATION_RUN_TERMINAL_STATES = [
-    'succeeded',
-    'failed',
-    'cancelled',
-    'expired',
-    'dispatch_failed',
-    'skipped',
-    'missed',
-    'outcome_uncertain',
-] as const satisfies readonly AutomationRunState[];
+export const AUTOMATION_RUN_TERMINAL_STATES = AUTOMATION_RUN_TERMINAL_STATES_V3;
 
 export type AutomationRunTerminalState = typeof AUTOMATION_RUN_TERMINAL_STATES[number];
 
 export function isTerminalAutomationRunState(
     state: AutomationRunState,
 ): state is AutomationRunTerminalState {
-    return AUTOMATION_RUN_TERMINAL_STATES.some((terminalState) => terminalState === state);
+    return isTerminalAutomationRunStateV3(state);
 }
 
-export type AutomationTriggerKind = 'schedule' | 'pluginEvent' | 'sessionLifecycle';
+export type AutomationTriggerKind = import('@happier-dev/protocol').AutomationTriggerKind;
 export type AutomationObservationTransport = 'checkpointedPull' | 'durablePush' | 'socket';
 export type AutomationRunCauseKind = AutomationRunCause['kind'];
 /** The canonical execution-dispatch vocabulary; the Protocol schema is its one owner. */
@@ -274,6 +268,9 @@ export type AutomationTriggerItem = Readonly<{
     remainingOccurrences: number | null;
     sourceSessionId: string | null;
     sourceTurnId: string | null;
+    sourceRunId?: string | null;
+    sourceRunMachineId?: string | null;
+    runLifecycleConfigurationJson?: string | null;
     createdAt: Date;
     updatedAt: Date;
     /**
@@ -305,6 +302,7 @@ export type AutomationRunItem = Readonly<{
     causeSessionLifecycleEvent: AutomationSessionLifecycleEvent | null;
     causeSourceSessionId: string | null;
     causeSourceTurnId: string | null;
+    causeRunLifecycleEvidenceJson: string | null;
     causeSessionLifecycleRequestId: string | null;
     causeSessionLifecycleRequestKind: 'permission' | 'user_action' | null;
     causeSessionLifecyclePolicyKind: 'currentTurn' | 'firstMatch' | 'nextMatches' | 'everyMatch' | null;
@@ -355,27 +353,10 @@ export type AutomationRunItem = Readonly<{
 export type AutomationRunV3ListItem =
     Pick<
         AutomationRunItem,
+        | keyof typeof automationRunCauseSelect
         | 'id'
-        | 'originKind'
         | 'automationId'
         | 'state'
-        | 'triggerId'
-        | 'causeKind'
-        | 'causeTriggerKind'
-        | 'causeTriggerRevision'
-        | 'causeOccurredAt'
-        | 'causeEventPluginId'
-        | 'causeEventLocalId'
-        | 'causeScheduledFor'
-        | 'causeSessionLifecycleEvent'
-        | 'causeSourceSessionId'
-        | 'causeSourceTurnId'
-        | 'causeSessionLifecycleRequestId'
-        | 'causeSessionLifecycleRequestKind'
-        | 'causeSessionLifecyclePolicyKind'
-        | 'causeSessionLifecycleConfiguredCount'
-        | 'occurrenceKey'
-        | 'causeSourceSelectorId'
         | 'executionDispatchState'
         | 'executionAttempt'
         | 'errorCode'

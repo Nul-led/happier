@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import releasedV2Wire from './fixtures/automation-v2.0.2.11-wire.json';
 
 import * as Api from './automationApiV3.js';
 import { AutomationRunReplyHandoffStateV1Schema } from './automationEventV1.js';
@@ -389,20 +388,6 @@ describe('Automation versioned API schemas', () => {
         observationTransport: { ...push.observationTransport, webhookEndpointId: 'endpoint-1' },
       },
     }).success).toBe(false);
-  });
-
-  it('keeps exact released V2 vectors isolated from triggers and causes', () => {
-    const definition: unknown = releasedV2Wire.definition;
-    const v2Run: unknown = releasedV2Wire.run;
-    expect(Api.AutomationApiV2Schema.parse(definition)).toEqual(definition);
-    expect(Api.AutomationApiV2Schema.parse({
-      ...releasedV2Wire.definition,
-      schedule: { kind: 'manual', scheduleExpr: null, everyMs: null, timezone: null },
-    }).schedule.kind).toBe('manual');
-    expect(Api.AutomationRunApiV2Schema.parse(v2Run)).toEqual(v2Run);
-    expect(Api.AutomationApiV2Schema.safeParse({ ...releasedV2Wire.definition, triggers: [] }).success).toBe(false);
-    expect(Api.AutomationRunApiV2Schema.safeParse({ ...releasedV2Wire.run, cause: { kind: 'manual' } }).success)
-      .toBe(false);
   });
 
   it('projects plural trigger identity while keeping private definitions detail-only', () => {

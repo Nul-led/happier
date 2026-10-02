@@ -105,6 +105,8 @@ export const MachineLiveStreamStartRequestV1Schema = z
     streamId: z.string().min(1),
     streamFamily: z.string().min(1),
     sourceId: z.string().min(1).optional(),
+    /** Exact source occurrence bound by plugin viewing admission. */
+    sourceOccurrenceId: z.string().min(1).optional(),
     routeKind: MachineLiveStreamRouteKindV1Schema,
     sourceMachineId: z.string().min(1),
     targetMachineId: z.string().min(1),

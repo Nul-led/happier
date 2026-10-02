@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { admitAgentStartV1, type AgentStartContextV1 } from '../account/settings/admitAgentStartV1.js';
 import { DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1 } from '../account/settings/sessionAgentSpawnPolicyV1.js';
+import { AutomationRunCauseSchema } from '../automations/automationRunCause.js';
+import type { ActionCaller } from '../actions/executor/types.js';
 import { LaunchProfileV2Schema } from '../profiles/v2/schema.js';
 import { REVIEW_AND_CONVERGE_WORKFLOW_V1 } from './builtins/reviewAndConverge.js';
 import { PLAN_WITH_A_PANEL_WORKFLOW_V1 } from './builtins/planWithAPanel.js';
@@ -25,6 +27,125 @@ const policyContext: AgentStartContextV1 = {
 };
 
 describe('materializeWorkflowAcceptedSnapshotV1', () => {
+  it('replays frozen roles, children, placement and targets rather than today\'s graph', async () => {
+    const role = { roleId: 'frozen_builder', name: 'Builder', instructions: 'Do not write',
+      runsAs: { kind: 'background_run' as const, intent: 'delegate' as const },
+      engine: { agentTargetKey: 'happier.agent.codex/codex' }, workspaceWrites: 'deny' as const,
+      enabled: true, secondOpinion: 'off' as const };
+    const authored = { ...definition, defaults: { engine: { role: 'frozen_builder' } }, blocks: [
+      definition.blocks[0], { kind: 'workflow', id: 'nested', workflowRef: 'builtin:child', input: {} },
+    ] };
+    const original = await materialize({ definition: authored, roleSelection: { settingsRoles: { frozen_builder: role } },
+      effects: { resolveTargetAvailability: available, readWorkflowDefinition: async () => ({
+        definition: { ...definition, blocks: [{ ...definition.blocks[0], id: 'child', document: { text: 'Frozen child', references: [], attachments: [] } }] },
+        sourceKey: 'builtin:child',
+      }) } });
+    expect(original, JSON.stringify(original)).toMatchObject({ ok: true });
+    if (!original.ok) throw new Error(original.error.code);
+    const replay = await materialize({ definition: original.snapshot.definition,
+      ...{ replay: { snapshot: original.snapshot } },
+      context: { ...context, machineId: 'other', workspaceTarget: { project: { machineId: 'other', directory: '/other', checkoutRootPath: '/other' } } },
+      roleSelection: { settingsRoles: { frozen_builder: { ...role, workspaceWrites: 'allow' } } },
+      effects: { resolveTargetAvailability: available, readWorkflowDefinition: async () => ({
+        definition: { ...definition, blocks: [{ ...definition.blocks[0], id: 'changed' }] }, sourceKey: 'builtin:child',
+      }) } });
+    expect(replay).toMatchObject({ ok: true, snapshot: {
+      workspaceTarget: original.snapshot.workspaceTarget, machineId: original.snapshot.machineId,
+      frozenChildren: original.snapshot.frozenChildren, materializedLeaves: original.snapshot.materializedLeaves,
+    } });
+    if (!replay.ok) throw new Error(replay.error.code);
+    expect(replay.agentStartLeaves[0]?.workspaceWrites).toBe('deny');
+  });
+
+  it('rebinds edited inputs and only one explicit Agent override while rechecking current policy', async () => {
+    const authored = { ...definition, inputs: [{ name: 'request', valueType: 'string', required: true }], blocks: [
+      definition.blocks[0], { kind: 'action', id: 'record', actionId: 'session.goal.set', input: { goal: { kind: 'input', name: 'request' } } },
+    ] };
+    const effects = { resolveTargetAvailability: available, readActionContract: async () => ({
+      inputSchema: { type: 'object', properties: { goal: { type: 'string' } }, required: ['goal'] }, outputSchema: {},
+    }) };
+    const original = await materialize({ definition: authored, context: { ...context, inputs: { request: 'Before' } }, effects });
+    if (!original.ok) throw new Error(original.error.code);
+    const override = { sourceKey: '$root', blockId: 'work', engine: { agentTarget: { kind: 'agent' as const,
+      identity: { pluginId: 'happier.agent.claude', localId: 'claude' } } } };
+    const replayInput = { definition: original.snapshot.definition, context: { ...context, inputs: { request: 'After' } },
+      replay: { snapshot: original.snapshot, agentOverride: override }, effects };
+    expect(await materialize(replayInput)).toMatchObject({ ok: true, snapshot: {
+      inputs: { request: 'After' }, materializedLeaves: [
+        { blockId: 'work', selection: { agentTarget: override.engine.agentTarget } },
+        { blockId: 'record', actionInput: { goal: 'After' } },
+      ],
+    } });
+    expect(await materialize({ ...replayInput, admission: { kind: 'agent', admitLeaf: async leaf => admitAgentStartV1(
+      { ...DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1, allowBackendTargetOverride: false },
+      { kind: 'workflow_run_leaf', leaf }, policyContext,
+    ) } })).toMatchObject({ ok: false, error: { code: 'policy_denied_field', field: 'agentTarget', blockId: 'work' } });
+    expect(await materialize({ ...replayInput, replay: { snapshot: original.snapshot,
+      agentOverride: { ...override, blockId: 'missing' } } })).toMatchObject({ ok: false, error: { code: 'invalid_input' } });
+  });
+  it('keeps a from-step conversation target when its one Agent engine is overridden', async () => {
+    const original = await materialize({ definition: { ...definition, blocks: [definition.blocks[0],
+      { ...definition.blocks[0], id: 'follow', execution: { conversation: {
+        kind: 'from_step', producer: { blockId: 'work', scope: { kind: 'current' } },
+      } } },
+    ] } });
+    if (!original.ok) throw new Error(original.error.code);
+    const explicit = { kind: 'agent' as const, identity: { pluginId: 'happier.agent.claude', localId: 'claude' } };
+    const replay = await materialize({ replay: { snapshot: original.snapshot,
+      agentOverride: { sourceKey: '$root', blockId: 'follow', engine: { role: 'other_agent' } } },
+      roleSelection: { settingsRoles: { other_agent: { name: 'Other', instructions: 'Other role',
+        runsAs: { kind: 'background_run', intent: 'delegate' }, engine: { agentTargetKey: 'happier.agent.claude/claude' },
+        profileId: 'new-profile', workspaceWrites: 'allow', secondOpinion: 'off', enabled: true } } } });
+    expect(replay).toMatchObject({ ok: true, snapshot: { materializedLeaves: [
+        { blockId: 'work', selection: { agentTarget }, executionTarget: { kind: 'session' } },
+        { blockId: 'follow', selection: { agentTarget: explicit, conversation: original.snapshot.materializedLeaves[1]?.selection.conversation },
+          executionTarget: { kind: 'session' } },
+      ] } });
+    if (!replay.ok) throw new Error(replay.error.code);
+    expect(replay.snapshot.materializedLeaves[1]?.selection.profileId).toBeUndefined();
+  });
+  it('replays the frozen nested Action engine instead of its unprojected authored payload', async () => {
+    const explicit = { kind: 'agent' as const, identity: { pluginId: 'happier.agent.claude', localId: 'claude' } };
+    const original = await materialize({ definition: { ...definition, blocks: [
+      { kind: 'workflow', id: 'nested', workflowRef: 'builtin:child', input: {} },
+    ] }, effects: { resolveTargetAvailability: available,
+      readWorkflowDefinition: async () => ({ sourceKey: 'builtin:child', definition: { ...definition, blocks: [
+        { kind: 'action', id: 'review', actionId: 'review.start', execution: { engine: { agentTarget: explicit } },
+          input: { engineIds: { kind: 'literal', value: ['agent:happier.agent.codex/codex'] } } },
+      ] } }), readActionContract: async () => ({ inputSchema: { type: 'object' }, outputSchema: {} }),
+    } });
+    if (!original.ok) throw new Error(original.error.code);
+    const replay = await materialize({ replay: { snapshot: original.snapshot } });
+    expect(replay).toMatchObject({ ok: true, snapshot: { materializedLeaves: original.snapshot.materializedLeaves },
+      agentStartLeaves: [{ engine: { agentTargetKey: 'agent:happier.agent.claude/claude' } }] });
+  });
+  it.each([
+    { name: 'manual', frozenStartedBy: 'trigger', expectedStartedBy: 'user', cause: { kind: 'manual', invokedAt: 1 } },
+    { name: 'schedule', frozenStartedBy: 'user', expectedStartedBy: 'trigger', cause: AutomationRunCauseSchema.parse({
+      kind: 'trigger', triggerId: 'trigger-1', triggerRevision: 1, triggerKind: 'schedule', occurrenceKey: 'A'.repeat(43),
+      occurredAt: 1, evidence: { scheduledFor: 1 },
+    }) },
+  ] as const)('prioritizes an explicit $name Automation cause over a conflicting bounded plugin starter', async scenario => {
+    const actionCaller = { kind: 'plugin', pluginId: 'acme.starter', startedBy: scenario.frozenStartedBy,
+      initiatingCaller: { kind: 'automationRun', runId: 'automation-run', automationId: 'automation-1', cause: scenario.cause },
+    } satisfies ActionCaller;
+    const result = await materialize({ context: { ...context, actionCaller } });
+    expect(result).toMatchObject({ ok: true, snapshot: { startedBy: scenario.expectedStartedBy } });
+  });
+  it('freezes the admitting starter independently of origin Session and depth', async () => {
+    const user = await materialize({ context: { ...context, origin: { kind: 'direct', originSessionId: 'origin' } } });
+    const agent = await materialize({ admission: { kind: 'agent', admitLeaf: async (leaf) =>
+      admitAgentStartV1(DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1, { kind: 'workflow_run_leaf', leaf }, policyContext) } });
+    const trigger = await materialize({ admission: { kind: 'trigger', workDepth: 0, admitLeaf: async (leaf) =>
+      admitAgentStartV1(DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1, { kind: 'workflow_run_leaf', leaf }, policyContext) } });
+    expect(user).toMatchObject({ ok: true, snapshot: { startedBy: 'user' } });
+    expect(agent).toMatchObject({ ok: true, snapshot: { startedBy: 'agent' } });
+    expect(trigger).toMatchObject({ ok: true, snapshot: { startedBy: 'trigger' } });
+    if (!user.ok) throw new Error(user.error.code);
+    const missing = { ...user.snapshot };
+    Reflect.deleteProperty(missing, 'startedBy');
+    expect(WorkflowAcceptedSnapshotV1Schema.safeParse(missing).success).toBe(false);
+  });
   it('requires frozen workspace intent even for authored inheritance', async () => {
     const accepted = await materialize();
     if (!accepted.ok) throw new Error(accepted.error.code);

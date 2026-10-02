@@ -150,7 +150,8 @@ function validateOpenFramePolicy(input: Readonly<{
         return frame.open.destination === undefined ? null : 'destination_host_not_allowed';
     }
     if (!frame.open.destination || !isLiteralLoopbackHostname(frame.open.destination.host)) return 'destination_host_not_allowed';
-    if (!input.caps.allowedPorts.includes(frame.open.destination.port)) return 'destination_port_not_allowed';
+    if (frame.open.relayAuthorization?.payload.flowKind !== 'voice_media'
+        && !input.caps.allowedPorts.includes(frame.open.destination.port)) return 'destination_port_not_allowed';
     return null;
 }
 

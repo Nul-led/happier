@@ -37,6 +37,7 @@ import {
     parseWorkflowStoredContentEnvelopeV1,
     isAccountScopedBlobCiphertextForKind,
     AutomationEventTriggerDefinitionStoredPayloadV1Schema,
+    AutomationPullRequestTriggerSchema,
     AutomationSourceSelectorIdV1Schema,
     AutomationTriggerIdSchema,
     AutomationOccurrenceEvidenceEqualityTagV1Schema,
@@ -80,6 +81,8 @@ import {
 } from "./automationChangePublisher";
 import { assertAutomationAssignmentLiveness, replaceAutomationAssignmentsTx } from "./automationAssignmentService";
 import { ensureAutomationScheduleCursorsTx } from "./automationRunQueueService";
+import { decodeAutomationRunLifecycleConfiguration } from "./automationRunLifecycleConfigurationCodec";
+import { validateAutomationRunLifecycleSourceTx } from "./automationRunLifecycleAdmission";
 import { admitAutomationRunTx } from "./automationRunAdmissionService";
 import type { AutomationRecipeFeaturePolicy } from "./automationRecipeFeaturePolicy";
 import { validateExistingSessionAutomationTargetTx } from "./automationExistingSessionValidation";
@@ -838,10 +841,10 @@ function sealPlainAutomationPluginEventDefinition(params: Readonly<{
     }));
 }
 
-function readPlainAutomationPluginEventDefinition(
+function readPlainAutomationPrivateTriggerDefinition(
     automation: Pick<AutomationListItem, "id" | "templateVersion">,
     trigger: AutomationTriggerItem,
-): ReturnType<typeof AutomationEventTriggerDefinitionStoredPayloadV1Schema.parse> {
+) {
     const binding = readAutomationTriggerDefinitionBinding({
         automationId: automation.id,
         triggerId: trigger.id,
@@ -874,8 +877,15 @@ function readPlainAutomationPluginEventDefinition(
             "Automation Event private definition is unavailable",
         );
     }
+    return opened.definition;
+}
+
+function readPlainAutomationPluginEventDefinition(
+    automation: Pick<AutomationListItem, "id" | "templateVersion">,
+    trigger: AutomationTriggerItem,
+): ReturnType<typeof AutomationEventTriggerDefinitionStoredPayloadV1Schema.parse> {
     const parsed = AutomationEventTriggerDefinitionStoredPayloadV1Schema.safeParse(
-        opened.definition,
+        readPlainAutomationPrivateTriggerDefinition(automation, trigger),
     );
     if (!parsed.success) {
         throw new AutomationValidationError(
@@ -936,7 +946,7 @@ type AutomationTriggerCreateSemanticInput = Readonly<{
  * it authorized the first commit but is not a second definition owner.
  */
 function automationTriggerMatchesCreateInput(params: Readonly<{
-    automation: Pick<AutomationListItem, "id" | "templateVersion">;
+    automation: Pick<AutomationListItem, "id" | "templateVersion" | "scopeSessionId">;
     existing: AutomationTriggerItem;
     requested: AutomationTriggerCreateSemanticInput;
 }>): boolean {
@@ -958,6 +968,21 @@ function automationTriggerMatchesCreateInput(params: Readonly<{
     if (requested.trigger.kind === "sessionLifecycle") {
         return automationSessionLifecycleConfigurationsEqual(existing, requested.trigger);
     }
+    if (requested.trigger.kind === "runLifecycle") {
+        return createCanonicalJsonSigningInput(decodeAutomationRunLifecycleConfiguration(existing))
+            === createCanonicalJsonSigningInput({ kind: "runLifecycle", source: requested.trigger.source, condition: requested.trigger.condition });
+    }
+    if (requested.trigger.kind === "prComment" || requested.trigger.kind === "ciFailed") {
+        if (existing.sourceSessionId !== params.automation.scopeSessionId || !existing.definitionEnvelope) return false;
+        try {
+            return "triggerDefinitionEnvelope" in requested.trigger
+                ? pluginJsonValuesEqual(JSON.parse(existing.definitionEnvelope), requested.trigger.triggerDefinitionEnvelope)
+                : pluginJsonValuesEqual(readPlainAutomationPrivateTriggerDefinition(params.automation, existing), {
+                    kind: requested.trigger.kind, pullRequest: requested.trigger.pullRequest,
+                });
+        } catch { return false; }
+    }
+    if (requested.trigger.kind !== "pluginEvent") return false;
     if (
         existing.eventPluginId !== requested.trigger.eventRef.pluginId
         || existing.eventLocalId !== requested.trigger.eventRef.localId
@@ -1348,7 +1373,7 @@ function transitionInventoryDefinition(
         source: {
             templateCiphertext: row.templateCiphertext,
             triggerDefinitionEnvelopes: row.triggers
-                .filter((trigger) => trigger.kind === "pluginEvent")
+                .filter((trigger) => trigger.kind === "pluginEvent" || trigger.kind === "prComment" || trigger.kind === "ciFailed")
                 .map((trigger) => {
                     if (trigger.definitionEnvelope === null) {
                         throw new AutomationValidationError(
@@ -1586,7 +1611,7 @@ function assertAutomationDefinitionStoredContentForAccountMode(params: Readonly<
     mode: "plain" | "e2ee";
 }>): void {
     for (const trigger of params.row.triggers) {
-        if (trigger.kind !== "pluginEvent") {
+        if (trigger.kind !== "pluginEvent" && trigger.kind !== "prComment" && trigger.kind !== "ciFailed") {
             if (trigger.definitionEnvelope !== null) {
                 throw new AutomationValidationError(
                     "Non-Event Automation triggers must not retain trigger-definition content",
@@ -1933,7 +1958,7 @@ function validateAutomationTriggerDefinitionTransitionTargets(params: Readonly<{
     targetMode: "plain" | "e2ee";
 }>): AutomationAccountEncryptionTransitionValidatedDefinition["targetTriggerDefinitionEnvelopes"] {
     const pluginEventTriggers = params.row.triggers.filter(
-        (trigger) => trigger.kind === "pluginEvent",
+        (trigger) => trigger.kind === "pluginEvent" || trigger.kind === "prComment" || trigger.kind === "ciFailed",
     );
     if (params.item.target.triggerDefinitionEnvelopes.length !== pluginEventTriggers.length) {
         throw new AutomationValidationError(
@@ -2530,7 +2555,7 @@ function hasCompleteTriggerDefinitionMigrationTarget(
     row: AutomationAccountEncryptionMigrationRow,
     item: AutomationAccountEncryptionMigrationTemplateItem,
 ): boolean {
-    const eventTriggers = row.triggers.filter((trigger) => trigger.kind === "pluginEvent");
+    const eventTriggers = row.triggers.filter((trigger) => trigger.kind === "pluginEvent" || trigger.kind === "prComment" || trigger.kind === "ciFailed");
     const targets = item.triggerDefinitionEnvelopes;
     if (
         targets.length !== eventTriggers.length
@@ -3457,7 +3482,7 @@ export async function migrateAutomationAccountEncryptionInTx(params: Readonly<{
         return { status: "migration_incomplete" };
     }
     const requiresSourceMode = rows.some((row) =>
-        row.triggers.some((trigger) => trigger.kind === "pluginEvent"))
+        row.triggers.some((trigger) => trigger.kind === "pluginEvent" || trigger.kind === "prComment" || trigger.kind === "ciFailed"))
         || runRows.length > 0;
     const targetTriggerDefinitionsById = new Map<string, ReturnType<
         typeof validateAutomationTriggerDefinitionMigrationCandidate
@@ -4072,6 +4097,9 @@ const AUTOMATION_TRIGGER_PRIVATE_FIELDS_CLEARED = {
     remainingOccurrences: null,
     sourceSessionId: null,
     sourceTurnId: null,
+    sourceRunId: null,
+    sourceRunMachineId: null,
+    runLifecycleConfigurationJson: null,
 } as const;
 
 const AUTOMATION_TRIGGER_KIND_FIELDS_CLEARED = {
@@ -4114,7 +4142,7 @@ async function normalizeAutomationTriggerWriteTx(params: Readonly<{
     tx: Tx;
     accountId: string;
     automation: Pick<AutomationListItem,
-        "id" | "targetType" | "templateCiphertext" | "templateVersion">;
+        "id" | "targetType" | "templateCiphertext" | "templateVersion" | "scopeSessionId">;
     triggerId: string;
     triggerRevision: number;
     input: AutomationTriggerDefinitionInput;
@@ -4127,6 +4155,34 @@ async function normalizeAutomationTriggerWriteTx(params: Readonly<{
         deletedAt: null,
         ...AUTOMATION_TRIGGER_KIND_FIELDS_CLEARED,
     } as const;
+
+    if (params.input.kind === "prComment" || params.input.kind === "ciFailed") {
+        if (!params.automation.scopeSessionId) {
+            throw new AutomationValidationError("Pull-request triggers require a scoped session");
+        }
+        const currentness = await fetchAutomationAccountCurrentnessWitnessTx(params.tx, params.accountId);
+        if (!currentness) throw new AutomationStoredContentReadError("contentInvalid");
+        const binding = {
+            v: 1 as const, automationId: params.automation.id,
+            triggerId: AutomationTriggerIdSchema.parse(params.triggerId),
+            triggerRevision: params.triggerRevision, triggerKind: params.input.kind,
+        };
+        let envelope: string;
+        if ("triggerDefinitionEnvelope" in params.input) {
+            envelope = JSON.stringify(params.input.triggerDefinitionEnvelope);
+            if (validateAutomationTriggerDefinitionEnvelopeOuterForMode({
+                raw: envelope, mode: currentness.mode, binding,
+            }).kind !== "available") throw new AutomationStoredContentReadError("modeMismatch");
+        } else {
+            if (currentness.mode !== "plain") throw new AutomationStoredContentReadError("modeMismatch");
+            const definition = AutomationPullRequestTriggerSchema.parse({
+                kind: params.input.kind, pullRequest: params.input.pullRequest,
+            });
+            envelope = JSON.stringify(sealAutomationTriggerDefinitionStoredEnvelopeV1({ mode: "plain", binding, definition }));
+        }
+        return { isEvent: false, data: { ...common, kind: params.input.kind,
+            sourceSessionId: params.automation.scopeSessionId, definitionEnvelope: envelope } };
+    }
 
     if (params.input.kind === "schedule") {
         const schedule = resolveScheduleDbFields(
@@ -4162,6 +4218,17 @@ async function normalizeAutomationTriggerWriteTx(params: Readonly<{
                     : null,
             },
         };
+    }
+
+    if (params.input.kind === "runLifecycle") {
+        const definition = { kind: "runLifecycle" as const, source: params.input.source, condition: params.input.condition };
+        await validateAutomationRunLifecycleSourceTx(params.tx, params.accountId, definition);
+        const encoded = createCanonicalJsonSigningInput(definition);
+        const retains = params.existing?.kind === "runLifecycle"
+            && createCanonicalJsonSigningInput(decodeAutomationRunLifecycleConfiguration(params.existing)) === encoded;
+        return { isEvent: false, data: { ...common, kind: "runLifecycle", sourceRunId: definition.source.runId,
+            sourceRunMachineId: definition.source.kind === "execution_run" ? definition.source.machineId : null,
+            runLifecycleConfigurationJson: encoded, remainingOccurrences: retains ? params.existing?.remainingOccurrences ?? 1 : 1 } };
     }
 
     if (params.input.kind === "sessionLifecycle") {
@@ -4217,6 +4284,9 @@ async function normalizeAutomationTriggerWriteTx(params: Readonly<{
         };
     }
 
+    if (params.input.kind !== "pluginEvent") {
+        throw new AutomationValidationError("Unsupported Automation trigger kind");
+    }
     if ("triggerDefinitionEnvelope" in params.input) {
         const event = await normalizeEncryptedAutomationPluginEventWriteTx({
             tx: params.tx,
@@ -4623,6 +4693,7 @@ export async function createAutomation(params: {
                     targetType: definition.targetType,
                     templateCiphertext: definition.templateCiphertext,
                     templateVersion: 1,
+                    scopeSessionId: params.input.scopeSessionId ?? null,
                 },
                 triggerId,
                 triggerRevision: 0,
@@ -4833,6 +4904,10 @@ export async function updateAutomation(params: {
             ? existing.workflowDefinitionId : params.input.workflowDefinitionId;
         const effectiveScopeSessionId = params.input.scopeSessionId === undefined
             ? existing.scopeSessionId : params.input.scopeSessionId;
+        if (existing.triggers.some((trigger) => (trigger.kind === "prComment" || trigger.kind === "ciFailed")
+            && trigger.sourceSessionId !== effectiveScopeSessionId)) {
+            throw new AutomationValidationError("Pull-request trigger session scope cannot be changed independently");
+        }
         await assertWorkflowTriggerContextTx(tx, {
             accountId: params.accountId, targetType: effectiveTargetType,
             workflowDefinitionId: effectiveWorkflowDefinitionId, scopeSessionId: effectiveScopeSessionId,
@@ -5132,7 +5207,17 @@ export async function reconcileAutomationDefinition(params: Readonly<{
             ...existing,
             ...revisionUpdate,
             ...(currentDefinition ? { targetType: currentDefinition.targetType } : {}),
+            workflowDefinitionId: params.input.workflowDefinitionId === undefined
+                ? existing.workflowDefinitionId : params.input.workflowDefinitionId,
+            scopeSessionId: params.input.scopeSessionId === undefined
+                ? existing.scopeSessionId : params.input.scopeSessionId,
         };
+        if (params.input.triggers.some((item) => item.kind === "existing"
+            && existing.triggers.some((trigger) => trigger.id === item.triggerId
+                && (trigger.kind === "prComment" || trigger.kind === "ciFailed")
+                && trigger.sourceSessionId !== effectiveAutomation.scopeSessionId))) {
+            throw new AutomationValidationError("Pull-request trigger session scope cannot be changed independently");
+        }
         const effectiveExistingSessionId = currentDefinition?.strictExistingSessionId
             ?? readAutomationExistingSessionTargetId(effectiveAutomation);
         await assertWorkflowTriggerContextTx(tx, {
@@ -5286,7 +5371,10 @@ export async function reconcileAutomationDefinition(params: Readonly<{
                         },
                     });
                 }
-                if (trigger.kind === "pluginEvent") {
+                if (trigger.kind === "runLifecycle" && !trigger.enabled && nextEnabled) {
+                    await validateAutomationRunLifecycleSourceTx(tx, params.accountId, decodeAutomationRunLifecycleConfiguration(trigger));
+                }
+                if (trigger.kind === "pluginEvent" || trigger.kind === "prComment" || trigger.kind === "ciFailed") {
                     const currentness = await fetchAutomationAccountCurrentnessWitnessTx(tx, params.accountId);
                     if (!currentness) throw new AutomationStoredContentReadError("contentInvalid");
                     if (currentness.mode === "e2ee") {
@@ -5321,19 +5409,11 @@ export async function reconcileAutomationDefinition(params: Readonly<{
                         data.definitionEnvelope = JSON.stringify(
                             sealAutomationTriggerDefinitionStoredEnvelopeV1({
                                 mode: "plain",
-                                binding: {
-                                    v: 1,
-                                    automationId: existing.id,
-                                    triggerId: AutomationTriggerIdSchema.parse(trigger.id),
-                                    triggerRevision: nextRevision,
-                                    triggerKind: "pluginEvent",
-                                    eventRef: {
-                                        pluginId: trigger.eventPluginId!,
-                                        localId: trigger.eventLocalId!,
-                                    },
-                                    sourceSelectorId: AutomationSourceSelectorIdV1Schema.parse(trigger.sourceSelectorId),
-                                },
-                                definition: readPlainAutomationPluginEventDefinition(existing, trigger),
+                                binding: readAutomationTriggerDefinitionBinding({ automationId: existing.id,
+                                    triggerId: trigger.id, triggerRevision: nextRevision, triggerKind: trigger.kind,
+                                    triggerEventPluginId: trigger.eventPluginId, triggerEventLocalId: trigger.eventLocalId,
+                                    triggerSourceSelectorId: trigger.sourceSelectorId })!,
+                                definition: readPlainAutomationPrivateTriggerDefinition(existing, trigger),
                             }),
                         );
                     }
@@ -5608,13 +5688,16 @@ export async function updateAutomationTrigger(params: Readonly<{
                     },
                 });
             }
+            if (existing.kind === "runLifecycle" && !existing.enabled && resolvedNextEnabled) {
+                await validateAutomationRunLifecycleSourceTx(tx, params.accountId, decodeAutomationRunLifecycleConfiguration(existing));
+            }
             data = {
                 enabled: resolvedNextEnabled,
                 revision: nextRevision,
                 updatedAt: now,
                 ...(!resolvedNextEnabled ? { nextRunAt: null } : {}),
             };
-            if (existing.kind === "pluginEvent") {
+            if (existing.kind === "pluginEvent" || existing.kind === "prComment" || existing.kind === "ciFailed") {
                 const accountCurrentness = await fetchAutomationAccountCurrentnessWitnessTx(
                     tx,
                     params.accountId,
@@ -5651,25 +5734,17 @@ export async function updateAutomationTrigger(params: Readonly<{
                             "Plain Automation Event enablement must not supply an encrypted definition envelope",
                         );
                     }
-                    const definition = readPlainAutomationPluginEventDefinition(
+                    const definition = readPlainAutomationPrivateTriggerDefinition(
                         automation,
                         existing,
                     );
                     data.definitionEnvelope = JSON.stringify(
                         sealAutomationTriggerDefinitionStoredEnvelopeV1({
                             mode: "plain",
-                            binding: {
-                                v: 1,
-                                automationId: automation.id,
-                                triggerId: AutomationTriggerIdSchema.parse(existing.id),
-                                triggerRevision: nextRevision,
-                                triggerKind: "pluginEvent",
-                                eventRef: {
-                                    pluginId: existing.eventPluginId!,
-                                    localId: existing.eventLocalId!,
-                                },
-                                sourceSelectorId: AutomationSourceSelectorIdV1Schema.parse(existing.sourceSelectorId),
-                            },
+                            binding: readAutomationTriggerDefinitionBinding({ automationId: automation.id,
+                                triggerId: existing.id, triggerRevision: nextRevision, triggerKind: existing.kind,
+                                triggerEventPluginId: existing.eventPluginId, triggerEventLocalId: existing.eventLocalId,
+                                triggerSourceSelectorId: existing.sourceSelectorId })!,
                             definition,
                         }),
                     );
@@ -6006,27 +6081,28 @@ export async function runAutomationNow(params: {
 
 type AutomationRunListParams = Readonly<{
     accountId: string;
-    automationId: string;
     limit: number;
     cursor?: string | null;
-}>;
+}> & ({ automationId: string; attention?: "required" } | { automationId?: never; attention: "required" });
 
-export async function listAutomationRuns(params: AutomationRunListParams): Promise<{
+type AutomationRunListResult = {
     runs: AutomationRunV3ListItem[];
     nextCursor: string | null;
-} | null> {
+};
+export function listAutomationRuns(params: AutomationRunListParams & { automationId?: never }): Promise<AutomationRunListResult>;
+export function listAutomationRuns(params: AutomationRunListParams): Promise<AutomationRunListResult | null>;
+export async function listAutomationRuns(params: AutomationRunListParams): Promise<AutomationRunListResult | null> {
     const normalizedLimit = Math.min(
         Math.max(Math.floor(params.limit || 20), 1),
         AUTOMATION_V3_RUN_LIST_MAX_ITEMS,
     );
-    const automationExists = await db.automation.findFirst({
-        where: {
-            id: params.automationId,
-            accountId: params.accountId,
-        },
-        select: { id: true },
-    });
-    if (!automationExists) return null;
+    if (params.automationId !== undefined) {
+        const automationExists = await db.automation.findFirst({
+            where: { id: params.automationId, accountId: params.accountId },
+            select: { id: true },
+        });
+        if (!automationExists) return null;
+    }
 
     const rows = await db.automationRun.findMany({
         where: {
@@ -6034,13 +6110,24 @@ export async function listAutomationRuns(params: AutomationRunListParams): Promi
             automationId: params.automationId,
             originKind: "automation",
             causeKind: { not: null },
+            // Exclude the anchor by identity rather than skipping the first match:
+            // its attention state may have changed since the previous page.
+            ...(params.cursor ? { id: { not: params.cursor } } : {}),
+            ...(params.attention === "required" ? {
+                // Accepted managed Runs already belong to the Workflow attention predicate.
+                // Before acceptance, ordinary failures must be visible even without a Session.
+                workflowAcceptedSnapshotEnvelope: null,
+                OR: [
+                    { state: { in: ["failed", "dispatch_failed", "outcome_uncertain"] } },
+                    { replyHandoffState: "blocked" },
+                ],
+            } : {}),
         },
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: normalizedLimit + 1,
         ...(params.cursor
             ? {
                 cursor: { id: params.cursor },
-                skip: 1,
             }
             : {}),
         select: automationRunV3ListItemSelect,

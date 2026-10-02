@@ -1,9 +1,13 @@
 import { z } from 'zod';
 import type { ActionRequiredAuthority } from '../actions/metadata.js';
 import type { CallerInputConstraintsV1 } from '../auth/apiTokenGrant.js';
-import { RPC_METHODS } from './methods.js';
+import { RPC_METHODS, SESSION_RPC_METHODS } from './methods.js';
 import { SessionIdSchema } from '../sessions/idsV1.js';
 import { asProtocolZod } from '../plugins/actions/internalProtocolZodAdapter.js';
+import { AgentStartSessionCallerV1Schema } from '../account/settings/admitAgentStartV1.js';
+import { AgentPermissionIntentV1Schema } from '../runtime/permissionIntentV1.js';
+import { SessionInputCausalPermissionAuthorityV1Schema } from '../sessions/messages/sessionInputAdmission.js';
+import { RoleActionInputSchemasV1 } from '../prompts/roles/roleActionsV1.js';
 
 import type { SocketRpcAuthorizationContext } from './index.js';
 import type { ExternalActionMachineRpcExecutionV1, ExternalActionExecutionAuthorizationV1 } from '../actions/externalActionApi.js';
@@ -30,6 +34,32 @@ export const SOCKET_RPC_TRANSPORT_RESPONSE_ENVELOPE_VERSION_V1 = 1 as const;
  * caller's request at that target.
  */
 export const SocketRpcRequestIdSchema = z.string().trim().min(1).max(160);
+
+/** Original host-admitted Action facts, distinct from relay request correlation. Every object is closed. */
+export const SessionActionRpcOriginV1Schema = z.object({
+  v: z.literal(1),
+  caller: AgentStartSessionCallerV1Schema,
+  sourceTurnId: z.string().trim().min(1),
+  callerPermissionMode: asProtocolZod(AgentPermissionIntentV1Schema).nullable(),
+  causalPermissionAuthority: SessionInputCausalPermissionAuthorityV1Schema.nullable().optional(),
+  workspaceWrites: z.enum(['allow', 'deny']).optional(),
+  requestId: z.string().trim().min(1),
+}).strict();
+export type SessionActionRpcOriginV1 = Readonly<z.infer<typeof SessionActionRpcOriginV1Schema>>;
+
+export const SocketRpcSessionActionAuthorizationContextSchema = z.object({
+  kind: z.literal('session.action'),
+  sessionId: AgentStartSessionCallerV1Schema.shape.sessionId,
+  origin: SessionActionRpcOriginV1Schema,
+}).strict();
+export type SocketRpcSessionActionAuthorizationContext = Readonly<z.infer<typeof SocketRpcSessionActionAuthorizationContextSchema>>;
+
+/** The existing role Action family is the only Session-origin RPC corridor. */
+export function isSessionActionRpcMethodV1(method: string): boolean {
+  const unscoped = method.slice(method.lastIndexOf(':') + 1);
+  return (unscoped.startsWith('session.') && Object.hasOwn(RoleActionInputSchemasV1, unscoped))
+    || unscoped === SESSION_RPC_METHODS.SESSION_ROLES_CONFIGURATION_SET;
+}
 
 export const SocketRpcCancellationPayloadSchema = z.object({
   requestId: SocketRpcRequestIdSchema,
@@ -59,6 +89,8 @@ export type SocketRpcRequestPayload = Readonly<{
   method: string;
   /** Verified relay stamps only; receiver defaults missing authority to automation. */
   callerAuthority?: ActionRequiredAuthority;
+  /** Home-validated source Machine stamp; never accepted from an inbound header. */
+  sessionActionOrigin?: SessionActionRpcOriginV1;
   callerInputConstraints?: CallerInputConstraintsV1;
   /** Server-issued invocation proof; the relay never forwards caller-authored material here. */
   callerInputAuthorization?: ExternalActionExecutionAuthorizationV1;

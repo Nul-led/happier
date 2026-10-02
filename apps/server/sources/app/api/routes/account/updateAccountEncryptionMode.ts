@@ -186,6 +186,7 @@ export async function updateAccountEncryptionMode(params: Readonly<{
             await migrateArtifactAccountEncryptionInTx({
                 tx,
                 accountId: params.accountId,
+                fromMode: account.currentness.encryptionMode,
                 toMode: params.mode,
                 directive: { action: "assert_empty" },
             });

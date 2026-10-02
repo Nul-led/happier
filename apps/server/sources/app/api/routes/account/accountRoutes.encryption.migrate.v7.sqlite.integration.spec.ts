@@ -29,6 +29,9 @@ import {
     type AccountEncryptionMigrateRequest,
     type AccountEncryptionMigrateUnsignedRequest,
     type SessionOwnerMetadataEnvelopeV1,
+    ARTIFACT_PLAIN_DATA_KEY_MARKER,
+    encodePlainArtifactStoredContent,
+    sealEncryptedDataKeyEnvelopeV1,
 } from "@happier-dev/protocol";
 import * as privacyKit from "privacy-kit";
 import tweetnacl from "tweetnacl";
@@ -52,6 +55,7 @@ import {
     type LightSqliteHarness,
 } from "@/testkit/lightSqliteHarness";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
+import { openArtifactStoredContentBytes, storePlainArtifactDbBytes } from "@/app/artifacts/artifactStoredContent";
 import { registerAccountEncryptionMigrateRoutes } from "./registerAccountEncryptionMigrateRoutes";
 
 const SESSION_OWNER_MATERIAL = {
@@ -404,6 +408,147 @@ describe("account encryption migration .7 SQLite matrix", () => {
         await harness.close();
     });
 
+    it("preserves retained Artifact bodies through plain to E2EE to plain transitions and exact replay", async () => {
+        harness.resetEnv({
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
+            HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_ARTIFACTS_AT_REST: "server_sealed",
+        });
+        const signing = tweetnacl.sign.keyPair();
+        const binding = createSignedContentKeyBinding(signing.secretKey);
+        const account = await db.account.create({ data: {
+            publicKey: privacyKit.encodeHex(new Uint8Array(signing.publicKey)),
+            contentPublicKey: Buffer.from(binding.contentPublicKey, "base64"),
+            contentPublicKeySig: Buffer.from(binding.contentPublicKeySig, "base64"), encryptionMode: "plain",
+        } });
+        const artifactId = randomUUID();
+        const plainHeader = encodePlainArtifactStoredContent({ title: "History" });
+        const plainBody = encodePlainArtifactStoredContent({ body: "Current" });
+        const plainRevision = encodePlainArtifactStoredContent({ body: "Retained private body" });
+        const sealPlain = (field: "header" | "body", value: string) => storePlainArtifactDbBytes({
+            accountId: account.id, artifactId, field, content: Buffer.from(value, "base64"),
+        })!;
+        await db.artifact.create({ data: { id: artifactId, accountId: account.id,
+            header: sealPlain("header", plainHeader), body: sealPlain("body", plainBody),
+            headerVersion: 1, bodyVersion: 3, dataEncryptionKey: Buffer.from(ARTIFACT_PLAIN_DATA_KEY_MARKER, "base64"),
+            revisions: { create: [{ bodyVersion: 1, body: sealPlain("body", plainRevision), createdAt: new Date(1234) }] },
+        } });
+        // The server's E2EE boundary is deliberately opaque. Client codec
+        // round-trip tests separately prove these replacement bodies are opened.
+        const encryptedKey = privacyKit.encodeBase64(new Uint8Array(sealEncryptedDataKeyEnvelopeV1({
+            dataKey: new Uint8Array(32).fill(27), recipientPublicKey: privacyKit.decodeBase64(binding.contentPublicKey),
+            randomBytes: length => new Uint8Array(length).fill(29),
+        })));
+        const encryptedHeader = privacyKit.encodeBase64(new Uint8Array([2, 11, 12]));
+        const encryptedBody = privacyKit.encodeBase64(new Uint8Array([2, 21, 22]));
+        const encryptedRevision = privacyKit.encodeBase64(new Uint8Array([2, 31, 32]));
+        const app = createTestApp();
+        try {
+            for (const toMode of ["e2ee", "plain"] as const) {
+                const sourceAccount = await db.account.findUniqueOrThrow({ where: { id: account.id } });
+                const source = await db.artifact.findUniqueOrThrow({ where: { id: artifactId }, include: { revisions: true } });
+                const fingerprints = deriveAccountEncryptionMigrationKeyFingerprints(sourceAccount);
+                const unsigned = {
+                    toMode, expectedAccountVersion: sourceAccount.seq,
+                    expectedSigningKeyFingerprint: fingerprints.signingKeyFingerprint,
+                    expectedContentKeyFingerprint: fingerprints.contentKeyFingerprint,
+                    expectedSettingsVersion: sourceAccount.settingsVersion, settingsContent: null,
+                    connectedServices: { action: "assert_empty" as const }, automations: { action: "assert_empty" as const },
+                    machines: { action: "assert_empty" as const }, todos: { action: "assert_empty" as const },
+                    sessions: { action: "assert_empty" as const }, ...EMPTY_AMENDMENT9_DIRECTIVES,
+                    artifacts: { action: "migrate" as const, items: [{ artifactId,
+                        expectedHeaderVersion: source.headerVersion, expectedBodyVersion: source.bodyVersion,
+                        expectedDataEncryptionKey: privacyKit.encodeBase64(new Uint8Array(source.dataEncryptionKey)), recipientKeyEnvelopes: [],
+                        header: toMode === "plain" ? plainHeader : encryptedHeader,
+                        body: toMode === "plain" ? plainBody : encryptedBody,
+                        dataEncryptionKey: toMode === "plain" ? ARTIFACT_PLAIN_DATA_KEY_MARKER : encryptedKey,
+                        blobs: [],
+                        revisions: [{ bodyVersion: 1, expectedBody: toMode === "plain" ? encryptedRevision : plainRevision,
+                            body: toMode === "plain" ? plainRevision : encryptedRevision }],
+                    }] },
+                };
+                const payload = toMode === "e2ee" ? signPlainToE2eeRequest({ accountId: account.id,
+                    signingSecretKey: signing.secretKey, request: { ...unsigned, keyProof: {
+                        v: 1, publicKey: privacyKit.encodeBase64(new Uint8Array(signing.publicKey)), ...binding,
+                    } } }) : unsigned;
+                const options = { method: "POST" as const, url: "/v1/account/encryption/migrate",
+                    headers: { "x-test-user-id": account.id, ...currentCompatibilityHeaders() }, payload };
+                const response = await app.inject(options);
+                expect(response.statusCode, response.body).toBe(200);
+                const committed = await db.artifact.findUniqueOrThrow({ where: { id: artifactId }, include: { revisions: true } });
+                expect(committed.revisions).toHaveLength(1);
+                const revision = committed.revisions[0]!;
+                expect(revision.bodyVersion).toBe(1);
+                expect(revision.createdAt).toEqual(new Date(1234));
+                expect(privacyKit.encodeBase64(openArtifactStoredContentBytes({ accountId: account.id, artifactId,
+                    mode: toMode, field: "body", dataEncryptionKey: committed.dataEncryptionKey, content: revision.body })!))
+                    .toBe(toMode === "plain" ? plainRevision : encryptedRevision);
+                if (toMode === "plain") expect(Buffer.from(revision.body).toString("utf8")).toContain('"sealed_v1"');
+                const replay = await app.inject(options);
+                expect(replay.statusCode, replay.body).toBe(200);
+                expect(replay.json()).toEqual(response.json());
+                expect(await db.artifact.findUniqueOrThrow({ where: { id: artifactId }, include: { revisions: true } }))
+                    .toEqual(committed);
+            }
+        } finally { await app.close(); }
+    });
+
+    it.each(["body", "added_revision", "document_quota", "account_quota"] as const)("rejects retained Artifact %s without replacing the head or Account mode", async (drift) => {
+        harness.resetEnv({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1", HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_ARTIFACTS_AT_REST: "none" });
+        const account = await db.account.create({ data: { ...createSignedAccountContentBinding(), encryptionMode: "e2ee" } });
+        const artifactId = randomUUID();
+        const sourceBody = Buffer.from([2, 1, 2]);
+        const sourceKey = Buffer.from([3, 4, 5]);
+        await db.artifact.create({ data: { id: artifactId, accountId: account.id,
+            header: Buffer.from([2, 3, 4]), body: Buffer.from([2, 5, 6]), headerVersion: 1, bodyVersion: 3,
+            dataEncryptionKey: sourceKey, revisions: { create: [{ bodyVersion: 1, body: sourceBody }] } } });
+        const fingerprints = deriveAccountEncryptionMigrationKeyFingerprints(account);
+        const payload = { toMode: "plain" as const, expectedAccountVersion: account.seq,
+            expectedSigningKeyFingerprint: fingerprints.signingKeyFingerprint, expectedContentKeyFingerprint: fingerprints.contentKeyFingerprint,
+            expectedSettingsVersion: 0, settingsContent: null, connectedServices: { action: "assert_empty" as const },
+            automations: { action: "assert_empty" as const }, machines: { action: "assert_empty" as const }, todos: { action: "assert_empty" as const },
+            sessions: { action: "assert_empty" as const }, ...EMPTY_AMENDMENT9_DIRECTIVES,
+            artifacts: { action: "migrate" as const, items: [{ artifactId, expectedHeaderVersion: 1, expectedBodyVersion: 3,
+                expectedDataEncryptionKey: privacyKit.encodeBase64(sourceKey), dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+                recipientKeyEnvelopes: [], blobs: [], header: encodePlainArtifactStoredContent({ title: "Target" }),
+                body: encodePlainArtifactStoredContent({ body: "Current" }), revisions: [{ bodyVersion: 1,
+                    expectedBody: privacyKit.encodeBase64(sourceBody), body: encodePlainArtifactStoredContent({ body: "Retained" }) }] }] } };
+        if (drift === "body") await db.artifactRevision.update({ where: { artifactId_bodyVersion: { artifactId, bodyVersion: 1 } }, data: { body: Buffer.from([2, 7, 8]) } });
+        else if (drift === "added_revision") await db.artifactRevision.create({ data: { artifactId, bodyVersion: 2, body: Buffer.from([2, 9, 10]) } });
+        const item = payload.artifacts.items[0]!;
+        const headBytes = Buffer.from(item.header, "base64").byteLength + Buffer.from(item.body, "base64").byteLength;
+        const convertedDocumentBytes = headBytes + Buffer.from(item.revisions[0]!.body, "base64").byteLength;
+        if (drift === "account_quota") {
+            const otherArtifactId = randomUUID();
+            await db.artifact.create({ data: { id: otherArtifactId, accountId: account.id,
+                header: Buffer.from([2, 3, 4]), body: Buffer.from([2, 5, 6]), headerVersion: 1, bodyVersion: 3,
+                dataEncryptionKey: sourceKey, revisions: { create: [{ bodyVersion: 1, body: sourceBody }] } } });
+            payload.artifacts.items.push({ ...item, artifactId: otherArtifactId });
+        }
+        // Both byte budgets include the retained physical content.
+        // Each Account replacement fits alone; their combined growth does not.
+        const limitBytes = drift === "document_quota" ? convertedDocumentBytes - 1 : convertedDocumentBytes * 2 - 1;
+        if (drift === "document_quota") process.env.HAPPIER_ARTIFACT_DOCUMENT_LIMIT_BYTES = String(limitBytes);
+        if (drift === "account_quota") process.env.HAPPIER_ARTIFACT_ACCOUNT_LIMIT_BYTES = String(limitBytes);
+        const before = await db.artifact.findMany({ where: { accountId: account.id }, orderBy: { id: "asc" }, include: { revisions: true } });
+        const app = createTestApp();
+        try {
+            const response = await app.inject({ method: "POST", url: "/v1/account/encryption/migrate",
+                headers: { "x-test-user-id": account.id, ...currentCompatibilityHeaders() }, payload });
+            if (drift.endsWith("_quota")) {
+                expect(response.statusCode, response.body).toBe(413);
+                expect(response.json()).toEqual({ error: "quota_exceeded", budget: drift === "account_quota" ? "account" : "document",
+                    limitBytes, usedBytes: drift === "account_quota" ? convertedDocumentBytes * 2 : convertedDocumentBytes });
+            } else {
+                expect(response.statusCode, response.body).toBe(400);
+                expect(response.json()).toEqual({ error: "invalid-params", reason: "migration_inventory_changed" });
+            }
+            expect(await db.artifact.findMany({ where: { accountId: account.id }, orderBy: { id: "asc" }, include: { revisions: true } })).toEqual(before);
+            expect(await db.account.findUniqueOrThrow({ where: { id: account.id } })).toEqual(account);
+        } finally { await app.close(); }
+    });
+
     it.each(["plain", "e2ee"] as const)("reseals Account authoring memory atomically and replays the exact result (%s source)", async (fromMode) => {
         harness.resetEnv({
             HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
@@ -413,8 +558,9 @@ describe("account encryption migration .7 SQLite matrix", () => {
         const signing = tweetnacl.sign.keyPair();
         const binding = createSignedContentKeyBinding(signing.secretKey);
         const account = await db.account.create({ data: {
-            publicKey: privacyKit.encodeHex(signing.publicKey),
-            ...binding,
+            publicKey: privacyKit.encodeHex(new Uint8Array(signing.publicKey)),
+            contentPublicKey: Buffer.from(binding.contentPublicKey, "base64"),
+            contentPublicKeySig: Buffer.from(binding.contentPublicKeySig, "base64"),
             encryptionMode: fromMode,
             settings: null,
         } });
@@ -427,7 +573,7 @@ describe("account encryption migration .7 SQLite matrix", () => {
             accountId: account.id, key: physicalKey, version: 3,
             value: new TextEncoder().encode(JSON.stringify(source)),
         } });
-        const toMode = fromMode === "plain" ? "e2ee" : "plain";
+        const toMode: "plain" | "e2ee" = fromMode === "plain" ? "e2ee" : "plain";
         const content = toMode === "plain"
             ? { t: "plain" as const, v: "profile-a" }
             : encryptedAuthoringMemoryContent();
@@ -451,7 +597,7 @@ describe("account encryption migration .7 SQLite matrix", () => {
         const buildRequest = (candidate: typeof base | Omit<typeof base, "authoringMemory">) => toMode === "e2ee" ? signPlainToE2eeRequest({
             accountId: account.id, signingSecretKey: signing.secretKey,
             request: { ...candidate, keyProof: {
-                v: 1, publicKey: privacyKit.encodeBase64(signing.publicKey), ...binding,
+                v: 1, publicKey: privacyKit.encodeBase64(new Uint8Array(signing.publicKey)), ...binding,
             } },
         }) : candidate;
         const request = buildRequest(base);

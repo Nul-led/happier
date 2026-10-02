@@ -5,6 +5,7 @@ import {
 import type { SessionCapabilityV1 } from '../sessions/access/sessionEffectiveAccessV1.js';
 import type { ActionId } from '../actions/actionIds.js';
 import type { SessionFollowSourceKeyPrepareAuthorizationV1 } from '../sessions/follow/sessionFollowSourceKeyPreparationV1.js';
+import { SocketRpcSessionActionAuthorizationContextSchema, type SocketRpcSessionActionAuthorizationContext } from './socket.js';
 import {
   CURRENT_SESSION_PRESENTATION_ACK_RPC_METHOD,
   CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD,
@@ -76,6 +77,7 @@ export function isRpcMethodNotFoundResult(value: unknown): value is { error: str
 
 export const SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS = {
   SESSION_WRITE: 'session.write',
+  SESSION_ACTION: 'session.action',
   SESSION_PERMISSION_RESPOND: 'session.permission.respond',
   AUTOMATION_REPLY_HANDOFF_SERVER_ORIGIN: 'automation.replyHandoff.serverOrigin',
   SESSION_SERVER_START_SERVER_ORIGIN: 'session.serverStart.serverOrigin',
@@ -152,6 +154,7 @@ export const ACTION_API_SERVER_ORIGIN: SocketRpcActionApiServerOriginAuthorizati
  */
 export type SocketRpcSessionAuthorizationContext =
   | SocketRpcSessionWriteAuthorizationContext
+  | SocketRpcSessionActionAuthorizationContext
   | SocketRpcSessionPermissionRespondAuthorizationContext;
 
 export type SocketRpcAuthorizationContext =
@@ -287,6 +290,7 @@ const ADDITIONAL_SESSION_RPC_AUTHORIZATION_ROWS = [
   { method: RPC_METHODS.TRANSCRIPT_PAGE, authority: 'readTranscript', actionId: 'transcript.page', routeToSessionOwnerDaemon: true },
   { method: RPC_METHODS.TRANSCRIPT_READ_AFTER, authority: 'readTranscript', actionId: 'transcript.readAfter', routeToSessionOwnerDaemon: true },
   { method: RPC_METHODS.TRANSCRIPT_FOLLOW, authority: 'readTranscript', actionId: 'session.transcript.get', routeToSessionOwnerDaemon: true },
+  { method: RPC_METHODS.TRANSCRIPT_UNFOLLOW, authority: 'readTranscript', actionId: 'transcript.unfollow', routeToSessionOwnerDaemon: true },
   { method: RPC_METHODS.TRANSCRIPT_SEARCH, authority: 'readTranscript', routeToSessionOwnerDaemon: true },
   { method: RPC_METHODS.TRANSCRIPT_IMPORT, authority: 'submitAgentInput', routeToSessionOwnerDaemon: true },
   { method: CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD, authority: 'sessionOwner', routeToSessionOwnerDaemon: true, serverMintedContext: 'session.presentation.origin' },
@@ -449,6 +453,10 @@ export function isSocketRpcCurrentSessionPresentationOriginAuthorizationContext(
 export function parseSocketRpcAuthorizationContext(value: unknown): SocketRpcSessionAuthorizationContext | null {
   if (!value || typeof value !== 'object') return null;
   const candidate = value as { kind?: unknown; sessionId?: unknown; actor?: unknown };
+  if (candidate.kind === SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_ACTION) {
+    const parsed = SocketRpcSessionActionAuthorizationContextSchema.safeParse(value);
+    return parsed.success ? parsed.data : null;
+  }
   if (candidate.kind === SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE) {
     if (typeof candidate.sessionId !== 'string') return null;
     const sessionId = candidate.sessionId.trim();

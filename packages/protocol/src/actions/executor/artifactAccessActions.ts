@@ -8,7 +8,7 @@ import {
   type ArtifactAccessGrantsListResponseV1,
   type ArtifactAccessGrantMutationResponseV1,
 } from '../../artifacts/artifactAccessV1.js';
-import type { ArtifactSharingKindAdapterV1, ArtifactSharingResourceV1 } from '../../artifacts/artifactSharingV1.js';
+import { getArtifactUseTargetV1, type ArtifactSharingResourceV1 } from '../../artifacts/artifactSharingV1.js';
 
 export type ArtifactAccessActionTransportV1 = Readonly<{
   list: (input: ArtifactAccessGrantsListInputV1, signal?: AbortSignal) => Promise<ArtifactAccessGrantsListResponseV1>;
@@ -19,7 +19,6 @@ export type ArtifactAccessActionTransportV1 = Readonly<{
 /** The kind owner validates private content; the authenticated storage owner rechecks access. */
 export function createArtifactAccessActionsV1(params: Readonly<{
   read: (artifactId: string, options?: Readonly<{ signal?: AbortSignal }>) => Promise<ArtifactSharingResourceV1 | null>;
-  adapters: readonly ArtifactSharingKindAdapterV1[];
   transport: ArtifactAccessActionTransportV1;
 }>) {
   return async (args: Readonly<{ actionId: ArtifactAccessActionIdV1; input: unknown; signal?: AbortSignal }>) => {
@@ -28,8 +27,7 @@ export function createArtifactAccessActionsV1(params: Readonly<{
     const resource = await params.read(input.artifactId, args.signal ? { signal: args.signal } : undefined);
     args.signal?.throwIfAborted();
     if (!resource) throw Object.assign(new Error('artifact_not_found'), { code: 'artifact_not_found' });
-    const adapter = params.adapters.find((candidate) => candidate.kind === resource.header.kind);
-    if (!adapter || !adapter.canShare(resource)) throw Object.assign(new Error('artifact_kind_not_shareable'), { code: 'artifact_kind_not_shareable' });
+    if (!getArtifactUseTargetV1(resource).canShare) throw Object.assign(new Error('artifact_kind_not_shareable'), { code: 'artifact_kind_not_shareable' });
     if (!resource.access) throw Object.assign(new Error('artifact_access_unavailable'), { code: 'artifact_access_unavailable' });
     if (args.actionId !== 'artifact.access.grants.list' && resource.access !== 'owner' && resource.access !== 'admin') {
       throw Object.assign(new Error('artifact_access_forbidden'), { code: 'artifact_access_forbidden' });

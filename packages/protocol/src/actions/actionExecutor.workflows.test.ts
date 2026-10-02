@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { createActionExecutor, type ActionExecutorDeps } from './actionExecutor.js';
 import { createWorkflowActionExecutor } from './executor/workflowAccountActions.js';
 import { createWorkflowDefinitionActions } from './executor/workflowDefinitions.js';
+import { createWorkflowAccountRunActionOwner } from './executor/workflowRunActions.js';
 import { resolveWorkflowDefinitionRefV1 } from '../workflows/workflowDefinitionResolverV1.js';
+import { getBuiltinWorkflowCatalogV1 } from '../workflows/builtins/catalog.js';
 
 describe('createActionExecutor (Workflow family)', () => {
   it('discovers builtins and every Account library page through the real workflow owner', async () => {
@@ -11,6 +13,8 @@ describe('createActionExecutor (Workflow family)', () => {
     // Only the Account Artifact transport is substituted; catalog, definition
     // filtering, paging and Action discovery stay real.
     const definitions = createWorkflowDefinitionActions({
+      readPluginWorkflows: () => [{ workflow: 'plugin:example.recipe/check', pluginId: 'example.recipe',
+        version: '1.2.3', title: 'Check changes', definition: getBuiltinWorkflowCatalogV1()[0]!.definition }],
       artifactStore: {
         list: async ({ cursor }) => {
           const index = cursor ? 1 : 0;
@@ -31,7 +35,11 @@ describe('createActionExecutor (Workflow family)', () => {
     let workflowEnabled = true;
     const executor = createActionExecutor({ workflowAction: createWorkflowActionExecutor({
       isWorkflowFeatureEnabled: () => workflowEnabled, definitions,
-      runs: { execute: async () => { throw new Error('discovery_starts_no_run'); } },
+      runs: createWorkflowAccountRunActionOwner({ definitions,
+        storage: { execute: async () => { throw new Error('discovery_starts_no_run'); } },
+        resolveAccountId: async () => 'account', resolveEncryption: async () => ({ kind: 'available',
+          witness: { mode: 'plain', version: 1, contentKeyFingerprint: null } }),
+        normalizeAbsolutePath: () => null, randomBytes: () => { throw new Error('discovery_needs_no_keys'); } }),
     }) } as unknown as ActionExecutorDeps);
     for (const [actionId, fieldPath] of [['workflow.trigger.add', 'workflow'], ['session.trigger.add', 'target.ref'],
       ['workflow.run.start', 'source.workflow']] as const) {
@@ -40,6 +48,7 @@ describe('createActionExecutor (Workflow family)', () => {
         ...(actionId === 'workflow.run.start' ? [] : [{ value: ids[0], label: 'Own recipe' }, { value: ids[1], label: 'Shared recipe' }]),
         expect.objectContaining({ value: 'builtin:keep-going' }),
         expect.objectContaining({ value: 'builtin:plan-with-a-panel' }),
+        { value: 'plugin:example.recipe/check', label: 'Check changes' },
       ]) } });
       if (actionId === 'workflow.run.start') expect(result).not.toMatchObject({ result: { options: expect.arrayContaining([
         expect.objectContaining({ value: ids[0] }),

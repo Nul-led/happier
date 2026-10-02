@@ -124,6 +124,8 @@ import {
   AutomationConversationAdmitInputV1Schema,
   AutomationConversationAdmitResultV1Schema,
   AutomationConversationResultDeliveryV1Schema,
+  AutomationConversationScopedTriggerEvidenceV1Schema,
+  AutomationConversationScopedTriggerRefV1Schema,
   AutomationNonnegativeSafeIntegerV1Schema as NONNEGATIVE_SAFE_INTEGER_SCHEMA,
   AutomationResultDeliveryActionRefV1Schema,
   AutomationResultDeliveryInputV1JsonSchema,
@@ -1297,7 +1299,7 @@ export type AutomationConversationActionHttpCallerV1 = z.infer<
  * Private host evidence constructed by the authenticated Conversation
  * admission host. A plain Account keeps its semantic Action input on the wire;
  * an E2EE Account replaces it entirely with this sealed, Account-current
- * package so no sender, message text, or reply context reaches the server.
+ * package so no sender, message text, PR selector, or reply context reaches the server.
  *
  * An optional final-result handoff carries a host-sealed reply context bound to
  * the same `(automationId, occurrenceKey)` as the encrypted evidence. The
@@ -1319,6 +1321,8 @@ export const AutomationConversationAdmitEncryptedHostEvidenceV1Schema = z.object
   executionTriggerEvidenceEnvelope: AutomationAdmitEncryptedTriggerEvidenceEnvelopeV1Schema,
   occurrenceEvidenceEqualityTag: AutomationOccurrenceEvidenceEqualityTagV1Schema,
   replyHandoff: AutomationConversationAdmitReplyHandoffV1Schema.optional(),
+  // The selected repository/PR stays inside both sealed evidence envelopes.
+  scopedTrigger: AutomationConversationScopedTriggerEvidenceV1Schema.omit({ pullRequest: true }).optional(),
 }).strict().superRefine((value, context) => {
   if (value.accountCurrentness.mode !== 'e2ee') {
     context.addIssue({
@@ -1421,7 +1425,9 @@ export const AutomationConversationActionHttpRequestSchemasV1 = Object.freeze({
   'automation.conversation.target.verify': z.object({
     v: z.literal(1),
     caller: AutomationConversationActionHttpCallerV1Schema,
-    input: AutomationConversationTargetVerifyInputV1Schema,
+    input: AutomationConversationTargetVerifyInputV1Schema.omit({ scopedTrigger: true }).extend({
+      scopedTrigger: AutomationConversationScopedTriggerRefV1Schema.omit({ pullRequest: true }).optional(),
+    }).strict(),
   }).strict(),
   'automation.conversation.admit': AutomationConversationAdmitHttpRequestV1Schema,
 } as const satisfies Readonly<Record<AutomationConversationActionIdV1, z.ZodTypeAny>>);

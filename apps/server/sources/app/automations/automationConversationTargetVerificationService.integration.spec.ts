@@ -2,6 +2,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import tweetnacl from "tweetnacl";
 
 import {
+    AutomationTriggerIdSchema,
+    createAccountScopedCryptoMaterialSnapshotV1,
+    sealAutomationTriggerDefinitionStoredEnvelopeV1,
     signAccountContentKeyBindingV1,
     normalizePluginReleaseFactsV1,
 } from "@happier-dev/protocol";
@@ -250,6 +253,48 @@ describe("Automation conversation target verification database boundary", () => 
                 },
             })).resolves.toEqual({ kind: "verified" });
         }
+    });
+
+    it.each(['plain', 'e2ee'] as const)('verifies only exact public scoped trigger correspondence in %s', async (mode) => {
+        const content = tweetnacl.box.keyPair();
+        const signing = tweetnacl.sign.keyPair();
+        const material = createAccountScopedCryptoMaterialSnapshotV1({
+            accountEncryptionMode: 'e2ee',
+            material: { type: 'dataKey', machineKey: content.secretKey },
+            dataKeyPublicKey: content.publicKey,
+        }).material;
+        if (mode === 'e2ee') await db.account.update({ where: { id: ACCOUNT_ID }, data: {
+            encryptionMode: 'e2ee', publicKey: Buffer.from(signing.publicKey).toString('hex'),
+            contentPublicKey: new Uint8Array(content.publicKey),
+            contentPublicKeySig: new Uint8Array(signAccountContentKeyBindingV1({
+                accountSigningSecretKey: signing.secretKey, contentPublicKey: content.publicKey,
+            })),
+        } });
+        const ref = { sessionId: 'session-pr-verifier', triggerId: AutomationTriggerIdSchema.parse('trigger-pr-verifier'),
+            triggerRevision: 1, triggerKind: 'prComment' as const };
+        const binding = { v: 1 as const, automationId: 'automation-schedule-owned', triggerId: ref.triggerId,
+            triggerRevision: ref.triggerRevision, triggerKind: ref.triggerKind };
+        const definition = { kind: 'prComment' as const, pullRequest: { repository: 'private-owner/private-repository', number: 17 } };
+        const envelope = mode === 'plain'
+            ? sealAutomationTriggerDefinitionStoredEnvelopeV1({ mode, binding, definition })
+            : sealAutomationTriggerDefinitionStoredEnvelopeV1({ mode, material,
+                randomBytes: (length) => new Uint8Array(length).fill(17), binding, definition });
+        await db.automation.update({ where: { id: binding.automationId }, data: { scopeSessionId: ref.sessionId } });
+        await db.automationTrigger.create({ data: { id: ref.triggerId, automationId: binding.automationId,
+            kind: ref.triggerKind, revision: ref.triggerRevision, sourceSessionId: ref.sessionId,
+            // Attachment verifies before the Action enables its newly created trigger.
+            enabled: false, definitionEnvelope: JSON.stringify(envelope) } });
+
+        const verify = async (scopedTrigger: unknown) => await verifyAutomationConversationTargetV1({
+            accountId: ACCOUNT_ID, caller, input: { automationId: binding.automationId, scopedTrigger },
+        });
+        expect(await verify(ref)).toEqual({ kind: 'verified' });
+        for (const mismatch of [undefined,
+            { ...ref, sessionId: 'another-session' },
+            { ...ref, triggerId: 'another-trigger' },
+            { ...ref, triggerRevision: 0 },
+            { ...ref, triggerKind: 'ciFailed' },
+        ]) expect(await verify(mismatch)).toEqual({ kind: 'notVerified', reason: 'scopedTriggerIdentityMismatch' });
     });
 
     it("verifies an Automation for a plugin that did not author it", async () => {

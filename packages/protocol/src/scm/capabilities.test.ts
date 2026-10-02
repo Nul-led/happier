@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import * as policy from './capabilities.js';
 
 import {
   createGitScmCapabilities,
@@ -7,6 +8,12 @@ import {
 } from './capabilities.js';
 
 describe('scmCapabilities', () => {
+  it('admits undo only when its own capability is explicitly advertised', () => {
+    expect(policy.admitScmCommitUndoLast(undefined)).toMatchObject({ success: false, errorCode: 'FEATURE_UNSUPPORTED' });
+    expect(policy.admitScmCommitUndoLast({ writeCommitUndoLast: false })).toMatchObject({ success: false });
+    expect(policy.admitScmCommitUndoLast({ writeCommitUndoLast: true })).toEqual({ success: true });
+    expect(createScmCapabilities().writeCommitUndoLast).toBe(false);
+  });
   it('creates working-copy defaults when no input is provided', () => {
     const capabilities = createScmCapabilities();
     expect(capabilities.capabilityScope).toBe('local-backend');

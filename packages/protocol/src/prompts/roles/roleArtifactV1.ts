@@ -27,3 +27,8 @@ export const RoleArtifactV1Schema = z.object({
   enabled: z.boolean(),
 }).strict();
 export type RoleArtifactV1 = z.infer<typeof RoleArtifactV1Schema>;
+
+/** Ordinary Role writers and restores share one body-derived header projection. */
+export function buildRoleArtifactHeaderV1(role: RoleArtifactV1): Readonly<Record<string, unknown>> {
+  return { kind: 'role.v1', name: role.name };
+}

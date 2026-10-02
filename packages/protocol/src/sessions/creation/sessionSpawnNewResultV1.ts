@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { OperationUpdateRequiredV1Schema } from '../../compat/operationUpdateRequiredV1.js';
 import { ProviderErrorV1Schema } from '../../providers/errors.js';
+import { TerminalHostUnavailableSpawnErrorDetailSchema } from '../spawnSession.js';
 
 import { SessionInputAdmissionRejectionCodeV1Schema } from '../messages/sessionInputAdmissionRejectionV1.js';
 import { SessionAccessErrorCodeV1Schema } from '../access/sessionAccessOperationsV1.js';
@@ -114,7 +115,11 @@ export const SessionSpawnNewResultV1Schema = z.union([
     retryable: z.boolean(),
     agentId: z.string().refine((value) => value.trim().length > 0).optional(),
     providerError: ProviderErrorV1Schema.optional(),
+    terminalHostError: TerminalHostUnavailableSpawnErrorDetailSchema.optional(),
   }).strict().superRefine((value, context) => {
+    if (value.terminalHostError && (value.code !== 'incompatible_target' || value.retryable)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['terminalHostError'], message: 'Terminal host setup failures require a non-retryable incompatible target.' });
+    }
     const agentPrecondition = value.code === 'agent_cli_missing' || value.code === 'agent_signed_out';
     if (agentPrecondition !== (value.agentId !== undefined)) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['agentId'], message: 'Agent identity is required only for an Agent precondition failure.' });

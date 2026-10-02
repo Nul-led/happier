@@ -38,6 +38,7 @@ import {
 import {
   AutomationConversationAdmitInputV1Schema,
   AutomationConversationAdmitResultV1Schema,
+  AutomationConversationScopedTriggerRefV1Schema,
   AutomationNonnegativeSafeIntegerV1Schema as NONNEGATIVE_SAFE_INTEGER_SCHEMA,
 } from './automationResultDeliveryV1.js';
 
@@ -370,6 +371,7 @@ export type AutomationEventAdmitHttpResultV1 = z.infer<typeof AutomationEventAdm
  */
 export const AutomationConversationTargetVerifyInputV1Schema = z.object({
   automationId: asProtocolZod(AutomationIdV1Schema),
+  scopedTrigger: AutomationConversationScopedTriggerRefV1Schema.optional(),
   /**
    * A final-result author asks the Automation owner to validate that
    * capability against the current target; ordinary delivery omits it.
@@ -387,6 +389,7 @@ export const AutomationConversationTargetVerifyResultV1Schema = z.discriminatedU
     reason: z.enum([
       'notFound',
       'resultDeliveryUnsupported',
+      'scopedTriggerIdentityMismatch',
     ]),
   }).strict(),
 ]);

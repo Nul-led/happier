@@ -11,7 +11,7 @@ describe('Notify me Action', () => {
     } } as unknown as ActionExecutorDeps);
     expect(await executor.execute('notifications.notify_me', { message: 'Finished' }, {
       surface: 'cli', defaultSessionId: 'foreign-session',
-      actionCaller: { kind: 'session', sessionId: 'session-one' },
+      actionCaller: { kind: 'session', sessionId: 'session-one', starterDepth: 1, turnDepth: 2 },
     })).toEqual({ ok: true, result: { attemptedChannels: 1, deliveredChannels: 1 } });
   });
   it('exposes channel discovery and passes the workflow request identity and default link to its Account host', async () => {

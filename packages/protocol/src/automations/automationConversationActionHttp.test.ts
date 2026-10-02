@@ -139,6 +139,15 @@ describe('Automation conversation admission HTTP contract', () => {
       '/v1/automations/conversation/target/verify',
     );
     expect(AutomationConversationActionHttpRequestSchemasV1[actionId].parse(request)).toEqual(request);
+    const scopedTrigger = { sessionId: 'session-1', triggerId: 'trigger-1', triggerRevision: 0,
+      triggerKind: 'prComment' };
+    const scopedRequest = { ...request, input: { ...request.input, scopedTrigger } };
+    expect(AutomationConversationActionHttpRequestSchemasV1[actionId].parse(scopedRequest)).toEqual(scopedRequest);
+    expect(AutomationConversationActionHttpRequestSchemasV1[actionId].safeParse({
+      ...scopedRequest,
+      input: { ...scopedRequest.input, scopedTrigger: { ...scopedTrigger,
+        pullRequest: { repository: 'private-owner/private-repository', number: 17 } } },
+    }).success).toBe(false);
     expect(AutomationConversationActionHttpRequestSchemasV1[actionId].safeParse({
       ...request,
       input: { ...request.input, expectedTemplateVersion: 3 },
@@ -466,6 +475,16 @@ describe('Automation conversation admission HTTP contract', () => {
     const request = { v: 1, caller, hostEvidence } as const;
 
     expect(requests[actionId]!.parse(request)).toEqual(request);
+    const scopedTrigger = { sessionId: 'session-1', triggerId: 'trigger-1', triggerRevision: 0,
+      triggerKind: 'ciFailed', bindingId: 'binding-1', observationActorPrincipalId: '123',
+      actor: { principalId: '123', repositoryWriteAccess: true } };
+    const scopedRequest = { ...request, hostEvidence: { ...hostEvidence, scopedTrigger } };
+    expect(requests[actionId]!.parse(scopedRequest)).toEqual(scopedRequest);
+    expect(requests[actionId]!.safeParse({
+      ...scopedRequest,
+      hostEvidence: { ...scopedRequest.hostEvidence, scopedTrigger: { ...scopedTrigger,
+        pullRequest: { repository: 'private-owner/private-repository', number: 17 } } },
+    }).success).toBe(false);
     expect(requests[actionId]!.safeParse({
       ...request,
       hostEvidence: { ...hostEvidence, templateVersion: 3 },

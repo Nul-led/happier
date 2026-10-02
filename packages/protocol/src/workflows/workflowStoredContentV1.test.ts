@@ -104,6 +104,9 @@ describe('Workflow stored Account content', () => {
   it('seals and opens a deep accepted definition in plain and E2EE modes', () => {
     const definition = createDeepWorkflowDefinition();
     const acceptedSnapshot = {
+      startedBy: 'user' as const,
+      authoredDefinition: definition, workDepth: 0, metadata: null,
+      materializedLeaves: [], frozenChildren: {},
       definition, inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' as const },
       workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
       source: { kind: 'inline' as const }, origin: { kind: 'direct' as const },
@@ -121,12 +124,16 @@ describe('Workflow stored Account content', () => {
     }
   });
   it('round-trips every canonical purpose in plain and E2EE modes', () => {
+    const definition = { version: 1 as const, inputs: [], defaults: {}, blocks: [{ kind: 'step' as const,
+      id: 'step-1', document: { text: 'Do it', references: [], attachments: [] }, input: [], result: { kind: 'text' as const } }] };
     const fixtures = [
       {
         seal: (mode: 'plain' | 'e2ee') => sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
           binding: acceptedBinding,
           acceptedSnapshot: {
-            definition: { version: 1, inputs: [], defaults: {}, blocks: [{ kind: 'step', id: 'step-1', document: { text: 'Do it', references: [], attachments: [] }, input: [], result: { kind: 'text' } }] },
+            startedBy: 'trigger',
+            definition, authoredDefinition: definition, workDepth: 0,
+            materializedLeaves: [], frozenChildren: {},
             metadata: { title: 'Frozen private title', description: 'Frozen private summary' },
             inputs: {},
             machineId: 'machine-1',
@@ -195,10 +202,13 @@ describe('Workflow stored Account content', () => {
   });
 
   it('fails a private accepted metadata open closed with the wrong E2EE material', () => {
+    const definition = { version: 1 as const, inputs: [], defaults: {}, blocks: [{ kind: 'step' as const,
+      id: 'step-1', document: { text: 'Do it', references: [], attachments: [] }, input: [], result: { kind: 'text' as const } }] };
     const envelope = sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'e2ee', binding: acceptedBinding, runDataKey, randomBytes,
       acceptedSnapshot: {
-        definition: { version: 1, inputs: [], defaults: {}, blocks: [{ kind: 'step', id: 'step-1', document: { text: 'Do it', references: [], attachments: [] }, input: [], result: { kind: 'text' } }] },
+        startedBy: 'trigger', definition, authoredDefinition: definition, workDepth: 0,
+        materializedLeaves: [], frozenChildren: {},
         metadata: { title: 'Secret title' }, inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
         workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
         source: { kind: 'automation', automationId: 'automation-1' },

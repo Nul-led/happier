@@ -1,6 +1,8 @@
 import type { ActionId } from '../actionIds.js';
+import { getActionSpec } from '../actionSpecs.js';
 import type { ActionContextualDefaults } from '../contextualDefaults.js';
-import type { ActionExecuteFailure, ActionExecutorContext } from './types.js';
+import { resolveActionAgentStartContextV1 } from './agentStartAdmission.js';
+import type { ActionExecuteFailure, ActionExecutorContext, ActionExecutorDeps } from './types.js';
 
 export function isAutonomousSessionListSurface(surface: unknown): boolean {
   return surface === 'agent' || surface === 'mcp' || surface === 'plugin';
@@ -48,13 +50,16 @@ export function resolveActionSessionListAccessFailure(
  * remain a convenience for unconstrained human/API callers. The Agent surface
  * is intrinsically bound to its current Session; other autonomous surfaces use
  * the host-only `sessionListAccess` fact to declare the same restricted corpus.
+ * Read Actions may use the same host Session caller and server-proved led
+ * subtree as start admission. This does not authorize starts or mutations.
  */
-export function resolveActionCurrentSessionScopeFailure(
+export async function resolveActionCurrentSessionScopeFailure(
   actionId: ActionId,
   input: unknown,
   context: ActionExecutorContext | undefined,
   contextualDefaults: ActionContextualDefaults | undefined,
-): ActionExecuteFailure | null {
+  deps: Pick<ActionExecutorDeps, 'resolveAgentStartContext' | 'sessionList'>,
+): Promise<ActionExecuteFailure | null> {
   if (contextualDefaults?.sessionId !== 'current_session') return null;
   // Agent-originated cross-Session message delivery is authorized by the
   // Message Action owner, which requires a host-stamped active-turn source and
@@ -63,7 +68,10 @@ export function resolveActionCurrentSessionScopeFailure(
   // remain bound when their host declares current-Session-only list access.
   if (actionId === 'session.message.send' && context?.surface === 'agent') return null;
   if (!isAutonomousSessionListSurface(context?.surface)) return null;
-  if (context?.surface !== 'agent' && context?.sessionListAccess !== 'current_session') return null;
+  if (context?.surface !== 'agent'
+    && context?.sessionListAccess !== 'current_session'
+    && context?.sessionListAccess !== 'led_subtree'
+    && context?.sessionListAccess !== 'unavailable') return null;
 
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   const inputRecord = input as Readonly<Record<string, unknown>>;
@@ -75,7 +83,15 @@ export function resolveActionCurrentSessionScopeFailure(
     return { ok: false, errorCode: 'unsupported_action', error: `unsupported_action:${actionId}` };
   }
 
-  return inputRecord.sessionId.trim() === defaultSessionId
-    ? null
-    : { ok: false, errorCode: 'unsupported_action', error: `unsupported_action:${actionId}` };
+  const targetSessionId = inputRecord.sessionId.trim();
+  if (targetSessionId === defaultSessionId) return null;
+  if (context.sessionListAccess !== 'current_session'
+    && context.sessionListAccess !== 'unavailable'
+    && getActionSpec(actionId).sideEffectClass === 'read') {
+    const resolved = await resolveActionAgentStartContextV1(deps, context, targetSessionId);
+    if (resolved?.caller.kind === 'session'
+      && resolved.caller.sessionId === defaultSessionId
+      && resolved.ledSubtreeSessionIds.includes(targetSessionId)) return null;
+  }
+  return { ok: false, errorCode: 'unsupported_action', error: `unsupported_action:${actionId}` };
 }

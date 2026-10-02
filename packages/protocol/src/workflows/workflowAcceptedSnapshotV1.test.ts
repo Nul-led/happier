@@ -35,13 +35,13 @@ const workspaceTarget = {
   originalCommittedRevision: 'a'.repeat(40),
 } as const;
 
-const frozen = { authoredDefinition: definition, materializedLeaves: [], frozenChildren: {}, workDepth: 0, metadata: null };
+const frozen = { startedBy: 'user', authoredDefinition: definition, materializedLeaves: [], frozenChildren: {}, workDepth: 0, metadata: null };
 
 describe('WorkflowAcceptedSnapshotV1', () => {
   it('requires an explicit frozen authorship observation for saved sources', () => {
     const saved = { kind: 'saved' as const, definitionId: 'definition-1',
       revision: { headerVersion: 2, bodyVersion: 4 } };
-    const base = { definition, authoredDefinition: definition, workDepth: 0,
+    const base = { startedBy: 'user', definition, authoredDefinition: definition, workDepth: 0,
       materializedLeaves: [], frozenChildren: {}, metadata: { title: 'Frozen' },
       inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' as const },
       workspaceTarget, origin: { kind: 'direct' as const },

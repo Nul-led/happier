@@ -34,19 +34,32 @@ it("preserves explicit Voice application budgets independently of TCP admission"
     const input = {
         accountId: "account", targetMachineId: "machine", relaySocketId: "socket",
         destination: { host: "127.0.0.1", port: 3000 },
-        scope: { kind: "tcp_tunnel" as const, tunnelId: "voice-tunnel", allowedPorts: [3000] },
-        flowKind: "voice_media" as const,
-        applicationAuthority: {
-            v: 1 as const, applicationKind: "speech_transcription" as const,
+        scope: {
+            kind: "voice_media" as const, tunnelId: "voice-tunnel",
+            applicationKind: "speech_transcription" as const,
             applicationAttemptId: "attempt", applicationAuthorityDigest: `sha256:${"ab".repeat(32)}`,
         },
+        flowKind: "voice_media" as const,
         nowMs: 1000, ttlMs: 30000, serverGateEnabled: true,
-        serverCaps: { allowedPorts: [3000], maxFrameBytes: 65536 },
+        serverCaps: { allowedPorts: [], maxFrameBytes: 65536 },
         signingKey: { keyId: "test-key", secretKey: signing.secretKey },
     };
-    expect(mintPeerTcpTunnelRelayAuthorizationV2(input)).toMatchObject({ ok: false, reasonCode: "invalid_scope" });
+    const unbounded = mintPeerTcpTunnelRelayAuthorizationV2(input);
+    expect(unbounded.ok).toBe(true);
+    if (!unbounded.ok) return;
+    expect(unbounded.relayAuthorization.payload).not.toHaveProperty("maxIdleMs");
+    expect(unbounded.relayAuthorization.payload).not.toHaveProperty("maxDurationMs");
+    expect(unbounded.relayAuthorization.payload).not.toHaveProperty("maxTotalBytes");
+    expect(mintPeerTcpTunnelRelayAuthorizationV2({ ...input, flowKind: "tcp_tunnel" }))
+        .toMatchObject({ ok: false, reasonCode: "invalid_scope" });
+    expect(mintPeerTcpTunnelRelayAuthorizationV2({ ...input, destination: { host: "example.com", port: 3000 } }))
+        .toMatchObject({ ok: false, reasonCode: "destination_host_not_allowed" });
+    expect(mintPeerTcpTunnelRelayAuthorizationV2({
+        ...input, flowKind: "tcp_tunnel",
+        scope: { kind: "tcp_tunnel", tunnelId: "tcp-tunnel", allowedPorts: [3000] },
+    })).toMatchObject({ ok: false, reasonCode: "destination_port_not_allowed" });
     const budgets = { maxIdleMs: 2000, maxDurationMs: 10000, maxTotalBytes: 4096 };
-    const bounded = mintPeerTcpTunnelRelayAuthorizationV2({ ...input, applicationBudgets: budgets });
+    const bounded = mintPeerTcpTunnelRelayAuthorizationV2({ ...input, scope: { ...input.scope, ...budgets } });
     expect(bounded.ok).toBe(true);
     if (!bounded.ok) return;
     expect(bounded.relayAuthorization.payload).toMatchObject(budgets);
@@ -54,8 +67,21 @@ it("preserves explicit Voice application budgets independently of TCP admission"
         authorization: bounded.relayAuthorization, nowMs: 2000,
         trustRoots: [{ keyId: "test-key", publicKeyBase64Url: Buffer.from(signing.publicKey).toString("base64url") }],
     })).toMatchObject({ valid: true });
+    for (const change of [
+        { accountId: "other-account" },
+        { targetMachineId: "other-machine" },
+        { relaySocketId: "other-socket" },
+        { applicationAttemptId: "other-attempt" },
+        { applicationAuthorityDigest: `sha256:${"cd".repeat(32)}` },
+    ]) {
+        expect(verifyPeerTcpTunnelRelayAuthorizationV2({
+            authorization: { ...bounded.relayAuthorization, payload: { ...bounded.relayAuthorization.payload, ...change } },
+            nowMs: 2000,
+            trustRoots: [{ keyId: "test-key", publicKeyBase64Url: Buffer.from(signing.publicKey).toString("base64url") }],
+        })).toMatchObject({ valid: false, reasonCode: "bad_signature" });
+    }
     expect(mintPeerTcpTunnelRelayAuthorizationV2({
-        ...input, applicationBudgets: budgets,
+        ...input, scope: { ...input.scope, ...budgets },
         serverCaps: { ...input.serverCaps, maxDurationMs: 9999 },
     })).toMatchObject({ ok: false, reasonCode: "relay_cap_exceeded" });
 });

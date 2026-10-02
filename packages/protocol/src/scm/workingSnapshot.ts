@@ -39,6 +39,7 @@ const ScmCapabilitiesSchemaCore = z.object({
   writeExclude: z.boolean(),
   writeDiscard: z.boolean().optional(),
   writeCommit: z.boolean(),
+  writeCommitUndoLast: z.boolean().optional(),
   writeCommitAmend: z.boolean().optional(),
   writeCommitSignOff: z.boolean().optional(),
   writeCommitPathSelection: z.boolean(),
@@ -174,7 +175,9 @@ export const ScmWorkingSnapshotSchema = z.object({
   capabilities: ScmCapabilitiesSchema,
   branch: z.object({
     head: z.string().nullable(),
+    headOid: z.string().optional(),
     upstream: z.string().nullable(),
+    upstreamOid: z.string().optional(),
     ahead: z.number().int().nonnegative(),
     behind: z.number().int().nonnegative(),
     detached: z.boolean(),
