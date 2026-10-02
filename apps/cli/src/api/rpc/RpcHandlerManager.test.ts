@@ -16,6 +16,23 @@ import type { Socket } from 'socket.io-client';
 import type { RpcHandlerContext } from './types';
 import { computeExternalActionSocketRpcRequestDigestV1, type ExternalActionExecutionAuthorizationV1 } from '@happier-dev/protocol/actions';
 import { API_TOKEN_FULL_GRANT_V1 } from '@happier-dev/protocol/auth/apiTokenGrant';
+import { socketRpcCodec, type SocketRpcContent } from '@happier-dev/sync-client';
+
+const bindingCallId = '0123456789abcdef0123456789abcdef';
+function rpcContent(key: Uint8Array): SocketRpcContent {
+  return { mode: 'e2ee', cipher: {
+    encryptRaw: async value => encodeBase64(encrypt(key, 'dataKey', value)),
+    decryptRaw: async value => decrypt(key, 'dataKey', decodeBase64(value)),
+  } };
+}
+function sealRpcRequest(key: Uint8Array, method: string, value: unknown) {
+  return socketRpcCodec.encodeParams(rpcContent(key), value, { method, callId: bindingCallId });
+}
+async function openRpcResponse(key: Uint8Array, value: unknown) {
+  // Pre-admission refusals have no authenticated call id and cannot claim success.
+  if (typeof value !== 'string') return value;
+  return socketRpcCodec.decodeResult(rpcContent(key), { ok: true, result: value }, bindingCallId);
+}
 
 it('preserves a Home-stamped Session Action origin and rejects malformed or user-labelled origins', async () => {
   const rpc = new RpcHandlerManager({ scopePrefix: 'child', encryptionMode: 'plain', logger: () => {} });
@@ -45,7 +62,7 @@ it('binds the Home-issued input proof to the exact opaque RPC before opening it'
   rpc.registerHandler(SESSION_RPC_METHODS.SESSION_USER_MESSAGE_SEND, effect);
   const target = { kind: 'session' as const, sessionId: 'session-a' };
   const request = { method: `session-a:${SESSION_RPC_METHODS.SESSION_USER_MESSAGE_SEND}`,
-    requestId: 'rpc-input-1', params: encodeBase64(encrypt(encryptionKey, 'dataKey', { text: 'hello' })) };
+    requestId: 'rpc-input-1', params: await sealRpcRequest(encryptionKey, `session-a:${SESSION_RPC_METHODS.SESSION_USER_MESSAGE_SEND}`, { text: 'hello' }) };
   // The authenticated Home transport is the boundary here; downstream HTTP validates its signed token.
   const proof: ExternalActionExecutionAuthorizationV1 = { v: 1, token: 'home-issued-token', binding: {
     accountId: 'account-a', principalId: 'principal-a', credentialId: 'credential-a',
@@ -56,7 +73,7 @@ it('binds the Home-issued input proof to the exact opaque RPC before opening it'
   } };
   const admitted = { ...request, callerInputAuthorization: proof,
     callerInputConstraints: { models: null, permissionModes: null } };
-  expect(decrypt(encryptionKey, 'dataKey', decodeBase64(await rpc.handleRequest(admitted)))).toEqual({
+  expect(await openRpcResponse(encryptionKey, await rpc.handleRequest(admitted))).toEqual({
     proof, constraints: { models: null, permissionModes: ['read-only'] },
   });
   for (const refused of [
@@ -66,7 +83,7 @@ it('binds the Home-issued input proof to the exact opaque RPC before opening it'
     { ...admitted, callerInputAuthorization: { ...proof, binding: { ...proof.binding, machineId: 'machine-b' } } },
     { ...admitted, callerInputAuthorization: { ...proof, binding: { ...proof.binding, actionId: 'session.goal.set' } } },
   ]) {
-    expect(decrypt(encryptionKey, 'dataKey', decodeBase64(await rpc.handleRequest(refused))))
+    expect(await openRpcResponse(encryptionKey, await rpc.handleRequest(refused)))
       .toMatchObject({ errorCode: RPC_ERROR_CODES.FORBIDDEN });
   }
   expect(effect).toHaveBeenCalledOnce();
@@ -438,15 +455,15 @@ describe('RpcHandlerManager.handleRequest (encrypted)', () => {
       executed = true;
       return { constraints: context && 'callerInputConstraints' in context ? context.callerInputConstraints : null };
     });
-    const params = encodeBase64(encrypt(encryptionKey, 'dataKey', { callerInputConstraints: { models: null, permissionModes: null } }));
-    const decode = (result: unknown) => decrypt(encryptionKey, 'dataKey', decodeBase64(result as string));
+    const params = await sealRpcRequest(encryptionKey, 'sess_1:demo.constraints', { callerInputConstraints: { models: null, permissionModes: null } });
+    const decode = (result: unknown) => openRpcResponse(encryptionKey, result);
     const constraints = { models: null, permissionModes: ['read-only'] } as const;
-    expect(decode(await rpc.handleRequest({ method: 'sess_1:demo.constraints', params,
+    expect(await decode(await rpc.handleRequest({ method: 'sess_1:demo.constraints', params,
       callerInputConstraints: { ...constraints, permissionModes: [...constraints.permissionModes] },
     }))).toEqual({ constraints });
-    expect(decode(await rpc.handleRequest({ method: 'sess_1:demo.constraints', params }))).toEqual({ constraints: null });
+    expect(await decode(await rpc.handleRequest({ method: 'sess_1:demo.constraints', params }))).toEqual({ constraints: null });
     executed = false;
-    expect(decode(await rpc.handleRequest({ method: 'sess_1:demo.constraints', params,
+    expect(await decode(await rpc.handleRequest({ method: 'sess_1:demo.constraints', params,
       callerInputConstraints: { models: null, permissionModes: ['invalid'] },
     } as unknown as Parameters<typeof rpc.handleRequest>[0]))).toMatchObject({ errorCode: RPC_ERROR_CODES.FORBIDDEN });
     expect(executed).toBe(false);
@@ -458,12 +475,12 @@ describe('RpcHandlerManager.handleRequest (encrypted)', () => {
       scopePrefix: 'sess_1', encryptionKey, encryptionVariant: 'dataKey', logger: () => {},
     });
     rpc.registerHandler('demo.authority', async (_params, context) => ({ authority: context?.callerAuthority }));
-    const params = encodeBase64(encrypt(encryptionKey, 'dataKey', { callerAuthority: 'present_user' }));
+    const params = await sealRpcRequest(encryptionKey, 'sess_1:demo.authority', { callerAuthority: 'present_user' });
     for (const callerAuthority of [undefined, 'account_automation', 'present_user'] as const) {
       const result = await rpc.handleRequest({ method: 'sess_1:demo.authority', params,
         ...(callerAuthority ? { callerAuthority } : {}),
       });
-      expect(decrypt(encryptionKey, 'dataKey', decodeBase64(result as string))).toEqual({
+      expect(await openRpcResponse(encryptionKey, result as string)).toEqual({
         authority: callerAuthority ?? 'account_automation',
       });
     }
@@ -556,12 +573,8 @@ describe('RpcHandlerManager.handleRequest (encrypted)', () => {
       method: 'machine-1:daemon.actions.external.dispatch',
       params: rawEnvelope,
     } as Parameters<typeof rpc.handleRequest>[0]);
-    expect(typeof missingOrigin).toBe('string');
-    expect(decrypt(
-      encryptionKey,
-      'dataKey',
-      decodeBase64(missingOrigin as string),
-    )).toEqual({
+    expect(missingOrigin).toMatchObject({ errorCode: RPC_ERROR_CODES.FORBIDDEN });
+    expect(await openRpcResponse(encryptionKey, missingOrigin as string)).toEqual({
       error: RPC_ERROR_MESSAGES.FORBIDDEN,
       errorCode: RPC_ERROR_CODES.FORBIDDEN,
     });
@@ -626,12 +639,8 @@ describe('RpcHandlerManager.handleRequest (encrypted)', () => {
         ...(authorization ? { authorization } : {}),
       } as Parameters<typeof rpc.handleRequest>[0]);
 
-      expect(typeof response).toBe('string');
-      expect(decrypt(
-        encryptionKey,
-        'dataKey',
-        decodeBase64(response as string),
-      )).toEqual({
+      expect(response).toMatchObject({ errorCode: RPC_ERROR_CODES.FORBIDDEN });
+      expect(await openRpcResponse(encryptionKey, response as string)).toEqual({
         error: RPC_ERROR_MESSAGES.FORBIDDEN,
         errorCode: RPC_ERROR_CODES.FORBIDDEN,
       });
@@ -660,12 +669,7 @@ describe('RpcHandlerManager.handleRequest (encrypted)', () => {
     } as Parameters<typeof rpc.handleRequest>[0]);
 
     expect(handler).not.toHaveBeenCalled();
-    expect(typeof response).toBe('string');
-    expect(decrypt(
-      encryptionKey,
-      'dataKey',
-      decodeBase64(response as string),
-    )).toEqual({ error: 'Invalid RPC params' });
+    expect(response).toMatchObject({ errorCode: RPC_ERROR_CODES.UPDATE_REQUIRED });
   });
 
   it('wraps an encrypted result with only the requested projected transport acknowledgement', async () => {
@@ -688,7 +692,7 @@ describe('RpcHandlerManager.handleRequest (encrypted)', () => {
 
     const response = await rpc.handleRequest({
       method: 'machine_1:demo.stop',
-      params: encodeBase64(encrypt(encryptionKey, 'dataKey', { sessionId: 'sess_1' })),
+      params: await sealRpcRequest(encryptionKey, 'machine_1:demo.stop', { sessionId: 'sess_1' }),
       transportResponseEnvelopeVersion: 1,
     } as Parameters<typeof rpc.handleRequest>[0]);
 
@@ -702,11 +706,7 @@ describe('RpcHandlerManager.handleRequest (encrypted)', () => {
     const encryptedResult = (response as { result: unknown }).result;
     expect(typeof encryptedResult).toBe('string');
     expect(
-      decrypt(
-        encryptionKey,
-        'dataKey',
-        decodeBase64(encryptedResult as string),
-      ),
+      await openRpcResponse(encryptionKey, encryptedResult as string),
     ).toEqual({ status: 'stopped' });
   });
 
@@ -737,7 +737,7 @@ describe('RpcHandlerManager.handleRequest (encrypted)', () => {
 
     const res = await rpc.handleRequest({
       method: 'machine_1:demo.secure',
-      params: encodeBase64(encrypt(encryptionKey, 'dataKey', { sessionId: 'sess_1' })),
+      params: await sealRpcRequest(encryptionKey, 'machine_1:demo.secure', { sessionId: 'sess_1' }),
       authorization: { kind: 'session.write', sessionId: 'sess_1' },
       transportResponseEnvelopeVersion: 1,
     });
@@ -746,11 +746,7 @@ describe('RpcHandlerManager.handleRequest (encrypted)', () => {
     expect(res).toMatchObject({ v: 1 });
     const encryptedResult = (res as { result: unknown }).result;
     expect(typeof encryptedResult).toBe('string');
-    expect(decrypt(
-      encryptionKey,
-      'dataKey',
-      decodeBase64(encryptedResult as string),
-    )).toEqual({
+    expect(await openRpcResponse(encryptionKey, encryptedResult as string)).toEqual({
       error: RPC_ERROR_MESSAGES.FORBIDDEN,
       errorCode: RPC_ERROR_CODES.FORBIDDEN,
     });
@@ -771,16 +767,12 @@ describe('RpcHandlerManager.handleRequest (encrypted)', () => {
 
     const res = await rpc.handleRequest({
       method: 'sess_1:demo.method',
-      params: encodeBase64(encrypt(encryptionKey, 'dataKey', undefined)),
+      params: await sealRpcRequest(encryptionKey, 'sess_1:demo.method', undefined),
     });
 
     expect(typeof res).toBe('string');
     expect(
-      decrypt(
-        encryptionKey,
-        'dataKey',
-        decodeBase64(res as string),
-      ),
+      await openRpcResponse(encryptionKey, res as string),
     ).toEqual({ ok: true, sawUndefined: true });
   });
 
@@ -797,16 +789,12 @@ describe('RpcHandlerManager.handleRequest (encrypted)', () => {
 
     const res = await rpc.handleRequest({
       method: 'sess_1:demo.undefined',
-      params: encodeBase64(encrypt(encryptionKey, 'dataKey', { ok: true })),
+      params: await sealRpcRequest(encryptionKey, 'sess_1:demo.undefined', { ok: true }),
     });
 
     expect(typeof res).toBe('string');
     expect(
-      decrypt(
-        encryptionKey,
-        'dataKey',
-        decodeBase64(res as string),
-      ),
+      await openRpcResponse(encryptionKey, res as string),
     ).toBeUndefined();
   });
 });

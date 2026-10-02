@@ -10,6 +10,7 @@ import type { VoiceAgentHandle } from '@/voice/agent/types';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import { RPC_METHODS, SESSION_RPC_METHODS, SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS } from '@happier-dev/protocol/rpc';
 import { CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD } from '@happier-dev/protocol/sessions';
+import { socketRpcCodec } from '@happier-dev/sync-client';
 
 import { resetScopedSessionDataKeyCacheForTests } from './resolveScopedSessionDataKey';
 import { sessionRpcWithPreferredSessionScope } from './sessionRpcWithPreferredSessionScope';
@@ -678,9 +679,11 @@ describe('sessionRpcWithServerScope', () => {
     );
 
     const daemonSaw: unknown[] = [];
-    const emitWithAck = vi.fn(async (_event: string, payload: { params: string }) => {
-      daemonSaw.push(await daemon.decryptRaw(payload.params));
-      return { ok: true, result: await daemon.encryptRaw({ decoded: true }) };
+    const emitWithAck = vi.fn(async (_event: string, payload: { method: string; params: string }) => {
+      const content = { mode: 'e2ee' as const, cipher: daemon };
+      const decoded = await socketRpcCodec.decodeRequestParams(content, payload.params, payload.method);
+      daemonSaw.push(decoded.params);
+      return { ok: true, result: await socketRpcCodec.encodeResponse(content, { decoded: true }, decoded.callId) };
     });
     const fakeSocket = {
       timeout: vi.fn(() => ({ emitWithAck })),
@@ -743,11 +746,16 @@ describe('sessionRpcWithServerScope', () => {
     }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
 
     const daemonSaw: unknown[] = [];
-    const emitWithAck = vi.fn(async (_event: string, payload: { params: string }) => {
+    const emitWithAck = vi.fn(async (_event: string, payload: { method: string; params: string }) => {
       const opened = await daemon.decryptRaw(payload.params);
-      daemonSaw.push(opened);
-      if (opened === null) return { ok: false, error: 'Session key does not match', errorCode: 'invalid_session_key' };
-      return { ok: true, result: await daemon.encryptRaw({ accepted: true }) };
+      if (opened === null) {
+        daemonSaw.push(null);
+        return { ok: false, error: 'Session key does not match', errorCode: 'invalid_session_key' };
+      }
+      const content = { mode: 'e2ee' as const, cipher: daemon };
+      const decoded = await socketRpcCodec.decodeRequestParams(content, payload.params, payload.method);
+      daemonSaw.push(decoded.params);
+      return { ok: true, result: await socketRpcCodec.encodeResponse(content, { accepted: true }, decoded.callId) };
     });
     createEphemeralSocketSpy.mockResolvedValue({
       timeout: vi.fn(() => ({ emitWithAck })),
@@ -787,10 +795,11 @@ describe('sessionRpcWithServerScope', () => {
       })),
     );
 
-    const emitWithAck = vi.fn(async () => ({
-      ok: true,
-      result: await daemon.encryptRaw({ ok: true, source: 'alternate-profile' }),
-    }));
+    const emitWithAck = vi.fn(async (_event: string, payload: { method: string; params: string }) => {
+      const content = { mode: 'e2ee' as const, cipher: daemon };
+      const decoded = await socketRpcCodec.decodeRequestParams(content, payload.params, payload.method);
+      return { ok: true, result: await socketRpcCodec.encodeResponse(content, { ok: true, source: 'alternate-profile' }, decoded.callId) };
+    });
     const fakeSocket = {
       timeout: vi.fn(() => ({ emitWithAck })),
       emit: vi.fn(),
@@ -1128,7 +1137,7 @@ describe('sessionRpcWithServerScope', () => {
       return opened ? parseSerializedJsonValue(new TextDecoder().decode(opened)) : null;
     }
 
-    async function arrangeScopedHomeB(row: Record<string, unknown>) {
+    async function arrangeScopedHomeB(row: Record<string, unknown>, bound = true) {
       getActiveServerSnapshotSpy.mockReturnValue({
         serverId: 'server-a',
         serverUrl: 'https://server-a.example.test',
@@ -1144,16 +1153,22 @@ describe('sessionRpcWithServerScope', () => {
         headers: { 'Content-Type': 'application/json' },
       })));
       const daemonSaw: unknown[] = [];
-      const emitWithAck = vi.fn(async (_event: string, payload: { params: string }) => {
-        daemonSaw.push(openLikeReleased02Daemon(payload.params));
-        return { ok: true, result: sealLikeReleased02Daemon({ answered: true }) };
+      const emitWithAck = vi.fn(async (_event: string, payload: { method: string; params: string }) => {
+        const content = { mode: 'e2ee' as const, cipher: {
+          encryptRaw: async (value: unknown) => sealLikeReleased02Daemon(value),
+          decryptRaw: async (value: string) => openLikeReleased02Daemon(value),
+        } };
+        if (!bound) return { ok: true, result: sealLikeReleased02Daemon({ answered: true }) };
+        const request = await socketRpcCodec.decodeRequestParams(content, payload.params, payload.method);
+        daemonSaw.push(request.params);
+        return { ok: true, result: await socketRpcCodec.encodeResponse(content, { answered: true }, request.callId) };
       });
       const fakeSocket = { timeout: vi.fn(() => ({ emitWithAck })), emit: vi.fn(), disconnect: vi.fn() };
       createEphemeralSocketSpy.mockResolvedValue(fakeSocket);
       return { daemonSaw, emitWithAck };
     }
 
-    it('reaches the Session with the historical Account-secret cipher', async () => {
+    it('reaches retained 0.2 Session data with the historical cipher and v0.3 RPC binding', async () => {
       const { daemonSaw } = await arrangeScopedHomeB(released02OwnerRow);
 
       const { sessionRpcWithServerScope } = await import('./serverScopedSessionRpc');
@@ -1167,6 +1182,14 @@ describe('sessionRpcWithServerScope', () => {
 
       expect(daemonSaw).toEqual([{ value: 7 }]);
       expect(result).toEqual({ answered: true });
+    });
+
+    it('requires an update for an unbound response from a 0.2 daemon', async () => {
+      await arrangeScopedHomeB(released02OwnerRow, false);
+      const { sessionRpcWithServerScope } = await import('./serverScopedSessionRpc');
+      await expect(sessionRpcWithServerScope({
+        sessionId: 'session-1', method: 'method-test', payload: { value: 7 }, serverId: 'server-b', timeoutMs: 5000,
+      })).rejects.toMatchObject({ rpcErrorCode: 'RPC_UPDATE_REQUIRED' });
     });
 
     it.each([

@@ -118,10 +118,22 @@ it('roundtrips encrypted caller and responder codecs over the relay', async () =
   const content = cipher();
   server.sockets.sockets.forEach((remote) => remote.on('rpc-call', async (payload, ack) => {
     expect(typeof payload.params).toBe('string');
-    const request = await socketRpcCodec.decodeRequestParams(content, payload.params);
-    ack({ ok: true, result: await socketRpcCodec.encodeResponse(content, { request }) });
+    const request = await socketRpcCodec.decodeRequestParams(content, payload.params, payload.method);
+    expect(request.callId).toMatch(/^[0-9a-f]{32}$/);
+    expect(request.callId).not.toBe(payload.requestId);
+    ack({ ok: true, result: await socketRpcCodec.encodeResponse(content, { request: request.params }, request.callId) });
   }));
-  expect(await callSocketRpc({ socket, target: { kind: 'machine', id: 'm' }, method: 'echo', params: { text: 'secret' }, content })).toEqual({ request: { text: 'secret' } });
+  expect(await callSocketRpc({ socket, target: { kind: 'machine', id: 'm' }, method: 'echo', params: { text: 'secret' }, content,
+    requestId: 'relay-transport-id' })).toEqual({ request: { text: 'secret' } });
+});
+it('rejects a response from another call even with an authentic encrypted result', async () => {
+  const socket = await setup();
+  const content = cipher();
+  server.sockets.sockets.forEach((remote) => remote.on('rpc-call', async (_payload, ack) => {
+    ack({ ok: true, result: await socketRpcCodec.encodeResponse(content, { deleted: true }, 'abcdef0123456789abcdef0123456789') });
+  }));
+  await expect(callSocketRpc({ socket, target: { kind: 'machine', id: 'm' }, method: 'statFile', params: { path: 'keep.txt' }, content }))
+    .rejects.toMatchObject({ rpcErrorCode: 'RPC_UPDATE_REQUIRED' });
 });
 it('keeps attachment routing visible while sealing attachment input and output', async () => {
   const socket = await setup();
@@ -131,8 +143,8 @@ it('keeps attachment routing visible while sealing attachment input and output',
     expect(payload.transferRouting).toEqual(transferRouting);
     expect(typeof payload.params).toBe('string');
     expect(JSON.stringify(payload)).not.toContain('private-file.txt');
-    const request = await socketRpcCodec.decodeRequestParams(content, payload.params);
-    ack({ ok: true, result: await socketRpcCodec.encodeResponse(content, { request }) });
+    const request = await socketRpcCodec.decodeRequestParams(content, payload.params, payload.method);
+    ack({ ok: true, result: await socketRpcCodec.encodeResponse(content, { request: request.params }, request.callId) });
   }));
   expect(await callSocketRpc({ socket, target: { kind: 'session', id: 's' },
     method: transferRouting.method, transferRouting,
@@ -174,13 +186,17 @@ it('does not signal issuance or send cancellation when acknowledgement preparati
   expect(trace).toEqual(['prepare']);
 });
 it('preserves an authenticated undefined response and outer relay errors', async () => {
-  const content: SocketRpcContent = { mode: 'e2ee', cipher: { encryptRaw: async () => 'sealed-undefined', decryptRaw: async () => undefined } };
-  expect(await socketRpcCodec.decodeResult(content, { ok: true, result: 'sealed-undefined' })).toBeUndefined();
-  await expect(socketRpcCodec.decodeResult(content, { ok: false, error: 'denied', errorCode: 'FORBIDDEN' })).rejects.toMatchObject({ rpcErrorCode: 'FORBIDDEN' });
+  const content = cipher();
+  const callId = '0123456789abcdef0123456789abcdef';
+  const result = await socketRpcCodec.encodeResponse(content, undefined, callId);
+  expect(await socketRpcCodec.decodeResult(content, { ok: true, result }, callId)).toBeUndefined();
+  await expect(socketRpcCodec.decodeResult(content, { ok: false, error: 'denied', errorCode: 'FORBIDDEN' }, callId)).rejects.toMatchObject({ rpcErrorCode: 'FORBIDDEN' });
 });
 it('preserves authenticated serialized undefined request params', async () => {
-  const content: SocketRpcContent = { mode: 'e2ee', cipher: { encryptRaw: async () => 'sealed-undefined', decryptRaw: async () => undefined } };
-  expect(await socketRpcCodec.decodeRequestParams(content, 'sealed-undefined')).toBeUndefined();
+  const content = cipher();
+  const binding = { method: 'machine:echo', callId: '0123456789abcdef0123456789abcdef' };
+  const result = await socketRpcCodec.encodeParams(content, undefined, binding);
+  expect(await socketRpcCodec.decodeRequestParams(content, result, binding.method)).toEqual({ params: undefined, callId: binding.callId });
 });
 it('marks an issued request unknown when its socket disconnects without a caller deadline', async () => {
   const socket = await setup();

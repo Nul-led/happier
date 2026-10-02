@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RPC_ERROR_CODES } from '@happier-dev/protocol/rpc';
 import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 import tweetnacl from 'tweetnacl';
-import { encrypt, encodeBase64 } from '@/api/encryption';
+import { decrypt, decodeBase64, encrypt, encodeBase64 } from '@/api/encryption';
+import { socketRpcCodec, type SocketRpcContent } from '@happier-dev/sync-client';
 import { API_TOKEN_FULL_GRANT_V1, verifyExternalActionMachineRpcRequestV1, type ActionExecutorContext } from '@happier-dev/protocol';
 import { createSocketIoManagerStub } from '@/testkit/backends/apiSessionSocketHarness';
 
@@ -86,7 +87,9 @@ class FakeSocket {
       this.delayedAck = callback ?? null;
       return this;
     }
-    callback?.(nextRpcAck ?? { ok: true, result: { echoed: data.params } });
+    if (typeof nextRpcAck === 'function') {
+      void Promise.resolve(nextRpcAck(data)).then(callback);
+    } else callback?.(nextRpcAck ?? { ok: true, result: { echoed: data.params } });
     return this;
   }
 
@@ -434,7 +437,15 @@ describe('callSessionRpc (plaintext sessions)', () => {
     const content = mode === 'plain' ? { mode, ctx: null } : { mode, ctx: {
       encryptionKey: new Uint8Array(32).fill(4), encryptionVariant: 'legacy' as const,
     } };
-    nextRpcAck = { ok: true, result: mode === 'plain' ? null : encodeBase64(encrypt(new Uint8Array(32).fill(4), 'legacy', null), 'base64') };
+    nextRpcAck = async (request: { method: string; params: unknown }) => {
+      const key = new Uint8Array(32).fill(4);
+      const rpcContent: SocketRpcContent = mode === 'plain' ? { mode: 'plain' } : { mode: 'e2ee', cipher: {
+        encryptRaw: async value => encodeBase64(encrypt(key, 'legacy', value)),
+        decryptRaw: async value => decrypt(key, 'legacy', decodeBase64(value)),
+      } };
+      const decoded = await socketRpcCodec.decodeRequestParams(rpcContent, request.params, request.method);
+      return { ok: true, result: await socketRpcCodec.encodeResponse(rpcContent, null, decoded.callId) };
+    };
     const input = { token: 'daemon-token', sessionId: target.sessionId, method: `sess_1:${method}`,
       request: { v: 1, selection: { agentTargetKey: 'agent:happier.agent.codex/codex', providerConnectionId: null, modelId: 'A' } },
       ...content, externalAction: { context, effectActionId, installationId: 'installation', privateKey: key.secretKey },

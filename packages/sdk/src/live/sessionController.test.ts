@@ -12,6 +12,8 @@ import { CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION, CURRENT_ACCOU
 import { connect } from '../index.js';
 import type { HappierSessionController } from './types.js';
 import type { AgentState } from '@happier-dev/session-core';
+import { socketRpcCodec, type SocketRpcContent } from '@happier-dev/sync-client';
+import { createSessionContentEncryption } from './openSessionDataKey.js';
 
 const TOKEN_ID = '123e4567-e89b-42d3-a456-426614174000';
 const TOKEN = `hap_v1_${TOKEN_ID}_${encodeBase64(new Uint8Array(32).fill(8), 'base64url')}`;
@@ -180,10 +182,13 @@ async function fixture(encryptionMode: 'plain' | 'e2ee' = 'plain', contentCreden
   });
   io.on('connection', (socket) => {
     sessions.push(socket);
-    socket.on('rpc-call', async (value: unknown, ack: (value: unknown) => void) => {
+    socket.on('rpc-call', async (value: { method: string; params: unknown }, ack: (value: unknown) => void) => {
       rpc.push(value);
+      const content: SocketRpcContent = contentCredential
+        ? { mode: 'e2ee', cipher: createSessionContentEncryption(dataKey) } : { mode: 'plain' };
+      const request = await socketRpcCodec.decodeRequestParams(content, value.params, value.method);
       ack(rejectRpc ? { ok: false, error: 'permission_denied', errorCode: 'PERMISSION_DENIED' }
-        : { ok: true, result: contentCredential ? encodeBase64(await sealSessionDataKeyBundleV0({ ok: true }, dataKey), 'base64') : { ok: true } });
+        : { ok: true, result: await socketRpcCodec.encodeResponse(content, { ok: true }, request.callId) });
     });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

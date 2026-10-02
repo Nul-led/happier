@@ -51,6 +51,7 @@ export async function callSocketRpc<R>(params: Readonly<{
   authorization?: SocketRpcAuthorizationContext; timeoutMs?: number | null;
   transferRouting?: SessionTransferRoutingV1;
   signal?: AbortSignal; onIssued?: () => void; requestId?: string;
+  randomBytes?: (length: number) => Uint8Array;
   transportResponseEnvelopeVersion?: SocketRpcRequestPayload['transportResponseEnvelopeVersion'];
   createExternalActionExecution?: (request: Readonly<{ method: string; requestId: string; params: unknown }>) => SocketRpcRequestPayload['externalActionExecution'];
 }>): Promise<R> {
@@ -68,10 +69,12 @@ export async function callSocketRpc<R>(params: Readonly<{
       || transferRouting.sessionId !== params.target.id || transferRouting.method !== params.method)) {
       throw new Error('Session transfer routing does not match the RPC target');
     }
-    const encoded = await socketRpcCodec.encodeParams(params.content, params.params);
+    const callId = Array.from(params.randomBytes ? params.randomBytes(16) : globalThis.crypto.getRandomValues(new Uint8Array(16)),
+      byte => byte.toString(16).padStart(2, '0')).join('');
+    const method = `${params.target.id}:${params.method}`;
+    const encoded = await socketRpcCodec.encodeParams(params.content, params.params, { method, callId });
     if (params.signal?.aborted) throw createSocketRpcAbortError();
     const requestId = params.requestId ?? (params.signal || params.createExternalActionExecution ? createSocketRpcRequestId() : undefined);
-    const method = `${params.target.id}:${params.method}`;
     const authorization = sessionActionAuthorization ?? (params.target.kind === 'session'
       ? resolveSocketRpcSessionAuthorization(params.method)
         ? { kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE, sessionId: params.target.id } as const
@@ -89,7 +92,7 @@ export async function callSocketRpc<R>(params: Readonly<{
     };
     const ack = await emitWithAckCancellable({ ...params, event: SOCKET_RPC_EVENTS.CALL, payload, requestId });
     acknowledged = true;
-    const result = await socketRpcCodec.decodeResult(params.content, ack);
+    const result = await socketRpcCodec.decodeResult(params.content, ack, callId);
     if (params.signal?.aborted) throw markRpcRequestDisposition(createSocketRpcAbortError(), 'outcomeUnknown');
     return result as R;
   } catch (error) {

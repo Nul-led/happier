@@ -1012,6 +1012,31 @@ restore remain available when the device has no usable retained secret; the
 UI's existing recovery result links to restore even when Account encryption
 opt-out is disabled.
 
+### Encrypted socket RPC routing (v0.3 development)
+
+The shared `packages/sync-client/src/rpc/socketRpcCodec.ts` binds every E2EE
+socket RPC request to its complete target-prefixed method and a caller-generated
+128-bit random call id. Its encrypted plaintext is
+`{ v: 2, k: 'req', m: '<targetId>:<method>', c: '<call id>', p: params }`.
+Responders verify the direction and dispatched method before invoking a handler.
+Responses encrypt `{ v: 2, k: 'res', c: '<same call id>', r: result }`;
+callers verify the direction and their call id before accepting the result.
+The call id is independent of the relay-owned transport request id.
+
+This protects against a relay redirecting authentic ciphertext to a different
+method or target, substituting another call's response, or reflecting a request
+as a response. It does not prevent replay of a request to the same method and
+target. Replay protection is deferred; there are no replay caches or timestamps.
+The 0.2 RPC contract trusts the relay for routing; this binding starts at v0.3.
+
+Unbound, malformed, or mismatched encrypted envelopes fail closed with
+`RPC_UPDATE_REQUIRED`. Before a responder authenticates a request and obtains its
+call id, it can return only a plain typed refusal. Such a refusal conveys no
+authenticated success; a relay can already deny delivery. After authentication,
+handler results and errors use the bound encrypted response. Plain-mode RPC and
+reserved server-origin Session start, Action API, and Automation reply-handoff
+methods retain their existing plain transport and inner-envelope contracts.
+
 ### Machine metadata + daemon state
 - E2EE Machines retain the client-encrypted per-Machine branch. In current development
   source, a present `dataEncryptionKey` envelope selects the exact Machine content key

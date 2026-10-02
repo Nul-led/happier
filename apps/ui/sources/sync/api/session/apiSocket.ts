@@ -13,6 +13,7 @@ import {
     type HappierSocketRole,
     type SocketRpcContent,
 } from '@happier-dev/sync-client';
+import { getRandomBytes } from '@/platform/cryptoRandom';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { Encryption } from '@/sync/encryption/encryption';
 import { observeServerTimestamp } from '@/sync/runtime/time';
@@ -606,6 +607,7 @@ class ApiSocket {
             if (!usePlaintextParams && !sessionEncryption) throw new Error(`Session encryption not found for ${sessionId}`);
             return await callSocketRpc<R>({
                 socket: this.requireRpcSocket(),
+                randomBytes: getRandomBytes,
                 target: { kind: 'session', id: sessionId },
                 method,
                 params,
@@ -646,6 +648,7 @@ class ApiSocket {
             }
             return await callSocketRpc<R>({
                 socket: this.requireRpcSocket(),
+                randomBytes: getRandomBytes,
                 target: { kind: 'machine', id: machineId },
                 method,
                 params,
@@ -1420,37 +1423,43 @@ class ApiSocket {
             ? { mode: 'plain' }
             : { mode: 'e2ee', cipher: machineEncryption! };
 
+        let callId: string | null = null;
+        const respond = (value: unknown) => socketRpcCodec.encodeResponse(content, value, callId);
+        let decryptedParams: unknown;
+        try {
+            const decoded = await socketRpcCodec.decodeRequestParams(content, request.params, method);
+            decryptedParams = decoded.params;
+            callId = decoded.callId;
+        } catch (error) {
+            return await respond({ error: error instanceof Error ? error.message : 'Unable to open RPC content',
+                errorCode: readRpcErrorCode(error) ?? RPC_ERROR_CODES.UPDATE_REQUIRED });
+        }
+
         const handler = this.inboundMachineRpcHandlers.get(method);
         if (!handler) {
             const response = {
                 error: RPC_ERROR_MESSAGES.METHOD_NOT_FOUND,
                 errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND,
             };
-            return await socketRpcCodec.encodeResponse(content, response);
+            return await respond(response);
         }
 
         try {
-            let decryptedParams: unknown;
-            try {
-                decryptedParams = await socketRpcCodec.decodeRequestParams(content, request.params);
-            } catch (error) {
-                if (readRpcErrorCode(error) !== 'RPC_CONTENT_UNAVAILABLE') throw error;
-                decryptedParams = null;
-            }
             if (decryptedParams === null) {
                 const response = { error: 'Invalid RPC params' };
-                return await socketRpcCodec.encodeResponse(content, response);
+                return await respond(response);
             }
             if (this.inboundMachineRpcHandlers.get(method) !== handler) {
-                return await socketRpcCodec.encodeResponse(content, { error: RPC_ERROR_MESSAGES.METHOD_NOT_FOUND, errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND });
+                return await respond({ error: RPC_ERROR_MESSAGES.METHOD_NOT_FOUND, errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND });
             }
             const result = await handler(decryptedParams, context);
-            return await socketRpcCodec.encodeResponse(content, result);
+            return await respond(result);
         } catch (error) {
             const response = {
                 error: error instanceof Error ? error.message : 'Unknown error',
+                ...(readRpcErrorCode(error) ? { errorCode: readRpcErrorCode(error) } : {}),
             };
-            return await socketRpcCodec.encodeResponse(content, response);
+            return await respond(response);
         }
     }
 
