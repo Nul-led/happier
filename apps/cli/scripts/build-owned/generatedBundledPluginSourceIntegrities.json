@@ -7254,19 +7254,19 @@
       "packageName": "@happier-dev/plugins-codex",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-H4LTRY4I.js",
-          "byteLength": 6777108,
-          "digest": "sha256:09b03211d5887ba08d79ffa5014533350c696c8010f567697767334194a55253"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-3SEVFQMO.js",
+          "byteLength": 6777136,
+          "digest": "sha256:95fcab78df1bb150cbb96cac731721c1bfdd115e9845fe7921081c6d7c05a66c"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/engine.js",
           "byteLength": 197,
-          "digest": "sha256:9b8646e50111483d562d8cc855c056bafed70e0d41e72089f30ed0b62ef0e71a"
+          "digest": "sha256:e8a51045bf763428f9a925bcbf4260982ae2de870cd0ef82dd57cdbfa8cad256"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 165001,
-          "digest": "sha256:2d93f2f5804dda88e2bb0d34beaff214386f407bee8cff68047d0053fb22a756"
+          "digest": "sha256:d707c577156b137f6dfa1b1be92a86b6d92d717b64a85dfbab3884b22c5779e0"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -9140,18 +9140,18 @@
         },
         {
           "relativePath": "dist/agent/runtime/appServer/runtime.d.ts.map",
-          "byteLength": 145418,
-          "digest": "sha256:d51166049390972d6e7c5c49aa8b63bc916a213cc66fab25442833e473b12e01"
+          "byteLength": 145631,
+          "digest": "sha256:e1532cd179c1a437bbe3ce105ea87c86ab0d3442569e62fbea0ae72514ba3299"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/runtime.js",
-          "byteLength": 137527,
-          "digest": "sha256:daee8e15134f1bc944b8828e273c09a7908f187a4c433e9cdd1895f811b44a98"
+          "byteLength": 137750,
+          "digest": "sha256:2a684ff1cb80e96a9a2bd622603a1f6607c75ae8dded28b75320e249c8b46f0a"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/runtime.js.map",
-          "byteLength": 240336,
-          "digest": "sha256:3275a2bd6d6f5059a7697f2256180c4ebaaeec1526a1836bb77fcafc6e6fe122"
+          "byteLength": 240600,
+          "digest": "sha256:99845a5871f2a73bc7d01bd38642b8647158f8a6332171d3164ab6d0208ef117"
         },
         {
           "relativePath": "dist/agent/runtime/appServer/serviceTier.d.ts",

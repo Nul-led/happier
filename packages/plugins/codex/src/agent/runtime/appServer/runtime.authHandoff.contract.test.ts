@@ -28,14 +28,19 @@ const request = {
 };
 describe('owned auth handoff through canonical consumers', () => {
   beforeEach(() => clientState.reset());
-  it.each(['success', 'user_abort', 'auth_failure'] as const)('settles the canonical execution run only at the logical handoff outcome: %s', async outcome => {
+  it.each(['success', 'user_abort', 'auth_failure', 'interrupt_failure_late_interrupted'] as const)('settles the canonical execution run only at the logical handoff outcome: %s', async outcome => {
     const codexHome = await mkdtemp(join(tmpdir(), 'happier-codex-auth-run-contract-'));
     await mkdir(codexHome, { recursive: true });
-    const appServer = createRuntime({ processEnv: { CODEX_HOME: codexHome } });
+    const appServer = createRuntime({ processEnv: { CODEX_HOME: codexHome, ...(outcome === 'interrupt_failure_late_interrupted' ? { HAPPIER_CODEX_APP_SERVER_RPC_TIMEOUT_MS: '250' } : {}) } });
     const native = createCodexNativeAppServerSessionRuntime(appServer, 'session-1');
     const invariant = createAgentSessionTurnInvariant({ sessionId: 'session-1' });
     const rejected: unknown[] = [];
-    native.watch(event => { const result = invariant.observe(event); if (result.status === 'rejected') rejected.push(result.diagnostic); });
+    const nativeTerminals: string[] = [];
+    native.watch(event => {
+      if (event.kind === 'turn-complete' || event.kind === 'turn-failed' || event.kind === 'turn-cancelled') nativeTerminals.push(event.kind);
+      const result = invariant.observe(event);
+      if (result.status === 'rejected') rejected.push(result.diagnostic);
+    });
     const execution = await createExecutionRunHostBackendFromSessionRuntime({
       sessionId: 'session-1',
       request: { kind: 'create', runId: 'run-1', cwd: '/repo', profile: { pluginId: 'happier.agent.codex', localId: 'default' }, input: { text: 'owned work' } },
@@ -45,15 +50,31 @@ describe('owned auth handoff through canonical consumers', () => {
     execution.watch(event => events.push(event));
     const completion = waitForCodexAppServerRuntimeTurnCompletion(appServer);
     void completion.catch(() => undefined);
-    clientState.deferNextLoginStart();
+    if (outcome === 'interrupt_failure_late_interrupted') {
+      clientState.rejectNextInterruptWith(new Error('synthetic interrupt failure'));
+    } else {
+      clientState.deferNextLoginStart();
+    }
     const apply = native.runtimeAuth!.apply(request);
     void apply.catch(() => undefined);
     try {
       await waitForRequest('turn/interrupt', 1);
+      if (outcome === 'interrupt_failure_late_interrupted') {
+        await expect(apply).rejects.toThrow('synthetic interrupt failure');
+        terminal('turn-1', 'interrupted');
+        await expect(completion).rejects.toThrow('auth handoff failed');
+        expect(nativeTerminals).toEqual(['turn-failed']);
+        expect(events.filter(event => event.kind === 'run-failed' || event.kind === 'run-cancelled' || event.kind === 'run-complete').map(event => event.kind)).toEqual(['run-failed']);
+        expect(rejected).toEqual([]);
+        return;
+      }
       terminal('turn-1', 'interrupted');
       await new Promise(resolve => setTimeout(resolve, 20));
       expect(events.filter(event => event.kind === 'run-cancelled' || event.kind === 'run-failed' || event.kind === 'run-complete')).toEqual([]);
       await waitForRequest('account/login/start', 1);
+      // The actual execution-run admission owner keeps later input outside the held handoff.
+      await expect(execution.send({ text: 'later queued work' })).resolves.toMatchObject({ status: 'unavailable' });
+      expect(clientState.requests.filter(entry => entry.method === 'turn/start')).toHaveLength(1);
       if (outcome === 'user_abort') {
         await execution.stop();
         await new Promise(resolve => setTimeout(resolve, 10));

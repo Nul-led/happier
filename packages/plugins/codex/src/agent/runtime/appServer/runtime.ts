@@ -1744,7 +1744,9 @@ export function createCodexAppServerRuntime(
     setActive(false);
     if (status === 'interrupted' || isCodexTurnInterruptedStatus(readCodexTurnStatus(notificationParams))) {
       if (activeTurn.authHandoff) activeTurn.authHandoff.interrupted = true;
-      if (activeTurn.authHandoff?.state !== 'pending') {
+      // An internal handoff failure still belongs to the logical prompt's failure owner.
+      // Only a genuine cancellation may finalize it as cancelled before that owner settles.
+      if (!activeTurn.authHandoff || activeTurn.authHandoff.state === 'cancelled') {
         if (activeTurn.authHandoff) activeTurn.authHandoff.terminalPublished = true;
         publishRuntimeEvent({
           kind: 'turn-cancelled',
