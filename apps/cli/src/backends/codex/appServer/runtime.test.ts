@@ -22,6 +22,8 @@ import type { Metadata, PermissionMode } from '@/api/types';
 import type { AgentMessage } from '@/agent';
 import type { SessionTurnLifecycle } from '@/agent/runtime/session/turn/types';
 import { createSessionTurnLifecycle } from '@/agent/runtime/session/turn/lifecycle';
+import { createCodexAppServerExecutionRunBackend } from '@/backends/codex/executionRuns/createCodexAppServerExecutionRunBackend';
+import { createExecutionRunPermissionHandler } from '@/agent/executionRuns/policy/executionRunPermissionDecision';
 import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
 import { createSessionProviderInputConsumer } from '@/agent/runtime/sessionInput/SessionProviderInputConsumer';
 import { waitForCondition } from '@/testkit/async/waitFor';
@@ -265,7 +267,7 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '            process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32000, message: "thread not found: " + (msg.params?.threadId ?? "") } }) + "\\n");',
         '            continue;',
         '        }',
-        '        const threadReadResponse = JSON.stringify({ id: msg.id, result: { thread: { id: msg.params?.threadId ?? null, turns: msg.params?.includeTurns === true ? [{ id: "turn-history", items: [{ id: "item-history", type: "agentMessage", text: "history" }] }] : [] } } }) + "\\n";',
+        '        const threadReadResponse = JSON.stringify({ id: msg.id, result: { thread: { id: msg.params?.threadId ?? null, turns: msg.params?.includeTurns === true && resumedThreadIds.has(msg.params?.threadId) ? [{ id: "turn-history", items: [{ id: "item-history", type: "agentMessage", text: "history" }] }] : [] } } }) + "\\n";',
         `        if (${JSON.stringify(params.threadReadResponseDelayMs ?? 0)} > 0) {`,
         `            setTimeout(() => { process.stdout.write(threadReadResponse); }, ${JSON.stringify(params.threadReadResponseDelayMs ?? 0)});`,
         '        } else {',
@@ -1955,6 +1957,101 @@ describe('createCodexAppServerRuntime', () => {
         await runtime.reset();
         await startup.catch(() => undefined);
         expect(outcome).toBe('started');
+    });
+
+    it('materializes a fresh zero-turn native attachment once without replacing its identity or policy', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-native-attachment-');
+        let permissionMode: PermissionMode = 'read-only';
+        const session = createApiSessionClientFixture({
+            metadata: { ...createRuntimeMetadata(root), name: 'My actual session' },
+        });
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            session,
+            onThinkingChange: vi.fn(),
+            getPermissionMode: () => permissionMode,
+        });
+        await runtime.setSessionConfigOption('reasoning_effort', 'low');
+        await runtime.startOrLoad({});
+        expect(runtime.getPublishedSessionId()).toBeNull();
+        await expect(runtime.prepareThreadForCliAttach()).resolves.toBe('thread-started');
+        await expect(runtime.prepareThreadForCliAttach()).resolves.toBe('thread-started');
+        expect(runtime.getPublishedSessionId()).toBe('thread-started');
+        await runtime.setSessionModel('later-model');
+        await expect(runtime.prepareThreadForCliAttach()).resolves.toBe('thread-started');
+        permissionMode = 'acceptEdits';
+        await expect(runtime.prepareThreadForCliAttach()).resolves.toBe('thread-started');
+        const requests = await readRequestLog(requestLogPath);
+        expect(requests.filter((entry) => entry.method === 'thread/start')).toHaveLength(1);
+        expect(requests.filter((entry) => entry.method === 'thread/name/set')).toEqual([
+            expect.objectContaining({ params: { threadId: 'thread-started', name: 'My actual session' } }),
+        ]);
+        expect(requests.filter((entry) => entry.method === 'thread/read')).toEqual([
+            expect.objectContaining({ params: { threadId: 'thread-started', includeTurns: true } }),
+        ]);
+        expect(requests.some((entry) => entry.method === 'turn/start')).toBe(false);
+        expect(requests.find((entry) => entry.method === 'thread/start')?.params).toMatchObject({
+            config: { model_reasoning_effort: 'low' },
+        });
+    });
+
+    it('does not rename resumed threads when preparing native attachment', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-resumed-native-attachment-');
+        const metadata = createRuntimeMetadata(root);
+        const session = createApiSessionClientFixture({ metadata });
+        let rejectPublication = true;
+        // Resume success proves provider persistence even while the outward metadata write fails.
+        vi.spyOn(session, 'updateMetadata').mockImplementation(async (updater) => {
+            if (rejectPublication && updater(metadata).codexSessionId === 'existing-native-thread') {
+                throw new Error('metadata transport offline');
+            }
+        });
+        const runtime = createCodexAppServerRuntime({
+            directory: root, session, onThinkingChange: vi.fn(),
+        });
+        await runtime.startOrLoad({ resumeId: 'existing-native-thread', importHistory: false });
+        await waitForCondition(() => runtime.getPublishedSessionId() === null, { timeoutMs: 1000, label: 'failed resumed-thread metadata publication' });
+        rejectPublication = false;
+        await expect(runtime.prepareThreadForCliAttach()).resolves.toBe('existing-native-thread');
+        expect(runtime.getPublishedSessionId()).toBe('existing-native-thread');
+        const requests = await readRequestLog(requestLogPath);
+        expect(requests.filter((entry) => ['thread/start', 'thread/name/set', 'thread/read', 'turn/start'].includes(entry.method))).toEqual([]);
+    });
+
+    it('retries native attachment metadata publication without renaming or rereading a materialized thread', async () => {
+        const { root, requestLogPath } = await createRuntimeFixture('happier-codex-native-attachment-metadata-retry-');
+        const metadata = createRuntimeMetadata(root);
+        const session = createApiSessionClientFixture({ metadata });
+        const runtime = createCodexAppServerRuntime({ directory: root, session, onThinkingChange: vi.fn() });
+        await runtime.startOrLoad({});
+        // The outward Happier metadata write can fail after Codex has persisted the rollout.
+        let rejectPublication = true;
+        const publication = vi.spyOn(session, 'updateMetadata').mockImplementation(async (updater) => {
+            if (rejectPublication && updater(metadata).codexSessionId === 'thread-started') {
+                rejectPublication = false;
+                throw new Error('metadata transport offline');
+            }
+        });
+        await expect(runtime.prepareThreadForCliAttach()).resolves.toBe('thread-started');
+        await waitForCondition(() => runtime.getPublishedSessionId() === null, { timeoutMs: 1000, label: 'failed native-attachment metadata publication' });
+        await expect(runtime.prepareThreadForCliAttach()).resolves.toBe('thread-started');
+        expect(runtime.getPublishedSessionId()).toBe('thread-started');
+        expect(publication.mock.calls.length).toBeGreaterThanOrEqual(2);
+        const requests = await readRequestLog(requestLogPath);
+        expect(requests.filter((entry) => entry.method === 'thread/start')).toHaveLength(1);
+        expect(requests.filter((entry) => entry.method === 'thread/name/set')).toHaveLength(1);
+        expect(requests.filter((entry) => entry.method === 'thread/read')).toHaveLength(1);
+        expect(requests.some((entry) => entry.method === 'turn/start')).toBe(false);
+    });
+
+    it('does not expose native attachment before materialization succeeds', async () => {
+        const { root } = await createRuntimeFixture('happier-codex-failed-native-attachment-', { rejectThreadRead: true });
+        const runtime = createCodexAppServerRuntime({
+            directory: root, session: createApiSessionClientFixture(), onThinkingChange: vi.fn(),
+        });
+        await runtime.startOrLoad({});
+        await expect(runtime.prepareThreadForCliAttach()).rejects.toThrow();
+        expect(runtime.getPublishedSessionId()).toBeNull();
     });
 
     it('keeps a new app-server thread provisional until the first provider turn is accepted', async () => {
@@ -7616,6 +7713,32 @@ describe('createCodexAppServerRuntime', () => {
                 }),
             ]),
         );
+    });
+
+    it('keeps detached execution runs alive when Codex emits an async question', async () => {
+        const { root } = await createRuntimeFixture('happier-codex-execution-run-async-question-');
+        const messages: AgentMessage[] = [];
+        const backend = createCodexAppServerExecutionRunBackend({
+            cwd: root,
+            permissionMode: 'read-only',
+            permissionHandler: createExecutionRunPermissionHandler({ permissionMode: 'read-only', backendId: 'codex' }),
+        });
+        backend.onMessage((message) => messages.push(message));
+        try {
+            const { sessionId } = await backend.startSession();
+            await backend.sendPrompt(sessionId, 'bridge-async-user-action');
+            await expect(backend.waitForResponseComplete!()).resolves.toBeUndefined();
+            expect(messages).toContainEqual({
+                type: 'model-output',
+                fullText: 'Choose an environment\n- Staging\n- Production\n\nAdd release context',
+            });
+
+            await backend.sendPrompt(sessionId, 'bridge-async-user-action');
+            await expect(backend.waitForResponseComplete!()).resolves.toBeUndefined();
+            expect(messages.filter((message) => message.type === 'model-output')).toHaveLength(2);
+        } finally {
+            await backend.dispose();
+        }
     });
 
     it('routes async Codex questions through AskUserQuestion and the canonical session input queue', async () => {

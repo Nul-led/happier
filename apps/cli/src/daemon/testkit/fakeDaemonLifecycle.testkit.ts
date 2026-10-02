@@ -115,6 +115,12 @@ export async function withConfiguredDaemonTestHome<T>(
     'HAPPIER_DAEMON_SERVICE_TARGET_MODE',
     'HAPPIER_DAEMON_SERVICE_MODE',
     'HAPPIER_DAEMON_SERVICE_SYSTEM_USER',
+    'HAPPIER_DAEMON_SERVICE_MANAGED_BY',
+    'HAPPIER_DAEMON_SERVICE_BUNDLE_ID',
+    // A dev-stack shell exports its own lifecycle scope/relay; inherited, it would point the
+    // daemon state these tests write and read at the stack's directory.
+    'HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID',
+    'HAPPIER_ACTIVE_SERVER_ID',
     ...Object.keys(options.env ?? {}),
   ]
   const envScope = createEnvKeyScope(envKeys)
@@ -124,6 +130,10 @@ export async function withConfiguredDaemonTestHome<T>(
       HAPPIER_HOME_DIR: homeDir,
       HAPPIER_DAEMON_SERVICE_USER_HOME_DIR: homeDir,
       HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: homeDir,
+      HAPPIER_DAEMON_SERVICE_MANAGED_BY: undefined,
+      HAPPIER_DAEMON_SERVICE_BUNDLE_ID: undefined,
+      HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID: undefined,
+      HAPPIER_ACTIVE_SERVER_ID: undefined,
       ...(options.env ?? {}),
     })
     reloadConfiguration()

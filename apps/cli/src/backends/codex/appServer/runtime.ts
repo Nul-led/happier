@@ -5,6 +5,7 @@ import type { ApiSessionClient } from '@/api/session/sessionClient';
 import type { ACPMessageData } from '@/api/session/sessionMessageTypes';
 import type { AgentState, Metadata, PermissionMode } from '@/api/types';
 import { normalizePermissionModeToIntent } from '@/agent/runtime/permission/permissionModeCanonical';
+import { getSessionNotificationTitle } from '@/agent/runtime/readyNotificationContext';
 import { createKeyedStreamedTranscriptBridge } from '@/api/session/createKeyedStreamedTranscriptBridge';
 import type { StreamedTranscriptWriterSession } from '@/api/session/streamedTranscriptWriter';
 import { configuration } from '@/configuration';
@@ -498,7 +499,21 @@ type PermissionHandlerSubset = Readonly<{
     cancelPendingRequest?: (requestId: string, reason: string) => boolean;
 }>;
 
-type RuntimeSession = ApiSessionClient;
+export type CodexAppServerRuntimeSession = Pick<ApiSessionClient,
+    'sessionId' | 'updateMetadata' | 'getMetadataSnapshot' | 'sendAgentMessage'
+    | 'sendAgentMessageCommitted' | 'sendCodexMessage' | 'sendSessionEvent'
+> & Partial<ApiSessionClient>;
+type RuntimeSession = CodexAppServerRuntimeSession;
+type AsyncQuestionSession = Pick<ApiSessionClient,
+    'getAgentStateSnapshot' | 'updateAgentState' | 'sendCodexMessageCommitted' | 'enqueueSessionUserMessage'
+>;
+
+function supportsAsyncQuestionDelivery(session: RuntimeSession): session is RuntimeSession & AsyncQuestionSession {
+    return typeof session.getAgentStateSnapshot === 'function'
+        && typeof session.updateAgentState === 'function'
+        && typeof session.sendCodexMessageCommitted === 'function'
+        && typeof session.enqueueSessionUserMessage === 'function';
+}
 type RuntimeSessionMediaMessage = Extract<AgentMessage, { type: 'session-media' }>;
 type RuntimeSessionMediaSource = RuntimeSessionMediaMessage['media'][number];
 type RuntimeSessionMediaPersistResult = SessionMediaPersistResult;
@@ -1246,6 +1261,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
 }>): Readonly<{
     getSessionId: () => string | null;
     getPublishedSessionId: () => string | null;
+    prepareThreadForCliAttach: () => Promise<string>;
     supportsInFlightSteer: () => boolean;
     supportsInFlightConfigApply: () => boolean;
     canSteerPrompt: () => boolean;
@@ -1304,12 +1320,15 @@ export function createCodexAppServerRuntime(params: Readonly<{
     rollbackConversation: (request: SessionRollbackRpcParams) => Promise<SessionRollbackRpcResult>;
 }> {
     const runtimeEnv = params.processEnv ?? process.env;
+    const asyncQuestionSession = supportsAsyncQuestionDelivery(params.session) ? params.session : null;
     const contextWindowRecoveryConfig = resolveCodexContextWindowRecoveryConfig({
         configured: params.contextWindowRecovery,
         runtimeEnv,
     });
     const lastPublishedThreadId: { value: string | null } = { value: null };
     let threadId: string | null = null;
+    // Happier metadata publication can fail independently of Codex rollout persistence.
+    let nativeReadyThreadId: string | null = null;
     let turnInFlight = false;
     let thinking = false;
     let pendingTurn: PendingTurn | null = null;
@@ -2100,6 +2119,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
         // `thread/start` can return an id before older Codex versions materialize resumable state.
         // A provider turn acknowledgement is the first boundary that proves the fresh thread has
         // accepted work, so only then may its id become Happier's durable resume identity.
+        nativeReadyThreadId = candidate.threadId;
         publishThreadId();
         const deferred = deferredUnacknowledgedTerminalNotifications.get(observedTurnId) ?? null;
         clearDeferredUnacknowledgedTerminalNotificationsForOwner(candidate.promise);
@@ -2240,11 +2260,13 @@ export function createCodexAppServerRuntime(params: Readonly<{
         body: Record<string, unknown>,
     ): Promise<void> => {
         const localId = `codex-async-question-${recordKind}:${itemId}`;
-        await params.session.sendCodexMessageCommitted({ ...body, id: localId }, { localId });
+        if (!asyncQuestionSession) return;
+        await asyncQuestionSession.sendCodexMessageCommitted({ ...body, id: localId }, { localId });
     };
 
     const markCodexAsyncQuestionDelivered = async (itemId: string): Promise<void> => {
-        await params.session.updateAgentState((current) => {
+        if (!asyncQuestionSession) return;
+        await asyncQuestionSession.updateAgentState((current) => {
             const completed = current.completedRequests?.[itemId];
             const marked = markCodexAsyncQuestionDeliveryCompleted(completed, itemId);
             if (marked === completed) return current;
@@ -2265,7 +2287,8 @@ export function createCodexAppServerRuntime(params: Readonly<{
     ): Promise<boolean> => {
         const reply = buildCodexAsyncUserInputReply(delivery);
         if (!reply) return false;
-        await params.session.enqueueSessionUserMessage({
+        if (!asyncQuestionSession) return false;
+        await asyncQuestionSession.enqueueSessionUserMessage({
             text: reply.text,
             localId: `codex-async-question:${delivery.itemId}`,
             meta: {
@@ -2348,8 +2371,8 @@ export function createCodexAppServerRuntime(params: Readonly<{
     };
 
     const recoverPersistedCodexAsyncQuestionAnswers = async (): Promise<void> => {
-        if (typeof params.session.getAgentStateSnapshot !== 'function') return;
-        const completedRequests = params.session.getAgentStateSnapshot()?.completedRequests;
+        if (!asyncQuestionSession) return;
+        const completedRequests = asyncQuestionSession.getAgentStateSnapshot()?.completedRequests;
         if (!completedRequests) return;
         for (const completed of Object.values(completedRequests)) {
             const delivery = readPendingCodexAsyncQuestionDelivery(completed);
@@ -2374,8 +2397,8 @@ export function createCodexAppServerRuntime(params: Readonly<{
 
     const recoverPendingCodexAsyncQuestions = async (): Promise<void> => {
         const permissionHandler = params.permissionHandler;
-        if (!permissionHandler || typeof params.session.getAgentStateSnapshot !== 'function') return;
-        const requests = params.session.getAgentStateSnapshot()?.requests;
+        if (!permissionHandler || !asyncQuestionSession) return;
+        const requests = asyncQuestionSession.getAgentStateSnapshot()?.requests;
         if (!requests) return;
         const streamScopeId = threadId ?? 'resumed-thread';
         for (const [requestId, request] of Object.entries(requests)) {
@@ -2603,7 +2626,9 @@ export function createCodexAppServerRuntime(params: Readonly<{
         }
 
         if (update.type === 'async-user-input-request') {
-            if (context.sidechainId || !params.permissionHandler) {
+            // Detached runs have no session state or pending-input queue. Keep their
+            // question visible through the same text projection as non-interactive sessions.
+            if (context.sidechainId || !params.permissionHandler || !asyncQuestionSession) {
                 await applyStreamUpdate({
                     type: 'assistant-text-final',
                     itemId: update.itemId,
@@ -2624,7 +2649,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                 }, context);
                 return;
             }
-            const completedRequest = params.session.getAgentStateSnapshot()?.completedRequests?.[update.itemId];
+            const completedRequest = asyncQuestionSession.getAgentStateSnapshot()?.completedRequests?.[update.itemId];
             if (isCodexAsyncQuestionDeliveryCompleted(completedRequest, update.itemId)) return;
             const persistedDelivery = readPendingCodexAsyncQuestionDelivery(completedRequest);
             const itemKey = buildItemStateKey(context.streamScopeId, update.itemId);
@@ -3833,6 +3858,8 @@ export function createCodexAppServerRuntime(params: Readonly<{
             return null;
         }
 
+        nativeReadyThreadId = activeThreadId;
+
         pendingTurnStartSeqInclusive = readLastObservedMessageSeq(params.session);
         activeTurnHasMeaningfulContextWindowRecoveryActivity = false;
         const changeTrackingReady = beginTurnChangeTracking();
@@ -4113,6 +4140,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                                 const nextThreadId = readThreadId(notificationParams);
                                 if (nextThreadId && nextThreadId !== threadId) {
                                     threadId = nextThreadId;
+                                    nativeReadyThreadId = nextThreadId;
                                     publishThreadId();
                                 }
                                 startDetachedProviderProjection('turn/started:context-window', () => (
@@ -4590,6 +4618,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
             await finishPendingTurn({ flushReason: 'abort' });
         }
         if (options.publishThreadIdImmediately !== false) {
+            nativeReadyThreadId = nextThreadId;
             publishThreadId();
         }
         await publishActivePermissionProfile(startOrLoadResponse);
@@ -4736,6 +4765,26 @@ export function createCodexAppServerRuntime(params: Readonly<{
         }
         startDetachedProviderProjection('async-user-input-recovery', recoverPendingCodexAsyncQuestions);
         startDetachedProviderProjection('async-user-input-recovery', recoverPersistedCodexAsyncQuestionAnswers);
+    };
+
+    const prepareThreadForCliAttach = async (): Promise<string> => {
+        const attachedThreadId = threadId;
+        if (!attachedThreadId) throw new Error('Codex native attachment requires an initialized thread');
+        if (nativeReadyThreadId !== attachedThreadId) {
+            const client = await ensureClient();
+            const name = getSessionNotificationTitle(() => params.session.getMetadataSnapshot())
+                ?? `Happier session ${params.session.sessionId}`;
+            await client.request('thread/name/set', { threadId: attachedThreadId, name });
+            // Codex paginated history is not resumable after thread/start alone.
+            // A truthful name plus a full read persists the zero-turn rollout.
+            const snapshot = await client.request('thread/read', { threadId: attachedThreadId, includeTurns: true });
+            if (readThreadId(snapshot) !== attachedThreadId || threadId !== attachedThreadId) {
+                throw new Error('Codex native attachment materialized a different thread');
+            }
+            nativeReadyThreadId = attachedThreadId;
+        }
+        publishThreadId();
+        return attachedThreadId;
     };
 
     const compactActiveThread = async (activeThreadId: string): Promise<void> => {
@@ -4997,6 +5046,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
 
     return {
         getSessionId: () => threadId,
+        prepareThreadForCliAttach,
         getPublishedSessionId: () => lastPublishedThreadId.value,
         // Codex app-server exposes `turn/steer`, which appends user input to the active in-flight
         // turn without interrupting it. This may not affect a currently-running tool until that
@@ -5049,6 +5099,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
         },
         reset: async () => {
             threadId = null;
+            nativeReadyThreadId = null;
             currentModeId = null;
             currentCollaborationMode = null;
             currentModelId = null;

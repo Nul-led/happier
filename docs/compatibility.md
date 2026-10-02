@@ -134,6 +134,51 @@ Every retained compatibility path records:
 
 Remove the path when its support window has ended and evidence shows no supported reader, writer, or stored shape still requires it. Do not remove a released-data reader merely because current writers stopped producing that shape.
 
+### Herdr terminal metadata (development)
+
+The released stable UI `ui-web-v0.2.12` and preview
+`ui-web-v0.2.12-preview.4` at
+`a357c65536ba89669422977d6f7daf9aa0d17e73` reject `herdr` in both
+`terminal.mode` and `terminal.requested`. That failure rejects the Session's
+entire metadata, not just its terminal attachment.
+
+`packages/protocol/src/sessionMetadata/terminalMetadata.ts` owns the development
+wire projection: Herdr uses the released `plain` enum value with additive
+`hostKind: 'herdr'` and, independently, `requestedHostKind: 'herdr'` for a Herdr
+preference. The existing Herdr terminal identity and control-serviceability
+fields are preserved. New readers normalize these wire selectors immediately
+to the canonical `herdr` domain values and remove the recognized selectors;
+later domain mutations cannot retain competing host choices. All Session
+metadata write boundaries apply the same projection, before either plaintext
+serialization or encryption. Machine metadata and message bodies are unaffected.
+
+Older UIs retain core Session metadata and can preserve the additive fields when
+editing metadata; they do not acquire Herdr-specific authoring or attachment
+controls. Current UIs and CLIs retain those controls. A provenance-pinned
+released-reader fixture covers current writes through old reads/edits back into
+new readers. The projection may be removed only when UIs with these strict enums
+are no longer supported; readers of persisted additive projections remain needed
+while such Session metadata can still be encountered.
+
+### Terminal-host account settings (development)
+
+The same released UI at `a357c65536ba89669422977d6f7daf9aa0d17e73`
+strips unknown fields inside `sessionTmuxByMachineId` and its machine editor
+writes the complete parsed map. Non-tmux machine choices therefore live in the
+additive top-level `sessionTerminalHostByMachineId` setting, which its raw-baseline
+writeback preserves when editing another machine. `terminalSettings.ts` owns the
+effective host for both launch and presentation. Modern edits update that map and
+the legacy tmux projection in one account-settings patch; none/tmux choices use
+the released boolean settings and retain tmux names, isolation and temporary paths.
+
+A released UI selecting tmux on the same machine remains authoritative through
+`useTmux: true`. A false value also accompanies a non-tmux choice and cannot
+distinguish a repeated old-client echo from an intent to disable Herdr. Older UIs
+do not gain Herdr controls. Current readers normalize the development-only nested
+`terminalHost` shape when the top-level map is absent; an explicit new-map clear
+cannot revive it. Remove this development reader once retained nested development
+settings are no longer encountered.
+
 ### ACP session-list browse source
 
 The released `cli-v0.2.12` and `cli-v0.2.12-preview.1` daemon at

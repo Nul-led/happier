@@ -141,8 +141,7 @@ export const codexDirectSessionProviderOps: DirectSessionProviderOps = {
         homePath: codexHome,
       },
     });
-    const adoptExistingDaemon = transcriptStorage === 'direct'
-      && await isCodexThreadLoadedInAppServerDaemon({
+    const adoptExistingDaemon = await isCodexThreadLoadedInAppServerDaemon({
         cwd: directory,
         processEnv: runtimeEnv,
         threadId: linked.remoteSessionId,

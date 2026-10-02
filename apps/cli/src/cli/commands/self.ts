@@ -39,10 +39,7 @@ import {
   quiesceInstalledCliWindowsPayloadOwners,
   resolvePayloadOwnerStopTimeoutMs,
 } from '@/cli/runtime/update/quiesceInstalledCliWindowsPayloadOwners';
-import {
-  planServiceDaemonRestartAfterUpdate,
-  restartServiceDaemonOntoInstalledCli,
-} from '@/cli/runtime/update/restartServiceDaemonAfterUpdate';
+import { planServiceDaemonsRestartAfterUpdate } from '@/cli/runtime/update/restartServiceDaemonAfterUpdate';
 import { evaluateCurrentDaemonOwner } from '@/daemon/ownership/evaluateCurrentDaemonOwner';
 import { resolveCliVersionFromBinary } from '@/daemon/service/resolveCliVersionFromBinary';
 
@@ -306,9 +303,9 @@ async function cmdUpdate(argv: string[], rawArgv: readonly string[] = process.ar
   })();
   const processEnv = { ...process.env, HAPPIER_HOME_DIR: configuration.happyHomeDir };
 
-  // Observed before anything changes: on Windows the update stops the payload's processes, and only
-  // this observation still knows the service's daemon was running and must come back.
-  const restartPlan = planServiceDaemonRestartAfterUpdate({
+  // Observed before anything changes: on Windows the update stops the payload's processes (every
+  // relay's daemon), and only this observation still knows which service daemons must come back.
+  const restartPlan = await planServiceDaemonsRestartAfterUpdate({
     channel: effective.channel,
     ownerBeforeUpdate: await evaluateCurrentDaemonOwner(),
     processEnv,
@@ -335,9 +332,7 @@ async function cmdUpdate(argv: string[], rawArgv: readonly string[] = process.ar
     beforeActivate: process.platform === 'win32'
       ? async () => await quiesceInstalledCliWindowsPayloadOwners({ channel: effective.channel, processEnv })
       : undefined,
-    restartServiceDaemon: restartPlan.kind === 'restart'
-      ? async ({ expectedVersion }) => await restartServiceDaemonOntoInstalledCli({ plan: restartPlan, expectedVersion, processEnv })
-      : null,
+    restartServiceDaemon: restartPlan.restart,
   }));
   if (result.outcome !== 'succeeded') {
     throw new Error(result.message);
@@ -360,10 +355,12 @@ async function cmdUpdate(argv: string[], rawArgv: readonly string[] = process.ar
     ? `✓ Updated ${updatedToolName} to ${result.targetVersion}`
     : `✓ ${updatedToolName} is already ${result.targetVersion}`));
   if (result.restarted) {
-    console.log(chalk.green(`✓ The background service now runs ${result.targetVersion}`));
+    console.log(chalk.green(restartPlan.labels.length > 1
+      ? `✓ The background services (${restartPlan.labels.join(', ')}) now run ${result.targetVersion}`
+      : `✓ The background service now runs ${result.targetVersion}`));
   }
-  if (restartPlan.kind === 'unmanaged') {
-    console.log(chalk.yellow(restartPlan.message));
+  if (restartPlan.unmanagedMessage) {
+    console.log(chalk.yellow(restartPlan.unmanagedMessage));
   }
   const migrationRan = await maybeRunVersionGatedRuntimeMigration({
     fromVersion: result.previousVersion,
@@ -444,6 +441,11 @@ async function cmdInternalInstallPayload(argv: string[], rawArgv: readonly strin
     throw new Error('--version is required');
   }
 
+  // On Windows promotion stops every daemon of the payload (every relay's); the service daemons
+  // observed running here come back afterwards through the same rule `self update` uses.
+  const windowsServiceRestart = componentId === 'happier-cli' && process.platform === 'win32'
+    ? await planServiceDaemonsRestartAfterUpdate({ channel, processEnv: process.env })
+    : null;
   if (componentId === 'happier-cli') {
     await quiesceInstalledCliWindowsPayloadOwners({
       channel,
@@ -462,6 +464,15 @@ async function cmdInternalInstallPayload(argv: string[], rawArgv: readonly strin
     // choice is what makes a channel the default `happier` command (install.sh / install.ps1).
     selectAsDefaultReleaseChannel: true,
   });
+
+  if (windowsServiceRestart?.restart && promotion.currentVersionId) {
+    // The installer continues either way (it installs the default service next); a daemon that did
+    // not come back is named rather than failing the promotion.
+    await windowsServiceRestart.restart({ expectedVersion: promotion.currentVersionId, phase: 'activated' })
+      .catch((error: unknown) => {
+        console.error(chalk.yellow(`Background services stopped for the update did not all come back: ${error instanceof Error ? error.message : String(error)}`));
+      });
+  }
 
   if (componentId === 'happier-cli' && !shouldSkipInstallPayloadMigration(process.env)) {
     await withInstalledCliMigrationRuntime({

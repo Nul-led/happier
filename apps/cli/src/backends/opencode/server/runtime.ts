@@ -781,14 +781,17 @@ export function createOpenCodeServerRuntime(params: {
     }
   };
 
-  const publishDynamicSessionOptionsBestEffort = () => {
-    void (async () => {
+  const publishDynamicSessionOptionsBestEffort = (): Promise<void> => {
+    return (async () => {
       if (!sessionId) return;
       const c = await ensureClient();
 
       const [config, agents, providers] = await Promise.all([
         c.globalConfigGet().catch(() => ({})),
-        c.agentsList().catch(() => []),
+        c.agentsList().catch(() => {
+          logger.infoFile('[OpenCodeServer] Mode discovery failed; retaining the last available mode list');
+          return null;
+        }),
         c.providersList().catch(() => {
           logger.infoFile('[OpenCodeServer] Model discovery failed; retaining the last available model list');
           return null;
@@ -863,20 +866,22 @@ export function createOpenCodeServerRuntime(params: {
       const updatedAt = Date.now();
       await params.session.updateMetadata((prev) => ({
         ...prev,
-        sessionModesV1: {
-          v: 1,
-          provider,
-          updatedAt,
-          currentModeId,
-          availableModes,
-        },
-        acpSessionModesV1: {
-          v: 1,
-          provider,
-          updatedAt,
-          currentModeId,
-          availableModes,
-        },
+        ...(agents !== null ? {
+          sessionModesV1: {
+            v: 1 as const,
+            provider,
+            updatedAt,
+            currentModeId,
+            availableModes,
+          },
+          acpSessionModesV1: {
+            v: 1 as const,
+            provider,
+            updatedAt,
+            currentModeId,
+            availableModes,
+          },
+        } : {}),
         ...(providers !== null ? {
           sessionModelsV1: {
             v: 1 as const,
@@ -3391,7 +3396,17 @@ export function createOpenCodeServerRuntime(params: {
         // durable tail and resume import has its own owner, so it must not launch a second import.
         scheduleExternalSessionTranscriptProjection();
       }
-      return refreshLiveKnownOpenCodeStateFromControlPlaneBestEffort();
+      // Inventory snapshots can precede V2 plugin settlement; reconnect also catches missed
+      // invalidations. Return the publication work to the existing event sequencing owner.
+      return Promise.all([
+        refreshLiveKnownOpenCodeStateFromControlPlaneBestEffort(),
+        publishDynamicSessionOptionsBestEffort(),
+      ]).then(() => {});
+    }
+
+    if (type === 'model.updated' || type === 'provider.updated' || type === 'agent.updated') {
+      if (evt.directory && evt.directory !== currentMcpDirectory) return;
+      return publishDynamicSessionOptionsBestEffort();
     }
 
     const compactionEvent = mapOpenCodeCompactionEventToAgentMessage(evt, sessionId);
@@ -3940,6 +3955,7 @@ export function createOpenCodeServerRuntime(params: {
   });
   return {
     getSessionId: () => sessionId,
+    getManagedServerIdentity: () => client?.getManagedServerIdentity() ?? null,
     shouldResumeAfterPermissionModeChange: () => true,
     supportsInFlightSteer: () => client?.supportsInFlightSteer() === true,
     isTurnInFlight: () => turnInFlight,
@@ -4568,6 +4584,10 @@ export function createOpenCodeServerRuntime(params: {
 
     async setSessionMode(modeId: string): Promise<void> {
       const trimmed = typeof modeId === 'string' ? modeId.trim() : '';
+      if (sessionId && trimmed) {
+        const c = await ensureClient();
+        await c.sessionSetAgent({ sessionId, agent: trimmed });
+      }
       selectedAgent = trimmed.length > 0 ? trimmed : null;
       publishDynamicSessionOptionsBestEffort();
     },
@@ -4576,11 +4596,15 @@ export function createOpenCodeServerRuntime(params: {
       const normalizedId = typeof configId === 'string' ? configId.trim() : '';
       if (!normalizedId) return;
       if (normalizedId === 'reasoning_effort') {
-        if (value === null) {
-          delete configOverrides.variant;
-          return;
+        const variant = value === null ? '' : typeof value === 'string' ? value.trim() : String(value).trim();
+        if (sessionId) {
+          const c = await ensureClient();
+          await c.sessionSetModel({
+            sessionId,
+            ...(selectedModel ? { model: selectedModel } : {}),
+            ...(variant ? { variant } : {}),
+          });
         }
-        const variant = typeof value === 'string' ? value.trim() : String(value ?? '').trim();
         if (!variant) {
           delete configOverrides.variant;
           return;
@@ -4603,7 +4627,13 @@ export function createOpenCodeServerRuntime(params: {
         publishDynamicSessionOptionsBestEffort();
         return;
       }
-      selectedModel = await resolveModelOverride(trimmed);
+      const nextModel = await resolveModelOverride(trimmed);
+      if (sessionId && nextModel) {
+        const c = await ensureClient();
+        const variant = typeof configOverrides.variant === 'string' ? configOverrides.variant.trim() : '';
+        await c.sessionSetModel({ sessionId, model: nextModel, ...(variant ? { variant } : {}) });
+      }
+      selectedModel = nextModel;
       selectedModelWasQualifiedOverride = parseOpenCodeModelId(trimmed) !== null;
       publishDynamicSessionOptionsBestEffort();
     },

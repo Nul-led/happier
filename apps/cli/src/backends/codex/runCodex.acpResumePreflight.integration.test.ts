@@ -347,6 +347,22 @@ vi.mock('./appServer/createCodexSharedAppServer', () => ({
   createCodexSharedAppServer: (params: unknown) => createCodexSharedAppServerSpy(params),
 }));
 
+let daemonProxyExitHandler: ((error: Error) => void | Promise<void>) | null = null;
+const daemonProxyClient = {
+  onExit: vi.fn((handler: (error: Error) => void | Promise<void>) => {
+    daemonProxyExitHandler = handler;
+    return () => {};
+  }),
+};
+const createCodexAppServerDaemonProxyClientSpy = vi.fn<(params: unknown) => Promise<typeof daemonProxyClient>>(async () => daemonProxyClient);
+vi.mock('./appServer/daemon/codexAppServerDaemonTransport', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./appServer/daemon/codexAppServerDaemonTransport')>();
+  return {
+    ...actual,
+    createCodexAppServerDaemonProxyClient: (params: unknown) => createCodexAppServerDaemonProxyClientSpy(params),
+  };
+});
+
 const sharedLocalControlDisposeSpy = vi.fn(async () => {});
 const createCodexSharedLocalControlSpy = vi.fn<(...args: any[]) => any>(() => ({
   onAfterStart: vi.fn(async () => {}),
@@ -544,6 +560,9 @@ describe('runCodex CodexACP resume behavior', () => {
       reason: 'unsupported-version' as const,
     });
     createCodexSharedAppServerSpy.mockClear();
+    createCodexAppServerDaemonProxyClientSpy.mockClear();
+    daemonProxyClient.onExit.mockClear();
+    daemonProxyExitHandler = null;
     createCodexSharedLocalControlSpy.mockClear();
     sharedAppServerDisposeSpy.mockClear();
     sharedLocalControlDisposeSpy.mockClear();
@@ -1363,6 +1382,7 @@ describe('runCodex CodexACP resume behavior', () => {
 
   it('reuses the existing Codex daemon transport without creating or publishing a Happier-owned server', async () => {
     process.env.HAPPIER_CODEX_APP_SERVER_TRANSPORT = 'daemonProxy';
+    process.env.HAPPIER_RUNNER_TERMINATION_TIMEOUT_MS = '250';
     resolveCodexSharedControlSupportSpy.mockResolvedValueOnce({ ok: true as const });
     resolveRunnerMcpServersSpy.mockResolvedValueOnce({
       happierMcpServer: { url: 'http://127.0.0.1:0', stop: vi.fn() },
@@ -1386,6 +1406,24 @@ describe('runCodex CodexACP resume behavior', () => {
     expect(createCodexAppServerRuntimeSpy).toHaveBeenCalledWith(expect.objectContaining({
       createClient: expect.any(Function),
     }));
+
+    const runtimeArgs = createCodexAppServerRuntimeSpy.mock.calls[0]?.[0] as {
+      createClient?: () => Promise<unknown>;
+    } | undefined;
+    await expect(runtimeArgs?.createClient?.()).resolves.toBe(daemonProxyClient);
+    expect(daemonProxyClient.onExit).toHaveBeenCalledOnce();
+    expect(daemonProxyExitHandler).toBeTypeOf('function');
+
+    const processExitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    try {
+      await daemonProxyExitHandler!(new Error('native Codex app-server stopped'));
+      await vi.waitFor(() => {
+        expect(processExitSpy).toHaveBeenCalledWith(0);
+      });
+    } finally {
+      processExitSpy.mockRestore();
+      delete process.env.HAPPIER_RUNNER_TERMINATION_TIMEOUT_MS;
+    }
   });
 
   it('routes Codex ChatGPT refresh bridge requests for connected-service profile selections to the daemon', async () => {

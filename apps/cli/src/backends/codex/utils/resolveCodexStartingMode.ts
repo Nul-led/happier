@@ -5,6 +5,9 @@ export function resolveCodexStartingMode(params: Readonly<{
   localControlEnabled: boolean;
 }>): 'local' | 'remote' {
   if (params.startedBy === 'daemon') {
+    if (params.explicitStartingMode === 'local' && params.hasTtyForLocal && params.localControlEnabled) {
+      return 'local';
+    }
     return 'remote';
   }
 

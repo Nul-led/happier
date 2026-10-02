@@ -1,4 +1,5 @@
 import {
+  projectSessionMetadataForWire,
   SESSION_AGENT_TRANSITION_DIVIDER_MESSAGE,
   SESSION_AGENT_TRANSITION_DIVIDER_SIDECAR_KEY,
   SessionAgentTransitionDividerV1Schema,
@@ -845,7 +846,7 @@ export async function runSessionAgentTransition(params: Readonly<{
         metadataCiphertext: encryptStoredSessionPayload({
           mode: sessionTarget.mode,
           ctx: sessionTarget.ctx,
-          payload: targetMetadata,
+          payload: projectSessionMetadataForWire(targetMetadata),
         }),
         expectedAgentStateVersion: source.agentStateVersion,
         agentStateCiphertext: null,

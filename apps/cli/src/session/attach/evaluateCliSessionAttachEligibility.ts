@@ -188,6 +188,16 @@ export async function evaluateCliSessionAttachEligibility(params: Readonly<{
   }
 
   if (localControl.attachStrategy === 'provider_attach') {
+    if (params.localAttachmentInfo) {
+      const hosted = buildTerminalAttachEligibility({
+        metadata,
+        localAttachmentInfo: params.localAttachmentInfo,
+        metadataTerminal,
+        insideTmux: params.insideTmux,
+        currentTmuxSocketPath: params.currentTmuxSocketPath ?? null,
+      });
+      if (hosted.eligible) return hosted;
+    }
     if (!agentId) {
       return {
         eligible: false,

@@ -362,10 +362,12 @@ describe('resolveDirectTakeoverSpawnOptions', () => {
     expect(bootstrapAccountSettingsContextMock).not.toHaveBeenCalled();
   });
 
-  it('does not adopt a live Codex daemon for persisted transcript takeover', async () => {
+  it('adopts a live Codex daemon independently of persisted transcript storage', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-persisted-takeover-codex-daemon-'));
     const codexHome = join(root, '.codex');
+    const projectDir = join(root, 'project');
     await mkdir(codexHome, { recursive: true });
+    await mkdir(projectDir, { recursive: true });
     const fakeAppServer = await writeFakeCodexAppServerThreadListScript({
       dir: root,
       loadedThreadIds: ['daemon-thread-2'],
@@ -377,7 +379,7 @@ describe('resolveDirectTakeoverSpawnOptions', () => {
       credentials: TEST_CREDENTIALS,
       linked: createLinkedCodexSessionFixture({
         remoteSessionId: 'daemon-thread-2',
-        sessionPath: '/tmp/persisted-codex-daemon-project',
+        sessionPath: projectDir,
         source: { kind: 'codexHome', home: 'user' },
         codexBackendMode: 'appServer',
       }),
@@ -385,7 +387,23 @@ describe('resolveDirectTakeoverSpawnOptions', () => {
       transcriptStorage: 'persisted',
     });
 
-    expect(spawnOptions?.environmentVariables).not.toHaveProperty('HAPPIER_CODEX_APP_SERVER_TRANSPORT');
+    expect(spawnOptions).toMatchObject({
+      codexBackendMode: 'appServer',
+      transcriptStorage: 'persisted',
+      environmentVariables: {
+        CODEX_HOME: codexHome,
+        CODEX_SQLITE_HOME: TEST_CODEX_SQLITE_HOME,
+        HAPPIER_CODEX_APP_SERVER_TRANSPORT: 'daemonProxy',
+      },
+      connectedServices: {
+        v: 1,
+        bindingsByServiceId: {
+          'openai-codex': { source: 'native' },
+          openai: { source: 'native' },
+        },
+      },
+    });
+    expect(bootstrapAccountSettingsContextMock).not.toHaveBeenCalled();
   });
 
   it('refuses ambiguous connected-service Codex takeovers when the source does not identify an exact profile/home', async () => {

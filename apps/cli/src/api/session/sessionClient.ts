@@ -10,6 +10,8 @@ import { readNonBlankOpaqueIdentifier } from '@/utils/opaqueIdentifiers';
 import { createSerializedWorkQueueDiagnostics, type SerializedWorkDiagnosticContext } from '@/utils/serializedWorkQueueDiagnostics';
 import {
     isConditionalPendingSteerClaim,
+    normalizeSessionMetadataForRead,
+    projectSessionMetadataForWire,
     readPendingLocalId,
     redactBugReportSensitiveText,
 } from '@happier-dev/protocol';
@@ -940,7 +942,7 @@ export class ApiSessionClient extends EventEmitter {
 	        super()
 	        this.token = token;
 	        this.sessionId = session.id;
-	        this.metadata = session.metadata;
+	        this.metadata = normalizeSessionMetadataForRead(session.metadata);
 	        this.metadataVersion = session.metadataVersion;
             this.sessionSocketMachineId = resolveSessionSocketMachineIdForBootstrap(session.metadata);
             this.agentState = session.agentState;
@@ -5060,6 +5062,7 @@ export class ApiSessionClient extends EventEmitter {
         const effectiveThinking = this.resolveKeepAliveThinkingWithTerminalGuard(thinking, Date.now());
         this.latestSessionPresence = { thinking: effectiveThinking, mode };
         const payload = this.createSessionAlivePayload(this.latestSessionPresence);
+        this.emit('local-presence', { thinking: effectiveThinking, mode });
 
         if (effectiveThinking) {
             void this.sessionTurnLifecycle.touchActiveTurn({ observedAt: payload.time }).catch((error) => {
@@ -5851,6 +5854,7 @@ export class ApiSessionClient extends EventEmitter {
             // ignore
         }
         await this.sessionConnectionSupervisor?.stop();
+        this.emit('local-closed');
     }
 
     beginRuntimeTermination(): void {
@@ -6076,8 +6080,8 @@ export class ApiSessionClient extends EventEmitter {
                 const nextMetadata = addDiscardedCommittedMessageLocalIds(current, uniqueNew);
                 const metadataPayload =
                     this.sessionEncryptionMode === 'plain'
-                        ? JSON.stringify(nextMetadata)
-                        : encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, nextMetadata));
+                        ? JSON.stringify(projectSessionMetadataForWire(nextMetadata))
+                        : encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, projectSessionMetadataForWire(nextMetadata)));
                 const answer = await emitSocketWithAck<any>({
                     socket: this.socket as any,
                     event: 'update-metadata',
@@ -6089,10 +6093,10 @@ export class ApiSessionClient extends EventEmitter {
                 });
 
                 if (answer.result === 'success') {
-                    this.metadata =
+                    this.metadata = normalizeSessionMetadataForRead<Metadata>(
                         this.sessionEncryptionMode === 'plain'
                             ? JSON.parse(String(answer.metadata ?? 'null'))
-                            : decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(answer.metadata));
+                            : decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(answer.metadata)));
                     this.metadataVersion = answer.version;
                     addedCount = uniqueNew.length;
                     return;
@@ -6101,10 +6105,10 @@ export class ApiSessionClient extends EventEmitter {
                 if (answer.result === 'version-mismatch') {
                     if (answer.version > this.metadataVersion) {
                         this.metadataVersion = answer.version;
-                        this.metadata =
+                        this.metadata = normalizeSessionMetadataForRead<Metadata>(
                             this.sessionEncryptionMode === 'plain'
                                 ? JSON.parse(String(answer.metadata ?? 'null'))
-                                : decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(answer.metadata));
+                                : decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(answer.metadata)));
                     }
                     throw new Error('Metadata version mismatch');
                 }

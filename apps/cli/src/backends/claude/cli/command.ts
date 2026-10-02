@@ -34,6 +34,7 @@ import {
 } from '@/cli/connectedServices/resolveDirectConnectedServiceEnvironment';
 import { resolveDirectCliConnectedServiceBindings } from '@/cli/connectedServices/resolveDirectCliConnectedServiceBindings';
 import { HAPPIER_SESSION_CONNECTED_SERVICES_BINDINGS_ENV_KEY } from '@/agent/runtime/sessionConnectedServicesBindingsEnv';
+import { claimSessionRunnerOwnership, withSessionRunnerOwnership } from '@/daemon/sessionRunnerLock';
 
 import type { CommandContext } from '@/cli/commandRegistry';
 
@@ -388,7 +389,10 @@ ${chalk.bold.cyan(`Claude Code Options (from \`${providerHelpCommand}\`):`)}
       }
     }
     options.terminalRuntime = context.terminalRuntime;
-    await runClaude(credentials, options);
+    await withSessionRunnerOwnership(async () => {
+      if (options.existingSessionId) await claimSessionRunnerOwnership(options.existingSessionId);
+      await runClaude(credentials, options);
+    });
     runCompleted = true;
   } catch (error) {
     logger.fatal(error);

@@ -1749,6 +1749,7 @@ export async function runCodex(opts: {
     mcpServers = happierBridge.mcpServers;
     if (useCodexAppServer) {
         codexAppServerConfigOverrides = buildCodexAppServerConfigOverrides(mcpServers, {
+            codexArgs: opts.codexArgs,
             happierSessionId: codexProviderProcessEnv.HAPPIER_SESSION_ID,
             happierMcpToolCallTimeoutMs: configuration.codexHappierMcpToolCallTimeoutMs,
             processEnv: codexAppServerProcessEnv,
@@ -1899,10 +1900,16 @@ export async function runCodex(opts: {
             configOverrides: codexAppServerConfigOverrides,
             ...(useCodexAppServerDaemonProxy
                 ? {
-                    createClient: async () => await createCodexAppServerDaemonProxyClient({
-                        cwd: directory,
-                        processEnv: codexAppServerProcessEnv,
-                    }),
+                    createClient: async () => {
+                        const daemonProxyClient = await createCodexAppServerDaemonProxyClient({
+                            cwd: directory,
+                            processEnv: codexAppServerProcessEnv,
+                        });
+                        daemonProxyClient.onExit(() => {
+                            terminationHandlers.requestTermination({ kind: 'exit', code: 0 });
+                        });
+                        return daemonProxyClient;
+                    },
                 }
                 : codexSharedAppServer
                     ? { createClient: codexSharedAppServer.createClient }
@@ -2306,13 +2313,14 @@ export async function runCodex(opts: {
                         });
                         wasCreated = true;
                         sharedThreadNeedsSystemPrompt = true;
+                        await codexAppServerRuntime!.prepareThreadForCliAttach();
                         await sessionModeSync?.flushPendingAfterStart();
                         await configOptionSync?.flushPendingAfterStart();
                         await modelSync?.flushPendingAfterStart();
                         codexAppServerDaemonReportReadiness.resolve?.();
                         codexAppServerDaemonReportReadiness.resolve = null;
                     }
-                    return codexAppServerRuntime!.getPublishedSessionId();
+                    return await codexAppServerRuntime!.prepareThreadForCliAttach();
                 },
                 directory,
                 endpoint: codexSharedAppServer.endpoint,

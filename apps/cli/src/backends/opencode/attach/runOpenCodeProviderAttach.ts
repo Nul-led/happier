@@ -1,6 +1,9 @@
 import { spawn } from 'node:child_process';
 
-import { resolveWindowsCommandInvocation } from '@happier-dev/cli-common/process';
+import { prepareOwnedTerminalSpawn } from '@/terminal/runtime/terminalLaunchSpec';
+import { launchOwnedTerminalProcess } from '@/terminal/runtime/ownedTerminalProcess';
+import { logger } from '@/ui/logger';
+import type { ProviderAttachOps } from '@/backends/types';
 
 import { readSharedManagedOpenCodeServerStateBestEffort } from '@/backends/opencode/server/sharedManagedServer';
 import { createOpenCodeAttachArgs } from '@/backends/opencode/localControl/createOpenCodeAttachArgs';
@@ -16,16 +19,10 @@ import { resolveOpenCodeCliLaunchSpec } from '@/backends/opencode/utils/resolveO
 import type { ProviderCliLaunchSpec } from '@/runtime/managedTools/requireProviderCliLaunchSpec';
 import { resolveOpenCodeProviderAttachTargetWithManagedServerFallback } from './evaluateOpenCodeProviderAttachEligibility';
 
-type SpawnedProcess = Readonly<{
-  once: {
-    (event: 'exit', handler: (code: number | null, signal: NodeJS.Signals | null) => void): void;
-    (event: 'error', handler: (error: Error) => void): void;
-  };
-}>;
-
 export async function runOpenCodeProviderAttach(params: Readonly<{
   sessionId: string;
   metadata: Record<string, unknown>;
+  prepareProviderCliAttach?: Parameters<ProviderAttachOps['runAttach']>[0]['prepareProviderCliAttach'];
   spawnProcess?: typeof spawn;
   command?: string;
   commandArgs?: readonly string[];
@@ -59,8 +56,9 @@ export async function runOpenCodeProviderAttach(params: Readonly<{
   // attached CLI need its credential; a remote target keeps the ambient environment untouched.
   const env = await resolveOpenCodeAttachChildEnv({
     baseUrl: target.baseUrl,
+    managedServerLaunchFingerprint: target.managedServerLaunchFingerprint,
     env: ambientEnv,
-    readManagedServerStateFn,
+    ...(params.readManagedServerStateFn ? { readManagedServerStateFn: params.readManagedServerStateFn } : {}),
   });
   const launchApiGeneration = launch && 'apiGeneration' in launch
     && (launch.apiGeneration === 'v2' || launch.apiGeneration === 'auto')
@@ -71,11 +69,24 @@ export async function runOpenCodeProviderAttach(params: Readonly<{
     ...(launchApiGeneration ? { launchApiGeneration } : {}),
     headers: await resolveOpenCodeAttachTargetAuthHeaders({
       baseUrl: target.baseUrl,
+      managedServerLaunchFingerprint: target.managedServerLaunchFingerprint,
       env: ambientEnv,
-      readManagedServerStateFn,
+      ...(params.readManagedServerStateFn ? { readManagedServerStateFn: params.readManagedServerStateFn } : {}),
     }),
   });
-  const invocation = resolveWindowsCommandInvocation({
+  if (dialect === 'v2') {
+    if (!params.prepareProviderCliAttach) {
+      throw new Error('provider_cli_attach_preparation_unavailable');
+    }
+    const preparation = await params.prepareProviderCliAttach({ providerSessionId: target.vendorSessionId }).catch(() => {
+      throw new Error('provider_cli_attach_preparation_failed');
+    });
+    if (!preparation.ok) throw new Error('provider_cli_attach_not_ready');
+    if (preparation.providerSessionId !== target.vendorSessionId) {
+      throw new Error('provider_cli_attach_identity_mismatch');
+    }
+  }
+  const prepared = await prepareOwnedTerminalSpawn({
     command,
     args: [
       ...commandArgs,
@@ -87,18 +98,13 @@ export async function runOpenCodeProviderAttach(params: Readonly<{
       }),
     ],
     env,
-    resolveCommandOnPath: false,
+    cwd: process.cwd(),
   });
-
-  return await new Promise<number>((resolve) => {
-    const child = spawnProcess(invocation.command, invocation.args, {
-      stdio: 'inherit',
-      shell: false,
-      env,
-      ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
-    }) as unknown as SpawnedProcess;
-
-    child.once('error', () => resolve(1));
-    child.once('exit', (code) => resolve(typeof code === 'number' ? code : 1));
-  });
+  try {
+    const child = await launchOwnedTerminalProcess({ spawn: prepared, cwd: process.cwd(), spawnProcess });
+    return (await child.whenExited).code ?? 1;
+  } catch {
+    logger.infoFile('[terminal] Native terminal attach failed (terminal_native_attach_failed)');
+    return 1;
+  }
 }

@@ -1,15 +1,8 @@
 import { spawn } from 'node:child_process';
 
-import { resolveWindowsCommandInvocation } from '@happier-dev/cli-common/process';
-
-type SpawnedProcess = Readonly<{
-  exitCode?: number | null;
-  once: {
-    (event: 'exit', handler: (code: number | null, signal: NodeJS.Signals | null) => void): void;
-    (event: 'error', handler: (error: Error) => void): void;
-  };
-  kill: (signal?: NodeJS.Signals | number) => boolean;
-}>;
+import { launchOwnedTerminalProcess, type OwnedTerminalProcess } from '@/terminal/runtime/ownedTerminalProcess';
+import { prepareOwnedTerminalSpawn } from '@/terminal/runtime/terminalLaunchSpec';
+import { logger } from '@/ui/logger';
 
 export type AttachedTerminalSupervisor<TTarget> = Readonly<{
   isAttached: () => boolean;
@@ -18,23 +11,7 @@ export type AttachedTerminalSupervisor<TTarget> = Readonly<{
   dispose: () => Promise<void>;
 }>;
 
-async function waitForStartup(proc: SpawnedProcess): Promise<boolean> {
-  if (proc.exitCode !== null && proc.exitCode !== undefined) return false;
-  return await new Promise<boolean>((resolve) => {
-    let settled = false;
-    const finish = (value: boolean) => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-    };
-    proc.once('exit', () => finish(false));
-    proc.once('error', () => finish(false));
-    setImmediate(() => finish(true));
-  });
-}
-
-async function waitForExit(proc: SpawnedProcess, timeoutMs: number): Promise<boolean> {
-  if (proc.exitCode !== null && proc.exitCode !== undefined) return true;
+async function waitForExit(proc: OwnedTerminalProcess, timeoutMs: number): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
     let settled = false;
     const timer = setTimeout(() => {
@@ -43,12 +20,13 @@ async function waitForExit(proc: SpawnedProcess, timeoutMs: number): Promise<boo
       resolve(false);
     }, timeoutMs);
     timer.unref?.();
-    proc.once('exit', () => {
+    const finished = () => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       resolve(true);
-    });
+    };
+    void proc.whenExited.then(finished, finished);
   });
 }
 
@@ -73,17 +51,17 @@ export function createAttachedTerminalSupervisor<TTarget>(params: Readonly<{
   const spawnProcess = params.spawnProcess ?? spawn;
   const env = params.env ?? process.env;
   const detachTimeoutMs = Math.max(100, Math.min(60_000, params.detachTimeoutMs ?? 3_000));
-  let proc: SpawnedProcess | null = null;
-  const intentionallyDetached = new WeakSet<SpawnedProcess>();
+  let proc: OwnedTerminalProcess | null = null;
+  const intentionallyDetached = new WeakSet<OwnedTerminalProcess>();
 
   const detach = async (): Promise<void> => {
     const child = proc;
     if (!child) return;
     intentionallyDetached.add(child);
-    child.kill('SIGINT');
+    await child.signal('SIGINT');
     const exitedGracefully = await waitForExit(child, detachTimeoutMs);
     if (!exitedGracefully) {
-      child.kill('SIGKILL');
+      await child.signal('SIGKILL');
       await waitForExit(child, detachTimeoutMs);
     }
     if (proc === child) proc = null;
@@ -98,35 +76,29 @@ export function createAttachedTerminalSupervisor<TTarget>(params: Readonly<{
         ? await resolution
         : resolution as AttachedTerminalInvocation;
       const childEnv = resolved.env ?? env;
-      const invocation = resolveWindowsCommandInvocation({
+      const prepared = await prepareOwnedTerminalSpawn({
         command: resolved.command,
         args: [...resolved.args],
         env: childEnv,
-        resolveCommandOnPath: false,
+        cwd: process.cwd(),
       });
-      const child = spawnProcess(invocation.command, invocation.args, {
-        stdio: 'inherit',
-        env: childEnv,
-        ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
-      }) as unknown as SpawnedProcess;
+      let child: OwnedTerminalProcess;
+      try {
+        child = await launchOwnedTerminalProcess({ spawn: prepared, cwd: process.cwd(), spawnProcess });
+      } catch {
+        logger.infoFile('[terminal] Native terminal could not start (terminal_native_startup_failed)');
+        return false;
+      }
       proc = child;
-      let startupCompleted = false;
       let closeHandled = false;
       const handleClosed = (): void => {
         if (closeHandled) return;
         closeHandled = true;
         if (proc === child) proc = null;
         const wasIntentionallyDetached = intentionallyDetached.delete(child);
-        if (startupCompleted && !wasIntentionallyDetached) void params.onExit?.();
+        if (!wasIntentionallyDetached) void params.onExit?.();
       };
-      child.once('exit', handleClosed);
-      child.once('error', handleClosed);
-      const started = await waitForStartup(child);
-      if (!started) {
-        if (proc === child) proc = null;
-        return false;
-      }
-      startupCompleted = true;
+      void child.whenExited.then(handleClosed, handleClosed);
       return true;
     },
     detach,

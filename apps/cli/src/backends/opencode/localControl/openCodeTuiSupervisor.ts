@@ -15,11 +15,14 @@ function resolveDetachTimeoutMs(): number {
   return Math.max(100, Math.min(60_000, value));
 }
 
-export type OpenCodeTuiSupervisor = AttachedTerminalSupervisor<{
+export type OpenCodeTuiAttachTarget = Readonly<{
   baseUrl: string;
   directory: string;
   sessionId: string;
+  managedServerLaunchFingerprint?: string;
 }>;
+
+export type OpenCodeTuiSupervisor = AttachedTerminalSupervisor<OpenCodeTuiAttachTarget>;
 
 export function createOpenCodeTuiSupervisor(params?: Readonly<{
   spawnProcess?: Parameters<typeof createAttachedTerminalSupervisor>[0]['spawnProcess'];
@@ -50,13 +53,14 @@ export function createOpenCodeTuiSupervisor(params?: Readonly<{
     env,
     detachTimeoutMs: resolveDetachTimeoutMs(),
     onExit: params?.onExit,
-    resolveInvocation: async ({ baseUrl, directory, sessionId }) => {
+    resolveInvocation: async ({ baseUrl, directory, sessionId, managedServerLaunchFingerprint }) => {
       // The attached CLI talks to the target server itself: it needs that server's credential (loopback
       // managed targets only) and the argv dialect the target actually speaks.
       const readManagedServerStateFn = params?.readManagedServerStateFn;
       const targetAuth = {
         baseUrl,
         env,
+        managedServerLaunchFingerprint,
         ...(readManagedServerStateFn ? { readManagedServerStateFn } : {}),
       };
       const dialect = await (params?.resolveDialectFn ?? resolveOpenCodeAttachCliDialect)({

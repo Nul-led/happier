@@ -44,8 +44,13 @@ type PromptRuntime = {
 
 type OverrideSynchronizer = {
   syncFromMetadata: () => void;
-  flushPendingAfterStart: () => Promise<void>;
+  flushPendingAfterStart: () => Promise<void | boolean>;
 };
+
+export type ProviderStartupControls = Readonly<{
+  initialControlsApplied: boolean;
+  prepareLocalAttachment: () => Promise<boolean>;
+}>;
 
 type QueuedPermissionModeMessage = {
   message: PermissionModeQueuedPrompt;
@@ -132,7 +137,7 @@ export async function runPermissionModePromptLoop(opts: {
   }>) => void | Promise<void>) | null;
   failClosedOnResumeFailure?: boolean;
   startRuntimeBeforeFirstPrompt?: boolean;
-  onAfterStart?: (() => void | Promise<void>) | null;
+  onAfterStart?: ((controls: ProviderStartupControls) => void | Promise<void>) | null;
   onAfterReset?: (() => void | Promise<void>) | null;
   resolveFreshSessionSystemPrompt?: (args: {
     baseOverride?: string | null;
@@ -245,6 +250,12 @@ export async function runPermissionModePromptLoop(opts: {
 
   overrideSync.syncFromMetadata();
 
+  const prepareLocalAttachment = async (): Promise<boolean> => {
+    if (!wasStarted || opts.shouldExit()) return false;
+    overrideSync.syncFromMetadata();
+    return await overrideSync.flushPendingAfterStart() === true && !opts.shouldExit();
+  };
+
   const ensureRuntimeStarted = async (): Promise<{ startedFreshSessionForTurn: boolean }> => {
     if (wasStarted) return { startedFreshSessionForTurn: false };
 
@@ -305,17 +316,21 @@ export async function runPermissionModePromptLoop(opts: {
     if (opts.shouldExit()) return { startedFreshSessionForTurn };
     if (strictAbort) throw strictAbort;
 
-    await opts.onAfterStart?.();
-    if (opts.shouldExit()) return { startedFreshSessionForTurn };
     wasStarted = true;
-    await overrideSync.flushPendingAfterStart();
+    const initialControlsApplied = await overrideSync.flushPendingAfterStart() === true;
     if (opts.shouldExit()) return { startedFreshSessionForTurn };
     // Provider startup can publish metadata after the prompt-boundary refresh, so keep one post-start catch-up.
     await refreshSessionSnapshotBeforeTurnBestEffort();
     if (opts.shouldExit()) return { startedFreshSessionForTurn };
     syncPermissionModeFromMetadata();
     overrideSync.syncFromMetadata();
-    await overrideSync.flushPendingAfterStart();
+    const catchUpControlsApplied = await overrideSync.flushPendingAfterStart() === true;
+    if (opts.shouldExit()) return { startedFreshSessionForTurn };
+    await opts.onAfterStart?.({
+      // A settled/rejected command may disappear during catch-up; absence cannot erase its failure.
+      initialControlsApplied: initialControlsApplied && catchUpControlsApplied,
+      prepareLocalAttachment,
+    });
     if (opts.shouldExit()) return { startedFreshSessionForTurn };
     await opts.runtime.drainPendingAfterStartOrLoad?.();
     return { startedFreshSessionForTurn };

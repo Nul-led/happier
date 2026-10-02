@@ -115,6 +115,29 @@ describe('PushNotificationClient.sendToAllDevicesAsync', () => {
     expect(logger.infoFile).toHaveBeenCalledWith('[PUSH] Expo rejected oversized notification payload', { count: 1 });
   });
 
+  it('reports invalid Expo credentials immediately instead of retrying a permanent failure', async () => {
+    vi.useFakeTimers();
+    try {
+      sendPushNotificationsAsyncSpy.mockResolvedValue([
+        { status: 'error', details: { error: 'InvalidCredentials' } },
+      ]);
+      const result = new PushNotificationClient('t').sendPushNotifications([
+        { to: 'ExponentPushToken[a]', body: 'Body' },
+      ]);
+
+      await vi.advanceTimersByTimeAsync(300_000);
+
+      await expect(result).rejects.toThrow(/InvalidCredentials/);
+      expect(sendPushNotificationsAsyncSpy).toHaveBeenCalledTimes(1);
+      expect(logger.infoFile).toHaveBeenCalledWith(
+        '[PUSH] Expo rejected push notification credentials',
+        expect.objectContaining({ error: 'InvalidCredentials' }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('uses token-specific clientServerUrl when present', async () => {
     (axios as any).get.mockResolvedValue({
       data: {

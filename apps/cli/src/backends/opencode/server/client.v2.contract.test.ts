@@ -46,6 +46,27 @@ async function makeReleasedV2Client(env: NodeJS.ProcessEnv = {}) {
 describe('OpenCodeServerRuntimeClient released V2 contract', () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it('retains V1 frontend-local selection without writing unsupported native model routes', async () => {
+    const writes: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (init?.method === 'POST') writes.push(url.pathname);
+      return url.pathname === '/global/health'
+        ? Response.json({ healthy: true, version: '1.18.33' })
+        : new Response(null, { status: 404 });
+    }));
+    const client = await makeReleasedV2Client();
+    try {
+      await client.sessionSetModel({
+        sessionId: 'ses_v1', model: { providerID: 'openai', modelID: 'cheap-model' }, variant: 'low',
+      });
+      await client.sessionSetAgent({ sessionId: 'ses_v1', agent: 'plan' });
+      expect(writes).toEqual([]);
+    } finally {
+      await client.dispose();
+    }
+  });
+
   it.each([
     ['/api/provider', {}], ['/api/model', {}],
     ['/api/provider', { data: [{}] }], ['/api/model', { data: [{}] }],

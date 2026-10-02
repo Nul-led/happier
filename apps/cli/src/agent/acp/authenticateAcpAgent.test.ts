@@ -1,11 +1,22 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { authenticateAcpAgent } from './authenticateAcpAgent';
 import { writeAcpTestAgentScript } from './testkit/subprocessHarness';
 import { withTempDir } from '@/testkit/fs/tempDir';
 import { isPidAlive } from '@/testkit/process/spawn';
+
+// Genuine OS enumeration boundary; the ACP transport and cleanup owner remain real.
+const enumeration = vi.hoisted(() => ({ denied: false }));
+vi.mock('ps-list', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('ps-list')>();
+  return { default: () => {
+    if (enumeration.denied) return Promise.reject(new Error('process listing unavailable'));
+    return actual.default();
+  } };
+});
+afterEach(() => { enumeration.denied = false; });
 
 function fixture(dir: string, behavior: 'success' | 'reject' | 'wait' = 'success') {
   // External ACP boundary: the pinned AGY 1.1.1 server persists auth.type only
@@ -56,6 +67,21 @@ function expectProviderStopped(dir: string) {
 }
 
 describe('ACP login', () => {
+  it('preserves provider rejection alongside an unverified cleanup failure', async () => {
+    await withTempDir('happier-acp-login-cleanup-', async (dir) => {
+      enumeration.denied = true;
+      await expect(authenticateAcpAgent({ ...fixture(dir, 'reject'), methodId: 'gemini-api-key' })).rejects.toMatchObject({
+        name: 'AggregateError',
+        errors: [
+          { code: -32602 },
+          { code: 'process_tree_termination_incomplete' },
+        ],
+      });
+      expect(existsSync(join(dir, 'settings.json'))).toBe(false);
+      expectProviderStopped(dir);
+    });
+  });
+
   it('finishes authentication, surfaces the browser link, and leaves persistence to the provider', async () => {
     await withTempDir('happier-acp-login-', async (dir) => {
       let output = '';
