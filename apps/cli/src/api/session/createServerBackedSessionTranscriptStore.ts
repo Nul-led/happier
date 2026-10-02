@@ -5,6 +5,9 @@ import type {
     FileBackedTranscriptSubscriptionListener,
 } from './fileBackedTranscripts/store';
 import { SessionMessageV1Schema } from '@happier-dev/protocol';
+import { UpdateContainerSchema } from '@happier-dev/protocol/updates';
+import { observeSessionSocketEvents } from '@/session/transport/socket/sessionSocketAgentState';
+import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import type { OpenedSessionStateSnapshot, OpenedSessionStateVersions } from './snapshotSync';
 import { createSessionTranscriptStoredContentUnavailableError } from './sessionTranscriptStoredContentUnavailable';
 import { openSessionMessageContent, SessionStoredContentError, type SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionEncryptionContext';
@@ -162,6 +165,7 @@ export function createServerBackedSessionTranscriptStore(
         },
         async readAfter(rawParams?: unknown): Promise<FileBackedTranscriptReadAfterResult<SessionTranscriptActionItem>> {
             const input = readRecord(rawParams);
+            const signal = input.signal instanceof AbortSignal ? input.signal : undefined;
             const openedProjection = input.projection === 'openedMessagesV1';
             const readSessionState = async () => {
                 if (!params.readOpenedSessionState) throw createSessionTranscriptStoredContentUnavailableError();
@@ -177,6 +181,7 @@ export function createServerBackedSessionTranscriptStore(
                     token: params.token,
                     sessionId: params.sessionId,
                     limit: 1,
+                    ...(signal ? { signal } : {}),
                 });
                 tailCursor = cursorForSequence(page.messages[0]?.seq) ?? '0';
                 return {
@@ -192,6 +197,7 @@ export function createServerBackedSessionTranscriptStore(
                 sessionId: params.sessionId,
                 limit: maxItems,
                 ...(afterSeq !== undefined ? { afterSeq } : {}),
+                ...(signal ? { signal } : {}),
             });
             tailCursor = typeof page.nextAfterSeq === 'number' ? String(page.nextAfterSeq) : tailCursor;
             const limited = limitItemsByEncodedBytes(
@@ -210,6 +216,33 @@ export function createServerBackedSessionTranscriptStore(
         },
         getTailCursor: () => tailCursor,
         subscribe: (_listener?: FileBackedTranscriptSubscriptionListener<SessionTranscriptActionItem>) => () => undefined,
+        observeChanges: (listener, onError) => {
+            // Capture the exact configured Home under the invocation's server scope.
+            const serverUrl = resolveServerHttpBaseUrl();
+            let connected = false;
+            let resolveReady!: () => void;
+            let rejectReady!: (error: unknown) => void;
+            const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+            void ready.catch(() => undefined); // Retain failures until the Action awaits readiness.
+            const observation = observeSessionSocketEvents({ token: params.token, sessionId: params.sessionId, serverUrl }, {
+                onUpdate: (value) => {
+                    const parsed = UpdateContainerSchema.safeParse(value);
+                    if (!parsed.success) return;
+                    const body = parsed.data.body;
+                    if (body.t === 'new-message' && body.sid === params.sessionId) listener({ kind: 'append' });
+                    else if (body.t === 'message-updated' && body.sid === params.sessionId) {
+                        listener({ kind: 'revision', messageId: body.message.id, seq: body.message.seq });
+                    } else if ((body.t === 'update-session' && body.id === params.sessionId)
+                        || (body.t === 'pending-changed' && (body.sid ?? body.sessionId) === params.sessionId)) listener({ kind: 'session' });
+                },
+                onConnected: () => { if (connected) listener({ kind: 'reset' }); connected = true; resolveReady(); },
+                onError: (error) => { rejectReady(error); onError(error); },
+            });
+            return { ready, dispose: async () => {
+                rejectReady(new DOMException('Transcript observation cancelled', 'AbortError'));
+                await observation.dispose();
+            } };
+        },
         getTitle: async () => null,
         getWorkingDirectory: async () => null,
         getActivity: async () => null,

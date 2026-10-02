@@ -29,6 +29,25 @@ afterEach(() => {
 });
 
 describe('useSessionListViewFilters', () => {
+    it('enforces the fixed Show on writes and reset while retaining starter choices across remount', async () => {
+        const input = {
+            contextKey: 'global:show:runs',
+            fixedShow: 'runs' as const,
+            defaults: { homeServerIds: ['home-a'], show: 'runs' as const },
+            accountScopeResolutions: boundAccountScopes({ serverId: 'home-a', accountId: 'account-a' }),
+        };
+        const hook = await renderHook(() => useSessionListViewFilters(input));
+        await act(async () => hook.getCurrent().updateFilters((current) => ({
+            ...current, show: 'sessions', startedBy: ['triggers', 'agents'],
+        })));
+        expect(hook.getCurrent().filters).toMatchObject({ show: 'runs', startedBy: ['triggers', 'agents'] });
+        await hook.unmount();
+        const remounted = await renderHook(() => useSessionListViewFilters(input));
+        expect(remounted.getCurrent().filters).toMatchObject({ show: 'runs', startedBy: ['triggers', 'agents'] });
+        await act(async () => remounted.getCurrent().resetFilters());
+        expect(remounted.getCurrent().filters).toMatchObject({ show: 'runs', startedBy: ['you'] });
+    });
+
     it.each(['team', 'global'] as const)('preserves the %s audience boundary through authoritative Group pruning', async (kind) => {
         const team = { serverId: 'home-a', teamId: 'team-a' };
         const viewContext: SessionListViewContext = kind === 'team' ? { kind, team } : { kind };
@@ -111,6 +130,8 @@ describe('useSessionListViewFilters', () => {
             hook.getCurrent().updateFilters((current) => ({
                 ...current,
                 attention: 'needs_my_attention',
+                show: 'runs',
+                startedBy: ['triggers', 'agents'],
                 source: 'direct',
                 searchQuery: 'private search',
                 tagIds: [{ serverId: 'home-a', tagId: 'urgent' }],
@@ -119,6 +140,8 @@ describe('useSessionListViewFilters', () => {
         expect(hook.getCurrent().filters).toMatchObject({
             scope: 'my_work',
             attention: 'needs_my_attention',
+            show: 'runs',
+            startedBy: ['triggers', 'agents'],
             source: 'direct',
             searchQuery: 'private search',
         });
@@ -135,6 +158,8 @@ describe('useSessionListViewFilters', () => {
         const globalAgain = await hook.rerender('global');
         expect(globalAgain.filters.searchQuery).toBe('private search');
         expect(globalAgain.filters.tagIds).toEqual([{ serverId: 'home-a', tagId: 'urgent' }]);
+        expect(globalAgain.filters.show).toBe('runs');
+        expect(globalAgain.filters.startedBy).toEqual(['triggers', 'agents']);
     });
 
     it('lets an untouched global default follow a Home that finishes mounting later', async () => {

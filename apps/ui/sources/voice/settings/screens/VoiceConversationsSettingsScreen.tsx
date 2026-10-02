@@ -137,7 +137,6 @@ export function VoiceConversationsSettingsScreen() {
           onContentSizeChange={focusRegistry.onContentSizeChange}
           onScroll={focusRegistry.onScroll}
           scrollEventThrottle={16}
-          presentation="page"
         >
           <SettingsPageHeader description={t('settingsVoice.intents.conversations.subtitle')} />
           <View

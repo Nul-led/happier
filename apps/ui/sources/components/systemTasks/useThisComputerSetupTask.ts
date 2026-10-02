@@ -1,13 +1,14 @@
 import * as React from 'react';
 import type { SystemTaskResult } from '@happier-dev/protocol';
 
-import type { SystemTaskAuthRequestApproval } from './approveSystemTaskAuthRequestPrompt';
-import { useSystemTaskAuthRequestApproval } from './useSystemTaskAuthRequestApproval';
-import { readLatestSystemTaskPrompt } from './prompts/readLatestSystemTaskPrompt';
+import { readTokenOnlyAuthRequestPrompt, respondToTokenOnlyAuthRequestPrompt, type SystemTaskAuthRequestApproval } from './approveSystemTaskAuthRequestPrompt';
+import { presentUnmanagedCliConsent } from './presentUnmanagedCliConsent';
 import { getSystemTasksRunner } from './systemTasksRuntime';
-import { useThisComputerSetupPromptModals } from './thisComputerSetup/useThisComputerSetupPromptModals';
+import { answerThisComputerSetupPrompt } from './thisComputerSetup/answerThisComputerSetupPrompt';
+import { areServerProfileIdentifiersEquivalent, resolveSavedServerProfileByUrl } from '@/sync/domains/server/serverProfiles';
+import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { useSystemTaskSnapshot } from './useSystemTaskSnapshot';
-import type { SystemTaskRunState, SystemTaskRunner } from './types';
+import type { SystemTaskPromptContinuation, SystemTaskRunState, SystemTaskRunner } from './types';
 import type { SystemTaskSpec } from '@happier-dev/protocol';
 
 export type ThisComputerSetupFollowUp = 'auth' | null;
@@ -22,9 +23,52 @@ export function resolveThisComputerSetupFollowUp(result: SystemTaskResult | null
     return null;
 }
 
+/** Captures the initiating Home; navigation never retargets a pending pairing request. */
+export function createThisComputerSetupPromptContinuation(
+    approval?: SystemTaskAuthRequestApproval,
+    spec?: SystemTaskSpec,
+): SystemTaskPromptContinuation {
+    const params = spec?.params;
+    const expectedAccountId = params !== null && typeof params === 'object' && !Array.isArray(params)
+        && 'activeAccountId' in params && typeof params.activeAccountId === 'string'
+        ? params.activeAccountId.trim() : approval?.expectedAccountId;
+    const scopedApproval = approval ? { ...approval, ...(expectedAccountId ? { expectedAccountId } : {}) } : undefined;
+    return async (prompt) => {
+        const authPrompt = readTokenOnlyAuthRequestPrompt({ type: 'prompt', data: prompt.data });
+        if (authPrompt) {
+            if (!scopedApproval) return undefined;
+            let answer: unknown;
+            await respondToTokenOnlyAuthRequestPrompt({ prompt: authPrompt, approval: scopedApproval,
+                confirmUnmanagedCli: presentUnmanagedCliConsent, respond: (next) => { answer = next; },
+            });
+            return answer;
+        }
+        return await answerThisComputerSetupPrompt(prompt);
+    };
+}
+
+function matchesSetupApproval(spec: SystemTaskSpec | null, approval: SystemTaskAuthRequestApproval): boolean {
+    if (!spec || (spec.kind !== 'setup.thisComputer.v1' && spec.kind !== 'setup.repairThisComputer.v1')) return false;
+    const params = spec.params;
+    if (params === null || typeof params !== 'object' || Array.isArray(params)) return false;
+    const relayUrl = 'activeRelayUrl' in params && typeof params.activeRelayUrl === 'string' ? params.activeRelayUrl : '';
+    const identity = 'activeServerIdentityId' in params && typeof params.activeServerIdentityId === 'string'
+        ? params.activeServerIdentityId : null;
+    const accountId = 'activeAccountId' in params && typeof params.activeAccountId === 'string' ? params.activeAccountId : null;
+    const urlProfile = identity ? null : resolveSavedServerProfileByUrl(relayUrl, { includeCanonicalServerUrl: true });
+    const matchesHome = identity
+        ? identity === approval.serverId || areServerProfileIdentifiersEquivalent(identity, approval.serverId)
+        : approval.serverId
+            ? urlProfile?.kind === 'resolved' && areServerProfileIdentifiersEquivalent(urlProfile.profile.id, approval.serverId)
+            : urlProfile?.kind !== 'ambiguous';
+    return Boolean(relayUrl) && createServerUrlComparableKey(relayUrl) === createServerUrlComparableKey(approval.expectedRelayUrl)
+        && matchesHome
+        && accountId === (approval.expectedAccountId ?? null);
+}
+
 export function useThisComputerSetupTask(options: Readonly<{
     runner?: SystemTaskRunner;
-    /** A presenter-owned retained handle; undefined keeps the legacy local-state behavior. */
+    /** A presenter-owned handle; otherwise adopt this runner's continued setup for the explicit Home. */
     taskId?: string | null;
     onTaskIdChange?: (taskId: string | null) => void;
     onNeedsAuth?: () => void;
@@ -33,8 +77,20 @@ export function useThisComputerSetupTask(options: Readonly<{
     authRequestApproval?: SystemTaskAuthRequestApproval;
 }> = {}) {
     const runner = options.runner ?? getSystemTasksRunner();
-    const [localTaskId, setLocalTaskId] = React.useState<string | null>(null);
-    const activeTaskId = options.taskId === undefined ? localTaskId : options.taskId;
+    const [localTaskId, setLocalTaskId] = React.useState<string | null>(() => {
+        const approval = options.authRequestApproval;
+        if (!approval || options.taskId !== undefined) return null;
+        return runner.listPromptContinuations?.().find(({ spec }) => matchesSetupApproval(spec, approval))?.taskId ?? null;
+    });
+    const approval = options.authRequestApproval;
+    const activeTaskId = options.taskId === undefined
+        ? localTaskId && approval && !matchesSetupApproval(runner.getTaskSpec?.(localTaskId) ?? null, approval) ? null : localTaskId
+        : options.taskId;
+    React.useEffect(() => {
+        if (options.taskId !== undefined || !approval) return;
+        setLocalTaskId((current) => current && matchesSetupApproval(runner.getTaskSpec?.(current) ?? null, approval)
+            ? current : runner.listPromptContinuations?.().find(({ spec }) => matchesSetupApproval(spec, approval))?.taskId ?? null);
+    }, [runner, options.taskId, approval?.expectedRelayUrl, approval?.serverId, approval?.expectedAccountId]);
     const setActiveTaskId = React.useCallback((taskId: string | null) => {
         setLocalTaskId(taskId);
         options.onTaskIdChange?.(taskId);
@@ -49,6 +105,7 @@ export function useThisComputerSetupTask(options: Readonly<{
         setStartError(null);
         try {
             const taskId = await runner.start(spec);
+            runner.registerPromptContinuation?.(taskId, createThisComputerSetupPromptContinuation(options.authRequestApproval, spec));
             handledResultTaskIdRef.current = null;
             setActiveTaskId(taskId);
             return taskId;
@@ -58,7 +115,7 @@ export function useThisComputerSetupTask(options: Readonly<{
         } finally {
             setIsStarting(false);
         }
-    }, [runner, setActiveTaskId]);
+    }, [runner, setActiveTaskId, options.authRequestApproval]);
 
     const cancel = React.useCallback(() => {
         if (!activeTaskId) {
@@ -68,29 +125,13 @@ export function useThisComputerSetupTask(options: Readonly<{
     }, [activeTaskId, runner]);
 
 
-    // Blocking token-only pairing prompts are answered by the one approval owner.
-    useSystemTaskAuthRequestApproval({
-        runner,
-        taskId: activeTaskId,
-        ...(options.authRequestApproval ? { approval: options.authRequestApproval } : {}),
-    });
-
-    // The service-consent prompts the setup kind raises before it mutates anything
-    // (`releaseChannel.switchDefaultForSetup`, `daemon.takeOverManualRelayRuntimeForSetup`,
-    // `daemon.replaceLocalBackgroundServices`) are blocking too: `ctx.prompt` is an unbounded
-    // promise, so a starter with no responder leaves the run waiting forever with no affordance.
-    // The responder therefore lives beside the approval owner here, so every starter of this hook
-    // answers them — not only the surface that happened to mount the modal hook itself.
-    const activeTaskPrompt = React.useMemo(
-        () => readLatestSystemTaskPrompt(activeTaskSnapshot),
-        [activeTaskSnapshot],
-    );
-    useThisComputerSetupPromptModals({
-        runner,
-        taskId: activeTaskId,
-        snapshot: activeTaskSnapshot,
-        prompt: activeTaskPrompt,
-    });
+    React.useEffect(() => {
+        if (!activeTaskId || !runner.registerPromptContinuation
+            || runner.listPromptContinuations?.().some((entry) => entry.taskId === activeTaskId)) return;
+        runner.registerPromptContinuation(activeTaskId, createThisComputerSetupPromptContinuation(
+            options.authRequestApproval, runner.getTaskSpec?.(activeTaskId) ?? undefined,
+        ));
+    }, [activeTaskId, runner, options.authRequestApproval]);
 
     React.useEffect(() => {
         if (!activeTaskSnapshot?.result) {

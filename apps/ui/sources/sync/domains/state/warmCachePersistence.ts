@@ -378,9 +378,10 @@ export type PluginUiProjectionCacheEntryV1 = z.infer<typeof PluginUiProjectionCa
  */
 export const UsageSummaryCacheV1Schema = z.object({
     v: z.literal(1),
-    asOf: z.number().int().nonnegative(),
     entries: z.array(z.object({
         key: z.string().min(1),
+        /** Unknown when the producer has no reading time; never inferred from another account. */
+        fetchedAt: z.number().int().nonnegative().nullable(),
         serviceLabel: z.string(),
         /** Added with per-provider grouping; absent in values saved before it (still readable). */
         serviceGroupKey: z.string().min(1).optional(),

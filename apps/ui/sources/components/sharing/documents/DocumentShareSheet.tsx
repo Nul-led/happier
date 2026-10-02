@@ -1,11 +1,14 @@
 import * as React from 'react';
 import { useActiveServerAccountScope } from '@/sync/domains/state/storage';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { t } from '@/text';
 import { ShareSheet } from '../ShareSheet';
 import type { ShareSheetActions, ShareSheetModel, ShareSheetPresentation } from '../shareSheetTypes';
 import { createDocumentShareAdapter, type DocumentShareKind } from './documentShareAdapter';
 import { useDocumentShareController } from './useDocumentShareController';
+import { useDocumentPublicLinkController } from './useDocumentPublicLinkController';
+import { DocumentPublicLinkSection } from './DocumentPublicLinkSection';
 
 export type DocumentShareSheetProps = Readonly<{
     artifactId: string;
@@ -23,7 +26,13 @@ const DEFAULT_TEST_ID = 'document-share-editor';
 
 function ScopedDocumentShareSheet(props: DocumentShareSheetProps & Readonly<{ scope: ServerAccountScope }>): React.ReactElement {
     const controller = useDocumentShareController({ artifactId: props.artifactId, scope: props.scope });
-    const adapter = createDocumentShareAdapter({
+    const publicLinkEnabled = useFeatureEnabled('sharing.public', { scopeKind: 'spawn', serverId: props.scope.serverId });
+    const [publicLinkRequested, setPublicLinkRequested] = React.useState(false);
+    const canManagePublicLink = publicLinkEnabled && controller.model.editable && !controller.loading && !controller.issue && !controller.model.stale;
+    const publicLink = useDocumentPublicLinkController({ artifactId: props.artifactId, scope: props.scope,
+        enabled: publicLinkRequested && canManagePublicLink, canManage: canManagePublicLink });
+    const baseAdapter = createDocumentShareAdapter({
+        artifactId: props.artifactId,
         kind: props.kind,
         grants: controller.grants,
         ...(props.linkPath ? { linkPath: props.linkPath } : {}),
@@ -34,6 +43,19 @@ function ScopedDocumentShareSheet(props: DocumentShareSheetProps & Readonly<{ sc
         readOnly: !controller.loading && !controller.issue && !controller.model.editable,
         retryContent: controller.retryContent,
     });
+    const adapter = {
+        ...baseAdapter,
+        sections: (context: Parameters<NonNullable<typeof baseAdapter.sections>>[0]) => ({
+            ...baseAdapter.sections?.(context),
+            ...(canManagePublicLink ? { afterAccess: [{ kind: 'static' as const, id: 'public-link', options: [{
+                id: 'public-link', testID: `${context.idPrefix}document-share-public-link`, label: t('session.sharing.publicLink'),
+                onSelect: () => { setPublicLinkRequested(true); context.onExpand('public-link'); },
+                expandedContent: () => <DocumentPublicLinkSection
+                    key={`${publicLink.publication?.id ?? 'off'}:${publicLink.publication?.updatedAt ?? ''}`}
+                    link={publicLink} idPrefix={context.idPrefix} />,
+            }] }] } : {}),
+        }),
+    };
     return <ShareSheet model={controller.model} actions={controller.actions} adapter={adapter}
         presentation={props.presentation ?? 'full'} onRequestClose={props.onRequestClose} testID={props.testID ?? DEFAULT_TEST_ID} />;
 }
@@ -48,13 +70,14 @@ const UNSCOPED_MODEL: ShareSheetModel = {
 };
 
 /**
- * Share a workflow, role or launch profile: the one share sheet with the documents adapter over
+ * Share any ordinary Account Artifact (a document, prompt, board, workflow, role or launch profile): the one share sheet with the documents adapter over
  * the Artifact grant Actions. Hosts mount it from their own share slot (see `showDocumentShareSheet`).
  */
 export function DocumentShareSheet(props: DocumentShareSheetProps): React.ReactElement {
     const scope = useActiveServerAccountScope();
     if (scope) return <ScopedDocumentShareSheet key={`${scope.serverId}:${scope.accountId}:${props.artifactId}`} {...props} scope={scope} />;
     const adapter = createDocumentShareAdapter({
+        artifactId: props.artifactId,
         kind: props.kind, grants: [], loading: false, readOnly: false, retryContent: noop,
         issue: { code: 'not_authenticated', message: t('shareSheet.documents.errors.unavailable'), retryable: false },
     });

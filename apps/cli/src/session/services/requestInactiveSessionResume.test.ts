@@ -231,8 +231,6 @@ describe('requestInactiveSessionResume', () => {
   it('waits for a 1231ms accepted resume to become ready without submitting the resume twice', async () => {
     vi.useFakeTimers();
     vi.stubEnv('HAPPIER_SPAWN_SESSION_ID_RESOLVE_TIMEOUT_MS', '5000');
-    vi.stubEnv('HAPPIER_SPAWN_SESSION_ID_RESOLVE_POLL_INTERVAL_MS', '25');
-    const startedAt = Date.now();
     callMachineRpc.mockImplementation(async (params: Readonly<{ method: string }>) => {
       if (params.method === RPC_METHODS.SPAWN_HAPPY_SESSION) {
         return {
@@ -245,9 +243,8 @@ describe('requestInactiveSessionResume', () => {
         params.method === RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE
         || params.method === RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE_BY_NONCE
       ) {
-        return Date.now() - startedAt >= 1231
-          ? { status: 'success', sessionId: 'session-1' }
-          : { status: 'pending' };
+        await new Promise((resolve) => setTimeout(resolve, 1231));
+        return { status: 'success', sessionId: 'session-1' };
       }
       throw new Error(`Unexpected machine RPC method: ${params.method}`);
     });
@@ -271,7 +268,7 @@ describe('requestInactiveSessionResume', () => {
 
     await expect(result).resolves.toEqual({ ok: true });
     expect(callMachineRpc.mock.calls.filter(([params]) => params.method === RPC_METHODS.SPAWN_HAPPY_SESSION)).toHaveLength(1);
-    expect(callMachineRpc.mock.calls.filter(([params]) => params.method === RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE).length).toBeGreaterThan(1);
+    expect(callMachineRpc.mock.calls.filter(([params]) => params.method === RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE)).toHaveLength(1);
     expect(callMachineRpc.mock.calls.filter(([params]) => params.method === RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE_BY_NONCE)).toHaveLength(0);
     expect(callMachineRpc.mock.calls[0]?.[0]?.request).toMatchObject({
       spawnNonce: expect.stringMatching(/^inactive-session\.resume:/u),

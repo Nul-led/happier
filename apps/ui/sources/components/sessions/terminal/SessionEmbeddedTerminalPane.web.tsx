@@ -1,38 +1,13 @@
 import * as React from 'react';
-import type { SessionTerminalMemberV1 } from '@happier-dev/protocol';
-import { Pressable, View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
+import { View } from 'react-native';
 
-import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { IconButton } from '@/components/ui/buttons/IconButton';
 import { EmbeddedTerminalPane } from '@/components/terminal/embedded/EmbeddedTerminalPane.web';
-import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
-import { t } from '@/text';
-import { useDeviceType } from '@/utils/platform/responsive';
-import { useLocalSettingMutable } from '@/sync/domains/state/storage';
 
-import {
-    closeEmbeddedTerminalOutsideDockLocation,
-    openEmbeddedTerminalInDockLocation,
-    SESSION_PRIMARY_TERMINAL_INSTANCE_ID,
-    type EmbeddedTerminalDockLocation,
-} from './embeddedTerminalDocking';
-import type { EmbeddedTerminalRendererHandle } from '@/components/terminal/embedded/embeddedTerminalRendererHandle';
-import { useSessionEmbeddedTerminalPty } from './useSessionEmbeddedTerminalPty';
-import { useSessionTerminalIdentity, type SessionTerminalIdentity, type SessionTerminalMode } from './sessionTerminalMode';
-import { Icon } from '@/components/ui/icons/Icon';
+import { SESSION_PRIMARY_TERMINAL_INSTANCE_ID } from './embeddedTerminalDocking';
+import { useSessionTerminalIdentity, type SessionTerminalIdentity } from './sessionTerminalMode';
+import { useSessionEmbeddedTerminalPaneModel, type SessionEmbeddedTerminalPaneProps } from './useSessionEmbeddedTerminalPaneModel';
 
-export type SessionEmbeddedTerminalPaneProps = Readonly<{
-    sessionId: string;
-    scopeId: string;
-    currentDockLocation: EmbeddedTerminalDockLocation;
-    terminalInstanceId?: string;
-    onOpenNewTerminalTab?: (() => void) | null;
-    onRequestClose?: () => void;
-    testIdPrefix?: string | null;
-    terminalMode?: SessionTerminalMode;
-    terminal?: SessionTerminalMemberV1;
-}>;
+export type { SessionEmbeddedTerminalPaneProps } from './useSessionEmbeddedTerminalPaneModel';
 
 export const SessionEmbeddedTerminalPane = React.memo(function SessionEmbeddedTerminalPaneWeb(props: SessionEmbeddedTerminalPaneProps) {
     const terminalIdentity = useSessionTerminalIdentity({
@@ -45,116 +20,19 @@ export const SessionEmbeddedTerminalPane = React.memo(function SessionEmbeddedTe
 });
 
 const SessionEmbeddedTerminalPaneContent = React.memo(function SessionEmbeddedTerminalPaneContent(props: SessionEmbeddedTerminalPaneProps & Readonly<{ terminalIdentity: SessionTerminalIdentity }>) {
-    const { theme } = useUnistyles();
-    const pane = useAppPaneScope(props.scopeId);
-    const deviceType = useDeviceType();
-    const showDockMenu = deviceType !== 'phone';
-
-    const [dockMenuOpen, setDockMenuOpen] = React.useState(false);
-    const [, setDockLocationSetting] = useLocalSettingMutable('embeddedTerminalDockLocation');
-
-    const testIdPrefix = props.testIdPrefix === undefined ? 'session-embedded-terminal' : props.testIdPrefix;
-    const testId = React.useCallback(
-        (suffix: string) => (testIdPrefix ? `${testIdPrefix}-${suffix}` : undefined),
-        [testIdPrefix],
-    );
-
-    const terminalRendererRef = React.useRef<EmbeddedTerminalRendererHandle | null>(null);
-    const { serverId, terminalMode, terminalKey } = props.terminalIdentity;
-
-    const controller = useSessionEmbeddedTerminalPty({
-        sessionId: props.sessionId,
-        serverId,
-        terminalKey,
-        terminalMode,
-        terminalTarget: props.terminalIdentity.terminalTarget,
-        terminalRef: terminalRendererRef,
-    });
-
-    const dockItems = React.useMemo(() => ([
-        { id: 'sidebar', title: t('terminalEmbedded.location.sidebar'), icon: <Icon name="stack" size={16} color={theme.colors.text.secondary} /> },
-        { id: 'details', title: t('terminalEmbedded.location.details'), icon: <Icon name="info" size={16} color={theme.colors.text.secondary} /> },
-        { id: 'bottom', title: t('terminalEmbedded.location.bottom'), icon: <Icon name="list" size={16} color={theme.colors.text.secondary} /> },
-    ]), [theme.colors.text.secondary]);
-
-    const onSelectDock = React.useCallback((id: string) => {
-        const next = id as EmbeddedTerminalDockLocation;
-        setDockMenuOpen(false);
-        if (next === props.currentDockLocation) {
-            return;
-        }
-        setDockLocationSetting(next);
-        closeEmbeddedTerminalOutsideDockLocation({ pane, dockLocation: next });
-        openEmbeddedTerminalInDockLocation({ pane, dockLocation: next });
-    }, [pane, props.currentDockLocation, setDockLocationSetting]);
-
-    const toolbarActionsStart = React.useMemo(() => {
-        if (!showDockMenu && !props.onOpenNewTerminalTab) {
-            return null;
-        }
-
-        return (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                {props.onOpenNewTerminalTab ? (
-                    <IconButton
-                        testID={testId('new-tab')}
-                        iconName="plus"
-                        accessibilityLabel={t('terminalEmbedded.openNewTabA11y')}
-                        tooltip={t('terminalEmbedded.openNewTabA11y')}
-                        variant="plain"
-                        size={28}
-                        iconSize={18}
-                        onPress={props.onOpenNewTerminalTab}
-                    />
-                ) : null}
-                {showDockMenu ? (
-                    <DropdownMenu
-                        open={dockMenuOpen}
-                        onOpenChange={setDockMenuOpen}
-                        variant="selectable"
-                        search={false}
-                        selectedId={props.currentDockLocation}
-                        showCategoryTitles={false}
-                        matchTriggerWidth={false}
-                        connectToTrigger={false}
-                        rowKind="selectableRow"
-                        trigger={({ toggle }) => (
-                            <Pressable
-                                testID={testId('dock')}
-                                accessibilityRole="button"
-                                accessibilityLabel={t('terminalEmbedded.dockMenuA11y')}
-                                onPress={toggle}
-                            >
-                                <Icon name="arrows-out-cardinal" size={16} color={theme.colors.text.secondary} />
-                            </Pressable>
-                        )}
-                        items={dockItems}
-                        onSelect={onSelectDock}
-                    />
-                ) : null}
-            </View>
-        );
-    }, [
-        dockItems,
-        dockMenuOpen,
-        onSelectDock,
-        props.currentDockLocation,
-        props.onOpenNewTerminalTab,
-        testId,
-        theme.colors.text.secondary,
-        showDockMenu,
-    ]);
-
+    const model = useSessionEmbeddedTerminalPaneModel(props);
     return (
         <View style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
             <EmbeddedTerminalPane
-                title={terminalMode === 'session_attach' ? t('tools.askUserQuestion.attachedTerminalNotice.openTerminal') : t('settings.terminal')}
-                controller={controller}
-                terminalRef={terminalRendererRef}
+                title={model.title}
+                chrome={props.chrome}
+                machineName={props.machineName}
+                controller={model.controller}
+                terminalRef={model.terminalRendererRef}
                 onRequestClose={props.onRequestClose}
-                testIdPrefix={testIdPrefix}
-                nativeSurfaceKey={terminalKey}
-                toolbarActionsStart={toolbarActionsStart}
+                testIdPrefix={model.testIdPrefix}
+                nativeSurfaceKey={model.terminalKey}
+                toolbarActionsStart={model.toolbarActionsStart}
             />
         </View>
     );

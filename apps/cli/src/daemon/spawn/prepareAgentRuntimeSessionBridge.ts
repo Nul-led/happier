@@ -6,7 +6,8 @@ import {
 } from '@happier-dev/protocol';
 
 import type {
-  AgentRuntimeDaemonSessionDescriptorV1,
+    AgentRuntimeDaemonSessionDescriptorV1,
+    AgentRuntimeRunnerBootstrapLaunchV1,
 } from '@/agent/runtime/session/process/agentRuntimeRunnerProtocol';
 import { activateAgentRuntimeContributionOnDemand } from '@/agent/runtime/registry/activationDemand';
 import { configuration } from '@/configuration';
@@ -26,6 +27,7 @@ import {
 export async function prepareForegroundAgentRuntimeBootstrapForLease(input: Readonly<{
   target: BackendTargetRefV2;
   lease: PluginRuntimeRegistryLease;
+  launch?: AgentRuntimeRunnerBootstrapLaunchV1;
 }>) {
   const descriptor =
     await resolveRunnerAgentSessionDescriptorForLease(input);
@@ -35,6 +37,7 @@ export async function prepareForegroundAgentRuntimeBootstrapForLease(input: Read
     publicReleaseRing: configuration.publicReleaseRing,
     capability: randomBytes(32).toString('base64url'),
     descriptor,
+    ...(input.launch ? { launch: input.launch } : {}),
   });
 }
 
@@ -42,12 +45,14 @@ export async function prepareRunnerAgentSessionBootstrap(
   input: Readonly<{
     target: BackendTargetRefV2;
     pluginRuntimeLease: SpawnPluginRuntimeLease;
+    launch?: AgentRuntimeRunnerBootstrapLaunchV1;
   }>,
 ) {
   const lease = await input.pluginRuntimeLease.acquire();
   return await prepareRunnerAgentSessionBootstrapForLease({
     target: input.target,
     lease,
+    ...(input.launch ? { launch: input.launch } : {}),
   });
 }
 
@@ -55,6 +60,7 @@ export async function prepareRunnerAgentSessionBootstrapForLease(
   input: Readonly<{
     target: BackendTargetRefV2;
     lease: PluginRuntimeRegistryLease;
+    launch?: AgentRuntimeRunnerBootstrapLaunchV1;
   }>,
 ) {
   const descriptor =
@@ -64,6 +70,7 @@ export async function prepareRunnerAgentSessionBootstrapForLease(
     happyHomeDir: configuration.happyHomeDir,
     publicReleaseRing: configuration.publicReleaseRing,
     descriptor,
+    ...(input.launch ? { launch: input.launch } : {}),
   });
 }
 

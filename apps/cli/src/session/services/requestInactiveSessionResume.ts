@@ -264,7 +264,7 @@ export async function requestInactiveSessionResume(params: Readonly<{
           credentials: params.credentials,
           machineId,
           method: RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE,
-          request: { spawnNonce },
+          request: { spawnNonce, ...(resolverTimeoutMs !== undefined ? { timeoutMs: resolverTimeoutMs } : {}) },
           ...(typeof resolverTimeoutMs === 'number' ? { timeoutMs: resolverTimeoutMs } : {}),
           ...(params.signal ? { signal: params.signal } : {}),
         }))

@@ -347,6 +347,15 @@ describe('discoverHappierServices', () => {
             await writeFile(join(userRoot, 'happier-daemon.default.service'), unit({ HAPPIER_HOME_DIR: homeDir }), 'utf8');
             const fromDefaultChannel = await discoverHappierServices({ platform: 'linux', roots: [{ path: userRoot, scope: 'user' }] });
             expect(fromDefaultChannel.services).toEqual([expect.objectContaining({ targetMode: 'default-following', ring: 'preview' })]);
+
+            await writeFile(join(userRoot, 'happier-daemon.default.service'), unit({
+                HAPPIER_HOME_DIR: homeDir,
+                HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'pinned',
+                HAPPIER_ACTIVE_SERVER_ID: 'company',
+                HAPPIER_PUBLIC_RELEASE_CHANNEL: 'stable',
+            }), 'utf8');
+            const explicitlyPinned = await discoverHappierServices({ platform: 'linux', roots: [{ path: userRoot, scope: 'user' }] });
+            expect(explicitlyPinned.services).toEqual([expect.objectContaining({ targetMode: 'pinned', instanceId: 'company', ring: 'stable' })]);
         } finally {
             await rm(root, { recursive: true, force: true });
         }

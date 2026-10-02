@@ -55,6 +55,51 @@ export function resolveSessionListQueryPresentation(input: Readonly<{
     statesByServerId: Readonly<Record<string, SessionListQueryHomeState | undefined>>;
     coverageComplete: boolean;
     retainedRowCount: number;
+    sessionsEnabled?: boolean;
+    workflowRunUnavailableHomes?: readonly Readonly<{
+        serverId: string;
+        reason: 'not_selected' | 'unsupported';
+    }>[];
+    workflowRunWindow?: Readonly<{
+        status: 'loading' | 'loaded' | 'failed';
+        hasMore: boolean;
+        loadingMore: boolean;
+        loadMoreFailed: boolean;
+    }>;
+}>): SessionListQueryPresentation {
+    const window = input.workflowRunWindow;
+    if (window?.status === 'failed' || window?.loadMoreFailed) {
+        return { kind: 'error', retainedRows: input.retainedRowCount > 0 };
+    }
+    if (window?.status === 'loading') {
+        return input.retainedRowCount > 0
+            ? { kind: 'refreshing', retainedRows: true }
+            : { kind: 'initial_loading' };
+    }
+    const sessions = input.sessionsEnabled === false
+        ? { kind: 'ready' as const, complete: true }
+        : resolveSessionQueryPresentation(input);
+    if (input.workflowRunUnavailableHomes && input.workflowRunUnavailableHomes.length > 0) {
+        const unavailableHomes = sessions.kind === 'partial' ? [...sessions.unavailableHomes] : [];
+        for (const home of input.workflowRunUnavailableHomes) {
+            if (!unavailableHomes.some((entry) => areServerProfileIdentifiersEquivalent(entry.serverId, home.serverId))) unavailableHomes.push(home);
+        }
+        return { kind: 'partial', unavailableHomes };
+    }
+    if (sessions.kind === 'initial_loading' && input.retainedRowCount > 0) {
+        return { kind: 'refreshing', retainedRows: true };
+    }
+    if (window && sessions.kind === 'ready' && (window.hasMore || window.loadingMore)) {
+        return { ...sessions, complete: false, hasMore: window.hasMore };
+    }
+    return sessions;
+}
+
+function resolveSessionQueryPresentation(input: Readonly<{
+    selectedServerIds: readonly string[];
+    statesByServerId: Readonly<Record<string, SessionListQueryHomeState | undefined>>;
+    coverageComplete: boolean;
+    retainedRowCount: number;
 }>): SessionListQueryPresentation {
     const selectedServerIds = normalizeTrimmedStringArrayWithSharedEmpty(input.selectedServerIds);
     if (selectedServerIds.length === 0) {

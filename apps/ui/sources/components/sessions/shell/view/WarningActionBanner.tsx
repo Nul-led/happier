@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Platform, Pressable, StyleSheet, useWindowDimensions, View, type ViewStyle } from 'react-native';
+import { Platform, Pressable, useWindowDimensions, View, type ViewStyle } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 import { HappierBanner, isHappierBannerUrgent } from '@happier-dev/plugin-ui/presentation';
 
@@ -52,8 +52,6 @@ const INLINE_ACTIONS_MIN_WIDTH = 720;
  * of growing, so a long action run forms a right-aligned grid beside the copy rather than either
  * squeezing the message into a narrow column or dropping below it and leaving the row half empty.
  */
-const INLINE_ACTIONS_MAX_WIDTH = '50%';
-
 const BANNER_PADDING_HORIZONTAL = 14;
 const BANNER_PADDING_VERTICAL = 10;
 
@@ -126,11 +124,10 @@ export function WarningActionBanner(props: WarningActionBannerProps): React.Reac
         && typeof props.actionLabel === 'string'
         && typeof props.actionTestID === 'string';
     const secondaryActions = props.secondaryActions ?? [];
-    const hasActions = hasPrimaryAction || secondaryActions.length > 0;
     const inlineActions = availableWidth >= INLINE_ACTIONS_MIN_WIDTH;
-    const actionsInTitle = props.actionsPlacement === 'title' && inlineActions;
+    const actionsInTitle = props.actionsPlacement === 'title' && inlineActions && Boolean(props.title);
 
-    const actionsNode = hasActions ? (
+    const actionsNode = hasPrimaryAction || secondaryActions.length > 0 ? (
         <View
             testID={`${props.testID}-actions-row`}
             style={{
@@ -141,7 +138,7 @@ export function WarningActionBanner(props: WarningActionBannerProps): React.Reac
                 columnGap: 4,
                 rowGap: 6,
                 justifyContent: 'flex-end',
-                maxWidth: inlineActions ? INLINE_ACTIONS_MAX_WIDTH : '100%',
+                maxWidth: inlineActions ? availableWidth / 2 : '100%',
                 width: inlineActions ? undefined : '100%',
             }}
         >
@@ -207,83 +204,50 @@ export function WarningActionBanner(props: WarningActionBannerProps): React.Reac
             description={props.body}
             tone={tone === 'warning' ? 'warning' : 'neutral'}
             theme={presentationTheme}
-            unstyled
+            backgroundColor={toneTokens.background}
+            borderColor={toneTokens.border}
+            icon={iconName ? <Icon name={iconName} size={16} color={toneTokens.icon} /> : undefined}
             style={[
                 {
-                    flexDirection: inlineActions && !actionsInTitle ? 'row' : 'column',
-                    alignItems: inlineActions && !actionsInTitle ? 'center' : 'stretch',
                     paddingHorizontal: BANNER_PADDING_HORIZONTAL,
                     paddingVertical: BANNER_PADDING_VERTICAL,
-                    backgroundColor: toneTokens.background,
                     // The composer stack's radius: the banner and the panel below it round alike.
                     borderRadius: theme.parts.composer.radius,
-                    // Bounded exactly like the composer panel below it: hairline surface border,
-                    // no cast shadow. The panel deliberately carries no drop shadow outside glass
-                    // mode, so a shadow here would make the banner float off its own stack.
-                    borderWidth: StyleSheet.hairlineWidth,
-                    borderColor: toneTokens.border,
-                    gap: hasActions && !actionsInTitle ? (inlineActions ? 12 : 8) : 0,
                 },
                 props.style,
             ]}
-            renderContent={() => (
-              <>
-            <View
-                testID={`${props.testID}-copy-row`}
-                style={{
-                    flexDirection: 'row',
-                    // Anchored to the first line rather than the block's centre, so the icon stays
-                    // beside the title as the body wraps to two or three lines.
-                    alignItems: 'flex-start',
-                    gap: 9,
-                    flex: inlineActions && !actionsInTitle ? 1 : undefined,
-                    minWidth: 0,
-                    width: inlineActions && !actionsInTitle ? undefined : '100%',
-                }}
-            >
-                {iconName ? (
-                    // Optical nudge: the glyph's ink sits above its box centre next to the title.
-                    <Icon name={iconName} size={16} color={toneTokens.icon} style={{ marginTop: 1 }} />
-                ) : null}
-                {/* Title/body separation matches `Item`: iOS needs a hair of space under the
-                    title, elsewhere the subtitle line-height already provides it. */}
-                <View style={{ flex: 1, minWidth: 0, gap: Platform.select({ ios: 2, default: 0 }) }}>
-                    {props.title ? (
-                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                            <Text
-                                selectable
-                                style={{
-                                    ...ITEM_TITLE_TEXT_METRICS.compact,
-                                    color: theme.colors.text.primary,
-                                    fontWeight: '600',
-                                    flexShrink: 1,
-                                }}
-                            >
-                                {props.title}
-                            </Text>
-                            {actionsInTitle ? actionsNode : null}
-                        </View>
-                    ) : null}
-                    {props.body ? (
-                        <Text
-                            selectable
-                            style={{
-                                ...ITEM_SUBTITLE_TEXT_METRICS.compact,
-                                color: theme.colors.text.secondary,
-                                // Quotas, reset times, and countdowns live in this copy; tabular
-                                // figures keep it from twitching as they tick.
-                                fontVariant: ['tabular-nums'],
-                            }}
-                        >
-                            {props.body}
-                        </Text>
-                    ) : null}
-                    {props.content}
+            titleContent={props.title ? (
+                <View testID={`${props.testID}-title-row`} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                    <Text
+                        selectable
+                        style={{
+                            ...ITEM_TITLE_TEXT_METRICS.compact,
+                            color: theme.colors.text.primary,
+                            fontWeight: '600',
+                            flexShrink: 1,
+                        }}
+                    >
+                        {props.title}
+                    </Text>
+                    {actionsInTitle ? actionsNode : null}
                 </View>
-            </View>
-            {hasActions && !actionsInTitle ? actionsNode : null}
-              </>
-            )}
+            ) : <></>}
+            descriptionContent={props.body ? (
+                <Text
+                    selectable
+                    style={{
+                        ...ITEM_SUBTITLE_TEXT_METRICS.compact,
+                        color: theme.colors.text.secondary,
+                        // Quotas, reset times, and countdowns live in this copy; tabular
+                        // figures keep it from twitching as they tick.
+                        fontVariant: ['tabular-nums'],
+                    }}
+                >
+                    {props.body}
+                </Text>
+            ) : undefined}
+            details={<>{props.content}{!inlineActions ? actionsNode : null}</>}
+            action={inlineActions && !actionsInTitle ? actionsNode : undefined}
         />
     );
 }

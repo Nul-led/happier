@@ -1,18 +1,30 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+// Third-party Markdown rendering is outside this filter editor contract.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({ splitStreamingRevealTextParts: () => [] }));
 
 import { invokeTestInstanceHandler, renderScreen, standardCleanup } from '@/dev/testkit';
 
 import { buildSessionListFilterTagOptionId } from './sessionListFilterEditorModel';
 import { createSessionListViewFilterDefaults, type SessionListViewFilters } from './sessionListViewFilters';
 import { SessionListFilterEditor, type SessionListFilterEditorProps } from './SessionListFilterEditor';
+import { clearSessionListViewFilterRetentionForTests, useSessionListViewFilters } from './useSessionListViewFilters';
+import { readSessionListWorkFilterSummary, SessionListFilterControl } from './SessionListFilterControl';
+import type { SessionListViewFilterController } from './useSessionListViewFilterController';
+import { SessionListSearchChrome } from './SessionListSearchChrome';
+import { Text } from '@/components/ui/text/Text';
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock();
 });
 
-afterEach(standardCleanup);
+afterEach(() => {
+    standardCleanup();
+    clearSessionListViewFilterRetentionForTests();
+});
 
 const labels = {
     search: 'Search filters', show: 'Show', myWork: 'My work', assignedToMe: 'Assigned to me',
@@ -25,6 +37,9 @@ const labels = {
     clear: 'Reset', done: 'Done', title: 'Session filters', archived: 'Archived',
     moreTags: (count: number) => `+ ${count} more`,
     resultCount: (count: number) => `${count} sessions`,
+    scope: 'Scope', sessions: 'Sessions', runs: 'Runs', both: 'Both', startedBy: 'Started by',
+    startedByYou: 'You', startedByTriggers: 'Triggers', startedByAgents: 'Agents',
+    runsNeedingYouAlwaysShow: 'Runs that need you always show',
 } as const;
 
 type HarnessOverrides = Partial<SessionListFilterEditorProps>;
@@ -51,6 +66,99 @@ function editorProps(overrides: HarnessOverrides = {}): SessionListFilterEditorP
 }
 
 describe('SessionListFilterEditor panel', () => {
+    it('shows a quiet active-filter summary without search and Reset reaches the retained owner', async () => {
+        let owner: ReturnType<typeof useSessionListViewFilters> | null = null;
+        function FilterSummaryHarness() {
+            const retained = useSessionListViewFilters({
+                contextKey: 'summary-panel', defaults: { homeServerIds: ['home-a'] },
+                accountScopeResolutions: new Map(),
+            });
+            owner = retained;
+            const summary = readSessionListWorkFilterSummary({
+                filters: retained.filters,
+                defaultFilters: createSessionListViewFilterDefaults({ homeServerIds: ['home-a'] }),
+            });
+            return <>
+                <SessionListSearchChrome
+                    searchQuery=""
+                    onSearchQueryChange={retained.setSearchQuery}
+                    filterSummary={summary ? {
+                        label: summary, onReset: retained.resetFilters,
+                    } : undefined}
+                />
+                <Text testID="retained-work-filter">{JSON.stringify({ show: retained.filters.show, startedBy: retained.filters.startedBy })}</Text>
+            </>;
+        }
+        const screen = await renderScreen(<FilterSummaryHarness />);
+        expect(screen.findByTestId('session-list-filter-summary')).toBeNull();
+        await act(async () => owner!.updateFilters((filters) => ({ ...filters, show: 'runs', startedBy: ['you', 'triggers'] })));
+        expect(screen.getTextContent()).toContain('Runs · You, Triggers');
+        await screen.pressByTestIdAsync('session-list-filter-summary-reset');
+        expect(screen.findByTestId('session-list-filter-summary')).toBeNull();
+        expect(screen.getTextContent()).toContain('"show":"both","startedBy":["you"]');
+    });
+
+    it('marks Show and Started by narrowing in the real collapsed control', async () => {
+        const defaults = createSessionListViewFilterDefaults({ homeServerIds: ['home-a'] });
+        const controller: SessionListViewFilterController = {
+            filters: defaults, defaultFilters: defaults, updateFilters: vi.fn(), setSearchQuery: vi.fn(),
+            removeAuthoritativelyDeletedSelections: vi.fn(), resetFilters: vi.fn(), includeInactive: true,
+            corpusStorage: 'active', setIncludeInactive: vi.fn(), setSource: vi.fn(), queryEnabled: true,
+            corpusPresentation: 'semantic_query', queryHomes: [], pagingHomes: [], followingAvailable: true,
+            sourceAvailable: true, homeOptions: [{ serverId: 'home-a', label: 'Home A' }],
+            viewContext: { kind: 'global' }, viewContextKey: 'global', retentionScopeKey: 'home-a',
+        };
+        const screen = await renderScreen(<SessionListFilterControl controller={controller} organizationProjectionsByServerId={{}} />);
+        expect(screen.findByTestId('session-list-filter-trigger')?.props.accessibilityState.selected).toBe(false);
+        await act(async () => screen.update(<SessionListFilterControl controller={{ ...controller, filters: { ...defaults, show: 'runs' } }} organizationProjectionsByServerId={{}} />));
+        expect(screen.findByTestId('session-list-filter-trigger')?.props.accessibilityState.selected).toBe(true);
+        await act(async () => screen.update(<SessionListFilterControl controller={{ ...controller, filters: { ...defaults, startedBy: [] } }} organizationProjectionsByServerId={{}} />));
+        expect(screen.findByTestId('session-list-filter-trigger')?.props.accessibilityState.selected).toBe(true);
+        await act(async () => screen.update(<SessionListFilterControl controller={{ ...controller, fixedShow: 'runs', filters: { ...defaults, show: 'runs' } }} organizationProjectionsByServerId={{}} />));
+        expect(screen.findByTestId('session-list-filter-trigger')?.props.accessibilityState.selected).toBe(false);
+    });
+
+    it('edits Show and Started by through retained filter state, allows no starters, and resets both facets', async () => {
+        function RetainedFilterEditor() {
+            const owner = useSessionListViewFilters({
+                contextKey: 'filter-panel',
+                defaults: { homeServerIds: ['home-a'] },
+                accountScopeResolutions: new Map(),
+            });
+            return <SessionListFilterEditor {...editorProps({ ...owner })} />;
+        }
+        const screen = await renderScreen(<RetainedFilterEditor />);
+        expect(screen.findByTestId('session-list-filter:show:both')?.props.accessibilityState.checked).toBe(true);
+        expect(screen.findByTestId('session-list-filter:started-by:you')?.props.accessibilityState.checked).toBe(true);
+        expect(screen.getTextContent()).toContain('Runs that need you always show');
+
+        await screen.pressByTestIdAsync('session-list-filter:show:runs');
+        expect(screen.findByTestId('session-list-filter:show:runs')?.props.accessibilityState.checked).toBe(true);
+        await screen.pressByTestIdAsync('session-list-filter:started-by:triggers');
+        await screen.pressByTestIdAsync('session-list-filter:started-by:agents');
+        await screen.pressByTestIdAsync('session-list-filter:started-by:you');
+        expect(screen.findByTestId('session-list-filter:started-by:you')?.props.accessibilityState.checked).toBe(false);
+        expect(screen.findByTestId('session-list-filter:started-by:triggers')?.props.accessibilityState.checked).toBe(true);
+        expect(screen.findByTestId('session-list-filter:started-by:agents')?.props.accessibilityState.checked).toBe(true);
+        await screen.pressByTestIdAsync('session-list-filter:started-by:triggers');
+        await screen.pressByTestIdAsync('session-list-filter:started-by:agents');
+        expect(screen.findByTestId('session-list-filter:started-by:agents')?.props.accessibilityState.checked).toBe(false);
+
+        await screen.pressByTestIdAsync('session-list-filter-clear');
+        expect(screen.findByTestId('session-list-filter:show:both')?.props.accessibilityState.checked).toBe(true);
+        expect(screen.findByTestId('session-list-filter:started-by:you')?.props.accessibilityState.checked).toBe(true);
+        expect(screen.findByTestId('session-list-filter:started-by:triggers')?.props.accessibilityState.checked).toBe(false);
+    });
+
+    it('keeps the Runs destination fixed while leaving its Started by choices available', async () => {
+        const screen = await renderScreen(<SessionListFilterEditor {...editorProps({
+            fixedShow: 'runs',
+            filters: { ...createSessionListViewFilterDefaults(), show: 'runs' },
+        })} />);
+        expect(screen.findByTestId('session-list-filter:show:sessions')).toBeNull();
+        expect(screen.findByTestId('session-list-filter:started-by:triggers')).not.toBeNull();
+    });
+
     it('offers only the available scopes as a grid and writes the chosen one; Archived opens without writing', async () => {
         const updateFilters = vi.fn();
         const setIncludeInactive = vi.fn();

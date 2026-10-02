@@ -65,7 +65,7 @@ function AutomationsGateUnavailable(props: Readonly<{
 
     if (support.arm === 'unknown') {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <SurfaceStateCard
                     testID="automations-gate-unknown"
                     kind="error"
@@ -81,7 +81,7 @@ function AutomationsGateUnavailable(props: Readonly<{
     if (support.arm === 'unsupported' || support.arm === 'unsupported_context') {
         const unsupportedHome = support.arm === 'unsupported';
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <SurfaceStateCard
                     testID="automations-gate-unsupported"
                     kind="unavailable"
@@ -99,7 +99,7 @@ function AutomationsGateUnavailable(props: Readonly<{
         ? resolveFeatureToggleHref('automations', props.experimentsEnabled)
         : undefined;
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SurfaceStateCard
                 testID="automations-gate-disabled"
                 kind="unavailable"

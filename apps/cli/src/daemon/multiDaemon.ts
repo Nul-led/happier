@@ -21,6 +21,7 @@ import { DaemonStopIncompleteError } from '@/daemon/controlClient';
 import { isLoopbackHttpServerUrl } from '@/server/serverUrlClassification';
 import { sanitizeServerIdForFilesystem } from '@/server/serverId';
 import { isPidPresent } from '@happier-dev/cli-common/process';
+import { selectServingDaemonService } from '@happier-dev/cli-common/systemTasks';
 import type { DaemonStartupSource } from '@/daemon/ownership/daemonOwnershipMetadata';
 type NormalizedDaemonState = Readonly<{
   pid: number;
@@ -278,19 +279,15 @@ type ServerServiceInstallation = Readonly<{ installed: boolean; platform?: strin
 function resolveServiceInstallationSnapshot(
   params: Readonly<{ serverId: string; serverUrl: string; targetMode: 'pinned' | 'default-following' }>,
 ): ServerServiceInstallation {
-  try {
-    const snapshot = resolveDaemonServiceInstallationSnapshotFromEnv({
-      processEnv: {
-        ...process.env,
-        HAPPIER_DAEMON_SERVICE_INSTANCE_ID: params.serverId,
-        HAPPIER_DAEMON_SERVICE_SERVER_URL: params.serverUrl,
-        HAPPIER_DAEMON_SERVICE_TARGET_MODE: params.targetMode,
-      },
-    });
-    return { installed: snapshot.installed, platform: snapshot.platform, installedPath: snapshot.installedPath };
-  } catch {
-    return { installed: false };
-  }
+  const snapshot = resolveDaemonServiceInstallationSnapshotFromEnv({
+    processEnv: {
+      ...process.env,
+      HAPPIER_DAEMON_SERVICE_INSTANCE_ID: params.serverId,
+      HAPPIER_DAEMON_SERVICE_SERVER_URL: params.serverUrl,
+      HAPPIER_DAEMON_SERVICE_TARGET_MODE: params.targetMode,
+    },
+  });
+  return { installed: snapshot.installed, platform: snapshot.platform, installedPath: snapshot.installedPath };
 }
 
 /**
@@ -302,10 +299,13 @@ function resolveServiceInstallationForServer(
   params: Readonly<{ serverId: string; serverUrl: string; persistedActiveServerId: string }>,
 ): ServerServiceInstallation {
   const pinned = resolveServiceInstallationSnapshot({ ...params, targetMode: 'pinned' });
-  if (pinned.installed || params.serverId !== params.persistedActiveServerId) {
-    return pinned;
-  }
-  return resolveServiceInstallationSnapshot({ ...params, targetMode: 'default-following' });
+  const serving = selectServingDaemonService([
+    ...(pinned.installed ? [{ targetMode: 'pinned' as const }] : []),
+    ...(params.serverId === params.persistedActiveServerId ? [{ targetMode: 'default-following' as const }] : []),
+  ]);
+  return serving?.targetMode === 'default-following'
+    ? resolveServiceInstallationSnapshot({ ...params, targetMode: 'default-following' })
+    : pinned;
 }
 
 export async function listDaemonStatusesForAllKnownServers(): Promise<DaemonStatusEntry[]> {

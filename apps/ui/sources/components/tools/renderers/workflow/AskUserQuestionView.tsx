@@ -12,7 +12,7 @@ import { resolveAgentRequestKind } from '@happier-dev/protocol';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import {
     useOpenAttachedSessionTerminal,
-    type AttachedSessionTerminalUnavailableReason,
+    resolveAttachedTerminalUnavailableMessage,
 } from '@/components/sessions/terminal/openAttachedSessionTerminal';
 import {
     compilePluginJsonSchema,
@@ -358,21 +358,6 @@ function resolveFreeformAnswer(
         value: question.freeform?.whitespace === 'preserve' ? rawValue : rawValue.trim(),
         present: hasEditedValue || question.freeform?.initialValue !== undefined,
     };
-}
-
-function resolveAttachedTerminalUnavailableMessage(
-    reason: AttachedSessionTerminalUnavailableReason | null,
-): string | null {
-    switch (reason) {
-        case 'missing_machine':
-            return t('terminalEmbedded.errors.missingMachineTarget');
-        case 'terminal_disabled':
-            return t('terminalEmbedded.errors.disabled');
-        case 'cli_update_required':
-            return t('deps.ui.notAvailableUpdateCli');
-        default:
-            return null;
-    }
 }
 
 function parseAskUserQuestionAnswersFromToolResult(result: unknown): Record<string, string> | null {

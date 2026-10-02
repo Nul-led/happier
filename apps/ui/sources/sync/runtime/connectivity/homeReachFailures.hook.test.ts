@@ -1,8 +1,11 @@
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderHook } from '@/dev/testkit';
+// The focused connectivity harness avoids loading unrelated screen fixtures from the barrel.
+import { renderHook } from '@/dev/testkit/hooks/renderHook';
 import { getPersistenceStorage, getPersistenceStorageId } from '@/sync/domains/state/persistenceStorage';
+import * as profiles from '@/sync/domains/server/serverProfiles';
+import { useLaptopHomeNudgeFacts } from '@/components/homes/journeys/nudge/useLaptopHomeNudgeFacts';
 
 import { dismissHomeReachNudge, recordFailedHomeReach, useHomeReachNudge } from './homeReachFailures';
 
@@ -75,6 +78,36 @@ describe('device-local Home reach nudge subscription', () => {
             expect(hook.getCurrent()).toEqual({ show: false, failureCount: 3 });
         } finally {
             await hook.unmount();
+        }
+    });
+
+    it('shows J6 for the focused Home’s local failures and follows Home changes and permanent dismissal', async () => {
+        // Collect the real module graph above; module loading is not this contract's runtime.
+        const previousServerId = profiles.getActiveServerId();
+        const first = await profiles.upsertServerProfile({ serverUrl: 'https://nudge-a.example.test', name: 'Home A' });
+        const second = await profiles.upsertServerProfile({ serverUrl: 'https://nudge-b.example.test', name: 'Home B' });
+        await profiles.setServerProfileIdentityForUrl(first.serverUrl, 'srv_nudge_a');
+        await profiles.setServerProfileIdentityForUrl(second.serverUrl, 'srv_nudge_b');
+        expect(first.id).not.toBe('srv_nudge_a');
+        await profiles.setActiveServerId('srv_nudge_a');
+        const hook = await renderHook(() => useLaptopHomeNudgeFacts());
+        try {
+            expect(hook.getCurrent()).toBeNull();
+            await act(async () => {
+                for (let index = 0; index < 3; index++) recordFailedHomeReach('srv_nudge_a', Date.now());
+            });
+            expect(hook.getCurrent()).toMatchObject({ homeServerId: first.id, homeIdentityId: 'srv_nudge_a', missedReachesThisWeek: 3 });
+            await act(async () => { await profiles.setActiveServerId('srv_nudge_b'); });
+            expect(hook.getCurrent()).toBeNull();
+            await act(async () => { await profiles.setActiveServerId('srv_nudge_a'); });
+            expect(hook.getCurrent()).toMatchObject({ missedReachesThisWeek: 3 });
+            await act(async () => { dismissHomeReachNudge('srv_nudge_a'); });
+            expect(hook.getCurrent()).toBeNull();
+        } finally {
+            await hook.unmount();
+            await profiles.setActiveServerId(previousServerId);
+            await profiles.removeServerProfile(first.id);
+            await profiles.removeServerProfile(second.id);
         }
     });
 });

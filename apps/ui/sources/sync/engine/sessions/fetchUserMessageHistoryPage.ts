@@ -2,6 +2,7 @@ import type { SessionMessageRole } from '@happier-dev/protocol';
 
 import { buildSessionMessagesPath } from '@happier-dev/protocol';
 import type { NormalizedMessage } from "@happier-dev/session-core/raw";
+import { readMessageDisplayText } from "@happier-dev/session-core/messages";
 
 import {
     runSessionMessagesPagePipeline,
@@ -110,8 +111,8 @@ function buildHistoryRow(message: NormalizedMessage): SessionMessageHistoryRemot
     } as const;
 
     if (message.role === 'user') {
-        const text = message.content.text.trim();
-        return text ? { ...identity, role: 'user', text } : null;
+        const text = readMessageDisplayText({ text: message.content.text, displayText: message.meta?.displayText });
+        return text.trim() ? { ...identity, role: 'user', text } : null;
     }
     if (message.role === 'agent') {
         const agentText = readAgentHistoryText(message.content);

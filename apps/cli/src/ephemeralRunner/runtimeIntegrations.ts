@@ -593,7 +593,7 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
       if (manifest.preparedAuthoring.authoring.checkoutCreationDraft) throwIfCancelled(postMaterializationSignal);
       const preparedTarget = await prepareSessionCreationTarget({
         request: {
-          directory: manifest.endpointFacts.directory,
+          directory: { kind: 'path', path: manifest.endpointFacts.directory },
           checkoutCreationDraft: manifest.preparedAuthoring.authoring.checkoutCreationDraft,
         },
       });

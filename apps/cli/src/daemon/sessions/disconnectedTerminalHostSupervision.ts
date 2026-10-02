@@ -15,6 +15,8 @@ import type { TerminalMode } from '@/terminal/runtime/terminalConfig';
 import { removeSessionMarker as removeDefaultSessionMarker } from '../sessionRegistry';
 import type { SessionRunnerServiceabilityProbe } from './isSessionRunnerActive';
 import type { ExactTerminalControlServiceabilityRetirement } from './retireTerminalControlServiceability';
+import type { TrackedSession } from '../types';
+import { resolveTrackedSessionTerminalPresentation } from './resolveTrackedSessionTerminalPresentation';
 
 export type DisconnectedTerminalHostCandidate = Readonly<{
   sessionId: string;
@@ -24,6 +26,8 @@ export type DisconnectedTerminalHostCandidate = Readonly<{
   handle: TerminalHostHandle & Readonly<{ attachmentId: NonNullable<TerminalHostHandle['attachmentId']> }>;
   terminalMode?: TerminalMode;
   controlDescriptorAvailable?: boolean;
+  spawnOptions?: TrackedSession['spawnOptions'];
+  metadata?: TrackedSession['happySessionMetadataFromLocalWebhook'];
 }>;
 
 export type DisconnectedTerminalHostSupervisionResult =
@@ -41,6 +45,87 @@ export function resolveDisconnectedTerminalHostResumeGate(
 }
 
 type TerminalHostAdapters = Readonly<Partial<Record<TerminalHostAdapter['kind'], TerminalHostAdapter>>>;
+
+/** Final-exit marker retention; unexpected daemon recovery remains caller-owned. */
+export async function shouldRetainTrackedTerminalHostExitMarker(input: Readonly<{
+  tracked: TrackedSession;
+  happyHomeDir: string;
+}>): Promise<boolean> {
+  const tracked = input.tracked;
+  if (tracked.publishedTerminalControlServiceabilityAttachmentLifecycle === 'borrowed') return false;
+  const terminal = tracked.happySessionMetadataFromLocalWebhook?.terminal ?? tracked.hostedTerminal;
+  return Boolean(tracked.publishedTerminalControlServiceabilityAttachmentId)
+    || Boolean(terminal?.mode && terminal.mode !== 'plain');
+}
+
+/** Final-exit owned-host selection; borrowed-shell release has its own disposition. */
+export async function resolveTrackedSessionTerminalHostExitCandidate(input: Readonly<{
+  tracked: TrackedSession;
+  pid: number;
+  happyHomeDir: string;
+  attachmentInfo: TerminalHostAttachmentInfo | null;
+}>): Promise<DisconnectedTerminalHostCandidate | null> {
+  const { tracked, attachmentInfo } = input;
+  const sessionId = tracked.happySessionId?.trim();
+  if (!sessionId) return null;
+  const terminal = tracked.happySessionMetadataFromLocalWebhook?.terminal ?? tracked.hostedTerminal;
+  if (attachmentInfo?.version !== 2) {
+    const optionalPresentation = (await resolveTrackedSessionTerminalPresentation(
+      tracked, attachmentInfo?.handle.kind ?? 'plain',
+    ))?.kind === 'provider_attach';
+    if (!optionalPresentation
+      && (tracked.publishedTerminalControlServiceabilityAttachmentId || (terminal?.mode && terminal.mode !== 'plain'))) {
+      throw new Error('terminal_host_attachment_unavailable_after_runner_exit');
+    }
+    return null;
+  }
+  const terminalMode = resolveDisconnectedTerminalMode({
+    terminal, hostKind: attachmentInfo.handle.kind, attachmentId: attachmentInfo.attachmentId,
+  });
+  if (!terminalMode) throw new Error('terminal_host_mode_unresolved_after_runner_exit');
+  return { sessionId, pid: input.pid, happyHomeDir: input.happyHomeDir,
+    attachmentId: attachmentInfo.attachmentId, handle: attachmentInfo.handle, terminalMode,
+    ...(tracked.spawnOptions ? { spawnOptions: tracked.spawnOptions } : {}),
+    ...(tracked.happySessionMetadataFromLocalWebhook ? { metadata: tracked.happySessionMetadataFromLocalWebhook } : {}),
+    ...(tracked.publishedTerminalControlServiceabilityAttachmentId === attachmentInfo.attachmentId
+      ? { controlDescriptorAvailable: true } : {}),
+  };
+}
+
+/** Observe the optional frontend using the existing heartbeat, not Session lifetime. */
+export async function superviseTrackedOptionalTerminalPresentation(input: Readonly<{
+  tracked: TrackedSession;
+  isCurrent: () => boolean;
+  happyHomeDir: string;
+  loadTerminalHostAdapters: () => Promise<TerminalHostAdapters>;
+  probeSessionServiceability: NonNullable<Parameters<typeof superviseDisconnectedTerminalHostCandidate>[0]['probeSessionServiceability']>;
+  retireExactTerminalControlServiceability: NonNullable<Parameters<typeof superviseDisconnectedTerminalHostCandidate>[0]['retireExactTerminalControlServiceability']>;
+}>): Promise<void> {
+  const sessionId = input.tracked.happySessionId;
+  if (!sessionId || !input.isCurrent()) return;
+  const attachment = await readDefaultTerminalHostAttachmentInfo({ happyHomeDir: input.happyHomeDir, sessionId });
+  if (!input.isCurrent() || attachment?.version !== 2) return;
+  if ((await resolveTrackedSessionTerminalPresentation(input.tracked, attachment.handle.kind))?.kind !== 'provider_attach'
+    || !input.isCurrent()) return;
+  const adapters = await input.loadTerminalHostAdapters();
+  if (!input.isCurrent()) return;
+  await superviseDisconnectedTerminalHostCandidate({
+    candidate: { sessionId, pid: input.tracked.pid, happyHomeDir: input.happyHomeDir,
+      attachmentId: attachment.attachmentId, handle: attachment.handle,
+      ...(input.tracked.spawnOptions ? { spawnOptions: input.tracked.spawnOptions } : {}),
+      ...(input.tracked.happySessionMetadataFromLocalWebhook
+        ? { metadata: input.tracked.happySessionMetadataFromLocalWebhook } : {}),
+    },
+    terminalHostAdapters: adapters,
+    isCurrent: input.isCurrent,
+    removeSessionMarker: async () => {},
+    probeSessionServiceability: input.probeSessionServiceability,
+    retireExactTerminalControlServiceability: async (fact) => {
+      if (!input.isCurrent()) throw new Error('Optional terminal presentation owner changed');
+      return await input.retireExactTerminalControlServiceability(fact);
+    },
+  });
+}
 
 export function resolveDisconnectedTerminalMode(input: Readonly<{
   terminal: Metadata['terminal'] | undefined;
@@ -62,6 +147,7 @@ export async function superviseDisconnectedTerminalHostCandidate(input: Readonly
   readTerminalAttachmentInfo?: (input: Readonly<{ happyHomeDir: string; sessionId: string }>) => Promise<TerminalHostAttachmentInfo | null>;
   removeTerminalAttachmentInfo?: typeof removeDefaultTerminalHostAttachmentInfo;
   removeSessionMarker?: (pid: number) => Promise<void>;
+  isCurrent?: () => boolean;
   probeSessionServiceability?: (sessionId: string) => Promise<SessionRunnerServiceabilityProbe>;
   retireExactTerminalControlServiceability?: (input: Readonly<{
     happyHomeDir: string;
@@ -75,11 +161,11 @@ export async function superviseDisconnectedTerminalHostCandidate(input: Readonly
     happyHomeDir: input.candidate.happyHomeDir,
     sessionId: input.candidate.sessionId,
   });
-  if (
+  if (input.isCurrent?.() === false || (
     current?.version !== 2
     || current.attachmentId !== input.candidate.attachmentId
     || current.handle.attachmentId !== input.candidate.attachmentId
-  ) {
+  )) {
     return { state: 'unknown', reason: 'attachment_changed' };
   }
 
@@ -87,23 +173,29 @@ export async function superviseDisconnectedTerminalHostCandidate(input: Readonly
   if (!adapter) return { state: 'unknown', reason: 'adapter_unavailable' };
 
   const probe = await probeTerminalHostForRecovery({ adapter, handle: current.handle });
+  if (input.isCurrent?.() === false) return { state: 'unknown', reason: 'attachment_changed' };
+  let destroyOptionalClient = false;
   if (probe.status === 'alive') {
-    if (input.candidate.controlDescriptorAvailable === false) {
+    const optionalPresentation = (await resolveTrackedSessionTerminalPresentation({
+      pid: input.candidate.pid, startedBy: 'daemon', happySessionId: input.candidate.sessionId,
+      spawnOptions: input.candidate.spawnOptions,
+      happySessionMetadataFromLocalWebhook: input.candidate.metadata,
+    }, current.handle.kind))?.kind === 'provider_attach';
+    if (!optionalPresentation && input.candidate.controlDescriptorAvailable === false) {
       return { state: 'recoverable_unservable', reason: 'control_descriptor_missing' };
     }
     if (!input.probeSessionServiceability) return { state: 'unknown', reason: 'probe_inconclusive' };
     const serviceability = await input.probeSessionServiceability(input.candidate.sessionId);
+    if (input.isCurrent?.() === false) return { state: 'unknown', reason: 'attachment_changed' };
     if (serviceability.state === 'runner_absent') {
-      return { state: 'recoverable_unservable', reason: 'runner_absent' };
-    }
-    if (serviceability.state === 'runner_unknown') {
+      if (!optionalPresentation) return { state: 'recoverable_unservable', reason: 'runner_absent' };
+      destroyOptionalClient = true;
+    } else if (serviceability.state === 'runner_unknown') {
       return { state: 'unknown', reason: 'probe_inconclusive' };
-    }
-    if (serviceability.control.state === 'servable') return { state: 'servable' };
-    if (serviceability.control.state === 'recoverable_unservable') {
+    } else if (serviceability.control.state === 'servable') return { state: 'servable' };
+    else if (serviceability.control.state === 'recoverable_unservable') {
       return { state: 'recoverable_unservable', reason: serviceability.control.reason };
-    }
-    return { state: 'unknown', reason: 'probe_inconclusive' };
+    } else return { state: 'unknown', reason: 'probe_inconclusive' };
   }
   if (probe.status === 'inconclusive') return { state: 'unknown', reason: 'probe_inconclusive' };
 
@@ -116,7 +208,9 @@ export async function superviseDisconnectedTerminalHostCandidate(input: Readonly
     happyHomeDir: input.candidate.happyHomeDir,
     sessionId: input.candidate.sessionId,
     expectedAttachmentId: input.candidate.attachmentId,
-    intent: { kind: 'retire_confirmed_dead_attachment', reason: 'positive_dead_recovery' },
+    intent: destroyOptionalClient
+      ? { kind: 'destroy_owned_host', reason: 'unrecoverable_control_recovery' }
+      : { kind: 'retire_confirmed_dead_attachment', reason: 'positive_dead_recovery' },
     adapter,
     readAttachmentInfo: readAttachment,
     removeAttachmentInfo: input.removeTerminalAttachmentInfo ?? removeDefaultTerminalHostAttachmentInfo,
@@ -143,7 +237,9 @@ export async function superviseDisconnectedTerminalHostCandidate(input: Readonly
         }
       : undefined,
   });
-  if (disposition.status !== 'retired') return { state: 'unknown', reason: 'retirement_failed' };
+  if (disposition.status !== 'retired' && (disposition.status !== 'destroyed' || disposition.descriptorRetained)) {
+    return { state: 'unknown', reason: 'retirement_failed' };
+  }
   await (input.removeSessionMarker ?? removeDefaultSessionMarker)(input.candidate.pid);
   return { state: 'stopped' };
 }

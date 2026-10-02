@@ -195,7 +195,7 @@ describe('createAutomationClaimClient', () => {
     });
   });
 
-  it('claims and executes an exact released-V2 frozen input through the current V3 lifecycle', async () => {
+  it('claims and executes current frozen input containing retained 0.2 template data', async () => {
     axiosGet.mockResolvedValue({ data: { assignments: [], settings: DEFAULT_WORKER_SETTINGS } });
     const frozenExecutionInput = JSON.stringify({
       kind: 'happier_automation_run_execution_input_v1',

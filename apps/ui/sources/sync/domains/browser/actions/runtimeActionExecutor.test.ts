@@ -393,7 +393,7 @@ describe('browser runtime action executor', () => {
         controlService.registerOwner({ ...view, ownerId: 'human-owner', authority: 'uiLocal', navigationGeneration: 4,
             adapterKind: 'localPreview', fidelity: 'webIframe', trustedInput: false, supportedActions: ['click'],
             executeAction: async request => { applied.push(request.requestedBy); return { status: 'succeeded' }; } });
-        controlService.recordHumanInput({ ...view, occurredAtMs: Date.now() });
+        controlService.recordHumanInput({ ...view, inputKind: 'pointer', occurredAtMs: Date.now() });
         const execute = createBrowserRuntimeActionExecutor({ automation: { controlService } });
         const input = { v: 1, ...view, automationRequestId: 'request', navigationGeneration: 4,
             requestedBy: 'user', requesterRef: { kind: 'agent', id: 'agent' }, actionKind: 'click',

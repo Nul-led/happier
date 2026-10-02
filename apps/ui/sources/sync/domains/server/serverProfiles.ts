@@ -849,6 +849,30 @@ export function findPersonalHomeBootstrapCompletedProfile(
     return completed.length === 1 ? completed[0]! : null;
 }
 
+/** Retires verified readiness only for the Home whose data was irreversibly erased. */
+export function retirePersonalHomeBootstrapCompletion(serverIdentityId: string): Promise<void> {
+    const identity = normalizeServerIdentityId(serverIdentityId);
+    if (!identity) throw new Error('A stable Home identity is required to retire bootstrap completion');
+    return withPersistedStateMutation(() => {
+        const state = readPersistedState();
+        const servers = { ...state.servers };
+        let changed = false;
+        for (const profile of Object.values(servers)) {
+            if (profile.serverIdentityId !== identity || !isServerProfilePersonalHomeBootstrapCompleted(profile)) continue;
+            const { personalHomeBootstrapCompleted: _completed, ...retained } = profile;
+            // The legacy source is also a receipt on read; clear both representations
+            // so a later parse cannot recreate completion after a cleanup refusal.
+            servers[profile.id] = { ...retained, ...(profile.source === 'desktop-personal-home' ? { source: 'manual' as const } : {}) };
+            changed = true;
+        }
+        if (!changed) return;
+        const previousSnapshot = getActiveServerSnapshot();
+        writePersistedState({ ...state, servers });
+        emitServerProfilesChanged();
+        emitActiveServerChanged(previousSnapshot);
+    });
+}
+
 /**
  * Equivalent-profile merges select one exact descriptor atomically, after
  * established Home authority outranks advisory Directory placeholders. Never
@@ -1750,17 +1774,26 @@ export type SavedServerProfileUrlResolution =
     | Readonly<{ kind: 'missing' | 'ambiguous' }>;
 
 /** URL-only intents may select a saved Home only when that address names exactly one profile. */
-export function resolveSavedServerProfileByUrl(serverUrl: string): SavedServerProfileUrlResolution {
+export function resolveSavedServerProfileByUrl(
+    serverUrl: string,
+    options: Readonly<{ includeCanonicalServerUrl?: boolean }> = {},
+): SavedServerProfileUrlResolution {
     const targetKey = comparableUrlKey(serverUrl);
     if (!targetKey) return { kind: 'missing' };
-    const matches = listServerProfiles().filter((profile) => comparableUrlKey(profile.serverUrl) === targetKey);
+    const matches = listServerProfiles().filter((profile) => (
+        comparableUrlKey(profile.serverUrl) === targetKey
+        || (options.includeCanonicalServerUrl === true && comparableUrlKey(profile.canonicalServerUrl ?? '') === targetKey)
+    ));
     if (matches.length === 0) return { kind: 'missing' };
     if (matches.length > 1) return { kind: 'ambiguous' };
     return { kind: 'resolved', profile: matches[0]! };
 }
 
-export function resolveUniqueServerProfileByUrl(serverUrl: string): ServerProfile | null {
-    const resolution = resolveSavedServerProfileByUrl(serverUrl);
+export function resolveUniqueServerProfileByUrl(
+    serverUrl: string,
+    options: Readonly<{ includeCanonicalServerUrl?: boolean }> = {},
+): ServerProfile | null {
+    const resolution = resolveSavedServerProfileByUrl(serverUrl, options);
     return resolution.kind === 'resolved' ? resolution.profile : null;
 }
 

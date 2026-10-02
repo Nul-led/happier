@@ -146,6 +146,15 @@ import {
 import { readPersistedSessionViewport } from './domains/state/sessionViewportPersistence';
 import { activatePendingQueueScope, currentPendingEnqueueAck } from './engine/pending/pendingQueueV2.testHelpers';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
+import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { loadPendingOutboxForSession } from '@/sync/domains/state/pendingOutboxPersistence';
+import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+
+// Sync initializes native Markdown bindings, but these transport tests never render them.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({
+    splitStreamingRevealTextParts: () => { throw new Error('Unexpected Markdown rendering in Sync test'); },
+}));
 
 const initialStorageState = storage.getState();
 
@@ -249,6 +258,7 @@ describe('sync.sendMessage wake-after-send', () => {
     afterEach(async () => {
         const { sync } = await import('./sync');
         sync.disconnectServer();
+        resetRuntimeFetch();
         vi.unstubAllGlobals();
         resetServerFeaturesClientForTests();
         vi.restoreAllMocks();
@@ -629,6 +639,144 @@ describe('sync.sendMessage wake-after-send', () => {
         expect(directSend).not.toHaveBeenCalled();
         expect(pendingPost).not.toHaveBeenCalled();
         expect(storage.getState().sessionPending[sessionId]).toBeUndefined();
+    });
+
+    it('keeps the exact Account lifetime through submitMessage and reports acknowledged custody after retirement', async () => {
+        const sessionId = 's_submit_exact_retirement';
+        storage.getState().applySessions([{ ...createPlainSession({ sessionId }), active: true, pendingVersion: 2 }]);
+        const accountLifetime = captureActiveServerAccountScopeLifetime();
+        expect(accountLifetime).not.toBeNull();
+        vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({
+            token: `e30.${Buffer.from(JSON.stringify({ sub: accountLifetime!.scope.accountId })).toString('base64url')}.signature`,
+        });
+        const { sync } = await import('./sync');
+        const onOutboundHandoff = vi.fn();
+        // Exact Account requests resolve their own authenticated HTTP transport.
+        let didAcknowledgeEnqueue = false;
+        setRuntimeFetch(async (url, init) => {
+            if (String(url).endsWith('/v1/auth/ping')) {
+                return new Response(JSON.stringify({ ok: true }), { status: 200 });
+            }
+            expect(init?.method).toBe('POST');
+            const response = currentPendingEnqueueAck(init);
+            didAcknowledgeEnqueue = true;
+            retireActiveServerAccountScopeLifetime();
+            return response;
+        });
+
+        await expect(sync.submitMessage(sessionId, 'review draft', undefined, undefined, {
+            accountLifetime: accountLifetime!, onOutboundHandoff,
+        })).rejects.toMatchObject({ code: 'session_account_scope_retired' });
+        expect(didAcknowledgeEnqueue).toBe(true);
+        expect(onOutboundHandoff).not.toHaveBeenCalled();
+        expect(storage.getState().sessionPending[sessionId]?.messages[0]?.deliveryStatus).toBe('accepted');
+    });
+
+    it.each([
+        [true, null], [false, null], [true, 'prepare'], [true, 'enqueue'],
+    ] as const)('prepares typed Queue attachments and fences settlement (reachable=%s, retiredAt=%s)', async (reachable, retiredAt) => {
+        const sessionId = `s_typed_queue_${reachable}_${retiredAt}`;
+        storage.getState().applySessions([{ ...createPlainSession({ sessionId }), active: true, pendingVersion: 2 }]);
+        const attachment = {
+            v: 1, instanceId: 'issue-42', attachment: { pluginId: 'acme.issues', localId: 'issue' },
+            key: '42', value: { issueId: 42 }, presentation: { label: 'Issue #42', typeLabel: 'Issue' },
+        } as const;
+        const preparedAttachment = { ...attachment, value: { issueId: 42, prepared: true } };
+        const sessionMediaMetadata = {
+            key: 'happier' as const,
+            envelope: { kind: 'session_media.v1' as const, payload: { media: [{
+                id: 'media-42', role: 'input' as const, category: 'attachment' as const,
+                mediaKind: 'image' as const, mimeType: 'image/png' as const, name: 'issue.png',
+                path: '.happier/uploads/issue.png', sizeBytes: 42, sha256: 'a'.repeat(64),
+                origin: { source: 'user-upload' as const },
+            }] } },
+        };
+        const stagedMediaHandle = {
+            v: 1 as const, id: 'stage-42', executionTarget: { serverId: getActiveServerSnapshot().serverId, machineId: 'm1' },
+            owner: attachment.attachment, mediaKind: 'image' as const, mimeType: 'image/png', name: 'issue.png',
+            sizeBytes: 42, sha256: 'a'.repeat(64),
+        };
+        const cleanup = { workingDirectory: '/tmp/project', createdWorkspaceRelativePaths: ['.happier/uploads/issue.png'] };
+        const retireOwner = () => storage.getState().activateProfileScope({
+            serverId: getActiveServerSnapshot().serverId, accountId: 'replacement-account',
+        });
+        const events: string[] = [];
+        let acceptedFact: unknown;
+        vi.spyOn(apiSocket, 'sessionRPC').mockImplementation(async (_id, method) => {
+            if (method === SESSION_RPC_METHODS.SESSION_PENDING_MESSAGE_COMPOSER_ADMISSION_PREPARE_V1) {
+                events.push('prepare');
+                if (!reachable) throw new Error('daemon unavailable');
+                if (retiredAt === 'prepare') retireOwner();
+                return { ok: true, text: 'prepared queue', structuredInput: { v: 1, composerAttachments: [preparedAttachment] },
+                    stagedMediaHandles: [stagedMediaHandle], sessionMediaMetadata, sessionMediaCleanup: cleanup };
+            }
+            events.push(method === SESSION_RPC_METHODS.SESSION_PENDING_MESSAGE_COMPOSER_ADMISSION_ABANDONED_V1 ? 'abandoned' : 'accepted');
+            return { ok: true };
+        });
+        const rpc = vi.mocked(apiSocket.sessionRPC);
+        vi.spyOn(apiSocket, 'request').mockImplementation(async (_path, init) => {
+            events.push('enqueue');
+            const body = JSON.parse(String(init?.body));
+            expect(body.content.v.content.text).toBe('prepared queue');
+            expect(body.content.v.meta.happierStructuredInputV1.composerAttachments).toEqual([preparedAttachment]);
+            // Preserve the general envelope while placing admitted media in its reserved slot.
+            expect(body.content.v.meta.happier).toEqual({ kind: 'context.v1', payload: {} });
+            expect(body.content.v.meta.happierMedia).toEqual(sessionMediaMetadata.envelope);
+            if (retiredAt === 'enqueue') retireOwner();
+            return currentPendingEnqueueAck(init);
+        });
+        const { sync } = await import('./sync');
+        const submit = sync.enqueuePendingMessage(sessionId, 'queue', undefined, {
+            happierStructuredInputV1: { v: 1, composerAttachments: [attachment] },
+            happier: { kind: 'context.v1', payload: {} },
+        }, { localId: 'typed-local', requestedAction: { v: 1, kind: 'enqueue' } });
+        if (!reachable) {
+            await expect(submit).rejects.toThrow('daemon unavailable');
+            expect(events).toEqual(['prepare']);
+            expect(storage.getState().sessionPending[sessionId]?.messages ?? []).toEqual([]);
+            expect(await loadPendingOutboxForSession(sessionId, getActiveServerAccountScope()!)).toEqual([]);
+            return;
+        }
+        if (retiredAt === 'prepare') {
+            await expect(submit).rejects.toMatchObject({ code: 'session_account_scope_retired' });
+            expect(events).toEqual(['prepare']);
+            return;
+        }
+        await expect(submit).resolves.toMatchObject({ accepted: true, localId: 'typed-local' });
+        acceptedFact = rpc.mock.calls.find((call) => call[1] === SESSION_RPC_METHODS.SESSION_PENDING_MESSAGE_COMPOSER_ADMISSION_ACCEPTED_V1)?.[2];
+        if (retiredAt === 'enqueue') {
+            expect(events).toEqual(['prepare', 'enqueue']);
+            expect(acceptedFact).toBeUndefined();
+            return;
+        }
+        expect(events).toEqual(['prepare', 'enqueue', 'accepted']);
+        expect(acceptedFact).toEqual({ sessionId, localId: 'typed-local', structuredInput: { v: 1, composerAttachments: [preparedAttachment] },
+            stagedMediaHandles: [stagedMediaHandle], sessionMediaMetadata: { ...sessionMediaMetadata, key: 'happierMedia' } });
+    });
+
+    it('abandons prepared media when invalid caller metadata prevents pending custody', async () => {
+        const sessionId = 's_typed_queue_invalid_meta';
+        storage.getState().applySessions([{ ...createPlainSession({ sessionId }), active: true, pendingVersion: 2 }]);
+        const attachment = {
+            v: 1, instanceId: 'issue-42', attachment: { pluginId: 'acme.issues', localId: 'issue' },
+            key: '42', value: {}, presentation: { label: 'Issue #42', typeLabel: 'Issue' },
+        } as const;
+        const cleanup = { workingDirectory: '/tmp/project', createdWorkspaceRelativePaths: ['.happier/uploads/prepared.png'] };
+        const rpc = vi.spyOn(apiSocket, 'sessionRPC').mockImplementation(async (_id, method) => (
+            method === SESSION_RPC_METHODS.SESSION_PENDING_MESSAGE_COMPOSER_ADMISSION_PREPARE_V1
+                ? { ok: true, text: 'prepared', structuredInput: { v: 1, composerAttachments: [attachment] },
+                    stagedMediaHandles: [], sessionMediaCleanup: cleanup }
+                : { ok: true }
+        ));
+        const request = vi.spyOn(apiSocket, 'request');
+        const { sync } = await import('./sync');
+        await expect(sync.enqueuePendingMessage(sessionId, 'queue', undefined, {
+            happierStructuredInputV1: { v: 1, composerAttachments: [attachment] }, displayText: 42,
+        }, { localId: 'invalid-meta' })).rejects.toThrow('projection is invalid');
+        expect(request).not.toHaveBeenCalled();
+        expect(rpc.mock.calls.find((call) => call[1] === SESSION_RPC_METHODS.SESSION_PENDING_MESSAGE_COMPOSER_ADMISSION_ABANDONED_V1)?.[2]).toMatchObject({
+            sessionId, localId: 'invalid-meta', sessionMediaCleanup: cleanup,
+        });
     });
 
     it('routes force-immediate submitMessage through durable enqueue with send-now action ownership', async () => {

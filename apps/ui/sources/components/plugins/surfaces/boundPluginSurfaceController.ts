@@ -72,6 +72,8 @@ import {
 } from './pluginActionInputSelectionHostApi';
 import { createPluginOpenNewSessionHostApiHandler } from './pluginOpenNewSessionHostApi';
 import { createPluginSurfaceSessionHandlers } from './pluginSurfaceSessionState';
+import { createPluginSurfaceStoredImageOwner, type PluginStoredImageReadTransport } from './pluginSurfaceStoredImage';
+import { createPluginSurfaceLiveStreamOwner } from './pluginSurfaceLiveStream';
 
 /**
  * The bound surface controller (§3.1).
@@ -314,6 +316,7 @@ export type BoundPluginSurfaceBinding = Readonly<{
     /** Transport overrides for the daemon boundary (tests). */
     executeContributedAction?: PluginSurfaceContributedActionTransport;
     readResource?: PluginSurfaceResourceReadTransport;
+    readStoredImage?: PluginStoredImageReadTransport;
     watchResource?: Partial<PluginSurfaceResourceWatchTransport>;
     /** The selected workspace-file viewer's exact opaque host binding. */
     openableContent?: PluginSurfaceOpenableContentBinding;
@@ -333,6 +336,8 @@ export type BoundPluginSurfaceController = Readonly<{
     /** The one exact surface context for this mount. */
     surfaceContext: PluginUiSurfaceContextV1;
     hostApi: PluginSurfaceHostApiV1;
+    /** Private approved descriptor; it never enters the public subscription result. */
+    readLiveStreamViewing: (subscriptionId: string) => import('@happier-dev/protocol').DaemonPluginUiCaptureSourceDescriptorV1 | null;
     /**
      * The host API method snapshot consumed by existing host-local controls.
      * Renderer admission uses `admissionMethods` so temporary daemon
@@ -422,7 +427,7 @@ const EMPTY_RESOURCE_SCOPE: readonly PluginUiSurfaceContextV1['resourceScope'][n
 const NOOP_MOUNT_RETIREMENT = Object.freeze({ dispose(): void {} });
 
 function isDaemonOwnedPluginSurfaceMethod(method: PluginUiHostMethodV1): boolean {
-    return method === 'readResource'
+    return method === 'watchLiveStream' || method === 'readStoredImage' || method === 'readResource'
         || method === 'watchResource'
         || method === 'statOpenableContent'
         || method === 'readOpenableContent'
@@ -626,6 +631,7 @@ function omitControllerOwnedHostApiHandlers(
     const {
         publishCurrentUiContext: _ignoredCurrentUiContext,
         openConnectedAccounts: _ignoredConnectedAccounts,
+        watchLiveStream: _ignoredLiveStream,
         ...retained
     } = handlers;
     return retained;
@@ -911,6 +917,12 @@ export function createBoundPluginSurfaceController(input: Readonly<{
     // Linked-Session state and permission answers are client-realm host
     // capabilities of this Account (r0.42). They share the mount's one
     // invalidation fan-out and its disposal, so they add no second channel.
+    const mountLifetime = new AbortController();
+    const liveStreams = daemon && accountLifetime && !isOpenableContentViewer ? createPluginSurfaceLiveStreamOwner({
+        pluginId: surfaceContext.pluginId, occurrenceId: daemon.expectedOccurrenceId, machineId: daemon.machineId,
+        serverId: daemon.serverId ?? accountLifetime.scope.serverId, lifetimeSignal: mountLifetime.signal, isCurrent,
+        executeAction: (request, options) => hostApi.handleRequest(request, options),
+    }) : null;
     const sessionHandlers = accountLifetime && !isOpenableContentViewer
         ? createPluginSurfaceSessionHandlers({
             accountScope: accountLifetime.scope,
@@ -919,13 +931,21 @@ export function createBoundPluginSurfaceController(input: Readonly<{
         })
         : null;
     const mountedDisposeHostResource = mountedHostApiHandlers.disposeHostResource;
+    const storedImages = daemon && accountLifetime && !isOpenableContentViewer ? createPluginSurfaceStoredImageOwner({
+        pluginId: surfaceContext.pluginId, occurrenceId: daemon.expectedOccurrenceId, machineId: daemon.machineId,
+        serverId: daemon.serverId ?? accountLifetime.scope.serverId,
+        isCurrent, lifetimeSignal: mountLifetime.signal,
+        ...(binding?.readStoredImage ? { read: binding.readStoredImage } : {}),
+    }) : null;
     const hostApiMountedHandlers: PluginSurfaceHostApiHandlers = sessionHandlers
         ? Object.freeze({
             ...mountedHostApiHandlers,
             readSession: sessionHandlers.handlers.readSession,
             watchSession: sessionHandlers.handlers.watchSession,
             respondToSessionPermission: sessionHandlers.handlers.respondToSessionPermission,
+            ...(liveStreams ? { watchLiveStream: liveStreams.watchLiveStream } : {}),
             disposeHostResource: async (request, options) => {
+                liveStreams?.disposeHostResource(request);
                 sessionHandlers.handlers.disposeHostResource(request);
                 return mountedDisposeHostResource
                     ? await mountedDisposeHostResource(request, options)
@@ -935,6 +955,8 @@ export function createBoundPluginSurfaceController(input: Readonly<{
         : mountedHostApiHandlers;
     const disposeHostApiMountedHandlers = sessionHandlers
         ? () => {
+            storedImages?.dispose();
+            liveStreams?.dispose();
             sessionHandlers.dispose();
             disposeMountedHostApiHandlers?.();
         }
@@ -950,7 +972,6 @@ export function createBoundPluginSurfaceController(input: Readonly<{
     // One controller-owned lifetime fences target selection and all
     // daemon-backed Resource work. Replacements abort obsolete work rather than
     // merely withholding its eventual delivery.
-    const mountLifetime = new AbortController();
     const targetedContributions = input.facts.targetedContributions;
     const selectActionInput = daemon
         ? createPluginActionInputSelectionHostApiHandler({
@@ -1073,7 +1094,8 @@ export function createBoundPluginSurfaceController(input: Readonly<{
         ...(binding?.openSurface ? { openSurface: binding.openSurface } : {}),
         ...(selectActionInput ? { selectActionInput } : {}),
         ...(createOpenNewSession ? { createOpenNewSession } : {}),
-        mountedHostApiHandlers: hostApiMountedHandlers,
+        mountedHostApiHandlers: { ...hostApiMountedHandlers, ...(storedImages ? { readStoredImage: storedImages.readStoredImage } : {}) },
+        ...(storedImages ? { onActionResult: storedImages.retainActionResult } : {}),
         ...(disposeHostApiMountedHandlers
             ? { disposeMountedHostApiHandlers: disposeHostApiMountedHandlers }
             : {}),
@@ -1107,6 +1129,7 @@ export function createBoundPluginSurfaceController(input: Readonly<{
     return Object.freeze({
         surfaceContext,
         hostApi,
+        readLiveStreamViewing: (subscriptionId) => liveStreams?.readViewing(subscriptionId) ?? null,
         installedMethods: hostApi.installedMethods,
         get admissionMethods(): readonly PluginUiHostMethodV1[] {
             return hostApi.admissionMethods;

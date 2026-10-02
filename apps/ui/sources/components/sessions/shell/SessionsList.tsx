@@ -8,6 +8,7 @@ import { sessionListStyles } from './sessionListStyles';
 import { SessionListDropOverlay } from './drag/SessionListDropOverlay';
 import { SessionListVirtualizedContent } from './sessionListVirtualizedContent';
 import { SessionListSearchChrome } from './search/SessionListSearchChrome';
+import { readSessionListWorkFilterSummary } from './search/SessionListFilterControl';
 import { HomeReachabilityGate } from '@/components/navigation/connectionStatus/HomeReachabilityGate';
 import {
     useSessionListViewFilterController,
@@ -41,6 +42,7 @@ import {
     setRetainedSessionListPaneReferenceCorpusActive,
 } from './sessionListPaneRetention';
 import type { SessionListViewContext } from './search/sessionListViewFilters';
+import type { SessionListFilterV1 } from '@happier-dev/protocol';
 import {
     registerSessionListRouteRemovalRelease,
     type SessionListRouteRemovalNavigation,
@@ -86,6 +88,7 @@ function buildSessionListViewRetentionKey(params: Readonly<{
 }
 
 export function SessionsList(props: Readonly<{
+    fixedShow?: SessionListFilterV1['show'];
     storageKind?: SessionListStorageFilter;
     corpusStorage?: SessionListCorpusStorage;
     pathname?: string;
@@ -97,6 +100,7 @@ export function SessionsList(props: Readonly<{
 }
 
 export function SessionsListView(props: Readonly<{
+    fixedShow?: SessionListFilterV1['show'];
     storageKind?: SessionListStorageFilter;
     corpusStorage?: SessionListCorpusStorage;
     paneState?: VisibleSessionListPaneState;
@@ -106,7 +110,7 @@ export function SessionsListView(props: Readonly<{
     releaseRetentionOnRouteRemoval?: boolean;
 }>) {
     const corpusStorage = props.corpusStorage ?? 'active';
-    const filterController = useSessionListViewFilterController(corpusStorage, props.viewContext);
+    const filterController = useSessionListViewFilterController(corpusStorage, props.viewContext, props.fixedShow);
 
     return (
         <SessionsListViewWithFilterController
@@ -179,6 +183,7 @@ function SessionsListViewWithResolvedPaneState(props: Readonly<{
         queryHomes: props.filterController.pagingHomes,
         emptyQuerySelectionComplete: props.filterController.emptyQuerySelectionComplete,
         corpusStorage: props.corpusStorage,
+        workFilter: props.filterController.filters,
     });
     React.useEffect(() => {
         if (!surfaceOwnership.dataActive) return;
@@ -342,29 +347,37 @@ function VisibleSessionsListViewContent(
     });
     const handleLoadMoreSessions = React.useCallback(() => {
         if (!surfaceDataActiveRef.current) return;
+        const runWindow = props.paneState.workflowRunWindow;
+        if (runWindow?.hasMore && !runWindow.loadingMore) runWindow.loadMore();
+        if (props.filterController.filters.show === 'runs') return;
         const query = props.paneState.query;
         fireAndForget(
             query?.active === true ? query.loadNext() : sync.fetchMoreSessions(),
             { tag: query?.active === true ? 'SessionsList.query.loadNext' : 'SessionsList.fetchMoreSessions' },
         );
-    }, [props.paneState.query]);
+    }, [props.filterController.filters.show, props.paneState.query, props.paneState.workflowRunWindow]);
     const handleRefreshSessions = React.useCallback(async () => {
         if (!surfaceDataActiveRef.current) return;
         if (refreshingSessionsRef.current) return;
         refreshingSessionsRef.current = true;
         setRefreshingSessions(true);
         try {
+            const runWindow = props.paneState.workflowRunWindow;
+            if (runWindow?.loadMoreFailed) runWindow.loadMore();
+            else runWindow?.retry();
             await runRefreshDiagnosticAction(
                 { action: 'pull_to_refresh', screen: 'session_list' },
-                () => props.paneState.query?.active === true
-                    ? props.paneState.query.refresh()
-                    : sync.refreshSessions(),
+                () => props.filterController.filters.show === 'runs'
+                    ? Promise.resolve()
+                    : props.paneState.query?.active === true
+                        ? props.paneState.query.refresh()
+                        : sync.refreshSessions(),
             );
         } finally {
             refreshingSessionsRef.current = false;
             setRefreshingSessions(false);
         }
-    }, [props.paneState.query]);
+    }, [props.filterController.filters.show, props.paneState.query, props.paneState.workflowRunWindow]);
     const handleClearFilters = React.useCallback(() => {
         props.filterController.resetFilters();
     }, [props.filterController]);
@@ -417,7 +430,7 @@ function VisibleSessionsListViewContent(
     }, [handleRefreshSessions, refreshingSessions, surfaceOwnership.dataActive]);
     const queryVisibleSessionCount = React.useMemo(
         () => viewState.nodeIds.reduce(
-            (count, nodeId) => count + (nodeId.startsWith('session:') ? 1 : 0),
+            (count, nodeId) => count + (nodeId.startsWith('session:') || nodeId.startsWith('workflow_run:') ? 1 : 0),
             0,
         ),
         [viewState.nodeIds],
@@ -456,6 +469,13 @@ function VisibleSessionsListViewContent(
         props.paneState.hasHiddenInactiveSessions,
         queryVisibleSessionCount,
     ]);
+    const filterSummaryLabel = readSessionListWorkFilterSummary(props.filterController);
+    const filterSummary = React.useMemo(
+        () => filterSummaryLabel
+            ? { label: filterSummaryLabel, onReset: props.filterController.resetFilters }
+            : undefined,
+        [filterSummaryLabel, props.filterController.resetFilters],
+    );
 
     return (
         <SessionListSelectionStoreProvider store={viewState.sessionListSelectionStore}>
@@ -471,7 +491,10 @@ function VisibleSessionsListViewContent(
                 onLayout={handleTreeViewportLayout}
                 style={contentContainerStyle}
             >
-                <SessionListSearchChrome {...viewState.searchChrome} />
+                <SessionListSearchChrome
+                    {...viewState.searchChrome}
+                    filterSummary={filterSummary}
+                />
                 {queryVisibleSessionCount > 0 ? (
                     <HomeReachabilityGate
                         variant="line"

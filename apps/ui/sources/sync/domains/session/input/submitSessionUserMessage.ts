@@ -47,10 +47,15 @@ function isSubmitAccountLifetimeCurrent(opts: SubmitSessionUserMessageOptions): 
     return opts.accountLifetime?.isCurrent() !== false;
 }
 
-function accountScopeRetiredResult(type: 'rejected' | 'send_failed' = 'rejected'): SubmitSessionUserMessageResult {
+function accountScopeRetiredResult(
+    type: 'rejected' | 'send_failed' = 'rejected',
+    persistence: SubmitPersistence = 'none',
+    localId?: string,
+): SubmitSessionUserMessageResult {
     return {
         type,
-        persistence: 'none',
+        persistence,
+        ...(localId ? { localId } : {}),
         wake: { attempted: false, state: 'not_needed' },
         errorCode: SESSION_INPUT_ACCOUNT_SCOPE_RETIRED_ERROR_CODE,
         errorMessage: 'Session Account authority is unavailable',
@@ -524,7 +529,9 @@ async function enqueuePending(
                     : undefined,
             },
         );
-        if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult('send_failed');
+        if (!isSubmitAccountLifetimeCurrent(opts)) {
+            return accountScopeRetiredResult('send_failed', enqueueResult?.cancelled ? 'none' : 'pending', readLocalId(enqueueResult) ?? handoffLocalId);
+        }
     } catch (error) {
         return {
             type: 'send_failed',
@@ -547,7 +554,6 @@ async function enqueuePending(
         }
         return true;
     };
-    if (!opts.accountLifetime) reportHandoffIfCurrent();
     if (enqueueResult && typeof enqueueResult === 'object' && enqueueResult.cancelled === true) {
         return {
             type: 'rejected',
@@ -558,8 +564,9 @@ async function enqueuePending(
             localId,
         };
     }
+    if (!opts.accountLifetime) reportHandoffIfCurrent();
     if (enqueueResult && typeof enqueueResult === 'object' && enqueueResult.accepted === false) {
-        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed');
+        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed', 'pending', localId);
         return {
             type: 'wake_pending',
             persistence: 'pending',
@@ -568,7 +575,7 @@ async function enqueuePending(
         };
     }
     if (isExecutionRun || (enqueueResult && typeof enqueueResult === 'object' && enqueueResult.terminal === true)) {
-        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed');
+        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed', 'pending', localId);
         return {
             type: 'success',
             persistence: 'pending',
@@ -577,7 +584,7 @@ async function enqueuePending(
         };
     }
     if (!wakeOpts) {
-        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed');
+        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed', 'pending', localId);
         return {
             type: 'wake_pending',
             persistence: 'pending',
@@ -587,7 +594,7 @@ async function enqueuePending(
     }
 
     if (inactiveResumePolicy === 'online_only' && port.isMachineReachable?.(wakeOpts.machineId) !== true) {
-        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed');
+        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed', 'pending', localId);
         return {
             type: 'wake_pending',
             persistence: 'pending',
@@ -600,9 +607,9 @@ async function enqueuePending(
         ?? (inactiveResumePolicy === 'online_only'
             ? true
             : await shouldWakePendingInputFromUi(port, opts, wakeOpts.machineId));
-    if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult('send_failed');
+    if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult('send_failed', 'pending', localId);
     if (!shouldWakeFromUi) {
-        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed');
+        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed', 'pending', localId);
         return {
             type: 'success',
             persistence: 'pending',
@@ -619,10 +626,10 @@ async function enqueuePending(
 
     try {
         const wakeResult = await port.ensureSessionRuntimeForPendingInput(resumeOptions);
-        if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult('send_failed');
+        if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult('send_failed', 'pending', localId);
         if (wakeResult.type === 'error') {
             await switchRemoteAfterPendingEnqueueIfNeeded(port, opts);
-            if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed');
+            if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed', 'pending', localId);
             return {
                 type: 'wake_failed',
                 persistence: 'pending',
@@ -637,10 +644,10 @@ async function enqueuePending(
             };
         }
     } catch (error) {
-        if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult('send_failed');
+        if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult('send_failed', 'pending', localId);
         const errorMessage = getErrorMessage(error, 'Failed to resume session');
         await switchRemoteAfterPendingEnqueueIfNeeded(port, opts);
-        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed');
+        if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed', 'pending', localId);
         return {
             type: 'wake_failed',
             persistence: 'pending',
@@ -655,7 +662,7 @@ async function enqueuePending(
     }
 
     await switchRemoteAfterPendingEnqueueIfNeeded(port, opts);
-    if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed');
+    if (!reportHandoffIfCurrent()) return accountScopeRetiredResult('send_failed', 'pending', localId);
     return {
         type: 'success',
         persistence: 'pending',
@@ -688,7 +695,7 @@ export async function submitSessionUserMessage(
                             ...(opts.accountLifetime ? { accountLifetime: opts.accountLifetime } : {}),
                         }] as const : [] as const),
                     );
-                    if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult('send_failed');
+                    if (!isSubmitAccountLifetimeCurrent(opts)) return accountScopeRetiredResult('send_failed', 'pending', opts.localId ?? undefined);
                     return { type: 'success', persistence: 'pending', wake: { attempted: false, state: 'not_needed' }, localId };
                 }
                 return await enqueuePending(port, opts);
@@ -756,7 +763,7 @@ export async function submitSessionUserMessage(
                     ...(effectiveOpts.accountLifetime ? { accountLifetime: effectiveOpts.accountLifetime } : {}),
                 }] as const : [] as const),
             );
-            if (!isSubmitAccountLifetimeCurrent(effectiveOpts)) return accountScopeRetiredResult('send_failed');
+            if (!isSubmitAccountLifetimeCurrent(effectiveOpts)) return accountScopeRetiredResult('send_failed', 'pending', localId);
         } catch (error) {
             const failure = getSubmitSendFailure(error, 'Failed to update pending action');
             return {
@@ -788,7 +795,7 @@ export async function submitSessionUserMessage(
                 };
             }
         } else if (await shouldWakePendingInputFromUi(port, effectiveOpts, wakeOpts.machineId)) {
-            if (!isSubmitAccountLifetimeCurrent(effectiveOpts)) return accountScopeRetiredResult('send_failed');
+            if (!isSubmitAccountLifetimeCurrent(effectiveOpts)) return accountScopeRetiredResult('send_failed', 'pending', localId);
             try {
                 const wakeResult = await port.ensureSessionRuntimeForPendingInput({
                     ...wakeOpts,
@@ -799,7 +806,7 @@ export async function submitSessionUserMessage(
                     ...(effectiveOpts.serverId ? { serverId: effectiveOpts.serverId } : {}),
                     ...(effectiveOpts.accountLifetime ? { accountLifetime: effectiveOpts.accountLifetime } : {}),
                 });
-                if (!isSubmitAccountLifetimeCurrent(effectiveOpts)) return accountScopeRetiredResult('send_failed');
+                if (!isSubmitAccountLifetimeCurrent(effectiveOpts)) return accountScopeRetiredResult('send_failed', 'pending', localId);
                 if (wakeResult.type === 'error') {
                     return {
                         type: 'wake_pending',

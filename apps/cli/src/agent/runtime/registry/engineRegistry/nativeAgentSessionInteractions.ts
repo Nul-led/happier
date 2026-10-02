@@ -283,6 +283,7 @@ async function presentBoundPermissionRequest(
             toPermissionInput(request),
             {
                 ...(permissionContext?.origin ? { origin: permissionContext.origin } : {}),
+                ...(permissionContext?.lifetime ? { lifetime: permissionContext.lifetime } : {}),
                 ...(hasTurnId && permissionContext
                     ? { turnId: permissionContext.turnId }
                     : {}),

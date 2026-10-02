@@ -1,4 +1,5 @@
 import type { TranslationKey } from '@/text';
+import { PLANET_LIGHT_RAMP } from '@happier-dev/brand/planet';
 
 import type { WizardStepId } from '../../state/wizardTypes';
 
@@ -121,7 +122,7 @@ export const journeyBeats: readonly JourneyBeat[] = [
         frameId: 'session-view.hero',
         surfaces: allSurfaces,
         stageTreatment: 'planet-hero',
-        accentHue: '#FFB14A',
+        accentHue: PLANET_LIGHT_RAMP.warm,
         skipTarget: JOURNEY_SKIP_TO_SETUP_TARGET,
     },
     {
@@ -269,7 +270,7 @@ export const journeyBeats: readonly JourneyBeat[] = [
         surfaces: allSurfaces,
         configStepId: 'relay_select',
         stageTreatment: 'planet-hero',
-        accentHue: '#FFB14A',
+        accentHue: PLANET_LIGHT_RAMP.warm,
     },
     {
         id: 'S2',
@@ -310,7 +311,7 @@ export const journeyBeats: readonly JourneyBeat[] = [
         frameId: 'sessions-list.hero',
         surfaces: allSurfaces,
         stageTreatment: 'planet-hero',
-        accentHue: '#FFB14A',
+        accentHue: PLANET_LIGHT_RAMP.warm,
     },
 ] as const;
 

@@ -11,6 +11,13 @@ import {
     type UiAccountActionExecute,
 } from './accountActionTransport';
 
+/** The existing Account relay's serving machine; shared by its cold projection readers. */
+export function resolveUiAccountActionFallbackMachineId(account: Pick<ActionAccountContext, 'serverId'>): string | null {
+    return areServerProfileIdentifiersEquivalent(getActiveServerSnapshot().serverId, account.serverId)
+        ? resolveVisibleMachinesForActiveServerFromState(storage.getState()).find((machine) => isMachineOnline(machine))?.id ?? null
+        : null;
+}
+
 /** Compose the existing machine relay with the invocation's captured Account. */
 export function createUiAccountAction(params: Readonly<{
     account: Pick<ActionAccountContext, 'serverId' | 'accountId' | 'assertCurrent'>;
@@ -18,11 +25,7 @@ export function createUiAccountAction(params: Readonly<{
 }>): UiAccountActionExecute {
     const execute = createUiAccountActionTransport({
         account: params.account,
-        resolveFallbackMachineId: () => (
-            areServerProfileIdentifiersEquivalent(getActiveServerSnapshot().serverId, params.account.serverId)
-                ? resolveVisibleMachinesForActiveServerFromState(storage.getState()).find((machine) => isMachineOnline(machine))?.id ?? null
-                : null
-        ),
+        resolveFallbackMachineId: () => resolveUiAccountActionFallbackMachineId(params.account),
         transport: params.transport ?? (async (input) => await machineRpcWithServerScope(input)),
     });
     return async (args) => await execute(

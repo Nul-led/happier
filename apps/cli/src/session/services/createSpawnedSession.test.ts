@@ -95,6 +95,7 @@ describe('createSpawnedSession settlement', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.useRealTimers();
   });
 
   beforeEach(() => {
@@ -1086,7 +1087,7 @@ describe('createSpawnedSession settlement', () => {
       credentials,
       machineId: 'machine-exact',
       method: RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE_BY_NONCE,
-      request: { spawnNonce: 'exact-machine-action-1' },
+      request: { spawnNonce: 'exact-machine-action-1', timeoutMs: expect.any(Number) },
       timeoutMs: expect.any(Number),
     });
     expect(callMachineRpc.mock.calls[1]?.[0]?.timeoutMs).toBeGreaterThan(20_000);
@@ -1138,7 +1139,7 @@ describe('createSpawnedSession settlement', () => {
     );
     expect(directTransport.resolveSpawnSessionByNonce).toHaveBeenCalledWith(
       'direct-target-action-1',
-      { signal: controller.signal },
+      { signal: controller.signal, timeoutMs: expect.any(Number) },
     );
     expect(callMachineRpc).not.toHaveBeenCalled();
     expect(spawnDaemonSession).not.toHaveBeenCalled();
@@ -1543,7 +1544,7 @@ describe('createSpawnedSession settlement', () => {
       credentials,
       machineId: 'machine-1',
       method: RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE_BY_NONCE,
-      request: { spawnNonce: 'provider-action-1' },
+      request: { spawnNonce: 'provider-action-1', timeoutMs: expect.any(Number) },
       timeoutMs: expect.any(Number),
     });
     expect(spawnDaemonSession).not.toHaveBeenCalled();
@@ -1666,7 +1667,7 @@ describe('createSpawnedSession settlement', () => {
       credentials,
       machineId: 'machine-1',
       method: RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE_BY_NONCE,
-      request: { spawnNonce: 'provider-action-retry' },
+      request: { spawnNonce: 'provider-action-retry', timeoutMs: expect.any(Number) },
       timeoutMs: expect.any(Number),
     });
     expect(spawnDaemonSession).not.toHaveBeenCalled();
@@ -1674,6 +1675,7 @@ describe('createSpawnedSession settlement', () => {
   });
 
   it('waits past the old three-second window for one accepted exact-machine spawn and one nonce', async () => {
+    vi.useFakeTimers();
     callMachineRpc
       .mockResolvedValueOnce({
         success: true,
@@ -1681,11 +1683,10 @@ describe('createSpawnedSession settlement', () => {
         sessionIdStatus: 'pending',
         spawnNonce: 'daemon-echoed-nonce',
       })
-      .mockResolvedValueOnce({ status: 'pending' })
-      .mockResolvedValueOnce({ status: 'pending' })
-      .mockResolvedValueOnce({ status: 'pending' })
-      .mockResolvedValueOnce({ status: 'pending' })
-      .mockResolvedValueOnce({ status: 'success', sessionId: 'session-after-slow-registration', sessionCreationOutcome: creationOutcome });
+      .mockImplementationOnce(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 3_500));
+        return { status: 'success', sessionId: 'session-after-slow-registration', sessionCreationOutcome: creationOutcome };
+      });
     fetchSessionById.mockResolvedValue({
       id: 'session-after-slow-registration',
       createdAt: 1,
@@ -1696,21 +1697,19 @@ describe('createSpawnedSession settlement', () => {
       metadataVersion: 1,
       metadata: { path: '/repo', host: 'host' },
     });
-    let nowMs = 0;
-    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => {
-      nowMs += 1_000;
-      return nowMs;
-    });
-
-    const result = await createSpawnedSession({
+    const pending = createSpawnedSession({
       credentials,
       directory: '/repo',
       machineId: 'machine-1',
       backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
-    }).finally(() => nowSpy.mockRestore());
+    });
+    await vi.advanceTimersByTimeAsync(3_499);
+    expect(callMachineRpc).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await pending;
 
     expect(result.sessionId).toBe('session-after-slow-registration');
-    expect(callMachineRpc).toHaveBeenCalledTimes(6);
+    expect(callMachineRpc).toHaveBeenCalledTimes(2);
     expect(callMachineRpc.mock.calls[0]?.[0]).toMatchObject({
       machineId: 'machine-1',
       method: RPC_METHODS.SPAWN_HAPPY_SESSION,
@@ -1721,7 +1720,7 @@ describe('createSpawnedSession settlement', () => {
       expect(request).toMatchObject({
         machineId: 'machine-1',
         method: RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE_BY_NONCE,
-        request: { spawnNonce: sentNonce },
+        request: { spawnNonce: sentNonce, timeoutMs: expect.any(Number) },
       });
     }
     expect(spawnDaemonSession).not.toHaveBeenCalled();
@@ -1730,9 +1729,7 @@ describe('createSpawnedSession settlement', () => {
 
   it('abandons a late-settled generated-nonce child through stop then bounded inactive archive', async () => {
     vi.stubEnv('HAPPIER_SPAWN_SESSION_ID_RESOLVE_TIMEOUT_MS', '100');
-    vi.stubEnv('HAPPIER_SPAWN_SESSION_ID_RESOLVE_POLL_INTERVAL_MS', '25');
     vi.stubEnv('HAPPIER_SPAWN_ABANDON_TIMEOUT_MS', '1000');
-    vi.stubEnv('HAPPIER_SPAWN_ABANDON_POLL_INTERVAL_MS', '100');
     callMachineRpc
       .mockResolvedValueOnce({
         success: true,
@@ -1750,24 +1747,14 @@ describe('createSpawnedSession settlement', () => {
       cleanupOrder.push('archive');
       return { archivedAt: 123 };
     });
-    let nowMs = 0;
-    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => {
-      nowMs += 1_000;
-      return nowMs;
-    });
-
-    try {
-      await expect(createSpawnedSession({
+    await expect(createSpawnedSession({
         credentials,
         directory: '/repo',
         machineId: 'machine-1',
         backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
-      })).rejects.toMatchObject({
+    })).rejects.toMatchObject({
         code: SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT,
-      });
-    } finally {
-      nowSpy.mockRestore();
-    }
+    });
 
     await vi.waitFor(() => {
       expect(archiveSessionOnceInactive).toHaveBeenCalledWith({
@@ -1830,12 +1817,12 @@ describe('createSpawnedSession settlement', () => {
     expect(callMachineRpc).toHaveBeenNthCalledWith(2, expect.objectContaining({
       machineId: 'machine-1',
       method: RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE_BY_NONCE,
-      request: { spawnNonce: stableAttempt.spawnNonce },
+      request: { spawnNonce: stableAttempt.spawnNonce, timeoutMs: expect.any(Number) },
     }));
     expect(callMachineRpc).toHaveBeenNthCalledWith(3, expect.objectContaining({
       machineId: 'machine-1',
       method: RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE_BY_NONCE,
-      request: { spawnNonce: stableAttempt.spawnNonce },
+      request: { spawnNonce: stableAttempt.spawnNonce, timeoutMs: expect.any(Number) },
     }));
     expect(spawnDaemonSession).not.toHaveBeenCalled();
     expect(resolveDaemonSpawnSessionByNonce).not.toHaveBeenCalled();

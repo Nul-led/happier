@@ -76,6 +76,19 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
   }
 
   const controllerOccurrenceId = randomUUID();
+  const resumeFailure = (error: unknown): ExecutionRunEnsureResult => {
+    const missing = error instanceof Error && 'code' in error && error.code === 'AGENT_RESUME_PROVIDER_STATE_MISSING';
+    const errorCode = missing ? 'execution_run_provider_state_missing' : 'execution_run_failed';
+    const message = error instanceof Error ? error.message : 'Resume failed';
+    // Only the exact retained occurrence may publish this definitive result.
+    // Keep its provider identity for inspection; an unavailable handle never
+    // authorizes substitution of a new provider thread.
+    if (missing && args.runs.get(args.runId) === args.run && !args.controllers.has(args.runId)) {
+      args.runs.set(args.runId, { ...args.run, error: { code: errorCode, message } });
+      args.onPublicStateUpdated?.(args.runId);
+    }
+    return { ok: false, errorCode, error: message, resumeFailureKind: missing ? 'permanent' : 'indeterminate' };
+  };
   let backend: ExecutionRunHostRuntime;
   try {
     backend = args.createRuntime({
@@ -91,12 +104,7 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
     });
   } catch (error: unknown) {
     args.budgetRegistry?.releaseExecutionRun(args.runId);
-    return {
-      ok: false,
-      errorCode: 'execution_run_failed',
-      error: error instanceof Error ? error.message : 'Resume failed',
-      resumeFailureKind: 'indeterminate',
-    };
+    return resumeFailure(error);
   }
   const wantsReplayCapture = args.requireReplayCapture === true;
   let resolveTerminal!: () => void;
@@ -257,11 +265,6 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
     return { ok: true };
   } catch (error: unknown) {
     await retireResumeOccurrence();
-    return {
-      ok: false,
-      errorCode: 'execution_run_failed',
-      error: error instanceof Error ? error.message : 'Resume failed',
-      resumeFailureKind: 'indeterminate',
-    };
+    return resumeFailure(error);
   }
 }

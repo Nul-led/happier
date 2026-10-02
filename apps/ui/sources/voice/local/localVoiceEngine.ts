@@ -69,6 +69,7 @@ import { readSafeVoiceRuntimeFailureCode } from '@/voice/runtime/voiceRuntimeFai
 import {
   isVoiceBargeInEnabled,
   isLocalVoiceProviderSelected,
+  parseLocalVoiceTtsSettings,
   resolveAdaptiveInterruptionConfig,
   resolveLocalVoiceAdapterSettings,
   resolveLocalConversationControlSessionId,
@@ -385,11 +386,11 @@ function closeInputLevel(): void {
 /**
  * Rearm leg for the automatic VAD-driven barge-in. The barge-in controller
  * drives the machine through `interruptAndRearmListening`, which calls this to
- * re-acquire the mic for the interrupting session. The admission refreshes at
- * this new capture boundary, then that snapshot owns its provider/settings
- * through stop and send.
+ * retain the producer and utterance already captured over playback. Only a
+ * missing producer needs a new capture admission.
  */
 async function startBargeInRearmListening(sessionId: string, signal?: AbortSignal): Promise<void> {
+  if (localVoiceCaptureOwner.isCaptureActive(sessionId)) return;
   const admission = acquireCaptureAdmission(sessionId);
   if (!admission) return;
   await startCaptureForAdmission(admission, admission.captureAttempt, signal);
@@ -576,7 +577,10 @@ async function maybeRearmHandsFreeCapture(
     return false;
   }
 
-  const admission = acquireCaptureAdmission(followUp.sessionId);
+  const captureIsActive = localVoiceCaptureOwner.isCaptureActive(followUp.sessionId);
+  const admission = captureIsActive
+    ? readCaptureAdmission(followUp.sessionId)
+    : acquireCaptureAdmission(followUp.sessionId);
   const captureAttempt = admission?.captureAttempt;
   if (
     !admission
@@ -589,7 +593,9 @@ async function maybeRearmHandsFreeCapture(
 
   await voiceConversationRuntimeMachine.rearmListening({
     controlSessionId: followUp.sessionId,
-    startListening: (signal) => startCaptureForAdmission(admission, captureAttempt, signal),
+    startListening: (signal) => captureIsActive
+      ? Promise.resolve()
+      : startCaptureForAdmission(admission, captureAttempt, signal),
   });
   return true;
 }
@@ -623,16 +629,37 @@ function handleRuntimeOwnedEndpointSignal(signal: TurnEndpointSignal): void {
   // The controller re-validates machine state/session, the backchannel gate, and
   // the textual echo guard before it aborts playback + interrupt-and-rearms.
   if (current.status === 'speaking') {
+    if (!isEndpointDrivenCaptureProvider(provider)) return;
+    const precedingTurn = inFlight;
     fireAndForget(
-      bargeInController.handleUserSpeechDuringPlayback({
-        sessionId: signal.sessionId,
-        source: signal.source,
-        transcript: signal.transcript,
-        durationMs: signal.durationMs,
-        confidence: signal.confidence,
-        speakingElapsedMs: resolveBargeInSpeakingElapsedMs(signal.detectedAt),
-        bargeInEnabled: isVoiceBargeInEnabled(settings),
-      }),
+      (async () => {
+        const interrupted = await bargeInController.handleUserSpeechDuringPlayback({
+          sessionId: signal.sessionId,
+          source: signal.source,
+          transcript: signal.transcript,
+          durationMs: signal.durationMs,
+          confidence: signal.confidence,
+          speakingElapsedMs: resolveBargeInSpeakingElapsedMs(signal.detectedAt),
+          bargeInEnabled: isVoiceBargeInEnabled(settings),
+        });
+        if (!isCaptureAdmissionCurrent(admission) || admission.captureAttempt !== captureAttempt) return;
+        if (interrupted) {
+          // Playback settles the preceding send. Keep the recognizer which
+          // produced this utterance, then drain and submit its actual final.
+          await precedingTurn?.catch(() => {});
+          if (!isCaptureAdmissionCurrent(admission) || admission.captureAttempt !== captureAttempt) return;
+          beginEndpointDrivenStopAndSend(admission, captureAttempt, provider);
+        } else {
+          // Endpoint controllers consume one utterance. Discard a suppressed
+          // echo/backchannel and rearm the same admitted producer for the next.
+          await localVoiceCaptureOwner.stopEndpointDrivenCapture({
+            adaptiveConfig: resolveAdaptiveInterruptionConfig(), provider, sessionId: signal.sessionId,
+          });
+          if (!isCaptureAdmissionCurrent(admission) || admission.captureAttempt !== captureAttempt
+            || voiceConversationRuntimeMachine.getSnapshot().error) return;
+          await startCaptureForAdmission(admission, captureAttempt, admission.captureAbortController.signal);
+        }
+      })(),
       { tag: 'localVoiceEngine.bargeIn.handleUserSpeechDuringPlayback' },
     );
     return;
@@ -746,8 +773,26 @@ async function runVoiceTurnWithSendFailureHandling(
   runner: (signal: AbortSignal) => Promise<void>,
 ): Promise<void> {
   try {
+    const admission = readCaptureAdmission(sessionId);
+    const ttsSettings = admission
+      ? parseLocalVoiceTtsSettings(resolveLocalVoiceAdapterSettings(admission.captureAttempt.settings).config?.tts)
+      : null;
+    const startsPlaybackCapture = !!admission && isEndpointDrivenCaptureProvider(admission.captureAttempt.provider)
+      && isVoiceBargeInEnabled(admission.captureAttempt.settings)
+      && ttsSettings?.autoSpeakReplies !== false
+      && !localVoiceCaptureOwner.isCaptureActive(sessionId);
+    if (admission && startsPlaybackCapture) {
+      await startCaptureForAdmission(admission, admission.captureAttempt, admission.captureAbortController.signal);
+      if (!isCaptureAdmissionCurrent(admission)) return;
+    }
     await runAbortableVoiceTurn(sessionId, runner);
     beginAutomaticCurrentUiContextUpdates(sessionId);
+    if (admission && startsPlaybackCapture && !admission.captureAttempt.handsFree
+      && isCaptureAdmissionCurrent(admission)
+      && getCurrentLocalRuntimeCompatState().status === 'idle'
+      && localVoiceCaptureOwner.isCaptureActive(sessionId)) {
+      await localVoiceCaptureOwner.stopCapture({ provider: admission.captureAttempt.provider, sessionId });
+    }
   } catch (error) {
     if (isAbortedVoiceTurnError(error)) {
       return;

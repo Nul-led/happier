@@ -204,7 +204,10 @@ async function setupHome(options: Readonly<{ sharing: boolean; encrypted: boolea
      * compare-and-set. The client's real codec seals and opens them, so an E2EE
      * Account's approval is stored encrypted exactly as it is in production.
      */
-    const artifacts = createArtifactStoreBoundary();
+    const artifacts = createArtifactStoreBoundary({
+        ownerAccountId: () => MANAGER.accountId,
+        encryptionMode: options.encrypted ? 'e2ee' : 'plain',
+    });
     const sessionDataKey = new Uint8Array(32).fill(11);
     // The Home stores the fingerprint of the content key this Account published:
     // the one its persisted credentials derive, exactly as the client derives it.

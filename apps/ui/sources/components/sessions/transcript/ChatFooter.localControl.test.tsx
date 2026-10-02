@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createSessionFixture, renderScreen, standardCleanup } from '@/dev/testkit';
 import { getSessionLocalControlState } from '@/sync/domains/session/control/sessionLocalControl';
-import { shouldRequestRemoteControl } from '@/sync/domains/session/control/localControlSwitch';
+import { shouldOfferLocalControlRelease } from '@/sync/domains/session/control/localControlSwitch';
 import { installTranscriptCommonModuleMocks, resetTranscriptCommonModuleMockState } from './transcriptTestHelpers';
 import { ChatFooter } from './ChatFooter';
 
@@ -94,7 +94,7 @@ describe('ChatFooter (local control)', () => {
         const screen = await renderFooter({
             controlledByUser: false,
             localControl: getSessionLocalControlState(session),
-            onRequestSwitchToRemote: shouldRequestRemoteControl(session, 'logged_out') ? release : undefined,
+            onRequestSwitchToRemote: shouldOfferLocalControlRelease(session, 'logged_out') ? release : undefined,
         });
         const action = screen.findByTestId('session-chatFooter-detachLocalTerminal');
         expect(action).not.toBeNull();
@@ -111,7 +111,7 @@ describe('ChatFooter (local control)', () => {
         } } });
         const screen = await renderFooter({
             localControl: getSessionLocalControlState(session),
-            onRequestSwitchToRemote: shouldRequestRemoteControl(session, 'logged_out') ? vi.fn() : undefined,
+            onRequestSwitchToRemote: shouldOfferLocalControlRelease(session, 'logged_out') ? vi.fn() : undefined,
         });
         expect(screen.findByTestId('session-chatFooter-detachLocalTerminal')).toBeNull();
     });

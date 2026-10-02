@@ -534,7 +534,7 @@ export function LegacyProfileEditForm({
     }, [handleSave, saveRef]);
 
     return (
-        <ItemList ref={popoverBoundaryRef} style={containerStyle} keyboardShouldPersistTaps="handled" presentation="page">
+        <ItemList ref={popoverBoundaryRef} style={containerStyle} keyboardShouldPersistTaps="handled">
             {header}
             <ProfileNameSection testIDPrefix="profile-legacy" name={name} onChangeName={setName} />
 

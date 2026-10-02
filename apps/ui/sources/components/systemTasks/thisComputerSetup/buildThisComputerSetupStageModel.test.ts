@@ -66,8 +66,8 @@ describe('buildThisComputerSetupStageModel', () => {
             'setup.thisComputer.startService',
             'setup.thisComputer.verifyService',
         ]);
-        expect(items.some((item) => item.id === 'setup.thisComputer.checkAuth')).toBe(false);
-        expect(items.some((item) => item.id === 'setup.thisComputer.auth.wait')).toBe(false);
+        expect(items.map((item) => item.id)).not.toContain('setup.thisComputer.checkAuth');
+        expect(items.map((item) => item.id)).not.toContain('setup.thisComputer.auth.wait');
         expect(items.every((item) => item.kind === 'stage')).toBe(true);
     });
 

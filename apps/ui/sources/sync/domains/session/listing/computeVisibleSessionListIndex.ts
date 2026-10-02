@@ -1,4 +1,9 @@
-import { nestSessionListReports } from './nestSessionListReports';
+import { nestSessionListReports, resolveWorkflowRunParentSessionId } from './nestSessionListReports';
+import { normalizeSessionListFilterV1, type SessionListFilterV1, type WorkflowRunSummaryV1 } from '@happier-dev/protocol';
+import { workflowRunMatchesSessionListFilter } from './sessionListWorkFilter';
+import { buildSessionListDateGroups } from './sessionListDateGroups';
+import { t } from '@/text';
+import { isTerminalWorkflowRunState } from '@/components/work/status/resolveWorkStatusTone';
 import type { ServerSelectionPresentation } from '@/sync/domains/server/selection/serverSelectionTypes';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
@@ -25,12 +30,14 @@ import {
 } from './sessionListOrderingStateV1';
 import { normalizeTrimmedString } from './normalizeTrimmedString';
 import type { SessionListRenderableSession } from './sessionListRenderable';
-import { buildSessionFolderWorkspaceRefKey } from '@/sync/domains/session/folders/workspaceRefs';
+import { buildSessionFolderWorkspaceRefKey, compareSessionFolderWorkspaceRefs, normalizeSessionFolderWorkspaceRef } from '@/sync/domains/session/folders/workspaceRefs';
+import type { SessionFolderFocusScope } from '@/sync/domains/session/folders/focus';
 import {
     buildSessionListSessionOrderingKey,
     compareSessionListSessionOrderingKeys,
     normalizeSessionListFolderSortModeV1,
     normalizeSessionListOrderingModeV1,
+    readSessionListMeaningfulActivityAt,
     resolveEffectiveSessionListFolderSortMode,
     resolveEffectiveSessionListOrderingModeForGroup,
     type SessionListFolderSortModeV1,
@@ -77,6 +84,9 @@ export type ComputeVisibleSessionListIndexParams = Readonly<{
     }>;
     storageFilterApplied?: boolean;
     nowMs?: number;
+    workFilter?: SessionListFilterV1;
+    workflowRuns?: readonly Readonly<{ serverId: string; summary: WorkflowRunSummaryV1 }>[];
+    folderFocus?: SessionFolderFocusScope | null;
 }>;
 
 const PINNED_GROUP_KEY_V1 = 'pinned-v1';
@@ -527,7 +537,7 @@ function buildListItemOrderKey(item: SessionListIndexItem): string | null {
     if (item.type === 'session') {
         return normalizeSessionListKeyParts(item.serverId, item.sessionId).sessionKey;
     }
-    if (item.headerKind === 'folder') {
+    if (item.type === 'header' && item.headerKind === 'folder') {
         return buildSessionListFolderOrderItemKey({
             serverId: item.serverId ?? item.workspace?.serverId ?? null,
             folderId: item.folderId,
@@ -565,7 +575,7 @@ function resolveFolderParentGroupKeyFromVisibleItems(params: Readonly<{
 }
 
 function isInsideFolderBlock(item: SessionListIndexItem, folderDepth: number): boolean {
-    if (item.type === 'session') {
+    if (item.type !== 'header') {
         return readFolderDepth(item) > folderDepth;
     }
     return item.headerKind === 'folder' && readFolderDepth(item) > folderDepth;
@@ -599,7 +609,7 @@ function collectDirectChildOrderEntries(
             continue;
         }
 
-        if (item.headerKind !== 'folder') continue;
+        if (item.type !== 'header' || item.headerKind !== 'folder') continue;
         if (resolveFolderParentGroupKeyFromVisibleItems({ items, itemIndex: index, folder: item }) !== groupKey) continue;
         const key = buildListItemOrderKey(item);
         if (!key) continue;
@@ -869,7 +879,7 @@ function flushPendingFolderHeaders(params: Readonly<{
     return true;
 }
 
-function pruneOrphanHeaders(items: ReadonlyArray<SessionListIndexItem>): SessionListIndexItem[] {
+export function pruneOrphanHeaders(items: ReadonlyArray<SessionListIndexItem>): SessionListIndexItem[] {
     const out: SessionListIndexItem[] = [];
     const headerState = createVisibleSessionListHeaderState();
 
@@ -884,18 +894,15 @@ function pruneOrphanHeaders(items: ReadonlyArray<SessionListIndexItem>): Session
             }
             continue;
         }
-        if (item.type === 'session') {
-            if (headerState.pendingSectionHeader) {
-                out.push(headerState.pendingSectionHeader);
-                headerState.pendingSectionHeader = null;
-            }
-            if (headerState.pendingGroupHeaders.length > 0) {
-                out.push(...headerState.pendingGroupHeaders);
-                headerState.pendingGroupHeaders = [];
-            }
-            out.push(item);
-            continue;
+        if (headerState.pendingSectionHeader) {
+            out.push(headerState.pendingSectionHeader);
+            headerState.pendingSectionHeader = null;
         }
+        if (headerState.pendingGroupHeaders.length > 0) {
+            out.push(...headerState.pendingGroupHeaders);
+            headerState.pendingGroupHeaders = [];
+        }
+        out.push(item);
     }
 
     flushPendingFolderHeaders({ out, headerState });
@@ -928,7 +935,7 @@ function filterHideInactiveSessions(
             const serverFiltered = item.serverId
                 ? serverFilteredInactiveServerIds?.has(item.serverId) === true
                 : false;
-            if (!isActive && !keepVisible && !serverFiltered) {
+            if (!isActive && !keepVisible && !serverFiltered && row?.origin?.kind !== 'run_step') {
                 continue;
             }
             if (headerState.pendingSectionHeader) {
@@ -1373,18 +1380,128 @@ function resolveEachSessionRowOnce(
     };
 }
 
+function projectWorkflowRunRows(
+    visible: SessionListIndexItem[],
+    params: ComputeVisibleSessionListIndexParams,
+): SessionListIndexItem[] {
+    if (!params.workFilter && !params.workflowRuns) return nestSessionListReports(visible, params.resolveSessionRow);
+    const filter = params.workFilter ?? normalizeSessionListFilterV1({
+        homeServerIds: [...new Set(params.workflowRuns?.map((run) => run.serverId) ?? [])],
+    });
+    const runs = params.corpusStorage === 'archived' ? [] : (params.workflowRuns ?? [])
+        .filter((run) => workflowRunMatchesSessionListFilter(run.summary, run.serverId, filter))
+        .filter((run) => {
+            if (!params.folderFocus) return true;
+            const parentSessionId = resolveWorkflowRunParentSessionId(run.summary);
+            return parentSessionId !== null && visible.some((item) => item.type === 'session'
+                && item.serverId === run.serverId && item.sessionId === parentSessionId);
+        });
+    const headers = visible.filter((item): item is Extract<SessionListIndexItem, { type: 'header' }> => item.type === 'header');
+    const headerSections = new Map<Extract<SessionListIndexItem, { type: 'header' }>, 'active' | 'inactive'>();
+    let headerSection: 'active' | 'inactive' = 'active';
+    for (const item of visible) {
+        if (item.type !== 'header') continue;
+        if (item.headerKind === 'active' || item.headerKind === 'inactive') headerSection = item.headerKind;
+        headerSections.set(item, headerSection);
+    }
+    const output = visible.filter((item) => {
+        if (item.type !== 'session') return item.type === 'header';
+        const step = params.resolveSessionRow(item.serverId, item.sessionId)?.origin?.kind === 'run_step';
+        return step ? filter.show !== 'sessions' : filter.show !== 'runs';
+    });
+    const summaryByKey = new Map(runs.map((run) => [JSON.stringify([run.serverId, run.summary.id]), run.summary]));
+    for (const { serverId, summary } of runs) {
+        const section = isTerminalWorkflowRunState(summary.state) ? 'inactive' : 'active';
+        const where = summary.where;
+        const scope = where ? normalizeSessionFolderWorkspaceRef({
+            t: 'workspaceScope', serverId, machineId: where.machineId, rootPath: where.directory,
+        }) : null;
+        const reference = where?.workspaceRefId ? normalizeSessionFolderWorkspaceRef({
+            t: 'workspaceRef', serverId, workspaceRefId: where.workspaceRefId,
+        }) : null;
+        const header = headers.find((item) => item.headerKind === 'project' && item.serverId === serverId
+            && (params.sessionListLayoutChoice !== 'active_inactive' || headerSections.get(item) === section)
+            && (item.workspace && (reference && compareSessionFolderWorkspaceRefs(item.workspace, reference)
+                || scope && compareSessionFolderWorkspaceRefs(item.workspace, scope))));
+        const workspace = header?.workspace ?? reference ?? scope;
+        const groupKey = header?.groupKey ?? JSON.stringify(['workflow_runs', serverId,
+            params.sessionListLayoutChoice === 'active_inactive' ? section : null,
+            workspace ? buildSessionFolderWorkspaceRefKey(workspace) : null]);
+        const row: Extract<SessionListIndexItem, { type: 'workflow_run' }> = {
+            type: 'workflow_run', runId: summary.id, serverId, groupKey, groupKind: 'project', section,
+            ...(workspace ? { workspace } : {}),
+        };
+        let insertAt = -1;
+        for (let i = 0; i < output.length; i += 1) if (output[i]?.groupKey === groupKey) insertAt = i + 1;
+        if (insertAt >= 0) output.splice(insertAt, 0, row);
+        else output.push({ type: 'header', headerKind: 'project', groupKey, serverId,
+            title: where?.directory ?? t('workflows.title'), ...(workspace ? { workspace } : {}) }, row);
+    }
+    // Placement has already assigned these bands through the canonical Session
+    // owner. Adding Runs must not reclassify those rows into ordinary sections.
+    const placed: SessionListIndexItem[] = [];
+    const ordinary: SessionListIndexItem[] = [];
+    let inPlacedBand = false;
+    for (const item of output) {
+        if (item.type === 'header') inPlacedBand = item.headerKind === 'attention'
+            || item.headerKind === 'working' || item.headerKind === 'pinned';
+        (inPlacedBand ? placed : ordinary).push(item);
+    }
+    let arranged = output;
+    if (params.sessionListLayoutChoice === 'active_inactive') {
+        arranged = [...placed];
+        for (const section of ['active', 'inactive'] as const) {
+            const sectionItems: SessionListIndexItem[] = [];
+            let pendingHeaders: Extract<SessionListIndexItem, { type: 'header' }>[] = [];
+            for (const item of ordinary) {
+                if (item.type === 'header') {
+                    if (isPrimarySessionListSectionHeader(item)) pendingHeaders = [];
+                    else if (item.headerKind === 'server') pendingHeaders = [item];
+                    else pendingHeaders = [...pendingHeaders.filter((header) => header.headerKind === 'server'), item];
+                    continue;
+                }
+                const itemSection = item.section ?? (item.type === 'session'
+                    && params.resolveSessionRow(item.serverId, item.sessionId)?.active !== true ? 'inactive' : 'active');
+                if (itemSection !== section) continue;
+                sectionItems.push(...pendingHeaders, item);
+                pendingHeaders = [];
+            }
+            if (sectionItems.length > 0) arranged.push({ type: 'header', headerKind: section,
+                groupKey: section, title: t(section === 'active' ? 'common.active' : 'common.inactive') }, ...sectionItems);
+        }
+    }
+    if (params.sessionListLayoutChoice === 'recent_activity') {
+        const activity = (item: Exclude<SessionListIndexItem, { type: 'header' }>) => item.type === 'session'
+            ? readSessionListMeaningfulActivityAt(params.resolveSessionRow(item.serverId, item.sessionId))
+            : Date.parse(summaryByKey.get(JSON.stringify([item.serverId, item.runId]))?.updatedAt ?? '') || 0;
+        const loading = ordinary.filter((item) => item.type === 'header'
+            ? item.headerKind === 'loading' : item.groupKind === 'loading');
+        const work = ordinary.filter((item): item is Exclude<SessionListIndexItem, { type: 'header' }> => item.type !== 'header' && item.groupKind !== 'loading')
+            .sort((a, b) => activity(b) - activity(a));
+        arranged = [...placed, ...buildSessionListDateGroups({ items: work, readMeaningfulActivityAt: activity, nowMs: params.nowMs })
+            .flatMap((group): SessionListIndexItem[] => [{ type: 'header', headerKind: 'date', groupKey: `recent:day:${group.dateKey}`, title: group.title },
+                ...group.items.map((item) => ({ ...item, groupKey: `recent:day:${group.dateKey}`, groupKind: 'date' as const }))]), ...loading];
+    }
+    const nested = nestSessionListReports(arranged, params.resolveSessionRow, (serverId, runId) => {
+        const summary = summaryByKey.get(JSON.stringify([serverId, runId]));
+        return resolveWorkflowRunParentSessionId(summary);
+    });
+    return pruneOrphanHeaders(nested);
+}
+
 export function computeVisibleSessionListIndex(
     inputParams: ComputeVisibleSessionListIndexParams,
 ): SessionListIndexItem[] | null {
-    const source = inputParams.source;
+    const source = inputParams.source ?? (inputParams.workflowRuns?.length ? [] : null);
     if (!source) return null;
     const params: ComputeVisibleSessionListIndexParams = {
         ...inputParams,
+        source,
         resolveSessionRow: resolveEachSessionRowOnce(inputParams.resolveSessionRow),
     };
     if (!syncPerformanceTelemetry.isEnabled()) {
         const visible = computeVisibleSessionListIndexUnmeasured(params);
-        return visible ? nestSessionListReports(visible, params.resolveSessionRow) : visible;
+        return visible ? projectWorkflowRunRows(visible, params) : visible;
     }
 
     const startedAtMs = nowMs();
@@ -1420,5 +1537,5 @@ export function computeVisibleSessionListIndex(
             storageFilter: params.storageFilterApplied === true ? 1 : 0,
         },
     );
-    return result ? nestSessionListReports(result, params.resolveSessionRow) : result;
+    return result ? projectWorkflowRunRows(result, params) : result;
 }

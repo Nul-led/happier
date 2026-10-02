@@ -6,7 +6,7 @@ import { selectScmCreatePrResult } from './selectScmCreatePrResult';
 describe('selectScmCreatePrResult', () => {
     it('distinguishes in-app creation, reuse, and provider-page handoff', () => {
         const pullRequest = {
-            provider: { id: 'scm.github', kind: 'github' as const, displayName: 'GitHub', baseUrl: 'https://github.com', nameWithOwner: 'team/repo', urlSafety: { allowedSchemes: ['https:'] as const } },
+            provider: { id: 'scm.github', kind: 'github' as const, displayName: 'GitHub', baseUrl: 'https://github.com', nameWithOwner: 'team/repo', urlSafety: { allowedSchemes: ['https:'] } },
             number: 12, title: 'New PR', url: 'https://github.com/team/repo/pull/12',
             baseBranch: 'main', headBranch: 'feature', state: 'open' as const,
         };

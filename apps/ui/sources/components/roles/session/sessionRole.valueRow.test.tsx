@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BUILT_IN_ROLES_V1 } from '@happier-dev/protocol';
 
 import { renderScreen } from '@/dev/testkit';
+import { createSessionFixture, createSessionAccessFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -49,7 +50,7 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     });
 });
 
-const { SessionRoleValueRow } = await import('./sessionRole');
+const { SessionRoleValueRow, isSessionRoleSnapshotCopiedAcrossOwners } = await import('./sessionRole');
 const { invalidateRoleCatalog } = await import('@/components/roles/catalog/useRoleCatalog');
 
 /** The composite that declared a testID (not the host it painted), for reading its declared props. */
@@ -64,6 +65,25 @@ function sessionRoles(roleId: string | null, overrides: Record<string, unknown> 
 describe('Session Role value row (Work tab top row)', () => {
     beforeEach(() => {
         invalidateRoleCatalog();
+    });
+
+    it('compares the inherited lead and worker owners rather than treating all inheritance as cross-owner', () => {
+        const metadata = { path: '/repo', host: 'test', work: { sessionRolesV1: {
+            inheritedFrom: 'lead', overrides: {}, sessionRoles: {}, notes: 'Snapshot',
+        } } };
+        const worker = createSessionFixture({ id: 'worker', serverId: 'home', owner: 'worker-owner', metadata });
+        const lead = createSessionFixture({ id: 'lead', serverId: 'home', owner: 'lead-owner' });
+        expect(isSessionRoleSnapshotCopiedAcrossOwners(worker, lead, 'worker-owner')).toBe(true);
+        expect(isSessionRoleSnapshotCopiedAcrossOwners({ ...worker, owner: 'lead-owner' }, lead, 'lead-owner')).toBe(false);
+        expect(isSessionRoleSnapshotCopiedAcrossOwners({ ...worker, metadata: null }, lead, 'worker-owner')).toBe(false);
+        expect(isSessionRoleSnapshotCopiedAcrossOwners(worker, { ...lead, serverId: 'other-home' }, 'worker-owner')).toBe(false);
+        const ownWorker = { ...worker, owner: undefined, access: createSessionAccessFixture('owner') };
+        const receivedLead = { ...lead, access: createSessionAccessFixture('edit') };
+        expect(isSessionRoleSnapshotCopiedAcrossOwners(ownWorker, receivedLead, 'worker-owner')).toBe(true);
+        expect(isSessionRoleSnapshotCopiedAcrossOwners({ ...worker, access: createSessionAccessFixture('edit') },
+            { ...lead, owner: undefined, access: createSessionAccessFixture('owner') }, 'lead-owner')).toBe(true);
+        expect(isSessionRoleSnapshotCopiedAcrossOwners(ownWorker,
+            { ...lead, owner: undefined, access: createSessionAccessFixture('owner') }, 'worker-owner')).toBe(false);
     });
 
     it('names the session\'s role with hands-off as its attribute, and opens the Role popover', async () => {
@@ -87,5 +107,12 @@ describe('Session Role value row (Work tab top row)', () => {
         shared.metadata = sessionRoles(null);
         const none = await renderScreen(<SessionRoleValueRow sessionId="lead" testID="session-work-role" />);
         expect(declared(none, 'session-work-role', 'detail')!.props.detail).toBe('sessionWork.role.none');
+    });
+
+    it('keeps a copied Role inspectable as text without opening a mutation popover', async () => {
+        shared.metadata = sessionRoles('orchestrator');
+        const screen = await renderScreen(<SessionRoleValueRow sessionId="lead" copiedAtSpawn testID="session-work-role" />);
+        expect(declared(screen, 'session-work-role', 'detail')!.props.detail).toBe('Orchestrator · sessionWork.role.handsOff');
+        expect(declared(screen, 'session-work-role', 'onPress')).toBeNull();
     });
 });

@@ -1,32 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { buildWorkBoardItemKeyV1, createWorkBoardV1, WorkBoardsV1Schema, type BoardItemRefV1, type WorkBoardsV1 } from '@happier-dev/protocol';
+import { buildWorkBoardItemKeyV1, createWorkBoardV1, WorkBoardsV1Schema, type BoardItemRefV1, type WorkBoardArtifactV1 } from '@happier-dev/protocol';
+import { createWorkBoardArtifactBoundary } from '@/dev/testkit/harness/workBoardArtifactBoundary';
 import { createWorkBoardAccountStore } from './workBoardAccountStore';
 import { projectDisplayedWorkBoards } from './workBoardSaveQueue';
 
 const session = (id: string): BoardItemRefV1 => ({ kind: 'session', qualifiedId: { serverId: 'home-a', id } });
 const base = WorkBoardsV1Schema.parse({ v: 1, boards: [{ ...createWorkBoardV1({ id: 'b1', name: 'Overview' }), source: { picked: [session('s1')] } }] });
 
-/** KV CAS is the persistence boundary; reducer, rebase, queue and projection remain real. */
+/** Artifact CAS is the persistence boundary; reducer, rebase, queue and projection remain real. */
 function boundary() {
-    let value: unknown = base;
-    let version = 0;
-    let gate: Promise<void> = Promise.resolve();
+    const persistence = createWorkBoardArtifactBoundary(base);
     let current = true;
-    let unavailable = false;
-    const store = createWorkBoardAccountStore({
-        read: async () => { await gate; if (unavailable) throw new Error('offline'); return { value, version }; },
-        compareAndSet: async (next, expected) => {
-            if (expected !== version) return { success: false, value, version };
-            value = next;
-            return { success: true, version: ++version };
-        },
-    }, () => current);
-    return { store, acknowledged: () => WorkBoardsV1Schema.parse(value), replace: (next: unknown) => { value = next; version++; },
-        retire: () => { current = false; }, offline: (next: boolean) => { unavailable = next; },
-        hold() { let release!: () => void; gate = new Promise<void>(resolve => { release = resolve; }); return release; } };
+    const store = createWorkBoardAccountStore(persistence.transport, () => current);
+    return { store, ...persistence, retire: () => { current = false; } };
 }
 
-describe('WorkBoard Account KV save queue', () => {
+describe('WorkBoard Account Artifact save queue', () => {
     it('settles an admitted edit after the last Board view detaches', async () => {
         const b = boundary();
         const releaseView = b.store.retainView(() => () => {});
@@ -49,30 +38,109 @@ describe('WorkBoard Account KV save queue', () => {
 
     it('does not render a malformed stored record as an empty collection', async () => {
         const b = boundary();
-        await b.store.refresh(); b.replace(null);
+        await b.store.refresh(); const original = b.rows.get('b1')!;
+        b.rows.set('b1', { ...original, body: 'invalid-json' });
         await b.store.refresh();
         expect(b.store.getReadState()).toMatchObject({ status: 'error', hasSnapshot: true, errorCode: 'invalid_board_record' });
         expect(b.store.getBoards()).toEqual(base);
-        b.replace(base); await b.store.refresh();
+        b.rows.set('b1', original); await b.store.refresh();
         expect(b.store.getReadState()).toMatchObject({ status: 'ready', hasSnapshot: true });
     });
 
+    it('withdraws an unreadable Board projection without rewriting it or hiding readable neighbors', async () => {
+        const persistence = createWorkBoardArtifactBoundary(WorkBoardsV1Schema.parse({ v: 1, boards: [...base.boards, createWorkBoardV1({ id: 'b2', name: 'Other' })] }));
+        const store = createWorkBoardAccountStore(persistence.transport, () => true);
+        await store.refresh();
+        const row = persistence.rows.get('b1')!;
+        const future = { ...row, body: JSON.stringify({ ...base.boards[0], futureField: true }), revision: { headerVersion: 2, bodyVersion: 2 } };
+        persistence.rows.set('b1', future);
+        await store.refresh();
+        expect(store.getReadState().status).toBe('ready');
+        expect(store.getBoards().boards.map(board => board.id)).toEqual(['b2']);
+        expect(persistence.rows.get('b1')).toBe(future);
+    });
+
     it('keeps a newer write acknowledgement when an older refresh returns later', async () => {
-        let value = base;
-        let version = 0;
-        let resolveOld!: (value: { value: WorkBoardsV1; version: number }) => void;
+        const persistence = createWorkBoardArtifactBoundary(base);
+        const original = persistence.rows.get('b1')!;
+        let resolveOld!: (value: WorkBoardArtifactV1) => void;
+        let markReading!: () => void;
+        const reading = new Promise<void>(resolve => { markReading = resolve; });
         let first = true;
         const store = createWorkBoardAccountStore({
-            read: async () => {
-                if (first) { first = false; return await new Promise(resolve => { resolveOld = resolve; }); }
-                return { value, version };
+            ...persistence.transport,
+            read: async id => {
+                if (first) { first = false; markReading(); return await new Promise(resolve => { resolveOld = resolve; }); }
+                return persistence.transport.read(id);
             },
-            compareAndSet: async next => { value = next; return { success: true, version: ++version }; },
         }, () => true);
         const refresh = store.refresh();
+        await reading;
         await store.queue.dispatch({ kind: 'update', boardId: 'b1', patch: { name: 'Newer' } });
-        resolveOld({ value: base, version: 0 }); await refresh;
+        resolveOld(original); await refresh;
         expect(store.getBoards().boards[0]!.name).toBe('Newer');
+    });
+
+    it('does not resurrect a deleted Board when an older body refresh arrives', async () => {
+        const persistence = createWorkBoardArtifactBoundary(base);
+        const original = persistence.rows.get('b1')!;
+        let resolveOld!: (value: WorkBoardArtifactV1) => void;
+        let markReading!: () => void;
+        const reading = new Promise<void>(resolve => { markReading = resolve; });
+        let first = true;
+        const store = createWorkBoardAccountStore({ ...persistence.transport, read: async id => {
+            if (first) { first = false; markReading(); return await new Promise(resolve => { resolveOld = resolve; }); }
+            return persistence.transport.read(id);
+        } }, () => true);
+        const refresh = store.refresh(); await reading;
+        await store.queue.dispatch({ kind: 'delete', boardId: 'b1' });
+        resolveOld(original); await refresh;
+        expect(store.getBoards().boards).toEqual([]);
+        expect(store.getSummaries()).toEqual([]);
+    });
+
+    it('serves pin chrome from headers and loads only a demanded Board body', async () => {
+        const persistence = createWorkBoardArtifactBoundary(WorkBoardsV1Schema.parse({ v: 1, boards: [...base.boards, createWorkBoardV1({ id: 'b2', name: 'Other' })] }));
+        const store = createWorkBoardAccountStore(persistence.transport, () => true);
+        const releaseHeaders = store.retainView(() => () => {}, 'headers');
+        await store.refresh();
+        expect(store.getSummaries().map(board => board.id)).toEqual(['b1', 'b2']);
+        expect(persistence.reads).toEqual([]);
+        const releaseBody = store.retainView(() => () => {}, 'board:b1');
+        await store.refresh();
+        expect(persistence.reads).toEqual(['b1']);
+        releaseBody(); releaseHeaders();
+    });
+
+    it('acknowledges a newly created Board after its same id was deleted', async () => {
+        const b = boundary();
+        await b.store.queue.dispatch({ kind: 'update', boardId: 'b1', patch: { name: 'Before deletion' } });
+        await b.store.queue.dispatch({ kind: 'delete', boardId: 'b1' });
+        await b.store.queue.dispatch({ kind: 'create', board: { id: 'b1', name: 'Recreated' } });
+        expect(b.store.queue.getState().failure).toBeNull();
+        expect(b.store.getBoards().boards[0]?.name).toBe('Recreated');
+    });
+
+    it('loads independent Board bodies in parallel and publishes them in inventory order', async () => {
+        const persistence = createWorkBoardArtifactBoundary(WorkBoardsV1Schema.parse({ v: 1, boards: [...base.boards, createWorkBoardV1({ id: 'b2', name: 'Other' })] }));
+        let releaseFirst!: () => void;
+        const firstResponse = new Promise<void>(resolve => { releaseFirst = resolve; });
+        let startedFirst!: () => void;
+        const firstRequest = new Promise<void>(resolve => { startedFirst = resolve; });
+        let inFlight = 0;
+        let peak = 0;
+        const store = createWorkBoardAccountStore({ ...persistence.transport, read: async id => {
+            inFlight++; peak = Math.max(peak, inFlight);
+            if (id === 'b1') { startedFirst(); await firstResponse; }
+            const row = await persistence.transport.read(id);
+            inFlight--; return row;
+        } }, () => true);
+        const refresh = store.refresh(); await firstRequest;
+        // Flush the other independent response; the first remains held at the persistence boundary.
+        await new Promise<void>(resolve => { setTimeout(resolve, 0); });
+        try { expect(peak).toBe(2); }
+        finally { releaseFirst(); await refresh; }
+        expect(store.getBoards().boards.map(board => board.id)).toEqual(['b1', 'b2']);
     });
 
     it('projects an edit immediately and keeps it once the dedicated record acknowledges it', async () => {

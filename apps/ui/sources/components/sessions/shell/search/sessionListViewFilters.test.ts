@@ -563,5 +563,14 @@ describe('sessionListViewFilters', () => {
         expect(signature).not.toContain('home-b');
         expect(signature).not.toContain('team-b');
         expect(signature).not.toContain('later');
+        const eligibility = {
+            eligibleHomeServerIds: ['home-a'],
+            eligibleAudiences: [{ serverId: 'home-a', kind: 'team' as const, teamId: 'team-a' }],
+            eligibleTagIds: [{ serverId: 'home-a', tagId: 'urgent' }],
+        };
+        expect(buildSessionListSelectionScopeSignature({ ...filters, show: 'runs' }, eligibility)).not.toBe(signature);
+        expect(buildSessionListSelectionScopeSignature({ ...filters, startedBy: [] }, eligibility)).not.toBe(signature);
+        expect(buildSessionListSelectionScopeSignature({ ...filters, startedBy: ['agents', 'triggers'] }, eligibility))
+            .toBe(buildSessionListSelectionScopeSignature({ ...filters, startedBy: ['triggers', 'agents'] }, eligibility));
     });
 });

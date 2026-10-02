@@ -10,7 +10,7 @@ import { reloadConfiguration } from '@/configuration';
 import { startAutomationWorker } from './automationWorker';
 import type { sendSessionMessage } from '@/session/services/sendSessionMessage';
 
-import { createAccountScopedCryptoMaterialSnapshotV1, convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1, type AutomationV3WorkerAssignmentsResponse } from '@happier-dev/protocol';
+import { AutomationV3WorkerClaimResponseSchema, createAccountScopedCryptoMaterialSnapshotV1, convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1, type AutomationV3WorkerAssignmentsResponse } from '@happier-dev/protocol';
 
 type MachineAdmissionTransport = NonNullable<
   Parameters<typeof sendSessionMessage>[0]['machineAdmissionTransport']
@@ -101,6 +101,37 @@ async function startAutomationServer(params: {
   const snapshot = createAccountScopedCryptoMaterialSnapshotV1({ accountEncryptionMode: 'e2ee', material: TEST_ENCRYPTION });
   const contentKeyFingerprint = accountMode === 'plain' ? null : convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(snapshot.contentPublicKeyFingerprint);
   let accountCurrentnessVersion = 1;
+  const original = params.claimRunOnce;
+  const invokedAt = original?.run.createdAt ?? Date.now();
+  // Validate the network fixture at the real wire boundary before starting the
+  // server, so fixture drift fails directly instead of stalling worker effects.
+  const claimResponse = original ? AutomationV3WorkerClaimResponseSchema.parse({
+    run: {
+      id: original.run.id,
+      automationId: original.run.automationId,
+      attempt: original.run.attempt,
+      revision: 0,
+      recipeKind: 'legacy',
+      triggerId: null,
+      triggerRetired: false,
+      executionInputEnvelope: original.run.executionInputEnvelope ?? JSON.stringify({
+        kind: 'happier_automation_run_execution_input_v1',
+        targetType: original.automation.targetType,
+        templateVersion: 1,
+        templateCiphertext: original.automation.templateCiphertext,
+        origin: { kind: 'manual', invokedAt },
+      }),
+      cause: original.run.cause ?? { kind: 'manual', invokedAt },
+    },
+    automation: {
+      id: original.automation.id,
+      name: original.automation.name,
+      enabled: original.automation.enabled,
+      workflowDefinitionId: null,
+      scopeSessionId: null,
+    },
+    accountCurrentness: { mode: accountMode, version: 1, contentKeyFingerprint },
+  }) : null;
 
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
@@ -114,24 +145,9 @@ async function startAutomationServer(params: {
     }
 
     if (!params.missingAutomationRoutes && request.method === 'POST' && url.pathname === '/v3/automations/runs/claim') {
-      if (!claimConsumed && params.claimRunOnce) {
+      if (!claimConsumed && claimResponse) {
         claimConsumed = true;
-        const original = params.claimRunOnce;
-        const invokedAt = original.run.createdAt ?? Date.now();
-        const cause = original.run.cause ?? { kind: 'manual', invokedAt };
-        const executionInputEnvelope = original.run.executionInputEnvelope ?? JSON.stringify({
-          kind: 'happier_automation_run_execution_input_v1', targetType: original.automation.targetType,
-          templateVersion: 1, templateCiphertext: original.automation.templateCiphertext,
-          origin: { kind: 'manual', invokedAt },
-        });
-        writeJson(response, 200, {
-          run: { id: original.run.id, automationId: original.run.automationId, attempt: original.run.attempt,
-            revision: 0, recipeKind: 'legacy', triggerId: null, triggerRetired: false,
-            executionInputEnvelope, cause, resultDelivery: { kind: 'none' } },
-          automation: { id: original.automation.id, name: original.automation.name, enabled: original.automation.enabled,
-            workflowDefinitionId: null, scopeSessionId: null },
-          accountCurrentness: { mode: accountMode, version: 1, contentKeyFingerprint },
-        });
+        writeJson(response, 200, claimResponse);
         return;
       }
       writeJson(response, 200, { run: null, automation: null, accountCurrentness: null });
@@ -391,7 +407,7 @@ describe('automationWorker integration', () => {
     }
   });
 
-  it('executes a released-V2 frozen input through the V3 HTTP client and executor lifecycle', async () => {
+  it('executes current frozen normalization of retained 0.2 data through the V3 HTTP client and executor lifecycle', async () => {
     const invokedAt = Date.now();
     const frozenInput = JSON.stringify({
       kind: 'happier_automation_run_execution_input_v1',
@@ -591,7 +607,7 @@ describe('automationWorker integration', () => {
     try {
       await waitForCondition(() => server.state.failed.length === 1);
       expect(spawnSession).not.toHaveBeenCalled();
-      expect(server.state.started).toHaveLength(1);
+      expect(server.state.started).toHaveLength(0);
       expect(server.state.succeeded).toHaveLength(0);
       expect(server.state.failed[0]).toEqual(
         expect.objectContaining({

@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
-import { SCM_OPERATION_ERROR_CODES, type ScmHostingRepositoryDescribePublishTargetsResponse, type ScmHostingRepositoryPublishResponse } from '@happier-dev/protocol/scm';
+import { SCM_OPERATION_ERROR_CODES, ScmHostingRepositoryDescribePublishTargetsResponseSchema, type ScmHostingRepositoryDescribePublishTargetsResponse, type ScmHostingRepositoryPublishResponse } from '@happier-dev/protocol/scm';
 
 import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
 import { createThemeFixture } from '@/dev/testkit/fixtures/themeFixtures';
@@ -94,7 +94,7 @@ describe('SourceControlPublishRepositorySection', () => {
         const onConnectGitHub = vi.fn();
         const screen = await renderScreen(<SourceControlPublishRepositorySection
             theme={createSourceControlUpdateThemeFixture()} snapshot={createSnapshot()} writeEnabled
-            publishTargets={{ success: true, defaultRepositoryName: 'repo', ...result }}
+            publishTargets={ScmHostingRepositoryDescribePublishTargetsResponseSchema.parse({ success: true, defaultRepositoryName: 'repo', ...result })}
             onDescribePublishTargets={vi.fn()} onPublishRepository={vi.fn()} onRefresh={vi.fn()}
             onConnectGitHub={onConnectGitHub}
         />);
@@ -105,7 +105,7 @@ describe('SourceControlPublishRepositorySection', () => {
 
     it('shows the Azure provider CLI command from the actual signed-out provider result', async () => {
         let authenticated = false;
-        const describePublishTargets = async (): Promise<ScmHostingRepositoryDescribePublishTargetsResponse> => ({
+        const describePublishTargets = async (): Promise<ScmHostingRepositoryDescribePublishTargetsResponse> => ScmHostingRepositoryDescribePublishTargetsResponseSchema.parse({
             success: true,
             defaultRepositoryName: 'repo',
             ...await createAzureDevopsOperationsAdapter().describePublishTargets({

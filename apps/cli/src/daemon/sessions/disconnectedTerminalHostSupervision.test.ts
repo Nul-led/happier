@@ -132,8 +132,7 @@ describe('disconnected terminal-host supervision', () => {
     await withConfiguredDaemonTestHome({ prefix: 'dead-host-superseded-' }, async ({ homeDir }) => {
       const sessionId = 'session-live-1';
       await writeTerminalHostAttachmentInfo({
-        happyHomeDir: homeDir, sessionId, attachmentId: handle.attachmentId, handle,
-        terminal: { mode: 'tmux', tmux: { target: 'happier-live-1:claude.1' } },
+        happyHomeDir: homeDir, sessionId, handle,
       });
       const metadata = JSON.stringify({ path: '/repo', terminal: {
         mode: 'tmux', controlServiceabilityV1: {

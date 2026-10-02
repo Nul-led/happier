@@ -176,7 +176,7 @@ import {
   type AgentRuntimeDaemonServiceRequestV1,
   type AgentRuntimeDaemonServiceResponseV1,
 } from '@/agent/runtime/session/process/agentRuntimeDaemonServiceProtocol';
-import type { ForegroundAgentRuntimeAdmissionOwner } from './agentRuntime/foregroundAdmission';
+import type { ForegroundAgentRuntimeAdmissionOwner, ForegroundDaemonServiceSubject } from './agentRuntime/foregroundAdmission';
 import {
   FOREGROUND_AGENT_RUNTIME_ADMISSION_PATH,
   FOREGROUND_AGENT_RUNTIME_CLAIM_PATH,
@@ -208,6 +208,7 @@ export type AgentRuntimeDaemonServiceRoutes = Readonly<{
       invocationContext: RunnerAgentInvocationContext;
       trackedSession?: TrackedSession;
       signal?: AbortSignal;
+      isCurrent(): Promise<boolean>;
     }>,
   ): Promise<AgentRuntimeDaemonServiceResponseV1>;
 }>;
@@ -392,7 +393,7 @@ type TrackedAgentRuntimeDaemonServiceAuthority = Readonly<{
   invocationContext: RunnerAgentInvocationContext;
 }>;
 
-async function resolveTrackedAgentRuntimeDaemonServiceAuthority(
+export async function resolveTrackedAgentRuntimeDaemonServiceAuthority(
   tracked: TrackedSession,
   sessionId: string,
   readPluginHardRevocationRevision?: (pluginId: string) => Promise<number>,
@@ -622,6 +623,7 @@ function readRuntimeAuthRecoveryAttemptId(recovery: unknown): string | null {
 }
 
 type SpawnNonceCorrelationRecord = Readonly<{
+  terminal?: { promise: Promise<void>; resolve: () => void; activeWaits: number };
   status: 'pending' | 'success' | 'error';
   sessionId?: string;
   sessionCreationOutcome?: SessionCreationOutcome;
@@ -981,8 +983,9 @@ export function createDaemonControlApp({
 
   const pruneSpawnNonceCorrelation = (nowMs: number = Date.now()): void => {
     for (const [spawnNonce, record] of spawnNonceCorrelationByNonce.entries()) {
-      if (record.expiresAtMs <= nowMs) {
+      if (record.expiresAtMs <= nowMs && !record.terminal?.activeWaits) {
         spawnNonceCorrelationByNonce.delete(spawnNonce);
+        record.terminal?.resolve();
       }
     }
   };
@@ -994,8 +997,12 @@ export function createDaemonControlApp({
     pruneSpawnNonceCorrelation(nowMs);
     const current = spawnNonceCorrelationByNonce.get(normalizedNonce);
     if ((current?.status === 'success' || current?.status === 'error') && current.expiresAtMs > nowMs) return;
+    if (current?.status === 'pending') return;
+    let resolve!: () => void;
+    const promise = new Promise<void>((settle) => { resolve = settle; });
     spawnNonceCorrelationByNonce.set(normalizedNonce, {
       status: 'pending',
+      terminal: { promise, resolve, activeWaits: 0 },
       updatedAtMs: nowMs,
       expiresAtMs: nowMs + spawnNoncePendingTtlMs,
     });
@@ -1020,6 +1027,7 @@ export function createDaemonControlApp({
       updatedAtMs: nowMs,
       expiresAtMs: nowMs + spawnNonceSuccessTtlMs,
     });
+    current?.terminal?.resolve();
   };
 
   const markSpawnNonceError = (
@@ -1047,12 +1055,15 @@ export function createDaemonControlApp({
       updatedAtMs: nowMs,
       expiresAtMs: nowMs + spawnNonceSuccessTtlMs,
     });
+    current?.terminal?.resolve();
   };
 
   const clearSpawnNonceCorrelation = (spawnNonce: string): void => {
     const normalizedNonce = spawnNonce.trim();
     if (!normalizedNonce) return;
+    const current = spawnNonceCorrelationByNonce.get(normalizedNonce);
     spawnNonceCorrelationByNonce.delete(normalizedNonce);
+    current?.terminal?.resolve();
   };
 
   const readTrackedSpawnNonceAdmission = async (spawnNonce: string): Promise<Exclude<SpawnNonceAdmissionResult, { type: 'none' | 'claimed' }> | null> => {
@@ -1113,19 +1124,27 @@ export function createDaemonControlApp({
       return tracked;
     }
     if (tracked?.type === 'pending') {
-      spawnNonceCorrelationByNonce.delete(normalizedNonce);
       return tracked;
     }
     if (tracked?.type === 'error') {
       markSpawnNonceError(normalizedNonce, tracked);
       return tracked;
     }
-    spawnNonceCorrelationByNonce.set(normalizedNonce, {
-      status: 'pending',
-      updatedAtMs: nowMs,
-      expiresAtMs: nowMs + spawnNoncePendingTtlMs,
-    });
     return { type: 'claimed' };
+  };
+
+  const readSpawnNonceSnapshot = (spawnNonce: string): z.infer<typeof SpawnSessionNonceControlResponseSchema> => {
+    const record = spawnNonceCorrelationByNonce.get(spawnNonce);
+    if (record?.status === 'success' && isCanonicalSessionId(record.sessionId)) {
+      return { success: true, status: 'success', sessionId: record.sessionId,
+        ...(record.sessionCreationOutcome ? { sessionCreationOutcome: record.sessionCreationOutcome } : {}) };
+    }
+    if (record?.status === 'error' && record.errorCode && record.errorMessage) {
+      return { success: true, status: 'error', errorCode: record.errorCode, errorMessage: record.errorMessage,
+        ...(record.agentId !== undefined ? { agentId: record.agentId } : {}),
+        ...(record.errorDetail ? { errorDetail: record.errorDetail } : {}) };
+    }
+    return { success: true, status: record?.status === 'pending' ? 'pending' : 'not_found' };
   };
 
   const markSpawnNonceFromTrackedSession = (sessionId: string): void => {
@@ -2899,13 +2918,22 @@ export function createDaemonControlApp({
         },
       };
     }
-    if (
-      request.body.operation.kind
-        === 'managed_server.endpoint.resolve'
-    ) {
-      const witness = request.body.operation.witness;
+    const operationWitness =
+      request.body.operation.kind === 'managed_server.endpoint.resolve'
+      || request.body.operation.kind === 'action.execute'
+        ? request.body.operation.witness
+        : null;
+    const turnWitnessIsCurrent = (
+      subject: ForegroundDaemonServiceSubject | null = foregroundSubject,
+    ): boolean => {
+      if (!operationWitness) return true;
+      const witness = operationWitness;
+      if (witness.agentStartCaller
+        && witness.agentStartCaller.sessionId !== request.body.context.sessionId) {
+        return false;
+      }
       const foregroundAdmission =
-        foregroundSubject?.readAdmission() ?? null;
+        subject?.readAdmission() ?? null;
       const trackedWitnessAuthorized = trackedAuthority
         ? authorizeTrackedRunnerAgentDaemonServiceOperation({
           tracked: trackedAuthority.tracked,
@@ -2932,22 +2960,21 @@ export function createDaemonControlApp({
               === witness.userMessageSeqs[index],
         ),
       );
-      if (
-        trackedAuthority
-          ? !trackedWitnessAuthorized
-          : !foregroundWitnessAuthorized
-      ) {
-        reply.code(403);
-        return {
-          ok: false as const,
-          error: {
-            code:
-              'agent_runtime_daemon_service_turn_forbidden',
-            message:
-              'Agent runtime daemon service turn witness is forbidden',
-          },
-        };
-      }
+      return trackedAuthority
+        ? trackedWitnessAuthorized
+        : foregroundWitnessAuthorized;
+    };
+    if (!turnWitnessIsCurrent()) {
+      reply.code(403);
+      return {
+        ok: false as const,
+        error: {
+          code:
+            'agent_runtime_daemon_service_turn_forbidden',
+          message:
+            'Agent runtime daemon service turn witness is forbidden',
+        },
+      };
     }
     const trackedAuthorityAtDispatch = trackedAuthority;
     const trackedAuthorityRemainsCurrent = async (): Promise<boolean> => {
@@ -2969,6 +2996,27 @@ export function createDaemonControlApp({
           request.body.context.sessionId,
           readPluginHardRevocationRevision,
         ),
+      );
+    };
+    const isCurrent = async (): Promise<boolean> => {
+      if (trackedAuthorityAtDispatch) {
+        return await trackedAuthorityRemainsCurrent() && turnWitnessIsCurrent();
+      }
+      if (getChildren().some((candidate) => candidate.happySessionId === request.body.context.sessionId)) {
+        return false;
+      }
+      const current = foregroundAgentRuntimeAdmission?.authorizeDaemonServiceRequest({
+        request: request.body,
+        providedCapability,
+      }) ?? null;
+      return Boolean(
+        foregroundSubject
+        && current
+        && current.capabilityDigest === foregroundSubject.capabilityDigest
+        && isDeepStrictEqual(current.runner, foregroundSubject.runner)
+        && isDeepStrictEqual(current.retainedAgent, foregroundSubject.retainedAgent)
+        && isDeepStrictEqual(current.invocationContext, foregroundSubject.invocationContext)
+        && turnWitnessIsCurrent(current),
       );
     };
     const admissionCustodyUnavailable = () => {
@@ -2998,6 +3046,7 @@ export function createDaemonControlApp({
             invocationContext: trackedAuthority.invocationContext,
             trackedSession: trackedAuthority.tracked,
             signal: requestLifetime.signal,
+            isCurrent,
           }
           : {
             sessionId: request.body.context.sessionId,
@@ -3005,12 +3054,15 @@ export function createDaemonControlApp({
             retainedAgent: foregroundSubject!.retainedAgent,
             invocationContext: foregroundSubject!.invocationContext,
             signal: requestLifetime.signal,
+            isCurrent,
           },
       );
     } finally {
       reply.raw.removeListener('close', onClientClose);
     }
-    if (tracked && !await trackedAuthorityRemainsCurrent()) {
+    if (request.body.operation.kind === 'action.execute'
+      ? !await isCurrent()
+      : tracked && !await trackedAuthorityRemainsCurrent()) {
       return admissionCustodyUnavailable();
     }
     if (
@@ -3571,6 +3623,7 @@ export function createDaemonControlApp({
     schema: {
       body: z.object({
         spawnNonce: z.string(),
+        timeoutMs: z.number().int().nonnegative().optional(),
       }),
       response: {
         200: SpawnSessionNonceControlResponseSchema,
@@ -3578,7 +3631,7 @@ export function createDaemonControlApp({
       },
     },
     preHandler: requireAuth,
-  }, async (request) => {
+  }, async (request, reply) => {
     const normalizedNonce = request.body.spawnNonce.trim();
     if (!normalizedNonce) {
       return {
@@ -3587,83 +3640,61 @@ export function createDaemonControlApp({
       };
     }
 
-    const nowMs = Date.now();
-    pruneSpawnNonceCorrelation(nowMs);
-    const record = spawnNonceCorrelationByNonce.get(normalizedNonce);
-    if (record) {
-      if (record.status === 'success' && isCanonicalSessionId(record.sessionId)) {
-        return {
-          success: true as const,
-          status: 'success' as const,
-          sessionId: record.sessionId,
-          ...(record.sessionCreationOutcome
-            ? { sessionCreationOutcome: record.sessionCreationOutcome }
-            : {}),
-        };
-      }
-      if (record.status === 'pending') {
-        return {
-          success: true as const,
-          status: 'pending' as const,
-        };
-      }
-      if (record.status === 'error' && record.errorCode && record.errorMessage) {
-        return {
-          success: true as const,
-          status: 'error' as const,
-          errorCode: record.errorCode,
-          errorMessage: record.errorMessage,
-          ...(record.agentId !== undefined ? { agentId: record.agentId } : {}),
-          ...(record.errorDetail ? { errorDetail: record.errorDetail } : {}),
-        };
-      }
+    pruneSpawnNonceCorrelation();
+    const timeoutMs = request.body.timeoutMs;
+    const deadlineMs = Date.now() + (timeoutMs ?? 0);
+    const needsRecovery = !spawnNonceCorrelationByNonce.has(normalizedNonce);
+    if (needsRecovery && getChildren().some(child => child.spawnOptions?.spawnNonce?.trim() === normalizedNonce)) {
+      // Recover observation before I/O, without claiming an unknown nonce.
+      markSpawnNoncePending(normalizedNonce);
     }
-
-    const tracked = await readTrackedSpawnNonceAdmission(normalizedNonce);
-    // Canonical report/spawn completion can publish while recovered proof awaits I/O.
-    const completed = spawnNonceCorrelationByNonce.get(normalizedNonce);
-    if (completed?.status === 'success' && isCanonicalSessionId(completed.sessionId)) {
-      return { success: true as const, status: 'success' as const, sessionId: completed.sessionId,
-        ...(completed.sessionCreationOutcome ? { sessionCreationOutcome: completed.sessionCreationOutcome } : {}) };
-    }
-    if (completed?.status === 'error' && completed.errorCode && completed.errorMessage) {
-      return { success: true as const, status: 'error' as const, errorCode: completed.errorCode,
-        errorMessage: completed.errorMessage, ...(completed.agentId !== undefined ? { agentId: completed.agentId } : {}),
-        ...(completed.errorDetail ? { errorDetail: completed.errorDetail } : {}) };
-    }
-    if (completed?.status === 'pending') return { success: true as const, status: 'pending' as const };
-    if (tracked) {
-      if (tracked.type === 'success') {
-        markSpawnNonceSuccess(
-          normalizedNonce,
-          tracked.sessionId,
-          tracked.sessionCreationOutcome,
-        );
-        return {
-          success: true as const,
-          status: 'success' as const,
-          sessionId: tracked.sessionId,
-          ...(tracked.sessionCreationOutcome
-            ? { sessionCreationOutcome: tracked.sessionCreationOutcome }
-            : {}),
-        };
+    let terminal: SpawnNonceCorrelationRecord['terminal'];
+    let ended = false;
+    const retainTerminal = () => {
+      if (!terminal) {
+        terminal = spawnNonceCorrelationByNonce.get(normalizedNonce)?.terminal;
+        if (terminal) terminal.activeWaits += 1;
       }
-      if (tracked.type === 'error') {
-        markSpawnNonceError(normalizedNonce, tracked);
-        return { success: true as const, status: 'error' as const, errorCode: tracked.errorCode,
-          errorMessage: tracked.errorMessage, ...(tracked.agentId !== undefined ? { agentId: tracked.agentId } : {}),
-          ...(tracked.errorDetail ? { errorDetail: tracked.errorDetail } : {}) };
-      }
-      return {
-        success: true as const,
-        status: 'pending' as const,
-      };
-    }
-
-    return {
-      success: true as const,
-      status: 'not_found' as const,
+      return terminal;
     };
+    const observe = async () => {
+      if (needsRecovery) {
+        const recovery = readTrackedSpawnNonceAdmission(normalizedNonce);
+        const pending = timeoutMs ? retainTerminal() : undefined;
+        const tracked = await (pending
+          ? Promise.race([recovery, pending.promise.then(() => null)])
+          : recovery);
+        // A startup callback can settle while recovered proof awaits I/O.
+        const current = spawnNonceCorrelationByNonce.get(normalizedNonce);
+        if (!current || current.status === 'pending') {
+          if (tracked?.type === 'success') markSpawnNonceSuccess(normalizedNonce, tracked.sessionId, tracked.sessionCreationOutcome);
+          else if (tracked?.type === 'error') markSpawnNonceError(normalizedNonce, tracked);
+          else if (tracked?.type === 'pending') markSpawnNoncePending(normalizedNonce);
+        }
+      }
+      if (timeoutMs && !ended && Date.now() < deadlineMs) {
+        await retainTerminal()?.promise;
+      }
+      return readSpawnNonceSnapshot(normalizedNonce);
+    };
+    if (!timeoutMs) return await observe();
+    // One containing deadline, including recovered-admission I/O. No cadence.
+    return await new Promise<z.infer<typeof SpawnSessionNonceControlResponseSchema>>((resolve, reject) => {
+      const cleanup = () => {
+        ended = true;
+        clearTimeout(timer);
+        request.raw.removeListener('aborted', finish);
+        reply.raw.removeListener('close', finish);
+        if (terminal) terminal.activeWaits -= 1;
+      };
+      const finish = () => { if (!ended) { cleanup(); resolve(readSpawnNonceSnapshot(normalizedNonce)); } };
+      const timer = setTimeout(finish, Math.max(0, deadlineMs - Date.now()));
+      request.raw.once('aborted', finish);
+      reply.raw.once('close', finish);
+      void observe().then(() => { if (!ended) finish(); }, (error: unknown) => {
+        if (!ended) { cleanup(); reject(error); }
+      });
+    });
   });
 
   typed.post('/continue-with-replay', {

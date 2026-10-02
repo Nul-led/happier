@@ -40,7 +40,7 @@ beforeEach(() => {
   http.post.mockImplementation(async (url: string, body: Record<string, unknown>) => {
     if (url.endsWith('/v1/artifacts')) {
       rows.set(String(body.id), { ...body, ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'plain', headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 });
-      return { status: 200, data: { id: body.id } };
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     }
     const id = url.split('/').at(-1)!;
     http.beforeUpdate?.(id);

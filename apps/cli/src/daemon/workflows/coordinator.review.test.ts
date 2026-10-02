@@ -28,8 +28,9 @@ describe('workflow review pipeline', () => {
     const executed: string[] = [];
     const coordinator = createWorkflowCoordinator({ store, resolveWorkspace: async () => ({ ok: true, workspace }),
       isAcceptedAuthorizationCurrent: async () => true,
-      sessionContext: { resolveSessionContextField: async () => {
-        contextRead.resolve(); await releaseContext.promise; return 42;
+      sessionContext: { resolveSessionContext: async () => {
+        contextRead.resolve(); await releaseContext.promise;
+        return { usage: { kind: 'accounted' as const, tokensUsed: 42 }, turns: [], truncated: false };
       } },
       executeStep: async (params) => {
         executed.push(params.step.id);
@@ -37,9 +38,9 @@ describe('workflow review pipeline', () => {
         await params.onInputAccepted({ kind: 'session', sessionId: params.step.id, localInputId: params.step.id });
         return { kind: 'completed', result: params.step.id };
       } });
-    const running = coordinator.run({ runId: 'materialization', definition: definition([{ kind: 'parallel', id: 'p', failurePolicy: 'fail_stop',
+    const running = coordinator.run({ runId: 'materialization', originSessionId: 'origin-session', definition: definition([{ kind: 'parallel', id: 'p', failurePolicy: 'fail_stop',
       branches: [{ id: 'a', blocks: [leaf('held', true)] }, { id: 'b', blocks: [{ ...leaf('context'),
-        input: [{ kind: 'session_context_field', field: 'usage.tokensUsed' }] }] }] }]), inputs: {}, executionTarget, authorization });
+        input: [{ kind: 'session_context', recentTurns: 0 }] }] }] }]), inputs: {}, executionTarget, authorization });
     await contextRead.promise;
     await new Promise<void>((resolve) => setImmediate(resolve));
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -121,7 +122,8 @@ describe('workflow review pipeline', () => {
         await params.onInputAccepted({ kind: 'session', sessionId: 'session', localInputId: 'generated-input' }, 1000);
         return terminal === 'completed' ? { kind: 'completed', result: 'generated' }
           : terminal === 'failed' ? { kind: 'failed', code: 'provider_failed' }
-          : { kind: 'cancelled', code: terminal === 'stop_pending' ? 'session_input_turn_cancel_requested' : 'provider_stopped' };
+          : terminal === 'stop_pending' ? { kind: 'needs_attention', code: 'session_input_result_read_failed' }
+          : { kind: 'cancelled', code: 'provider_stopped' };
       } });
     const outcome = await coordinator.run({ runId: 'generate', definition: definition([{ ...leaf('held', true), timeoutMs: 100 }]), inputs: {}, executionTarget, authorization });
     expect(outcome.state).toBe(terminal === 'completed' ? 'succeeded' : terminal === 'stop_pending' ? 'interrupted' : 'waiting_for_review');
@@ -130,18 +132,20 @@ describe('workflow review pipeline', () => {
     expect(prior).toMatchObject({ lifecycle: 'superseded', result: 'prior', execution: { localInputId: 'prior-input' } });
     const replacement = [...store.records.values()].find((row) => row.attempt === 1)!;
     expect(replacement).toMatchObject({ previousAttemptRecordId: 'held-row',
-      lifecycle: terminal === 'completed' ? 'completed' : terminal === 'stop_pending' ? 'cancel_requested' : 'waiting_for_review' });
+      lifecycle: terminal === 'completed' ? 'completed' : terminal === 'stop_pending' ? 'needs_attention' : 'waiting_for_review' });
     expect(replacement.observationDeadline).toEqual({ kind: 'at', expiresAt: new Date(1100).toISOString() });
     if (terminal === 'completed') expect(replacement.result).toBe('generated');
   });
 
-  it('reholds offline generation with a typed reason when retained conversation material is lost', async () => {
+  it('reholds offline generation with a typed reason when retained workspace material is lost', async () => {
     const store = createInMemoryWorkflowCoordinatorStore();
+    const authored = definition([leaf('held', true)]);
     const key = workflowInvocationKey({ runId: 'lost-generation', blockId: 'held', scope: [], attempt: 0 });
     await store.ensureIntent({ key, recordId: 'held-row', runId: 'lost-generation', blockKind: 'step', blockId: 'held', memberOrdinal: '0',
       path: { blockId: 'held', scope: [] }, attempt: 0, acceptedAtMs: 1, lifecycle: 'pending' });
     await store.commitFact({ key, lifecycle: 'waiting_for_review', result: 'prior',
-      execution: { kind: 'detached_run', runId: 'native', localInputId: 'prior-input' }, workspace: { descriptor: workspace },
+      execution: { kind: 'detached_run', runId: 'native', localInputId: 'prior-input',
+        runtimeSelection: projectWorkflowRetainedRuntimeSelectionV1({ ...authored.defaults, permissionMode: 'default' }) },
       review: { decision: { kind: 'generate', requestedFromContentRevision: '0' } } });
     let sent = false;
     const executeStep = createWorkflowDetachedExecutionRunStepExecutor({ workDepth: 0,
@@ -150,7 +154,7 @@ describe('workflow review pipeline', () => {
       buildActionContext: () => ({ surface: 'rpc', authority: 'account_automation', callerPermissionMode: 'default' }) });
     const coordinator = createWorkflowCoordinator({ store, executeStep,
       resolveWorkspace: async () => ({ ok: true, workspace }), isAcceptedAuthorizationCurrent: async () => true });
-    expect((await coordinator.run({ runId: 'lost-generation', definition: definition([leaf('held', true)]), inputs: {},
+    expect((await coordinator.run({ runId: 'lost-generation', definition: authored, inputs: {},
       executionTarget: { kind: 'detached_run' }, authorization })).state).toBe('waiting_for_review');
     expect(sent).toBe(false);
     expect(store.records.get(key)).toMatchObject({ lifecycle: 'superseded', result: 'prior' });
@@ -309,11 +313,11 @@ describe('workflow review pipeline', () => {
         await params.beforeInputAdmission();
         await params.onInputAccepted({ kind: 'session', sessionId: 'session', localInputId: 'generated-input' });
         controller.abort(WORKFLOW_CANCEL_REQUESTED_ABORT_REASON);
-        return { kind: 'cancelled', code: 'session_input_turn_cancel_requested' };
+        return { kind: 'needs_attention', code: 'session_input_result_read_failed' };
       } });
     expect(await coordinator.run({ runId: 'cancel-generation', definition: definition([leaf('held', true)]), inputs: {},
       executionTarget, authorization, signal: controller.signal })).toMatchObject({ state: 'interrupted' });
-    expect([...store.records.values()].find((row) => row.attempt === 1)).toMatchObject({ lifecycle: 'cancel_requested',
+    expect([...store.records.values()].find((row) => row.attempt === 1)).toMatchObject({ lifecycle: 'needs_attention',
       execution: { localInputId: 'generated-input' } });
     expect(reviewEntries).toBe(0);
   });

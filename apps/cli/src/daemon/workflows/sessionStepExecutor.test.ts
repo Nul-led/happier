@@ -30,6 +30,17 @@ vi.mock('@/session/creation/prepareSessionCreationTarget', () => ({
   prepareSessionCreationTarget: sessionCreation.prepareSessionCreationTarget,
 }));
 vi.mock('@/settings/accountSettings/bootstrapAccountSettingsContext', () => accountSettingsBootstrap);
+vi.mock('node:fs', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...fs,
+    readFileSync: (...args: Parameters<typeof fs.readFileSync>) => {
+      // Source runtime tests do not consume a remote host's ignored package-build failures.
+      if (String(args[0]).replaceAll('\\', '/').endsWith('/.project/tmp/bundled-plugin-publication/failures.json')) return '[]';
+      return fs.readFileSync(...args);
+    },
+  };
+});
 
 
 describe('workflow Session step executor', () => {
@@ -452,10 +463,13 @@ describe('workflow Session step executor', () => {
     const conversations = createProductionWorkflowConversationOwner({
       machineId: 'machine-1', createFreshConversation,
       resolveSharedRunConversation: async () => ({ sessionId: 'shared', machineId: 'machine-1', directory: '/repo',
+        agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } },
         runtimeSelection: { connectedServices: { v: 2, bindingsByServiceId: {} } } }),
       resolveProducerConversation: async () => ({ sessionId: 'shared', machineId: 'machine-1', directory: '/repo',
+        agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } },
         runtimeSelection: { connectedServices: { v: 2, bindingsByServiceId: {} } } }),
       resolveExistingSessionConversation: async ({ sessionId, machineId }) => ({ sessionId, machineId, directory: '/repo',
+        agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } },
         runtimeSelection: { connectedServices: { v: 2, bindingsByServiceId: {} } } }),
     });
     const base = {
@@ -849,10 +863,15 @@ describe('workflow Session step executor', () => {
     expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: 'default' }));
   });
 
-  it('retires or cancels the exact accepted Session input when observation is aborted', async () => {
+  it.each([
+    { kind: 'turn_cancel_requested' as const },
+    { kind: 'turn_cancel_refused' as const, status: 'notRunning' as const, code: 'notRunning' },
+  ])('observes the exact accepted Session input after cancellation ($kind) and preserves its real terminal result', async (cancellation) => {
     const controller = new AbortController();
-    const cancel = vi.fn(async () => ({ kind: 'turn_cancel_requested' as const }));
+    const cancel = vi.fn(async () => cancellation);
     const observe = vi.fn(async (input: { signal?: AbortSignal }) => {
+      if (!input.signal) return { ok: true as const, sessionId: 'session-1', localId: 'local-1',
+        result: { kind: 'final_text' as const, text: 'finished before cancellation', usage: { inputTokens: 2, outputTokens: 3 } } };
       expect(input.signal).toBe(controller.signal);
       await new Promise<void>((resolve) => {
         input.signal?.addEventListener('abort', () => resolve(), { once: true });
@@ -877,7 +896,7 @@ describe('workflow Session step executor', () => {
     await vi.waitFor(() => expect(observe).toHaveBeenCalledOnce());
     controller.abort(WORKFLOW_CANCEL_REQUESTED_ABORT_REASON);
 
-    await expect(execution).resolves.toEqual({ kind: 'cancelled', code: 'session_input_turn_cancel_requested' });
+    await expect(execution).resolves.toEqual({ kind: 'completed', result: 'finished before cancellation', usage: { inputTokens: 2, outputTokens: 3 } });
     expect(cancel).toHaveBeenCalledWith({
       credentials: { token: 'token', encryption: null },
       sessionId: 'session-1', localId: 'local-1',

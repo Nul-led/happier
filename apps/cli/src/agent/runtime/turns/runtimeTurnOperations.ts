@@ -79,6 +79,8 @@ export type RuntimeTurnPromptMeta = Readonly<{
   userMessageSeqs?: readonly number[];
   /** Exact immutable authority captured at terminal user-input admission. */
   causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+  /** Host-private admission facts, never projected into the Agent's send request. */
+  agentStartCaller?: import('@happier-dev/protocol').AgentStartSessionCallerV1;
 }>;
 
 /**
@@ -191,7 +193,7 @@ export type RuntimeTurnOperations = Readonly<{
    * provider CLI attach surface. This is intentionally transient: durable
    * Session identity publication remains owned by provider acceptance.
    */
-  prepareProviderCliAttach?: AgentSessionRuntime['prepareProviderCliAttach'];
+  prepareTerminalPresentation?: AgentSessionRuntime['prepareTerminalPresentation'];
   readSessionIdentity: () => RuntimeTurnSessionIdentity;
   updateSessionRuntimeConfig: (update: RuntimeTurnConfigUpdate) => Promise<RuntimeConfigUpdateOutcomeV1 | void>;
   resetOrDisposeRuntime: (

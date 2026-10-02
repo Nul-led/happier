@@ -4,6 +4,8 @@ import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
+import { UPDATES_ROUTE } from '@/components/updates/updatesRoute';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -63,24 +65,25 @@ vi.mock('@/components/systemTasks/systemTasksRuntime', async () => {
     return { getSystemTasksRunner: () => runner };
 });
 
-const switchConnectionToActiveServer = vi.hoisted(() => vi.fn(async () => null));
-vi.mock('@/sync/runtime/orchestration/connectionManager', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/runtime/orchestration/connectionManager')>(),
-    switchConnectionToActiveServer,
-}));
+// Credential persistence is empty at the SDK boundary; auth and relay switching remain real.
+vi.mock('@react-native-async-storage/async-storage', () => ({ default: {
+    getItem: async () => null,
+    setItem: async () => {},
+    removeItem: async () => {},
+} }));
 
 const router = vi.hoisted(() => ({ push: vi.fn() }));
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
     return createExpoRouterMock({ router: { push: (value: unknown) => router.push(value) } }).module;
 });
-vi.mock('@/auth/context/AuthContext', () => ({ useAuth: () => ({ refreshFromActiveServer: async () => {} }) }));
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
     return createTextModuleMock({ translate: (key: string) => key });
 });
 
 import { getActiveServerSnapshot, resetServerProfilesRuntimeForTests } from '@/sync/domains/server/serverProfiles';
+import { AuthProvider } from '@/auth/context/AuthContext';
 
 import { DesktopTrayRuntime } from './DesktopTrayRuntime';
 
@@ -102,7 +105,7 @@ const row = (relayUrl: string, extra: Record<string, unknown> = {}) => ({
 });
 
 async function mountTray() {
-    const screen = await renderScreen(<DesktopTrayRuntime />);
+    const screen = await renderScreen(<AuthProvider initialCredentials={null}><DesktopTrayRuntime /></AuthProvider>);
     await vi.waitFor(() => expect(host.trayStates.at(-1)?.services?.status).toBe('listed'));
     return screen;
 }
@@ -137,7 +140,6 @@ describe('DesktopTrayRuntime — this computer\'s services (R16 c)', () => {
         host.nextDestination = null;
         host.desktop = true;
         router.push.mockClear();
-        switchConnectionToActiveServer.mockClear();
     });
 
     it('sends every service with the app\'s Home judged against the app\'s account, and the managed services\' one login-start mode (A13-02)', async () => {
@@ -188,9 +190,24 @@ describe('DesktopTrayRuntime — this computer\'s services (R16 c)', () => {
         await act(async () => screen.tree.unmount());
     });
 
+    it('opens Settings and Updates requested by the tray while the window already exists', async () => {
+        const screen = await mountTray();
+        await act(async () => {
+            host.listeners.get('desktop_open_settings_requested')?.(null);
+            host.listeners.get('desktop_open_updates_requested')?.(null);
+        });
+        expect(router.push.mock.calls.map(([route]) => route)).toEqual([
+            SETTINGS_ROUTES.general,
+            UPDATES_ROUTE,
+        ]);
+        await act(async () => screen.tree.unmount());
+        expect(host.listeners.has('desktop_open_settings_requested')).toBe(false);
+        expect(host.listeners.has('desktop_open_updates_requested')).toBe(false);
+    });
+
     it('pushes nothing and listens to nothing outside the desktop shell', async () => {
         host.desktop = false;
-        const screen = await renderScreen(<DesktopTrayRuntime />);
+        const screen = await renderScreen(<AuthProvider initialCredentials={null}><DesktopTrayRuntime /></AuthProvider>);
         await act(async () => { for (let i = 0; i < 10; i += 1) await Promise.resolve(); });
         expect(host.trayStates).toEqual([]);
         expect(host.listeners.size).toBe(0);

@@ -421,6 +421,16 @@ export const AgentRuntimeDaemonSessionDescriptorV1Schema = z.object({
 export type AgentRuntimeDaemonSessionDescriptorV1 =
   z.infer<typeof AgentRuntimeDaemonSessionDescriptorV1Schema>;
 
+/** Non-authoritative launch intent, separate from the admitted Agent identity. */
+export const AgentRuntimeRunnerBootstrapV1Schema = z.object({
+  v: z.literal(1),
+  descriptor: AgentRuntimeDaemonSessionDescriptorV1Schema,
+  launch: z.object({ runtimeDescriptorV1: RuntimeDescriptorV1Schema }).strict().optional(),
+}).strict();
+
+export type AgentRuntimeRunnerBootstrapLaunchV1 =
+  NonNullable<z.infer<typeof AgentRuntimeRunnerBootstrapV1Schema>['launch']>;
+
 export const AgentRuntimeDaemonProviderConnectionModelRefV1Schema =
   z.object({
     agentTargetKey: ProviderAgentTargetKeySchema,

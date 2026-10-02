@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+// Third-party rendering is outside this listing contract; its streaming renderer is unused here.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({ splitStreamingRevealTextParts: () => [] }));
+
 import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
@@ -142,11 +145,12 @@ function setSessionOrganizationProjection(params: Readonly<{
     };
 }
 
-vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
-    const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
-    return createStorageModuleMock({
-        importOriginal,
-        overrides: {
+vi.mock('@/sync/domains/state/storage', async () => {
+    const { createStorageModuleStub, createStorageStoreMock } = await import('@/dev/testkit/mocks/storage');
+    const store = createStorageStoreMock({ workflowRunListWindows: {}, workflowRunsById: {} });
+    return createStorageModuleStub({
+            storage: store,
+            getStorage: () => store,
             useSessionListRowsByServerId: () => viewState.rowsByServerId,
             useArtifacts: () => {
                 throw new Error('session list view state must use canonical row state instead of full artifacts');
@@ -187,7 +191,6 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
                 : viewState.sessionOrganizationProjection
                     ? Object.fromEntries(serverIds.map((serverId) => [serverId, viewState.sessionOrganizationProjection]))
                     : {},
-        },
     });
 });
 
@@ -234,6 +237,10 @@ vi.mock('@/sync/domains/session/listing/computeVisibleSessionListIndex', async (
     };
 });
 
+// Complete the real hook graph during collection, after the boundary factories
+// initialize, rather than charging its cold imports to the first test's clock.
+const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
+
 describe('useVisibleSessionListViewState (index pipeline)', () => {
     afterEach(() => {
         standardCleanup();
@@ -275,7 +282,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
     });
 
     it('forwards authoritative empty-query completeness to the source owner', async () => {
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         await renderHook(() => useVisibleSessionListViewState('all', {
             queryHomes: [],
             emptyQuerySelectionComplete: true,
@@ -297,7 +303,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 
@@ -327,13 +332,12 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
 
         let unmount: (() => Promise<void> | void) | null = null;
         try {
-            const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
             const hook = await renderHook(() => useVisibleSessionListViewState('all'));
             unmount = () => hook.unmount();
 
             expect(hook.getCurrent().visibleSessionListIndex?.map((item) => item.type === 'header'
                 ? `header:${item.headerKind ?? 'unknown'}`
-                : `session:${item.sessionId}`
+                : item.type === 'session' ? `session:${item.sessionId}` : `run:${item.runId}`
             )).toEqual([
                 'header:date',
                 'session:a',
@@ -430,7 +434,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             labelsByLabelKey: {},
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 
@@ -517,7 +520,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             'home-b': projection('home-b', false),
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         let queryHomes = [{ serverId: 'home-a' }, { serverId: 'home-b' }] as any;
         const hook = await renderHook(() => useVisibleSessionListViewState('all', { queryHomes }));
         await flushHookEffects();
@@ -563,7 +565,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all', {
             sessionListSurfaceDataActive: false,
         }));
@@ -586,7 +587,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
         const firstIndex = hook.getCurrent()?.visibleSessionListIndex;
@@ -614,7 +614,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 
@@ -637,8 +636,11 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             statesByServerId: { s1: { appliedSourceKind: 'query' } },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
-        const hook = await renderHook(() => useVisibleSessionListViewState('all', { queryHomes: [] }));
+        const queryHomes = [{ serverId: 's1', query: {
+            v: 1 as const, storage: 'active' as const, includeInactive: false,
+            scope: 'my_work' as const, attention: 'any' as const, audiences: [], tagIds: [],
+        } }];
+        const hook = await renderHook(() => useVisibleSessionListViewState('all', { queryHomes }));
         await flushHookEffects();
 
         // The server returned this inactive row on purpose (it needs attention);
@@ -647,12 +649,20 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             .toEqual(['served-inactive']);
         expect(hook.getCurrent()?.hasHiddenInactiveSessions).toBe(false);
 
+        // A Runs-inclusive query fetches inactive steps, so its ordinary inactive
+        // Sessions still need the client's hide-inactive rule.
+        const expandedQueryHook = await renderHook(() => useVisibleSessionListViewState('all', {
+            queryHomes: queryHomes.map((home) => ({ ...home, query: { ...home.query, includeInactive: true } })),
+        }));
+        await flushHookEffects();
+        expect(expandedQueryHook.getCurrent()?.visibleSessionListIndex).toEqual([]);
+
         // The released GET adapter answered this Home, so the local rule still applies.
         viewState.query = {
             active: true,
             statesByServerId: { s1: { appliedSourceKind: 'ordinary' } },
         };
-        const ordinaryHook = await renderHook(() => useVisibleSessionListViewState('all', { queryHomes: [] }));
+        const ordinaryHook = await renderHook(() => useVisibleSessionListViewState('all', { queryHomes }));
         await flushHookEffects();
         expect(ordinaryHook.getCurrent()?.visibleSessionListIndex).toEqual([]);
         expect(ordinaryHook.getCurrent()?.hasHiddenInactiveSessions).toBe(true);
@@ -687,7 +697,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 
@@ -722,7 +731,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 
@@ -757,7 +765,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 
@@ -797,7 +804,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 
@@ -833,7 +839,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             s2: { 'approval-session': makeSessionRow('approval-session', { active: true, presence: 'online' }) },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 
@@ -873,7 +878,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 
@@ -959,7 +963,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const firstHook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 
@@ -998,7 +1001,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const firstHook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
         const retainedVisibleSessionListIndex = firstHook.getCurrent()?.visibleSessionListIndex;
@@ -1042,7 +1044,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
         expect(hook.getCurrent()?.visibleSessionListIndex?.[1]).toEqual(expect.objectContaining({
@@ -1109,7 +1110,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 
@@ -1173,7 +1173,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 
@@ -1215,7 +1214,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 
@@ -1279,7 +1277,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const firstHook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
         const retainedVisibleSessionListIndex = firstHook.getCurrent()?.visibleSessionListIndex;
@@ -1353,7 +1350,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all', { pathname: '/' }));
         await flushHookEffects();
 
@@ -1462,7 +1458,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         });
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 
@@ -1554,7 +1549,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             }],
         });
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 
@@ -1633,7 +1627,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         });
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const disabledHook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 
@@ -1715,7 +1708,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('direct'));
         await flushHookEffects();
 
@@ -1752,7 +1744,6 @@ describe('useVisibleSessionListViewState (index pipeline)', () => {
             },
         };
 
-        const { useVisibleSessionListViewState } = await import('./useVisibleSessionListViewState');
         const hook = await renderHook(() => useVisibleSessionListViewState('all'));
         await flushHookEffects();
 

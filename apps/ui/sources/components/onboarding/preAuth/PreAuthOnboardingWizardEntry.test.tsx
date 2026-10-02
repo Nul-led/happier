@@ -121,7 +121,7 @@ const pendingSetupIntentState = vi.hoisted(() => ({
 }));
 const desktopWindowBridgeState = vi.hoisted(() => ({
     getDesktopWindowChromePolicy: vi.fn<() => Promise<DesktopWindowChromePolicy>>(async () => ({ strategy: 'none' })),
-    getDesktopWindowState: vi.fn<() => Promise<DesktopWindowState>>(async () => ({ isMaximized: false })),
+    getDesktopWindowState: vi.fn<() => Promise<DesktopWindowState>>(async () => ({ isMaximized: false, isFullscreen: false })),
     listenDesktopWindowState: vi.fn<(handler: (state: DesktopWindowState) => void) => Promise<() => Promise<void>>>(async () => async () => {}),
     minimizeDesktopWindow: vi.fn(async () => {}),
     toggleDesktopWindowMaximize: vi.fn(async () => {}),
@@ -362,7 +362,7 @@ describe('PreAuthOnboardingWizardEntry', () => {
         desktopWindowBridgeState.closeDesktopWindow.mockReset();
         desktopWindowBridgeState.startDesktopWindowDragging.mockReset();
         desktopWindowBridgeState.getDesktopWindowChromePolicy.mockResolvedValue({ strategy: 'none' });
-        desktopWindowBridgeState.getDesktopWindowState.mockResolvedValue({ isMaximized: false });
+        desktopWindowBridgeState.getDesktopWindowState.mockResolvedValue({ isMaximized: false, isFullscreen: false });
         desktopWindowBridgeState.listenDesktopWindowState.mockResolvedValue(async () => {});
     });
 

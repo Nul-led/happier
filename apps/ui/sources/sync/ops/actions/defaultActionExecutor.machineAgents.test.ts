@@ -1,14 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { AccountSettingsV2UpdateRequestSchema, BUILT_IN_ROLES_V1, RoleActionOutputSchemasV1, readLegacyRolesV1 } from '@happier-dev/protocol';
+import { storage } from '@/sync/domains/state/storage';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 
 import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { createHomeGovernanceHarness, installHomeGovernanceBoundaries } from '@/dev/testkit/harness/homeGovernanceHarness';
 
-const rpc = vi.hoisted(() => ({ machine: vi.fn() }));
+const rpc = vi.hoisted(() => ({ machine: vi.fn(), session: vi.fn() }));
 // The remote daemon transport is the boundary; registry adaptation, inventory
 // selection, Action admission and daemon-fact projection execute unchanged.
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
     machineRpcWithServerScope: rpc.machine,
+}));
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc', () => ({
+    sessionRpcWithServerScope: rpc.session,
 }));
 const harness = createHomeGovernanceHarness();
 installHomeGovernanceBoundaries(harness);
@@ -30,9 +36,159 @@ describe('UI machine Agent inventory Action transport', () => {
     beforeEach(async () => {
         await harness.reset();
         rpc.machine.mockReset();
+        rpc.session.mockReset();
         clearDaemonMergedProjectionCacheForTests();
     });
     afterEach(() => standardCleanup());
+
+    it('lists and mutates Account roles through the ordinary UI executor without a running Session', async () => {
+        const serverId = await harness.addHome({ name: 'Roles Home', serverUrl: 'https://roles.test', accountId: 'alice' });
+        let raw: Record<string, unknown> = {};
+        let version = 0;
+        // The genuine Settings HTTP boundary persists its CAS winner; all
+        // migration, normalization and rebase logic above it remains real.
+        harness.answer(serverId, '/v2/account/settings', { select: (input) => {
+            if (input === undefined || input === null) return { body: { content: { t: 'plain', v: raw }, version } };
+            const request = AccountSettingsV2UpdateRequestSchema.parse(input);
+            if (request.expectedVersion !== version) return { body: { success: false, error: 'version-mismatch', currentVersion: version,
+                currentContent: { t: 'plain', v: raw } } };
+            if (!request.content || request.content.t !== 'plain') throw new Error('Expected Plain Account settings');
+            raw = request.content.v;
+            version += 1;
+            return { body: { success: true, version } };
+        } });
+        const context = { surface: 'ui' as const, authority: 'present_user' as const, serverId };
+        const execute = createDefaultActionExecutor().execute;
+        const list = await execute('roles.list', {}, context);
+        expect(list.ok).toBe(true);
+        if (!list.ok) throw new Error(list.error);
+        expect(RoleActionOutputSchemasV1['roles.list'].parse(list.result).items).toContainEqual({
+            roleId: 'builder', role: BUILT_IN_ROLES_V1.builder, shared: false, viewOnly: false, migratedFromV0_2: false,
+        });
+        expect(await execute('roles.create', { roleId: 'my-role', role: BUILT_IN_ROLES_V1.builder }, context))
+            .toEqual({ ok: true, result: { roleId: 'my-role', revision: { headerVersion: 1, bodyVersion: 1 } } });
+        expect(JSON.parse(harness.artifacts(serverId).readPlainBody('my-role')!)).toEqual(BUILT_IN_ROLES_V1.builder);
+        expect(await execute('roles.update', { roleId: 'my-role', expectedRevision: { headerVersion: 1, bodyVersion: 0 },
+            role: BUILT_IN_ROLES_V1.reviewer }, context)).toMatchObject({ ok: false, errorCode: 'currentness_conflict' });
+        expect(await execute('roles.update', { roleId: 'my-role', expectedRevision: { headerVersion: 1, bodyVersion: 1 },
+            role: BUILT_IN_ROLES_V1.reviewer }, context))
+            .toEqual({ ok: true, result: { roleId: 'my-role', revision: { headerVersion: 2, bodyVersion: 2 } } });
+        expect(JSON.parse(harness.artifacts(serverId).readPlainBody('my-role')!)).toEqual(BUILT_IN_ROLES_V1.reviewer);
+        expect(await execute('roles.delete', { roleId: 'builder', expectedRevision: { headerVersion: 0, bodyVersion: 0 } }, context))
+            .toMatchObject({ ok: false, errorCode: 'role_read_only' });
+        expect(await execute('roles.override.set', { roleId: 'builder', instructionsOverride: 'Account instructions' }, context))
+            .toEqual({ ok: true, result: { updated: true } });
+        expect(raw.rolesV1).toMatchObject({ overrides: { builder: { instructionsOverride: 'Account instructions' } } });
+        expect(await execute('roles.override.reset', { roleId: 'builder' }, context)).toEqual({ ok: true, result: { updated: true } });
+        expect(raw.rolesV1).toEqual({ overrides: {} });
+        expect(await execute('roles.delete', { roleId: 'my-role', expectedRevision: { headerVersion: 2, bodyVersion: 2 } }, context))
+            .toEqual({ ok: true, result: { deleted: true } });
+        expect(harness.artifacts(serverId).read('my-role')).toBeNull();
+    });
+
+    it('retains predecessor guidance Artifacts before the first Account role override cuts off read-through', async () => {
+        const serverId = await harness.addHome({ name: 'Migrating Roles Home', serverUrl: 'https://migrating-roles.test', accountId: 'alice' });
+        let raw: Record<string, unknown> = { executionRunsGuidanceEntries: [{ id: 'legacy-review', title: 'Review', description: 'Review carefully.' }] };
+        const legacy = readLegacyRolesV1(raw, 'alice')[0];
+        let version = 0;
+        harness.answer(serverId, '/v2/account/settings', { select: (input) => {
+            if (input === undefined || input === null) return { body: { content: { t: 'plain', v: raw }, version } };
+            const request = AccountSettingsV2UpdateRequestSchema.parse(input);
+            expect(harness.artifacts(serverId).readPlainBody(legacy.artifactId)).toBe(JSON.stringify(legacy.role));
+            if (!request.content || request.content.t !== 'plain') throw new Error('Expected Plain Account settings');
+            raw = request.content.v;
+            version += 1;
+            return { body: { success: true, version } };
+        } });
+        expect(await createDefaultActionExecutor().execute('roles.override.set', { roleId: 'builder', workspaceWrites: 'deny' },
+            { surface: 'ui', authority: 'present_user', serverId })).toEqual({ ok: true, result: { updated: true } });
+        expect(raw.rolesV1).toMatchObject({ overrides: { builder: { workspaceWrites: 'deny' } } });
+        expect(readLegacyRolesV1(raw, 'alice')).toEqual([]);
+    });
+
+    it('sends session notes and role writes to the exact Home Session owner and preserves refusals', async () => {
+        const serverId = await harness.addHome({ name: 'Session Roles Home', serverUrl: 'https://session-roles.test', accountId: 'alice' });
+        const context = { surface: 'ui' as const, authority: 'present_user' as const, serverId };
+        rpc.session.mockImplementation(async (request: { method: string }) => request.method === 'session.notes.set'
+            ? { updated: true } : { ok: false, errorCode: 'role_policy_unenforceable', error: 'role_policy_unenforceable' });
+        const execute = createDefaultActionExecutor().execute;
+        expect(await execute('session.notes.set', { sessionId: 'child', notes: 'Retained notes' }, context))
+            .toEqual({ ok: true, result: { updated: true } });
+        expect(await execute('session.role.set', { sessionId: 'child', roleId: 'orchestrator' }, context))
+            .toMatchObject({ ok: false, errorCode: 'role_policy_unenforceable' });
+        expect(rpc.session.mock.calls.map(([request]) => request)).toEqual([
+            expect.objectContaining({ serverId, sessionId: 'child', method: 'session.notes.set', payload: { sessionId: 'child', notes: 'Retained notes' } }),
+            expect.objectContaining({ serverId, sessionId: 'child', method: 'session.role.set', payload: { sessionId: 'child', roleId: 'orchestrator' } }),
+        ]);
+    });
+
+    it('does not complete a role read for a replaced Home Account', async () => {
+        const serverId = await harness.addHome({ name: 'Retiring Roles Home', serverUrl: 'https://retiring-roles.test', accountId: 'alice' });
+        let release!: () => void;
+        let dispatched!: () => void;
+        const pendingResponse = new Promise<void>((resolve) => { release = resolve; });
+        const reachedTransport = new Promise<void>((resolve) => { dispatched = resolve; });
+        harness.answer(serverId, 'GET /v1/artifacts', { select: () => {
+            dispatched();
+            return { body: { artifacts: [] }, respondAfter: pendingResponse };
+        } });
+        const pending = createDefaultActionExecutor().execute('roles.list', {}, { surface: 'ui', serverId, expectedAccountId: 'alice' });
+        await reachedTransport;
+        await harness.switchAccount(serverId, 'bob');
+        release();
+        expect(await pending).toMatchObject({ ok: false, errorCode: 'action_account_scope_changed' });
+    });
+
+    it('keeps built-in role reads available when the serving daemon cannot supply a projection', async () => {
+        const serverId = await harness.addHome({ name: 'Offline Plugin Home', serverUrl: 'https://offline-plugin.test', accountId: 'alice' });
+        storage.setState({ machineListByServerId: { [serverId]: [createMachineFixture({ activeAt: Date.now() })] } });
+        rpc.machine.mockRejectedValue(new Error('Daemon transport unavailable'));
+        const result = await createDefaultActionExecutor().execute('roles.list', {}, { surface: 'ui', serverId });
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error(result.error);
+        expect(RoleActionOutputSchemasV1['roles.list'].parse(result.result).items.map((entry) => entry.roleId))
+            .toContain('builder');
+    });
+
+    it('includes plugin roles from the current daemon projection as overridable read-only sources', async () => {
+        const serverId = await harness.addHome({ name: 'Plugin Roles Home', serverUrl: 'https://plugin-roles.test', accountId: 'alice' });
+        let raw: Record<string, unknown> = {};
+        let version = 0;
+        harness.answer(serverId, '/v2/account/settings', { select: (input) => {
+            if (input === undefined || input === null) return { body: { content: { t: 'plain', v: raw }, version } };
+            const request = AccountSettingsV2UpdateRequestSchema.parse(input);
+            if (!request.content || request.content.t !== 'plain') throw new Error('Expected Plain Account settings');
+            raw = request.content.v;
+            version += 1;
+            return { body: { success: true, version } };
+        } });
+        storage.setState({ machineListByServerId: { [serverId]: [createMachineFixture({ activeAt: Date.now() })] } });
+        rpc.machine.mockResolvedValue({ protocolVersion: 1, projection: { v: 2, generation: 1, agentsById: {},
+            installedPackagesById: { acme: { id: 'acme', displayName: 'Roles plugin', version: '1.0.0', enabled: true,
+                source: { kind: 'path', locator: '/plugins/acme' }, occurrenceId: 'roles-plugin-occurrence' } }, familiesById: {
+            roles: { family: 'roles', entriesById: {
+                'acme/reviewer': { id: 'acme/reviewer', pluginId: 'acme', definition: { id: 'reviewer', ...BUILT_IN_ROLES_V1.reviewer } },
+                'withdrawn/reviewer': { id: 'withdrawn/reviewer', pluginId: 'withdrawn', definition: { id: 'reviewer', ...BUILT_IN_ROLES_V1.reviewer } },
+            } },
+        } } });
+        const execute = createDefaultActionExecutor().execute;
+        const context = { surface: 'ui' as const, serverId };
+        const result = await execute('roles.list', {}, context);
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error(result.error);
+        expect(RoleActionOutputSchemasV1['roles.list'].parse(result.result).items).toContainEqual({
+            roleId: 'plugin:acme/reviewer', role: BUILT_IN_ROLES_V1.reviewer, shared: false, viewOnly: true, migratedFromV0_2: false,
+        });
+        expect(RoleActionOutputSchemasV1['roles.list'].parse(result.result).items.some((entry) => entry.roleId === 'plugin:withdrawn/reviewer')).toBe(false);
+        expect(await execute('roles.override.set', { roleId: 'plugin:acme/reviewer', instructionsOverride: 'Account plugin override' }, context))
+            .toEqual({ ok: true, result: { updated: true } });
+        expect(raw.rolesV1).toMatchObject({ overrides: { 'plugin:acme/reviewer': { instructionsOverride: 'Account plugin override' } } });
+        expect(await execute('roles.delete', { roleId: 'plugin:acme/reviewer', expectedRevision: { headerVersion: 1, bodyVersion: 1 } }, context))
+            .toMatchObject({ ok: false, errorCode: 'role_read_only' });
+        expect(await execute('roles.override.reset', { roleId: 'plugin:acme/reviewer' }, context))
+            .toEqual({ ok: true, result: { updated: true } });
+        expect(raw.rolesV1).toEqual({ overrides: {} });
+    });
 
     it('uses the target daemon roster and returns daemon facts on the exact Home and machine', async () => {
         const serverId = await harness.addHome({ name: 'Inventory Home', serverUrl: 'https://inventory.test', accountId: 'alice' });

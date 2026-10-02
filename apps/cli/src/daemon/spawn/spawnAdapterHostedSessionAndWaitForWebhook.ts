@@ -2,6 +2,7 @@ import type { BackendTargetRefV2 } from '@happier-dev/protocol';
 import type { TerminalHostHandle } from '@happier-dev/agents';
 
 import { createDefaultTerminalHostAdapterInventory } from '@/integrations/terminal/host/defaultAdapters';
+import { resolveTerminalHostCreationFailure, resolveTerminalHostUnavailableSpawnErrorDetail } from '@/integrations/terminal/host/errors';
 import { buildHappyCliSubprocessLaunchSpec, type HappyCliSubprocessLaunchOptions } from '@/utils/spawnHappyCLI';
 import { SPAWN_SESSION_ERROR_CODES, type SpawnSessionOptions, type SpawnSessionResult } from '@/session/shared/spawnSessionContract';
 import { buildTerminalMetadataFromHostHandle } from '@/terminal/runtime/terminalMetadata';
@@ -24,6 +25,7 @@ import { waitForTerminalHostedSessionWebhook } from './waitForTerminalHostedSess
 
 export async function spawnAdapterHostedSessionAndWaitForWebhook(params: Readonly<{
   terminalRequest: ResolvedTerminalRequest;
+  startingMode?: 'terminal' | 'remote';
   directory: string;
   trackedSpawnOptions: SpawnSessionOptions;
   normalizedExistingSessionId: string;
@@ -51,6 +53,7 @@ export async function spawnAdapterHostedSessionAndWaitForWebhook(params: Readonl
   sanitizeDiagnosticText?: (value: string) => string;
   revalidateBeforeCommit?: SpawnCommitRevalidation;
   runnerLaunchOptions?: HappyCliSubprocessLaunchOptions;
+  onUntrackedHostedChild: () => void;
 }>): Promise<SpawnSessionResult | null> {
   if (params.terminalRequest.requested !== 'zellij' && params.terminalRequest.requested !== 'herdr') return null;
   const hostKind = params.terminalRequest.requested;
@@ -64,6 +67,8 @@ export async function spawnAdapterHostedSessionAndWaitForWebhook(params: Readonl
   const inventory = await createDefaultTerminalHostAdapterInventory({
     happyHomeDir: params.happyHomeDir,
     preference: hostKind,
+    ...(hostKind === 'herdr' ? { herdrSessionName: params.terminalRequest.herdr.sessionName,
+      herdrSocketPath: params.terminalRequest.herdr.socketPath } : {}),
   });
   const adapter = inventory.adapters[hostKind];
   if (!adapter) {
@@ -73,6 +78,7 @@ export async function spawnAdapterHostedSessionAndWaitForWebhook(params: Readonl
       type: 'error',
       errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
       errorMessage: `${displayName} hosting requires a supported ${displayName} installation on this machine.`,
+      errorDetail: { kind: 'terminal_host_unavailable', host: hostKind, reason: 'installation_unavailable' },
     };
   }
 
@@ -82,12 +88,13 @@ export async function spawnAdapterHostedSessionAndWaitForWebhook(params: Readonl
     '--happy-terminal-requested', hostKind,
     '--happy-terminal-attachment-id', attachmentId,
     ...(hostKind === 'herdr'
-      ? ['--happy-herdr-session-name', params.terminalRequest.herdr.sessionName]
+      ? ['--happy-herdr-session-name', params.terminalRequest.herdr.sessionName,
+          ...(params.terminalRequest.herdr.socketPath ? ['--happy-herdr-socket-path', params.terminalRequest.herdr.socketPath] : [])]
       : []),
   ];
   const args = [
     agentCommand,
-    '--happy-starting-mode', 'local',
+    '--happy-starting-mode', params.startingMode ?? 'terminal',
     '--started-by', 'daemon',
     ...terminalRuntimeArgs,
     ...params.sessionControlArgs,
@@ -165,13 +172,33 @@ export async function spawnAdapterHostedSessionAndWaitForWebhook(params: Readonl
     });
     return spawnResult;
   } catch (error) {
-    if (handle) await adapter.dispose(handle).catch(() => {});
-    await params.cleanupSpawnResources();
-    await params.spawnLifecycleCallbacks.cleanupPendingSessionAttach();
+    let failure = resolveTerminalHostCreationFailure(error);
+    if (handle) {
+      try {
+        await adapter.dispose(handle);
+        failure = { creationDisposition: 'created_and_absent', cleanupIncomplete: false };
+      } catch {
+        failure = { creationDisposition: 'created_or_uncertain', cleanupIncomplete: true };
+      }
+    }
+    if (failure.creationDisposition !== 'created_or_uncertain') {
+      const cleanupResults = await Promise.allSettled([
+        Promise.resolve().then(() => params.cleanupSpawnResources()),
+        Promise.resolve().then(() => params.spawnLifecycleCallbacks.cleanupPendingSessionAttach()),
+      ]);
+      if (cleanupResults.some((result) => result.status === 'rejected')) {
+        failure = { ...failure, cleanupIncomplete: true };
+      }
+    }
+    if (failure.creationDisposition === 'created_or_uncertain') params.onUntrackedHostedChild();
+    if (failure.creationDisposition === 'created_or_uncertain' || failure.cleanupIncomplete) {
+      params.warn(`[DAEMON RUN] ${displayName} launch cleanup could not be completed (terminal_host_launch_cleanup_incomplete, disposition=${failure.creationDisposition})`);
+    }
     return {
       type: 'error',
       errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
       errorMessage: `${displayName} runner launch failed: ${sanitizeDiagnosticText(error instanceof Error ? error.message : String(error))}`,
+      errorDetail: resolveTerminalHostUnavailableSpawnErrorDetail(error),
     };
   }
 }

@@ -3,6 +3,8 @@ import { resolveManagedCliToolNameForRing } from '@happier-dev/cli-common/firstP
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 
 import type { Metadata } from '@/api/types';
+import type { ApiSessionClient } from '@/api/session/sessionClient';
+import { deriveActivitySummaryFromAgentState } from '@/api/session/deriveActivitySummaryFromAgentState';
 import { configuration } from '@/configuration';
 import { createRuntimeContextPrefixArgs } from '@/utils/env/runtimeContextArgv';
 import { resolveHappierRuntimeContextEnvFromConfiguration } from '@/utils/env/resolveHappierRuntimeContextEnvFromConfiguration';
@@ -17,6 +19,9 @@ type ManagedHerdrBinding = Readonly<{
   preserveHostOnClose(): void;
 }>;
 
+type ManagedHerdrSession = EventEmitter & Pick<ApiSessionClient, 'getAgentStateSnapshot'>
+  & Partial<Pick<ApiSessionClient, 'getMetadataSnapshot'>>;
+
 const managedHerdrBindings = new WeakMap<EventEmitter, Map<string, ManagedHerdrBinding>>();
 
 export function createHerdrResumeArgv(sessionId: string, releaseRing: PublicReleaseRingId): string[] {
@@ -28,7 +33,7 @@ export function createHerdrResumeArgv(sessionId: string, releaseRing: PublicRele
 }
 
 export async function bindHerdrAgentIfNeeded(params: Readonly<{
-  session: EventEmitter;
+  session: ManagedHerdrSession;
   sessionId: string;
   agent: string;
   terminal: Metadata['terminal'] | undefined;
@@ -75,7 +80,7 @@ export async function bindHerdrAgentIfNeeded(params: Readonly<{
 }
 
 export function bindManagedHerdrSession(params: Readonly<{
-  session: EventEmitter;
+  session: ManagedHerdrSession;
   client: Pick<HerdrClient, 'findPane' | 'request'>;
   terminalId: string;
   agent: string;
@@ -93,13 +98,18 @@ export function bindManagedHerdrSession(params: Readonly<{
   sessionBindings ??= new Map();
   managedHerdrBindings.set(params.session, sessionBindings);
 
-  let desiredState: 'idle' | 'working' = 'idle';
-  let reportedState: 'idle' | 'working' | null = null;
+  const resolveState = (thinking: boolean): 'idle' | 'working' | 'blocked' => {
+    const activity = deriveActivitySummaryFromAgentState(params.session.getAgentStateSnapshot());
+    if (activity.pendingPermissionRequestCount > 0 || activity.pendingUserActionRequestCount > 0) return 'blocked';
+    return thinking ? 'working' : 'idle';
+  };
+  let desiredState = resolveState(false);
+  let reportedState: 'idle' | 'working' | 'blocked' | null = null;
   let closed = false;
   let preserveHostOnClose = params.preserveHostOnClose === true;
   let reporting: Promise<void> | null = null;
 
-  const report = async (state: 'idle' | 'working') => {
+  const report = async (state: 'idle' | 'working' | 'blocked') => {
     const pane = await params.client.findPane(params.terminalId);
     if (!pane) {
       reportedState = state;
@@ -142,18 +152,25 @@ export function bindManagedHerdrSession(params: Readonly<{
   };
 
   const onPresence = (presence: { thinking: boolean }) => {
-    desiredState = presence.thinking ? 'working' : 'idle';
+    desiredState = resolveState(presence.thinking);
     schedule();
   };
   const onClosed = () => {
     closed = true;
     params.session.off('local-presence', onPresence);
     params.session.off('local-closed', onClosed);
+    params.session.off('metadata-updated', onMetadataUpdated);
     sessionBindings?.delete(bindingKey);
     if (preserveHostOnClose) return;
     void (reporting ?? Promise.resolve()).then(release).catch(() => {
       logger.infoFile('[WARN] [herdr] Failed to release managed agent state');
     });
+  };
+  const onMetadataUpdated = () => {
+    const terminal = params.session.getMetadataSnapshot?.()?.terminal;
+    if (!terminal) return;
+    if (terminal.mode !== 'herdr' || terminal.herdr?.terminalId !== params.terminalId
+      || terminal.controlServiceabilityV1?.retired === true) onClosed();
   };
   sessionBindings.set(bindingKey, {
     schedule,
@@ -161,5 +178,6 @@ export function bindManagedHerdrSession(params: Readonly<{
   });
   params.session.on('local-presence', onPresence);
   params.session.on('local-closed', onClosed);
+  params.session.on('metadata-updated', onMetadataUpdated);
   schedule();
 }

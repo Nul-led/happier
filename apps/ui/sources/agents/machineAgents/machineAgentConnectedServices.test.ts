@@ -21,6 +21,7 @@ const entry: ConnectedServiceRegistryEntry = {
     serviceId: 'account', service, connectCommand: 'connect', supportsOauth: true, executable: true,
     projectedDescriptor: {
         id: 'account', serviceId: 'account', pluginId: 'acme.agent', title: 'Acme account',
+        provenance: 'external', sourceKind: 'installed',
         authentication: {
             defaultModeId: 'oauth',
             modes: [{ id: 'oauth', kind: 'oauthAuthorizationCode', pkce: 'required', outcomeReconciliation: 'providerCheck' }],
@@ -148,7 +149,7 @@ describe('projectMachineAgentConnectedServices', () => {
         };
         const legacyDefaults = {
             ...defaults, accountTransport: 'legacy' as const, entries: [legacyEntry],
-            agents: [{ agentId: 'codex', connectedAccounts: [{ purpose: 'primary', service: legacyService, credentialKinds: ['oauth'] } as const] }],
+            agents: [{ agentId: 'codex', connectedAccounts: [{ purpose: 'primary', service: legacyService, credentialKinds: ['oauth'] } satisfies PluginProjectedAgentConnectedAccountPurposeV2] }],
             profile: { ...profileDefaults, connectedServicesV2: [{
                 serviceId: 'openai-codex' as const, groups: [], profiles: [
                     { profileId: 'wrong-kind', status: 'connected' as const, kind: 'token' as const, providerEmail: 'token@example.com', providerAccountId: null, expiresAt: null, lastUsedAt: null, health: null },

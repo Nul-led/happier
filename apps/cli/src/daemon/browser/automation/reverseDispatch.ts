@@ -2,6 +2,8 @@ import {
   UiBrowserAutomationDispatchRequestV1Schema,
   UiBrowserAutomationDispatchResultV1Schema,
   uiBrowserAutomationDispatchMethod,
+  BrowserAutomationActionKindV1Schema,
+  isBrowserAutomationMutatingActionKind,
   type RuntimeActionExecute,
 } from '@happier-dev/protocol';
 
@@ -23,23 +25,31 @@ export function createBrowserAutomationReverseDispatcher(input: Readonly<{
     const client = input.getMachineClient();
     if (!client?.hasConnectedClientRpcHandler(method)) return unavailable;
     const request = UiBrowserAutomationDispatchRequestV1Schema.safeParse({
-      v: 1, actionId: args.actionId, input: args.input,
+      v: 1, sessionId: args.context.defaultSessionId, actionId: args.actionId, input: args.input,
       ...(args.context.authority ? { authority: args.context.authority } : {}),
     });
     if (!request.success) return unavailable;
-    args.context.signal?.throwIfAborted();
+    const actionKind = BrowserAutomationActionKindV1Schema.safeParse(record.actionKind);
+    const effectBearing = args.actionId === 'browser.automation.cancelActive'
+      || (actionKind.success && isBrowserAutomationMutatingActionKind(actionKind.data));
+    let issued = false;
+    const interrupted = () => UiBrowserAutomationDispatchResultV1Schema.parse({
+      v: 1, status: 'interrupted', completion: 'unknown',
+      ...(typeof record.automationRequestId === 'string' ? { automationRequestId: record.automationRequestId } : {}),
+    });
+    const failedTransport = () => issued && effectBearing ? interrupted() : unavailable;
+    if (args.context.signal?.aborted) return unavailable;
     try {
       // Automation owns its execution budget; do not let the generic RPC default cut
       // a valid long-running page action off first.
       const response = await client.callConnectedClientRpc(method, request.data,
-        typeof record.timeoutMs === 'number' ? { timeoutMs: record.timeoutMs } : undefined);
-      args.context.signal?.throwIfAborted();
-      if (!response.ok) return unavailable;
+        { ...(typeof record.timeoutMs === 'number' ? { timeoutMs: record.timeoutMs } : {}),
+          signal: args.context.signal, onIssued: () => { issued = true; } });
+      if (args.context.signal?.aborted || !response.ok) return failedTransport();
       const parsed = UiBrowserAutomationDispatchResultV1Schema.safeParse(response.result);
-      return parsed.success ? parsed.data : unavailable;
+      return parsed.success ? parsed.data : failedTransport();
     } catch {
-      args.context.signal?.throwIfAborted();
-      return unavailable;
+      return failedTransport();
     }
   };
 }

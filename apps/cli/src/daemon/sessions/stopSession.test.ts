@@ -1890,7 +1890,7 @@ describe('createStopSession', () => {
       expect(spawnSyncMock).toHaveBeenCalledWith(
         'C:\\WINDOWS\\System32\\taskkill.exe',
         ['/F', '/T', '/PID', '778'],
-        { stdio: 'ignore' },
+        { stdio: 'ignore', windowsHide: true },
       );
       expect(childKill).not.toHaveBeenCalled();
       expect(pidToTrackedSession.get(778)?.stopRequestedAtMs).toBe(123456789);

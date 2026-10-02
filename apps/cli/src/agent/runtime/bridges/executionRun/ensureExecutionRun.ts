@@ -21,6 +21,7 @@ import type { ExecutionRunProfileContributionCatalog } from '@/agent/executionRu
 import { isExecutionRunControllerCurrent, settleExecutionRunController } from './settleExecutionRunController';
 import type { ExecutionRunBackendStartContext } from '@/agent/executionRuns/registry/executionRunBackendTypes';
 import { resolveExecutionRunLifecycle } from './resolveExecutionRunLifecycle';
+import { resolveExecutionRunResumeBackendOptions, type ExecutionRunResumeBackendOptions } from './resolveExecutionRunResumeBackendOptions';
 
 export type ExecutionRunEnsureResult =
   | Readonly<{ ok: true }>
@@ -42,7 +43,7 @@ export async function ensureExecutionRun(args: Readonly<{
   runs: Map<string, ExecutionRunState>;
   controllers: Map<string, ExecutionRunController>;
   budgetRegistry: ExecutionBudgetRegistry | null;
-  createRuntime: (opts: {
+  createRuntime: (opts: ExecutionRunResumeBackendOptions & {
     runId?: string;
     controllerOccurrenceId: string;
     backendId: string;
@@ -92,6 +93,12 @@ export async function ensureExecutionRun(args: Readonly<{
     return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume requires input', resumeFailureKind: 'permanent' };
   }
   if (lifecycle.projection.state === 'unavailable') {
+    if (lifecycle.unavailableReason === 'provider_state_missing') {
+      return {
+        ok: false, errorCode: 'execution_run_provider_state_missing',
+        error: run.error?.message ?? 'Provider session state is missing', resumeFailureKind: 'permanent',
+      };
+    }
     const error = lifecycle.unavailableReason === 'not_resumable'
       ? 'Not resumable'
       : lifecycle.unavailableReason === 'unsupported'
@@ -117,6 +124,7 @@ export async function ensureExecutionRun(args: Readonly<{
     const resumeHandle = run.resumeHandle!;
 
     const voiceRun = run;
+    const resumeBackendOptions = resolveExecutionRunResumeBackendOptions({ run });
 
     const needsBudget = Boolean(args.budgetRegistry && run.status !== 'running');
     if (needsBudget && args.budgetRegistry && !args.budgetRegistry.tryAcquireExecutionRun(args.runId, run.intent)) {
@@ -184,8 +192,11 @@ export async function ensureExecutionRun(args: Readonly<{
         commitModelId: config.commitModelId,
         ...(config.chatModelSelection ? { chatModelSelection: config.chatModelSelection } : {}),
         ...(config.commitModelSelection ? { commitModelSelection: config.commitModelSelection } : {}),
-        ...(run.launch?.sessionConfigOptionOverrides
-          ? { sessionConfigOptionOverrides: run.launch.sessionConfigOptionOverrides }
+        ...(resumeBackendOptions.sessionConfigOptionOverrides
+          ? { sessionConfigOptionOverrides: resumeBackendOptions.sessionConfigOptionOverrides }
+          : {}),
+        ...(resumeBackendOptions.connectedServices !== undefined
+          ? { connectedServices: resumeBackendOptions.connectedServices }
           : {}),
         commitIsolation: config.commitIsolation,
         permissionIntent: config.permissionIntent,
@@ -208,12 +219,15 @@ export async function ensureExecutionRun(args: Readonly<{
           connectedServices,
         }) =>
           args.createRuntime({
+            ...resumeBackendOptions,
             runId: args.runId,
             controllerOccurrenceId,
             backendId,
             backendTarget,
             modelId,
-            ...(modelSelection ? { modelSelection } : {}),
+            // Voice owns separate chat/commit selections; never inherit the
+            // admitted chat model selection into the commit role.
+            modelSelection,
             ...(sessionConfigOptionOverrides ? { sessionConfigOptionOverrides } : {}),
             permissionMode: permissionIntent,
             workspaceWrites: voiceRun.workspaceWrites,
@@ -221,10 +235,7 @@ export async function ensureExecutionRun(args: Readonly<{
               ? { causalPermissionAuthority: args.params.causalPermissionAuthority }
               : {}),
             start: {
-              intent: voiceRun.intent,
-              runClass: voiceRun.runClass,
-              ioMode: voiceRun.ioMode,
-              retentionPolicy: voiceRun.retentionPolicy,
+              ...resumeBackendOptions.start,
               ...(start ?? {}),
             },
             ...(connectedServices !== undefined ? { connectedServices } : {}),
@@ -249,7 +260,7 @@ export async function ensureExecutionRun(args: Readonly<{
 
       await args.writeActivityMarker(args.runId, args.getNowMs(), { force: true });
       if (
-        args.runs.get(args.runId) !== resumedRun
+        args.runs.get(args.runId)?.status !== 'running'
         || !isExecutionRunControllerCurrent({
           runId: args.runId,
           controller: voiceCtrl,

@@ -13,7 +13,7 @@ import {
   createAccountEncryptionCurrentnessFixture,
   createSessionRecordFixture,
 } from '@/testkit/backends/sessionFixtures';
-import { projectCliSessionAwarenessV1 } from '@/cli/output/session/sessionAwareness';
+import { buildCliSessionAwarenessInputV1, projectCliSessionAwarenessV1 } from '@/cli/output/session/sessionAwareness';
 
 const NOW_MS = 1_700_000_000_000;
 
@@ -37,7 +37,7 @@ describe('projectCliSessionAwarenessV1', () => {
     expect(awareness).not.toHaveProperty('lineage');
     expect(SessionAwarenessProjectionV1Schema.safeParse(awareness).success).toBe(true);
   });
-  it('keeps a foreground turn but reports runtime currentness as unknown without presence evidence', () => {
+  it('exposes the persisted V2 Session presence while keeping its own foreground turn', () => {
     const awareness = project({
       id: 'session-working',
       encryptionMode: 'plain',
@@ -55,8 +55,8 @@ describe('projectCliSessionAwarenessV1', () => {
       sessionId: 'session-working',
       title: 'Release prep',
       lifecycle: 'active',
-      runtime: 'unknown',
-      freshness: 'unknown',
+      runtime: 'working',
+      freshness: 'live',
       operational: { primary: 'working' },
       encryption: 'plain',
       availability: 'complete',
@@ -65,7 +65,7 @@ describe('projectCliSessionAwarenessV1', () => {
     expect(SessionAwarenessProjectionV1Schema.safeParse(awareness).success).toBe(true);
   });
 
-  it('does not fabricate offline reachability when the CLI has no presence channel', () => {
+  it('reports the persisted offline Session presence', () => {
     const awareness = project({
       id: 'session-offline',
       encryptionMode: 'plain',
@@ -76,9 +76,24 @@ describe('projectCliSessionAwarenessV1', () => {
       pendingUserActionRequestCount: 0,
     } as never);
 
-    expect(awareness.runtime).toBe('unknown');
-    expect(awareness.freshness).toBe('unknown');
-    expect(awareness.operational.reasons).not.toContain('runtime_offline');
+    expect(awareness.runtime).toBe('offline');
+    expect(awareness.freshness).toBe('offline');
+    expect(awareness.operational.reasons).toContain('runtime_offline');
+  });
+
+  it('normalizes presence from the current row without turning stale evidence into live idle', () => {
+    const row = createSessionRecordFixture({ id: 'presence', encryptionMode: 'plain', metadata: '{}',
+      updatedAt: NOW_MS, active: true, activeAt: NOW_MS, latestTurnStatus: null,
+      pendingPermissionRequestCount: 0, pendingUserActionRequestCount: 0 });
+    const params = { credentials: tokenOnlyCredentials, accountEncryption: createAccountEncryptionCurrentnessFixture(), row, nowMs: NOW_MS };
+    expect(buildCliSessionAwarenessInputV1(params).runtime.presence).toBe('online');
+    expect(projectCliSessionAwarenessV1(params)).toMatchObject({ runtime: 'idle', freshness: 'live', availability: 'complete' });
+    row.active = false;
+    expect(buildCliSessionAwarenessInputV1(params).runtime.presence).toBe('offline');
+    expect(projectCliSessionAwarenessV1(params).runtime).toBe('offline');
+    row.active = true;
+    row.activeAt = NOW_MS - 3_600_000;
+    expect(projectCliSessionAwarenessV1(params).freshness).toBe('stale');
   });
 
   it('keeps background provider activity distinct from a foreground turn', () => {
@@ -96,7 +111,7 @@ describe('projectCliSessionAwarenessV1', () => {
       pendingUserActionRequestCount: 0,
     } as never);
 
-    expect(awareness.runtime).toBe('unknown');
+    expect(awareness.runtime).toBe('background_active');
     expect(awareness.operational.reasons).toContain('background_activity');
     expect(awareness.operational.reasons).not.toContain('working');
   });
@@ -247,7 +262,7 @@ describe('projectCliSessionAwarenessV1', () => {
       pendingPermissionRequestCount: 1, pendingUserActionRequestCount: 0,
       pendingRequestObservedAt: NOW_MS - 1_000,
     } as never);
-    expect(withoutEvidence.runtime).toBe('unknown');
+    expect(withoutEvidence.runtime).toBe('waiting');
     expect(withoutEvidence.operational.primary).toBe('permission_required');
 
     // A malformed or foreign-version envelope is no evidence, never a fabricated state.
@@ -261,7 +276,7 @@ describe('projectCliSessionAwarenessV1', () => {
       pendingPermissionRequestCount: 1, pendingUserActionRequestCount: 0,
       pendingRequestObservedAt: NOW_MS - 1_000,
     } as never);
-    expect(malformed.runtime).toBe('unknown');
+    expect(malformed.runtime).toBe('waiting');
   });
 
   it('reports incomplete rather than safe when a producer projected no pending state', () => {

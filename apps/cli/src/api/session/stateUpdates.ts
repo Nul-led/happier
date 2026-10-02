@@ -136,10 +136,10 @@ export async function updateSessionMetadataWithAck(opts: {
         if (answer.result === 'version-mismatch') {
             if (answer.version > opts.getMetadataVersion()) {
                 opts.setMetadataVersion(answer.version);
-                const next = normalizeSessionMetadataForRead(
-                    opts.sessionEncryptionMode === 'plain'
+                const decoded: Metadata | null = opts.sessionEncryptionMode === 'plain'
                         ? JSON.parse(String(answer.metadata ?? 'null'))
-                        : decrypt(opts.encryptionKey, opts.encryptionVariant, decodeBase64(answer.metadata)));
+                        : decrypt(opts.encryptionKey, opts.encryptionVariant, decodeBase64(answer.metadata));
+                const next = normalizeSessionMetadataForRead(decoded);
                 logger.debug('[API] updateMetadata version-mismatch', {
                     version: answer.version,
                     hasModeOverride: Boolean((next as Record<string, unknown> | null)?.acpSessionModeOverrideV1),

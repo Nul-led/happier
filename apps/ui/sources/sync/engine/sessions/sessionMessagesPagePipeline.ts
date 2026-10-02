@@ -284,7 +284,7 @@ async function decryptMessagesInBatchesWithTelemetry(
     direction: MessagePageDirection,
     encryption: SessionMessagesEncryption,
     messages: SessionMessageV1[],
-    options: MessageDecryptBatchOptions & Pick<DecryptOptions, 'onAuthenticationFailure'>,
+    options: MessageDecryptBatchOptions & Pick<DecryptOptions, 'onAuthenticationFailure'> & Pick<SessionMessagesPageOptions, 'isCurrent'>,
 ): Promise<Array<DecryptedSessionMessage | null>> {
     const batchSize = resolveMessageDecryptBatchSize(direction, options);
     return syncPerformanceTelemetry.measureAsync(
@@ -330,10 +330,10 @@ function measureMessageNormalization<T>(
 async function decryptMessagesInBatches(
     encryption: SessionMessagesEncryption,
     messages: SessionMessageV1[],
-    options: MessageDecryptBatchOptions & Pick<DecryptOptions, 'onAuthenticationFailure'>,
+    options: MessageDecryptBatchOptions & Pick<DecryptOptions, 'onAuthenticationFailure'> & Pick<SessionMessagesPageOptions, 'isCurrent'>,
     batchSize: number,
 ): Promise<Array<DecryptedSessionMessage | null>> {
-    if (messages.length === 0) return [];
+    if (messages.length === 0 || options.isCurrent?.() === false) return [];
 
     if (batchSize >= messages.length) {
         return encryption.decryptMessages(messages, { onAuthenticationFailure: options.onAuthenticationFailure });
@@ -344,9 +344,11 @@ async function decryptMessagesInBatches(
     const decryptedMessages: Array<DecryptedSessionMessage | null> = [];
 
     for (let start = 0; start < messages.length; start += batchSize) {
+        if (options.isCurrent?.() === false) break;
         if (start > 0) {
             await yieldBetweenBatches(yieldDelayMs);
         }
+        if (options.isCurrent?.() === false) break;
         const batch = messages.slice(start, start + batchSize);
         decryptedMessages.push(...await encryption.decryptMessages(batch, {
             onAuthenticationFailure: (index) => options.onAuthenticationFailure?.(start + index),
@@ -514,12 +516,15 @@ export async function runSessionMessagesPagePipeline(params: {
             messagesToDecrypt,
             {
                 ...params,
+                isCurrent: () => isCurrent() && params.shouldContinue?.() !== false,
                 onAuthenticationFailure: (index) => authenticationFailures.push(messagesToDecrypt[index]),
             },
         );
     } catch (cause) {
         throw new SessionMessagePageDecryptionError(params.sessionId, cause);
     }
+    if (!isCurrent()) return skippedMissingSessionResult(params.page.direction);
+    if (params.shouldContinue?.() === false) return skippedSupersededResult(params.page.direction);
     const replayableMessages = await Promise.all(decryptedMessages.map(async (decrypted) => {
         if (!decrypted) return null;
         return {

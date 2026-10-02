@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { PLANET_LIGHT_RAMP } from '@happier-dev/brand/planet';
 import { Platform, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -37,8 +38,8 @@ export type SplitStageLayoutProps = Readonly<{
     testID?: string;
 }>;
 
-const DEFAULT_ACCENT_DARK = '#6D94FF';
-const DEFAULT_ACCENT_LIGHT = '#FFB14A';
+const DEFAULT_ACCENT_DARK = PLANET_LIGHT_RAMP.cool;
+const DEFAULT_ACCENT_LIGHT = PLANET_LIGHT_RAMP.warm;
 
 export function resolveJourneyStagePaneState(beat: JourneyBeat): JourneyStagePaneState {
     if (beat.stageTreatment === 'planet-hero') {
@@ -85,11 +86,11 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     narrationPaneLeft: {
         borderRightWidth: 1,
-        borderRightColor: theme.dark ? 'rgba(255,177,74,.08)' : 'rgba(255,177,74,.14)',
+        borderRightColor: theme.dark ? stageVisualTokens.horizon.dark.dividerColor : stageVisualTokens.horizon.light.dividerColor,
     },
     narrationPaneRight: {
         borderLeftWidth: 1,
-        borderLeftColor: theme.dark ? 'rgba(255,177,74,.08)' : 'rgba(255,177,74,.14)',
+        borderLeftColor: theme.dark ? stageVisualTokens.horizon.dark.dividerColor : stageVisualTokens.horizon.light.dividerColor,
     },
     // Single 2px accent hairline pinned to the very top of the narration column;
     // its width tracks beat progress (D17). No numbers, no acts, no dots.

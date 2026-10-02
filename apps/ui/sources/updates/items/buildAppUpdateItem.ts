@@ -12,7 +12,18 @@ export type AppUpdateFacts = Readonly<{
     native: Readonly<{ updateUrl: string | null }>;
     webUiUpdateAvailable: boolean;
     desktop: DesktopUpdaterSnapshot;
-    ota: Readonly<{ isDownloading: boolean; downloadProgress: number | null; isUpdatePending: boolean }>;
+    ota: Readonly<{
+        supported: boolean;
+        isChecking: boolean;
+        isDownloading: boolean;
+        isRestarting: boolean;
+        downloadProgress: number | null;
+        isUpdateAvailable: boolean;
+        isUpdatePending: boolean;
+        checkFailed: boolean;
+        downloadFailed: boolean;
+        checkedAt: number | null;
+    }>;
 }>;
 
 export type AppUpdateItemModel = Readonly<{ channel: AppUpdateChannel; item: UpdateItem }>;
@@ -86,6 +97,10 @@ export function buildAppUpdateItem(facts: AppUpdateFacts): AppUpdateItemModel {
     if (facts.desktopHost || facts.desktop.phase !== 'idle') {
         return { channel: 'desktop', item: buildDesktopItem(base, facts.desktop) };
     }
+    if (!facts.ota.supported) return { channel: 'none', item: base };
+    if (facts.ota.isRestarting) {
+        return { channel: 'ota', item: { ...base, state: 'running', step: 'restarting' } };
+    }
     if (facts.ota.isDownloading) {
         return {
             channel: 'ota',
@@ -95,5 +110,18 @@ export function buildAppUpdateItem(facts: AppUpdateFacts): AppUpdateItemModel {
     if (facts.ota.isUpdatePending) {
         return { channel: 'ota', item: { ...base, state: 'ready', action: { kind: 'run', verb: 'restart' } } };
     }
-    return { channel: 'none', item: base };
+    if (facts.ota.isChecking) {
+        return { channel: 'ota', item: { ...base, state: 'checking' } };
+    }
+    // Expo retains the previous download error after a later check finds no update.
+    if (facts.ota.downloadFailed && facts.ota.isUpdateAvailable) {
+        return { channel: 'ota', item: { ...base, state: 'failed', failure: { kind: 'appDownload' }, action: { kind: 'run', verb: 'retry' } } };
+    }
+    if (facts.ota.checkFailed) {
+        return { channel: 'ota', item: { ...base, state: 'unknown', failure: { kind: 'appCheck' }, action: { kind: 'run', verb: 'retry' } } };
+    }
+    if (facts.ota.isUpdateAvailable) {
+        return { channel: 'ota', item: { ...base, state: 'available', action: { kind: 'run', verb: 'update' } } };
+    }
+    return { channel: 'ota', item: { ...base, state: facts.ota.checkedAt === null ? 'unchecked' : 'upToDate' } };
 }

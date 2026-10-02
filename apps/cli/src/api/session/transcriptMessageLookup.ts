@@ -10,7 +10,8 @@ import { resolveServerHttpBaseUrl } from '../client/serverHttpBaseUrl';
 import { SessionMessageContentSchema, type SessionMessageContent } from '../types';
 import { readAuthenticationStatus, readHttpStatus } from '@/api/client/httpStatusError';
 import { isNetworkConnectionErrorCode } from '@/api/client/classifyServerEndpointError';
-import { TranscriptRecoveryCoordinator, type TranscriptRecoveryResult } from './recovery/TranscriptRecoveryCoordinator';
+import { TranscriptRecoveryCoordinator } from './recovery/TranscriptRecoveryCoordinator';
+import { openSessionEventSource } from '@/session/transport/socket/sessionSocketAgentState';
 
 const KEEP_ALIVE_HTTP_AGENT = new HttpAgent({ keepAlive: true, maxSockets: 16 });
 const KEEP_ALIVE_HTTPS_AGENT = new HttpsAgent({ keepAlive: true, maxSockets: 16 });
@@ -198,13 +199,6 @@ export async function findTranscriptEncryptedMessageByLocalIdV2(params: {
     }
 }
 
-function normalizeTranscriptLookupOutcomeForWait(outcome: TranscriptLookupOutcome): TranscriptLookupOutcome {
-    if (outcome.type === 'protocol_error' && isLegacyV2RouteMissingError(outcome.error)) {
-        return { type: 'not_found' };
-    }
-    return outcome;
-}
-
 export async function findTranscriptEncryptedMessageByLocalId(params: {
     token: string;
     sessionId: string;
@@ -247,179 +241,52 @@ export async function waitForTranscriptEncryptedMessageByLocalId(params: {
     supervisor?: ManagedConnectionSupervisor;
     maxWaitMs?: number;
     onError?: (error: unknown) => void;
-    pollIntervalMs?: number;
-    errorBackoffBaseMs?: number;
-    errorBackoffMaxMs?: number;
     requestTimeoutMs?: number;
     signal?: AbortSignal;
     onUnsupported?: (error: unknown) => void;
     resolveAuthorizationHeaders?: ResolveTranscriptLookupAuthorizationHeaders;
 }): Promise<TranscriptMessageLookupResult | null> {
-    const maxWaitMs = params.maxWaitMs ?? 5_000;
-    const pollIntervalMs = params.pollIntervalMs ?? configuration.transcriptLookupPollIntervalMs;
-    const errorBackoffBaseMs = params.errorBackoffBaseMs ?? configuration.transcriptLookupErrorBackoffBaseMs;
-    const errorBackoffMaxMs = params.errorBackoffMaxMs ?? configuration.transcriptLookupErrorBackoffMaxMs;
-    const requestTimeoutMs = params.requestTimeoutMs ?? configuration.transcriptLookupRequestTimeoutMs;
+    const deadlineMs = Date.now() + (params.maxWaitMs ?? 5_000);
+    const events = openSessionEventSource(params);
     const serverUrl = resolveServerHttpBaseUrl();
-    if (params.supervisor) {
-        return await waitForTranscriptEncryptedMessageByLocalIdWithSupervisor({
-            ...params,
-            supervisor: params.supervisor,
-            serverUrl,
-            maxWaitMs,
-            pollIntervalMs,
-            errorBackoffBaseMs,
-            requestTimeoutMs,
-        });
-    }
-
-    const startedAt = Date.now();
-    let currentErrorBackoffMs = errorBackoffBaseMs;
-    while (!params.signal?.aborted && Date.now() - startedAt < maxWaitMs) {
-        const elapsedMs = Date.now() - startedAt;
-        const remainingMs = maxWaitMs - elapsedMs;
-        if (remainingMs <= 0) break;
-
-        let hadError = false;
-        const outcome = await findTranscriptEncryptedMessageByLocalIdV2({
-            token: params.token,
-            serverUrl,
-            sessionId: params.sessionId,
-            localId: params.localId,
-            timeoutMs: Math.max(1, Math.min(requestTimeoutMs, remainingMs)),
-            ...(params.signal ? { signal: params.signal } : {}),
-            ...(params.resolveAuthorizationHeaders
-                ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
-                : {}),
-        });
-        switch (outcome.type) {
-            case 'found':
-                return outcome.message;
-            case 'not_found':
-                break;
-            case 'auth_failed':
-                throw outcome.error;
-            case 'unhealthy':
-                hadError = true;
-                params.onError?.(outcome.error);
-                break;
-            case 'protocol_error':
-                if (isLegacyV2RouteMissingError(outcome.error)) {
+    try {
+        while (!params.signal?.aborted && Date.now() < deadlineMs) {
+            const revision = events.currentRevision();
+            const request = () => findTranscriptEncryptedMessageByLocalIdV2({
+                token: params.token, serverUrl, sessionId: params.sessionId, localId: params.localId,
+                timeoutMs: Math.max(1, Math.min(params.requestTimeoutMs ?? configuration.transcriptLookupRequestTimeoutMs, deadlineMs - Date.now())),
+                ...(params.signal ? { signal: params.signal } : {}),
+                ...(params.resolveAuthorizationHeaders ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders } : {}),
+            });
+            if (params.supervisor) {
+                const supervisor = params.supervisor;
+                const result = await TranscriptRecoveryCoordinator.forServer(serverUrl).scheduleByLocalId({
+                    sessionId: params.sessionId, localId: params.localId, supervisor,
+                    runRequest: () => runSupervisedRequest({ supervisor, purpose: 'recovery_read', request }),
+                });
+                if (result.type === 'success') return result.value;
+                if (result.type === 'error' && result.reason === 'auth_failed') throw result.error;
+                if (result.type === 'error') {
+                    if (result.reason === 'protocol_error' && isLegacyV2RouteMissingError(result.error)) {
+                        params.onUnsupported?.(result.error);
+                        return null;
+                    }
+                    params.onError?.(result.error);
+                }
+            } else {
+                const outcome = await request();
+                if (outcome.type === 'found') return outcome.message;
+                if (outcome.type === 'auth_failed') throw outcome.error;
+                if (outcome.type === 'protocol_error' && isLegacyV2RouteMissingError(outcome.error)) {
                     params.onUnsupported?.(outcome.error);
                     return null;
                 }
-                hadError = true;
-                params.onError?.(outcome.error);
-                break;
-        }
-
-        const delayMs = hadError ? currentErrorBackoffMs : pollIntervalMs;
-        if (hadError) {
-            currentErrorBackoffMs = Math.min(errorBackoffMaxMs, currentErrorBackoffMs * 2);
-        } else {
-            currentErrorBackoffMs = errorBackoffBaseMs;
-        }
-
-        const remainingAfterAttemptMs = maxWaitMs - (Date.now() - startedAt);
-        if (remainingAfterAttemptMs <= 0) break;
-
-        await waitForTranscriptLookupDelay(Math.min(delayMs, remainingAfterAttemptMs), params.signal);
-    }
-    return null;
-}
-
-async function waitForTranscriptEncryptedMessageByLocalIdWithSupervisor(params: {
-    token: string;
-    serverUrl: string;
-    sessionId: string;
-    localId: string;
-    supervisor: ManagedConnectionSupervisor;
-    maxWaitMs: number;
-    pollIntervalMs: number;
-    errorBackoffBaseMs: number;
-    requestTimeoutMs: number;
-    signal?: AbortSignal;
-    onError?: (error: unknown) => void;
-    onUnsupported?: (error: unknown) => void;
-    resolveAuthorizationHeaders?: ResolveTranscriptLookupAuthorizationHeaders;
-}): Promise<TranscriptMessageLookupResult | null> {
-    const coordinator = TranscriptRecoveryCoordinator.forServer(params.serverUrl);
-    const startedAt = Date.now();
-
-    while (!params.signal?.aborted && Date.now() - startedAt < params.maxWaitMs) {
-        const elapsedMs = Date.now() - startedAt;
-        const remainingMs = params.maxWaitMs - elapsedMs;
-        if (remainingMs <= 0) break;
-
-        const result = await coordinator.scheduleByLocalId({
-            sessionId: params.sessionId,
-            localId: params.localId,
-            supervisor: params.supervisor,
-            runRequest: () => runSupervisedRequest({
-                supervisor: params.supervisor,
-                purpose: 'recovery_read',
-                request: async () => await findTranscriptEncryptedMessageByLocalIdV2({
-                    token: params.token,
-                    serverUrl: params.serverUrl,
-                    sessionId: params.sessionId,
-                    localId: params.localId,
-                    timeoutMs: Math.max(1, Math.min(params.requestTimeoutMs, remainingMs)),
-                    ...(params.signal ? { signal: params.signal } : {}),
-                    ...(params.resolveAuthorizationHeaders
-                        ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
-                        : {}),
-                }),
-            }),
-        });
-
-        if (result.type === 'success') return result.value;
-        if (result.type === 'error' && result.reason === 'auth_failed') throw result.error;
-        if (result.type === 'error') {
-            if (result.reason === 'protocol_error' && isLegacyV2RouteMissingError(result.error)) {
-                params.onUnsupported?.(result.error);
-                return null;
+                if (outcome.type === 'protocol_error' || outcome.type === 'unhealthy') params.onError?.(outcome.error);
             }
-            params.onError?.(result.error);
+            if (!(await events.waitForChange(revision, { deadlineMs, signal: params.signal }))) break;
         }
-
-        const remainingAfterAttemptMs = params.maxWaitMs - (Date.now() - startedAt);
-        if (remainingAfterAttemptMs <= 0) break;
-
-        await waitForTranscriptLookupDelay(
-            Math.min(resolveRecoveryResultDelayMs(result, params), remainingAfterAttemptMs),
-            params.signal,
-        );
-    }
-
-    return null;
-}
-
-function waitForTranscriptLookupDelay(ms: number, signal?: AbortSignal): Promise<void> {
-    if (signal?.aborted) return Promise.resolve();
-    return new Promise((resolve) => {
-        const timer = setTimeout(finish, Math.max(1, Math.trunc(ms)));
-        function finish(): void {
-            clearTimeout(timer);
-            signal?.removeEventListener('abort', finish);
-            resolve();
-        }
-        signal?.addEventListener('abort', finish, { once: true });
-        if (signal?.aborted) finish();
-    });
-}
-
-function resolveRecoveryResultDelayMs(
-    result: TranscriptRecoveryResult<TranscriptMessageLookupResult>,
-    params: { pollIntervalMs: number; errorBackoffBaseMs: number },
-): number {
-    switch (result.type) {
-        case 'success':
-            return 0;
-        case 'not_found':
-            return params.pollIntervalMs;
-        case 'error':
-            return params.errorBackoffBaseMs;
-        case 'deferred':
-            return Math.max(params.pollIntervalMs, params.errorBackoffBaseMs);
+        return null;
+    } finally {
+        await events.close();
     }
 }

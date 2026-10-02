@@ -2,6 +2,7 @@ import {
     buildProviderAccountUsageRecordId,
     openProviderAccountUsageSnapshotCiphertext,
     openSealedProviderAccountUsageSnapshot,
+    SealedProviderAccountUsageSnapshotV1Schema,
     type ProviderAccountUsageRecordKeyV1,
     type ProviderAccountUsageSnapshotV1,
 } from '@happier-dev/protocol';
@@ -262,7 +263,7 @@ describe('provider account usage persistence scheduler', () => {
             });
             expect(openSealedProviderAccountUsageSnapshot({
                 material: encryption,
-                sealed: sealedPayload,
+                sealed: SealedProviderAccountUsageSnapshotV1Schema.parse(sealedPayload),
             })?.subscription).toEqual(snapshot.subscription);
         } finally {
             scheduler.dispose();

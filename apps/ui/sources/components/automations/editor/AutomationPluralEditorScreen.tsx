@@ -1238,7 +1238,6 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
     return (
         <ItemList
             testID="automation-editor-scroll"
-            presentation="page"
             // A form with focusable name, description, prompt and trigger
             // fields: the list's shared native keyboard owner keeps the
             // focused field above the keyboard instead of beneath it.

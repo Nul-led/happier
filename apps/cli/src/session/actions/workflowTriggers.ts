@@ -23,7 +23,9 @@ export function createCliWorkflowTriggerActions(params: Readonly<{
   resolveWorkflowTeamIds?: WorkflowTriggerActionsDependencies['resolveWorkflowTeamIds'];
   resolveSession?: WorkflowTriggerActionsDependencies['resolveSession'];
   resolveRunTrigger?: WorkflowTriggerActionsDependencies['resolveRunTrigger'];
+  resolveRunSource?: WorkflowTriggerActionsDependencies['resolveRunSource'];
   resolveMaterializer?: WorkflowTriggerActionsDependencies['resolveMaterializer'];
+  pullRequests?: WorkflowTriggerActionsDependencies['pullRequests'];
 }>) {
   const onServer = <T>(operation: () => Promise<T>): Promise<T> => params.serverHttpBaseUrl
     ? runWithServerHttpBaseUrl(params.serverHttpBaseUrl, operation) : operation();
@@ -52,7 +54,9 @@ export function createCliWorkflowTriggerActions(params: Readonly<{
     newId: () => randomUUID(),
     ...(params.resolveSession ? { resolveSession: params.resolveSession } : {}),
     ...(params.resolveRunTrigger ? { resolveRunTrigger: params.resolveRunTrigger } : {}),
+    ...(params.resolveRunSource ? { resolveRunSource: params.resolveRunSource } : {}),
     ...(params.resolveMaterializer ? { resolveMaterializer: params.resolveMaterializer } : {}),
+    ...(params.pullRequests ? { pullRequests: params.pullRequests } : {}),
     resolveWorkflow: (ref) => onServer(() => params.resolveWorkflow(ref)),
     resolveWorkflowTeamIds: (artifactId) => onServer(async () => {
       if (params.resolveWorkflowTeamIds) return params.resolveWorkflowTeamIds(artifactId);

@@ -1,7 +1,8 @@
 import * as React from 'react';
 
 import { useActiveServerAccountScope, useSetting } from '@/sync/domains/state/storage';
-import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
+import { areServerAccountScopesEqual, serverAccountScopeKeySuffix, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { captureActiveServerAccountScopeLifetime, getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
 import { createFrontDoorActionExecute } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
 import { buildRoleCatalog, parseRolesListOutput, type RoleCatalogEntry, type RolesListItem } from '@/sync/domains/roles/roleCatalog';
 
@@ -26,18 +27,23 @@ function publish(scopeKey: string, snapshot: ScopeSnapshot): void {
 }
 
 /** One `roles.list` per scope at a time; concurrent opens share it. */
-function loadRoleCatalog(scopeKey: string): Promise<void> {
+function loadRoleCatalog(scope: ServerAccountScope): Promise<void> {
+    const scopeKey = serverAccountScopeKeySuffix(scope);
+    const lifetime = captureActiveServerAccountScopeLifetime();
+    if (!lifetime || !areServerAccountScopesEqual(lifetime.scope, scope)) return Promise.resolve();
     const pending = inFlightByScope.get(scopeKey);
     if (pending) return pending;
     execute ??= createFrontDoorActionExecute();
-    const request = execute('roles.list', {}, { surface: 'ui' })
+    const request = execute('roles.list', {}, { surface: 'ui', serverId: scope.serverId, expectedAccountId: scope.accountId })
         .then((result) => {
+            if (!lifetime.isCurrent()) return;
             const items = result.ok ? parseRolesListOutput(result.result) : null;
             const previous = lastKnownByScope.get(scopeKey);
             publish(scopeKey, items === null
                 ? { items: previous?.items ?? null, failed: true }
                 : { items, failed: false });
         }, () => {
+            if (!lifetime.isCurrent()) return;
             const previous = lastKnownByScope.get(scopeKey);
             publish(scopeKey, { items: previous?.items ?? null, failed: true });
         })
@@ -50,8 +56,8 @@ function loadRoleCatalog(scopeKey: string): Promise<void> {
 
 /** Re-reads the catalog after a role write, for every open surface of that scope. */
 export function invalidateRoleCatalog(scopeKey?: string): void {
-    const keys = scopeKey === undefined ? [...lastKnownByScope.keys()] : [scopeKey];
-    for (const key of keys) void loadRoleCatalog(key);
+    const scope = getActiveServerAccountScope();
+    if (scope && (scopeKey === undefined || scopeKey === serverAccountScopeKeySuffix(scope))) void loadRoleCatalog(scope);
 }
 
 /**
@@ -71,9 +77,9 @@ export function useRoleCatalog(): RoleCatalogState {
         () => lastKnownByScope.get(scopeKey),
     );
     React.useEffect(() => {
-        void loadRoleCatalog(scopeKey);
+        if (scope) void loadRoleCatalog(scope);
     }, [scopeKey]);
-    const refresh = React.useCallback(() => { void loadRoleCatalog(scopeKey); }, [scopeKey]);
+    const refresh = React.useCallback(() => { if (scope) void loadRoleCatalog(scope); }, [scopeKey]);
     const overrides = useSetting('rolesV1')?.overrides ?? NO_OVERRIDES;
     const items = snapshot?.items ?? EMPTY_ITEMS;
     const entries = React.useMemo(() => buildRoleCatalog({ items, overrides }), [items, overrides]);

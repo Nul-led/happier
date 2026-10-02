@@ -20,7 +20,6 @@ describe('resolveSessionListHeaderViewState', () => {
             workspaceRefId: 'workspace_ref_1',
             legacyWorkspaceKey: 'legacy-key',
             scopeHint: { serverId: 'server_a', machineId: 'machine_a', rootPath: '/repo' },
-            newSessionTarget: { serverId: 'server_a', machineId: 'machine_a', rootPath: '/repo' },
             seedSessionId: null,
         };
         const input = {
@@ -64,7 +63,6 @@ describe('resolveSessionListHeaderViewState', () => {
             workspaceRefId: 'workspace_ref_1',
             legacyWorkspaceKey: 'legacy-key',
             scopeHint: { serverId: 'server_a', machineId: 'machine_a', rootPath: '/repo' },
-            newSessionTarget: { serverId: 'server_a', machineId: 'machine_a', rootPath: '/repo' },
             seedSessionId: null,
         };
 

@@ -37,7 +37,7 @@ export function UpdatesPopoverRows(props: Readonly<{ model: UpdatesContentModel 
     }, [theme]);
 
     const rows = React.useMemo(() => model.groups.map((group: UpdatesGroup): ActionListItem => {
-        const row = describeUpdatesGroupRow(group);
+        const row = describeUpdatesGroupRow(group, { sessionsRunningOn: model.sessionsRunningOn });
         const color = toneColor(row.tone);
         const action = row.action;
         const where = row.title;
@@ -77,7 +77,7 @@ export function UpdatesPopoverRows(props: Readonly<{ model: UpdatesContentModel 
             ) : undefined,
             rightElementOutsidePressable: action != null,
         };
-    }), [model.groups, runItem, theme.colors.text.secondary, toneColor, updateGroup]);
+    }), [model.groups, model.sessionsRunningOn, runItem, theme.colors.text.secondary, toneColor, updateGroup]);
 
     const extras: ActionListItem[] = model.whatsNewUnread ? [{
         id: 'updates-whats-new',

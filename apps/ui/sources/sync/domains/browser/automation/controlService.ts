@@ -43,6 +43,7 @@ export type BrowserAutomationRequest = Readonly<{
 
 export type BrowserAutomationResult = Readonly<{
     status: BrowserAutomationResultStatus;
+    completion?: 'unknown';
     errorCode?: BrowserAutomationErrorCodeV1;
     automationRequestId?: string;
     durationMs?: number;
@@ -119,6 +120,7 @@ type ActiveAction = {
     /** Retirement outlives eviction from the recent-closed-view projection. */
     viewClosed?: true;
     interruption?: BrowserAutomationResult;
+    detachCallerAbort?: () => void;
     timeoutId: ReturnType<typeof setTimeout> | null;
     resolve: (result: BrowserAutomationResult) => void;
 };
@@ -130,7 +132,7 @@ export type BrowserAutomationControlService = Readonly<{
     updateNavigationGeneration: (
         input: Readonly<{ browserSessionId: string; viewId: string; navigationGeneration: number }>,
     ) => void;
-    executeAction: (request: BrowserAutomationRequest) => Promise<BrowserAutomationResult>;
+    executeAction: (request: BrowserAutomationRequest, options?: Readonly<{ signal?: AbortSignal }>) => Promise<BrowserAutomationResult>;
     cancelActiveAction: (
         input: Readonly<{ browserSessionId: string; viewId: string; reasonCode?: BrowserAutomationErrorCodeV1 }>,
     ) => BrowserAutomationCancelActiveResultV1;
@@ -267,6 +269,7 @@ export function createBrowserAutomationControlService(
         if (active.settled) return;
         result = active.interruption ?? result;
         active.settled = true;
+        active.detachCallerAbort?.();
         if (active.timeoutId) {
             clearTimeout(active.timeoutId);
             active.timeoutId = null;
@@ -447,7 +450,7 @@ export function createBrowserAutomationControlService(
             emitChange();
         },
 
-        executeAction(request) {
+        executeAction(request, options) {
             const viewKey = browserViewKey(request);
             const owner = ownersByViewKey.get(viewKey) ?? null;
             if (closedViewKeys.has(viewKey)) {
@@ -455,6 +458,9 @@ export function createBrowserAutomationControlService(
             }
             if (!owner) {
                 return Promise.resolve(unavailableResult('canceled', 'owner_disconnected'));
+            }
+            if (options?.signal?.aborted) {
+                return Promise.resolve(rejectAndRecord(request, owner, 'canceled', 'user_canceled'));
             }
             if (request.navigationGeneration !== owner.navigationGeneration) {
                 return Promise.resolve(rejectAndRecord(request, owner, 'stale', 'stale_navigation'));
@@ -501,6 +507,19 @@ export function createBrowserAutomationControlService(
             active.timeoutId = setTimeout(() => {
                 interruptActiveAction(active, { status: 'timed_out', errorCode: 'timed_out' });
             }, request.timeoutMs);
+
+            const callerSignal = options?.signal;
+            if (callerSignal) {
+                const onAbort = () => interruptActiveAction(active, {
+                    status: 'interrupted', errorCode: 'user_canceled', completion: 'unknown',
+                });
+                callerSignal.addEventListener('abort', onAbort, { once: true });
+                active.detachCallerAbort = () => callerSignal.removeEventListener('abort', onAbort);
+                if (callerSignal.aborted) {
+                    finishActiveAction(active, { status: 'canceled', errorCode: 'user_canceled' });
+                    return resultPromise;
+                }
+            }
 
             owner.executeAction(request, { signal: abortController.signal, onActiveTarget: target => {
                 if (active.settled || active.interruption || abortController.signal.aborted

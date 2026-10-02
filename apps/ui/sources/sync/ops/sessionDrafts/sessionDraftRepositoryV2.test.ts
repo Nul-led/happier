@@ -14,6 +14,9 @@ import {
 import { createDeferred } from '@/dev/testkit';
 import { createSessionDraftCipher } from '@/sync/encryption/sessionDraftEncryption';
 import { SessionDraftEpochUnavailableError } from './sessionDraftEpochError';
+import { readNewSessionAttachmentDrafts, writeNewSessionAttachmentDrafts, clearAllNewSessionAttachmentDrafts } from '@/components/sessions/new/attachments/newSessionAttachmentDraftStore';
+import { resolveNewSessionDraftAttachmentFlowId } from '@/components/sessions/new/attachments/newSessionDraftAttachmentFlowId';
+import { deleteNewSessionDraftAfterConfirmation } from '@/components/sessions/drafts/deleteNewSessionDraftAfterConfirmation';
 
 const scope = { serverId: 'server-a', accountId: 'account-a' } as const;
 const runAddress = { kind: 'run', sessionId: 'session-a', runId: 'run-a' } as const;
@@ -75,6 +78,85 @@ function createRemote(address: SessionDraftAddressV2) {
 }
 
 describe('session draft repository V2 addresses', () => {
+    it.each(['local', 'scoped', 'synchronized'] as const)('reclaims only authoritatively removed New Session attachment sources (%s)', async (mode) => {
+        clearAllNewSessionAttachmentDrafts();
+        const address = { kind: 'newSession' as const, draftId: '00000000-0000-4000-8000-000000000801' };
+        const survivorId = '00000000-0000-4000-8000-000000000802';
+        const flowId = resolveNewSessionDraftAttachmentFlowId(address.draftId);
+        const survivorFlow = resolveNewSessionDraftAttachmentFlowId(survivorId);
+        const bytes = new Uint8Array([1, 2, 3]);
+        const files = [{ id: 'local-file', status: 'pending' as const, source: { kind: 'memory' as const, bytes, name: 'local.txt' } }];
+        writeNewSessionAttachmentDrafts(flowId, files);
+        writeNewSessionAttachmentDrafts(survivorFlow, files);
+        const remote = createRemote(address);
+        const cipher = plainCipher();
+        let cleanupFinished = false;
+        const repository = createSessionDraftRepository({
+            storage: createMemoryStorage(), scope, cipher,
+            syncEnabled: mode !== 'local', transport: mode === 'local' ? undefined : remote.transport,
+            onDraftRemoved: async () => {
+                // The installed cleanup is composed, rather than replaced; its
+                // failure must still retain sources for the repository's retry.
+                expect(readNewSessionAttachmentDrafts(flowId)[0]?.source).toMatchObject({ bytes });
+                cleanupFinished = true;
+            },
+        });
+        repository.writeNewSessionDraft({ scope, draftId: address.draftId, patch: { text: 'delete me' }, materializationIntent: 'userEdit' });
+        repository.writeNewSessionDraft({ scope, draftId: survivorId, patch: { text: 'keep me' }, materializationIntent: 'userEdit' });
+        if (mode !== 'local') await repository.flushSessionDraft({ scope, address });
+        if (mode === 'scoped') {
+            await expect(repository.deleteSessionDraftWithScopedRuntime({ scope, address,
+                runtime: { transport: remote.transport, cipher }, isCurrent: () => true,
+            })).resolves.toBe(true);
+        } else if (mode === 'synchronized') {
+            // A tombstone from another client enters the same removal owner.
+            const existing = remote.readCurrent()!;
+            remote.replaceCurrent({ ...existing, revision: existing.revision + 1, content: null });
+            await repository.materializeExact(scope, address);
+        } else {
+            await expect(repository.deleteSessionDraft({ scope, address })).resolves.toBe(true);
+        }
+        expect(cleanupFinished).toBe(true);
+        expect(repository.getSessionDraftSnapshot(scope, address)).toBeNull();
+        expect(readNewSessionAttachmentDrafts(flowId)).toEqual([]);
+        expect(readNewSessionAttachmentDrafts(survivorFlow)[0]?.source).toMatchObject({ bytes });
+        expect(repository.getSessionDraftSnapshot(scope, { kind: 'newSession', draftId: survivorId })).not.toBeNull();
+        clearAllNewSessionAttachmentDrafts();
+    });
+
+    it('retains attachment bytes when draft removal is cancelled, refused, fails remotely, or local cleanup fails', async () => {
+        clearAllNewSessionAttachmentDrafts();
+        const address = { kind: 'newSession' as const, draftId: '00000000-0000-4000-8000-000000000803' };
+        const flowId = resolveNewSessionDraftAttachmentFlowId(address.draftId);
+        const bytes = new Uint8Array([4, 5, 6]);
+        writeNewSessionAttachmentDrafts(flowId, [{ id: 'retained', status: 'pending', source: { kind: 'memory', bytes, name: 'retained.txt' } }]);
+        const remote = createRemote(address);
+        const cipher = plainCipher();
+        const repository = createSessionDraftRepository({
+            storage: createMemoryStorage(), scope, cipher, syncEnabled: true, transport: remote.transport,
+            onDraftRemoved: async () => { throw new Error('custody busy'); },
+        });
+        repository.writeNewSessionDraft({ scope, draftId: address.draftId, patch: { text: 'retain me' }, materializationIntent: 'userEdit' });
+        await repository.flushSessionDraft({ scope, address });
+        await expect(deleteNewSessionDraftAfterConfirmation({
+            confirm: async () => false,
+            readCurrentDraftDeletionDisposition: () => 'deletable',
+            deleteDraft: () => repository.deleteSessionDraft({ scope, address }),
+        })).resolves.toBe(false);
+        expect(readNewSessionAttachmentDrafts(flowId)[0]?.source).toMatchObject({ bytes });
+        expect(repository.getSessionDraftSnapshot(scope, address)).not.toBeNull();
+        await expect(repository.deleteSessionDraftWithScopedRuntime({ scope, address,
+            runtime: { cipher, transport: remote.transport }, isCurrent: () => false,
+        })).resolves.toBe(false);
+        expect(readNewSessionAttachmentDrafts(flowId)[0]?.source).toMatchObject({ bytes });
+        vi.mocked(remote.transport.mutate).mockRejectedValueOnce(new Error('offline'));
+        await expect(repository.deleteSessionDraft({ scope, address })).rejects.toThrow('offline');
+        expect(readNewSessionAttachmentDrafts(flowId)[0]?.source).toMatchObject({ bytes });
+        await expect(repository.deleteSessionDraft({ scope, address })).rejects.toThrow('custody busy');
+        expect(readNewSessionAttachmentDrafts(flowId)[0]?.source).toMatchObject({ bytes });
+        clearAllNewSessionAttachmentDrafts();
+    });
+
     it('materializes an inactive exact Home through an operation-scoped runtime without reading the configured active Home', async () => {
         const address = { kind: 'session', sessionId: 'shared-session-id' } as const;
         const scopeB = { serverId: 'server-b', accountId: 'account-b' } as const;

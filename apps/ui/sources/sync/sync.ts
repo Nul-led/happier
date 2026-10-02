@@ -323,7 +323,7 @@ import {
 import { SessionViewerProjectionV1Schema } from '@happier-dev/protocol';
 import { isSessionPersonallyTrackedForViewer } from './domains/session/readState/sessionViewer';
 import { updateSessionMetadataWithRetry as updateSessionMetadataWithRetryRpc, type SessionMetadataUpdateRequest, type UpdateMetadataAck } from './domains/session/metadata/updateSessionMetadataWithRetry';
-import type { ArtifactHeader, DecryptedArtifact } from './domains/artifacts/artifactTypes';
+import type { ArtifactBodyInput, ArtifactHeader, DecryptedArtifact } from './domains/artifacts/artifactTypes';
 import type {
     AutomationDefinition,
     AutomationDefinitionRun,
@@ -485,6 +485,7 @@ import {
     createArtifactWithHeaderViaApi,
     fetchAndApplyArtifactsList,
     fetchArtifactWithBodyFromApi,
+    fetchArtifactBinaryFromApi,
     handleDeleteArtifactSocketUpdate,
     handleNewArtifactSocketUpdate,
     handleUpdateArtifactSocketUpdate,
@@ -4899,6 +4900,7 @@ class Sync {
         metaOverrides?: Record<string, unknown>,
         options?: Readonly<{
             serverId?: string | null;
+            accountLifetime?: ServerAccountScopeLifetime;
             recipient?: ParticipantRecipientV1;
             requestedAction?: PendingRequestedActionV1;
             resumeWhenAvailable?: true;
@@ -4937,6 +4939,7 @@ class Sync {
         const result = await submitSessionUserMessage(port, {
             sessionId,
             ...(options?.serverId ? { serverId: options.serverId } : {}),
+            ...(options?.accountLifetime ? { accountLifetime: options.accountLifetime } : {}),
             ...(options?.localId ? { localId: options.localId } : {}),
             recipient: options?.recipient,
             requestedAction: options?.requestedAction,
@@ -5743,6 +5746,8 @@ class Sync {
             request,
             outboxScope,
             serverWireMode,
+            accountLifetime: options?.accountLifetime,
+            isCurrent,
             requestedAction: options?.requestedAction ?? { v: 1, kind: 'enqueue' },
             ...(options?.resumeWhenAvailable === true ? { resumeWhenAvailable: true as const } : {}),
             onLocalPendingProjectionCreated: options?.onLocalPendingProjectionCreated,
@@ -7885,9 +7890,26 @@ class Sync {
         });
     }
 
+    public fetchArtifactBinary = async (artifactId: string, reference: Parameters<typeof fetchArtifactBinaryFromApi>[0]['reference'], signal?: AbortSignal): Promise<Uint8Array> => {
+        if (!this.credentials) throw new Error('Not authenticated');
+        const scope = getActiveServerAccountScope();
+        if (!scope) throw new Error('Artifact Account scope is unavailable');
+        const isCurrent = this.createServerScopeGuard();
+        const credentials = this.credentials;
+        const encryption = this.encryption;
+        const authority = await captureServerRequestAuthorityForServerAccountScope({ scope, activeRequest: this.requestViaConfiguredSocket });
+        try {
+            if (!isCurrent() || authority.context.token !== credentials.token) throw new Error('Artifact Account scope changed');
+            const bytes = await fetchArtifactBinaryFromApi({ credentials, artifactId, reference, encryption,
+                artifactDataKeys: this.artifactDataKeys, signal, request: (path, init) => authority.request(path, init) });
+            if (!isCurrent()) throw new Error('Artifact Account scope changed');
+            return bytes;
+        } finally { await authority.release(); }
+    };
+
     public async createArtifact(
         title: string | null, 
-        body: string | null,
+        body: ArtifactBodyInput,
         sessions?: string[],
         draft?: boolean
     ): Promise<string> {
@@ -7907,7 +7929,7 @@ class Sync {
         });
     }
 
-    public async createArtifactWithHeader(header: ArtifactHeader, body: string | null): Promise<string> {
+    public async createArtifactWithHeader(header: Readonly<Record<string, unknown>>, body: ArtifactBodyInput): Promise<string> {
         if (!this.credentials) {
             throw new Error('Not authenticated');
         }
@@ -7925,7 +7947,7 @@ class Sync {
     public async updateArtifact(
         artifactId: string, 
         title: string | null, 
-        body: string | null,
+        body: ArtifactBodyInput,
         sessions?: string[],
         draft?: boolean
     ): Promise<void> {
@@ -7947,7 +7969,12 @@ class Sync {
         });
     }
 
-    public async updateArtifactWithHeader(artifactId: string, header: ArtifactHeader, body: string | null): Promise<void> {
+    public async updateArtifactWithHeader(
+        artifactId: string,
+        header: Readonly<Record<string, unknown>>,
+        body: ArtifactBodyInput,
+        options?: Readonly<{ expectedRevision: Readonly<{ headerVersion: number; bodyVersion: number }>; signal?: AbortSignal }>,
+    ): Promise<void> {
         if (!this.credentials) {
             throw new Error('Not authenticated');
         }
@@ -7955,6 +7982,8 @@ class Sync {
         await updateArtifactWithHeaderViaApi({
             credentials: this.credentials,
             artifactId,
+            expectedRevision: options?.expectedRevision,
+            signal: options?.signal,
             header,
             body,
             encryption: this.encryption,
@@ -8192,7 +8221,9 @@ class Sync {
 
     private syncSettings = async () => {
         if (!this.credentials) return;
-        if (!this.embedSessionScope && !isEmbedWindowContext()) await this.ensureAuthoringMemoryRuntime();
+        if (!this.embedSessionScope && !isEmbedWindowContext()) {
+            fireAndForget(this.ensureAuthoringMemoryRuntime(), { tag: 'Sync.authoringMemory.bootstrap' });
+        }
         const settingsScope = this.pendingSettingsScope;
         const requestContext = this.createAppliedSettingsRequestContext(settingsScope);
         if (!requestContext) return;

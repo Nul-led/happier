@@ -257,7 +257,7 @@ export const WorkspaceSyncRelationshipList = React.memo(function WorkspaceSyncRe
     const summaries = useWorkspaceSyncRelationshipSummaries(props.workspaceRefId);
     const localMachineId = useLocalDaemonControl().status?.machineId ?? null;
     return (
-        <ItemGroup title={t(props.onAddMachine ? 'workspaceSync.availableOn' : 'workspaceSync.title')} footer={t('workspaceSync.footer')}>
+        <ItemGroup title={t(props.onAddMachine ? 'workspaceSync.availableOn' : 'workspaceSync.title')} description={t('workspaceSync.footer')}>
             {summaries.length === 0 ? (
                 <Item title={t('workspaceSync.none')} mode="info" />
             ) : summaries.map((summary) => (

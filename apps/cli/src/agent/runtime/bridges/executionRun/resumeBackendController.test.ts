@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ExecutionRunState } from '@/agent/runtime/bridges/executionRun/executionRunTypes';
 import type { ExecutionRunHostRuntime } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
@@ -7,6 +7,13 @@ import { createTestExecutionRunHostRuntime } from './testkit/runtime';
 import { startExecutionRun } from './startExecutionRun';
 import { VoiceAgentManager } from '@/agent/voice/agent/VoiceAgentManager';
 import { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
+import { resolveExecutionRunLifecycle } from './resolveExecutionRunLifecycle';
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const { createBundledPluginPublicationFsFixture } = await import('@/plugins/projection/registry/builtIn/locators.testkit');
+  return createBundledPluginPublicationFsFixture(actual);
+});
 
 describe('resumeBackendControllerForResumableRun', () => {
   it('admits only one concurrent resume occurrence for the same run', async () => {
@@ -307,6 +314,32 @@ describe('resumeBackendControllerForResumableRun', () => {
       errorCode: 'execution_run_failed',
       resumeFailureKind: 'indeterminate',
     });
+
+    const missingRuns = new Map([[run.runId, run]]);
+    const missingControllers = new Map();
+    const missingProviderState = await resumeBackendControllerForResumableRun({
+      ...common,
+      runs: missingRuns,
+      controllers: missingControllers,
+      createRuntime: () => createTestExecutionRunHostRuntime({
+        readResumeSupport: async () => true,
+        provisionRuntime: async ({ resumeRuntimeId } = {}) => {
+          expect(resumeRuntimeId).toBe('vendor_session_1');
+          throw Object.assign(new Error('Provider session state is missing'), {
+            code: 'AGENT_RESUME_PROVIDER_STATE_MISSING',
+          });
+        },
+      }).runtime,
+    });
+    expect(missingProviderState).toMatchObject({
+      ok: false,
+      errorCode: 'execution_run_provider_state_missing',
+      resumeFailureKind: 'permanent',
+    });
+    expect(missingControllers.has(run.runId)).toBe(false);
+    expect(missingRuns.get(run.runId)?.resumeHandle).toEqual(run.resumeHandle);
+    expect(missingRuns.get(run.runId)?.error?.code).toBe('execution_run_provider_state_missing');
+    expect(resolveExecutionRunLifecycle(missingRuns.get(run.runId)!, null).projection.state).toBe('unavailable');
   });
 
   it('persists a cloned runtime account settings snapshot when starting a run', async () => {

@@ -29,6 +29,8 @@ export type ServerScopedMachineRpcParams<A> = Readonly<{
     signal?: AbortSignal;
     /** Exact-action issuance hook, invoked immediately before the real socket emit. */
     onIssued?: () => void;
+    /** Transport dispatch hook; unlike exact-action issuance, preserves peer routing. */
+    onDispatched?: () => void;
 }>;
 
 export type ActiveServerRpcContext = Readonly<{

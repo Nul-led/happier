@@ -1,7 +1,8 @@
-import type {
-    PluginContributionIdentityV1,
-    PluginProjectedActionV2,
-    PluginResourceContextV1,
+import {
+    DaemonPluginActionSchemasReadResponseSchema,
+    type PluginContributionIdentityV1,
+    type PluginProjectedActionV2,
+    type PluginResourceContextV1,
 } from '@happier-dev/protocol';
 import {
     PluginUiSelectActionInputResultV1Schema,
@@ -875,6 +876,7 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
         }))).resolves.toEqual({ reloaded: true });
 
         expect(executeHostAction).toHaveBeenCalledWith('plugins.reload', {}, {
+            actionRequestId: 'req:executeAction',
             serverId: 'server-1',
             surface: 'plugin',
             actionCaller: {
@@ -1152,6 +1154,28 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
             result: { ok: true as const, result: { prepared: true } },
         }));
         const optionsTransport = await import('@/sync/ops/machineContributionRegistryProjection');
+        // The daemon owns exact Action schemas; selection and validation remain real.
+        const readSchemas = vi.spyOn(optionsTransport, 'machinePluginActionSchemasRead').mockResolvedValue({
+            supported: true,
+            result: DaemonPluginActionSchemasReadResponseSchema.parse({
+                ok: true,
+                inputSchema: {
+                    type: 'object', additionalProperties: false, required: ['credentialRef'],
+                    properties: {
+                        credentialRef: {
+                            type: 'object', additionalProperties: false, required: ['service', 'accountId'],
+                            properties: {
+                                service: {
+                                    type: 'object', additionalProperties: false, required: ['pluginId', 'localId'],
+                                    properties: { pluginId: { type: 'string' }, localId: { type: 'string' } },
+                                },
+                                accountId: { type: 'string' },
+                            },
+                        },
+                    },
+                },
+            }),
+        });
         const resolveOptions = vi.spyOn(
             optionsTransport,
             'machinePluginActionFormConnectedAccountOptionsResolve',
@@ -1272,6 +1296,7 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
             hide.mockRestore();
             show.mockRestore();
             resolveOptions.mockRestore();
+            readSchemas.mockRestore();
         }
     });
 
@@ -1623,8 +1648,11 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
 
     it('preserves a known Action success when its mount retires after settlement wins', async () => {
         let settle: ((value: unknown) => void) | undefined;
+        let signalAdmission: () => void = () => {};
+        const admitted = new Promise<void>((resolve) => { signalAdmission = resolve; });
         const executeContributedAction = vi.fn(() => new Promise((resolve) => {
             settle = resolve;
+            signalAdmission();
         }));
         const controller = createBoundPluginSurfaceController({
             facts: FACTS,
@@ -1635,6 +1663,7 @@ describe('BoundPluginSurfaceController (§3.1)', () => {
             action: 'refresh-index',
             input: {},
         }));
+        await admitted;
         expect(executeContributedAction).toHaveBeenCalledTimes(1);
 
         controller.dispose();

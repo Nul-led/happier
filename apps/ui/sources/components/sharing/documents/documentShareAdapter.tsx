@@ -1,17 +1,34 @@
 import type { ArtifactAccessGrantRowV1 } from '@happier-dev/protocol';
+import { classifyArtifactBrowserKind } from '@/components/artifacts/artifactBrowserModel';
 import type { SelectionListOption } from '@/components/ui/selectionList';
 import { t } from '@/text';
 import type { ShareSheetAdapter, ShareUiError, ShareUiReason } from '../shareSheetTypes';
 
-/** The Artifact kinds the one documents adapter shares (FIN workflows; ORC roles and launch profiles). */
-export type DocumentShareKind = 'workflow-definition.v1' | 'role.v1' | 'launch-profile.v1';
+/**
+ * The header kind of the ordinary Account Artifact being shared (`null` for an untyped document).
+ * Every ordinary kind shares through this one adapter; the Artifacts browser model names the kind.
+ */
+export type DocumentShareKind = string | null;
 
-function documentUseHelp(kind: DocumentShareKind): string {
+function documentUseHelp(artifactId: string, kind: DocumentShareKind): string {
     switch (kind) {
         case 'workflow-definition.v1': return t('shareSheet.documents.help.workflowUse');
         case 'role.v1': return t('shareSheet.documents.help.roleUse');
         case 'launch-profile.v1': return t('shareSheet.documents.help.profileUse');
     }
+    switch (classifyArtifactBrowserKind({ id: artifactId, header: kind === null ? null : { title: null, kind } })) {
+        case 'prompt': return t('shareSheet.documents.help.promptUse');
+        case 'board': return t('shareSheet.documents.help.boardUse');
+        default: return t('shareSheet.documents.help.documentUse');
+    }
+}
+
+/** A document or board is read; everything that runs or is used in a session keeps "Can use". */
+function documentViewLabel(artifactId: string, kind: DocumentShareKind): string {
+    const browserKind = classifyArtifactBrowserKind({ id: artifactId, header: kind === null ? null : { title: null, kind } });
+    return browserKind === 'document' || browserKind === 'board'
+        ? t('shareSheet.documents.levels.canRead')
+        : t('shareSheet.documents.levels.canUse');
 }
 
 /**
@@ -30,15 +47,17 @@ function documentShareNotes(kind: DocumentShareKind, grants: readonly ArtifactAc
         }
         case 'role.v1': return [t('shareSheet.documents.notes.roleLive')];
         case 'launch-profile.v1': return [t('shareSheet.documents.notes.profileSecrets')];
+        default: return [];
     }
 }
 
 /**
- * The documents meaning of the one share sheet, over FIN's Artifact grants: "Can use / Can edit /
- * Admin" for every document kind, the kind's own help and rules, Copy link and Send a copy instead
- * when the host supplies them.
+ * The documents meaning of the one share sheet, over the Artifact grants of every ordinary kind:
+ * "Can read" (documents, boards) or "Can use" (everything that runs) / "Can edit" / "Admin", the
+ * kind's own help and rules, Copy link and Send a copy instead when the host supplies them.
  */
 export function createDocumentShareAdapter(input: Readonly<{
+    artifactId: string;
     kind: DocumentShareKind;
     grants: readonly ArtifactAccessGrantRowV1[];
     linkPath?: string;
@@ -53,7 +72,7 @@ export function createDocumentShareAdapter(input: Readonly<{
         namespace: 'document-share',
         title: t('shareSheet.documents.title'),
         levels: {
-            view: { label: t('shareSheet.documents.levels.canUse'), help: documentUseHelp(input.kind) },
+            view: { label: documentViewLabel(input.artifactId, input.kind), help: documentUseHelp(input.artifactId, input.kind) },
             edit: { label: t('shareSheet.documents.levels.canEdit'), help: t('shareSheet.documents.help.editForEveryone') },
             admin: { label: t('shareSheet.documents.levels.admin'), help: t('shareSheet.documents.help.adminOwnerShares') },
         },

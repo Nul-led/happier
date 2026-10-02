@@ -14,6 +14,7 @@ import type { ExecutionRunState } from './executionRunTypes';
 import type { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
 import {
   retainExecutionRunWorkerUpdate,
+  retainExecutionRunState,
   writeExecutionRunMarker,
   type RetainedExecutionRunWorkerUpdate,
 } from '@/daemon/executionRunRegistry';
@@ -301,6 +302,7 @@ export async function finishExecutionRun(args: Readonly<{
   } as const;
 
   const markerWritePromise = args.enqueueMarkerWrite(args.runId, async (): Promise<void> => {
+    await retainExecutionRunState(updated, terminalEventId);
     if (parentWorkerUpdate) {
       await retainExecutionRunWorkerUpdate(parentWorkerUpdate);
       args.onWorkerUpdateRetained?.(parentWorkerUpdate);
@@ -331,7 +333,7 @@ export async function finishExecutionRun(args: Readonly<{
   }
 
   // A parent completion is durable input, not merely daemon visibility.
-  if (parentWorkerUpdate) await trackedMarkerWritePromise;
+  await trackedMarkerWritePromise;
 
   if (terminalizationError) throw terminalizationError;
   return true;

@@ -112,7 +112,6 @@ describe('WarningActionBanner', () => {
         );
         expect(flattenStyle(screen.findByTestId('warning')?.props.style)).toMatchObject({
             backgroundColor: lightTheme.colors.state.warning.background,
-            borderColor: lightTheme.colors.state.warning.border,
         });
         const textNodes = screen.root.findAllByType('Text' as React.ElementType);
         expect(flattenStyle(textNodes.find((node) => node.props.children === 'Draft conflict')?.props.style)).toMatchObject({
@@ -194,10 +193,7 @@ describe('WarningActionBanner', () => {
             flexDirection: 'row',
             alignItems: 'center',
         });
-        expect(flattenStyle(screen.findByTestId('warning-copy-row')?.props.style)).toMatchObject({
-            flexDirection: 'row',
-            flex: 1,
-        });
+        expect(screen.findByTestId('warning-title-row')?.findAllByProps({ testID: 'warning-primary' })).toHaveLength(0);
         expect(flattenStyle(screen.findByTestId('warning-actions-row')?.props.style)).toMatchObject({
             flexDirection: 'row',
             flexWrap: 'wrap',
@@ -222,11 +218,7 @@ describe('WarningActionBanner', () => {
             />,
         );
 
-        expect(flattenStyle(screen.findByTestId('warning')?.props.style)).toMatchObject({
-            flexDirection: 'column',
-            alignItems: 'stretch',
-        });
-        expect(screen.findByTestId('warning-actions-row')).toBeTruthy();
+        expect(screen.findByTestId('warning-title-row')?.findAllByProps({ testID: 'warning-primary' })).toHaveLength(1);
     });
 
     it('wraps a long action run into a right-aligned block beside the copy on desktop', async () => {
@@ -270,14 +262,11 @@ describe('WarningActionBanner', () => {
             flexDirection: 'row',
             alignItems: 'center',
         });
-        expect(flattenStyle(screen.findByTestId('warning-copy-row')?.props.style)).toMatchObject({
-            flex: 1,
-        });
         expect(flattenStyle(screen.findByTestId('warning-actions-row')?.props.style)).toMatchObject({
             flexDirection: 'row',
             flexWrap: 'wrap',
             flexShrink: 1,
-            maxWidth: '50%',
+            maxWidth: 600,
             justifyContent: 'flex-end',
         });
         expect(flattenStyle(screen.findByTestId('warning-actions-row')?.props.style).width).toBeUndefined();
@@ -312,9 +301,7 @@ describe('WarningActionBanner', () => {
             />,
         );
 
-        expect(flattenStyle(screen.findByTestId('warning')?.props.style)).toMatchObject({
-            flexDirection: 'column',
-        });
+        expect(screen.findByTestId('warning-title-row')?.findAllByProps({ testID: 'warning-primary' })).toHaveLength(0);
         expect(flattenStyle(screen.findByTestId('warning-actions-row')?.props.style)).toMatchObject({
             width: '100%',
             maxWidth: '100%',
@@ -351,14 +338,7 @@ describe('WarningActionBanner', () => {
             />,
         );
 
-        expect(flattenStyle(screen.findByTestId('warning')?.props.style)).toMatchObject({
-            flexDirection: 'column',
-            alignItems: 'stretch',
-        });
-        expect(flattenStyle(screen.findByTestId('warning-copy-row')?.props.style)).toMatchObject({
-            flexDirection: 'row',
-            width: '100%',
-        });
+        expect(screen.findByTestId('warning-title-row')?.findAllByProps({ testID: 'warning-primary' })).toHaveLength(0);
         expect(flattenStyle(screen.findByTestId('warning-actions-row')?.props.style)).toMatchObject({
             flexDirection: 'row',
             flexWrap: 'wrap',
@@ -405,10 +385,7 @@ describe('WarningActionBanner', () => {
             });
         });
 
-        expect(flattenStyle(screen.findByTestId('warning')?.props.style)).toMatchObject({
-            flexDirection: 'column',
-            alignItems: 'stretch',
-        });
+        expect(screen.findByTestId('warning-title-row')?.findAllByProps({ testID: 'warning-primary' })).toHaveLength(0);
         expect(flattenStyle(screen.findByTestId('warning-actions-row')?.props.style)).toMatchObject({
             width: '100%',
         });

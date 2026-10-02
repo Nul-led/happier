@@ -9,7 +9,7 @@ import {
     type RemoteOperationKind,
     type RemoteTargetDisplay,
 } from '@/scm/operations/remoteFeedback';
-import { inferRemoteTargetFromSnapshot } from '@/scm/operations/remoteTarget';
+import { inferRemoteTargetFromSnapshot, resolveForceWithLeaseTarget } from '@/scm/operations/remoteTarget';
 import { getScmUserFacingError } from '@/scm/operations/userFacingErrors';
 import { trackBlockedScmOperation, type ScmOperationTracker } from '@/scm/operations/reporting';
 import { tryShowDaemonUnavailableAlertForScmOperationFailure } from '@/scm/operations/scmDaemonUnavailableAlert';
@@ -27,6 +27,8 @@ import {
     normalizeScmOperationOutcome,
     createScmOperationUnknownOutcome,
     type ScmOperationOutcome,
+    type ScmRemotePolicy,
+    admitScmRemotePolicy,
 } from '@happier-dev/protocol/scm';
 
 export type ScmRemoteOperationKind = RemoteOperationKind;
@@ -74,6 +76,7 @@ export async function executeScmRemoteOperation(input: Readonly<{
     shouldContinue?: (() => boolean) | null;
     skipConfirmation?: boolean;
     retrySkipConfirmation?: boolean;
+    policy?: ScmRemotePolicy;
     /**
      * Where a failure is shown. `outcomeLine`: the surface renders the operation log's terminal result inline
      * (the session Git pane), so no modal is raised and a rejected push is not followed by a fetch prompt (the
@@ -82,12 +85,24 @@ export async function executeScmRemoteOperation(input: Readonly<{
     failureFeedback?: 'alert' | 'outcomeLine';
 }>): Promise<void> {
     const inlineFailures = input.failureFeedback === 'outcomeLine';
+    const leasePush = input.policy?.pushMode === 'force_with_lease';
+    const leaseTarget = leasePush ? resolveForceWithLeaseTarget(input.scmSnapshot) : null;
+    const admission = admitScmRemotePolicy(input.policy ?? {}, input.scmSnapshot?.capabilities);
+    if (!admission.success || (leasePush && (input.kind !== 'push' || !leaseTarget || leaseTarget.expectedRemoteOid !== input.policy?.expectedRemoteOid))) {
+        const outcome: ScmOperationOutcome = !admission.success ? admission.outcome : {
+            v: 1, kind: 'needs_input', errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST,
+            nextActions: [{ kind: 'refresh' }], message: t('sessionGitPane.flow.lease.fetchFirst'),
+        };
+        input.reportOperation({ operation: input.kind, status: 'failed', detail: outcome.message ?? '', errorCode: 'errorCode' in outcome ? outcome.errorCode : undefined, outcome });
+        return;
+    }
     const preflight = evaluateScmOperationPreflight({
         intent: input.kind,
         scmWriteEnabled: input.scmWriteEnabled,
         sessionPath: input.repoPath,
         snapshot: input.scmSnapshot,
         commitStrategy: input.scmCommitStrategy,
+        remotePolicy: input.policy,
     });
     if (!preflight.allowed) {
         trackBlockedScmOperation({
@@ -103,15 +118,20 @@ export async function executeScmRemoteOperation(input: Readonly<{
     if (!input.repoPath) return;
     const repoPath = input.repoPath;
 
-    const remoteTarget = inferRemoteTargetFromSnapshot(input.scmSnapshot);
+    const remoteTarget = leaseTarget ?? inferRemoteTargetFromSnapshot(input.scmSnapshot);
     let shouldOfferFetchAfterPushReject = false;
     const isPullOrPush = input.kind === 'pull' || input.kind === 'push';
     const shouldConfirmRemote = input.skipConfirmation === true
         ? false
         : shouldConfirmRemoteOperation(input.scmRemoteConfirmPolicy, input.kind);
 
-    if (isPullOrPush && shouldConfirmRemote) {
-        const dialog = buildRemoteConfirmDialog({
+    if (isPullOrPush && (leasePush || shouldConfirmRemote)) {
+        const dialog = leaseTarget ? {
+            title: t('sessionGitPane.flow.lease.confirmTitle'),
+            body: t('sessionGitPane.flow.lease.confirmBody', { target: `${remoteTarget.remote}/${remoteTarget.branch}`, oid: leaseTarget.expectedRemoteOid.slice(0, 7) }),
+            confirmText: t('sessionGitPane.flow.lease.push'),
+            cancelText: t('common.cancel'),
+        } : buildRemoteConfirmDialog({
             kind: input.kind,
             target: remoteTarget,
             detachedHeadLabel: t('files.detachedHead'),
@@ -119,7 +139,7 @@ export async function executeScmRemoteOperation(input: Readonly<{
         const confirmed = await Modal.confirm(
             dialog.title,
             dialog.body,
-            { confirmText: dialog.confirmText, cancelText: dialog.cancelText },
+            { confirmText: dialog.confirmText, cancelText: dialog.cancelText, ...(leasePush ? { destructive: true } : {}) },
         );
         if (!confirmed) return;
     }
@@ -150,7 +170,7 @@ export async function executeScmRemoteOperation(input: Readonly<{
                     input.kind === 'push'
                     && response.errorCode === SCM_OPERATION_ERROR_CODES.REMOTE_NON_FAST_FORWARD
                 ) {
-                    shouldOfferFetchAfterPushReject = true;
+                    shouldOfferFetchAfterPushReject = !leasePush;
                 }
                 input.reportOperation({
                     operation: input.kind,

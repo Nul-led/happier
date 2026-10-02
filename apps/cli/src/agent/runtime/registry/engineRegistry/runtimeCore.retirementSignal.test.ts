@@ -12,12 +12,26 @@ import type {
   ResolvedAgentRuntimeContribution,
 } from '@/plugins/projection/registry/types';
 import { projectLoadedPluginContributes } from '@/plugins/projection/registry/resolvePluginContributions';
-import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import type { PluginContributionRuntimeLifecycle, ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import { createPluginReloadController } from '@/plugins/runtime/reload/controller';
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 
 import { createEmptyBackendExecutionSurfaces } from '../engineRegistryTypes';
 import { resolveBackendRuntimeCore } from './runtimeCore';
+
+type NativeAgentRuntimeIdentity = NonNullable<Parameters<typeof resolveBackendRuntimeCore>[0]['nativeAgentRuntimeIdentity']>;
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    readFileSync: (...args: Parameters<typeof actual.readFileSync>) => {
+      // Source tests exercise real declarations independently of target-local package publication failures.
+      if (String(args[0]).replace(/\\/gu, '/').endsWith('/bundled-plugin-publication/failures.json')) return '[]';
+      return actual.readFileSync(...args);
+    },
+  };
+});
 
 function createSessionClient(sessionId: string) {
   let metadata: Record<string, unknown> = {
@@ -266,9 +280,9 @@ describe('resolveBackendRuntimeCore retirement signal ownership', () => {
           pluginId,
           pluginVersion: '1.0.0',
           agentId: pluginId,
-          generation: 'agent-generation',
+          occurrenceId: 'agent-occurrence',
           isCurrent: () => true,
-        },
+        } satisfies NativeAgentRuntimeIdentity,
       } as never);
       const plan = await adapter?.runtimeCore.createSessionRuntime({
         credentials: {
@@ -328,7 +342,7 @@ describe('resolveBackendRuntimeCore retirement signal ownership', () => {
     }
   });
 
-  it('uses exact registered Agent generations without substituting registry-wide retirement', async () => {
+  it('uses exact registered Agent occurrences without substituting registry-wide retirement', async () => {
     const agentId = 'generation-agent';
     const backendId = agentId;
     const pluginId = 'acme.carried-plugin';
@@ -380,10 +394,10 @@ describe('resolveBackendRuntimeCore retirement signal ownership', () => {
       contributes,
       retirementSignal: registryRetirement.signal,
       resolveVoiceProviderRuntimeLifecycle: () => ({
-        generation: 'voice-generation',
+        occurrenceId: 'voice-occurrence',
         isCurrent: () => !voiceRetirement.signal.aborted,
         retirementSignal: voiceRetirement.signal,
-      }),
+      } satisfies PluginContributionRuntimeLifecycle),
     } as unknown as ResolvedExecutablePluginRuntimeRegistry;
     const session: AgentSessionRuntime = {
       send: vi.fn(async () => ({ status: 'admitted' as const })),
@@ -422,7 +436,7 @@ describe('resolveBackendRuntimeCore retirement signal ownership', () => {
         },
         retirementSignal: agentGenerationRetirement.signal,
         isCurrent: () => true,
-      },
+      } satisfies NativeAgentRuntimeIdentity,
     });
     const plan = await adapter?.runtimeCore.createSessionRuntime({
       credentials: {
@@ -446,7 +460,7 @@ describe('resolveBackendRuntimeCore retirement signal ownership', () => {
       voiceProvider.localId,
     );
     expect(voiceAuthority?.resolveProviderOccurrenceId(voiceProvider)).toBe(
-      'voice-generation',
+      'voice-occurrence',
     );
     expect(voiceAuthority?.isCurrent(voiceProvider)).toBe(true);
 
@@ -497,7 +511,7 @@ describe('resolveBackendRuntimeCore retirement signal ownership', () => {
         retirementSignal: agentGenerationRetirement.signal,
         isCurrent: () =>
           !agentGenerationRetirement.signal.aborted,
-      },
+      } satisfies NativeAgentRuntimeIdentity,
     });
     const carriedOnlyPlan =
       await carriedOnlyAdapter?.runtimeCore.createSessionRuntime({
@@ -520,7 +534,7 @@ describe('resolveBackendRuntimeCore retirement signal ownership', () => {
     );
     expect(
       carriedOnlyAuthority?.resolveProviderOccurrenceId(voiceProvider),
-    ).toBe('voice-generation');
+    ).toBe('voice-occurrence');
     expect(carriedOnlyAuthority?.isCurrent(voiceProvider)).toBe(true);
     agentGenerationRetirement.abort(
       new Error('Agent generation retired'),

@@ -189,7 +189,7 @@ export function VoiceSessionSpawnPickerModal(props: Props) {
     <View style={styles.body}>
       {step === 'machine' ? (
         <>
-          <ItemList style={{ paddingTop: 0 }}>
+          <ItemList presentation="grouped" style={{ paddingTop: 0 }}>
             <MachineSelector
               machines={machines}
               selectedMachine={selectedMachine}

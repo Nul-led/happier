@@ -14,6 +14,7 @@ import {
   buildAutomationConversationOccurrenceEvidenceV1,
   deriveAutomationOccurrenceKeyV1,
   deriveAutomationOccurrenceTriggerEvidenceEqualityTagV1,
+  isAutomationConversationAdmitScopedCorrespondenceV1,
   sealAutomationConversationReplyContextStoredEnvelopeV1,
   sealAutomationOccurrenceTriggerEvidenceEnvelopeV1,
   sealAutomationRunTriggerEvidenceEnvelopeV1,
@@ -209,16 +210,26 @@ export function createAutomationConversationActionExecutor(params: Readonly<{
       }, args.signal);
     }
     if (args.actionId === 'automation.conversation.target.verify') {
+      const input = AutomationConversationActionInputSchemasV1[args.actionId].parse(args.input);
+      const scopedTrigger = input.scopedTrigger === undefined ? undefined : (() => {
+        const { pullRequest: _privateSelection, ...correspondence } = input.scopedTrigger;
+        return correspondence;
+      })();
       const staleCaller = await callerNoLongerCurrent();
       if (staleCaller) return staleCaller;
       return await transport.execute(args.actionId, {
         v: 1,
         caller,
-        input: AutomationConversationActionInputSchemasV1[args.actionId].parse(args.input),
+        input: { ...input, ...(scopedTrigger === undefined ? {} : { scopedTrigger }) },
       }, args.signal);
     }
 
     const input = AutomationConversationAdmitInputV1Schema.parse(args.input);
+    // The server cannot open a sealed occurrence's sender or binding. Prove
+    // the same semantic correspondence in either Account mode before sealing.
+    if (!isAutomationConversationAdmitScopedCorrespondenceV1(input)) {
+      return { kind: 'refused', reason: 'scopedTriggerIdentityMismatch', checkpointSafe: true };
+    }
     // Admission is the durable effect boundary. Account currentness, identity,
     // crypto materialization, evidence construction and sealing can all await,
     // and the outer dispatcher rechecks the caller only after this host Action
@@ -248,6 +259,7 @@ export function createAutomationConversationActionExecutor(params: Readonly<{
               sender: input.sender,
               text: input.text,
               resultDelivery: input.resultDelivery,
+              hostEvidence: input.hostEvidence,
             }),
           );
           return {
@@ -288,6 +300,7 @@ export function createAutomationConversationActionExecutor(params: Readonly<{
       sender: input.sender,
       text: input.text,
       resultDelivery: input.resultDelivery,
+      hostEvidence: input.hostEvidence,
     });
     const occurrenceKey = deriveAutomationOccurrenceKeyV1(evidence);
     const replyHandoff = input.resultDelivery.kind === 'none'
@@ -302,6 +315,10 @@ export function createAutomationConversationActionExecutor(params: Readonly<{
           opaqueContext: input.resultDelivery.opaqueContext,
         }),
       };
+    const scopedTrigger = input.hostEvidence === undefined ? undefined : (() => {
+      const { pullRequest: _privateSelection, ...correspondence } = input.hostEvidence;
+      return correspondence;
+    })();
     const request = AutomationConversationAdmitEncryptedHttpRequestV1Schema.parse({
       v: 1,
       caller,
@@ -312,6 +329,7 @@ export function createAutomationConversationActionExecutor(params: Readonly<{
         automationId: input.automationId,
         occurrenceKey,
         occurredAt: input.occurredAt,
+        ...(scopedTrigger === undefined ? {} : { scopedTrigger }),
         triggerEvidenceEnvelope: sealAutomationOccurrenceTriggerEvidenceEnvelopeV1({
           material,
           evidence,

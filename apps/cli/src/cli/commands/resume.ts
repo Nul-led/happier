@@ -26,6 +26,7 @@ import type {
 import { fetchAccountEncryptionCurrentness } from '@/api/client/connectedServiceCredentialApi';
 import {
   ConnectedServiceBindingsV2IngressSchema,
+  SessionTerminalMetadataSchema,
   readAcpConfiguredBackendV1FromMetadata,
   readLegacyConfiguredAcpBackendId,
   serializeSessionModelSelectionV1,
@@ -41,6 +42,8 @@ import { handleConfiguredAcpCatalogCliCommand } from '@/agent/acp/catalog/config
 import { buildContinueSelectionModel } from './resumeInteractiveSelection';
 import { handleAttachCommand } from './attach';
 import { readTerminalAttachmentInfo } from '@/terminal/attachment/terminalAttachmentInfo';
+import { probeSessionRunnerPresence } from '@/daemon/sessions/isSessionRunnerActive';
+import { getSessionHostBridge } from '@/agent/runtime/bridges/session/SessionHostBridge';
 import { isTmuxAvailable } from '@/integrations/tmux';
 import { promptConfirmYesNo } from '@/terminal/prompts/promptConfirmYesNo';
 import { SESSION_HELP_LINES } from '@/cli/commands/session/shared/sessionCommandUsage';
@@ -253,7 +256,37 @@ export async function handleResumeCommand(
   if (rowModel.archivedAt !== null) {
     throw new Error('Session is archived and cannot be resumed.');
   }
-  if (rowModel.active === true) {
+  const sessionMetadata = tryDecryptSessionOwnerMetadataView({
+    credentials, rawSession, accountEncryptionMode: accountEncryptionCurrentness.mode,
+  });
+  const savedTerminal = SessionTerminalMetadataSchema.safeParse(sessionMetadata?.terminal);
+  const inheritedTerminal = deps?.terminalRuntime;
+  const inheritedHerdrMatchesSavedPane = inheritedTerminal?.mode === 'herdr'
+    && savedTerminal.success && savedTerminal.data.mode === 'herdr'
+    && Boolean(savedTerminal.data.herdr?.paneId?.trim())
+    && inheritedTerminal.herdrPaneId === savedTerminal.data.herdr?.paneId
+    && inheritedTerminal.herdrSocketPath === savedTerminal.data.herdr?.socketPath
+    && inheritedTerminal.herdrSessionName === savedTerminal.data.herdr?.sessionName;
+  // A restored pane is placement intent, not Session identity. Only positive
+  // runner absence allows normal same-Session resume past stale relay activity.
+  const resumeInInheritedHerdrPane = inheritedHerdrMatchesSavedPane
+    && (await probeSessionRunnerPresence({ sessionId: rawSession.id, trackedSessions: [] })).state === 'runner_absent';
+  let openRestorationCandidate = false;
+  if (rowModel.active !== true && !resumeInInheritedHerdrPane) {
+    const settings = await (deps?.attachDeps?.readSettingsFn ?? readSettings)();
+    const eligibility = await getSessionHostBridge().evaluateAttachEligibility({
+      credentials, rawSession, accountEncryptionMode: accountEncryptionCurrentness.mode,
+      currentMachineId: typeof settings.machineId === 'string' ? settings.machineId.trim() || null : null,
+      currentMachineHost: hostname(),
+      localAttachmentInfo: await (deps?.attachDeps?.readTerminalAttachmentInfoFn ?? readTerminalAttachmentInfo)({
+        happyHomeDir: configuration.happyHomeDir, sessionId: rawSession.id,
+      }),
+      insideTmux: Boolean(process.env.TMUX),
+      currentTmuxSocketPath: typeof process.env.TMUX === 'string' ? process.env.TMUX.split(',')[0]?.trim() || null : null,
+    });
+    openRestorationCandidate = eligibility.eligible && eligibility.attachStrategy === 'terminal_host';
+  }
+  if ((rowModel.active === true || openRestorationCandidate) && !resumeInInheritedHerdrPane) {
     await handleAttachCommand([rawSession.id], {
       ...deps?.attachDeps,
       readCredentialsFn: async () => credentials,

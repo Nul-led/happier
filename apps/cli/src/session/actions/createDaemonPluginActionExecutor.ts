@@ -3,6 +3,10 @@ import {
   type ActionExecuteResult,
   type ActionExecutorContext,
   type ActionId,
+  type ActionCaller,
+  type ActionExecutorDeps,
+  type WorkflowRunStartedByV1,
+  resolveWorkflowRunStartedByForActionCallerV1,
 } from '@happier-dev/protocol';
 
 import { requestDaemonPluginActionExecution } from '@/daemon/controlClient';
@@ -19,6 +23,9 @@ type ActionExecutorLike = Readonly<{
     input: unknown,
     context?: OccurrenceBoundActionExecutorContext,
   ) => Promise<ActionExecuteResult>;
+}>;
+type PluginActionExecutor = ActionExecutorLike & Readonly<{
+  invokeContributedAction: NonNullable<ActionExecutorDeps['invokeContributedAction']>;
 }>;
 
 const DAEMON_OWNED_PLUGIN_META_ACTION_IDS = new Set<string>([
@@ -37,11 +44,14 @@ const BUILT_IN_ACTION_IDS = new Set<string>(ACTION_IDS);
 export function createDaemonPluginActionExecutor(params: Readonly<{
   base: ActionExecutorLike;
   requestPluginActionExecution?: PluginActionExecutionRequestOwner;
-}>): ActionExecutorLike {
+  /** Exact caller bound by the host, never inferred from a requested target or surface. */
+  initiatingActionCaller?: ActionCaller;
+}>): PluginActionExecutor {
   return createPluginActionExecutor({
     base: params.base,
     requestPluginActionExecution: params.requestPluginActionExecution
       ?? requestDaemonPluginActionExecution,
+    ...(params.initiatingActionCaller ? { initiatingActionCaller: params.initiatingActionCaller } : {}),
   });
 }
 
@@ -50,6 +60,8 @@ export type PluginActionExecutionRequestOwner = (request: Readonly<{
     input: unknown;
     surface: 'cli' | 'mcp' | 'agent';
     defaultSessionId?: string;
+    /** Bounded host-stamped descriptive fact; never permission ancestry. */
+    startedBy?: WorkflowRunStartedByV1;
     expectedContributorOccurrenceId?: string;
   }>, options?: Readonly<{ signal?: AbortSignal }>) => Promise<PluginActionExecutionAttempt>;
 
@@ -57,35 +69,41 @@ export type PluginActionExecutionRequestOwner = (request: Readonly<{
 export function createPluginActionExecutor(params: Readonly<{
   base: ActionExecutorLike;
   requestPluginActionExecution: PluginActionExecutionRequestOwner;
-}>): ActionExecutorLike {
+  initiatingActionCaller?: ActionCaller;
+}>): PluginActionExecutor {
+  const requestContributed = async (
+    actionId: string, input: unknown, context?: OccurrenceBoundActionExecutorContext,
+  ) => {
+    const surface: 'cli' | 'mcp' | 'agent' = context?.surface === 'mcp'
+      ? 'mcp' : context?.surface === 'agent' ? 'agent' : 'cli';
+    const admittingCaller = context?.actionCaller ?? params.initiatingActionCaller;
+    const request = {
+      actionId, input, surface,
+      ...(admittingCaller ? { startedBy: resolveWorkflowRunStartedByForActionCallerV1(admittingCaller) } : {}),
+      ...(typeof context?.defaultSessionId === 'string' ? { defaultSessionId: context.defaultSessionId } : {}),
+      ...(typeof context?.expectedContributorOccurrenceId === 'string'
+        && context.expectedContributorOccurrenceId.trim().length > 0
+        ? { expectedContributorOccurrenceId: context.expectedContributorOccurrenceId.trim() } : {}),
+    };
+    return context?.signal
+      ? await params.requestPluginActionExecution(request, { signal: context.signal })
+      : await params.requestPluginActionExecution(request);
+  };
   return {
+    invokeContributedAction: async (request) => {
+      const attempt = await requestContributed('action.invoke', {
+        action: request.action, input: request.input,
+      }, { ...request.context, ...(request.signal ? { signal: request.signal } : {}) });
+      // A nested invocation must never fall back to the same base Action owner.
+      return attempt.matched ? attempt.result : {
+        ok: false, errorCode: 'contributed_action_unavailable', error: 'contributed_action_unavailable',
+      };
+    },
     execute: async (actionId, input, context) => {
       const normalizedActionId = String(actionId);
       if (!BUILT_IN_ACTION_IDS.has(normalizedActionId)
         || DAEMON_OWNED_PLUGIN_META_ACTION_IDS.has(normalizedActionId)) {
-        const surface: 'cli' | 'mcp' | 'agent' = context?.surface === 'mcp'
-          ? 'mcp'
-          : context?.surface === 'agent'
-            ? 'agent'
-            : 'cli';
-        const request = {
-          actionId: normalizedActionId,
-          input,
-          surface,
-          ...(typeof context?.defaultSessionId === 'string'
-            ? { defaultSessionId: context.defaultSessionId }
-            : {}),
-          ...(typeof context?.expectedContributorOccurrenceId === 'string'
-            && context.expectedContributorOccurrenceId.trim().length > 0
-            ? {
-                expectedContributorOccurrenceId:
-                  context.expectedContributorOccurrenceId.trim(),
-              }
-            : {}),
-        };
-        const attempt = context?.signal
-          ? await params.requestPluginActionExecution(request, { signal: context.signal })
-          : await params.requestPluginActionExecution(request);
+        const attempt = await requestContributed(normalizedActionId, input, context);
         if (attempt.matched) {
           return attempt.result;
         }

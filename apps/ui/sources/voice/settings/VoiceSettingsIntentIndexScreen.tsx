@@ -30,7 +30,7 @@ export function VoiceSettingsIntentIndexScreen() {
   }, [legacyIntent, routeParams.focus, router]);
 
   return (
-    <ItemList testID="settings.voice.intents" presentation="page">
+    <ItemList testID="settings.voice.intents">
       <SettingsPageHeader description={t('settings.voiceAssistantSubtitle')} />
       <ItemGroup>
         {VOICE_SETTINGS_INTENTS.map((intent) => {

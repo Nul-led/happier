@@ -31,6 +31,7 @@ import { resolveInlineDiffVirtualizedViewportStyle } from '@/components/ui/code/
 import { useInlineDiffVirtualizationThresholds } from '@/components/ui/code/diff/useInlineDiffVirtualizationThresholds';
 import { Icon } from '@/components/ui/icons/Icon';
 import { Avatar } from '@/components/ui/avatar/Avatar';
+import { SESSION_STORED_IMAGE_HOST } from '@/components/sessions/media/SessionMediaInlineImages';
 import type {
     HappierAgentCursorMotionDriver,
     HappierCapsuleHost,
@@ -50,6 +51,7 @@ import {
 import { InstalledPluginBrandMark } from '@/components/plugins/shared/InstalledPluginBrandMark';
 import type { HappierUiPalette } from '@happier-dev/plugin-ui/environment';
 import type { PluginUiSessionPartPresentation } from '@happier-dev/plugin-ui/advanced';
+import type { ItemProps, NavigationListDestination } from '@happier-dev/plugin-ui';
 import type { HappierPageChrome, HappierStateSize } from '@happier-dev/plugin-ui/presentation';
 import type { DetailsPaneSlotBinding } from '@/components/appShell/panes/details/DetailsPaneSlot';
 import type { usePaneHeaderSlotBinding } from '@/components/appShell/panes/paneHeaderSlot';
@@ -118,7 +120,17 @@ export type PluginUiPrivateTargetedSurfacePresentation = Readonly<{
 
 type PluginUiPrivateBrandPresentationInput = Omit<InstalledPluginBrandPresentationInput, 'installedPackage'>;
 
+export type PluginDestinationRowInput = NavigationListDestination & Readonly<{
+    children: React.ReactNode;
+    renderWithSecondaryActions?(actions: Readonly<{
+        secondaryActions: NonNullable<ItemProps['secondaryActions']>;
+        onSecondaryAction: NonNullable<ItemProps['onSecondaryAction']>;
+    }>): React.ReactNode;
+}>;
+
 export type PluginUiPrivatePresentationHostOptions = Readonly<{
+    renderLiveStream?: NonNullable<PluginUiPrivatePresentationHost['renderLiveStream']>;
+    renderDestinationRow?: (input: PluginDestinationRowInput) => React.ReactNode;
     /** Exact mounted direction for logical icon tokens. */
     direction?: PluginUiIconDirection;
     /** Exact-key lookup only; no enumeration, search, or caller-controlled Resource reference. */
@@ -280,6 +292,7 @@ function PluginUiPrivateQRCode(props: Readonly<{ data: string; size: number; tes
 
 function createPluginUiPrivatePresentationRenderers(direction?: PluginUiIconDirection) {
     return Object.freeze({
+    storedImageHost: SESSION_STORED_IMAGE_HOST,
     renderMarkdown(input: Readonly<{ value: string; selectable: boolean; testID?: string }>) {
         return <MarkdownView markdown={input.value} selectable={input.selectable} testID={input.testID} />;
     },
@@ -371,6 +384,7 @@ export type PluginUiPrivatePresentationHost = Readonly<
         stateSize?: HappierStateSize;
         detailsPane?: DetailsPaneSlotBinding;
         paneHeader?: NonNullable<ReturnType<typeof usePaneHeaderSlotBinding>>;
+        renderDestinationRow?: (input: PluginDestinationRowInput) => React.ReactNode;
         /** The Collection transition and peek motion, from the app's motion tokens. */
         collectionMotion: typeof reanimatedCollectionMotion;
         disclosureMotion: HappierDisclosureMotionDriver;
@@ -517,12 +531,14 @@ export function createPluginUiPrivatePresentationHost(
         : undefined;
     return Object.freeze({
         ...presentationRenderers,
+        ...(options?.renderLiveStream ? { renderLiveStream: options.renderLiveStream } : {}),
         typography: readPluginUiHostTypography(),
         ...(options?.palette === undefined ? {} : { palette: options.palette }),
         ...(options?.pageChrome === undefined ? {} : { pageChrome: options.pageChrome }),
         ...(options?.stateSize === undefined ? {} : { stateSize: options.stateSize }),
         ...(options?.detailsPane === undefined ? {} : { detailsPane: options.detailsPane }),
         ...(options?.paneHeader === undefined ? {} : { paneHeader: options.paneHeader }),
+        ...(options?.renderDestinationRow === undefined ? {} : { renderDestinationRow: options.renderDestinationRow }),
         // The same-realm motion drivers for the Collection's transition and its peek disclosure.
         collectionMotion: reanimatedCollectionMotion,
         // Widened to the contract's driver type: the Disclosure hands `Body` only the motion its own

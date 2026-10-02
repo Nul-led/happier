@@ -105,7 +105,7 @@ describe('CLI workflow trigger Account codec', () => {
     await expect(actions.update({ automationId: 'automation-old', expectedRevision: 1, patch: { enabled: false } }))
       .rejects.toMatchObject({ code: 'legacy_conversion_unsupported', details: { reason: 'channel_association_unknown' } });
     expect(network.reconcile).not.toHaveBeenCalled();
-    expect((await actions.list({ scope: 'account_inline' })).sets[0]?.target)
-      .toMatchObject({ kind: 'inline', definition: { blocks: [{ document: { text: 'Review' } }] } });
+    // Native one-shot recipes are not Workflow definitions and stay out of this list.
+    expect((await actions.list({ scope: 'account_inline' })).sets).toEqual([]);
   });
 });

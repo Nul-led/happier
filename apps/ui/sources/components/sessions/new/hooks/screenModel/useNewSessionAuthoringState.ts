@@ -26,6 +26,7 @@ import {
     persistNewSessionDraftAndPause,
 } from './newSessionDraftPersistenceBinding';
 import type { MachineSpawnReadiness } from '@/sync/domains/machines/identity/resolveMachineSpawnReadiness';
+import type { NewSessionDraft } from '@/sync/domains/state/persistence';
 
 type PersistedDraft = ReturnType<typeof buildPersistedNewSessionDraftFromAuthoringDraft>;
 type BuildResolvedInputs = Parameters<typeof buildNewSessionAuthoringDraftFromResolvedInputs>[0];
@@ -78,6 +79,7 @@ export function useNewSessionAuthoringState(params: Readonly<{
     draftId?: string;
     launchUserAttemptId?: string | null;
     placementCandidates?: readonly PluginUiSessionPlacementCandidateV1[];
+    zenTaskSource?: NewSessionDraft['zenTaskSource'];
 }>): Readonly<{
     authoringContext: ReturnType<typeof buildNewSessionAuthoringContext>;
     currentAuthoringDraft: SessionAuthoringDraft;
@@ -249,6 +251,7 @@ export function useNewSessionAuthoringState(params: Readonly<{
             : '';
         return {
             ...persistedDraft,
+            ...(params.zenTaskSource === undefined ? {} : { zenTaskSource: params.zenTaskSource }),
             ...(launchUserAttemptId ? { launchUserAttemptId } : {}),
             agentType: resolveNewSessionCompatAgentType({
                 backendTarget: persistedDraft.backendTarget ?? null,
@@ -267,6 +270,7 @@ export function useNewSessionAuthoringState(params: Readonly<{
         draftAgentId,
         params.getSessionOnlySecretValueEncByProfileIdByEnvVarName,
         params.launchUserAttemptId,
+        params.zenTaskSource,
         params.selectedMachineId,
         params.selectedSecretId,
         params.selectedSecretIdByProfileIdByEnvVarName,

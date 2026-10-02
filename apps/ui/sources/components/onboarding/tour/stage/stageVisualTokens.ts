@@ -1,22 +1,12 @@
+import { PLANET_PALETTES, PLANET_ARTWORK_BREATH, PLANET_GRAIN } from '@happier-dev/brand/planet';
+
 export const stageVisualTokens = {
     orientation: {
         default: 'narration-right',
     },
     horizon: {
-        dark: {
-            skyGradient: 'linear-gradient(180deg, #050508 0%, #0A0A10 100%)',
-            backgroundColor: '#050508',
-            backgroundColorTransparent: 'rgba(5,5,8,0)',
-            atmosphereColor: 'rgba(109,148,255,.28)',
-            bloomColor: 'rgba(255,177,74,.18)',
-        },
-        light: {
-            skyGradient: 'linear-gradient(180deg, #FAF9F7 0%, #F3EDE6 100%)',
-            backgroundColor: '#FAF9F7',
-            backgroundColorTransparent: 'rgba(250,249,247,0)',
-            atmosphereColor: 'rgba(255,177,74,.24)',
-            bloomColor: 'rgba(255,177,74,.20)',
-        },
+        dark: PLANET_PALETTES.dark.horizon,
+        light: PLANET_PALETTES.light.horizon,
         /**
          * The journey and the pre-auth welcome screen share ONE planet framing
          * recipe (spec §1): full-bleed cover anchored at `80% 50%`, which reads
@@ -40,13 +30,9 @@ export const stageVisualTokens = {
          */
         bottomFadeHeight: '55%',
         accentTransitionMs: 800,
-        idleBreath: {
-            durationMs: 20_000,
-            scalePeak: 1.012,
-            bloomOpacityDelta: 0.1,
-        },
-        noiseOpacity: 0.02,
-        noiseTileSize: 16,
+        idleBreath: PLANET_ARTWORK_BREATH,
+        noiseOpacity: PLANET_GRAIN.opacity,
+        noiseTileSize: PLANET_GRAIN.tileSize,
         noiseTileDataUri: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAACbklEQVR4nDWT127rMBBE9alxYsex4yJ2UmIxVRgVSvzliwF8HwQQ4pbZs8NKCHETQtyVUsFa+8EY05RS1ratyTl/1HV9eL1eR0opjTE+932XwzCcc85nSimpcEDgMAwH772ilNb4SikNpZTHGB/TNB201l/jOF4ppUpKydGw7/u2Ukp5HIZh+Cil2Gmavkspbl3XJqVE0KDrOmGM+d33XXRdRxC/rqvd951XCF6WRfR975um4UKIJ+QTQh7rujohxKVtWwQj0ez7zjAWIeQGNdU0TSfvPcfs4zjet227LcvCUkp027arEOIB6UqpNsZ4zzkf6ro+/Y8Bg493B4aulFIJeVrrk7X2bK39XJZFggMK5Zy/jDFPFFRKmYoQci+l+HmeH9baE2ThYtu2p5SSgHzXdYDq//7+Gikl5Zx/ghmaVph727bfpmko4DjnHkhY11WHEALGcs7dcfd6vU4YA2MSQn7QvFqWhVtrDyEEbMPFGC+lFOO9Z6CcUhIhBANWOedjXddfyHHOXYdhOFVd1zHMXEoJgInu2P0bEnHOPZEcQtD4N8/z1RhzB0gArYwxoHxBQNM0tVJKY17sHAC11gcoQtcQQlPX9RmmG8fxhv8ocEWXtxc0oAEkpVSgICRDunPuB26EjTEmYpBbgSjcByO9twEjtTij8DzPgPULgPAF5/yUUmJSSig8VqA7TdNRa/0ZY/zBwwJpbMd7T1NK8L6KMd5wjyT4BiMzxlyFFSEBVMECZoHUtyP5siwUCv4/Jjw4rFgI8dP3fagYY23OGbDOxpgLzt57iRn3fa/neUaDG7rhjaAA5/w7pQSF6h8uPvCkmGdInQAAAABJRU5ErkJggg==',
     },
     appShell: {

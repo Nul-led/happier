@@ -58,6 +58,7 @@ import {
     PendingRequestedActionV1Schema,
     DEFAULT_PENDING_REQUESTED_ACTION_V1,
     HAPPIER_STRUCTURED_INPUT_METADATA_KEY_V1,
+    hasRawComposerAttachmentSelectionV1,
     HappierStructuredInputV1Schema,
     PendingMessageMutationFingerprintV1Schema,
     RawIngressStructuredInputV1Schema,
@@ -69,6 +70,7 @@ import {
     SessionInputAdmissionRejectionCodeV1Schema,
     type ComposerContentHandleV1,
     type SessionPendingMessageComposerAdmissionAcceptedRequestV1,
+    type SessionPendingMessageComposerAdmissionPrepareResponseV1,
     type RawIngressStructuredInputV1,
     type HappierStructuredInputV1,
     type PendingDeliveryBlockedReason,
@@ -93,7 +95,14 @@ import {
     areServerAccountScopesEqual,
     serverAccountScopeKeySuffix,
     type ServerAccountScope,
+    type ServerAccountScopeLifetime,
 } from '@/sync/domains/scope/serverAccountScope';
+import {
+    preparePendingMessageComposerAdmission,
+    acceptPendingMessageComposerAdmission,
+    abandonPendingMessageComposerAdmission,
+} from '@/sync/ops/pendingMessageComposerAdmission';
+import { log } from '@/log';
 import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
 import {
     isPendingOutboxProjectionForIdentity,
@@ -117,6 +126,54 @@ type PendingStatus = 'queued' | 'delivering' | 'external_handoff' | 'blocked' | 
 /** The only fact callers may use for Composer post-accept work. */
 export type PendingMessageComposerAdmissionAcceptedFactV1 =
     SessionPendingMessageComposerAdmissionAcceptedRequestV1;
+
+type PreparedPendingComposerAdmission = Readonly<{
+    stagedMediaHandles: readonly ComposerContentHandleV1[];
+    sessionMediaMetadata?: Readonly<{
+        key: 'happier' | 'happierMedia';
+        envelope: SessionMediaMessageMetaV1;
+    }>;
+}>;
+
+function buildPreparedPendingComposerRecord<T extends RawRecord>(
+    rawRecord: T,
+    sessionId: string,
+    localId: string,
+    prepared: PreparedPendingComposerAdmission,
+): Readonly<{ rawRecord: T; accepted: PendingMessageComposerAdmissionAcceptedFactV1 }> {
+    const meta = isPlainObject(rawRecord.meta) ? { ...rawRecord.meta } : {};
+    for (const key of ['happier', 'happierMedia'] as const) {
+        if (SessionMediaMessageMetaV1Schema.safeParse(meta[key]).success) {
+            throw new Error('Pending Composer admission cannot replace existing SessionMedia metadata');
+        }
+    }
+    if (prepared.stagedMediaHandles.length > 0 && !prepared.sessionMediaMetadata) {
+        throw new Error('Pending Composer media admission requires canonical SessionMedia metadata');
+    }
+    let sessionMediaMetadata: PreparedPendingComposerAdmission['sessionMediaMetadata'];
+    if (prepared.sessionMediaMetadata) {
+        const envelope = SessionMediaMessageMetaV1Schema.parse(prepared.sessionMediaMetadata.envelope);
+        let key = prepared.sessionMediaMetadata.key;
+        if (key === 'happier' && Object.prototype.hasOwnProperty.call(meta, 'happier')) key = 'happierMedia';
+        if (Object.prototype.hasOwnProperty.call(meta, key)) {
+            throw new Error('Pending Composer SessionMedia metadata slot is occupied');
+        }
+        sessionMediaMetadata = { key, envelope };
+        meta[key] = envelope;
+    }
+    const admitted = readAdmittedHappierStructuredInputV1FromMeta(meta);
+    const structuredInput = admitted.status === 'admitted'
+        ? admitted.structuredInput
+        : admitted.status === 'absent'
+            ? HappierStructuredInputV1Schema.parse({ v: 1 })
+            : (() => { throw new Error('Pending Composer admission is not canonical'); })();
+    const accepted = SessionPendingMessageComposerAdmissionAcceptedRequestV1Schema.parse({
+        sessionId, localId, structuredInput,
+        stagedMediaHandles: prepared.stagedMediaHandles,
+        ...(sessionMediaMetadata ? { sessionMediaMetadata } : {}),
+    });
+    return { rawRecord: { ...rawRecord, meta }, accepted };
+}
 
 type PendingRow = {
     recipient?: PendingMessage['recipient'];
@@ -2238,15 +2295,18 @@ async function enqueuePendingMessageV2Owned(params: {
     serverWireMode: PendingInputServerWireMode;
     requestedAction?: PendingRequestedActionV1;
     resumeWhenAvailable?: true;
+    accountLifetime?: ServerAccountScopeLifetime;
+    isCurrent?: () => boolean | Promise<boolean>;
 }): Promise<PendingMessageEnqueueResultV2> {
-    const { sessionId, text, displayText, encryption, request } = params;
+    const { sessionId, displayText, encryption, request } = params;
+    let text = params.text;
     const normalizedRecipient = params.recipient ? normalizeParticipantRecipientRoutingIdentityV1(params.recipient) : undefined;
     const recipient = normalizedRecipient?.kind === 'execution_run' ? normalizedRecipient : undefined;
     if (recipient && params.serverWireMode !== 'pending_input_v3') {
         throw createPendingTargetUpdateRequiredError();
     }
     if (recipient && params.deliveryMode) throw createPendingTargetConflictError();
-    const metaOverrides = params.recipient ? withParticipantRecipientV1(params.metaOverrides ?? {}, params.recipient) : params.metaOverrides;
+    let metaOverrides = params.recipient ? withParticipantRecipientV1(params.metaOverrides ?? {}, params.recipient) : params.metaOverrides;
     if (!recipient && readParticipantRecipientRoutingIdentityV1(metaOverrides)?.kind === 'execution_run') {
         throw createPendingTargetConflictError();
     }
@@ -2282,35 +2342,78 @@ async function enqueuePendingMessageV2Owned(params: {
         throw new Error('Persisted pending outbox row is quarantined');
     }
     if (recipient && !existingOutboxRow && !params.targetMachineId) throw createPendingTargetUpdateRequiredError();
+    const composerAdmissionOptions = {
+        serverId: outboxScope.serverId,
+        ...(params.accountLifetime ? { accountLifetime: params.accountLifetime } : {}),
+    };
+    let prepared: Extract<SessionPendingMessageComposerAdmissionPrepareResponseV1, { ok: true }> | undefined;
+    const isComposerAdmissionCurrent = async (): Promise<boolean> => params.accountLifetime?.isCurrent() !== false
+        && (!params.isCurrent || await params.isCurrent());
+    const abandonPrepared = async (): Promise<void> => {
+        if (!prepared?.sessionMediaCleanup) return;
+        try {
+            if (!await isComposerAdmissionCurrent()) return;
+            await abandonPendingMessageComposerAdmission(sessionId, {
+                sessionId, localId, structuredInput: prepared.structuredInput,
+                stagedMediaHandles: prepared.stagedMediaHandles,
+                sessionMediaCleanup: prepared.sessionMediaCleanup,
+            }, composerAdmissionOptions);
+        } catch (error) {
+            log.log(`Pending Composer preparation cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    };
+    if (!existingOutboxRow && hasRawComposerAttachmentSelectionV1(metaOverrides)) {
+        const response = await preparePendingMessageComposerAdmission(sessionId, {
+            localId, text,
+            structuredInput: RawIngressStructuredInputV1Schema.parse(metaOverrides?.[HAPPIER_STRUCTURED_INPUT_METADATA_KEY_V1]),
+        }, composerAdmissionOptions);
+        if (!response.ok) throw Object.assign(new Error(response.error), { code: response.errorCode });
+        prepared = response;
+        if (params.isCurrent && !await params.isCurrent()) {
+            await abandonPrepared();
+            throw Object.assign(new Error('Session Account authority is unavailable'), { code: 'session_account_scope_retired' });
+        }
+        text = prepared.text;
+        metaOverrides = { ...metaOverrides, [HAPPIER_STRUCTURED_INPUT_METADATA_KEY_V1]: prepared.structuredInput };
+    }
     if (!recipient && isActiveScope()) storage.getState().markSessionOptimisticThinking(sessionId);
     const effectiveDeliveryMode = existingOutboxRow
         ? readPendingEnqueueDeliveryMode(existingOutboxRow.request.body)
         : params.deliveryMode;
     const sessionEncryptionMode: 'e2ee' | 'plain' = session.encryptionMode === 'plain' ? 'plain' : 'e2ee';
-    const candidateRawRecord: unknown = existingOutboxRow?.rawRecord ?? buildOutgoingUserTextRecord({
-        text,
-        displayText,
-        permissionMode: session.permissionMode || 'default',
-        agentId: resolveAgentIdFromSessionMetadata(readSessionOwnerMetadataView(session)),
-        modelMode: session.modelMode,
-        settings: isActiveScope()
-            ? storage.getState().settings
-            : settingsParse(loadAccountSettings(outboxScope).settings),
-        session,
-        metaOverrides,
-        hostAdmissionOrigin: params.hostAdmissionOrigin,
-        allowedModels: params.allowedModels,
-        allowedPermissionModes: params.allowedPermissionModes,
-    });
-    const parsedRawRecord = RawRecordSchema.safeParse(candidateRawRecord);
-    const rawRecord = parsedRawRecord.success && parsedRawRecord.data.role === 'user'
-        ? parsedRawRecord.data
-        : null;
-    if (!rawRecord && !existingOutboxRow) {
-        (await removePendingOutboxMessage(sessionId, localId, outboxScope, 'enqueue'));
-        if (!recipient && isActiveScope()) storage.getState().clearSessionOptimisticThinking(sessionId);
-        throw new Error('Persisted pending outbox projection is invalid');
-    }
+    const { rawRecord, acceptedComposerAdmission } = await (async () => {
+        try {
+            const candidateRawRecord: unknown = existingOutboxRow?.rawRecord ?? buildOutgoingUserTextRecord({
+                text,
+                displayText,
+                permissionMode: session.permissionMode || 'default',
+                agentId: resolveAgentIdFromSessionMetadata(readSessionOwnerMetadataView(session)),
+                modelMode: session.modelMode,
+                settings: isActiveScope()
+                    ? storage.getState().settings
+                    : settingsParse(loadAccountSettings(outboxScope).settings),
+                session,
+                metaOverrides,
+                hostAdmissionOrigin: params.hostAdmissionOrigin,
+                allowedModels: params.allowedModels,
+                allowedPermissionModes: params.allowedPermissionModes,
+            });
+            const parsed = RawRecordSchema.safeParse(candidateRawRecord);
+            const rawRecord = parsed.success && parsed.data.role === 'user' ? parsed.data : null;
+            if (!rawRecord && !existingOutboxRow) {
+                throw new Error('Persisted pending outbox projection is invalid');
+            }
+            if (prepared && rawRecord) {
+                const admitted = buildPreparedPendingComposerRecord(rawRecord, sessionId, localId, prepared);
+                return { rawRecord: admitted.rawRecord, acceptedComposerAdmission: admitted.accepted };
+            }
+            return { rawRecord, acceptedComposerAdmission: undefined };
+        } catch (error) {
+            await abandonPrepared();
+            if (!recipient && isActiveScope()) storage.getState().clearSessionOptimisticThinking(sessionId);
+            throw error;
+        }
+    })();
     const canonicalText = existingOutboxRow?.text ?? text;
     const canonicalDisplayText = existingOutboxRow?.displayText ?? displayText;
     const createdAt = existingOutboxRow?.createdAt ?? nowServerMs();
@@ -2501,6 +2604,16 @@ async function enqueuePendingMessageV2Owned(params: {
             return { committed: true, cancelled: false, terminal };
         });
 
+        if (acceptedComposerAdmission && outcome.committed && !outcome.cancelled) {
+            try {
+                if (await isComposerAdmissionCurrent()) {
+                    await acceptPendingMessageComposerAdmission(sessionId, acceptedComposerAdmission, composerAdmissionOptions);
+                }
+            } catch (error) {
+                // Enqueue acceptance is already authoritative; failed notification cannot undo its custody.
+                log.log(`Pending Composer accepted settlement failed: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        }
         if (outcome.alreadySettled === true) {
             removeLocalPendingOutboxProjectionsIfOwned(sessionId, localId, outboxScope);
             if (!recipient && isActiveScope()) storage.getState().clearSessionOptimisticThinking(sessionId);
@@ -2508,6 +2621,7 @@ async function enqueuePendingMessageV2Owned(params: {
         }
 
         if (outcome.cancelled) {
+            await abandonPrepared();
             retirePendingProjectionAfterConfirmedCancellation(sessionId, localId, outboxScope);
             if (!recipient && isActiveScope()) storage.getState().clearSessionOptimisticThinking(sessionId);
             return { localId, accepted: true, cancelled: true };
@@ -2527,6 +2641,7 @@ async function enqueuePendingMessageV2Owned(params: {
         };
     } catch (e) {
         if (!hasDurableOutboxCustody) {
+            await abandonPrepared();
             removePendingOutboxProjectionIfOwned(sessionId, localId, outboxScope);
             if (!recipient && isActiveScope()) storage.getState().clearSessionOptimisticThinking(sessionId);
             throw e;
@@ -2553,6 +2668,7 @@ async function enqueuePendingMessageV2Owned(params: {
         try {
             await removePendingOutboxMessage(sessionId, localId, outboxScope, 'enqueue');
             removePendingOutboxProjectionIfOwned(sessionId, localId, outboxScope);
+            await abandonPrepared();
         } catch {
             // Retain the known durable projection if retirement fails, and preserve the original send error.
         }
@@ -2819,13 +2935,7 @@ export async function updatePendingMessageV2(params: {
     /** The complete current editable Composer semantic input; an empty envelope removes it. */
     structuredInput?: RawIngressStructuredInputV1 | HappierStructuredInputV1;
     /** Opaque daemon-produced staged-media handles; the canonical writer returns them only after PATCH acceptance. */
-    preparedComposerAdmission?: Readonly<{
-        stagedMediaHandles: readonly ComposerContentHandleV1[];
-        sessionMediaMetadata?: Readonly<{
-            key: 'happier' | 'happierMedia';
-            envelope: SessionMediaMessageMetaV1;
-        }>;
-    }>;
+    preparedComposerAdmission?: PreparedPendingComposerAdmission;
     encryption: PendingQueueUpdateEncryption | null;
     fetchArtifactWithBody?: (artifactId: string) => Promise<DecryptedArtifact | null>;
     updateArtifact?: (artifact: DecryptedArtifact) => void;
@@ -2888,14 +2998,6 @@ export async function updatePendingMessageV2(params: {
     if (params.preparedComposerAdmission && params.structuredInput === undefined) {
         throw new Error('Pending Composer admission requires a canonical structured input');
     }
-    if (
-        params.preparedComposerAdmission
-        && params.preparedComposerAdmission.stagedMediaHandles.length > 0
-        && !params.preparedComposerAdmission.sessionMediaMetadata
-    ) {
-        throw new Error('Pending Composer media admission requires canonical SessionMedia metadata');
-    }
-
     let rawRecord: RawRecord = replacePendingEditStructuredInput((() => {
         if (existing.rawRecord) {
             const parsed = RawRecordSchema.safeParse(existing.rawRecord);
@@ -2931,73 +3033,12 @@ export async function updatePendingMessageV2(params: {
         });
     })(), params.structuredInput, text);
 
-    let acceptedSessionMediaMetadata: Readonly<{
-        key: 'happier' | 'happierMedia';
-        envelope: SessionMediaMessageMetaV1;
-    }> | undefined;
+    let acceptedComposerAdmissionTemplate: PendingMessageComposerAdmissionAcceptedFactV1 | undefined;
     if (params.preparedComposerAdmission) {
-        const currentMeta = isPlainObject(rawRecord.meta) ? { ...rawRecord.meta } : {};
-        // The mounted Pending editor deliberately does not admit already-durable
-        // SessionMedia attachments. If such a row reaches this lower boundary,
-        // guessing whether its old envelope should be retained or removed would
-        // decouple metadata custody from the final structured input. Refuse it
-        // before PATCH instead; the canonical non-editable row remains intact.
-        for (const key of ['happier', 'happierMedia'] as const) {
-            if (SessionMediaMessageMetaV1Schema.safeParse(currentMeta[key]).success) {
-                throw new Error('Pending Composer admission cannot replace existing SessionMedia metadata');
-            }
-        }
-
-        const preparedMetadata = params.preparedComposerAdmission.sessionMediaMetadata;
-        if (preparedMetadata) {
-            const envelope = SessionMediaMessageMetaV1Schema.parse(preparedMetadata.envelope);
-            let key = preparedMetadata.key;
-            // `meta.happier` is an incumbent general envelope slot. The daemon
-            // prepares media without seeing that unrelated value, so the
-            // canonical Pending writer chooses the reserved secondary slot
-            // instead of overwriting it.
-            if (key === 'happier' && Object.prototype.hasOwnProperty.call(currentMeta, 'happier')) {
-                key = 'happierMedia';
-            }
-            if (Object.prototype.hasOwnProperty.call(currentMeta, key)) {
-                throw new Error('Pending Composer SessionMedia metadata slot is occupied');
-            }
-            acceptedSessionMediaMetadata = { key, envelope };
-        }
-        rawRecord = {
-            ...rawRecord,
-            meta: {
-                ...currentMeta,
-                ...(acceptedSessionMediaMetadata
-                    ? { [acceptedSessionMediaMetadata.key]: acceptedSessionMediaMetadata.envelope }
-                    : {}),
-            },
-        };
+        const admitted = buildPreparedPendingComposerRecord(rawRecord, sessionId, params.replacementLocalId ?? localId, params.preparedComposerAdmission);
+        rawRecord = admitted.rawRecord;
+        acceptedComposerAdmissionTemplate = admitted.accepted;
     }
-
-    const acceptedComposerAdmissionTemplate = params.preparedComposerAdmission
-        ? (() => {
-            const admitted = readAdmittedHappierStructuredInputV1FromMeta(rawRecord.meta);
-            const structuredInput = admitted.status === 'admitted'
-                ? admitted.structuredInput
-                : admitted.status === 'absent'
-                    ? HappierStructuredInputV1Schema.parse({ v: 1 })
-                    : (() => {
-                        throw new Error('Pending Composer admission is not canonical');
-                    })();
-            // Parse before writing so invalid staged-media claims cannot turn a
-            // rejected PATCH into an accepted-but-unsettleable outcome.
-            return SessionPendingMessageComposerAdmissionAcceptedRequestV1Schema.parse({
-                sessionId,
-                localId: params.replacementLocalId ?? localId,
-                structuredInput,
-                stagedMediaHandles: params.preparedComposerAdmission.stagedMediaHandles,
-                ...(acceptedSessionMediaMetadata
-                    ? { sessionMediaMetadata: acceptedSessionMediaMetadata }
-                    : {}),
-            });
-        })()
-        : undefined;
 
     const replacementMutationFingerprint = params.replacementLocalId
         ? derivePendingMessageMutationFingerprintV1({

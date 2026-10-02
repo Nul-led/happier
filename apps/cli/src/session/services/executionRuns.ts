@@ -5,6 +5,7 @@ import {
     ExecutionRunListResponseSchema,
     ExecutionRunPublicStateSchema,
     ExecutionRunWaitResultSchema,
+    normalizeExecutionRunWaitTimeoutMs,
     isExecutionRunTerminalStatus,
     readExecutionRunStartRunCreation,
     withExecutionRunStartFailureDetails,
@@ -17,6 +18,8 @@ import {
     type ExecutionRunStartRunCreation,
     type ExecutionRunTerminalStatus as ProtocolExecutionRunTerminalStatus,
     type ExecutionRunWaitLoopResult,
+    type ExecutionRunWaitCondition,
+    type ExecutionRunGetResponse,
     type FeatureAxis,
     type FeatureBlockerCode,
     type FeatureId,
@@ -28,7 +31,8 @@ import {
 } from '@happier-dev/protocol/rpcErrors';
 
 import { configuration } from '@/configuration';
-import { listExecutionRunMarkers } from '@/daemon/executionRunRegistry';
+import { listExecutionRunMarkers, reconcileRetainedExecutionRunRecords } from '@/daemon/executionRunRegistry';
+import { projectExecutionRunPublicState } from '@/agent/runtime/bridges/executionRun/publicState';
 import type {
     SessionStoredContentCryptoContext,
 } from '@/session/transport/encryption/sessionEncryptionContext';
@@ -246,6 +250,12 @@ async function listMarkerBackedExecutionRuns(params: Readonly<{ sessionId: strin
     return runs;
 }
 
+async function listRetainedExecutionRuns(sessionId: string): Promise<readonly ExecutionRunPublicState[]> {
+    return (await reconcileRetainedExecutionRunRecords({ nowMs: Date.now() }))
+        .filter((record) => record.state.sessionId === sessionId && record.state.status !== 'running')
+        .map((record) => projectExecutionRunPublicState(record.state));
+}
+
 async function getMarkerBackedExecutionRun(params: Readonly<{ sessionId: string; runId: string }>): Promise<ExecutionRunPublicState | null> {
     const runs = await listMarkerBackedExecutionRuns({ sessionId: params.sessionId });
     return runs.find((run) => run.runId === params.runId) ?? null;
@@ -335,15 +345,18 @@ async function buildExecutionRunListFallbackRuns(
                 markerRuns,
             })
             : markerRuns;
+    const retainedRuns = await listRetainedExecutionRuns(params.sessionId);
 
     return {
-        runs: applyExecutionRunListRequest(combinedRuns, params.request),
+        runs: applyExecutionRunListRequest(mergeExecutionRunLists({ primaryRuns: retainedRuns, markerRuns: combinedRuns }), params.request),
     };
 }
 
 async function buildExecutionRunGetFallbackRun(
     params: ExecutionRunRpcContext & Readonly<{ runId: string }>,
 ): Promise<ExecutionRunPublicState | null> {
+    const retained = (await listRetainedExecutionRuns(params.sessionId)).find((run) => run.runId === params.runId);
+    if (retained) return retained;
     const transcriptRun = await tryGetTranscriptBackedExecutionRun(params);
     if (transcriptRun) {
         return transcriptRun;
@@ -358,6 +371,8 @@ async function buildExecutionRunGetFallbackRun(
 async function tryBuildExecutionRunGetFallbackRun(
     params: ExecutionRunRpcContext & Readonly<{ runId: string }>,
 ): Promise<Readonly<{ ok: true; run: ExecutionRunPublicState | null }> | Readonly<{ ok: false }>> {
+    const retained = (await listRetainedExecutionRuns(params.sessionId)).find((run) => run.runId === params.runId);
+    if (retained) return { ok: true, run: retained };
     let transcriptLookupOk = true;
     try {
         const transcriptRun = await getTranscriptBackedExecutionRun(params);
@@ -845,6 +860,9 @@ type ExecutionRunWaitRequest = Readonly<{
     runId: string;
     timeoutMs: number | null;
     signal?: AbortSignal;
+    condition?: ExecutionRunWaitCondition;
+    after?: ExecutionRunGetResponse;
+    onSnapshot?: (snapshot: ExecutionRunGetResponse) => void | Promise<void>;
 }>;
 
 function projectTerminalExecutionRunWaitResult(data: unknown): WaitForExecutionRunResult | null {
@@ -874,30 +892,104 @@ async function readExecutionRunWaitCompatibilitySnapshot(
 export async function waitForExecutionRun(
     params: ExecutionRunRpcContext & ExecutionRunWaitRequest,
 ): Promise<WaitForExecutionRunResult> {
+    const observationTimeoutMs = normalizeExecutionRunWaitTimeoutMs(
+        params.timeoutMs === null ? null : params.timeoutMs / 1_000,
+    );
     const request = {
         runId: params.runId,
-        ...(params.timeoutMs === null
+        ...(params.onSnapshot ? { condition: 'change' as const } : params.condition ? { condition: params.condition } : {}),
+        ...(observationTimeoutMs === null
             ? {}
-            : { timeoutSeconds: Math.max(1, Math.ceil(params.timeoutMs / 1_000)) }),
+            : { timeoutSeconds: Math.max(1, Math.ceil(observationTimeoutMs / 1_000)) }),
+    };
+    const deadlineAtMs = observationTimeoutMs === null ? null : Date.now() + observationTimeoutMs;
+    const deadlineAbort = deadlineAtMs === null ? null : new AbortController();
+    const signal = deadlineAbort
+        ? params.signal ? AbortSignal.any([params.signal, deadlineAbort.signal]) : deadlineAbort.signal
+        : params.signal;
+    const observedParams = { ...params, signal };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const armDeadline = () => {
+        if (deadlineAtMs === null) return;
+        // The authored observation budget includes offline time and output
+        // backpressure. Chunk only at Node's timer boundary, never cap it.
+        timer = setTimeout(() => {
+            if (Date.now() < deadlineAtMs) { armDeadline(); return; }
+            deadlineAbort?.abort(new DOMException('Execution-run observation deadline reached', 'TimeoutError'));
+        }, Math.min(2_147_483_647, Math.max(0, deadlineAtMs - Date.now())));
+    };
+    let after = params.after;
+    let snapshotDelivery: Promise<void> = Promise.resolve();
+    const readRequest = async () => {
+        // A reconnect must not bypass output backpressure from the previous
+        // connection's accepted snapshot.
+        await snapshotDelivery;
+        signal?.throwIfAborted();
+        const current = { ...request, ...(after ? { after } : {}) };
+        if (deadlineAtMs === null) return current;
+        const remainingMs = deadlineAtMs - Date.now();
+        // The remaining budget never grants a reconnect a fresh lifetime.
+        // The wire retains its one-second quantum; the caller signal carries
+        // the precise containing deadline, including a fractional second.
+        return { ...current, timeoutSeconds: Math.max(1, Math.ceil(remainingMs / 1_000)) };
     };
     try {
-        const waitedPayload = await callSessionRpc({
-            ...params,
-            token: params.token,
-            sessionId: params.sessionId,
-            method: `${params.sessionId}:${SESSION_RPC_METHODS.EXECUTION_RUN_WAIT}`,
-            request,
-            // The daemon owns the optional observation deadline. A second local
-            // acknowledgement timer can only race and discard its final reply.
-            timeoutMs: null,
-        });
+        armDeadline();
+        let waitedPayload: unknown;
+        try {
+            waitedPayload = await callSessionRpc({
+                ...observedParams,
+                token: params.token,
+                sessionId: params.sessionId,
+                method: `${params.sessionId}:${SESSION_RPC_METHODS.EXECUTION_RUN_WAIT}`,
+                request,
+                // No acknowledgement timeout: the observation's own signal spans
+                // the entire connection/reconnect/output lifetime.
+                timeoutMs: null,
+                reattachOnReconnect: { readRequest, ...(params.onSnapshot ? {
+                    onResult: async (raw: unknown) => {
+                        signal?.throwIfAborted();
+                        const parsed = ExecutionRunWaitResultSchema.safeParse(raw);
+                        if (!parsed.success || !parsed.data.ok || !('disposition' in parsed.data) || parsed.data.disposition !== 'snapshot') return true;
+                        // State snapshots are refreshable; reconnect recovers current state,
+                        // not every transient event missed while disconnected.
+                        after = parsed.data.result;
+                        snapshotDelivery = Promise.resolve(params.onSnapshot!(after));
+                        await snapshotDelivery;
+                        return false;
+                    },
+                } : {}) },
+            });
+        } catch (error) {
+            signal?.throwIfAborted();
+            const fallbackCode = classifyExecutionRunRpcFallback(error);
+            if (!fallbackCode) throw error;
+            if (params.condition || params.onSnapshot) return { ok: false, code: fallbackCode };
+            const fallback = await readExecutionRunWaitCompatibilitySnapshot(observedParams);
+            return fallback ?? {
+                ok: false,
+                code: fallbackCode,
+                message: error instanceof Error ? error.message : String(error),
+            };
+        }
         const waited = ExecutionRunWaitResultSchema.safeParse(waitedPayload);
         if (waited.success) {
+            const value = waited.data;
+            if (value.ok) {
+                const condition = params.onSnapshot ? 'change' : params.condition ?? 'terminal';
+                const disposition = 'disposition' in value ? value.disposition : 'terminal';
+                const matchesRequest = disposition === 'observation_timeout'
+                    || condition === disposition
+                    || condition === 'change' && disposition === 'snapshot'
+                    || condition === 'terminal_or_needs_attention' && (disposition === 'terminal' || disposition === 'needs_attention');
+                if (!matchesRequest) return { ok: false, code: 'execution_run_wait_result_invalid',
+                    message: 'Execution run wait response does not match the requested condition' };
+            }
             return waited.data;
         }
         const normalized = normalizeExecutionRunRpcPayload(waitedPayload);
-        if (!normalized.ok && isFallbackSafeExecutionRunServiceError(normalized)) {
-            return await readExecutionRunWaitCompatibilitySnapshot(params) ?? normalized;
+        if (!params.condition && !params.onSnapshot && !normalized.ok && isFallbackSafeExecutionRunServiceError(normalized)) {
+            return await readExecutionRunWaitCompatibilitySnapshot(observedParams) ?? normalized;
         }
         return {
             ok: false,
@@ -905,13 +997,19 @@ export async function waitForExecutionRun(
             message: 'Execution run wait returned an invalid result',
         };
     } catch (error) {
-        const fallbackCode = classifyExecutionRunRpcFallback(error);
-        if (!fallbackCode) throw error;
-        const fallback = await readExecutionRunWaitCompatibilitySnapshot(params);
-        return fallback ?? {
-            ok: false,
-            code: fallbackCode,
-            message: error instanceof Error ? error.message : String(error),
-        };
-    }
+        params.signal?.throwIfAborted();
+        if (deadlineAbort?.signal.aborted) {
+            // No current readable owner fact is available. Do not invent a Run
+            // status or reconnect/get after this observation has ended.
+            return { ok: false, code: 'observation_timeout', message: 'Execution-run observation deadline reached' };
+        }
+        throw error;
+    } finally { if (timer !== undefined) clearTimeout(timer); }
+}
+
+/** Passive snapshots from the same supervised execution wait RPC; cancellation ends observation only. */
+export async function watchExecutionRun(params: ExecutionRunRpcContext & ExecutionRunWaitRequest & Readonly<{
+    onSnapshot: (snapshot: ExecutionRunGetResponse) => void | Promise<void>;
+}>): Promise<WaitForExecutionRunResult> {
+    return await waitForExecutionRun(params);
 }

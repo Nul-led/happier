@@ -35,7 +35,7 @@ describe('runScmOperationWithGitIndexLockRecovery', () => {
     });
     it('never replays applied or uncertain mutations even when legacy diagnostics mention an index lock', async () => {
         modalConfirm.mockReset().mockResolvedValue(true);
-        const removeIndexLock = vi.fn(async () => ({ success: true as const }));
+        const removeIndexLock = vi.fn(async () => ({ success: true as const, removed: true, lockPath: '/repo/.git/index.lock' }));
         const retryOriginalOperation = vi.fn(async () => ({ success: true as const }));
         const { runScmOperationWithGitIndexLockRecovery } = await import('./gitIndexLockRecovery');
         const outcomes: ScmOperationOutcome[] = [

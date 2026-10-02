@@ -175,6 +175,27 @@ function flattenStyle(style: unknown): Record<string, unknown> {
  * not shippable, and none of these are visible in a screenshot.
  */
 describe('VoiceOrb', () => {
+    it('lets an admitted Manual turn Send without invoking End Voice', async () => {
+        const onCommitInput = vi.fn();
+        const control = createControl({
+            canStop: true,
+            canCommitInput: true,
+            commitInputLabel: 'Send',
+            onCommitInput,
+        });
+        const { screen } = await renderOrb({ control, expanded: true });
+        try {
+            const send = findTransportControl(screen, 'Send');
+            expect(send).toHaveLength(1);
+            send[0]!.props.onPress();
+            expect(onCommitInput).toHaveBeenCalledTimes(1);
+            expect(control.onPrimaryAction).not.toHaveBeenCalled();
+            expect(findTransportControl(screen, labels.transport.end)).toHaveLength(1);
+        } finally {
+            await screen.unmount();
+        }
+    });
+
     beforeEach(() => {
         waveformRenderCount.count = 0;
         motionPreference.reduced = false;

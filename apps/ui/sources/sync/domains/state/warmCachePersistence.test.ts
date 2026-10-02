@@ -37,9 +37,11 @@ import {
     clearWarmCacheAccountScope,
     loadMachineDisplayWarmCacheEntries,
     loadSessionListWarmCacheEntries,
+    loadUsageSummaryWarmCache,
     resolveWarmCacheAccountScope,
     saveMachineDisplayWarmCacheEntries,
     saveSessionListWarmCacheEntries,
+    saveUsageSummaryWarmCache,
     setWarmCacheAccountScope,
 } from './warmCachePersistence';
 import { prepareWarmCacheEncryptionKey } from './warmCacheEncryptionKey';
@@ -53,6 +55,20 @@ describe('warmCachePersistence', () => {
         set.mockClear();
         deleteKey.mockClear();
         clearWarmCacheAccountScope();
+    });
+
+    it('retains each account reading time in the scoped usage cache', () => {
+        const entry = {
+            key: 'claude:work', serviceLabel: 'Claude', profileLabel: 'Work',
+            planLabel: null, meters: [], fetchedAt: 1000,
+        };
+        const usage = { v: 1 as const, entries: [
+            entry, { ...entry, key: 'claude:personal', fetchedAt: 5000 },
+        ] };
+        saveUsageSummaryWarmCache('server-a', 'account-a', usage);
+        expect(loadUsageSummaryWarmCache('server-a', 'account-a')).toEqual(usage);
+        expect(loadUsageSummaryWarmCache('server-b', 'account-a')).toBeNull();
+        expect(loadUsageSummaryWarmCache('server-a', 'account-b')).toBeNull();
     });
 
     it('roundtrips session list entries by server and account scope', () => {

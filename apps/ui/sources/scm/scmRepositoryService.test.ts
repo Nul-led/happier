@@ -522,6 +522,8 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
         statusRpcMock.mockResolvedValue({
             success: true,
             snapshot: makeScmSnapshot({
+                branch: { headOid: 'observed-head', upstreamOid: 'observed-upstream' },
+                capabilities: { writeCommitUndoLast: true },
                 repo: {
                     isRepo: true,
                     rootPath: '/repo',
@@ -546,6 +548,8 @@ describe('ScmRepositoryService.fetchSnapshotForSession', () => {
         const service = new ScmRepositoryService();
         const result = await service.fetchSnapshotForSession('session_1');
 
+        expect(result?.branch).toMatchObject({ headOid: 'observed-head', upstreamOid: 'observed-upstream' });
+        expect(result?.capabilities?.writeCommitUndoLast).toBe(true);
         expect(result?.repo.defaultBranch).toBe('release/2026');
         expect(result?.repo.worktrees).toEqual([
             { path: '/repo/.worktrees/feature-auth', branch: 'feature/auth', isCurrent: false },

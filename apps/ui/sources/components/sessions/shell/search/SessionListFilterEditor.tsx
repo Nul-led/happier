@@ -71,6 +71,8 @@ export type SessionListFilterEditorProps = Readonly<{
     labels: SessionListFilterEditorCopy;
     fixedHomeServerIds?: ReadonlySet<string>;
     fixedAudienceKeys?: ReadonlySet<string>;
+    /** Fixed destination semantics, for the Workflows Runs sidebar. */
+    fixedShow?: SessionListViewFilters['show'];
     updateFilters(filters: SessionListViewFilters): void;
     removeAuthoritativelyDeletedSelections(deleted: SessionListFilterDeletedSelections): void;
     setIncludeInactive(includeInactive: boolean): void;
@@ -323,12 +325,14 @@ export const SessionListFilterEditor = React.memo(function SessionListFilterEdit
         sourceAvailable: props.sourceAvailable,
         fixedHomeServerIds: props.fixedHomeServerIds,
         fixedAudienceKeys: props.fixedAudienceKeys,
+        fixedShow: props.fixedShow,
         archivedLabel: props.onOpenArchived ? props.labels.archived : undefined,
     }), [
         audiences,
         props.filters,
         props.fixedAudienceKeys,
         props.fixedHomeServerIds,
+        props.fixedShow,
         props.followingAvailable,
         props.homes,
         props.includeInactive,
@@ -370,6 +374,7 @@ export const SessionListFilterEditor = React.memo(function SessionListFilterEdit
         }
         if (props.inactiveVisibilityAvailable === false && optionId.startsWith('inactive:')) return;
         if (!props.queryEnabled && optionId.startsWith('attention:')) return;
+        if (props.fixedShow && optionId.startsWith('show:')) return;
         const next = resolveSessionListFilterEditorSelectionChange(
             props.filters,
             props.includeInactive,

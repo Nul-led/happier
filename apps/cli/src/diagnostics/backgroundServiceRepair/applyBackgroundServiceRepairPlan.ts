@@ -74,6 +74,8 @@ export async function applyBackgroundServiceRepairPlan(
         autostart: action.autostart,
         bundleId: action.bundleId ?? undefined,
         managedBy: action.managedBy ?? undefined,
+        enablement: action.enablement,
+        preserveRunningWhenDisabled: action.preserveRunningWhenDisabled,
         runCommands: true,
       });
       if (hadPreexistingExactDefaultTarget) {
@@ -127,6 +129,8 @@ export async function applyBackgroundServiceRepairPlan(
           autostart: service.autostart,
           bundleId: service.bundleId ?? undefined,
           managedBy: service.managedBy ?? undefined,
+          enablement: service.enablement,
+          preserveRunningWhenDisabled: service.preserveRunningWhenDisabled,
           runCommands: true,
         });
       } catch (rollbackError) {

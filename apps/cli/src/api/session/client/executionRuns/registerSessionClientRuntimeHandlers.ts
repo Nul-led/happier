@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { resolveAgentIdFromSessionMetadata, resolvePermissionIntentFromSessionMetadata } from '@happier-dev/agents';
-import { parseSessionPermissionModeAlias, SessionAccessGrantSetActionInputV1Schema, SessionModelSelectionV2Schema, type AccountSettings, type ActionExecutorDeps, type TeamCredentialProviderModelSelectionV1 } from '@happier-dev/protocol';
+import { parseSessionPermissionModeAlias, readSessionWorkspaceWritesV1, SessionAccessGrantSetActionInputV1Schema, SessionModelSelectionV2Schema, type AccountSettings, type ActionExecutorDeps, type TeamCredentialProviderModelSelectionV1 } from '@happier-dev/protocol';
 import { configuration } from '@/configuration';
 import { notifyDaemonConnectedServiceUsageLimitWaitResumeCancel } from '@/daemon/controlClient';
 import { createExecutionBudgetRegistry } from '@/daemon/executionBudget/createExecutionBudgetRegistry';
@@ -50,7 +50,10 @@ import type { LocalServicesRuntimeActionRoutes } from '@/daemon/local/services/a
 import type { DaemonPeerMediationObservabilityRuntimeActionContext } from '@/daemon/peer/mediation/observability/runtimeActionExecutor';
 import type { SimulatorPreviewRoutes } from '@/daemon/devices/simulator/previewRoutes.types';
 import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
-import { importHistoricalSessionTranscript } from '@/session/transport/http/sessionsHttp';
+import { fetchSessionById, importHistoricalSessionTranscript } from '@/session/transport/http/sessionsHttp';
+import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { resolveSessionTransportContext } from '@/session/services/resolveSessionTransportContext';
+import { tryDecryptSessionOwnerMetadataView } from '@/session/transport/encryption/sessionEncryptionContext';
 import { createServerBackedSessionTranscriptStore } from '@/api/session/createServerBackedSessionTranscriptStore';
 import {
     DEFAULT_SESSION_TRANSCRIPT_FOLLOW_LEASE_IDLE_TTL_MS,
@@ -466,7 +469,7 @@ export function registerSessionClientRuntimeHandlers(
         });
         return checker ? await checker(args) : false;
     };
-    const transcriptActionExecutor = createCliActionExecutor({
+    const sessionActionParams = {
         token: params.token,
         sessionId: params.sessionId,
         getCurrentSessionMetadata: params.getSessionMetadata,
@@ -504,11 +507,22 @@ export function registerSessionClientRuntimeHandlers(
             workingDirectory,
             accessPolicy: { kind: 'osUser' },
         },
-    });
+    } satisfies Parameters<typeof createCliActionExecutor>[0];
+    const transcriptActionExecutor = createCliActionExecutor(sessionActionParams);
+    const resolveCredentialedRoleParams = async () => {
+        const credentials = await readOwnerAccountCredentials();
+        if (!credentials || readAccountIdFromToken(credentials.token) !== runtimeAccountId) return null;
+        await resolveOwnerAccountSettings();
+        return { ...sessionActionParams, token: credentials.token, credentials,
+            serverId: approvalServerId, serverHttpBaseUrl: approvalServerApiUrl };
+    };
 
     registerActionSpecRpcHandlers({
         rpcHandlerManager: params.rpcHandlerManager,
-        actionExecutor: transcriptActionExecutor,
+        resolveActionExecutor: async () => {
+            const roleParams = await resolveCredentialedRoleParams();
+            return roleParams ? createCliActionExecutor(roleParams) : transcriptActionExecutor;
+        },
         actionIds: ROLE_ACTION_IDS_V1.filter((actionId) => actionId.startsWith('session.')),
     });
     registerSessionRoleConfigurationHandler({
@@ -518,6 +532,44 @@ export function registerSessionClientRuntimeHandlers(
         readRoleSources: params.readRoleSources ?? parentSessionForTools?.readRoleSources,
         prepareWorkspaceWritesPolicy: params.prepareWorkspaceWritesPolicy ?? parentSessionForTools?.prepareWorkspaceWritesPolicy,
         readSettingsOverrides: async () => (await resolveOwnerAccountSettings())?.rolesV1.overrides ?? {},
+        resolveAgentStartContext: async (context) => {
+            const roleParams = await resolveCredentialedRoleParams();
+            if (!roleParams) return null;
+            return await runWithServerHttpBaseUrl(approvalServerApiUrl, () =>
+                createCliActionDeps(roleParams).resolveAgentStartContext?.(context) ?? null);
+        },
+        sessionList: async (input) => {
+            const roleParams = await resolveCredentialedRoleParams();
+            if (!roleParams) return { ok: false, errorCode: 'target_unavailable', error: 'target_unavailable' };
+            return await createSessionListActionDependency({ credentials: roleParams.credentials,
+                serverId: approvalServerId, serverHttpBaseUrl: approvalServerApiUrl })(input);
+        },
+        readCurrentReportLead: async (signal) => {
+            const roleParams = await resolveCredentialedRoleParams();
+            if (!roleParams) return null;
+            const session = await runWithServerHttpBaseUrl(approvalServerApiUrl, () => fetchSessionById({
+                token: roleParams.token, sessionId: params.sessionId, signal, accessProjectionVersion: 1,
+            }));
+            return session?.effectiveAccess?.level === 'owner' ? session.reportsTo?.sessionId ?? null : null;
+        },
+        readCallerWorkspaceWrites: async (context) => {
+            if (context.actionCaller?.kind !== 'session') return null;
+            const roleParams = await resolveCredentialedRoleParams();
+            if (!roleParams) return null;
+            const sessionId = context.actionCaller.sessionId;
+            const transport = await runWithServerHttpBaseUrl(approvalServerApiUrl, () => resolveSessionTransportContext({
+                credentials: roleParams.credentials, idOrPrefix: sessionId, signal: context.signal,
+            }));
+            if (!transport.ok || transport.sessionId !== sessionId || transport.rawSession.effectiveAccess?.level !== 'owner') return null;
+            const metadata = tryDecryptSessionOwnerMetadataView({ credentials: roleParams.credentials,
+                accountEncryptionMode: transport.accountEncryptionCurrentness.mode, rawSession: transport.rawSession });
+            if (!metadata) return null;
+            const sources = await roleParams.readRoleSources?.(context.signal) ?? [];
+            return readSessionWorkspaceWritesV1(metadata, {
+                settingsRoles: Object.fromEntries(sources.map((entry) => [entry.roleId, entry.role])),
+                settingsOverrides: actionsSettingsProvider.getAccountSettings?.()?.rolesV1.overrides,
+            });
+        },
         ...(params.enqueueRegisteredSessionStateFieldMutation ? {
             stageSessionStateMutation: async (mutation) => { await params.enqueueRegisteredSessionStateFieldMutation!(mutation); },
         } : {}),

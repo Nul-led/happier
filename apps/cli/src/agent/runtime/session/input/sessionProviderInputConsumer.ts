@@ -100,6 +100,8 @@ type WaitForNextInputOptions<Mode, Message> = SessionProviderInputConsumerOption
   waitForAdmissionChange: (abortSignal: AbortSignal) => Promise<boolean>;
   takeReservedBatch: () => MessageBatch<Mode, Message> | null;
   takeDeferredContextOnlyBatch: () => MessageBatch<Mode, Message> | null;
+  hasDeferredContextOnlyBatch: () => boolean;
+  resumeDeferredContextOnlyBatch: () => void;
   reserveBatch: (batch: MessageBatch<Mode, Message>) => void;
   hasLocalInputCustody: () => boolean;
   isAdmitted: () => boolean;
@@ -187,6 +189,7 @@ export function createSessionProviderInputConsumer<Mode, Message>(
   let pendingMaterializationTurn: Promise<void> = Promise.resolve();
   let reservedBatch: MessageBatch<Mode, Message> | null = null;
   let deferredContextOnlyBatch: MessageBatch<Mode, Message> | null = null;
+  let deferredContextOnlyWaitingForChange = false;
   const admissionKey = (scope: ProviderInputActionRequiredDisposition) =>
     `${scope.reason}\u0000${scope.serviceId}\u0000${scope.groupId}`;
   const admissions = new Map<string, ProviderInputActionRequiredDisposition>();
@@ -406,6 +409,10 @@ export function createSessionProviderInputConsumer<Mode, Message>(
   };
 
   return {
+    deferContextOnlyInput(batch) {
+      deferredContextOnlyBatch = batch;
+      deferredContextOnlyWaitingForChange = true;
+    },
     async finalizeContextOnlyInput(finalizeOpts) {
       if (finalizeOpts.abortSignal.aborted || !await finalizeOpts.recheck()) return 'withdrawn';
       if (finalizeOpts.abortSignal.aborted) return 'withdrawn';
@@ -413,6 +420,7 @@ export function createSessionProviderInputConsumer<Mode, Message>(
       // workflow withdrawal share the same event-loop ordering point.
       if (readAdmission() || hasLocalInputCustody() || opts.session.hasPendingProviderInput?.()) {
         deferredContextOnlyBatch = finalizeOpts.batch;
+        deferredContextOnlyWaitingForChange = false;
         markPassDirty();
         return 'deferred';
       }
@@ -496,10 +504,13 @@ export function createSessionProviderInputConsumer<Mode, Message>(
             return batch;
           },
           takeDeferredContextOnlyBatch: () => {
+            if (deferredContextOnlyWaitingForChange) return null;
             const batch = deferredContextOnlyBatch;
             deferredContextOnlyBatch = null;
             return batch;
           },
+          hasDeferredContextOnlyBatch: () => deferredContextOnlyBatch !== null,
+          resumeDeferredContextOnlyBatch: () => { deferredContextOnlyWaitingForChange = false; },
           reserveBatch: (batch) => {
             reservedBatch = batch;
             markPassDirty();
@@ -621,6 +632,13 @@ async function waitForNextInput<Mode, Message>(
         waitForContextOnlyInputChange: opts.waitForContextOnlyInputChange ?? undefined,
         controller,
         metadataWaitRetryBackoffMs,
+      }).then((winner) => {
+        if ((winner.kind === 'meta' && winner.ok)
+          || (winner.kind === 'queue' && winner.hasMessages)
+          || ((winner.kind === 'context_only' || winner.kind === 'admission') && winner.changed)) {
+          opts.resumeDeferredContextOnlyBatch();
+        }
+        return winner;
       });
 
       if (opts.abortSignal.aborted) return null;
@@ -633,6 +651,7 @@ async function waitForNextInput<Mode, Message>(
 
       const existingBatch = await collectQueuedBatch(opts);
       if (existingBatch) {
+        opts.resumeDeferredContextOnlyBatch();
         controller.abort('sessionProviderInputConsumer-existing');
         return await returnBatch(opts, existingBatch, refreshBeforeQueuedBatch);
       }
@@ -641,6 +660,7 @@ async function waitForNextInput<Mode, Message>(
 
       const materializedBatch = await collectQueuedBatch(opts);
       if (materializedBatch) {
+        opts.resumeDeferredContextOnlyBatch();
         controller.abort('sessionProviderInputConsumer-materialized');
         return await returnBatch(opts, materializedBatch, refreshBeforeQueuedBatch);
       }
@@ -650,7 +670,7 @@ async function waitForNextInput<Mode, Message>(
       const contextOnlyBatch = opts.session.hasPendingProviderInput?.()
         ? null
         : opts.takeDeferredContextOnlyBatch()
-          ?? await opts.takeContextOnlyInput?.(opts.abortSignal);
+          ?? (opts.hasDeferredContextOnlyBatch() ? null : await opts.takeContextOnlyInput?.(opts.abortSignal));
       if (contextOnlyBatch) {
         controller.abort('sessionProviderInputConsumer-context-only');
         return contextOnlyBatch;

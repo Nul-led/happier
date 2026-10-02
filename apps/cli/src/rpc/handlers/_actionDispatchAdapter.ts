@@ -1,6 +1,7 @@
 import type { ActionExecuteResult, ActionExecutorContext, ActionId } from '@happier-dev/protocol';
 import type { createCliActionExecutor } from '@/session/actions/createCliActionExecutor';
 import type { RpcLocalActionContext } from '@/api/rpc/types';
+import type { SessionActionRpcOriginV1 } from '@happier-dev/protocol/socketRpc';
 
 type CliActionExecutorParams = Parameters<typeof createCliActionExecutor>[0];
 
@@ -27,6 +28,7 @@ export type RpcActionDispatchRequest = Readonly<{
     signal?: AbortSignal;
     localActionContext?: RpcLocalActionContext;
     callerAuthority?: ActionExecutorContext['authority'];
+    sessionActionOrigin?: SessionActionRpcOriginV1;
     executor?: RpcActionExecutor;
     executorParams?: CliActionExecutorParams;
 }>;
@@ -40,7 +42,7 @@ function normalizeOptionalString(value: string | null | undefined): string | und
 }
 
 export function buildActionExecutorContextForRpc(
-    params: Pick<RpcActionDispatchRequest, 'defaultSessionId' | 'serverId' | 'externalActionTarget' | 'signal' | 'localActionContext' | 'callerAuthority'>,
+    params: Pick<RpcActionDispatchRequest, 'defaultSessionId' | 'serverId' | 'externalActionTarget' | 'signal' | 'localActionContext' | 'callerAuthority' | 'sessionActionOrigin'>,
 ): RpcActionExecutorContext {
     const defaultSessionId = normalizeOptionalString(params.defaultSessionId);
     const serverId = normalizeOptionalString(params.serverId);
@@ -90,6 +92,19 @@ export function buildActionExecutorContextForRpc(
         ...(hasLocalCausalPermissionAuthority
             ? { causalPermissionAuthority: localActionContext?.causalPermissionAuthority ?? null }
             : {}),
+        ...(params.sessionActionOrigin ? {
+            // Invocation origin is transport authority, not the Session being mutated.
+            surface: 'agent' as const,
+            authority: 'account_automation' as const,
+            defaultSessionId: params.sessionActionOrigin.caller.sessionId,
+            actionCaller: params.sessionActionOrigin.caller,
+            actionRequestId: params.sessionActionOrigin.requestId,
+            callerPermissionMode: params.sessionActionOrigin.callerPermissionMode,
+            causalPermissionAuthority: params.sessionActionOrigin.causalPermissionAuthority ?? null,
+            sessionInputSource: { sourceSessionId: params.sessionActionOrigin.caller.sessionId,
+                sourceTurnId: params.sessionActionOrigin.sourceTurnId, via: 'action' as const },
+            ...(params.sessionActionOrigin.workspaceWrites ? { workspaceWrites: params.sessionActionOrigin.workspaceWrites } : {}),
+        } : {}),
     };
 }
 

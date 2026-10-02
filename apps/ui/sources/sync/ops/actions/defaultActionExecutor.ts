@@ -15,9 +15,11 @@ import {
   createLaunchProfilePublisherV1,
   createWorkBoardArtifactPortV1,
   createArtifactAccessActionsV1,
-  workflowDefinitionArtifactSharingAdapterV1,
-  roleArtifactSharingAdapterV1,
-  launchProfileArtifactSharingAdapterV1,
+  createAccountRoleActionExecutorV1,
+  isRoleActionIdV1,
+  RoleActionInputSchemasV1,
+  RoleActionOutputSchemasV1,
+  PluginRoleDeclarationV1Schema,
   resolveInvocationAuthority,
   getSharedBlockingApprovalCoordinator,
   isActionEnabledByActionsSettings,
@@ -32,6 +34,7 @@ import {
   type ActionExecutorDeps,
   type ActionExecuteResult,
   type ActionId,
+  type ArtifactPublicLinkIssuedV1,
   type ApprovalRequest,
   type SessionModelTransitionRequestV1,
   type SessionModelTransitionResultV1,
@@ -44,7 +47,9 @@ import {
   type SessionFollowActionOutputV1,
   type SessionFollowSourceKeyPreparationResultV1,
 } from '@happier-dev/protocol';
-import { loadDaemonMergedProjectionInputs } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
+import { loadDaemonMergedProjectionInputs, loadDaemonMergedProjectionCacheEntry } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
+import { randomUUID } from '@/platform/randomUUID';
+import { resolveUiAccountActionFallbackMachineId } from './accountActionDeps';
 import { buildMachineAgentInventoryDescriptors } from '@/agents/machineAgents/machineAgentCatalog';
 import {
   startAgentInstallJobRpc,
@@ -70,6 +75,8 @@ import { RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { HappyError } from '@/utils/errors/errors';
 
 import { captureLazyActionAccountContext, type LazyActionAccountContext } from './actionAccountContext';
+import { createUiArtifactAction } from './artifactActionDeps';
+import { subscribeHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
 import { captureMountedWorkspaceAction, invokeWorkspaceAction } from '@/components/appShell/workspace/workspaceActionRuntime';
 import { invokeSessionTerminalAction } from '@/components/sessions/terminal/sessionTerminalActions';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
@@ -80,6 +87,7 @@ import { createSettingsDeclarationAction } from './settingsDeclarationAction';
 import { createAppShellAction } from './appShellAction';
 import { executeExternalSessionBrowseAction } from './externalSessionBrowseAction';
 import { createUiConnectedServiceAction } from './connectedServiceActionDeps';
+import { createUiScmAction } from './scmActionDeps';
 import { resolveSettingsHost, settingsHosts } from '@/components/settings/catalog/settingDeclarations';
 import { readSettingsPageGate } from '@/components/settings/catalog/pageCatalog';
 import { executeCommandPaletteAction } from '@/components/appShell/commandPalette/commandPaletteActionRuntime';
@@ -429,6 +437,8 @@ async function settleAccountSecurityAction<T>(operation: () => Promise<T>) {
    * surface owns reachability while the executor keeps admission and validation.
    */
   sessionAccessAction?: NonNullable<ActionExecutorDeps['sessionAccessAction']>;
+  /** Local keyholding-host delivery; never enters Action input, approval or result. */
+  onPublicLinkIssued?: (link: ArtifactPublicLinkIssuedV1) => void | Promise<void>;
   /** Optional Session human-discussion family port bound by a mounted surface. */
   sessionDiscussionAction?: NonNullable<ActionExecutorDeps['sessionDiscussionAction']>;
   /**
@@ -468,13 +478,70 @@ async function settleAccountSecurityAction<T>(operation: () => Promise<T>) {
   const approvalCoordinator = getSharedBlockingApprovalCoordinator();
   const capturedFamilyPorts = accountContext ? createCapturedScopeFamilyPorts(accountContext) : null;
   const settingsHost = resolveSettingsHost();
+  const accountRoleAction = accountContext ? createAccountRoleActionExecutorV1({
+    accountId: accountContext.accountId,
+    readRawAccountSettings: accountContext.readRawSettings,
+    mutateAccountSettings: accountContext.mutateRawSettings,
+    generateId: randomUUID,
+    artifactStore: {
+      ...accountContext.workflowArtifacts,
+      create: async (input) => {
+        await accountContext.workflowArtifacts.create(input);
+        const created = await accountContext.workflowArtifacts.read(input.artifactId, { signal: input.signal });
+        if (!created) throw Object.assign(new Error('artifact_content_unavailable'), { code: 'artifact_content_unavailable' });
+        return { artifactId: created.artifactId, revision: created.revision };
+      },
+    },
+    readPluginRoles: async (signal) => {
+      accountContext.assertCurrent();
+      signal?.throwIfAborted();
+      const machineId = resolveUiAccountActionFallbackMachineId(accountContext);
+      if (!machineId) return [];
+      const entry = await loadDaemonMergedProjectionCacheEntry({ machineId, serverId: accountContext.serverId,
+        accountLifetime: accountContext.accountLifetime, reuseFreshReady: true });
+      accountContext.assertCurrent();
+      signal?.throwIfAborted();
+      // A missing serving daemon withdraws plugin sources, not Account-owned
+      // Artifacts or built-ins; never consume retained failed projections.
+      if (entry?.kind !== 'ready') return [];
+      const projection = entry.inputs.pluginProjectionV2;
+      return Object.values(projection?.familiesById.roles?.entriesById ?? {}).flatMap((source) => {
+        if (!source.pluginId) throw Object.assign(new Error('source_unavailable'), { code: 'source_unavailable' });
+        if (!projection?.installedPackagesById[source.pluginId]?.occurrenceId) return [];
+        const definition = PluginRoleDeclarationV1Schema.parse(source.definition);
+        const { id: localId, ...role } = definition;
+        return [{ pluginId: source.pluginId, localId, role }];
+      });
+    },
+  }) : null;
 
   const deps: ActionExecutorDeps = {
+    roleActionExecute: async (args) => {
+      if (!accountContext || !accountRoleAction) return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
+      accountContext.assertCurrent();
+      const input = RoleActionInputSchemasV1[args.actionId].parse(args.input);
+      if ('sessionId' in input) {
+        // The Account socket authenticates a present user; autonomous callers
+        // retain the Session host's authenticated provenance path.
+        if (args.context.authority !== 'present_user') return { ok: false, errorCode: 'role_rpc_origin_unavailable', error: 'role_rpc_origin_unavailable' };
+        const result = await sessionRpcWithServerScope<unknown, typeof input>({
+          serverId: accountContext.serverId, sessionId: input.sessionId, method: args.actionId,
+          payload: input, signal: args.context.signal,
+        });
+        accountContext.assertCurrent();
+        if (result && typeof result === 'object' && 'ok' in result && result.ok === false) return result;
+        return RoleActionOutputSchemasV1[args.actionId].parse(result);
+      }
+      const result = await accountRoleAction(args);
+      accountContext.assertCurrent();
+      return result;
+    },
     scopeAction: async ({ actionId, input, context }) => {
       context.signal?.throwIfAborted();
       return await invokeScopeAction(actionId, input);
     },
     connectedServiceAction: accountContext ? createUiConnectedServiceAction(accountContext) : undefined,
+    scmActionExecute: createUiScmAction(accountContext),
     appShellAction: createAppShellAction(accountContext),
     hostExternalSessionAction: executeExternalSessionBrowseAction,
     settingsDeclarationAction: createSettingsDeclarationAction({
@@ -505,15 +572,15 @@ async function settleAccountSecurityAction<T>(operation: () => Promise<T>) {
       return await createLaunchProfilePublisherV1({
         readSettings: accountContext.readRawSettings,
         mutateSettings: accountContext.mutateRawSettings,
-        artifactStore: { read: accountContext.workflowArtifacts.read,
+        artifactStore: { read: (artifactId, signal) => accountContext.workflowArtifacts.read(artifactId, { signal }),
           create: async ({ header, body }) => ({ artifactId: await accountContext.createArtifact(header, body) }) },
       }).publish(input, context);
     } } : {}),
     ...(accountContext ? createUiNotificationActionDeps({ account: accountContext }) : {}),
+    ...(accountContext ? { artifactAction: createUiArtifactAction(accountContext, { onPublicLinkIssued: opts?.onPublicLinkIssued }) } : {}),
     ...(accountContext ? { artifactAccessAction: createArtifactAccessActionsV1({
       read: accountContext.workflowArtifacts.read,
       transport: accountContext.artifactAccessGrants,
-      adapters: [workflowDefinitionArtifactSharingAdapterV1, roleArtifactSharingAdapterV1, launchProfileArtifactSharingAdapterV1],
     }) } : {}),
     ...(opts?.workflowAction
       ? { workflowAction: opts.workflowAction }
@@ -695,6 +762,7 @@ async function settleAccountSecurityAction<T>(operation: () => Promise<T>) {
       isApprovalRequiredByActionsSettings(actionId, resolveActionsSettingsSnapshot(), {
         surface: ctx.surface ?? null,
         authority: ctx.authority,
+        actionCaller: ctx.actionCaller,
       }),
     ...createUiExecutionRunActionDeps(),
     resolveSessionSpawnAgentInventorySelection: resolveSessionSpawnAgentInventorySelectionForActions,
@@ -1803,12 +1871,39 @@ async function settleAccountSecurityAction<T>(operation: () => Promise<T>) {
       await approvalCoordinator.resolveBlockingDecision({ artifactId, request, decision }),
 
     approvalsWaitForDecision: async ({ artifactId, request, serverId, signal }) => {
+      const accountLifetime = accountContext?.accountLifetime ?? captureActiveServerAccountScopeLifetime();
+      const scopeChanged = () => Object.assign(new Error('action_account_scope_changed'), { code: 'action_account_scope_changed' as const });
+      if (!accountLifetime || (serverId && !areServerProfileIdentifiersEquivalent(serverId, accountLifetime.scope.serverId))) {
+        throw scopeChanged();
+      }
+      const assertCurrent = () => {
+        if (!accountLifetime.isCurrent()) throw scopeChanged();
+      };
+      assertCurrent();
       const decision = await approvalCoordinator.waitForDecision({
         artifactId,
         request,
         serverId,
         signal,
-        readRequest: async () => await deps.approvalsGet?.({ artifactId, serverId: serverId ?? null }) ?? null,
+        subscribeChanges: (onChange, onError) => {
+          const unsubscribe = subscribeHomeAccountChange((change) => {
+            if (!areServerProfileIdentifiersEquivalent(change.serverId, accountLifetime.scope.serverId)
+              || (change.entityIds !== undefined && !change.entityIds.includes(artifactId))) return;
+            if (!accountLifetime.isCurrent()) onError(scopeChanged());
+            else onChange();
+          });
+          const retirement = accountLifetime.onRetire(() => onError(scopeChanged()));
+          return { dispose: () => { unsubscribe(); retirement.dispose(); } };
+        },
+        readRequest: async () => {
+          assertCurrent();
+          // A wake invalidates the durable Artifact, not the optimistic approval cache.
+          const full = await (accountContext ? accountContext.fetchArtifact(artifactId) : sync.fetchArtifactWithBody(artifactId));
+          assertCurrent();
+          if (!full?.header || typeof full.body !== 'string') return null;
+          const parsed = approvalArtifactBodyMatchesHeaderV1(full.header, full.body);
+          return parsed?.family === 'built_in' ? parsed.request : null;
+        },
       });
       return { ...decision, request: ApprovalRequestSchema.parse(decision.request) };
     },
@@ -1899,11 +1994,15 @@ async function settleAccountSecurityAction<T>(operation: () => Promise<T>) {
 
 
 type DefaultActionExecutorOptions = Parameters<typeof buildDefaultActionExecutor>[0];
-type DefaultActionExecuteContext = Readonly<{
+/** UI-only projection qualifier; the captured Account owner enforces it before admission. */
+export type UiActionExecutorContext = ActionExecutorContext & Readonly<{ expectedAccountId?: string }>;
+type DefaultActionExecutor = Omit<ReturnType<typeof createActionExecutor>, 'execute' | 'prepare'> & Readonly<{
+  execute: (actionId: ActionId, input: unknown, context?: UiActionExecutorContext) => ReturnType<ReturnType<typeof createActionExecutor>['execute']>;
+  prepare: (actionId: ActionId, input: unknown, context?: UiActionExecutorContext) => ReturnType<ReturnType<typeof createActionExecutor>['prepare']>;
+}>;
+type DefaultActionExecuteContext = Pick<UiActionExecutorContext, 'expectedAccountId'> & Readonly<{
   serverId: string;
   signal?: AbortSignal;
-  /** Rejects before admission when a caller is acting on an Account-owned projection. */
-  expectedAccountId?: string;
   /** Synchronously consumes a failure only while this captured Account is still current. */
   onCurrentError?: (error: unknown) => void;
 }>;
@@ -2036,7 +2135,7 @@ export async function withDefaultActionExecuteContext<TResult>(
   }
 }
 
-export function createDefaultActionExecutor(opts?: DefaultActionExecutorOptions): ReturnType<typeof createActionExecutor> {
+export function createDefaultActionExecutor(opts?: DefaultActionExecutorOptions): DefaultActionExecutor {
   let unscoped: ReturnType<typeof createActionExecutor> | undefined;
   const ordinary = () => unscoped ?? (unscoped = buildDefaultActionExecutor(opts));
   const apiTokenTransport = async (): Promise<ApiTokenActionTransport | null> => {
@@ -2053,12 +2152,13 @@ export function createDefaultActionExecutor(opts?: DefaultActionExecutorOptions)
     execute: async (actionId, input, context) => {
       const api = await apiTokenTransport();
       if (api) return await executeApiTokenAction(api, actionId, input, context);
-      const serverId = context?.serverId;
+      const serverId = context?.serverId ?? (isRoleActionIdV1(actionId) ? getActiveServerAccountScope()?.serverId : undefined);
       if (!serverId) return await ordinary().execute(actionId, input, context);
       try {
         return await withDefaultActionExecuteContext(opts, { ...context, serverId }, async (executor, account) => (
           await executor.execute(actionId, input, {
             ...context,
+            serverId,
             ...(account.serverIdentityId ? { serverIdentityId: account.serverIdentityId } : {}),
             runtimeAccountId: account.accountId,
           })
@@ -2072,14 +2172,16 @@ export function createDefaultActionExecutor(opts?: DefaultActionExecutorOptions)
     prepare: async (actionId, input, context) => {
       const api = await apiTokenTransport();
       if (api) return { kind: 'ready', invocation: { run: async () => await executeApiTokenAction(api, actionId, input, context) } };
-      if (!context?.serverId) return await ordinary().prepare(actionId, input, context);
-      const account = await captureLazyActionAccountContext(context.serverId, context.signal);
+      const serverId = context?.serverId ?? (isRoleActionIdV1(actionId) ? getActiveServerAccountScope()?.serverId : undefined);
+      if (!serverId) return await ordinary().prepare(actionId, input, context);
+      const account = await captureLazyActionAccountContext(serverId, context?.signal);
       try {
         const settings = await account.readSettings();
         account.assertCurrent();
-        context.signal?.throwIfAborted();
+        context?.signal?.throwIfAborted();
         const prepared = await buildDefaultActionExecutor(opts, { ...account, settings }).prepare(actionId, input, {
           ...context,
+          serverId,
           ...(account.serverIdentityId ? { serverIdentityId: account.serverIdentityId } : {}),
           runtimeAccountId: account.accountId,
         });

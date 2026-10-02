@@ -2,7 +2,9 @@ import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 import { SELECTION_LIST_DEFAULT_DYNAMIC_DEBOUNCE_MS } from '@/components/ui/selectionList/_constants';
-import { ARTIFACT_PLAIN_DATA_KEY_MARKER, encodePlainArtifactStoredContent } from '@happier-dev/protocol';
+import { ARTIFACT_PLAIN_DATA_KEY_MARKER, encodePlainArtifactStoredContent, tryWriteServerEnabledBitInPlace } from '@happier-dev/protocol';
+import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
+import { primeServerFeaturesSnapshot, resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
 import { serveActionHomes } from '@/dev/testkit/harness/actionHomesHttpHarness';
 import { invalidateAccountEncryptionModeCache } from '@/sync/api/account/apiAccountEncryptionMode';
 import { retireActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
@@ -19,6 +21,10 @@ vi.mock('@legendapp/list/react-native', async () => {
     return { LegendList: createCapturingLegendListMock({ renderItems: true, renderItemLimit: 40 }).module.LegendList };
 });
 vi.mock('@/components/ui/accessibility/announceAccessibilityMessage', () => ({ announceAccessibilityMessage: vi.fn() }));
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({ spies: { confirm: vi.fn(async () => true) } }).module;
+});
 
 /**
  * HTTP is the sheet's boundary: the real Action front door, its policy, the Artifact grant Actions,
@@ -33,6 +39,8 @@ const host = vi.hoisted(() => ({
     grants: [] as any[],
     grantStatus: 200,
     document: { header: {} as Record<string, unknown>, body: '' },
+    publicShare: null as import('@happier-dev/protocol').StoredContentPublicShareV1 | null,
+    publicRequests: [] as Array<Readonly<{ method: string; body?: unknown }>>,
 }));
 
 const WORKFLOW_DOCUMENT = {
@@ -54,6 +62,20 @@ async function serveHome(): Promise<void> {
         route: (request) => {
             // The sheet targets its captured profile scope, not the focused Home's transport.
             if (request.home !== 'home') return undefined;
+            if (request.path.startsWith('/v1/public-shares')) {
+                host.publicRequests.push({ method: request.method, ...(request.body ? { body: request.body } : {}) });
+                if (request.path.endsWith('/access-log')) return Response.json({ accessLog: [{ id: 'visit-1',
+                    accessedAt: 1780000000000, ipAddress: '192.0.2.1', userAgent: 'Browser' }] });
+                if (request.method === 'POST') {
+                    const input = request.body as import('@happier-dev/protocol').StoredContentPublicShareCreateRequestV1;
+                    host.publicShare = { id: 'share-1', subject: input.subject, expiresAt: input.expiresAt ?? null,
+                        maxUses: input.maxUses ?? null, useCount: 0, isConsentRequired: input.isConsentRequired ?? false,
+                        createdAt: 1, updatedAt: 1, keyDerivation: input.keyDerivation };
+                    return Response.json({ publicShare: host.publicShare, isolatedOrigin: 'https://isolated.test' });
+                }
+                if (request.method === 'DELETE') { host.publicShare = null; return Response.json({ success: true }); }
+                return Response.json({ publicShares: host.publicShare ? [host.publicShare] : [] });
+            }
             const route = /^\/v1\/artifacts\/([^/]+)(\/access\/grants)?$/.exec(request.path);
             if (!route) return undefined;
             const artifactId = decodeURIComponent(route[1]!);
@@ -77,6 +99,9 @@ async function serveHome(): Promise<void> {
         },
     });
     host.serverId = served.homes.home!.id;
+    const features = createRootLayoutFeaturesResponse();
+    if (!tryWriteServerEnabledBitInPlace(features, 'sharing.public', true)) throw new Error('Unable to enable public sharing');
+    primeServerFeaturesSnapshot({ serverId: host.serverId, snapshot: { status: 'ready', features } });
     const sheetScope = { serverId: host.serverId, accountId: 'owner' };
     getStorage().setState({ profileScope: sheetScope, settingsScope: sheetScope });
     disposeHome = served.dispose;
@@ -119,6 +144,8 @@ describe('DocumentShareSheet', () => {
         host.grants = [ana, studio];
         host.grantStatus = 200;
         host.document = WORKFLOW_DOCUMENT;
+        host.publicShare = null;
+        host.publicRequests = [];
         await serveHome();
         vi.useFakeTimers();
     });
@@ -128,6 +155,7 @@ describe('DocumentShareSheet', () => {
         disposeHome = null;
         retireActiveServerAccountScopeLifetime();
         invalidateAccountEncryptionModeCache();
+        resetServerFeaturesClientForTests();
         vi.restoreAllMocks();
     });
 
@@ -185,6 +213,52 @@ describe('DocumentShareSheet', () => {
         await screen.pressByTestIdAsync('document-share-grant-account:ana');
         expect(screen.findByTestId('document-share-remove:account:ana')).toBeNull();
         expect(screen.findByTestId('document-share-level:account:ana:admin')).toBeNull();
+        expect(screen.findByTestId('document-share-public-link')).toBeNull();
+        expect(host.publicRequests).toEqual([]);
+    });
+
+    it('offers the owner a public-link row inside the existing share sheet', async () => {
+        const screen = await renderScreen(<DocumentShareSheet artifactId="wf-1" kind="workflow-definition.v1" />);
+        await settle();
+
+        expect(screen.findByTestId('document-share-public-link')).not.toBeNull();
+        expect(host.publicRequests).toEqual([]);
+        await screen.pressByTestIdAsync('document-share-public-link');
+        await settle();
+        expect(screen.findByTestId('document-share-public-link-controls')).not.toBeNull();
+    });
+
+    it('creates a local fragment link, reads the owner audit and revokes through the canonical Actions', async () => {
+        const screen = await renderScreen(<DocumentShareSheet artifactId="wf-1" kind="workflow-definition.v1" />);
+        await settle();
+        await screen.pressByTestIdAsync('document-share-public-link');
+        await settle();
+        await screen.pressByTestIdAsync('session-public-link-create');
+        await screen.pressByTestIdAsync('session-public-link-options-create');
+        await settle();
+
+        const issuedUrl = screen.findByTestId('session-public-link-url')?.props.children as string;
+        const url = new URL(issuedUrl);
+        expect(url.origin).toBe('https://isolated.test');
+        expect(url.pathname).toMatch(/^\/s\/[A-Za-z0-9_-]+$/);
+        expect(url.hash).toMatch(/^#k=[A-Za-z0-9_-]{43}$/);
+        const created = host.publicRequests.find((request) => request.method === 'POST')!;
+        expect(created.body).toMatchObject({ subject: { kind: 'artifact', id: 'wf-1' }, keyDerivation: 'fragment_v1' });
+        expect(JSON.stringify(host.publicRequests)).not.toContain(url.hash.slice(3));
+        expect(created.body).not.toHaveProperty('encryptedDataKey');
+        await screen.pressByTestIdAsync('document-share-grant-account:ana');
+        await screen.pressByTestIdAsync('document-share-public-link');
+        await settle();
+        expect(screen.findByTestId('session-public-link-url')?.props.children).toBe(issuedUrl);
+        await screen.pressByTestIdAsync('document-share-public-link-audit');
+        await settle();
+        expect(screen.findByTestId('document-share-public-link-visit:visit-1')).not.toBeNull();
+
+        await screen.pressByTestIdAsync('session-public-link-turn-off');
+        await settle();
+        expect(host.publicShare).toBeNull();
+        expect(screen.findByTestId('session-public-link-url')).toBeNull();
+        expect(host.publicRequests.some(request => request.method === 'DELETE')).toBe(true);
     });
 
     it('tells a profile owner that secret values never travel', async () => {

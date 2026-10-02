@@ -36,14 +36,23 @@ import { buildSessionOrganizationSessionKey } from '@/sync/domains/session/organ
 import { storage } from '@/sync/domains/state/storageStore';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { SessionAttentionStanding } from '@happier-dev/protocol';
+import type { AutomationDefinitionRun } from '@/sync/domains/automations/automationTypes';
 import { createFrontDoorActionExecute } from '@/sync/ops/actions/frontDoorRuntimeActionExecutor';
 
 import { useInboxFriendRequests } from './useInboxFriendRequests';
 import {
     useWorkflowAttentionSource,
+    useAutomationAttentionSource,
     WorkflowAttentionSourceBoundary,
     type WorkflowAttentionSource,
 } from './useWorkflowAttentionSource';
+
+/** Public summary only. ORC renders the item and opens the exact existing Run route. */
+export type AutomationInboxItem = Readonly<{
+    key: string;
+    run: AutomationDefinitionRun;
+    route: Readonly<{ pathname: '/automations/[id]/runs/[runId]'; params: Readonly<{ id: string; runId: string }> }>;
+}>;
 
 export type InboxModel = Readonly<{
     source: ReturnType<typeof useActivityOverview>['source'];
@@ -64,6 +73,8 @@ export type InboxModel = Readonly<{
     workGroups: readonly InboxWorkGroup[];
     /** The workflow input's freshness, for the one "couldn't refresh" line. */
     workflowAttention: WorkflowAttentionSource;
+    automationAttention: WorkflowAttentionSource;
+    automationAttentionItems: readonly AutomationInboxItem[];
     /** Settle: `session.attention.set {standing:false}` + `session.read_state.set read`. */
     settle: (session: Session) => Promise<void>;
     /** Snooze (`remindAt`) or clear it (`null`) through `session.attention.set`. */
@@ -133,6 +144,12 @@ function useCreateInboxModel(): InboxModel {
     );
     const workflowAttention = useWorkflowAttentionSource();
     const workflowRuns = useWorkflowRunRows(workflowAttention.runIds);
+    const automationAttention = useAutomationAttentionSource();
+    const automationRuns = useWorkflowRunRows(automationAttention.runIds);
+    const automationAttentionItems = React.useMemo(() => automationRuns.flatMap((row): AutomationInboxItem[] => row.automation ? [{
+        key: `automation-run:${row.id}`, run: row.automation,
+        route: { pathname: '/automations/[id]/runs/[runId]', params: { id: row.automation.automationId, runId: row.id } },
+    }] : []), [automationRuns]);
     const attentionStandings = storage((state) => state.sessionOrganizationAttentionStandingsBySessionKey) ?? EMPTY_STANDINGS;
     const sessionPresentation = React.useMemo(
         () => buildInboxSessionPresentation({
@@ -190,14 +207,19 @@ function useCreateInboxModel(): InboxModel {
     const isLoading = (
         (friends.visible && !friendsLoaded)
         || (!source.isDataReady && overview.candidates.length === 0)
+        || (workflowAttention.available && workflowAttention.phase === 'loading')
+        || (automationAttention.available && automationAttention.phase === 'loading')
     );
     const hasPrimaryAttention = openApprovals.length > 0
+        || automationAttentionItems.length > 0
         || workGroups.length > 0
         || sessionPresentation.sessionsNeedingAttention.length > 0
         || sessionPresentation.readySessions.length > 0
         || friends.requests.length > 0
         || actionOperationEntries.length > 0;
-    const showCaughtUp = !isLoading && !hasPrimaryAttention;
+    const showCaughtUp = !isLoading && !hasPrimaryAttention
+        && ![workflowAttention, automationAttention].some((attention) => attention.available
+            && (attention.phase === 'failed' || attention.refreshFailed));
     const markAllPending = markAllReadTargets.length > 0
         && markAllReadTargets.every((target) => pendingReadKeys.has(target.key));
 
@@ -278,6 +300,8 @@ function useCreateInboxModel(): InboxModel {
         resolveActionOperation,
         workGroups,
         workflowAttention,
+        automationAttention,
+        automationAttentionItems,
         settle,
         setReminder,
     }), [
@@ -298,6 +322,8 @@ function useCreateInboxModel(): InboxModel {
         targetBySessionAddress,
         workGroups,
         workflowAttention,
+        automationAttention,
+        automationAttentionItems,
     ]);
 }
 

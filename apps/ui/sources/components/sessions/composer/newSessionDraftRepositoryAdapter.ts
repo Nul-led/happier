@@ -22,10 +22,12 @@ import {
     writeNewSessionDraft,
     writeSessionDraftLocalSupplement,
     type SessionDraftConflict,
+    type SessionDraftMaterializationIntent,
 } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import { buildNewSessionDraftLocalState } from '@/sync/ops/sessionDrafts/newSessionDraftLocalState';
 import { sanitizeNewSessionAutomationDraft } from '@/sync/domains/automations/automationDraft';
 import { fireAndForget } from '@/utils/system/fireAndForget';
+import { ZenTaskSourceSchema } from '@/sync/domains/todos/todoStoredContent';
 
 function strictJson(value: unknown): StrictJsonValue {
     return StrictJsonValueSchema.parse(value);
@@ -89,10 +91,12 @@ export function readNewSessionDraftProjectionFromRepository(input: Readonly<{
             : predecessorAuthoring.modelSelection;
     const backendTarget = resolveDraftBackendTarget({ agentTarget }) ?? undefined;
     const localState = snapshot.localSupplement.newSessionLocalState;
+    const zenTaskSource = ZenTaskSourceSchema.safeParse(localState?.zenTaskSource);
     const draft: NewSessionDraft = {
         input: typeof snapshot.document.composer.text.value === 'string'
             ? snapshot.document.composer.text.value
             : '',
+        ...(zenTaskSource.success ? { zenTaskSource: zenTaskSource.data } : {}),
         ...(attachments.length > 0 ? { composerAttachments: attachments } : {}),
         ...(Array.isArray(localState?.composerAttachmentSeeds) && localState.composerAttachmentSeeds.length > 0
             ? { composerAttachmentSeeds: localState.composerAttachmentSeeds }
@@ -174,6 +178,7 @@ export function writeNewSessionDraftToRepository(input: Readonly<{
     scope: ServerAccountScope;
     draftId: string;
     draft: NewSessionDraft;
+    materializationIntent?: SessionDraftMaterializationIntent;
 }>): void {
     const draft = input.draft;
     writeNewSessionDraft({
@@ -184,7 +189,7 @@ export function writeNewSessionDraftToRepository(input: Readonly<{
             attachments: (draft.composerAttachments ?? []).map(strictJson),
             authoring: projectNewSessionDraftAuthoring(draft, input.scope.serverId),
         },
-        materializationIntent: 'userEdit',
+        materializationIntent: input.materializationIntent ?? 'userEdit',
     });
     writeSessionDraftLocalSupplement({
         scope: input.scope,

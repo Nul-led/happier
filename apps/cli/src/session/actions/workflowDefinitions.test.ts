@@ -33,7 +33,7 @@ type ArtifactCreateInput = Parameters<ReturnType<typeof createAccountArtifactSto
 describe('workflow definition Actions', () => {
   it('allows an agent to save input-bound loop limits while enforcing the leaf authority', async () => {
     const step = { kind: 'step', id: 'work', document: { text: 'Work', references: [], attachments: [] }, input: [], result: { kind: 'text' } };
-    const definition = { version: 1, defaults: JSON.parse(definitionBody).definition.defaults,
+    const definition = { version: 1 as const, defaults: JSON.parse(definitionBody).definition.defaults,
       inputs: [{ name: 'rounds', valueType: 'number', required: true }],
       blocks: [{ kind: 'loop', id: 'loop', repetition: { kind: 'until', maxIterations: { kind: 'input', name: 'rounds' },
         stopWhen: { kind: 'exists', value: { kind: 'literal', value: true } } }, body: [step] }] };
@@ -299,7 +299,7 @@ describe('workflow definition Actions', () => {
       kind: 'workflow-definition.v1', definitionId: id, revision, metadata: { title: 'Review' },
     });
     const artifactWith = (header: ReturnType<typeof headerFor>) => ({
-      artifactId: definitionId, header, body: definitionBody,
+      artifactId: definitionId, header, body: definitionBody, ownerAccountId: 'account-1', access: 'owner' as const,
       revision: { headerVersion: 2, bodyVersion: 2 }, seq: 1, createdAt: 1, updatedAt: 1,
     });
 

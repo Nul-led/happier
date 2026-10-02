@@ -109,6 +109,21 @@ describe('dispatchBrowserDaemonControlCommandViaMachineRpc', () => {
 });
 
 describe('createBrowserDaemonControlCommandSender', () => {
+    it.each([
+        [{ error: 'Method not found', errorCode: 'RPC_METHOD_NOT_FOUND' }, 'unavailable'],
+        [{ protocolVersion: 1, result: { bogus: true } }, 'invalid_response'],
+    ] as const)('returns the terminal transport outcome to the caller instead of swallowing it', async (response, reason) => {
+        machineRpcWithServerScopeMock.mockResolvedValue(response);
+        const send = createBrowserDaemonControlCommandSender({ machineId: MACHINE_ID, serverId: SERVER_ID });
+        expect(await send(RELOAD_COMMAND)).toEqual({ ok: false, reason });
+    });
+
+    it('returns unknown delivery after the connection fails', async () => {
+        machineRpcWithServerScopeMock.mockRejectedValue(new Error('socket down'));
+        const send = createBrowserDaemonControlCommandSender({ machineId: MACHINE_ID, serverId: SERVER_ID });
+        expect(await send(RELOAD_COMMAND)).toEqual({ ok: false, reason: 'request_failed' });
+    });
+
     it('feeds authoritative response events to the surface event sink', async () => {
         const event = { kind: 'navigationCommitted', eventId: 'redirect', browserSessionId: 'browser_session_1', viewId: 'view_1', occurredAt: 1, currentUrl: 'https://redirect.test/', navigationGeneration: 4 };
         const response = dispatchedResponse();

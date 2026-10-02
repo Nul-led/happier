@@ -5408,7 +5408,7 @@ describe('Session initial-access spawn settlement', () => {
     });
   });
 
-  it('carries a physical-host repair failure through the real spawn dependency result', async () => {
+  it.each(['initial_access', 'terminal_host'] as const)('carries %s through the real spawn dependency result', async (failure) => {
     const realCatalog = await vi.importActual<typeof import('@/agent/catalog/snapshot')>('@/agent/catalog/snapshot');
     readAgentCatalogSnapshot.mockImplementation(realCatalog.readAgentCatalogSnapshot);
     const realCreation = await vi.importActual<typeof import('@/session/services/createSpawnedSession')>(
@@ -5420,7 +5420,10 @@ describe('Session initial-access spawn settlement', () => {
     const spawn = vi.fn(async () => ({
       success: false as const,
       error: 'Failed to spawn session',
-      errorCode: 'session_access_invalid_recipient_envelope',
+      errorCode: failure === 'initial_access' ? 'session_access_invalid_recipient_envelope' : 'SPAWN_FAILED',
+      ...(failure === 'terminal_host' ? { errorDetail: {
+        kind: 'terminal_host_unavailable' as const, host: 'herdr' as const, reason: 'installation_unavailable' as const,
+      } } : {}),
     }));
     const deps = createCliActionDeps({
       token: 'token',
@@ -5474,13 +5477,16 @@ describe('Session initial-access spawn settlement', () => {
       },
       actionCaller: { kind: 'host' },
     });
-    await expect(createSpawnedSession.mock.results[0]?.value).rejects.toMatchObject({
-      code: 'session_access_invalid_recipient_envelope',
+    await expect(createSpawnedSession.mock.results.at(-1)?.value).rejects.toMatchObject({
+      code: failure === 'initial_access' ? 'session_access_invalid_recipient_envelope' : 'SPAWN_FAILED',
     });
-    expect(result).toEqual({
+    expect(result).toEqual(failure === 'initial_access' ? {
       type: 'error',
       code: 'session_access_invalid_recipient_envelope',
       retryable: false,
+    } : {
+      type: 'error', code: 'incompatible_target', retryable: false,
+      terminalHostError: { kind: 'terminal_host_unavailable', host: 'herdr', reason: 'installation_unavailable' },
     });
     expect(spawn).toHaveBeenCalledOnce();
   });

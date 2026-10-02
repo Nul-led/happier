@@ -1,4 +1,5 @@
 import type { Message } from "@happier-dev/session-core/messages";
+import { readMessageDisplayText } from "@happier-dev/session-core/messages";
 
 export type AgentInputHistoryScope = 'perSession' | 'global';
 
@@ -21,14 +22,14 @@ export function collectUserMessageHistoryEntries(opts: {
         const messages = opts.sessionId ? (opts.messagesBySessionId[opts.sessionId] ?? []) : [];
         for (const m of messages) {
             if (!isUserTextMessage(m)) continue;
-            candidates.push({ createdAt: m.createdAt, text: m.text });
+            candidates.push({ createdAt: m.createdAt, text: readMessageDisplayText(m) });
         }
     } else {
         for (const messages of Object.values(opts.messagesBySessionId)) {
             if (!messages) continue;
             for (const m of messages) {
                 if (!isUserTextMessage(m)) continue;
-                candidates.push({ createdAt: m.createdAt, text: m.text });
+                candidates.push({ createdAt: m.createdAt, text: readMessageDisplayText(m) });
             }
         }
     }
@@ -39,11 +40,10 @@ export function collectUserMessageHistoryEntries(opts: {
     const seen = new Set<string>();
 
     for (const c of candidates) {
-        const trimmed = c.text.trim();
-        if (!trimmed) continue;
-        if (seen.has(trimmed)) continue;
-        seen.add(trimmed);
-        out.push(trimmed);
+        if (!c.text.trim()) continue;
+        if (seen.has(c.text)) continue;
+        seen.add(c.text);
+        out.push(c.text);
         if (out.length >= maxEntries) break;
     }
 

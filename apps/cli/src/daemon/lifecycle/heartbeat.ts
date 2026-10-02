@@ -44,6 +44,7 @@ export function startDaemonHeartbeatLoop(params: Readonly<{
     pid: number,
     exit: Readonly<{ reason: string; code: number | null; signal: string | null }>,
   ) => void | Promise<void>;
+  onTrackedSessionHealthy?: (tracked: TrackedSession) => Promise<void>;
   pidSafetyDependencies?: Readonly<{
     readProcessIdentityByPidFn?: typeof readProcessIdentityByPid;
   }>;
@@ -79,6 +80,15 @@ export function startDaemonHeartbeatLoop(params: Readonly<{
       sessionAttachCleanupByPid,
       getApiMachineForSessions,
     });
+
+  const observeHealthySession = async (tracked: TrackedSession): Promise<void> => {
+    if (pidToTrackedSession.get(tracked.pid) === tracked
+      && isShuttingDown?.() !== true
+      && typeof tracked.stopRequestedAtMs !== 'number'
+      && tracked.reportMarkerCustody?.retiring !== true) {
+      await params.onTrackedSessionHealthy?.(tracked);
+    }
+  };
 
   // Periodically:
   // 1. Prune stale sessions
@@ -159,6 +169,7 @@ export function startDaemonHeartbeatLoop(params: Readonly<{
           && childProcess.exitCode === null
           && childProcess.signalCode === null
         ) {
+          await observeHealthySession(tracked);
           continue;
         }
         if (!isPidPresent(pid)) {
@@ -172,6 +183,7 @@ export function startDaemonHeartbeatLoop(params: Readonly<{
         }
         const expectedProcessStartTimeMs = tracked.processStartTimeMs;
         if (expectedProcessStartTimeMs === undefined) {
+          await observeHealthySession(tracked);
           continue;
         }
         const processIdentity = await (
@@ -179,13 +191,13 @@ export function startDaemonHeartbeatLoop(params: Readonly<{
         )(pid).catch(() => null);
         const currentTracked = pidToTrackedSession.get(pid);
         if (
-          !processGenerationProvesReuse(
-            expectedProcessStartTimeMs,
-            processIdentity?.processStartTimeMs,
-          )
-          || currentTracked !== tracked
+          currentTracked !== tracked
           || currentTracked.processStartTimeMs !== expectedProcessStartTimeMs
         ) {
+          continue;
+        }
+        if (!processGenerationProvesReuse(expectedProcessStartTimeMs, processIdentity?.processStartTimeMs)) {
+          await observeHealthySession(tracked);
           continue;
         }
         logger.debug(

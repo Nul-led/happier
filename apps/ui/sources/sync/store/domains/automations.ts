@@ -274,6 +274,10 @@ function commitAutomationRunWindows<S extends AutomationsDomain & AutomationRuns
         next.automationRunIdsByAutomationId,
         next.automationRunTraversalsByAutomationId,
     );
+    // History owns its membership, not the lifetime of another visible Run window.
+    for (const window of Object.values(next.workflowRunListWindows)) {
+        for (const runId of window?.runIds ?? []) retainedRunIds.add(runId);
+    }
     const workflowRunsById = releaseWorkflowRunBodies({
         runsById: next.workflowRunsById,
         releasedRunIds: collectReferencedRunIds(

@@ -495,7 +495,7 @@ export function useMachineTerminalSession(params: Readonly<{
                 },
                 onGap: () => {
                     terminalPreviewDecoderRef.current.reset();
-                    writeTerminalOutput('\r\n[Output truncated]\r\n');
+                    writeTerminalOutput('\u0018\r\n[Output truncated]\r\n');
                 },
                 onUrl: (event) => {
                     syncDetectedUrl({

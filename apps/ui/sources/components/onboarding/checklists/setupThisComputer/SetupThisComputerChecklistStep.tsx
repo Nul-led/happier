@@ -95,6 +95,7 @@ export const SetupThisComputerChecklistStep = React.memo(function SetupThisCompu
 }>) {
     const styles = stylesheet;
     const preflight = useThisComputerSetupPreflight();
+    const { accountId: appAccountId } = useAppAccountIdentity();
     const isReady = computeIsReady(preflight);
     const {
         activeTaskId,
@@ -112,6 +113,7 @@ export const SetupThisComputerChecklistStep = React.memo(function SetupThisCompu
             authRequestApproval: {
                 expectedRelayUrl: preflight.activeRelayUrl,
                 ...(preflight.activeServerId ? { serverId: preflight.activeServerId } : {}),
+                ...(appAccountId ? { expectedAccountId: appAccountId } : {}),
             },
         } : {}),
         onNeedsAuth: props.onNeedsAuth,
@@ -140,7 +142,6 @@ export const SetupThisComputerChecklistStep = React.memo(function SetupThisCompu
         return activeRelayUrl && activeWebappUrl ? { activeRelayUrl, activeWebappUrl } : null;
     }, [preflight.activeRelayUrl, preflight.activeWebappUrl]);
     // A11-06: set up this computer for the app's own account on that Home.
-    const { accountId: appAccountId } = useAppAccountIdentity();
     const buildExecutionPlan = React.useCallback((selectedIds: readonly string[]) => {
         if (!explicitSetupTarget) {
             throw new Error('This computer cannot be set up until a Home is selected.');

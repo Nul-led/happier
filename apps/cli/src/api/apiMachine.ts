@@ -52,6 +52,7 @@ import { readAccountIdFromToken } from '@/cloud/decodeJwtPayload';
 
 import { MachineMetadata, DaemonState, Machine, Update, UpdateMachineBody } from './types';
 import { callSocketRpc, isSocketIoAckTimeoutError, type SocketRpcContent } from '@happier-dev/sync-client';
+import type { SessionActionRpcTransport } from '@/session/actions/createCliActionDeps';
 import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 import { registerSessionHandlers } from '@/rpc/handlers/registerSessionHandlers';
 import { registerAutomationReplyHandoffRpcHandler } from '@/rpc/handlers/automationReplyHandoff';
@@ -211,9 +212,6 @@ import {
     publishMachineOperationProtocolCapabilitiesOnSocket,
 } from '@/api/machine/publishMachineOperationProtocolCapabilities';
 import { publishSessionFollowWakeInvalidation } from '@/agent/runtime/session/follow/sessionFollowWakeSignal';
-import {
-    requireCurrentAccountStoredContentServerCompatibility,
-} from '@/api/clientCompatibility/accountStoredContentActivation';
 import { readMachineOwnerConflictFromSocketError, type MachineOwnerConflictDetails } from '@/api/machine/machineOwnerConflict';
 import { readAccountSettingsVersionFromHint } from '@/settings/accountSettings/accountSettingsVersion';
 import { buildInstallationProofForMachine } from '@/daemon/identity/proof';
@@ -359,9 +357,9 @@ export type ConnectedServicesProjectionNotification = Readonly<{
 }>;
 
 export type ApiMachineClientLifecycleDependencies = Readonly<{
+    liveStreamCaptureRegistry?: import('@/daemon/peer/mediation/stream/captureRegistry').MachineLiveStreamCaptureRegistry;
     resolveHostedSessionWorkingDirectory?: (sessionId: string) => Promise<string | null>;
     isDaemonQuiescing?: () => boolean;
-    requireCurrentAccountStoredContentCompatibility?: () => Promise<void>;
     resolveServerFeaturesSnapshot?: () => Promise<Awaited<ReturnType<typeof fetchServerFeaturesSnapshot>> | undefined>;
     createCapabilitiesApiClient?: MachineRpcHandlerDeps['createCapabilitiesApiClient'];
     /** Test seam for the canonical Resource lifecycle owner. */
@@ -505,14 +503,6 @@ export class ApiMachineClient {
     private readonly lifecycleDependencies: ApiMachineClientLifecycleDependencies;
     private readonly machineContentCodec: MachineContentCodec;
     private readonly actionOperationRuntime: HostActionOperationRuntime;
-
-    private async requirePlainMachineCompatibility(): Promise<void> {
-        if (this.machine.encryptionMode !== 'plain') return;
-        await (
-            this.lifecycleDependencies.requireCurrentAccountStoredContentCompatibility
-            ?? requireCurrentAccountStoredContentServerCompatibility
-        )();
-    }
 
     private shouldSuppressMachinePublication(allowWhileQuiescing = false): boolean {
         return !allowWhileQuiescing
@@ -833,6 +823,7 @@ export class ApiMachineClient {
                 resolveCurrentTarget: async ({ signal }) => await resolveCurrentMachineExecutionOriginContext(signal),
             },
             daemonContributionRegistryProjection: {
+                resolveCaptureRegistry: () => this.lifecycleDependencies.liveStreamCaptureRegistry ?? null,
                 observePluginExecution: this.actionOperationRuntime.observePluginExecution,
                 resolveServerFeaturesSnapshot: async () => (
                     await this.lifecycleDependencies.resolveServerFeaturesSnapshot?.()
@@ -1591,13 +1582,12 @@ export class ApiMachineClient {
     async callConnectedClientRpc<TResult = unknown>(
         method: string,
         params: unknown,
-        options?: Readonly<{ timeoutMs?: number }>,
+        options?: Readonly<{ timeoutMs?: number; signal?: AbortSignal; onIssued?: () => void }>,
     ): Promise<Readonly<{ ok: true; result: TResult }> | Readonly<{ ok: false; error?: string; errorCode?: string }>> {
         const socket = this.socket;
         if (!socket) {
             return { ok: false, errorCode: 'machine_socket_unavailable' };
         }
-        await this.requirePlainMachineCompatibility();
         const timeoutMs = options?.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : 20_000;
         const codec = this.machineContentCodec;
         let resultDecodeFailed = false;
@@ -1619,6 +1609,8 @@ export class ApiMachineClient {
                 params,
                 content,
                 timeoutMs,
+                signal: options?.signal,
+                onIssued: options?.onIssued,
             });
             if (socket.connected === false) return { ok: false, errorCode: 'machine_socket_unavailable' };
             return { ok: true, result };
@@ -1631,6 +1623,19 @@ export class ApiMachineClient {
                 ...(errorCode ? { errorCode } : {}),
             };
         }
+    }
+
+    /** Source Session custody is admitted by the daemon before using this verified Machine socket. */
+    async callSessionActionRpc(request: Parameters<SessionActionRpcTransport>[0]): Promise<unknown> {
+        const socket = this.socket;
+        if (!socket?.connected) throw Object.assign(new Error('machine_socket_unavailable'), { code: 'machine_socket_unavailable' });
+        return await callSocketRpc({
+            socket, target: { kind: 'session', id: request.sessionId }, method: request.method,
+            params: request.input, content: request.content,
+            authorization: { kind: 'session.action', sessionId: request.sessionId, origin: request.origin },
+            timeoutMs: null,
+            ...(request.signal ? { signal: request.signal } : {}),
+        });
     }
 
     private dispatchUpdate(update: Update): boolean {
@@ -2056,7 +2061,6 @@ export class ApiMachineClient {
             if (this.machine.metadata && JSON.stringify(updated) === JSON.stringify(this.machine.metadata)) {
                 return 'unchanged';
             }
-            await this.requirePlainMachineCompatibility();
 
             const answer = await emitSocketWithAck<any>({
                 socket: this.socket as any,
@@ -2104,7 +2108,6 @@ export class ApiMachineClient {
             }
             const previousIrohEndpoint = this.machine.daemonState?.peerMediation?.iroh?.endpoint ?? null;
             const updated = handler(this.machine.daemonState);
-            await this.requirePlainMachineCompatibility();
 
             const answer = await emitSocketWithAck<any>({
                 socket: this.socket as any,
@@ -2472,33 +2475,11 @@ export class ApiMachineClient {
                 `[API MACHINE] Received RPC request:`,
                 projectIncomingMachineRpcDebugPayload(data),
             );
-            try {
-                await this.requirePlainMachineCompatibility();
-                if (!isCurrentTransport()) {
-                    return;
-                }
-                const response = await this.rpcHandlerManager.handleRequest(data);
-                if (!isCurrentTransport()) {
-                    return;
-                }
-                callback(response);
-            } catch (error) {
-                if (!isCurrentTransport()) {
-                    return;
-                }
-                callback({
-                    ok: false,
-                    error: error instanceof Error ? error.message : 'Machine RPC is unavailable',
-                    errorCode: (
-                        error
-                        && typeof error === 'object'
-                        && typeof (error as { code?: unknown }).code === 'string'
-                    )
-                        ? (error as { code: string }).code
-                        : 'client-upgrade-required',
-                    retryable: false,
-                });
+            const response = await this.rpcHandlerManager.handleRequest(data);
+            if (!isCurrentTransport()) {
+                return;
             }
+            callback(response);
         });
 
         socket.on(SOCKET_RPC_EVENTS.REGISTERED, (data: { method: string }) => {

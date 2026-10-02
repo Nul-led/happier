@@ -2357,6 +2357,7 @@ export function useNewSessionScreenModel(input?: Readonly<{
         draftPersistenceEnabled,
         draftPersistenceGenerationRef,
     } = useNewSessionScreenAuthoringState({
+        zenTaskSource: persistedDraft?.zenTaskSource,
         automationDraft,
         automationFeatureEnabled,
         hostBoundMachineId,
@@ -3326,6 +3327,8 @@ export function useNewSessionScreenModel(input?: Readonly<{
         providerLaunchError,
         retryProviderLaunch,
     } = useNewSessionCreateSessionAction({
+        zenTaskSource: persistedDraft?.zenTaskSource,
+        targetAccountScope: temporaryComputerTargetScope,
         flushComposerInput: newSessionComposerDocument.flushComposerInput,
         draftId,
         router,
@@ -3536,7 +3539,7 @@ export function useNewSessionScreenModel(input?: Readonly<{
         <AgentSessionStartBlocker
             agent={selectedMachineAgent}
             machineName={getMachineDisplayName(selectedMachine) ?? selectedMachineId}
-            onSetUp={() => router.push(machineCollectionHref({ machineId: selectedMachineId, serverId: targetServerId }) as never)}
+            onSetUp={targetServerId === null ? undefined : () => router.push(machineCollectionHref({ machineId: selectedMachineId, serverId: targetServerId }) as never)}
         />
     ) : null;
     const composerTopContent = agentStartBlocker || input?.composerTopContent

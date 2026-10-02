@@ -12,6 +12,7 @@ import { encodeBase64 } from '@/encryption/base64';
 import { encodeUTF8 } from '@/encryption/text';
 import { loadAuthoringMemoryProjection, saveAuthoringMemoryProjection } from './domains/state/authoringMemoryPersistence';
 import { createAccountSettingsScope, type AccountSettingsScope } from './domains/settings/scope/accountSettingsScope';
+import type { Settings } from './domains/settings/settings';
 
 // MMKV/native SDK and the prepared HTTP adapter are the real system boundaries.
 vi.mock('react-native-mmkv', () => {
@@ -49,6 +50,7 @@ import { Encryption } from './encryption/encryption';
 type AuthoringRuntimeTestAccess = {
     credentials: AuthCredentials | undefined;
     pendingSettingsScope: AccountSettingsScope | null;
+    pendingSettings: Partial<Settings>;
     appliedServerTarget: SyncServerTarget | null;
     authoringMemoryRuntime: unknown;
     encryption: Encryption | null;
@@ -57,17 +59,51 @@ type AuthoringRuntimeTestAccess = {
 };
 const owner = sync as unknown as AuthoringRuntimeTestAccess;
 const original = { credentials: owner.credentials, pendingSettingsScope: owner.pendingSettingsScope,
+    pendingSettings: owner.pendingSettings,
     appliedServerTarget: owner.appliedServerTarget, authoringMemoryRuntime: owner.authoringMemoryRuntime,
     encryption: owner.encryption, settingsSecretsKey: owner.settingsSecretsKey,
     settingsSecretsReadKeys: owner.settingsSecretsReadKeys };
+const originalSettings = { settings: storage.getState().settings, settingsVersion: storage.getState().settingsVersion,
+    settingsScope: storage.getState().settingsScope };
 
 afterEach(() => {
     Object.assign(owner, original);
     storage.getState().resetAuthoringMemory();
+    storage.setState(originalSettings);
     network.request.mockReset();
 });
 
 describe('Sync authoring-memory runtime', () => {
+    it('refreshes ordinary Account Settings when authoring-memory storage is unavailable', async () => {
+        owner.credentials = { token: 'settings-independent-account' };
+        owner.encryption = null;
+        owner.settingsSecretsKey = null;
+        owner.settingsSecretsReadKeys = [];
+        owner.pendingSettings = {};
+        owner.appliedServerTarget = { serverId: 'https://settings-independent.test', serverUrl: 'https://settings-independent.test', generation: 1 };
+        const scope = createAccountSettingsScope(owner.appliedServerTarget.serverId, 'settings-independent-account');
+        if (!scope) throw new Error('Expected valid Account/Home scope');
+        owner.pendingSettingsScope = scope;
+        owner.authoringMemoryRuntime = null;
+        await storage.getState().activateSettingsScope(scope);
+        network.request.mockImplementation(async (path, init) => {
+            if (path === '/v1/account/encryption') return Response.json({ mode: 'plain', updatedAt: 1 });
+            if (path === '/v1/account/authoring-memory') return Response.json({ error: 'authoring_memory_storage_unavailable' }, { status: 503 });
+            if (path === '/v2/account/settings' && init?.method !== 'POST') {
+                return Response.json({ content: { t: 'plain', v: { analyticsOptOut: true } }, version: 1 });
+            }
+            if (path === '/v1/push-tokens?projectionVersion=2') return Response.json({}, { status: 404 });
+            throw new Error(`Unexpected independent Settings request: ${path}`);
+        });
+
+        await sync.refreshAccountSettingsFromServer(1, scope);
+
+        expect(storage.getState().settingsVersion).toBe(1);
+        expect(storage.getState().settings.analyticsOptOut).toBe(true);
+        await expect(sync.applyAuthoringMemoryDelta({ lastUsedProfile: 'must-not-write' })).rejects.toThrow();
+        expect(storage.getState().authoringMemory.lastUsedProfile).toBeNull();
+    });
+
     it('retires only the transferred legacy key and preserves an unrelated raw SecretString sibling exactly under E2EE', async () => {
         const machineKey = new Uint8Array(32).fill(7);
         const publicKey = new Uint8Array(32).fill(8);

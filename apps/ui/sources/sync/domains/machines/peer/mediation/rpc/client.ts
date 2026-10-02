@@ -50,6 +50,7 @@ export type MachineRpcWithPeerMediationRouteParams<A> = Readonly<{
      * transports, mirroring `serverFallback`.
      */
     signal?: AbortSignal;
+    onDispatched?: () => void;
     resolveDirectRoute: (input: Readonly<{
         serverId?: string | null;
         accountId?: string | null;
@@ -61,6 +62,7 @@ export type MachineRpcWithPeerMediationRouteParams<A> = Readonly<{
         request: PeerMachineRpcDirectRequestV2;
         timeoutMs?: number;
         signal?: AbortSignal;
+        onDispatched?: () => void;
     }>) => Promise<PeerMachineRpcDirectResponseV2>;
     serverFallback: (input: Readonly<{
         serverId?: string | null;
@@ -235,6 +237,7 @@ export async function machineRpcWithPeerMediationRoute<R, A>(
         url: resolveDirectRpcUrl(route.endpoint.url),
         timeoutMs: params.timeoutMs,
         signal: params.signal,
+        onDispatched: params.onDispatched,
         request: directRequest,
     });
     const directResponse = PeerMachineRpcDirectResponseV2Schema.parse(rawDirectResponse);

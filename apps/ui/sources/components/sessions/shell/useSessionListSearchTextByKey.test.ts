@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act } from 'react-test-renderer';
 
 import { t } from '@/text';
 
@@ -7,11 +8,22 @@ import type { Message } from "@happier-dev/session-core/messages";
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { StorageState } from '@/sync/store/types';
 import { createReducer } from "@happier-dev/session-core/reducer";
+import { createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
+import { buildSessionListIndexNodeId } from '@/sync/domains/sessionList/sessionListIndex';
+import { workflowRunRowFromSummary } from '@/sync/store/domains/workflowRuns';
+import { storage } from '@/sync/domains/state/storageStore';
+import { renderHook } from '@/dev/testkit/hooks/renderHook';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
+import { sessionTagKey } from './sessionTagUtils';
 
 import {
     buildCanonicalSessionListSearchText,
     createSessionListSearchTextSelector,
+    useSessionListSearchTextByKey,
 } from './useSessionListSearchTextByKey';
+
+// The third-party Markdown renderer is not used by the metadata-only search hook.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({ splitStreamingRevealTextParts: () => [] }));
 
 function createRenderable(
     overrides: Partial<SessionListRenderableSession> & Pick<SessionListRenderableSession, 'id'>,
@@ -108,7 +120,7 @@ describe('createSessionListSearchTextSelector', () => {
         const selector = createSessionListSearchTextSelector([
             { type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined },
         ], true, {
-            sessionTags: { 'server1:session1': ['release'] },
+            sessionTags: { [sessionTagKey('server1', 'session1')]: ['release'] },
             workspaceRefs: [{
                 id: 'workspace-ref-1',
                 serverId: 'server1',
@@ -130,8 +142,8 @@ describe('createSessionListSearchTextSelector', () => {
             },
         }));
 
-        expect(result['server1:session1']).toContain('release');
-        expect(result['server1:session1']).toContain('Payments workspace');
+        expect(result[sessionTagKey('server1', 'session1')]).toContain('release');
+        expect(result[sessionTagKey('server1', 'session1')]).toContain('Payments workspace');
     });
 
     it('does not read same-id metadata from another Home through the bare-id Session store', () => {
@@ -158,8 +170,8 @@ describe('createSessionListSearchTextSelector', () => {
             },
         }));
 
-        expect(result['home-a:same-session']).toContain('Home A title');
-        expect(result['home-a:same-session']).not.toContain('Home B private title');
+        expect(result[sessionTagKey('home-a', 'same-session')]).toContain('Home A title');
+        expect(result[sessionTagKey('home-a', 'same-session')]).not.toContain('Home B private title');
     });
 
     it('reuses cached text without reading rows on an empty session-list delta tick', () => {
@@ -200,7 +212,7 @@ describe('createSessionListSearchTextSelector', () => {
         }));
 
         expect(second).toBe(first);
-        expect(second['server1:session1']).toContain('Build lane');
+        expect(second[sessionTagKey('server1', 'session1')]).toContain('Build lane');
         expect(metadataReads).toBe(readsAfterFirstSelection);
     });
 
@@ -312,9 +324,9 @@ describe('createSessionListSearchTextSelector', () => {
             },
         }));
 
-        expect(result['server1:session1']).toContain('Canonical metadata title');
-        expect(result['server1:session1']).not.toContain('hydrated-transcript-only-term');
-        expect(result['server1:session1']).not.toContain('tool-description-only-term');
+        expect(result[sessionTagKey('server1', 'session1')]).toContain('Canonical metadata title');
+        expect(result[sessionTagKey('server1', 'session1')]).not.toContain('hydrated-transcript-only-term');
+        expect(result[sessionTagKey('server1', 'session1')]).not.toContain('tool-description-only-term');
     });
 
     it('does not index pending or discarded message text into the immediate local haystack', () => {
@@ -350,8 +362,79 @@ describe('createSessionListSearchTextSelector', () => {
             },
         }));
 
-        expect(result['server1:session1']).toContain('Metadata only');
-        expect(result['server1:session1']).not.toContain('pending-only-term');
-        expect(result['server1:session1']).not.toContain('discarded-only-term');
+        expect(result[sessionTagKey('server1', 'session1')]).toContain('Metadata only');
+        expect(result[sessionTagKey('server1', 'session1')]).not.toContain('pending-only-term');
+        expect(result[sessionTagKey('server1', 'session1')]).not.toContain('discarded-only-term');
+    });
+});
+
+describe('mixed Session and Run search projection', () => {
+    const previousState = storage.getState();
+    afterEach(() => {
+        standardCleanup();
+        storage.setState(previousState);
+    });
+
+    it('indexes visible Run private title and Where under its qualified node id without reading detail', async () => {
+        const row = {
+            ...workflowRunRowFromSummary(createWorkflowRunSummaryFixture({
+                id: 'same-id', startedBy: 'user', where: { machineId: 'builder', directory: '/payments/repo' },
+            })),
+            metadata: { kind: 'available', value: { title: 'Prepare release', description: 'Review payments' } } as const,
+        };
+        Object.defineProperty(row, 'detail', { get: () => { throw new Error('search must not read Run detail'); } });
+        storage.setState({
+            profileScope: { serverId: 'home-a', accountId: 'account-a' },
+            workflowRunsById: { 'same-id': row },
+            sessionListRowsByServerId: { 'home-a': { 'same-id': createRenderable({
+                id: 'same-id', metadata: { name: 'Session title', path: '/session/repo' },
+            }) } },
+        });
+        const run = { type: 'workflow_run', serverId: 'home-a', runId: 'same-id' } as const;
+        const hook = await renderHook(() => useSessionListSearchTextByKey([
+            { type: 'session', serverId: 'home-a', sessionId: 'same-id' }, run,
+            { type: 'workflow_run', serverId: 'home-b', runId: 'same-id' },
+        ], true));
+        expect(hook.getCurrent()).toMatchObject({
+            searchableTextBySessionKey: { [sessionTagKey('home-a', 'same-id')]: expect.stringContaining('Session title') },
+            searchableTextByWorkflowRunKey: { [buildSessionListIndexNodeId(run)]: expect.stringContaining('Prepare release') },
+        });
+        expect(hook.getCurrent().searchableTextByWorkflowRunKey[buildSessionListIndexNodeId(run)]).toContain('/payments/repo');
+        expect(hook.getCurrent().searchableTextByWorkflowRunKey[buildSessionListIndexNodeId(run)]).toContain('builder');
+        expect(Object.keys(hook.getCurrent().searchableTextByWorkflowRunKey)).toEqual([buildSessionListIndexNodeId(run)]);
+    });
+
+    it('refreshes a Run-only title change on an empty Session delta and preserves unchanged haystacks', async () => {
+        const run = { type: 'workflow_run', serverId: 'home-a', runId: 'run-1' } as const;
+        const row = { ...workflowRunRowFromSummary(createWorkflowRunSummaryFixture()),
+            metadata: { kind: 'available', value: { title: 'Before' } } as const };
+        storage.setState({ profileScope: { serverId: 'home-a', accountId: 'account-a' }, workflowRunsById: { 'run-1': row },
+            sessionListRenderableDelta: { revision: 1, changedSessionIds: [], removedSessionIds: [], rebuiltSessionListIndex: false } });
+        const items = [run];
+        const hook = await renderHook(() => useSessionListSearchTextByKey(items, true));
+        const first = hook.getCurrent().searchableTextByWorkflowRunKey;
+        act(() => { storage.setState({ workflowRunsById: { 'run-1': { ...row,
+            metadata: { kind: 'available', value: { title: 'After' } } } },
+            sessionListRenderableDelta: { revision: 2, changedSessionIds: [], removedSessionIds: [], rebuiltSessionListIndex: false } }); });
+        expect(hook.getCurrent().searchableTextByWorkflowRunKey[buildSessionListIndexNodeId(run)]).toContain('After');
+        expect(hook.getCurrent().searchableTextByWorkflowRunKey).not.toBe(first);
+        const updated = hook.getCurrent().searchableTextByWorkflowRunKey;
+        act(() => { storage.setState({ workflowRunsById: { ...storage.getState().workflowRunsById,
+            unrelated: workflowRunRowFromSummary(createWorkflowRunSummaryFixture({ id: 'unrelated' })) } }); });
+        expect(hook.getCurrent().searchableTextByWorkflowRunKey).toBe(updated);
+    });
+
+    it('keeps unavailable private metadata out and clears Run search when the Account scope retires', async () => {
+        const run = { type: 'workflow_run', serverId: 'home-a', runId: 'run-1' } as const;
+        storage.setState({ profileScope: { serverId: 'home-a', accountId: 'account-a' }, workflowRunsById: {
+            'run-1': { ...workflowRunRowFromSummary(createWorkflowRunSummaryFixture()), metadata: { kind: 'unavailable' } },
+        } });
+        const items = [run];
+        const hook = await renderHook(() => useSessionListSearchTextByKey(items, true));
+        expect(hook.getCurrent()).toMatchObject({ searchableTextByWorkflowRunKey: {
+            [buildSessionListIndexNodeId(run)]: 'run-1',
+        } });
+        act(() => { storage.setState({ profileScope: null }); });
+        expect(hook.getCurrent()).toMatchObject({ searchableTextByWorkflowRunKey: {} });
     });
 });

@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ARTIFACT_PLAIN_DATA_KEY_MARKER, CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION, createLaunchProfilePublisherV1 } from '@happier-dev/protocol';
+import { ARTIFACT_PLAIN_DATA_KEY_MARKER, CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION, createLaunchProfilePublisherV1,
+    decodePlainArtifactStoredContent, withArtifactExcerptV1 } from '@happier-dev/protocol';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { encodeBase64 } from '@/encryption/base64';
 import { upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
 import type { Artifact, ArtifactCreateRequest, ArtifactUpdateRequest } from '@/sync/domains/artifacts/artifactTypes';
+import { ArtifactEncryption } from '@/sync/encryption/artifactEncryption';
 import { captureLazyActionAccountContext } from './actionAccountContext';
 
 // HTTP, device credential storage and the native theme runtime are substituted boundaries.
@@ -12,6 +14,10 @@ vi.mock('@/utils/system/runtimeFetch', () => ({ runtimeFetch: (...args: unknown[
 vi.mock('react-native-unistyles', async () => {
     const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
     return createUnistylesMock();
+});
+vi.mock('@/text', async () => {
+    const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+    return createTextModuleMock();
 });
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
 afterEach(() => { runtimeFetch.mockReset(); vi.restoreAllMocks(); });
@@ -58,7 +64,7 @@ describe('scoped Account workflow Artifact operations', () => {
         const context = await captureLazyActionAccountContext(home.id);
         try {
             const result = await createLaunchProfilePublisherV1({ readSettings: context.readRawSettings,
-                mutateSettings: context.mutateRawSettings, artifactStore: { read: context.workflowArtifacts.read,
+                mutateSettings: context.mutateRawSettings, artifactStore: { read: (artifactId, signal) => context.workflowArtifacts.read(artifactId, { signal }),
                     create: async ({ header, body }) => ({ artifactId: await context.createArtifact({ ...header, title: 'Deploy' }, body) }) },
             }).publish({ profileId: 'deploy' });
             expect(raw.profiles).toEqual([result]);
@@ -122,12 +128,15 @@ describe('scoped Account workflow Artifact operations', () => {
             if (target.pathname === '/v1/account/encryption') return json({ mode, updatedAt: 0 });
             if (target.pathname === '/v1/artifacts' && init?.method === 'POST') {
                 const body = JSON.parse(String(init.body)) as ArtifactCreateRequest;
-                stored = { ...body, ownerAccountId: 'artifact-account', access: 'owner', encryptionMode: 'plain', headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 9 };
+                stored = { ...body, ownerAccountId: 'artifact-account', access: 'owner', encryptionMode: mode, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 9 };
                 return json(stored);
             }
             if (target.pathname === '/v1/artifacts') return json(stored ? [stored] : []);
             if (target.pathname.endsWith('/transport-error')) return json({ error: 'denied' }, 403);
-            if (target.pathname.endsWith('/locked')) return json({ ...stored, id: 'locked', header: 'broken', dataEncryptionKey: 'unopenable' });
+            if (target.pathname.endsWith('/locked')) return json({ ...stored, id: 'locked', encryptionMode: 'e2ee', header: 'broken', dataEncryptionKey: 'unopenable' });
+            if (stored && target.pathname.endsWith('/recipients')) return json({ artifactId: stored.id,
+                ownerAccountId: stored.ownerAccountId, access: stored.access, encryptionMode: stored.encryptionMode,
+                dataEncryptionKey: stored.dataEncryptionKey, callerDataEncryptionKey: stored.dataEncryptionKey, recipients: [] });
             if (!stored || target.pathname !== `/v1/artifacts/${stored.id}`) return json({ error: 'missing' }, 404);
             if (init?.method === 'DELETE') { stored = undefined; return new Response(null, { status: 204 }); }
             if (init?.method !== 'POST') return json(stored);
@@ -144,9 +153,15 @@ describe('scoped Account workflow Artifact operations', () => {
             await port.create({ artifactId: 'workflow-id', header, body: 'definition body' });
             expect(stored?.id).toBe('workflow-id');
             expect(stored?.dataEncryptionKey === ARTIFACT_PLAIN_DATA_KEY_MARKER).toBe(mode === 'plain');
-            expect(await port.read('workflow-id')).toEqual({ artifactId: 'workflow-id', header, body: 'definition body', revision: { headerVersion: 1, bodyVersion: 1 } });
+            const encryption = (await context.resolveAccountEncryption()).encryption;
+            const key = encryption ? await encryption.decryptEncryptionKey(stored!.dataEncryptionKey) : null;
+            const storedHeader = mode === 'plain' ? decodePlainArtifactStoredContent(stored!.header)
+                : await new ArtifactEncryption(key!).decryptHeaderRaw(stored!.header);
+            const expectedHeader = withArtifactExcerptV1(header, 'definition body');
+            expect(storedHeader).toEqual(expectedHeader);
+            expect(await port.read('workflow-id')).toEqual({ artifactId: 'workflow-id', ownerAccountId: 'artifact-account', access: 'owner', header: expectedHeader, body: 'definition body', revision: { headerVersion: 1, bodyVersion: 1 } });
             const page = await port.list({ limit: 1, cursor: 'incoming-cursor' });
-            expect(page.items[0]).toMatchObject({ artifactId: 'workflow-id', header, headerVersion: 1, updatedAt: 9 });
+            expect(page.items[0]).toMatchObject({ artifactId: 'workflow-id', ownerAccountId: 'artifact-account', access: 'owner', header: expectedHeader, headerVersion: 1, updatedAt: 9 });
             expect(page.nextCursor).toBe(context.encodeArtifactListCursor(page.items[0]!));
             expect(requests.find((url) => url.searchParams.has('cursor'))?.searchParams.get('cursor')).toBe('incoming-cursor');
             expect(requests.find((url) => url.searchParams.has('limit'))?.searchParams.get('limit')).toBe('1');

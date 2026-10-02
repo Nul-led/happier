@@ -19,7 +19,7 @@ export function VoiceAdvancedSettingsScreen() {
 
   return (
     <View style={{ flex: 1 }} ref={popoverBoundaryRef}>
-      <ItemList presentation="page">
+      <ItemList>
         <SettingsPageHeader description={t('settingsVoice.intents.advanced.subtitle')} />
         <VoiceUiSection
           voice={voice}

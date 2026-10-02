@@ -13,7 +13,7 @@ import type { AutomationDefinitionRun } from '@/sync/domains/automations/automat
 import type { StoreGet, StoreSet } from './_shared';
 
 /**
- * One admitted workflow Run, as this Account can read it.
+ * One Run, including an Automation failure before Session creation, as this Account can read it.
  *
  * A Run is identified by its own `runId`, never by the Automation that happened
  * to admit it, so an exact read, an invalidation or a deep link reaches the row
@@ -68,6 +68,7 @@ export type WorkflowRunsDomain = {
     applyWorkflowRunListPage: (input: Readonly<{
         windowId: WorkflowRunListWindowId;
         runs: readonly WorkflowRunSummaryV1[];
+        automationRuns?: readonly AutomationDefinitionRun[];
         metadataByRunId?: Readonly<Record<string, WorkflowRunPrivateMetadataV1 | null>>;
         nextCursor: string | null;
         mode: WorkflowLoadedSpanMode;
@@ -118,7 +119,7 @@ export type WorkflowRunsDomain = {
  */
 export type WorkflowLoadedSpanMode = 'replace' | 'append' | 'refresh';
 
-export type WorkflowRunListWindowId = 'all' | 'active' | 'attention' | 'triggered';
+export type WorkflowRunListWindowId = 'all' | 'active' | 'attention' | 'automationAttention';
 export type WorkflowRunListWindow = Readonly<{
     runIds: readonly string[];
     nextCursor: string | null;
@@ -371,10 +372,11 @@ export function resolveVisibleWorkflowInvocations(
  * Whether `candidate` sorts strictly after `boundary` in the Run list's
  * newest-first `(createdAt desc, id desc)` order.
  */
-function isBeyondListSpan(candidate: WorkflowRunRow | undefined, boundary: WorkflowRunRow): boolean {
-    if (candidate?.summary === undefined || candidate.summary === null || boundary.summary === null) return false;
-    const candidateCreatedAt = toEpochMilliseconds(candidate.summary.createdAt);
-    const boundaryCreatedAt = toEpochMilliseconds(boundary.summary.createdAt);
+export function isBeyondWorkflowRunListSpan(candidate: WorkflowRunRow | undefined, boundary: WorkflowRunRow): boolean {
+    if (candidate === undefined) return false;
+    const candidateCreatedAt = candidate.summary ? toEpochMilliseconds(candidate.summary.createdAt) : candidate.automation?.createdAt;
+    const boundaryCreatedAt = boundary.summary ? toEpochMilliseconds(boundary.summary.createdAt) : boundary.automation?.createdAt;
+    if (candidateCreatedAt === undefined || boundaryCreatedAt === undefined) return false;
     if (candidateCreatedAt !== boundaryCreatedAt) return candidateCreatedAt < boundaryCreatedAt;
     return candidate.id < boundary.id;
 }
@@ -407,7 +409,7 @@ function refreshWorkflowRunListWindow(params: Readonly<{
     if (boundary === undefined) return { runIds: [...pageRunIds], nextCursor, loaded: true };
     const pageIds = new Set(pageRunIds);
     const retained = previous.runIds.filter((runId) => (
-        !pageIds.has(runId) && isBeyondListSpan(runsById[runId], boundary)
+        !pageIds.has(runId) && isBeyondWorkflowRunListSpan(runsById[runId], boundary)
     ));
     return { runIds: [...pageRunIds, ...retained], nextCursor: previous.nextCursor, loaded: true };
 }
@@ -485,26 +487,59 @@ function selectCurrentSummaryProjection(
 ): Pick<WorkflowRunRow, 'summary' | 'metadata'> {
     if (!incoming.summary) return stored;
     if (!stored.summary) return incoming;
-    if (incoming.summary.revision !== stored.summary.revision) {
-        return incoming.summary.revision > stored.summary.revision
-            ? { summary: incoming.summary, metadata: incoming.metadata ?? stored.metadata }
-            : stored;
+    let incomingSummary = incoming.summary;
+    for (const key of ['where', 'startedBy', 'stepProgress', 'stepProgressCurrentness'] as const) {
+        if (incomingSummary[key] === undefined && stored.summary[key] !== undefined) {
+            incomingSummary = { ...incomingSummary, [key]: stored.summary[key] };
+        }
     }
-
-    let summary = toEpochMilliseconds(incoming.summary.updatedAt) > toEpochMilliseconds(stored.summary.updatedAt)
-        ? incoming.summary
-        : stored.summary;
+    const parentCurrent = incoming.summary.revision >= stored.summary.revision;
+    let summary = incoming.summary.revision > stored.summary.revision
+        || (incoming.summary.revision === stored.summary.revision
+            && toEpochMilliseconds(incoming.summary.updatedAt) > toEpochMilliseconds(stored.summary.updatedAt))
+        ? incomingSummary : stored.summary;
     // Attention is an indexed child-row fact. A demanded server read can
     // refresh it without moving the parent's control revision or timestamp.
     // Projections that did not read membership cannot clear known attention.
-    const attentionRequired = incoming.summary.attentionRequired ?? stored.summary.attentionRequired;
+    const attentionRequired = parentCurrent ? incoming.summary.attentionRequired ?? stored.summary.attentionRequired : stored.summary.attentionRequired;
     if (attentionRequired !== undefined && summary.attentionRequired !== attentionRequired) {
         summary = { ...summary, attentionRequired };
+    }
+    // Private list projections are opened by the authorized list host, including
+    // progress which can advance without a parent control revision. Omission by
+    // a control operation preserves the observation; explicit unreadability clears it.
+    for (const key of ['where', 'startedBy'] as const) {
+        const value = incomingSummary[key];
+        if (parentCurrent && value !== undefined && (summary[key] === undefined || !sameStrictJsonValue(summary[key], value))) {
+            summary = { ...summary, [key]: value };
+        }
+    }
+    // Encrypted root progress has its own currentness. A parent control read can
+    // arrive later while carrying an older observation (or no observation at all).
+    const nextToken = incoming.summary.stepProgressCurrentness;
+    const previousToken = stored.summary.stepProgressCurrentness;
+    let acceptProgress = parentCurrent && incoming.summary.stepProgress !== undefined;
+    if (nextToken && previousToken) {
+        acceptProgress = BigInt(nextToken.attempt) > BigInt(previousToken.attempt)
+            || (nextToken.attempt === previousToken.attempt && nextToken.recordId === previousToken.recordId
+                && BigInt(nextToken.contentRevision) >= BigInt(previousToken.contentRevision));
+    } else if (previousToken && !nextToken && incoming.summary.stepProgress !== null) {
+        acceptProgress = false;
+    } else if (nextToken) {
+        acceptProgress = true;
+    }
+    const progressSource = acceptProgress ? incoming.summary : stored.summary;
+    for (const key of ['stepProgress', 'stepProgressCurrentness'] as const) {
+        if (!sameStrictJsonValue(summary[key], progressSource[key])) {
+            summary = { ...summary, [key]: progressSource[key] };
+        }
     }
     // Opening private content can recover without advancing the server-owned
     // Run revision. At the same accepted revision an available projection is
     // strictly more informative than unavailable, regardless of read order.
-    const metadata = stored.metadata?.kind === 'available'
+    const metadata = incoming.summary.revision > stored.summary.revision
+        ? incoming.metadata ?? stored.metadata
+        : stored.metadata?.kind === 'available'
         ? stored.metadata
         : incoming.metadata?.kind === 'available'
             ? incoming.metadata
@@ -651,16 +686,17 @@ export function createWorkflowRunsDomain<S extends WorkflowRunsDomain>({
             delete workflowRunInvocationsByRunId[runId];
             return { ...state, workflowRunsById, workflowRunListWindows, workflowRunInvocationsByRunId };
         }),
-        applyWorkflowRunListPage: ({ windowId, runs, metadataByRunId, nextCursor, mode }) =>
+        applyWorkflowRunListPage: ({ windowId, runs, automationRuns = [], metadataByRunId, nextCursor, mode }) =>
             set((state) => {
                 const previous = state.workflowRunListWindows[windowId];
                 // Bodies merge first so the refreshed span can be measured
                 // against the rows the page just restated.
                 const workflowRunsById = mergeWorkflowRunBodies(
                     state.workflowRunsById,
-                    runs.map((run) => workflowRunRowFromSummary(run, metadataByRunId?.[run.id] ?? null)),
+                    [...runs.map((run) => workflowRunRowFromSummary(run, metadataByRunId?.[run.id] ?? null)),
+                        ...automationRuns.map(workflowRunRowFromAutomationRun)],
                 );
-                const pageRunIds = runs.map((run) => run.id);
+                const pageRunIds = [...runs.map((run) => run.id), ...automationRuns.map((run) => run.id)];
                 const window: WorkflowRunListWindow = mode === 'append' && previous
                     ? { runIds: appendUniqueIds(previous.runIds, pageRunIds), nextCursor, loaded: true }
                     : mode === 'refresh'

@@ -17,6 +17,7 @@ import type { SessionListViewContext, SessionListViewFilters } from './search/se
 export type SessionListVirtualizedNode = Readonly<{
     id: string;
     rowViewModel?: SessionListRowViewModel | null;
+    isGroupTail?: boolean;
 }>;
 
 type SessionListScrollEvent = Readonly<{
@@ -150,6 +151,9 @@ export type SessionListRowDensity = 'default' | 'compact' | 'minimal';
  */
 function getSessionListNodeType(node: SessionListVirtualizedNode, rowDensity: SessionListRowDensity): string {
     const nodeId = node.id;
+    if (nodeId.startsWith('workflow_run:')) {
+        return `workflow_run:${rowDensity}:${node.isGroupTail === true ? 'tail' : 'body'}`;
+    }
     if (typeof nodeId === 'string' && nodeId.startsWith('session:')) {
         const heightClass = node.rowViewModel?.isLast === true || node.rowViewModel?.isSingle === true
             ? 'tail'

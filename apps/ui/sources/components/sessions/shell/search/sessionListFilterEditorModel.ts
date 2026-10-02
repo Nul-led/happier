@@ -18,6 +18,14 @@ import {
 export type SessionListFilterEditorLabels = Readonly<{
     search: string;
     show: string;
+    scope: string;
+    sessions: string;
+    runs: string;
+    both: string;
+    startedBy: string;
+    startedByYou: string;
+    startedByTriggers: string;
+    startedByAgents: string;
     myWork: string;
     assignedToMe: string;
     following: string;
@@ -143,9 +151,11 @@ function selectedIds(
     attentionAvailable: boolean,
 ): ReadonlySet<string> {
     const selected = new Set<string>([
+        `show:${filters.show}`,
         `scope:${filters.scope}`,
         `source:${filters.source}`,
     ]);
+    for (const starter of filters.startedBy) selected.add(`started-by:${starter}`);
     if (attentionAvailable) {
         selected.add(`attention:${filters.attention}`);
     }
@@ -185,6 +195,7 @@ export function buildSessionListFilterEditorModel(input: Readonly<{
     audiencePresentation?: SessionListFilterAudiencePresentation;
     fixedHomeServerIds?: ReadonlySet<string>;
     fixedAudienceKeys?: ReadonlySet<string>;
+    fixedShow?: SessionListViewFilters['show'];
     /**
      * The Archived destination, offered after the scope choices on the active corpus only. It opens
      * the archived list; it is never a facet and never part of the selection.
@@ -252,10 +263,30 @@ export function buildSessionListFilterEditorModel(input: Readonly<{
             inputPlaceholder: input.labels.search,
             emptyStateLabel: input.labels.noOptions,
             sections: [
+                ...(!input.fixedShow ? [{
+                    kind: 'static' as const,
+                    id: 'work-kind',
+                    title: input.labels.show,
+                    options: [
+                        { id: 'show:sessions', label: input.labels.sessions },
+                        { id: 'show:runs', label: input.labels.runs },
+                        { id: 'show:both', label: input.labels.both },
+                    ],
+                }] : []),
+                ...(input.filters.show !== 'sessions' ? [{
+                    kind: 'static' as const,
+                    id: 'started-by',
+                    title: input.labels.startedBy,
+                    options: [
+                        { id: 'started-by:you', label: input.labels.startedByYou },
+                        { id: 'started-by:triggers', label: input.labels.startedByTriggers },
+                        { id: 'started-by:agents', label: input.labels.startedByAgents },
+                    ],
+                }] : []),
                 ...(showOptionsAvailable || archivedOptions.length > 0 ? [{
                     kind: 'static' as const,
                     id: 'show',
-                    title: input.labels.show,
+                    title: input.labels.scope,
                     options: [...(showOptionsAvailable ? showOptions : []), ...archivedOptions],
                 }] : []),
                 ...(input.attentionAvailable !== false ? [{
@@ -385,6 +416,19 @@ export function reduceSessionListFilterEditorSelection(
     optionId: string,
     context?: SessionListFilterEditorSelectionContext,
 ): SessionListViewFilters {
+    if (optionId === 'show:sessions') return { ...filters, show: 'sessions' };
+    if (optionId === 'show:runs') return { ...filters, show: 'runs' };
+    if (optionId === 'show:both') return { ...filters, show: 'both' };
+    if (optionId.startsWith('started-by:')) {
+        const starter = optionId.slice('started-by:'.length);
+        if (starter !== 'you' && starter !== 'triggers' && starter !== 'agents') return filters;
+        return {
+            ...filters,
+            startedBy: filters.startedBy.includes(starter)
+                ? filters.startedBy.filter((value) => value !== starter)
+                : [...filters.startedBy, starter],
+        };
+    }
     if (optionId.startsWith('scope:')) {
         const scope = optionId.slice('scope:'.length) as SessionListScopeV1;
         return SCOPES.includes(scope) ? { ...filters, scope } : filters;

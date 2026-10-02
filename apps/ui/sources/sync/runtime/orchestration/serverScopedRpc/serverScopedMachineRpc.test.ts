@@ -27,7 +27,6 @@ const listServerProfilesSpy = vi.hoisted(() => vi.fn());
 const getActiveServerSnapshotSpy = vi.hoisted(() => vi.fn());
 const getAppliedActiveServerSnapshotSpy = vi.hoisted(() => vi.fn());
 const machineRpcWithPeerMediationRouteSpy = vi.hoisted(() => vi.fn());
-const requireCurrentAccountStoredContentServerCompatibilitySpy = vi.hoisted(() => vi.fn());
 const resolveServerScopedContextOverrideSpy = vi.hoisted(() => vi.fn());
 const runtimeFetchWithServerReachabilitySpy = vi.hoisted(() => vi.fn());
 const SECRET_A = btoa('a'.repeat(32));
@@ -35,10 +34,6 @@ const SECRET_B = btoa('b'.repeat(32));
 const TOKEN_A = `header.${btoa(JSON.stringify({ sub: 'account-a' }))}.signature`;
 const TOKEN_B = `header.${btoa(JSON.stringify({ sub: 'account-b' }))}.signature`;
 
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', () => ({
-    requireCurrentAccountStoredContentServerCompatibility: (...args: unknown[]) =>
-        requireCurrentAccountStoredContentServerCompatibilitySpy(...args),
-}));
 
 vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({
     getReadyServerFeatures: (...args: unknown[]) => getReadyServerFeaturesSpy(...args),
@@ -192,7 +187,6 @@ describe('machineRpcWithServerScope', () => {
         resetRunnerCreatorMachineContentKeyTrustProjectionForTests();
         getAppliedActiveServerSnapshotSpy.mockImplementation(() => getActiveServerSnapshotSpy());
         installDefaultPeerMediationFallback();
-        requireCurrentAccountStoredContentServerCompatibilitySpy.mockResolvedValue(undefined);
     });
 
     afterEach(() => {
@@ -206,7 +200,6 @@ describe('machineRpcWithServerScope', () => {
         getActiveServerSnapshotSpy.mockReset();
         getAppliedActiveServerSnapshotSpy.mockReset();
         machineRpcWithPeerMediationRouteSpy.mockReset();
-        requireCurrentAccountStoredContentServerCompatibilitySpy.mockReset();
         resolveServerScopedContextOverrideSpy.mockReset();
         runtimeFetchWithServerReachabilitySpy.mockReset();
         vi.unstubAllGlobals();
@@ -478,7 +471,7 @@ describe('machineRpcWithServerScope', () => {
         }
     });
 
-    it('fences delayed active preparation after exact scoped fallback starts', async () => {
+    it.each(['exact', 'ordered'] as const)('fences delayed active preparation after %s scoped fallback starts', async (dispatchMode) => {
         vi.useFakeTimers();
         try {
             getActiveServerSnapshotSpy.mockReturnValue({
@@ -514,10 +507,15 @@ describe('machineRpcWithServerScope', () => {
             const { machineRpcWithServerScope } = await import('./serverScopedMachineRpc');
             const result = machineRpcWithServerScope({
                 machineId: 'machine-1', method: RPC_METHODS.SPAWN_HAPPY_SESSION,
-                payload: { sessionId: 'session-1' }, timeoutMs: 25, onIssued,
+                payload: { sessionId: 'session-1' }, timeoutMs: 25,
+                skipTransferPolicyEvaluation: true,
+                ...(dispatchMode === 'exact' ? { onIssued } : { onDispatched: onIssued }),
             });
 
+            await vi.advanceTimersByTimeAsync(0);
+            expect(machineRpcSpy).toHaveBeenCalledTimes(1);
             await vi.advanceTimersByTimeAsync(25);
+            expect(scopedEmit).toHaveBeenCalledTimes(1);
             await expect(result).resolves.toEqual({ source: 'scoped' });
             releaseActive();
             await Promise.resolve();
@@ -709,9 +707,6 @@ describe('machineRpcWithServerScope', () => {
         })).resolves.toEqual({ decoded: true });
 
         expect(createEncryptionSpy).not.toHaveBeenCalled();
-        expect(requireCurrentAccountStoredContentServerCompatibilitySpy).toHaveBeenCalledWith({
-            serverId: 'server-b',
-        });
         expect(emitWithAck).toHaveBeenCalledWith(
             SOCKET_RPC_EVENTS.CALL,
             expect.objectContaining({
@@ -831,41 +826,6 @@ describe('machineRpcWithServerScope', () => {
         expect(runtimeFetchWithServerReachabilitySpy).not.toHaveBeenCalled();
         expect(disconnect).toHaveBeenCalledTimes(1);
         expect(releaseCarrier).not.toHaveBeenCalled();
-    });
-
-    it('refuses scoped plaintext machine RPC before opening a socket when compatibility is not required', async () => {
-        const compatibilityError = Object.assign(
-            new Error('server compatibility is only observed'),
-            { code: 'client-upgrade-required', retryable: false as const },
-        );
-        getActiveServerSnapshotSpy.mockReturnValue({
-            serverId: 'server-a',
-            serverUrl: 'https://server-a.example.test',
-            kind: 'custom',
-            generation: 1,
-        });
-        listServerProfilesSpy.mockReturnValue([
-            { id: 'server-b', serverUrl: 'https://server-b.example.test', name: 'Server B' },
-        ]);
-        getCredentialsSpy.mockResolvedValue({ token: TOKEN_B });
-        mockScopedMachineFetch({
-            id: 'machine-plain',
-            dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER,
-        });
-        requireCurrentAccountStoredContentServerCompatibilitySpy.mockRejectedValueOnce(
-            compatibilityError,
-        );
-
-        const { machineRpcWithServerScope } = await import('./serverScopedMachineRpc');
-        await expect(machineRpcWithServerScope({
-            machineId: 'machine-plain',
-            method: 'method-test',
-            payload: { value: 2 },
-            serverId: 'server-b',
-            timeoutMs: 5_000,
-        })).rejects.toBe(compatibilityError);
-
-        expect(createEphemeralSocketSpy).not.toHaveBeenCalled();
     });
 
     it('falls back to a scoped socket on the active server when active machine encryption is unavailable', async () => {

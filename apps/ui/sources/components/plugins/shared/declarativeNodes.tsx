@@ -32,6 +32,7 @@ import type {
 
 import type { Theme } from '@/theme';
 import { MarkdownView } from '@/components/markdown/MarkdownView';
+import type { MarkdownRenderingProfile } from '@/components/markdown/rendering/MarkdownRenderingProfile';
 import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 import { buildActionRowAccessibilityLabel } from '@/components/ui/lists/actionRowAccessibility';
 import { Text } from '@/components/ui/text/Text';
@@ -218,6 +219,8 @@ export type DeclarativeActionAffordance = Readonly<{
 export type DeclarativeNodeRenderContext = Readonly<{
     colors: ThemeColors;
     presentationTheme: HappierUiTheme;
+    /** The containing surface's prose density; rendering stays with the shared Markdown owner. */
+    markdownProfile?: MarkdownRenderingProfile;
     /**
      * How this consumer resolves declared localized text. A mounted surface
      * supplies its environment-bound resolver; a persisted transcript supplies
@@ -506,7 +509,7 @@ const DECLARATIVE_NODE_RENDERERS = Object.freeze({
             value={context.localize(node.text)}
             selectable
             renderContent={(input) => (
-                <MarkdownView markdown={input.value} selectable={input.selectable} testID={input.testID} />
+                <MarkdownView markdown={input.value} selectable={input.selectable} testID={input.testID} profile={context.markdownProfile} />
             )}
         />
     ),

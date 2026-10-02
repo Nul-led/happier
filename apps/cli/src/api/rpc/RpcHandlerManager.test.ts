@@ -17,6 +17,24 @@ import type { RpcHandlerContext } from './types';
 import { computeExternalActionSocketRpcRequestDigestV1, type ExternalActionExecutionAuthorizationV1 } from '@happier-dev/protocol/actions';
 import { API_TOKEN_FULL_GRANT_V1 } from '@happier-dev/protocol/auth/apiTokenGrant';
 
+it('preserves a Home-stamped Session Action origin and rejects malformed or user-labelled origins', async () => {
+  const rpc = new RpcHandlerManager({ scopePrefix: 'child', encryptionMode: 'plain', logger: () => {} });
+  rpc.registerHandler('session.notes.set', (_input: unknown, context?: RpcHandlerContext) => ({
+    authority: context?.callerAuthority, origin: context?.sessionActionOrigin,
+  }));
+  const origin = { v: 1 as const, caller: { kind: 'session' as const, sessionId: 'lead', starterDepth: 2, turnDepth: 3 },
+    callerPermissionMode: 'default' as const, sourceTurnId: 'original-turn', requestId: 'original-request' };
+  const request = { method: 'child:session.notes.set', params: { sessionId: 'child', notes: 'Notes' },
+    callerAuthority: 'account_automation' as const, sessionActionOrigin: origin };
+  expect(await rpc.handleRequest(request)).toEqual({ authority: 'account_automation', origin });
+  for (const refused of [
+    { ...request, callerAuthority: 'present_user' as const },
+    { ...request, sessionActionOrigin: { ...origin, caller: { kind: 'session', sessionId: 'lead' } } },
+    { ...request, sessionActionOrigin: { ...origin, caller: { ...origin.caller, turnDepth: -1 } } },
+    { ...request, method: 'child:session.message.send' },
+  ]) expect(await rpc.handleRequest(refused)).toMatchObject({ errorCode: RPC_ERROR_CODES.FORBIDDEN });
+});
+
 it('binds the Home-issued input proof to the exact opaque RPC before opening it', async () => {
   const encryptionKey = new Uint8Array(32).fill(17);
   const rpc = new RpcHandlerManager({ scopePrefix: 'session-a', localMachineId: 'machine-a',

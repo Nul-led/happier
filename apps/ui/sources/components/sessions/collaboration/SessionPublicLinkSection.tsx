@@ -122,7 +122,10 @@ function presentFailure(error: unknown): void {
 }
 
 /** What the link grants, in plain words, then its limits: "Expires Oct 6 · 3 of 10 uses · asks for consent". */
-export function describeSessionPublicLink(publicShare: SessionPublicLinkPublication): string {
+export type PublicLinkCardPublication = Pick<SessionPublicLinkPublication, 'id' | 'expiresAt' | 'maxUses' | 'useCount' | 'isConsentRequired'>
+    & Readonly<{ token?: string | null; publicUrl?: string | null }>;
+
+export function describeSessionPublicLink(publicShare: PublicLinkCardPublication, grantsLabel = t('session.collaboration.pane.linkGrants')): string {
     const limits = [
         publicShare.expiresAt
             ? t('session.collaboration.pane.linkExpires', { date: new Date(publicShare.expiresAt).toLocaleDateString() })
@@ -132,7 +135,7 @@ export function describeSessionPublicLink(publicShare: SessionPublicLinkPublicat
             : t('session.sharing.usageCountUnlimited', { used: publicShare.useCount }),
         publicShare.isConsentRequired ? t('session.collaboration.pane.linkAsksConsent') : t('session.collaboration.pane.linkNoConsent'),
     ];
-    return `${t('session.collaboration.pane.linkGrants')} ${limits.join(' · ')}`;
+    return `${grantsLabel} ${limits.join(' · ')}`;
 }
 
 export type SessionCollaborationPublicLink = ReturnType<typeof useSessionPublicLinkController> & Readonly<{
@@ -233,7 +236,11 @@ export function SessionPublicLinkSection(props: Readonly<{
  */
 export function SessionPublicLinkCard(props: Readonly<{
     testID: string;
-    publicShare: SessionPublicLinkPublication | null;
+    publicShare: PublicLinkCardPublication | null;
+    /** Local bearer URL supplied by the creating client, never a transport projection. */
+    shareUrl?: string | null;
+    description?: string;
+    grantsLabel?: string;
     serverUrl: string | null;
     loading: boolean;
     /** The publication has been read at least once, so "off" is a fact. */
@@ -244,7 +251,7 @@ export function SessionPublicLinkCard(props: Readonly<{
     pendingApproval: boolean;
     onRetry: () => void | Promise<void>;
     onOpenPendingApproval: () => void;
-    onCreate: (options: SessionPublicLinkCreateOptions) => Promise<SessionPublicLinkPublication | null>;
+    onCreate: (options: SessionPublicLinkCreateOptions) => Promise<PublicLinkCardPublication | null>;
     onDelete: () => Promise<void>;
 }>): React.ReactElement {
     const { theme } = useUnistyles();
@@ -263,13 +270,13 @@ export function SessionPublicLinkCard(props: Readonly<{
     const inFlight = React.useRef(false);
     const mounted = React.useRef(true);
     React.useEffect(() => () => { mounted.current = false; }, []);
-    const shareUrl = React.useMemo(() => (publicShare?.token
+    const shareUrl = React.useMemo(() => props.shareUrl ?? publicShare?.publicUrl ?? (publicShare?.token
         ? buildPublicShareApplicationUrl({
             applicationBaseUrl: resolvePublicShareApplicationBaseUrl(),
             token: publicShare.token,
             serverUrl: props.serverUrl,
         })
-        : null), [props.serverUrl, publicShare?.token]);
+        : null), [props.shareUrl, props.serverUrl, publicShare?.publicUrl, publicShare?.token]);
     const busy = creating || revoking;
     const mutationsDisabled = props.readOnly || props.pendingApproval || busy;
 
@@ -368,7 +375,7 @@ export function SessionPublicLinkCard(props: Readonly<{
                     ) : (
                         <Text testID="session-public-link-hidden" style={styles.meta}>{t('session.collaboration.pane.linkHidden')}</Text>
                     )}
-                    <Text testID="session-public-link-detail" style={styles.meta}>{describeSessionPublicLink(publicShare)}</Text>
+                    <Text testID="session-public-link-detail" style={styles.meta}>{describeSessionPublicLink(publicShare, props.grantsLabel)}</Text>
                     {showQr && shareUrl ? (
                         <View style={styles.qr} testID="session-public-link-qr-code">
                             <React.Suspense fallback={<ActivitySpinner size="small" />}>
@@ -407,7 +414,7 @@ export function SessionPublicLinkCard(props: Readonly<{
             ) : null}
             {!on && !configuring && props.loaded ? (
                 <>
-                    <Text style={styles.meta}>{t('session.sharing.publicLinkDescription')}</Text>
+                    <Text style={styles.meta}>{props.description ?? t('session.sharing.publicLinkDescription')}</Text>
                     <View style={styles.actions}>
                         <ToolbarButton
                             testID="session-public-link-create"

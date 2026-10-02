@@ -11,7 +11,34 @@ const progress: WorkflowProgressEnvelopeV1 = {
 };
 
 describe('exact Workflow recovery observation', () => {
-  it('reattaches an Action through its exact native runs without observing through Actions', async () => {
+  it('preserves an observed cancelled Session terminal without requesting cancellation again', async () => {
+    const cancelSession = vi.fn(async () => ({ kind: 'turn_cancel_requested' as const }));
+    const observe = createWorkflowInvocationRecoveryObserver({
+      credentials: { token: 'token', encryption: null }, machineId: 'machine-1',
+      actionExecutor: { execute: async () => { throw new Error('Session observation cannot invoke an Action'); } },
+      observeSession: async () => ({ ok: true, sessionId: 'session-1', localId: 'input-1',
+        result: { kind: 'cancelled', message: 'stopped', usage: { inputTokens: 2, outputTokens: 3 } } }),
+      cancelSession,
+    });
+    await expect(observe({
+      progress: { ...progress, execution: { kind: 'session', sessionId: 'session-1', localInputId: 'input-1' } },
+      terminalParent: false, cancellationRequested: true,
+    })).resolves.toEqual({ kind: 'cancelled', code: 'session_input_cancelled', usage: { inputTokens: 2, outputTokens: 3 } });
+    expect(cancelSession).not.toHaveBeenCalled();
+  });
+  it('keeps a refused exact Session cancellation unresolved during recovery', async () => {
+    const observe = createWorkflowInvocationRecoveryObserver({
+      credentials: { token: 'token', encryption: null }, machineId: 'machine-1',
+      actionExecutor: { execute: async () => { throw new Error('Session observation cannot invoke an Action'); } },
+      observeSession: async () => ({ ok: true, sessionId: 'session-1', localId: 'input-1', result: { kind: 'pending' } }),
+      cancelSession: async () => ({ kind: 'turn_cancel_refused', status: 'notRunning', code: 'notRunning' }),
+    });
+    await expect(observe({
+      progress: { ...progress, execution: { kind: 'session', sessionId: 'session-1', localInputId: 'input-1' } },
+      terminalParent: false, cancellationRequested: true,
+    })).resolves.toEqual({ kind: 'unresolved', code: 'notRunning' });
+  });
+  it.each(['running', 'succeeded'] as const)('reattaches a %s Action through exact native runs without effects or a retained wait', async (status) => {
     const contract = freezeActionCompletionContractV1(getActionSpec('review.start').completion!);
     let reads = 0;
     const execution = { kind: 'action' as const, actionId: 'review.start', actionRequestId: 'request', localInputId: 'request', input: {},
@@ -21,15 +48,17 @@ describe('exact Workflow recovery observation', () => {
       actionExecutor: { execute: async () => { throw new Error('Action observation bypass'); } },
       nativeActionRuns: { get: async (runId) => { reads++; return { run: {
         runId, callId: 'call', sidechainId: 'side', intent: 'review', backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
-        permissionMode: 'default', retentionPolicy: 'resumable', runClass: 'bounded', ioMode: 'request_response', status: 'succeeded', startedAtMs: 1,
+        permissionMode: 'default', retentionPolicy: 'resumable', runClass: 'bounded', ioMode: 'request_response', status, startedAtMs: 1,
       }, latestToolResult: { output: { findings: [], reviewedFingerprint: 'fingerprint', commentIds: ['comment'], materialization: { kind: 'complete' } } } }; },
-      stop: async () => { throw new Error('Observation-only stop'); } },
+      stop: async () => { throw new Error('Observation-only stop'); },
+      wait: async () => { throw new Error('Observation-only wait'); } },
     });
-    expect(await observe({ progress: { ...progress, blockKind: 'action', execution }, frozenActionContract: {
+    const observed = await observe({ progress: { ...progress, blockKind: 'action', execution }, frozenActionContract: {
       inputSchema: {}, outputSchema: contract.terminalOutputSchema, completion: contract },
-      terminalParent: false, cancellationRequested: false, observationOnly: true }))
-      .toMatchObject({ kind: 'completed', result: { reviewedFingerprint: 'fingerprint', commentIds: ['comment'],
-        perEngineOutcome: [{ key: 'codex', runId: 'native-run', outcome: 'completed' }] } });
+      terminalParent: false, cancellationRequested: false, observationOnly: true });
+    if (status === 'running') expect(observed).toEqual({ kind: 'unresolved', code: 'execution_run_input_pending' });
+    else expect(observed).toMatchObject({ kind: 'completed', result: { reviewedFingerprint: 'fingerprint', commentIds: ['comment'],
+      perEngineOutcome: [{ key: 'codex', runId: 'native-run', outcome: 'completed' }] } });
     expect(reads).toBe(1);
   });
   it('never settles an invocation from another native execution run', async () => {

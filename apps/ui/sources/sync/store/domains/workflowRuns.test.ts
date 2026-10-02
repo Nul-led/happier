@@ -68,13 +68,27 @@ function summary(input: Readonly<{
 }
 
 describe('workflow run body store', () => {
+    it('holds Automation attention in the shared row owner and removes it on a complete refresh', () => {
+        const harness = createHarness();
+        const failed = createAutomationRunFixture({ state: 'failed', producedSessionId: null });
+        harness.get().applyWorkflowRunListPage({ windowId: 'automationAttention', runs: [], automationRuns: [failed], nextCursor: null, mode: 'replace' });
+        expect(harness.get().workflowRunListWindows.automationAttention?.runIds).toEqual([failed.id]);
+        expect(harness.get().workflowRunsById[failed.id]?.automation).toEqual(failed);
+        const settled = { ...failed, state: 'cancelled' as const, revision: failed.revision + 1 };
+        harness.get().upsertWorkflowRuns([workflowRunRowFromAutomationRun(settled)]);
+        harness.get().applyWorkflowRunListPage({ windowId: 'automationAttention', runs: [], automationRuns: [], nextCursor: null, mode: 'refresh' });
+        expect(harness.get().workflowRunListWindows.automationAttention?.runIds).toEqual([]);
+        expect(harness.get().workflowRunsById[failed.id]?.automation).toBe(settled);
+    });
     it('retains opened Run content when a list refresh observes the same Run', () => {
         const harness = createHarness();
         const run = summary({ id: 'run-1', revision: 4 });
         const definition = createWorkflowDefinitionFixture();
         const detail = { run, definition, checkpoint: null, acceptedContext: {
+            startedBy: 'user' as const,
             source: { kind: 'inline' as const }, inputs: {}, machineId: run.machineId,
             executionTarget: { kind: 'session' as const },
+            materializedLeaves: [],
             workspaceTarget: { project: { machineId: run.machineId, directory: '/repo', checkoutRootPath: '/repo' } },
             origin: { kind: 'direct' as const },
         } };
@@ -127,6 +141,44 @@ describe('workflow run body store', () => {
         expect(mergeWorkflowRunBodies(settled, [workflowRunRowFromSummary({ ...run, attentionRequired: false })])).toBe(settled);
         expect(mergeWorkflowRunBodies(settled, [workflowRunRowFromSummary({ ...run, revision: 3, attentionRequired: true })])).toBe(settled);
         expect(mergeWorkflowRunBodies(needsYou, [workflowRunRowFromSummary(run)])).toBe(needsYou);
+    });
+
+    it('retains an opened Where across control projections and clears it on an unreadable list projection', () => {
+        const run = summary({ id: 'run-1', revision: 4 });
+        const where = { machineId: run.machineId, directory: '/repo', workspaceRefId: 'workspace-1' };
+        const initial = mergeWorkflowRunBodies({}, [workflowRunRowFromSummary({ ...run, where })]);
+        const controlled = mergeWorkflowRunBodies(initial, [workflowRunRowFromSummary({ ...run, revision: 5 })]);
+        expect(controlled['run-1']?.summary).toHaveProperty('where', where);
+        const unreadable = mergeWorkflowRunBodies(controlled, [workflowRunRowFromSummary({ ...run, revision: 5, where: null })]);
+        expect(unreadable['run-1']?.summary).toHaveProperty('where', null);
+        expect(mergeWorkflowRunBodies(unreadable, [workflowRunRowFromSummary({ ...run, revision: 5, where: null })])).toBe(unreadable);
+        expect(mergeWorkflowRunBodies(unreadable, [workflowRunRowFromSummary({ ...run, revision: 3, where })])).toBe(unreadable);
+    });
+
+    it('retains private starter and authored progress across control rows, but clears explicitly unreadable content', () => {
+        const run = summary({ id: 'run-1', revision: 4 });
+        const projected = { ...run, startedBy: 'user' as const, stepProgress: { completed: 1, total: 3 } };
+        const initial = mergeWorkflowRunBodies({}, [workflowRunRowFromSummary(projected)]);
+        const controlled = mergeWorkflowRunBodies(initial, [workflowRunRowFromSummary({ ...run, revision: 5 })]);
+        expect(controlled['run-1']?.summary).toMatchObject({ startedBy: 'user', stepProgress: { completed: 1, total: 3 } });
+        const unreadable = mergeWorkflowRunBodies(controlled, [workflowRunRowFromSummary({ ...run, revision: 5, startedBy: null, stepProgress: null })]);
+        expect(unreadable['run-1']?.summary).toMatchObject({ startedBy: null, stepProgress: null });
+        expect(mergeWorkflowRunBodies(unreadable, [workflowRunRowFromSummary(projected)])).toBe(unreadable);
+    });
+
+    it('orders authored progress by the existing root observation even when parent revision and time do not move', () => {
+        const run = summary({ id: 'run-1', revision: 4 });
+        const progress = (contentRevision: string, completed: number) => workflowRunRowFromSummary({
+            ...run, stepProgress: { completed, total: 3 },
+            stepProgressCurrentness: { recordId: 'root-1', attempt: '0', contentRevision },
+        });
+        const latest = mergeWorkflowRunBodies({}, [progress('9007199254740993', 1)]);
+        expect(mergeWorkflowRunBodies(latest, [progress('9007199254740992', 0)])).toBe(latest);
+        // A new current retry can legitimately reduce completion, not merely increase it.
+        const retry = mergeWorkflowRunBodies(latest, [progress('9007199254740994', 0)]);
+        expect(retry['run-1']?.summary?.stepProgress?.completed).toBe(0);
+        const control = mergeWorkflowRunBodies(retry, [workflowRunRowFromSummary({ ...run, revision: 5 })]);
+        expect(control['run-1']?.summary?.stepProgressCurrentness?.contentRevision).toBe('9007199254740994');
     });
 
     it('starts empty', () => {

@@ -18,6 +18,8 @@ import type {
     ScmCommitBackoutResponse,
     ScmCommitCreateRequest,
     ScmCommitCreateResponse,
+    ScmCommitUndoLastRequest,
+    ScmCommitUndoLastResponse,
     ScmDiffCommitRequest,
     ScmDiffCommitResponse,
     ScmDiffFileRequest,
@@ -72,7 +74,7 @@ import type {
 import { SCM_OPERATION_ERROR_CODES, ScmLogListResponseSchema } from '@happier-dev/protocol/scm';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { getScmRpcSideEffectClass } from '@happier-dev/protocol/actions/scmGitActionSpecs';
-import { scmFallbackError } from './scmRpcFailure';
+import { scmFallbackError, type ScmRpcFailure } from './scmRpcFailure';
 import { runScmRpcWithAdmission } from './scmRpcAdmission';
 export { assertScmResponse, scmFallbackError } from './scmRpcFailure';
 
@@ -129,7 +131,7 @@ export async function runMachineScmRpc<
     method: string,
     request: R,
     options?: MachineScmCallOptions,
-): Promise<T> {
+): Promise<T | ScmRpcFailure> {
     const payload = withScmBackendPreference({
         ...request,
         outcomeVersion: 1 as const,
@@ -157,7 +159,7 @@ async function callMachineScm<
     method: string,
     request: R,
     options?: MachineScmCallOptions,
-): Promise<T> {
+): Promise<T | ScmRpcFailure> {
     try {
         return await runMachineScmRpc<T, R>(machineId, method, request, options);
     } catch (error) {
@@ -168,9 +170,12 @@ async function callMachineScm<
         if (options?.signal?.aborted && getScmRpcSideEffectClass(method) === 'read') {
             throw error;
         }
-        return scmFallbackError<T>(error, { method, request });
+        return scmFallbackError(error, { method, request });
     }
 }
+
+// The Action family shares typed facades' cancellation and uncertain-write handling.
+export { callMachineScm as runMachineScmRpcWithFallback };
 
 export async function machineScmStatusSnapshot(
     machineId: string,
@@ -226,6 +231,14 @@ export async function machineScmCommitCreate(
     options?: MachineScmCallOptions,
 ): Promise<ScmCommitCreateResponse> {
     return await callMachineScm<ScmCommitCreateResponse, ScmCommitCreateRequest>(machineId, RPC_METHODS.SCM_COMMIT_CREATE, request, options);
+}
+
+export async function machineScmCommitUndoLast(
+    machineId: string,
+    request: ScmCommitUndoLastRequest,
+    options?: MachineScmCallOptions,
+): Promise<ScmCommitUndoLastResponse> {
+    return await callMachineScm<ScmCommitUndoLastResponse, ScmCommitUndoLastRequest>(machineId, RPC_METHODS.SCM_COMMIT_UNDO_LAST, request, options);
 }
 
 export async function machineScmLogList(

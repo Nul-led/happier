@@ -122,7 +122,6 @@ export function VoiceDictationSettingsScreen() {
           onContentSizeChange={focusRegistry.onContentSizeChange}
           onScroll={focusRegistry.onScroll}
           scrollEventThrottle={16}
-          presentation="page"
         >
           <SettingsPageHeader description={t('settingsVoice.intents.dictation.subtitle')} />
           <View onLayout={onProviderSectionLayout}>

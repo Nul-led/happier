@@ -29,7 +29,7 @@ import {
   resolveSessionControlStopPollIntervalMs,
   resolveSessionControlStopTimeoutMs,
 } from '@/session/transport/shared/sessionTimeouts';
-import { delay } from '@/utils/time';
+import { openSessionEventSource } from '@/session/transport/socket/sessionSocketAgentState';
 import { readTerminalHostAttachmentState } from '@/terminal/attachment/terminalAttachmentInfo';
 import { readOrCreateDeviceLocalSecretStorage } from '@/daemon/deviceLocalSecretStorage';
 import { RPC_ERROR_CODES, RPC_METHODS, SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS } from '@happier-dev/protocol/rpc';
@@ -155,20 +155,16 @@ async function waitForSessionStopResult(params: Readonly<{
   sessionId: string;
 }>): Promise<boolean> {
   const deadlineMs = Date.now() + resolveSessionControlStopTimeoutMs();
-
-  while (Date.now() <= deadlineMs) {
-    if (await readSessionInactive({ token: params.token, sessionId: params.sessionId }) === true) {
-      return true;
+  const events = openSessionEventSource(params);
+  try {
+    while (true) {
+      const revision = events.currentRevision();
+      if (await readSessionInactive(params) === true) return true;
+      if (!(await events.waitForChange(revision, { deadlineMs }))) return false;
     }
-
-    if (Date.now() >= deadlineMs) {
-      break;
-    }
-
-    await delay(resolveSessionControlStopPollIntervalMs());
+  } finally {
+    await events.close();
   }
-
-  return false;
 }
 
 async function stopSessionViaMarkersBestEffort(params: Readonly<{

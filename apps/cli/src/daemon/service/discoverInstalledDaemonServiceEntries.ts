@@ -1,11 +1,12 @@
 import * as fs from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawnBackgroundSync } from '@happier-dev/cli-common/process';
 import { basename, join, win32 as win32Path } from 'node:path';
 
 import {
   parseLaunchdPlist,
   parseSystemdUnit,
   parseWindowsScheduledTaskWrapperPs1,
+  resolveDaemonServiceTargetMode,
   type ParsedLaunchdPlist,
   type ParsedSystemdUnit,
   type ParsedWindowsScheduledTaskWrapperPs1,
@@ -123,10 +124,15 @@ function resolveDiscoveredServiceIdentity(params: Readonly<{
   return params.parsed.serverId;
 }
 
-function readInstalledServiceFile(path: string): string | null {
+function readInstalledServiceFile(path: string, requireReadable: boolean): string | null {
   try {
     return fs.readFileSync(path, 'utf8');
-  } catch {
+  } catch (cause) {
+    if (requireReadable && !(cause && typeof cause === 'object' && 'code' in cause && cause.code === 'ENOENT')) {
+      throw Object.assign(new Error('Background service inventory could not be read', { cause }), {
+        code: 'service_inventory_unavailable' as const,
+      });
+    }
     return null;
   }
 }
@@ -153,8 +159,9 @@ function parseInstalledDaemonServiceDefinition(params: Readonly<{
 function readInstalledDaemonServiceDefinition(params: Readonly<{
   platform: 'darwin' | 'linux' | 'win32';
   path: string;
+  requireReadable?: boolean;
 }>): ParsedInstalledDaemonServiceDefinition | null {
-  const contents = readInstalledServiceFile(params.path);
+  const contents = readInstalledServiceFile(params.path, params.requireReadable === true);
   return contents === null
     ? null
     : parseInstalledDaemonServiceDefinition({ ...params, contents });
@@ -218,9 +225,9 @@ function parseWindowsScheduledTaskWrapperPathFromTaskToRun(taskToRunText: string
   return bareMatch?.[1]?.trim() || null;
 }
 
-function runWindowsSchtasksCommand(args: readonly string[]): ReturnType<typeof spawnSync> {
+function runWindowsSchtasksCommand(args: readonly string[]): ReturnType<typeof spawnBackgroundSync> {
   const timeoutMs = readPositiveIntEnv('HAPPIER_WINDOWS_SCHTASKS_TIMEOUT_MS', 15_000);
-  return spawnSync('schtasks', [...args], {
+  return spawnBackgroundSync('schtasks', [...args], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: timeoutMs,
@@ -231,37 +238,17 @@ function readWindowsScheduledTaskWrapperPath(taskName: string): string | null {
   const normalizedTaskName = normalizeWindowsScheduledTaskName(taskName);
   if (!normalizedTaskName) return null;
 
-  try {
-    const result = runWindowsSchtasksCommand(['/Query', '/TN', normalizedTaskName, '/XML']);
-    if (result.status !== 0) {
-      const fallback = runWindowsSchtasksCommand(['/Query', '/TN', normalizedTaskName, '/FO', 'LIST', '/V']);
-      if (fallback.status !== 0) {
-        return null;
-      }
-      return parseWindowsScheduledTaskWrapperPathFromTaskToRun(String(fallback.stdout ?? ''));
-    }
-    return parseWindowsScheduledTaskWrapperPathFromXml(String(result.stdout ?? ''))
-      ?? (() => {
-        const fallback = runWindowsSchtasksCommand(['/Query', '/TN', normalizedTaskName, '/FO', 'LIST', '/V']);
-        if (fallback.status !== 0) {
-          return null;
-        }
-        return parseWindowsScheduledTaskWrapperPathFromTaskToRun(String(fallback.stdout ?? ''));
-      })();
-  } catch {
-    return null;
-  }
-}
-
-function deriveWindowsScheduledTaskWrapperPath(taskName: string, servicesDir: string): string | null {
-  const normalizedTaskName = normalizeWindowsScheduledTaskName(taskName);
-  if (!normalizedTaskName) return null;
-
-  const resolvedWrapperPath = readWindowsScheduledTaskWrapperPath(normalizedTaskName);
-  if (resolvedWrapperPath) {
-    return resolvedWrapperPath;
-  }
-  return null;
+  const result = runWindowsSchtasksCommand(['/Query', '/TN', normalizedTaskName, '/XML']);
+  const xmlPath = !result.error && result.status === 0
+    ? parseWindowsScheduledTaskWrapperPathFromXml(String(result.stdout ?? '')) : null;
+  if (xmlPath) return xmlPath;
+  const fallback = runWindowsSchtasksCommand(['/Query', '/TN', normalizedTaskName, '/FO', 'LIST', '/V']);
+  const listPath = !fallback.error && fallback.status === 0
+    ? parseWindowsScheduledTaskWrapperPathFromTaskToRun(String(fallback.stdout ?? '')) : null;
+  if (listPath) return listPath;
+  // Only a successful listing establishes disappearance; errors and localized diagnostics do not.
+  if (!listWindowsScheduledTaskNames().some((name) => name.toLowerCase() === normalizedTaskName.toLowerCase())) return null;
+  throw new Error(`Could not read its wrapper: ${String(fallback.stderr ?? result.stderr ?? '').trim() || 'task inspection failed'}`, { cause: fallback.error ?? result.error });
 }
 
 function deriveWindowsServiceHomeDirFromWrapperPath(wrapperPath: string | null): string | null {
@@ -276,25 +263,27 @@ function deriveWindowsServiceHomeDirFromWrapperPath(wrapperPath: string | null):
   return normalizedPath.slice(0, index);
 }
 
-function listWindowsScheduledTaskWrapperPaths(servicesDir: string): readonly string[] {
-  try {
-    const result = runWindowsSchtasksCommand(['/Query', '/FO', 'CSV', '/NH']);
-    if (result.status !== 0) {
-      return [];
-    }
-
-    return String(result.stdout ?? '')
+function listWindowsScheduledTaskNames(): readonly string[] {
+  const result = runWindowsSchtasksCommand(['/Query', '/FO', 'CSV', '/NH']);
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`Could not enumerate Happier scheduled tasks: ${String(result.stderr ?? '').trim() || `schtasks exited with status ${result.status}`}`);
+  return String(result.stdout ?? '')
       .split(/\r?\n/u)
       .map((line) => parseCsvFirstField(line))
       .filter((taskName): taskName is string => Boolean(taskName))
       .map((taskName) => normalizeWindowsScheduledTaskName(taskName))
       .filter((taskName): taskName is string => Boolean(taskName))
-      .filter((taskName) => taskName.toLowerCase().startsWith('happier\\happier-daemon'))
-      .map((taskName) => deriveWindowsScheduledTaskWrapperPath(taskName, servicesDir))
-      .filter((wrapperPath): wrapperPath is string => Boolean(wrapperPath));
-  } catch {
-    return [];
-  }
+      .filter((taskName) => taskName.toLowerCase().startsWith('happier\\happier-daemon'));
+}
+
+function listWindowsScheduledTaskWrapperPaths(): readonly string[] {
+  return listWindowsScheduledTaskNames().map((taskName) => {
+    try {
+      return readWindowsScheduledTaskWrapperPath(taskName);
+    } catch (cause) {
+      throw new Error(`Could not inspect Happier scheduled task ${taskName}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    }
+  }).filter((wrapperPath): wrapperPath is string => Boolean(wrapperPath));
 }
 
 function hasDaemonStartSyncCommand(definition: ParsedInstalledDaemonServiceDefinition | null): boolean {
@@ -386,7 +375,7 @@ export function isValidInstalledDaemonServiceFile(params: Readonly<{
   return isValidInstalledDaemonServiceDefinition({
     platform: params.platform,
     expectedLabel: params.expectedLabel,
-    definition: readInstalledDaemonServiceDefinition(params),
+    definition: readInstalledDaemonServiceDefinition({ ...params, requireReadable: true }),
   });
 }
 
@@ -423,7 +412,7 @@ function parseInstalledServiceMetadata(params: Readonly<{
     happierHomeDir: parsedHappierHomeDir,
     relayUrl: parsedRelayUrl,
     releaseChannel: parsedReleaseChannel ?? params.initialReleaseChannel,
-    targetMode: parsedTargetMode === 'default-following' ? 'default-following' : params.initialTargetMode,
+    targetMode: resolveDaemonServiceTargetMode(parsedTargetMode, params.initialTargetMode),
   };
 }
 
@@ -453,11 +442,15 @@ export async function discoverInstalledDaemonServiceEntries(params: Readonly<{
     }
   }
 
+  let scheduledTaskPaths: readonly string[] = [];
+  try {
+    if (params.platform === 'win32') scheduledTaskPaths = listWindowsScheduledTaskWrapperPaths();
+  } catch (cause) {
+    throw Object.assign(new Error(`Background service inventory could not be read: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }), { code: 'service_inventory_unavailable' as const });
+  }
   const discoveredCandidates = [
     ...fileNames.map((fileName) => ({ path: join(servicesDir, fileName), source: 'file' as const })),
-    ...(params.platform === 'win32'
-      ? listWindowsScheduledTaskWrapperPaths(servicesDir).map((path) => ({ path, source: 'task' as const }))
-      : []),
+    ...scheduledTaskPaths.map((path) => ({ path, source: 'task' as const })),
   ].filter((candidate, index, allCandidates) => allCandidates.findIndex((other) => other.path === candidate.path) === index);
 
   return discoveredCandidates
@@ -469,6 +462,7 @@ export async function discoverInstalledDaemonServiceEntries(params: Readonly<{
       const definition = readInstalledDaemonServiceDefinition({
         platform: params.platform,
         path,
+        requireReadable: true,
       });
       const definitionExists = isValidInstalledDaemonServiceDefinition({
         platform: params.platform,

@@ -204,7 +204,7 @@ describe('session list layout projection', () => {
 
         expect(whileLoading.map((item) => item.type === 'header'
             ? `header:${item.headerKind}`
-            : `session:${item.serverId}:${item.sessionId}:${item.groupKind}`,
+            : item.type === 'session' ? `session:${item.serverId}:${item.sessionId}:${item.groupKind}` : `run:${item.serverId}:${item.runId}`,
         )).toEqual([
             'header:date',
             'session:home-a:hydrated:date',
@@ -224,7 +224,7 @@ describe('session list layout projection', () => {
 
         expect(afterHydration.map((item) => item.type === 'header'
             ? `header:${item.headerKind}`
-            : `session:${item.serverId}:${item.sessionId}:${item.groupKind}`,
+            : item.type === 'session' ? `session:${item.serverId}:${item.sessionId}:${item.groupKind}` : `run:${item.serverId}:${item.runId}`,
         )).toEqual([
             'header:date',
             'session:home-b:pending:date',
@@ -286,7 +286,7 @@ describe('session list layout projection', () => {
 
         expect(projected.map((item) => item.type === 'header'
             ? `header:${item.headerKind}:${item.title}`
-            : `session:${item.serverId}:${item.sessionId}:${item.groupKind}`,
+            : item.type === 'session' ? `session:${item.serverId}:${item.sessionId}:${item.groupKind}` : `run:${item.serverId}:${item.runId}`,
         )).toEqual([
             'header:date:Today',
             'session:home-b:same:date',

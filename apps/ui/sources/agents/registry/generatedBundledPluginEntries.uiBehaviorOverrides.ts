@@ -13,7 +13,7 @@
  */
 
 import type { CanonicalAgentId } from './registryCore';
-import { CLAUDE_PREDECESSOR_MESSAGE_META_WRITER } from '@happier-dev/plugins-claude/ui/predecessor-message-meta';
+import { buildClaudePredecessorMessageMeta } from '@happier-dev/protocol/agents/claude/predecessor-message-meta';
 
 export type BundledAgentUiBehaviorDescriptor = Readonly<{
     agentId: CanonicalAgentId;
@@ -724,5 +724,32 @@ export type BundledAgentPredecessorMessageMetaWriter = Readonly<{
 export const BUNDLED_CANONICAL_AGENT_PREDECESSOR_MESSAGE_META_WRITERS: Readonly<
     Partial<Record<CanonicalAgentId, BundledAgentPredecessorMessageMetaWriter>>
 > = Object.freeze({
-    claude: CLAUDE_PREDECESSOR_MESSAGE_META_WRITER,
+    claude: {
+        buildPredecessorMessageMeta: (settings) => buildClaudePredecessorMessageMeta(settings, {
+  "claudeCodeExperimentalAgentTeamsEnabled": false,
+  "claudeDynamicModelProbeEnabled": true,
+  "claudeLocalPermissionBridgeEnabled": true,
+  "claudeLocalPermissionBridgeTimeoutSeconds": 600,
+  "claudeLocalPermissionBridgeWaitIndefinitely": true,
+  "claudeRemoteAdvancedOptionsJson": "",
+  "claudeRemoteAgentSdkEnabled": true,
+  "claudeRemoteDebugCategories": [],
+  "claudeRemoteDebugEnabled": false,
+  "claudeRemoteDisableTodos": false,
+  "claudeRemoteEnableFileCheckpointing": false,
+  "claudeRemoteMaxThinkingTokens": null,
+  "claudeRemoteSettingSources": "user_project",
+  "claudeRemoteSettingSourcesV2": [
+    "user",
+    "project",
+    "local"
+  ],
+  "claudeRemoteStrictMcpServerConfig": false,
+  "claudeRemoteVerboseEnabled": false,
+  "claudeUnifiedTerminalEnabled": false,
+  "claudeUnifiedTerminalHost": "auto",
+  "claudeUnifiedTerminalResumeChoice": "ask_every_time",
+  "claudeUnifiedTerminalWorkspaceTrust": "ask_every_time"
+}),
+    },
 });

@@ -10,12 +10,28 @@ const {
     requestRefreshMock,
     openQuotaMock,
     machineRpcMock,
+    runtime,
 } = vi.hoisted(() => ({
     getQuotaMock: vi.fn(),
     requestRefreshMock: vi.fn(),
     openQuotaMock: vi.fn(),
     machineRpcMock: vi.fn(),
+    runtime: { active: true, listeners: new Set<() => void>() },
 }));
+
+// Runtime visibility is an environment boundary; keep the reader/store real.
+vi.mock('@/utils/runtime/isRuntimeActive', () => ({
+    isRuntimeActive: () => runtime.active,
+    subscribeToRuntimeActiveChange: (listener: () => void) => {
+        runtime.listeners.add(listener);
+        return () => runtime.listeners.delete(listener);
+    },
+}));
+
+function setRuntimeActive(active: boolean): void {
+    runtime.active = active;
+    for (const listener of [...runtime.listeners]) listener();
+}
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
     machineRpcWithServerScope: machineRpcMock,
@@ -79,6 +95,44 @@ describe('qualifiedConnectedAccountQuotaSnapshotStore', () => {
     beforeEach(async () => {
         vi.clearAllMocks();
         __resetQualifiedConnectedAccountQuotaSnapshotStore();
+        runtime.active = true;
+    });
+
+    it('parks retained reads while inactive and refreshes immediately on return, retaining the last snapshot', async () => {
+        vi.useFakeTimers();
+        const store = await import('./qualifiedConnectedAccountQuotaSnapshotStore');
+        const context = buildContext('server-a', 1);
+        const key = store.buildQualifiedQuotaSnapshotScopeKey(context);
+        const snapshot = { v: 1, ref, fetchedAt: 1, staleAfterMs: 60_000, planLabel: null, accountLabel: null, meters: [] };
+        getQuotaMock.mockResolvedValue({ ref, sourceResolution });
+        openQuotaMock.mockReturnValue(snapshot);
+        setRuntimeActive(false);
+        const release = store.retainQualifiedQuotaSnapshotPolling(key, context);
+        try {
+            await vi.advanceTimersByTimeAsync(120_000);
+            expect(getQuotaMock).not.toHaveBeenCalled();
+            setRuntimeActive(true);
+            await flushAsyncTurns();
+            expect(store.getQualifiedQuotaSnapshotEntry(key).snapshot).toEqual(snapshot);
+            expect(getQuotaMock).toHaveBeenCalledTimes(1);
+
+            setRuntimeActive(false);
+            await vi.advanceTimersByTimeAsync(1_000);
+            expect(store.getQualifiedQuotaSnapshotEntry(key).snapshot).toEqual(snapshot);
+            openQuotaMock.mockReturnValue({ ...snapshot, fetchedAt: 2 });
+            setRuntimeActive(true);
+            await flushAsyncTurns();
+            expect(store.getQualifiedQuotaSnapshotEntry(key).snapshot?.fetchedAt).toBe(2);
+            expect(getQuotaMock).toHaveBeenCalledTimes(2);
+            setRuntimeActive(false);
+            await vi.advanceTimersByTimeAsync(120_000);
+            expect(getQuotaMock).toHaveBeenCalledTimes(2);
+        } finally {
+            release();
+            store.__resetQualifiedConnectedAccountQuotaSnapshotStore();
+            expect(runtime.listeners.size).toBe(0);
+            vi.useRealTimers();
+        }
     });
 
     it.each([

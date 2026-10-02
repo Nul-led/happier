@@ -5,7 +5,7 @@ import { createBrowserDaemonControlCommandSender, type BrowserDaemonControlComma
 /**
  * Resolve a stable `sendDaemonCommand` transport for a browser surface (W2-A-1 / A3).
  *
- * Returns a memoized fire-and-forget sender keyed on `(machineId, serverId)` so daemon-authoritative
+ * Returns a memoized result-bearing sender keyed on `(machineId, serverId)` so daemon-authoritative
  * views (`chromiumSidecar`/`streamedBrowserSurface`) dispatch reload/stop/navigate through the daemon
  * control broker over machine RPC. Returns `undefined` when the surface has no resolved machine/server
  * context, so the control adapter falls back to its honest `browser_control_route_unavailable` state

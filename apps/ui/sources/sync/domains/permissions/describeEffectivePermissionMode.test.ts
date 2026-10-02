@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { Metadata } from '@happier-dev/session-core/state';
 
 import { describeEffectivePermissionMode } from './describeEffectivePermissionMode';
+import { mapToClaudePermissionMode } from '../../../../../../packages/plugins/claude/src/agent/runtime/permissionMode';
 
 function reasonCodes(res: ReturnType<typeof describeEffectivePermissionMode>): string[] {
     return res.reasons.map((r) => r.code);
@@ -17,6 +18,22 @@ function buildMetadata(overrides: Partial<Metadata> = {}): Metadata {
 }
 
 describe('describeEffectivePermissionMode', () => {
+    it.each(['default', 'acceptEdits', 'bypassPermissions', 'safe-yolo', 'yolo', 'read-only'] as const)(
+        'describes the Claude-native mode actually selected by the runtime for %s',
+        (selectedMode) => {
+            const res = describeEffectivePermissionMode({
+                agentType: 'claude',
+                selectedMode,
+                metadata: buildMetadata(),
+                applyTiming: 'immediate',
+            });
+            const nativeMode = res.reasons.find((reason) => reason.code === 'mode_mapped_for_provider')
+                ?.params?.providerMode ?? res.effectiveMode;
+
+            expect(nativeMode).toBe(mapToClaudePermissionMode(selectedMode));
+        },
+    );
+
     it('fails closed to read-only for codex-like plan and emits reason codes', () => {
         const res = describeEffectivePermissionMode({
             agentType: 'codex',

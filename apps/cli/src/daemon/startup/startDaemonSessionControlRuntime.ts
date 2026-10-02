@@ -157,6 +157,7 @@ import {
 } from '../externalActions/createDaemonExternalActionContributedInvoker';
 import {
     createDaemonApprovalExecutionOriginCurrentness,
+    createDaemonApprovalExecutionOriginCurrentnessFromCredentials,
     createDaemonExternalActionTargetResolver,
 } from '../externalActions/daemonExternalActionTargetResolver';
 import type { ExternalActionIngressOwner } from '@/rpc/handlers/externalAction';
@@ -169,7 +170,8 @@ import type {
 } from '../connectedServices/daemonAuthBridgeTypes';
 import type { DeviceLocalSecretStorage } from '../deviceLocalSecretStorage';
 
-import { startDaemonControlServer } from '../controlServer';
+import { startDaemonControlServer, resolveTrackedAgentRuntimeDaemonServiceAuthority } from '../controlServer';
+import { createDaemonSessionAccountActionExecutor } from '../agentRuntime/createDaemonSessionAccountActionExecutor';
 import { createOnDaemonSessionStartupFailure } from '../sessions/onHappySessionWebhook';
 import {
     AgentRuntimeDaemonModelTransitionAuthorizationResultV1Schema,
@@ -360,6 +362,9 @@ import {
     resolveDisconnectedTerminalMode,
     resolveDisconnectedTerminalHostResumeGate,
     superviseDisconnectedTerminalHostCandidate,
+    resolveTrackedSessionTerminalHostExitCandidate,
+    shouldRetainTrackedTerminalHostExitMarker,
+    superviseTrackedOptionalTerminalPresentation,
     type DisconnectedTerminalHostCandidate,
     type DisconnectedTerminalHostSupervisionResult,
 } from '../sessions/disconnectedTerminalHostSupervision';
@@ -2248,6 +2253,7 @@ export async function startDaemonSessionControlRuntime(
         getV2: (request: SessionRunnerStatusGetRequestV1) => Promise<SessionRunnerRuntimeStatusV2>;
     }>;
     onChildExited: (pid: number, exit: { reason: string; code: number | null; signal: string | null }) => void;
+    onTrackedSessionHealthy: (tracked: TrackedSession) => Promise<void>;
     controlPort: number;
     controlToken: string;
     stopControlServer: () => Promise<void>;
@@ -8085,13 +8091,12 @@ export async function startDaemonSessionControlRuntime(
             return true;
         },
         onPidPromoted: onTrackedSessionPidPromoted,
-        shouldPreserveSessionMarkerOnExit: ({ trackedSession, unexpected }) => {
-            if (trackedSession.publishedTerminalControlServiceabilityAttachmentLifecycle === 'borrowed') return false;
-            if (unexpected && trackedSession.startedBy === 'daemon') return true;
-            const terminal = trackedSession.happySessionMetadataFromLocalWebhook?.terminal
-                ?? trackedSession.hostedTerminal;
-            return Boolean(trackedSession.publishedTerminalControlServiceabilityAttachmentId)
-                || Boolean(terminal?.mode && terminal.mode !== 'plain');
+        shouldPreserveSessionMarkerOnExit: async ({ trackedSession, unexpected }) => {
+            if (unexpected && trackedSession.startedBy === 'daemon'
+                && trackedSession.publishedTerminalControlServiceabilityAttachmentLifecycle !== 'borrowed') return true;
+            return await shouldRetainTrackedTerminalHostExitMarker({
+                tracked: trackedSession, happyHomeDir: configuration.happyHomeDir,
+            });
         },
         onFinalTrackedSessionExitStaged: async ({ pid, trackedSession }) => {
             if (params.connectedServicesRestartRequestedPids.has(pid)) return;
@@ -8139,36 +8144,10 @@ export async function startDaemonSessionControlRuntime(
                 }
                 return;
             }
-            if (attachmentInfo?.version !== 2) {
-                if (
-                    trackedSession.publishedTerminalControlServiceabilityAttachmentId
-                    || (terminal?.mode && terminal.mode !== 'plain')
-                ) {
-                    throw new Error('terminal_host_attachment_unavailable_after_runner_exit');
-                }
-                return;
-            }
-            const terminalMode = resolveDisconnectedTerminalMode({
-                terminal,
-                hostKind: attachmentInfo.handle.kind,
-                attachmentId: attachmentInfo.attachmentId,
+            const candidate = await resolveTrackedSessionTerminalHostExitCandidate({
+                tracked: trackedSession, pid, happyHomeDir: configuration.happyHomeDir, attachmentInfo,
             });
-            if (!terminalMode) {
-                throw new Error('terminal_host_mode_unresolved_after_runner_exit');
-            }
-
-            registerDisconnectedTerminalHostCandidate({
-                sessionId,
-                pid,
-                happyHomeDir: configuration.happyHomeDir,
-                attachmentId: attachmentInfo.attachmentId,
-                handle: attachmentInfo.handle,
-                terminalMode,
-                ...(trackedSession.publishedTerminalControlServiceabilityAttachmentId
-                    === attachmentInfo.attachmentId
-                    ? { controlDescriptorAvailable: true }
-                    : {}),
-            });
+            if (candidate) registerDisconnectedTerminalHostCandidate(candidate);
         },
     });
     onChildExited = async (pid, exit) => {
@@ -8254,12 +8233,34 @@ export async function startDaemonSessionControlRuntime(
                 await computerRoutes?.closeSession(trackedBeforeExit.happySessionId);
                 connectedServiceRuntimeAuthSwitchAttempts.clearSession(trackedBeforeExit.happySessionId);
                 connectedServiceSessionAuthSwitchCore.clearSession(trackedBeforeExit.happySessionId);
-                void disposeSessionHookArtifactsForSession({
-                    happyHomeDir: configuration.happyHomeDir,
-                    sessionId: trackedBeforeExit.happySessionId,
-                }).catch((error) => {
-                    logger.debug('[DAEMON RUN] Session hook artifact cleanup failed (non-fatal)', error);
-                });
+                const retainedTerminalCandidate = disconnectedTerminalHostCandidates.find(candidate =>
+                    candidate.sessionId === trackedBeforeExit.happySessionId
+                    && !terminalizedDisconnectedTerminalHostIds.has(candidate.attachmentId));
+                const retainedTerminal = retainedTerminalCandidate
+                    ? await superviseDisconnectedTerminalHost(retainedTerminalCandidate)
+                    : null;
+                // The existing exact-host supervision owns absence. A surviving
+                // provider still uses these Session-scoped ports/secrets; unknown
+                // evidence stays fenced rather than becoming artifact absence.
+                if (retainedTerminal?.state === 'unknown') {
+                    logger.warn('[DAEMON RUN] Session hook cleanup deferred while terminal-host retirement is unproven', {
+                        sessionId: trackedBeforeExit.happySessionId,
+                        reason: retainedTerminal.reason,
+                    });
+                }
+                if ((!retainedTerminal || retainedTerminal.state === 'stopped')
+                    && !Array.from(params.pidToTrackedSession.values())
+                        .some(child => child.happySessionId === trackedBeforeExit.happySessionId)) {
+                    await disposeSessionHookArtifactsForSession({
+                        happyHomeDir: configuration.happyHomeDir,
+                        sessionId: trackedBeforeExit.happySessionId,
+                    }).catch(() => {
+                        logger.warn('[DAEMON RUN] Session hook artifact cleanup failed', {
+                            sessionId: trackedBeforeExit.happySessionId,
+                            reason: 'artifact_cleanup_failed',
+                        });
+                    });
+                }
                 void disposeTerminalAttachmentInfoForSession({
                     happyHomeDir: configuration.happyHomeDir,
                     sessionId: trackedBeforeExit.happySessionId,
@@ -11263,7 +11264,28 @@ export async function startDaemonSessionControlRuntime(
                 : {}),
         })
         : null;
-    const externalActionApprovalExecutionOriginCurrentness = (
+    const isSessionCallerCurrent: NonNullable<Parameters<typeof createDaemonApprovalExecutionOriginCurrentness>[0]['isSessionCallerCurrent']> = async ({ caller, signal }) => {
+        if (signal?.aborted) return false;
+        const tracked = Array.from(params.pidToTrackedSession.values())
+            .find((candidate) => candidate.happySessionId === caller.sessionId);
+        if (tracked) {
+            const authority = await resolveTrackedAgentRuntimeDaemonServiceAuthority(tracked, caller.sessionId);
+            return !signal?.aborted && authority !== null
+                && Array.from(params.pidToTrackedSession.values()).includes(tracked);
+        }
+        return foregroundAgentRuntimeAdmission.isSessionCurrent(caller.sessionId);
+    };
+    const sessionApprovalExecutionOriginCurrentness = createDaemonApprovalExecutionOriginCurrentnessFromCredentials({
+        credentials: params.credentials,
+        machineId: params.machineId,
+        serverId: params.serverId,
+        serverApiUrl: params.serverBaseUrl,
+        isSessionCallerCurrent,
+        ...(params.resolveServerFeaturesSnapshot
+            ? { resolveServerFeaturesSnapshot: params.resolveServerFeaturesSnapshot }
+            : {}),
+    });
+    const nonSessionApprovalExecutionOriginCurrentness = (
         externalActionAccountId
         && externalActionTargetResolver
         && externalActionAccountServerDeps?.accountApiTokensListAction
@@ -11313,6 +11335,14 @@ export async function startDaemonSessionControlRuntime(
                 : {}),
         })
         : null;
+    // Session replay needs the credentialed owner's current permission and
+    // Account spawn-policy reads. Other callers retain their existing custom
+    // Machine/Workflow authority composition.
+    const externalActionApprovalExecutionOriginCurrentness: typeof nonSessionApprovalExecutionOriginCurrentness = nonSessionApprovalExecutionOriginCurrentness
+        ? async (args) => args.origin.caller.kind === 'session'
+            ? await sessionApprovalExecutionOriginCurrentness?.(args) === true
+            : await nonSessionApprovalExecutionOriginCurrentness(args)
+        : null;
     const externalActionContributedApprovalReplay = (
         externalActionAccountId
         && externalActionApprovalExecutionOriginCurrentness
@@ -11339,7 +11369,9 @@ export async function startDaemonSessionControlRuntime(
     };
     const createExternalActionExecutor = (
         credentials: typeof params.credentials,
-    ): ExternalActionIngressOwner['executor'] => ({
+        getCurrentTurnWorkDepth?: Parameters<typeof createCliActionExecutorFromCredentials>[0]['getCurrentTurnWorkDepth'],
+        isSessionActionCallerCurrent?: () => Promise<boolean>,
+    ): Pick<ReturnType<typeof createCliActionExecutorFromCredentials>, 'execute'> => ({
         execute: async (actionId, input, context) => {
             let executionContext = context;
             let observedServerIdentityId: string | null = null;
@@ -11394,6 +11426,7 @@ export async function startDaemonSessionControlRuntime(
             const apiMachineForSessions = params.getApiMachineForSessions();
             const executor = createCliActionExecutorFromCredentials({
                 credentials,
+                ...(getCurrentTurnWorkDepth ? { getCurrentTurnWorkDepth } : {}),
                 readCredentials: async () => await readStoredCredentialsForServerId(params.serverId),
                 serverId: params.serverId,
                 serverApiUrl: params.serverBaseUrl,
@@ -11440,6 +11473,13 @@ export async function startDaemonSessionControlRuntime(
                     : {}),
                 ...(apiMachineForSessions
                     ? {
+                        sessionActionRpcTransport: async (request) => {
+                            const current = isSessionActionCallerCurrent
+                                ? await isSessionActionCallerCurrent()
+                                : await isSessionCallerCurrent({ caller: request.origin.caller, signal: request.signal });
+                            if (!current) throw Object.assign(new Error('target_unavailable'), { code: 'target_unavailable' });
+                            return await apiMachineForSessions.callSessionActionRpc(request);
+                        },
                         machineActionDirectTargetTransport: {
                             machineId: params.machineId,
                             invoke: async (method, request, options) =>
@@ -11502,6 +11542,13 @@ export async function startDaemonSessionControlRuntime(
                 : {}),
         }
         : undefined;
+    const executeSessionAccountAction = externalActionIngressOwner
+        ? createDaemonSessionAccountActionExecutor({
+            serverId: params.serverId,
+            createExecutor: (getCurrentTurnWorkDepth, isCallerCurrent) =>
+                createExternalActionExecutor(params.credentials, getCurrentTurnWorkDepth, isCallerCurrent),
+        })
+        : null;
     const externalActionApi: NonNullable<
         Parameters<typeof startDaemonControlServer>[0]['externalActionApi']
     > | undefined = externalActionIngressOwner
@@ -11722,6 +11769,18 @@ export async function startDaemonSessionControlRuntime(
                     retainedAgent,
                     trackedSession,
                 } = context;
+                if (request.operation.kind === 'action.execute') {
+                    return {
+                        ok: true as const,
+                        result: {
+                            kind: 'action.execution' as const,
+                            requestId: request.operation.requestId,
+                            outcome: executeSessionAccountAction
+                                ? await executeSessionAccountAction(request.operation, context)
+                                : { ok: false as const, errorCode: 'target_unavailable' as const, error: 'target_unavailable' },
+                        },
+                    };
+                }
                 if (
                     request.operation.kind
                     === 'turn.admission.authorize'
@@ -14158,6 +14217,31 @@ export async function startDaemonSessionControlRuntime(
             getV2: resolveSessionRunnerStatusV2,
         },
         onChildExited,
+        onTrackedSessionHealthy: async (tracked: TrackedSession): Promise<void> => {
+            await superviseTrackedOptionalTerminalPresentation({
+                tracked,
+                happyHomeDir: configuration.happyHomeDir,
+                isCurrent: () => params.pidToTrackedSession.get(tracked.pid) === tracked
+                    && params.isShuttingDown?.() !== true
+                    && typeof tracked.stopRequestedAtMs !== 'number'
+                    && tracked.reportMarkerCustody?.retiring !== true,
+                loadTerminalHostAdapters: async () => await params.loadTerminalHostAdapters?.() ?? {},
+                probeSessionServiceability: async (sessionId) => await probeSessionRunnerServiceability({
+                    sessionId,
+                    trackedSessions: params.pidToTrackedSession.values(),
+                    probeCapability: async () => await probeAlreadyRunningExistingSessionServiceability({
+                        sessionId,
+                        credentials: params.credentials,
+                        abortSignal: shutdownCancellationDomains.daemonWorkSignal,
+                        ...(params.isShuttingDown ? { isShuttingDown: params.isShuttingDown } : {}),
+                    }),
+                }),
+                retireExactTerminalControlServiceability: async ({ sessionId, attachmentInfo, terminalMode }) =>
+                    await retireTerminalControlServiceabilityForCurrentAccount({
+                        sessionId, attachmentId: attachmentInfo.attachmentId, terminalMode,
+                    }),
+            });
+        },
         controlPort,
         controlToken,
         stopControlServer: stopControlServerWithConnectedServiceDeferralCleanup,

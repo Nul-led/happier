@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { createSocketTransportAdapter } from '@happier-dev/sync-client';
 import { createActionExecutor, deriveSessionCreationTagV1 } from '@happier-dev/protocol';
 import { executeExternalAction } from '@/daemon/externalActions/executeExternalAction';
 import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
@@ -8,7 +10,8 @@ import { createCliActionDeps } from '@/session/actions/createCliActionDeps';
 // HTTP and fetch are the real process boundaries; authoring, crypto envelopes,
 // Session resolution, capability parsing and Pending transport stay real.
 const http = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
-const sockets = vi.hoisted(() => ({ createUserScopedSocket: vi.fn() }));
+const sockets = vi.hoisted(() => ({ createUserScopedSocket: vi.fn(), createSessionScopedSocketConnection: vi.fn() }));
+let observationSocket: EventEmitter;
 const rpc = vi.hoisted(() => ({ callSessionRpc: vi.fn() }));
 vi.mock('axios', () => ({ default: { ...http, isAxiosError: () => false } }));
 vi.mock('@/api/session/sockets', () => sockets);
@@ -22,7 +25,7 @@ const correspondence = {
   v: 1,
   sessionCreationTag: deriveSessionCreationTagV1({ callerCreationNamespace: 'user', creationKey: 'target-send-test' }),
   recipe: {
-    execution: { machineId: 'machine-a', directory: '/workspace' },
+    execution: { machineId: 'machine-a', directory: { kind: 'path', path: '/workspace' } },
     organization: { folderId: null, tagIds: [] },
     agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } },
     modelSelection: null, profileId: null, requestedPermissionMode: null,
@@ -33,12 +36,22 @@ const correspondence = {
 
 function mockRunReads(inputTurns: readonly unknown[]) {
   let readIndex = 0;
-  rpc.callSessionRpc.mockImplementation(async () => ({ ok: true, data: { run: {
+  let resolveRead!: () => void;
+  const firstRead = new Promise<void>((resolve) => { resolveRead = resolve; });
+  const run = () => ({
         runId: 'run-a', callId: 'call-a', sidechainId: 'sidechain-a', intent: 'delegate',
         backendTarget: { kind: 'builtInAgent', agentId: 'claude' }, permissionMode: 'read-only',
         retentionPolicy: 'resumable', runClass: 'long_lived', ioMode: 'streaming', status: 'running', startedAtMs: 1,
-        inputTurns: inputTurns[Math.min(readIndex++, inputTurns.length - 1)],
-      } } }));
+        inputTurns: inputTurns[Math.min(readIndex, inputTurns.length - 1)],
+      });
+  rpc.callSessionRpc.mockImplementation(async () => {
+    resolveRead();
+    return { ok: true, data: { run: run() } };
+  });
+  return { firstRead, advance: () => {
+    readIndex += 1;
+    observationSocket.emit('ephemeral', { type: 'execution-run-updated', sessionId, run: run() });
+  } };
 }
 
 describe('target Session input authoring through HTTP', () => {
@@ -80,6 +93,13 @@ describe('target Session input authoring through HTTP', () => {
     http.get.mockReset();
     http.post.mockReset();
     sockets.createUserScopedSocket.mockReset();
+    sockets.createSessionScopedSocketConnection.mockImplementation(() => {
+      const socket = Object.assign(new EventEmitter(), {
+        connected: false, connect: () => {}, disconnect: () => {}, close: () => {},
+      });
+      observationSocket = socket;
+      return { socket, transport: createSocketTransportAdapter(socket) };
+    });
     rpc.callSessionRpc.mockReset();
     http.get.mockImplementation(async (url: string) => {
       if (url.endsWith('/v1/account/encryption/currentness')) return {
@@ -226,16 +246,19 @@ describe('target Session input authoring through HTTP', () => {
     });
     // The exact Pending row is already gone: the server answers the replay as terminal.
     http.post.mockResolvedValue({ status: 200, data: { didWrite: false, terminal: true } });
-    mockRunReads([
+    const run = mockRunReads([
       { occurrenceId: 'occurrence-a', current: { turnId: 'turn-a', inputIds: ['input-a'], state: 'active' },
         last: { turnId: 'sibling-turn', inputIds: ['sibling-input'], state: 'failed' } },
       { occurrenceId: 'occurrence-a', last: { turnId: 'turn-a', inputIds: ['input-a'], state } },
     ]);
 
-    const result = await sendSessionMessage({
+    const pendingResult = sendSessionMessage({
       credentials, idOrPrefix: sessionId, localId: 'input-a', message: 'Wait for this run input',
       recipient, wait: true, timeoutMs: 1_000,
     });
+    await run.firstRead;
+    run.advance();
+    const result = await pendingResult;
 
     if (state === 'completed') {
       expect(result, JSON.stringify(result)).toMatchObject({ ok: true, localId: 'input-a', waited: true });
@@ -355,17 +378,20 @@ describe('target Session input authoring through HTTP', () => {
       } } };
       return originalGet(url);
     });
-    mockRunReads([
+    const run = mockRunReads([
       { occurrenceId: 'occurrence-a', current: { turnId: 'turn-a', inputIds: ['input-a'], state: 'active' },
         last: { turnId: 'sibling-turn', inputIds: ['sibling-input'], state: 'completed' } },
       { occurrenceId: 'occurrence-a', last: { turnId: 'turn-a', inputIds: ['input-a'], state } },
     ]);
     const deps = createCliActionDeps({ token: credentials.token, credentials, sessionId, mode: 'plain', ctx: null });
-    const result = await deps.sessionSendMessage({
+    const pendingResult = deps.sessionSendMessage({
       context: cliActionContext,
       sessionId, localId: 'input-a', message: 'Wait for this run input', recipient, wait: true, timeoutSeconds: 1,
       requestedAction: { v: 1, kind: 'steer_if_active' },
     });
+    await run.firstRead;
+    run.advance();
+    const result = await pendingResult;
     if (state === 'completed') expect(result).toEqual({ status: 'accepted', localId: 'input-a' });
     else expect(result).toEqual({
       status: state,

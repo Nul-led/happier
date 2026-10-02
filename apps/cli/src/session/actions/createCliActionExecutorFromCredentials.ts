@@ -77,6 +77,7 @@ import type { ComposerAttachmentSendPreparationRegistryV1 } from '@/session/comp
 import type {
   CliActionExactHomeTarget,
   MachineActionDirectTargetTransport,
+  SessionActionRpcTransport,
   SessionSpawnDirectTargetTransport,
 } from './createCliActionDeps';
 import { createCliActionExecutor } from './createCliActionExecutor';
@@ -499,6 +500,8 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
   resolveExactSessionEncryptionMaterial?: (sessionId: string) => SessionTransportEncryptionMaterial | null;
   /** Credential-scoped canonical policy shared with pre-execution discovery. */
   actionsSettingsProvider?: RuntimeActionSettingsProvider;
+  /** Exact admitted-turn depth supplied by the authenticated Session host. */
+  getCurrentTurnWorkDepth?: Parameters<typeof createCliActionExecutor>[0]['getCurrentTurnWorkDepth'];
   resolvePluginNotifications?: Parameters<typeof createCliActionExecutor>[0]['resolvePluginNotifications'];
   /** Explicit CLI machine selector for public Action transport. */
   machineId?: string;
@@ -536,6 +539,7 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
   sessionSpawnDirectTargetTransport?: SessionSpawnDirectTargetTransport;
   /** In-process transport to the current daemon's canonical machine Action handlers. */
   machineActionDirectTargetTransport?: MachineActionDirectTargetTransport;
+  sessionActionRpcTransport?: SessionActionRpcTransport;
   machineAdmissionTransport?: CliActionMachineAdmissionTransport;
   /** Late-bound plugin-runtime Composer attachments for declared Session input. */
   resolveComposerAttachmentSendPreparation?: () => ComposerAttachmentSendPreparationRegistryV1 | null;
@@ -771,6 +775,7 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
         ? { pluginActionExecutionOwner: params.pluginActionExecutionOwner }
         : {}),
       sessionId: 'cli-global',
+      ...(params.getCurrentTurnWorkDepth ? { getCurrentTurnWorkDepth: params.getCurrentTurnWorkDepth } : {}),
       ...(params.readRegisteredPromptAssetAdapters
         ? { readRegisteredPromptAssetAdapters: params.readRegisteredPromptAssetAdapters }
         : {}),
@@ -810,6 +815,7 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
       ...(params.machineActionDirectTargetTransport
         ? { machineActionDirectTargetTransport: params.machineActionDirectTargetTransport }
         : {}),
+      ...(params.sessionActionRpcTransport ? { sessionActionRpcTransport: params.sessionActionRpcTransport } : {}),
       ...(params.externalSessionPluginAdmissionOwner
         ? {
             externalSessionPluginAdmissionOwner:
@@ -975,7 +981,8 @@ export function createCliActionExecutorFromCredentials(params: Readonly<{
         ) {
           await ensureCliActionPolicySettings(credentials, resolveActionServerApiUrl());
         }
-        return await executor.execute(actionId, input, context);
+        const signal = combineInvocationSignals(invocationSignal, context?.signal);
+        return await executor.execute(actionId, input, signal ? { ...context, signal } : context);
       },
       replayApprovedApprovalRequest: async (args) => {
         const credentials = await readCurrentCredentials();

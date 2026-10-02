@@ -1,7 +1,6 @@
-import { EventEmitter } from 'node:events';
 import { chmodSync, existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { spawn, spawnSync, ChildProcess, type SpawnOptions } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -9,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 
 import { afterAll, beforeAll, describe, expect, it, onTestFailed, onTestFinished, vi } from 'vitest';
 import { bundleInstalledPackageWithRuntimeDependencies, bundleWorkspacePackagesWithRuntimeDependencies } from '@happier-dev/cli-common/workspaces';
+import { readProcessInstanceFingerprintSync } from '@happier-dev/cli-common/processInstance';
 
 import { launchBorrowedTerminalProcess } from './borrowedTerminalProcess';
 import { killProcessTree } from '@/agent/runtime/process/killProcessTree';
@@ -17,17 +17,89 @@ import { bindProcessLogger, Logger } from '@/ui/logger';
 import { waitForCondition } from '@/testkit/async/waitFor';
 
 describe('launchBorrowedTerminalProcess', () => {
+  it('exposes the actual launcher process generation only after native startup admission', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'happier-terminal-launcher-custody-'));
+    let launcherPid: number | undefined;
+    let launched: Awaited<ReturnType<typeof launchBorrowedTerminalProcess>> | undefined;
+    try {
+      launched = await launchBorrowedTerminalProcess({
+        spawnArgv: [process.execPath, '-e', 'setInterval(() => {}, 1000)'],
+        workingDirectory: directory,
+        spawnEnv: { PATH: process.env.PATH ?? '' },
+        spawnProcess: (command, args, options) => {
+          const child = spawn(command, [...args], options); // Actual OS spawn, preserving native IPC admission.
+          launcherPid = child.pid;
+          return child;
+        },
+      });
+      expect(launcherPid).toBeGreaterThan(1);
+      expect(launched.launcherIdentity).toEqual({
+        pid: launcherPid,
+        processInstanceFingerprint: readProcessInstanceFingerprintSync(launcherPid!),
+      });
+      expect(launched.launcherIdentity?.processInstanceFingerprint).toBeTruthy();
+      expect(Object.isFrozen(launched.launcherIdentity)).toBe(true);
+    } finally {
+      if (launcherPid) await killProcessTree({ pid: launcherPid });
+      await launched?.whenExited.catch(() => undefined);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it('retries failed physical termination while coalescing each attempt and retaining successful completion', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'happier-terminal-termination-retry-'));
+    const failure = new Error('physical termination temporarily unavailable');
+    let rejectFirst!: (error: Error) => void;
+    const firstBoundary = new Promise<void>((_resolve, reject) => { rejectFirst = reject; });
+    let releaseSecond!: () => void;
+    const secondBoundary = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    let attempts = 0;
+    let launcherPid: number | undefined;
+    let launched: Awaited<ReturnType<typeof launchBorrowedTerminalProcess>> | undefined;
+    try {
+      launched = await launchBorrowedTerminalProcess({
+        spawnArgv: [process.execPath, '-e', 'setInterval(() => {}, 1000)'],
+        workingDirectory: directory, spawnEnv: { PATH: process.env.PATH ?? '' },
+        terminateProcess: async (child) => {
+          launcherPid = child.pid;
+          attempts += 1;
+          if (attempts === 1) return firstBoundary;
+          await secondBoundary;
+          await killProcessTree(child);
+        },
+      });
+      const first = launched.terminate();
+      expect(launched.terminate()).toBe(first);
+      const failureObserved = expect(first).rejects.toBe(failure);
+      rejectFirst(failure);
+      await failureObserved;
+      expect(isPidAlive(launcherPid!)).toBe(true);
+      const retry = launched.terminate();
+      expect(launched.terminate()).toBe(retry);
+      releaseSecond();
+      await expect(retry).resolves.toBeUndefined();
+      await expect(waitForProcessExit(launcherPid!, { timeoutMs: 3_000 })).resolves.toBe(true);
+      await launched.whenExited;
+      expect(launched.terminate()).toBe(retry);
+      expect(attempts).toBe(2);
+    } finally {
+      releaseSecond();
+      if (launcherPid) await killProcessTree({ pid: launcherPid });
+      await launched?.whenExited.catch(() => undefined);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
   it('reports late handoff cleanup failure to the default file diagnostic without disturbing the terminal', async () => {
     if (process.platform === 'win32') return; // Real POSIX directory permissions.
     const directory = await mkdtemp(join(tmpdir(), 'happier-borrowed-diagnostic-'));
     const logPath = join(directory, 'diagnostic.log');
     const scopedLogger = new Logger({ logFilePath: logPath, allowDangerousRemoteLogging: false, pruneCurrentProcessLogs: false });
     const restoreLogger = bindProcessLogger(scopedLogger);
-    const child = Object.assign(new EventEmitter(), { pid: undefined });
+    const child = new ChildProcess();
     let specPath: string | undefined;
     const spawnProcess = vi.fn((_command: string, args: readonly string[], _options: SpawnOptions) => {
       specPath = args[1]!;
-      return child as unknown as ChildProcess; // Genuine OS-spawn/exit boundary.
+      queueMicrotask(() => child.emit('message', { type: 'terminal-native-spawned' }));
+      return child; // Genuine OS-spawn/exit boundary.
     });
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -38,7 +110,10 @@ describe('launchBorrowedTerminalProcess', () => {
       });
       chmodSync(dirname(specPath!), 0o500);
       child.emit('exit', 0, null);
-      await expect(launched.whenExited).rejects.toMatchObject({ code: 'EACCES' });
+      await expect(launched.whenExited).rejects.toMatchObject({ errors: expect.arrayContaining([
+        expect.objectContaining({ code: 'EACCES' }),
+        expect.objectContaining({ code: 'ENOTEMPTY' }),
+      ]) });
       scopedLogger.flushSync();
       const diagnostic = await readFile(logPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOENT') return '';
@@ -65,13 +140,13 @@ describe('launchBorrowedTerminalProcess', () => {
     if (process.platform === 'win32') return; // Real POSIX directory permissions, not an internal mock.
     const failure = new Error('native spawn refused');
     let specPath: string | undefined;
-    const child = Object.assign(new EventEmitter(), { pid: undefined });
+    const child = new ChildProcess();
     const spawnProcess = vi.fn((_command: string, args: readonly string[], _options: SpawnOptions): ChildProcess => {
       specPath = args[1]!;
       chmodSync(dirname(specPath), 0o500);
       if (failureMode === 'sync') throw failure;
       queueMicrotask(() => child.emit('error', failure));
-      return child as unknown as ChildProcess; // Genuine failed OS-spawn boundary.
+      return child; // Genuine failed OS-spawn boundary.
     });
     try {
       const result = launchBorrowedTerminalProcess({
@@ -81,7 +156,10 @@ describe('launchBorrowedTerminalProcess', () => {
       expect(error).toBeInstanceOf(AggregateError);
       const errors = (error as AggregateError).errors as unknown[];
       expect(errors).toContain(failure);
-      expect(errors).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'EACCES' })]));
+      expect(errors).toEqual(expect.arrayContaining([expect.objectContaining({ errors: expect.arrayContaining([
+        expect.objectContaining({ code: 'EACCES' }),
+        expect.objectContaining({ code: 'ENOTEMPTY' }),
+      ]) })]));
     } finally {
       if (specPath) {
         chmodSync(dirname(specPath), 0o700);
@@ -118,6 +196,46 @@ describe('launchBorrowedTerminalProcess', () => {
     });
     afterAll(async () => {
       if (assetsDirectory) await rm(assetsDirectory, { recursive: true, force: true });
+    });
+    it('cancels during the real private handoff read without spawning a native child', async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'happier-borrowed-read-cancel-'));
+      const readingPath = join(directory, 'reading');
+      const nativePath = join(directory, 'native-started');
+      const preloadPath = join(directory, 'pause-handoff.cjs');
+      // Pause only the launcher's real filesystem boundary, preserving its lifetime owner.
+      await writeFile(preloadPath, `
+        const fs = require('node:fs');
+        const original = fs.promises.readFile;
+        fs.promises.readFile = async (...args) => {
+          fs.writeFileSync(${JSON.stringify(readingPath)}, 'reading');
+          await new Promise(resolve => process.once('disconnect', resolve));
+          return await original(...args);
+        };
+      `);
+      const cancellation = new AbortController();
+      let launcher: ChildProcess | undefined;
+      const startup = launchBorrowedTerminalProcess({
+        spawnArgv: [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(nativePath)}, 'started')`],
+        spawnEnv: { PATH: process.env.PATH ?? '' }, workingDirectory: directory, signal: cancellation.signal,
+        spawnProcess: (_command, args, options) => {
+          const child = spawn(process.execPath, ['--require', preloadPath, runnerPath, ...args.slice(1)], options);
+          launcher = child;
+          return child;
+        },
+      });
+      void startup.catch(() => undefined);
+      try {
+        await waitForCondition(() => existsSync(readingPath), { timeoutMs: 10_000, label: 'launch handoff read' });
+        cancellation.abort();
+        await expect(startup).rejects.toThrow();
+        expect(existsSync(nativePath)).toBe(false);
+        await expect(waitForProcessExit(launcher!.pid!, { timeoutMs: 10_000 })).resolves.toBe(true);
+      } finally {
+        cancellation.abort();
+        if (launcher?.pid && isPidAlive(launcher.pid)) await killProcessTree(launcher);
+        await startup.catch(() => undefined);
+        await rm(directory, { recursive: true, force: true });
+      }
     });
     it('reports controller-loss cleanup failure with a fixed diagnostic, without native launch values', async () => {
       if (process.platform === 'win32') return; // Real unavailable POSIX discovery commands.
@@ -171,7 +289,9 @@ describe('launchBorrowedTerminalProcess', () => {
         { controllerRuntime: bunPath, launcherRuntime: bunPath, lifetime: true },
       ] : []),
       { controllerRuntime: process.execPath, launcherRuntime: process.execPath, lifetime: false },
-    ])('handles controller loss with controller=$controllerRuntime launcher=$launcherRuntime lifetime=$lifetime, preserving shell and final native environment', async ({ controllerRuntime, launcherRuntime, lifetime }) => {
+      { controllerRuntime: process.execPath, launcherRuntime: process.execPath, lifetime: true, nativeAttach: true },
+      { controllerRuntime: process.execPath, launcherRuntime: process.execPath, lifetime: true, nativeAttach: true, forcedDetach: true },
+    ])('handles controller loss with controller=$controllerRuntime launcher=$launcherRuntime lifetime=$lifetime nativeAttach=$nativeAttach forcedDetach=$forcedDetach, preserving shell and final native environment', async ({ controllerRuntime, launcherRuntime, lifetime, nativeAttach, forcedDetach }) => {
       if (process.platform === 'win32') return; // This controller-only SIGKILL proof is POSIX-specific.
       const directory = await mkdtemp(join(tmpdir(), 'happier-borrowed-lifetime-'));
       const readyPath = join(directory, 'ready.json');
@@ -182,9 +302,25 @@ describe('launchBorrowedTerminalProcess', () => {
         const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
         child.once('message', pid => require('node:fs').writeFileSync(${JSON.stringify(readyPath)}, JSON.stringify({ launcher: process.ppid, provider: process.pid, descendant: pid, env: { TEST_SECRET: process.env.TEST_SECRET, HERDR_ENV: process.env.HERDR_ENV } })));
         process.on('SIGTERM', () => { child.once('exit', () => process.exit(0)); child.kill('SIGTERM'); });
+        ${forcedDetach ? "process.on('SIGINT', () => {});" : ''}
         setInterval(() => {}, 1000);
       `;
-      const source = lifetime ? `
+      const source = nativeAttach ? `
+        const { createProviderCliAttachSurface } = await import(${JSON.stringify(pathToFileURL(resolve('src/session/attach/providerCliAttach.ts')).href)});
+        const { spawn } = await import('node:child_process');
+        const cancellation = new AbortController();
+        process.on('message', message => { if (message === 'force-detach') { process.send('detach-request-observed'); cancellation.abort(); } });
+        process.send('source-owner-ready');
+        ${forcedDetach ? "const independentService = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); independentService.once('spawn', () => process.send({ type: 'independent-service-ready', pid: independentService.pid }));" : ''}
+        const surface = createProviderCliAttachSurface({ agentId: 'opencode',
+          resolveTarget: () => ({ ok: true, value: {} }), createArgs: () => [],
+          resolveLaunchSpec: () => ({ source: 'managed', resolvedPath: ${JSON.stringify(process.execPath)}, command: ${JSON.stringify(process.execPath)}, args: ['-e', ${JSON.stringify(provider)}] }),
+          env: { PATH: process.env.PATH, TEST_SECRET: 'private-native-value' },
+          spawnProcess: (command, args, options) => spawn(command, args[0]?.endsWith('terminal_launch_spec_runner.cjs') ? [${JSON.stringify(runnerPath)}, ...args.slice(1)] : args, options),
+        });
+        await surface.attachManaged({ sessionId: 'harmless-fixture', metadata: { path: ${JSON.stringify(directory)} }, signal: cancellation.signal, onAttached: async () => { process.send('native-attach-ready'); } });
+        ${forcedDetach ? "setInterval(() => {}, 1000);" : ''}
+      ` : lifetime ? `
         process.stderr.write('test phase: importing current borrowed owner\\n');
         const { launchBorrowedTerminalProcess } = await import(${JSON.stringify(ownerUrl)});
         process.stderr.write('test phase: borrowed owner imported\\n');
@@ -214,10 +350,17 @@ describe('launchBorrowedTerminalProcess', () => {
         env: { ...process.env, NODE_PATH: '', HERDR_ENV: 'must-not-return', HAPPIER_JS_RUNTIME_PATH: launcherRuntime },
       });
       let stderr = '';
+      const observations: unknown[] = [];
+      let independentServicePid: number | undefined;
+      controller.on('message', (message) => {
+        observations.push(message);
+        if (message && typeof message === 'object' && 'type' in message && message.type === 'independent-service-ready'
+          && 'pid' in message && typeof message.pid === 'number') independentServicePid = message.pid;
+      });
       controller.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
       let phase = 'current-source controller import';
       onTestFailed(() => {
-        console.error(`Controller lifetime fixture failed during ${phase}; exit=${controller.exitCode}; stderr=${stderr}`);
+        console.error(`Controller lifetime fixture failed during ${phase}; exit=${controller.exitCode}; observations=${JSON.stringify(observations)}; stderr=${stderr}`);
       });
       const sourceReady = new Promise<void>((resolve, reject) => {
         controller.once('message', (message) => {
@@ -233,6 +376,8 @@ describe('launchBorrowedTerminalProcess', () => {
       const cleanOwnedProcesses = () => cleanup ??= (async () => {
         if (tree && isPidAlive(tree.launcher)) await killProcessTree({ pid: tree.launcher });
         else if (tree && isPidAlive(tree.provider)) await killProcessTree({ pid: tree.provider });
+        if (tree && isPidAlive(tree.descendant)) await killProcessTree({ pid: tree.descendant });
+        if (independentServicePid && isPidAlive(independentServicePid)) await killProcessTree({ pid: independentServicePid });
         if (controller.exitCode === null && controller.signalCode === null) await killProcessTree(controller);
         await killProcessTree(sentinel);
         await rm(directory, { recursive: true, force: true });
@@ -249,17 +394,29 @@ describe('launchBorrowedTerminalProcess', () => {
         }, { timeout: 10_000 });
         expect(tree!.env).toEqual({ TEST_SECRET: 'private-native-value' });
         expect(isPidAlive(tree!.descendant)).toBe(true);
-        phase = 'controller-only SIGKILL and owned tree cleanup';
-        controller.kill('SIGKILL');
-        await expect(waitForProcessExit(controller.pid!, { timeoutMs: 10_000 })).resolves.toBe(true);
+        phase = forcedDetach ? 'forced native detach and owned tree cleanup' : 'controller-only SIGKILL and owned tree cleanup';
+        if (forcedDetach) {
+          await vi.waitFor(() => expect(observations).toContain('native-attach-ready'), { timeout: 10_000 });
+          controller.send('force-detach');
+          await vi.waitFor(() => expect(observations).toContain('detach-request-observed'), { timeout: 10_000 });
+        }
+        else {
+          controller.kill('SIGKILL');
+          await expect(waitForProcessExit(controller.pid!, { timeoutMs: 10_000 })).resolves.toBe(true);
+        }
         if (lifetime) {
-          await expect(waitForProcessExit(tree!.provider, { timeoutMs: 3_000 })).resolves.toBe(true);
+          await expect(waitForProcessExit(tree!.provider, { timeoutMs: forcedDetach ? 10_000 : 3_000 })).resolves.toBe(true);
           await expect(waitForProcessExit(tree!.descendant, { timeoutMs: 3_000 })).resolves.toBe(true);
         } else {
           await expect(waitForProcessExit(tree!.provider, { timeoutMs: 3_000 })).resolves.toBe(false);
           expect(isPidAlive(tree!.descendant)).toBe(true);
         }
         expect(isPidAlive(sentinel.pid!)).toBe(true);
+        if (forcedDetach) expect(isPidAlive(controller.pid!)).toBe(true);
+        if (forcedDetach) {
+          expect(independentServicePid).toBeTypeOf('number');
+          expect(isPidAlive(independentServicePid!)).toBe(true);
+        }
         phase = 'fixture teardown';
       } finally {
         await cleanOwnedProcesses();
@@ -275,16 +432,29 @@ describe('launchBorrowedTerminalProcess', () => {
     await expect(launched.whenExited).resolves.toEqual({ code: 0, signal: null });
   });
 
+  it('does not acknowledge a successfully spawned launcher when the native executable is missing', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'happier-borrowed-missing-'));
+    try {
+      const result = launchBorrowedTerminalProcess({
+        spawnArgv: [join(directory, 'missing-native-executable')], spawnEnv: {}, workingDirectory: directory,
+      });
+      await expect(result).rejects.toThrow();
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
   it('runs the launch argv in the current terminal and terminates only its process tree', async () => {
-    const child = Object.assign(new EventEmitter(), { pid: 42 });
-    const spawnProcess = vi.fn((_command: string, _args: readonly string[], _options: SpawnOptions) => child);
+    const child = Object.assign(new ChildProcess(), { pid: 42 });
+    const spawnProcess = vi.fn((_command: string, _args: readonly string[], _options: SpawnOptions) => {
+      queueMicrotask(() => child.emit('message', { type: 'terminal-native-spawned' }));
+      return child;
+    });
     const terminateProcess = vi.fn(async () => undefined);
 
     const launched = await launchBorrowedTerminalProcess({
       spawnArgv: ['/managed/agent', 'opaque arg'],
       spawnEnv: { PATH: '/bin', TERM: 'xterm-256color' },
       workingDirectory: '/workspace/project',
-      spawnProcess: spawnProcess as never,
+      spawnProcess,
       terminateProcess,
     });
 
@@ -315,7 +485,7 @@ describe('launchBorrowedTerminalProcess', () => {
   });
 
   it('reports a spawn failure through startup without leaking an unhandled exit rejection', async () => {
-    const child = Object.assign(new EventEmitter(), { pid: undefined });
+    const child = new ChildProcess();
     const failure = new Error('spawn failed');
     const spawnProcess = vi.fn(() => {
       queueMicrotask(() => child.emit('error', failure));
@@ -326,7 +496,7 @@ describe('launchBorrowedTerminalProcess', () => {
       spawnArgv: ['/missing/managed-node'],
       spawnEnv: { PATH: '/bin' },
       workingDirectory: '/workspace/project',
-      spawnProcess: spawnProcess as never,
+      spawnProcess,
     })).rejects.toBe(failure);
   });
 });

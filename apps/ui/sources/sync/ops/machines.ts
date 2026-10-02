@@ -48,9 +48,6 @@ import { mergeMachineMetadataForVersionMismatch } from './machineMetadataMerge';
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
 import { isMachineRpcTimeoutError } from '@/sync/runtime/orchestration/serverScopedRpc/machineRpcTimeoutError';
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
-import {
-    requireCurrentAccountStoredContentServerCompatibility,
-} from '@/sync/api/capabilities/accountStoredContentCompatibility';
 import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 import { stopSessionViaDaemonMachineRpc } from './sessionStopStrategy';
 import {
@@ -1110,9 +1107,6 @@ export async function machineUpdateMetadata(
     const machineEncryption = storageMode === 'plain'
         ? null
         : sync.encryption?.getMachineEncryption(machineId);
-    if (storageMode === 'plain') {
-        await requireCurrentAccountStoredContentServerCompatibility();
-    }
     if (storageMode === 'e2ee' && !machineEncryption) {
         throw new Error(`Machine encryption not found for ${machineId}`);
     }

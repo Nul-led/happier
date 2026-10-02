@@ -12,7 +12,9 @@ import {
 } from '@/sync/domains/settings/voiceSettings';
 import { renderSettingsView, type SettingsViewHarness } from '@/dev/testkit';
 import { t } from '@/text';
-import { ProviderConnectionIdSchema } from '@happier-dev/protocol';
+import { PluginProjectionV2Schema, ProviderConnectionIdSchema } from '@happier-dev/protocol';
+import { clearDaemonMergedProjectionCacheForTests } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
+import { resolveVoiceConfiguredAgentTarget } from '@/voice/agent/resolveVoiceConfiguredAgentTarget';
 
 
 (
@@ -22,6 +24,13 @@ import { ProviderConnectionIdSchema } from '@happier-dev/protocol';
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 const platformOsMock = vi.hoisted(() => ({ value: 'ios' as 'ios' | 'web' }));
+// The daemon registry RPC is the system boundary; settings normalization,
+// catalog resolution, and the selected execution target stay real.
+const registryDescribe = vi.hoisted(() => vi.fn());
+vi.mock('@/sync/ops/machineContributionRegistryProjection', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/sync/ops/machineContributionRegistryProjection')>(),
+  machineContributionRegistryProjectionDescribe: registryDescribe,
+}));
 const daemonProjectionState = vi.hoisted((): { current: any } => ({
   current: {
     phase: 'ready' as const,
@@ -110,19 +119,6 @@ vi.mock('@/agents/hooks/useEnabledAgentIds', () => ({
 vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
   useDaemonMergedProjectionInputs: () => daemonProjectionState.current,
 }));
-
-vi.mock('@/agents/catalog/catalog', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/agents/catalog/catalog')>();
-  return {
-    ...actual,
-    isBundledAgentId: (v: any) => v === 'codex' || v === 'claude',
-    getAgentCore: (id: string) => ({
-      displayNameKey: 'common.ok' as any,
-      ui: { agentPickerIconName: 'sparkles-outline' },
-      model: { supportsSelection: true, supportsFreeform: true, allowedModes: ['m1', 'm2'], defaultMode: 'default' },
-    }),
-  };
-});
 
 vi.mock('@/sync/domains/models/modelOptions', () => ({
     findModelOptionForEffectiveModelId: (options: any, effectiveModelId: any) =>
@@ -257,6 +253,26 @@ function findChoiceByTitle(
 }
 
 beforeEach(() => {
+  clearDaemonMergedProjectionCacheForTests();
+  registryDescribe.mockResolvedValue({
+    supported: true,
+    projection: PluginProjectionV2Schema.parse({
+      v: 2,
+      generation: 7,
+      agentsById: {
+        'com.acme.voice.agent': {
+          id: 'com.acme.voice.agent',
+          identity: { pluginId: 'com.acme.voice', localId: 'agent' },
+          title: 'Acme Voice',
+          capabilities: { sessions: { open: ['create'], delivery: ['newTurn'], cancel: true } },
+        },
+      },
+      backendsById: {
+        'com.acme.voice.agent': { id: 'com.acme.voice.agent', agentId: 'com.acme.voice.agent' },
+      },
+      familiesById: {},
+    }),
+  });
   platformOsMock.value = 'ios';
   featureEnabledState['voice.agent'] = true;
   daemonProjectionState.current.phase = 'ready';
@@ -302,8 +318,7 @@ describe('LocalConversationSection', () => {
       isBuiltIn: false,
     });
 
-    // The exact target facts ride the catalog entry: no raw-id escape exists.
-    expect(agentPicker?.props.items.map((item: any) => item.id)).not.toContain('__custom__');
+    expect(agentPicker?.props.items.map((item: any) => item.id)).toContain('__custom__');
 
     act(() => {
       agentPicker?.props.onSelect('com.acme.voice.agent');
@@ -316,6 +331,22 @@ describe('LocalConversationSection', () => {
       agentIdentity: { pluginId: 'com.acme.voice', localId: 'agent' },
       agentProjectionGeneration: 7,
     });
+    await expect(resolveVoiceConfiguredAgentTarget({
+      machineId: 'machine-1',
+      selection: readLocalConversationVoiceSettings(nextVoice).agent,
+    })).resolves.toMatchObject({
+      ok: true,
+      agentId: 'com.acme.voice.agent',
+      backendTarget: { kind: 'backend', backendId: 'com.acme.voice.agent' },
+      targetKey: 'agent:com.acme.voice/agent',
+    });
+
+    clearDaemonMergedProjectionCacheForTests();
+    registryDescribe.mockResolvedValue({ supported: false, reason: 'not-supported' });
+    await expect(resolveVoiceConfiguredAgentTarget({
+      machineId: 'machine-1',
+      selection: readLocalConversationVoiceSettings(nextVoice).agent,
+    })).resolves.toMatchObject({ ok: false, errorCode: 'voice_agent_selection_unavailable' });
   });
 
   it('persists the exact backend target key of a bundled Agent selection', async () => {
@@ -325,7 +356,10 @@ describe('LocalConversationSection', () => {
       conversationMode: 'agent',
       agent: {
         agentSource: 'agent',
-        agentId: 'codex',
+        agentId: 'com.acme.voice.agent',
+        agentTargetKey: 'agent:com.acme.voice/agent',
+        agentIdentity: { pluginId: 'com.acme.voice', localId: 'agent' },
+        agentProjectionGeneration: 7,
       },
     });
 
@@ -344,6 +378,50 @@ describe('LocalConversationSection', () => {
       agentId: 'codex',
       agentTargetKey: 'agent:happier.agent.codex/codex',
       agentIdentity: null,
+      agentProjectionGeneration: null,
+    });
+    await expect(resolveVoiceConfiguredAgentTarget({
+      machineId: 'machine-1',
+      selection: readLocalConversationVoiceSettings(nextVoice).agent,
+    })).resolves.toMatchObject({
+      ok: true,
+      agentId: 'codex',
+      backendTarget: { kind: 'backend', backendId: 'codex' },
+    });
+  });
+
+  it('clears the previous catalog identity when committing a changed custom Agent id', async () => {
+    const LocalConversationSection = await loadLocalConversationSection();
+    const setVoice = vi.fn();
+    const voice = createLocalConversationVoice({
+      conversationMode: 'agent',
+      agent: {
+        agentSource: 'agent',
+        agentId: 'com.acme.voice.agent',
+        agentTargetKey: 'agent:com.acme.voice/agent',
+        agentIdentity: { pluginId: 'com.acme.voice', localId: 'agent' },
+        agentProjectionGeneration: 7,
+      },
+    });
+    const screen = await renderSettingsView(<LocalConversationSection voice={voice} setVoice={setVoice} />);
+    act(() => {
+      findDropdownByItemTriggerTitle(screen, t('settingsVoice.local.mediatorAgentId'))?.props.onSelect('__custom__');
+    });
+    const field = screen.findAll((node) => node.props?.fieldTestID === 'settings.voice.local.agentId.custom.field')[0];
+    expect(field).toBeDefined();
+    act(() => { field.props.onCommit('claude'); });
+
+    const selection = readLocalConversationVoiceSettings(setVoice.mock.calls[0]?.[0]).agent;
+    expect(selection).toMatchObject({
+      agentId: 'claude',
+      agentTargetKey: null,
+      agentIdentity: null,
+      agentProjectionGeneration: null,
+    });
+    await expect(resolveVoiceConfiguredAgentTarget({ machineId: 'machine-1', selection })).resolves.toMatchObject({
+      ok: true,
+      agentId: 'claude',
+      backendTarget: { kind: 'backend', backendId: 'claude' },
     });
   });
 
@@ -383,6 +461,10 @@ describe('LocalConversationSection', () => {
     const voice = createLocalConversationVoice({
       conversationMode: 'agent',
       agent: {
+        agentId: 'com.acme.voice.agent',
+        agentTargetKey: 'agent:com.acme.voice/agent',
+        agentIdentity: { pluginId: 'com.acme.voice', localId: 'agent' },
+        agentProjectionGeneration: 7,
         providerChat: {
           status: 'needs_selection',
           providerConnectionId: ProviderConnectionIdSchema.parse('voice-openai-compatible-chat'),
@@ -409,6 +491,9 @@ describe('LocalConversationSection', () => {
     expect(readLocalConversationVoiceSettings(nextVoice).agent).toMatchObject({
       agentSource: 'agent',
       agentId: 'opencode',
+      agentTargetKey: 'agent:happier.agent.opencode/opencode',
+      agentIdentity: null,
+      agentProjectionGeneration: null,
       providerChat: {
         status: 'configured',
         chat: {

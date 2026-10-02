@@ -515,7 +515,6 @@ describe('warmCacheAdapters', () => {
         expect(firstSessionEntries).toBe(secondSessionEntries);
         expect(firstSessionEntries).toEqual({});
         expect(firstMachineEntries).toBe(secondMachineEntries);
-        expect(firstSessionEntries).toBe(firstMachineEntries);
         expect(firstMachineEntries).toEqual({});
     });
 

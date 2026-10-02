@@ -351,6 +351,7 @@ export function createDaemonExternalActionContributedApprovalReplay(input: Reado
             context: {
               surface: 'api',
               invocationSurface: 'api',
+              initiatingActionCaller: origin.caller,
               ...(externalActionContext ? { externalActionContext } : {}),
               ...(replayPlacement.defaultSessionId === undefined
                 ? {}

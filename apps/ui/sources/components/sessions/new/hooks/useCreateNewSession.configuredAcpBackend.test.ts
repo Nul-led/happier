@@ -103,7 +103,7 @@ async function setupHarness(options?: ConfiguredBackendHarnessOptions) {
     const { sync } = await import('@/sync/sync');
     configuredBackendHarnessModuleState.sync = sync;
     const token = `header.${Buffer.from(JSON.stringify({ sub: 'account-a' })).toString('base64url')}.signature`;
-    await sync.restore({ token }, null);
+    await sync.switchServer({ token });
     storage.getState().applySettings(storage.getState().settings, 1);
     storage.getState().applyMachines([createMachineFixture({ id: 'm1' })], true, { sourceServerId: 'server-a' });
     const storageState = storage.getState();

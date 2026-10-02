@@ -1,6 +1,4 @@
 import type {
-    ScmConflictAcceptSideRequest,
-    ScmConflictMarkResolvedRequest,
     ScmBackendDescribeRequest,
     ScmBackendDescribeResponse,
     ScmBranchIntegrationRequest,
@@ -18,6 +16,8 @@ import type {
     ScmChangeDiscardResponse,
     ScmCommitBackoutRequest,
     ScmCommitBackoutResponse,
+    ScmCommitUndoLastRequest,
+    ScmCommitUndoLastResponse,
     ScmCommitCreateRequest,
     ScmCommitCreateResponse,
     ScmDiffCommitRequest,
@@ -81,6 +81,7 @@ import type {
     ScmWorktreeRemoveRequest,
     ScmWorktreeRemoveResponse,
 } from '@happier-dev/protocol';
+import type { ScmConflictAcceptSideRequest, ScmConflictMarkResolvedRequest } from '@happier-dev/protocol/scm';
 import { SCM_OPERATION_ERROR_CODES, ScmLogListRequestSchema } from '@happier-dev/protocol';
 import type { ScmStatusSnapshotTransportResponse } from '@happier-dev/protocol/scm';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -464,6 +465,17 @@ export function registerScmHandlers(
             rpcCompatibility: true,
             runMutation: runWithStatusSnapshotCacheInvalidation,
         }) as ScmCommitBackoutResponse,
+    );
+
+    scmRpcHandlerManager.registerHandler<ScmCommitUndoLastRequest, ScmCommitUndoLastResponse>(
+        RPC_METHODS.SCM_COMMIT_UNDO_LAST,
+        async (request) => await executeScmActionOperation({
+            actionId: 'scm.commit.undoLast',
+            input: request,
+            ...routeBase,
+            rpcCompatibility: true,
+            runMutation: runWithStatusSnapshotCacheInvalidation,
+        }) as ScmCommitUndoLastResponse,
     );
 
     scmRpcHandlerManager.registerHandler<ScmRemoteAddRequest, ScmRemoteManagementResponse>(

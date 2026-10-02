@@ -13,7 +13,7 @@ import { SESSION_LIST_ROW_HEIGHT_DEFAULT } from './sessionListRowHeights';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
 import { buildSessionListIndexFromViewData, buildSessionListIndexNodeId } from '@/sync/domains/sessionList/sessionListIndex';
 import { buildSessionListServerScopedRowKey } from '@/sync/domains/session/listing/sessionListKeyNormalization';
-import type { LocalSettings } from '@/sync/domains/settings/localSettings';
+import { localSettingsDefaults, type LocalSettings } from '@/sync/domains/settings/localSettings';
 import { clearSessionListViewFilterRetentionForTests } from './search/useSessionListViewFilters';
 import { buildSessionOrganizationProjectionFromLegacyTestSettings } from './sessionOrganizationProjectionTestFixture';
 import { createUseSettingMock, createUseSettingMutableMockFromReader } from '@/dev/testkit/mocks/storage';
@@ -421,6 +421,10 @@ installSessionShellCommonModuleMocks({
                     if (key === 'workspaceRefsV1') return [workspaceRefsV1, setWorkspaceRefsV1];
                     return [null, vi.fn()];
                 }),
+                useLocalSetting: <K extends keyof LocalSettings>(key: K): LocalSettings[K] => ({
+                    ...localSettingsDefaults,
+                    sessionMruOrderV1,
+                })[key],
                 useLocalSettingMutable: <K extends keyof LocalSettings>(key: K): [LocalSettings[K], (value: LocalSettings[K]) => void] => {
                     const value = key === 'sessionMruOrderV1'
                         ? [sessionMruOrderV1, setSessionMruOrderV1]
@@ -2026,16 +2030,13 @@ describe('SessionsList (native virtualization)', () => {
         }));
     });
 
-    it('records active session changes into the server-scoped MRU order', async () => {
+    it('does not rewrite focused-session MRU from the active list projection', async () => {
         mockPathname = '/session/sess_b';
         sessionMruOrderV1 = ['server_a:stale', 'server_a:sess_a'];
 
         await renderSessionsList();
 
-        expect(setSessionMruOrderV1).toHaveBeenCalledWith([
-            buildSessionListServerScopedRowKey('server_a', 'sess_b'),
-            buildSessionListServerScopedRowKey('server_a', 'sess_a'),
-        ]);
+        expect(setSessionMruOrderV1).not.toHaveBeenCalled();
     });
 
     it('does not record active session changes into the MRU order when the surface is not data-active', async () => {

@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { SCM_OPERATION_ERROR_CODES, type ScmHostingRepositoryDescribePublishTargetsResponse } from '@happier-dev/protocol/scm';
+import { SCM_OPERATION_ERROR_CODES, ScmHostingRepositoryDescribePublishTargetsResponseSchema, type ScmHostingRepositoryDescribePublishTargetsResponse } from '@happier-dev/protocol/scm';
 
 import { createAzureDevopsOperationsAdapter } from '../../../../../../../packages/plugins/scm-azure-devops/src/operations/azureDevopsAdapter';
 import { resolveSourceControlPublishRepositoryRemediation } from './resolveSourceControlPublishRepositoryRemediation';
 
 describe('publish repository remediation retry', () => {
     it('allows the existing loader to retry actual Azure auth discovery and stops after authentication', async () => {
-        const describeTargets = async (authenticated: boolean) => ({
+        const describeTargets = async (authenticated: boolean) => ScmHostingRepositoryDescribePublishTargetsResponseSchema.parse({
             success: true as const,
             defaultRepositoryName: 'repo',
             ...await createAzureDevopsOperationsAdapter().describePublishTargets({
@@ -23,6 +23,7 @@ describe('publish repository remediation retry', () => {
             }),
         });
         const signedOut = await describeTargets(false);
+        if (!signedOut.success) throw new Error('Expected signed-out target discovery to succeed');
         const input = {
             targetsResponse: signedOut,
             selectedTarget: signedOut.targets[0] ?? null,
@@ -36,6 +37,7 @@ describe('publish repository remediation retry', () => {
             kind: 'authenticate-provider-cli', providerName: 'Azure DevOps', command: 'az login', disabled: false,
         });
         const authenticated = await describeTargets(true);
+        if (!authenticated.success) throw new Error('Expected authenticated target discovery to succeed');
         expect(resolveSourceControlPublishRepositoryRemediation({
             ...input, targetsResponse: authenticated, selectedTarget: authenticated.targets[0] ?? null,
         }).retryTargets).toBeNull();

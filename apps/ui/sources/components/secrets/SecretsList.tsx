@@ -285,7 +285,7 @@ export function SecretsList(props: SecretsListProps) {
                     {recipientSharedEntries.map((entry, idx) => renderSharedEntry(entry, idx, recipientSharedEntries.length))}
                 </ItemGroup>
             ) : null}
-            <ItemGroup footer={groupFooter}>
+            <ItemGroup description={groupFooter}>
                 {props.allowAdd !== false && onCreatePersonal ? (
                     <InlineAddExpander
                         triggerTestID="saved-secret-add"
@@ -340,7 +340,7 @@ export function SecretsList(props: SecretsListProps) {
     }
 
     return (
-        <ItemList style={{ paddingTop: 0 }}>
+        <ItemList presentation="grouped" style={{ paddingTop: 0 }}>
             {group}
         </ItemList>
     );

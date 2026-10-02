@@ -36,6 +36,17 @@ function facts(overrides: Partial<PersonalHomeFacts> = {}): PersonalHomeFacts {
 }
 
 describe('derivePersonalHomeBootstrapSnapshot', () => {
+    it('requires explicit Retry for an erased Home even when app persistence retains its completion', () => {
+        const snapshot = derivePersonalHomeBootstrapSnapshot(facts({
+            completedPersonalHomeProfile: { ...profile, personalHomeBootstrapCompleted: true },
+            relayRuntime: { relayUrl: profile.serverUrl, installed: true, healthy: false, dataPresent: false,
+                status: 'stopped', purpose: { kind: 'personal-home', canonicalServerUrl: profile.serverUrl } },
+            localHomeIdentity: null, localHomeAuth: 'missing', localHomeReachability: 'unreachable',
+            anonymousSignup: 'unknown',
+        }));
+        expect(snapshot).toMatchObject({ homeReady: false, phase: 'blocked', action: 'retry',
+            detail: { code: 'personal_home_erased' } });
+    });
     it('gates while the managed Home runtime is missing', () => {
         const snapshot = derivePersonalHomeBootstrapSnapshot(facts({ relayRuntime: null }));
         expect(snapshot.phase).toBe('ensuring-home');

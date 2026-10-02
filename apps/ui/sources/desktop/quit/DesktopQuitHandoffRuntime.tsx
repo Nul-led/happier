@@ -162,7 +162,7 @@ function TauriDesktopQuitHandoffRuntime(): null {
                     const status = readLocalDaemonSharedState<LocalDaemonStatusData>(runner).status;
                     const handoff = readQuitHandoff(payload);
                     // The one login-start setting governs the quit (A13-02), never one scoped service's mode.
-                    const serviceAutostart = status?.serviceAutostart ?? handoff.serviceAutostart;
+                    const serviceAutostart = status ? status.serviceAutostart ?? null : handoff.serviceAutostart;
                     const storage = getStorage().getState();
                     const activeServer = getActiveServerSnapshot();
                     const view = {

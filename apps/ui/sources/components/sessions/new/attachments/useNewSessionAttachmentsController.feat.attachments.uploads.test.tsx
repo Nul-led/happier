@@ -1,7 +1,8 @@
 import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
 import { createNewSessionPromptStore } from '@/components/sessions/new/hooks/screenModel/newSessionPromptStore';
 import * as React from 'react';
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { registerStandardCleanupTarget, unregisterStandardCleanupTarget, standardCleanup } from '@/dev/testkit';
 import renderer, { act } from 'react-test-renderer';
 import { Platform } from 'react-native';
 import type { ComposerAttachmentDraftV1, ComposerSnapshotV1 } from '@happier-dev/protocol';
@@ -15,7 +16,10 @@ import { installNewSessionScreenModelCommonModuleMocks } from '@/components/sess
 import {
     clearAllNewSessionAttachmentDrafts,
     readNewSessionAttachmentDrafts,
+    writeNewSessionAttachmentDrafts,
 } from './newSessionAttachmentDraftStore';
+import { createSessionDraftRepository } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
+import { resolveNewSessionDraftAttachmentFlowId } from './newSessionDraftAttachmentFlowId';
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -154,6 +158,7 @@ async function renderHook(
     let tree: renderer.ReactTestRenderer | null = null;
     await act(async () => {
         tree = renderer.create(<Probe />);
+        registerStandardCleanupTarget(tree);
         await flushHookEffects({ cycles: 1, turns: 1 });
     });
 
@@ -170,6 +175,7 @@ async function renderHook(
         },
         unmount: async () => {
             await act(async () => {
+                unregisterStandardCleanupTarget(tree);
                 tree?.unmount();
                 await flushHookEffects({ cycles: 1, turns: 1 });
             });
@@ -230,6 +236,8 @@ function createComposerDocument(input: Readonly<{
             onStructuredInputMentionsChange: () => {},
             onComposerFocusChange: () => {},
             onComposerFocusRequestChange: () => {},
+            onComposerInputFlushRequestChange: () => {},
+            flushComposerInput: () => {},
             onComposerActionBarLayoutChange: () => {},
             inputPersistence: {
                 restoreToken: 'new-session-composer-scope',
@@ -271,6 +279,7 @@ function createLaunchAttempt(): NewSessionLaunchAttempt {
 }
 
 describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
+    afterEach(standardCleanup);
     beforeEach(() => {
         clearAllNewSessionAttachmentDrafts();
         uploadAttachmentDraftsToSessionSpy.mockReset();
@@ -879,6 +888,42 @@ describe('useNewSessionAttachmentsController (attachments.uploads)', () => {
 
         expect(captureSubmissionSnapshot).toHaveBeenCalledWith(undefined);
         expect(handleCreateSession).not.toHaveBeenCalled();
+        await hook.unmount();
+    });
+
+    it('releases a mounted deleted draft and does not republish its sources after a later update', async () => {
+        const { useNewSessionAttachmentsController } = await import('./useNewSessionAttachmentsController');
+        const scope = { serverId: 'server-a', accountId: 'account-a' };
+        const draftId = '00000000-0000-4000-8000-000000000804';
+        const flowId = resolveNewSessionDraftAttachmentFlowId(draftId);
+        const values = new Map<string, string>();
+        const repository = createSessionDraftRepository({
+            storage: { getString: (key) => values.get(key), set: (key, value) => { values.set(key, value); }, delete: (key) => { values.delete(key); } },
+            scope, syncEnabled: false,
+            cipher: { seal: async () => { throw new Error('local deletion needs no encryption'); }, open: async () => null },
+        });
+        repository.writeNewSessionDraft({ scope, draftId, patch: { text: 'delete me' }, materializationIntent: 'userEdit' });
+        writeNewSessionAttachmentDrafts(flowId, [{ id: 'file', status: 'pending', source: { kind: 'memory', bytes: new Uint8Array([1]), name: 'file.txt' } }]);
+        const hook = await renderHook(() => useNewSessionAttachmentsController({
+            flowId, isCreating: false, promptStore: createNewSessionPromptStore(''),
+            handleCreateSession: vi.fn(), selectedProfileId: null, targetServerId: 'server-a',
+        }));
+        expect(hook.getCurrent().drafts).toHaveLength(1);
+        await act(async () => {
+            await expect(repository.deleteSessionDraft({ scope, address: { kind: 'newSession', draftId } })).resolves.toBe(true);
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+        expect(hook.getCurrent().drafts).toEqual([]);
+        expect(readNewSessionAttachmentDrafts(flowId)).toEqual([]);
+        // An in-flight picker can still finish before navigation unmounts the
+        // old controller. It cannot reacquire custody of the deleted flow.
+        await act(async () => {
+            hook.getCurrent().addPickedAttachments([{ kind: 'native', uri: 'file:///tmp/late.txt', name: 'late.txt' }]);
+            await flushHookEffects({ cycles: 1, turns: 1 });
+        });
+        await hook.rerender();
+        expect(hook.getCurrent().drafts).toEqual([]);
+        expect(readNewSessionAttachmentDrafts(flowId)).toEqual([]);
         await hook.unmount();
     });
 

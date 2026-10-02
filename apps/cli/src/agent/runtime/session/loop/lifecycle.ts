@@ -479,22 +479,37 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
   });
   const hookRuntime = params.hookRuntime;
   const hookRuntimeForCallbacks = hookRuntime;
+  let preparedTurnFacts: SessionTurnFactsV1 | null = null;
   // The foreground Runner owns current-generation Composer callbacks through its authenticated
   // daemon bridge. The prompt loop only receives these narrow dispatch operations; it never
   // gains registry or PluginInvocationContext authority of its own.
   const runtimeForPromptLoop: PermissionModePromptLoopTurnOperations =
-    daemonTurnContributionsBridge
-      ? Object.freeze({
-          ...hookRuntimeForCallbacks,
-          resolveComposerReference: async (input) =>
+    Object.freeze({
+      ...hookRuntimeForCallbacks,
+      sendTurnPrompt: (prompt, meta) => {
+        const starterDepth = params.session.getWorkDepth?.();
+        const turnDepth = preparedTurnFacts?.workDepth;
+        return hookRuntimeForCallbacks.sendTurnPrompt(prompt, {
+          ...meta,
+          agentStartCaller: starterDepth !== undefined && turnDepth !== undefined
+            ? { kind: 'session', sessionId: params.session.sessionId, starterDepth, turnDepth }
+            : undefined,
+        });
+      },
+      steerInFlightTurn: (prompt, meta) => hookRuntimeForCallbacks.steerInFlightTurn(prompt, {
+        ...meta,
+        agentStartCaller: hookRuntimeForCallbacks.readActiveTurnAdmissionWitness?.()?.agentStartCaller,
+      }),
+      ...(daemonTurnContributionsBridge ? {
+          resolveComposerReference: async (input: Parameters<NonNullable<PermissionModePromptLoopTurnOperations['resolveComposerReference']>>[0]) =>
             await daemonTurnContributionsBridge.resolveComposerReference({
               sessionId: params.session.sessionId,
               reference: input.reference,
               candidateId: input.candidateId,
               signal: input.signal,
             }),
-        })
-      : hookRuntimeForCallbacks;
+      } : {}),
+    });
   const toolNormalizationProtocol = resolveRuntimeCheckpointToolProtocol(params.config.checkpointToolProtocol);
   const configuredCheckpointLifecycle = await params.config.lifecycleHooks?.createCheckpointLifecycle?.({
     session: params.session,
@@ -677,7 +692,6 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
     trackRuntimeTranscriptProjection(terminalMutation.then(() => undefined));
     return terminalMutation;
   };
-  let preparedTurnFacts: SessionTurnFactsV1 | null = null;
   const sessionTurnLifecycle = createSessionTurnLifecycle({
     session: {
       get sessionId() {

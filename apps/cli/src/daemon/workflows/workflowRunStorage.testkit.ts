@@ -307,6 +307,15 @@ export function createWorkflowRunStorageTestkit(params: Readonly<{
         const attentionBefore = requiresAttention();
         const row = rows.get(String(operation.invocationId));
         if (!row) throw notFound();
+        if (operation.expectedRevision !== undefined) {
+          expectRevision();
+          if (operation.parentAttempt !== undefined || state !== 'interrupted') throw storageError('currentness_conflict');
+          if (operation.resolution === 'root_list_progress') {
+            if (row.index.parentRecordId !== null || row.index.sequence !== '0' || row.index.memberOrdinal !== '0'
+              || row.index.attempt !== '0' || operation.lifecycle !== operation.expectedLifecycle) throw storageError('invalid_input');
+          } else if (operation.resolution !== 'observed_terminal_execution'
+            || !['completed', 'failed', 'cancelled', 'needs_attention'].includes(String(operation.lifecycle))) throw storageError('invalid_input');
+        } else if (operation.resolution === 'root_list_progress') throw storageError('invalid_input');
         if (row.index.lifecycle !== operation.expectedLifecycle) throw storageError('currentness_conflict');
         if (row.index.attempt !== operation.invocationAttempt) throw storageError('currentness_conflict');
         if (row.index.contentRevision !== operation.expectedContentRevision) throw storageError('currentness_conflict');

@@ -1,5 +1,6 @@
 import type { SessionInitialAccessDraftV1, SessionAuthoringExecutionTargetV2, TemporaryComputerActivationRefV1 } from '@happier-dev/protocol';
 import { z } from 'zod';
+import type { ZenTaskSource } from '@/sync/domains/todos/todoStoredContent';
 import type { Settings } from '../settings/settings';
 import { voiceSettingsParse } from '../settings/voiceSettings';
 import {
@@ -176,6 +177,7 @@ const NewSessionDraftExecutionTargetSchema = SessionExecutionTargetV1Schema.exte
 
 export interface NewSessionDraft {
     input: string;
+    zenTaskSource?: ZenTaskSource;
     /**
      * Host-created attachment requests waiting for the mounted Composer to
      * resolve the current contribution catalog. These remain device-local

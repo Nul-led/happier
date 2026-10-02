@@ -14,6 +14,7 @@ import type {
 import type { SpawnSessionOptions, SpawnSessionResult } from '@/session/shared/spawnSessionContract';
 import { SPAWN_SESSION_ERROR_CODES } from '@/session/shared/spawnSessionContract';
 import { resolveTerminalRequestFromSpawnOptions } from '@/terminal/runtime/terminalConfig';
+import type { ResolvedTerminalRequest } from '@/terminal/runtime/terminalConfig';
 import { logger } from '@/ui/logger';
 
 import type { resolveConnectedServiceAuthForSpawn } from '../connectedServices/resolveConnectedServiceAuthForSpawn';
@@ -40,6 +41,7 @@ export async function prepareDaemonSpawnChildEnvironment(input: Readonly<{
     resolvedAgentId?: string | null;
     effectiveModelSelection: SpawnSessionOptions['modelSelection'];
     terminal: SpawnSessionOptions['terminal'];
+    admittedTerminalRequest?: ResolvedTerminalRequest;
     profileEnvironmentVariables: Readonly<Record<string, string>>;
     daemonSpawnHooks: DaemonSpawnHooks | null;
     pluginRuntimeRegistry: ResolvedExecutablePluginRuntimeRegistry;
@@ -236,7 +238,7 @@ export async function prepareDaemonSpawnChildEnvironment(input: Readonly<{
         extraEnv,
         extraEnvForChild,
         trackedSpawnOptions,
-        terminalRequest: resolveTerminalRequestFromSpawnOptions({
+        terminalRequest: input.admittedTerminalRequest ?? resolveTerminalRequestFromSpawnOptions({
             happyHomeDir: configuration.happyHomeDir,
             terminal: input.terminal,
             environmentVariables: extraEnv,

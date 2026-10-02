@@ -9,6 +9,7 @@ import {
 } from '@happier-dev/agents';
 
 import { getSessionHostBridge } from '@/agent/runtime/bridges/session/SessionHostBridge';
+import { probeSessionRunnerPresence } from '@/daemon/sessions/isSessionRunnerActive';
 import type { CatalogAgentId } from '@/agent/catalog/ids';
 import { configuration } from '@/configuration';
 import { readSettings, readStoredCredentials, type Settings, type StoredCredentials } from '@/persistence';
@@ -16,8 +17,9 @@ import { bootstrapAccountSettingsContext } from '@/settings/accountSettings/boot
 import { resolveSessionStartAccountSettingsContext } from '@/settings/accountSettings/resolveSessionStartAccountSettingsContext';
 import { resolveSessionIdOrPrefix } from '@/session/query/resolveSessionId';
 import { fetchSessionById, fetchSessionsPage, type RawSessionListRow, type RawSessionRecord } from '@/session/transport/http/sessionsHttp';
-import { tryDecryptSessionOwnerMetadataView } from '@/session/transport/encryption/sessionEncryptionContext';
-import { createAgentAttachStatePublisher } from '@/agent/runtime/mode/switching/createAttachStatePublisher';
+import { tryDecryptSessionOwnerMetadataView, resolveSessionEncryptionContextFromCredentials, resolveSessionStoredContentEncryptionMode } from '@/session/transport/encryption/sessionEncryptionContext';
+import { callSessionRpc } from '@/session/transport/rpc/sessionRpc';
+import { createSessionOwnerMetadataV1 } from '@happier-dev/protocol';
 import {
   fetchAccountEncryptionCurrentness,
 } from '@/api/client/connectedServiceCredentialApi';
@@ -97,7 +99,6 @@ type AttachCommandDeps = Readonly<{
     sessionId: string;
     metadata: AttachSessionMetadataV1;
   }) => Promise<number | false>;
-  createProviderAttachStatePublisherFn?: typeof createAgentAttachStatePublisher;
   getAccountEncryptionCurrentnessFn?: (
     credentials: StoredCredentials,
   ) => Promise<AccountEncryptionCurrentnessResponse>;
@@ -367,8 +368,6 @@ export async function handleAttachCommand(
       ? result.value.exitCode
       : 1;
   });
-  const createProviderAttachStatePublisherFn =
-    deps.createProviderAttachStatePublisherFn ?? createAgentAttachStatePublisher;
   const canUseInkSelectorFn = deps.canUseInkSelectorFn ?? canUseInkSelector;
   const selectAttachableSessionIdFn = deps.selectAttachableSessionIdFn ?? selectAttachableSessionId;
   const getAccountEncryptionCurrentnessFn = deps.getAccountEncryptionCurrentnessFn
@@ -492,34 +491,40 @@ export async function handleAttachCommand(
     }
 
     if (eligibility.attachStrategy === 'provider_attach') {
-      // The publisher answers null for an Agent that declares no local control
-      // capability, so an installed external Agent reaches it unchanged.
-      const statePublisher = createProviderAttachStatePublisherFn({
+      // Independent native clients do not own the runner's managed terminal custody.
+      const exitCode = await runProviderAttachFn({
         agentId: eligibility.agentId,
+        backendId: eligibility.backendId,
         sessionId: resolvedSessionId,
-        credentials: context.credentials,
-        rawSession: context.rawSession,
-        getAccountEncryptionCurrentness: async () =>
-          await getAccountEncryptionCurrentnessFn(context.credentials),
+        metadata: eligibility.metadata,
       });
-      if (statePublisher) {
-        await statePublisher.publishAttached(true).catch(() => {});
-      }
-      let exitCode: number | false;
-      try {
-        exitCode = await runProviderAttachFn({
-          agentId: eligibility.agentId,
-          backendId: eligibility.backendId,
-          sessionId: resolvedSessionId,
-          metadata: eligibility.metadata,
-        });
-      } finally {
-        if (statePublisher) {
-          await statePublisher.publishAttached(false).catch(() => {});
-        }
-      }
       if (!isAttachSuccess(exitCode)) process.exit(typeof exitCode === 'number' ? exitCode : 1);
       return;
+    }
+
+    const ownerMetadata = createSessionOwnerMetadataV1({ metadata: eligibility.metadata });
+    const localControl = ownerMetadata.ok
+      ? ownerMetadata.ownerMetadata.runtime?.agentRuntimeCapabilitiesV1?.localControl
+      : null;
+    const canOpenRestorationCandidate = eligibility.terminal.mode === 'herdr'
+      && Boolean(eligibility.terminal.herdr?.paneId?.trim())
+      && (await probeSessionRunnerPresence({ sessionId: resolvedSessionId, trackedSessions: [] })).state === 'runner_absent';
+    if (localControl?.supported === true && localControl.topology === 'shared' && localControl.attachStrategy === 'provider_attach'
+      && !canOpenRestorationCandidate) {
+      const mode = resolveSessionStoredContentEncryptionMode(context.rawSession);
+      const ctx = resolveSessionEncryptionContextFromCredentials(context.credentials, context.rawSession);
+      if (mode === 'e2ee' && !ctx) throw new Error('Session encryption context is unavailable for terminal restoration.');
+      const restored = await callSessionRpc({
+        token: context.credentials.token,
+        sessionId: resolvedSessionId,
+        method: 'switch',
+        request: { to: 'local' },
+        ...(mode === 'plain' ? { mode: 'plain' as const, ctx: null } : { mode: 'e2ee' as const, ctx: ctx! }),
+      });
+      if (restored !== true) {
+        console.error(chalk.red('Error:'), 'The managed terminal could not be restored.');
+        process.exit(1);
+      }
     }
 
     const hostExitCode = await runTerminalHostAttach({

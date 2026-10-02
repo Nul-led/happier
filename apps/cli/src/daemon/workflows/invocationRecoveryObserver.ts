@@ -127,7 +127,7 @@ export async function observeWorkflowInvocationRecoveryEvidence(params: Readonly
   }
 }
 
-/** Exact, one-shot observation/stop adapter. It never sends, starts, or resolves a provider handle. */
+/** Exact observation/stop adapter. It never sends, starts, or resolves a provider handle. */
 export function createWorkflowInvocationRecoveryObserver(params: Readonly<{
   credentials: StoredCredentials;
   machineId: string;
@@ -139,6 +139,7 @@ export function createWorkflowInvocationRecoveryObserver(params: Readonly<{
   nativeActionRuns?: Readonly<{
     get: (runId: string, signal?: AbortSignal) => Promise<unknown>;
     stop: (runId: string, signal?: AbortSignal) => Promise<unknown>;
+    wait: (runId: string, signal?: AbortSignal) => Promise<unknown>;
   }>;
 }>) {
   const now = params.now ?? Date.now;
@@ -169,11 +170,24 @@ export function createWorkflowInvocationRecoveryObserver(params: Readonly<{
         }));
         const active = snapshots.filter(({ native }) => native.run.status === 'running');
         if (active.length) {
+          let stopUnavailable = false;
           if (!input.observationOnly && (input.terminalParent || input.cancellationRequested)) {
-            await Promise.all(active.map(async ({ runId }) => await params.nativeActionRuns!.stop(runId, input.signal)));
+            const stopped = await Promise.allSettled(active.map(async ({ runId }) => await params.nativeActionRuns!.stop(runId, input.signal)));
+            stopUnavailable = stopped.some((result) => result.status === 'rejected');
           }
-          // Stop acceptance is not terminal proof; the next indexed pass observes it.
-          return { kind: 'unresolved', code: 'execution_run_input_pending' };
+          // Stop acceptance is not terminal proof. The indexed recovery owner
+          // retains this exact native wait even if the Stop response was lost.
+          return { kind: 'unresolved', code: stopUnavailable ? 'execution_run_observation_unavailable' : 'execution_run_input_pending',
+            ...(!input.observationOnly ? { waitForCompletion: async () => {
+              const waited = await Promise.allSettled(active.map(async ({ runId }) => {
+                const parsed = ExecutionRunGetResponseSchema.safeParse(await params.nativeActionRuns!.wait(runId, input.signal));
+                if (!parsed.success || parsed.data.run.runId !== runId || parsed.data.run.status === 'running') {
+                  throw new Error('execution_run_terminal_observation_unavailable');
+                }
+              }));
+              for (const result of waited) if (result.status === 'rejected') throw result.reason;
+            } } : {}),
+          };
         }
         const completion = await resumeActionCompletionV1({ actionId: execution.actionId, completion: input.frozenActionContract.completion,
           state: { output: execution.output, awaitedRuns: execution.awaitedRuns },
@@ -210,9 +224,7 @@ export function createWorkflowInvocationRecoveryObserver(params: Readonly<{
             return { kind: 'unresolved', code: 'session_input_pending' };
           }
           break;
-        case 'cancelled':
-          if (input.observationOnly) return result;
-          break;
+        case 'cancelled': return { ...result, code: 'session_input_cancelled' };
       }
       let cancelled: Awaited<ReturnType<typeof cancelSession>>;
       try {
@@ -227,13 +239,9 @@ export function createWorkflowInvocationRecoveryObserver(params: Readonly<{
       switch (cancelled.kind) {
         case 'pending_retired': return { kind: 'cancelled', code: 'session_input_pending_retired',
           ...(result.kind !== 'pending' && result.usage ? { usage: result.usage } : {}) };
-        // The Session owner accepted the stop request, but the exact turn may
-        // still be running. Live coordination keeps this same correspondence
-        // in `cancel_requested`; recovery must not turn the acknowledgement
-        // into terminal evidence and settle parent custody prematurely.
+        // Acknowledging a stop is not exact terminal evidence.
         case 'turn_cancel_requested': return { kind: 'unresolved', code: 'session_input_turn_cancel_requested' };
-        case 'session_absent': return { kind: 'cancelled', code: 'session_input_session_absent',
-          ...(result.kind !== 'pending' && result.usage ? { usage: result.usage } : {}) };
+        case 'turn_cancel_refused':
         case 'turn_cancel_unavailable': return { kind: 'unresolved', code: cancelled.code };
       }
     }

@@ -5,7 +5,6 @@ import type { ArtifactDataKeyCache } from './syncArtifacts';
 import { HappyError } from '@/utils/errors/errors';
 import {
     ARTIFACT_PLAIN_DATA_KEY_MARKER,
-    CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
     decodePlainArtifactStoredContent,
     encodePlainArtifactStoredContent,
 } from '@happier-dev/protocol';
@@ -15,17 +14,12 @@ const mocks = vi.hoisted(() => ({
     fetchArtifact: vi.fn(),
     fetchArtifacts: vi.fn(),
     fetchAccountEncryptionMode: vi.fn(),
-    getServerFeaturesSnapshot: vi.fn(),
     randomUUID: vi.fn(() => 'artifact-plain-1'),
     updateArtifact: vi.fn(),
 }));
 
 vi.mock('@/sync/api/account/apiAccountEncryptionMode', () => ({
     fetchAccountEncryptionMode: mocks.fetchAccountEncryptionMode,
-}));
-
-vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
-    getServerFeaturesSnapshot: mocks.getServerFeaturesSnapshot,
 }));
 
 vi.mock('@/sync/api/artifacts/apiArtifacts', () => ({
@@ -75,23 +69,9 @@ describe('syncArtifacts plaintext account storage', () => {
         mocks.fetchArtifact.mockReset();
         mocks.fetchArtifacts.mockReset();
         mocks.fetchAccountEncryptionMode.mockReset();
-        mocks.getServerFeaturesSnapshot.mockReset();
         mocks.randomUUID.mockClear();
         mocks.updateArtifact.mockReset();
         mocks.fetchAccountEncryptionMode.mockResolvedValue({ mode: 'plain', updatedAt: 0 });
-        mocks.getServerFeaturesSnapshot.mockResolvedValue({
-            status: 'ready',
-            features: {
-                capabilities: {
-                    accountStoredContentCompatibility: {
-                        v: 1,
-                        minimumProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
-                        currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
-                        declarationTransport: 'http-header-and-socket-auth-v1',
-                    },
-                },
-            },
-        });
     });
 
     it('creates an artifact without account encryption material using canonical plain envelopes', async () => {
@@ -129,36 +109,6 @@ describe('syncArtifacts plaintext account storage', () => {
         });
     });
 
-    it('creates plain Artifact content without probing an older server snapshot', async () => {
-        mocks.createArtifact.mockImplementation(async (_credentials, request: ArtifactCreateRequest) => ({
-            ...buildPlainArtifact(), ...request,
-        }));
-        mocks.getServerFeaturesSnapshot.mockResolvedValue({
-            status: 'ready',
-            features: {
-                capabilities: {
-                    encryption: {
-                        storagePolicy: 'optional',
-                    },
-                },
-            },
-        });
-
-        await expect(createArtifactWithHeaderViaApi({
-            credentials: { token: 'token-only' },
-            header: {
-                v: 1,
-                kind: 'approval_request.v1',
-                title: 'Do not send',
-            },
-            body: '{"v":1}',
-            encryption: null,
-            artifactDataKeys: new Map(),
-            addArtifact: vi.fn(),
-        })).resolves.toBe('artifact-plain-1');
-
-        expect(mocks.getServerFeaturesSnapshot).not.toHaveBeenCalled();
-    });
 
     it('reads plain list and full artifacts without account encryption material', async () => {
         const artifact = buildPlainArtifact();
@@ -387,46 +337,6 @@ describe('syncArtifacts plaintext account storage', () => {
         });
     });
 
-    it('refuses a plain Artifact marker update before POST on an observe-only server', async () => {
-        const current = (await decryptArtifactWithBody({
-            artifact: buildPlainArtifact(),
-            encryption: null,
-            artifactDataKeys: new Map(),
-        }))!;
-        mocks.getServerFeaturesSnapshot.mockResolvedValue({
-            status: 'ready',
-            features: {
-                capabilities: {
-                    accountStoredContentCompatibility: {
-                        v: 1,
-                        minimumProtocolVersion: 1,
-                        currentProtocolVersion: 1,
-                        declarationTransport: 'http-header-and-socket-auth-v1',
-                    },
-                },
-            },
-        });
-
-        await expect(updateArtifactWithHeaderViaApi({
-            credentials: { token: 'token-only' },
-            artifactId: current.id,
-            header: {
-                v: 1,
-                kind: 'approval_request.v1',
-                title: 'Do not send',
-            },
-            body: '{"v":2}',
-            encryption: null,
-            artifactDataKeys: new Map(),
-            getArtifact: () => current,
-            updateArtifact: vi.fn(),
-        })).rejects.toMatchObject({
-            code: 'client-upgrade-required',
-            retryable: false,
-        });
-
-        expect(mocks.updateArtifact).not.toHaveBeenCalled();
-    });
 });
 
 describe('syncArtifacts retained encrypted content', () => {

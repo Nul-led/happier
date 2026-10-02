@@ -17,10 +17,9 @@ import {
   openEncryptedDataKeyEnvelopeV1,
   openAccountScopedBlobCiphertext,
   sealAccountScopedBlobCiphertext,
-  openPublicShareEncryptedDataKeyEnvelopeV0,
+  openPublicShareDataKeyV1,
+  type ArtifactPublicLinkIssuedV1,
   PUBLIC_SHARE_ENCRYPTED_DATA_KEY_CURRENT_V0_BYTES,
-  PUBLIC_SHARE_KEY_DERIVATION_PATH_V1,
-  PUBLIC_SHARE_KEY_DERIVATION_USAGE_V1,
   sealEncryptedDataKeyEnvelopeV1,
   SetSessionAccessGrantRequestV1Schema,
   signAccountContentKeyBindingV1,
@@ -34,24 +33,7 @@ import {
   createCurrentSessionProjectionRecordFixture,
   createSessionRecordFixture,
 } from '@/testkit/backends/sessionFixtures';
-import { deriveKey } from '@/utils/deriveKey';
 import { createAccountServerActionDeps } from './accountServerActionDeps';
-
-async function openPublicShareDataKeyEnvelope(params: Readonly<{ encryptedDataKey: string; token: string }>): Promise<Uint8Array | null> {
-  try {
-    const wrappingKey = await deriveKey(
-      new TextEncoder().encode(params.token),
-      PUBLIC_SHARE_KEY_DERIVATION_USAGE_V1,
-      [...PUBLIC_SHARE_KEY_DERIVATION_PATH_V1],
-    );
-    return openPublicShareEncryptedDataKeyEnvelopeV0({
-      envelope: decodeBase64(params.encryptedDataKey),
-      wrappingKey,
-    });
-  } catch {
-    return null;
-  }
-}
 
 function ownerSessionAccessGrants(grants: readonly unknown[] = []) {
   return {
@@ -1726,7 +1708,7 @@ describe('Session access HTTP adapter', () => {
     {
       actionId: 'session.public_link.create' as const,
       method: 'post' as const,
-      path: '/v1/sessions/session/public-share',
+      path: '/v1/public-shares',
       input: { sessionId: 'session' },
     },
     {
@@ -1751,11 +1733,13 @@ describe('Session access HTTP adapter', () => {
       }),
     }));
     app.route({ method: method.toUpperCase() as 'POST' | 'DELETE', url: path, handler: async () => ({}) });
+    const issued: ArtifactPublicLinkIssuedV1[] = [];
     const deps = createAccountServerActionDeps({
       token: 'bound-home-token',
       credentials: { token: 'bound-home-token', encryption: null },
       serverId: 'home',
       serverHttpBaseUrl: 'http://access.test',
+      onPublicLinkIssued: link => { issued.push(link); },
     });
 
     await expect(deps.sessionAccessAction!({
@@ -1797,7 +1781,8 @@ describe('Session access HTTP adapter', () => {
     })).rejects.toThrow();
   });
 
-  it('creates a Plain public link with a fresh token and no key material in the logical result', async () => {
+  it('creates a Plain fragment public link and refuses publication without local secret custody', async () => {
+    const issued: ArtifactPublicLinkIssuedV1[] = [];
     const physicalBodies: unknown[] = [];
     let sessionReads = 0;
     app.get('/v2/sessions/session-plain', async () => {
@@ -1812,7 +1797,7 @@ describe('Session access HTTP adapter', () => {
         }),
       };
     });
-    app.post('/v1/sessions/:sessionId/public-share', async (request) => {
+    app.post('/v1/public-shares', async (request) => {
       physicalBodies.push({ url: request.url, body: request.body });
       return {
         publicShare: {
@@ -1824,13 +1809,16 @@ describe('Session access HTTP adapter', () => {
           isConsentRequired: false,
           createdAt: 1,
           updatedAt: 1,
+          keyDerivation: 'fragment_v1',
         },
+        isolatedOrigin: 'https://public.example.test',
       };
     });
     const deps = createAccountServerActionDeps({
       token: 'bound-home-token',
       serverId: 'home',
       serverHttpBaseUrl: 'http://access.test',
+      onPublicLinkIssued: link => { issued.push(link); },
     });
     const logicalInput = { sessionId: 'session-plain', isConsentRequired: false };
     const snapshot = JSON.parse(JSON.stringify(logicalInput));
@@ -1840,19 +1828,50 @@ describe('Session access HTTP adapter', () => {
       input: logicalInput,
       context: { surface: 'cli', serverId: 'home' },
     });
-    expect(result).toEqual({ id: 'share-plain', updatedAt: 1, expiresAt: null, maxUses: null, useCount: 0, isConsentRequired: false });
+    expect(result).toMatchObject({ id: 'share-plain', updatedAt: 1, expiresAt: null, maxUses: null, useCount: 0, isConsentRequired: false });
     expect(logicalInput).toEqual(snapshot);
     expect(sessionReads).toBe(1);
     expect(physicalBodies).toHaveLength(1);
     const physical = (physicalBodies[0] as { body: Record<string, unknown> }).body;
-    expect(typeof physical.token).toBe('string');
-    expect((physical.token as string)).toMatch(/^[0-9a-f]{24}$/);
+    expect(physical.lookupId).toBe(issued[0]?.lookupId);
+    expect(physical).toHaveProperty('keyDerivation', 'fragment_v1');
+    expect(physical).not.toHaveProperty('token');
+    expect(issued[0]?.url).toBe(`https://public.example.test/s/${issued[0]?.lookupId}#k=${issued[0]?.secret}`);
+    expect(JSON.stringify({ physical, result })).not.toContain(issued[0]?.secret);
     expect(physical).not.toHaveProperty('encryptedDataKey');
     expect(physical).toMatchObject({ isConsentRequired: false });
-    expect(JSON.stringify(result)).not.toContain(physical.token as string);
+    expect(physical.subject).toEqual({ kind: 'session', id: 'session-plain' });
+    const noCustody = createAccountServerActionDeps({ token: 'bound-home-token', serverId: 'home', serverHttpBaseUrl: 'http://access.test' });
+    await expect(noCustody.sessionAccessAction!({ actionId: 'session.public_link.create', input: logicalInput,
+      context: { surface: 'cli', serverId: 'home' } })).resolves.toMatchObject({ ok: false, errorCode: 'public_link_custody_unavailable' });
+    expect(physicalBodies).toHaveLength(1);
   });
 
+  it('does not rotate an older Home publication through a Session route that strips new fields', async () => {
+    let legacyPublication = 'retained-legacy-publication';
+    let aliasMutations = 0;
+    const issued: ArtifactPublicLinkIssuedV1[] = [];
+    app.get('/v2/sessions/session-plain', async () => ({ session: createSessionRecordFixture({
+      id: 'session-plain', encryptionMode: 'plain', dataEncryptionKey: null, metadataVersion: 0, agentStateVersion: 0,
+    }) }));
+    // The predecessor owner route ignores unknown lookup/derivation fields and mutates its legacy publication.
+    app.post('/v1/sessions/:sessionId/public-share', async () => {
+      aliasMutations += 1;
+      legacyPublication = 'silently-rotated';
+      return { publicShare: { id: 'share-old', expiresAt: null, maxUses: null, useCount: 0,
+        isConsentRequired: false, createdAt: 1, updatedAt: 2 } };
+    });
+    const host = createAccountServerActionDeps({ token: 'bound-home-token', serverId: 'home',
+      serverHttpBaseUrl: 'http://access.test', onPublicLinkIssued: link => { issued.push(link); } });
+    const result = await host.sessionAccessAction!({ actionId: 'session.public_link.create', input: { sessionId: 'session-plain' },
+      context: { surface: 'cli', serverId: 'home' } });
+    expect(aliasMutations).toBe(0);
+    expect(legacyPublication).toBe('retained-legacy-publication');
+    expect(result).toMatchObject({ ok: false, errorCode: 'unsupported_action' });
+    expect(issued).toEqual([]);
+  });
   it('replays one lost public-link create with the identical physical body', async () => {
+    const issued: ArtifactPublicLinkIssuedV1[] = [];
     const physicalBodies: string[] = [];
     let sessionReads = 0;
     app.get('/v2/sessions/session-plain', async () => {
@@ -1867,19 +1886,20 @@ describe('Session access HTTP adapter', () => {
         }),
       };
     });
-    app.post('/v1/sessions/:sessionId/public-share', async (request) => {
+    app.post('/v1/public-shares', async (request) => {
       physicalBodies.push(JSON.stringify(request.body));
       return {
         publicShare: {
           id: 'share-plain', expiresAt: null, maxUses: null, useCount: 0,
-          isConsentRequired: false, createdAt: 1, updatedAt: 1,
+          isConsentRequired: false, createdAt: 1, updatedAt: 1, keyDerivation: 'fragment_v1',
         },
+        isolatedOrigin: 'https://public.example.test',
       };
     });
     const installedAdapter = axios.getAdapter(axios.defaults.adapter);
     let publicationAttempts = 0;
     axios.defaults.adapter = async (config) => {
-      if (config.method === 'post' && config.url?.endsWith('/v1/sessions/session-plain/public-share')) {
+      if (config.method === 'post' && config.url?.endsWith('/v1/public-shares')) {
         publicationAttempts += 1;
         const response = await installedAdapter(config);
         if (publicationAttempts === 1) {
@@ -1894,6 +1914,7 @@ describe('Session access HTTP adapter', () => {
       credentials: { token: 'bound-home-token', encryption: null },
       serverId: 'home',
       serverHttpBaseUrl: 'http://access.test',
+      onPublicLinkIssued: link => { issued.push(link); },
     });
 
     await expect(deps.sessionAccessAction!({
@@ -1905,9 +1926,11 @@ describe('Session access HTTP adapter', () => {
     expect(sessionReads).toBe(1);
     expect(physicalBodies).toHaveLength(2);
     expect(physicalBodies[1]).toBe(physicalBodies[0]);
+    expect(issued).toHaveLength(1);
   });
 
   it('creates an E2EE public link by wrapping the exact-Home current Session DEK without leaking secrets', async () => {
+    const issued: ArtifactPublicLinkIssuedV1[] = [];
     const callerMachineKey = new Uint8Array(32).fill(11);
     const callerPublicKey = deriveBoxPublicKeyFromSeed(callerMachineKey);
     const sessionDataKey = new Uint8Array(32).fill(29);
@@ -1926,7 +1949,7 @@ describe('Session access HTTP adapter', () => {
         agentStateVersion: 0,
       }),
     }));
-    app.post('/v1/sessions/:sessionId/public-share', async (request) => {
+    app.post('/v1/public-shares', async (request) => {
       physicalBodies.push({ body: request.body as Record<string, unknown> });
       return {
         publicShare: {
@@ -1938,7 +1961,9 @@ describe('Session access HTTP adapter', () => {
           isConsentRequired: true,
           createdAt: 1,
           updatedAt: 1,
+          keyDerivation: 'fragment_v1',
         },
+        isolatedOrigin: 'https://public.example.test',
       };
     });
     const deps = createAccountServerActionDeps({
@@ -1949,6 +1974,7 @@ describe('Session access HTTP adapter', () => {
       },
       serverId: 'home',
       serverHttpBaseUrl: 'http://access.test',
+      onPublicLinkIssued: link => { issued.push(link); },
     });
     const logicalInput = { sessionId: 'session-e2ee', isConsentRequired: true };
     const snapshot = JSON.parse(JSON.stringify(logicalInput));
@@ -1958,24 +1984,26 @@ describe('Session access HTTP adapter', () => {
       input: logicalInput,
       context: { surface: 'cli', serverId: 'home' },
     });
-    expect(result).toEqual({ id: 'share-e2ee', updatedAt: 1, expiresAt: null, maxUses: null, useCount: 0, isConsentRequired: true });
+    expect(result).toMatchObject({ id: 'share-e2ee', updatedAt: 1, expiresAt: null, maxUses: null, useCount: 0, isConsentRequired: true });
     expect(logicalInput).toEqual(snapshot);
     expect(physicalBodies).toHaveLength(1);
     const physical = physicalBodies[0]!.body;
-    const token = physical.token as string;
-    expect(token).toMatch(/^[0-9a-f]{24}$/);
+    const secret = issued[0]!.secret;
+    expect(physical.lookupId).toBe(issued[0]?.lookupId);
+    expect(physical.subject).toEqual({ kind: 'session', id: 'session-e2ee' });
+    expect(physical).not.toHaveProperty('token');
     expect(typeof physical.encryptedDataKey).toBe('string');
     expect(decodeBase64(physical.encryptedDataKey as string)).toHaveLength(
       PUBLIC_SHARE_ENCRYPTED_DATA_KEY_CURRENT_V0_BYTES,
     );
-    await expect(openPublicShareDataKeyEnvelope({ encryptedDataKey: physical.encryptedDataKey as string, token }))
-      .resolves.toEqual(sessionDataKey);
+    expect(openPublicShareDataKeyV1({ encryptedDataKey: physical.encryptedDataKey as string, secret })).toEqual(sessionDataKey);
+    expect(openPublicShareDataKeyV1({ encryptedDataKey: physical.encryptedDataKey as string, secret: physical.lookupId as string })).toBeNull();
     const serialized = JSON.stringify({ result, physical });
     expect(result).not.toHaveProperty('token');
     expect(result).not.toHaveProperty('encryptedDataKey');
-    expect(JSON.stringify(result)).not.toContain(token);
+    expect(JSON.stringify(result)).not.toContain(secret);
     expect(JSON.stringify(result)).not.toContain(physical.encryptedDataKey as string);
-    expect(serialized).toContain(token);
+    expect(serialized).not.toContain(secret);
   });
 
   it('rejects a caller-authored public-link envelope before any effect', async () => {
@@ -1985,7 +2013,7 @@ describe('Session access HTTP adapter', () => {
       sessionReads += 1;
       return { session: createSessionRecordFixture({ id: 'session-e2ee' }) };
     });
-    app.post('/v1/sessions/:sessionId/public-share', async () => {
+    app.post('/v1/public-shares', async () => {
       mutations += 1;
       return { publicShare: null };
     });
@@ -2015,7 +2043,7 @@ describe('Session access HTTP adapter', () => {
         agentStateVersion: 0,
       }),
     }));
-    app.post('/v1/sessions/:sessionId/public-share', async () => {
+    app.post('/v1/public-shares', async () => {
       mutations += 1;
       return { publicShare: null };
     });
@@ -2062,7 +2090,7 @@ describe('Session access HTTP adapter', () => {
         }),
       };
     });
-    app.post('/v1/sessions/:sessionId/public-share', async () => {
+    app.post('/v1/public-shares', async () => {
       mutations += 1;
       return { publicShare: null };
     });
@@ -2105,7 +2133,7 @@ describe('Session access HTTP adapter', () => {
         }),
       };
     });
-    app.post('/v1/sessions/:sessionId/public-share', async () => {
+    app.post('/v1/public-shares', async () => {
       mutations += 1;
       return { publicShare: null };
     });
@@ -2180,6 +2208,7 @@ describe('Session access HTTP adapter', () => {
   });
 
   it('reports cancellation after public-link mutation dispatch as an unknown outcome', async () => {
+    const issued: ArtifactPublicLinkIssuedV1[] = [];
     app.get('/v2/sessions/session-plain', async () => ({
       session: createSessionRecordFixture({
         id: 'session-plain',
@@ -2191,7 +2220,7 @@ describe('Session access HTTP adapter', () => {
     }));
     const installedAdapter = axios.getAdapter(axios.defaults.adapter);
     axios.defaults.adapter = async (config) => {
-      if (config.method === 'post' && config.url?.endsWith('/v1/sessions/session-plain/public-share')) {
+      if (config.method === 'post' && config.url?.endsWith('/v1/public-shares')) {
         throw new axios.CanceledError('cancelled after dispatch', undefined, config);
       }
       return await installedAdapter(config);
@@ -2201,6 +2230,7 @@ describe('Session access HTTP adapter', () => {
       credentials: { token: 'bound-home-token', encryption: null },
       serverId: 'home',
       serverHttpBaseUrl: 'http://access.test',
+      onPublicLinkIssued: link => { issued.push(link); },
     });
 
     await expect(deps.sessionAccessAction!({

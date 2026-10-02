@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import { stat } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 
@@ -19,15 +18,10 @@ import type {
 import type { AgentCliLaunchSpec } from '@/packagedRuntime/managedTools/requireAgentCliLaunchSpec';
 import { requireAgentCliLaunchSpec } from '@/packagedRuntime/managedTools/requireAgentCliLaunchSpec';
 import { logger } from '@/ui/logger';
-
-type SpawnedAttachProcess = Readonly<{
-    exitCode?: number | null;
-    once: {
-        (event: 'exit', handler: (code: number | null, signal: NodeJS.Signals | null) => void): void;
-        (event: 'error', handler: (error: Error) => void): void;
-    };
-    kill: (signal?: NodeJS.Signals | number) => boolean;
-}>;
+import { launchBorrowedTerminalProcess, type TerminalSpawnProcess } from '@/terminal/host/borrowedTerminalProcess';
+import { finalizeSessionChildEnvironment } from '@/session/runtime/control/finalizeSessionChildEnvironment';
+import type { TerminalHostHandle, TerminalHostPreference } from '@happier-dev/agents';
+import type { PreparedTerminalHostOwner } from '@/plugins/runtime/context/terminalHost';
 
 const PROVIDER_ATTACH_STOP_GRACE_MS = 3_000;
 
@@ -40,7 +34,39 @@ export type ProviderCliAttachManagedServiceAccess = Readonly<{
         signal: AbortSignal;
     }>): Promise<Readonly<{ ok: boolean }>>;
     childEnvironment: Readonly<Record<string, string>>;
+    isCurrent?(): boolean;
 }>;
+
+/** Host-owned managed custody, not a public Agent AttachSurface extension. */
+export type HostProviderCliAttachRequest = Parameters<AttachSurface['attach']>[0] & Readonly<{
+    onAttached(): Promise<void>;
+    /** Captured host placement, supplied only by the admitted Session mode owner. */
+    hostPresentation?: Readonly<{
+        owner: PreparedTerminalHostOwner;
+        preference: TerminalHostPreference;
+        sessionName: string;
+        workingDirectory: string;
+        startupDeadline(): number;
+        startupPollIntervalMs?: number;
+        bindHost(handle: TerminalHostHandle): Promise<void>;
+        waitForRetirement(handle: TerminalHostHandle, signal: AbortSignal): Promise<boolean>;
+    }>;
+    resolveManagedServiceAccess?(input: Readonly<{
+        sessionId: string;
+        targetBaseUrl: string;
+        environmentKey: string;
+        signal?: AbortSignal;
+    }>): Promise<ProviderCliAttachManagedServiceAccess | null>;
+}>;
+
+export type HostProviderCliAttachSurface = AttachSurface & Readonly<{
+    attachManaged(request: HostProviderCliAttachRequest): ReturnType<AttachSurface['attach']>;
+}>;
+
+export function isHostProviderCliAttachSurface(surface: unknown): surface is HostProviderCliAttachSurface {
+    return typeof surface === 'object' && surface !== null
+        && 'attachManaged' in surface && typeof surface.attachManaged === 'function';
+}
 
 async function readProviderCliVersion(params: Readonly<{
     launch: AgentCliLaunchSpec;
@@ -186,12 +212,12 @@ export function createProviderCliAttachSurface<TTarget extends object>(params: R
         args: readonly string[];
         env?: NodeJS.ProcessEnv;
     }>) => CommandInvocation;
-    spawnProcess?: typeof spawn;
+    spawnProcess?: TerminalSpawnProcess;
     fetchFn?: typeof fetch;
     probeSocket?: (path: string, timeoutMs: number) => Promise<boolean>;
     env?: NodeJS.ProcessEnv;
     reachabilityTimeoutMs?: number;
-}>): AttachSurface {
+}>): HostProviderCliAttachSurface {
     const resolveReachability = params.resolveReachability;
     const resolveInvocation = params.resolveCommandInvocation ?? resolveWindowsCommandInvocation;
     const resolveLaunch = async (env: NodeJS.ProcessEnv): Promise<AgentCliLaunchSpec> => await (
@@ -215,15 +241,21 @@ export function createProviderCliAttachSurface<TTarget extends object>(params: R
     const resolveExactManagedServiceAccess = async (
         sessionId: string,
         target: TTarget,
-    ): Promise<ProviderCliAttachManagedServiceAccess | null> => {
+        hostRequest?: HostProviderCliAttachRequest,
+    ): Promise<ProviderCliAttachManagedServiceAccess | null | undefined> => {
         const targetBaseUrl = params.managedServiceTargetBaseUrl?.(target);
-        if (!targetBaseUrl || !params.resolveManagedServiceAccess) return null;
+        if (!targetBaseUrl) return undefined;
         try {
-            const access = await params.resolveManagedServiceAccess({
-                sessionId,
-                targetBaseUrl,
-            });
-            if (!access) return null;
+            const access = hostRequest?.resolveManagedServiceAccess
+                ? params.managedServiceCredentialEnvironmentKey
+                    ? await hostRequest.resolveManagedServiceAccess({
+                        sessionId, targetBaseUrl,
+                        environmentKey: params.managedServiceCredentialEnvironmentKey,
+                        ...(hostRequest.signal ? { signal: hostRequest.signal } : {}),
+                    })
+                    : null
+                : await params.resolveManagedServiceAccess?.({ sessionId, targetBaseUrl });
+            if (!access || access.isCurrent?.() === false) return null;
             return new URL(access.baseUrl).toString()
                 === new URL(targetBaseUrl).toString()
                 ? access
@@ -232,8 +264,7 @@ export function createProviderCliAttachSurface<TTarget extends object>(params: R
             return null;
         }
     };
-    return {
-        evaluateAvailability: async (request) => {
+    const evaluateAvailability: NonNullable<AttachSurface['evaluateAvailability']> = async (request) => {
             const target = await resolveTargetWithFallback({
                 metadata: request.metadata,
                 sessionId: request.sessionId,
@@ -281,6 +312,7 @@ export function createProviderCliAttachSurface<TTarget extends object>(params: R
                                 request.sessionId,
                                 target.value,
                             );
+                            if (access === null) return false;
                             if (access) {
                                 const targetUrl = new URL(reachability.url);
                                 const accessUrl = new URL(access.baseUrl);
@@ -308,8 +340,12 @@ export function createProviderCliAttachSurface<TTarget extends object>(params: R
                 }
             }
             return { available: true };
-        },
-        attach: async ({ metadata, sessionId, signal }) => {
+    };
+    const attach = async (request: Parameters<AttachSurface['attach']>[0] | HostProviderCliAttachRequest): Promise<Awaited<ReturnType<AttachSurface['attach']>>> => {
+            const { metadata, sessionId, signal } = request;
+            const onAttached = 'onAttached' in request ? request.onAttached : undefined;
+            const hostPresentation = 'onAttached' in request ? request.hostPresentation : undefined;
+            const startupDeadline = hostPresentation?.startupDeadline();
             if (signal?.aborted) {
                 return { ok: true, value: { exitCode: 0 } };
             }
@@ -331,8 +367,20 @@ export function createProviderCliAttachSurface<TTarget extends object>(params: R
             const managedServiceAccess = await resolveExactManagedServiceAccess(
                 sessionId,
                 target.value,
+                'onAttached' in request ? request : undefined,
             );
-            const childEnv = { ...env };
+            if (managedServiceAccess === null) {
+                return {
+                    ok: false,
+                    code: 'attach_failed',
+                    message: 'Provider attach managed-service access is unavailable.',
+                };
+            }
+            const childEnv = finalizeSessionChildEnvironment({
+                environment: env,
+                enableCgroupSelfMigration: false,
+                stackProcessKind: null,
+            });
             const credentialEnvironmentKey =
                 params.managedServiceCredentialEnvironmentKey;
             const credentialEnvironmentDestinations = credentialEnvironmentKey
@@ -362,55 +410,150 @@ export function createProviderCliAttachSurface<TTarget extends object>(params: R
                 ],
                 env: childEnv,
             });
-            const child = (params.spawnProcess ?? spawn)(
-                invocation.command,
-                invocation.args,
-                {
-                    env: childEnv,
-                    shell: false,
-                    stdio: 'inherit',
-                    ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
-                },
-            ) as unknown as SpawnedAttachProcess;
+            if (signal?.aborted) return { ok: true, value: { exitCode: 0 } };
+            if (managedServiceAccess?.isCurrent?.() === false) {
+                return { ok: false, code: 'attach_failed', message: 'Provider attach managed-service access is unavailable.' };
+            }
+            if (hostPresentation) {
+                const localAbort = new AbortController();
+                const retiredAbort = new AbortController();
+                const ownerSignal = AbortSignal.any([localAbort.signal, ...(signal ? [signal] : [])]);
+                const startupSignal = AbortSignal.any([ownerSignal, retiredAbort.signal]);
+                let created: Awaited<ReturnType<PreparedTerminalHostOwner['createPreparedHost']>> | null = null;
+                let physicallyRetired = false;
+                let phase = 'prepare_native';
+                try {
+                    created = await hostPresentation.owner.createPreparedHost({
+                        preference: hostPresentation.preference, sessionName: hostPresentation.sessionName,
+                        workingDirectory: hostPresentation.workingDirectory,
+                        spawnArgv: [invocation.command, ...invocation.args],
+                        spawnEnv: Object.fromEntries(Object.entries(childEnv).filter(
+                            (entry): entry is [string, string] => typeof entry[1] === 'string',
+                        )),
+                        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+                        signal: ownerSignal,
+                        beforeSpawn: () => {
+                            if (managedServiceAccess?.isCurrent?.() === false) throw new Error('Provider managed-service access was withdrawn');
+                        },
+                    });
+                    phase = 'bind_host';
+                    await hostPresentation.bindHost(created.handle);
+                    const retirement = hostPresentation.waitForRetirement(created.handle, ownerSignal).then(retired => {
+                        physicallyRetired = retired;
+                        if (retired) retiredAbort.abort();
+                        return retired;
+                    });
+                    void retirement.catch(() => undefined);
+                    phase = 'await_native_spawn';
+                    const status = await created.launch.awaitNativeSpawnResult!(
+                        startupDeadline!, hostPresentation.startupPollIntervalMs, startupSignal,
+                    );
+                    if (physicallyRetired || ownerSignal.aborted) return { ok: true, value: { exitCode: 0 } };
+                    if (status !== 'spawned') throw new Error('Native presentation startup was not confirmed');
+                    phase = 'publish_attached';
+                    await onAttached?.();
+                    // Actual native startup owns the live presentation. Private cleanup
+                    // failure is already observable at the artifact owner and is nonfatal.
+                    await created.launch.discard().catch(() => undefined);
+                    phase = 'wait_for_retirement';
+                    await retirement;
+                    return { ok: true, value: { exitCode: 0 } };
+                } catch {
+                    logger.infoFile('[provider-attach] Hosted native presentation unavailable', {
+                        error: 'managed_provider_attach_startup_failed', sessionId, phase,
+                    });
+                    return signal?.aborted
+                        ? { ok: true, value: { exitCode: 0 } }
+                        : { ok: false, code: 'attach_failed', message: 'Hosted native presentation startup failed.' };
+                } finally {
+                    // Cancel pending receipt/lifecycle work before awaiting exact disposal.
+                    localAbort.abort();
+                    if (created) await hostPresentation.owner.dispose(created.handle, physicallyRetired
+                        ? { kind: 'preserve_host', reason: 'runtime_recovery' }
+                        : { kind: 'destroy_owned_host', reason: 'session_closed' });
+                }
+            }
+            let child: Awaited<ReturnType<typeof launchBorrowedTerminalProcess>>;
+            try {
+                child = await launchBorrowedTerminalProcess({
+                    spawnArgv: [invocation.command, ...invocation.args],
+                    workingDirectory: process.cwd(),
+                    spawnEnv: Object.fromEntries(Object.entries(childEnv).filter(
+                        (entry): entry is [string, string] => typeof entry[1] === 'string',
+                    )),
+                    envPassthroughKeys: [],
+                    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+                    beforeSpawn: () => {
+                        if (managedServiceAccess?.isCurrent?.() === false) {
+                            throw new Error('Provider managed-service access was withdrawn');
+                        }
+                    },
+                    ...(params.spawnProcess ? { spawnProcess: params.spawnProcess } : {}),
+                    ...(signal ? { signal } : {}),
+                });
+            } catch {
+                return signal?.aborted
+                    ? { ok: true, value: { exitCode: 0 } }
+                    : { ok: false, code: 'attach_failed', message: 'Provider native attach startup failed.' };
+            }
 
-            const exitCode = await new Promise<number>((resolve) => {
+            let startupFailed = false;
+            const exitCode = await new Promise<number>((resolve, reject) => {
                 let stopTimer: NodeJS.Timeout | null = null;
+                let startupPublication: Promise<void> | null = null;
+                let finished = false;
                 const finish = (code: number): void => {
+                    if (finished) return;
+                    finished = true;
                     if (stopTimer) {
                         clearTimeout(stopTimer);
                         stopTimer = null;
                     }
                     signal?.removeEventListener('abort', stop);
-                    resolve(code);
+                    void Promise.resolve(startupPublication).then(() => resolve(code));
                 };
                 const stop = (): void => {
-                    try {
-                        child.kill('SIGINT');
-                    } catch {
+                    void child.signal('SIGINT').catch(() => {
                         logger.infoFile('[provider-attach] Failed to signal foreground attach process', {
                             error: 'provider_attach_cleanup_signal_failed', sessionId, signal: 'SIGINT',
                         });
                         // The exit/error event remains the authoritative settlement.
-                    }
+                    });
                     stopTimer = setTimeout(() => {
-                        if (child.exitCode !== null && child.exitCode !== undefined) return;
-                        try {
-                            child.kill('SIGKILL');
-                        } catch {
+                        if (finished) return;
+                        void child.signal('SIGKILL').catch(() => {
                             logger.infoFile('[provider-attach] Failed to signal foreground attach process', {
                                 error: 'provider_attach_cleanup_signal_failed', sessionId, signal: 'SIGKILL',
                             });
                             // The exit/error event remains the authoritative settlement.
-                        }
+                        });
                     }, PROVIDER_ATTACH_STOP_GRACE_MS);
                     stopTimer.unref?.();
                 };
-                child.once('error', () => finish(1));
-                child.once('exit', (code) => finish(typeof code === 'number' ? code : 1));
+                if (onAttached) {
+                    startupPublication = Promise.resolve().then(async () => {
+                        if (signal?.aborted) throw new Error('Managed attach startup cancelled');
+                        await onAttached();
+                    }).catch(() => {
+                        startupFailed = true;
+                        if (!finished) stop();
+                    });
+                }
+                void child.whenExited.then(
+                    ({ code }) => finish(typeof code === 'number' ? code : 1),
+                    (error: unknown) => {
+                        finished = true;
+                        if (stopTimer) clearTimeout(stopTimer);
+                        signal?.removeEventListener('abort', stop);
+                        reject(error);
+                    },
+                );
                 signal?.addEventListener('abort', stop, { once: true });
                 if (signal?.aborted) stop();
             });
-            return { ok: true, value: { exitCode } };
-        },
+            return startupFailed
+                ? { ok: false, code: 'attach_failed', message: 'Managed provider attach startup failed.' }
+                : { ok: true, value: { exitCode } };
     };
+    return { evaluateAvailability, attach, attachManaged: attach };
 }

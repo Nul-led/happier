@@ -174,6 +174,9 @@ function serializeAutomationActionResult(
     result: BrowserAutomationResult,
     controlService: BrowserAutomationControlService,
 ): unknown {
+    if (result.status === 'interrupted' && result.completion === 'unknown') {
+        return { v: 1, automationRequestId: request.automationRequestId, status: 'interrupted', completion: 'unknown' };
+    }
     const entry = [...controlService.getActionTimeline({
         browserSessionId: request.browserSessionId,
         viewId: request.viewId,
@@ -313,7 +316,7 @@ async function executeBrowserAutomationAction(
     const requestedBy = resolveBrowserAutomationActionRequester(request.data.requestedBy, args.context?.authority);
     if (!requestedBy) return invalidParametersResult;
     const admitted = { ...request.data, requestedBy };
-    const result = await controlService.executeAction(admitted);
+    const result = await controlService.executeAction(admitted, { signal: args.context?.signal });
     return serializeAutomationActionResult(admitted, result, controlService);
 }
 

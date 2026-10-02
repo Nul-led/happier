@@ -10,6 +10,24 @@ import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
 import { writeExecutableShim } from '@/testkit/fs/executableShim';
 import { waitForSessionWebhook } from './spawn/waitForSessionWebhook';
 
+const { waitForSessionWebhook: waitForRealSessionWebhook } = await vi.importActual<typeof import('./spawn/waitForSessionWebhook')>('./spawn/waitForSessionWebhook');
+
+// Simulate the child webhook at the process boundary while retaining the real
+// waiter, PID custody, failure settlement and finalization behavior.
+function completeSessionWebhook(params: Parameters<typeof waitForSessionWebhook>[0], sessionId = 'sess_plain') {
+  const completion = waitForRealSessionWebhook(params);
+  queueMicrotask(() => {
+    const tracked = params.pidToTrackedSession?.get(params.pid);
+    if (!tracked) {
+      completion.settleFailure({ type: 'error', errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
+        errorMessage: 'Expected tracked child at the webhook boundary' });
+      return;
+    }
+    params.pidToAwaiter.get(params.pid)?.({ ...tracked, happySessionId: sessionId });
+  });
+  return completion;
+}
+
 type ShutdownSource = 'happier-app' | 'happier-cli' | 'os-signal' | 'exception';
 type BuildHappyCliSubprocessLaunchSpec = typeof import('@/utils/spawnHappyCLI').buildHappyCliSubprocessLaunchSpec;
 type ReattachTrackedSessionsFromMarkers = typeof import('./sessions/reattachFromMarkers').reattachTrackedSessionsFromMarkers;
@@ -564,8 +582,9 @@ vi.mock('@/daemon/ownership/daemonServiceInventory', () => ({
   renderDaemonInstalledServiceConflict: vi.fn(() => ({ title: 'service-conflict', lines: [] })),
 }));
 
-vi.mock('./spawn/waitForSessionWebhook', () => ({
-  waitForSessionWebhook: vi.fn(async () => ({ type: 'success', sessionId: 'sess_plain' })),
+vi.mock('./spawn/waitForSessionWebhook', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./spawn/waitForSessionWebhook')>(),
+  waitForSessionWebhook: vi.fn((params: Parameters<typeof waitForSessionWebhook>[0]) => completeSessionWebhook(params)),
 }));
 
 vi.mock('./automation/automationWorker', () => ({
@@ -1135,10 +1154,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
     process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = 'false';
 
     const waitForSessionWebhookMock = vi.mocked(waitForSessionWebhook);
-    waitForSessionWebhookMock.mockImplementationOnce(async () => ({
-      type: 'success',
-      sessionId: 'sess_plain',
-    }));
+    waitForSessionWebhookMock.mockImplementationOnce(completeSessionWebhook);
 
     try {
       const { startDaemon } = await import('./startDaemon');
@@ -1165,7 +1181,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
       await run;
     } finally {
       waitForSessionWebhookMock.mockReset();
-      waitForSessionWebhookMock.mockImplementation(async () => ({ type: 'success', sessionId: 'sess_plain' }));
+      waitForSessionWebhookMock.mockImplementation(completeSessionWebhook);
       if (refreshEnvOriginal === undefined) {
         delete process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
       } else {
@@ -1181,17 +1197,19 @@ describe('startDaemon spawn resume wiring (integration)', () => {
     process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = 'false';
 
     const waitForSessionWebhookMock = vi.mocked(waitForSessionWebhook);
-    let resolveWebhook: ((result: SpawnSessionResult) => void) | null = null;
-    const readResolveWebhook = (): ((result: SpawnSessionResult) => void) => {
+    let resolveWebhook: ((result: Extract<SpawnSessionResult, { type: 'error' }>) => void) | null = null;
+    const readResolveWebhook = (): ((result: Extract<SpawnSessionResult, { type: 'error' }>) => void) => {
       const resolver = resolveWebhook;
       if (!resolver) {
         throw new Error('Expected session webhook waiter to be registered');
       }
       return resolver;
     };
-    waitForSessionWebhookMock.mockImplementationOnce(async () => await new Promise<SpawnSessionResult>((resolve) => {
-      resolveWebhook = resolve;
-    }));
+    waitForSessionWebhookMock.mockImplementationOnce((params) => {
+      const completion = waitForRealSessionWebhook(params);
+      resolveWebhook = completion.settleFailure;
+      return completion;
+    });
 
     try {
       const { startDaemon } = await import('./startDaemon');
@@ -1240,7 +1258,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
         on: vi.fn(),
       }));
       waitForSessionWebhookMock.mockReset();
-      waitForSessionWebhookMock.mockImplementation(async () => ({ type: 'success', sessionId: 'sess_plain' }));
+      waitForSessionWebhookMock.mockImplementation(completeSessionWebhook);
       if (refreshEnvOriginal === undefined) {
         delete process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
       } else {
@@ -1691,10 +1709,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
     );
 
     const waitForSessionWebhookMock = vi.mocked(waitForSessionWebhook);
-    waitForSessionWebhookMock.mockResolvedValueOnce({
-      type: 'success',
-      sessionId: 'sess-handoff-source',
-    });
+    waitForSessionWebhookMock.mockImplementationOnce((params) => completeSessionWebhook(params, 'sess-handoff-source'));
 
     try {
       const { startDaemon } = await import('./startDaemon');
@@ -1722,7 +1737,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
       await run;
     } finally {
       waitForSessionWebhookMock.mockReset();
-      waitForSessionWebhookMock.mockImplementation(async () => ({ type: 'success', sessionId: 'sess_plain' }));
+      waitForSessionWebhookMock.mockImplementation(completeSessionWebhook);
       spawnHappyCLI.mockClear();
       if (refreshEnvOriginal === undefined) {
         delete process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
@@ -1777,10 +1792,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
     );
 
     const waitForSessionWebhookMock = vi.mocked(waitForSessionWebhook);
-    waitForSessionWebhookMock.mockResolvedValueOnce({
-      type: 'success',
-      sessionId: 'sess-handoff-source',
-    });
+    waitForSessionWebhookMock.mockImplementationOnce((params) => completeSessionWebhook(params, 'sess-handoff-source'));
 
     try {
       const { startDaemon } = await import('./startDaemon');
@@ -1809,7 +1821,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
       await run;
     } finally {
       waitForSessionWebhookMock.mockReset();
-      waitForSessionWebhookMock.mockImplementation(async () => ({ type: 'success', sessionId: 'sess_plain' }));
+      waitForSessionWebhookMock.mockImplementation(completeSessionWebhook);
       spawnHappyCLI.mockClear();
       if (refreshEnvOriginal === undefined) {
         delete process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;

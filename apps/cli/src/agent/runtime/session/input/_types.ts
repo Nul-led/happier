@@ -68,6 +68,7 @@ export type WaitForNextProviderInputOptions = Readonly<{
 
 export type SessionProviderInputConsumer<Mode, Message> = Readonly<{
   waitForNextInput: (opts: WaitForNextProviderInputOptions) => Promise<MessageBatch<Mode, Message> | null>;
+  deferContextOnlyInput: (batch: MessageBatch<Mode, Message>) => void;
   finalizeContextOnlyInput: (opts: Readonly<{
     batch: MessageBatch<Mode, Message>;
     abortSignal: AbortSignal;

@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { isAbsolute, join, relative, sep } from 'node:path';
 
 import cliDistBuildManifest from '../../cliDistBuildManifest.cjs';
-import { BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH as BUNDLED_PLUGIN_FAILURES_RELATIVE_PATH } from '../../bundledPluginPublicationPolicy.mjs';
+import { BUNDLED_PLUGIN_PUBLICATION_FAILURES_RELATIVE_PATH as BUNDLED_PLUGIN_FAILURES_RELATIVE_PATH, parseBundledPluginPublicationFailures } from '../../bundledPluginPublicationPolicy.mjs';
 import {
   assertResolvedRuntimeDependencyMatchesDeclaration,
   collectExternalRuntimeDependencies,
@@ -849,6 +849,9 @@ async function stageCliBinaryArtifactSupportPayload({
   await copyCliRuntimeSidecars(repoRoot, payloadDir);
   const bundledPluginFailuresSource = join(repoRoot, 'apps', 'cli', BUNDLED_PLUGIN_FAILURES_RELATIVE_PATH);
   const bundledPluginFailuresTarget = join(payloadDir, BUNDLED_PLUGIN_FAILURES_RELATIVE_PATH);
+  const publicationFailures = existsSync(bundledPluginFailuresSource)
+    ? parseBundledPluginPublicationFailures(readFileSync(bundledPluginFailuresSource, 'utf8'))
+    : [];
   await mkdir(join(payloadDir, '.project', 'tmp', 'bundled-plugin-publication'), { recursive: true });
   if (existsSync(bundledPluginFailuresSource)) {
     await copyFile(bundledPluginFailuresSource, bundledPluginFailuresTarget);
@@ -863,6 +866,7 @@ async function stageCliBinaryArtifactSupportPayload({
     yarn,
     runCommand,
     prebuiltExecutablePath: cliProxyApiManagedRuntimeExecutablePath,
+    publicationFailures,
   });
   await stageProcessCustodyRuntime({
     repoRoot,
@@ -911,7 +915,7 @@ async function stageCliBinaryArtifactSupportPayload({
     workspaceRuntimeIdentity: stagedWorkspaceRuntime.fingerprint,
     runtimeAssetRelativePath: relative(
       payloadDir,
-      cliProxyApiManagedRuntime.executablePath,
+      cliProxyApiManagedRuntime?.executablePath ?? join(payloadDir, `${CLIPROXYAPI_MANAGED_RUNTIME_RELATIVE_PATH}${target.exeExt}`),
     ).replaceAll('\\', '/'),
   };
 }
@@ -1000,6 +1004,11 @@ export async function buildCliBinaryArtifactPayload({
   requiredCliDistInputFingerprint?: string;
   includeIrohNativeReleaseEvidence?: boolean;
 }): Promise<{ executableName: string; entrypoint: string }> {
+  const publicationFailuresPath = join(repoRoot, 'apps', 'cli', BUNDLED_PLUGIN_FAILURES_RELATIVE_PATH);
+  if (existsSync(publicationFailuresPath)
+    && parseBundledPluginPublicationFailures(readFileSync(publicationFailuresPath, 'utf8')).length > 0) {
+    throw new Error('[component-artifacts] release payload requires a complete bundled-plugin publication');
+  }
   await rm(payloadDir, { recursive: true, force: true });
   await mkdir(payloadDir, { recursive: true });
   const code = await buildCliBinaryArtifactCodePayload({

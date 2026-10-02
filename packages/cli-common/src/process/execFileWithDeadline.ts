@@ -62,7 +62,8 @@ export function execFileWithDeadline(
   args: readonly string[],
   options: ExecFileWithDeadlineOptions,
 ): Promise<ExecFileWithDeadlineResult> {
-  const { timeout, terminateOnAbort, ...spawnOptions } = options;
+  const { timeout, terminateOnAbort, ...commandOptions } = options;
+  const spawnOptions = { ...commandOptions, windowsHide: commandOptions.windowsHide !== false };
   return new Promise<ExecFileWithDeadlineResult>((resolve, reject) => {
     const signal = spawnOptions.signal;
     if (terminateOnAbort) signal?.throwIfAborted();

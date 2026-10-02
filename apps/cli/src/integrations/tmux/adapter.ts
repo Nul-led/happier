@@ -18,7 +18,8 @@ import {
 import { createTmuxTerminalControlPort } from './control';
 import { resolveTmuxPromptSubmitDelayMs } from './env';
 import { evaluateTmuxPaneLiveness } from './paneLiveness';
-import { TmuxUtilities, type TmuxSpawnOptions } from './TmuxUtilities';
+import { TmuxUtilities, type TmuxSpawnOptions, type TmuxSpawnResult } from './TmuxUtilities';
+import { TerminalHostCreationError } from '../terminal/host/errors';
 import { pasteTextViaTmuxBuffer } from './typeText';
 import type { TmuxCommandResult, TmuxControlSequence } from './types';
 import { createTmuxTerminalHostHandle } from './hostHandle';
@@ -48,7 +49,7 @@ export type TmuxTerminalHostUtility = Readonly<{
     args: string[],
     options?: TmuxSpawnOptions,
     env?: Record<string, string>,
-  ): Promise<{ success: boolean; sessionId?: string; sessionName?: string; windowName?: string; windowId?: string; pid?: number; error?: string }>;
+  ): Promise<TmuxSpawnResult>;
   captureCurrentInput(session?: string, window?: string, pane?: string): Promise<string>;
   captureCursorPosition(session?: string, window?: string, pane?: string): Promise<Readonly<{ x: number; y: number }> | null>;
   sendKeys(keys: string | TmuxControlSequence, session?: string, window?: string, pane?: string): Promise<boolean>;
@@ -210,7 +211,11 @@ export function createTmuxTerminalHostAdapter(params?: Readonly<{
         requireNewSession: true,
       }, { ...opts.spawnEnv });
       if (!result.success) {
-        throw new Error(result.error ?? 'Failed to create tmux terminal host');
+        const error = new Error(result.error ?? 'Failed to create tmux terminal host');
+        throw new TerminalHostCreationError([error], error.message, {
+          creationDisposition: result.creationDisposition,
+          cleanupIncomplete: result.cleanupIncomplete === true,
+        });
       }
       return createTmuxTerminalHostHandle({
         sessionName: result.sessionName ?? opts.sessionName,

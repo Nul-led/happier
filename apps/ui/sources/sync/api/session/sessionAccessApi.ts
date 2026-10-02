@@ -22,6 +22,7 @@ import {
     ResolveSessionAccessPrincipalsResponseV1Schema,
     type SessionAccessPrincipalSummaryV1,
     type SessionAccessCreationDecisionV1,
+    generateStoredContentPublicShareMaterialV1,
 } from '@happier-dev/protocol';
 import { randomUUID } from '@/platform/randomUUID';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
@@ -32,7 +33,7 @@ import { readSessionSnapshotForAuthority, SessionSnapshotReadError } from '@/syn
 import { readTransferableSessionDataKey } from '@/sync/encryption/readTransferableSessionDataKey';
 import { encryptDataKeyForRecipientV0, verifyRecipientContentPublicKeyBinding } from '@/sync/encryption/directShareEncryption';
 import { encryptDataKeyForPublicShare } from '@/sync/encryption/publicShareEncryption';
-import { generateSessionPublicLinkBearer } from '@/sync/domains/social/sessionPublicLinkPublication';
+import { getRandomBytes } from '@/platform/cryptoRandom';
 import type { ServerAccountRequestAuthority } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import { captureEncryptionGenerationCurrentness } from '@/sync/encryption/encryption';
 import { searchUsersPageByUsername } from '@/sync/api/social/apiFriends';
@@ -80,16 +81,8 @@ export type SessionAccessRequestOptions = Readonly<{
     availability: SessionCollaborationAvailability;
     isCurrent?: () => boolean;
     signal?: AbortSignal;
-    /**
-     * Observes the bearer this trusted host generated for a new publication.
-     *
-     * The public Action result never carries the bearer, and the Home stores
-     * only its hash, so the generating device is the one place it can be kept.
-     * It is reported before dispatch so the mounted host retains the same
-     * bearer while this executor performs its one exact physical replay after
-     * an ambiguous response.
-     */
-    onPublicLinkBearerIssued?: (token: string) => void;
+    /** Device-local custody only; this material never enters the public Action or HTTP body. */
+    onPublicLinkIssued?: (material: Readonly<{ lookupId: string; secret: string }>) => void;
 }>;
 
 async function materializeDirectAccountEnvelope(params: Readonly<{
@@ -183,9 +176,8 @@ async function materializeDirectAccountEnvelope(params: Readonly<{
 /**
  * Materializes the trusted-host publication material for a new public link.
  *
- * A public link is publication, not an access grant: the bearer is generated
- * here and the Home keeps only its hash, so the wrapped Session key is sealed
- * to that bearer by this host before the already-bound request is dispatched.
+ * The lookup and fragment secret are independently generated here. The Home
+ * sees only the lookup and a key sealed to the fragment held by this device.
  * The public Action input stays bearer-free and key-free.
  */
 async function materializePublicLinkCreateMaterial(params: Readonly<{
@@ -193,7 +185,8 @@ async function materializePublicLinkCreateMaterial(params: Readonly<{
     check(): void;
     sessionId: string;
 }>): Promise<Readonly<{
-    token: string;
+    lookupId: string;
+    secret: string;
     encryptedDataKey?: string;
     checkCurrentness: () => void;
 }>> {
@@ -220,9 +213,9 @@ async function materializePublicLinkCreateMaterial(params: Readonly<{
     checkEncryptionScope();
     // Authority stays with the Home transaction and with the mounted host's own
     // capability check; this leaf adds no second access decision.
-    const token = generateSessionPublicLinkBearer();
+    const material = generateStoredContentPublicShareMaterialV1(getRandomBytes);
     if ((snapshot.session.encryptionMode ?? 'e2ee') === 'plain') {
-        return { token, checkCurrentness: checkEncryptionScope };
+        return { ...material, checkCurrentness: checkEncryptionScope };
     }
     const sessionDataKey = await readTransferableSessionDataKey({
         callerDataKeyEnvelope: snapshot.callerDataKeyEnvelope,
@@ -230,9 +223,9 @@ async function materializePublicLinkCreateMaterial(params: Readonly<{
     });
     checkEncryptionScope();
     if (!sessionDataKey) throw new SessionAccessApiError('session_data_key_unavailable');
-    const encryptedDataKey = await encryptDataKeyForPublicShare(sessionDataKey, token);
+    const encryptedDataKey = await encryptDataKeyForPublicShare(sessionDataKey, material.secret);
     checkEncryptionScope();
-    return { token, encryptedDataKey, checkCurrentness: checkEncryptionScope };
+    return { ...material, encryptedDataKey, checkCurrentness: checkEncryptionScope };
 }
 
 /**
@@ -271,6 +264,9 @@ export async function executeSessionAccessHttpAction(params: SessionAccessReques
     // An already-aborted request proves this host never handed bytes to the
     // transport. After dispatch, cancellation can no longer prove that.
     if (params.signal?.aborted) throw new SessionAccessApiError('cancelled');
+    if (actionId === 'session.public_link.create' && !params.onPublicLinkIssued) {
+        throw new SessionAccessApiError('public_link_custody_unavailable');
+    }
     // The typed family binder is the one place an Action input becomes a
     // request, so this leaf keeps no route table of its own.
     return await runWithServerAccountScopeRequestGuard({
@@ -287,17 +283,23 @@ export async function executeSessionAccessHttpAction(params: SessionAccessReques
             check();
             const publicBound = bindSessionAccessActionHttpRequestV1(actionId, publicInput);
             let physicalMutation: SessionGrantMutationV1 | null = null;
-            let publicLinkMaterial: Readonly<{ token: string; encryptedDataKey?: string }> | null = null;
+            let publicLinkMaterial: Readonly<{ lookupId: string; keyDerivation: 'fragment_v1'; encryptedDataKey?: string }> | null = null;
             let retainedEnvelopeFallback = false;
             let checkMaterializationCurrentness = check;
             if (actionId === 'session.public_link.create') {
                 const { sessionId } = publicInput as { sessionId: string };
                 const materialized = await materializePublicLinkCreateMaterial({ authority, check, sessionId });
                 publicLinkMaterial = materialized.encryptedDataKey === undefined
-                    ? { token: materialized.token }
-                    : { token: materialized.token, encryptedDataKey: materialized.encryptedDataKey };
+                    ? { lookupId: materialized.lookupId, keyDerivation: 'fragment_v1' }
+                    : { lookupId: materialized.lookupId, keyDerivation: 'fragment_v1', encryptedDataKey: materialized.encryptedDataKey };
                 checkMaterializationCurrentness = materialized.checkCurrentness;
-                params.onPublicLinkBearerIssued?.(materialized.token);
+                try {
+                    params.onPublicLinkIssued?.({ lookupId: materialized.lookupId, secret: materialized.secret });
+                } catch {
+                    // This callback has seen a fragment secret; never propagate
+                    // its arbitrary exception to an Action result or logger.
+                    throw new SessionAccessApiError('public_link_custody_unavailable');
+                }
             }
             if (actionId === 'session.access.grant.set') {
                 const { sessionId, ...grant } = publicInput as Record<string, unknown> & { sessionId: string };
@@ -349,7 +351,7 @@ export async function executeSessionAccessHttpAction(params: SessionAccessReques
                     try {
                         // The server's public-link owner is value-idempotent.
                         // Replay this already-materialized request once so the
-                        // token and wrapped key remain byte-identical; never
+                        // lookup and wrapped key remain byte-identical; never
                         // regenerate either after an ambiguous response.
                         checkMaterializationCurrentness();
                         response = await authority.request(bound.path, requestInit);

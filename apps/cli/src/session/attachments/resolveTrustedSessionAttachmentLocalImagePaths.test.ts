@@ -27,6 +27,38 @@ function sha256(content: string): string {
 }
 
 describe('resolveTrustedSessionAttachmentLocalImagePaths', () => {
+    it('refuses plugin image disclosure outside declared Session READ scope or Account encryption mode', async () => {
+        const cwd = await createTempDir();
+        const mediaPath = '.happier/uploads/artifacts/session-1/capture-1/screen.png';
+        const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a2ioAAAAASUVORK5CYII=', 'base64');
+        await mkdir(dirname(join(cwd, mediaPath)), { recursive: true });
+        await writeFile(join(cwd, mediaPath), bytes);
+        const image = {
+            id: 'session-media:capture-1', kind: 'localImage', path: mediaPath, mimeType: 'image/png',
+            sha256: createHash('sha256').update(bytes).digest('hex'), sizeBytes: bytes.byteLength,
+            provenance: { kind: 'sessionMediaArtifact', sessionId: 'session-1', storage: 'session' },
+        };
+        const base = {
+            cwd, sessionId: 'session-1', image, maxBytes: bytes.byteLength,
+            pluginAccess: {
+                scopes: [{ access: ['read' as const], machineIds: ['machine-1'] }],
+                session: { id: 'session-1', machineId: 'machine-1' },
+                accountEncryptionMode: 'plain' as const,
+                sessionEncryptionMode: 'plain' as const,
+            },
+        };
+        expect(await verifySessionStructuredImageInput(base)).toMatchObject({ status: 'verified', bytes });
+        const refusals = await Promise.all([verifySessionStructuredImageInput({ ...base, pluginAccess: {
+            ...base.pluginAccess, session: { id: 'session-1', machineId: 'foreign-machine' },
+        } }), verifySessionStructuredImageInput({ ...base, pluginAccess: {
+            ...base.pluginAccess, scopes: [{ access: ['control' as const] }],
+        } }), verifySessionStructuredImageInput({ ...base, pluginAccess: {
+            ...base.pluginAccess, sessionEncryptionMode: 'e2ee' as const,
+        } }), verifySessionStructuredImageInput({ ...base, pluginAccess: {
+            ...base.pluginAccess, accountEncryptionMode: 'e2ee' as const,
+        } })]);
+        expect(refusals.map((result) => result.status)).toEqual(['untrusted', 'untrusted', 'untrusted', 'untrusted']);
+    });
     it('verifies native Session media without browser provenance and refuses scope, integrity and bucket substitutions', async () => {
         const cwd = await createTempDir();
         const mediaPath = '.happier/uploads/artifacts/session-1/capture-1/screen.png';

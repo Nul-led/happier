@@ -5,7 +5,11 @@ import {
     encodePlainArtifactStoredContent,
     openEncryptedDataKeyEnvelopeV1,
     signAccountContentKeyBindingV1,
+    validateWorkflowDefinition,
     verifyAccountContentKeyBindingV1,
+    withArtifactExcerptV1,
+    openPublicShareDataKeyV1,
+    type ArtifactPublicLinkIssuedV1,
     type ArtifactAccessGrantRowV1,
     type ArtifactRecipientKeyEnvelopeCommitInputV1,
 } from '@happier-dev/protocol';
@@ -15,7 +19,7 @@ import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import { encodeHex } from '@/encryption/hex';
 import { invalidateAccountEncryptionModeCache } from '@/sync/api/account/apiAccountEncryptionMode';
 import { resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
-import type { Artifact, ArtifactCreateRequest } from '@/sync/domains/artifacts/artifactTypes';
+import type { Artifact, ArtifactCreateRequest, ArtifactUpdateRequest } from '@/sync/domains/artifacts/artifactTypes';
 import { retireActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
 import { getStorage } from '@/sync/domains/state/storage';
@@ -49,8 +53,14 @@ async function fixture(mode: 'plain' | 'e2ee', document?: Readonly<{ header: Rec
     let grantStatus = 200;
     let censusCallerEnvelope: string | undefined;
     let makeMutationUnreadable = false;
+    let restoreQuota: Readonly<{ error: 'quota_exceeded'; budget: 'document'; limitBytes: number; usedBytes: number }> | null = null;
+    const revisions: { bodyVersion: number; body: string; createdAt: number; sizeBytes: number }[] = [];
     let grants: ArtifactAccessGrantRowV1[] = [];
     const requests: string[] = [];
+    const issued: ArtifactPublicLinkIssuedV1[] = [];
+    let publicLinkBody: Record<string, unknown> | undefined;
+    const publicShare = { id: 'share-1', subject: { kind: 'artifact', id: 'document' }, expiresAt: null, maxUses: null,
+        useCount: 0, isConsentRequired: false, createdAt: 1, updatedAt: 1, keyDerivation: 'fragment_v1' };
     const envelopes: ArtifactRecipientKeyEnvelopeCommitInputV1[] = [];
     const recipientSecret = new Uint8Array(32).fill(17);
     const contentPublicKey = x25519.getPublicKey(recipientSecret);
@@ -68,12 +78,52 @@ async function fixture(mode: 'plain' | 'e2ee', document?: Readonly<{ header: Rec
         expect(new Headers(init?.headers).get('Authorization')).toBe(`Bearer ${token}`);
         requests.push(`${init?.method ?? 'GET'} ${target.pathname}`);
         if (target.pathname === '/v1/account/encryption') return Response.json({ mode, updatedAt: 0 });
+        if (target.pathname === '/v1/public-shares') {
+            if (init?.method === 'POST') {
+                publicLinkBody = JSON.parse(String(init.body));
+                return Response.json({ publicShare, isolatedOrigin: 'https://public.example.test' });
+            }
+            expect(target.searchParams.get('subjectKind')).toBe('artifact');
+            expect(target.searchParams.get('subjectId')).toBe('document');
+            return Response.json({ publicShares: [publicShare] });
+        }
+        if (target.pathname === '/v1/public-shares/share-1' && init?.method === 'DELETE') return Response.json({ success: true });
+        if (target.pathname === '/v1/artifacts/storage/usage') return Response.json({ usedBytes: 321, limitBytes: null,
+            documentLimitBytes: null, revisionRetentionCount: 10 });
         if (target.pathname === '/v1/artifacts' && init?.method === 'POST') {
             const input = JSON.parse(String(init.body)) as ArtifactCreateRequest;
-            stored = { ...input, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
+            stored = { ...input, ownerAccountId: 'owner', access, encryptionMode: mode,
+                headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
             return Response.json(stored);
         }
-        if (stored && target.pathname === '/v1/artifacts/document') return Response.json({ ...stored, ownerAccountId: 'owner', access, encryptionMode: mode });
+        if (stored && target.pathname === '/v1/artifacts/document') {
+            if (init?.method === 'POST') {
+                const input = JSON.parse(String(init.body)) as ArtifactUpdateRequest;
+                if (input.expectedHeaderVersion !== stored.headerVersion || input.expectedBodyVersion !== stored.bodyVersion)
+                    return Response.json({ success: false, error: 'version-mismatch' });
+                if (stored.body) revisions.push({ bodyVersion: stored.bodyVersion!, body: stored.body,
+                    createdAt: stored.updatedAt, sizeBytes: decodeBase64(stored.body).byteLength });
+                stored = { ...stored, header: input.header!, body: input.body!,
+                    headerVersion: stored.headerVersion + 1, bodyVersion: stored.bodyVersion! + 1, seq: stored.seq + 1 };
+                return Response.json({ success: true, headerVersion: stored.headerVersion, bodyVersion: stored.bodyVersion });
+            }
+            return Response.json({ ...stored, ownerAccountId: 'owner', access, encryptionMode: mode });
+        }
+        if (stored && target.pathname === '/v1/artifacts/document/revisions') return Response.json({ revisions, retentionCount: 10 });
+        if (stored && target.pathname === '/v1/artifacts/document/revisions/1/restore') {
+            if (restoreQuota) return Response.json(restoreQuota, { status: 413 });
+            const input = JSON.parse(String(init?.body)) as { header: string; expectedHeaderVersion: number; expectedBodyVersion: number };
+            expect(Object.keys(input).sort()).toEqual(['expectedBodyVersion', 'expectedHeaderVersion', 'header']);
+            if (input.expectedHeaderVersion !== stored.headerVersion || input.expectedBodyVersion !== stored.bodyVersion)
+                return Response.json({ success: false, error: 'version-mismatch', currentHeaderVersion: stored.headerVersion,
+                    currentBodyVersion: stored.bodyVersion, currentHeader: stored.header, currentBody: stored.body });
+            const selected = revisions.find(row => row.bodyVersion === 1)!;
+            revisions.push({ bodyVersion: stored.bodyVersion!, body: stored.body!, createdAt: stored.updatedAt,
+                sizeBytes: decodeBase64(stored.body!).byteLength });
+            stored = { ...stored, header: input.header, body: selected.body, headerVersion: stored.headerVersion + 1,
+                bodyVersion: stored.bodyVersion! + 1, seq: stored.seq + 1 };
+            return Response.json({ success: true, headerVersion: stored.headerVersion, bodyVersion: stored.bodyVersion });
+        }
         if (target.pathname === '/v1/artifacts/document/access/grants') {
             if (grantStatus !== 200) return Response.json({ error: 'not_found' }, { status: grantStatus });
             if (init?.method === 'PUT') {
@@ -105,17 +155,79 @@ async function fixture(mode: 'plain' | 'e2ee', document?: Readonly<{ header: Rec
     const body = document?.body ?? 'definition';
     // Seed the HTTP store with canonical bytes; creation compatibility is tested
     // by the existing Artifact tests, independently of the sharing front door.
-    if (mode === 'plain') stored = { id: 'document', header: encodePlainArtifactStoredContent(header), body: encodePlainArtifactStoredContent({ body }),
+    if (mode === 'plain') stored = { id: 'document', ownerAccountId: 'owner', access, encryptionMode: mode,
+        header: encodePlainArtifactStoredContent(header), body: encodePlainArtifactStoredContent({ body }),
         dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
     else await account.workflowArtifacts.create({ artifactId: 'document', header, body });
     const context = { serverId: home.id, surface: 'ui', authority: 'present_user', actionCaller: { kind: 'host' } } as const;
-    return { account, context, executor: createDefaultActionExecutor(), requests, envelopes, recipientSecret, fingerprint,
+    return { account, context, executor: createDefaultActionExecutor({ onPublicLinkIssued: link => { issued.push(link); } }), requests, envelopes, recipientSecret, fingerprint,
+        issued, publicLinkBody: () => publicLinkBody,
         stored: () => stored!, setAccess: (value: typeof access) => { access = value; },
         setGrantStatus: (value: number) => { grantStatus = value; }, setCensusCallerEnvelope: (value: string) => { censusCallerEnvelope = value; },
+        setRestoreQuota: () => { restoreQuota = { error: 'quota_exceeded', budget: 'document', limitBytes: 10, usedBytes: 20 }; },
         makeMutationUnreadable: () => { makeMutationUnreadable = true; } };
 }
 
 describe('UI Artifact sharing Action front door', () => {
+    it.each(['plain', 'e2ee'] as const)('creates, lists and revokes %s public links on the captured Home without secret egress', async mode => {
+        const f = await fixture(mode, { header: { title: 'Public note' }, body: 'note' });
+        try {
+            const created = await f.executor.execute('artifact.public_link.create', { artifactId: 'document' }, {
+                ...f.context, presentUserConfirmation: { actionId: 'artifact.public_link.create' },
+            });
+            expect(created).toMatchObject({ ok: true, result: { publicShare: { id: 'share-1' } } });
+            const local = f.issued[0]!;
+            expect(local.url).toBe(`https://public.example.test/s/${local.lookupId}#k=${local.secret}`);
+            expect(JSON.stringify({ created, body: f.publicLinkBody() })).not.toContain(local.secret);
+            if (mode === 'e2ee') expect(openPublicShareDataKeyV1({ encryptedDataKey: String(f.publicLinkBody()!.encryptedDataKey), secret: local.secret })).toHaveLength(32);
+            else expect(f.publicLinkBody()).not.toHaveProperty('encryptedDataKey');
+            expect(await f.executor.execute('artifact.public_link.list', { artifactId: 'document' }, {
+                ...f.context, presentUserConfirmation: { actionId: 'artifact.public_link.list' },
+            })).toMatchObject({ ok: true, result: { publicShares: [{ id: 'share-1' }] } });
+            expect(await f.executor.execute('artifact.public_link.revoke', { artifactId: 'document', shareId: 'share-1' }, {
+                ...f.context, presentUserConfirmation: { actionId: 'artifact.public_link.revoke' },
+            })).toMatchObject({ ok: true, result: { revoked: true } });
+        } finally { f.account.dispose(); }
+    });
+    it.each(['plain', 'e2ee'] as const)('lists retained bodies, restores a kind-coherent %s workflow and reads storage usage on the captured Home', async (mode) => {
+        const definition = validateWorkflowDefinition({ version: 1,
+            defaults: { agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.test', localId: 'test' } } },
+            blocks: ['Retained work'],
+        }).normalizedDefinition!;
+        const originalBody = JSON.stringify({ kind: 'workflow-definition.v1', definition });
+        const header = { kind: 'workflow-definition.v1', definitionId: 'document', revision: { headerVersion: 1, bodyVersion: 1 },
+            metadata: { title: 'Workflow' } };
+        const f = await fixture(mode, { header, body: originalBody });
+        try {
+            const nextHeader = { ...header, metadata: { title: 'Current title' }, revision: { headerVersion: 2, bodyVersion: 2 } };
+            const nextBody = JSON.stringify({ kind: 'workflow-definition.v1', definition: { ...definition, description: 'Current body' } });
+            await expect(f.account.workflowArtifacts.update({ artifactId: 'document', expectedRevision: header.revision,
+                header: nextHeader, body: nextBody })).resolves.toEqual({ ok: true, revision: nextHeader.revision });
+            const listed = await f.executor.execute('artifact.revisions.list', { artifactId: 'document' }, f.context);
+            expect(listed, JSON.stringify(listed)).toMatchObject({ ok: true, result: { artifactId: 'document', retentionCount: 10,
+                revisions: [{ bodyVersion: 1, body: originalBody, createdAt: 1 }] } });
+            await expect(f.executor.execute('artifact.storage.usage', {}, f.context)).resolves.toEqual({ ok: true,
+                result: { usedBytes: 321, limitBytes: null, documentLimitBytes: null, revisionRetentionCount: 10 } });
+            await expect(f.executor.execute('artifact.revisions.restore', { artifactId: 'document', bodyVersion: 1,
+                expectedRevision: nextHeader.revision }, f.context)).resolves.toEqual({ ok: true,
+                result: { artifactId: 'document', revision: { headerVersion: 3, bodyVersion: 3 } } });
+            const restored = await f.account.workflowArtifacts.read('document');
+            expect(restored).toMatchObject({ body: originalBody, header: withArtifactExcerptV1({ ...nextHeader,
+                revision: { headerVersion: 3, bodyVersion: 3 } }, originalBody), revision: { headerVersion: 3, bodyVersion: 3 } });
+            await expect(f.executor.execute('artifact.access.grants.set', { artifactId: 'document',
+                principal: { kind: 'account', accountId: 'recipient' }, accessLevel: 'view' }, f.context))
+                .resolves.toMatchObject({ ok: true, result: { changed: true } });
+            expect(getStorage().getState().artifacts['document']).toMatchObject({ body: originalBody, headerVersion: 3, bodyVersion: 3 });
+            const stale = await f.executor.execute('artifact.revisions.restore', { artifactId: 'document', bodyVersion: 1,
+                expectedRevision: nextHeader.revision }, f.context);
+            expect(stale).toMatchObject({ ok: false, errorCode: 'version_mismatch' });
+            f.setRestoreQuota();
+            await expect(f.executor.execute('artifact.revisions.restore', { artifactId: 'document', bodyVersion: 1,
+                expectedRevision: { headerVersion: 3, bodyVersion: 3 } }, f.context)).resolves.toMatchObject({ ok: false,
+                errorCode: 'quota_exceeded', details: { budget: 'document', limitBytes: 10, usedBytes: 20 } });
+            expect(f.stored()).toMatchObject({ headerVersion: 3, bodyVersion: 3 });
+        } finally { f.account.dispose(); }
+    });
     it.each(['plain', 'e2ee'] as const)('lists, grants and removes %s documents on the captured Home', async (mode) => {
         const f = await fixture(mode);
         try {
@@ -162,6 +274,7 @@ describe('UI Artifact sharing Action front door', () => {
     });
 
     it.each([
+        { header: { title: 'Notes' }, body: 'Ordinary private notes' },
         { header: { kind: 'role.v1', name: 'Builder' }, body: JSON.stringify({ name: 'Builder', instructions: 'Build', runsAs: { kind: 'session' }, workspaceWrites: 'allow', secondOpinion: 'off', enabled: true }) },
         { header: { kind: 'launch-profile.v1', profileId: 'deploy', name: 'Deploy' }, body: JSON.stringify({ kind: 'launch-profile.v1', profile: { v: 2, id: 'deploy', name: 'Deploy', createdAt: 1, updatedAt: 1 }, secretBindings: {} }) },
     ])('shares a valid $header.kind document through its canonical adapter', async (document) => {
@@ -174,7 +287,8 @@ describe('UI Artifact sharing Action front door', () => {
     });
 
     it.each([
-        { header: { kind: 'notes.v1' }, body: 'notes' },
+        { header: { kind: 'workflow-definition.v1', definitionId: 'document',
+            revision: { headerVersion: 9, bodyVersion: 9 }, metadata: { title: 'Stale workflow' } }, body: 'notes' },
         { header: { kind: 'launch-profile.v1', profileId: 'deploy', name: 'Deploy' }, body: JSON.stringify({ kind: 'launch-profile.v1', profile: {
             v: 2, id: 'deploy', name: 'Deploy', createdAt: 1, updatedAt: 1,
             extraEnvironmentVariables: [{ name: 'TOKEN', value: 'secret', isSecret: true }],

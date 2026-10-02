@@ -142,14 +142,14 @@ describe('declared settings owner', () => {
         for (const host of [{ os: 'web', desktop: true }, { os: 'ios', desktop: false }] as const) {
             const owner = createOwner(host, true);
             const discovered = await owner.action({ actionId: 'settings.list', input: {} });
-            if (!('items' in discovered)) throw new Error('Discovery failed');
+            if (!('items' in discovered) || !discovered.items) throw new Error('Discovery failed');
             for (const item of discovered.items.filter((item) => item.writable)) {
                 const current = await owner.action({ actionId: 'settings.get', input: { anchor: item.anchor } });
                 if ('unset' in current) {
                     expect(current).toEqual({ anchor: item.anchor, unset: true });
                     continue;
                 }
-                if (!('value' in current)) throw new Error(`${item.anchor}: ${current.errorCode}`);
+                if (!('value' in current)) throw new Error(`${item.anchor}: ${'errorCode' in current ? current.errorCode : 'Missing value'}`);
                 expect(await owner.action({ actionId: 'settings.set', input: current })).toEqual(current);
             }
         }

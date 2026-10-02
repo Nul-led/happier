@@ -1653,6 +1653,11 @@ export async function runPermissionModePromptLoop(opts: {
             : preparedHostContext.contextOnlyWorkerUpdate
           : null;
         if (hostContextOnly?.kind === 'worker_update' && !contextOnlyWorkerUpdate) {
+          if (preparedHostContext?.contextOnlyWorkerDisposition === 'deferred'
+            && await hostContextOnly.recheckAdmission(dispatchAbortSignal)
+            && !dispatchAbortSignal.aborted) {
+            inputConsumer.deferContextOnlyInput({ ...message, isolate: true });
+          }
           contextOnlyWakeWithdrawn = true;
           return;
         }

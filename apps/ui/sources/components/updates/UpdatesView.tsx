@@ -9,7 +9,7 @@ import { UpdatesContent } from './UpdatesContent';
 export const UpdatesView = React.memo(function UpdatesView() {
     const model = useUpdatesContentModel();
     return (
-        <ItemList style={{ paddingTop: 0 }} testID="updates-screen" presentation="page">
+        <ItemList style={{ paddingTop: 0 }} testID="updates-screen">
             <UpdatesContent model={model} presentation="screen" />
         </ItemList>
     );

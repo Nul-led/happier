@@ -1,4 +1,4 @@
-import { createScmOperationUnknownOutcome, SCM_OPERATION_ERROR_CODES, ScmOperationOutcomeSchema, type ScmOperationReconciliation } from '@happier-dev/protocol/scm';
+import { createScmOperationUnknownOutcome, SCM_OPERATION_ERROR_CODES, ScmOperationOutcomeSchema, type ScmOperationErrorCode, type ScmOperationOutcome, type ScmOperationReconciliation } from '@happier-dev/protocol/scm';
 import { getScmRpcSideEffectClass } from '@happier-dev/protocol/actions/scmGitActionSpecs';
 import { isRpcMethodNotAvailableError, isRpcMethodNotFoundError, type RpcErrorCarrier } from '@happier-dev/protocol/rpcErrors';
 import { RPC_ERROR_MESSAGES, RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -8,6 +8,13 @@ const SCM_UNSUPPORTED_RESPONSE_ERROR = 'SCM_UNSUPPORTED_RESPONSE_ERROR';
 type ScmRpcFailureContext = Readonly<{
     method: string;
     request: Readonly<{ cwd?: string; remote?: unknown; branch?: unknown; expectedRemoteOid?: unknown; head?: unknown; base?: unknown; providerId?: unknown; message?: unknown }>;
+}>;
+
+export type ScmRpcFailure = Readonly<{
+    success: false;
+    error: string;
+    errorCode: ScmOperationErrorCode;
+    outcome?: ScmOperationOutcome;
 }>;
 
 function reconciliationFor({ method, request }: ScmRpcFailureContext): ScmOperationReconciliation {
@@ -44,17 +51,17 @@ function reconciliationFor({ method, request }: ScmRpcFailureContext): ScmOperat
     return { kind: 'repository_status', ...(request.cwd ? { cwd: request.cwd } : {}) };
 }
 
-export function scmFallbackError<T extends { success: boolean; error?: string; errorCode?: string }>(error: unknown, context: ScmRpcFailureContext): T {
+export function scmFallbackError(error: unknown, context: ScmRpcFailureContext): ScmRpcFailure {
     if (error && typeof error === 'object') {
         const rpcError: RpcErrorCarrier = {
             rpcErrorCode: typeof (error as { rpcErrorCode?: unknown }).rpcErrorCode === 'string' ? (error as { rpcErrorCode: string }).rpcErrorCode : undefined,
             message: typeof (error as { message?: unknown }).message === 'string' ? (error as { message: string }).message : undefined,
         };
         if (isRpcMethodNotAvailableError(rpcError)) {
-            return { success: false, error: RPC_ERROR_MESSAGES.METHOD_NOT_AVAILABLE, errorCode: SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE } as T;
+            return { success: false, error: RPC_ERROR_MESSAGES.METHOD_NOT_AVAILABLE, errorCode: SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE };
         }
         if (isRpcMethodNotFoundError(rpcError)) {
-            return { success: false, error: RPC_ERROR_MESSAGES.METHOD_NOT_FOUND, errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED } as T;
+            return { success: false, error: RPC_ERROR_MESSAGES.METHOD_NOT_FOUND, errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED };
         }
     }
     if (getScmRpcSideEffectClass(context.method) !== 'read') {
@@ -63,12 +70,12 @@ export function scmFallbackError<T extends { success: boolean; error?: string; e
             error: SCM_OPERATION_ERROR_CODES.COMMAND_OUTCOME_UNKNOWN,
             errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_OUTCOME_UNKNOWN,
             outcome: createScmOperationUnknownOutcome(reconciliationFor(context)),
-        } as T;
+        };
     }
     if (error instanceof Error && error.message === SCM_UNSUPPORTED_RESPONSE_ERROR) {
-        return { success: false, error: RPC_ERROR_MESSAGES.METHOD_NOT_FOUND, errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED } as T;
+        return { success: false, error: RPC_ERROR_MESSAGES.METHOD_NOT_FOUND, errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED };
     }
-    return { success: false, error: RPC_ERROR_MESSAGES.METHOD_NOT_AVAILABLE, errorCode: SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE } as T;
+    return { success: false, error: RPC_ERROR_MESSAGES.METHOD_NOT_AVAILABLE, errorCode: SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE };
 }
 
 export function assertScmResponse<T extends { success: boolean; error?: string; errorCode?: string }>(value: unknown): T {
@@ -76,10 +83,12 @@ export function assertScmResponse<T extends { success: boolean; error?: string; 
         throw new Error(SCM_UNSUPPORTED_RESPONSE_ERROR);
     }
     const outcome = (value as { outcome?: unknown }).outcome;
+    // The machine RPC is an untyped transport boundary; validate its envelope and rich outcome here.
+    const response = value as T;
     if (outcome !== undefined) {
         const parsed = ScmOperationOutcomeSchema.safeParse(outcome);
         if (!parsed.success) throw new Error(SCM_UNSUPPORTED_RESPONSE_ERROR);
-        return { ...value, outcome: parsed.data } as T;
+        return { ...response, outcome: parsed.data };
     }
-    return value as T;
+    return response;
 }

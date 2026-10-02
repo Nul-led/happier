@@ -6,10 +6,7 @@ import { IconButton } from '@/components/ui/buttons/IconButton';
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
 import type { ExecutionRunIntent } from '@/components/sessions/runs/launcher/executionRunLauncherModel';
-import {
-    useWorkflowDefinitionLibrary,
-    type WorkflowDefinitionLibrary,
-} from '@/components/workflows/library/workflowLibraryReads';
+import { useWorkflowDefinitionLibrary } from '@/components/workflows/library/workflowLibraryReads';
 import { t, tLoose } from '@/text';
 
 import { SESSION_STARTABLE_BUILTIN_WORKFLOWS } from './useSessionBuiltinWorkflowStart';
@@ -23,33 +20,11 @@ const INTENT_COPY = {
 
 const WORKFLOW_ITEM_PREFIX = 'workflow:';
 const BUILTIN_ITEM_PREFIX = 'builtin:';
+const PLUGIN_ITEM_PREFIX = 'plugin-workflow:';
 const ALL_WORKFLOWS_ITEM_ID = 'workflow-all';
 const LIBRARY_STATUS_ITEM_ID = 'workflow-library-status';
 /** Second opinion is ORC's role on a review start (INT §6 I4); no new run intent. */
 const SECOND_OPINION_ROLE_ID = 'second_opinion';
-
-type LibraryView = Pick<WorkflowDefinitionLibrary, 'status' | 'definitions' | 'hasMore' | 'loadMoreFailed'>;
-
-/**
- * FIN's workflow library (`useWorkflowDefinitionLibrary`: Account-scoped, paged, invalidated on
- * delete), mounted only while the "+" is open so an unopened menu issues no read. While open it
- * pages through the owner's own cursor so search and selection reach every saved workflow; closing
- * mid-read leaves the read with its owner, and reopening shows what it settled. Nothing is copied or
- * cached here.
- */
-const WorkflowLibraryWhileOpen = React.memo(function WorkflowLibraryWhileOpen(props: Readonly<{
-    onChange: (view: LibraryView) => void;
-}>) {
-    const { status, definitions, hasMore, loadingMore, loadMoreFailed, loadMore } = useWorkflowDefinitionLibrary();
-    const { onChange } = props;
-    React.useEffect(() => {
-        onChange({ status, definitions, hasMore, loadMoreFailed });
-    }, [definitions, hasMore, loadMoreFailed, onChange, status]);
-    React.useEffect(() => {
-        if (status === 'loaded' && hasMore && !loadingMore && !loadMoreFailed) loadMore();
-    }, [hasMore, loadMore, loadMoreFailed, loadingMore, status]);
-    return null;
-});
 
 /**
  * The Work tab's "+" (lab `convo-W1`/`W4`, phone `P2`): everything that can start from here, in one
@@ -74,7 +49,13 @@ export const SessionAgentsLaunchMenu = React.memo((props: Readonly<{
     const { launcher, onAddTrigger, onKeepGoing } = props;
     const canRun = launcher.unavailableReason === null;
     const iconColor = theme.colors.text.secondary;
-    const [workflowLibrary, setWorkflowLibrary] = React.useState<LibraryView | null>(null);
+    // Demand and Account masking stay with the same library owner. No closed-menu snapshot can
+    // retain another Account's rows, and an unopened menu issues no read or detailed subscription.
+    const workflowLibrary = useWorkflowDefinitionLibrary({ enabled: open });
+    const { status, hasMore, loadingMore, loadMoreFailed, loadMore } = workflowLibrary;
+    React.useEffect(() => {
+        if (open && status === 'loaded' && hasMore && !loadingMore && !loadMoreFailed) loadMore();
+    }, [open, status, hasMore, loadingMore, loadMoreFailed, loadMore]);
 
     const items = React.useMemo((): readonly DropdownMenuItem[] => {
         const result: DropdownMenuItem[] = [];
@@ -132,7 +113,7 @@ export const SessionAgentsLaunchMenu = React.memo((props: Readonly<{
             icon: workflowIcon,
         }));
         // Last-known rows stay while the owner refreshes or after a failed refresh.
-        for (const definition of workflowLibrary?.definitions ?? []) {
+        for (const definition of workflowLibrary.definitions) {
             const description = definition.metadata.description?.trim();
             workflowItems.push({
                 id: `${WORKFLOW_ITEM_PREFIX}${definition.definitionId}`,
@@ -143,16 +124,26 @@ export const SessionAgentsLaunchMenu = React.memo((props: Readonly<{
                 icon: workflowIcon,
             });
         }
+        for (const plugin of workflowLibrary.pluginWorkflows) {
+            workflowItems.push({
+                id: `${PLUGIN_ITEM_PREFIX}${plugin.workflow}`,
+                testID: `session-agents-launch:plugin:${plugin.workflow}`,
+                category: t('workflows.plugins.fromPlugins'),
+                title: plugin.title,
+                ...(plugin.description ? { subtitle: plugin.description } : {}),
+                icon: workflowIcon,
+            });
+        }
         // An unread, failed or empty library says so in its own section, never as an empty list.
-        const libraryStatus = workflowLibrary !== null && workflowLibrary.definitions.length > 0
+        const libraryStatus = workflowLibrary.definitions.length > 0
             ? null
-            : workflowLibrary?.status === 'loaded'
+            : workflowLibrary.status === 'loaded'
                 ? t('agentStart.menu.noWorkflows')
-                : workflowLibrary?.status === 'failed' ? t('common.unavailable') : t('common.loading');
+                : workflowLibrary.status === 'failed' ? t('common.unavailable') : t('common.loading');
         if (libraryStatus !== null) {
             workflowItems.push({ id: LIBRARY_STATUS_ITEM_ID, category: librarySection, title: libraryStatus, disabled: true });
         }
-        if (workflowLibrary?.hasMore && workflowLibrary.loadMoreFailed) {
+        if (workflowLibrary.hasMore && workflowLibrary.loadMoreFailed) {
             // A later page could not be read: the Workflows destination has the rest (and its Retry).
             workflowItems.push({
                 id: ALL_WORKFLOWS_ITEM_ID,
@@ -160,7 +151,7 @@ export const SessionAgentsLaunchMenu = React.memo((props: Readonly<{
                 category: librarySection,
                 title: t('agentStart.menu.allWorkflows'),
             });
-        } else if (workflowLibrary?.hasMore && workflowLibrary.definitions.length > 0) {
+        } else if (workflowLibrary.hasMore && workflowLibrary.definitions.length > 0) {
             // The next page is on its way; say so rather than imply the list is complete.
             workflowItems.push({ id: LIBRARY_STATUS_ITEM_ID, category: librarySection, title: t('common.loading'), disabled: true });
         }
@@ -215,6 +206,12 @@ export const SessionAgentsLaunchMenu = React.memo((props: Readonly<{
             launcher.startBuiltinWorkflow(itemId.slice(BUILTIN_ITEM_PREFIX.length));
             return;
         }
+        if (itemId.startsWith(PLUGIN_ITEM_PREFIX)) {
+            const workflow = itemId.slice(PLUGIN_ITEM_PREFIX.length);
+            const source = workflowLibrary.pluginWorkflows.find((entry) => entry.workflow === workflow);
+            if (source) launcher.startPluginWorkflow(source);
+            return;
+        }
         if (itemId.startsWith(WORKFLOW_ITEM_PREFIX)) {
             // FIN's run entry: the saved workflow's page opens on its Run, which asks its inputs.
             const definitionId = itemId.slice(WORKFLOW_ITEM_PREFIX.length);
@@ -232,13 +229,12 @@ export const SessionAgentsLaunchMenu = React.memo((props: Readonly<{
         // The rest of the library lives in the Workflows destination.
         else if (itemId === 'run-workflow' || itemId === ALL_WORKFLOWS_ITEM_ID) router.push('/workflows' as never);
         else if (itemId === 'review' || itemId === 'plan' || itemId === 'delegate') launcher.openRun(itemId);
-    }, [launcher, onAddTrigger, onKeepGoing, router]);
+    }, [launcher, onAddTrigger, onKeepGoing, router, workflowLibrary]);
 
     if (items.length === 0) return null;
 
     return (
         <>
-        {open ? <WorkflowLibraryWhileOpen onChange={setWorkflowLibrary} /> : null}
         <DropdownMenu
             testID={props.testID ?? 'session-agents-launch-menu'}
             open={open}

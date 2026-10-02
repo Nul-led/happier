@@ -59,11 +59,24 @@ afterEach(() => {
 });
 
 describe('plugins command daemon mutations', () => {
-  it('routes exact structured logs through the selected machine and stops follow polling when cancelled', async () => {
+  it('rejects the retired generation filter rather than silently reading other occurrences', async () => {
+    const resolvePluginInvocationLogTarget = vi.fn(async () => ({
+      kind: 'unavailable' as const,
+      code: 'machine_not_current',
+      message: 'The selected machine is no longer active.',
+    }));
+    await expect(handlePluginsCommand(['logs', 'acme.example', '--generation', 'old-id'], {
+      resolvePluginInvocationLogTarget,
+    })).rejects.toThrow('Unknown option: --generation');
+    expect(resolvePluginInvocationLogTarget).not.toHaveBeenCalled();
+  });
+
+  it('routes exact structured logs through the selected machine and stops following when cancelled', async () => {
     const controller = new AbortController();
     const target = {
       serverIdentityId: 'srv_example',
       serverLabel: 'https://api.example.test',
+      serverUrl: 'https://api.example.test',
       machineId: 'machine-2',
       machineLabel: 'build-host',
     } as const;
@@ -85,7 +98,7 @@ describe('plugins command daemon mutations', () => {
           context: {
             plugin: { id: 'acme.example', version: '1.0.0' },
             contribution: { id: 'run', qualifiedId: 'acme.example/run' },
-            generation: 'generation-1',
+            occurrenceId: 'occurrence-1',
             correlationId: 'correlation-1',
             surface: 'cli' as const,
           },
@@ -94,6 +107,8 @@ describe('plugins command daemon mutations', () => {
         }],
         cursor: 64,
         hasMore: false,
+        logId: 'log-1',
+        cursorReset: false,
       };
     });
     const output = captureStdoutJsonOutput();
@@ -102,7 +117,7 @@ describe('plugins command daemon mutations', () => {
         'logs',
         'acme.example',
         '--machine=machine-2',
-        '--generation', 'generation-1',
+        '--occurrence', 'occurrence-1',
         '--correlation', 'correlation-1',
         '--follow',
         '--json',
@@ -122,7 +137,7 @@ describe('plugins command daemon mutations', () => {
         target,
         request: {
           pluginId: 'acme.example',
-          generation: 'generation-1',
+          occurrenceId: 'occurrence-1',
           correlationId: 'correlation-1',
         },
         signal: controller.signal,
@@ -149,6 +164,7 @@ describe('plugins command daemon mutations', () => {
     const target = {
       serverIdentityId: 'srv_example',
       serverLabel: 'https://api.example.test',
+      serverUrl: 'https://api.example.test',
       machineId: 'machine-2',
       machineLabel: 'build-host',
     } as const;
@@ -158,6 +174,8 @@ describe('plugins command daemon mutations', () => {
       records: [],
       cursor: 64,
       hasMore: false,
+      logId: 'log-1',
+      cursorReset: false,
     };
     const resolvePluginInvocationLogTarget = vi.fn(async () => ({ kind: 'selected' as const, target }));
     const readPluginInvocationLogsOnMachine = vi.fn()
@@ -189,7 +207,8 @@ describe('plugins command daemon mutations', () => {
       });
       expect(readPluginInvocationLogsOnMachine).toHaveBeenNthCalledWith(2, {
         target,
-        request: { pluginId: 'acme.example', cursor: 64 },
+        request: { pluginId: 'acme.example', cursor: 64, logId: 'log-1' },
+        waitForChanges: true,
         signal: controller.signal,
       });
       expect(output.json()).toMatchObject({
@@ -211,6 +230,7 @@ describe('plugins command daemon mutations', () => {
     const target = {
       serverIdentityId: 'srv_example',
       serverLabel: 'https://api.example.test',
+      serverUrl: 'https://api.example.test',
       machineId: 'machine-2',
       machineLabel: 'build-host',
     } as const;
@@ -221,6 +241,8 @@ describe('plugins command daemon mutations', () => {
       records: [],
       cursor: 64,
       hasMore: false,
+      logId: 'log-1',
+      cursorReset: false,
     }));
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
@@ -240,12 +262,14 @@ describe('plugins command daemon mutations', () => {
         {
           serverIdentityId: 'srv_example',
           serverLabel: 'https://api.example.test',
+          serverUrl: 'https://api.example.test',
           machineId: 'machine-1',
           machineLabel: 'laptop',
         },
         {
           serverIdentityId: 'srv_example',
           serverLabel: 'https://api.example.test',
+          serverUrl: 'https://api.example.test',
           machineId: 'machine-2',
           machineLabel: 'build-host',
         },
@@ -305,6 +329,7 @@ describe('plugins command daemon mutations', () => {
     const target = {
       serverIdentityId: 'srv_example',
       serverLabel: 'https://api.example.test',
+      serverUrl: 'https://api.example.test',
       machineId: 'machine-2',
       machineLabel: 'build-host',
     } as const;
@@ -335,6 +360,7 @@ describe('plugins command daemon mutations', () => {
     const target = {
       serverIdentityId: 'srv_example',
       serverLabel: 'https://api.example.test',
+      serverUrl: 'https://api.example.test',
       machineId: 'machine-2',
       machineLabel: 'build-host',
     } as const;
@@ -346,7 +372,7 @@ describe('plugins command daemon mutations', () => {
       context: {
         plugin: { id: 'acme.example', version: '1.0.0' },
         contribution: { id: 'run', qualifiedId: 'acme.example/run' },
-        generation: 'generation-1',
+        occurrenceId: 'occurrence-1',
         correlationId: 'correlation-1',
         surface: 'cli' as const,
       },
@@ -362,6 +388,8 @@ describe('plugins command daemon mutations', () => {
         records: firstPage,
         cursor: 1_000,
         hasMore: true,
+        logId: 'log-1',
+        cursorReset: false,
       })
       .mockResolvedValueOnce({
         version: 1 as const,
@@ -369,6 +397,8 @@ describe('plugins command daemon mutations', () => {
         records: [record(101, 'later snapshot record')],
         cursor: 1_100,
         hasMore: false,
+        logId: 'log-1',
+        cursorReset: false,
       });
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 

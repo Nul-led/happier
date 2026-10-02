@@ -7,6 +7,7 @@ import type {
   MachineLiveStreamStartRequestV1,
   PeerMediationObservabilityEventKindV1,
 } from '@happier-dev/protocol';
+import { PEER_MEDIATION_RECEIPTS } from '@happier-dev/protocol';
 
 import type { MachineLiveStreamCaptureRegistry } from './captureRegistry';
 
@@ -105,7 +106,40 @@ export function createDaemonMachineLiveStreamCaptureAdapter(
             reasonCode: source.diagnostic.reasonCode,
           };
         }
-        return await source.source.adapter.start(input);
+        const selected = source.source;
+        if (input.startRequest.sourceOccurrenceId !== undefined
+            && input.startRequest.sourceOccurrenceId !== selected.sourceOccurrenceId) {
+          return { ok: false, reasonCode: 'capture_source_unavailable' };
+        }
+        let session: MachineLiveStreamCaptureSession | null = null;
+        let stopped = false;
+        const stop = async () => {
+          if (stopped) return;
+          stopped = true;
+          selected.retirementSignal?.removeEventListener('abort', retire);
+          await session?.stop();
+        };
+        const retire = () => {
+          input.emitReceipt({ v: 1, id: PEER_MEDIATION_RECEIPTS.streamPaused, streamId: input.streamId,
+            routeKind: input.startRequest.routeKind, flowKind: 'live_stream', terminal: true,
+            terminalOutcome: 'stopped', reasonCode: 'capture_source_unavailable' });
+          void stop().catch(() => undefined);
+        };
+        selected.retirementSignal?.addEventListener('abort', retire, { once: true });
+        let result: Awaited<ReturnType<MachineLiveStreamCaptureAdapter['start']>>;
+        try {
+          result = await selected.adapter.start({ ...input,
+            offerFrame: frame => stopped || selected.retirementSignal?.aborted
+              ? { ok: false, reasonCode: 'capture_source_unavailable' } : input.offerFrame(frame),
+          });
+        } catch (error) { await stop(); throw error; }
+        if (!result.ok) { await stop(); return result; }
+        session = result.session;
+        if (stopped || selected.retirementSignal?.aborted) {
+          await session.stop();
+          return { ok: false, reasonCode: 'capture_source_unavailable' };
+        }
+        return { ok: true, session: { ...session, stop } };
       },
     };
   }

@@ -31,8 +31,11 @@ import type { SemanticTranscriptItem } from './transcript/semanticTranscriptItem
 import type { HostExternalSessionsAuthorService } from '@/session/external/privateContract';
 import type { PluginSubagentsHostService } from '@/session/subagents/pluginSubagentsService';
 import { getSessionTranscript } from './getSessionTranscript';
+import { openSessionEventSource } from '@/session/transport/socket/sessionSocketAgentState';
 import { fetchAccountEncryptionCurrentness } from '@/api/client/connectedServiceCredentialApi';
 import type { AccountEncryptionCurrentnessResponse } from '@happier-dev/protocol';
+import { hasPluginSessionAccess, projectPluginSessionAccessIdentity, type PluginSessionAccess, type PluginSessionAccessScope } from '@happier-dev/protocol';
+export type { PluginSessionAccess, PluginSessionAccessScope } from '@happier-dev/protocol';
 
 const CURSOR_PREFIX = 'plugin_sessions_v1_';
 const DEFAULT_PAGE_LIMIT = 50;
@@ -50,19 +53,6 @@ type InventoryQuery = Readonly<{
   state?: SessionSummary['state'];
 }>;
 
-export type PluginSessionAccess = 'read' | 'write' | 'control';
-
-/**
- * Host-private Session authority projected from the final HostAccess binding.
- * `sessionIds` is reserved for separately host-stamped exact-current Session
- * invocations; manifest-derived scopes never populate it.
- */
-export type PluginSessionAccessScope = Readonly<{
-  access: readonly PluginSessionAccess[];
-  machineIds?: readonly string[];
-  projectIds?: readonly string[];
-  sessionIds?: readonly string[];
-}>;
 
 type PluginSessionSystemRecordCapabilities = Pick<
   SessionHandle,
@@ -210,13 +200,6 @@ function readMetadataString(metadata: Record<string, unknown> | null, key: strin
   return normalized || undefined;
 }
 
-function readRawString(raw: RawSessionListRow | RawSessionRecord, key: string): string | undefined {
-  const value = (raw as Record<string, unknown>)[key];
-  if (typeof value !== 'string') return undefined;
-  const normalized = value.trim();
-  return normalized || undefined;
-}
-
 function readTitle(metadata: Record<string, unknown> | null): string | undefined {
   const summary = metadata?.summary;
   if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return undefined;
@@ -248,10 +231,9 @@ function projectSessionSummary(params: Readonly<{
     rawSession: params.raw,
     accountEncryptionMode: params.accountEncryptionMode,
   });
-  const machineId = readRawString(params.raw, 'machineId') ?? readMetadataString(metadata, 'machineId');
+  const { machineId, projectId } = projectPluginSessionAccessIdentity(params.raw, metadata);
   const state = sessionState(params.raw);
   const title = readTitle(metadata);
-  const projectId = readRawString(params.raw, 'projectId') ?? readMetadataString(metadata, 'projectId');
   const agentId = resolveAgentIdFromSessionMetadata(metadata);
   return Object.freeze({
     id: params.raw.id,
@@ -276,27 +258,12 @@ function matchesQuery(summary: SessionSummary, query: InventoryQuery): boolean {
     && (!query.state || summary.state === query.state);
 }
 
-function scopeMatchesSession(
-  scope: PluginSessionAccessScope,
-  summary: SessionSummary,
-): boolean {
-  return (!scope.sessionIds || scope.sessionIds.includes(summary.id))
-    && (!scope.machineIds || (
-      summary.machineId !== undefined && scope.machineIds.includes(summary.machineId)
-    ))
-    && (!scope.projectIds || (
-      summary.projectId !== undefined && scope.projectIds.includes(summary.projectId)
-    ));
-}
-
 function hasSessionAccess(
   scopes: readonly PluginSessionAccessScope[],
   summary: SessionSummary,
   access: PluginSessionAccess,
 ): boolean {
-  return scopes.some((scope) => (
-    scope.access.includes(access) && scopeMatchesSession(scope, summary)
-  ));
+  return hasPluginSessionAccess({ scopes, session: summary, access });
 }
 
 function projectSessionMessageEvent(item: SemanticTranscriptItem): Extract<SessionEvent, { kind: 'message' }> | null {
@@ -408,7 +375,7 @@ export function createPluginSessionsInventory(
     sessionId: string,
     signal?: AbortSignal,
     currentCredentials?: StoredCredentials,
-  ): Promise<Readonly<{ credentials: StoredCredentials; summary: SessionSummary | null }>> => {
+  ): Promise<Readonly<{ credentials: StoredCredentials; summary: SessionSummary | null; raw: RawSessionRecord | null }>> => {
     const credentials = currentCredentials ?? await readCurrentCredentials(signal);
     const serverFeaturesSnapshot = params.resolveServerFeaturesSnapshot?.();
     const [raw, storagePolicy, accountEncryptionCurrentness] = await Promise.all([
@@ -424,6 +391,7 @@ export function createPluginSessionsInventory(
     assertGenerationCurrent();
     return Object.freeze({
       credentials,
+      raw,
       summary: raw
         ? projectSessionSummary({
           credentials,
@@ -455,16 +423,16 @@ export function createPluginSessionsInventory(
     sessionId: string,
     access: PluginSessionAccess,
     signal?: AbortSignal,
-  ): Promise<Readonly<{ credentials: StoredCredentials; summary: SessionSummary }>> => {
+  ): Promise<Readonly<{ credentials: StoredCredentials; summary: SessionSummary; raw: RawSessionRecord }>> => {
     assertDeclaredSessionAccess(access);
     const session = await readSession(sessionId, signal);
-    if (!session.summary) {
+    if (!session.summary || !session.raw) {
       throw pluginError('plugin_session_not_found', 'Session is not available to this account');
     }
     if (!hasSessionAccess(params.sessionScopes, session.summary, access)) {
       throw pluginError('plugin_session_scope_unavailable', 'This Session access scope is unavailable');
     }
-    return Object.freeze({ credentials: session.credentials, summary: session.summary });
+    return Object.freeze({ credentials: session.credentials, summary: session.summary, raw: session.raw });
   };
   const unavailableHandleMethod = () => {
     throw pluginError('plugin_session_service_unavailable', 'This Session capability is unavailable');
@@ -640,79 +608,101 @@ export function createPluginSessionsInventory(
       readSystemRecord: guardedReadSystemRecord,
       deleteSystemRecord: guardedDeleteSystemRecord,
       watch(listener: (event: SessionEvent) => void): Disposable {
-      assertDeclaredSessionAccess('read');
-      assertGenerationCurrent();
-      let disposed = false;
-      let timer: ReturnType<typeof setTimeout> | null = null;
-      let cursor = '0';
-      let lastDeliveredSequence = -1;
-
-      const schedule = (delayMs: number): void => {
-        if (disposed || !isOccurrenceCurrent()) return;
-        timer = setTimeout(() => void poll(), delayMs);
-        timer.unref?.();
-      };
-      const poll = async (): Promise<void> => {
-        if (disposed || !isOccurrenceCurrent()) return;
-        try {
-          const credentials = await assertSessionAccess(sessionId, 'read');
-          const page = await getSessionTranscript({
-            credentials,
-            idOrPrefix: sessionId,
-            limit: SESSION_MESSAGE_WATCH_PAGE_LIMIT,
-            cursor,
-            direction: 'after',
-            scope: 'main',
-            roles: ['user', 'assistant'],
-            includeTools: true,
-            includeReasoning: true,
-            includeEvents: true,
-            includeRaw: false,
-            includeStructuredPayload: false,
-            maxCharsPerMessage: 50_000,
-          });
-          if (disposed || !isOccurrenceCurrent()) return;
-          if (!page.ok) {
-            throw pluginError('plugin_session_messages_unavailable', 'Session messages are temporarily unavailable');
+        assertDeclaredSessionAccess('read');
+        assertGenerationCurrent();
+        const lifetime = new AbortController();
+        const signal = combineAbortSignals(params.signal, lifetime.signal);
+        let source: ReturnType<typeof openSessionEventSource> | null = null;
+        let cursor = '0';
+        let lastDeliveredSequence = -1;
+        let previousSnapshot: string | undefined;
+        const isWatching = () => !signal.aborted && isOccurrenceCurrent();
+        const close = () => { void source?.close().catch(() => undefined); };
+        signal.addEventListener('abort', close, { once: true });
+        const emit = (event: SessionEvent) => {
+          if (!isWatching()) return;
+          try {
+            const result = (listener as (value: SessionEvent) => void | Promise<void>)(event);
+            if (result) void result.catch(() => undefined);
+          } catch {
+            // Plugin listeners cannot take down the host-owned observation loop.
           }
-          if (page.sessionId !== sessionId) {
-            throw pluginError('plugin_session_binding_mismatch', 'Session message observation resolved a different Session');
-          }
-          const events = page.items
-            .map(projectSessionMessageEvent)
-            .filter((event): event is Extract<SessionEvent, { kind: 'message' }> => event !== null)
-            .sort((left, right) => left.sequence - right.sequence);
-          for (const event of events) {
-            if (disposed || !isOccurrenceCurrent()) return;
-            if (event.sequence <= lastDeliveredSequence) continue;
-            lastDeliveredSequence = event.sequence;
-            try {
-              const listenerResult = (
-                listener as (value: SessionEvent) => void | Promise<void>
-              )(event);
-              if (listenerResult) void listenerResult.catch(() => undefined);
-            } catch {
-              // Plugin listeners cannot take down the host-owned observation loop.
+        };
+        const observe = async () => {
+          try {
+            // Authorize before subscribing, then subscribe before the baseline read.
+            const credentials = await assertSessionAccess(sessionId, 'read', signal);
+            if (!isWatching()) return;
+            source = openSessionEventSource({ token: credentials.token, sessionId });
+            while (isWatching()) {
+              const revision = source.currentRevision();
+              try {
+                const session = await readAuthorizedSession(sessionId, 'read', signal);
+                if (!isWatching()) return;
+                if (session.credentials.token !== credentials.token) return;
+                const snapshot = JSON.stringify([
+                  session.summary, session.raw.latestTurnId, session.raw.latestTurnStatus,
+                  session.raw.latestTurnStatusObservedAt, session.raw.latestReadyEventSeq,
+                ]);
+                // Turn settlement can unblock publication without a new transcript row.
+                if (previousSnapshot !== undefined && previousSnapshot !== snapshot) {
+                  emit({ kind: 'changed', sequence: session.raw.seq, summary: session.summary });
+                }
+                previousSnapshot = snapshot;
+                let hasMore: boolean;
+                do {
+                  const page = await getSessionTranscript({
+                    credentials: session.credentials,
+                    idOrPrefix: sessionId,
+                    limit: SESSION_MESSAGE_WATCH_PAGE_LIMIT,
+                    cursor,
+                    direction: 'after',
+                    scope: 'main',
+                    roles: ['user', 'assistant'],
+                    includeTools: true,
+                    includeReasoning: true,
+                    includeEvents: true,
+                    includeRaw: false,
+                    includeStructuredPayload: false,
+                    maxCharsPerMessage: 50_000,
+                    signal,
+                    serverFeaturesSnapshot: params.resolveServerFeaturesSnapshot?.(),
+                  });
+                  if (!isWatching()) return;
+                  if (!page.ok) {
+                    throw pluginError('plugin_session_messages_unavailable', 'Session messages are temporarily unavailable');
+                  }
+                  if (page.sessionId !== sessionId) {
+                    throw pluginError('plugin_session_binding_mismatch', 'Session message observation resolved a different Session');
+                  }
+                  const events = page.items
+                    .map(projectSessionMessageEvent)
+                    .filter((event): event is Extract<SessionEvent, { kind: 'message' }> => event !== null)
+                    .sort((left, right) => left.sequence - right.sequence);
+                  for (const event of events) {
+                    if (!isWatching()) return;
+                    if (event.sequence <= lastDeliveredSequence) continue;
+                    lastDeliveredSequence = event.sequence;
+                    emit(event);
+                  }
+                  const previousCursor = cursor;
+                  if (page.nextCursor !== null) cursor = page.nextCursor;
+                  hasMore = page.hasMore && cursor !== previousCursor;
+                } while (hasMore && isWatching());
+              } catch (error) {
+                if (isPluginError(error) && !error.retryable) return;
+                // Keep the frontier on read failure; the next event/reconnect retries it.
+              }
+              if (!isWatching() || !await source.waitForChange(revision, { deadlineMs: null, signal })) return;
             }
+          } finally {
+            signal.removeEventListener('abort', close);
+            await source?.close();
           }
-          const previousCursor = cursor;
-          if (page.nextCursor !== null) cursor = page.nextCursor;
-          schedule(page.hasMore && cursor !== previousCursor ? 0 : pollIntervalMs);
-        } catch {
-          schedule(pollIntervalMs);
-        }
-      };
-
-      void poll();
-      return Object.freeze({
-        dispose() {
-          if (disposed) return;
-          disposed = true;
-          if (timer) clearTimeout(timer);
-          timer = null;
-        },
-      });
-    },
+        };
+        void observe().catch(() => undefined);
+        return Object.freeze({ dispose: () => lifetime.abort() });
+      },
       auth: guardedAuth,
       permissions: guardedPermissions,
       mcp: guardedMcp,

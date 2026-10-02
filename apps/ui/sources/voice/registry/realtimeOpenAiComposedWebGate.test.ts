@@ -1782,6 +1782,41 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     }
   });
 
+  it.each(['manual', 'server_vad'] as const)('submits captured input only for the admitted %s turn mode without ending Voice', async (turnDetection) => {
+    const browser = installVoiceWebRtcBrowserBoundary();
+    storage.setState((current) => {
+      const voice = voiceSettingsParse(current.settings.voiceSettingsV1);
+      const providerId = openAiEntry().providerId;
+      const selected = voice.providers[providerId]!;
+      const config = selected.config as Readonly<Record<string, unknown>>;
+      const updatedVoice = { ...voice, providers: { ...voice.providers, [providerId]: {
+        ...selected, config: { ...config, turnDetection },
+      } } };
+      return { ...current, settings: { ...current.settings, voiceSettingsV1: updatedVoice,
+        voice: { ...updatedVoice, credentialBindings: current.settings.voice.credentialBindings } } };
+    });
+    const composed = createSourceComposedOpenAiRuntime(browser);
+    try {
+      const starting = composed.runtime.adapter.start({ sessionId: '', requestedTargetSessionAddress: null, initialContext: '' });
+      await vi.waitFor(() => expect(browser.peer.createDataChannel).toHaveBeenCalledWith('oai-events'));
+      browser.peer.channel.open();
+      await starting;
+      expect(composed.runtime.adapter.getSnapshot().canCommitInput).toBe(turnDetection === 'manual');
+      const sentBefore = browser.peer.channel.sent.length;
+      await composed.runtime.adapter.commitInput?.({ sessionId: composed.controlSessionId });
+      const submitted = browser.peer.channel.sent.slice(sentBefore).map((value) => JSON.parse(value));
+      expect(submitted).toEqual(turnDetection === 'manual'
+        ? [{ type: 'input_audio_buffer.commit' }, { type: 'response.create' }]
+        : []);
+      expect(composed.runtime.adapter.getSnapshot().status).toBe('connected');
+      expect(browser.micSession.teardown).not.toHaveBeenCalled();
+    } finally {
+      await composed.runtime.dispose();
+      composed.hostLease.revoke();
+      browser.restore();
+    }
+  });
+
   it('transcribes and answers a committed user turn taken while the assistant is idle', async () => {
     const browser = installVoiceWebRtcBrowserBoundary();
     const composed = createSourceComposedOpenAiRuntime(browser);
@@ -2279,7 +2314,6 @@ describe('realtime_openai source-composed WebRTC gate', () => {
     const runtime: DefaultVoiceHistoryRuntime = {
       readActiveScope: () => scope,
       captureAuthority: async () => authority,
-      prepareSessionLookup: async () => undefined,
       lookupByTags: async () => (
         discoveredSessionId ? [{ id: discoveredSessionId }] : []
       ),

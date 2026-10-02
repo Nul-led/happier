@@ -31,7 +31,7 @@ export type TerminalSpawnOptions = {
 export type ResolvedTerminalRequest =
   | { requested: 'plain' }
   | { requested: 'zellij' }
-  | { requested: 'herdr'; herdr: { sessionName: string } }
+  | { requested: 'herdr'; herdr: { sessionName: string; socketPath?: string } }
   | {
     requested: 'tmux';
     tmux: {

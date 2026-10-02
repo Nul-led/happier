@@ -672,6 +672,7 @@ export async function reattachTrackedSessionsFromMarkers(params: Readonly<{
             attachmentId: attachmentState.info.attachmentId,
             handle: attachmentState.info.handle,
             terminalMode,
+            ...(marker.metadata ? { metadata: marker.metadata } : {}),
             controlDescriptorAvailable: hasActiveTerminalControlServiceabilityDescriptor({
               terminal: marker.metadata?.terminal,
               attachmentId: attachmentState.info.attachmentId,

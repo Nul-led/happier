@@ -1439,16 +1439,14 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
         });
     }
 
-    it('opens blocked Agent setup on the canonical capability Home when the spawn target is unresolved', async () => {
+    it('keeps blocked Agent setup disabled until the spawn Home resolves, then opens that scoped machine', async () => {
         const { TokenStorage } = await import('@/auth/storage/tokenStorage');
-        const { upsertServerProfile } = await import('@/sync/domains/server/serverProfiles');
-        const { getActiveServerSnapshot, setActiveServer } = await import('@/sync/domains/server/serverRuntime');
+        const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
         const { serverAccountScopedResourceKey } = await import('@/sync/domains/scope/serverAccountScope');
         const { machineAgentInventoryStore } = await import('@/agents/machineAgents/machineAgentInventoryStore');
         const { useMachineAgent } = await import('@/agents/machineAgents/useMachineAgents');
         const { machineCollectionHref } = await import('@/components/settings/machines/collection/machineCollectionModel');
-        const previousServerId = getActiveServerSnapshot().serverId;
-        const profile = await upsertServerProfile({ serverUrl: 'https://new-session-blocker.example.test' });
+        const profile = { id: getActiveServerSnapshot().serverId };
         const accountId = 'new-session-blocker-account';
         const machineId = 'machine-2';
         const inventoryKey = serverAccountScopedResourceKey({ serverId: profile.id, accountId }, 'machine-agents', machineId);
@@ -1460,7 +1458,6 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
         let hook: Awaited<ReturnType<typeof renderNewSessionScreenModel>> | null = null;
         let unmountAgent: (() => Promise<void>) | null = null;
         try {
-            await setActiveServer({ serverId: profile.id });
             activeServerAccountScopeState.value = { serverId: profile.id, accountId };
             invalidateMockStorageSnapshot();
             targetServerState.targetServerId = null;
@@ -1484,15 +1481,25 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
             if (model.variant !== 'simple') throw new Error('Expected the simple composer');
             const screen = await renderScreen(<>{model.simpleProps.composerTopContent}</>);
             expect(screen.findByTestId('new-session-agent-blocker.action')).not.toBeNull();
+            expect(screen.findByTestId('new-session-agent-blocker.action')?.props.disabled).toBe(true);
             await screen.pressByTestIdAsync('new-session-agent-blocker.action');
-            expect(routerPushMock).toHaveBeenLastCalledWith(machineCollectionHref({ machineId, serverId: profile.id }));
+            expect(routerPushMock).not.toHaveBeenCalled();
             await screen.unmount();
+            targetServerState.targetServerId = profile.id;
+            machineListByServerIdState.value = { [profile.id]: activeMachinesState.value };
+            await hook.rerender();
+            const resolvedModel = hook.getCurrent();
+            if (resolvedModel.variant !== 'simple') throw new Error('Expected the simple composer');
+            const resolvedScreen = await renderScreen(<>{resolvedModel.simpleProps.composerTopContent}</>);
+            expect(resolvedScreen.findByTestId('new-session-agent-blocker.action')?.props.disabled).not.toBe(true);
+            await resolvedScreen.pressByTestIdAsync('new-session-agent-blocker.action');
+            expect(routerPushMock).toHaveBeenLastCalledWith(machineCollectionHref({ machineId, serverId: profile.id }));
+            await resolvedScreen.unmount();
         } finally {
             await unmountAgent?.();
             await hook?.unmount();
             machineAgentInventoryStore.publish(inventoryKey, { status: 'ready', items: [], descriptors: [], lastCheckedAt: null });
             credentialsRead.mockRestore();
-            await setActiveServer({ serverId: previousServerId });
         }
     });
 
@@ -1819,7 +1826,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
 
         standardCleanup();
 
-        expect(authoringMemoryState.lastEngineSelectionsByScopeV1?.[scopeKey]?.acpSessionModeId).toBeNull();
+        expect(projectAuthoringMemory(authoringMemoryState).currentRememberedEngineSelectionsByScopeV1[scopeKey]?.acpSessionModeId).toBeNull();
     });
 
     it('does not expose a retained Provider projection after the spawn-scoped feature decision disables Providers', async () => {
@@ -1971,7 +1978,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
         await settleNewSessionScreenModel({ cycles: 2, turns: 2 });
         standardCleanup();
 
-        expect(authoringMemoryState.lastEngineSelectionsByScopeV1?.[scopeKey]?.modelSelection).toEqual(selection);
+        expect(projectAuthoringMemory(authoringMemoryState).currentRememberedEngineSelectionsByScopeV1[scopeKey]?.modelSelection).toEqual(selection);
     });
 
     it('does not remember stale engine state when route params select a different backend', async () => {
@@ -2010,7 +2017,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
         standardCleanup();
 
         expect(authoringMemoryState.lastEngineSelectionsByScopeV1?.[opencodeScopeKey]).toBeUndefined();
-        expect(authoringMemoryState.lastEngineSelectionsByScopeV1?.[codexScopeKey]?.modelId).toBe('gpt-5.5');
+        expect(projectAuthoringMemory(authoringMemoryState).currentRememberedEngineSelectionsByScopeV1[codexScopeKey]?.modelSelection?.ref.modelId).toBe('gpt-5.5');
     });
 
     it('hydrates permission, agent, and path from the persisted draft', async () => {

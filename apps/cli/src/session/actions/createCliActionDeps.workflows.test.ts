@@ -75,7 +75,10 @@ describe('createCliActionDeps workflow boundary', () => {
       defaults: { agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } } }, blocks: ['work'] }).normalizedDefinition!;
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
-      acceptedSnapshot: { definition, source: { kind: 'inline' }, inputs: {}, machineId: 'machine-1',
+      acceptedSnapshot: { definition, authoredDefinition: definition, startedBy: 'user', workDepth: 0, metadata: null, frozenChildren: {},
+        materializedLeaves: [{ sourceKey: '$root', blockId: definition.blocks[0]!.id, kind: 'step',
+          selection: definition.defaults ?? {}, authoredWorkspace: { kind: 'inherit' }, executionTarget: { kind: targetKind } }],
+        source: { kind: 'inline' }, inputs: {}, machineId: 'machine-1',
         executionTarget: { kind: targetKind }, workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
         origin: { kind: 'direct' }, authorization: { admittedPermissionCeiling: 'default', principal: { kind: 'host' } } },
     }));
@@ -213,8 +216,12 @@ describe('createCliActionDeps workflow boundary', () => {
         },
       },
     });
-    expect(http.get).not.toHaveBeenCalled();
+    // Caller authorization may read currentness; normalization never fetches saved content.
+    expect(http.get.mock.calls.every(([url]) => typeof url === 'string'
+      && url.endsWith('/v1/account/encryption/currentness'))).toBe(true);
     expect(http.post).not.toHaveBeenCalled();
+    expect(http.put).not.toHaveBeenCalled();
+    expect(http.delete).not.toHaveBeenCalled();
   });
 
   it('records Account cancellation without resolving a local execution machine', async () => {

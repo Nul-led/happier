@@ -35,12 +35,18 @@ export async function invokeSessionTerminalAction(request: Readonly<{
         case 'session.terminals.open':
         case 'session.terminals.split':
         case 'session.terminals.run_script': {
-            const target: SessionTerminalTargetV1 | null = 'target' in data ? data.target
-                : 'runTargetId' in data ? { kind: 'machine_shell', machineId: data.machineId, cwd: data.cwd,
-                    launch: { kind: 'package_script', runTargetId: data.runTargetId } } : null;
-            if (!target) return sessionTerminalActionFailure('invalid_parameters');
+            const terminalInput = request.actionId === 'session.terminals.run_script'
+                ? SESSION_TERMINAL_ACTION_INPUT_SCHEMAS['session.terminals.run_script'].safeParse(request.input)
+                : request.actionId === 'session.terminals.split'
+                    ? SESSION_TERMINAL_ACTION_INPUT_SCHEMAS['session.terminals.split'].safeParse(request.input)
+                    : SESSION_TERMINAL_ACTION_INPUT_SCHEMAS['session.terminals.open'].safeParse(request.input);
+            if (!terminalInput.success) return sessionTerminalActionFailure('invalid_parameters');
+            const terminalData = terminalInput.data;
+            const target: SessionTerminalTargetV1 = 'target' in terminalData ? terminalData.target
+                : { kind: 'machine_shell', machineId: terminalData.machineId, cwd: terminalData.cwd,
+                    launch: { kind: 'package_script', runTargetId: terminalData.runTargetId } };
             terminalId = randomUUID();
-            const terminal = { id: terminalId, target, ...('title' in data && data.title ? { title: data.title } : {}) };
+            const terminal = { id: terminalId, target, ...(terminalData.title ? { title: terminalData.title } : {}) };
             if (request.actionId === 'session.terminals.split') {
                 if (!tab) return sessionTerminalActionFailure('terminal_tab_not_found');
                 const measurement = getSplitMeasurementsForScope(data.scopeId, tab.id);
@@ -50,18 +56,20 @@ export async function invokeSessionTerminalAction(request: Readonly<{
             } else command = { type: 'open', terminal };
             break;
         }
-        case 'session.terminals.focus':
-            if (!('terminalId' in data)) return sessionTerminalActionFailure('invalid_parameters');
-            command = { type: 'focus', terminalId: data.terminalId };
+        case 'session.terminals.focus': {
+            const input = SESSION_TERMINAL_ACTION_INPUT_SCHEMAS['session.terminals.focus'].safeParse(request.input);
+            if (!input.success) return sessionTerminalActionFailure('invalid_parameters');
+            command = { type: 'focus', terminalId: input.data.terminalId };
             break;
-        case 'session.terminals.close':
-            if (!('terminalId' in data)) return sessionTerminalActionFailure('invalid_parameters');
-            {
-                const result = await closeOwnedSessionTerminals({ scopeId: data.scopeId, terminals: workspace.tabs.flatMap((item) => item.terminals).filter((terminal) => terminal.id === data.terminalId), signal: request.signal });
-                if (!result.ok) return result;
-                closedTerminalIds = [data.terminalId];
-            }
+        }
+        case 'session.terminals.close': {
+            const input = SESSION_TERMINAL_ACTION_INPUT_SCHEMAS['session.terminals.close'].safeParse(request.input);
+            if (!input.success) return sessionTerminalActionFailure('invalid_parameters');
+            const result = await closeOwnedSessionTerminals({ scopeId: data.scopeId, terminals: workspace.tabs.flatMap((item) => item.terminals).filter((terminal) => terminal.id === input.data.terminalId), signal: request.signal });
+            if (!result.ok) return result;
+            closedTerminalIds = [input.data.terminalId];
             break;
+        }
         case 'session.terminals.close_others':
             if (!tab) return sessionTerminalActionFailure('terminal_tab_not_found');
             {
@@ -81,28 +89,37 @@ export async function invokeSessionTerminalAction(request: Readonly<{
             break;
         case 'session.terminals.resize': {
             if (!tab || tab.terminals.length < 2) return sessionTerminalActionFailure('terminal_split_unavailable');
-            if (!('ratio' in data && 'splitId' in data)) return sessionTerminalActionFailure('invalid_parameters');
-            const resized = resizeSessionTerminalSplitForScope(data.scopeId, tab.id, data.splitId, data.ratio);
+            const input = SESSION_TERMINAL_ACTION_INPUT_SCHEMAS['session.terminals.resize'].safeParse(request.input);
+            if (!input.success) return sessionTerminalActionFailure('invalid_parameters');
+            const resized = resizeSessionTerminalSplitForScope(data.scopeId, tab.id, input.data.splitId, input.data.ratio);
             return resized === null ? sessionTerminalActionFailure('terminal_layout_unmeasured')
                 : resized ? { ok: true as const } : sessionTerminalActionFailure('terminal_split_unavailable');
         }
-        case 'session.terminals.detach':
-            if (!('terminalId' in data)) return sessionTerminalActionFailure('invalid_parameters');
-            command = { type: 'detach', terminalId: data.terminalId, newTabId: randomUUID() };
+        case 'session.terminals.detach': {
+            const input = SESSION_TERMINAL_ACTION_INPUT_SCHEMAS['session.terminals.detach'].safeParse(request.input);
+            if (!input.success) return sessionTerminalActionFailure('invalid_parameters');
+            command = { type: 'detach', terminalId: input.data.terminalId, newTabId: randomUUID() };
             break;
-        case 'session.terminals.reorder':
+        }
+        case 'session.terminals.reorder': {
             if (!tab) return sessionTerminalActionFailure('terminal_tab_not_found');
-            if (!('index' in data)) return sessionTerminalActionFailure('invalid_parameters');
-            command = { type: 'reorder', tabId: tab.id, index: data.index };
+            const input = SESSION_TERMINAL_ACTION_INPUT_SCHEMAS['session.terminals.reorder'].safeParse(request.input);
+            if (!input.success) return sessionTerminalActionFailure('invalid_parameters');
+            command = { type: 'reorder', tabId: tab.id, index: input.data.index };
             break;
-        case 'session.terminals.rename':
-            if (!('terminalId' in data && 'title' in data)) return sessionTerminalActionFailure('invalid_parameters');
-            command = { type: 'rename', terminalId: data.terminalId, title: data.title };
+        }
+        case 'session.terminals.rename': {
+            const input = SESSION_TERMINAL_ACTION_INPUT_SCHEMAS['session.terminals.rename'].safeParse(request.input);
+            if (!input.success) return sessionTerminalActionFailure('invalid_parameters');
+            command = { type: 'rename', terminalId: input.data.terminalId, title: input.data.title };
             break;
-        case 'session.terminals.list_view':
-            if (!('showList' in data)) return sessionTerminalActionFailure('invalid_parameters');
-            command = { type: 'showList', showList: data.showList };
+        }
+        case 'session.terminals.list_view': {
+            const input = SESSION_TERMINAL_ACTION_INPUT_SCHEMAS['session.terminals.list_view'].safeParse(request.input);
+            if (!input.success) return sessionTerminalActionFailure('invalid_parameters');
+            command = { type: 'showList', showList: input.data.showList };
             break;
+        }
         default: return sessionTerminalActionFailure('unsupported_action');
     }
     if (closedTerminalIds) {

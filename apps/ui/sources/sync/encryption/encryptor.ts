@@ -3,6 +3,8 @@ import { encodeBase64, decodeBase64 } from "@/encryption/base64";
 import sodium from '@/encryption/libsodium.lib';
 import { decodeUTF8, encodeUTF8 } from "@/encryption/text";
 import { decryptAESGCMString, encryptAESGCMString } from "@/encryption/aes";
+import { openAes256GcmBytes, sealAes256GcmBytes } from '@/encryption/aes256GcmBytes';
+import { getRandomBytes } from '@/platform/cryptoRandom';
 import {
     frameSessionDataKeyBundleV0,
     parseSessionDataKeyValue,
@@ -10,6 +12,7 @@ import {
     readSessionDataKeyBundleV0,
     serializeSessionDataKeyValue,
     stringifySerializedJsonValue,
+    SESSION_DATA_KEY_NONCE_BYTES,
 } from '@happier-dev/protocol';
 import { syncPerformanceTelemetry } from '../runtime/syncPerformanceTelemetry';
 import { yieldToEventLoop } from './cryptoBatchYield';
@@ -317,6 +320,23 @@ export class AES256Encryption implements Encryptor, Decryptor {
             this.decryptBase64 = async (data, decryptOptions = {}) => this.decryptBase64WithoutNativeWorker(data, decryptOptions);
             this.decryptBase64.shouldDecryptBase64 = shouldUseLargePayloadAesBase64Path;
         }
+    }
+
+    /** Raw payloads use the same V0 frame, without the JSON/string adapter. */
+    async encryptBytes(plaintext: Uint8Array): Promise<Uint8Array> {
+        const nonce = getRandomBytes(SESSION_DATA_KEY_NONCE_BYTES);
+        const ciphertext = await sealAes256GcmBytes({ key: this.secretKey, nonce, aad: new Uint8Array(), plaintext });
+        const payload = new Uint8Array(nonce.length + ciphertext.length);
+        payload.set(nonce);
+        payload.set(ciphertext, nonce.length);
+        return frameSessionDataKeyBundleV0(payload);
+    }
+
+    async decryptBytes(bundle: Uint8Array): Promise<Uint8Array> {
+        const parts = readSessionDataKeyBundleV0(bundle);
+        if (parts.status !== 'ready') throw new Error('Unsupported Artifact binary encryption frame');
+        return openAes256GcmBytes({ key: this.secretKey, nonce: parts.nonce, aad: new Uint8Array(),
+            ciphertext: parts.payload.subarray(SESSION_DATA_KEY_NONCE_BYTES) });
     }
 
     async encrypt(data: any[]): Promise<Uint8Array[]> {

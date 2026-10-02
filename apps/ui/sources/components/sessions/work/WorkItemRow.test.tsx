@@ -61,6 +61,10 @@ function needsYouSession(): WorkItem {
     };
 }
 
+// The notification leaf uses the real Action graph. Load it outside the per-test
+// assertion deadline instead of mocking that graph or lengthening the deadline.
+await import('./WorkItemRow');
+
 describe('WorkItemRow', () => {
     it('states where the work stands and opens it, with no answer controls on the row (S-1)', async () => {
         const { WorkItemRow } = await import('./WorkItemRow');
@@ -151,6 +155,7 @@ function workSources(input: Readonly<{
             runs: (input.managedRunIds ?? []).map((id) => createWorkflowRunSummaryFixture({ id })),
             attentionRunIds: new Set(),
             refreshFailed: false,
+            retry: () => {},
         },
         // Neither is read by a row's map.
         agentActivity: {} as SessionWorkSources['agentActivity'],
@@ -314,16 +319,18 @@ describe('WorkItemRow compact live map (INT §6 I4: workflow runs keep their min
             measureInWindow: (callback: (x: number, y: number, width: number, height: number) => void) => callback(...rect),
         });
         const scrollRect: { current: Rect } = { current: [0, 100, 320, 400] };
-        const scrollRef = { current: { measureInWindow: (callback: (x: number, y: number, w: number, h: number) => void) => callback(...scrollRect.current) } };
+        const scrollRef = { current: { getNativeScrollRef: () => ({
+            measureInWindow: (callback: (x: number, y: number, w: number, h: number) => void) => callback(...scrollRect.current),
+        }) } };
         let api: ReturnType<typeof useWorkScrollViewport> | null = null;
         function Harness() {
-            api = useWorkScrollViewport(scrollRef as never);
+            api = useWorkScrollViewport(scrollRef);
             return null;
         }
         await renderScreen(<Harness />);
         const seen: Record<string, boolean[]> = { inside: [], below: [] };
-        api!.viewport.observe({ current: measurable([0, 150, 320, 52]) } as never, (visible) => seen.inside.push(visible));
-        api!.viewport.observe({ current: measurable([0, 900, 320, 52]) } as never, (visible) => seen.below.push(visible));
+        api!.viewport.observe({ current: measurable([0, 150, 320, 52]) }, (visible) => seen.inside.push(visible));
+        api!.viewport.observe({ current: measurable([0, 900, 320, 52]) }, (visible) => seen.below.push(visible));
         expect(seen.inside.at(-1)).toBe(true);
         expect(seen.below.at(-1)).toBe(false);
 

@@ -35,7 +35,7 @@ import {
 import { ensureJavaScriptRuntimeExecutable } from '@/packagedRuntime/js/ensureJavaScriptRuntimeExecutable';
 import { isBun } from '@/utils/runtime';
 import { resolveLiveRunnerSnapshotFingerprints } from '../sessionRunnerRuntime/resolveLiveRunnerSnapshotFingerprints';
-import { resolveBackendExecutionSurfaces } from '@/agent/runtime/registry/engineRegistry';
+import type { BackendExecutionSurfaces } from '@/agent/runtime/registry/engineRegistry';
 
 function resolveSourceDevWorkspaceNamesForBackendTarget(
   target: BackendTargetRefV2 | undefined,
@@ -48,6 +48,7 @@ function resolveSourceDevWorkspaceNamesForBackendTarget(
 
 export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
   terminalRequest: ResolvedTerminalRequest;
+  terminalPresentation?: Awaited<ReturnType<NonNullable<BackendExecutionSurfaces['resolveTerminalPresentation']>>>;
   directory: string;
   options: SpawnSessionOptions;
   initialAccessFilePath?: string;
@@ -85,7 +86,7 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
   sanitizeDiagnosticText?: (value: string) => string;
   createStreamingSanitizer?: () => ProviderStreamingSanitizer;
   revalidateBeforeCommit?: SpawnCommitRevalidation;
-  onUntrackedTmuxChild: () => void;
+  onUntrackedHostedChild: () => void;
 }>): Promise<SpawnSessionResult> {
   const revalidateBeforeCommit = withTakeoverAdmissionCommitRevalidation(
     params.takeoverAdmission,
@@ -109,23 +110,14 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
     agentModeUpdatedAt: params.agentModeUpdatedAt,
     modelSelection: params.modelSelection,
   });
-  const executionSurfaces = await resolveBackendExecutionSurfaces(params.effectiveBackendTargetV2);
-  const launchEnvironmentValues = Object.fromEntries(Object.entries({
-    ...params.processEnv,
-    ...params.extraEnvForChildWithMessage,
-  }).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
-  for (const key of params.unsetEnvKeys ?? []) delete launchEnvironmentValues[key];
-  const terminalPresentationEnabled = executionSurfaces.resolveTerminalPresentation?.({
-    runtimeDescriptorV1: params.options.runtimeDescriptorV1,
-    launchEnvironment: { values: launchEnvironmentValues, unset: params.unsetEnvKeys ?? [] },
-    configuration: {
-      options: Object.fromEntries(Object.entries(params.options.sessionConfigOptionOverrides?.overrides ?? {})
-        .map(([id, option]) => [id, { value: option.value, updatedAtMs: option.updatedAt }])),
-    },
-  }) ?? false;
-  const effectiveTerminalRequest = terminalPresentationEnabled
+  const terminalPresentation = params.terminalPresentation;
+  const terminalPresentationEnabled = terminalPresentation !== undefined && terminalPresentation.kind !== 'none';
+  // Only runner presentation places the controller in a terminal. Managed
+  // terminal and provider-attach runtimes present their own prepared client.
+  const effectiveTerminalRequest = terminalPresentation?.kind === 'runner'
     ? params.terminalRequest
     : { requested: 'plain' as const };
+  const startingMode = terminalPresentation?.startingMode ?? 'remote';
 
   const agentCommand = resolveDaemonCliSubcommandFromBackendTarget(params.effectiveBackendTargetV2);
   if (!agentCommand) {
@@ -138,9 +130,19 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
 
   const args = [
     agentCommand,
-    '--happy-starting-mode', 'remote',
+    '--happy-starting-mode', startingMode,
     '--started-by', 'daemon',
   ];
+  if (terminalPresentation?.kind === 'provider_attach' || terminalPresentation?.kind === 'managed_terminal') {
+    const request = params.terminalRequest;
+    if (request.requested === 'herdr' || request.requested === 'zellij' || request.requested === 'tmux') {
+      args.push('--happy-terminal-mode', 'plain', '--happy-terminal-requested', request.requested);
+      if (request.requested === 'herdr') args.push('--happy-herdr-session-name', request.herdr.sessionName,
+        ...(request.herdr.socketPath ? ['--happy-herdr-socket-path', request.herdr.socketPath] : []));
+      if (request.requested === 'tmux') args.push('--happy-tmux-target', request.tmux.sessionName,
+        ...(request.tmux.tmpDir ? ['--happy-tmux-tmpdir', request.tmux.tmpDir] : []));
+    }
+  }
 
   const sourceDevWorkspaceNames = resolveSourceDevWorkspaceNamesForBackendTarget(params.effectiveBackendTargetV2);
   const sourceDevSharedDepsPreflight = await prepareSourceDevSharedDepsForHappyCliSpawn({
@@ -181,6 +183,7 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
   };
 
   const tmuxSpawnResult = await spawnTmuxHostedSessionAndWaitForWebhook({
+    startingMode,
     terminalRequest: effectiveTerminalRequest,
     directory: params.directory,
     options: params.options,
@@ -218,7 +221,7 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
   const { tmuxRequested, tmuxFallbackReason, tmuxCreationDisposition } = tmuxSpawnResult;
 
   if (tmuxCreationDisposition === 'created_or_uncertain') {
-    params.onUntrackedTmuxChild();
+    params.onUntrackedHostedChild();
     return {
       type: 'error',
       errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
@@ -234,7 +237,17 @@ export async function routeSpawnModeAndWaitForWebhook(params: Readonly<{
     };
   }
 
+  if (tmuxSpawnResult.tmuxCleanupIncomplete) {
+    return {
+      type: 'error',
+      errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_FAILED,
+      errorMessage: tmuxFallbackReason ?? 'Tmux launch cleanup is incomplete; regular fallback was refused',
+    };
+  }
+
   const adapterHostedResult = await spawnAdapterHostedSessionAndWaitForWebhook({
+    startingMode,
+    onUntrackedHostedChild: params.onUntrackedHostedChild,
     terminalRequest: effectiveTerminalRequest,
     directory: params.directory,
     trackedSpawnOptions: params.trackedSpawnOptions,

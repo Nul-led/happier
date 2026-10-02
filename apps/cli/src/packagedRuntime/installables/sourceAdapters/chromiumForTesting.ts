@@ -46,6 +46,7 @@ export async function installChromiumForTesting(params: Readonly<{
   arch?: string;
   asset?: ChromiumForTestingPlatformAsset;
   pinnedVersion?: string;
+  signal?: AbortSignal;
 }> = {}): Promise<InstallChromiumForTestingResult> {
   const platform = params.platform ?? process.platform;
   const arch = params.arch ?? process.arch;
@@ -76,6 +77,7 @@ export async function installChromiumForTesting(params: Readonly<{
     return { ok: false, errorMessage: `Chrome-for-Testing ${pinnedVersion} (${platformKey}) has an invalid pinned integrity digest.` };
   }
   const result = await installPinnedArchive({
+    signal: params.signal,
     installId: MANAGED_KEY,
     version: pinnedVersion,
     asset: {

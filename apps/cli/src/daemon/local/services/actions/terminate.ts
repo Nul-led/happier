@@ -106,7 +106,7 @@ export type TerminateDescendantResolution =
     | Readonly<{ status: 'resolved'; pids: readonly number[] }>
     | Readonly<{ status: 'unavailable' }>;
 
-export type TerminateWindowsTreeInput = Readonly<{ pid: number; force: boolean }>;
+export type TerminateWindowsTreeInput = Readonly<{ pid: number; force: boolean; timeoutMs: number }>;
 
 export type TerminateProcessControl = Readonly<{
     platform: 'posix' | 'windows';
@@ -257,11 +257,12 @@ export function createTerminateDetectedService(
         };
         try {
             if (control.platform === 'windows') {
-                await control.terminateWindowsTree({ pid, force: false });
+                const gracefulDeadline = Date.now() + graceMs;
+                await control.terminateWindowsTree({ pid, force: false, timeoutMs: graceMs });
                 deliveredAnySignal = true;
-                await control.wait(graceMs);
+                await control.wait(Math.max(0, gracefulDeadline - Date.now()));
                 if (await control.isProcessAlive(pid)) {
-                    await control.terminateWindowsTree({ pid, force: true });
+                    await control.terminateWindowsTree({ pid, force: true, timeoutMs: graceMs });
                 }
             } else {
                 for (const member of [pid, ...descendantPids]) {

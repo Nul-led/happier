@@ -18,8 +18,10 @@ class FakeSocket {
   public onEmit: (() => void) | null = null;
   public connectError: Error | null = null;
   public disconnectAfterConnect = false;
+  public rejectAcksOnDisconnect = true;
   public emitError: Error | null = null;
   public ackMode: 'sync' | 'never' = 'sync';
+  public delayedAck: ((payload: unknown) => void) | null = null;
   public disconnectCalls = 0;
   public closeCalls = 0;
   private pendingAcks = new Set<(error: Error) => void>();
@@ -48,7 +50,9 @@ class FakeSocket {
   trigger(event: string, ...args: any[]) {
     if (event === 'disconnect') {
       this.connected = false;
-      for (const reject of this.pendingAcks) reject(new Error('RPC socket disconnected before acknowledgement'));
+      if (this.rejectAcksOnDisconnect) {
+        for (const reject of this.pendingAcks) reject(new Error('RPC socket disconnected before acknowledgement'));
+      }
       this.pendingAcks.clear();
     }
     for (const handler of this.handlers.get(event) ?? []) handler(...args);
@@ -79,6 +83,7 @@ class FakeSocket {
     this.emitted.push({ event, data });
     this.onEmit?.();
     if (this.ackMode === 'never') {
+      this.delayedAck = callback ?? null;
       return this;
     }
     callback?.(nextRpcAck ?? { ok: true, result: { echoed: data.params } });
@@ -124,6 +129,282 @@ vi.mock('socket.io-client', () => ({
 }));
 
 import { callSessionRpc, readSessionRpcRequestDisposition } from './sessionRpc';
+import { waitForExecutionRun, watchExecutionRun } from '@/session/services/executionRuns';
+
+describe('execution wait transport recovery', () => {
+  const terminal = {
+    ok: true, status: 'succeeded', result: { run: {
+      runId: 'run-original', callId: 'run-call', sidechainId: 'run-sidechain', intent: 'plan',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' }, permissionMode: 'workspace_write',
+      retentionPolicy: 'ephemeral', runClass: 'bounded', ioMode: 'request_response',
+      status: 'succeeded', startedAtMs: 1, finishedAtMs: 2,
+    } },
+  };
+  it.each(['needs_attention', 'change'] as const)('refuses a terminal-only reply to a %s request', async (condition) => {
+    nextRpcAck = { ok: true, result: terminal };
+    await expect(waitForExecutionRun({ token: 'token', sessionId: 'sess_1', mode: 'plain', ctx: null,
+      runId: 'run-original', timeoutMs: null, condition,
+    })).resolves.toMatchObject({ ok: false, code: 'execution_run_wait_result_invalid' });
+    expect(nextSocket?.emitted.filter((call) => call.event === 'rpc-call').map((call) => call.data.method))
+      .toEqual(['sess_1:execution.run.wait']);
+  });
+  it('streams passive snapshots, parks while quiet and resnapshots the same run after reconnect', async () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    configureNextSocket = (socket) => { sockets.push(socket); socket.ackMode = 'never'; };
+    const abort = new AbortController();
+    const snapshots: unknown[] = [];
+    const watching = watchExecutionRun({ token: 'token', sessionId: 'sess_1', mode: 'plain', ctx: null,
+      runId: 'run-original', timeoutMs: null, signal: abort.signal, onSnapshot: (value) => { snapshots.push(value); },
+    }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    const running = { run: { ...terminal.result.run, status: 'running', finishedAtMs: undefined } };
+    sockets[0]?.delayedAck?.({ ok: true, result: { ok: true, status: 'running', disposition: 'snapshot', result: running } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(snapshots).toEqual([running]);
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]?.emitted).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sockets[0]?.emitted).toHaveLength(2); // One parked change RPC, no periodic gets.
+    sockets[0]?.trigger('disconnect', 'transport close');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(sockets).toHaveLength(2);
+    expect(sockets[1]?.emitted[0]?.data.params).toMatchObject({ runId: 'run-original', condition: 'change', after: running });
+    sockets[1]?.delayedAck?.({ ok: true, result: { ok: true, status: 'succeeded', disposition: 'snapshot', result: terminal.result } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(snapshots).toEqual([running, terminal.result]);
+    abort.abort();
+    expect(await watching).toMatchObject({ name: 'AbortError' });
+    expect(sockets.flatMap((socket) => socket.emitted).filter((call) => call.event === 'rpc-call')
+      .every((call) => call.data.method === 'sess_1:execution.run.wait')).toBe(true);
+    expect(sockets.every((socket) => socket.listenerCount('disconnect') === 0)).toBe(true);
+  });
+  it('preserves snapshot output backpressure across reconnect', async () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    configureNextSocket = (socket) => { sockets.push(socket); socket.ackMode = 'never'; };
+    const abort = new AbortController();
+    let releaseOutput = () => {};
+    const output = new Promise<void>((resolve) => { releaseOutput = resolve; });
+    const snapshots: unknown[] = [];
+    const watching = watchExecutionRun({ token: 'token', sessionId: 'sess_1', mode: 'plain', ctx: null,
+      runId: 'run-original', timeoutMs: null, signal: abort.signal,
+      onSnapshot: async (value) => { snapshots.push(value); await output; },
+    }).catch((error: unknown) => error);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      sockets[0]?.delayedAck?.({ ok: true, result: { ...terminal, disposition: 'snapshot' } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(snapshots).toEqual([terminal.result]);
+      sockets[0]?.trigger('disconnect', 'transport close');
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(sockets).toHaveLength(2);
+      expect(sockets[1]?.emitted).toHaveLength(0);
+      releaseOutput();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets[1]?.emitted[0]?.data.params).toMatchObject({ after: terminal.result, condition: 'change' });
+    } finally { releaseOutput(); abort.abort(); await watching; }
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+    nextRpcAck = null;
+    nextSocket = null;
+    configureNextSocket = null;
+  });
+
+  it.each(['before submission', 'after submission', 'before terminal acknowledgement'] as const)(
+    'reattaches the original run after disconnect %s', async (phase) => {
+      vi.useFakeTimers();
+      const sockets: FakeSocket[] = [];
+      configureNextSocket = (socket) => {
+        sockets.push(socket);
+        if (sockets.length === 1) {
+          socket.rejectAcksOnDisconnect = false;
+          socket.ackMode = 'never';
+          socket.disconnectAfterConnect = phase === 'before submission';
+          if (phase === 'before terminal acknowledgement') {
+            socket.onEmit = () => socket.trigger('disconnect', 'transport close');
+          }
+        } else {
+          nextRpcAck = { ok: true, result: terminal };
+        }
+      };
+      const result = waitForExecutionRun({
+        token: 'token', sessionId: 'sess_1', mode: 'plain', ctx: null, runId: 'run-original', timeoutMs: null,
+      }).catch((error: unknown) => error);
+      if (phase === 'after submission') {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(sockets[0]?.emitted.some((item) => item.event === 'rpc-call')).toBe(true);
+        sockets[0]?.trigger('disconnect', 'transport close');
+      }
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(result).resolves.toEqual(terminal);
+      const calls = sockets.flatMap((socket) => socket.emitted.filter((item) => item.event === 'rpc-call'));
+      expect(calls.length).toBe(phase === 'before submission' ? 1 : 2);
+      expect(calls.every((item) => item.data.method === 'sess_1:execution.run.wait'
+        && item.data.params.runId === 'run-original')).toBe(true);
+      expect(sockets.every((socket) => socket.listenerCount('disconnect') === 0)).toBe(true);
+    },
+  );
+
+  it('detaches a cancelled waiter while a sibling waits on the same run', async () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    configureNextSocket = (socket) => { sockets.push(socket); socket.ackMode = 'never'; };
+    const cancelled = new AbortController();
+    const first = waitForExecutionRun({
+      token: 'token', sessionId: 'sess_1', mode: 'plain', ctx: null, runId: 'run-original', timeoutMs: null,
+      signal: cancelled.signal,
+    }).catch((error: unknown) => error);
+    const second = waitForExecutionRun({
+      token: 'token', sessionId: 'sess_1', mode: 'plain', ctx: null, runId: 'run-original', timeoutMs: null,
+    }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    cancelled.abort();
+    expect(await first).toMatchObject({ name: 'AbortError' });
+    expect(sockets[1]?.disconnectCalls).toBe(0);
+    sockets[1]?.trigger('disconnect', 'transport close');
+    configureNextSocket = (socket) => { sockets.push(socket); nextRpcAck = { ok: true, result: terminal }; };
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(second).resolves.toEqual(terminal);
+    expect(sockets.flatMap((socket) => socket.emitted).some((item) => item.data?.method?.includes('start'))).toBe(false);
+  });
+
+  it('discards a late acknowledgement from the disconnected observation', async () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    configureNextSocket = (socket) => {
+      sockets.push(socket);
+      if (sockets.length === 1) { socket.ackMode = 'never'; socket.rejectAcksOnDisconnect = false; }
+      else nextRpcAck = { ok: true, result: terminal };
+    };
+    let settled = false;
+    const result = waitForExecutionRun({
+      token: 'token', sessionId: 'sess_1', mode: 'plain', ctx: null, runId: 'run-original', timeoutMs: null,
+    }).then((value) => { settled = true; return value; });
+    await vi.advanceTimersByTimeAsync(0);
+    sockets[0]?.trigger('disconnect', 'transport close');
+    sockets[0]?.delayedAck?.({ ok: true, result: {
+      ...terminal, status: 'failed', result: { run: { ...terminal.result.run, status: 'failed' } },
+    } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(result).resolves.toEqual(terminal);
+  });
+
+  it('preserves the remaining observation budget and accepts terminal custody before the deadline', async () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    configureNextSocket = (socket) => {
+      sockets.push(socket);
+      if (sockets.length === 1) { socket.ackMode = 'never'; socket.rejectAcksOnDisconnect = false; }
+      else nextRpcAck = { ok: true, result: terminal };
+    };
+    const result = waitForExecutionRun({
+      token: 'token', sessionId: 'sess_1', mode: 'plain', ctx: null, runId: 'run-original', timeoutMs: 5_000,
+    }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(2_000);
+    sockets[0]?.trigger('disconnect', 'transport close');
+    await vi.advanceTimersByTimeAsync(2_000);
+    const calls = sockets.flatMap((socket) => socket.emitted.filter((item) => item.event === 'rpc-call'));
+    await expect(result).resolves.toEqual(terminal);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.data.params.timeoutSeconds).toBeGreaterThan(0);
+    expect(calls[1]?.data.params.timeoutSeconds).toBeLessThanOrEqual(3);
+  });
+
+  it.each(['before connection', 'after submission', 'during output backpressure'] as const)(
+    'expires the finite observation %s without inventing Run state or replaying work', async (phase) => {
+      vi.useFakeTimers();
+      const sockets: FakeSocket[] = [];
+      configureNextSocket = (socket) => {
+        sockets.push(socket);
+        socket.ackMode = 'never';
+        socket.rejectAcksOnDisconnect = false;
+        if (phase === 'before connection' || sockets.length > 1) socket.connectError = new Error('offline');
+      };
+      const abort = new AbortController();
+      let releaseOutput = () => {};
+      const output = new Promise<void>((resolve) => { releaseOutput = resolve; });
+      let settled = false;
+      const snapshots: unknown[] = [];
+      const observing = waitForExecutionRun({ token: 'token', sessionId: 'sess_1', mode: 'plain', ctx: null,
+        runId: 'run-original', timeoutMs: 5_000, signal: abort.signal,
+        ...(phase === 'during output backpressure' ? { onSnapshot: async (value: unknown) => { snapshots.push(value); await output; } } : {}),
+      }).catch((error: unknown) => error).then((value) => { settled = true; return value; });
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        if (phase === 'during output backpressure') {
+          sockets[0]?.delayedAck?.({ ok: true, result: { ...terminal, disposition: 'snapshot' } });
+          await vi.advanceTimersByTimeAsync(0);
+          expect(snapshots).toEqual([terminal.result]);
+        }
+        if (phase !== 'before connection') sockets[0]?.trigger('disconnect', 'transport close');
+        await vi.advanceTimersByTimeAsync(4_999);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(settled).toBe(true);
+        const timeout = await observing;
+        expect(timeout).toMatchObject({ ok: false, code: 'observation_timeout' });
+        expect(timeout).not.toHaveProperty('status');
+        expect(timeout).not.toHaveProperty('result');
+        // A late reconnect/ACK cannot revive this observer; only observation is ended.
+        configureNextSocket = (socket) => { sockets.push(socket); nextRpcAck = { ok: true, result: terminal }; };
+        releaseOutput();
+        sockets[0]?.delayedAck?.({ ok: true, result: terminal });
+        const socketCount = sockets.length;
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(sockets).toHaveLength(socketCount);
+        expect(sockets.flatMap((socket) => socket.emitted).filter((call) => call.event === 'rpc-call')
+          .every((call) => call.data.method === 'sess_1:execution.run.wait')).toBe(true);
+        expect(sockets.every((socket) => socket.listenerCount('disconnect') === 0)).toBe(true);
+      } finally { releaseOutput(); abort.abort(); await observing; }
+    },
+  );
+  it('expires the same finite observation while its predecessor compatibility snapshot is unavailable', async () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    configureNextSocket = (socket) => {
+      sockets.push(socket);
+      if (sockets.length === 1) nextRpcAck = { ok: false, error: 'Method not found', errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND };
+      else socket.ackMode = 'never';
+    };
+    const abort = new AbortController();
+    const observing = waitForExecutionRun({ token: 'token', sessionId: 'sess_1', mode: 'plain', ctx: null,
+      runId: 'run-original', timeoutMs: 5_000, signal: abort.signal,
+    }).catch((error: unknown) => error);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sockets.flatMap((socket) => socket.emitted).filter((call) => call.event === 'rpc-call')
+        .map((call) => call.data.method)).toEqual(['sess_1:execution.run.wait', 'sess_1:execution.run.get']);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(observing).resolves.toMatchObject({ ok: false, code: 'observation_timeout' });
+    } finally { abort.abort(); await observing; }
+  });
+
+  it('keeps a 30-day direct observation alive until its authored deadline and removes its timer', async () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    configureNextSocket = (socket) => { sockets.push(socket); socket.ackMode = 'never'; };
+    const abort = new AbortController();
+    const durationMs = 30 * 24 * 60 * 60 * 1_000;
+    let settled = false;
+    const observing = waitForExecutionRun({ token: 'token', sessionId: 'sess_1', mode: 'plain', ctx: null,
+      runId: 'run-original', timeoutMs: durationMs, signal: abort.signal,
+    }).catch((error: unknown) => error).then((value) => { settled = true; return value; });
+    try {
+      await vi.advanceTimersByTimeAsync(durationMs - 1);
+      expect(settled).toBe(false);
+      expect(sockets).toHaveLength(1);
+      expect(sockets[0]?.emitted).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(observing).resolves.toMatchObject({ ok: false, code: 'observation_timeout' });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { abort.abort(); await observing; }
+  });
+});
 
 describe('callSessionRpc (plaintext sessions)', () => {
   afterEach(() => {

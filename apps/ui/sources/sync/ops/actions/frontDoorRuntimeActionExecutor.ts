@@ -1,6 +1,6 @@
-import type { ActionExecutorContext, ActionId, RuntimeActionExecute } from '@happier-dev/protocol';
+import type { ActionId, RuntimeActionExecute } from '@happier-dev/protocol';
 
-import type { createDefaultActionExecutor } from './defaultActionExecutor';
+import type { createDefaultActionExecutor, UiActionExecutorContext } from './defaultActionExecutor';
 
 type ActionExecutorLike = Pick<ReturnType<typeof createDefaultActionExecutor>, 'execute'>;
 
@@ -15,6 +15,7 @@ type ActionExecutorLike = Pick<ReturnType<typeof createDefaultActionExecutor>, '
  */
 export function createFrontDoorActionExecute(
   executor?: ActionExecutorLike,
+  options?: Parameters<typeof createDefaultActionExecutor>[0],
 ): ActionExecutorLike['execute'] {
   // Lazily resolve the default executor on first dispatch so that mounting a surface (which often
   // renders nothing) never eagerly builds the full executor dependency graph.
@@ -24,7 +25,7 @@ export function createFrontDoorActionExecute(
     // dynamic import makes the dev bundler serve a duplicate lazy bundle that takes seconds to build
     // (production cost is unchanged). Evaluation stays deferred to the first dispatch. A top-level
     // import would form a cycle: the executor's dependencies import this front door.
-    const target = resolved ?? (resolved = (require('./defaultActionExecutor') as typeof import('./defaultActionExecutor')).createDefaultActionExecutor());
+    const target = resolved ?? (resolved = (require('./defaultActionExecutor') as typeof import('./defaultActionExecutor')).createDefaultActionExecutor(options));
     return target.execute(actionId, input, context);
   };
 }
@@ -37,7 +38,7 @@ export function createFrontDoorActionExecute(
  */
 export function createFrontDoorUiActionExecutor(
   executor?: ActionExecutorLike,
-  scopeContext?: Pick<ActionExecutorContext, 'serverId' | 'expectedAccountId'>,
+  scopeContext?: Pick<UiActionExecutorContext, 'serverId' | 'expectedAccountId'>,
 ): (
   actionId: ActionId,
   input: unknown,

@@ -398,6 +398,9 @@ export function createRegisteredScmBackendAdapter(input: Readonly<{
         async commitBackout({ context, request }) {
             return useHandler(runtimeServices, hostingProviderRuntimeServices, input.registration.handlers.commit?.backout, { context, request });
         },
+        async commitUndoLast({ context, request }) {
+            return useHandler(runtimeServices, hostingProviderRuntimeServices, input.registration.handlers.commit?.undoLast, { context, request });
+        },
         async logList({ context, request }) {
             return useHandler(runtimeServices, hostingProviderRuntimeServices, input.registration.handlers.read?.logList, { context, request });
         },

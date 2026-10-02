@@ -8,6 +8,7 @@ import type { CallerInputConstraintsV1 } from '@happier-dev/protocol/auth/apiTok
 import type { ExternalActionExecutionAuthorizationV1 } from '@happier-dev/protocol/actions';
 import type {
     SocketRpcRequestPayload,
+    SessionActionRpcOriginV1,
     SocketRpcTransportAcknowledgementV1,
 } from '@happier-dev/protocol/socketRpc';
 
@@ -51,6 +52,8 @@ export type RpcHandlerContext = Readonly<{
     signal: AbortSignal;
     /** Verified server ingress authority; never read from decrypted caller input. */
     callerAuthority?: ActionExecutorContext['authority'];
+    /** Validated Home stamp from the Session caller's currently hosting Machine. */
+    sessionActionOrigin?: SessionActionRpcOriginV1;
     /** Validated server ingress constraints, never decrypted caller input. */
     callerInputConstraints?: CallerInputConstraintsV1;
     /** Home transport proof bound before decryption; signed token is verified by downstream admission. */

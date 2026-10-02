@@ -13,7 +13,7 @@ describe('CLI machine terminal Action', () => {
   beforeEach(() => boundary.callMachineRpc.mockReset());
   it('lists through the authenticated exact-machine transport and rejects unavailable credentials', async () => {
     const credentials = { token: 'token', encryption: { type: 'legacy' as const, secret: new Uint8Array(32) } };
-    const executor = createActionExecutor(createCliActionDeps({ token: credentials.token, credentials, sessionId: 'session', serverId: 'home', mode: 'plain', ctx: null }));
+    const executor = createActionExecutor(createCliActionDeps({ token: credentials.token, credentials, sessionId: 'session', serverId: 'home', serverHttpBaseUrl: 'https://home.invalid', mode: 'plain', ctx: null }));
     boundary.callMachineRpc.mockResolvedValueOnce({ ok: true, terminals: [] });
     expect(await executor.execute('machines.terminal.list', { machineId: 'machine' }, { surface: 'cli', authority: 'present_user', serverId: 'home' }))
       .toEqual({ ok: true, result: { ok: true, terminals: [] } });
@@ -25,7 +25,7 @@ describe('CLI machine terminal Action', () => {
   it('opens the canonical PTY and preserves the exact Home and request', async () => {
     const credentials = { token: 'token', encryption: { type: 'legacy' as const, secret: new Uint8Array(32) } };
     const executor = createActionExecutor({ ...createCliActionDeps({ token: credentials.token, credentials,
-      sessionId: 'session', serverId: 'home', mode: 'plain', ctx: null }) });
+      sessionId: 'session', serverId: 'home', serverHttpBaseUrl: 'https://home.invalid', mode: 'plain', ctx: null }) });
     boundary.callMachineRpc.mockResolvedValueOnce({ ok: true, terminalId: 'pty', reused: true });
     expect(await executor.execute('machines.terminal.open', { machineId: 'machine', terminalKey: 'shell', cwd: '/project' }, {
       surface: 'cli', authority: 'present_user', serverId: 'home', presentUserConfirmation: { actionId: 'machines.terminal.open' },

@@ -206,6 +206,10 @@ export function useConnectedServiceQuotaSummaries(options?: Readonly<{
     usageRecordIdsByKey: Readonly<Record<string, ProviderAccountUsageRecordId | null>>;
     isRefreshing: boolean;
     hasConnectedProfiles: boolean;
+    refreshableKeys: readonly string[];
+    refreshingByKey: Readonly<Record<string, boolean>>;
+    errorsByKey: Readonly<Record<string, string | null>>;
+    refresh(keys?: readonly string[]): Promise<void>;
 }> {
     const quotasEnabled = useFeatureEnabled('connectedServices.quotas');
     const profile = useProfile();
@@ -267,6 +271,10 @@ export function useConnectedServiceQuotaSummaries(options?: Readonly<{
         loadingByKey,
         readByKey,
         usageRecordIdsByKey,
+        refreshableKeys,
+        refreshingByKey,
+        errorsByKey,
+        refresh,
     } = useConnectedServiceQuotaSnapshots(quotaProfileInputs, { fetchPolicy: options?.fetchPolicy });
     const readsAccounts = (options?.fetchPolicy ?? 'poll') !== 'cache_only';
 
@@ -386,8 +394,8 @@ export function useConnectedServiceQuotaSummaries(options?: Readonly<{
     ]);
 
     const isRefreshing = React.useMemo(
-        () => Object.values(loadingByKey).some(Boolean),
-        [loadingByKey],
+        () => Object.values(loadingByKey).some(Boolean) || Object.values(refreshingByKey).some(Boolean),
+        [loadingByKey, refreshingByKey],
     );
 
     // Signed-out accounts are not read (their usage is hidden) but still belong beside usage, with
@@ -443,5 +451,9 @@ export function useConnectedServiceQuotaSummaries(options?: Readonly<{
         usageRecordIdsByKey,
         isRefreshing,
         hasConnectedProfiles: connectedProfiles.length > 0,
+        refreshableKeys,
+        refreshingByKey,
+        errorsByKey,
+        refresh,
     };
 }

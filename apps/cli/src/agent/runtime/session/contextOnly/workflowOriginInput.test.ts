@@ -30,7 +30,7 @@ describe('origin workflow current-state pull', () => {
   const definition = { version: 1 as const, inputs: [], defaults: {}, blocks: [
     { kind: 'step' as const, id: 'work', document: { text: 'Work', references: [], attachments: [] }, input: [], result: { kind: 'text' as const } },
   ] };
-  const frozen = { authoredDefinition: definition, materializedLeaves: [], frozenChildren: {}, metadata: null };
+  const frozen = { startedBy: 'user' as const, authoredDefinition: definition, materializedLeaves: [], frozenChildren: {}, metadata: null };
   const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
     mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId, runId },
     acceptedSnapshot: { ...frozen, definition,

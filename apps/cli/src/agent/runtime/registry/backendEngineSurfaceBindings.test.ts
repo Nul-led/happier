@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ChildProcess, type spawn } from 'node:child_process';
+import { createProviderCliAttachSurface } from '@/session/attach/providerCliAttach';
+import { createTerminalLauncherFixture } from '@/testkit/process/terminalLauncher';
 import type { AgentRuntime } from '@happier-dev/plugin-sdk/agents/runtime';
 
 import type { ResolvedAgentRuntimeContribution } from '../../../plugins/projection/registry/types';
@@ -54,6 +57,39 @@ async function allowCurrentPublisherEffect<T>(
 }
 
 describe('resolveBackendExecutionSurfacesFromNativeAgentRuntime', () => {
+  it('retains concrete host attach readiness and fences its leased generation', async () => {
+    let current = true;
+    const children: ChildProcess[] = [];
+    const attach = createProviderCliAttachSurface({
+      agentId: 'codex',
+      resolveTarget: () => ({ ok: true, value: { threadId: 'thread-projected' } }),
+      createArgs: (target) => ['resume', target.threadId],
+      resolveLaunchSpec: () => ({ source: 'managed', resolvedPath: '/managed/codex', command: '/managed/codex', args: [] }),
+      spawnProcess: (() => {
+        const { child } = createTerminalLauncherFixture({ autoReady: false });
+        children.push(child);
+        return child;
+      }) as typeof spawn,
+    });
+    const runtime = { ...createNativeRuntime(async () => { throw new Error('Unused terminal surface'); }), surfaces: { attach } };
+    const surfaces = resolveBackendExecutionSurfacesFromNativeAgentRuntime({
+      backend: createBackend(), runtime, agentId: 'codex', isCurrent: () => current,
+      declaredAgentSurfaceFamilies: new Set(), diagnostics: [],
+    });
+    if (!surfaces.attach?.attachManaged) throw new Error('Concrete managed attach operation was lost');
+    let ready = false;
+    const completion = surfaces.attach.attachManaged({ sessionId: 'session-projected', metadata: {}, onAttached: async () => { ready = true; } });
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    expect(ready).toBe(false);
+    children[0]!.emit('message', { type: 'terminal-native-spawned' });
+    await vi.waitFor(() => expect(ready).toBe(true));
+    children[0]!.emit('exit', 0, null);
+    await expect(completion).resolves.toEqual({ ok: true, value: { exitCode: 0 } });
+    current = false;
+    await expect(surfaces.attach.attachManaged({ sessionId: 'session-projected', metadata: {}, onAttached: async () => undefined })).rejects.toThrow('retired runtime generation');
+    expect(children).toHaveLength(1);
+  });
+
   function createNativeRuntime(
     resolveLaunch: NonNullable<NonNullable<AgentRuntime['surfaces']>['terminal']>['resolveLaunch'],
   ): AgentRuntime {
@@ -109,7 +145,7 @@ describe('resolveBackendExecutionSurfacesFromNativeAgentRuntime', () => {
     expect(attach.attach).toHaveBeenCalledWith({ sessionId: 'session-1', metadata: {} });
     expect(surfaces.checkpoint).toBe(checkpoint);
     expect(surfaces.terminalRuntime).toBeNull();
-    expect(surfaces.resolveTerminalPresentation?.({})).toBe(true);
+    await expect(surfaces.resolveTerminalPresentation?.({})).resolves.toEqual({ kind: 'none' });
 
     const runnerSurfaces = resolveBackendExecutionSurfacesFromNativeAgentRuntime({
       backend: createBackend(),
@@ -120,15 +156,14 @@ describe('resolveBackendExecutionSurfacesFromNativeAgentRuntime', () => {
       declaredAgentSurfaceFamilies: new Set(),
       diagnostics: [],
     });
-    expect(runnerSurfaces.resolveTerminalPresentation?.({})).toBe(true);
+    await expect(runnerSurfaces.resolveTerminalPresentation?.({})).resolves.toEqual({ kind: 'none' });
 
     const narrowedRunnerSurfaces = resolveBackendExecutionSurfacesFromNativeAgentRuntime({
       backend: createBackend(),
       runtime: {
-        ...runtime,
         surfaces: { checkpoint },
         sessions: {
-          supportsTerminalPresentation: () => false,
+          resolveTerminalPresentation: async () => ({ kind: 'none' }),
           open: () => { throw new Error('not opened'); },
         },
       },
@@ -138,10 +173,10 @@ describe('resolveBackendExecutionSurfacesFromNativeAgentRuntime', () => {
       declaredAgentSurfaceFamilies: new Set(),
       diagnostics: [],
     });
-    expect(narrowedRunnerSurfaces.resolveTerminalPresentation?.({})).toBe(false);
+    await expect(narrowedRunnerSurfaces.resolveTerminalPresentation?.({})).rejects.toThrow('admitted invocation context');
   });
 
-  it('does not grant terminal presentation to absent or undeclared terminal surfaces', () => {
+  it('does not grant terminal presentation to absent or undeclared terminal surfaces', async () => {
     const runtime = createNativeRuntime(async () => { throw new Error('not launched'); });
     for (const surfaces of [undefined, runtime.surfaces]) {
       const projected = resolveBackendExecutionSurfacesFromNativeAgentRuntime({
@@ -152,7 +187,7 @@ describe('resolveBackendExecutionSurfacesFromNativeAgentRuntime', () => {
         declaredAgentSurfaceFamilies: new Set(),
         diagnostics: [],
       });
-      expect(projected.resolveTerminalPresentation?.({})).toBe(false);
+      await expect(projected.resolveTerminalPresentation?.({})).resolves.toEqual({ kind: 'none' });
     }
   });
 
@@ -704,7 +739,7 @@ describe('resolveBackendExecutionSurfacesFromNativeAgentRuntime', () => {
       declaredAgentSurfaceFamilies: new Set(['terminalRuntime']),
       diagnostics,
     });
-    expect(surfaces.resolveTerminalPresentation?.({})).toBe(true);
+    await expect(surfaces.resolveTerminalPresentation?.({})).resolves.toEqual({ kind: 'none' });
     const signal = new AbortController().signal;
     const terminalConfiguration = {
       mode: { value: null, updatedAtMs: 0 },

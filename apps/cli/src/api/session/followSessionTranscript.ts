@@ -1,5 +1,6 @@
 import type { FileBackedTranscriptSessionStore } from './fileBackedTranscripts/store';
-import type { TranscriptOpenedAgentStateV1, TranscriptOpenedSharedMetadataV1 } from '@happier-dev/protocol';
+import type { TranscriptFollowChangeV1, TranscriptOpenedAgentStateV1, TranscriptOpenedSharedMetadataV1 } from '@happier-dev/protocol';
+import { waitForChange } from '@/utils/async/waitForChange';
 import {
     normalizeBoundedInt,
     readOptionalString,
@@ -12,6 +13,12 @@ type SessionTranscriptFollowLease = Readonly<{
     leaseId: string;
     idleTtlMs: number;
     release: () => Promise<void>;
+    changes?: Readonly<{
+        ready: () => Promise<void>;
+        wait: (signal?: AbortSignal) => Promise<void>;
+        take: () => TranscriptFollowChangeV1[];
+        pending: () => boolean;
+    }>;
 }>;
 
 export type SessionTranscriptFollowLeaseIdentity = Readonly<{
@@ -28,6 +35,8 @@ export type SessionTranscriptFollowLeaseRegistry = Readonly<{
     dispose: () => Promise<void>;
     activeCount: () => number;
     resolveIdleTtlMs: (requestedIdleTtlMs: unknown) => number;
+    get: (identity: SessionTranscriptFollowLeaseIdentity) => SessionTranscriptFollowLease | undefined;
+    suspendIdleExpiry: (identity: SessionTranscriptFollowLeaseIdentity) => () => void;
 }>;
 
 type SessionTranscriptFollowLeaseRegistryParams = Readonly<{
@@ -41,6 +50,7 @@ type FollowSessionTranscriptParams<TItem> = Readonly<{
     registry: SessionTranscriptFollowLeaseRegistry;
     sessionId: string;
     input?: unknown;
+    signal?: AbortSignal;
     onUpdate?: (update: Readonly<{
         items: readonly TItem[];
         nextCursor: string | null;
@@ -139,6 +149,13 @@ export function createSessionTranscriptFollowLeaseRegistry(
         dispose,
         activeCount: () => leases.size,
         resolveIdleTtlMs,
+        get: (identity) => leases.get(getLeaseKey(identity)),
+        suspendIdleExpiry: (identity) => {
+            const leaseKey = getLeaseKey(identity);
+            const lease = leases.get(leaseKey);
+            clearLeaseTimer(leaseKey);
+            return () => { if (lease && leases.get(leaseKey) === lease) scheduleIdleExpiry(identity, lease.idleTtlMs); };
+        },
     };
 }
 
@@ -152,6 +169,7 @@ export async function followSessionTranscript<TItem>(
     projection?: 'openedMessagesV1';
     agentState?: TranscriptOpenedAgentStateV1 | null;
     sharedMetadata?: TranscriptOpenedSharedMetadataV1 | null;
+    changes?: readonly TranscriptFollowChangeV1[];
 }>> {
     const input = readRecord(params.input);
     const cursor = readOptionalString(input, 'cursor');
@@ -161,6 +179,9 @@ export async function followSessionTranscript<TItem>(
 
     const leaseId = readOptionalString(input, 'leaseId') ?? `transcript-follow-${++generatedFollowLeaseCounter}`;
     const idleTtlMs = params.registry.resolveIdleTtlMs(input.idleTtlMs);
+    if (input.waitForChanges === true) {
+        return await followWaitingSessionTranscript({ ...params, cursor, leaseId, idleTtlMs, input });
+    }
     let released = false;
     let updateInFlight = false;
     let queuedUpdate: Readonly<{
@@ -242,4 +263,75 @@ export async function followSessionTranscript<TItem>(
         truncated: read.truncated,
         ...(read.projection === 'openedMessagesV1' ? { projection: read.projection, agentState: read.agentState ?? null, sharedMetadata: read.sharedMetadata ?? null } : {}),
     };
+}
+
+async function followWaitingSessionTranscript<TItem>(params: FollowSessionTranscriptParams<TItem> & Readonly<{
+    cursor: string; leaseId: string; idleTtlMs: number; input: Record<string, unknown>;
+}>) {
+    const identity = { sessionId: params.sessionId, leaseId: params.leaseId };
+    let lease = params.registry.get(identity);
+    if (!lease?.changes) {
+        if (!params.store.observeChanges) throw new Error('transcript_changes_unavailable');
+        const pending: TranscriptFollowChangeV1[] = [];
+        const waiters = new Set<() => void>();
+        const wake = () => { for (const listener of waiters) listener(); };
+        let released = false;
+        let failure: unknown;
+        const subscription = params.store.observeChanges((change) => {
+            if (released) return;
+            if (!pending.some((entry) => entry.kind === change.kind && (entry.kind !== 'revision'
+                || change.kind === 'revision' && entry.messageId === change.messageId))) pending.push(change);
+            wake();
+        }, (error) => { failure = error; wake(); });
+        lease = { ...identity, idleTtlMs: params.idleTtlMs,
+            changes: { ready: () => subscription.ready,
+                pending: () => pending.length > 0,
+                take: () => pending.splice(0),
+                wait: (signal) => waitForChange({ signal,
+                    subscribe: (listener) => { waiters.add(listener); return () => { waiters.delete(listener); }; },
+                    hasChanged: () => released || failure !== undefined || pending.length > 0,
+                }).then(() => { if (failure !== undefined) throw failure; if (released) throw new Error('transcript_follow_released'); }),
+            },
+            release: async () => { released = true; wake(); await subscription.dispose(); },
+        };
+        if (!params.registry.retain(lease)) {
+            await lease.release();
+            return { ok: false as const, errorCode: 'follow_lease_limit_exceeded', message: 'Transcript follow lease limit exceeded.' };
+        }
+    }
+    const changes = lease.changes!;
+    const resumeIdleExpiry = params.registry.suspendIdleExpiry(identity);
+    const abort = () => { void params.registry.release(identity, lease).catch(() => undefined); };
+    params.signal?.addEventListener('abort', abort, { once: true });
+    try {
+        params.signal?.throwIfAborted();
+        await changes.ready();
+        params.signal?.throwIfAborted();
+        let readCursor = params.cursor;
+        const read = () => params.store.readAfter({ ...params.input,
+            cursor: readCursor,
+            maxBytes: normalizeBoundedInt(params.input.maxBytes, 64 * 1024, 1024 * 1024),
+            maxItems: normalizeBoundedInt(params.input.maxItems, 100, 500),
+            ...(params.signal ? { signal: params.signal } : {}),
+        });
+        let page = await read();
+        readCursor = page.nextCursor ?? params.store.getTailCursor() ?? readCursor;
+        params.signal?.throwIfAborted();
+        if (!page.items.length && !page.truncated && !page.agentState && !page.sharedMetadata && !changes.pending()) {
+            await changes.wait(params.signal);
+            page = await read();
+        }
+        params.signal?.throwIfAborted();
+        return { ok: true as const, leaseId: params.leaseId, ...page,
+            nextCursor: page.nextCursor ?? (params.cursor === 'tail' ? params.store.getTailCursor() : params.cursor),
+            changes: changes.take(),
+        };
+    } catch (error) {
+        await params.registry.release(identity, lease);
+        params.signal?.throwIfAborted();
+        throw error;
+    } finally {
+        params.signal?.removeEventListener('abort', abort);
+        resumeIdleExpiry();
+    }
 }

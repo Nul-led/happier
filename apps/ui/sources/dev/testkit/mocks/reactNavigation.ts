@@ -51,6 +51,10 @@ export function createReactNavigationNativeMock(options: CreateReactNavigationNa
         NavigationRouteContext: React.createContext<Readonly<{ key?: string; name?: string }> | undefined>(undefined),
         NavigationContainer: passThrough,
         NavigationIndependentTree: passThrough,
+        // Installed SDK's no-config factory returns these three native containers.
+        createNavigatorFactory: (_Navigator: unknown) => () => ({
+            Navigator: passThrough, Screen: passThrough, Group: passThrough,
+        }),
         ThemeProvider: passThrough,
         useIsFocused: () => isFocused,
         useFocusEffect: (effect: () => void | (() => void)) => {

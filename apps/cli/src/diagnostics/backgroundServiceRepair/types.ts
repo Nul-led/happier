@@ -3,12 +3,14 @@ import type { IrohRelayEnvConfig } from '@happier-dev/iroh-native/node';
 import type { HomeApplicationCarrierEligibility } from '@happier-dev/cli-common/homeEnrollment';
 
 import type { DaemonServiceListEntry } from '@/daemon/service/cli';
-import type { DaemonServiceAutostartMode, DaemonServiceManagedBy, DaemonServiceMode, DaemonServiceTargetMode } from '@/daemon/service/plan';
+import type { DaemonServiceAutostartMode, DaemonServiceInstallEnablement, DaemonServiceManagedBy, DaemonServiceMode, DaemonServiceTargetMode } from '@/daemon/service/plan';
 
 type PreservedServiceInstallOptions = Readonly<{
   autostart?: DaemonServiceAutostartMode;
   bundleId?: string | null;
   managedBy?: DaemonServiceManagedBy | null;
+  enablement?: DaemonServiceInstallEnablement;
+  preserveRunningWhenDisabled?: boolean;
 }>;
 
 export type BackgroundServiceRepairPlan = Readonly<{

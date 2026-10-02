@@ -33,6 +33,24 @@ import type { AgentActivityEntry } from '@/sync/domains/session/agentActivity';
 export type WorkBucket = WorkStatusBucket;
 export type WorkStatus = WorkStatusPresentation;
 
+/** Unknown or stale source content is never evidence that this Session started nothing. */
+export function resolveWorkReadPresentation(input: Readonly<{
+    projection: WorkProjection | null;
+    managedRuns: Readonly<{ phase: 'idle' | 'loading' | 'loaded' | 'failed'; refreshFailed: boolean }> | null;
+    transcriptLoaded: boolean;
+}>) {
+    const managedLoading = input.managedRuns?.phase === 'loading';
+    const managedUnavailable = input.managedRuns?.phase === 'failed';
+    const itemCount = input.projection ? input.projection.sessions.length + input.projection.workflows.length
+        + input.projection.backgroundRuns.length + input.projection.agents.length : 0;
+    return {
+        nothingYet: input.projection !== null && input.transcriptLoaded && itemCount === 0
+            && !managedLoading && !managedUnavailable && !input.managedRuns?.refreshFailed,
+        managedLoading,
+        managedUnavailable,
+    };
+}
+
 export type WorkItemKind = 'session' | 'workflow_run' | 'background_run' | 'agent';
 
 /** Where a row leads. The peek (details pane) or the phone push resolves each target. */

@@ -341,9 +341,10 @@ async function prepareDaemonHomeIrohTransportOnce(
           }, true);
         }
         if (input.token) {
+          const token = input.token;
           const authenticatedReadiness = await checkReadiness(async () => await probe({
             serverUrl: nativeLease.runtimeOrigin,
-            token: input.token,
+            token,
             expectedServerIdentityId: expectedHomeServerIdentityId,
           }));
           if (authenticatedReadiness.status !== 'ready') {

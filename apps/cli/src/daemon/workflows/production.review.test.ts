@@ -46,6 +46,10 @@ describe('durable review coordinator', () => {
   it.each(['narrower_controller', 'revoked_authority', 'narrowed_during_preparation'] as const)('reholds Generate with typed authority refusal before input (%s)', async denial => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({ mode: 'plain',
       binding: { v: 1, purpose: 'accepted_snapshot', accountId, runId }, acceptedSnapshot: {
+        authoredDefinition: { version: 1, inputs: [], defaults: { agentTarget: generationAgentTarget }, blocks: [step] },
+        startedBy: 'user', workDepth: 0, metadata: null, frozenChildren: {},
+        materializedLeaves: [{ sourceKey: '$root', blockId: 'draft', kind: 'step',
+          selection: { agentTarget: generationAgentTarget }, authoredWorkspace: { kind: 'inherit' }, executionTarget: { kind: 'session' } }],
         definition: { version: 1, inputs: [], defaults: { agentTarget: generationAgentTarget }, blocks: [step] },
         source: { kind: 'inline' }, inputs: {}, machineId: 'machine', executionTarget: { kind: 'session' },
         workspaceTarget: { project: workspace }, origin: { kind: 'direct' },
@@ -72,6 +76,7 @@ describe('durable review coordinator', () => {
         machineAdmissionTransport: async () => { throw new Error('denied_generate_cannot_admit'); },
         resolveExistingSessionConversation: async ({ sessionId }) => {
           if (denial !== 'narrowed_during_preparation') throw new Error('denied_generate_cannot_prepare');
+          callerPermissionMode = 'default';
           return { sessionId, machineId: 'machine', directory: '/repo', agentTarget: generationAgentTarget };
         },
         sessionInput: { enqueue: async () => { admittedInput = true; return { status: 'accepted', localId: 'forbidden-input' }; },
@@ -92,6 +97,10 @@ describe('durable review coordinator', () => {
   it('reholds an offline generation request when production preparation cannot reach the retained Session', async () => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({ mode: 'plain',
       binding: { v: 1, purpose: 'accepted_snapshot', accountId, runId }, acceptedSnapshot: {
+        authoredDefinition: { version: 1, inputs: [], defaults: { agentTarget: generationAgentTarget }, blocks: [step] },
+        startedBy: 'user', workDepth: 0, metadata: null, frozenChildren: {},
+        materializedLeaves: [{ sourceKey: '$root', blockId: 'draft', kind: 'step',
+          selection: { agentTarget: generationAgentTarget }, authoredWorkspace: { kind: 'inherit' }, executionTarget: { kind: 'session' } }],
         definition: { version: 1, inputs: [], defaults: { agentTarget: generationAgentTarget }, blocks: [step] },
         source: { kind: 'inline' }, inputs: {}, machineId: 'machine', executionTarget: { kind: 'session' },
         workspaceTarget: { project: workspace }, origin: { kind: 'direct' },
@@ -120,8 +129,11 @@ describe('durable review coordinator', () => {
       execution: { credentials: { token: 'token', encryption: null }, serverId: 'server',
 
         machineAdmissionTransport: async () => { admittedInput = true; throw new Error('missing_session_must_not_admit_input'); },
-        resolveExistingSessionConversation: async ({ sessionId }) => restored
-          ? { sessionId, machineId: 'machine', directory: '/repo', agentTarget: generationAgentTarget } : null,
+        resolveExistingSessionConversation: async ({ sessionId }) => {
+          if (!restored) return null;
+          if (narrowDuringPreparation) callerPermissionMode = 'default';
+          return { sessionId, machineId: 'machine', directory: '/repo', agentTarget: generationAgentTarget };
+        },
         // External Session network ports, beneath the real production conversation/admission owners.
         sessionInput: { enqueue: async () => { admittedInput = true; return { status: 'accepted', localId: 'second-generation-input' }; },
           observe: async ({ sessionId, localId }) => ({ ok: true, sessionId, localId,
@@ -172,6 +184,10 @@ describe('durable review coordinator', () => {
   it.each(['default', 'safe-yolo'] as const)('checks live controller dominance only for recorded boundary Resume (%s)', async (callerPermissionMode) => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({ mode: 'plain',
       binding: { v: 1, purpose: 'accepted_snapshot', accountId, runId }, acceptedSnapshot: {
+        authoredDefinition: { version: 1, inputs: [], defaults: {}, blocks: [{ kind: 'wait', id: 'human', document: { text: 'Continue', references: [], attachments: [] } }] },
+        startedBy: 'user', workDepth: 0, metadata: null, frozenChildren: {},
+        materializedLeaves: [{ sourceKey: '$root', blockId: 'human', kind: 'wait',
+          selection: {}, authoredWorkspace: { kind: 'inherit' }, executionTarget: { kind: 'session' } }],
         definition: { version: 1, inputs: [], defaults: {}, blocks: [{ kind: 'wait', id: 'human', document: { text: 'Continue', references: [], attachments: [] } }] },
         source: { kind: 'inline' }, inputs: {}, machineId: 'machine', executionTarget: { kind: 'session' },
         workspaceTarget: { project: workspace }, origin: { kind: 'direct' },
@@ -235,6 +251,10 @@ describe('durable review coordinator', () => {
   it('does not apply Resume dominance to an initial claim or a review wake', async () => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({ mode: 'plain',
       binding: { v: 1, purpose: 'accepted_snapshot', accountId, runId }, acceptedSnapshot: {
+        authoredDefinition: { version: 1, inputs: [], defaults: {}, blocks: [{ kind: 'wait', id: 'human', document: { text: 'Continue', references: [], attachments: [] } }] },
+        startedBy: 'user', workDepth: 0, metadata: null, frozenChildren: {},
+        materializedLeaves: [{ sourceKey: '$root', blockId: 'human', kind: 'wait',
+          selection: {}, authoredWorkspace: { kind: 'inherit' }, executionTarget: { kind: 'session' } }],
         definition: { version: 1, inputs: [], defaults: {}, blocks: [{ kind: 'wait', id: 'human', document: { text: 'Continue', references: [], attachments: [] } }] },
         source: { kind: 'inline' }, inputs: {}, machineId: 'machine', executionTarget: { kind: 'session' },
         workspaceTarget: { project: workspace }, origin: { kind: 'direct' },
@@ -260,6 +280,10 @@ describe('durable review coordinator', () => {
   it('keeps opened Workflow authorization current across Account sequence writes but refuses a content-mode change', async () => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({ mode: 'plain',
       binding: { v: 1, purpose: 'accepted_snapshot', accountId, runId }, acceptedSnapshot: {
+        authoredDefinition: { version: 1, inputs: [], defaults: {}, blocks: [{ kind: 'wait', id: 'human', document: { text: 'Continue', references: [], attachments: [] } }] },
+        startedBy: 'user', workDepth: 0, metadata: null, frozenChildren: {},
+        materializedLeaves: [{ sourceKey: '$root', blockId: 'human', kind: 'wait',
+          selection: {}, authoredWorkspace: { kind: 'inherit' }, executionTarget: { kind: 'session' } }],
         definition: { version: 1, inputs: [], defaults: {}, blocks: [{ kind: 'wait', id: 'human', document: { text: 'Continue', references: [], attachments: [] } }] },
         source: { kind: 'inline' }, inputs: {}, machineId: 'machine', executionTarget: { kind: 'session' },
         workspaceTarget: { project: workspace }, origin: { kind: 'direct' },
@@ -307,6 +331,10 @@ describe('durable review coordinator', () => {
   it.each(['unchanged', 'committed'] as const)('reconciles review park transport failure from the actual parent (%s)', async (parent) => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({ mode: 'plain',
       binding: { v: 1, purpose: 'accepted_snapshot', accountId, runId }, acceptedSnapshot: {
+        authoredDefinition: { version: 1, inputs: [], defaults: {}, blocks: [{ kind: 'wait', id: 'human', document: { text: 'Continue', references: [], attachments: [] } }] },
+        startedBy: 'user', workDepth: 0, metadata: null, frozenChildren: {},
+        materializedLeaves: [{ sourceKey: '$root', blockId: 'human', kind: 'wait',
+          selection: {}, authoredWorkspace: { kind: 'inherit' }, executionTarget: { kind: 'session' } }],
         definition: { version: 1, inputs: [], defaults: {}, blocks: [{ kind: 'wait', id: 'human', document: { text: 'Continue', references: [], attachments: [] } }] },
         source: { kind: 'inline' }, inputs: {}, machineId: 'machine', executionTarget: { kind: 'session' },
         workspaceTarget: { project: workspace }, origin: { kind: 'direct' },
@@ -412,7 +440,7 @@ describe('durable review coordinator', () => {
         await params.onInputAccepted({ kind: 'session', sessionId: 'session', localInputId: 'generated-input' });
         return { kind: 'completed', result: 'Generated' };
       } });
-    expect(await coordinator.run({ runId, definition: { version: 1, inputs: [], defaults: {}, blocks: [step] },
+    expect(await coordinator.run({ runId, definition: { version: 1, inputs: [], defaults: { agentTarget: generationAgentTarget }, blocks: [step] },
       inputs: {}, executionTarget: { kind: 'session' }, authorization: { admittedPermissionCeiling: 'default', principal: { kind: 'host' } } }))
       .toMatchObject({ state: 'succeeded' });
     expect(storage.rowById(intent.recordId)?.index.lifecycle).toBe('superseded');

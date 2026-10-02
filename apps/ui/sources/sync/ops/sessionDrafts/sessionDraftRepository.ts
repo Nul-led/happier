@@ -36,6 +36,8 @@ import { isSessionDraftEpochUnavailableError } from './sessionDraftEpochError';
 import type { NewSessionDraftLocalState } from './newSessionDraftLocalState';
 import { getSessionDraftDocumentField as getField, type DraftFieldPathV1 } from './sessionDraftDocumentFields';
 import { parseSerializedSessionDraftScope, serializeSessionDraftReplica } from './sessionDraftSerializedScope';
+import { clearNewSessionAttachmentDrafts } from '@/components/sessions/new/attachments/newSessionAttachmentDraftStore';
+import { resolveNewSessionDraftAttachmentFlowId } from '@/components/sessions/new/attachments/newSessionDraftAttachmentFlowId';
 
 export type SessionDraftRepositoryScope = ServerAccountScope;
 type NewSessionDraftDocument = SessionDraftDocumentV2 & {
@@ -880,14 +882,14 @@ export class SessionDraftRepository {
         }>,
     ): void {
         const cleanup = this.runtime.onDraftRemoved;
-        if (!cleanup) return;
         const key = this.replicaListenerKey(scope, removed.address);
         if (this.draftRemovalCleanups.has(key)) return;
-        const pending = Promise.resolve().then(() => cleanup({
-            scope,
-            address: removed.address,
-            document: removed.document,
-        })).catch((error) => {
+        const pending = Promise.resolve().then(async () => {
+            await cleanup?.({ scope, address: removed.address, document: removed.document });
+            if (removed.address.kind === 'newSession') {
+                clearNewSessionAttachmentDrafts(resolveNewSessionDraftAttachmentFlowId(removed.address.draftId));
+            }
+        }).catch((error) => {
             // The remote tombstone is already authoritative. Restore only the
             // local retry surface, and never overwrite a newer local draft.
             const state = this.getScopeState(scope);

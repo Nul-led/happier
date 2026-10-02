@@ -1,6 +1,7 @@
 export {
   listKnownServiceDefinitionFiles,
 } from './listKnownServiceDefinitionFiles.js';
+export { resolveDaemonServiceTargetMode } from './resolveDaemonServiceTargetMode.js';
 export type {
   LaunchdLoadedStatus,
   ParsedLaunchdPlist,

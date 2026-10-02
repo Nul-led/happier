@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act } from 'react-test-renderer';
+import { renderHook } from '@/dev/testkit';
 
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
@@ -11,7 +13,7 @@ const rpc = vi.hoisted(() => ({
     pollResults: [] as unknown[],
     invoke: vi.fn(),
     detect: vi.fn(async (..._args: unknown[]) => ({ supported: true, response: { protocolVersion: 1, results: {} } })),
-    jobs: [] as import('@happier-dev/protocol').AgentInstallJob[],
+    jobs: new Map<string, import('@happier-dev/protocol').AgentInstallJob[]>(),
     jobOutcome: { kind: 'succeeded', version: '2.1.283' } as import('@happier-dev/protocol').AgentInstallJobOutcome,
     machineRpc: vi.fn(),
 }));
@@ -28,6 +30,7 @@ vi.mock('@/sync/ops', () => ({
 }));
 
 import type { UpdateItem } from './items/updateItem';
+import { buildRemoteCliUpdateItem } from './items/buildMachineUpdateItems';
 
 const runs = await import('./machineUpdateRuns');
 let testSequence = 0;
@@ -62,20 +65,145 @@ async function advance(ms: number) {
 }
 
 describe('runMachineItemUpdate — a remote CLI update is started, then observed', () => {
+
+    it('keeps a failed machine ordered and the batch observable until another started machine settles on the initiating account', async () => {
+        vi.useRealTimers();
+        const scope = { serverId: serverA, accountId: 'original-batch-account' };
+        const other = { ...scope, accountId: 'other-batch-account' };
+        const agent: UpdateItem = { ...remoteCli, id: 'ordered:agent:codex', machineId: 'ordered', subject: { kind: 'agent-cli', agentId: 'codex' } };
+        const cli: UpdateItem = { ...remoteCli, id: 'ordered:happier-cli', machineId: 'ordered' };
+        const parallel: UpdateItem = { ...agent, id: 'parallel:agent:claude', machineId: 'parallel', subject: { kind: 'agent-cli', agentId: 'claude' } };
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => { release = resolve; });
+        const transport = rpc.machineRpc.getMockImplementation()!;
+        rpc.pollResults = [{ ok: true }];
+        rpc.machineRpc.mockImplementation(async (request) => {
+            if (request.method === 'daemon.agents.install.read') {
+                if (request.payload.jobId === 'job-claude') await pending;
+                if (request.payload.jobId === 'job-codex') return { ok: true, steps: [], progress: [], events: [], nextCursor: 0, done: true,
+                    outcome: { kind: 'failed', code: 'install_failed', stepId: 'cli', message: 'Failed.' } };
+            }
+            return transport(request);
+        });
+        const execute = (item: UpdateItem) => runs.runMachineItemUpdate(item, { scope });
+        const initial = await renderHook(() => runs.useUpdateBatch(scope, [cli, agent, parallel], execute));
+        let completion!: Promise<void>;
+        await act(async () => { completion = initial.getCurrent().updateAll(); });
+        expect(initial.getCurrent().batch).toEqual({ done: 2, total: 3, stopping: false });
+        await initial.unmount();
+        const switched = await renderHook(() => runs.useUpdateBatch(other, [], execute));
+        expect(switched.getCurrent().batch).toBeNull();
+        await act(async () => { switched.getCurrent().stopAfterCurrent(); });
+        const original = await renderHook(() => runs.useUpdateBatch(scope, [], execute));
+        expect(original.getCurrent().batch).toEqual({ done: 2, total: 3, stopping: false });
+        const actions = () => rpc.machineRpc.mock.calls.filter(([request]) =>
+            request.method === 'daemon.agents.install.start' || request.payload?.method === 'start');
+        expect(actions().map(([request]) => request.method === 'daemon.agents.install.start' ? request.payload.agentId : 'happier-cli')).toEqual(['codex', 'claude', 'happier-cli']);
+        await act(async () => { release(); await completion; });
+        expect(original.getCurrent().batch).toBeNull();
+        for (const [request] of actions()) expect(request.serverId).toBe(scope.serverId);
+        expect(runs.readUnseenUpdateCompletions(scope).get(parallel.id)).toBe('done');
+        expect(runs.readUnseenUpdateCompletions(other).size).toBe(0);
+        expect(runs.observeMachineUpdateRun(runs.readMachineUpdateRuns(scope.serverId), agent.id)).toMatchObject({
+            running: false, errorMessage: 'agentInstallJob.failedBody',
+        });
+        await switched.unmount();
+        await original.unmount();
+    });
+
+    it('shares disjoint groups but rejects another presentation of an already planned machine', async () => {
+        vi.useRealTimers();
+        const scope = { serverId: serverA, accountId: 'group-batch-account' };
+        const first: UpdateItem = { ...remoteCli, id: 'group-one:agent:codex', machineId: 'group-one', subject: { kind: 'agent-cli', agentId: 'codex' } };
+        const second: UpdateItem = { ...first, id: 'group-two:agent:claude', machineId: 'group-two', subject: { kind: 'agent-cli', agentId: 'claude' } };
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => { release = resolve; });
+        const transport = rpc.machineRpc.getMockImplementation()!;
+        rpc.machineRpc.mockImplementation(async (request) => {
+            if (request.method === 'daemon.agents.install.read') await pending;
+            return transport(request);
+        });
+        const execute = (item: UpdateItem) => runs.runMachineItemUpdate(item, { scope });
+        const hook = await renderHook(() => runs.useUpdateBatch(scope, [first, second], execute));
+        let firstCompletion!: Promise<void>;
+        let secondCompletion!: Promise<void>;
+        await act(async () => {
+            firstCompletion = hook.getCurrent().updateGroup({ id: 'one', items: [first] });
+            secondCompletion = hook.getCurrent().updateGroup({ id: 'two', items: [second] });
+        });
+        const snapshot = hook.getCurrent().batch;
+        expect(snapshot).toEqual({ done: 0, total: 2, stopping: false });
+        expect(runs.readUpdateBatch(scope)).toBe(snapshot);
+        expect(runs.readUpdateBatch(scope)).toBe(snapshot);
+        await act(async () => {
+            await hook.getCurrent().updateGroup({ id: 'another-presentation', items: [{ ...second, id: 'group-one:agent:claude', machineId: first.machineId }] });
+            await hook.getCurrent().updateAll();
+        });
+        expect(hook.getCurrent().batch).toBe(snapshot);
+        const starts = rpc.machineRpc.mock.calls.filter(([request]) => request.method === 'daemon.agents.install.start');
+        expect(starts.map(([request]) => request.machineId)).toEqual(['group-one', 'group-two']);
+        await hook.unmount();
+        const reopened = await renderHook(() => runs.useUpdateBatch(scope, [], execute));
+        expect(reopened.getCurrent().batch).toBe(snapshot);
+        await act(async () => { release(); await Promise.all([firstCompletion, secondCompletion]); });
+        expect(reopened.getCurrent().batch).toBeNull();
+        await reopened.unmount();
+    });
+
+    it.each(['all', 'group'] as const)('reopening adopts the %s plan and Stop prevents the next update through the real install owner', async (action) => {
+        vi.useRealTimers();
+        const scope = { serverId: serverA, accountId: 'batch-owner' };
+        const first: UpdateItem = { ...remoteCli, id: 'queued:agent:codex', machineId: 'queued', subject: { kind: 'agent-cli', agentId: 'codex' } };
+        const second: UpdateItem = { ...first, id: 'queued:agent:claude', subject: { kind: 'agent-cli', agentId: 'claude' } };
+        const items = [first, second];
+        const group = { id: 'machine:queued', items };
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => { release = resolve; });
+        const transport = rpc.machineRpc.getMockImplementation()!;
+        rpc.machineRpc.mockImplementation(async (request) => {
+            if (request.method === 'daemon.agents.install.read' && request.payload.jobId === 'job-codex') await pending;
+            return transport(request);
+        });
+        const execute = (item: UpdateItem) => runs.runMachineItemUpdate(item, { scope });
+        const open = () => renderHook(() => runs.useUpdateBatch(scope, items, execute));
+        const initial = await open();
+        let completion!: Promise<void>;
+        await act(async () => {
+            completion = action === 'all' ? initial.getCurrent().updateAll() : initial.getCurrent().updateGroup(group);
+        });
+        await initial.unmount();
+        const reopened = await open();
+        expect(reopened.getCurrent().batch).toEqual({ done: 0, total: 2, stopping: false });
+        await act(async () => {
+            await reopened.getCurrent().updateGroup(group);
+            await reopened.getCurrent().updateAll();
+            reopened.getCurrent().stopAfterCurrent();
+        });
+        expect(reopened.getCurrent().batch?.stopping).toBe(true);
+        await act(async () => { release(); await completion; });
+        expect(reopened.getCurrent().batch).toBeNull();
+        const starts = rpc.machineRpc.mock.calls.filter(([request]) => request.method === 'daemon.agents.install.start');
+        expect(starts.map(([request]) => request.payload.agentId)).toEqual(['codex']);
+        expect(starts[0]?.[0]).toMatchObject({ serverId: scope.serverId, machineId: 'queued' });
+        expect(runs.readUnseenUpdateCompletions(scope).get(first.id)).toBe('done');
+        await reopened.unmount();
+    });
     beforeEach(() => {
         serverA = `server-a-${++testSequence}`;
         vi.useFakeTimers();
         rpc.invoke.mockReset();
         rpc.pollResults = [];
-        rpc.jobs = [];
+        rpc.jobs = new Map();
         rpc.jobOutcome = { kind: 'succeeded', version: '2.1.283' };
         rpc.machineRpc.mockReset().mockImplementation(async (request: { machineId: string; serverId: string; method: string; payload: { agentId?: string; intent?: 'install' | 'update'; jobId?: string } }) => {
             if (request.method === 'daemon.agents.install.start') {
                 const jobId = `job-${request.payload.agentId}`;
-                rpc.jobs.push({ jobId, agentId: request.payload.agentId!, intent: request.payload.intent!, startedAt: 1, steps: [], progress: [], done: false, outcome: null });
+                const jobs = rpc.jobs.get(request.machineId) ?? [];
+                jobs.push({ jobId, agentId: request.payload.agentId!, intent: request.payload.intent!, startedAt: 1, steps: [], progress: [], done: false, outcome: null });
+                rpc.jobs.set(request.machineId, jobs);
                 return { ok: true, jobId };
             }
-            if (request.method === 'daemon.agents.install.list') return { ok: true, jobs: rpc.jobs };
+            if (request.method === 'daemon.agents.install.list') return { ok: true, jobs: rpc.jobs.get(request.machineId) ?? [] };
             if (request.method === 'daemon.agents.install.read') return { ok: true, steps: [], progress: [], events: [], nextCursor: 0, done: true, outcome: rpc.jobOutcome };
             const response = await rpc.invoke(request.machineId, request.payload, { serverId: request.serverId });
             return response.supported ? response.response : { error: 'machine unavailable' };
@@ -118,6 +246,20 @@ describe('runMachineItemUpdate — a remote CLI update is started, then observed
         await advance(5_000);
         await done;
         expect(read()).toMatchObject({ running: true, step: 'reconnecting' });
+    });
+
+    it('exposes a changed failed outcome after admission even when the target version is current', async () => {
+        vi.useRealTimers();
+        rpc.pollResults = [{ protocolVersion: 1, taskId: 'task-1', ok: true, data: { started: true, currentVersion: '0.2.12', channel: 'stable', logPath: '/l' } }];
+        await runs.runMachineItemUpdate(remoteCli, { scope: { serverId: serverA, accountId: 'account-a' }, lastUpdateSignature: '' });
+        const lastUpdate = { targetVersion: '0.2.14', outcome: 'failed', at: 2, message: 'Restoring the old daemon failed.' } as const;
+        const task = runs.observeMachineUpdateRun(runs.readMachineUpdateRuns(serverA), remoteCli.id, { lastUpdateSignature: runs.signatureOfLastUpdate(lastUpdate) });
+        expect(task.running).toBe(false);
+        const row = buildRemoteCliUpdateItem({
+            machineId: 'studio', title: 'Happier CLI', online: true, platform: 'linux', happyCliVersion: '0.2.14', remoteUpdateAdvertised: true, task,
+            facts: { currentVersion: '0.2.14', latestVersion: '0.2.14', channel: 'stable', installSource: 'managed', updateCommand: 'happier self update', canUpdateRemotely: true, lastUpdate },
+        });
+        expect(row).toMatchObject({ state: 'failed', failure: { kind: 'message', message: lastUpdate.message }, action: { kind: 'run', verb: 'retry' } });
     });
 
     it('another update holding the lock is a retryable refusal, never "installing" (its lock may not be this update)', async () => {

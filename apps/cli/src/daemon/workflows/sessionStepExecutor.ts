@@ -305,8 +305,23 @@ export function createWorkflowSessionStepExecutor(deps: Readonly<{
       const cancelled = await sessionInput.cancel({ credentials: deps.credentials, sessionId, localId });
       switch (cancelled.kind) {
         case 'pending_retired': return { kind: 'cancelled' as const, code: 'session_input_pending_retired' };
-        case 'turn_cancel_requested': return { kind: 'cancelled' as const, code: 'session_input_turn_cancel_requested' };
-        case 'session_absent': return { kind: 'cancelled' as const, code: 'session_input_session_absent' };
+        case 'turn_cancel_requested':
+        case 'turn_cancel_refused': {
+          // The stop response is not settlement. Observe the same input without
+          // the cancelled claim signal, using its existing observation deadline.
+          try {
+            const settled = await sessionInput.observe({
+              credentials: deps.credentials, sessionId, localId,
+              ...(params.invocation.observationDeadline?.kind === 'at'
+                ? { deadlineMs: Date.parse(params.invocation.observationDeadline.expiresAt) }
+                : params.step.timeoutMs === undefined ? {} : { timeoutAfterInputMs: params.step.timeoutMs }),
+            });
+            return settled.ok ? settleObservedInput(settled.result)
+              : { kind: 'needs_attention' as const, code: settled.code };
+          } catch {
+            return { kind: 'needs_attention' as const, code: 'session_input_result_read_failed' };
+          }
+        }
         case 'turn_cancel_unavailable': return { kind: 'needs_attention' as const, code: cancelled.code };
       }
     };

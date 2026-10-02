@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { Animated, Easing, Platform, Pressable, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
+import { HappierPressable } from '@happier-dev/plugin-ui/presentation';
 
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { CompactSearchField } from '@/components/ui/forms/CompactSearchField';
@@ -9,6 +10,7 @@ import { resolveMinimumInteractiveTargetSize, resolveTouchTargetFloorPx } from '
 import { Text } from '@/components/ui/text/Text';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { t } from '@/text';
+import { focusRingStyle } from '@/components/ui/interactions/interactionFeedback';
 
 import { SessionListViewOptionsButton, stopPressEventPropagation } from '../sessionListChrome';
 import { SESSION_LIST_COLUMN_METRICS, sessionListStyles } from '../sessionListStyles';
@@ -25,6 +27,7 @@ type Focusable = Readonly<{ focus: () => void }>;
 
 export type SessionListSearchChromeProps = Readonly<{
     filterControl?: React.ReactNode;
+    filterSummary?: Readonly<{ label: string; onReset(): void }>;
     searchQuery: string;
     /** Exact Home whose transcript provider supplies contextual matches. */
     searchScopeLabel?: string;
@@ -170,6 +173,24 @@ export const SessionListSearchChrome = React.memo(function SessionListSearchChro
                     minimumInteractiveTargetSize={touchTargetSize}
                 />
             </View>
+            {props.filterSummary ? (
+                <View testID="session-list-filter-summary" style={styles.searchChromeStatusRow}>
+                    <Text style={styles.searchChromeStatusText}>{props.filterSummary.label}</Text>
+                    <HappierPressable
+                        testID="session-list-filter-summary-reset"
+                        accessibilityRole="button"
+                        accessibilityLabel={t('common.reset')}
+                        onPress={props.filterSummary.onReset}
+                        style={(state) => [
+                            styles.searchChromeStatusRetry,
+                            MINIMUM_ESCALATION_TARGET_STYLE,
+                            focusRingStyle({ focused: state.focused, color: theme.colors.border.focus }),
+                        ]}
+                    >
+                        <Text style={styles.searchChromeStatusRetryText}>{t('common.reset')}</Text>
+                    </HappierPressable>
+                </View>
+            ) : null}
             {searchIsOpen ? (
                 <Animated.View style={{ opacity: fieldOpacity }}>
                     <CompactSearchField

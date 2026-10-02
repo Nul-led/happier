@@ -68,7 +68,7 @@ describe('PushNotificationPermissionPrimingRuntime', () => {
     it('ignores unrelated settings and asks when the account enables push', async () => {
         const policy = settingsDefaults.attentionDeliveryPolicyV1;
         storage.getState().applySettingsLocal({
-            attentionDeliveryPolicyV1: { ...policy, channels: { ...policy.channels, expo_push: { enabled: false } } },
+            attentionDeliveryPolicyV1: { ...policy, channels: { ...policy.channels, expo_push: { ...policy.channels.expo_push, enabled: false } } },
         });
         const { PushNotificationPermissionPrimingRuntime } = await import('./PushNotificationPermissionPrimingRuntime');
         const commits = vi.fn();

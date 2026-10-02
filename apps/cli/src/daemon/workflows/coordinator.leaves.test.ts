@@ -112,6 +112,8 @@ describe('workflow Action leaves', () => {
       engineIds: { kind: 'literal', value: ['codex', 'claude'] },
     } };
     const materialized = frozen(leaf);
+    const completion = materialized.actionContract?.completion;
+    if (!completion || typeof completion !== 'object' || Array.isArray(completion)) throw new Error('Expected Action completion contract');
     const store = createInMemoryWorkflowCoordinatorStore();
     const coordinator = createWorkflowCoordinator({ store, executeStep: async () => { throw new Error('Agent'); },
       resolveWorkspace: async () => ({ ok: true, workspace }), isAcceptedAuthorizationCurrent: async () => true,
@@ -137,7 +139,7 @@ describe('workflow Action leaves', () => {
         failurePolicy: 'collect_outcomes' }, body: [leaf] }, goal]),
       inputs: {}, executionTarget, authorization, originSessionId: 'origin', materializedLeaves: [
         { ...materialized, actionContract: { ...materialized.actionContract!, completion: {
-          ...materialized.actionContract!.completion!, terminalOutputSchema: { type: 'object', required: ['missing'] },
+          ...completion, terminalOutputSchema: { type: 'object', required: ['missing'] },
         } } }, frozen(goal),
       ] });
     expect(outcome).toMatchObject(launchFailure ? { state: 'outcome_uncertain' }

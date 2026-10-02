@@ -4,6 +4,41 @@ import { unavailableMachineLiveStreamCaptureAdapter } from './captureAdapter';
 import { createMachineLiveStreamCaptureRegistry } from './captureRegistry';
 
 describe('createMachineLiveStreamCaptureRegistry', () => {
+    it('retires the exact source occurrence when the same source id is replaced', () => {
+        const registry = createMachineLiveStreamCaptureRegistry();
+        const register = () => registry.register({ sourceId: 'screen', streamFamily: 'screen', adapter: unavailableMachineLiveStreamCaptureAdapter,
+            capabilities: { v: 1, sourceId: 'screen', sourceKind: 'screen', supportedCodecs: ['image.mjpeg'],
+                inputMode: 'none', sidebands: [], health: { status: 'available' } } });
+        register();
+        const admitted = registry.describeViewing({ pluginId: 'acme.viewer', reference: { kind: 'host', sourceId: 'screen' } });
+        expect(admitted.ok).toBe(true);
+        if (!admitted.ok) throw new Error('expected admitted viewing');
+        const oldOccurrence = admitted.source.sourceOccurrenceId;
+        register();
+        expect(admitted.source.retirementSignal?.aborted).toBe(true);
+        const replaced = registry.resolve({ sourceId: 'screen' });
+        expect(replaced.ok && replaced.source.sourceOccurrenceId).not.toBe(oldOccurrence);
+    });
+    it('refuses foreign plugin sources and a host alias to a private plugin source', () => {
+        const registry = createMachineLiveStreamCaptureRegistry();
+        const source = {
+            sourceId: 'private-source', streamFamily: 'screen',
+            adapter: unavailableMachineLiveStreamCaptureAdapter,
+            capabilities: {
+                v: 1 as const, sourceId: 'private-source', sourceKind: 'screen' as const,
+                supportedCodecs: ['image.mjpeg' as const], inputMode: 'none' as const,
+                sidebands: [], health: { status: 'available' as const },
+            },
+            plugin: { pluginId: 'acme.owner', localId: 'screen', occurrenceId: 'owner-1' },
+        };
+        registry.register(source);
+        expect(registry.describeViewing({ pluginId: 'acme.foreign',
+            reference: { kind: 'plugin', source: { pluginId: 'acme.owner', localId: 'screen' } },
+        })).toEqual({ ok: false, reasonCode: 'capture_source_denied' });
+        expect(registry.describeViewing({ pluginId: 'acme.foreign',
+            reference: { kind: 'host', sourceId: 'private-source' },
+        })).toEqual({ ok: false, reasonCode: 'capture_source_denied' });
+    });
     it('requires an exact source when a family contains multiple views and checks that source belongs to the family', () => {
         const registry = createMachineLiveStreamCaptureRegistry();
         for (const sourceId of ['view-a', 'view-b']) {

@@ -16,6 +16,7 @@ import {
     readLaunchdServiceEnabled,
     readScheduledTaskStatus,
     readSystemdUnitStatus,
+    resolveDaemonServiceTargetMode,
     type ParsedLaunchdPlist,
     type ParsedSystemdUnit,
     type ParsedWindowsScheduledTaskWrapperPs1,
@@ -141,11 +142,10 @@ function resolveDaemonIdentity(label: string, definition: ServiceDefinition): Di
             : null;
     if (parts === null) return null;
 
-    const targetMode =
-        String(definition.env.HAPPIER_DAEMON_SERVICE_TARGET_MODE ?? '').trim().toLowerCase() === 'default-following'
-            || parts[0] === 'default'
-            ? 'default-following'
-            : 'pinned';
+    const targetMode = resolveDaemonServiceTargetMode(
+        definition.env.HAPPIER_DAEMON_SERVICE_TARGET_MODE,
+        parts[0] === 'default' ? 'default-following' : 'pinned',
+    );
 
     if (targetMode === 'default-following') {
         return {

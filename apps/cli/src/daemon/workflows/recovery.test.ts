@@ -16,6 +16,8 @@ import {
   type WorkflowStep,
   type WorkflowMaterializedLeafV1,
   WorkflowRunSummaryV1Schema,
+  freezeActionCompletionContractV1,
+  getActionSpec,
 } from '@happier-dev/protocol';
 
 import { createWorkflowRunRecoveryReader, createWorkflowInvocationRecoveryFactWriter } from './recovery';
@@ -31,10 +33,42 @@ const now = '2026-09-08T12:00:00.000Z';
 const availability = { pause: false, resumeBoundary: false,
     restoreWorkspace: false, cancel: false, inspectExecution: true, disabledReasons: [] };
 
+it('refreshes the encrypted root counts after interrupted native reattach without completing the parent', async () => {
+  const rootId = '2aaf1a39-4c48-4904-83a4-7eae318dfc2c';
+  const childId = '33333333-3333-4333-8333-333333333333';
+  const kit = createWorkflowRunStorageTestkit({ accountId, runId, machineId, now, origin: { kind: 'direct' },
+    acceptedEnvelope: directAcceptedEnvelope() });
+  const seal = (id: string, root: boolean) => serializeWorkflowStoredContentEnvelopeV1(sealWorkflowProgressStoredEnvelopeV1({
+    mode: 'plain', binding: { v: 1, purpose: 'invocation_progress', accountId, runId, recordId: id,
+      sequence: root ? '0' : '1', parentRecordId: root ? null : rootId, memberOrdinal: '0', attempt: '0' },
+    progress: { kind: 'happier.workflow-progress.v1', blockKind: root ? 'root' : 'step',
+      invocationPath: { blockId: root ? '$root' : 'step', scope: [] }, attempt: '0', logicalInvocationRecordId: id,
+      ...(root ? { stepProgress: { completed: 0, total: 1 } }
+        : { execution: { kind: 'session' as const, sessionId: 'session', localInputId: 'input' } }) },
+  }));
+  await kit.execute({ operation: 'initialize', runId, expectedRevision: 0, checkpointEnvelope: checkpointEnvelope(),
+    rootInvocation: { id: rootId, contentEnvelope: seal(rootId, true) } });
+  await kit.execute({ operation: 'invocations.fact', runId, parentAttempt: 0, invocationId: rootId,
+    invocationAttempt: '0', expectedContentRevision: '0', expectedLifecycle: 'pending', lifecycle: 'running', contentEnvelope: seal(rootId, true) });
+  await kit.execute({ operation: 'invocations.admit', runId, expectedRevision: 1, checkpointEnvelope: checkpointEnvelope(),
+    invocations: [{ id: childId, sequence: '1', parentRecordId: rootId, memberOrdinal: '0', lifecycle: 'running', contentEnvelope: seal(childId, false) }] });
+  await kit.execute({ operation: 'transition', runId, expectedRevision: 2, state: 'interrupted', checkpointEnvelope: checkpointEnvelope() });
+  const writer = createWorkflowInvocationRecoveryFactWriter({ accountId, run: kit.run(), expectedRevision: 3, storage: kit,
+    encryption: { witness: { mode: 'plain', version: 1, contentKeyFingerprint: null }, runCrypto: { mode: 'plain' } } });
+  const child = await writer.readInvocation(childId);
+  if (!child) throw new Error('fixture_invocation_unavailable');
+  await writer.commitObservation(child, { kind: 'completed', result: 'done' });
+  expect((await writer.readInvocation(rootId))?.progress.stepProgress).toEqual({ completed: 1, total: 1 });
+  expect(kit.rowById(rootId)?.index.lifecycle).toBe('running');
+  expect(kit.run()).toMatchObject({ state: 'interrupted', revision: 3, workflowCustodyState: 'pending' });
+  expect(kit.calls.find((operation) => operation.resolution === 'root_list_progress'))
+    .toMatchObject({ expectedRevision: 3, invocationId: rootId, expectedLifecycle: 'running', lifecycle: 'running' });
+});
+
 it.each([
-  { generation: true, kind: 'cancelled', code: 'session_input_turn_cancel_requested', lifecycle: 'cancel_requested' },
+  { generation: true, kind: 'unresolved', code: 'session_input_pending', lifecycle: 'running' },
   // A pending stop cannot resolve outcome uncertainty; storage requires definitive terminal evidence.
-  { generation: true, kind: 'cancelled', code: 'session_input_turn_cancel_requested', lifecycle: 'outcome_uncertain', initialLifecycle: 'outcome_uncertain' },
+  { generation: true, kind: 'unresolved', code: 'session_input_pending', lifecycle: 'outcome_uncertain', initialLifecycle: 'outcome_uncertain' },
   { generation: true, kind: 'cancelled', code: 'provider_stopped', lifecycle: 'waiting_for_review' },
   { generation: true, kind: 'failed', code: 'provider_failed', lifecycle: 'waiting_for_review' },
   { generation: true, kind: 'completed', lifecycle: 'completed' },
@@ -51,7 +85,7 @@ it.each([
     serializeWorkflowStoredContentEnvelopeV1(sealWorkflowProgressStoredEnvelopeV1({ mode: 'plain',
       binding: { v: 1, purpose: 'invocation_progress', accountId, runId, recordId: id, sequence, parentRecordId,
         memberOrdinal: '0', attempt: progress.attempt }, progress }));
-  const checkpoint = checkpointEnvelope();
+  const checkpoint = checkpointEnvelope(rootId);
   await kit.execute({ operation: 'initialize', runId, expectedRevision: 0, checkpointEnvelope: checkpoint,
     rootInvocation: { id: rootId, contentEnvelope: seal(rootId, '0', null, { kind: 'happier.workflow-progress.v1', blockKind: 'root',
       invocationPath: { blockId: '$root', scope: [] }, attempt: '0', logicalInvocationRecordId: rootId }) } });
@@ -69,7 +103,7 @@ it.each([
   // Seed the retained replacement row through the canonical storage boundary fixture.
   const replacement = kit.rowById(recordId)!;
   replacement.index = { ...replacement.index, attempt: '1',
-    lifecycle: 'initialLifecycle' in scenario ? scenario.initialLifecycle : 'running' };
+    lifecycle: scenario.lifecycle === 'outcome_uncertain' ? scenario.initialLifecycle : 'running' };
   let reviewEntries = 0;
   const writer = createWorkflowInvocationRecoveryFactWriter({ accountId, run: kit.run(), parentAttempt: 0, storage: kit,
     encryption: { witness: { mode: 'plain', version: 1, contentKeyFingerprint: null }, runCrypto: { mode: 'plain' } },
@@ -80,7 +114,7 @@ it.each([
     : { kind: scenario.kind, code: scenario.code });
   expect(kit.rowById(recordId)?.index.lifecycle).toBe(scenario.lifecycle);
   expect(reviewEntries).toBe(scenario.lifecycle === 'waiting_for_review' ? 1 : 0);
-  if (scenario.kind === 'cancelled' && scenario.code === 'session_input_turn_cancel_requested') {
+  if (scenario.kind === 'unresolved') {
     expect((await writer.readInvocation(recordId))?.progress.uncertainPriorEffects).toBeUndefined();
   }
   expect(kit.run().workflowCustodyState).toBe('pending');
@@ -212,7 +246,7 @@ function directAcceptedEnvelope(params: Readonly<{
     ...(params.sealMode ?? { mode: 'plain' as const }),
     binding: { v: 1, purpose: 'accepted_snapshot', accountId, runId },
     acceptedSnapshot: {
-      definition, authoredDefinition: definition, workDepth: 0, metadata: null, frozenChildren: {},
+      startedBy: 'user', definition, authoredDefinition: definition, workDepth: 0, metadata: null, frozenChildren: {},
       materializedLeaves: params.materializedLeaves ?? [{ sourceKey: '$root', blockId: 'step', kind: 'step',
         authoredWorkspace: { kind: 'inherit' }, selection: definition.defaults, executionTarget: { kind: 'session' } }],
       source: { kind: 'inline' }, inputs: {}, machineId,
@@ -225,13 +259,13 @@ function directAcceptedEnvelope(params: Readonly<{
   }));
 }
 
-function checkpointEnvelope() {
+function checkpointEnvelope(rootRecordId = '2aaf1a39-4c48-4904-83a4-7eae318dfc2c') {
   return serializeWorkflowStoredContentEnvelopeV1(sealWorkflowCheckpointStoredEnvelopeV1({
     mode: 'plain',
     binding: { v: 1, purpose: 'checkpoint', accountId, runId },
     checkpoint: {
       kind: 'happier.workflow-checkpoint.v1',
-      rootRecordId: '2aaf1a39-4c48-4904-83a4-7eae318dfc2c',
+      rootRecordId,
       nextSequence: '8',
       frontier: { nextBlockOrdinal: 1, paused: false },
     },
@@ -266,7 +300,7 @@ describe.each(['plain', 'e2ee'] as const)('frozen result recovery (%s)', (mode) 
       expected: { reason: { code: 'session_input_failed', message: 'provider failed' } }, lifecycle: 'failed' },
     { name: 'cancelled exact input retains usage', contract: { kind: 'text' },
       observed: { kind: 'cancelled', message: 'input cancelled', usage: { inputTokens: 8 } },
-      expected: { reason: { code: 'session_input_pending_retired' } }, lifecycle: 'cancelled' },
+      expected: { reason: { code: 'session_input_cancelled' } }, lifecycle: 'cancelled' },
   ];
 
   async function recoverResult(test: (typeof cases)[number], options: Readonly<{
@@ -332,10 +366,7 @@ describe.each(['plain', 'e2ee'] as const)('frozen result recovery (%s)', (mode) 
       return { ok: true as const, sessionId: 'session-1', localId: 'input-1', result: test.observed };
     });
     const observer = createWorkflowInvocationRecoveryObserver({ credentials: { token: 'token', encryption: null }, machineId,
-      observeSession, cancelSession: async () => {
-        if (test.observed.kind === 'cancelled') return { kind: 'pending_retired' as const };
-        throw new Error('completed_input_must_not_be_cancelled');
-      },
+      observeSession, cancelSession: async () => { throw new Error('terminal_input_must_not_be_cancelled'); },
       actionExecutor: { execute: async () => ({ ok: true as const, result: { run: {
         runId: 'execution-1', callId: 'call-1', sidechainId: 'sidechain-1', intent: 'agent',
         backendTarget: { kind: 'builtInAgent', agentId: 'claude' }, permissionMode: 'read_only',
@@ -398,6 +429,70 @@ describe.each(['plain', 'e2ee'] as const)('frozen result recovery (%s)', (mode) 
 });
 
 describe('workflow Run startup/reconnect recovery', () => {
+  it.each(['later', 'before_observation', 'running_parent', 'lost_stop_response'] as const)('settles stopped Action child custody when terminal arrives %s without another recovery trigger', async (timing) => {
+    const rootId = '33333333-3333-4333-8333-333333333333';
+    const childId = '44444444-4444-4444-8444-444444444444';
+    const completion = freezeActionCompletionContractV1(getActionSpec('review.start').completion!);
+    const definition: WorkflowDefinitionV1 = { version: 1, inputs: [], defaults: {},
+      blocks: [{ kind: 'action', id: 'review', actionId: 'review.start', input: {} }] };
+    const kit = createWorkflowRunStorageTestkit({ runId, machineId, now, origin: { kind: 'direct' },
+      acceptedEnvelope: directAcceptedEnvelope({ definition, materializedLeaves: [{ sourceKey: '$root', blockId: 'review',
+        kind: 'action', actionId: 'review.start', selection: {}, executionTarget: { kind: 'detached_run' },
+        authoredWorkspace: { kind: 'inherit' }, actionContract: { inputSchema: {}, outputSchema: {}, completion } }] }) });
+    const seal = (id: string, root: boolean) => serializeWorkflowStoredContentEnvelopeV1(sealWorkflowProgressStoredEnvelopeV1({
+      mode: 'plain', binding: { v: 1, purpose: 'invocation_progress', accountId, runId, recordId: id,
+        sequence: root ? '0' : '1', parentRecordId: root ? null : rootId, memberOrdinal: '0', attempt: '0' },
+      progress: { kind: 'happier.workflow-progress.v1', blockKind: root ? 'root' : 'action',
+        invocationPath: { blockId: root ? '$root' : 'review', scope: [] }, attempt: '0', logicalInvocationRecordId: id,
+        ...(root ? {} : { execution: { kind: 'action' as const, actionId: 'review.start', actionRequestId: 'request', localInputId: 'request', input: {},
+          output: { intent: 'review', sessionId: null, results: [{ key: 'codex', ok: true, result: { runId: 'native-review' } }] },
+          awaitedRuns: [{ key: 'codex', runId: 'native-review' }] } }) },
+    }));
+    await kit.execute({ operation: 'initialize', runId, expectedRevision: 0, checkpointEnvelope: checkpointEnvelope(rootId),
+      rootInvocation: { id: rootId, contentEnvelope: seal(rootId, true) } });
+    await kit.execute({ operation: 'invocations.admit', runId, expectedRevision: 1, checkpointEnvelope: checkpointEnvelope(rootId),
+      invocations: [{ id: childId, sequence: '1', parentRecordId: rootId, memberOrdinal: '0', lifecycle: 'running', contentEnvelope: seal(childId, false) }] });
+    kit.requestControl(timing === 'running_parent' ? 'cancel_requested' : 'cancelled');
+    let terminal = false;
+    let finish = () => {};
+    const terminalEvent = new Promise<void>((resolve) => { finish = () => { terminal = true; resolve(); }; });
+    const snapshot = () => ({ run: { runId: 'native-review', callId: 'call', sidechainId: 'side', intent: 'review',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' }, permissionMode: 'default', retentionPolicy: 'resumable',
+      runClass: 'bounded', ioMode: 'request_response', status: terminal ? 'succeeded' : 'running', startedAtMs: 1 },
+      ...(terminal ? { latestToolResult: { output: { findings: [], reviewedFingerprint: 'fingerprint', commentIds: ['comment'], materialization: { kind: 'complete' } } } } : {}) });
+    const observe = createWorkflowInvocationRecoveryObserver({ credentials: { token: 'token', encryption: null }, machineId,
+      actionExecutor: { execute: async () => { throw new Error('unexpected_action_effect'); } },
+      nativeActionRuns: { get: async () => snapshot(), stop: async () => {
+        if (timing === 'before_observation') finish();
+        if (timing === 'lost_stop_response') throw new Error('stop_response_lost');
+        return { ok: true };
+      },
+        wait: async () => { await terminalEvent; return snapshot(); } } });
+    let indexed = false;
+    const recover = createWorkflowRunRecoveryReader({ accountId, machineId,
+      storage: { execute: async (operation, options) => {
+        if (operation.operation !== 'recovery.list') return await kit.execute(operation, options);
+        // The completion wake must not launch another global sweep.
+        if (indexed) throw new Error('unexpected_global_recovery_sweep');
+        indexed = true;
+        return { candidates: [{ run: kit.run(), parentAttempt: 0 }] };
+      } },
+      resolveAccountEncryption: async () => ({ kind: 'available', witness: { mode: 'plain', version: 1, contentKeyFingerprint: null } }),
+      reconcileInvocation: observe });
+    await recover('startup');
+    if (timing !== 'before_observation') {
+      expect(kit.run().workflowCustodyState).toBe('pending');
+      expect(kit.rowById(childId)?.index.lifecycle).toBe('cancel_requested');
+      finish();
+    }
+    await vi.waitFor(() => expect(kit.run()).toMatchObject({ state: 'cancelled', workflowCustodyState: 'settled' }));
+    const writer = createWorkflowInvocationRecoveryFactWriter({ accountId, run: kit.run(), parentAttempt: 0, storage: kit,
+      encryption: { witness: { mode: 'plain', version: 1, contentKeyFingerprint: null }, runCrypto: { mode: 'plain' } } });
+    expect((await writer.readInvocation(childId))?.progress.result).toMatchObject({ commentIds: ['comment'],
+      perEngineOutcome: [{ key: 'codex', runId: 'native-review', outcome: 'completed' }] });
+    expect(kit.rowById(childId)?.index.lifecycle).toBe('completed');
+  });
+
   it('pages terminal candidates and settles custody while origin updates remain unacknowledged', async () => {
     const run = { sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null, id: runId, origin: { kind: 'direct' as const, originSessionId: 'session-origin' }, state: 'succeeded' as const,
       revision: 9, machineId, workflowCustodyState: 'pending' as const, originDeliveryAckRevision: 0,

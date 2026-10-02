@@ -3,20 +3,25 @@ import {
   createWorkflowDefinitionActions as createSharedWorkflowDefinitionActions,
   materializeWorkflowDefinitionAuthorityV1,
   SessionAgentSpawnPolicyV1StrictSchema,
+  type WorkflowPluginSourceReaderV1,
 } from '@happier-dev/protocol';
 
 import { encodeAccountArtifactListCursor, type createAccountArtifactStore } from '@/api/artifacts/accountArtifactStore';
 import type { createWorkflowMaterializationHostV1 } from './workflowMaterializationHost';
+import { readPluginWorkflowSources } from '@/plugins/projection/registry/workflows';
+import { readCurrentContributionRegistry } from '@/agent/catalog/snapshot';
 
 /** CLI crypto/transport adapts the shared atomic definition and admission owners. */
 export function createWorkflowDefinitionActions(params: Readonly<{
   artifactStore: ReturnType<typeof createAccountArtifactStore>;
   removeWorkflowTriggers?: (definitionId: string) => Promise<void>;
   resolveMaterializer?: ReturnType<typeof createWorkflowMaterializationHostV1>;
+  readPluginWorkflows?: WorkflowPluginSourceReaderV1;
 }>) {
   return createSharedWorkflowDefinitionActions({
     artifactStore: params.artifactStore,
     encodeListCursor: encodeAccountArtifactListCursor,
+    readPluginWorkflows: params.readPluginWorkflows ?? (() => readPluginWorkflowSources(readCurrentContributionRegistry())),
     ...(params.removeWorkflowTriggers ? { removeWorkflowTriggers: params.removeWorkflowTriggers } : {}),
     assertDefinitionWriteAllowed: async (definition, context, caller) => {
       if (caller?.surface !== 'agent') return;

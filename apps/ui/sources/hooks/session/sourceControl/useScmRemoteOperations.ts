@@ -25,7 +25,7 @@ export type RunScmRemoteOperationOptions = Readonly<{
      * An explicit choice for this one pull (never remembered): keep uncommitted changes aside first, or let Git
      * decide overlap; rebase or merge when the branch and origin have both moved. Omitted: refuse / fast-forward only.
      */
-    policy?: Readonly<Pick<ScmRemotePolicy, 'dirtyPolicy' | 'reconcile'>>;
+    policy?: Readonly<ScmRemotePolicy>;
 }>;
 
 const SCM_REMOTE_POST_OPERATION_REFRESH_TIMEOUT_MS = 5_000;
@@ -138,6 +138,7 @@ export function useScmRemoteOperations(input: {
             scmPushRejectPolicy,
             surface,
             tracking,
+            policy: options?.policy,
             setScmOperationBusy: setScmRemoteOperationBusySafe,
             setScmOperationStatus: setScmRemoteOperationStatusSafe,
             runWithOperationLock: async (operation, run) => {
@@ -162,6 +163,8 @@ export function useScmRemoteOperations(input: {
                         : await sessionScmRemotePush(sessionId, {
                             remote: remoteTarget.remote,
                             branch: remoteTarget.branch ?? undefined,
+                            ...(options?.policy?.pushMode ? { pushMode: options.policy.pushMode } : {}),
+                            ...(options?.policy?.expectedRemoteOid ? { expectedRemoteOid: options.policy.expectedRemoteOid } : {}),
                         }, serverId);
             },
             removeIndexLock: (request) => sessionScmRepositoryRemoveIndexLock(sessionId, request, serverId),

@@ -660,7 +660,7 @@ export function SecretRequirementModal(props: SecretRequirementModalProps) {
                     )}
 
                     {selectedSource === 'once' && props.allowSessionOnly !== false && (
-                        <ItemGroup title={t('profiles.requirements.sections.useOnceTitle')} footer={t('profiles.requirements.sections.useOnceFooter')}>
+                        <ItemGroup title={t('profiles.requirements.sections.useOnceTitle')} description={t('profiles.requirements.sections.useOnceFooter')}>
                             <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 16 }}>
                                 <Text style={styles.fieldLabel}>{t('profiles.requirements.sections.useOnceLabel')}</Text>
                                 <TextInput

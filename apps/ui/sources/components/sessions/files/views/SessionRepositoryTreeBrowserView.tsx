@@ -5,6 +5,8 @@ import { Platform, StyleSheet, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { SearchResultsList } from '@/components/workspaces/files/repositoryTree/SearchResultsList';
+import { hrefForDestinationRef } from '@/components/appShell/destinations/compactAppDestinationCatalog';
+import { serializeSessionPaneUrlState } from '@/components/sessions/panes/url/sessionPaneUrlState';
 import { RepositoryTreeToolbar } from '@/components/workspaces/files/repositoryTree/RepositoryTreeToolbar';
 import { RepositoryTreeCreateMenu, type RepositoryTreeCreateMenuItemId } from '@/components/workspaces/files/repositoryTree/RepositoryTreeCreateMenu';
 import { usePaneHeaderSlotContent } from '@/components/appShell/panes/paneHeaderSlot';
@@ -113,6 +115,13 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
     const { theme } = useUnistyles();
     const { machineRpcTargetAvailable } = useSessionMachineReachability(props.sessionId, props.serverId);
     const workspaceTarget = useSessionWorkspaceTarget(props.sessionId, props.serverId);
+    const routeServerId = workspaceTarget?.serverId ?? props.serverId;
+    const fileHref = React.useCallback((path: string) => hrefForDestinationRef([], {
+        kind: 'sessionDetails', params: {
+            id: props.sessionId, ...(routeServerId ? { serverId: routeServerId } : {}),
+            ...serializeSessionPaneUrlState({ details: { kind: 'file', path } }),
+        },
+    }), [routeServerId, props.sessionId]);
     // One identity for the whole surface. Spreading the target into a key plus three separate
     // address parts is what let a sibling browser key by one server and read through another.
     //
@@ -320,6 +329,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
             : null;
         return (
             <RepositoryTreeRowActionsMenu
+                href={node.type === 'file' ? fileHref(node.path) : null}
                 path={node.path}
                 kind={nodeKind}
                 disableWriteActions={!allowCreateActions}
@@ -328,7 +338,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                 control={control}
             />
         );
-    }, [allowCreateActions, canDownload, rowActions]);
+    }, [allowCreateActions, canDownload, fileHref, rowActions]);
 
     const handleFilesDropped = React.useCallback(async (event: any) => {
         const dataTransfer = event?.dataTransfer;
@@ -574,6 +584,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
             <View style={repositoryTreeBrowserStyles.content}>
                 {shouldShowSearchResults ? (
                     <SearchResultsList
+                        fileHref={fileHref}
                         theme={repositoryTreeTheme}
                         isSearching={isSearching}
                         searchQuery={searchQuery}
@@ -589,6 +600,7 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                     />
                 ) : workspaceScope ? (
                     <WorkspaceRepositoryTreeList
+                        fileHref={fileHref}
                         theme={repositoryTreeTheme}
                         scope={workspaceScope}
                         reloadToken={treeReloadNonce}

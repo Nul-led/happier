@@ -156,7 +156,7 @@ export function AutomationSettingsScreen(): React.ReactElement {
 
     if (loading && settings === null) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 {header}
                 <View style={{ alignItems: 'center', paddingVertical: 32 }}>
                     <ActivitySpinner size="small" color={theme.colors.text.secondary} />
@@ -167,7 +167,7 @@ export function AutomationSettingsScreen(): React.ReactElement {
 
     if (settings === null) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 {header}
                 <SurfaceStateCard
                     testID="automation-settings-load-error"
@@ -185,7 +185,7 @@ export function AutomationSettingsScreen(): React.ReactElement {
     }
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             {header}
             {loadFailed ? (
                 <AttentionBanner

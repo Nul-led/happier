@@ -70,7 +70,8 @@ export function createWorkBoardSaveQueue(deps: Readonly<{ port: Pick<WorkBoardAr
             await deps.port.apply(intent);
         } catch (error) {
             failure = { intent, reason: error instanceof WorkBoardMutationErrorV1
-                ? error.code === 'board_not_found' ? 'not_found' : 'invalidValue' : 'unavailable' };
+                ? error.code === 'board_not_found' ? 'not_found'
+                    : error.code === 'board_scope_retired' ? 'unavailable' : 'invalidValue' : 'unavailable' };
         }
         if (writeGeneration !== generation) return;
         setState({

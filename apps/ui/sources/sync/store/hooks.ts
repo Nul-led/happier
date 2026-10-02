@@ -3331,8 +3331,9 @@ export function useAutomationRuns(automationId: string): AutomationDefinitionRun
  * link or a notification uses: it resolves the same body an Automation list
  * shows, and it never needs the Run's origin Automation.
  */
-export function useWorkflowRun(runId: string | null | undefined): WorkflowRunRow | null {
-  return getStorage()((state) => (runId ? state.workflowRunsById[runId] ?? null : null));
+export function useWorkflowRun(runId: string | null | undefined, options: Readonly<{ enabled?: boolean }> = {}): WorkflowRunRow | null {
+  const enabled = options.enabled !== false;
+  return getStorage()((state) => (enabled && runId ? state.workflowRunsById[runId] ?? null : null));
 }
 
 /**

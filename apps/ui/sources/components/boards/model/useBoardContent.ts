@@ -14,6 +14,7 @@ import { useWorkflowLibrarySummaries } from '@/components/workflows/library/useW
 import { areServerProfileIdentifiersEquivalent, resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
 import { readSessionListRowForServerId } from '@/sync/domains/session/listing/sessionListRowStateLookup';
 import { useSessionListQueryHomeStates } from '@/sync/domains/session/listing/useSessionListQuerySourceState';
+import { resolveWorkflowRunUnavailableHomes, workflowRunMatchesSessionListFilter } from '@/sync/domains/session/listing/sessionListWorkFilter';
 import { getStorage, useMachineListByServerId, useSessionListRowsByServerId, useWorkflowRunRows } from '@/sync/domains/state/storage';
 import type { Machine } from '@/sync/domains/state/storageTypes';
 
@@ -70,7 +71,7 @@ function runRef(serverId: string, id: string): BoardItemRefV1 {
 
 /** Keeps the previous array when it holds the same refs, so an unrelated store write changes nothing. */
 function useStableRefs(next: readonly BoardItemRefV1[] | null): readonly BoardItemRefV1[] | null {
-    const ref = React.useRef<Readonly<{ key: string; refs: readonly BoardItemRefV1[] | null }>>({ key: '', refs: null });
+    const ref = React.useRef<Readonly<{ key: string; refs: readonly BoardItemRefV1[] | null }>>({ key: '\u0000', refs: null });
     const key = next === null ? '\u0000' : next.map(buildWorkBoardItemKeyV1).join('\n');
     if (ref.current.key !== key) ref.current = { key, refs: next };
     return ref.current.refs;
@@ -125,25 +126,37 @@ function useMachineRefs(enabled: boolean, machineLists: Readonly<Record<string, 
     return useStableRefs(refs);
 }
 
-function useFilteredSessionRefs(board: WorkBoardV1, homes: BoardHomes): Readonly<{
+function useFilteredWorkRefs(board: WorkBoardV1, homes: BoardHomes): Readonly<{
     refs: readonly BoardItemRefV1[] | null | undefined;
     complete: boolean;
 }> {
-    const filter = board.source.filter;
+    const filter = React.useMemo(() => board.source.filter
+        ? fromBoardSessionFilter(board.source.filter, homes.mountedServerIds)
+        : null, [board.source.filter, homes.mountedServerIds]);
+    const includesSessions = filter !== null && filter.show !== 'runs';
+    const includesRuns = filter !== null && filter.show !== 'sessions';
+    const readsRuns = includesRuns && homes.activeServerId !== null
+        && filter.homeServerIds.some((home) => areServerProfileIdentifiersEquivalent(home, homes.activeServerId));
+    const window = useWorkflowRunWindow('all', { enabled: readsRuns });
     const queryHomes = React.useMemo(() => {
-        if (!filter) return [];
+        if (!filter || !includesSessions) return [];
         // An empty Home selection means every mounted Home, as in the Sessions list.
-        return buildSessionListFilterQueryHomes(fromBoardSessionFilter(filter, homes.mountedServerIds), {
+        return buildSessionListFilterQueryHomes(filter, {
             storage: 'active',
             includeInactive: false,
             mountedHomeServerIds: homes.mountedServerIds,
         });
-    }, [filter, homes.mountedServerIds]);
-    const states = useSessionListQueryHomeStates({ enabled: Boolean(filter), homes: queryHomes });
+    }, [filter, homes.mountedServerIds, includesSessions]);
+    const states = useSessionListQueryHomeStates({ enabled: includesSessions, homes: queryHomes });
     const answered = React.useMemo(() => {
         if (!filter) return { refs: null, complete: true };
         const next: BoardItemRefV1[] = [];
-        let complete = true;
+        let complete = !includesSessions || states.coverageComplete;
+        if (includesRuns && resolveWorkflowRunUnavailableHomes({
+            selectedHomeServerIds: filter.homeServerIds,
+            mountedHomeServerIds: homes.mountedServerIds,
+            servedHomeServerId: readsRuns ? homes.activeServerId : null,
+        }).length > 0) complete = false;
         for (const home of queryHomes) {
             // A Home that has not answered (or cannot serve the filter) adds nothing yet; the others still show.
             const addresses = states.membershipByServerId[home.serverId];
@@ -153,8 +166,20 @@ function useFilteredSessionRefs(board: WorkBoardV1, homes: BoardHomes): Readonly
             }
             for (const address of addresses) next.push(sessionRef(home.serverId, address.sessionId));
         }
+        if (readsRuns && homes.activeServerId) {
+            for (const row of window.rows) {
+                if (row.summary && workflowRunMatchesSessionListFilter(row.summary, homes.activeServerId, filter)) {
+                    next.push(runRef(homes.activeServerId, row.id));
+                }
+            }
+            if (window.status !== 'loaded' || window.hasMore || window.loadingMore || window.loadMoreFailed) complete = false;
+        } else if (includesRuns && homes.activeServerId === null) {
+            complete = false;
+        }
         return { refs: next, complete };
-    }, [filter, queryHomes, states.membershipByServerId]);
+    }, [filter, homes.activeServerId, homes.mountedServerIds, includesRuns, includesSessions, queryHomes, readsRuns,
+        states.coverageComplete, states.membershipByServerId, window.hasMore, window.loadMoreFailed,
+        window.loadingMore, window.rows, window.status]);
     const stable = useStableRefs(answered.refs);
     return { refs: filter ? stable : undefined, complete: answered.complete };
 }
@@ -166,7 +191,7 @@ export function useBoardMembership(board: WorkBoardV1, homes: BoardHomes): Board
     const needsYou = useNeedsYouRefs(boardReadsNeedsYou(board), homes.activeServerId);
     const running = useRunningRefs(sections.has('running'), homes.activeServerId);
     const myMachines = useMachineRefs(sections.has('my_machines'), machineLists);
-    const filtered = useFilteredSessionRefs(board, homes);
+    const filtered = useFilteredWorkRefs(board, homes);
     return React.useMemo(() => projectBoardMembership(board, {
         isHomeMounted: homes.isHomeMounted,
         sections: { needs_you: needsYou, running, my_machines: myMachines },

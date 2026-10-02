@@ -35,7 +35,7 @@ export type SendReviewForChangesOutcome =
 export async function sendReviewForChanges(input: Readonly<{
     sessionId: string;
     serverId?: string | null;
-    accountLifetime: Pick<ServerAccountScopeLifetime, 'scope' | 'isCurrent'>;
+    accountLifetime: ServerAccountScopeLifetime;
     drafts: readonly ReviewCommentDraft[];
     reviewScope: WorkspaceScopeBase | null;
     /** Removes the comments that were sent (the review-comment drafts' own owner). */
@@ -68,6 +68,7 @@ export async function sendReviewForChanges(input: Readonly<{
     try {
         await sync.submitMessage(input.sessionId, outbound.text, outbound.displayText, outbound.metaOverrides, {
             ...(input.serverId ? { serverId: input.serverId } : {}),
+            accountLifetime: input.accountLifetime,
             callerSurface: 'session_review_comment_composer',
             onOutboundHandoff: clearOnce,
         });

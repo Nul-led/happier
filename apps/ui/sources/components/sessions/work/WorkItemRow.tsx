@@ -14,6 +14,7 @@ import { t } from '@/text';
 
 import { useSessionWorkSources } from './sessionWorkSources';
 import type { WorkItem } from './workProjection';
+import { SessionWorkNotifications } from './SessionWorkNotifications';
 
 /**
  * One Work row: the item's mark, its title, one quiet line of facts and its state word at the trailing
@@ -87,11 +88,11 @@ type WorkViewportObserver = {
  * working workflow runs do) when the pane scrolls, resizes — a retained pane hiding or showing — or
  * its content moves. Live content waits until both the row and its viewport can be measured.
  */
-export function useWorkScrollViewport(scrollRef: React.RefObject<Measurable | null>) {
+export function useWorkScrollViewport(scrollRef: React.RefObject<Readonly<{ getNativeScrollRef: () => Measurable | null }> | null>) {
     const observersRef = React.useRef(new Set<WorkViewportObserver>());
     const measure = React.useCallback((targets: readonly WorkViewportObserver[]) => {
         if (targets.length === 0) return;
-        measureWindowRect(scrollRef.current, (viewport) => {
+        measureWindowRect(scrollRef.current?.getNativeScrollRef(), (viewport) => {
             for (const observer of targets) {
                 measureWindowRect(observer.target.current, (row) => {
                     const visible = row !== null && viewport !== null && isWorkRowOnScreen(row, viewport);
@@ -230,6 +231,7 @@ export const WorkItemRow = React.memo((props: Readonly<{
     const onPress = React.useCallback(() => onOpen(item), [item, onOpen]);
     const rowRef = React.useRef<View>(null);
     const liveMapRunId = readLiveMapRunId(item);
+    const sources = useSessionWorkSources();
 
     // One topology for every row, so a run that starts or stops working keeps its row mounted.
     return (
@@ -247,6 +249,8 @@ export const WorkItemRow = React.memo((props: Readonly<{
                     trailingState={{ word: item.status.word, tone: item.status.tone }}
                 />
             </WorkRowShell>
+            {item.open.kind === 'session' && item.status.bucket !== 'finished'
+                ? <SessionWorkNotifications sessionId={item.open.sessionId} serverId={sources?.serverId} /> : null}
             {liveMapRunId === null ? null : (
                 <WorkRunMiniMapSlot rowRef={rowRef} runId={liveMapRunId} itemKey={item.key} onOpen={onPress} />
             )}

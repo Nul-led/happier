@@ -800,7 +800,7 @@ export function AutomationRunDetailScreen(): React.ReactElement {
     const claimedByLabel = claimedByMachine ? getMachineDisplayName(claimedByMachine) : null;
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <Stack.Screen options={{ headerShown: true, headerTitle: title }} />
             {/*
               * The run's identity first: what state it is in, what started it and when. The

@@ -63,6 +63,8 @@ export type SessionManagedWorkflowRunsState = Readonly<{
      * nothing known yet is `failed`.
      */
     refreshFailed: boolean;
+    /** Re-ask this window through its existing read owner, without dropping retained rows. */
+    retry: () => void;
 }>;
 
 type SessionManagedWorkflowRunsWindow = Readonly<{
@@ -121,6 +123,7 @@ export function useSessionManagedWorkflowRuns(params: Readonly<{
     const accountScopeKey = activeAccountScope === null ? null : serverAccountScopeKeySuffix(activeAccountScope);
     const [listWindow, setWindow] = React.useState<SessionManagedWorkflowRunsWindow>(EMPTY_WINDOW);
     const [invalidationToken, setInvalidationToken] = React.useState(0);
+    const retry = React.useCallback(() => setInvalidationToken((token) => token + 1), []);
     const current = listWindow.accountScopeKey === accountScopeKey && listWindow.sessionId === sessionId;
     // Only this Session's own window, never the Account's whole Run map: an
     // exact refresh of a Run this Session did not start must not rerender a
@@ -234,8 +237,8 @@ export function useSessionManagedWorkflowRuns(params: Readonly<{
     const refreshFailed = current ? listWindow.refreshFailed : false;
     // One stable state object per change, as the consumers that memoize on it expect.
     return React.useMemo(
-        () => ({ phase, runs, metadataByRunId, attentionRunIds, refreshFailed }),
-        [attentionRunIds, metadataByRunId, phase, refreshFailed, runs],
+        () => ({ phase, runs, metadataByRunId, attentionRunIds, refreshFailed, retry }),
+        [attentionRunIds, metadataByRunId, phase, refreshFailed, retry, runs],
     );
 }
 

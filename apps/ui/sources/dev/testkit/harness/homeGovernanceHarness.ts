@@ -223,7 +223,10 @@ export function createHomeGovernanceHarness(): HomeGovernanceHarness {
                 accountId,
                 token: accountId === null ? null : createAccountTokenForTests(accountId),
                 answers: new Map(),
-                artifacts: createArtifactStoreBoundary(),
+                artifacts: createArtifactStoreBoundary({
+                    ownerAccountId: () => record.accountId,
+                    encryptionMode: options.accountEncryptionMode ?? 'plain',
+                }),
             };
             homesByServerId.set(serverId, record);
             homesByServerUrl.set(storedServerUrl, record);

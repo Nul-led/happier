@@ -91,6 +91,7 @@
   ],
   "bundledDependencies": [
     "@happier-dev/agents",
+    "@happier-dev/brand",
     "@happier-dev/cli-common",
     "@happier-dev/channels-protocol",
     "@happier-dev/connection-supervisor",
@@ -221,6 +222,7 @@
     "@fastify/swagger": "9.7.0",
     "@fastify/websocket": "^11.2.0",
     "@happier-dev/agents": "0.0.0",
+    "@happier-dev/brand": "0.0.0",
     "@happier-dev/channels-protocol": "0.0.0",
     "@happier-dev/cli-common": "0.0.0",
     "@happier-dev/connection-supervisor": "0.0.0",

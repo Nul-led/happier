@@ -572,6 +572,8 @@ export async function requestDaemonPluginActionExecution(request: Readonly<{
   input: unknown;
   surface: 'cli' | 'mcp' | 'agent';
   defaultSessionId?: string;
+  /** Host-stamped descriptive starter, not an authorization principal. */
+  startedBy?: import('@happier-dev/protocol').WorkflowRunStartedByV1;
   /** Host-stamped turn admission fence; never Action input or SDK surface. */
   expectedContributorOccurrenceId?: string;
 }>, options: DaemonControlRequestOptions = {}): Promise<PluginActionExecutionAttempt> {
@@ -876,40 +878,27 @@ export async function spawnDaemonSession(
 
 export type DaemonSpawnSessionResolveStatus = SpawnSessionNonceResolution;
 
-export async function resolveDaemonSpawnSessionByNonce(spawnNonce: string): Promise<DaemonSpawnSessionResolveStatus> {
+export async function resolveDaemonSpawnSessionByNonce(
+  spawnNonce: string,
+  timeoutOrOptions?: number | DaemonControlRequestOptions,
+): Promise<DaemonSpawnSessionResolveStatus> {
   const normalizedSpawnNonce = spawnNonce.trim();
   if (!normalizedSpawnNonce) {
     return { status: 'not_found' };
   }
-  const result = await daemonPost('/spawn-session/resolve', { spawnNonce: normalizedSpawnNonce });
+  const options = typeof timeoutOrOptions === 'number' ? { timeoutMs: timeoutOrOptions } : timeoutOrOptions;
+  const timeoutMs = options?.timeoutMs;
+  const result = await daemonPost('/spawn-session/resolve', {
+    spawnNonce: normalizedSpawnNonce,
+    ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
+  }, {
+    ...options,
+    // The resolve owner, and the caller's containing wait, own this deadline.
+    // The generic control HTTP timeout must not shorten a valid nonce wait.
+    ...(typeof timeoutMs === 'number' ? { timeoutMs: null } : {}),
+  });
   if (result && typeof result === 'object' && typeof (result as { status?: unknown }).status === 'string') {
-    const status = (result as { status: string }).status;
-    if (status === 'pending') return { status: 'pending' };
-    if (status === 'not_found') return { status: 'not_found' };
-    if (status === 'error') {
-      const normalized = normalizeSpawnSessionNonceResolution(result);
-      return normalized.status === 'error' ? normalized : { status: 'not_found' };
-    }
-    if (status === 'success') {
-      const sessionId = typeof (result as { sessionId?: unknown }).sessionId === 'string'
-        ? (result as { sessionId: string }).sessionId.trim()
-        : '';
-      if (sessionId) {
-        const normalized = normalizeSpawnSessionNonceResolution({
-          status: 'success',
-          sessionId,
-          sessionCreationOutcome: (result as { sessionCreationOutcome?: unknown }).sessionCreationOutcome,
-        });
-        return {
-          status: 'success',
-          sessionId,
-          ...(normalized.status === 'success' && normalized.sessionCreationOutcome
-            ? { sessionCreationOutcome: normalized.sessionCreationOutcome }
-            : {}),
-        };
-      }
-      return { status: 'not_found' };
-    }
+    return normalizeSpawnSessionNonceResolution(result);
   }
 
   const errorMessage = typeof (result as { error?: unknown } | null)?.error === 'string'
@@ -918,6 +907,7 @@ export async function resolveDaemonSpawnSessionByNonce(spawnNonce: string): Prom
   if (errorMessage.includes('/spawn-session/resolve') && errorMessage.includes('HTTP 404')) {
     return { status: 'unsupported' };
   }
+  if (errorMessage) throw new Error(errorMessage);
 
   return { status: 'not_found' };
 }

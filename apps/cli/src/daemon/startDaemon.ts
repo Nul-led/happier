@@ -1591,6 +1591,7 @@ export async function startDaemon(
       isSessionAlreadyRunning,
       sessionRunnerStatus,
       onChildExited,
+      onTrackedSessionHealthy,
       controlPort,
       controlToken,
       stopControlServer,
@@ -2058,13 +2059,30 @@ export async function startDaemon(
                   happyHomeDir: configuration.happyHomeDir,
                   controller: pluginReloadController,
                 });
+                const withBrokerProviderRegistry: import('@/providers/broker/providerConnectionSource').ProviderConnectionRegistryReader = async (read) => {
+                  const lease = await acquireAuthoritativePluginRuntimeRegistryLease({
+                    happyHomeDir: configuration.happyHomeDir,
+                    controller: pluginReloadController,
+                  });
+                  try {
+                    return await read(resolveProviderContributionRegistryView(
+                      lease.registry.contributes,
+                      lease.durableRevision,
+                      lease.registry.readPluginOccurrenceId,
+                    ));
+                  } finally {
+                    await lease.release();
+                  }
+                };
                 const sourceOwner = createTeamCredentialBrokerSourceOwner({
                   machineId: registeredMachineId,
                   custody: brokerManagedProviderCustody,
                   selectConnectedServicesSourceMember: createConnectedServicesBrokerSourceMemberSelect({
+                    withRegistry: withBrokerProviderRegistry,
                     resolveBindingIntentSelection: connectedAccountPurposeBindingRuntime.resolveBindingIntentSelection,
                   }),
                   openConnectedServicesSource: createConnectedServicesBrokerSourceOpen({
+                    withRegistry: withBrokerProviderRegistry,
                     readResource,
                     resolveBindingIntentSelection: connectedAccountPurposeBindingRuntime.resolveBindingIntentSelection,
                     custody: brokerManagedProviderCustody,
@@ -2083,21 +2101,7 @@ export async function startDaemon(
                           }
                         : null;
                     },
-                    withRegistry: async (read) => {
-                      const lease = await acquireAuthoritativePluginRuntimeRegistryLease({
-                        happyHomeDir: configuration.happyHomeDir,
-                        controller: pluginReloadController,
-                      });
-                      try {
-                        return await read(resolveProviderContributionRegistryView(
-                          lease.registry.contributes,
-                          lease.durableRevision,
-                          lease.registry.readPluginOccurrenceId,
-                        ));
-                      } finally {
-                        await lease.release();
-                      }
-                    },
+                    withRegistry: withBrokerProviderRegistry,
                     getAccountSettingsSnapshot: getActiveAccountSettingsSnapshot,
                     collectDnsEvidence: async ({ source, registry, signal }) => {
                       const snapshot = getActiveAccountSettingsSnapshot();
@@ -2773,6 +2777,7 @@ export async function startDaemon(
       sessionAttachCleanupByPid,
       getApiMachineForSessions: () => apiMachineForSessions,
       onChildExited,
+      onTrackedSessionHealthy,
       controlPort,
       fileState,
       currentCliVersion: configuration.currentCliVersion,

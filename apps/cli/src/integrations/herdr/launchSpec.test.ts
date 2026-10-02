@@ -1,17 +1,40 @@
-import { chmod, readFile, stat } from 'node:fs/promises';
-import { dirname } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { chmod, readFile, stat, unlink, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createHerdrLaunchSpec } from './launchSpec';
+import { logger } from '@/ui/logger';
 
 describe('Herdr managed launch', () => {
+  it('reports incomplete private handoff cleanup while retaining unexpected content', async () => {
+    const launch = await createHerdrLaunchSpec({
+      workingDirectory: '/tmp', spawnArgv: ['/managed/happier'], spawnEnv: {},
+    });
+    const unexpected = join(dirname(launch.specPath), 'unexpected');
+    const diagnostic = vi.spyOn(logger, 'infoFile').mockImplementation(() => undefined);
+    try {
+      await writeFile(unexpected, 'retained');
+      await expect(launch.discard()).rejects.toMatchObject({ code: 'ENOTEMPTY' });
+      await expect(readFile(unexpected, 'utf8')).resolves.toBe('retained');
+      await expect(stat(launch.specPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining('terminal_launch_cleanup_incomplete'));
+    } finally {
+      diagnostic.mockRestore();
+      await unlink(unexpected);
+      await launch.discard();
+    }
+  });
+
   it.skipIf(process.platform === 'win32')('reports failure to remove an unread launch handoff instead of silently leaving secrets behind', async () => {
     const launch = await createHerdrLaunchSpec({
       workingDirectory: '/tmp', spawnArgv: ['/managed/happier'], spawnEnv: { TEST_SECRET: 'secret' },
     });
     try {
       await chmod(dirname(launch.specPath), 0o500);
-      await expect(launch.discard()).rejects.toMatchObject({ code: 'EACCES' });
+      await expect(launch.discard()).rejects.toMatchObject({ errors: expect.arrayContaining([
+        expect.objectContaining({ code: 'EACCES' }),
+        expect.objectContaining({ code: 'ENOTEMPTY' }),
+      ]) });
     } finally {
       await chmod(dirname(launch.specPath), 0o700);
       await launch.discard();

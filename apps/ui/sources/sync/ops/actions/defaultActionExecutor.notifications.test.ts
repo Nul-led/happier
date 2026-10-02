@@ -27,7 +27,7 @@ async function addHome() {
         accountId: 'account-a',
     });
     const { storage } = await import('@/sync/domains/state/storage');
-    const machine = createMachineFixture({ id: 'notification-relay' });
+    const machine = createMachineFixture({ id: 'notification-relay', activeAt: Date.now() });
     storage.setState({
         machines: { [machine.id]: machine },
         machineListByServerId: { [serverId]: [machine] },
@@ -71,22 +71,21 @@ describe('default Action notification daemon transport', () => {
     it('resolves Send to options from that same Account host through the declared Action route', async () => {
         const serverId = await addHome();
         const { createDefaultActionExecutor } = await import('./defaultActionExecutor');
-        const options = [{ value: 'plugin/channel', label: 'Plugin channel' }];
+        const options = [{ value: 'plugin/channel', label: 'Plugin channel', disabled: true }];
         const result = {
-            actionId: 'notifications.notify_me', fieldPath: 'channels',
             optionsSourceId: 'notifications.channels.available', options,
         };
         rpc.machine.mockResolvedValue(result);
 
         await expect(createDefaultActionExecutor().execute('action.options.resolve', {
-            actionId: 'notifications.notify_me', fieldPath: 'channels',
+            optionsSourceId: 'notifications.channels.available',
         }, { surface: 'ui', serverId })).resolves.toEqual({ ok: true, result });
         expect(rpc.machine).toHaveBeenCalledWith(expect.objectContaining({
             serverId,
             accountId: 'account-a',
             machineId: 'notification-relay',
             method: 'action.options.resolve',
-            payload: { actionId: 'notifications.notify_me', fieldPath: 'channels' },
+            payload: { optionsSourceId: 'notifications.channels.available' },
         }));
     });
 
@@ -109,13 +108,12 @@ describe('default Action notification daemon transport', () => {
         rpc.machine.mockImplementation(async () => {
             await harness.switchAccount(serverId, 'account-b');
             return {
-                actionId: 'notifications.notify_me', fieldPath: 'channels',
                 optionsSourceId: 'notifications.channels.available',
                 options: [{ value: 'private/channel', label: 'Private channel' }],
             };
         });
         await expect(createDefaultActionExecutor().execute('action.options.resolve', {
-            actionId: 'notifications.notify_me', fieldPath: 'channels',
+            optionsSourceId: 'notifications.channels.available',
         }, { surface: 'ui', serverId })).resolves.toMatchObject({
             ok: false, errorCode: 'action_account_scope_changed',
         });

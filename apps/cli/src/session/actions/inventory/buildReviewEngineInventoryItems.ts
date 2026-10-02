@@ -1,4 +1,4 @@
-import { buildBackendTargetKey, buildBackendTargetKeyV2, type AccountSettings } from '@happier-dev/protocol';
+import { isBackendTargetDisabledByAccountSettings, type AccountSettings } from '@happier-dev/protocol';
 
 import { readAgentContributionDisplayTitle } from '@/agent/catalog/agentDisplayTitle';
 import { readAgentCatalogSnapshot } from '@/agent/catalog/snapshot';
@@ -7,7 +7,6 @@ import type {
   ResolvedAgentContribution,
 } from '@/plugins/projection/registry/types';
 
-import { isBackendEnabled } from './backendAvailability';
 import { buildConfiguredAcpBackendInventoryItems } from './buildAgentBackendInventoryItems';
 
 export type ActionReviewEngineInventoryItem = Readonly<{
@@ -115,18 +114,12 @@ export async function buildReviewEngineInventoryItems(params: Readonly<{
       const agent = registry.agentDefinitionsById.get(agentId);
       if (!agent) return [];
       const description = readReviewEngineDescription(agent);
-      const targetKey = buildBackendTargetKeyV2({
-        kind: 'backend',
-        backendId: agent.id,
-        sourceKind: 'built_in',
-      });
-      const legacyTargetKey = buildBackendTargetKey({ kind: 'builtInAgent', agentId: agent.id });
       return [{
         engineId: agent.id,
         value: agent.id,
         label: readAgentContributionDisplayTitle(agent, agent.id) ?? agent.id,
         ...(description ? { description } : {}),
-        enabled: isBackendEnabled(accountSettings, [targetKey, legacyTargetKey]),
+        enabled: !isBackendTargetDisabledByAccountSettings(accountSettings, { kind: 'backend', backendId: agent.id }),
         backendId: agent.id,
       }];
     });

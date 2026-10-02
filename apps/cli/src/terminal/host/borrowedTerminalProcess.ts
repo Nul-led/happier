@@ -1,31 +1,42 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 
 import { resolveWindowsCommandInvocation } from '@happier-dev/cli-common/process';
+import { readProcessInstanceFingerprintSync } from '@happier-dev/cli-common/processInstance';
 
 import { killProcessTree } from '@/agent/runtime/process/killProcessTree';
 import { logger } from '@/ui/logger';
 import { createTerminalLaunchSpec, discardFailedTerminalLaunch } from './launchSpec';
 
-type BorrowedTerminalChild = Readonly<{
-  pid?: number;
-  once(event: 'error', listener: (error: Error) => void): unknown;
-  once(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
+/** The terminal owner always supplies explicit argv and options at its OS boundary. */
+export type TerminalSpawnProcess = (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
+
+export type BorrowedTerminalProcessIdentity = Readonly<{
+  pid: number;
+  processInstanceFingerprint: string;
 }>;
 
 export type BorrowedTerminalProcess = Readonly<{
+  /** The native-spawn receipt admits the launcher; unknown process generation is not custody. */
+  launcherIdentity: BorrowedTerminalProcessIdentity | null;
   whenExited: Promise<Readonly<{ code: number | null; signal: NodeJS.Signals | null }>>;
   terminate(): Promise<void>;
+  signal(signal: 'SIGINT' | 'SIGKILL'): Promise<void>;
 }>;
 
 export async function launchBorrowedTerminalProcess(params: Readonly<{
   spawnArgv: readonly string[];
   workingDirectory: string;
   spawnEnv: Readonly<Record<string, string>>;
-  spawnProcess?: typeof spawn;
-  terminateProcess?: (child: BorrowedTerminalChild) => Promise<void>;
+  spawnProcess?: TerminalSpawnProcess;
+  terminateProcess?: (child: ChildProcess) => Promise<void>;
+  signal?: AbortSignal;
+  envPassthroughKeys?: readonly string[];
+  windowsVerbatimArguments?: boolean;
+  beforeSpawn?: () => void;
 }>): Promise<BorrowedTerminalProcess> {
   const [command, ...args] = params.spawnArgv;
   if (!command) throw new Error('Borrowed terminal launch requires a command');
+  params.signal?.throwIfAborted();
 
   const env = { ...params.spawnEnv };
   const invocation = resolveWindowsCommandInvocation({ command, args, env, resolveCommandOnPath: false });
@@ -33,14 +44,16 @@ export async function launchBorrowedTerminalProcess(params: Readonly<{
     workingDirectory: params.workingDirectory,
     spawnArgv: [invocation.command, ...invocation.args],
     spawnEnv: env,
-    envPassthroughKeys: ['TERM', 'COLORTERM', 'TERM_PROGRAM', 'TERM_PROGRAM_VERSION'],
-    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+    envPassthroughKeys: params.envPassthroughKeys ?? ['TERM', 'COLORTERM', 'TERM_PROGRAM', 'TERM_PROGRAM_VERSION'],
+    windowsVerbatimArguments: params.windowsVerbatimArguments ?? invocation.windowsVerbatimArguments,
   });
   const launcherInvocation = resolveWindowsCommandInvocation({
     command: launch.argv[0]!, args: launch.argv.slice(1), env, resolveCommandOnPath: false,
   });
-  let child: BorrowedTerminalChild;
+  let child: ChildProcess;
   try {
+    params.signal?.throwIfAborted();
+    params.beforeSpawn?.();
     child = (params.spawnProcess ?? spawn)(launcherInvocation.command, launcherInvocation.args, {
       cwd: params.workingDirectory,
       env,
@@ -50,7 +63,7 @@ export async function launchBorrowedTerminalProcess(params: Readonly<{
       serialization: 'json',
       windowsHide: true,
       ...(launcherInvocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
-    }) as unknown as BorrowedTerminalChild;
+    });
   } catch (error) {
     return discardFailedTerminalLaunch(launch, error);
   }
@@ -62,8 +75,31 @@ export async function launchBorrowedTerminalProcess(params: Readonly<{
     resolveStartup = resolve;
     rejectStartup = reject;
   });
+  let exited = false;
+  const cancelStartup = () => {
+    if (startupSettled) return;
+    try { child.disconnect(); }
+    catch {
+      logger.infoFile('[borrowed-terminal] Startup cancellation could not close the lifetime channel', {
+        code: 'terminal_child_cancellation_failed',
+      });
+    }
+  };
+  params.signal?.addEventListener('abort', cancelStartup, { once: true });
+  child.on('message', (message) => {
+    if (!message || typeof message !== 'object' || !('type' in message)) return;
+    if (message.type === 'terminal-native-spawned' && !startupSettled) {
+      startupSettled = true;
+      resolveStartup?.();
+    } else if (message.type === 'terminal-native-signal-failed') {
+      logger.infoFile('[borrowed-terminal] Native terminal process signal failed', {
+        code: 'terminal_child_signal_failed',
+      });
+    }
+  });
   const whenExited = new Promise<Readonly<{ code: number | null; signal: NodeJS.Signals | null }>>((resolve, reject) => {
     child.once('error', (error) => {
+      exited = true;
       if (!startupSettled) {
         startupSettled = true;
         rejectStartup?.(error);
@@ -71,6 +107,7 @@ export async function launchBorrowedTerminalProcess(params: Readonly<{
       reject(error);
     });
     child.once('exit', (code, signal) => {
+      exited = true;
       if (!startupSettled) {
         startupSettled = true;
         rejectStartup?.(new Error('Borrowed terminal process exited before startup completed'));
@@ -79,13 +116,10 @@ export async function launchBorrowedTerminalProcess(params: Readonly<{
     });
   }).finally(launch.discard);
   void whenExited.catch(() => undefined);
-  setImmediate(() => {
-    if (startupSettled) return;
-    startupSettled = true;
-    resolveStartup?.();
-  });
+  if (params.signal?.aborted) cancelStartup();
   try { await startup; }
   catch (error) { return discardFailedTerminalLaunch(launch, error); }
+  finally { params.signal?.removeEventListener('abort', cancelStartup); }
   // Startup failures are returned to their caller. Later completion/cleanup failures
   // need a file-only diagnostic because lifecycle readers may track only completion.
   void whenExited.catch(() => {
@@ -95,12 +129,31 @@ export async function launchBorrowedTerminalProcess(params: Readonly<{
   });
 
   const terminateProcess = params.terminateProcess
-    ?? (async (target: BorrowedTerminalChild) => await killProcessTree(target));
+    ?? (async (target: ChildProcess) => await killProcessTree(target));
   let termination: Promise<void> | null = null;
+  const processInstanceFingerprint = typeof child.pid === 'number'
+    ? readProcessInstanceFingerprintSync(child.pid)
+    : null;
   return Object.freeze({
+    launcherIdentity: typeof child.pid === 'number' && processInstanceFingerprint
+      ? Object.freeze({ pid: child.pid, processInstanceFingerprint })
+      : null,
     whenExited,
+    signal: async (signal: 'SIGINT' | 'SIGKILL') => {
+      if (exited) return;
+      await new Promise<void>((resolve, reject) => {
+        child.send({ type: 'terminal-native-signal', signal }, (error) => error ? reject(error) : resolve());
+      });
+    },
     terminate: () => {
-      termination ??= terminateProcess(child);
+      if (!termination) {
+        const attempt = Promise.resolve().then(() => terminateProcess(child));
+        const guardedAttempt = attempt.catch((error) => {
+          if (termination === guardedAttempt) termination = null;
+          throw error;
+        });
+        termination = guardedAttempt;
+      }
       return termination;
     },
   });

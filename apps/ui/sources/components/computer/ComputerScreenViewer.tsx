@@ -10,7 +10,7 @@ import {
     useFirstFrameSize,
     type BrowserStreamedSurfaceRuntime,
 } from '@/components/browser/adapters/BrowserStreamedTarget';
-import { BrowserPresenceCapsule, type BrowserPresenceAgent } from '@/components/browser/copresence/BrowserPresenceCapsule';
+import { BrowserPresenceCapsule, type BrowserPresenceAgent, type BrowserPresenceCapsuleProps } from '@/components/browser/copresence/BrowserPresenceCapsule';
 import { BrowserAgentCursor } from '@/components/browser/copresence/BrowserAgentCursor';
 import { BrowserFrameStatusCapsule } from '@/components/browser/frame/BrowserFrameStatusCapsule';
 import { LiveStreamInputLayer } from '@/components/stream/LiveStreamInputLayer';
@@ -92,7 +92,7 @@ export type ComputerScreenViewerProps = Readonly<{
     /** The agent's action is in flight ("is using"), not merely allowed ("can use"). */
     agentActing: boolean;
     checking?: boolean;
-    onTakeControl: () => void;
+    onTakeControl: NonNullable<BrowserPresenceCapsuleProps['onTakeControl']>;
     onHandBack: () => void;
     onCheckAgain: () => void;
     onChooseWindow: () => void;

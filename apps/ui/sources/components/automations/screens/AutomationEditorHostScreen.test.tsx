@@ -45,15 +45,15 @@ const preventRemoveState = vi.hoisted(() => ({
     handler: null as null | ((event: Readonly<{ data: Readonly<{ action: unknown }> }>) => void),
 }));
 
-vi.mock('@react-navigation/native', () => ({
-    usePreventRemove: (
-        enabled: boolean,
-        handler: (event: Readonly<{ data: Readonly<{ action: unknown }> }>) => void,
-    ) => {
-        preventRemoveState.enabled = enabled;
-        preventRemoveState.handler = handler;
-    },
-}));
+vi.mock('@react-navigation/native', async () => {
+    const { createReactNavigationNativeMock } = await import('@/dev/testkit');
+    return createReactNavigationNativeMock({
+        usePreventRemove: (enabled, handler) => {
+            preventRemoveState.enabled = enabled;
+            preventRemoveState.handler = handler;
+        },
+    });
+});
 
 vi.mock('@/components/automations/editor/AutomationPluralEditorScreen', () => ({
     AutomationPluralEditorScreen: (props: any) => {

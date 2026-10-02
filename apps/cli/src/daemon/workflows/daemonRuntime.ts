@@ -215,7 +215,9 @@ export function createWorkflowAcceptedAuthorizationCurrentness(params: Readonly<
           return false;
         }
       }
-      if (principal.kind === 'host') {
+      // Session is immutable acceptance attribution, not a revocable grant
+      // from the originating process. The accepted Run outlives that Session.
+      if (principal.kind === 'host' || principal.kind === 'session') {
         return true;
       }
       if (principal.kind === 'api') {
@@ -503,6 +505,16 @@ export function createProductionDaemonWorkflowRuntime(params: Readonly<{
               method: SESSION_RPC_METHODS.EXECUTION_RUN_GET, request: { runId, includeStructured: true }, ...(signal ? { signal } : {}) }),
             stop: async (runId, signal) => await callMachineRpc({ credentials: params.credentials, machineId: input.machineId,
               method: SESSION_RPC_METHODS.EXECUTION_RUN_STOP, request: { runId }, ...(signal ? { signal } : {}) }),
+            wait: async (runId, signal) => {
+              const waited = ExecutionRunWaitResultSchema.safeParse(await callMachineRpc({
+                credentials: params.credentials, machineId: input.machineId,
+                method: SESSION_RPC_METHODS.EXECUTION_RUN_WAIT, request: { runId }, timeoutMs: null,
+                ...(signal ? { signal } : {}),
+              }));
+              if (!waited.success || !waited.data.ok || waited.data.status === 'running'
+                || waited.data.result.run.runId !== runId) throw new Error('execution_run_terminal_observation_unavailable');
+              return waited.data.result;
+            },
           },
         }),
       });

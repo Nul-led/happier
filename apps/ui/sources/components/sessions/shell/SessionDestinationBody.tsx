@@ -250,7 +250,7 @@ export function SessionDestinationBody() {
                         routeHydrationState={routeHydrationState}
                         surfaceFocusedOverride={focused}
                         surfaceVisibleOverride={visible}
-                        routeAnchorOverride={true}
+                        routeAnchorOverride={focused && visible}
                     /> : <SessionSplitCanvasScreen
                         sessionId={sessionId}
                         routeServerId={routeServerId.trim() || undefined}

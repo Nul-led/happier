@@ -1,15 +1,23 @@
 import { describe, expect, it, vi } from 'vitest';
 import tweetnacl from 'tweetnacl';
+import axios from 'axios';
 
 import {
   API_TOKEN_FULL_GRANT_V1,
+  ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1,
+  FeaturesResponseSchema,
   SessionAgentSpawnPolicyV1Schema,
+  sealSessionOwnerMetadataEnvelopeV1,
   signExternalActionApprovalInputV1,
   type ApprovalExecutionOriginV1,
   type ApprovalRequestV2,
 } from '@happier-dev/protocol';
 
-import { createDaemonApprovalExecutionOriginCurrentness } from './daemonExternalActionTargetResolver';
+import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
+import { resolveSessionTransportContext } from '@/session/services/resolveSessionTransportContext';
+import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { tryDecryptSessionOwnerMetadataView } from '@/session/transport/encryption/sessionEncryptionContext';
+import { createDaemonApprovalExecutionOriginCurrentness, createDaemonApprovalExecutionOriginCurrentnessFromCredentials, createDaemonExternalActionTargetResolver } from './daemonExternalActionTargetResolver';
 
 const origin: ApprovalExecutionOriginV1 = {
   v: 1,
@@ -27,18 +35,73 @@ const origin: ApprovalExecutionOriginV1 = {
 };
 
 describe('daemon approval execution-origin currentness', () => {
+  it('rechecks layout-1 private permission and locality using Account mode, independently of Session mode', async () => {
+    const sessionId = 'c111111111111111111111111';
+    const secret = new Uint8Array(32).fill(7);
+    const credentials = { token: `header.${Buffer.from(JSON.stringify({ sub: 'account-1' })).toString('base64url')}.signature`,
+      encryption: { type: 'legacy' as const, secret } };
+    const ownerEnvelope = (permissionMode: string) => sealSessionOwnerMetadataEnvelopeV1({
+      material: credentials.encryption, randomBytes: (length) => new Uint8Array(length).fill(3),
+      ownerMetadata: { v: 1, workspace: { path: '/owner/repo', machineId: 'machine-1' }, runtime: { permissionMode } },
+    });
+    let rawSession = createSessionRecordFixture({ id: sessionId, encryptionMode: 'plain', metadataLayoutVersion: 1, share: null,
+      metadata: JSON.stringify({ v: 1, agentPresentation: { agentId: 'codex' } }), ownerMetadata: ownerEnvelope('default') });
+    const serverApiUrl = 'https://approval-owner-mode.test';
+    // Only the HTTP boundaries are replaced. Identity, Account currentness,
+    // Session transport, envelope opening and permission policy remain real.
+    const get = vi.spyOn(axios, 'get').mockImplementation(async (url) => {
+      if (String(url).endsWith('/v1/account/encryption/currentness')) return { status: 200, data: {
+        mode: 'e2ee', version: 1, signingKeyFingerprint: 'a'.repeat(64), contentKeyFingerprint: 'b'.repeat(64), updatedAt: 1 } };
+      if (String(url).includes('/v2/sessions/')) return { status: 200, data: { session: rawSession } };
+      throw new Error(`Unexpected HTTP request: ${String(url)}`);
+    });
+    const featureBody = JSON.stringify(FeaturesResponseSchema.parse({ features: {},
+      capabilities: { serverIdentity: { serverIdentityId: 'srv_approval_owner_mode' } } }));
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(featureBody, { status: 200 }));
+    const request = vi.spyOn(axios, 'request').mockImplementation(async (config) => {
+      if (config.method === 'POST' && String(config.url).endsWith(ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1)) return { status: 200, data: { tokens: [] } };
+      throw new Error(`Unexpected HTTP request: ${String(config.url)}`);
+    });
+    try {
+      const transport = await runWithServerHttpBaseUrl(serverApiUrl, () => resolveSessionTransportContext({ credentials, idOrPrefix: sessionId }));
+      expect(transport.ok).toBe(true);
+      if (!transport.ok) throw new Error(transport.code);
+      expect(tryDecryptSessionOwnerMetadataView({ credentials, accountEncryptionMode: transport.accountEncryptionCurrentness.mode,
+        rawSession: transport.rawSession })).toMatchObject({ machineId: 'machine-1', permissionMode: 'default' });
+      const check = createDaemonApprovalExecutionOriginCurrentnessFromCredentials({ credentials, serverApiUrl,
+        machineId: 'machine-1', serverId: 'home-1', isSessionCallerCurrent: () => true });
+      expect(check).toBeDefined();
+      const sessionOrigin: ApprovalExecutionOriginV1 = { v: 1, authority: 'account_automation', surface: 'agent',
+        caller: { kind: 'session', sessionId }, serverId: 'home-1', accountId: 'account-1', machineId: 'machine-1',
+        actionId: 'workflow.trigger.add', requestId: 'private-permission-request', callerPermissionMode: 'default' };
+      await expect(check!({ origin: sessionOrigin })).resolves.toBe(true);
+      const target = { kind: 'session' as const, sessionId };
+      const resolveTarget = createDaemonExternalActionTargetResolver({ credentials, serverApiUrl });
+      await expect(resolveTarget({ actionId: 'session.open', target, currentMachineId: 'machine-1' })).resolves.toEqual(target);
+      rawSession = { ...rawSession, ownerMetadata: ownerEnvelope('read-only') };
+      await expect(check!({ origin: sessionOrigin })).resolves.toBe(false);
+      rawSession = { ...rawSession, id: 'c222222222222222222222222', ownerMetadata: ownerEnvelope('default') };
+      await expect(check!({ origin: sessionOrigin })).resolves.toBe(false);
+      await expect(resolveTarget({ actionId: 'session.open', target, currentMachineId: 'machine-1' })).resolves.toBeNull();
+      rawSession = { ...rawSession, id: sessionId, ownerMetadata: { t: 'plain', v: { v: 1,
+        workspace: { path: '/wrong-mode', machineId: 'machine-1' }, runtime: { permissionMode: 'default' } } } };
+      await expect(check!({ origin: sessionOrigin })).resolves.toBe(false);
+      await expect(resolveTarget({ actionId: 'session.open', target, currentMachineId: 'machine-1' })).resolves.toBeNull();
+    } finally { get.mockRestore(); request.mockRestore(); fetch.mockRestore(); }
+  });
   it('requires the Session caller owner to prove currentness independently of its effect target', async () => {
     const sessionOrigin = { ...origin, surface: 'agent' as const,
       caller: { kind: 'session' as const, sessionId: 'caller-session' },
       accountId: 'account-1', principalId: undefined, credentialId: undefined,
       callerPermissionMode: 'default' as const,
     };
+    let currentMode = 'default';
     const shared = {
       accountId: 'account-1', machineId: 'machine-1', serverId: 'home-1',
       resolveCurrentMachineExecutionOriginContext: async () => ({ serverIdentityId: 'home-1', machineId: 'machine-1' }),
       resolveTarget: async () => origin.target ?? null,
       listAccountApiTokens: async () => ({ tokens: [] }),
-      resolveCurrentPermissionMode: async () => 'default',
+      resolveCurrentPermissionMode: async () => currentMode,
     };
     const unavailable = createDaemonApprovalExecutionOriginCurrentness(shared);
     await expect(unavailable({ origin: sessionOrigin })).resolves.toBe(false);
@@ -50,6 +113,9 @@ describe('daemon approval execution-origin currentness', () => {
       },
     });
     await expect(isCurrent({ origin: sessionOrigin })).resolves.toBe(true);
+    currentMode = 'read-only';
+    await expect(isCurrent({ origin: sessionOrigin })).resolves.toBe(false);
+    currentMode = 'default';
     callerIsCurrent = false;
     await expect(isCurrent({ origin: sessionOrigin })).resolves.toBe(false);
   });

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
+import { Terminal } from '@xterm/xterm';
 
 import { createDeferred, flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
 import type { DaemonTerminalEnsureResponse } from '@happier-dev/protocol';
@@ -1112,6 +1113,45 @@ describe('useMachineTerminalSession', () => {
         await hook.unmount();
     });
 
+    it('aborts a partial OSC at a stream gap so the marker and next prompt remain visible', async () => {
+        useFeatureEnabledMock.mockReturnValue(false);
+        terminalOps.ensure.mockResolvedValue({ ok: true, terminalId: 'term-osc-gap', reused: false });
+        terminalOps.streamRead.mockResolvedValueOnce({
+            ok: true,
+            events: [
+                { t: 'data', data: '\u001b]0;unfinished title' },
+                { t: 'gap', droppedBefore: 2 },
+                { t: 'data', data: 'next prompt$ ' },
+            ],
+            nextCursor: 3,
+            done: true,
+        });
+        const terminal = new Terminal({ cols: 80, rows: 24 });
+        const terminalRef = { current: {
+            write: (data: string) => terminal.write(data),
+            clear: () => terminal.clear(),
+        } satisfies EmbeddedTerminalRendererHandle };
+        const { useMachineTerminalSession } = await import('./useMachineTerminalSession');
+        const hook = await renderHook(() => useMachineTerminalSession({
+            machineId: 'machine-1',
+            cwd: '/repo',
+            terminalKey: 'session:osc-gap:terminal',
+            terminalRef,
+        }), { flushOptions: { cycles: 1, turns: 1 } });
+        try {
+            await act(async () => hook.getCurrent().onReady(80, 24));
+            await flushHookEffects({ cycles: 4, turns: 2, runOnlyPendingTimers: true });
+            const text = Array.from({ length: terminal.buffer.active.length }, (_, index) => (
+                terminal.buffer.active.getLine(index)?.translateToString(true) ?? ''
+            )).join('\n');
+            expect(text).toContain('[Output truncated]');
+            expect(text).toContain('next prompt$');
+        } finally {
+            await hook.unmount();
+            terminal.dispose();
+        }
+    });
+
     it('replaces same-mode cached preview text when daemon replay begins', async () => {
         const terminalKey = 'session:s-preview-replacement:terminal';
         replaceTerminalSurfaceState(terminalKey, {
@@ -1232,7 +1272,7 @@ describe('useMachineTerminalSession', () => {
         await act(async () => {
             hook.getCurrent().onReady(80, 24);
         });
-        expect(firstRenderer.write).toHaveBeenCalledWith('cached output');
+        expect(firstRenderer.write).toHaveBeenCalledWith('cached output', { intent: 'replay' });
 
         terminalRef.current = fallbackRenderer;
         await act(async () => {
@@ -1240,7 +1280,7 @@ describe('useMachineTerminalSession', () => {
         });
 
         expect(fallbackRenderer.clear).toHaveBeenCalledTimes(1);
-        expect(fallbackRenderer.write).toHaveBeenCalledWith('cached output');
+        expect(fallbackRenderer.write).toHaveBeenCalledWith('cached output', { intent: 'replay' });
         await hook.unmount();
     });
 

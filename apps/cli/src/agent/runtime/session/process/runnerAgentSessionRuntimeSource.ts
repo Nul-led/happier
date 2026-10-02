@@ -76,6 +76,7 @@ import {
 import {
     AgentRuntimeDaemonSessionOpenRequestV1Schema,
     AgentRuntimeDaemonSessionDescriptorV1Schema,
+    AgentRuntimeRunnerBootstrapV1Schema,
 } from './agentRuntimeRunnerProtocol';
 import {
     createRunnerAgentDaemonFacets,
@@ -113,11 +114,6 @@ import {
     ExternalSessionProviderFailureError,
     type ExternalSessionExecutionSurface,
 } from '@/session/external/providerOps';
-
-const RunnerBootstrapHandoffSchema = z.object({
-    v: z.literal(1),
-    descriptor: AgentRuntimeDaemonSessionDescriptorV1Schema,
-}).strict();
 
 function createRunnerSourceUnavailableError(message: string): Error {
     const error = new Error(message) as Error & { code: string };
@@ -189,10 +185,13 @@ export async function createRunnerAgentSessionRuntimeBootstrap(input: Readonly<{
 }>): Promise<RunnerAgentSessionRuntimeSource | null> {
     let descriptor:
         z.infer<typeof AgentRuntimeDaemonSessionDescriptorV1Schema>;
+    let launch: z.infer<typeof AgentRuntimeRunnerBootstrapV1Schema>['launch'];
     try {
-        descriptor = RunnerBootstrapHandoffSchema.parse(
+        const bootstrap = AgentRuntimeRunnerBootstrapV1Schema.parse(
             JSON.parse(await readPrivateBearerFile(input.bootstrapFilePath)),
-        ).descriptor;
+        );
+        descriptor = bootstrap.descriptor;
+        launch = bootstrap.launch;
     } catch {
         return null;
     }
@@ -515,6 +514,7 @@ export async function createRunnerAgentSessionRuntimeBootstrap(input: Readonly<{
             });
 
     return Object.freeze({
+        ...(launch ? { startupRuntimeDescriptorV1: launch.runtimeDescriptorV1 } : {}),
         get agentContribution() {
             return claimed?.agentContribution
                 ?? bootstrapAgentContribution;
@@ -661,6 +661,8 @@ export async function createRunnerAgentSessionRuntimeBootstrap(input: Readonly<{
         externalSessionHostOperations,
         retainedExternalSessionProviderOps,
         managedServiceEndpointReadPort,
+        resolveProviderCliAttachManagedServiceAccess: async (request) =>
+            await requireClaimed().resolveProviderCliAttachManagedServiceAccess?.(request) ?? null,
         managedServicesCustodyPort,
         agentSessionRealtimeVoiceAuthority,
     });
@@ -1688,6 +1690,8 @@ export async function createRunnerAgentSessionRuntimeSource(input: Readonly<{
         retainedExternalSessionProviderOps,
         managedServiceEndpointReadPort:
             runnerManagedServiceOwner.endpointReadPort,
+        resolveProviderCliAttachManagedServiceAccess:
+            runnerManagedServiceOwner.resolveProviderCliAttachManagedServiceAccess,
         managedServicesCustodyPort:
             managedServicesCustodyOwner,
         agentSessionRealtimeVoiceAuthority:

@@ -124,6 +124,41 @@ function openedWith(key: Uint8Array, encoded: unknown): unknown {
 }
 
 describe('callMachineRpc', () => {
+  it('reattaches a read-only observation on reconnect with the same target and cursor', async () => {
+    axiosGet.mockResolvedValue({ data: { machine: { id: 'machine-session',
+      dataEncryptionKey: encodeBase64(new TextEncoder().encode(JSON.stringify({ t: 'plain', v: null }))),
+    } } });
+    const requests: unknown[] = [];
+    socket.emit.mockImplementation((event, payload, ack) => {
+      if (event !== SOCKET_RPC_EVENTS.CALL) return;
+      requests.push(payload.params);
+      if (requests.length === 2) ack({ ok: true, result: { cursor: 81 } });
+    });
+    const controller = new AbortController();
+    const observation = callExactMachineRpc({
+      credentials: { token: 'token', encryption: null },
+      machineId: 'machine-session',
+      method: RPC_METHODS.DAEMON_PLUGIN_INVOCATION_LOGS_READ,
+      request: { cursor: 42 },
+      timeoutMs: null,
+      reattachOnReconnect: true,
+      signal: controller.signal,
+    });
+    // Attach rejection immediately so the defective one-shot path is observable.
+    const outcome = observation.then((value) => ({ value }), (error: unknown) => ({ error }));
+    try {
+      await vi.waitFor(() => expect(requests).toHaveLength(1));
+      socketHandlers.get('disconnect')?.();
+      socketHandlers.get('connect')?.();
+      await vi.waitFor(() => expect(requests).toHaveLength(2));
+      expect(requests).toEqual([{ cursor: 42 }, { cursor: 42 }]);
+      await expect(outcome).resolves.toEqual({ value: { cursor: 81 } });
+    } finally {
+      controller.abort();
+      await outcome;
+    }
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     socket.connected = false;

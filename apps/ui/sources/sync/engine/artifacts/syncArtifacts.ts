@@ -11,12 +11,16 @@ import {
     fetchArtifact as fetchArtifactApi,
     fetchArtifacts as fetchArtifactsApi,
     updateArtifact as updateArtifactApi,
+    fetchArtifactRevisions,
+    fetchArtifactBlob,
+    restoreArtifactRevision,
 } from '@/sync/api/artifacts/apiArtifacts';
 import type { Encryption } from '@/sync/encryption/encryption';
-import { ArtifactEncryption } from '@/sync/encryption/artifactEncryption';
+import { ArtifactEncryption, projectArtifactHeaderForDisplay } from '@/sync/encryption/artifactEncryption';
 import { HappyError } from '@/utils/errors/errors';
 import type {
     Artifact,
+    ArtifactBodyInput,
     ArtifactCreateRequest,
     ArtifactLockedReason,
     ArtifactUpdateRequest,
@@ -25,11 +29,33 @@ import type {
 import type { ArtifactHeader } from '@/sync/domains/artifacts/artifactTypes';
 import {
     ARTIFACT_PLAIN_DATA_KEY_MARKER,
+    ArtifactBodyV1Schema,
+    ArtifactBlobReferenceV1Schema,
+    artifactKindRequiresTextBodyV1,
+    type ArtifactBlobReferenceV1,
+    type ArtifactBodyV1,
     decodePlainArtifactStoredContent,
     encodePlainArtifactStoredContent,
     isPlainArtifactDataKeyMarker,
     runArtifactRecipientKeyPreparationV1,
+    withArtifactExcerptV1,
+    prepareArtifactHeaderForRevisionV1,
+    type ArtifactRevisionV1,
 } from '@happier-dev/protocol';
+import { hashArtifactBinaryContent, openArtifactBinaryContent, sealArtifactBinaryContent } from '@/sync/domains/artifacts/artifactBinaryContent';
+
+function prepareArtifactBody(input: ArtifactBodyInput): ArtifactBodyV1 | null {
+    if (input !== null && typeof input === 'object' && 'bytes' in input) return ArtifactBlobReferenceV1Schema.parse({
+        blobId: randomUUID(), mime: input.mime, sizeBytes: input.bytes.length, sha256: hashArtifactBinaryContent(input.bytes),
+    });
+    return ArtifactBodyV1Schema.nullable().parse(input);
+}
+
+function requireArtifactBodyKind(header: Readonly<Record<string, unknown>>, body: ArtifactBodyV1 | null): void {
+    if (body !== null && typeof body !== 'string' && artifactKindRequiresTextBodyV1(header.kind)) {
+        throw new HappyError('This Artifact kind requires text content', false, { code: 'artifact_invalid_body' });
+    }
+}
 
 function artifactAccessProjection(artifact: Artifact) {
     return { access: artifact.access, ownerAccountId: artifact.ownerAccountId };
@@ -147,27 +173,27 @@ function requireArtifactEncryption(encryption: Encryption | null): Encryption {
     return encryption;
 }
 
-function decodePlainArtifactHeader(value: string): ArtifactHeader {
+function decodePlainArtifactHeaderRaw(value: string): Readonly<Record<string, unknown>> {
     const decoded = decodePlainArtifactStoredContent(value);
     if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
         throw new Error('Invalid plaintext artifact header');
     }
-    return normalizeArtifactHeaderForDecryptedArtifact(decoded as ArtifactHeader);
+    return decoded as Readonly<Record<string, unknown>>;
 }
 
-function decodePlainArtifactBody(value: string): { body: string | null } {
+function decodePlainArtifactHeader(value: string): ArtifactHeader {
+    return normalizeArtifactHeaderForDecryptedArtifact(decodePlainArtifactHeaderRaw(value));
+}
+
+function decodePlainArtifactBody(value: string): { body: ArtifactBodyV1 | null } {
     const decoded = decodePlainArtifactStoredContent(value);
     if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
         throw new Error('Invalid plaintext artifact body');
     }
-    const body = (decoded as { body?: unknown }).body;
-    if (body !== null && typeof body !== 'string') {
-        throw new Error('Invalid plaintext artifact body');
-    }
-    return { body };
+    return { body: ArtifactBodyV1Schema.nullable().parse(Reflect.get(decoded, 'body')) };
 }
 
-function normalizeArtifactHeaderForDecryptedArtifact(header: ArtifactHeader): ArtifactHeader {
+function normalizeArtifactHeaderForDecryptedArtifact(header: Readonly<Record<string, unknown>>): ArtifactHeader {
     const title = typeof header.title === 'string' ? header.title : null;
     const vRaw = header.v;
     const v = typeof vRaw === 'number' && Number.isFinite(vRaw) ? Math.floor(vRaw) : 1;
@@ -247,10 +273,12 @@ async function buildDecryptedArtifactListItem(params: {
 
     if (isPlainArtifactDataKeyMarker(artifact.dataEncryptionKey)) {
         try {
-            const header = decodePlainArtifactHeader(artifact.header);
+            const rawHeader = decodePlainArtifactHeaderRaw(artifact.header);
+            const header = normalizeArtifactHeaderForDecryptedArtifact(rawHeader);
             return {
                 id: artifact.id,
                 header,
+                rawHeader,
                 title: header.title,
                 sessions: header.sessions,
                 draft: header.draft,
@@ -292,7 +320,8 @@ async function buildDecryptedArtifactListItem(params: {
         const artifactEncryption = new ArtifactEncryption(dataKey);
 
         // Decrypt header
-        const header = await artifactEncryption.decryptHeader(artifact.header);
+        const rawHeader = await artifactEncryption.decryptHeaderRaw(artifact.header);
+        const header = rawHeader ? projectArtifactHeaderForDisplay(rawHeader) : null;
 
         if (!header) {
             return createLockedArtifactView({
@@ -304,6 +333,7 @@ async function buildDecryptedArtifactListItem(params: {
         return {
             id: artifact.id,
             header,
+            rawHeader,
             title: header.title || null,
             sessions: header.sessions,
             draft: header.draft,
@@ -335,11 +365,14 @@ export async function decryptArtifactWithBody(params: {
 
     if (isPlainArtifactDataKeyMarker(artifact.dataEncryptionKey)) {
         try {
-            const header = decodePlainArtifactHeader(artifact.header);
+            const rawHeader = decodePlainArtifactHeaderRaw(artifact.header);
+            const header = normalizeArtifactHeaderForDecryptedArtifact(rawHeader);
             const body = artifact.body ? decodePlainArtifactBody(artifact.body) : null;
+            requireArtifactBodyKind(rawHeader, body?.body ?? null);
             return {
                 id: artifact.id,
                 header,
+                rawHeader,
                 title: header.title,
                 sessions: header.sessions,
                 draft: header.draft,
@@ -382,23 +415,26 @@ export async function decryptArtifactWithBody(params: {
         const artifactEncryption = new ArtifactEncryption(decryptedKey);
 
         // Decrypt header and body
-        const header = await artifactEncryption.decryptHeader(artifact.header);
+        const rawHeader = await artifactEncryption.decryptHeaderRaw(artifact.header);
+        const header = rawHeader ? projectArtifactHeaderForDisplay(rawHeader) : null;
         const body = artifact.body ? await artifactEncryption.decryptBody(artifact.body) : null;
 
-        if (!header) {
+        if (!header || (artifact.body && !body)) {
             return createLockedArtifactView({
                 artifact,
                 reason: 'decryption_failed',
             });
         }
 
+        requireArtifactBodyKind(rawHeader!, body?.body ?? null);
         return {
             id: artifact.id,
             header,
             title: header.title || null,
             sessions: header.sessions,
             draft: header.draft,
-            body: body?.body || null,
+            body: body?.body ?? null,
+            rawHeader,
             headerVersion: artifact.headerVersion,
             bodyVersion: artifact.bodyVersion,
             seq: artifact.seq,
@@ -511,9 +547,8 @@ export async function fetchArtifactWithBodyFromApi(params: {
             artifactDataKeys,
         });
         params.signal?.throwIfAborted();
-        // Grant-aware opens are the named key-holder pass for owners and grantees.
-        // Legacy responses have no access projection and keep their existing path.
-        if (opened?.isDecrypted && opened.storageMode === 'e2ee' && opened.access) {
+        // Every current HTTP E2EE open performs the named key-holder preparation pass.
+        if (opened?.isDecrypted && opened.storageMode === 'e2ee') {
             const key = artifactDataKeys.get(artifactId);
             if (!key || key.envelope !== artifact.dataEncryptionKey) {
                 throw Object.assign(new Error('artifact_content_unavailable'), { code: 'artifact_content_unavailable' });
@@ -532,12 +567,95 @@ export async function fetchArtifactWithBodyFromApi(params: {
     }
 }
 
+export async function fetchArtifactBinaryFromApi(params: Readonly<{
+    credentials: AuthCredentials; request?: ArtifactApiOptions['request']; artifactId: string;
+    reference: ArtifactBlobReferenceV1; encryption: Encryption | null; artifactDataKeys: ArtifactDataKeyCache; signal?: AbortSignal;
+}>): Promise<Uint8Array> {
+    const artifact = await fetchArtifactWithBodyFromApi(params);
+    if (!artifact?.isDecrypted || !artifact.storageMode) {
+        throw new HappyError('Artifact file changed or is unavailable', false, { code: 'artifact_content_unavailable' });
+    }
+    const stored = await fetchArtifactBlob(params.credentials, params.artifactId, params.reference.blobId, artifact.storageMode,
+        { request: params.request, signal: params.signal });
+    const dataKey = params.artifactDataKeys.get(params.artifactId)?.dataKey;
+    const bytes = await openArtifactBinaryContent({ reference: params.reference, content: stored.content, mode: artifact.storageMode,
+        encryption: dataKey ? new ArtifactEncryption(dataKey) : null });
+    params.signal?.throwIfAborted();
+    return bytes;
+}
+
+type ArtifactRevisionReadParams = Readonly<{
+    credentials: AuthCredentials;
+    request?: ArtifactApiOptions['request'];
+    artifactId: string;
+    encryption: Encryption | null;
+    artifactDataKeys: ArtifactDataKeyCache;
+    signal?: AbortSignal;
+}>;
+
+async function openRetainedArtifactBodies(params: ArtifactRevisionReadParams, artifact: Artifact) {
+    const inventory = await fetchArtifactRevisions(params.credentials, artifact.id, params);
+    const key = artifact.encryptionMode === 'e2ee' ? await resolveArtifactDataKey({ ...params, artifact }) : null;
+    if (artifact.encryptionMode === 'e2ee' && !key)
+        throw Object.assign(new Error('Artifact content is unavailable'), { code: 'content_unavailable' });
+    const codec = key ? new ArtifactEncryption(key) : null;
+    const revisions = await Promise.all(inventory.revisions.map(async (revision) => {
+        try {
+            const opened = artifact.encryptionMode === 'plain'
+                ? decodePlainArtifactBody(revision.body) : await codec!.decryptBody(revision.body);
+            if (!opened) throw new Error('Invalid retained body');
+            return { ...revision, body: opened.body };
+        } catch {
+            throw Object.assign(new Error('Artifact revision content is unavailable'), { code: 'content_unavailable' });
+        }
+    }));
+    params.signal?.throwIfAborted();
+    return { artifactId: artifact.id, revisions, retentionCount: inventory.retentionCount };
+}
+
+export async function fetchArtifactBodyRevisionsFromApi(params: ArtifactRevisionReadParams) {
+    const artifact = await fetchArtifactApi(params.credentials, params.artifactId, params);
+    return openRetainedArtifactBodies(params, artifact);
+}
+
+export async function restoreArtifactBodyRevisionViaApi(params: ArtifactRevisionReadParams & Readonly<{
+    bodyVersion: number;
+    expectedRevision: ArtifactRevisionV1;
+    updateArtifact: (artifact: DecryptedArtifact) => void;
+}>) {
+    const artifact = await fetchArtifactApi(params.credentials, params.artifactId, params);
+    if (artifact.headerVersion !== params.expectedRevision.headerVersion || artifact.bodyVersion !== params.expectedRevision.bodyVersion)
+        throw Object.assign(new Error('Artifact was modified by another client'), { code: 'version_mismatch' });
+    const current = await decryptArtifactWithBody({ ...params, artifact });
+    if (!current?.isDecrypted || !current.rawHeader)
+        throw Object.assign(new Error('Artifact content is unavailable'), { code: 'content_unavailable' });
+    const inventory = await openRetainedArtifactBodies(params, artifact);
+    const selected = inventory.revisions.find(row => row.bodyVersion === params.bodyVersion);
+    if (!selected) throw new HappyError('Artifact revision not found', false, { status: 404, code: 'not_found' });
+    const rawHeader = withArtifactExcerptV1(prepareArtifactHeaderForRevisionV1({
+        artifactId: artifact.id, header: current.rawHeader, body: selected.body, expectedRevision: params.expectedRevision,
+        nextRevision: { headerVersion: params.expectedRevision.headerVersion + 1, bodyVersion: params.expectedRevision.bodyVersion + 1 },
+    }), selected.body);
+    const key = params.artifactDataKeys.get(artifact.id)?.dataKey;
+    if (artifact.encryptionMode === 'e2ee' && !key)
+        throw Object.assign(new Error('Artifact content is unavailable'), { code: 'content_unavailable' });
+    const header = artifact.encryptionMode === 'plain' ? encodePlainArtifactStoredContent(rawHeader)
+        : await new ArtifactEncryption(key!).encryptHeader(rawHeader);
+    const revision = await restoreArtifactRevision(params.credentials, { artifactId: artifact.id,
+        bodyVersion: params.bodyVersion, expectedRevision: params.expectedRevision, header }, params);
+    const restored = await fetchArtifactWithBodyFromApi(params);
+    params.signal?.throwIfAborted();
+    if (!restored?.isDecrypted) throw Object.assign(new Error('Artifact content is unavailable'), { code: 'content_unavailable' });
+    params.updateArtifact(restored);
+    return { artifactId: artifact.id, revision };
+}
+
 export async function createArtifactViaApi(params: {
     credentials: AuthCredentials;
     request?: ArtifactApiOptions['request'];
     serverId?: string;
     title: string | null;
-    body: string | null;
+    body: ArtifactBodyInput;
     sessions?: string[];
     draft?: boolean;
     encryption: Encryption | null;
@@ -567,13 +685,17 @@ export async function createArtifactWithHeaderViaApi(params: {
     request?: ArtifactApiOptions['request'];
     serverId?: string;
     artifactId?: string;
-    header: ArtifactHeader;
-    body: string | null;
+    signal?: AbortSignal;
+    header: Readonly<Record<string, unknown>>;
+    body: ArtifactBodyInput;
     encryption: Encryption | null;
     artifactDataKeys: ArtifactDataKeyCache;
     addArtifact: (artifact: DecryptedArtifact) => void;
 }): Promise<string> {
-    const { credentials, header, body, encryption, artifactDataKeys, addArtifact } = params;
+    const { credentials, header, encryption, artifactDataKeys, addArtifact } = params;
+    const body = prepareArtifactBody(params.body);
+    requireArtifactBodyKind(header, body);
+    const rawHeader = withArtifactExcerptV1(header, body);
 
     try {
         // Generate unique artifact ID
@@ -583,10 +705,11 @@ export async function createArtifactWithHeaderViaApi(params: {
         let storedDataEncryptionKey: string;
         let storedHeader: string;
         let storedBody: string;
+        let artifactEncryption: ArtifactEncryption | null = null;
 
         if (accountMode === 'plain') {
             storedDataEncryptionKey = ARTIFACT_PLAIN_DATA_KEY_MARKER;
-            storedHeader = encodePlainArtifactStoredContent(header);
+            storedHeader = encodePlainArtifactStoredContent(rawHeader);
             storedBody = encodePlainArtifactStoredContent({ body });
         } else {
             const accountEncryption = requireArtifactEncryption(encryption);
@@ -604,10 +727,10 @@ export async function createArtifactWithHeaderViaApi(params: {
             });
 
             // Create artifact encryption instance
-            const artifactEncryption = new ArtifactEncryption(dataEncryptionKey);
+            artifactEncryption = new ArtifactEncryption(dataEncryptionKey);
 
             // Encrypt header and body
-            storedHeader = await artifactEncryption.encryptHeader(header);
+            storedHeader = await artifactEncryption.encryptHeader(rawHeader);
             storedBody = await artifactEncryption.encryptBody({ body });
             storedDataEncryptionKey = encodeBase64(encryptedKey, 'base64');
         }
@@ -619,9 +742,14 @@ export async function createArtifactWithHeaderViaApi(params: {
             body: storedBody,
             dataEncryptionKey: storedDataEncryptionKey,
         };
+        if (params.body !== null && typeof params.body === 'object' && 'bytes' in params.body && typeof body === 'object' && body !== null) {
+            request.blob = { blobId: body.blobId, content: await sealArtifactBinaryContent(params.body.bytes, accountMode, artifactEncryption) };
+        }
 
         // Send to server
-        const artifact = await createArtifactApi(credentials, request, { request: params.request });
+        params.signal?.throwIfAborted();
+        const artifact = await createArtifactApi(credentials, request, { request: params.request, signal: params.signal });
+        params.signal?.throwIfAborted();
 
         // Exact-id create can return a pre-existing row after a same-id race. Its
         // content and key are authoritative, not the plaintext we attempted to save.
@@ -635,10 +763,11 @@ export async function createArtifactWithHeaderViaApi(params: {
         }
 
         // Add to local storage
-        const normalizedHeader = normalizeArtifactHeaderForDecryptedArtifact(header);
+        const normalizedHeader = normalizeArtifactHeaderForDecryptedArtifact(rawHeader);
         const decryptedArtifact: DecryptedArtifact = {
             id: artifact.id,
             header: normalizedHeader,
+            rawHeader,
             title: normalizedHeader.title,
             sessions: normalizedHeader.sessions,
             draft: normalizedHeader.draft,
@@ -668,7 +797,7 @@ export async function updateArtifactViaApi(params: {
     serverId?: string;
     artifactId: string;
     title: string | null;
-    body: string | null;
+    body: ArtifactBodyInput;
     sessions?: string[];
     draft?: boolean;
     encryption: Encryption | null;
@@ -685,9 +814,12 @@ export async function updateArtifactViaApi(params: {
         if (!currentArtifact) {
             throw new Error(`Artifact ${artifactId} not found`);
         }
+        if (!currentArtifact.isDecrypted || !currentArtifact.rawHeader) {
+            throw Object.assign(new Error('Artifact content is unavailable. Please refresh and try again.'), { code: 'content_unavailable' });
+        }
 
         const header: ArtifactHeader = {
-            ...(currentArtifact.header ?? {}),
+            ...currentArtifact.rawHeader,
             title,
             ...(sessions ? { sessions } : {}),
             ...(typeof draft === 'boolean' ? { draft } : {}),
@@ -711,14 +843,6 @@ export async function updateArtifactViaApi(params: {
     }
 }
 
-function resolveHeaderCandidateForEquality(
-    artifact: DecryptedArtifact,
-    fallback: ArtifactHeader,
-): ArtifactHeader {
-    if (artifact.header) return normalizeArtifactHeaderForDecryptedArtifact(artifact.header);
-    return normalizeArtifactHeaderForDecryptedArtifact(fallback);
-}
-
 function stableStringifyJsonValue(value: unknown): string {
     if (value === null) return 'null';
     const t = typeof value;
@@ -739,14 +863,18 @@ export async function updateArtifactWithHeaderViaApi(params: {
     serverId?: string;
     artifactId: string;
     expectedRevision?: Readonly<{ headerVersion: number; bodyVersion: number }>;
-    header: ArtifactHeader;
-    body: string | null;
+    signal?: AbortSignal;
+    header: Readonly<Record<string, unknown>>;
+    body: ArtifactBodyInput;
     encryption: Encryption | null;
     artifactDataKeys: ArtifactDataKeyCache;
     getArtifact: (artifactId: string) => DecryptedArtifact | undefined;
     updateArtifact: (artifact: DecryptedArtifact) => void;
 }): Promise<void> {
-    const { credentials, artifactId, header, body, encryption, artifactDataKeys, getArtifact, updateArtifact } = params;
+    const { credentials, artifactId, header, encryption, artifactDataKeys, getArtifact, updateArtifact } = params;
+    const body = prepareArtifactBody(params.body);
+    requireArtifactBodyKind(header, body);
+    const rawHeader = withArtifactExcerptV1(header, body);
 
     // Get current artifact from storage
     const currentArtifact = getArtifact(artifactId);
@@ -771,7 +899,7 @@ export async function updateArtifactWithHeaderViaApi(params: {
         || storageMode === undefined
         || (storageMode === 'e2ee' && !dataEncryptionKey)
     ) {
-        const fullArtifact = await fetchArtifactApi(credentials, artifactId, { request: params.request });
+        const fullArtifact = await fetchArtifactApi(credentials, artifactId, { request: params.request, signal: params.signal });
         // Key recovery must never rebase the full CAS token supplied by the caller.
         if (!params.expectedRevision) {
             headerVersion = fullArtifact.headerVersion;
@@ -803,20 +931,16 @@ export async function updateArtifactWithHeaderViaApi(params: {
     // Prepare update request
     const updateRequest: ArtifactUpdateRequest = {};
 
-    const normalizedHeader = normalizeArtifactHeaderForDecryptedArtifact(header);
-    const currentHeaderCandidate = resolveHeaderCandidateForEquality(currentArtifact, {
-        title: currentArtifact.title,
-        ...(currentArtifact.sessions ? { sessions: currentArtifact.sessions } : {}),
-        ...(typeof currentArtifact.draft === 'boolean' ? { draft: currentArtifact.draft } : {}),
-    });
-
-    const shouldUpdateHeader =
-        stableStringifyJsonValue(normalizedHeader) !== stableStringifyJsonValue(currentHeaderCandidate);
+    const normalizedHeader = normalizeArtifactHeaderForDecryptedArtifact(rawHeader);
+    // A complete caller-supplied replacement is authoritative even when an old
+    // cache lacks raw metadata. Presentation normalization cannot prove a no-op.
+    const shouldUpdateHeader = !currentArtifact.rawHeader
+        || stableStringifyJsonValue(rawHeader) !== stableStringifyJsonValue(currentArtifact.rawHeader);
 
     if (params.expectedRevision || shouldUpdateHeader) {
         updateRequest.header = storageMode === 'plain'
-            ? encodePlainArtifactStoredContent(header)
-            : await artifactEncryption!.encryptHeader(header);
+            ? encodePlainArtifactStoredContent(rawHeader)
+            : await artifactEncryption!.encryptHeader(rawHeader);
         updateRequest.expectedHeaderVersion = headerVersion;
     }
 
@@ -826,6 +950,12 @@ export async function updateArtifactWithHeaderViaApi(params: {
             ? encodePlainArtifactStoredContent({ body })
             : await artifactEncryption!.encryptBody({ body });
         updateRequest.expectedBodyVersion = bodyVersion;
+        if (body !== null && typeof body === 'object') {
+            updateRequest.blob = { blobId: body.blobId,
+                ...(params.body !== null && typeof params.body === 'object' && 'bytes' in params.body
+                    ? { content: await sealArtifactBinaryContent(params.body.bytes, storageMode, artifactEncryption) } : {}),
+            };
+        }
     }
 
     // Skip if no changes
@@ -834,7 +964,9 @@ export async function updateArtifactWithHeaderViaApi(params: {
     }
 
     // Send update to server
-    const response = await updateArtifactApi(credentials, artifactId, updateRequest, { request: params.request });
+    params.signal?.throwIfAborted();
+    const response = await updateArtifactApi(credentials, artifactId, updateRequest, { request: params.request, signal: params.signal });
+    params.signal?.throwIfAborted();
 
     if (!response.success) {
         // Handle version mismatch
@@ -848,6 +980,7 @@ export async function updateArtifactWithHeaderViaApi(params: {
     const updatedArtifact: DecryptedArtifact = {
         ...currentArtifact,
         header: normalizedHeader,
+        rawHeader,
         title: normalizedHeader.title,
         sessions: normalizedHeader.sessions,
         draft: normalizedHeader.draft,
@@ -892,13 +1025,16 @@ export async function decryptSocketNewArtifactUpdate(params: {
 
     if (isPlainArtifactDataKeyMarker(dataEncryptionKey)) {
         try {
-            const decryptedHeader = decodePlainArtifactHeader(header);
+            const rawHeader = decodePlainArtifactHeaderRaw(header);
+            const decryptedHeader = normalizeArtifactHeaderForDecryptedArtifact(rawHeader);
             const decryptedBody = body && bodyVersion !== undefined
                 ? decodePlainArtifactBody(body).body
                 : undefined;
+            requireArtifactBodyKind(rawHeader, decryptedBody ?? null);
             return {
                 id: artifactId,
                 header: decryptedHeader,
+                rawHeader,
                 title: decryptedHeader.title,
                 sessions: decryptedHeader.sessions,
                 draft: decryptedHeader.draft,
@@ -966,7 +1102,8 @@ export async function decryptSocketNewArtifactUpdate(params: {
         const artifactEncryption = new ArtifactEncryption(decryptedKey);
 
         // Decrypt header
-        const decryptedHeader = await artifactEncryption.decryptHeader(header);
+        const rawHeader = await artifactEncryption.decryptHeaderRaw(header);
+        const decryptedHeader = rawHeader ? projectArtifactHeaderForDisplay(rawHeader) : null;
         if (!decryptedHeader) {
             return createLockedArtifactView({
                 artifact,
@@ -975,7 +1112,7 @@ export async function decryptSocketNewArtifactUpdate(params: {
         }
 
         // Decrypt body if provided
-        let decryptedBody: string | null | undefined = undefined;
+        let decryptedBody: ArtifactBodyV1 | null | undefined = undefined;
         if (body && bodyVersion !== undefined) {
             const decrypted = await artifactEncryption.decryptBody(body);
             if (!decrypted) {
@@ -984,13 +1121,15 @@ export async function decryptSocketNewArtifactUpdate(params: {
                     reason: 'decryption_failed',
                 });
             }
-            decryptedBody = decrypted.body || null;
+            decryptedBody = decrypted.body;
+            requireArtifactBodyKind(rawHeader!, decryptedBody);
         }
 
         return {
             id: artifactId,
             header: decryptedHeader,
             title: decryptedHeader.title || null,
+            rawHeader,
             sessions: decryptedHeader.sessions,
             draft: decryptedHeader.draft,
             body: decryptedBody,
@@ -1070,13 +1209,23 @@ export async function applySocketArtifactUpdate(params: {
         ...existingArtifact,
         updatedAt: createdAt,
     };
+    const lockedUpdate = (reason: ArtifactLockedReason): DecryptedArtifact => ({
+        ...updatedArtifact, isDecrypted: false, storageMode: existingArtifact.storageMode ?? 'e2ee',
+        header: null, rawHeader: null, title: null, sessions: undefined, draft: undefined, body: undefined,
+        availability: { kind: 'locked', reason },
+    });
 
     // Decrypt and update header if provided
     if (shouldApplyHeader && header) {
-        const decryptedHeader = existingArtifact.storageMode === 'plain'
-            ? decodePlainArtifactHeader(header.value)
-            : await artifactEncryption!.decryptHeader(header.value);
+        const rawHeader = existingArtifact.storageMode === 'plain'
+            ? decodePlainArtifactHeaderRaw(header.value)
+            : await artifactEncryption!.decryptHeaderRaw(header.value);
+        const decryptedHeader = rawHeader ? (existingArtifact.storageMode === 'plain'
+            ? normalizeArtifactHeaderForDecryptedArtifact(rawHeader)
+            : projectArtifactHeaderForDisplay(rawHeader)) : null;
+        if (!decryptedHeader) return lockedUpdate('decryption_failed');
         updatedArtifact.header = decryptedHeader;
+        updatedArtifact.rawHeader = rawHeader;
         updatedArtifact.title = decryptedHeader?.title || null;
         updatedArtifact.sessions = decryptedHeader?.sessions;
         updatedArtifact.draft = decryptedHeader?.draft;
@@ -1088,8 +1237,15 @@ export async function applySocketArtifactUpdate(params: {
         const decryptedBody = existingArtifact.storageMode === 'plain'
             ? decodePlainArtifactBody(body.value)
             : await artifactEncryption!.decryptBody(body.value);
-        updatedArtifact.body = decryptedBody?.body || null;
+        if (!decryptedBody) return lockedUpdate('decryption_failed');
+        updatedArtifact.body = decryptedBody.body;
         updatedArtifact.bodyVersion = body.version;
+    }
+
+    try {
+        requireArtifactBodyKind(updatedArtifact.rawHeader ?? {}, updatedArtifact.body ?? null);
+    } catch {
+        return lockedUpdate('invalid_stored_content');
     }
 
     return updatedArtifact;

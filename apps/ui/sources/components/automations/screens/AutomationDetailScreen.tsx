@@ -1064,7 +1064,7 @@ export function AutomationDetailScreen() {
 
     if (!automationId) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <SurfaceStateCard
                     testID="automation-detail-invalid-id"
                     kind="unavailable"
@@ -1076,7 +1076,7 @@ export function AutomationDetailScreen() {
 
     if (loading && !automation) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <View style={styles.loading}>
                     <ActivitySpinner size="small" color={theme.colors.text.secondary} />
                 </View>
@@ -1087,7 +1087,7 @@ export function AutomationDetailScreen() {
     if (!automation) {
         if (refreshFailed) {
             return (
-                <ItemList presentation="page">
+                <ItemList>
                     <SurfaceStateCard
                         testID="automation-detail-refresh-error"
                         kind="error"
@@ -1103,7 +1103,7 @@ export function AutomationDetailScreen() {
             );
         }
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <SurfaceStateCard
                     testID="automation-detail-not-found"
                     kind="unavailable"

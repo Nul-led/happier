@@ -6,7 +6,9 @@ import { resetScopedMachineTransportCacheForTests } from './serverScopedRpcPool'
 
 const machineRpcSpy = vi.hoisted(() => vi.fn());
 const createEphemeralSocketSpy = vi.hoisted(() => vi.fn());
-const getActiveServerSnapshotSpy = vi.hoisted(() => vi.fn());
+const getActiveServerSnapshotSpy = vi.hoisted(() => vi.fn(() => ({
+    serverId: 'server-a', serverUrl: 'https://server-a.example.test', kind: 'custom', generation: 1,
+})));
 const resolveDirectRouteSpy = vi.hoisted(() => vi.fn());
 const postDirectSpy = vi.hoisted(() => vi.fn());
 
@@ -92,6 +94,65 @@ describe('machineRpcWithServerScope signal (direct peer route)', () => {
         resolveDirectRouteSpy.mockReset();
         postDirectSpy.mockReset();
         resetScopedMachineTransportCacheForTests();
+    });
+
+    it('orders delayed route preparation while keeping recognition replies concurrently in flight', async () => {
+        let releaseRoute!: (route: ReturnType<typeof createSelectedRoute>) => void;
+        resolveDirectRouteSpy.mockImplementationOnce(() => new Promise<ReturnType<typeof createSelectedRoute>>((resolve) => {
+            releaseRoute = resolve;
+        }));
+        const replies: Array<(value: unknown) => void> = [];
+        const dispatched: number[] = [];
+        postDirectSpy.mockImplementation(({ request, onDispatched }: { onDispatched?: () => void; request: { requestId: string; method: string; params: { seq: number } } }) => {
+            dispatched.push(request.params.seq);
+            onDispatched?.();
+            return new Promise((resolve) => replies.push((result) => resolve({
+                v: 2, ok: true, requestId: request.requestId, method: request.method,
+                receipt: 'peer.rpc.direct_call_succeeded', routeKind: 'loopback_direct', result,
+            })));
+        });
+        const { createOrderedMachineRpcCaller } = await import('./serverScopedMachineRpc');
+        const call = createOrderedMachineRpcCaller();
+        const first = call({ machineId: 'machine_1', method: RPC_METHODS.DAEMON_MEMORY_STATUS, payload: { seq: 0 } });
+        const second = call({ machineId: 'machine_1', method: RPC_METHODS.DAEMON_MEMORY_STATUS, payload: { seq: 1 } });
+        await vi.waitFor(() => expect(resolveDirectRouteSpy).toHaveBeenCalledTimes(1));
+        expect(dispatched).toEqual([]);
+        releaseRoute(createSelectedRoute());
+        await vi.waitFor(() => expect(dispatched).toEqual([0, 1]));
+        // A reply fence would leave only seq 0 dispatched at this point.
+        replies[1]!({ ackSeq: 1 });
+        replies[0]!({ ackSeq: 0 });
+        await expect(second).resolves.toEqual({ ackSeq: 1 });
+        await expect(first).resolves.toEqual({ ackSeq: 0 });
+    });
+
+    it('cancels a queued preparation promptly without opening its predecessor dispatch fence', async () => {
+        let releaseRoute!: (route: ReturnType<typeof createSelectedRoute>) => void;
+        resolveDirectRouteSpy.mockImplementationOnce(() => new Promise<ReturnType<typeof createSelectedRoute>>((resolve) => { releaseRoute = resolve; }));
+        const dispatched: number[] = [];
+        postDirectSpy.mockImplementation(({ request, onDispatched }: { onDispatched?: () => void; request: { requestId: string; method: string; params: { seq: number } } }) => {
+            dispatched.push(request.params.seq);
+            onDispatched?.();
+            return Promise.resolve({ v: 2, ok: true, requestId: request.requestId, method: request.method,
+                receipt: 'peer.rpc.direct_call_succeeded', routeKind: 'loopback_direct', result: request.params.seq });
+        });
+        const { createOrderedMachineRpcCaller } = await import('./serverScopedMachineRpc');
+        const call = createOrderedMachineRpcCaller();
+        const params = { machineId: 'machine_1', method: RPC_METHODS.DAEMON_MEMORY_STATUS };
+        const first = call({ ...params, payload: { seq: 0 } });
+        const abort = new AbortController();
+        const cancelled = call({ ...params, payload: { seq: 1 }, signal: abort.signal });
+        const rejected = expect(cancelled).rejects.toMatchObject({ name: 'AbortError', code: 'MACHINE_RPC_ABORTED' });
+        const third = call({ ...params, payload: { seq: 2 } });
+        await vi.waitFor(() => expect(resolveDirectRouteSpy).toHaveBeenCalledTimes(1));
+        abort.abort();
+        await rejected;
+        expect(dispatched).toEqual([]);
+        expect(resolveDirectRouteSpy).toHaveBeenCalledTimes(1);
+        releaseRoute(createSelectedRoute());
+        await expect(first).resolves.toBe(0);
+        await expect(third).resolves.toBe(2);
+        expect(dispatched).toEqual([0, 2]);
     });
 
     it('rejects promptly during peer-route discovery and does not dispatch after it later resolves', async () => {

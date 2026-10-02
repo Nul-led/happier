@@ -548,9 +548,10 @@ export function planDaemonServiceInstall(params: Readonly<{
     });
   }
   if (params.enablement === 'disabled') {
-    // Stays off at login; a unit the person started by hand anyway picks up the new definition.
+    // Repair may have removed a previously running unit. Resume that observed activity explicitly;
+    // otherwise try-restart never starts a stopped unit, while refreshing one still running.
     commands.push({ cmd: 'systemctl', args: [...prefix, 'disable', unitName] });
-    commands.push({ cmd: 'systemctl', args: [...prefix, 'try-restart', unitName] });
+    commands.push({ cmd: 'systemctl', args: [...prefix, params.preserveRunningWhenDisabled ? 'restart' : 'try-restart', unitName] });
   } else {
     commands.push({ cmd: 'systemctl', args: [...prefix, autostart === 'at-login' ? 'enable' : 'disable', unitName] });
     if (!params.autostartTriggerChangeOnly) commands.push({ cmd: 'systemctl', args: [...prefix, 'restart', unitName] });

@@ -45,19 +45,22 @@ vi.mock('@/sync/api/session/sessionAccessApi', async (importOriginal) => {
         ...actual,
         createSessionAccessClient: (options: unknown) => {
             publication.clientOptions.push(options);
+            const withFormat = (settings: Record<string, unknown> | null) => settings === null ? null : {
+                ...settings, keyDerivation: 'fragment_v1', isolatedOrigin: 'https://public-viewer.example.test',
+            };
             return {
-                getPublicLink: publication.getPublicLink,
+                getPublicLink: async () => withFormat(await publication.getPublicLink()),
                 createPublicLink: async (input: unknown) => {
-                    const issue = (options as { onPublicLinkBearerIssued?: (token: string) => void })
-                        .onPublicLinkBearerIssued;
+                    const issue = (options as { onPublicLinkIssued?: (material: { lookupId: string; secret: string }) => void })
+                        .onPublicLinkIssued;
                     // The real leaf reports the bearer it generated before it
                     // dispatches, so recovery evidence survives a lost response.
                     // Each request mints its own bearer, which is what makes a
                     // falsely promoted one observable.
                     const issued = `generated-by-transport-${publication.issuedTokens.length + 1}`;
                     publication.issuedTokens.push(issued);
-                    issue?.(issued);
-                    return await publication.createPublicLink(input);
+                    issue?.({ lookupId: issued, secret: `fragment-${issued}` });
+                    return withFormat(await publication.createPublicLink(input));
                 },
                 removePublicLink: publication.removePublicLink,
             };
@@ -187,16 +190,14 @@ describe('SessionPublicLinkSection', () => {
         expect(screen.findByTestId('session-access-editor')).toBeNull();
     });
 
-    it('shows the link it made, carrying the exact Home public endpoint, with Copy and QR code', async () => {
+    it('shows its isolated link with a fragment secret, Copy and QR code', async () => {
         const created = { id: 'p1', expiresAt: null, useCount: 0, maxUses: 10, isConsentRequired: true, updatedAt: 1 };
         publication.getPublicLink.mockResolvedValue(null);
         publication.createPublicLink.mockResolvedValue(created);
         const screen = await renderScreen(<PublicLink />);
         await vi.waitFor(() => expect(status(screen)).toBe('Off'));
         await makeLink(screen);
-        await vi.waitFor(() => expect(shownUrl(screen)).toContain(`/share/${publication.issuedTokens[0]}`));
-        expect(serverProfile.get).toHaveBeenCalledWith('home-one');
-        expect(shownUrl(screen)).toContain(encodeURIComponent('https://public-home.example.test'));
+        await vi.waitFor(() => expect(shownUrl(screen)).toBe(`https://public-viewer.example.test/s/${publication.issuedTokens[0]}#k=fragment-${publication.issuedTokens[0]}`));
         expect(status(screen)).toBe('On');
         // What it grants, in plain words, then its limits.
         expect(String(screen.findByTestId('session-public-link-detail')?.props.children)).toContain('0/10');

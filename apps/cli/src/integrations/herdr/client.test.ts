@@ -28,6 +28,38 @@ const clientFor = (socketPath: string) => {
 };
 
 describe('Herdr client workspace placement', () => {
+  it.each(['sendText', 'sendRaw'] as const)('preserves large escaped Unicode input through %s within the released request-line budget', async (method) => {
+    await withHerdrApi(async (api) => {
+      const client = createHerdrClient({
+        binary: 'herdr', sessionName: 'work', socketPath: api.socketPath,
+        actionTimeoutMs: 5_000, startupTimeoutMs: 5_000,
+      });
+      // Escaping expands this beyond 1 MiB even though its UTF-8 source fits.
+      const text = `${'\\'.repeat(512 * 1024)}🌈你好\n${'😀'.repeat(100_000)}`;
+      await expect(client[method]('managed', text)).resolves.toBeUndefined();
+      const writes = api.requests.filter((request) => request.method === (method === 'sendText' ? 'pane.send_input' : 'pane.send_text'));
+      expect(writes.map((request) => request.params.text).join('')).toBe(text);
+      for (const write of writes) {
+        expect(Buffer.byteLength(`${JSON.stringify({ id: 'happier', ...write })}\n`)).toBeLessThanOrEqual(1024 * 1024);
+        expect(String(write.params.text)).not.toMatch(/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/u);
+      }
+    }, { maxInitialRequestBytes: 1024 * 1024 });
+  });
+
+  it('does not split a Unicode scalar at an odd UTF-16 request boundary', async () => {
+    await withHerdrApi(async (api) => {
+      const client = createHerdrClient({
+        binary: 'herdr', sessionName: 'work', socketPath: api.socketPath,
+        actionTimeoutMs: 5_000, startupTimeoutMs: 5_000,
+      });
+      const text = '😀'.repeat(600_000);
+      await client.sendText('managed!', text);
+      const chunks = api.requests.map((request) => String(request.params.text));
+      expect(chunks.join('')).toBe(text);
+      for (const chunk of chunks) expect(chunk).toMatch(/^(?:😀)+$/u);
+    }, { maxInitialRequestBytes: 1024 * 1024 });
+  });
+
   it('preserves terminal Unicode when a socket chunk splits a UTF-8 character', async () => {
     const text = '你好 🌈';
     const response = Buffer.from(`${JSON.stringify({ id: 'happier', result: { read: { text } } })}\n`);

@@ -196,10 +196,12 @@ describe('DesktopQuitHandoffRuntime (R16 a)', () => {
         expect(host.invocations.at(-1)).toEqual({ command: 'desktop_finish_shutdown', args: { outcome: 'menuBar' } });
     });
 
-    it('quits outright and touches nothing when the managed services\' mode is unknown or mixed', async () => {
+    it.each(['on-demand', 'at-login'])('keeps resolved unknown authoritative over persisted %s mode (A15-02)', async (persistedMode) => {
         publishStatus({ ...baseStatus, serviceAutostart: null, serviceRows: [row('https://home.example.test')] });
-        await quit({});
+        seeSessionsOfThisComputer();
+        await quit({ serviceAutostart: persistedMode });
         expect(stops()).toEqual([]);
+        expect(modal.asked).toEqual([]);
         expect(host.invocations.at(-1)).toEqual({ command: 'desktop_finish_shutdown' });
     });
 

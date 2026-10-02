@@ -3,6 +3,7 @@ import type {
   AutomationRunCause,
   AutomationTriggerId,
   AutomationV3WorkerResultDelivery,
+  AutomationRunLifecycleSource,
 } from '@happier-dev/protocol';
 
 export type AutomationV3ClaimedRun = Readonly<{
@@ -74,6 +75,7 @@ export type AutomationClaimRunResponse =
  * directly.
  */
 export type AutomationWorkerAssignmentsResponse = Readonly<{
+  runLifecycleSources?: ReadonlyArray<Extract<AutomationRunLifecycleSource, { kind: 'execution_run' }>>;
   assignments: Array<{
     machineId: string;
     automationId: string;

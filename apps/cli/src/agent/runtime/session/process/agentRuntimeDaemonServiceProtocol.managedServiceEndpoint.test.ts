@@ -54,6 +54,42 @@ function request(operation: unknown) {
 }
 
 describe('Agent runtime daemon managed-server endpoint service protocol', () => {
+  it('admits witnessed Actions and preserves canonical outcomes without caller-supplied authority', () => {
+    const operation = {
+      kind: 'action.execute',
+      requestId: 'action-1',
+      actionId: 'workflow.trigger.list',
+      input: { workflowDefinitionId: 'workflow-1' },
+      witness,
+      toolCallId: 'tool-call-1',
+    };
+    expect(AgentRuntimeDaemonServiceRequestV1Schema.safeParse(request(operation)).success).toBe(true);
+    const { input: _input, ...operationWithoutInput } = operation;
+    expect(AgentRuntimeDaemonServiceRequestV1Schema.safeParse(request(operationWithoutInput)).success).toBe(false);
+    for (const extra of [
+      { caller: { kind: 'host' } },
+      { callerPermissionMode: 'yolo' },
+      { witness: undefined },
+      { actionId: 'invented.action' },
+    ]) {
+      expect(AgentRuntimeDaemonServiceRequestV1Schema.safeParse(request({ ...operation, ...extra })).success).toBe(false);
+    }
+    const response = (outcome: unknown) => ({
+      ok: true,
+      result: { kind: 'action.execution', requestId: 'action-1', outcome },
+    });
+    expect(AgentRuntimeDaemonServiceResponseV1Schema.safeParse(response({ ok: true, result: { triggers: [] } })).success).toBe(true);
+    expect(AgentRuntimeDaemonServiceResponseV1Schema.safeParse(response({
+      ok: false,
+      errorCode: 'target_unavailable',
+      error: 'Account host is unavailable',
+      details: { reason: 'turn_depth_unavailable' },
+    })).success).toBe(true);
+    expect(AgentRuntimeDaemonServiceResponseV1Schema.safeParse(response({ ok: true })).success).toBe(false);
+    expect(AgentRuntimeDaemonServiceResponseV1Schema.safeParse(response({ ok: false, errorCode: 'target_unavailable' })).success).toBe(false);
+    expect(AgentRuntimeDaemonServiceResponseV1Schema.safeParse(response({ ok: true, result: null, caller: { kind: 'host' } })).success).toBe(false);
+  });
+
   it('admits strict direct-custody publish and release operations', () => {
     expect(AgentRuntimeDaemonServiceRequestV1Schema.safeParse(request({
       kind: 'managed_server.supervision.authorize',

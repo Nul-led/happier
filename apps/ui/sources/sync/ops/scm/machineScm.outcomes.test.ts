@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RPC_ERROR_CODES, RPC_ERROR_MESSAGES } from '@happier-dev/protocol/rpc';
+import { createScmCapabilities } from '@happier-dev/protocol/scm';
 
 const rpc = vi.hoisted(() => vi.fn());
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({ machineRpcWithServerScope: rpc }));
@@ -13,6 +14,24 @@ beforeEach(() => {
 });
 
 describe('SCM mutation transport outcomes', () => {
+    it('negotiates undo outcomes and preserves the observed HEAD on the exact machine target', async () => {
+        const { machineScmCommitUndoLast } = await import('./machineScm');
+        const expectedHeadOid = 'a'.repeat(40);
+        rpc.mockImplementation(async (request: { method: string }) => request.method === 'scm.backend.describe'
+            ? { success: true, capabilities: createScmCapabilities({ writeCommitUndoLast: true }) }
+            : { success: true, undoneCommitSha: expectedHeadOid, headOid: 'b'.repeat(40) });
+        const result = await machineScmCommitUndoLast('machine-other', { cwd: '/repo', expectedHeadOid }, { serverId: 'home-other' });
+        expect(result).toMatchObject({ success: true, undoneCommitSha: expectedHeadOid, headOid: 'b'.repeat(40) });
+        expect(rpc).toHaveBeenCalledWith(expect.objectContaining({ machineId: 'machine-other', serverId: 'home-other', method: 'scm.commit.undoLast', payload: { cwd: '/repo', expectedHeadOid, outcomeVersion: 1 } }));
+
+        rpc.mockImplementation(async (request: { method: string }) => {
+            if (request.method === 'scm.backend.describe') return { success: true, capabilities: createScmCapabilities({ writeCommitUndoLast: true }) };
+            throw new Error('lost mutation response');
+        });
+        expect(await machineScmCommitUndoLast('machine-other', { cwd: '/repo', expectedHeadOid }))
+            .toMatchObject({ success: false, outcome: { kind: 'outcome_unknown', reconciliation: { kind: 'repository_status', cwd: '/repo' } } });
+    });
+
     it('keeps an explicit missing method as a known no-effect failure', async () => {
         for (const rpcErrorCode of [RPC_ERROR_CODES.METHOD_NOT_AVAILABLE, RPC_ERROR_CODES.METHOD_NOT_FOUND]) {
             rpc.mockRejectedValueOnce(Object.assign(new Error(RPC_ERROR_MESSAGES.METHOD_NOT_AVAILABLE), { rpcErrorCode }));

@@ -79,6 +79,7 @@ describe('workflow Run Actions', () => {
       storage: { execute: async (operation) => {
         if (operation.operation === 'get') throw Object.assign(new Error('not found'), { response: { status: 404 } });
         if (operation.operation === 'admit') {
+          if (typeof operation.acceptedEnvelope !== 'string') throw new Error('Expected accepted snapshot envelope');
           acceptedEnvelope = operation.acceptedEnvelope;
           return { kind: 'created', run: { sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null,
             id: runId, origin: operation.origin, state: 'queued', revision: 0,
@@ -147,7 +148,7 @@ describe('workflow Run Actions', () => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
       acceptedSnapshot: {
-        authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
+        startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
         definition: normalizedDefinition,
         source: { kind: 'inline' }, inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
         workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
@@ -189,7 +190,7 @@ describe('workflow Run Actions', () => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
       acceptedSnapshot: {
-        authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
+        startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
         definition: normalizedDefinition,
         source: { kind: 'inline' }, inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
         workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
@@ -276,7 +277,7 @@ describe('workflow Run Actions', () => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
       acceptedSnapshot: {
-        authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
+        startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
         definition: normalizedDefinition, source: { kind: 'inline' }, inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
         workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
         origin: { kind: 'direct' }, authorization: { admittedPermissionCeiling: 'safe-yolo', principal: { kind: 'host' } },
@@ -351,7 +352,7 @@ describe('workflow Run Actions', () => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
       acceptedSnapshot: {
-        authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
+        startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
         definition: normalizedDefinition, source: { kind: 'inline' }, inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
         workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
         origin: { kind: 'direct' }, authorization: { admittedPermissionCeiling: 'safe-yolo', principal: { kind: 'host' } },
@@ -406,7 +407,7 @@ describe('workflow Run Actions', () => {
       const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
         mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
         acceptedSnapshot: {
-          authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
+          startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
           definition: normalizedDefinition, source: { kind: 'saved', definitionId: 'def-1', revision: { headerVersion: 1, bodyVersion: 1 }, savedBy: null },
           inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
           workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
@@ -460,7 +461,7 @@ describe('workflow Run Actions', () => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId: '11111111-1111-4111-8111-111111111111' },
       acceptedSnapshot: {
-        authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {},
+        startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {},
         definition: normalizedDefinition, metadata: { title: 'Frozen saved title' }, source: { kind: 'saved', definitionId: 'def-1', revision: { headerVersion: 1, bodyVersion: 1 }, savedBy: null },
         inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' }, workspaceTarget: { project: { machineId: 'machine-1', directory: canonicalProjectDirectory, checkoutRootPath: canonicalProjectDirectory } },
         origin: { kind: 'direct', originSessionId: 'deleted-session' },
@@ -549,7 +550,7 @@ describe('workflow Run Actions', () => {
       serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
         mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
         acceptedSnapshot: {
-          authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {},
+          startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {},
           definition: normalizedDefinition, metadata: metadata ?? null,
           source: { kind: 'inline' }, inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
           workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
@@ -629,7 +630,7 @@ describe('workflow Run Actions', () => {
       sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
         mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
         acceptedSnapshot: {
-          authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {},
+          startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {},
           definition: normalizedDefinition, metadata: { title: 'Boundary', description },
           source: { kind: 'inline' }, inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
           workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
@@ -674,7 +675,7 @@ describe('workflow Run Actions', () => {
       mode: 'plain',
       binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
       acceptedSnapshot: {
-        authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
+        startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
         definition: normalizedDefinition,
         source: { kind: 'inline' },
         inputs: { options: { alpha: 1, beta: { first: true, second: false } } },
@@ -1022,7 +1023,7 @@ describe('workflow Run Actions', () => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
       acceptedSnapshot: {
-        authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
+        startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
         definition: normalizedDefinition, source: { kind: 'inline' },
         inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
         workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
@@ -1195,7 +1196,7 @@ describe('workflow Run Actions', () => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
       acceptedSnapshot: {
-        authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
+        startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
         definition: normalizedDefinition, source: { kind: 'inline' },
         inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
         workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
@@ -1276,7 +1277,7 @@ describe('workflow Run Actions', () => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
       acceptedSnapshot: {
-        authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
+        startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
         definition: normalizedDefinition, source: { kind: 'inline' }, inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
         workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
         origin: { kind: 'direct' }, authorization: { admittedPermissionCeiling: 'default', principal: { kind: 'host' } },
@@ -1322,7 +1323,7 @@ describe('workflow Run Actions', () => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
       acceptedSnapshot: {
-        authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
+        startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
         definition: normalizedDefinition, source: { kind: 'inline' }, inputs: {}, machineId: 'machine-1',
         executionTarget: { kind: 'session' },
         workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
@@ -1510,13 +1511,20 @@ describe('workflow Run Actions', () => {
         ...(ids[position] === priorId ? { reason: { code: 'workspace_unavailable' },
           input: { document: { text: 'work', references: [], attachments: [] }, input: [] } } : {}) },
     })));
+    const materialized = await materializeWorkflowAcceptedSnapshotV1({
+      definition: root, admission: { kind: 'user' },
+      // The saved child definition and Machine readiness are external boundaries.
+      effects: { readWorkflowDefinition: async () => ({ definition: child, sourceKey: childRef }),
+        resolveTargetAvailability: async () => true },
+      context: { source: { kind: 'inline' }, inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
+        workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
+        origin: { kind: 'direct' }, authorization: { principal: { kind: 'host' } } },
+    });
+    if (!materialized.ok) throw new Error(materialized.error.code);
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
       acceptedSnapshot: {
-        authoredDefinition: root, workDepth: 0, materializedLeaves: [], metadata: null,
-        definition: root, frozenChildren: { [childRef]: child }, source: { kind: 'inline' }, inputs: {},
-        machineId: 'machine-1', executionTarget: { kind: 'session' }, origin: { kind: 'direct' },
-        workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
+        ...materialized.snapshot, startedBy: 'user',
         authorization: { principal: { kind: 'host' }, admittedPermissionCeiling: 'default' } },
     }));
     const run = { sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null, id: runId, origin: { kind: 'direct' }, state: 'interrupted', revision: 2, machineId: 'machine-1',
@@ -1629,7 +1637,7 @@ describe('workflow Run Actions', () => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
       acceptedSnapshot: {
-        authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
+        startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
         definition: normalizedDefinition, source: { kind: 'inline' }, inputs: {}, machineId: 'machine-1',
         executionTarget: { kind: 'session' },
         workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
@@ -1705,7 +1713,7 @@ describe('workflow Run Actions', () => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
       acceptedSnapshot: {
-        authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
+        startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
         definition: normalizedDefinition, source: { kind: 'inline' }, inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
         workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
         origin: { kind: 'direct' }, authorization: { admittedPermissionCeiling: 'default', principal: { kind: 'host' } },
@@ -1842,11 +1850,12 @@ describe('workflow Run Actions', () => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
       acceptedSnapshot: {
-        authoredDefinition: normalizedDefinition, workDepth: 0, frozenChildren: {}, metadata: null,
+        startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, frozenChildren: {}, metadata: null,
         definition: normalizedDefinition, source: { kind: 'inline' }, inputs: {}, machineId: 'machine-1',
         executionTarget: { kind: defaultTarget },
         materializedLeaves: normalizedDefinition.blocks.flatMap((block) => block.kind === 'step' ? [{
           sourceKey: '$root', blockId: block.id, kind: 'step' as const,
+          authoredWorkspace: { kind: 'inherit' as const },
           selection: block.execution ?? {}, executionTarget: { kind: 'session' as const },
         }] : []),
         workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
@@ -1890,7 +1899,7 @@ describe('workflow Run Actions', () => {
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'plain', binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
       acceptedSnapshot: {
-        authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
+        startedBy: 'user', authoredDefinition: normalizedDefinition, workDepth: 0, materializedLeaves: [], frozenChildren: {}, metadata: null,
         definition: normalizedDefinition, source: { kind: 'inline' },
         inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
         workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },

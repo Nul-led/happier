@@ -737,6 +737,9 @@ export function VoiceOrb(props: Readonly<{
                             muted={control.muted}
                             capturing={control.capturing}
                             canMute={control.canMute}
+                            canCommitInput={control.canCommitInput}
+                            commitInputLabel={control.commitInputLabel}
+                            onCommitInput={control.onCommitInput}
                             onStart={control.onPrimaryAction}
                             onEnd={control.onPrimaryAction}
                             onToggleMute={control.onToggleMute}

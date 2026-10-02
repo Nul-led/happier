@@ -145,6 +145,9 @@ export const VoiceTransport = React.memo(function VoiceTransport(props: Readonly
     canStart: boolean;
     muted: boolean;
     canMute: boolean;
+    canCommitInput?: boolean;
+    commitInputLabel?: string | null;
+    onCommitInput?: () => void;
     /**
      * True when the microphone is genuinely capturing.
      *
@@ -269,6 +272,10 @@ export const VoiceTransport = React.memo(function VoiceTransport(props: Readonly
                         color={props.muted ? light('warm', 1, tokens) : tokens.ink}
                     />
                 </TactilePressable>
+            ) : null}
+
+            {props.live && props.canCommitInput === true && props.commitInputLabel && props.onCommitInput ? (
+                <QuietAction label={props.commitInputLabel} onPress={props.onCommitInput} />
             ) : null}
 
             {(props.extra ?? []).map((c) => (

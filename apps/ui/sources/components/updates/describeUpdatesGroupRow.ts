@@ -47,10 +47,19 @@ function runnableAction(item: UpdateItem): UpdatesGroupRowAction | null {
  */
 export function describeUpdatesGroupRow(
     group: UpdatesGroup,
-    options: Readonly<{ formatLastSeen?: (at: number) => string }> = {},
+    options: Readonly<{ formatLastSeen?: (at: number) => string; sessionsRunningOn?: ReadonlySet<string> }> = {},
 ): UpdatesGroupRow {
     const title = groupTitle(group);
     const formatLastSeen = options.formatLastSeen ?? ((at: number) => formatLastSeenDefault(at));
+    const withSessionNote = (status: string, items: readonly UpdateItem[]) => {
+        for (const item of items) {
+            const { note } = describeUpdateItem(item, {
+                sessionsRunning: item.machineId != null && options.sessionsRunningOn?.has(item.machineId) === true,
+            });
+            if (note) return `${status} · ${note}`;
+        }
+        return status;
+    };
 
     if (!group.online) {
         const status = group.lastSeenAt != null
@@ -73,7 +82,7 @@ export function describeUpdatesGroupRow(
     if (failed.length > 0) {
         return {
             title,
-            status: failed.length === 1 ? namedItemStatus(failed[0]!) : t('updates.summary.failedCount', { count: failed.length }),
+            status: failed.length === 1 ? withSessionNote(namedItemStatus(failed[0]!), failed) : t('updates.summary.failedCount', { count: failed.length }),
             tone: 'attention',
             action: failed.length === 1 ? runnableAction(failed[0]!) : null,
         };
@@ -84,18 +93,18 @@ export function describeUpdatesGroupRow(
         const waiting = group.items.filter((item) => plan.appItemId === item.id || plan.machines.some((machine) => machine.itemIds.includes(item.id)));
         const required = waiting.some((item) => item.state === 'required');
         if (waiting.length === 1) {
-            return { title, status: namedItemStatus(waiting[0]!), tone: required ? 'attention' : 'info', action: runnableAction(waiting[0]!) };
+            return { title, status: withSessionNote(namedItemStatus(waiting[0]!), waiting), tone: required ? 'attention' : 'info', action: runnableAction(waiting[0]!) };
         }
         return {
             title,
-            status: t('updates.summary.available', { count: waiting.length }),
+            status: withSessionNote(t('updates.summary.available', { count: waiting.length }), waiting),
             tone: required ? 'attention' : 'info',
             action: { kind: 'group', label: t('updates.action.update') },
         };
     }
 
     const ready = group.items.find((item) => item.state === 'ready');
-    if (ready) return { title, status: namedItemStatus(ready), tone: 'info', action: runnableAction(ready) };
+    if (ready) return { title, status: withSessionNote(namedItemStatus(ready), [ready]), tone: 'info', action: runnableAction(ready) };
 
     if (group.items.some((item) => item.state === 'checking')) {
         return { title, status: t('updates.row.checking'), tone: 'pending', action: null };

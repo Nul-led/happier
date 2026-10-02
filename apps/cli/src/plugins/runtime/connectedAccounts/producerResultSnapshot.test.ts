@@ -7,6 +7,18 @@ import {
 } from './producerResultSnapshot';
 
 describe('connected-account producer result snapshots', () => {
+    it('preserves a provider quota family separately from its window and rejects malformed family metadata', () => {
+        const operation = { kind: 'quota' } as const;
+        const options = { quotaLeafUnavailable: false } as const;
+        const quota = { observedAtMs: 100, limits: [{ id: 'codex_spark:primary', providerLimitId: 'codex_spark', used: 20, remaining: 80 }] };
+        expect(snapshotConnectedAccountEstablishedResult(operation, quota, options)).toEqual(quota);
+        for (const providerLimitId of ['', 42, 'x'.repeat(257)]) {
+            expect(() => snapshotConnectedAccountEstablishedResult(operation, {
+                ...quota, limits: [{ ...quota.limits[0], providerLimitId }],
+            }, options)).toThrow(expect.objectContaining({ code: 'connected_account_producer_result_invalid' }));
+        }
+    });
+
     it('admits detached subscription observations and rejects invalid subscription authority fields', () => {
         const operation = { kind: 'quota' } as const;
         const options = { quotaLeafUnavailable: false } as const;
@@ -22,7 +34,7 @@ describe('connected-account producer result snapshots', () => {
             const quota = { observedAtMs: 110, limits: [{ id: 'requests', remaining: 3 }], subscription };
             const result = snapshotConnectedAccountEstablishedResult(operation, quota, options);
             expect(result).toEqual(quota);
-            if (!('limits' in result)) throw new Error('Expected a quota snapshot');
+            if (!result || !('limits' in result)) throw new Error('Expected a quota snapshot');
             subscription.observedAtMs = 900;
             subscription.lastRefreshError.observedAtMs = 900;
             expect(result.subscription).toMatchObject({ observedAtMs: 100, lastRefreshError: { observedAtMs: 110 } });

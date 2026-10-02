@@ -1,5 +1,5 @@
 import * as React from 'react';
-import type { WorkBoardV1 } from '@happier-dev/protocol';
+import type { WorkBoardArtifactSummaryV1, WorkBoardV1 } from '@happier-dev/protocol';
 
 import { StatusPill } from '@/components/ui/status/StatusPill';
 import { WORK_STATUS_PILL_VARIANT } from '@/components/work/status/resolveWorkStatusTone';
@@ -7,6 +7,7 @@ import { t } from '@/text';
 
 import { countBoardCardsNeedingYou } from './model/boardCards';
 import { useBoardLiveCards } from './model/useBoardContent';
+import { useWorkBoard } from './model/useWorkBoards';
 
 /**
  * A pinned board's needs-you count in the Sessions column (lab `boards-B6`): the same membership and
@@ -14,7 +15,12 @@ import { useBoardLiveCards } from './model/useBoardContent';
  * plugin destinations' `StatusPill`). Mounted only for boards the person pinned; healthy boards show
  * nothing. The pinned rows share one Inbox model (`BoardsInboxBoundary` around the column's rows).
  */
-export const PinnedBoardNeedsYouCount = React.memo(function PinnedBoardNeedsYouCount(props: Readonly<{ board: WorkBoardV1 }>) {
+export const PinnedBoardNeedsYouCount = React.memo(function PinnedBoardNeedsYouCount(props: Readonly<{ board: WorkBoardArtifactSummaryV1 }>) {
+    const board = useWorkBoard(props.board.id);
+    return board ? <PinnedBoardLiveCount board={board} /> : null;
+});
+
+const PinnedBoardLiveCount = React.memo(function PinnedBoardLiveCount(props: Readonly<{ board: WorkBoardV1 }>) {
     const { cards } = useBoardLiveCards(props.board);
     const count = countBoardCardsNeedingYou(cards);
     if (count === 0) return null;

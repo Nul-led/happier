@@ -31,8 +31,10 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
     const { createPartialServerProfilesModuleMock } = await import('@/dev/testkit/mocks/serverProfiles');
     return createPartialServerProfilesModuleMock(importOriginal, {
         overrides: {
-            resolveServerProfileForPortableIdentity: (serverIdentityId: string) => boundary.profileId
-                ? {
+            resolveServerProfileForPortableIdentity: (serverIdentityIdRaw: string | null | undefined) => {
+                const serverIdentityId = serverIdentityIdRaw?.trim() ?? '';
+                return boundary.profileId && serverIdentityId
+                    ? {
                     kind: 'resolved',
                     serverIdentityId,
                     profile: {
@@ -45,7 +47,8 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
                         lastUsedAt: 0,
                     },
                 }
-                : { kind: 'missing', serverIdentityId },
+                    : { kind: 'missing', serverIdentityId };
+            },
             getServerProfilesGeneration: () => boundary.profileGeneration,
             subscribeServerProfiles: (listener: (generation: number) => void) => {
                 boundary.profileListeners.add(listener);

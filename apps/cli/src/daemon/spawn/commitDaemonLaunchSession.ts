@@ -90,6 +90,7 @@ function buildCommittedLaunchMetadata(input: Readonly<{
       ? { sessionCreationCorrespondenceV1: options.sessionCreationCorrespondence }
       : {}),
     ...(options.placementOrigin ? { placementOrigin: options.placementOrigin } : {}),
+    ...(options.runtimeDescriptorV1 ? { runtimeDescriptorV1: options.runtimeDescriptorV1 } : {}),
     ...(mcpSelection ? { mcpSelectionV1: mcpSelection } : {}),
     connectedServiceMaterializationIdentityV1: input.materializationIdentity,
     ...(options.initialSessionRolesV1 ? { work: { sessionRolesV1: SessionRolesV1Schema.parse(options.initialSessionRolesV1) } } : {}),

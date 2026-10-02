@@ -43,7 +43,7 @@ describe('workflow final-panel certification', () => {
           execution: 'parallel', failurePolicy: 'collect_outcomes' }, body: [{ kind: 'action', id: 'review', actionId: 'review.start', input: {} }] }] }] };
     const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({ mode: 'plain',
       binding: { v: 1, purpose: 'accepted_snapshot', accountId, runId }, acceptedSnapshot: {
-        definition, authoredDefinition: definition, workDepth: 0, frozenChildren: {}, metadata: null,
+        definition, authoredDefinition: definition, startedBy: 'user', workDepth: 0, frozenChildren: {}, metadata: null,
         inputs: { diffFingerprint: 'F-a' }, machineId, executionTarget: { kind: 'session' },
         workspaceTarget: { project: { machineId, directory: '/repo', checkoutRootPath: '/repo' } },
         authorization: { principal: { kind: 'host' }, admittedPermissionCeiling: 'default' },

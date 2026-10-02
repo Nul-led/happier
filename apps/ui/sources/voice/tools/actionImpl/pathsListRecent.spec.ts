@@ -12,7 +12,7 @@ import { listRecentPathsForVoiceTool } from './pathsListRecent';
 const workspacePath = '/Users/leeroy/projects/happier';
 
 function setRecentPaths(paths: Array<{ machineId: string; path: string }>) {
-    storage.setState((state) => ({ settings: { ...state.settings, recentMachinePaths: paths } }));
+    storage.getState().applyAuthoringMemory({ recentMachinePaths: paths });
 }
 
 function forceRawPathSharing() {
@@ -49,8 +49,9 @@ describe('listRecentPathsForVoiceTool', () => {
             concurrentSessionListCacheByServerId: {},
             settings: { ...previousState.settings, voice: { ...previousState.settings.voice,
                 privacy: { ...previousState.settings.voice.privacy, shareDeviceInventory: true, shareFilePaths: false },
-            }, recentMachinePaths: [{ machineId: 'm1', path: workspacePath }] },
+            } },
         });
+        setRecentPaths([{ machineId: 'm1', path: workspacePath }]);
     });
 
     afterEach(async () => {

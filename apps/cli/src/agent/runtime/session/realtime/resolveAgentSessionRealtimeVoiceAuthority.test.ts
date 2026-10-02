@@ -7,11 +7,14 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createAgentSessionRunnerFactoryBinding,
 } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
+import type { PluginContributionRuntimeLifecycle } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 
 import {
   resolveAgentSessionRealtimeVoiceAuthority,
   resolveRetainedAgentSessionRealtimeVoiceAuthority,
 } from './resolveAgentSessionRealtimeVoiceAuthority';
+
+type AgentRuntimeIdentity = Parameters<typeof resolveAgentSessionRealtimeVoiceAuthority>[0]['agentRuntimeIdentity'];
 
 const selectedAgent = {
   pluginId: 'happier.agent.codex',
@@ -70,7 +73,7 @@ function conversation(
 }
 
 describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
-  it('materializes exact installed declarations from the current registry generation', () => {
+  it('materializes exact installed declarations from the current registry occurrence', () => {
     let current = true;
     const retirement = new AbortController();
     const resolveVoiceProviderRuntimeLifecycle = vi.fn((identity: PluginContributionIdentityV1) => (
@@ -79,7 +82,7 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
             occurrenceId: 'installed-provider-occurrence',
             isCurrent: () => current,
             retirementSignal: retirement.signal,
-          }
+          } satisfies PluginContributionRuntimeLifecycle
         : null
     ));
     const authority = resolveAgentSessionRealtimeVoiceAuthority({
@@ -120,7 +123,7 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
           installSource: 'npm',
         },
         isCurrent: () => current,
-      },
+      } satisfies AgentRuntimeIdentity,
       agentRetirementSignal: retirement.signal,
     });
 
@@ -130,7 +133,7 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
       installedProvider.localId,
     );
     expect(authority?.resolveProviderOccurrenceId(installedProvider)).toBe(
-      'installed-provider-generation',
+      'installed-provider-occurrence',
     );
     expect(authority?.isCurrent(installedProvider)).toBe(true);
     expect(authority?.resolveDeclaration(wrongAgentProvider)).toBeNull();
@@ -161,7 +164,7 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
           registeredRootId: 'development-root-1',
         },
         isCurrent: () => true,
-      },
+      } satisfies AgentRuntimeIdentity,
     })).toBeNull();
   });
 
@@ -184,7 +187,7 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
           occurrenceId: 'installed-provider-occurrence',
           isCurrent: () => !providerRetirement.signal.aborted,
           retirementSignal: providerRetirement.signal,
-        }),
+        } satisfies PluginContributionRuntimeLifecycle),
       },
       policyAgentRef: selectedAgent,
       agentRuntimeIdentity: {
@@ -196,7 +199,7 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
           registeredRootId: 'development-root-1',
         },
         isCurrent: () => true,
-      },
+      } satisfies AgentRuntimeIdentity,
     });
 
     expect(authority?.resolveDeclaration(installedProvider)?.id).toBe(
@@ -232,7 +235,7 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
         occurrenceId: 'installed-provider-occurrence',
         isCurrent: () => true,
         retirementSignal: new AbortController().signal,
-      }),
+      } satisfies PluginContributionRuntimeLifecycle),
     };
     expect(resolveRetainedAgentSessionRealtimeVoiceAuthority({
       runtimeRegistry: registryWithCurrentG,
@@ -292,7 +295,7 @@ describe('resolveAgentSessionRealtimeVoiceAuthority', () => {
         occurrenceId: 'installed-provider-occurrence',
         isCurrent: () => !providerRetirement.signal.aborted,
         retirementSignal: providerRetirement.signal,
-      }),
+      } satisfies PluginContributionRuntimeLifecycle),
     };
     const authority = resolveRetainedAgentSessionRealtimeVoiceAuthority({
       runtimeRegistry: registryAfterH,

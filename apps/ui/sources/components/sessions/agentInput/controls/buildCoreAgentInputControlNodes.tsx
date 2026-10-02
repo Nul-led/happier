@@ -2,7 +2,7 @@ import * as React from 'react';
 import type { View } from 'react-native';
 
 import type { AgentInputControlId } from './agentInputControlTypes';
-import type { SessionModeChipPresentation } from './resolveSessionModeChipPresentation';
+import type { resolveSessionModeChipPresentation, SessionModeChipPresentation } from './resolveSessionModeChipPresentation';
 import { createAgentSelectionActionChip } from '../definitions/createAgentSelectionActionChip';
 import { createAbortActionButton } from '../definitions/createAbortActionButton';
 import { createEnvVarsActionChip } from '../definitions/createEnvVarsActionChip';
@@ -18,10 +18,7 @@ import type { IconName } from '@/components/ui/icons/Icon';
 
 type ChipStyle = (pressed: boolean) => any;
 
-type SessionModeChipControlLike = Readonly<{
-    label: string;
-    selectedId: string;
-}>;
+type SessionModeChipControlLike = Pick<Parameters<typeof resolveSessionModeChipPresentation>[0], 'label' | 'selectedId'>;
 
 export function buildCoreAgentInputControlNodes(params: Readonly<{
     showPermissionChip: boolean;

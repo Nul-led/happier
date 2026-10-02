@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
-import { projectLegacySessionAccessCapabilitiesV1 } from '@happier-dev/protocol';
+import { createScmCapabilities } from '@happier-dev/protocol/scm';
+import { ApprovalRequestSchema, buildApprovalRequestArtifactHeaderV1, encodePlainArtifactStoredContent, projectLegacySessionAccessCapabilitiesV1 } from '@happier-dev/protocol';
 
 // Imported from their owning testkit modules, never the `@/dev/testkit` barrel:
 // the harness installs its network boundaries with `vi.doMock`, which only
@@ -67,6 +68,9 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', (
 
 const harness = createHomeGovernanceHarness();
 installHomeGovernanceBoundaries(harness);
+// Load the real executor after installing its environment boundaries. Cold graph
+// transformation belongs to collection, rather than a single behavior test's timer.
+const executorModule = await import('./defaultActionExecutor');
 
 const ACCOUNT_ID = 'account-a';
 // A Home publishes its portable identity in the canonical `srv_` grammar; the
@@ -149,7 +153,7 @@ function createdArtifactId(result: unknown): string {
 }
 
 async function loadExecutor() {
-    return await import('./defaultActionExecutor');
+    return executorModule;
 }
 
 describe('withDefaultActionExecuteContext', () => {
@@ -163,6 +167,107 @@ describe('withDefaultActionExecuteContext', () => {
     });
 
     afterEach(() => standardCleanup());
+
+    it('executes approved undo on the selected machine with the exact observed HEAD', async () => {
+        const serverId = await addHome();
+        const { createDefaultActionExecutor } = await loadExecutor();
+        const expectedHeadOid = 'a'.repeat(40);
+        rpc.machine.mockImplementation(async ({ method }: { method: string }) => method === RPC_METHODS.SCM_BACKEND_DESCRIBE
+            ? { success: true, capabilities: createScmCapabilities({ writeCommitUndoLast: true }) }
+            : { success: true, undoneCommitSha: expectedHeadOid, headOid: 'b'.repeat(40) });
+        const result = await createDefaultActionExecutor().execute('scm.commit.undoLast', { cwd: '/repo', expectedHeadOid }, {
+            serverId, surface: 'ui', authority: 'present_user', bypassApprovals: true,
+            externalActionTarget: { kind: 'machine', machineId: 'machine-scm' },
+        });
+        expect(result).toMatchObject({ ok: true, result: { success: true, undoneCommitSha: expectedHeadOid } });
+        expect(rpc.machine).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-scm', serverId: SERVER_IDENTITY_ID, accountId: ACCOUNT_ID, method: 'scm.commit.undoLast',
+            payload: { cwd: '/repo', expectedHeadOid, outcomeVersion: 1 },
+        }));
+    });
+
+    it('settles a blocking approval from the captured Home Artifact after an Account wake', async () => {
+        const serverId = await addHome();
+        harness.answer(serverId, '/v2/account/settings', {
+            body: { content: { t: 'plain', v: { actionsSettingsV1: { v: 1, actions: {
+                'action.spec.get': { approvalRequiredSurfaces: ['voice'] },
+            } } } }, version: 2 },
+        });
+        const { createDefaultActionExecutor } = await loadExecutor();
+        const { publishHomeAccountChange } = await import('@/sync/runtime/orchestration/homeAccountChange');
+        const abort = new AbortController();
+        const outcome: { result?: unknown } = {};
+        const pending = createDefaultActionExecutor().execute('action.spec.get', { id: 'review.start' }, {
+            serverId, surface: 'voice', authority: 'present_user', signal: abort.signal, actionRequestId: 'blocking-observation-1',
+        }).then((result) => { outcome.result = result; return result; });
+        try {
+            await vi.waitFor(() => {
+                expect(outcome.result, JSON.stringify(outcome.result)).toBeUndefined();
+                expect(harness.artifacts(serverId).list()).toHaveLength(1);
+            });
+            const row = harness.artifacts(serverId).list()[0]!;
+            const path = `/v1/artifacts/${row.id}`;
+            await vi.waitFor(() => expect(harness.requestsFor(path)).toHaveLength(1));
+            const rejected = ApprovalRequestSchema.parse({
+                ...ApprovalRequestSchema.parse(storedApproval(serverId, row.id).request),
+                status: 'rejected', decision: { kind: 'reject', decidedAtMs: Date.now() },
+            });
+            // The remote device commits through the genuine persistence boundary,
+            // not the local decision notifier or optimistic Artifact cache.
+            const written = await harness.artifacts(serverId).handle(path, { method: 'POST', body: JSON.stringify({
+                header: encodePlainArtifactStoredContent(buildApprovalRequestArtifactHeaderV1(rejected)),
+                body: encodePlainArtifactStoredContent({ body: JSON.stringify(rejected) }),
+                expectedHeaderVersion: row.headerVersion, expectedBodyVersion: row.bodyVersion,
+            }) });
+            expect(written?.status).toBe(200);
+            publishHomeAccountChange('unrelated-home', [row.id]);
+            publishHomeAccountChange(serverId, ['unrelated-artifact']);
+            await Promise.resolve();
+            expect(harness.requestsFor(path)).toHaveLength(1);
+            publishHomeAccountChange(serverId, [row.id]);
+            await vi.waitFor(() => expect(harness.requestsFor(path)).toHaveLength(2));
+            await expect(pending).resolves.toMatchObject({ ok: false, errorCode: 'approval_rejected' });
+            publishHomeAccountChange(serverId);
+            await Promise.resolve();
+            expect(harness.requestsFor(path)).toHaveLength(2);
+        } finally {
+            abort.abort();
+            await pending.catch(() => undefined);
+        }
+    });
+
+    it('retires a blocking approval when its captured Home Account is replaced', async () => {
+        const serverId = await addHome();
+        harness.answer(serverId, '/v2/account/settings', {
+            body: { content: { t: 'plain', v: { actionsSettingsV1: { v: 1, actions: {
+                'action.spec.get': { approvalRequiredSurfaces: ['voice'] },
+            } } } }, version: 2 },
+        });
+        const { createDefaultActionExecutor } = await loadExecutor();
+        const { publishHomeAccountChange } = await import('@/sync/runtime/orchestration/homeAccountChange');
+        const abort = new AbortController();
+        const outcome: { result?: unknown } = {};
+        const pending = createDefaultActionExecutor().execute('action.spec.get', { id: 'review.start' }, {
+            serverId, surface: 'voice', authority: 'present_user', signal: abort.signal, actionRequestId: 'blocking-retirement-1',
+        }).then((result) => { outcome.result = result; return result; });
+        try {
+            await vi.waitFor(() => {
+                expect(outcome.result, JSON.stringify(outcome.result)).toBeUndefined();
+                expect(harness.artifacts(serverId).list()).toHaveLength(1);
+            });
+            const row = harness.artifacts(serverId).list()[0]!;
+            const path = `/v1/artifacts/${row.id}`;
+            await vi.waitFor(() => expect(harness.requestsFor(path)).toHaveLength(1));
+            await harness.switchAccount(serverId, 'replacement-account');
+            await expect(pending).resolves.toMatchObject({ ok: false, errorCode: 'action_account_scope_changed' });
+            publishHomeAccountChange(serverId, [row.id]);
+            await Promise.resolve();
+            expect(harness.requestsFor(path)).toHaveLength(1);
+        } finally {
+            abort.abort();
+            await pending.catch(() => undefined);
+        }
+    });
 
     it('replays an approved Home-family mutation from the Inbox through the captured Home scope', async () => {
         const provider = {

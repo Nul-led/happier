@@ -2,6 +2,7 @@ import { access, rmdir, unlink } from 'node:fs/promises';
 import { chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
+import { spawn } from 'node:child_process';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -20,6 +21,7 @@ import { isTerminalHostStartupError } from '@/integrations/terminal/host/errors'
 
 import { createHerdrTerminalHostAdapter } from './adapter';
 import { withHerdrApi } from './herdrApi.testkit';
+import { createTerminalLaunchSpec } from '@/terminal/host/launchSpec';
 
 const launch = { sessionName: 'work', workingDirectory: tmpdir(), spawnArgv: [process.execPath, '--version'], spawnEnv: {}, isolatedEnv: true };
 const adapterFor = (socketPath: string) => {
@@ -40,6 +42,82 @@ async function discardSpec(specPath: string): Promise<void> {
 }
 
 describe('Herdr terminal host creation', () => {
+  it.each(['spawned', 'failed'] as const)('uses the admitted native handoff as the sole launcher and reports actual OS %s', async (outcome) => {
+    await withHerdrApi(async (api) => {
+      const spawnArgv = outcome === 'spawned' ? [process.execPath, '-e', 'process.exit(0)'] : ['/missing/native-fixture'];
+      const preparedLaunch = await createTerminalLaunchSpec({
+        workingDirectory: tmpdir(), spawnArgv, spawnEnv: {}, envPassthroughKeys: [], reportNativeSpawn: true,
+      });
+      try {
+        const request = { ...launch, spawnArgv, preparedLaunch };
+        await adapterFor(api.socketPath).createOrAttachHost(request);
+        const layout = api.requests.find(request => request.method === 'layout.apply');
+        const root = layout?.params.root as { command: string[] };
+        // A Herdr process boundary executes the actual submitted pane command.
+        const child = spawn(root.command[0]!, root.command.slice(1), { stdio: 'ignore' });
+        await new Promise<void>((resolve, reject) => {
+          child.once('error', reject);
+          child.once('exit', () => resolve());
+        });
+        expect(await preparedLaunch.awaitNativeSpawnResult!(Date.now(), 1)).toBe(outcome);
+        expect(root.command).toEqual(preparedLaunch.argv);
+      } finally {
+        await preparedLaunch.discard();
+        await discardSpec(readSpecPath(api.requests));
+      }
+    });
+  });
+  it('classifies failed server admission before submitting any native pane command', async () => {
+    await withHerdrApi(async (api) => {
+      api.faults.set('session.snapshot', 'error');
+      await expect(adapterFor(api.socketPath).createOrAttachHost(launch)).rejects.toMatchObject({
+        creationDisposition: 'not_created', cleanupIncomplete: false,
+        cause: expect.objectContaining({ code: 'session.snapshot_failed' }),
+      });
+      expect(api.requests.map((request) => request.method)).toEqual(['session.snapshot']);
+      expect([...api.panes]).toEqual([]);
+    });
+  });
+  it('reports an unsupported server before creating a pane', async () => {
+    await withHerdrApi(async (api) => {
+      api.setServerVersion('0.9.1');
+      await expect(adapterFor(api.socketPath).createOrAttachHost(launch)).rejects.toMatchObject({
+        code: 'terminal_host_startup_failed', hostKind: 'herdr', reason: 'server_version_unsupported',
+      });
+      expect(api.requests.map((request) => request.method)).toEqual(['session.snapshot']);
+      expect([...api.panes]).toEqual([]);
+    });
+  });
+  it.each([false, true])('submits large staged input once, but never submits or replays a partial failed write (fail=%s)', async (fail) => {
+    await withHerdrApi(async (api) => {
+      api.panes.add('managed');
+      const text = '\\🌈'.repeat(400_000);
+      if (fail) api.beforeResponse.set('pane.send_input', () => {
+        if (api.requests.filter((request) => request.method === 'pane.send_input').length === 2) {
+          api.faults.set('pane.send_input', 'disconnect');
+        }
+      });
+      const result = await createHerdrTerminalHostAdapter({
+        binary: 'herdr', sessionName: 'work', actionTimeoutMs: 5_000, startupTimeoutMs: 5_000,
+      }).injectUserPrompt({
+        kind: 'herdr', sessionName: 'work', socketPath: api.socketPath,
+        terminalId: 'terminal_1', paneId: 'managed',
+        attachMetadata: { attachStrategy: 'terminal_host', topology: 'shared' },
+      }, { text, multiline: false, origin: { kind: 'rpc', nonce: 'large-prompt' }, scheduling: {} });
+      const writes = api.requests.filter((request) => request.method === 'pane.send_input');
+      const enters = api.requests.filter((request) => request.method === 'pane.send_keys');
+      if (fail) {
+        expect(result).toMatchObject({ status: 'failed', phase: 'during_write', duplicateRisk: 'possible' });
+        expect(writes).toHaveLength(2);
+        expect(enters).toEqual([]);
+      } else {
+        expect(result).toMatchObject({ status: 'injected', bytesWritten: Buffer.byteLength(text) });
+        expect(writes.map((request) => request.params.text).join('')).toBe(text);
+        expect(enters.map((request) => request.params.keys)).toEqual([['enter']]);
+      }
+    }, { maxInitialRequestBytes: 1024 * 1024 });
+  });
+
   it.skipIf(process.platform === 'win32')('preserves stopped disposition and both causes when launch handoff removal fails', async () => {
     await withHerdrApi(async (api) => {
       api.faults.set('pane.get', 'error');
@@ -48,8 +126,18 @@ describe('Herdr terminal host creation', () => {
         const error = await adapterFor(api.socketPath).createOrAttachHost(launch).catch((failure: unknown) => failure);
         expect(error).toMatchObject({
           launchDisposition: 'stopped', cleanupIncomplete: true,
-          errors: [expect.objectContaining({ code: 'pane.get_failed' }), expect.objectContaining({ code: 'EACCES' })],
         });
+        expect(error).toBeInstanceOf(AggregateError);
+        if (!(error instanceof AggregateError)) throw error;
+        // AggregateError.errors is non-enumerable; assert its public value directly.
+        expect(error.errors).toHaveLength(2);
+        expect(error.errors[0]).toMatchObject({ code: 'pane.get_failed' });
+        const cleanupError = error.errors[1];
+        expect(cleanupError).toBeInstanceOf(AggregateError);
+        if (!(cleanupError instanceof AggregateError)) throw cleanupError;
+        expect(cleanupError.errors).toEqual([
+          expect.objectContaining({ code: 'EACCES' }), expect.objectContaining({ code: 'ENOTEMPTY' }),
+        ]);
         expect([...api.panes]).toEqual([]);
         await expect(access(readSpecPath(api.requests))).resolves.toBeUndefined();
       } finally {

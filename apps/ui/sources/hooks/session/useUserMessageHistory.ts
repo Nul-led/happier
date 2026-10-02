@@ -298,10 +298,9 @@ function mergeHistoryEntries(params: Readonly<{
     const out: string[] = [];
     const seen = new Set<string>();
     const push = (value: string) => {
-        const text = value.trim();
-        if (!text || seen.has(text)) return;
-        seen.add(text);
-        out.push(text);
+        if (!value.trim() || seen.has(value)) return;
+        seen.add(value);
+        out.push(value);
     };
 
     for (const entry of params.localEntries) {
@@ -329,11 +328,10 @@ function mergeRemoteHistoryRows(
     const seenMessageIds = new Set(out.map((row) => row.messageId));
 
     for (const row of incoming) {
-        const text = row.text.trim();
-        if (!text) continue;
+        if (!row.text.trim()) continue;
         if (seenMessageIds.has(row.messageId)) continue;
         seenMessageIds.add(row.messageId);
-        out.push({ ...row, text });
+        out.push(row);
     }
 
     return out;

@@ -4,6 +4,7 @@ import type {
   AutomationAccountCurrentnessWitnessV1,
   AutomationV3WorkerClaimResponse,
   AutomationV3WorkerAssignmentsResponse,
+  AutomationRunLifecycleOccurrenceEvidenceV1,
   AutomationV3WorkerExecutionDispatchOutcome,
 } from '@happier-dev/protocol';
 import {
@@ -11,6 +12,8 @@ import {
   AutomationV3WorkerAssignmentsResponseSchema,
   AutomationV3WorkerStartResponseSchema,
   PLUGIN_INSTALLATION_MANIFEST_PUBLISHER_HEADER_V1,
+  AutomationExecutionRunLifecycleSourcesResponseSchema,
+  AutomationExecutionRunLifecycleReportResponseSchema,
 } from '@happier-dev/protocol';
 
 import { configuration } from '@/configuration';
@@ -154,7 +157,25 @@ export function createAutomationClaimClient(params: {
           timeout: 15_000,
         },
       );
-      return toWorkerAssignmentResponseFromV3(AutomationV3WorkerAssignmentsResponseSchema.parse(response.data));
+      const sources = await axios.get(`${baseUrl}/v3/automations/worker/run-lifecycle`, {
+        headers: await workerHeaders({ method: 'GET', path: '/v3/automations/worker/run-lifecycle', body: null }),
+        params: { machineId }, timeout: 15_000,
+      }).then(result => AutomationExecutionRunLifecycleSourcesResponseSchema.parse(result.data).sources)
+        .catch((error: unknown) => {
+          // Supported older servers lack this additive source endpoint. Keep ordinary claims usable.
+          if (axios.isAxiosError(error) && error.response?.status === 404) return [];
+          throw error;
+        });
+      return { ...toWorkerAssignmentResponseFromV3(AutomationV3WorkerAssignmentsResponseSchema.parse(response.data)), runLifecycleSources: sources };
+    },
+
+    async reportRunLifecycle(machineId: string, occurrence: AutomationRunLifecycleOccurrenceEvidenceV1, signal: AbortSignal): Promise<void> {
+      const path = '/v3/automations/worker/run-lifecycle';
+      const body = { machineId, occurrence };
+      const response = await axios.post<unknown>(`${baseUrl}${path}`, body, {
+        headers: await workerHeaders({ method: 'POST', path, body }), signal, timeout: 15_000,
+      });
+      if (!AutomationExecutionRunLifecycleReportResponseSchema.parse(response.data).consumed) throw new Error('run_source_admission_ineligible');
     },
 
     async claimRun(paramsClaim: { machineId: string; leaseDurationMs: number; scope?: 'session_scoped' }): Promise<AutomationClaimRunResponse> {

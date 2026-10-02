@@ -2,26 +2,54 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ARTIFACT_PLAIN_DATA_KEY_MARKER } from '@happier-dev/protocol';
 
 const mocks = vi.hoisted(() => ({
-    getServerFeaturesSnapshot: vi.fn(),
     serverFetch: vi.fn(),
-}));
-
-vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
-    getServerFeaturesSnapshot: mocks.getServerFeaturesSnapshot,
 }));
 
 vi.mock('@/sync/http/client', () => ({
     serverFetch: mocks.serverFetch,
 }));
 
-import { deleteArtifact, fetchArtifact, fetchArtifacts } from './apiArtifacts';
+import { createArtifact, updateArtifact, deleteArtifact, fetchArtifact, fetchArtifacts, fetchArtifactBlob } from './apiArtifacts';
 
 const authority = { ownerAccountId: 'account-a', access: 'owner', encryptionMode: 'plain', dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER };
 
-describe('deleteArtifact stored-content compatibility', () => {
+describe('Artifact HTTP authority projection', () => {
     beforeEach(() => {
-        mocks.getServerFeaturesSnapshot.mockReset();
         mocks.serverFetch.mockReset();
+    });
+
+    it('refuses unsupported binary writes without falling back to older text-only endpoints', async () => {
+        const attempted: string[] = [];
+        mocks.serverFetch.mockImplementation(async (path: string) => {
+            attempted.push(path);
+            return path.endsWith('/content/binary')
+                ? new Response(JSON.stringify({ error: 'not_found' }), { status: 404 })
+                : new Response(JSON.stringify({ id: 'artifact', ...authority, success: true }));
+        });
+        const blob = { blobId: '00000000-0000-4000-8000-000000000001', content: { t: 'plain' as const, v: 'AA==' } };
+        await expect(createArtifact({ token: 't' }, { id: 'artifact', header: 'header', body: 'body', dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, blob },
+            { retry: 'none' })).rejects.toMatchObject({ status: 404 });
+        await expect(updateArtifact({ token: 't' }, 'artifact', { body: 'body', expectedBodyVersion: 1, blob: { blobId: blob.blobId } },
+            { retry: 'none' })).rejects.toMatchObject({ status: 404 });
+        expect(attempted).toEqual(['/v1/artifacts/content/binary', '/v1/artifacts/artifact/content/binary']);
+        await expect(createArtifact({ token: 't' }, { id: 'text', header: 'header', body: 'body', dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER },
+            { retry: 'none' })).resolves.toMatchObject({ id: 'artifact' });
+        expect(attempted.at(-1)).toBe('/v1/artifacts');
+    });
+
+    it('opens only the requested explicit-mode private blob response and refuses substitutions', async () => {
+        const blobId = '00000000-0000-4000-8000-000000000001';
+        const content = { t: 'plain', v: 'AP+A' };
+        mocks.serverFetch.mockResolvedValueOnce(new Response(JSON.stringify({ blobId, content }), { status: 200 }));
+        await expect(fetchArtifactBlob({ token: 'token' }, 'private', blobId, 'plain')).resolves.toEqual({ blobId, content });
+        for (const response of [
+            { blobId, content: { t: 'encrypted', c: 'AP+A' } },
+            { blobId: '00000000-0000-4000-8000-000000000002', content },
+            { blobId, content: { t: 'plain', v: 'not base64' } },
+        ]) {
+            mocks.serverFetch.mockResolvedValueOnce(new Response(JSON.stringify(response), { status: 200 }));
+            await expect(fetchArtifactBlob({ token: 'token' }, 'private', blobId, 'plain')).rejects.toMatchObject({ code: expect.stringMatching(/^artifact_/) });
+        }
     });
 
     it('selects only the captured owner for an Account migration, not received document grants', async () => {
@@ -46,16 +74,6 @@ describe('deleteArtifact stored-content compatibility', () => {
 
     it('deletes by id without reading stored content or requiring current protocol support', async () => {
         mocks.serverFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
-        mocks.getServerFeaturesSnapshot.mockResolvedValue({
-            status: 'ready',
-            features: {
-                capabilities: {
-                    encryption: {
-                        storagePolicy: 'optional',
-                    },
-                },
-            },
-        });
 
         await expect(deleteArtifact(
             { token: 'token-only' },
@@ -74,37 +92,6 @@ describe('deleteArtifact stored-content compatibility', () => {
             }),
             expect.objectContaining({ includeAuth: false }),
         );
-        expect(mocks.getServerFeaturesSnapshot).not.toHaveBeenCalled();
     });
 
-    it('preserves legacy E2EE Artifact deletion without requiring the marker capability', async () => {
-        mocks.serverFetch
-            .mockResolvedValueOnce(new Response(JSON.stringify({
-                id: 'artifact-e2ee',
-                header: 'encrypted-header',
-                headerVersion: 1,
-                body: 'encrypted-body',
-                bodyVersion: 1,
-                dataEncryptionKey: 'released-encrypted-data-key',
-                seq: 1,
-                createdAt: 1,
-                updatedAt: 1,
-            }), {
-                status: 200,
-                headers: { 'Content-Type': 'application/json' },
-            }))
-            .mockResolvedValueOnce(new Response(null, { status: 204 }));
-
-        await expect(deleteArtifact(
-            { token: 'released-keyed-client', secret: 'real-e2ee-material' },
-            'artifact-e2ee',
-            { retry: 'none' },
-        )).resolves.toBeUndefined();
-
-        expect(mocks.getServerFeaturesSnapshot).not.toHaveBeenCalled();
-        expect(
-            mocks.serverFetch.mock.calls.filter(([, init]) =>
-                (init as RequestInit | undefined)?.method === 'DELETE'),
-        ).toHaveLength(1);
-    });
 });

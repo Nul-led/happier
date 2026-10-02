@@ -1,7 +1,16 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// OS manager reads are the boundary; keep repair selection, metadata and preservation real.
+vi.mock('node:child_process', async (original) => ({
+  ...await original<typeof import('node:child_process')>(),
+  spawnSync: (command: string) => ({ status: 0, stdout: command === 'systemctl'
+    ? 'UnitFileState=enabled\nActiveState=inactive\n'
+    : command === 'powershell.exe' ? JSON.stringify({ exists: true, enabled: true, active: false, autostart: true })
+      : 'disabled services = {\n}', stderr: '' }),
+}));
 
 import type { IrohRelayEnvConfig } from '@happier-dev/iroh-native/node';
 

@@ -10,7 +10,7 @@ function createRequest() {
   const initialSnapshot = readSessionMetadataTupleWriterSnapshot({ credentials, accountEncryptionCurrentness, rawSession: {
     metadataLayoutVersion: 0, encryptionMode: 'plain', metadata: JSON.stringify({ path: '/private/workspace', host: 'host' }), metadataVersion: 4, ownerMetadata: null, agentState: null, agentStateVersion: 2,
   } });
-  return { token: credentials.token, sessionId: 'diagnostic-session', authority: { kind: 'owner' as const, credentials, accountEncryptionCurrentness }, mode: 'plain' as const, initialSnapshot,
+  return { token: credentials.token, sessionId: 'diagnostic-session', authority: { kind: 'owner' as const, credentials, accountEncryptionCurrentness }, mode: 'plain' as const, ctx: null, initialSnapshot,
     mutation: { kind: 'metadata' as const, update: (metadata: typeof initialSnapshot.value.metadata) => ({ ...metadata, name: 'private-title' }) } };
 }
 

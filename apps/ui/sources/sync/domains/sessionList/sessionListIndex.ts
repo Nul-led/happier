@@ -69,6 +69,19 @@ export type SessionListIndexItem =
          */
         contextualSearchReasons?: readonly SessionListContextualSearchReason[];
         contextualSearchSourceMachineId?: string | null;
+    }>
+    | Readonly<{
+        type: 'workflow_run';
+        runId: string;
+        serverId: string;
+        serverName?: string;
+        groupKey?: string;
+        groupKind?: 'active' | 'date' | 'project' | 'pinned' | 'loading' | 'folder' | 'attention' | 'working';
+        section?: 'active' | 'inactive';
+        folderId?: string | null;
+        folderDepth?: number;
+        reportsDepth?: number;
+        workspace?: SessionFolderWorkspaceRefV1;
     }>;
 
 export type SessionListContextualSearchReason =
@@ -141,6 +154,16 @@ export function areSessionListIndexItemsEqual(
     if (previous === next) return true;
     if (!previous || !next) return previous === next;
     if (previous.type !== next.type) return false;
+
+    if (previous.type === 'workflow_run') {
+        return next.type === 'workflow_run'
+            && previous.runId === next.runId && previous.serverId === next.serverId
+            && previous.serverName === next.serverName && previous.groupKey === next.groupKey
+            && previous.groupKind === next.groupKind && previous.section === next.section
+            && previous.folderId === next.folderId && previous.folderDepth === next.folderDepth
+            && (previous.reportsDepth ?? 0) === (next.reportsDepth ?? 0)
+            && areWorkspaceRefsEqual(previous.workspace, next.workspace);
+    }
 
     if (previous.type === 'session') {
         if (next.type !== 'session') return false;
@@ -224,6 +247,7 @@ export function buildSessionListIndexNodeId(item: SessionListIndexItem): string 
     }
 
     const serverId = String(item.serverId ?? '').trim();
+    if (item.type === 'workflow_run') return `workflow_run:${JSON.stringify([serverId, item.runId])}`;
     const sessionId = String(item.sessionId ?? '').trim();
     if (serverId && sessionId) return `session:${sessionAddressKey({ serverId, sessionId })}`;
     return `session:${sessionId}`;
@@ -234,6 +258,9 @@ export function resolveSessionListItemOrganizationEligibility(
     options: ResolveSessionListItemOrganizationEligibilityOptions,
 ): SessionListItemOrganizationEligibility {
     const foldersFeatureEnabled = options.foldersFeatureEnabled === true;
+    if (item.type === 'workflow_run') {
+        return { canUseSessionFolders: false, foldersFeatureEnabled, storageKind: null, reason: 'unsupported-item' };
+    }
     if (!foldersFeatureEnabled) {
         return {
             canUseSessionFolders: false,

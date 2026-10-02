@@ -28,9 +28,6 @@ import {
 } from '@/sync/domains/machines/peer/mediation/rpc/productionRoute';
 import { resolveProductionMachineRpcRelayFallbackForServer } from '@/sync/domains/machines/peer/mediation/rpc/productionRelayFallback';
 import { recordMachineRpcPeerMediationReceipt } from '@/sync/domains/machines/peer/mediation/rpc/receiptLog';
-import {
-    requireCurrentAccountStoredContentServerCompatibility,
-} from '@/sync/api/capabilities/accountStoredContentCompatibility';
 import { DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS } from './serverScopedRpcTypes';
 import type { ServerScopedMachineRpcParams } from './serverScopedRpcTypes';
 import { isGuardedMachineRpcMethod, resolveTransferPolicyAllowsMachineRpcDirect } from './guardedMachineRpcPolicy';
@@ -270,6 +267,7 @@ async function machineRpcWithServerTransport<R, A>(
                     onIssued();
                 }
                 socketRpcAbortScope.issued = true;
+                params.onDispatched?.();
             };
             try {
                 const result = await timeoutBudget.runWithinTimeout(
@@ -359,11 +357,6 @@ async function machineRpcWithServerTransport<R, A>(
             });
         }
         const usePlaintextTransport = machineTransport.mode === 'plain';
-        if (usePlaintextTransport) {
-            await requireCurrentAccountStoredContentServerCompatibility({
-                serverId: context.targetServerId,
-            });
-        }
         let machineEncryption = null;
         if (!usePlaintextTransport) {
             if (!context.encryption) {
@@ -435,6 +428,7 @@ async function machineRpcWithServerTransport<R, A>(
                             onIssued: () => {
                                 onIssued?.();
                                 socketRpcAbortScope.issued = true;
+                                params.onDispatched?.();
                             },
                             signal: params.signal,
                         });
@@ -511,6 +505,7 @@ export async function machineRpcWithServerScope<R, A>(params: ServerScopedMachin
             timeoutMs: effectiveParams.timeoutMs,
             authorization: effectiveParams.authorization,
             signal: effectiveParams.signal,
+            onDispatched: effectiveParams.onDispatched,
             resolveDirectRoute: async (input) => await resolveProductionMachineRpcDirectRoute({
                 ...input,
                 serverId: effectiveParams.serverId,
@@ -539,4 +534,34 @@ export async function machineRpcWithServerScope<R, A>(params: ServerScopedMachin
         }),
         socketRpcAbortScope,
     );
+}
+
+/** Order asynchronous preparation through actual dispatch, never through RPC replies. */
+export function createOrderedMachineRpcCaller(
+    call: typeof machineRpcWithServerScope = machineRpcWithServerScope,
+): typeof machineRpcWithServerScope {
+    let dispatchTail = Promise.resolve();
+    return async <R, A>(params: ServerScopedMachineRpcParams<A>): Promise<R> => {
+        const previous = dispatchTail;
+        let releaseDispatch!: () => void;
+        const dispatched = new Promise<void>((resolve) => { releaseDispatch = resolve; });
+        // A cancelled waiter must not let its successor overtake the previous dispatch.
+        dispatchTail = previous.then(() => dispatched);
+        try {
+            return await withMachineRpcAbort(params.method, params.signal, async () => {
+                await previous;
+                throwIfMachineRpcAborted(params.method, params.signal);
+                return await call<R, A>({
+                    ...params,
+                    onDispatched: () => {
+                        releaseDispatch();
+                        params.onDispatched?.();
+                    },
+                });
+            });
+        } finally {
+            // Setup failure or cancellation must release the admission fence as well.
+            releaseDispatch();
+        }
+    };
 }

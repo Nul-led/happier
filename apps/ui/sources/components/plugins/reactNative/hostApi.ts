@@ -35,6 +35,7 @@ import {
     PluginUiRespondToSessionPermissionRequestV1Schema,
     PluginUiRespondToSessionPermissionResultV1Schema,
     PluginUiWatchSessionRequestV1Schema,
+    PluginUiWatchLiveStreamRequestV1Schema,
     ComposerDecorationResultV1Schema,
     ComposerFocusResultV1Schema,
     ComposerReadResultV1Schema,
@@ -113,6 +114,9 @@ type PluginReactNativeHostRequestSubscription = Readonly<{
  * context or a second source of author-visible surface facts.
  */
 type PluginReactNativeHostRequestTransport = Readonly<{
+    watchLiveStream: (payload: import('@happier-dev/protocol/plugins/ui').PluginUiWatchLiveStreamRequestV1,
+        listener: (event: PluginUiResourceSubscriptionEventV1) => void,
+        options?: PluginSurfaceHostApiRequestOptions) => Promise<PluginReactNativeHostRequestSubscription>;
     request: (
         method: PluginUiHostApiRequestMethodV1,
         payload?: PluginUiJsonValueV1,
@@ -381,7 +385,7 @@ function createPluginReactNativeHostRequestTransport(params: Readonly<{
      * retirement are shared.
      */
     async function establishInvalidationSubscription(
-        method: Extract<PluginUiHostApiRequestMethodV1, 'watchResource' | 'watchSession'>,
+        method: Extract<PluginUiHostApiRequestMethodV1, 'watchResource' | 'watchSession' | 'watchLiveStream'>,
         subscriptionId: string,
         requestPayload: PluginUiJsonValueV1,
         listener: (event: PluginUiResourceSubscriptionEventV1) => void,
@@ -587,6 +591,11 @@ function createPluginReactNativeHostRequestTransport(params: Readonly<{
         request,
         watchResource,
         watchSession,
+        watchLiveStream: async (payload, listener, options) => {
+            const parsed = PluginUiWatchLiveStreamRequestV1Schema.safeParse(payload);
+            if (!parsed.success) throwHostApiError('invalid_payload');
+            return await establishInvalidationSubscription('watchLiveStream', parsed.data.subscriptionId, parsed.data, listener, options);
+        },
         watchComposer,
         acquireComposerInputLock,
         publishSubscriptionEvent: (event) => subscriptions.publish(params.requestSurface, event),
@@ -1220,6 +1229,15 @@ export function createCanonicalPluginReactNativeHostApiAdapter(params: Readonly<
                 await subscription.dispose();
                 assertActive(options?.signal);
             }
+            return disposable(() => { void subscription.dispose(); });
+        },
+        watchLiveStream: async (reference, listener, options) => {
+            assertActive(options?.signal); assertInstalled('watchLiveStream');
+            subscriptionSequence += 1;
+            const subscription = await transport.watchLiveStream({ reference,
+                subscriptionId: `${params.requestIdPrefix}:stream:${subscriptionSequence}` }, listener,
+                options?.signal ? { signal: options.signal } : undefined);
+            if (disposed || options?.signal?.aborted) { await subscription.dispose(); assertActive(options?.signal); }
             return disposable(() => { void subscription.dispose(); });
         },
         respondToSessionPermission: async (responseRequest, options) => {

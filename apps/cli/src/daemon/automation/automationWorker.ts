@@ -9,6 +9,7 @@ import {
   resolveValidatedAutomationAccountEncryptionV1,
 } from '@/plugins/runtime/automations/automationAccountCurrentness';
 import { createAutomationAssignmentCache } from './automationAssignmentCache';
+import { createAutomationRunLifecycleObservers } from './automationRunLifecycleObservers';
 import {
   classifyAutomationWorkerError,
   nextAutomationRetryDelayMs,
@@ -167,6 +168,19 @@ export function startAutomationWorker(params: {
     })
     : null;
   let maxActiveRunsPerMachine = DEFAULT_AUTOMATION_V3_MAX_ACTIVE_RUNS_PER_MACHINE;
+  const sourceObservers = createAutomationRunLifecycleObservers({
+    wait: async (source, signal) => {
+      if (!actionExecutor) throw new Error('not_authenticated');
+      const result = await actionExecutor.execute('execution.run.wait', {
+        runId: source.runId, sessionId: source.sessionId ?? null,
+      }, { surface: 'cli', executionRunTargetMachineId: source.machineId, signal });
+      if (!result.ok) throw Object.assign(new Error(result.errorCode), { code: result.errorCode });
+      return result.result;
+    },
+    report: (occurrence, signal) => claimClient.reportRunLifecycle(params.machineId, occurrence, signal),
+    onError: (error, source) => logAutomationWarn('Run notification source observation failed; retained source remains armed', error,
+      { machineId: source.machineId, runId: source.runId }),
+  });
 
   const nullClaimBackoffMs = Math.min(
     60_000,
@@ -284,6 +298,7 @@ export function startAutomationWorker(params: {
   const stopWorker = (reason: 'manual') => {
     if (stopped) return;
     stopped = true;
+    sourceObservers.clear();
     for (const active of activeExecutions.values()) {
       active.controller.abort();
     }
@@ -322,6 +337,7 @@ export function startAutomationWorker(params: {
       // The current server is the execution-capacity settings authority.
       maxActiveRunsPerMachine = response.settings.maxActiveRunsPerMachine;
       assignments.replace(response.assignments);
+      sourceObservers.replace(response.runLifecycleSources ?? []);
       scheduleNextAssignmentReconciliation();
       logAutomationInfo('Assignments refreshed', {
         machineId: params.machineId,
@@ -560,6 +576,7 @@ export function startAutomationWorker(params: {
     pause: () => {
       if (stopped || paused) return;
       paused = true;
+      sourceObservers.clear();
       clearClaimTimer();
       if (refreshSoonTimer) {
         clearTimeout(refreshSoonTimer);
@@ -576,6 +593,9 @@ export function startAutomationWorker(params: {
       if (stopped) return;
       const body = update?.body;
       if (!body || typeof body !== 'object') return;
+      if (body.t === 'automation-upsert' || body.t === 'automation-delete') {
+        scheduleAssignmentsRefreshSoon('socket-run-source-changed');
+      }
 
       if (body.t === 'automation-assignment-updated' && body.machineId === params.machineId) {
         scheduleAssignmentsRefreshSoon('socket-assignment-updated');

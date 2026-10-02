@@ -10,7 +10,6 @@ import {
   type PluginSourceCustodyV1,
   type ProviderErrorV1,
 } from '@happier-dev/protocol';
-import type { AgentCliSessionCommandBuildInputV1 } from '@happier-dev/plugin-sdk/agents/runtime';
 
 import type { StoredCredentials } from '@/persistence';
 import { readStoredCredentials } from '@/persistence';
@@ -42,6 +41,7 @@ import {
   type ProviderCliInfoCommandPrefix,
 } from '@/cli/providerCliPassthrough';
 import {
+  buildAgentCliSessionCommandBuildInput,
   partitionProviderSessionArgs,
   type ProviderSessionArgPartitionResult,
 } from '@/cli/providerSessionArgPartition';
@@ -130,41 +130,6 @@ function readUnsetEnvironmentVariables(value: unknown): readonly string[] | unde
 function passthroughProviderCliArgsAndExit(params: Parameters<typeof passthroughProviderCliArgs>[0]): void {
   passthroughProviderCliArgs(params);
   process.exit(0);
-}
-
-export function buildAgentCliSessionCommandBuildInput(params: Readonly<{
-  settings: Readonly<Record<string, unknown>>;
-  processEnv: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>;
-  startedBy: 'terminal' | 'daemon';
-  isExplicitCliSubcommand: boolean;
-  parsed: ProviderSessionArgPartitionResult;
-}>): AgentCliSessionCommandBuildInputV1 {
-  return Object.freeze({
-    isExplicitCliSubcommand: params.isExplicitCliSubcommand,
-    parsed: Object.freeze({
-      ...(params.parsed.startingMode === undefined
-        ? {}
-        : { startingMode: params.parsed.startingMode }),
-      ...(params.parsed.directory === undefined
-        ? {}
-        : { directory: params.parsed.directory }),
-      ...(params.parsed.resume === undefined
-        ? {}
-        : { resume: params.parsed.resume }),
-      agentArgs: Object.freeze([...params.parsed.providerArgs]),
-    }),
-    settings: params.settings,
-    // The daemon/catalog owner resolves the exact scope-qualified Agent
-    // Settings immediately before invoking the Agent callback. The transport
-    // still carries the public shape so every realm validates one contract;
-    // this pre-resolution producer therefore contributes the truthful empty
-    // projection rather than an old flat or optional spelling.
-    pluginSettings: Object.freeze({}),
-    environment: Object.freeze(Object.fromEntries(
-      Object.entries(params.processEnv).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
-    )),
-    startOrigin: params.startedBy,
-  });
 }
 
 async function finalizeProviderRunOptions(extras: Readonly<Record<string, unknown>>): Promise<Readonly<Record<string, unknown>>> {

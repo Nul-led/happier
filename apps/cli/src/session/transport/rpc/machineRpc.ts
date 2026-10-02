@@ -163,6 +163,8 @@ export async function callExactMachineRpc(params: Readonly<{
   requiredMachineKind?: 'persistent' | 'ephemeral_session_runner';
   /** Null delegates acknowledgement lifetime to the caller signal/server lifecycle. */
   timeoutMs?: number | null;
+  /** Only read-only observations may be repeated after transport reconnect. */
+  reattachOnReconnect?: true;
   signal?: AbortSignal;
   externalAction?: Readonly<{
     context: ActionExecutorContext;
@@ -185,8 +187,9 @@ export async function callExactMachineRpc(params: Readonly<{
       ...(params.serverUrl ? { serverUrl: params.serverUrl } : {}),
       connectTimeoutMs,
       signal: params.signal,
+      ...(params.reattachOnReconnect ? { reattachOnReconnect: true } : {}),
       disconnectMessage: 'Machine RPC socket disconnected before acknowledgement',
-    }, async (socket, connect) => {
+    }, async (socket, connect, attemptSignal) => {
       const machineCodec = await resolveMachineRpcContentCodec({
         credentials: params.credentials,
         machineId,
@@ -196,7 +199,7 @@ export async function callExactMachineRpc(params: Readonly<{
         ...(params.requireCurrentMachine ? { requireCurrentMachine: true } : {}),
         ...(params.requiredMachineKind ? { requiredMachineKind: params.requiredMachineKind } : {}),
         ...(params.externalAction ? { externalAction: params.externalAction } : {}),
-        ...(params.signal ? { signal: params.signal } : {}),
+        ...(attemptSignal ? { signal: attemptSignal } : {}),
       });
       if (params.expectedEncryptionMode !== undefined && machineCodec.mode !== params.expectedEncryptionMode) {
         throw new MachineRpcEncryptionModeMismatchError(machineId);
@@ -230,7 +233,7 @@ export async function callExactMachineRpc(params: Readonly<{
         content,
         requestId: randomUUID(),
         timeoutMs,
-        signal: params.signal,
+        signal: attemptSignal,
         authorization: params.authorization,
         ...(createExternalActionExecution ? { createExternalActionExecution } : {}),
       });

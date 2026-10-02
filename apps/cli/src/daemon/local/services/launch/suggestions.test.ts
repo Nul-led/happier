@@ -112,7 +112,7 @@ describe('buildLocalServiceLauncherSnapshot', () => {
                     folderLabel: 'web',
                     iconToken: 'vite',
                 },
-                originMode: 'path',
+                originMode: 'host',
                 browserTarget: {
                     kind: 'localServicePreview',
                     targetId: 'preview-a',

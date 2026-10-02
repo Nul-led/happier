@@ -12,7 +12,7 @@ import {
   type ExpoPushNotificationChannelV1,
 } from '@happier-dev/protocol';
 
-import type { PushNotificationDeliveryOptions } from '@/api/pushNotifications';
+import type { PushNotificationClient, PushNotificationDeliveryOptions } from '@/api/pushNotifications';
 import { serializeAxiosErrorForLog } from '@/api/client/serializeAxiosErrorForLog';
 import { logger } from '@/ui/logger';
 import type { ActivityNotificationEvent } from './activityNotificationEvent';
@@ -199,18 +199,29 @@ function buildCanonicalExpoPushChannel(decision: AttentionDeliveryDecision): Exp
 export async function listActivityNotificationChannels(params: Readonly<{
   settings: AccountSettings | null | undefined;
   pluginNotifications?: Pick<StablePluginNotificationsOwner, 'availableHostChannels'> | null;
-}>): Promise<readonly Readonly<{ value: string; label: string }>[]> {
+  pushTokenReader?: Pick<PushNotificationClient, 'fetchPushTokens'>;
+}>): Promise<readonly Readonly<{ value: string; label: string; disabled: boolean }>[]> {
   const settings = accountSettingsParse(params.settings ?? {});
   const pluginNotifications = params.pluginNotifications === undefined
     ? createHostPluginNotificationChannels()
     : params.pluginNotifications;
+  const configuredForNotifyMe = (kind: PluginNotificationChannelKindV1) => {
+    const decision = resolveChannelDecision({ settings, channel: kind,
+      event: { topic: 'notify_me', message: '' }, now: new Date() });
+    // Quiet hours apply when the future occurrence delivers, not when its intent
+    // is registered. Disabled channels/events remain unavailable in the catalog.
+    return decision.delivery !== 'suppress' || decision.reason === 'quiet_hours';
+  };
+  const pushConfigured = configuredForNotifyMe('expo_push') && params.pushTokenReader
+    ? (await params.pushTokenReader.fetchPushTokens()).length > 0 : false;
   return [
-    { value: BUILT_IN_EXPO_PUSH_NOTIFICATION_CHANNEL_ID, label: 'Push notifications' },
+    { value: BUILT_IN_EXPO_PUSH_NOTIFICATION_CHANNEL_ID, label: 'Push notifications', disabled: !pushConfigured },
     ...resolveNotificationChannelsV1FromAccountSettings(settings)
       .filter((channel) => channel.kind === 'webhook')
-      .map((channel) => ({ value: channel.id, label: channel.id })),
+      .map((channel) => ({ value: channel.id, label: channel.id,
+        disabled: !channel.enabled || !configuredForNotifyMe('webhook') })),
     ...(await pluginNotifications?.availableHostChannels() ?? [])
-      .map(({ value, label }) => ({ value, label })),
+      .map(({ value, label, kind }) => ({ value, label, disabled: !configuredForNotifyMe(kind) })),
   ];
 }
 

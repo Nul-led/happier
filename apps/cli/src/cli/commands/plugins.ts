@@ -38,7 +38,6 @@ import { createNpmRegistryProfileService } from '@/plugins/distribution/npm/prof
 import { createNpmRegistryProfileProbe } from '@/plugins/distribution/npm/profiles/probe';
 import { resolveArchiveExpectedIntegrity } from '@/plugins/distribution/archive/integrity';
 import { isInteractiveTerminal, promptSecretInput } from '@/terminal/prompts/promptInput';
-import { delay } from '@/utils/time';
 import { handlePluginsRegistryCommand, type PluginsRegistryCommandDeps } from './pluginsRegistry';
 import {
   handlePluginsSettingsCommand,
@@ -137,6 +136,7 @@ type PluginsCommandDeps = Readonly<{
   readPluginInvocationLogsOnMachine?: (params: Readonly<{
     target: PluginInvocationLogMachineTarget;
     request: PluginInvocationLogQuery;
+    waitForChanges?: true;
     signal?: AbortSignal;
   }>) => Promise<MachinePluginInvocationLogReadResult>;
   pluginSettings?: PluginsSettingsCommandDeps;
@@ -181,7 +181,7 @@ function usage(): string {
       { label: `${pluginCommand} doctor --installed [<pluginId>] [--json]`, description: 'Inspect installed immutable plugin generations for missing, escaped, non-regular, drifted, or unloadable files' },
       { label: `${pluginCommand} reload [developmentPluginId] [--json]`, description: 'Reapply the development source registered for this directory, or one explicit plugin id' },
       { label: `${pluginCommand} change status|approve|reject <pendingChangeId> [--json]`, description: 'Rejoin or explicitly decide a daemon-lifetime pending plugin change by its issued id' },
-      { label: `${pluginCommand} logs <pluginId> [--machine <id>] [--generation <id>] [--correlation <id>] [--cursor <byteOffset>] [--limit <1-500>] [--follow] [--json]`, description: 'Read canonical structured logs from one exact current daemon' },
+      { label: `${pluginCommand} logs <pluginId> [--machine <id>] [--occurrence <id>] [--correlation <id>] [--cursor <byteOffset>] [--limit <1-500>] [--follow] [--json]`, description: 'Read canonical structured logs from one exact current daemon' },
       ...pluginSettingsHelpRows(pluginCommand),
       { label: `${pluginCommand} registry add <origin> [--id <id>] [--name <name>] [--scope <@scope>] [--default] [--allow-private-network] [--json]`, description: 'Add a private npm registry profile' },
       { label: `${pluginCommand} registry login <profileId> [--json]`, description: 'Store a registry token through a hidden prompt' },
@@ -1009,18 +1009,21 @@ async function runPluginsChangeCommand(
 function readPluginLogsRequest(args: readonly string[]): Readonly<{
   pluginId: string;
   machineId?: string;
-  generation?: string;
+  occurrenceId?: string;
   correlationId?: string;
   cursor?: number;
   limit?: number;
 }> | null {
+  if (args.some((argument) => argument === '--generation' || argument.startsWith('--generation='))) {
+    throw new Error('Unknown option: --generation; use --occurrence');
+  }
   const pluginId = readCommandPositionals(args, {
     startIndex: 1,
-    valueFlags: ['--machine', '--generation', '--correlation', '--cursor', '--limit'],
+    valueFlags: ['--machine', '--occurrence', '--correlation', '--cursor', '--limit'],
   })[0] ?? null;
   if (!pluginId || pluginId === 'help' || pluginId === '--help' || pluginId === '-h') return null;
 
-  const readOptionalFlag = (flag: '--generation' | '--correlation'): string | undefined => {
+  const readOptionalFlag = (flag: '--occurrence' | '--correlation'): string | undefined => {
     if (!hasFlagValue(args, flag)) return undefined;
     const value = readFlagValue(args, flag);
     if (!value) throw new Error(`${flag} requires a value`);
@@ -1066,14 +1069,14 @@ function readPluginLogsRequest(args: readonly string[]): Readonly<{
   if ((inlineMachineValues.length > 0 || separateMachineCount === 1) && !machineId) {
     throw new Error('--machine requires a value');
   }
-  const generation = readOptionalFlag('--generation');
+  const occurrenceId = readOptionalFlag('--occurrence');
   const correlationId = readOptionalFlag('--correlation');
   const cursor = readBoundedIntegerFlag('--cursor', 0, Number.MAX_SAFE_INTEGER);
   const limit = readBoundedIntegerFlag('--limit', 1, 500);
   return {
     pluginId,
     ...(machineId ? { machineId } : {}),
-    ...(generation ? { generation } : {}),
+    ...(occurrenceId ? { occurrenceId } : {}),
     ...(correlationId ? { correlationId } : {}),
     ...(cursor === undefined ? {} : { cursor }),
     ...(limit === undefined ? {} : { limit }),
@@ -1123,6 +1126,7 @@ async function printPluginLogsResult(
     await printJsonEnvelope({ ok: true, kind: 'plugins_logs', data: { target, ...result } });
     return;
   }
+  if (result.cursorReset) console.log(neutral('The active daemon log changed; continuing from its beginning.'));
   if (result.records.length === 0) {
     console.log(neutral('No matching plugin logs.'));
     return;
@@ -1130,24 +1134,6 @@ async function printPluginLogsResult(
   for (const record of result.records) {
     await writeJsonStdout(record);
   }
-}
-
-async function waitForPluginLogsPoll(signal?: AbortSignal): Promise<boolean> {
-  if (signal?.aborted) return false;
-  if (!signal) {
-    await delay(250);
-    return true;
-  }
-  await new Promise<void>((resolve) => {
-    const complete = (): void => {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', complete);
-      resolve();
-    };
-    const timer = setTimeout(complete, 250);
-    signal.addEventListener('abort', complete, { once: true });
-  });
-  return !signal.aborted;
 }
 
 async function runPluginsLogsCommand(
@@ -1185,19 +1171,30 @@ async function runPluginsLogsCommand(
   if (!wantsJson(args)) printPluginLogsTarget(target);
   const follow = args.includes('--follow');
   let cursor = requestedCursor;
+  let logId: string | undefined;
+  let waitForChanges = false;
   let previousEmptyFollowPage: Readonly<{ cursor: number; hasMore: boolean }> | null = null;
   for (;;) {
-    const result = await readLogs({
-      target,
-      request: {
-        ...query,
-        ...(cursor === undefined ? {} : { cursor }),
-      },
-      ...(runtime.signal ? { signal: runtime.signal } : {}),
-    });
+    let result: MachinePluginInvocationLogReadResult;
+    try {
+      result = await readLogs({
+        target,
+        request: {
+          ...query,
+          ...(cursor === undefined ? {} : { cursor }),
+          ...(logId === undefined ? {} : { logId }),
+        },
+        ...(waitForChanges ? { waitForChanges: true } : {}),
+        ...(runtime.signal ? { signal: runtime.signal } : {}),
+      });
+    } catch (error) {
+      if (runtime.signal?.aborted) return;
+      throw error;
+    }
     const unchangedEmptyFollowPage = follow
       && result.kind === 'available'
       && result.records.length === 0
+      && !result.cursorReset
       && previousEmptyFollowPage !== null
       && previousEmptyFollowPage.cursor === result.cursor
       && previousEmptyFollowPage.hasMore === result.hasMore;
@@ -1212,8 +1209,8 @@ async function runPluginsLogsCommand(
 
     const madeProgress = cursor !== result.cursor;
     cursor = result.cursor;
-    if (result.hasMore && madeProgress) continue;
-    if (!await waitForPluginLogsPoll(runtime.signal)) return;
+    logId = result.logId;
+    waitForChanges = !(result.hasMore && madeProgress);
   }
 }
 

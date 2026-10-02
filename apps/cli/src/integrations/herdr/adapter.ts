@@ -4,12 +4,12 @@ import {
   resolveTerminalPromptWriteTimeoutMs,
   type TerminalAttachmentId,
   type TerminalControlPort,
-  type TerminalHostAdapter,
   type TerminalHostHandle,
   type TerminalInputInjectionResult,
   type TerminalInputState,
   type TerminalSpecialKey,
 } from '@happier-dev/agents';
+import type { TerminalHostAdapter } from '@/integrations/terminal/host/_types';
 
 import { buildTerminalControlCapture, normalizeCapturedScreen } from '@/integrations/terminalHost/controlCapture';
 import {
@@ -19,6 +19,7 @@ import {
 } from '@/integrations/terminalHost/promptSubmitVerification';
 import { createTerminalHostDeadline, remainingTerminalHostDeadlineMs } from '@/integrations/terminalHost/deadline';
 import { logger } from '@/ui/logger';
+import { TerminalHostCreationError, TerminalHostStartupError } from '@/integrations/terminal/host/errors';
 
 import { createHerdrClient, HerdrApiError, HerdrPaneCreationError, type HerdrClient } from './client';
 import { createHerdrLaunchSpec } from './launchSpec';
@@ -36,6 +37,21 @@ const SPECIAL_KEYS: Readonly<Record<TerminalSpecialKey, string>> = {
 
 function paneFailure(error: unknown): boolean {
   return error instanceof HerdrApiError && error.code === 'pane_not_found';
+}
+
+export async function admitHerdrServer(client: HerdrClient): Promise<string> {
+  try {
+    return await client.ensureServer();
+  } catch (error) {
+    if (error instanceof HerdrApiError && error.code === 'unsupported_server_version') {
+      throw new TerminalHostStartupError({ hostKind: 'herdr', reason: 'server_version_unsupported',
+        message: 'Herdr requires a supported server version. Update Herdr and restart its server.', cause: error,
+        creationFailure: { creationDisposition: 'not_created', cleanupIncomplete: false } });
+    }
+    throw new TerminalHostCreationError([error], 'Herdr server admission failed before native launch', {
+      creationDisposition: 'not_created', cleanupIncomplete: false,
+    });
+  }
 }
 
 function failedInjection(
@@ -56,6 +72,7 @@ export function createHerdrTerminalHostAdapter(params: Readonly<{
   actionTimeoutMs: number;
   startupTimeoutMs: number;
   sessionName?: string;
+  socketPath?: string;
   client?: HerdrClient;
   promptSubmitVerification?: TerminalPromptSubmitVerificationPolicy;
 }>): TerminalHostAdapter {
@@ -63,6 +80,7 @@ export function createHerdrTerminalHostAdapter(params: Readonly<{
   const client = params.client ?? createHerdrClient({
     binary: params.binary,
     sessionName,
+    ...(params.socketPath ? { socketPath: params.socketPath } : {}),
     actionTimeoutMs: params.actionTimeoutMs,
     startupTimeoutMs: params.startupTimeoutMs,
   });
@@ -137,7 +155,7 @@ export function createHerdrTerminalHostAdapter(params: Readonly<{
     },
     async createOrAttachHost(opts) {
       const hostSessionName = opts.sessionName === 'default' ? sessionName : opts.sessionName;
-      const launchClient = params.client || hostSessionName === sessionName
+      const launchClient = params.client || params.socketPath || hostSessionName === sessionName
         ? client
         : createHerdrClient({
             binary: params.binary,
@@ -145,8 +163,16 @@ export function createHerdrTerminalHostAdapter(params: Readonly<{
             actionTimeoutMs: params.actionTimeoutMs,
             startupTimeoutMs: params.startupTimeoutMs,
           });
-      await launchClient.ensureServer();
-      const launch = await createHerdrLaunchSpec(opts);
+      await admitHerdrServer(launchClient);
+      let launch: Awaited<ReturnType<typeof createHerdrLaunchSpec>>;
+      try {
+        launch = opts.preparedLaunch ?? await createHerdrLaunchSpec(opts);
+      } catch (error) {
+        if (error instanceof TerminalHostCreationError) throw error;
+        throw new TerminalHostCreationError([error], 'Herdr launch preparation failed before native launch', {
+          creationDisposition: 'not_created', cleanupIncomplete: false,
+        });
+      }
       let pane;
       try {
         pane = await launchClient.createPane({

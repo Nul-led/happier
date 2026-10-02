@@ -36,6 +36,7 @@ export async function createDefaultTerminalHostAdapterInventory(params: Readonly
   happyHomeDir: string;
   preference: TerminalHostPreference;
   herdrSessionName?: string;
+  herdrSocketPath?: string;
   platform?: NodeJS.Platform;
   promptSubmitVerification?: TerminalPromptSubmitVerificationPolicy;
   dependencies?: DefaultTerminalHostAdapterDependencies;
@@ -91,6 +92,7 @@ export async function createDefaultTerminalHostAdapterInventory(params: Readonly
       adapters.push(dependencies.createHerdrTerminalHostAdapter({
         binary: herdrBinary,
         ...(params.herdrSessionName ? { sessionName: params.herdrSessionName } : {}),
+        ...(params.herdrSocketPath ? { socketPath: params.herdrSocketPath } : {}),
         actionTimeoutMs: HERDR_ACTION_TIMEOUT_MS,
         startupTimeoutMs: HERDR_STARTUP_TIMEOUT_MS,
         ...(params.promptSubmitVerification

@@ -30,3 +30,4 @@ export {
   windowsSystemToolCommand,
   type WindowsSystemToolName,
 } from './windows/windowsSystemToolPath.js';
+export { spawnBackgroundSync } from './spawnBackgroundSync.js';

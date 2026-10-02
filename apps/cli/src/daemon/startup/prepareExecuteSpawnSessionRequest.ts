@@ -67,6 +67,7 @@ export type PreparedExecuteSpawnSessionRequest = Readonly<{
     | 'agentModeId'
     | 'agentModeUpdatedAt'
     | 'modelSelection'
+    | 'runtimeDescriptorV1'
 >;
 
 export type PrepareExecuteSpawnSessionRequestInput = Readonly<{
@@ -200,6 +201,9 @@ export async function prepareExecuteSpawnSessionRequest(
     try {
         runtimeSelection = readCanonicalSpawnRuntimeSelection({
             ...options,
+            ...(ownerMetadata?.nativeSession?.runtimeDescriptorV1
+                ? { runtimeDescriptorV1: ownerMetadata.nativeSession.runtimeDescriptorV1 }
+                : {}),
             ...(catalogAgentId ? { agentId: catalogAgentId } : {}),
         });
     } catch (error) {
@@ -294,5 +298,6 @@ export async function prepareExecuteSpawnSessionRequest(
         daemonSpawnHooks,
         environmentVariablesValidation,
         persistedProviderResumeState,
+        ...runtimeSelection,
     };
 }

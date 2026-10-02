@@ -7,6 +7,7 @@ import {
 } from '@/components/sessions/attachments/attachmentDraftMemoryStore';
 
 const NEW_SESSION_ATTACHMENT_DRAFT_KEY_PREFIX = 'new-session:';
+const removalListeners = new Set<(flowId: string | null) => void>();
 
 function normalizeFlowId(flowId: string | null | undefined): string | null {
     if (typeof flowId !== 'string') return null;
@@ -39,6 +40,17 @@ export function clearNewSessionAttachmentDrafts(flowId: string | null | undefine
     const normalizedFlowId = normalizeFlowId(flowId);
     if (!normalizedFlowId) return;
     clearAttachmentDraftsForKey(newSessionAttachmentDraftKey(normalizedFlowId));
+    for (const listener of removalListeners) listener(normalizedFlowId);
+}
+
+/** Mounted composers release their own sources when the draft owner removes the flow. */
+export function subscribeNewSessionAttachmentDraftRemoval(flowId: string, onRemoved: () => void): () => void {
+    const normalizedFlowId = normalizeFlowId(flowId);
+    const listener = (removedFlowId: string | null) => {
+        if (removedFlowId === null || removedFlowId === normalizedFlowId) onRemoved();
+    };
+    removalListeners.add(listener);
+    return () => { removalListeners.delete(listener); };
 }
 
 /** Accepted custody settles the detached Send, not files added to its successor draft. */
@@ -55,4 +67,5 @@ export function clearAcceptedNewSessionAttachmentDrafts(
 
 export function clearAllNewSessionAttachmentDrafts(): void {
     clearAttachmentDraftsForKeyPrefix(NEW_SESSION_ATTACHMENT_DRAFT_KEY_PREFIX);
+    for (const listener of removalListeners) listener(null);
 }

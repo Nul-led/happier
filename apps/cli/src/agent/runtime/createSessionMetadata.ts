@@ -15,6 +15,7 @@ import {
     parseSessionMcpSelectionV1Json,
     type SessionMetadata,
     type SessionModelSelectionIntentV1,
+    type RuntimeDescriptorV1,
 } from '@happier-dev/protocol';
 import {
     applyAcpConfigOptionIntentSessionMetadata,
@@ -57,6 +58,8 @@ export type BackendFlavor = string;
  * Options for creating session metadata.
  */
 export interface CreateSessionMetadataOptions {
+    /** Selected runtime intent captured before this fresh Session is committed. */
+    runtimeDescriptorV1?: RuntimeDescriptorV1;
     /** Backend flavor identifier. */
     flavor: BackendFlavor;
     /** Machine ID for server identification */
@@ -251,6 +254,7 @@ export function createSessionMetadata(opts: CreateSessionMetadataOptions): Sessi
         lifecycleState: 'running',
         lifecycleStateSince: Date.now(),
         flavor: opts.flavor,
+        ...(opts.runtimeDescriptorV1 ? { runtimeDescriptorV1: opts.runtimeDescriptorV1 } : {}),
         sessionWorkspaceLocationV1: buildSessionWorkspaceLocationV1({
             machineId: opts.machineId,
             agentPath: sessionPath,

@@ -1,5 +1,6 @@
 import { attachManagedSessionHumanPresenceSocket } from '@/sync/domains/session/humanPresence/attachManagedSessionHumanPresenceSocket';
 import { publishHomeAccountChange } from './homeAccountChange';
+import { notifyExecutionRunActivityFromUpdate, notifyExecutionRunActivityReconnect } from '@/sync/runtime/executionRuns/executionRunActivityBus';
 import {
     TokenStorage,
     type AuthCredentials,
@@ -1241,7 +1242,6 @@ async function connectManagedServer(
                 },
             );
             let ingressAccountId: string | null = null;
-            let hasConnectedOnce = false;
             try {
                 ingressAccountId = parseToken(credentials.token);
             } catch {
@@ -1258,7 +1258,12 @@ async function connectManagedServer(
                 queueRefresh(entry, 'socket');
             });
             socket.on('ephemeral', (raw: unknown) => {
+                if (!isManagedServerActive(entry)) return;
                 statusDemandTransport.observeEphemeral(raw);
+                if (raw && typeof raw === 'object' && 'type' in raw && raw.type === 'execution-run-updated') {
+                    notifyExecutionRunActivityFromUpdate(entry.id, raw);
+                    return;
+                }
                 const update = normalizeActionOperationEphemeralIngress(raw);
                 const encryption = entry.encryption;
                 if (!update || !ingressAccountId || !encryption) return;
@@ -1278,13 +1283,13 @@ async function connectManagedServer(
                     serverId: entry.id, token: credentials.token, socket, transport,
                 }),
                 transport.onConnected(() => {
+                    notifyExecutionRunActivityReconnect(entry.id);
                     statusDemandTransport.resend();
                     // This content-free secondary transport has no changes
-                    // cursor. A reconnect may have missed governance or Team
-                    // wakes, so conservatively invalidate only this captured
-                    // Home's reconstructible Account projections.
-                    if (hasConnectedOnce) publishHomeAccountChange(entry.id);
-                    hasConnectedOnce = true;
+                    // cursor. Connecting may have missed writes since a reader's
+                    // initial snapshot (including before the first connect), so
+                    // invalidate this Home's reconstructible Account projections.
+                    publishHomeAccountChange(entry.id);
                     queueRefresh(entry);
                 }),
                 transport.onDisconnected((event: TransportDisconnectEvent) => {

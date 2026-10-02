@@ -75,6 +75,8 @@ import type { AutocompleteSuggestionUpdate } from '@/components/autocomplete/aut
 import { resolveSessionComposerSuggestions } from '@/components/sessions/agentInput/sessionComposerSuggestions';
 import { resolveReviewCommentDraftAnchorsForPrompt } from '@/components/sessions/reviews/comments/resolveReviewCommentDraftAnchorsForPrompt';
 import { ChatHeaderView } from '@/components/sessions/transcript/ChatHeaderView';
+import { PhoneOpenTabsRail } from '@/components/appShell/workspace/PhoneOpenTabsRail';
+import { SessionAllTabsOpenerBridge } from '@/components/sessions/shell/useSessionAllTabsOpener';
 import { SessionHeaderActionMenu } from '@/components/sessions/actions/SessionHeaderActionMenu';
 import { SessionHeaderSubagentsButton } from '@/components/sessions/actions/SessionHeaderSubagentsButton';
 import { SessionHeaderTerminalButton } from '@/components/sessions/actions/SessionHeaderTerminalButton';
@@ -378,7 +380,7 @@ import { layout } from '@/components/ui/layout/layout';
 import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAreaInsets';
 import { useUnistyles } from 'react-native-unistyles';
 import { sessionSwitch } from '@/sync/ops';
-import { shouldRenderChatTimelineForSession, shouldRequestRemoteControl, shouldRequestRemoteControlAfterPendingEnqueue } from '@/sync/domains/session/control/localControlSwitch';
+import { shouldRenderChatTimelineForSession, shouldOfferLocalControlRelease, shouldRequestRemoteControlAfterPendingEnqueue } from '@/sync/domains/session/control/localControlSwitch';
 import { readControlSwitchUiTimeoutMsFromEnv } from '@/sync/domains/session/control/controlSwitchUiTimeout';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { getVoiceAdapterRegistry } from '@/voice/session/voiceAdapterRegistry';
@@ -483,6 +485,7 @@ import { SessionRightSidebarProvider } from '@/components/sessions/panes/Session
 import { createSessionPaneSurfaceScope } from '@/components/sessions/plugins/useSessionPluginRuntime';
 import { AppPaneScopeHost } from '@/components/appShell/panes/AppPaneScopeHost';
 import { useRegisterSessionPaneDriver } from '@/components/sessions/panes/useRegisterSessionPaneDriver';
+import { useTerminalJumpShortcut } from '@/components/sessions/terminal/jump/useTerminalJumpShortcut';
 import {
     useSessionAddressForSessionId,
     useSessionPluginRuntime,
@@ -1689,8 +1692,8 @@ const SessionViewRetainedSurface = React.memo((props: SessionViewProps & {
     isSurfaceVisible: boolean;
     isRouteAnchor: boolean;
 }) => {
-    // An embedded mount is presented whenever its host shows it; focus only decides eligibility.
-    const isPresented = props.presentation?.kind === 'embedded'
+    // Hosts supply visibility independently of focus and route ownership.
+    const isPresented = props.presentation?.kind === 'embedded' || typeof props.surfaceVisibleOverride === 'boolean'
         ? props.isSurfaceVisible
         : (props.isFocused || props.isRouteAnchor) && props.isSurfaceVisible;
     const [hasBeenPresented, setHasBeenPresented] = React.useState(isPresented);
@@ -1928,7 +1931,7 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
     const sessionEncryptionMode: 'e2ee' | 'plain' = (session?.encryptionMode ?? 'e2ee');
     const isEncryptedSessionLocked = Boolean(session && sessionEncryptionMode === 'e2ee' && !hasAuthCredentials);
     const showTopHeader = !embedded && !(isLandscape && deviceType === 'phone' && Platform.OS !== 'web');
-    const shouldRenderSessionSurface = (isFocused || isActiveSessionRoute) && isSurfaceVisible;
+    const shouldRenderSessionSurface = props.isPresented;
     const shouldRetainSessionSurface = Platform.OS === 'web'
         ? shouldRenderSessionSurface
         : true;
@@ -1973,6 +1976,8 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
         props.sessionPluginRuntime,
         embedded ? EMBEDDED_PANE_DRIVER_OPTIONS : undefined,
     );
+    // ⌘J / ⌥J: Jump to a terminal of this session. An embedded presentation is not the focused session.
+    useTerminalJumpShortcut(embedded ? '' : paneScopeId);
     const actionRailVisible = useAppPaneActionRailVisible(paneScopeId);
     const cockpitChrome = useSessionCockpitChromeRegistration();
     const mobileTerminalTabAvailable = deviceType === 'phone'
@@ -2453,8 +2458,15 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
     ), [collaborationAvailable, sessionRouteAddress, foldCollaborationHeaderEntry, headerProps.rightElement, openSessionCollaboration]);
 
     // Header - always shown on desktop/Mac, hidden in landscape mode only on actual phones.
+    // Phone: pulling the title down opens All tabs; the opener lives in a leaf so this screen never
+    // subscribes to the workspace's tab set.
+    const openAllTabsRef = React.useRef<(() => void) | null>(null);
+    const handlePullAllTabs = React.useCallback(() => { openAllTabsRef.current?.(); }, []);
     const sessionHeader = React.useMemo(() => showTopHeader ? (
         <View style={{ zIndex: 1000 }} {...pane.overlayFocusReturnCaptureProps}>
+            {isTablet ? null : (
+                <SessionAllTabsOpenerBridge sessionId={sessionId} serverId={currentSessionRouteServerId || null} openRef={openAllTabsRef} />
+            )}
             <ChatHeaderView
                 {...headerProps}
                 rightElement={headerRightElement}
@@ -2470,9 +2482,13 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
                 onBackPress={handleBackPress}
                 showBackButton={!isTablet}
                 includeTopInset={headerSafeAreaTopMode !== 'external'}
+                onPullAllTabs={isTablet ? undefined : handlePullAllTabs}
             />
+            {isTablet ? null : <PhoneOpenTabsRail />}
         </View>
     ) : null, [
+        handlePullAllTabs,
+        sessionId,
         currentSessionRouteServerId,
         handleBackPress,
         headerMachineTarget?.machineId,
@@ -6902,7 +6918,7 @@ function SessionViewLoadedContent({
     const cliAuthState = machineAgent?.signIn.status === 'signedIn' ? 'logged_in'
         : machineAgent?.signIn.status === 'signedOut' ? 'logged_out'
             : machineAgent ? 'unknown' : null;
-    const canRequestRemoteControl = shouldRequestRemoteControl(session, cliAuthState, currentSessionAgentCatalogEntry);
+    const canReleaseLocalControl = shouldOfferLocalControlRelease(session, cliAuthState, currentSessionAgentCatalogEntry);
     const [controlSwitchTo, setControlSwitchTo] = React.useState<'remote' | null>(null);
     const controlSwitchAttemptIdRef = React.useRef(0);
     React.useEffect(() => {
@@ -7197,7 +7213,7 @@ function SessionViewLoadedContent({
                   bottomNotice={bottomNotice}
                   controlledByUserOverride={isLocallyAttached}
                   controlSwitchTo={controlSwitchTo}
-                  onRequestSwitchToRemote={isHiddenSystemSessionSession || !canRequestRemoteControl ? undefined : handleRequestSwitchToRemote}
+                  onRequestSwitchToRemote={isHiddenSystemSessionSession || !canReleaseLocalControl ? undefined : handleRequestSwitchToRemote}
                   externalControlFooter={externalControlFooter}
                   jumpToSeq={jumpToSeq}
                   followBottomIntentKey={followBottomIntentSeq}

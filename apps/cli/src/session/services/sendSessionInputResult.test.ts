@@ -1,4 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { createSocketTransportAdapter } from '@happier-dev/sync-client';
+
+vi.mock('@/api/session/sockets', () => ({
+  createSessionScopedSocketConnection: () => {
+    const socket = Object.assign(new EventEmitter(), {
+      connected: false, connect: () => {}, disconnect: () => {}, close: () => {},
+    });
+    return { socket, transport: createSocketTransportAdapter(socket) };
+  },
+}));
 
 // The boundaries are mocked once, hoisted, and each test rebinds their
 // behaviour through these stable spies. The predecessor shape — `vi.doMock`
@@ -205,7 +216,7 @@ describe('waitForSessionInputResult', () => {
       result: { kind: 'final_text', text: 'completed without a workflow deadline' },
     });
     expect(waitForTranscriptEncryptedMessageByLocalId).toHaveBeenCalledWith(expect.objectContaining({
-      maxWaitMs: 250,
+      sessionId: 'sess-1', localId: 'automation:run:run-1', timeoutMs: expect.any(Number),
     }));
   });
 
@@ -237,7 +248,7 @@ describe('waitForSessionInputResult', () => {
         }),
       );
       expect(waitForTranscriptEncryptedMessageByLocalId).toHaveBeenCalledWith(expect.objectContaining({
-        maxWaitMs: 125,
+        sessionId: 'sess-1', localId: 'automation:run:run-1', timeoutMs: 125,
       }));
     } finally {
       now.mockRestore();

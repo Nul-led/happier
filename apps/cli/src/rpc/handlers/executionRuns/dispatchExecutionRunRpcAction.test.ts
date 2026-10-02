@@ -34,11 +34,13 @@ function unusedBridgeMethod(): never {
 
 function createUnusedExecutionRunBridge(): ExecutionRunHostBridgeContract {
   return {
+    recoverRetainedRuns: async () => {},
     get: () => null,
     getRunningCount: () => 0,
     getStructuredMeta: () => null,
     getLatestToolResult: () => null,
     waitForTerminal: async () => unusedBridgeMethod(),
+    waitForRunStateChange: async () => unusedBridgeMethod(),
     waitForInputTurn: async () => unusedBridgeMethod(),
     getPublic: () => null,
     listPublic: () => [],
@@ -53,6 +55,7 @@ function createUnusedExecutionRunBridge(): ExecutionRunHostBridgeContract {
     readTurnStream: async () => unusedBridgeMethod(),
     cancelTurnStream: async () => unusedBridgeMethod(),
     stop: async () => unusedBridgeMethod(),
+    cancelCurrentTurn: async () => unusedBridgeMethod(),
     respondToPermissionRequest: async () => unusedBridgeMethod(),
     completePermissionRequest: async () => unusedBridgeMethod(),
     applyAction: async () => unusedBridgeMethod(),
@@ -174,6 +177,16 @@ const AGENT_EXECUTION_RUN_START_REQUEST = {
   retentionPolicy: 'ephemeral',
   runClass: 'bounded',
   ioMode: 'request_response',
+} as const;
+
+// Authenticated host facts are input to real admission, not a mocked policy owner.
+const CURRENT_SESSION_AGENT_START_CONTEXT = {
+  caller: { kind: 'session', sessionId: 'sess_1', starterDepth: 0, turnDepth: 0 },
+  baseline: { machineId: 'machine_1', directory: '/workspace' },
+  roles: {}, ledSubtreeSessionIds: [], workDepthLimit: 4, callerPermissionCeiling: 'yolo',
+} as const;
+const CURRENT_AGENT_TARGET = {
+  kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
 } as const;
 
 function createAgentExecutionRunStartExecutor(start: ExecutionRunHostBridgeContract['start']) {
@@ -347,7 +360,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
     expect(await deps.runtimeActionExecute?.(request)).toEqual({ v: 1, outcome: 'no_active', canceledCount: 0 });
     owner = null;
     expect(await deps.runtimeActionExecute?.(request)).toMatchObject({ errorCode: 'runtime_action_disabled' });
-    expect(calls).toEqual([{ v: 1, actionId: request.actionId, input: request.input, authority: 'present_user' }]);
+    expect(calls).toEqual([{ v: 1, sessionId: 'sess_1', actionId: request.actionId, input: request.input, authority: 'present_user' }]);
   });
 
   it('binds the exact Workflow observation sink to a detached start with a local input id', async () => {
@@ -600,7 +613,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
         kind: 'agent',
         identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
       },
-    }, { surface: 'rpc' })).resolves.toMatchObject({ ok: true });
+    }, { surface: 'rpc', agentStartContext: CURRENT_SESSION_AGENT_START_CONTEXT })).resolves.toMatchObject({ ok: true });
     expect(start).toHaveBeenCalledWith(expect.objectContaining({
       backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
     }));
@@ -625,6 +638,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
     const result = await executor.execute('execution.run.start', {
       ...AGENT_EXECUTION_RUN_START_REQUEST,
       intent: 'agent',
+      backendTarget: CURRENT_AGENT_TARGET,
       instructions: undefined,
       initialInput: { kind: 'deferred_session_pending' },
       permissionMode: 'safe-yolo',
@@ -634,6 +648,8 @@ describe('createExecutionRunRpcActionExecutor', () => {
     }, {
       ...APPROVED_INTERNAL_RUNTIME_ACTION_CONTEXT,
       actionCaller,
+      agentStartContext: { ...CURRENT_SESSION_AGENT_START_CONTEXT,
+        caller: { kind: 'originless', runId: actionCaller.runId, runDepth: 0, runOriginSessionId: 'sess_1' } },
       actionRequestId: 'workflow-input-v2:stable:execution-run-start',
     });
     expect(result).toEqual({
@@ -909,7 +925,9 @@ describe('createExecutionRunRpcActionExecutor', () => {
       ok: false,
       errorCode: actionId === 'execution.run.send'
         ? 'session_input_target_update_required'
-        : 'execution_run_not_found',
+        : actionId === 'execution.run.action'
+          ? 'execution_run_scope_mismatch'
+          : 'execution_run_not_found',
     });
 
     for (const effect of [start, send, ensure, startTurnStream, readTurnStream, cancelTurnStream, stop, applyAction]) {
@@ -1249,7 +1267,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
 
     await expect(executor.execute(
       'execution.run.start',
-      AGENT_EXECUTION_RUN_START_REQUEST,
+      { ...AGENT_EXECUTION_RUN_START_REQUEST, backendTarget: CURRENT_AGENT_TARGET },
       {
         surface: 'agent',
         // The host stamps the admitted current-Session corpus for every
@@ -1259,6 +1277,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
         // The mutable Session mode has widened after the first turn was admitted.
         callerPermissionMode: 'yolo',
         causalPermissionAuthority: firstTurnAuthority,
+        agentStartContext: CURRENT_SESSION_AGENT_START_CONTEXT,
       } as unknown as Parameters<typeof executor.execute>[2],
     )).resolves.toEqual({
       ok: false,
@@ -1270,13 +1289,14 @@ describe('createExecutionRunRpcActionExecutor', () => {
 
     await expect(executor.execute(
       'execution.run.start',
-      AGENT_EXECUTION_RUN_START_REQUEST,
+      { ...AGENT_EXECUTION_RUN_START_REQUEST, backendTarget: CURRENT_AGENT_TARGET },
       {
         surface: 'agent',
         defaultSessionId: AGENT_EXECUTION_RUN_START_REQUEST.sessionId,
         callerPermissionMode: 'yolo',
         // A later independently admitted turn may carry a new ceiling.
         causalPermissionAuthority: laterTurnAuthority,
+        agentStartContext: CURRENT_SESSION_AGENT_START_CONTEXT,
       } as unknown as Parameters<typeof executor.execute>[2],
     )).resolves.toEqual({
       ok: true,
@@ -1884,7 +1904,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
     const result = await executor.execute('browser.navigate', {
       commandId: 'cmd_1',
       kind: 'navigate',
-      browserSessionId: 'browser_session_1',
+      browserSessionId: 'sess_1',
       viewId: 'view_1',
       url: 'https://example.com',
     }, APPROVED_INTERNAL_RUNTIME_ACTION_CONTEXT);
@@ -1912,7 +1932,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
       context: {
         sessionId: 'sess_1',
         cwd: '/workspace',
-        browserControl: { dispatchCommand },
+        browserControl: { dispatchCommand, listViews: () => { throw new Error('Unexpected browser view listing'); } },
         getServerFeaturesSnapshot: () => BROWSER_CONTROL_RUNTIME_ACTIONS_ENABLED,
       },
       policy: resolveExecutionRunPolicy({
@@ -1928,7 +1948,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
     const command = {
       commandId: 'cmd_1',
       kind: 'navigate',
-      browserSessionId: 'browser_session_1',
+      browserSessionId: 'sess_1',
       viewId: 'view_1',
       url: 'https://example.com',
     };
@@ -1949,7 +1969,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
         events: [],
       },
     });
-    expect(dispatchCommand).toHaveBeenCalledWith(command);
+    expect(dispatchCommand).toHaveBeenCalledWith(command, APPROVED_INTERNAL_RUNTIME_ACTION_CONTEXT);
   });
 
   it('routes execution.run.action runtime ids through the canonical daemon runtime executor', async () => {
@@ -1991,7 +2011,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
     const result = await executor.execute('execution.run.action', {
       runId: 'run_1',
       actionId: 'browser.diagnostics.snapshot',
-      input: { browserSessionId: 'browser_session_1', viewId: 'view_1' },
+      input: { browserSessionId: 'sess_1', viewId: 'view_1' },
     }, { surface: 'rpc', defaultSessionId: 'sess_1' });
 
     expect(result).toEqual({
@@ -2002,7 +2022,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
       },
     });
     expect(diagnostics.dispatch).toHaveBeenCalledWith('browser.diagnostics.snapshot', {
-      browserSessionId: 'browser_session_1',
+      browserSessionId: 'sess_1',
       viewId: 'view_1',
     });
     expect(applyAction).not.toHaveBeenCalled();

@@ -16,6 +16,25 @@ function agent(id: string, createdAt: number, text: string): Message {
 }
 
 describe('collectUserMessageHistoryEntries', () => {
+  it.each(['perSession', 'global'] as const)('recalls authored text verbatim in %s history', (scope) => {
+    const entries = collectUserMessageHistoryEntries({
+      scope,
+      sessionId: 's1',
+      messagesBySessionId: {
+        s1: [
+          { ...user('u1', 1, 'expanded review scaffolding'), displayText: '  authored\n\n' },
+          { ...user('u2', 2, 'hidden attachment scaffolding'), displayText: '' },
+          user('u3', 3, '  legacy\n'),
+          user('u4', 4, '   '),
+          { ...user('u5', 5, 'different expansion'), displayText: '  authored\n\n' },
+          user('u6', 6, 'authored'),
+        ],
+      },
+    });
+
+    expect(entries).toEqual(['authored', '  authored\n\n', '  legacy\n']);
+  });
+
   it('collects recent user messages for a single session (most recent first)', () => {
     const entries = collectUserMessageHistoryEntries({
       scope: 'perSession',

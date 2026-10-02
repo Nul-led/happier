@@ -13,6 +13,8 @@ import {
 
 const labels = {
     search: 'Search filters', show: 'Show', myWork: 'My work', assignedToMe: 'Assigned to me',
+    scope: 'Scope', sessions: 'Sessions', runs: 'Runs', both: 'Both', startedBy: 'Started by',
+    startedByYou: 'You', startedByTriggers: 'Triggers', startedByAgents: 'Agents',
     following: 'Following', involvingMe: 'Involving me', allAccessible: 'All accessible',
     attention: 'Attention', anyAttention: 'Any', needsMyAttention: 'Only sessions that need me',
     inactiveSessions: 'Inactive sessions', showInactive: 'Show', hideInactive: 'Hide', homes: 'Homes',
@@ -77,7 +79,8 @@ describe('sessionListFilterEditorModel', () => {
             sourceAvailable: true,
         });
 
-        expect(model.selection.selectedIds).toEqual(expect.objectContaining({ size: 6 }));
+        expect(model.selection.selectedIds.has('show:both')).toBe(true);
+        expect(model.selection.selectedIds.has('started-by:you')).toBe(true);
         expect(model.selection.selectedIds.has('scope:assigned_to_me')).toBe(true);
         expect(model.selection.selectedIds.has('inactive:hide')).toBe(true);
         expect(model.selection.selectedIds.has('home:home-a')).toBe(true);

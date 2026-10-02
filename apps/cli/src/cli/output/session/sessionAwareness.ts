@@ -104,10 +104,10 @@ function buildCliSessionAwarenessInputFromPresentationV1(
   const machineId = readText(metadata?.machineId);
   const workflow = SessionWorkflowActivityHeadlineV1Schema.safeParse(metadata?.sessionWorkflowActivityHeadlineV1);
 
-  // The V2 row carries activity facts but no runtime-reachability observation. `active` cannot be
-  // promoted into online/offline presence: preserve the lifecycle/provider evidence below while
-  // reporting reachability and freshness as unknown.
-  const presence = 'unknown' as const;
+  // V2 active/activeAt are the persisted Session publisher-presence facts also read by
+  // the stalled owner. The shared projector still decides freshness, work and readiness.
+  const active = readBoolean(row.active);
+  const presence = active === null ? 'unknown' : active ? 'online' : 'offline';
 
   const hasPendingProjection = row.pendingPermissionRequestCount !== undefined
     && row.pendingUserActionRequestCount !== undefined;
@@ -134,7 +134,7 @@ function buildCliSessionAwarenessInputFromPresentationV1(
   } as const;
   const runtime = {
     presence,
-    active: readBoolean(row.active),
+    active,
     lastObservedAtMs: readNumber(row.activeAt),
     thinking: readBoolean(row.thinking),
     thinkingAtMs: readNumber(row.thinkingAt),

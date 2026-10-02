@@ -18,6 +18,8 @@ import type {
     ScmCommitBackoutResponse,
     ScmCommitCreateRequest,
     ScmCommitCreateResponse,
+    ScmCommitUndoLastRequest,
+    ScmCommitUndoLastResponse,
     ScmDiffCommitRequest,
     ScmDiffCommitResponse,
     ScmDiffFileRequest,
@@ -66,7 +68,8 @@ import type {
 import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol/scm';
 import { RPC_ERROR_MESSAGES, RPC_METHODS } from '@happier-dev/protocol/rpc';
 
-import { runMachineScmRpc, scmFallbackError } from './scm/machineScm';
+import { runMachineScmRpcWithFallback } from './scm/machineScm';
+import type { ScmRpcFailure } from './scm/scmRpcFailure';
 import { resolveMachineAbsolutePath } from '@/sync/domains/fileSystem/resolveMachineAbsolutePath';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
 import { readMachineControlTargetForSession } from './sessionMachineTarget';
@@ -79,9 +82,12 @@ async function callScmPreferMachine<
     method: string,
     request: R,
     serverId?: string | null,
-): Promise<T> {
+    signal?: AbortSignal,
+    accountId?: string | null,
+    bindResolvedRequest?: (request: R & { cwd: string }) => R & { cwd: string },
+): Promise<T | ScmRpcFailure> {
     const machineTarget = readMachineControlTargetForSession(
-        serverId === undefined ? sessionId : { sessionId, serverId: serverId ?? '' },
+        serverId === undefined ? sessionId : { sessionId, serverId: serverId ?? '', ...(accountId ? { accountId } : {}) },
     );
 
     if (!machineTarget) {
@@ -89,7 +95,7 @@ async function callScmPreferMachine<
             success: false,
             error: RPC_ERROR_MESSAGES.METHOD_NOT_AVAILABLE,
             errorCode: SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE,
-        } as T;
+        };
     }
 
     const cwd = resolveMachineAbsolutePath({
@@ -100,17 +106,17 @@ async function callScmPreferMachine<
     const resolvedServerId = serverId === undefined
         ? resolvePreferredServerIdForSessionId(sessionId)
         : serverId;
-    try {
-        return await runMachineScmRpc<T, R>(
-            machineTarget.machineId,
-            method,
-            { ...request, cwd } as R,
-            { serverId: resolvedServerId },
-        );
-    } catch (error) {
-        return scmFallbackError<T>(error, { method, request: { ...request, cwd } });
-    }
+    const payload = bindResolvedRequest ? bindResolvedRequest({ ...request, cwd }) : { ...request, cwd };
+    return await runMachineScmRpcWithFallback<T, R>(
+        machineTarget.machineId,
+        method,
+        payload,
+        { serverId: resolvedServerId, ...(signal ? { signal } : {}), ...(accountId ? { accountId } : {}) },
+    );
 }
+
+// Actions and typed facades share the exact session target/path transport owner.
+export { callScmPreferMachine as runSessionScmRpc };
 
 export async function sessionScmStatusSnapshot(
     sessionId: string,
@@ -198,6 +204,19 @@ export async function sessionScmCommitCreate(
     return await callScmPreferMachine<ScmCommitCreateResponse, ScmCommitCreateRequest>(
         sessionId,
         RPC_METHODS.SCM_COMMIT_CREATE,
+        request,
+        serverId,
+    );
+}
+
+export async function sessionScmCommitUndoLast(
+    sessionId: string,
+    request: ScmCommitUndoLastRequest,
+    serverId?: string | null,
+): Promise<ScmCommitUndoLastResponse> {
+    return await callScmPreferMachine<ScmCommitUndoLastResponse, ScmCommitUndoLastRequest>(
+        sessionId,
+        RPC_METHODS.SCM_COMMIT_UNDO_LAST,
         request,
         serverId,
     );

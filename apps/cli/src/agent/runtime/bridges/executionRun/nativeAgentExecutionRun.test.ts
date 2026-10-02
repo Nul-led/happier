@@ -16,6 +16,7 @@ import {
     PortableRuntimeDescriptorV1Schema,
     ProviderBoundModelRefSchema,
     createProviderErrorV1,
+    type ExecutionRunResumeHandle,
 } from '@happier-dev/protocol';
 
 import type { AgentMessage } from '@/agent/core/AgentMessage';
@@ -25,6 +26,8 @@ import type { ExecutionRunBackendController } from '@/agent/executionRuns/contro
 import type { AgentInvocationTurnAdmissionWitness } from '@/plugins/runtime/invocation/services/types';
 import { executeBoundedBackendRun } from './bounded/loop';
 import { createRetainedExecutionRunInputDelivery } from './pending/retainedExecutionRunInputDelivery';
+import { VoiceAgentManager } from '@/agent/voice/agent/VoiceAgentManager';
+import { createVoiceSessionContextLease, createVoiceSessionRuntimeThroughNativeFactory } from './testkit/nativeSessionContext';
 
 import {
     createNativeAgentExecutionRunHostRuntime,
@@ -49,74 +52,6 @@ type UnsequencedSessionEvent<T> = T extends AgentSessionRuntimeEvent
     ? Omit<T, 'sequence' | 'sessionId' | 'emittedAtMs'>
     : never;
 
-function createVoiceSessionContextLease(params: Readonly<{
-    services: AgentSessionRuntimeContext['services'];
-    signal: AbortSignal;
-    dispose: () => Promise<void>;
-}>): Readonly<{
-    context: AgentSessionRuntimeContext;
-    dispose(): Promise<void>;
-}> {
-    const sessionServices = createNativeAgentSessionHostServices({
-        owners: {
-            features: { isEnabled: () => true },
-            sessionHooks: {},
-            transcripts: { fileFollow: {} },
-            accountUsage: {},
-            mcp: {},
-            toolExecution: {},
-        },
-        agentId: 'acme.voice/agents/default',
-        sessionId: 'session-parent',
-        directory: '/repo',
-        signal: params.signal,
-        isCurrent: () => true,
-        session: {
-            sessionId: 'session-parent',
-            updateMetadata: vi.fn(),
-            enqueueAgentMessageCommitted: vi.fn(),
-        },
-        publications: {
-            models: { bind: () => ({ dispose() {} }) },
-            activeInput: { bind: () => ({ dispose() {} }), publishStatus: vi.fn() },
-        },
-        readToolExecutionCapability: () => null,
-    } as never);
-    return {
-        context: composeNativeAgentSessionRuntimeContext({
-            identity: {
-                pluginId: 'acme.voice',
-                pluginVersion: '1.0.0',
-                agentId: 'acme.voice/agents/default',
-            },
-            contributionId: 'default',
-            invokedAtMs: 1,
-            sessionId: 'session-parent',
-            signal: params.signal,
-            services: params.services,
-            sessionServices,
-            ui: {} as AgentSessionRuntimeContext['ui'],
-            protocols: {} as AgentSessionRuntimeContext['protocols'],
-            workState: {
-                publisher() {
-                    return {
-                        async publish() {
-                            return {
-                                status: 'unavailable' as const,
-                                diagnostic: {
-                                    code: 'voice_test_unavailable',
-                                    severity: 'info' as const,
-                                },
-                            };
-                        },
-                    };
-                },
-            },
-        }),
-        dispose: params.dispose,
-    };
-}
-
 /**
  * Declared Session capabilities for the retained Voice interaction fixtures.
  * The host reads resume admission and every offered control from this one
@@ -127,6 +62,170 @@ const VOICE_INTERACTION_SESSION_CAPABILITIES: AgentSessionCapabilities = {
     delivery: ['newTurn'],
     cancel: true,
 };
+
+describe('retained native Voice conversation continuity', () => {
+    it.each([
+        { identityTiming: 'open', supportsResume: true },
+        { identityTiming: 'first_turn', supportsResume: true },
+        { identityTiming: 'open', supportsResume: false },
+    ] as const)('projects native resume identity with $identityTiming publication and resume=$supportsResume', async ({ identityTiming, supportsResume }) => {
+        const requests: AgentSessionOpenRequest[] = [];
+        const published: Array<ExecutionRunResumeHandle | null> = [];
+        const nativeSubscriptions: Array<(event: AgentSessionRuntimeEvent) => void> = [];
+        const manager = new VoiceAgentManager({ onResumeHandleChanged: (_voiceAgentId, handle) => published.push(handle), createRuntime: ({ modelId }) => {
+            const providerSessionId = `vendor-${modelId}`;
+            const runtime: AgentRuntime = { sessions: { async open(request) {
+                requests.push(request);
+                if (request.kind === 'resume' && request.providerSessionId !== providerSessionId) {
+                    throw new Error('Vendor session identity does not exist');
+                }
+                let listener: ((event: AgentSessionRuntimeEvent) => void) | null = null;
+                let sequence = 0;
+                const emit = (event: UnsequencedSessionEvent<AgentSessionRuntimeEvent>) => listener?.({
+                    ...event, sequence: ++sequence, sessionId: 'session-parent', emittedAtMs: sequence,
+                } as AgentSessionRuntimeEvent);
+                return {
+                    watch(next) {
+                        listener = next;
+                        nativeSubscriptions.push(next);
+                        if (identityTiming === 'open') emit({ kind: 'provider-session-id', providerSessionId });
+                        return { dispose() { listener = null; } };
+                    },
+                    async send(input) {
+                        if (identityTiming === 'first_turn') emit({ kind: 'provider-session-id', providerSessionId });
+                        const turnId = input.delivery.turnId;
+                        emit({ kind: 'input-accepted', inputIds: input.inputIds, delivery: input.delivery });
+                        emit({ kind: 'turn-start', turnId, startedBy: 'host' });
+                        emit({ kind: 'message-delta', turnId, channel: 'assistant', text: `answer-${modelId}` });
+                        emit({ kind: 'turn-complete', turnId });
+                        return { status: 'admitted' as const };
+                    },
+                    async dispose() {},
+                };
+            } } };
+            return createVoiceSessionRuntimeThroughNativeFactory({ runtime, modelId, capabilities: {
+                ...VOICE_INTERACTION_SESSION_CAPABILITIES, cancel: false, open: supportsResume ? ['create', 'resume'] : ['create'],
+            } });
+        } });
+        const params = {
+            voiceAgentId: 'voice-continuity', backendTarget: { kind: 'builtInAgent' as const, agentId: 'claude' },
+            chatModelId: 'chat', commitModelId: 'commit', commitIsolation: true, permissionIntent: 'read-only' as const,
+            idleTtlSeconds: 60, initialContext: '',
+        };
+        try {
+            await manager.start(params);
+            if (identityTiming === 'first_turn') expect(manager.getResumeHandle(params.voiceAgentId)).toBeNull();
+            await manager.sendTurn({ voiceAgentId: params.voiceAgentId, userText: 'remember blue' });
+            await manager.commit({ voiceAgentId: params.voiceAgentId });
+            const resumeHandle = manager.getResumeHandle(params.voiceAgentId);
+            if (!supportsResume) {
+                expect(resumeHandle).toBeNull();
+                return;
+            }
+            expect(resumeHandle).toMatchObject({ kind: 'voice_agent_sessions.v1', chatProviderSessionId: 'vendor-chat', commitProviderSessionId: 'vendor-commit' });
+            expect(published.at(-1)).toEqual(resumeHandle);
+            await manager.stop({ voiceAgentId: params.voiceAgentId });
+            await manager.start({ ...params, resumeHandle });
+            const publicationsAfterResume = published.length;
+            // A provider can race its detached watch disposal. Previous native
+            // evidence must not publish through the resumed Voice occurrence.
+            nativeSubscriptions[0]?.({ kind: 'provider-session-id', providerSessionId: 'vendor-chat', nativeSessionLogPath: '/old/late.log', sequence: 100, sessionId: 'session-parent', emittedAtMs: 100 });
+            expect(published).toHaveLength(publicationsAfterResume);
+            expect(manager.getResumeHandle(params.voiceAgentId)).toEqual(resumeHandle);
+            expect(requests.filter((request) => request.kind === 'resume')).toMatchObject([
+                { providerSessionId: 'vendor-chat' }, { providerSessionId: 'vendor-commit' },
+            ]);
+            await expect(manager.sendTurn({ voiceAgentId: params.voiceAgentId, userText: 'continue' })).resolves.toMatchObject({ assistantText: 'answer-chat' });
+        } finally { await manager.dispose(); }
+    });
+
+    it.each([false, true])('preserves conversation and admitted Follow across cancel (runtime ends=%s)', async (runtimeEnds) => {
+        const nativeListeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
+        const prompts: string[] = [];
+        let sequence = 0;
+        let openedSessions = 0;
+        let cancelledTurnId: string | null = null;
+        let sentSecond!: () => void;
+        const secondSent = new Promise<void>((resolve) => { sentSecond = resolve; });
+        const emit = (event: UnsequencedSessionEvent<AgentSessionRuntimeEvent>) => {
+            for (const listener of nativeListeners) listener({ ...event, sequence: ++sequence, sessionId: 'session-parent', emittedAtMs: sequence } as AgentSessionRuntimeEvent);
+        };
+        const open = async (): Promise<AgentSessionRuntime> => {
+            const providerSessionId = `vendor-conversation-${++openedSessions}`;
+            return {
+            watch(listener) {
+                nativeListeners.add(listener);
+                emit({ kind: 'provider-session-id', providerSessionId });
+                return { dispose() { nativeListeners.delete(listener); } };
+            },
+            async send(input) {
+                prompts.push(input.input.text);
+                const turnId = input.delivery.turnId;
+                emit({ kind: 'input-accepted', inputIds: input.inputIds, delivery: input.delivery });
+                emit({ kind: 'turn-start', turnId, startedBy: 'host' });
+                if (prompts.length === 2) { cancelledTurnId = turnId; sentSecond(); }
+                else {
+                    if (cancelledTurnId) emit({ kind: 'message-delta', turnId: cancelledTurnId, channel: 'assistant', text: 'STALE CANCELLED OUTPUT <voice_actions>{"actions":[{"t":"ui.voice_agent.teleport","args":{"sessionId":"stale-effect-session"}}]}</voice_actions>' });
+                    emit({ kind: 'message-delta', turnId, channel: 'assistant', text: prompts.length === 1 ? 'blue retained response' : 'continuing blue conversation' });
+                    emit({ kind: 'turn-complete', turnId });
+                }
+                return { status: 'admitted' as const };
+            },
+            async cancel({ turnId }) {
+                emit({ kind: 'turn-cancelled', turnId, cause: 'user' });
+                if (runtimeEnds) emit({ kind: 'runtime-ended', cause: 'providerEnded', retryable: true });
+                return { status: 'requested' as const, turnId };
+            },
+            async dispose() {},
+            };
+        };
+        const runtime: AgentRuntime = { sessions: { open } };
+        const acknowledgeAccepted = vi.fn();
+        const manager = new VoiceAgentManager({
+            prepareFollowContext: async () => ({ updates: [{
+                v: 1, kind: 'session_follow_update', edge: { sourceSessionId: 'follow-source', destinationSessionId: 'session-parent' },
+                reason: 'source_changed', deliveryIntent: 'context_only', observed: { transcriptSeq: 0, readyEventSeq: 0, agentStateVersion: 0, turn: null },
+                awareness: { v: 1, sessionId: 'follow-source', lifecycle: 'ready', runtime: 'idle', freshness: 'live', operational: { primary: 'ready', reasons: ['ready'] }, encryption: 'plain', availability: 'complete' },
+                recentMessages: [], truncated: false,
+            }], acknowledgeAccepted }),
+            createRuntime: () => createVoiceSessionRuntimeThroughNativeFactory({ runtime, modelId: 'chat', capabilities: VOICE_INTERACTION_SESSION_CAPABILITIES }),
+        });
+        try {
+            const { voiceAgentId } = await manager.start({ backendTarget: { kind: 'builtInAgent', agentId: 'claude' }, chatModelId: 'chat', commitModelId: 'chat', permissionIntent: 'read-only', idleTtlSeconds: 60, initialContext: '' });
+            await manager.sendTurn({ voiceAgentId, userText: 'remember blue' });
+            const originalConversation = manager.getResumeHandle(voiceAgentId);
+            const cancelled = await manager.startTurnStream({ voiceAgentId, userText: 'cancel this', durableUserTranscriptLocalId: 'voice-cancel-user' });
+            await secondSent;
+            expect(acknowledgeAccepted).toHaveBeenCalledOnce();
+            expect(prompts[1]).toContain('follow-source');
+            await manager.cancelTurnStream({ voiceAgentId, streamId: cancelled.streamId });
+            const nextTurn = await manager.startTurnStream({ voiceAgentId, userText: 'continue blue' });
+            let cursor = 0;
+            const streamedEvents = [];
+            for (;;) {
+                const page = await manager.readTurnStream({ voiceAgentId, streamId: nextTurn.streamId, cursor, waitForEvents: true });
+                streamedEvents.push(...page.events);
+                cursor = page.nextCursor;
+                if (page.done) {
+                    expect(page.terminalEvent).toMatchObject({ t: 'voice_output', output: { kind: 'turn_final', text: 'continuing blue conversation' } });
+                    break;
+                }
+            }
+            expect(JSON.stringify(streamedEvents)).not.toContain('STALE CANCELLED OUTPUT');
+            expect(JSON.stringify(streamedEvents)).not.toContain('stale-effect-session');
+            expect(manager.getResumeHandle(voiceAgentId)).toMatchObject({ providerSessionId: runtimeEnds ? 'vendor-conversation-2' : 'vendor-conversation-1' });
+            if (runtimeEnds) {
+                expect(prompts[2]).toContain('remember blue');
+                expect(prompts[2]).toContain('blue retained response');
+                expect(prompts[2]).toContain('follow-source');
+                expect(prompts[2]).not.toContain('cancel this');
+            } else {
+                expect(manager.getResumeHandle(voiceAgentId)).toEqual(originalConversation);
+                expect(prompts[2]).toBe('User: continue blue\nVoice agent:');
+            }
+        } finally { await manager.dispose(); }
+    });
+});
 
 describe('createNativeAgentExecutionRunHostRuntime', () => {
     it('joins exact-turn durable interaction retirement before reporting native turn completion', async () => {

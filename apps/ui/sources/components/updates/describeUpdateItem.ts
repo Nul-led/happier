@@ -111,7 +111,7 @@ export function describeUpdateItem(item: UpdateItem, context: Readonly<{ session
     const sizingLabel = item.subject.kind === 'app'
         ? t('updates.action.restart')
         : t('updates.action.update').length >= t('common.retry').length ? t('updates.action.update') : t('common.retry');
-    // Another machine's Happier CLI update restarts its background service; its sessions reconnect.
+    // A machine's Happier CLI update restarts its background service; its sessions reconnect.
     const note = context.sessionsRunning === true && item.subject.kind === 'happier-cli' && item.action.kind === 'run'
         ? t('updates.row.restartsService')
         : null;

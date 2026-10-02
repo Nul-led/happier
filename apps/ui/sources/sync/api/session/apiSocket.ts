@@ -1,4 +1,5 @@
 import { attachManagedSessionHumanPresenceSocket } from '@/sync/domains/session/humanPresence/attachManagedSessionHumanPresenceSocket';
+import { notifyExecutionRunActivityReconnect } from '@/sync/runtime/executionRuns/executionRunActivityBus';
 import type { Socket } from 'socket.io-client';
 import {
     callSocketRpc,
@@ -24,7 +25,7 @@ import {
     type TransferRelayV2SendEnvelope,
     uiBrowserAutomationDispatchMethod,
 } from '@happier-dev/protocol';
-import { SOCKET_RPC_EVENTS, type SessionTransferRoutingV1 } from '@happier-dev/protocol/socketRpc';
+import { SOCKET_RPC_EVENTS, SocketRpcCancellationPayloadSchema, SocketRpcRequestIdSchema, type SessionTransferRoutingV1 } from '@happier-dev/protocol/socketRpc';
 import {
     RPC_ERROR_CODES,
     RPC_ERROR_MESSAGES,
@@ -70,9 +71,6 @@ import {
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { createNotAuthenticatedError } from '@/sync/runtime/connectivity/authErrors';
 import { registerExternalSessionStatusDemandTransport } from '@/sync/runtime/orchestration/externalSessions/externalSessionStatusDemandCoordinator';
-import {
-    requireCurrentAccountStoredContentServerCompatibility,
-} from '@/sync/api/capabilities/accountStoredContentCompatibility';
 import { isServerRuntimeTransportPublished, resolveActiveServerRuntimeOrigin } from '@/sync/runtime/nativeLoopbackTunnels/runtimeOrigin';
 import { getActiveServerHomeCarrier } from '@/sync/domains/server/serverRuntime';
 import { ServerScopedTransportUnavailableError } from '@/sync/runtime/homeCarrier';
@@ -256,7 +254,7 @@ type SyncSocketMessageHandler = (data: any, context: SyncSocketMessageContext) =
  * Inbound machine-scoped reverse-RPC handler. Receives the already-decrypted request params and
  * returns the response payload that this socket will re-encrypt (machine-scoped e2ee) for the ack.
  */
-export type InboundMachineRpcHandler = (params: unknown) => Promise<unknown> | unknown;
+export type InboundMachineRpcHandler = (params: unknown, context?: Readonly<{ signal: AbortSignal }>) => Promise<unknown> | unknown;
 
 //
 // Main Class
@@ -302,6 +300,7 @@ class ApiSocket {
     // socket; the server forwards it to whichever client joined the matching rpc room. Registering
     // here makes THIS user-scoped socket that client (room membership via `rpc-register`).
     private inboundMachineRpcHandlers: Map<string, InboundMachineRpcHandler> = new Map();
+    private activeInboundMachineRpcRequests = new Map<AbortController, Readonly<{ socket: Socket; method: string; requestId?: string }>>();
 
     //
     // Initialization
@@ -639,9 +638,6 @@ class ApiSocket {
             if (this.getSessionScopedTarget()) throw new Error('Machine RPC is unavailable to a Session-scoped viewer');
             const usePlaintextParams =
                 readMachineStorageModeFromLocalState(machineId) === 'plain';
-            if (usePlaintextParams) {
-                await requireCurrentAccountStoredContentServerCompatibility();
-            }
             const machineEncryption = usePlaintextParams
                 ? null
                 : this.encryption?.getMachineEncryption(machineId) ?? null;
@@ -703,6 +699,11 @@ class ApiSocket {
         handler: InboundMachineRpcHandler,
     ): () => void {
         const prefixedMethod = `${machineId}:${method}`;
+        if (this.inboundMachineRpcHandlers.has(prefixedMethod)) {
+            for (const [controller, request] of this.activeInboundMachineRpcRequests) {
+                if (request.method === prefixedMethod) controller.abort('rpc-handler-replaced');
+            }
+        }
         this.inboundMachineRpcHandlers.set(prefixedMethod, handler);
         if (this.socketClientType === 'user-scoped') {
             this.socket?.emit(SOCKET_RPC_EVENTS.REGISTER, { method: prefixedMethod });
@@ -710,6 +711,9 @@ class ApiSocket {
         return () => {
             if (this.inboundMachineRpcHandlers.get(prefixedMethod) === handler) {
                 this.inboundMachineRpcHandlers.delete(prefixedMethod);
+                for (const [controller, request] of this.activeInboundMachineRpcRequests) {
+                    if (request.method === prefixedMethod) controller.abort('rpc-handler-retired');
+                }
                 if (this.socketClientType === 'user-scoped') {
                     this.socket?.emit(SOCKET_RPC_EVENTS.UNREGISTER, { method: prefixedMethod });
                 }
@@ -738,11 +742,11 @@ class ApiSocket {
 
     installBrowserAutomationReverseDispatch(
         machineId: string,
-        view: Readonly<{ browserSessionId: string; viewId: string }>,
+        view: Readonly<{ browserSessionId: string; viewId: string; sessionId: string }>,
     ): () => void {
-        return this.registerMachineScopedRpcHandler(machineId, uiBrowserAutomationDispatchMethod(view), async (params) => {
+        return this.registerMachineScopedRpcHandler(machineId, uiBrowserAutomationDispatchMethod(view), async (params, context) => {
             const { handleUiBrowserAutomationDispatchRequest } = await import('@/sync/domains/browser/automation/reverseDispatchHandler');
-            return handleUiBrowserAutomationDispatchRequest(params, view);
+            return handleUiBrowserAutomationDispatchRequest(params, view, context);
         });
     }
 
@@ -1219,10 +1223,11 @@ class ApiSocket {
         const messageContext: SyncSocketMessageContext = Object.freeze({
             serverId: String(this.config.serverId ?? '').trim() || null,
         });
-        this.installSocketEventHandlers(socket, statusDemandTransport?.observeEphemeral ?? (() => {}), messageContext, socketRole);
+        const detachInboundRequests = this.installSocketEventHandlers(socket, statusDemandTransport?.observeEphemeral ?? (() => {}), messageContext, socketRole);
         const transportConfig = this.config;
 
         this.detachSocketTransportListeners = [
+            detachInboundRequests,
             ...(accountScoped ? [attachManagedSessionHumanPresenceSocket({
                 serverId: this.config.serverId ?? getActiveServerSnapshot().serverId,
                 token: this.config.token, socket, transport,
@@ -1231,6 +1236,7 @@ class ApiSocket {
                 if (this.config !== transportConfig || transportConfig?.isCurrent?.() === false) return;
                 this.clearError();
                 this.updateStatus('connected');
+                if (accountScoped) notifyExecutionRunActivityReconnect(transportConfig.serverId ?? getActiveServerSnapshot().serverId);
                 // Reconnect-safe: re-join every inbound reverse-RPC room on each (re)connect so a
                 // dropped socket does not silently stop answering daemon reverse calls.
                 if (accountScoped) {
@@ -1310,6 +1316,11 @@ class ApiSocket {
             },
         });
         this.liveStreamTransport = liveStreamTransport;
+        const abortInboundRequests = () => {
+            for (const [controller, request] of this.activeInboundMachineRpcRequests) {
+                if (request.socket === socket) controller.abort('rpc-target-disconnected');
+            }
+        };
         socket.on?.('server:restarting', (payload: unknown) => {
             const config = this.config;
             if (!config) return;
@@ -1322,13 +1333,33 @@ class ApiSocket {
             reportServerRestarting(config.endpoint, readPlannedRestartRetryAfterMs(payload), config.token);
         });
         if (socketRole.clientType === 'user-scoped') {
+            socket.on('disconnect', abortInboundRequests);
+            socket.on(SOCKET_RPC_EVENTS.CANCEL, (payload: unknown) => {
+                if (this.socket !== socket || this.config !== installedConfig) return;
+                const parsed = SocketRpcCancellationPayloadSchema.safeParse(payload);
+                if (!parsed.success) return;
+                for (const [controller, request] of this.activeInboundMachineRpcRequests) {
+                    if (request.socket === socket && request.requestId === parsed.data.requestId) controller.abort('rpc-caller-canceled');
+                }
+            });
             socket.on(
                 SOCKET_RPC_EVENTS.REQUEST,
                 async (
-                    data: Readonly<{ method?: unknown; params?: unknown }>,
+                    data: Readonly<{ method?: unknown; params?: unknown; requestId?: unknown }>,
                     callback: (response: unknown) => void,
                 ) => {
-                    callback(await this.handleInboundMachineRpcRequest(data));
+                    if (this.socket !== socket || this.config !== installedConfig || installedConfig?.isCurrent?.() === false) {
+                        callback({ error: 'RPC target transport retired', errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND });
+                        return;
+                    }
+                    const controller = new AbortController();
+                    const requestId = SocketRpcRequestIdSchema.safeParse(data.requestId);
+                    this.activeInboundMachineRpcRequests.set(controller, { socket,
+                        method: typeof data.method === 'string' ? data.method : '',
+                        ...(requestId.success ? { requestId: requestId.data } : {}),
+                    });
+                    try { callback(await this.handleInboundMachineRpcRequest(data, { signal: controller.signal })); }
+                    finally { this.activeInboundMachineRpcRequests.delete(controller); }
                 },
             );
         }
@@ -1355,6 +1386,7 @@ class ApiSocket {
                 },
             );
         });
+        return abortInboundRequests;
     }
 
     /**
@@ -1368,30 +1400,13 @@ class ApiSocket {
      */
     private async handleInboundMachineRpcRequest(
         request: Readonly<{ method?: unknown; params?: unknown }>,
+        context?: Readonly<{ signal: AbortSignal }>,
     ): Promise<unknown> {
         const method = typeof request?.method === 'string' ? request.method : '';
         const separatorIndex = method.indexOf(':');
         const machineId = separatorIndex > 0 ? method.slice(0, separatorIndex) : '';
         const usePlaintextParams =
             readMachineStorageModeFromLocalState(machineId) === 'plain';
-        if (usePlaintextParams) {
-            try {
-                await requireCurrentAccountStoredContentServerCompatibility();
-            } catch (error) {
-                return {
-                    error: error instanceof Error
-                        ? error.message
-                        : 'Client upgrade required',
-                    errorCode:
-                        error
-                        && typeof error === 'object'
-                        && typeof (error as { code?: unknown }).code === 'string'
-                            ? (error as { code: string }).code
-                            : 'client-upgrade-required',
-                    retryable: false,
-                };
-            }
-        }
         const machineEncryption = machineId && !usePlaintextParams
             ? this.encryption?.getMachineEncryption(machineId) ?? null
             : null;
@@ -1426,7 +1441,10 @@ class ApiSocket {
                 const response = { error: 'Invalid RPC params' };
                 return await socketRpcCodec.encodeResponse(content, response);
             }
-            const result = await handler(decryptedParams);
+            if (this.inboundMachineRpcHandlers.get(method) !== handler) {
+                return await socketRpcCodec.encodeResponse(content, { error: RPC_ERROR_MESSAGES.METHOD_NOT_FOUND, errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND });
+            }
+            const result = await handler(decryptedParams, context);
             return await socketRpcCodec.encodeResponse(content, result);
         } catch (error) {
             const response = {

@@ -18,7 +18,6 @@ import { isConnectedServiceUsageProviderCompatible } from '@happier-dev/agents';
 import {
   ConnectedServiceStoredContentUnavailableError,
 } from '@/cloud/connectedServices/connectedServiceStoredContentUnavailable';
-import { AccountStoredContentClientUpgradeRequiredError } from '@/api/clientCompatibility/accountStoredContentActivation';
 import type { StoredCredentials } from '@/persistence';
 
 import type { ProviderAccountUsageStore } from './store';
@@ -122,10 +121,7 @@ async function resolveAccountEncryptionModeForHydration(
   if (!api.getAccountEncryptionMode) return 'unknown';
   try {
     return await api.getAccountEncryptionMode();
-  } catch (error) {
-    if (error instanceof AccountStoredContentClientUpgradeRequiredError) {
-      throw error;
-    }
+  } catch {
     return 'unknown';
   }
 }

@@ -60,6 +60,7 @@ import {
     toNativeAgentUsageObservation,
 } from '@/agent/runtime/registry/engineRegistry/nativeAgentSession';
 import type { UsageObservation } from '@/usage/usageObservation';
+import type { UsageObservationPublishResult } from '@/usage/createUsageObservationPublisher';
 import {
     normalizeHostProviderInputOutcome,
     type SessionProviderInputOutcome,
@@ -86,7 +87,7 @@ type NativeAgentRunUsagePublisher = Readonly<{
         observation: UsageObservation;
         turnId: string | null;
         externalKey: string;
-    }>): void | Promise<void>;
+    }>): void | Promise<void | UsageObservationPublishResult>;
 }>;
 
 type NativeAgentSessionContextLease = Readonly<{
@@ -141,7 +142,7 @@ export type NativeAgentRuntimeLeaseIdentity = Readonly<{
 
 const RUN_SESSION_PROJECTION_UNAVAILABLE_CODE = 'agent_run_session_projection_unavailable';
 
-function createRunScopedWorkStateService(signal: AbortSignal): WorkStateService {
+export function createRunScopedWorkStateService(signal: AbortSignal): WorkStateService {
     return Object.freeze({
         publisher: () => Object.freeze({
             async publish() {
@@ -1259,6 +1260,7 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
     let disposed = false;
     let turnOrdinal = 0;
     let pendingTurnTerminalSettlement: Promise<void> | null = null;
+    let resumedProviderSessionId: string | null = null;
 
     const assertUsable = (): void => {
         if (disposed) throw new Error('Native Agent Session interaction is disposed');
@@ -1324,10 +1326,14 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
                     cwd: params.options.cwd,
                     context,
                     capabilities: params.sessionCapabilities,
+                    ...(resumeSessionId ? { expectedProviderSessionId: resumeSessionId } : {}),
                     ...(params.options.configuration
                         ? { initialConfiguration: params.options.configuration }
                         : {}),
                 });
+                // A successful native resume admitted this existing vendor id.
+                // Fresh sessions remain unknown until validated provider evidence.
+                resumedProviderSessionId = resumeSessionId ?? null;
                 operations.setOnPromptDeliveryOutcome((evidence) => {
                     const outcome = normalizeHostProviderInputOutcome(evidence);
                     if (!outcome) return;
@@ -1366,6 +1372,40 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
         return await openPromise;
     };
 
+    const waitForTurnCompletion = async (timeoutMs?: number | null): Promise<void> => {
+        if (!operations) return;
+        let completionError: unknown = null;
+        try {
+            await operations.waitForTurnCompletion({ timeoutMs: timeoutMs ?? null });
+        } catch (error) {
+            completionError = error;
+        }
+        const settlement = pendingTurnTerminalSettlement;
+        if (settlement) {
+            try {
+                await settlement;
+            } catch (error) {
+                if (!isWorkflowInteractionCapacityError(error)) throw error;
+                throw Object.assign(
+                    createExecutionRunCodedError(WORKFLOW_INTERACTION_CAPACITY_EXCEEDED, error.message),
+                    { code: WORKFLOW_INTERACTION_CAPACITY_EXCEEDED, recoverable: true as const },
+                );
+            } finally {
+                if (pendingTurnTerminalSettlement === settlement) pendingTurnTerminalSettlement = null;
+            }
+        }
+        if (!completionError) return;
+        const event = readRuntimeTurnFailureAlreadySurfacedEvent(completionError);
+        if (event?.diagnostic.code !== WORKFLOW_INTERACTION_CAPACITY_EXCEEDED) throw completionError;
+        throw Object.assign(
+            createExecutionRunCodedError(
+                WORKFLOW_INTERACTION_CAPACITY_EXCEEDED,
+                event.diagnostic.message ?? WORKFLOW_INTERACTION_CAPACITY_EXCEEDED,
+            ),
+            { code: WORKFLOW_INTERACTION_CAPACITY_EXCEEDED, recoverable: true as const },
+        );
+    };
+
     return Object.freeze({
         permissionCapability: params.createSessionContext.respondToPermissionRequest ? 'responds' as const : 'static' as const,
         ...(params.createSessionContext.abortPendingPermissionRequests
@@ -1399,6 +1439,23 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
         }),
         async readResumeSupport() {
             return supportsResume;
+        },
+        readProviderSessionId() {
+            if (!supportsResume) return null;
+            return operations?.readSessionIdentity?.().sessionId ?? resumedProviderSessionId;
+        },
+        async canContinueAfterCancellation(timeoutMs) {
+            if (!params.sessionCapabilities.cancel || !params.sessionCapabilities.delivery.includes('newTurn')) return false;
+            try {
+                assertUsable();
+                // A never-delivered first turn has no completion to join. For
+                // delivered turns the canonical owner also retires interactions.
+                if (turnOrdinal > 0) await waitForTurnCompletion(timeoutMs);
+                assertUsable();
+                return operations?.canStartNewTurn?.() === true;
+            } catch {
+                return false;
+            }
         },
         async provisionRuntime(options) {
             assertUsable();
@@ -1489,44 +1546,7 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
             listeners.add(handler);
             return () => listeners.delete(handler);
         },
-        async waitForTurnCompletion(timeoutMs) {
-            if (!operations) return;
-            let completionError: unknown = null;
-            try {
-                await operations.waitForTurnCompletion({ timeoutMs: timeoutMs ?? null });
-            } catch (error) {
-                completionError = error;
-            }
-            const settlement = pendingTurnTerminalSettlement;
-            if (settlement) {
-                try {
-                    await settlement;
-                } catch (error) {
-                    if (!isWorkflowInteractionCapacityError(error)) throw error;
-                    throw Object.assign(
-                        createExecutionRunCodedError(
-                            WORKFLOW_INTERACTION_CAPACITY_EXCEEDED,
-                            error.message,
-                        ),
-                        { code: WORKFLOW_INTERACTION_CAPACITY_EXCEEDED, recoverable: true as const },
-                    );
-                } finally {
-                    if (pendingTurnTerminalSettlement === settlement) {
-                        pendingTurnTerminalSettlement = null;
-                    }
-                }
-            }
-            if (!completionError) return;
-            const event = readRuntimeTurnFailureAlreadySurfacedEvent(completionError);
-            if (event?.diagnostic.code !== WORKFLOW_INTERACTION_CAPACITY_EXCEEDED) throw completionError;
-            throw Object.assign(
-                createExecutionRunCodedError(
-                    WORKFLOW_INTERACTION_CAPACITY_EXCEEDED,
-                    event.diagnostic.message ?? WORKFLOW_INTERACTION_CAPACITY_EXCEEDED,
-                ),
-                { code: WORKFLOW_INTERACTION_CAPACITY_EXCEEDED, recoverable: true as const },
-            );
-        },
+        waitForTurnCompletion,
         async dispose() {
             if (disposed) return;
             disposed = true;

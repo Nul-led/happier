@@ -19,6 +19,8 @@ import {
     SocketRpcCancellationPayloadSchema,
     SocketRpcRequestIdSchema,
     SessionTransferRoutingV1Schema,
+    SessionActionRpcOriginV1Schema,
+    isSessionActionRpcMethodV1,
     SOCKET_RPC_TRANSPORT_RESPONSE_ENVELOPE_VERSION_V1,
     type SocketRpcTransportAcknowledgementV1,
 } from '@happier-dev/protocol/socketRpc';
@@ -163,6 +165,13 @@ export class RpcHandlerManager {
     async handleRequest(
         request: RpcRequest,
     ): Promise<any> {
+        const sessionActionOrigin = request.sessionActionOrigin === undefined
+            ? null : SessionActionRpcOriginV1Schema.safeParse(request.sessionActionOrigin);
+        if (sessionActionOrigin && (!sessionActionOrigin.success
+            || request.callerAuthority !== 'account_automation'
+            || !isSessionActionRpcMethodV1(this.readUnprefixedMethod(request.method)))) {
+            return await this.encodeTransportResponse(request, { error: 'Invalid Session Action origin', errorCode: RPC_ERROR_CODES.FORBIDDEN });
+        }
         const parsedTransferRouting = request.transferRouting === undefined
             ? null : SessionTransferRoutingV1Schema.safeParse(request.transferRouting);
         if (parsedTransferRouting && (!parsedTransferRouting.success
@@ -316,6 +325,7 @@ export class RpcHandlerManager {
             const result = await handler(decryptedParams, Object.freeze({
                 signal: controller.signal,
                 callerAuthority: request.callerAuthority === 'present_user' ? request.callerAuthority : 'account_automation',
+                ...(sessionActionOrigin?.success ? { sessionActionOrigin: sessionActionOrigin.data } : {}),
                 ...(parsedInputAuthorization?.success ? {
                     callerInputAuthorization: parsedInputAuthorization.data,
                     callerInputConstraints: {

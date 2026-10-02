@@ -1,4 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { createSocketTransportAdapter } from '@happier-dev/sync-client';
+
+vi.mock('@/api/session/sockets', () => ({
+    createSessionScopedSocketConnection: () => {
+        const socket = Object.assign(new EventEmitter(), {
+            connected: false, connect: () => {}, disconnect: () => {}, close: () => {},
+        });
+        return { socket, transport: createSocketTransportAdapter(socket) };
+    },
+}));
 import {
     SessionOwnerMetadataV1Schema,
   sealSessionOwnerMetadataEnvelopeV1,
@@ -88,6 +99,7 @@ describe('sendSessionMessage', () => {
             fetchEncryptedTranscriptPageLatest,
         }));
         vi.doMock('@/api/session/transcriptMessageLookup', () => ({
+            findTranscriptEncryptedMessageByLocalId: waitForTranscriptEncryptedMessageByLocalId,
             waitForTranscriptEncryptedMessageByLocalId,
         }));
         vi.doMock('@/session/transport/http/sessionsHttp', () => ({
@@ -96,7 +108,8 @@ describe('sendSessionMessage', () => {
         vi.doMock('@/session/transport/rpc/sessionRpc', () => ({
             callSessionRpc,
         }));
-        vi.doMock('@/session/transport/socket/sessionSocketAgentState', () => ({
+        vi.doMock('@/session/transport/socket/sessionSocketAgentState', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/session/transport/socket/sessionSocketAgentState')>(),
             waitForIdleViaSocket,
         }));
         vi.doMock('./resolveSessionTransportContext', () => ({
@@ -584,7 +597,7 @@ describe('sendSessionMessage', () => {
             reason: 'runtime_disposed_before_delivery' as const,
         }));
         const materializeNextPendingQueueV2MessageViaHttp = vi.fn(async () => undefined);
-        const waitForTranscriptEncryptedMessageByLocalId = vi.fn(async (_params: Readonly<{ maxWaitMs: number }>) => null);
+        const waitForTranscriptEncryptedMessageByLocalId = vi.fn(async (_params: Readonly<{ timeoutMs: number }>) => null);
         const fetchEncryptedTranscriptPageAfterSeq = vi.fn(async () => []);
         const fetchEncryptedTranscriptPageLatest = vi.fn(async () => []);
         const fetchSessionById = vi.fn(async () => ({
@@ -614,6 +627,7 @@ describe('sendSessionMessage', () => {
             fetchEncryptedTranscriptPageLatest,
         }));
         vi.doMock('@/api/session/transcriptMessageLookup', () => ({
+            findTranscriptEncryptedMessageByLocalId: waitForTranscriptEncryptedMessageByLocalId,
             waitForTranscriptEncryptedMessageByLocalId,
         }));
         vi.doMock('@/session/transport/http/sessionsHttp', () => ({
@@ -622,7 +636,8 @@ describe('sendSessionMessage', () => {
         vi.doMock('@/session/transport/rpc/sessionRpc', () => ({
             callSessionRpc,
         }));
-        vi.doMock('@/session/transport/socket/sessionSocketAgentState', () => ({
+        vi.doMock('@/session/transport/socket/sessionSocketAgentState', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/session/transport/socket/sessionSocketAgentState')>(),
             waitForIdleViaSocket,
         }));
         vi.doMock('./resolveSessionTransportContext', () => ({
@@ -664,9 +679,9 @@ describe('sendSessionMessage', () => {
         });
 
         expect(waitForTranscriptEncryptedMessageByLocalId).toHaveBeenCalledWith(expect.objectContaining({
-            maxWaitMs: expect.any(Number),
+            timeoutMs: expect.any(Number),
         }));
-        expect(waitForTranscriptEncryptedMessageByLocalId.mock.calls[0]?.[0]?.maxWaitMs).toBeLessThanOrEqual(250);
+        expect(waitForTranscriptEncryptedMessageByLocalId.mock.calls[0]?.[0]?.timeoutMs).toBeLessThanOrEqual(10_000);
         expect(readBlockedPendingQueueV2DeliveryByLocalIdFromServer).toHaveBeenCalledWith(expect.objectContaining({
             token: 'token',
             sessionId: 'sess-1',
@@ -715,6 +730,7 @@ describe('sendSessionMessage', () => {
             fetchEncryptedTranscriptPageLatest,
         }));
         vi.doMock('@/api/session/transcriptMessageLookup', () => ({
+            findTranscriptEncryptedMessageByLocalId: waitForTranscriptEncryptedMessageByLocalId,
             waitForTranscriptEncryptedMessageByLocalId,
         }));
         vi.doMock('@/session/transport/http/sessionsHttp', () => ({
@@ -723,7 +739,8 @@ describe('sendSessionMessage', () => {
         vi.doMock('@/session/transport/rpc/sessionRpc', () => ({
             callSessionRpc,
         }));
-        vi.doMock('@/session/transport/socket/sessionSocketAgentState', () => ({
+        vi.doMock('@/session/transport/socket/sessionSocketAgentState', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/session/transport/socket/sessionSocketAgentState')>(),
             waitForIdleViaSocket,
         }));
         vi.doMock('./resolveSessionTransportContext', () => ({
@@ -843,12 +860,14 @@ describe('sendSessionMessage', () => {
             fetchEncryptedTranscriptPageLatest,
         }));
         vi.doMock('@/api/session/transcriptMessageLookup', () => ({
+            findTranscriptEncryptedMessageByLocalId: waitForTranscriptEncryptedMessageByLocalId,
             waitForTranscriptEncryptedMessageByLocalId,
         }));
         vi.doMock('@/session/transport/http/sessionsHttp', () => ({
             fetchSessionById,
         }));
-        vi.doMock('@/session/transport/socket/sessionSocketAgentState', () => ({
+        vi.doMock('@/session/transport/socket/sessionSocketAgentState', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/session/transport/socket/sessionSocketAgentState')>(),
             waitForIdleViaSocket,
         }));
         vi.doMock('./resolveSessionTransportContext', () => ({
@@ -918,6 +937,7 @@ describe('sendSessionMessage', () => {
             fetchEncryptedTranscriptPageLatest,
         }));
         vi.doMock('@/api/session/transcriptMessageLookup', () => ({
+            findTranscriptEncryptedMessageByLocalId: waitForTranscriptEncryptedMessageByLocalId,
             waitForTranscriptEncryptedMessageByLocalId,
         }));
         vi.doMock('@/session/transport/http/sessionsHttp', () => ({
@@ -926,7 +946,8 @@ describe('sendSessionMessage', () => {
         vi.doMock('@/session/transport/rpc/sessionRpc', () => ({
             callSessionRpc,
         }));
-        vi.doMock('@/session/transport/socket/sessionSocketAgentState', () => ({
+        vi.doMock('@/session/transport/socket/sessionSocketAgentState', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/session/transport/socket/sessionSocketAgentState')>(),
             waitForIdleViaSocket,
         }));
         vi.doMock('./resolveSessionTransportContext', () => ({
@@ -1008,6 +1029,7 @@ describe('sendSessionMessage', () => {
             fetchEncryptedTranscriptPageLatest,
         }));
         vi.doMock('@/api/session/transcriptMessageLookup', () => ({
+            findTranscriptEncryptedMessageByLocalId: waitForTranscriptEncryptedMessageByLocalId,
             waitForTranscriptEncryptedMessageByLocalId,
         }));
         vi.doMock('@/session/transport/http/sessionsHttp', () => ({
@@ -1016,7 +1038,8 @@ describe('sendSessionMessage', () => {
         vi.doMock('@/session/transport/rpc/sessionRpc', () => ({
             callSessionRpc,
         }));
-        vi.doMock('@/session/transport/socket/sessionSocketAgentState', () => ({
+        vi.doMock('@/session/transport/socket/sessionSocketAgentState', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/session/transport/socket/sessionSocketAgentState')>(),
             waitForIdleViaSocket,
         }));
         vi.doMock('./resolveSessionTransportContext', () => ({
@@ -1214,6 +1237,7 @@ describe('sendSessionMessage', () => {
             fetchEncryptedTranscriptPageLatest,
         }));
         vi.doMock('@/api/session/transcriptMessageLookup', () => ({
+            findTranscriptEncryptedMessageByLocalId: waitForTranscriptEncryptedMessageByLocalId,
             waitForTranscriptEncryptedMessageByLocalId,
         }));
         vi.doMock('@/session/transport/http/sessionsHttp', () => ({
@@ -1222,7 +1246,8 @@ describe('sendSessionMessage', () => {
         vi.doMock('@/session/transport/rpc/sessionRpc', () => ({
             callSessionRpc,
         }));
-        vi.doMock('@/session/transport/socket/sessionSocketAgentState', () => ({
+        vi.doMock('@/session/transport/socket/sessionSocketAgentState', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/session/transport/socket/sessionSocketAgentState')>(),
             waitForIdleViaSocket,
         }));
         vi.doMock('./resolveSessionTransportContext', () => ({
@@ -1329,6 +1354,7 @@ describe('sendSessionMessage', () => {
             fetchEncryptedTranscriptPageLatest,
         }));
         vi.doMock('@/api/session/transcriptMessageLookup', () => ({
+            findTranscriptEncryptedMessageByLocalId: waitForTranscriptEncryptedMessageByLocalId,
             waitForTranscriptEncryptedMessageByLocalId,
         }));
         vi.doMock('@/session/transport/http/sessionsHttp', () => ({
@@ -1337,7 +1363,8 @@ describe('sendSessionMessage', () => {
         vi.doMock('@/session/transport/rpc/sessionRpc', () => ({
             callSessionRpc,
         }));
-        vi.doMock('@/session/transport/socket/sessionSocketAgentState', () => ({
+        vi.doMock('@/session/transport/socket/sessionSocketAgentState', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/session/transport/socket/sessionSocketAgentState')>(),
             waitForIdleViaSocket,
         }));
         vi.doMock('./resolveSessionTransportContext', () => ({
@@ -1936,7 +1963,8 @@ describe('sendSessionMessage', () => {
         vi.doMock('@/session/transport/rpc/sessionRpc', () => ({
             callSessionRpc,
         }));
-        vi.doMock('@/session/transport/socket/sessionSocketAgentState', () => ({
+        vi.doMock('@/session/transport/socket/sessionSocketAgentState', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/session/transport/socket/sessionSocketAgentState')>(),
             waitForIdleViaSocket,
         }));
         vi.doMock('@/api/session/pendingQueueV2Transport', () => ({
@@ -1948,6 +1976,7 @@ describe('sendSessionMessage', () => {
             materializeNextPendingQueueV2MessageViaHttp,
         }));
         vi.doMock('@/api/session/transcriptMessageLookup', () => ({
+            findTranscriptEncryptedMessageByLocalId: waitForTranscriptEncryptedMessageByLocalId,
             waitForTranscriptEncryptedMessageByLocalId,
         }));
         vi.doMock('./resolveSessionTransportContext', () => ({

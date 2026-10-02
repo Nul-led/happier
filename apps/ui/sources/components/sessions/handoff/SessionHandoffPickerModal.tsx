@@ -447,7 +447,7 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
 
     return (
         <View style={styles.body}>
-                <ItemList keyboardAware style={{ paddingTop: 0 }} pointerEvents={awaitingAdmission ? 'none' : 'auto'} importantForAccessibility={awaitingAdmission ? 'no-hide-descendants' : 'auto'}>
+                <ItemList presentation="grouped" keyboardAware style={{ paddingTop: 0 }} pointerEvents={awaitingAdmission ? 'none' : 'auto'} importantForAccessibility={awaitingAdmission ? 'no-hide-descendants' : 'auto'}>
                     <WorkspaceActivationDestinationFields
                         disabled={awaitingAdmission}
                         machine={{
@@ -491,7 +491,7 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
                     />
                     <ItemGroup
                         title={t('settingsSession.handoff.groupTitle')}
-                        footer={t('settingsSession.handoff.groupFooter')}
+                        description={t('settingsSession.handoff.groupFooter')}
                     >
                         <WorkspaceActivationModeField
                             open={openWorkspaceSyncModeMenu}
@@ -591,7 +591,7 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
                     {isExternalSession ? (
                         <ItemGroup
                             title={t('settingsSession.handoff.directTargetMode.groupTitle')}
-                            footer={t('settingsSession.handoff.directTargetMode.groupFooter')}
+                            description={t('settingsSession.handoff.directTargetMode.groupFooter')}
                         >
                             <DropdownMenu
                                 open={openDirectTargetModeMenu}

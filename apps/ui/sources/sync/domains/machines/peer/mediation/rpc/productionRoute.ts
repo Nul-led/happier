@@ -92,6 +92,7 @@ async function fetchJson(params: Readonly<{
     init: RequestInit;
     timeoutMs?: number;
     signal?: AbortSignal;
+    onDispatched?: () => void;
 }>): Promise<Readonly<{ ok: boolean; status: number; body: unknown }>> {
     const timeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0
         ? params.timeoutMs
@@ -108,10 +109,12 @@ async function fetchJson(params: Readonly<{
         }
     }
     try {
-        const response = await fetch(params.url, {
+        const pending = fetch(params.url, {
             ...params.init,
             ...(controller ? { signal: controller.signal } : {}),
         });
+        params.onDispatched?.();
+        const response = await pending;
         return {
             ok: response.ok,
             status: response.status,
@@ -305,12 +308,14 @@ export async function postProductionMachineRpcDirect(input: Readonly<{
     request: PeerMachineRpcDirectRequestV2;
     timeoutMs?: number;
     signal?: AbortSignal;
+    onDispatched?: () => void;
 }>): Promise<PeerMachineRpcDirectResponseV2> {
     try {
         const response = await fetchJson({
             url: input.url,
             timeoutMs: input.timeoutMs,
             signal: input.signal,
+            onDispatched: input.onDispatched,
             init: {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

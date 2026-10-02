@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION, ARTIFACT_PLAIN_DATA_KEY_MARKER } from '@happier-dev/protocol';
+import { ARTIFACT_PLAIN_DATA_KEY_MARKER } from '@happier-dev/protocol';
 import type { Artifact, ArtifactCreateRequest, ArtifactUpdateRequest, DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
 import { upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
 import { Encryption } from '@/sync/encryption/encryption';
@@ -16,6 +16,19 @@ function json(value: unknown, status = 200): Response {
 afterEach(() => { runtimeFetch.mockReset(); });
 
 describe('artifact captured Home transport', () => {
+    it('refuses repersisting presentation-only cached metadata when raw storage content is unavailable', async () => {
+        const cached: DecryptedArtifact = { id: 'document', title: 'Display title',
+            header: { title: 'Display title', v: 1, kind: 'artifact.legacy' }, body: 'old body',
+            headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1, isDecrypted: true, storageMode: 'plain' };
+        const request = vi.fn(async () => Response.json({ success: true, headerVersion: 2, bodyVersion: 2 }));
+        const updated: DecryptedArtifact[] = [];
+        await expect(updateArtifactViaApi({ credentials: { token: 'captured-token' }, request, artifactId: 'document',
+            title: 'Edited title', body: 'new body', encryption: null, artifactDataKeys: new Map(),
+            getArtifact: () => cached, updateArtifact: (row) => updated.push(row) }))
+            .rejects.toMatchObject({ code: 'content_unavailable' });
+        expect(updated).toEqual([]);
+        expect(request).not.toHaveBeenCalled();
+    });
     it('uses the caller artifact id and exact revision even when recovering an uncached key', async () => {
         const encryption = await Encryption.create(new Uint8Array(32).fill(23));
         const artifactDataKeys: ArtifactDataKeyCache = new Map();
@@ -29,6 +42,9 @@ describe('artifact captured Home transport', () => {
                 stored ??= { ...payload, ownerAccountId: 'owner', access: 'owner', encryptionMode: 'e2ee', headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
                 return json(stored);
             }
+            if (stored && path.endsWith('/recipients')) return json({ artifactId: stored.id,
+                ownerAccountId: stored.ownerAccountId, access: stored.access, encryptionMode: stored.encryptionMode,
+                dataEncryptionKey: stored.dataEncryptionKey, callerDataEncryptionKey: stored.dataEncryptionKey, recipients: [] });
             if (init?.method === 'POST') {
                 const payload = JSON.parse(String(init.body)) as ArtifactUpdateRequest;
                 updates.push(payload);
@@ -70,13 +86,7 @@ describe('artifact captured Home transport', () => {
             const target = new URL(String(url));
             requests.push(target.href);
             if (target.pathname === '/health' || target.pathname === '/v1/auth/ping') return json({});
-            if (target.pathname === '/v1/features') return json({
-                features: {}, capabilities: { accountStoredContentCompatibility: {
-                    v: 1, minimumProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
-                    currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
-                    declarationTransport: 'http-header-and-socket-auth-v1',
-                } },
-            });
+            if (target.pathname === '/v1/features') return json({ features: {}, capabilities: {} });
             if (target.origin !== homeB.serverUrl) return json({ error: 'wrong-home' }, 403);
             expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer token-b');
             if (target.pathname === '/v1/account/encryption') return json({ mode, updatedAt: 0 });
@@ -85,6 +95,9 @@ describe('artifact captured Home transport', () => {
                 stored = { ...body, ownerAccountId: 'owner', access: 'owner', encryptionMode: mode, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
                 return json(stored);
             }
+            if (stored && target.pathname.endsWith('/recipients')) return json({ artifactId: stored.id,
+                ownerAccountId: stored.ownerAccountId, access: stored.access, encryptionMode: stored.encryptionMode,
+                dataEncryptionKey: stored.dataEncryptionKey, callerDataEncryptionKey: stored.dataEncryptionKey, recipients: [] });
             if (stored && target.pathname === `/v1/artifacts/${stored.id}`) {
                 if (init?.method !== 'POST') return json(stored);
                 const update = JSON.parse(String(init.body)) as ArtifactUpdateRequest;

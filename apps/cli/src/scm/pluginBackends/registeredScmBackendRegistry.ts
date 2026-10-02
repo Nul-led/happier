@@ -79,6 +79,7 @@ const EXECUTABLE_SUPPORTED_LEAVES: readonly SupportedLeaf[] = [
     { key: 'commit.pathSelection', hasHandler: (registration) => typeof registration.handlers.commit?.create === 'function' },
     { key: 'commit.lineSelection', hasHandler: (registration) => typeof registration.handlers.commit?.create === 'function' },
     { key: 'commit.backout', hasHandler: (registration) => typeof registration.handlers.commit?.backout === 'function' },
+    { key: 'commit.undoLast', hasHandler: (registration) => typeof registration.handlers.commit?.undoLast === 'function' },
     { key: 'remote.add', hasHandler: (registration) => typeof registration.handlers.remote?.add === 'function' },
     { key: 'remote.setUrl', hasHandler: (registration) => typeof registration.handlers.remote?.setUrl === 'function' },
     { key: 'remote.remove', hasHandler: (registration) => typeof registration.handlers.remote?.remove === 'function' },

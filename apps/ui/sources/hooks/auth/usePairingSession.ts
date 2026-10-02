@@ -35,7 +35,13 @@ type StartedLifecycle = StartedHomePairing;
  * the focused Home's own runtime lease (Iroh or a leased loopback origin) can be used
  * as transport, so a background Home is reached through its published descriptor.
  */
-export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthenticated: boolean; targetProfileId?: string | null }>): Readonly<{
+export function usePairingSession(params: Readonly<{
+    enabled: boolean;
+    isAuthenticated: boolean;
+    targetProfileId?: string | null;
+    /** Reports the existing successful approval outcome, never pending, failure, or cancellation. */
+    onCompleted?: (context: PairingContext) => void;
+}>): Readonly<{
     deepLink: string | null; status: PairingStatus | null; pairingContext: PairingContext | null;
     completionState: PairingCompletionState; presentation: PairingPresentation; isExpired: boolean; isStarting: boolean;
     startPairing: () => Promise<StartPairingResult>; cancelPairing: () => Promise<CancelPairingResult>; clearSession: () => void;
@@ -54,6 +60,8 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
     const startingAbortRef = React.useRef<AbortController | null>(null);
     const generationRef = React.useRef(0);
     const activeRef = React.useRef<Readonly<{ lifecycle: StartedLifecycle; context: PairingContext }> | null>(null);
+    const completionCallbackRef = React.useRef(params.onCompleted);
+    completionCallbackRef.current = params.onCompleted;
 
     const resetPresentation = React.useCallback((preserveContext: boolean) => {
         setStatus(null); setDeepLink(null); setQrAvailable(true);
@@ -79,6 +87,8 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
         if (!enabled || !isAuthenticated) return { ok: false, status: 401 };
         if (isStartingRef.current) return { ok: false, status: 409 };
         const generation = ++generationRef.current;
+        // Retain the launching consumer's Account scope without making callback identity restart a QR.
+        const onCompleted = completionCallbackRef.current;
         const isCurrent = () => generationRef.current === generation;
         startingAbortRef.current?.abort();
         const startingAbort = new AbortController();
@@ -109,7 +119,7 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
                 fail(started.cause, started.status);
                 return { ok: false, status: started.status, ...(started.reason === 'invalid_invite' ? { reason: 'invalid_invite' as const } : {}) };
             }
-            if (started.kind === 'cancelled') return { ok: false, status: 409 };
+            if (started.kind !== 'started') return { ok: false, status: 409 };
             const context = { pairId: started.invite.pairId, target: started.target, issuedAtMs: started.invite.issuedAtMs, expiresAtMs: started.invite.expiresAtMs };
             activeRef.current = { lifecycle: started, context };
             setPairingContext(context); setQrAvailable(started.qrAvailable);
@@ -120,7 +130,10 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
             void started.completion.then((outcome) => {
                 if (!isCurrent() || activeRef.current?.lifecycle !== started) return;
                 activeRef.current = null;
-                if (outcome.kind === 'completed') { setRequestedDeviceLabel(outcome.requestedDeviceLabel); setCompletionState('completed'); }
+                if (outcome.kind === 'completed') {
+                    setRequestedDeviceLabel(outcome.requestedDeviceLabel); setCompletionState('completed');
+                    onCompleted?.(context);
+                }
                 else if (outcome.kind === 'expired') { resetPresentation(true); setCompletionState('expired'); }
                 else if (outcome.kind === 'invalid_request') { resetPresentation(false); setFailureCause('home_refused'); setCompletionState('invalid_request'); }
                 else if (outcome.kind === 'failed') { resetPresentation(false); setFailureCause('home_refused'); setCompletionState('completion_failed'); }

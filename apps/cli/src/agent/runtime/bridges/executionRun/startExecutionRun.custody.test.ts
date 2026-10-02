@@ -1,8 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { reloadConfiguration } from '@/configuration';
+import { listExecutionRunMarkers } from '@/daemon/executionRunRegistry';
 import type {
   ExecutionRunInteractionV1,
   SessionInputAdmissionResultV1,
 } from '@happier-dev/protocol';
+import { waitForExecutionRunTerminal } from '@happier-dev/protocol';
 
 import type { ExecutionRunController } from '@/agent/executionRuns/controllers/types';
 import { VoiceAgentManager } from '@/agent/voice/agent/VoiceAgentManager';
@@ -15,11 +21,61 @@ import { sendBackendLongLivedRun } from './send/backendLongLivedPrompt';
 import type { ExecutionRunState } from './executionRunTypes';
 import { createTestExecutionRunHostRuntime } from './testkit';
 
-// Only the marker's disk I/O is replaced; start and terminal settlement stay real.
-const markerWrites = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock('@/daemon/executionRunRegistry', () => ({ writeExecutionRunMarker: markerWrites }));
+// Retained lifecycle and marker publication exercise real isolated filesystem custody.
+let directory: string;
+beforeEach(() => {
+  directory = mkdtempSync(join(tmpdir(), 'happier-start-custody-'));
+  vi.stubEnv('HAPPIER_HOME_DIR', directory);
+  reloadConfiguration();
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  reloadConfiguration();
+  rmSync(directory, { recursive: true, force: true });
+});
 
 describe('execution run start transcript custody', () => {
+  it.each(['terminal', 'terminal_or_needs_attention'] as const)(
+    'holds an initial %s match behind real terminal transcript custody and re-reads publication failure', async (condition) => {
+      const run: ExecutionRunState = {
+        runId: 'custody-run', callId: 'custody-call', sidechainId: 'custody-sidechain', sessionId: 'session-1',
+        depth: 0, intent: 'delegate', backendId: 'claude', backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+        instructions: '', permissionMode: 'read_only', retentionPolicy: 'ephemeral', runClass: 'bounded',
+        ioMode: 'request_response', status: 'running', startedAtMs: 1,
+      };
+      const runs = new Map([[run.runId, run]]);
+      let releasePublication = () => {};
+      let publicationStarted = () => {};
+      const publishing = new Promise<void>((resolve) => { publicationStarted = resolve; });
+      const publication = new Promise<void>((resolve) => { releasePublication = resolve; });
+      // Only durable transcript I/O is held; terminalization and sealed state writes are real.
+      const finish = finishExecutionRun({
+        runId: run.runId, next: { status: 'succeeded', finishedAtMs: 2 }, toolResult: { output: 'Done' },
+        runs, controllers: new Map(), budgetRegistry: null, parentProvider: 'claude',
+        sendAcp: async () => { publicationStarted(); await publication; throw new Error('storage unavailable'); },
+        enqueueMarkerWrite: async (_id, write) => { await write(); }, terminalMarkerWritePromises: new Map(),
+      });
+      const completed = finish.catch(() => {});
+      let settled = false;
+      try {
+        await publishing;
+        expect(runs.get(run.runId)?.status).toBe('succeeded');
+        const wait = waitForExecutionRunTerminal({
+          runId: run.runId, timeoutMs: null, condition,
+          readRun: async ({ runId }) => ({ ok: true as const, data: { run: runs.get(runId) } }),
+          waitForTerminal: async () => { await completed; },
+        }).then((result) => { settled = true; return result; });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(settled).toBe(false);
+        releasePublication();
+        await expect(wait).resolves.toMatchObject({ ok: true, status: 'failed', result: { run: {
+          status: 'failed', error: { code: 'execution_run_transcript_custody_unavailable' },
+        } } });
+        expect((await listExecutionRunMarkers()).find((marker) => marker.runId === run.runId)?.status).toBe('failed');
+      } finally { releasePublication(); await completed; }
+    },
+  );
+
   const retainedInteraction = {
     kind: 'retained_agent_session.v1',
     capabilities: {
@@ -445,7 +501,8 @@ describe('execution run start transcript custody', () => {
       expect(controllers.size).toBe(0);
       expect(createRuntime).not.toHaveBeenCalled();
       expect(budgetRegistry.getInFlightSnapshot().executionRuns).toBe(0);
-      expect(markerWrites).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'failed' }));
+      expect((await listExecutionRunMarkers()).find((marker) => runs.has(marker.runId)))
+        .toMatchObject({ status: 'failed' });
 
       sendAcp.mockResolvedValue(undefined);
       const successor = await startExecutionRun(args);

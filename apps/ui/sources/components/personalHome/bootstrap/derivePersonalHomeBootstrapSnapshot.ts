@@ -55,12 +55,20 @@ export function derivePersonalHomeBootstrapSnapshot(facts: PersonalHomeFacts): P
         };
     }
 
+    // Authoritative erased data invalidates readiness even when app-side receipt
+    // cleanup could not persist. Offline health alone does not invalidate it.
+    const erasedPersonalHomeAwaitingRetry = facts.relayRuntime?.installed === true
+        && facts.relayRuntime.dataPresent === false
+        && facts.relayRuntime.purpose?.kind === 'personal-home'
+        && facts.anonymousSignup === 'unknown';
+    const alreadyCompleted = facts.completedPersonalHomeProfile != null && !erasedPersonalHomeAwaitingRetry;
+
     // An explicit selection is already the durable user decision. Keep the local
     // runtime untouched and let the selected Home own the normal shell.
     if (facts.explicitlySelectedOtherHome) {
         return {
             shouldGateShell: false,
-            homeReady: facts.completedPersonalHomeProfile != null,
+            homeReady: alreadyCompleted,
             daemonReady: daemonIsReady(facts),
             phase: 'ready',
             daemonState: daemonState(facts),
@@ -70,7 +78,6 @@ export function derivePersonalHomeBootstrapSnapshot(facts: PersonalHomeFacts): P
 
     // A profile carrying Lane 03's durable readiness classification must bypass this first-run
     // gate even when the managed runtime or daemon is temporarily offline.
-    const alreadyCompleted = facts.completedPersonalHomeProfile != null;
     const runtimeReady = runtimeIsHealthy(facts) || alreadyCompleted;
     const identityReady = facts.localHomeIdentity != null || alreadyCompleted;
     const authReady = (facts.localHomeAuth === 'present' && facts.localHomeReachability === 'reachable') || alreadyCompleted;
@@ -135,11 +142,6 @@ export function derivePersonalHomeBootstrapSnapshot(facts: PersonalHomeFacts): P
     // Erase intentionally retains the runtime registration so its explicit managed origin remains
     // available, but clears the Home's data and policy. This is not an automatic bootstrap
     // continuation: recreating a Personal Home is a new user decision made through Retry.
-    const erasedPersonalHomeAwaitingRetry = !alreadyCompleted
-        && facts.relayRuntime?.installed === true
-        && facts.relayRuntime.dataPresent === false
-        && facts.relayRuntime.purpose?.kind === 'personal-home'
-        && facts.anonymousSignup === 'unknown';
     if (erasedPersonalHomeAwaitingRetry) {
         return {
             shouldGateShell: true,

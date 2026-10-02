@@ -104,6 +104,10 @@ export {
   resolveExistingPnpmCommand,
 } from './managedPnpm.js';
 export { resolveHappyHomeDirFromEnvironment } from './resolveHappyHomeDir.js';
+export { resolveManagedDependencyCommand, validateManagedDependencyCommand } from './managedDependencyCommand.js';
+export type { ManagedDependencyCommand, ManagedDependencyLaunchDeclaration } from './managedDependencyCommand.js';
+export { selectManagedDependencyReleaseAsset } from './managedDependencyRelease.js';
+export type { ManagedDependencyReleaseDeclaration, ManagedDependencyReleaseAsset } from './managedDependencyRelease.js';
 export {
   expandHomeDirPath,
   resolveHomeDirFromEnvironment,

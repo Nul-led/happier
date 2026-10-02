@@ -10,11 +10,14 @@ import { managedPnpmBinPath, readManagedPnpmMinimumReleaseAgeMs } from './manage
 type ExecFile = typeof execFileWithDeadline;
 
 /** The managed pnpm process is the boundary: it answers `config get` and `--version`. */
-function fakePnpm(answers: Readonly<{ configured: string; version: string }>) {
-  return vi.fn<ExecFile>(async (_command, args) => ({
-    stdout: args.includes('--version') ? `${answers.version}\n` : `${answers.configured}\n`,
-    stderr: '',
-  }));
+function fakePnpm(answers: Readonly<{ configured: string; version: string; configFailed?: boolean }>) {
+  return vi.fn<ExecFile>(async (_command, args) => {
+    if (!args.includes('--version') && answers.configFailed) throw new Error('pnpm config failed');
+    return {
+      stdout: args.includes('--version') ? `${answers.version}\n` : `${answers.configured}\n`,
+      stderr: '',
+    };
+  });
 }
 
 describe('readManagedPnpmMinimumReleaseAgeMs', () => {
@@ -52,5 +55,18 @@ describe('readManagedPnpmMinimumReleaseAgeMs', () => {
     await expect(readManagedPnpmMinimumReleaseAgeMs({ HAPPIER_HOME_DIR: join(home, 'empty'), PATH: '' }, { execFile }))
       .resolves.toBeNull();
     expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { configured: 'ignored', configFailed: true },
+    { configured: '   ', configFailed: false },
+  ])('uses the major default for a failed or empty configuration answer: %j', async (answer) => {
+    await expect(readManagedPnpmMinimumReleaseAgeMs(env, { execFile: fakePnpm({ ...answer, version: '11.24.0' }) }))
+      .resolves.toBe(24 * 60 * 60_000);
+  });
+
+  it('honors an explicitly configured zero', async () => {
+    await expect(readManagedPnpmMinimumReleaseAgeMs(env, { execFile: fakePnpm({ configured: '0', version: '11.24.0' }) }))
+      .resolves.toBe(0);
   });
 });

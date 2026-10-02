@@ -1,4 +1,5 @@
 import * as React from 'react';
+import type { WorkflowPluginSourceV1 } from '@happier-dev/protocol';
 import { useRouter, type Href } from '@/components/appShell/workspace/destinationRoute';
 
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
@@ -41,6 +42,8 @@ export type SessionAgentLauncher = Readonly<{
     openRun: (intent?: ExecutionRunIntent, preset?: ExecutionRunStartPreset) => void;
     /** Starts one of FIN's built-in workflows from this Session (its machine and folder). */
     startBuiltinWorkflow: (workflowId: string) => void;
+    /** Starts a read-only plugin catalog source through that same Session start owner. */
+    startPluginWorkflow: (source: WorkflowPluginSourceV1) => void;
     /** Shows a Details tab where the person will see it (beside the Session, or the phone's Details). */
     openDetails: (tab: DetailsTab) => void;
     /** The Agent's own launch surface (a team, a teammate), when it contributes one. */
@@ -125,7 +128,7 @@ export function useSessionAgentLauncher(params: Readonly<{
         pane.openDetailsTab(createExecutionRunLauncherDetailsTab(intent, preset), { intent: 'preview' });
     }, [pane, phone, pushRunRoute]);
 
-    const startBuiltinWorkflow = useSessionBuiltinWorkflowStart({ sessionId, serverId });
+    const startCatalogWorkflow = useSessionBuiltinWorkflowStart({ sessionId, serverId });
 
     const providerTab = React.useMemo(
         () => createSessionSubagentLaunchDetailsTab({ session: params.session, subagents: params.subagents }),
@@ -143,6 +146,7 @@ export function useSessionAgentLauncher(params: Readonly<{
         openRun,
         openDetails,
         providerLaunch,
-        startBuiltinWorkflow,
-    }), [openDetails, agentIds, intents, launchUnavailableReason, openConversation, openRun, providerLaunch, startBuiltinWorkflow]);
+        startBuiltinWorkflow: startCatalogWorkflow,
+        startPluginWorkflow: startCatalogWorkflow,
+    }), [openDetails, agentIds, intents, launchUnavailableReason, openConversation, openRun, providerLaunch, startCatalogWorkflow]);
 }

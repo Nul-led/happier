@@ -29,13 +29,13 @@ import {
 } from './nativeAgentSession';
 import { createNativeAgentSessionHostServiceOwners } from './nativeAgentSessionHostServiceOwners';
 import { createNativeAgentSessionPublications } from './nativeAgentSessionPublications';
-import { createNativeAgentSessionWorkStateService } from './nativeAgentSessionWorkState';
 import { createNativeAgentCurrentSessionUiServices } from './nativeAgentSessionInteractions';
 import {
     createNativeAgentExecutionRunHostRuntime,
     createNativeAgentExecutionRunContextLeaseFactory,
     createNativeAgentSessionExecutionRunHostRuntime,
     createNativeAgentSessionInteractionHostRuntime,
+    createRunScopedWorkStateService,
     type NativeAgentRuntimeLeaseIdentity,
     type NativeAgentSessionContextLeaseFactory,
 } from '@/agent/runtime/bridges/executionRun/nativeAgentExecutionRun';
@@ -87,6 +87,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
         AgentSessionRealtimeVoiceAuthority | null;
     happyHomeDir?: string;
     nativeAgentRuntime?: AgentRuntime | null;
+    startupRuntimeDescriptorV1?: import('@happier-dev/plugin-sdk/agents/runtime').AgentSessionOpenRequest['runtimeDescriptorV1'];
     createNativeAgentRuntime?: (params: Readonly<{
         signal: AbortSignal;
     }>) => Promise<AgentRuntime>;
@@ -131,6 +132,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
             'managedServicesCustodyPort'
         ]
     >;
+    resolveProviderCliAttachManagedServiceAccess?: import('./types').RunnerAgentSessionRuntimeSource['resolveProviderCliAttachManagedServiceAccess'];
     nativeAgentRuntimeIdentity?: Readonly<{
         pluginId: string;
         pluginVersion: string;
@@ -263,6 +265,8 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                 params.managedServiceEndpointReadPort,
                             managedServicesCustodyPort:
                                 params.managedServicesCustodyPort,
+                            resolveProviderCliAttachManagedServiceAccess:
+                                params.resolveProviderCliAttachManagedServiceAccess,
                             ...(params.prepareNativeManagedProviderBinding
                                 ? {
                                     prepareManagedProviderBinding:
@@ -409,7 +413,12 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                             ? { signal: transformParams.signal }
                                             : undefined,
                                     ),
-                            sessionInput: buildPluginSessionBindingInput(sessionParams),
+                            sessionInput: (() => {
+                                const input = buildPluginSessionBindingInput(sessionParams);
+                                return params.startupRuntimeDescriptorV1
+                                    ? { ...input, bootstrap: { ...input.bootstrap, runtimeDescriptorV1: params.startupRuntimeDescriptorV1 } }
+                                    : input;
+                            })(),
                         });
                         if (
                             !params.daemonTurnContributionsBridge
@@ -636,7 +645,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                         }
                                         publications = createNativeAgentSessionPublications({
                                             agentId: nativeIdentity.agentId,
-                                            session: host.session,
+                                            session: null,
                                             signal,
                                             isCurrent: nativeIdentity.isCurrent,
                                             supportsInFlightSteer: readAgentSessionCapabilities(
@@ -733,17 +742,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                             sessionServices,
                                             ui,
                                             protocols,
-                                            workState: createNativeAgentSessionWorkStateService({
-                                                session: host.session,
-                                                pluginId: nativeIdentity.pluginId,
-                                                contributionId,
-                                                agentId: params.agent.id,
-                                                occurrenceId: nativeIdentity.occurrenceId,
-                                                declarations: readAgentSessionCapabilities(
-                                                    params.agent.richDefinition?.definition,
-                                                )?.workStateSources ?? [],
-                                                isCurrent: nativeIdentity.isCurrent,
-                                            }),
+                                            workState: createRunScopedWorkStateService(signal),
                                         });
                                         const disposeRunToolBinding = runToolBinding?.dispose ?? null;
                                         return Object.freeze({

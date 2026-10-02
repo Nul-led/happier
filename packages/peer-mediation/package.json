@@ -6,6 +6,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./browser/collector/cooperative": { "types": "./dist/browser/collector/cooperative.d.ts", "default": "./dist/browser/collector/cooperative.js" },
+    "./browser/collector/build": { "types": "./dist/browser/collector/build.d.ts", "default": "./dist/browser/collector/build.js" },
+    "./browser/collector/actions": { "types": "./dist/browser/collector/actions.d.ts", "default": "./dist/browser/collector/actions.js" },
+    "./browser/collector/elements": { "types": "./dist/browser/collector/elements.d.ts", "default": "./dist/browser/collector/elements.js" },
     "./localServices/preview/httpAdapter": { "types": "./dist/localServices/preview/httpAdapter.d.ts", "default": "./dist/localServices/preview/httpAdapter.js" },
     "./localServices/preview/websocketAdapter": { "types": "./dist/localServices/preview/websocketAdapter.d.ts", "default": "./dist/localServices/preview/websocketAdapter.js" },
     "./localServices/preview/headers": { "types": "./dist/localServices/preview/headers.d.ts", "default": "./dist/localServices/preview/headers.js" },

@@ -40,10 +40,12 @@ type SpawnTmuxHostedSessionAndWaitForWebhookResult = Readonly<{
   tmuxRequested: boolean;
   tmuxFallbackReason: string | null;
   tmuxCreationDisposition: TmuxWindowCreationDisposition;
+  tmuxCleanupIncomplete?: boolean;
 }>;
 
 export async function spawnTmuxHostedSessionAndWaitForWebhook(params: Readonly<{
   terminalRequest: ResolvedTerminalRequest;
+  startingMode?: 'terminal' | 'remote';
   directory: string;
   options: SpawnSessionOptions;
   trackedSpawnOptions: SpawnSessionOptions;
@@ -156,6 +158,7 @@ export async function spawnTmuxHostedSessionAndWaitForWebhook(params: Readonly<{
   ];
 
   const { commandTokens, tmuxEnv, unsetEnvKeys } = await buildTmuxSpawnConfig({
+    startingMode: params.startingMode,
     agent: agentSubcommand,
     directory: params.directory,
     extraEnv: params.extraEnvForChildWithMessage,
@@ -210,12 +213,13 @@ export async function spawnTmuxHostedSessionAndWaitForWebhook(params: Readonly<{
       tmuxRequested,
       tmuxFallbackReason,
       tmuxCreationDisposition: tmuxResult.creationDisposition,
+      tmuxCleanupIncomplete: tmuxResult.cleanupIncomplete,
     };
   }
 
   if (!tmuxResult.success) {
     tmuxFallbackReason = sanitizeDiagnosticText(tmuxResult.error ?? 'tmux spawn failed');
-    const outcome = tmuxResult.creationDisposition === 'not_created'
+    const outcome = tmuxResult.creationDisposition === 'not_created' && !tmuxResult.cleanupIncomplete
       ? 'falling back to regular spawning'
       : 'refusing regular-spawn fallback because window creation may have committed';
     params.logDebug(`[DAEMON RUN] Failed to spawn in tmux: ${tmuxFallbackReason}, ${outcome}`);
@@ -224,6 +228,7 @@ export async function spawnTmuxHostedSessionAndWaitForWebhook(params: Readonly<{
       tmuxRequested,
       tmuxFallbackReason,
       tmuxCreationDisposition: tmuxResult.creationDisposition,
+      tmuxCleanupIncomplete: tmuxResult.cleanupIncomplete,
     };
   }
 

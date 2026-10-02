@@ -17,6 +17,7 @@ import {
     groupWorkByState,
     projectWork,
     resolveWorkItemOpenTarget,
+    resolveWorkReadPresentation,
     type WorkItem,
     type WorkManagedRunSource,
     type WorkProjectionInput,
@@ -102,6 +103,18 @@ function input(overrides: Partial<WorkProjectionInput>): WorkProjectionInput {
 }
 
 describe('projectWork', () => {
+    it('distinguishes an unreadable first managed read from proven empty work and quiet disabled work', () => {
+        const projection = projectWork(input({}));
+        const read = (phase: 'idle' | 'loading' | 'loaded' | 'failed', refreshFailed = false) =>
+            resolveWorkReadPresentation({ projection, managedRuns: { phase, refreshFailed }, transcriptLoaded: true });
+        expect(read('failed', true)).toEqual({ nothingYet: false, managedLoading: false, managedUnavailable: true });
+        expect(read('loading')).toEqual({ nothingYet: false, managedLoading: true, managedUnavailable: false });
+        expect(read('loaded')).toEqual({ nothingYet: true, managedLoading: false, managedUnavailable: false });
+        expect(read('idle')).toEqual({ nothingYet: true, managedLoading: false, managedUnavailable: false });
+        // A failed refresh, including one of a known empty window, is not proof of current emptiness.
+        expect(read('loaded', true).nothingYet).toBe(false);
+    });
+
     it('lists the reportsTo subtree once, each session under its lead, and ignores unrelated sessions', () => {
         const projection = projectWork(input({
             reportSessions: [

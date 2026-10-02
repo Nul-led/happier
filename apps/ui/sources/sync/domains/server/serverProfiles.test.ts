@@ -196,6 +196,29 @@ describe('serverProfiles', () => {
         });
     });
 
+    it('resolves canonical aliases only on explicit opt-in and rejects ambiguous aliases without changing primary URL intents', async () => {
+        const scope = randomScope();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+        const web = stubWebRuntime('https://app.example.test');
+        const key = `${scopedStorageId('server-profiles', scope)}:server-state-v1`;
+        const alias = 'https://canonical-home.example.test';
+        const first = { id: 'home-a', name: 'Home A', serverUrl: 'https://home-a.example.test',
+            canonicalServerUrl: alias, serverIdentityId: 'srv_alias_home_a', source: 'manual' };
+        web.store.set(key, JSON.stringify({ servers: { 'home-a': first } }));
+        const profiles = await importFresh();
+        expect(profiles.resolveSavedServerProfileByUrl(alias).kind).toBe('missing');
+        expect(profiles.resolveUniqueServerProfileByUrl(`${alias}/`, { includeCanonicalServerUrl: true })?.id).toBe(first.id);
+        web.store.set(key, JSON.stringify({ servers: {
+            'home-a': first,
+            'home-b': { ...first, id: 'home-b', serverUrl: 'https://home-b.example.test', serverIdentityId: 'srv_alias_home_b' },
+        } }));
+        profiles.resetServerProfilesRuntimeForTests();
+        expect(profiles.resolveSavedServerProfileByUrl(alias).kind).toBe('missing');
+        expect(profiles.resolveSavedServerProfileByUrl(alias, { includeCanonicalServerUrl: true }).kind).toBe('ambiguous');
+        expect(profiles.resolveUniqueServerProfileByUrl(alias, { includeCanonicalServerUrl: true })).toBeNull();
+        expect(profiles.resolveUniqueServerProfileByUrl(first.serverUrl)?.id).toBe(first.id);
+    });
+
     function seedServerState(scope: string, state: Record<string, unknown>): MMKV {
         const storage = new MMKV({ id: scopedStorageId('server-profiles', scope) });
         storage.set('server-state-v1', JSON.stringify(state));

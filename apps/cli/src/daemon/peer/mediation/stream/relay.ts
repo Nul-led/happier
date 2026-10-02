@@ -17,6 +17,7 @@ import {
 import { startMachineLiveStreamFramePump } from './framePump';
 import {
     classifyCaptureTerminalCloseKind,
+    createDaemonMachineLiveStreamCaptureAdapter,
     type MachineLiveStreamCaptureAdapter,
     type MachineLiveStreamCaptureSession,
     type MachineLiveStreamCaptureStartResult,
@@ -247,7 +248,8 @@ export function createMachineLiveStreamRelayTerminator(input: Readonly<{
                 emitObservability({ kind: 'flow.denied', startRequest, reasonCode: source.diagnostic.reasonCode });
                 return { ok: false, reasonCode: source.diagnostic.reasonCode };
             }
-            const captureAdapter = source?.ok ? source.source.adapter : input.captureAdapter;
+            // Registered sources share the same occurrence/retirement owner as bootstrap-wired capture.
+            const captureAdapter = input.registry ? createDaemonMachineLiveStreamCaptureAdapter(input.registry) : input.captureAdapter;
             if (!captureAdapter) {
                 emitObservability({ kind: 'flow.denied', startRequest, reasonCode: 'capture_source_unavailable' });
                 return { ok: false, reasonCode: 'capture_source_unavailable' };

@@ -547,6 +547,9 @@ export const VoiceHorizon = React.memo(function VoiceHorizon(props: Readonly<{
                             canStart={attemptControl.canStart}
                             muted={attemptControl.muted}
                             canMute={attemptControl.canMute}
+                            canCommitInput={attemptControl.canCommitInput}
+                            commitInputLabel={attemptControl.commitInputLabel}
+                            onCommitInput={attemptControl.onCommitInput}
                             /*
                              * Capture, not the inverse of muted. A half-duplex provider closes the
                              * microphone while it speaks; drawing it open there would be the one

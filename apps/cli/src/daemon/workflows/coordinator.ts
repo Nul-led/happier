@@ -43,6 +43,7 @@ import { ActionIdSchema } from '@happier-dev/protocol/actions';
 import { validateExecutionRunProfileResult } from '@happier-dev/protocol/execution/runs/resultContract';
 import { decodeExecutionRunResultObservation, type ExecutionRunResultDecodeResult } from '@happier-dev/protocol/execution/runs/resultContract';
 import { isAuthoritativeAutomationRunCancellation } from '@/daemon/automation/automationRunCancellation';
+import type { AutomationRunCause } from '@happier-dev/protocol/automations/run-cause';
 
 import {
   evaluateWorkflowCondition,
@@ -841,13 +842,14 @@ export function createWorkflowCoordinator(deps: Readonly<{
     workDepth: number;
     authorization: WorkflowAcceptedAuthorizationV1;
     originSessionId?: string;
+    automationCause?: AutomationRunCause;
     signal?: AbortSignal;
   }>) => Promise<WorkflowCoordinatorResult>;
 }> {
   let activeHolds: WorkflowReviewHolds | undefined;
   return {
     refreshReviewHolds: async () => { await activeHolds?.refresh(); },
-    run: async ({ runId, definition, authoredDefinition, inputs, executionTarget, materializedLeaves, frozenChildren, workDepth, authorization, originSessionId, signal }) => {
+    run: async ({ runId, definition, authoredDefinition, inputs, executionTarget, materializedLeaves, frozenChildren, workDepth, authorization, originSessionId, automationCause, signal }) => {
       const root: Frame = {
         scopeRunId: runId,
         conversationOwnerKey: deps.rootInvocationRecordId ?? workflowInvocationKey({ runId, blockId: '$root', scope: [], attempt: 0 }),
@@ -870,7 +872,7 @@ export function createWorkflowCoordinator(deps: Readonly<{
       try {
         const context = withAbortSignal({
           runId, definition, authoredDefinition, inputs, executionTarget, materializedLeaves, frozenChildren,
-          workDepth, sourceKey: '$root', authorization, originSessionId, rootOwnerKey: root.conversationOwnerKey,
+          workDepth, sourceKey: '$root', authorization, originSessionId, automationCause, rootOwnerKey: root.conversationOwnerKey,
           deps: { ...deps, store: trackedStore,
             ...(deps.sessionContext ? { sessionContext: {
               ...(deps.sessionContext.resolveSessionContext ? { resolveSessionContext: (recentTurns: number) =>
@@ -943,6 +945,7 @@ type ExecutionContext = Readonly<{
   projectWorkspace?: WorkflowWorkspaceSource;
   rootOwnerKey: string;
   originSessionId?: string;
+  automationCause?: AutomationRunCause;
   signal?: AbortSignal;
   admissionGate: KeyedAdmissionGate;
   holds: WorkflowReviewHolds;
@@ -1785,6 +1788,7 @@ async function executeStepBlock(
       await assertAdmissionOpen(context);
       if (!resolved.review?.decision) throw new WorkflowLeafFailure('interrupted', 'continuation_unavailable');
       const originalMaterialized = resolved.input ? undefined : await materializeWorkflowStepInput({ document: step.document,
+        automationCause: context.automationCause,
         references: [...step.input, ...supplementalInputValues.map((value) => ({ kind: 'literal' as const, value }))],
         runtime: createResolutionRuntime(context.inputs, frame, context.deps.store, context.deps.sessionContext) });
       const original: WorkflowAuthoredInputV1 = { document: step.document,
@@ -1890,6 +1894,7 @@ async function executeStepBlock(
     : step;
   const persistedInput = admitted.input;
   const input = await materializeWorkflowStepInput({
+    automationCause: context.automationCause,
     document: persistedInput?.document ?? effectiveStep.document,
     references: persistedInput
       ? persistedInput.input.map((value) => ({ kind: 'literal' as const, value }))
@@ -2241,12 +2246,8 @@ async function executeStepBlock(
           ? 'cancel_requested' : current?.lifecycle ?? 'admitting', reason: execution.code });
       throw new WorkflowLeafFailure('interrupted', execution.code);
     }
-    const stopStillPending = execution.kind === 'cancelled'
-      && execution.code === 'session_input_turn_cancel_requested'
-      && !authorizationRevoked;
     const state = execution.kind === 'failed' || execution.kind === 'needs_attention'
       || (execution.kind === 'outcome_uncertain' && durableExecution !== undefined)
-      || stopStillPending
       ? 'interrupted'
       : execution.kind;
     const reason = failStopClosure
@@ -2256,7 +2257,7 @@ async function executeStepBlock(
       : execution.code;
     await context.deps.store.commitFact({
       key,
-      lifecycle: stopStillPending ? 'cancel_requested' : failStopClosure ? 'cancelled' : execution.kind,
+      lifecycle: failStopClosure ? 'cancelled' : execution.kind,
       reason,
       ...(execution.kind === 'failed' && execution.message !== undefined
         ? { reasonMessage: execution.message } : {}),

@@ -128,6 +128,7 @@ describe('plugin Settings administration CLI', () => {
       target: {
         serverIdentityId: 'srv_settings_1',
         serverLabel: 'Settings Home',
+        serverUrl: 'https://settings.example.test',
         machineId: 'machine-1',
         machineLabel: 'Settings Machine',
       },

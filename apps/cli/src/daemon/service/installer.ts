@@ -32,6 +32,7 @@ import { readInstalledDaemonServiceInstallOptions, readInstalledDaemonServiceMan
 import type { DaemonServiceAutostartMode } from './plan';
 import type { IrohRelayEnvConfig } from '@happier-dev/iroh-native/node';
 import type { HomeApplicationCarrierEligibility } from '@happier-dev/cli-common/homeEnrollment';
+import { readBackgroundServiceActivity, readBackgroundServiceEnablement } from './readBackgroundServiceHealth';
 
 type SupportedPlatform = 'darwin' | 'linux' | 'win32';
 
@@ -117,6 +118,38 @@ export type DaemonServiceInstallPreview = Readonly<{
   conflictPlan: DaemonServiceInstallConflictPlan;
   plan: ReturnType<typeof planDaemonServiceInstall>;
 }>;
+
+/** One preservation owner for rewrites and repair's remove/reinstall/compensation. */
+export function readDaemonServicePreservedInstallOptions(params: Readonly<{
+  platform: SupportedPlatform;
+  path: string;
+  /** Passive repair preserves OS disablement; explicit install requests activation instead. */
+  preserveEnablement?: Readonly<{ label: string; uid: number | null; mode?: DaemonServiceMode }>;
+}>): Readonly<{
+  autostart?: DaemonServiceAutostartMode;
+  bundleId?: string | null;
+  managedBy?: DaemonServiceManagedBy | null;
+  irohRelayConfig: IrohRelayEnvConfig;
+  homeCarrierEligibility?: HomeApplicationCarrierEligibility;
+  enablement?: DaemonServiceInstallEnablement;
+  preserveRunningWhenDisabled?: boolean;
+}> {
+  const installedService = { platform: params.platform, path: params.path };
+  const options = {
+    ...readInstalledDaemonServiceInstallOptions(installedService),
+    managedBy: readInstalledDaemonServiceManagedBy(installedService),
+    irohRelayConfig: resolveDaemonServiceIrohRelayConfig({ processEnv: {}, installedService }),
+    homeCarrierEligibility: resolveDaemonServiceHomeCarrierPolicy({ processEnv: {}, installedService }),
+  };
+  if (!params.preserveEnablement) return options;
+  const stateParams = { platform: params.platform, ...params.preserveEnablement };
+  const enablement = readBackgroundServiceEnablement(stateParams);
+  if (enablement === null) throw Object.assign(new Error(`Could not preserve OS enablement for background service ${stateParams.label}`), { code: 'service_inventory_unavailable' as const });
+  if (enablement === 'enabled') return options;
+  const activity = readBackgroundServiceActivity(stateParams);
+  if (activity === 'unknown') throw Object.assign(new Error(`Could not preserve running state for disabled background service ${stateParams.label}`), { code: 'service_inventory_unavailable' as const });
+  return { ...options, enablement, preserveRunningWhenDisabled: activity === 'active' };
+}
 
 export async function previewDaemonServiceInstall(options: Readonly<{
   platform?: SupportedPlatform;
@@ -213,26 +246,16 @@ export async function previewDaemonServiceInstall(options: Readonly<{
     services: discoveredServices,
   });
   const installedTarget = discoveredServices.find((service) => daemonServiceMatchesInstallTarget(service, target));
+  const installedOptions = installedTarget ? readDaemonServicePreservedInstallOptions({ platform, path: installedTarget.path }) : null;
   const requestedIrohRelayConfig = resolveDaemonServiceIrohRelayConfig({ processEnv: process.env });
   const irohRelayConfig = requestedIrohRelayConfig.explicitlyConfigured
     ? requestedIrohRelayConfig
-    : options.irohRelayConfig ?? resolveDaemonServiceIrohRelayConfig({
-      processEnv: process.env,
-      ...(installedTarget
-        ? { installedService: { platform, path: installedTarget.path } }
-        : {}),
-    });
+    : options.irohRelayConfig ?? installedOptions?.irohRelayConfig ?? requestedIrohRelayConfig;
   const homeCarrierEligibility = resolveDaemonServiceHomeCarrierPolicy({ processEnv: process.env })
     ?? options.homeCarrierEligibility
-    ?? resolveDaemonServiceHomeCarrierPolicy({
-      processEnv: process.env,
-      ...(installedTarget
-        ? { installedService: { platform, path: installedTarget.path } }
-        : {}),
-    });
+    ?? installedOptions?.homeCarrierEligibility;
   // Only an explicit request marks a service as the desktop's; every rewrite keeps the installed mark.
-  const managedBy = options.managedBy ?? (installedTarget ? readInstalledDaemonServiceManagedBy({ platform, path: installedTarget.path }) : null);
-  const installedOptions = installedTarget ? readInstalledDaemonServiceInstallOptions({ platform, path: installedTarget.path }) : null;
+  const managedBy = options.managedBy ?? installedOptions?.managedBy;
   const installedAutostart = installedOptions?.autostart;
   const bundleId = options.bundleId ?? installedOptions?.bundleId;
   const autostart = options.autostart ?? installedAutostart;

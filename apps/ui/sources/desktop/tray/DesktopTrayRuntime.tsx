@@ -43,6 +43,9 @@ export const DESKTOP_TRAY_REFRESH_REQUESTED_EVENT = 'desktop_tray_refresh_reques
 /** Emitted by the native side when a row's Open is chosen while the window exists (D11-3). */
 export const DESKTOP_OPEN_HOME_REQUESTED_EVENT = 'desktop_open_home_requested';
 
+export const DESKTOP_OPEN_SETTINGS_REQUESTED_EVENT = 'desktop_open_settings_requested';
+export const DESKTOP_OPEN_UPDATES_REQUESTED_EVENT = 'desktop_open_updates_requested';
+
 const SCREEN_ROUTES: Record<'updates' | 'settings', string> = {
     updates: UPDATES_ROUTE,
     settings: SETTINGS_ROUTES.general,
@@ -176,6 +179,12 @@ function TauriDesktopTrayRuntime(): React.ReactElement | null {
     useDesktopHostEvent(DESKTOP_BACKGROUND_SERVICES_CHANGED_EVENT, refreshThisComputer);
     // The menu is about to open: its rows should be current (N-12).
     useDesktopHostEvent(DESKTOP_TRAY_REFRESH_REQUESTED_EVENT, refreshThisComputer);
+    useDesktopHostEvent(DESKTOP_OPEN_SETTINGS_REQUESTED_EVENT, React.useCallback(() => {
+        openDestination('settings');
+    }, [openDestination]));
+    useDesktopHostEvent(DESKTOP_OPEN_UPDATES_REQUESTED_EVENT, React.useCallback(() => {
+        openDestination('updates');
+    }, [openDestination]));
     useDesktopHostEvent(DESKTOP_OPEN_HOME_REQUESTED_EVENT, React.useCallback((payload: unknown) => {
         const destination = readDesktopTrayDestination(payload);
         if (destination && typeof destination !== 'string') openDestination(destination);

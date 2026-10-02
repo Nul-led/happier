@@ -23,7 +23,7 @@ import {
     resolveProfileAvailabilityForNewSession,
 } from '@/components/sessions/new/modules/newSessionAgentSelection';
 import { runAfterInteractionsWithFallback } from '@/utils/timing/runAfterInteractionsWithFallback';
-import { resolveTerminalSpawnOptions } from '@/sync/domains/settings/terminalSettings';
+import { resolveTerminalHost } from '@/sync/domains/settings/terminalSettings';
 import { resolveWindowsTerminalAvailable } from '@/capabilities/windowsTerminalAvailability';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
 import type { Machine } from '@/sync/domains/state/storageTypes';
@@ -107,10 +107,10 @@ export function useNewSessionAvailabilityState(params: Readonly<{
     }), [machineAgents, selectedMachineCapabilitiesSnapshot]);
 
     const tmuxRequested = React.useMemo(() => {
-        return Boolean(resolveTerminalSpawnOptions({
+        return resolveTerminalHost({
             settings: params.settings,
             machineId: params.selectedMachineId,
-        }));
+        }) === 'tmux';
     }, [params.selectedMachineId, params.settings]);
 
     // The Agent this picker describes is the OPERATIONAL runtime carrier, not

@@ -18,7 +18,7 @@ describe('fetchEncryptedTranscriptMessages', () => {
   it('passes beforeSeq through to the server query params when provided', async () => {
     const getSpy = vi.spyOn(axios, 'get').mockResolvedValueOnce({
       status: 200,
-      data: { messages: [] },
+      data: { messages: [], hasMore: false },
     } as any);
 
     const { fetchEncryptedTranscriptMessages } = await import('./fetchEncryptedTranscriptMessages');
@@ -37,7 +37,7 @@ describe('fetchEncryptedTranscriptMessages', () => {
   it('passes scope and role filters through to the server query params', async () => {
     const getSpy = vi.spyOn(axios, 'get').mockResolvedValueOnce({
       status: 200,
-      data: { messages: [] },
+      data: { messages: [], hasMore: false },
     } as any);
 
     const { fetchEncryptedTranscriptMessagesPage } = await import('./fetchEncryptedTranscriptMessages');
@@ -64,10 +64,10 @@ describe('fetchEncryptedTranscriptMessages', () => {
     vi.spyOn(axios, 'get').mockResolvedValueOnce({
       status: 200,
       data: {
-        messages: [{ id: 'm1', seq: 1, createdAt: 1, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'ok' } } } }],
+        messages: [{ id: 'm1', seq: 6, createdAt: 1, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'ok' } } } }],
         hasMore: true,
-        nextBeforeSeq: 1,
-        nextAfterSeq: null,
+        nextBeforeSeq: null,
+        nextAfterSeq: 6,
       },
     } as any);
 
@@ -81,10 +81,10 @@ describe('fetchEncryptedTranscriptMessages', () => {
     });
 
     expect(res).toEqual({
-      messages: [{ id: 'm1', seq: 1, createdAt: 1, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'ok' } } } }],
+      messages: [{ id: 'm1', seq: 6, createdAt: 1, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'ok' } } } }],
       hasMore: true,
-      nextBeforeSeq: 1,
-      nextAfterSeq: null,
+      nextBeforeSeq: null,
+      nextAfterSeq: 6,
     });
   });
 
@@ -238,6 +238,28 @@ describe('fetchEncryptedTranscriptMessages', () => {
 
     expect(page.messages.map((row) => row.seq)).toEqual([11, 12, 13]);
     expect(JSON.stringify(page)).not.toContain('inputAdmissionReceipt');
+  });
+
+  it.each([
+    { messages: [] },
+    { messages: [], hasMore: true, nextBeforeSeq: 1 },
+  ])('rejects unproven ordinary page completeness: %j', async (data) => {
+    vi.spyOn(axios, 'get').mockResolvedValueOnce({ status: 200, data });
+    const { fetchEncryptedTranscriptMessagesPage } = await import('./fetchEncryptedTranscriptMessages');
+    await expect(fetchEncryptedTranscriptMessagesPage({ token: 't', sessionId: 'sess_1', limit: 10 })).rejects.toMatchObject({
+      code: 'session_transcript_stored_content_unavailable',
+    });
+  });
+
+  it('rejects an ordinary continuation that cannot advance the requested cursor', async () => {
+    vi.spyOn(axios, 'get').mockResolvedValueOnce({ status: 200, data: {
+      messages: [{ id: 'm3', seq: 3, createdAt: 1, content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'ok' } } } }],
+      hasMore: true, nextAfterSeq: 3, nextBeforeSeq: null,
+    } });
+    const { fetchEncryptedTranscriptMessagesPage } = await import('./fetchEncryptedTranscriptMessages');
+    await expect(fetchEncryptedTranscriptMessagesPage({ token: 't', sessionId: 'sess_1', limit: 10, afterSeq: 3 })).rejects.toMatchObject({
+      code: 'session_transcript_stored_content_unavailable',
+    });
   });
 
   it('throws a stable auth status error for terminal auth failures', async () => {

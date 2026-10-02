@@ -57,7 +57,7 @@ import {
   type SessionTurnActivity,
 } from '@/session/query/detectSessionTurnInFlight';
 import { fetchSessionById } from '@/session/transport/http/sessionsHttp';
-import { waitForIdleViaSocket } from '@/session/transport/socket/sessionSocketAgentState';
+import { openSessionEventSource, waitForIdleViaSocket } from '@/session/transport/socket/sessionSocketAgentState';
 import {
   decryptSessionPayload,
   deriveSessionInputEqualityTagV1,
@@ -86,6 +86,7 @@ import { requestInactiveSessionResume } from './requestInactiveSessionResume';
 import { resolveSessionUserMessageRequestedAction } from './resolveSessionUserMessageRequestedAction';
 import { buildImmutableSessionInputEqualityEnvelopeV1 } from './sessionInputEqualityEnvelope';
 import { decodeTranscriptBody } from './transcript/transcriptBodyDecoder';
+import { configuration } from '@/configuration';
 
 export type SendSessionMessageResult =
   | Readonly<{
@@ -435,19 +436,6 @@ async function resolveCurrentTurnAfterSeqExclusive(params: Readonly<{
   }
 }
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) return Promise.resolve();
-  return new Promise((resolve) => {
-    const timer = setTimeout(finish, Math.max(1, Math.trunc(ms)));
-    function finish(): void {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', finish);
-      resolve();
-    }
-    signal?.addEventListener('abort', finish, { once: true });
-    if (signal?.aborted) finish();
-  });
-}
 
 function decryptTranscriptRowContent(params: Readonly<{
   content: { t: 'encrypted'; c: string } | { t: 'plain'; v: unknown };
@@ -601,8 +589,6 @@ type AssistantTurnOutcome =
   | AssistantTurnFailure;
 
 const ASSISTANT_TURN_SCAN_PAGE_LIMIT = 100;
-const CURRENT_PROMPT_DELIVERY_POLL_MS = 250;
-const EXECUTION_RUN_INPUT_TURN_POLL_MS = 250;
 
 type CurrentPromptDeliveryOutcome =
   | Readonly<{ kind: 'missing' }>
@@ -635,47 +621,32 @@ async function waitForCurrentPromptDelivery(params: Readonly<{
   resolveAuthorizationHeaders?: ResolveSessionMessageAuthorizationHeaders;
   beforeInputObservation?: () => Promise<void>;
 }>): Promise<CurrentPromptDeliveryOutcome> {
-  let observedOnce = false;
-  while (!params.signal?.aborted && (!observedOnce || params.deadlineMs === null || Date.now() <= params.deadlineMs)) {
-    await params.beforeInputObservation?.();
-    if (params.signal?.aborted) break;
-    observedOnce = true;
-    const remainingMs = params.deadlineMs === null
-      ? CURRENT_PROMPT_DELIVERY_POLL_MS
-      : params.deadlineMs - Date.now();
-    const request = {
-      token: params.token,
-      sessionId: params.sessionId,
-      localId: params.localId,
-      ...(params.signal ? { signal: params.signal } : {}),
-      ...(params.resolveAuthorizationHeaders
-        ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
-        : {}),
-    };
-    // The deadline bounds waiting, not the native request needed to observe
-    // once. Use its owning transport budget rather than imposing a 1ms timeout.
-    const materialized = params.deadlineMs !== null && remainingMs <= 0
-      ? await findTranscriptEncryptedMessageByLocalId(request)
-      : await waitForTranscriptEncryptedMessageByLocalId({
-        ...request,
-        maxWaitMs: Math.max(1, Math.min(CURRENT_PROMPT_DELIVERY_POLL_MS, remainingMs)),
+  const events = openSessionEventSource(params);
+  try {
+    while (!params.signal?.aborted) {
+      const revision = events.currentRevision();
+      await params.beforeInputObservation?.();
+      params.signal?.throwIfAborted();
+      const remainingMs = params.deadlineMs === null ? null : params.deadlineMs - Date.now();
+      const materialized = await findTranscriptEncryptedMessageByLocalId({
+        token: params.token, sessionId: params.sessionId, localId: params.localId,
+        // Preserve the one baseline read even when transport resolution consumed the deadline.
+        timeoutMs: remainingMs !== null && remainingMs > 0
+          ? Math.min(configuration.transcriptLookupRequestTimeoutMs, remainingMs)
+          : configuration.transcriptLookupRequestTimeoutMs,
+        ...(params.signal ? { signal: params.signal } : {}),
+        ...(params.resolveAuthorizationHeaders ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders } : {}),
       });
-    params.signal?.throwIfAborted();
-    if (materialized) {
-      return { kind: 'materialized', message: materialized };
+      params.signal?.throwIfAborted();
+      if (materialized) return { kind: 'materialized', message: materialized };
+      const blockedReason = await readBlockedPromptDeliveryReason(params);
+      if (blockedReason) return { kind: 'blocked', reason: blockedReason };
+      if (!(await events.waitForChange(revision, params))) break;
     }
-
-    const blockedReason = await readBlockedPromptDeliveryReason(params);
-    if (blockedReason) {
-      return { kind: 'blocked', reason: blockedReason };
-    }
+    return { kind: 'missing' };
+  } finally {
+    await events.close();
   }
-
-  const blockedReason = await readBlockedPromptDeliveryReason(params);
-  if (blockedReason) {
-    return { kind: 'blocked', reason: blockedReason };
-  }
-  return { kind: 'missing' };
 }
 
 async function scanAssistantTurnAfterCurrentUserTurn(params: Readonly<{
@@ -851,30 +822,22 @@ async function waitForAssistantCompletionAfterCurrentUserTurn(params: Readonly<{
   signal?: AbortSignal;
   resolveAuthorizationHeaders?: ResolveSessionMessageAuthorizationHeaders;
 }>): Promise<AssistantTurnOutcome> {
-  let lastAttempt = false;
-
-  while (!params.signal?.aborted && (params.deadlineMs === null || Date.now() <= params.deadlineMs)) {
-    lastAttempt = true;
-    try {
-      const outcome = await readAssistantTurnOutcomeAfterCurrentUserTurn(params);
-      if (outcome.kind !== 'missing') {
-        return outcome;
+  const events = openSessionEventSource(params);
+  try {
+    while (!params.signal?.aborted) {
+      const revision = events.currentRevision();
+      try {
+        const outcome = await readAssistantTurnOutcomeAfterCurrentUserTurn(params);
+        if (outcome.kind !== 'missing') return outcome;
+      } catch {
+        // An unavailable transcript is not completion. Reobserve on change or reconnect.
       }
-    } catch {
-      // Missing proof is not success. Keep polling until the caller's wait budget expires.
+      if (!(await events.waitForChange(revision, params))) break;
     }
-
-    const remainingMs = params.deadlineMs === null ? 100 : params.deadlineMs - Date.now();
-    if (params.deadlineMs !== null && remainingMs <= 0) {
-      break;
-    }
-    await sleep(Math.min(100, remainingMs));
+    return { kind: 'missing' };
+  } finally {
+    await events.close();
   }
-
-  if (!lastAttempt && !params.signal?.aborted) {
-    return readAssistantTurnOutcomeAfterCurrentUserTurn(params).catch(() => ({ kind: 'missing' }));
-  }
-  return { kind: 'missing' };
 }
 
 function resultFromAssistantTurnOutcome(outcome: AssistantTurnOutcome): SessionInputResultV1 {
@@ -979,7 +942,7 @@ async function readExecutionRunInputTranscriptOutcome(params: Readonly<{
  * read owner. Completion means that exact turn completed, failed, or was
  * cancelled — never parent-Session idle, a sibling target's queue, or the
  * run's generic terminal status. Missing, unavailable, or unmatchable run
- * evidence is not success: polling continues until the wait budget expires and
+ * evidence is not success: observation waits until the wait budget expires and
  * the caller then reports the existing typed outcome-unknown result. The wait
  * never retries or cancels the admitted input itself.
  */
@@ -1009,68 +972,75 @@ async function waitForExecutionRunInputTurnOutcome(params: Readonly<{
   });
   if (params.signal?.aborted) return 'observation_cancelled';
   if (!materialized) return null;
-  while (true) {
-    if (params.signal?.aborted) return 'observation_cancelled';
-    let turnState: ExecutionRunInputTurnV1['state'] | null = null;
-    try {
-      if (params.resolveAuthorizationHeaders) {
-        turnState = materialized.sidechainId
-          ? await readExecutionRunInputTranscriptOutcome({
-              token: params.credentials.token,
-              sessionId: params.sessionId,
-              localId: params.localId,
-              sidechainId: materialized.sidechainId,
-              materializedSeq: materialized.seq,
-              ctx: params.crypto.ctx,
-              deadlineMs,
-              ...(params.signal ? { signal: params.signal } : {}),
-              resolveAuthorizationHeaders: params.resolveAuthorizationHeaders,
-            })
-          : null;
-      } else {
-        const readResult = await getExecutionRun({
-        ...params.crypto,
-        token: params.credentials.token,
-        sessionId: params.sessionId,
-        request: { runId: params.runId },
-        ...(params.signal ? { signal: params.signal } : {}),
-        });
-        if (readResult.ok) {
-          const parsed = ExecutionRunGetResponseSchema.safeParse(readResult.data);
-          if (parsed.success) {
-            turnState = readExecutionRunInputTurnOutcome({ run: parsed.data.run, localId: params.localId });
-            if (
-              turnState === null
-              && materialized.sidechainId === parsed.data.run.sidechainId
-            ) {
-              turnState = await readExecutionRunInputTranscriptOutcome({
+  const events = openSessionEventSource({ token: params.credentials.token, sessionId: params.sessionId });
+  try {
+    while (true) {
+      const revision = events.currentRevision();
+      if (params.signal?.aborted) return 'observation_cancelled';
+      let turnState: ExecutionRunInputTurnV1['state'] | null = null;
+      try {
+        if (params.resolveAuthorizationHeaders) {
+          turnState = materialized.sidechainId
+            ? await readExecutionRunInputTranscriptOutcome({
                 token: params.credentials.token,
                 sessionId: params.sessionId,
                 localId: params.localId,
-                sidechainId: parsed.data.run.sidechainId,
+                sidechainId: materialized.sidechainId,
                 materializedSeq: materialized.seq,
                 ctx: params.crypto.ctx,
                 deadlineMs,
                 ...(params.signal ? { signal: params.signal } : {}),
-              });
+                resolveAuthorizationHeaders: params.resolveAuthorizationHeaders,
+              })
+            : null;
+        } else {
+          const readResult = await getExecutionRun({
+            ...params.crypto,
+            token: params.credentials.token,
+            sessionId: params.sessionId,
+            request: { runId: params.runId },
+            ...(params.signal ? { signal: params.signal } : {}),
+          });
+          if (readResult.ok) {
+            const parsed = ExecutionRunGetResponseSchema.safeParse(readResult.data);
+            if (parsed.success) {
+              turnState = readExecutionRunInputTurnOutcome({ run: parsed.data.run, localId: params.localId });
+              if (
+                turnState === null
+                && materialized.sidechainId === parsed.data.run.sidechainId
+              ) {
+                turnState = await readExecutionRunInputTranscriptOutcome({
+                  token: params.credentials.token,
+                  sessionId: params.sessionId,
+                  localId: params.localId,
+                  sidechainId: parsed.data.run.sidechainId,
+                  materializedSeq: materialized.seq,
+                  ctx: params.crypto.ctx,
+                  deadlineMs,
+                  ...(params.signal ? { signal: params.signal } : {}),
+                });
+              }
             }
           }
         }
+      } catch {
+        if (params.signal?.aborted) return 'observation_cancelled';
+        // Missing run evidence is not success. Re-observe on change or reconnect.
       }
-    } catch {
       if (params.signal?.aborted) return 'observation_cancelled';
-      // A missing or unavailable run projection is not success. Keep polling
-      // until the caller's wait budget expires.
+      if (turnState === 'completed' || turnState === 'failed' || turnState === 'cancelled') {
+        return turnState;
+      }
+      const remainingMs = deadlineMs - Date.now();
+      if (remainingMs <= 0) {
+        return null;
+      }
+      if (!(await events.waitForChange(revision, { deadlineMs, signal: params.signal }))) {
+        return params.signal?.aborted ? 'observation_cancelled' : null;
+      }
     }
-    if (params.signal?.aborted) return 'observation_cancelled';
-    if (turnState === 'completed' || turnState === 'failed' || turnState === 'cancelled') {
-      return turnState;
-    }
-    const remainingMs = deadlineMs - Date.now();
-    if (remainingMs <= 0) {
-      return null;
-    }
-    await sleep(Math.min(EXECUTION_RUN_INPUT_TURN_POLL_MS, remainingMs), params.signal);
+  } finally {
+    await events.close();
   }
 }
 
@@ -1598,7 +1568,7 @@ export async function sendSessionMessage(
     if (!resumeResult.ok) {
       return {
         ok: false,
-        code: resumeResult.code,
+        code: resumeResult.code === 'SESSION_DIRECTORY_MISSING' ? 'resume_failed' : resumeResult.code,
         message: resumeResult.message,
         ...(admissionResult ? { admissionResult } : {}),
       };

@@ -23,6 +23,8 @@ export type DaemonServiceTaskParams = Readonly<{
 
 export type DaemonServiceStatusSnapshot = Readonly<{
   serviceAutostart?: 'at-login' | 'on-demand' | null;
+  /** Full managed inventory presence, before relay-row dedupe; null means absence is unproved. */
+  managedServiceInstalled?: boolean | null;
   /** Full managed inventory, before relay-row dedupe; null means an unreadable managed target. */
   runningManagedServiceCount?: number | null;
   serviceTargetMode?: 'default-following' | 'pinned' | null;

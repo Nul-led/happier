@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import type { WorkerUpdateV1 } from '@happier-dev/protocol';
+import type { WorkerDeliverableReferenceV1, WorkerUpdateV1 } from '@happier-dev/protocol';
 
 import { hasAgentIconMark } from '@/agents/catalog/catalog';
 import { AgentIcon } from '@/agents/registry/AgentIcon';
@@ -18,6 +18,11 @@ import { workStatusSurfaceStyle, workStatusWordStyle } from '@/components/work/s
 import { Typography } from '@/constants/Typography';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { useSessionDisplayNameSource } from '@/sync/domains/state/storage';
+import { storage } from '@/sync/domains/state/storage';
+import type { Session } from '@/sync/domains/state/storageTypes';
+import { isSessionContentReadable, readSessionContentAvailability } from '@/sync/domains/session/encryptedContentAvailability';
+import { resolveWorkspaceTargetForSessionFromState } from '@/sync/domains/session/resolveWorkspaceTargetForSessionFromState';
+import { MarkdownView } from '@/components/markdown/MarkdownView';
 import { t } from '@/text';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import { formatShortRelativeTime } from '@/utils/time/formatShortRelativeTime';
@@ -64,6 +69,103 @@ const WorkerMark = React.memo(function WorkerMark(props: Readonly<{ update: Work
     return <Icon name={KIND_GLYPHS[props.update.workerKind]} size={MARK_SIZE} color={theme.colors.text.secondary} />;
 });
 
+/** Closed rows do no reads. Opening rechecks the exact Home and the incumbent reader's access. */
+function WorkerDeliverable(props: Readonly<{
+    reference: WorkerDeliverableReferenceV1;
+    index: number;
+    serverId: string | null | undefined;
+    enabled: boolean;
+}>) {
+    const transcriptSource = useSessionTranscriptSource();
+    const [preview, setPreview] = React.useState<Readonly<{ title: string; body: string }> | null>(null);
+    const [unavailable, setUnavailable] = React.useState(false);
+    const operation = React.useRef<Readonly<{ controller: AbortController; dispose: () => void }> | null>(null);
+    React.useEffect(() => () => {
+        operation.current?.controller.abort();
+        operation.current?.dispose();
+    }, []);
+    const open = async () => {
+        operation.current?.controller.abort();
+        operation.current?.dispose();
+        operation.current = null;
+        setPreview(null);
+        if (preview) return;
+        setUnavailable(false);
+        const controller = new AbortController();
+        operation.current = { controller, dispose: () => {} };
+        let context: Awaited<ReturnType<typeof import('@/sync/ops/actions/actionAccountContext').captureLazyActionAccountContext>> | null = null;
+        let keepPreview = false;
+        try {
+            if (!props.enabled || !props.serverId) throw new Error('content_unavailable');
+            const { captureLazyActionAccountContext } = await import('@/sync/ops/actions/actionAccountContext');
+            context = await captureLazyActionAccountContext(props.serverId, controller.signal);
+            const retirement = context.accountLifetime.onRetire(() => {
+                if (!controller.signal.aborted) { setPreview(null); setUnavailable(true); }
+            });
+            operation.current = { controller, dispose: () => { retirement.dispose(); context?.dispose(); } };
+            if (props.reference.kind === 'artifact') {
+                const artifact = await context.fetchArtifact(props.reference.artifactId);
+                if (!artifact?.isDecrypted || (artifact.body !== null && typeof artifact.body !== 'string')) throw new Error('content_unavailable');
+                context.assertCurrent();
+                setPreview({ title: artifact.title ?? t('artifacts.untitled'), body: artifact.body ?? '' });
+                keepPreview = true;
+            } else {
+                if (!transcriptSource.navigate) throw new Error('content_unavailable');
+                const [{ fetchSessionByIdWithServerScope }, { callDaemonWorkspaceStatFileRpc }, { buildSessionListRenderableFromSession }] = await Promise.all([
+                    import('@/sync/runtime/orchestration/serverScopedRpc/fetchSessionByIdWithServerScope'),
+                    import('@/sync/domains/transfers/runtime/transferRuntime'),
+                    import('@/sync/domains/session/listing/sessionListRenderable'),
+                ]);
+                const account = await context.resolveAccountEncryption();
+                // Hydrate in this invocation only, not into the focused Account's Session store.
+                const sessions: Omit<Session, 'presence'>[] = [];
+                const read = await fetchSessionByIdWithServerScope({
+                    sessionId: props.reference.sessionId, serverId: context.serverId,
+                    activeCredentials: context.credentials, accountMode: account.accountMode,
+                    activeEncryption: account.encryption,
+                    sessionDataKeys: new Map(), activeRequest: context.request,
+                    applySessions: rows => { sessions.push(...rows); },
+                    includeTurnsProjection: false, isCurrent: context.accountLifetime.isCurrent,
+                    log: { log: () => {} },
+                });
+                const source = sessions[0];
+                if (!read.ok || !source || !isSessionContentReadable(readSessionContentAvailability(source))) throw new Error('content_unavailable');
+                context.assertCurrent();
+                // Publish metadata through the existing Home-qualified row owner so the file
+                // route reads this workspace, without replacing the focused same-id Session.
+                storage.getState().applyServerScopedSessionListRows(context.serverId,
+                    [buildSessionListRenderableFromSession({ ...source, presence: 0 })],
+                    { source: 'rowOnly', mode: 'append' });
+                const identity = { sessionId: props.reference.sessionId, serverId: context.serverId };
+                const scope = resolveWorkspaceTargetForSessionFromState(storage.getState(), identity);
+                if (!scope) throw new Error('content_unavailable');
+                const stat = await callDaemonWorkspaceStatFileRpc({ ...scope, request: { path: props.reference.path }, signal: controller.signal });
+                context.assertCurrent();
+                if (!stat.success || !stat.exists || stat.kind !== 'file') throw new Error('content_unavailable');
+                // The existing Session file route owns binary/large previews and subsequent reads.
+                transcriptSource.navigate(buildScopedSessionRouteHref({
+                    ...identity, suffix: '/file', query: { path: props.reference.path },
+                }));
+            }
+        } catch {
+            if (!controller.signal.aborted) { setPreview(null); setUnavailable(true); }
+        } finally {
+            if (!keepPreview && operation.current?.controller === controller) {
+                operation.current.dispose();
+                operation.current = null;
+            }
+        }
+    };
+    const label = props.reference.kind === 'workspace_file' ? props.reference.path : preview?.title ?? t('artifacts.untitled');
+    return <View style={styles.deliverable}>
+        <RoundButton testID={`worker-deliverable:${props.index}`} size="small" display="inverted"
+            title={label} titleNumberOfLines="complete" action={open} disabled={!props.enabled}
+            expanded={preview !== null} />
+        {unavailable || !props.enabled ? <Text testID="worker-deliverable-unavailable" style={styles.fact}>{t('common.unavailable')}</Text> : null}
+        {preview ? <MarkdownView testID="worker-deliverable-preview" markdown={preview.body} selectable /> : null}
+    </View>;
+}
+
 /**
  * One transcript card for host worker updates and retained historical completions (ORC §3.2, lab
  * `cards-T1`/`T2`): head (mark · worker · state word · kind · age), the result, then a footer of facts
@@ -104,9 +206,16 @@ export function WorkerUpdateCard(props: Readonly<{
             : buildSessionExecutionRunRouteHref({ sessionId: pointer.sessionId, runId: pointer.runId, serverId: props.serverId });
         if (href) transcriptSource.navigate?.(href);
     };
-    const body = props.children === undefined
+    const resultBody = props.children === undefined
         ? (update.result ? <Text testID="worker-update-result" selectable style={styles.result}>{update.result}</Text> : null)
         : props.children;
+    const deliverableServerId = props.serverId ?? transcriptSource.serverId;
+    const body = resultBody || update.deliverables?.length ? <>
+        {resultBody}
+        {update.deliverables?.map((reference, index) => <WorkerDeliverable
+            key={JSON.stringify([deliverableServerId, reference, index])} reference={reference} index={index}
+            serverId={deliverableServerId} enabled={props.navigationEnabled !== false && Boolean(deliverableServerId)} />)}
+    </> : null;
     const hasFooter = props.facts !== undefined || engine !== undefined || update.truncated === true || canInspect;
     return (
         <SurfaceCard testID={`worker-update:${update.workerId}`} tone="muted" padding="none" style={workStatusSurfaceStyle(status.tone)}>
@@ -170,6 +279,12 @@ const styles = StyleSheet.create((theme) => ({
     result: {
         ...Typography.default(),
         color: theme.colors.text.primary,
+    },
+    deliverable: {
+        alignItems: 'flex-start',
+        alignSelf: 'stretch',
+        gap: theme.margins.xs,
+        marginTop: theme.margins.sm,
     },
     footer: {
         flexDirection: 'row',

@@ -18,6 +18,7 @@ import {
     buildQualifiedPluginContributionKey,
     buildMentionRefForKindV1,
     MENTION_KIND_V1,
+    MACHINE_PLAIN_DATA_KEY_MARKER,
     SessionModelSelectionV1Schema,
     SessionSpawnNewInputV2Schema,
     type SessionMcpSelectionV1,
@@ -168,7 +169,8 @@ function buildAutomationAuthoringDraft(params: Readonly<{
     });
 }
 
-async function createUseCreateNewSessionHarness() {
+async function createUseCreateNewSessionHarness(accountMode: 'plain' | 'e2ee' = 'e2ee') {
+    const accountId = accountMode === 'plain' ? 'account-plain' : 'account-a';
     const captured: { value: SpawnPayloadCapture } = { value: null };
     const sessionSpawnNewRpcRequest: { value: SessionSpawnNewRpcRequest | null } = { value: null };
     let scopeStorage: (typeof import('@/sync/domains/state/storageStore'))['storage'];
@@ -228,8 +230,11 @@ async function createUseCreateNewSessionHarness() {
         if (url.endsWith('/v1/auth/ping')) {
             return Response.json({ ok: true });
         }
+        if (url.endsWith('/v1/machines/m1')) {
+            return Response.json({ machine: { id: 'm1', kind: 'persistent', dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER } });
+        }
         if (url.endsWith('/v1/account/encryption')) {
-            return Response.json({ mode: 'e2ee', updatedAt: 1 });
+            return Response.json({ mode: accountMode, updatedAt: 1 });
         }
         if (url.endsWith('/v2/account/settings') && method === 'GET') {
             return Response.json({ content: null, version: 1 });
@@ -332,8 +337,8 @@ async function createUseCreateNewSessionHarness() {
     // stored-content availability. The test server and credential fixtures
     // above are both for server-a/account-a, so mount that scope through the
     // incumbent store owner instead of registering a test-only reader.
-    scopeStorage.getState().activateProfileScope({ serverId: 'server-a', accountId: 'account-a' });
-    scopeStorage.getState().activateSettingsScope({ serverId: 'server-a', accountId: 'account-a' });
+    scopeStorage.getState().activateProfileScope({ serverId: 'server-a', accountId });
+    scopeStorage.getState().activateSettingsScope({ serverId: 'server-a', accountId });
     scopeStorage.getState().applySettings(scopeStorage.getState().settings, 1);
     scopeStorage.getState().applyMachines([createMachineFixture({ id: 'm1' })], true, { sourceServerId: 'server-a' });
     const upsertPendingMessageSpy = vi.spyOn(scopeStorage.getState(), 'upsertPendingMessage');
@@ -341,18 +346,24 @@ async function createUseCreateNewSessionHarness() {
     const { sync } = await import('@/sync/sync');
     syncSingletonBridge.current = sync;
     const secret = new Uint8Array(32).fill(7);
-    const { Encryption } = await import('@/sync/encryption/encryption');
-    const token = `header.${Buffer.from(JSON.stringify({ sub: 'account-a' })).toString('base64url')}.signature`;
-    await sync.restore({
-        token,
-        secret: Buffer.from(secret).toString('base64url'),
-    }, await Encryption.create(secret));
+    const token = `header.${Buffer.from(JSON.stringify({ sub: accountId })).toString('base64url')}.signature`;
+    const credentials = accountMode === 'plain' ? { token } : { token, secret: Buffer.from(secret).toString('base64url') };
+    await sync.switchServer(credentials);
+    scopeStorage.getState().applySettings(scopeStorage.getState().settings, 1);
+    scopeStorage.getState().applyMachines([createMachineFixture({ id: 'm1' })], true, { sourceServerId: 'server-a' });
     // Scheduled Automation persistence uses the real Account-encryption reader,
     // which in turn uses the canonical reachability-supervised fetch boundary.
     // Retain the same Home lifetime a mounted application would own so those
     // tests exercise the real writer without waiting for an absent app shell.
     const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
     const activeHome = getActiveServerSnapshot();
+    const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+    const saveHomeCredentials = async () => {
+        expect(await TokenStorage.setCredentialsForServerUrl(activeHome.serverUrl, {
+            serverId: activeHome.serverId,
+        }, credentials)).toBe(true);
+    };
+    await saveHomeCredentials();
     const {
         acquireServerReachabilitySupervisor,
         peekServerReachabilityState,
@@ -399,14 +410,40 @@ async function createUseCreateNewSessionHarness() {
             payload,
         });
     });
-    await import('@/sync/ops/actions/defaultActionExecutor');
+    const { createSocketIoBoundaryStub } = await import('@/dev/testkit/mocks/socketIo');
+    const socketFactory = await import('@/sync/runtime/orchestration/serverScopedRpc/createEphemeralServerSocketClient');
+    // The remote socket is the network boundary; scoped credential/encryption/RPC owners stay real.
+    vi.spyOn(socketFactory, 'createEphemeralServerSocketClient').mockImplementation(async () => {
+        const { socket } = createSocketIoBoundaryStub();
+        socket.emitWithAck.mockImplementation(async (event, input) => {
+            expect(event).toBe('rpc-call');
+            // This remote-server fixture receives the canonical plain Socket RPC envelope.
+            const request = input as Readonly<{ method: string; params: unknown }>;
+            expect(request.method).toBe(`m1:${RPC_METHODS.SESSION_SPAWN_NEW}`);
+            const payload = SessionSpawnNewInputV2Schema.parse(request.params);
+            const result = await sessionSpawnNewRpcSpy({
+                serverId: payload.executionTarget.serverId, machineId: 'm1',
+                method: RPC_METHODS.SESSION_SPAWN_NEW, payload,
+            });
+            return { ok: true, result };
+        });
+        // The real pool returns an acquired, connected socket to the RPC owner.
+        socket.connect();
+        return { ...socket, getSocketId: () => socket.id };
+    });
+    const { createDefaultActionExecutor } = await import('@/sync/ops/actions/defaultActionExecutor');
+    const { executeSessionSpawnNewAction } = await import('@/sync/ops/actions/sessionSpawnNewAction');
+    const { NewSessionEmbeddedHostProvider } = await import('../navigation/newSessionHost');
+    const { InjectedAuthProvider } = await import('@/auth/context/AuthContext');
+    const actionExecutor = createDefaultActionExecutor();
+    const spawnActions: Array<Awaited<ReturnType<typeof executeSessionSpawnNewAction>>> = [];
     const { useCreateNewSession: useCreateNewSessionOwner } = await import('./useCreateNewSession');
     type UseCreateNewSessionTestParams = Omit<Parameters<typeof useCreateNewSessionOwner>[0], 'resolveSavedSecretReference'> & Readonly<{
         resolveSavedSecretReference?: Parameters<typeof useCreateNewSessionOwner>[0]['resolveSavedSecretReference'];
     }>;
     const useCreateNewSession = (params: UseCreateNewSessionTestParams) => useCreateNewSessionOwner({
         ...params,
-        draftScope: params.draftScope ?? { serverId: 'server-a', accountId: 'account-a' },
+        draftScope: params.draftScope ?? { serverId: 'server-a', accountId },
         resolveSavedSecretReference: params.resolveSavedSecretReference ?? ((ref) => {
             const secret = params.secrets.find((candidate) => candidate.id === ref) ?? null;
             return {
@@ -424,8 +461,10 @@ async function createUseCreateNewSessionHarness() {
     const defaultSpawn = sessionSpawnNewRpcSpy.getMockImplementation()!;
     return {
         async reset() {
+            syncSingletonBridge.current = sync;
             authoringMemoryHttp.reset();
             captured.value = null;
+            spawnActions.length = 0;
             sessionSpawnNewRpcRequest.value = null;
             lastCreatedAutomation = null;
             sessionSpawnNewRpcSpy.mockReset().mockImplementation(defaultSpawn);
@@ -435,13 +474,16 @@ async function createUseCreateNewSessionHarness() {
             scopeStorage.setState({ ...initialStore, sessions: {}, sessionPending: {} });
             const { actionOperationStore } = await import('@/sync/domains/actionOperations/actionOperationStore');
             actionOperationStore.reset();
+            vi.stubGlobal('fetch', fetchSpy);
+            setRuntimeFetch(fetchSpy);
             await selectNewSessionTestHome();
-            scopeStorage.getState().activateProfileScope({ serverId: 'server-a', accountId: 'account-a' });
-            scopeStorage.getState().activateSettingsScope({ serverId: 'server-a', accountId: 'account-a' });
+            await saveHomeCredentials();
+            await sync.switchServer(credentials);
             scopeStorage.getState().applySettings(
                 scopeStorage.getState().settings,
                 Math.max(scopeStorage.getState().settingsVersion ?? 0, 1),
             );
+            scopeStorage.getState().applyMachines([createMachineFixture({ id: 'm1' })], true, { sourceServerId: 'server-a' });
             // The shared Vitest setup resets `runtimeFetch` and unstubs `fetch`
             // after every test, while the retained reachability supervisor above
             // keeps probing through that boundary. Re-arm it before each test so a
@@ -453,6 +495,24 @@ async function createUseCreateNewSessionHarness() {
             expect(peekServerReachabilityState(activeHome.serverUrl, token)?.phase).toBe('online');
         },
         useCreateNewSession,
+        renderWithActionExecutor: async (children: React.ReactElement) => await renderScreen(
+            React.createElement(InjectedAuthProvider, {
+                credentials,
+                children: React.createElement(NewSessionEmbeddedHostProvider, {
+                    host: {
+                        params: {}, setParams() {}, openDraft() {}, onHandedOff() {}, demanded: true,
+                        // Exercise real Action admission; only replace the bundler-only lazy module load.
+                        executeSpawnAction: async (input, context) => {
+                            const result = await executeSessionSpawnNewAction(input, context, actionExecutor);
+                            spawnActions.push(result);
+                            return result;
+                        },
+                    },
+                    children,
+                }),
+            }),
+        ),
+        spawnActions,
         storage: scopeStorage,
         setLocalSearchParams(nextParams: Record<string, string | string[] | undefined>) {
             routerSearchParamsState.value = { ...nextParams };
@@ -461,6 +521,7 @@ async function createUseCreateNewSessionHarness() {
         automationCaptured,
         saveAutomationEditorDraftSpy,
         modalAlertSpy,
+        modalConfirmSpy,
         clearNewSessionDraftSpy,
         refreshAutomationsSpy,
         upsertPendingMessageSpy,
@@ -502,6 +563,52 @@ describe('useCreateNewSession permission seeding', () => {
 
     afterEach(() => {
         vi.clearAllMocks();
+    });
+
+    it.each(['server', 'acp'] as const)('launches OpenCode %s with strict configuration instead of raw environment', async (mode) => {
+        const launchHarness = await createUseCreateNewSessionHarness('plain');
+        await launchHarness.reset();
+        const { useCreateNewSession, captured, storage, renderWithActionExecutor, spawnActions, modalAlertSpy } = launchHarness;
+        let handleCreateSession: (() => Promise<void>) | null = null;
+        const telemetry = await import('@/utils/system/sentry');
+        const errors = vi.spyOn(telemetry, 'captureExceptionIfEnabled');
+        function Test() {
+            const hook = useCreateNewSession({
+                launchIntentSignature: `opencode-${mode}`,
+                router: { push: vi.fn(), replace: vi.fn() },
+                selectedMachineId: 'm1', selectedPath: '/tmp',
+                selectedMachine: createMachineFixture({ id: 'm1' }),
+                setIsCreating: vi.fn(), setIsResumeSupportChecking: vi.fn(),
+                settings: storage.getState().settings,
+                pluginSettings: { account: {
+                    opencodeBackendMode: mode,
+                    opencodeServerBaseUrlByServerIdV1: { 'server-a': 'https://opencode.example.test/path' },
+                } },
+                pluginSettingsReadiness: { ready: true, settled: true, loading: false, error: null },
+                useProfiles: false, selectedProfileId: null, profileMap: new Map(), recentMachinePaths: [],
+                agentType: 'opencode', permissionMode: 'default', modelMode: 'default',
+                promptStore: createNewSessionPromptStore('hello'), resumeSessionId: '', agentNewSessionOptions: null,
+                machineEnvPresence: { isPreviewEnvSupported: false, isLoading: false, meta: {}, refreshedAt: null, refresh: () => {} },
+                secrets: [], secretBindingsByProfileId: {}, selectedSecretIdByProfileIdByEnvVarName: {},
+                sessionOnlySecretValueByProfileIdByEnvVarName: {}, selectedMachineCapabilities: null,
+                targetServerId: 'server-a', allowedTargetServerIds: ['server-a'],
+            });
+            handleCreateSession = hook.handleCreateSession as () => Promise<void>;
+            return React.createElement('View');
+        }
+        try {
+            await renderWithActionExecutor(React.createElement(Test));
+            expect(handleCreateSession).toBeTypeOf('function');
+            await act(async () => { await invokeHandleCreateSession(handleCreateSession); });
+            expect(captured.value, JSON.stringify({ actions: spawnActions, alerts: modalAlertSpy.mock.calls, errors: errors.mock.calls.map(([error]) => String(error)) })).not.toBeNull();
+            expect(captured.value?.configuration?.options).toMatchObject({
+                opencodeBackendMode: { value: mode },
+                opencodeServerBaseUrl: { value: 'https://opencode.example.test/' },
+            });
+            expect(captured.value).not.toHaveProperty('environmentVariables');
+        } finally {
+            await launchHarness.dispose();
+        }
     });
 
     it('passes a canonical permission mode and timestamp into the strict Action request', async () => {

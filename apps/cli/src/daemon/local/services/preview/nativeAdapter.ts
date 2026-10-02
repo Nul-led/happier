@@ -51,7 +51,7 @@ export async function startLocalServicePreviewNativeAdapter(input: Readonly<{
         const onClose = () => { if (!response.writableEnded) abort.abort(); };
         response.once('close', onClose);
         void proxyLocalServicePreviewHttpRequest({
-            preview: { ...input.preview, originMode: 'host' },
+            preview: input.preview,
             request: { method: request.method ?? 'GET', path: location.pathname, search: location.search,
                 headers: request.headers, body: request, signal: abort.signal, externalProtocol: 'http' },
             response: {
@@ -77,7 +77,7 @@ export async function startLocalServicePreviewNativeAdapter(input: Readonly<{
         const location = requestLocation(request.url);
         if (!location) { void writeLocalServicePreviewUpgradeError(socket, 400, 'Bad Request'); return; }
         void proxyLocalServicePreviewWebSocketUpgrade({
-            preview: { ...input.preview, originMode: 'host' },
+            preview: input.preview,
             request: { path: location.pathname, search: location.search, headers: request.headers,
                 rawHeaders: request.rawHeaders, head, client: createLocalServicePreviewUpgradeClient(socket), externalProtocol: 'http' },
             openTunnel,

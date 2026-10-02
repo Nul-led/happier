@@ -126,7 +126,7 @@ export type BundledVoiceProviderMediaPort = Readonly<{
   createPcmConnection(input: Readonly<{
     driver: VoiceConnectionDriver;
     input: Readonly<{ sampleRate: number; chunkMs: number }>;
-    output: Readonly<{ sampleRate: number; maxBufferedMs: number }>;
+    output: Readonly<{ sampleRate: number }>;
     onInputChunk(base64Pcm16Le: string): void;
     onInputError?(code: BundledVoicePcmCaptureError): void;
   }>): BundledVoicePcmConnection;
@@ -207,7 +207,6 @@ export type BundledRealtimeProviderRuntimeHost = Readonly<{
     input: Readonly<{ sampleRate: number; chunkMs: number }>;
     output: Readonly<{
       sampleRate: number;
-      maxBufferedMs: number;
       retainedOutputMaxMs: number;
     }>;
     onInputChunk(base64Pcm16Le: string): void;
@@ -332,6 +331,8 @@ export type BundledRealtimeProviderRuntimeHost = Readonly<{
   }>): void;
   clearAttemptStatus(controlSessionId: string): void;
   createToolBarrier(input: Readonly<{
+    controlSessionId: string;
+    adapterId: string;
     /** Provider-declared effect-call custody, fail-closed for undeclared adapters. */
     effectCalls: VoiceConversationToolEffectCalls;
     resolveSessionId(explicitSessionId?: string | null): string | null;

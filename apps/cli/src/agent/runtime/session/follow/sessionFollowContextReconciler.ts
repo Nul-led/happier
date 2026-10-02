@@ -3,6 +3,7 @@ import {
   deriveSessionFollowWakeEventLocalIdV1,
   isAuthoritativeHumanSessionFollowMessageV1,
   isSessionFollowFrontierEqualV1,
+  isSessionFollowTurnEqualV1,
   normalizeSessionFollowWakeObservationsV1,
   renderSessionInputContextPromptV1,
   type SessionFollowAcknowledgeResponseV1,
@@ -196,6 +197,10 @@ export function createSessionFollowContextReconciler(input: Readonly<{
         && entry.edgeKind === observation.edgeKind
         && entry.attachedAt === observation.attachedAt
         && isSessionFollowFrontierEqualV1(entry.delivered, observation.delivered)
+        // A presence-derived stall is withdrawable until dispatch; numeric
+        // transcript progress must not keep a recovered own turn admissible.
+        && (observation.observed.turn?.status !== 'stalled'
+          || isSessionFollowTurnEqualV1(entry.observed.turn, observation.observed.turn))
         && entry.mode === observation.mode
         && (
           observer.kind !== 'account_voice'

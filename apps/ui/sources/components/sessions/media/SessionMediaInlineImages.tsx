@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { Pressable, View } from 'react-native';
-import { Image, type ImageLoadEventData } from 'expo-image';
+import { Image } from 'expo-image';
+import { HappierStoredImage, type HappierStoredImageHost } from '@happier-dev/plugin-ui/presentation';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Modal } from '@/modal';
@@ -13,9 +14,7 @@ import {
     type AttachmentImagePreviewModalImage,
 } from '@/components/sessions/attachments/preview/AttachmentImagePreviewModal';
 import {
-    resolveSessionMediaInlineImageDimensions,
     resolveSessionMediaInlineImageLayout,
-    type SessionMediaInlineImageDimensions,
 } from '@/components/sessions/media/resolveSessionMediaInlineImageLayout';
 import { SessionMediaVideoPreview } from '@/components/sessions/media/SessionMediaVideoPreview';
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
@@ -168,26 +167,6 @@ function SessionMediaInlineImageTile(props: Readonly<{
     onOpenPreview: (index: number) => void;
 }>): React.ReactElement {
     const { theme } = useUnistyles();
-    const styles = stylesheet;
-    const [loadedDimensions, setLoadedDimensions] = React.useState<SessionMediaInlineImageDimensions | null>(null);
-    const thumbnailSize = resolveSessionMediaInlineImageLayout({
-        persistedDimensions: props.media,
-        loadedDimensions,
-    });
-
-    React.useEffect(() => {
-        setLoadedDimensions(null);
-    }, [props.media.path, props.media.sha256]);
-
-    const handleImageLoad = React.useCallback((event: ImageLoadEventData) => {
-        const dimensions = resolveSessionMediaInlineImageDimensions(event.source);
-        if (!dimensions) return;
-        setLoadedDimensions((current) => (
-            current?.width === dimensions.width && current.height === dimensions.height
-                ? current
-                : dimensions
-        ));
-    }, []);
 
     const preview = useSessionImagePreview({
         sessionId: props.sessionId,
@@ -202,9 +181,16 @@ function SessionMediaInlineImageTile(props: Readonly<{
     const actionable = preview.status !== 'error' || props.fileOpenEnabled;
 
     return (
-        <Pressable
+        <HappierStoredImage
+            identity={JSON.stringify([props.media.path, props.media.sha256])}
+            status={preview.status}
+            uri={preview.uri}
+            dimensions={props.media}
+            host={SESSION_STORED_IMAGE_HOST}
+            borderColor={theme.colors.border.default}
+            backgroundColor={theme.colors.surface.elevated}
+            imageTestID={`${props.testIdPrefix}-inline-image-preview:${props.media.path}`}
             testID={`${props.testIdPrefix}-inline-image:${props.media.path}`}
-            accessibilityRole={actionable ? 'button' : 'image'}
             accessibilityLabel={resolveInlineImageAccessibilityLabel(props.media)}
             accessibilityHint={preview.status === 'error'
                 ? t('files.sessionMedia.previewUnavailableA11y')
@@ -218,28 +204,21 @@ function SessionMediaInlineImageTile(props: Readonly<{
                     props.onOpenPreview(props.imageIndex);
                 }
                 : undefined}
-            style={[styles.tile, thumbnailSize]}
-        >
-            {preview.status === 'loaded' ? (
-                <Image
-                    testID={`${props.testIdPrefix}-inline-image-preview:${props.media.path}`}
-                    source={{ uri: preview.uri }}
-                    contentFit="contain"
-                    onLoad={handleImageLoad}
-                    style={inlineImageFillStyle}
-                />
-            ) : (
-                <View style={styles.placeholder}>
+            placeholder={(
                     <Icon
                         name={preview.status === 'error' ? 'warning-circle' : 'image'}
                         size={20}
                         color={theme.colors.text.secondary}
                     />
-                </View>
             )}
-        </Pressable>
+        />
     );
 }
+
+export const SESSION_STORED_IMAGE_HOST: HappierStoredImageHost = Object.freeze({
+    renderImage: ({ uri, testID, onLoad }) => <Image testID={testID} source={{ uri }} contentFit="contain"
+        onLoad={(event) => onLoad(event.source)} style={inlineImageFillStyle} />,
+} satisfies HappierStoredImageHost);
 
 function SessionMediaInlineInertTile(props: Readonly<{
     media: SessionMediaInlineImageAvailableSummary | SessionMediaInlineVideoAvailableSummary;

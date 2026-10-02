@@ -80,7 +80,7 @@ describe('UI machine connection Actions', () => {
         await adoptHomeProfile({ descriptor, source: 'manual' });
         const features = { ...createRootLayoutFeaturesResponse({
             capabilities: { serverIdentity: { serverIdentityId: identity } },
-            features: { auth: { pairing: { boundQrV2: { enabled: true } } } } }), homeConnectionDescriptor: descriptor };
+            features: { auth: { pairing: { boundQrV2: { enabled: true }, desktopQrMobileScan: { enabled: false } } } } }), homeConnectionDescriptor: descriptor };
         const { primeServerFeaturesSnapshot } = await import('@/sync/api/capabilities/serverFeaturesClient');
         primeServerFeaturesSnapshot({ serverId, snapshot: { status: 'ready', features, serverIdentityId: identity } });
         harness.answer(serverId, '/v1/features', { body: features });

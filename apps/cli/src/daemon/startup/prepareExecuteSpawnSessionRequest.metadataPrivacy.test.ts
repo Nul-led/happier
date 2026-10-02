@@ -204,6 +204,7 @@ describe('prepareExecuteSpawnSessionRequest metadata privacy authority', () => {
       },
       nativeSession: {
         codexSessionId: 'private-vendor-resume',
+        runtimeDescriptorV1: { v: 1, agentId: 'codex', agent: { backendMode: 'appServer' } },
         externalSessionV1: {
           v: 1,
           agentId: 'codex',
@@ -242,6 +243,7 @@ describe('prepareExecuteSpawnSessionRequest metadata privacy authority', () => {
         options: {
           directory: '/shared-fallback-must-not-win',
           existingSessionId: 'session-private-resume',
+          runtimeDescriptorV1: { v: 1, agentId: 'codex', agent: { backendMode: 'acp' } },
         },
         credentials,
       },
@@ -259,6 +261,7 @@ describe('prepareExecuteSpawnSessionRequest metadata privacy authority', () => {
         backendId: 'codex',
       },
       catalogAgentId: 'codex',
+      runtimeDescriptorV1: { v: 1, agentId: 'codex', agent: { backendMode: 'appServer' } },
     });
     // Preparation resolves the owner-derived workspace but performs no
     // filesystem work: creation belongs after the definitive refusals.

@@ -148,7 +148,7 @@ async function waitForTargetCustody(input: Readonly<{
         credentials: input.credentials,
         machineId: input.machineId,
         method: RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE,
-        request: { spawnNonce },
+        request: { spawnNonce, ...(timeoutMs !== undefined ? { timeoutMs } : {}) },
         ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
         signal: input.signal,
       }),

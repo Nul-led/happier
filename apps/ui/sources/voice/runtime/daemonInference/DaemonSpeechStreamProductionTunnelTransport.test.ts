@@ -5,6 +5,7 @@ import {
   PEER_TCP_TUNNEL_STREAM_PATH,
   PEER_APPLICATION_ENCRYPTION_INSTALL_CONFIRMATION_V1,
   DirectRouteGrantRequestV2Schema,
+  VoiceMediaGrantScopeV1Schema,
   createPeerApplicationAuthorityDigestV1,
   createSpeechTranscriptionApplicationAuthorityDigestV1,
   createPeerApplicationEncryptionAadV1,
@@ -145,9 +146,7 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
               },
               tunnel: {
             directPeer: {
-              allowedPorts: [3005],
-              maxIdleMs: 30_000,
-              maxDurationMs: 300_000,
+              allowedPorts: [],
             },
                 serverRouted: {
                   supportedEncodings: [PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2],
@@ -255,7 +254,7 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
     expect(createServerScopedRelaySocketMock).not.toHaveBeenCalled();
   });
 
-  it('closes a non-OK direct start before returning it and permits a fresh retry', async () => {
+  it('admits direct speech without TCP ports or lifetime quotas and closes a failed start before retry', async () => {
     let resolveFirstClose!: () => void;
     const firstClose = vi.fn(() => new Promise<void>((resolve) => {
       resolveFirstClose = resolve;
@@ -327,6 +326,7 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
       compatibilityTransport,
     });
 
+    expect(firstSelection).not.toBeNull();
     const failedStart = firstSelection!.transport.start(startPayload);
     await vi.waitFor(() => expect(firstClose).toHaveBeenCalledTimes(1));
     let firstStartSettled = false;
@@ -804,7 +804,7 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
   });
 
 
-  it('uses the actual server relay on direct fallback and closes failed encryption confirmation before retry', async () => {
+  it.each([{}, { maxDurationMs: 60_000, maxTotalBytes: 960_000 }])('uses optional voice budgets for binary relay and closes failed encryption confirmation before retry (%j)', async (applicationCaps) => {
     getReadyServerFeaturesMock.mockResolvedValue({
       features: {
         machines: {
@@ -827,8 +827,7 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
                 maxBitrateBps: 128_000,
                 maxFramesPerSecond: 50,
                 maxFrameBytes: 8_192,
-                maxDurationMs: 60_000,
-                maxTotalBytes: 960_000,
+                ...applicationCaps,
                 maxConcurrentStreamsPerAccount: 2,
                 maxConcurrentStreamsPerSocket: 1,
                 maxConcurrentStreamsPerMachine: 2,
@@ -898,14 +897,16 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
     );
     let installedKey: Uint8Array | null = null;
     let installConfirmation: string = PEER_APPLICATION_ENCRYPTION_INSTALL_CONFIRMATION_V1;
-    const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => ({
-      ok: true,
-      status: 200,
-      json: async () => ({
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(VoiceMediaGrantScopeV1Schema.parse(body.scope)).toMatchObject(applicationCaps);
+      expect(body.scope).not.toHaveProperty('maxIdleMs');
+      return {
         ok: true,
-        relayAuthorization,
-      }),
-    }));
+        status: 200,
+        json: async () => ({ ok: true, relayAuthorization }),
+      };
+    });
     vi.stubGlobal('fetch', fetchMock);
     const relayDisconnect = vi.fn();
     createServerScopedRelaySocketMock.mockResolvedValue({

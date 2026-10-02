@@ -40,6 +40,7 @@ import { formatPendingCountBadge } from '@/components/sessions/pendingBadge';
 import { useNavigateToSession } from '@/hooks/session/useNavigateToSession';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { useWorkspaceOpenActions } from '@/components/appShell/workspace/useWorkspaceOpenActions';
+import { WorkspaceDestinationRow } from '@/components/appShell/workspace/WorkspaceDestinationRow';
 import { useDestinationRouter } from '@/components/appShell/workspace/DestinationInstanceHost';
 import { t } from '@/text';
 import {
@@ -66,6 +67,7 @@ import {
 import { SessionRowAttentionIndicator } from './row/SessionRowAttentionIndicator';
 import { SessionRowReportsChip, hasSessionRowReportsChip } from './row/SessionRowReportsChip';
 import { SessionListRowPresentation, SessionListRowSubtitle, SessionListRowTitle } from './row/SessionListRowPresentation';
+import { WorkflowRunItemBody, type WorkflowRunItemProps } from './row/WorkflowRunItemBody';
 import {
     SESSION_LIST_ROW_CORNER_RADIUS,
     resolveSessionListRowIdentityMetrics,
@@ -1150,9 +1152,6 @@ const SessionItemContent = React.memo(
                     case 'selectRange':
                         rowSelection.selectRange();
                         return;
-                    case 'addRange':
-                        rowSelection.addRange();
-                        return;
                 }
             }
 
@@ -1515,6 +1514,9 @@ const SessionItemContent = React.memo(
                 separator={Boolean(embedded && !embeddedIsLast)}
                 onLayout={sourceTagChips.length > 0 ? handleRowLayout : undefined}
                 renderContainer={(content, rowStyle) => (
+                    <WorkspaceDestinationRow existingMenu href={buildScopedSessionRouteHref({
+                        sessionId: resolvedSession.id, serverId: serverId ?? null,
+                    })}>
                     <Pressable
                         ref={followEditor.triggerRef}
                         testID={`session-list-item-${resolvedSession.id}`}
@@ -1535,6 +1537,7 @@ const SessionItemContent = React.memo(
                         } : undefined}
                         style={rowStyle}
                         onPress={handleRowPress}
+                        onFocus={Platform.OS === 'web' ? rowSelection.setFocused : undefined}
                         onPressIn={enableLongPressContextMenu ? () => {
                             clearContextMenuPressInTimer();
                             contextMenuPressInTimerRef.current = setTimeout(() => {
@@ -1557,6 +1560,7 @@ const SessionItemContent = React.memo(
                         ) : null}
                         {content}
                     </Pressable>
+                    </WorkspaceDestinationRow>
                 )}
                 identity={shouldRenderSessionListIdentity || shouldRenderSelectionCheckbox ? (
                     <>
@@ -2090,7 +2094,9 @@ function SessionItemFromRowViewModel(props: SessionItemProps) {
     );
 }
 
-export const SessionItem = React.memo(function SessionItem(props: SessionItemProps) {
+export const SessionItem = React.memo(function SessionItem(props: SessionItemProps | WorkflowRunItemProps) {
+    if ('kind' in props && props.kind === 'workflow_run') return <WorkflowRunItemBody {...props} />;
+    if (!('rowViewModel' in props)) return null;
     if (!props.rowViewModel) return null;
     return <SessionItemFromRowViewModel {...props} />;
 });

@@ -20,6 +20,7 @@ import {
   WorkflowRunSummaryV1Schema,
   isAuthoritativeHumanSessionFollowMessageV1,
   isSessionAwarenessContentReadableV1,
+  isSessionFollowTurnEqualV1,
   resolveVoiceSessionUpdatePolicyV1,
   resolveVoiceSourceDisclosureV1,
   parseSessionMessageAccountActorV1,
@@ -28,6 +29,7 @@ import {
   SESSION_FOLLOW_SOURCE_PROJECTION_MAX_PAGE_ROWS_V1,
   TranscriptRawAgentEventV1Schema,
   WorkerUpdateV1Schema,
+  workerDeliverablesBelongToSessionV1,
   SessionInputAdmissionResultV1Schema,
   getActionSpec,
 } from '@happier-dev/protocol';
@@ -568,10 +570,11 @@ export function createSessionFollowSourceHydrator(input: Readonly<{
           : awareness.lifecycle === 'cancelled' ? 'cancelled'
             : awareness.lifecycle === 'ready' && observation.observed.turn?.status === 'completed' && pendingReviewRuns === 0 ? 'settled'
               : awareness.operational.primary === 'permission_required' || awareness.operational.primary === 'action_required' ? 'needs_input'
-                : observation.machineOffline === true && awareness.lifecycle === 'active' ? 'stalled' : null
+                : observation.observed.turn?.status === 'stalled'
+                  && !isSessionFollowTurnEqualV1(observation.delivered.turn, observation.observed.turn) ? 'stalled' : null
         : null;
       let workerText: Readonly<{ text: string; seq: number; agentId?: string }> | null = null;
-      let publishedReport: Readonly<{ text: string; seq: number }> | null = null;
+      let publishedReport: Readonly<{ text: string; seq: number; deliverables?: WorkerUpdateV1['deliverables'] }> | null = null;
       const reviewWorkerUpdate = observation.edgeKind === 'reports_to' && workerState === 'settled'
         && isSessionAwarenessContentReadableV1(awareness.encryption)
         ? await input.session.runSessionFollowSourceRequest({ credentials: input.credentials,
@@ -605,6 +608,7 @@ export function createSessionFollowSourceHydrator(input: Readonly<{
           wake: ownerState === 'published' ? 'published' : ownerState === 'stalled' ? 'stalled'
             : ownerState === 'failed' || ownerState === 'needs_input' ? 'needs_you' : 'finished',
           headline, ...(result ? { result: result.text.slice(0, 8000) } : {}),
+          ...(publishedReport?.deliverables ? { deliverables: publishedReport.deliverables } : {}),
           ...(result && result.text.length > 8000 ? { truncated: true } : {}),
           ...(workerText?.agentId ? { engine: { agentId: workerText.agentId } } : {}),
           transcriptPointer: { kind: 'session', sessionId: observation.sourceSessionId, ...((result ?? workerText) ? { seq: (result ?? workerText)!.seq } : {}) },
@@ -770,8 +774,9 @@ export function createSessionFollowSourceHydrator(input: Readonly<{
           if (row.content && typeof row.content === 'object' && !Array.isArray(row.content)
             && 'type' in row.content && row.content.type === 'event' && 'data' in row.content) {
             const event = TranscriptRawAgentEventV1Schema.safeParse(row.content.data);
-            if (event.success && event.data.type === 'worker-report' && row.seq > deliveredSeq) {
-              publishedReport = { text: event.data.summary, seq: row.seq };
+            if (event.success && event.data.type === 'worker-report' && row.seq > deliveredSeq
+              && workerDeliverablesBelongToSessionV1(event.data.deliverables, observation.sourceSessionId)) {
+              publishedReport = { text: event.data.summary, seq: row.seq, ...(event.data.deliverables ? { deliverables: event.data.deliverables } : {}) };
             }
           }
         }

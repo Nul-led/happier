@@ -40,6 +40,7 @@ export type ArchiveDownloadInstallableAdapter = Readonly<{
   installOrUpgrade: (params?: Readonly<{
     platform?: NodeJS.Platform | string;
     arch?: string;
+    signal?: AbortSignal;
   }>) => Promise<ArchiveDownloadInstallResult>;
 }>;
 
@@ -59,6 +60,7 @@ export function getBrowserChromiumArchiveDownloadInstallableAdapter(): ArchiveDo
       installChromiumForTesting({
         platform: params.platform,
         arch: params.arch,
+        signal: params.signal,
       }),
   };
 }

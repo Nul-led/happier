@@ -8,6 +8,8 @@ import {
 } from '@/sync/domains/server/serverProfiles';
 import { normalizeSessionListKeyParts } from './listing/sessionListKeyNormalization';
 import { normalizeSessionId } from './normalizeSessionId';
+import { readRegisteredStorageState } from '@/sync/domains/state/storageStateReaderBridge';
+import { moveSessionMruEntryToFront } from './navigation/sessionNavigationOrder';
 
 export type SessionSurfaceVisibilitySnapshot = Readonly<{
     focusedSessionId: string | null;
@@ -297,6 +299,16 @@ export function setFocusedSessionId(sessionId: string | null, serverId?: string 
     sessionSurfaceVisibilityState.focusedSessionAddress = identity.serverId && identity.sessionId
         ? { serverId: identity.serverId, sessionId: identity.sessionId }
         : null;
+    // Every real activation converges here, including retained tabs and routed opens.
+    // Visibility alone (for example an unfocused split pane) is not a recent visit.
+    const state = identity.sessionKey ? readRegisteredStorageState() : null;
+    if (state) {
+        const order = state.localSettings.sessionMruOrderV1;
+        const nextOrder = moveSessionMruEntryToFront({ order, activeSessionKey: identity.sessionKey });
+        if (order.length !== nextOrder.length || order.some((key, index) => key !== nextOrder[index])) {
+            state.applyLocalSettings({ sessionMruOrderV1: nextOrder });
+        }
+    }
     refreshSnapshot();
     emitChange();
 }

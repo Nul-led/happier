@@ -3,8 +3,45 @@ import { describe, expect, it, vi } from 'vitest';
 import { Encryption } from '@/sync/encryption/encryption';
 import type { ArtifactDataKeyCache } from './syncArtifacts';
 import type { ArtifactCreateRequest, DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
+import { ArtifactBodyV1Schema, decodePlainArtifactStoredContent, type ArtifactBlobStoredContentV1 } from '@happier-dev/protocol';
+import { ArtifactEncryption } from '@/sync/encryption/artifactEncryption';
 
 describe('createArtifactWithHeaderViaApi', () => {
+  it.each(['plain', 'e2ee'] as const)('uploads and reads binary bytes in %s without disclosing a mismatched or substituted payload', async (mode) => {
+    const encryption = mode === 'e2ee' ? await Encryption.create(new Uint8Array(32).fill(9)) : null;
+    const artifactDataKeys: ArtifactDataKeyCache = new Map();
+    const added: DecryptedArtifact[] = [];
+    let saved: ArtifactCreateRequest | null = null;
+    let blob: ArtifactBlobStoredContentV1 | null = null;
+    const request = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === '/v1/account/encryption') return new Response(JSON.stringify({ mode, updatedAt: 0 }));
+      if (path === '/v1/artifacts/content/binary') {
+        saved = JSON.parse(String(init?.body)) as ArtifactCreateRequest;
+        blob = saved.blob?.content ?? null;
+      }
+      if (!saved) throw new Error('Missing created Artifact');
+      if (path.endsWith('/recipients')) return new Response(JSON.stringify({ artifactId: saved.id, ownerAccountId: 'owner', access: 'owner',
+        encryptionMode: mode, dataEncryptionKey: saved.dataEncryptionKey, callerDataEncryptionKey: saved.dataEncryptionKey, recipients: [] }));
+      if (path.includes('/blobs/')) return new Response(JSON.stringify({ blobId: saved.blob?.blobId, content: blob }));
+      return new Response(JSON.stringify({ ...saved, ownerAccountId: 'owner', access: 'owner', encryptionMode: mode,
+        headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 0, updatedAt: 0 }));
+    });
+    const { createArtifactWithHeaderViaApi, fetchArtifactBinaryFromApi } = await import('./syncArtifacts');
+    const bytes = new Uint8Array([0, 255, 128, 13, 10]);
+    const artifactId = await createArtifactWithHeaderViaApi({ credentials: { token: 't' }, header: { kind: 'artifact.legacy', title: 'Image' },
+      body: { bytes, mime: 'image/png' }, encryption, artifactDataKeys, request, addArtifact: artifact => added.push(artifact) });
+    if (!saved || !blob) throw new Error('Missing uploaded bytes');
+    const wire: ArtifactCreateRequest = saved;
+    const storedBody = mode === 'plain' ? decodePlainArtifactStoredContent(wire.body)
+      : await new ArtifactEncryption(artifactDataKeys.get(artifactId)!.dataKey).decryptBody(wire.body);
+    const body = ArtifactBodyV1Schema.parse(Reflect.get(storedBody as object, 'body'));
+    if (typeof body === 'string') throw new Error('Binary must remain a reference');
+    expect(body).toMatchObject({ mime: 'image/png', sizeBytes: bytes.length, blobId: wire.blob?.blobId });
+    expect(added[0]?.body).toEqual(body);
+    await expect(fetchArtifactBinaryFromApi({ credentials: { token: 't' }, artifactId, reference: body, encryption, artifactDataKeys, request })).resolves.toEqual(bytes);
+    blob = mode === 'plain' ? { t: 'encrypted', c: 'AA==' } : { t: 'plain', v: 'AA==' };
+    await expect(fetchArtifactBinaryFromApi({ credentials: { token: 't' }, artifactId, reference: body, encryption, artifactDataKeys, request })).rejects.toMatchObject({ code: 'artifact_account_mode_mismatch' });
+  });
   it('preserves passthrough header metadata in local decrypted artifacts', async () => {
     const encryption = await Encryption.create(new Uint8Array(32).fill(9));
     const artifactDataKeys: ArtifactDataKeyCache = new Map();

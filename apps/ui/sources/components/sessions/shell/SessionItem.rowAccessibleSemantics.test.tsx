@@ -1,7 +1,8 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { createSessionItemRowViewModel } from './sessionItemRowViewModelTestFixture';
@@ -10,6 +11,7 @@ import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers'
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 const NOW_MS = 1_700_000_000_000;
+const routerPush = vi.hoisted(() => vi.fn());
 
 /**
  * The row's state vocabulary, as the reader hears it. Keyed exactly as the canonical `status`
@@ -55,6 +57,10 @@ vi.mock('@/hooks/ui/useHappyAction', () => ({ useHappyAction: (fn: unknown) => [
 vi.mock('expo-clipboard', () => ({ setStringAsync: vi.fn(async () => undefined) }));
 
 installSessionShellCommonModuleMocks({
+    router: async () => {
+        const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+        return createExpoRouterMock({ pathname: '/workflows/runs', router: { push: routerPush } }).module;
+    },
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock({ Platform: { OS: 'web' } });
@@ -77,6 +83,10 @@ installSessionShellCommonModuleMocks({
         });
     },
 });
+
+// The shell testkit must receive its boundary options before its consumers load. Keep that work
+// in collection, outside the observable assertion budget.
+const { SessionItem } = await import('./SessionItem');
 
 type RowStateCase = Readonly<{
     label: string;
@@ -140,7 +150,6 @@ async function renderRow(input: Readonly<{
     density: 'default' | 'minimal';
     secondaryLineMode: 'status' | 'path';
 }>) {
-    const { SessionItem } = await import('./SessionItem');
     const { getSessionStatus } = await import('@/utils/sessions/sessionUtils');
     const session = createRowSession(input.testCase.session, input.id);
     const rowViewModel = createSessionItemRowViewModel({
@@ -181,6 +190,7 @@ describe('SessionItem outer row accessible semantics', () => {
 
     afterEach(() => {
         vi.useRealTimers();
+        routerPush.mockReset();
         standardCleanup();
     });
 

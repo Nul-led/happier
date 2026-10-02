@@ -4,6 +4,7 @@ import type {
     AnyTerminalRuntimeOps,
 } from '@/agent/catalog/types';
 import type { ExternalSessionExecutionSurface } from '@/session/external/providerOps';
+import type { HostProviderCliAttachSurface } from '@/session/attach/providerCliAttach';
 import type { AttachSurfaceV1, CheckpointSurfaceV1, ForkSurfaceV1, HandoffSurfaceV1 } from '@happier-dev/agents';
 import type { AccountSettings, AcpConfigOptionOverridesV1, BackendTargetRefV2Input, HostSemanticEventV1, PortableRuntimeDescriptorV1, ProviderBoundModelRef, ProviderErrorV1, SessionEnvOverlayV1, SessionInputCausalPermissionAuthorityV1, SessionRunPromptReadActionIdV1, TeamCredentialProviderModelSelectionV1 } from '@happier-dev/protocol';
 import type {
@@ -148,10 +149,12 @@ export type NativeAgentSessionInteractionHostBinding = Readonly<{
 }>;
 
 export type BackendExecutionSurfaces = Readonly<{
-    resolveTerminalPresentation?: NonNullable<AgentSessionRuntimeFactory['supportsTerminalPresentation']>;
+    resolveTerminalPresentation?: (
+        selection: Parameters<NonNullable<AgentSessionRuntimeFactory['resolveTerminalPresentation']>>[0],
+    ) => ReturnType<NonNullable<AgentSessionRuntimeFactory['resolveTerminalPresentation']>>;
     terminalRuntime: AnyTerminalRuntimeOps | null;
     externalSession: ExternalSessionExecutionSurface | null;
-    attach: AttachSurfaceV1 | null;
+    attach: (AttachSurfaceV1 & Partial<Pick<HostProviderCliAttachSurface, 'attachManaged'>>) | null;
     handoff: HandoffSurfaceV1 | null;
     fork: ForkSurfaceV1 | null;
     checkpoint: CheckpointSurfaceV1 | null;

@@ -49,7 +49,7 @@ async function createBridge() {
 }
 
 /** Real terminal owner state and disk custody; no internal runtime factory is mocked. */
-async function retainTerminalRun(finalText = 'The requested change is implemented.', ciphertextOverride?: string) {
+async function retainTerminalRun(finalText: unknown = 'The requested change is implemented.', ciphertextOverride?: string) {
   const run: ExecutionRunState = {
     runId: 'retained-run', callId: 'call-1', sidechainId: 'side-1', sessionId: 'parent_session', depth: 0,
     intent: 'agent', backendTarget: { kind: 'builtInAgent', agentId: 'acme.actual' }, backendId: 'acme.actual',
@@ -66,7 +66,7 @@ async function retainTerminalRun(finalText = 'The requested change is implemente
   });
   if (ciphertextOverride) {
     const markerDir = join(directory, 'tmp', 'daemon-execution-runs');
-    const entry = readdirSync(markerDir).find((name) => name.endsWith('.sealed'));
+    const entry = readdirSync(markerDir).find((name) => name.startsWith('worker-update-') && name.endsWith('.sealed'));
     if (!entry) throw new Error('Expected the retained terminal custody file');
     writeFileSync(join(markerDir, entry), ciphertextOverride);
   }
@@ -74,6 +74,22 @@ async function retainTerminalRun(finalText = 'The requested change is implemente
 }
 
 describe('execution-run retained WorkerUpdate inbox custody', () => {
+  it('does not interpret a foreign-workspace final result as scoped deliverables', async () => {
+    const finalResult = { summary: 'Foreign file', deliverables: [{ kind: 'workspace_file', sessionId: 'foreign', path: 'result.md' }] };
+    await retainTerminalRun(finalResult);
+    const bridge = await createBridge();
+    const update = (await bridge.takeWorkerUpdate('parent_session', new AbortController().signal))?.update;
+    expect(update).not.toHaveProperty('deliverables');
+    expect(update?.result).toBe(JSON.stringify(finalResult));
+  });
+  it('carries scoped deliverables from the final profile result through completion and restart', async () => {
+    const deliverables = [{ kind: 'workspace_file', sessionId: 'parent_session', path: 'docs/result.md' }, { kind: 'artifact', artifactId: 'document-1' }];
+    await retainTerminalRun({ summary: 'Ready for review', deliverables });
+    const bridge = await createBridge();
+    expect((await bridge.takeWorkerUpdate('parent_session', new AbortController().signal))?.update).toMatchObject({ result: 'Ready for review', deliverables });
+    const restarted = await createBridge();
+    expect((await restarted.takeWorkerUpdate('parent_session', new AbortController().signal))?.update).toMatchObject({ result: 'Ready for review', deliverables });
+  });
   it('pulls the scoped retained result without consuming it and keeps pending custody private through GC', async () => {
     const run = await retainTerminalRun();
     const bridge = await createBridge();
@@ -98,7 +114,7 @@ describe('execution-run retained WorkerUpdate inbox custody', () => {
     expect(await bridge.waitForWorkerUpdateChange('parent_session', signal)).toBe(true);
     expect(readFileSync(join(directory, 'tmp', 'daemon-execution-runs', `run-${run.runId}.json`), 'utf8')).not.toContain('The requested change');
     const markerDir = join(directory, 'tmp', 'daemon-execution-runs');
-    const custodyEntry = readdirSync(markerDir).find((name) => name.endsWith('.sealed'));
+    const custodyEntry = readdirSync(markerDir).find((name) => name.startsWith('worker-update-') && name.endsWith('.sealed'));
     if (!custodyEntry) throw new Error('Expected protected terminal custody');
     expect(readFileSync(join(markerDir, custodyEntry), 'utf8')).not.toContain('The requested change');
     if (process.platform !== 'win32') {
@@ -189,7 +205,7 @@ describe('execution-run retained WorkerUpdate inbox custody', () => {
       const accepted = await bridge.takeWorkerUpdate('parent_session', signal);
       if (!accepted) throw new Error('Expected retained input');
       const markerDir = join(directory, 'tmp', 'daemon-execution-runs');
-      const entry = readdirSync(markerDir).find((name) => name.endsWith('.sealed'));
+      const entry = readdirSync(markerDir).find((name) => name.startsWith('worker-update-') && name.endsWith('.sealed'));
       if (!entry) throw new Error('Expected old completion custody');
       oldCustodyPath = join(markerDir, entry);
 

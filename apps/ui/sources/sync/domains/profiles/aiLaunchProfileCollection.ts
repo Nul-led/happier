@@ -43,7 +43,7 @@ export type UiAiLaunchProfileSnapshot = Readonly<{
 export function readUiAiLaunchProfileSnapshot(raw: unknown, artifacts: Readonly<Record<string, DecryptedArtifact>> = {}): UiAiLaunchProfileSnapshot {
     const artifactsById = new Map<string, ArtifactSharingResourceV1>();
     for (const artifact of Object.values(artifacts)) {
-        if (!artifact.isDecrypted || artifact.header?.kind !== 'launch-profile.v1' || artifact.body === undefined) continue;
+        if (!artifact.isDecrypted || artifact.header?.kind !== 'launch-profile.v1' || (artifact.body !== null && typeof artifact.body !== 'string')) continue;
         artifactsById.set(artifact.id, { artifactId: artifact.id, header: artifact.header, body: artifact.body,
             ...(artifact.access ? { access: artifact.access } : {}),
             ...(artifact.bodyVersion !== undefined ? { revision: { headerVersion: artifact.headerVersion, bodyVersion: artifact.bodyVersion } } : {}) });

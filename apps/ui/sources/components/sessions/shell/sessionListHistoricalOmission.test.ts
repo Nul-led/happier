@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+// Third-party rendering is outside this listing contract; its streaming renderer is unused here.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({ splitStreamingRevealTextParts: () => [] }));
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import {
@@ -21,6 +24,7 @@ import { buildSessionListQueryKey } from '@/sync/domains/session/listing/session
 import { readAdmittedSessionReferenceCorpusOptions } from '@/voice/tools/actionImpl/admittedSessionReferenceCorpus';
 
 import { resolveSessionListViewEmptyState } from './sessionListViewEmptyStateModel';
+import { createSessionListViewFilterDefaults } from './search/sessionListViewFilters';
 import { resetSessionListPaneRetentionForTests, retainSessionListPaneState } from './sessionListPaneRetention';
 
 afterEach(() => resetSessionListPaneRetentionForTests());
@@ -45,6 +49,7 @@ const QUERY: SessionListQueryV1 = {
 };
 
 const DEFAULTS = {
+    ...createSessionListViewFilterDefaults(),
     scope: 'all_accessible',
     attention: 'any',
     homeServerIds: ['home-a'],

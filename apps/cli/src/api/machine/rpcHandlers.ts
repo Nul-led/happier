@@ -234,7 +234,7 @@ export type MachineRpcHandlers = {
    * session-spawn replies include the atomic create-or-rejoin outcome.
    */
   sessionSpawnV1OutcomeRequired?: true;
-  resolveSpawnSessionByNonce?: (spawnNonce: string) => Promise<SpawnSessionNonceResolution>;
+  resolveSpawnSessionByNonce?: (spawnNonce: string, timeoutMs?: number) => Promise<SpawnSessionNonceResolution>;
   abandonSpawnSessionByNonce?: (spawnNonce: string) => Promise<
     | { status: 'completed'; sessionId: string }
     | { status: 'pending' | 'not_found' | 'unsupported' | 'failed' }
@@ -465,7 +465,7 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
     registerExternalActionRpcHandler(rpcHandlerManager, externalAction);
     registerActionSpecRpcHandlers({
       rpcHandlerManager,
-      actionIds: [...WORKFLOW_ACTION_IDS_V1, 'notifications.notify_me', 'action.options.resolve'],
+      actionIds: [...WORKFLOW_ACTION_IDS_V1, 'notifications.notify_me', 'action.options.resolve', 'action.invoke'],
       ...(params.deps?.currentMachineId
         ? { targetMachineId: params.deps.currentMachineId }
         : {}),

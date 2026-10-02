@@ -188,8 +188,9 @@ export function resolveTeamSessionsSurfaceState(input: Readonly<{
 export function normalizeSessionListViewFilters(
     input: SessionListViewFilters,
     viewContext?: SessionListViewContext,
+    fixedShow?: SessionListViewFilters['show'],
 ): SessionListViewFilters {
-    const filters = createSessionListViewFilterDefaults(input);
+    const filters = createSessionListViewFilterDefaults(fixedShow ? { ...input, show: fixedShow } : input);
     if (viewContext?.kind !== 'team') return filters;
     const team = createTeamAddress(viewContext.team.serverId, viewContext.team.teamId);
     if (!team) return filters;
@@ -426,6 +427,8 @@ export function buildSessionListSelectionScopeSignature(
         .map(buildQualifiedTagAddressKey)
         .sort();
     return JSON.stringify({
+        show: filters.show,
+        startedBy: [...filters.startedBy].sort(),
         scope: filters.scope,
         attention: filters.attention,
         source: filters.source,

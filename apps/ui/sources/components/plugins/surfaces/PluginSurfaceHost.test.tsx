@@ -92,6 +92,7 @@ import { createTestMessageChannel } from '@/dev/testkit/mocks/messageChannel';
 import { createPluginLocalizedTextResolver } from '@/sync/domains/plugins/ui/i18n';
 import { PluginSurfaceFocusEligibilityProvider } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
+import { AppShellPluginUiProjectionValueProvider } from '@/components/appShell/plugins/AppShellPluginUiProjection';
 import { darkTheme, lightTheme } from '@/theme';
 import {
     applyLocalServicePreviewSnapshot,
@@ -1140,6 +1141,11 @@ vi.mock('react-native', async () => {
     });
 });
 
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock().module;
+});
+
 vi.mock('react-native-unistyles', async () => {
     const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
     const unistyles = await createUnistylesMock();
@@ -1986,7 +1992,7 @@ function createStaticAssetPreviewState() {
                 target: { scheme: 'http', host: '127.0.0.1', port: 51789 },
                 initialPath: { pathname: '/', search: '' },
                 display: { title: 'Docs', addressLabel: '127.0.0.1:51789' },
-                originMode: 'path',
+                originMode: 'host',
             },
         }],
     });
@@ -2775,7 +2781,7 @@ describe('PluginSurfacePlacementHost', () => {
         });
     });
 
-    it('adopts a declared live declarative document through the mounted Resource host API instead of rendering only the static model', async () => {
+    it('keeps a visible unfocused declarative document live and refreshes its retained snapshot after being hidden', async () => {
         // The incumbent declarative renderer initializes its Settings boundary
         // even though this text-only document has no fields.
         declarativeSettingsGetMock.mockResolvedValue({ supported: false, reason: 'error' });
@@ -2786,23 +2792,26 @@ describe('PluginSurfacePlacementHost', () => {
         // The canonical L1 store admits its watch before one baseline read.
         // That admitted snapshot is the live document until an invalidation
         // queues a replacement.
-        resourceReadMock.mockResolvedValueOnce(liveDocument);
-        resourceWatchOpenMock.mockResolvedValueOnce({
+        resourceReadMock.mockResolvedValue(liveDocument);
+        resourceWatchOpenMock.mockResolvedValue({
             supported: true,
             result: { ok: true, digest: liveDocument.result.digest },
         });
         const projection = declarativeDocumentProjection();
         const { PluginSurfacePlacementHost } = await import('./PluginSurfaceHost');
-        const screen = await renderScreen(
-            <PluginSurfacePlacementHost
-                placement={declarativeDocumentPlacement()}
-                machineId="machine-1"
-                serverId="server-a"
-                sessionId="session-live-dashboard"
-                pluginUiProjection={projection}
-                platform="web"
-            />,
+        const renderPlacement = (presented: boolean) => (
+            <PluginSurfaceFocusEligibilityProvider active={false} presentationActive={presented}>
+                <PluginSurfacePlacementHost
+                    placement={declarativeDocumentPlacement()}
+                    machineId="machine-1"
+                    serverId="server-a"
+                    sessionId="session-live-dashboard"
+                    pluginUiProjection={projection}
+                    platform="web"
+                />
+            </PluginSurfaceFocusEligibilityProvider>
         );
+        const screen = await renderScreen(renderPlacement(true));
 
         expect(resourceReadMock).toHaveBeenCalledWith('machine-1', expect.objectContaining({
             serverId: 'server-a',
@@ -2814,6 +2823,19 @@ describe('PluginSurfacePlacementHost', () => {
             expect(screen.getTextContent()).toContain('Live dashboard');
             expect(screen.getTextContent()).not.toContain('Static dashboard');
         });
+        await screen.update(renderPlacement(false));
+        expect(screen.getTextContent()).toContain('Live dashboard');
+        const updatedDocument = documentResourceRead({
+            version: 1,
+            root: { kind: 'text', text: 'Updated dashboard' },
+        }, DECLARATIVE_DOCUMENT_CONTENT_TYPE, `sha256:${'2'.repeat(64)}`);
+        resourceReadMock.mockResolvedValue(updatedDocument);
+        resourceWatchOpenMock.mockResolvedValue({
+            supported: true,
+            result: { ok: true, digest: updatedDocument.result.digest },
+        });
+        await screen.update(renderPlacement(true));
+        await vi.waitFor(() => expect(screen.getTextContent()).toContain('Updated dashboard'));
     });
 
     it('routes fixed collection row commands through catalog presentation and mounted facades only', async () => {
@@ -6396,6 +6418,23 @@ describe('PluginSurfacePlacementHost', () => {
             occurrenceId: targetedFixture.mountedTarget.occurrenceId,
         });
 
+        const rowDestinations = {
+            ...appPageHostedWebProjection,
+            surfacePlacementsById: {
+                ...appPageHostedWebProjection.surfacePlacementsById,
+                'surfacePlacement:acme.provider:notes': surfacePlacementFixture({
+                    binding: { pluginId: 'acme.provider', destinationId: 'notes', rendererId: 'panel', container: 'appPage', target: { kind: 'app' } },
+                    renderer: { kind: 'hostedWeb', contributionId: 'panel' }, display: { label: 'Other Notes' },
+                }),
+            },
+        } satisfies PluginUiProjectionModel;
+        const rowProjectionValue = {
+            pluginUiProjection: rowDestinations, pluginBrowserProjection: null, phase: 'current' as const,
+            interactionEnabled: true, machineId: 'machine_1', serverId: 'server_1', platform: 'web' as const,
+            reloadConnectedAccountProjection: () => {}, clientExecutableActivation: { status: 'ready' as const },
+            reloadClientExecutables: () => {},
+        };
+
         // The mount no longer takes a host API: `connected` now drives the REAL
         // signal the controller reads — daemon reachability.
         const renderPlacement = (
@@ -6405,7 +6444,7 @@ describe('PluginSurfacePlacementHost', () => {
         ) => {
             pluginSurfaceConnectivity.endpointStatus = connected ? 'online' : 'offline';
             return (
-                <PluginSurfaceFocusEligibilityProvider active={focusActive}>
+                <AppShellPluginUiProjectionValueProvider value={rowProjectionValue}><PluginSurfaceFocusEligibilityProvider active={focusActive}>
                     <PluginSurfacePlacementHost
                     placement={generatedPlacement}
                     resourceBrowserTarget={target}
@@ -6416,7 +6455,7 @@ describe('PluginSurfacePlacementHost', () => {
                     platform="web"
                     reactNativeLoaderBackend={reactNativeLoaderBackend}
                     />
-                </PluginSurfaceFocusEligibilityProvider>
+                </PluginSurfaceFocusEligibilityProvider></AppShellPluginUiProjectionValueProvider>
             );
         };
         const screen = await renderScreen(renderPlacement());
@@ -6455,6 +6494,15 @@ describe('PluginSurfacePlacementHost', () => {
         };
 
         expect(props.hostApi).toBeUndefined();
+        const renderDestinationRow = props.privateHostBindings?.presentationHost?.renderDestinationRow;
+        if (!renderDestinationRow) throw new Error('Expected the mounted destination row adapter');
+        const rowChild = React.createElement('DestinationRowContent');
+        const localRow = renderDestinationRow({ destination: 'notes', subPath: 'issue/2', children: rowChild });
+        if (!React.isValidElement<{ href: string }>(localRow)) throw new Error('Expected a destination row');
+        expect(localRow.props.href).toBe('/plugins/acme.browser/notes/issue/2');
+        const qualifiedRow = renderDestinationRow({ destination: { pluginId: 'acme.provider', localId: 'notes' }, children: rowChild });
+        if (!React.isValidElement<{ href: string }>(qualifiedRow)) throw new Error('Expected a qualified destination row');
+        expect(qualifiedRow.props.href).toBe('/plugins/acme.provider/notes');
         expect(props.interactionEnabled).toBe(true);
         expect(props.renderContext).toMatchObject({
             plugin: { id: 'acme.browser', version: '3.2.1' },
@@ -8346,12 +8394,6 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             expect(typeof observedActivities.at(-1)).toBe('boolean');
             expect(publicationClear).not.toHaveBeenCalled();
 
-            await screen.update(renderPlacement(false, true));
-            expect(observedActivities.at(-1)).toBe(true);
-            await screen.update(renderPlacement(false, false));
-            expect(observedActivities.at(-1)).toBe(false);
-            await screen.update(renderPlacement(true, true));
-
             currentUiContextMountLifecycle.active = false;
             await screen.update(renderPlacement(false));
             expect(publicationClear).not.toHaveBeenCalled();
@@ -8363,6 +8405,11 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             await vi.waitFor(() => expect(publishLabels).toEqual(['Issue A', 'Issue A']));
             expect(typeof observedActivities.at(-1)).toBe('boolean');
             expect(publicationClear).not.toHaveBeenCalled();
+            await screen.update(renderPlacement(false, true));
+            expect(observedActivities.at(-1)).toBe(true);
+            await screen.update(renderPlacement(false, false));
+            expect(observedActivities.at(-1)).toBe(false);
+            await screen.update(renderPlacement(true, true));
         } finally {
             await screen?.unmount();
         }

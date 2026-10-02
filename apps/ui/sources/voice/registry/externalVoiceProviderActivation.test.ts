@@ -39,6 +39,7 @@ import {
   listExternalVoiceProviderRegistrations,
   subscribeExternalVoiceProviderRegistrations,
 } from './externalVoiceProviderRegistrations';
+import { storage } from '@/sync/domains/state/storage';
 import {
   createBundledConversationRuntimeHostLease,
   getCurrentBundledConversationRuntimeHost,
@@ -118,6 +119,54 @@ function createProviderLeaf(input?: Readonly<{ setInputMuted?(muted: boolean): P
 }
 
 describe('external Voice provider activation', () => {
+  it('provisions declared effect-tool definitions while their direct callbacks remain denied', async () => {
+    const provisioningDeclaration = requireConversationDeclaration(PluginContributesV2Schema.parse({
+      voiceProviders: [{
+        ...declaration,
+        id: 'provision-effect-tools',
+        capabilities: { ...declaration.capabilities, tools: { effectCalls: 'stable_ids' } },
+        settings: {
+          schemaVersion: 1,
+          fields: [{ id: 'agentId', title: 'Agent ID', schema: { type: 'string' }, default: '', presentation: { control: 'text' } }],
+          actions: [{
+            id: 'create-agent', title: 'Create Agent', patchFieldIds: ['agentId'],
+            placement: { kind: 'contributionFooter' }, confirmation: { kind: 'none' },
+          }],
+        },
+      }],
+    }).voiceProviders[0]!);
+    const previousSettings = storage.getState().settings;
+    storage.setState((current) => ({ ...current, settings: {
+      ...current.settings, experiments: true,
+      featureToggles: { ...current.settings.featureToggles, voice: true },
+    } }));
+    const hostLease = createBundledConversationRuntimeHostLease();
+    const scope = createExternalVoiceProviderActivationScope({
+      pluginId: identity.pluginId, occurrenceId: 'provisioning-tool-capability',
+      declarations: [provisioningDeclaration], hostPlatform: 'web', runtimeHost: hostLease.host,
+      isRuntimeHostCurrent: () => true,
+    });
+    onTestFinished(async () => {
+      await scope.unwind(); hostLease.revoke();
+      storage.setState((current) => ({ ...current, settings: previousSettings }));
+    });
+    let exposedTools: readonly Readonly<{ name: string }>[] = [];
+    scope.api.voiceProviders.register(provisioningDeclaration.id, {
+      ...createProviderLeaf(),
+      settingsActions: { async execute(_input, context) {
+        exposedTools = context.tools;
+        const effect = context.tools.find((tool) => tool.name === 'sendSessionMessage');
+        if (effect) await expect(effect.execute({ message: 'must stay behind custody' }))
+          .rejects.toMatchObject({ code: 'voice_effect_call_custody_required' });
+        return { patch: { agentId: 'provisioned-agent' } };
+      } },
+    });
+    await scope.commit();
+    const registration = listExternalVoiceProviderRegistrations().find((entry) => entry.localId === provisioningDeclaration.id);
+    if (!registration?.settingsActions) throw new Error('settings_actions_not_registered');
+    await registration.settingsActions.execute({ actionId: 'create-agent', settings: {}, signal: new AbortController().signal });
+    expect(exposedTools.map((tool) => tool.name)).toContain('sendSessionMessage');
+  });
   it('derives identical Agent runtime requirements and incompatibility for bundled and external declarations', async () => {
     const agentRealtimeDeclaration = requireConversationDeclaration(PluginContributesV2Schema.parse({
       voiceProviders: [{

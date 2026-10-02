@@ -6,6 +6,7 @@ import type { ItemAction } from '@/components/ui/lists/itemActions';
 import { t } from '@/text';
 import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
 import type { FilesystemBrowserRowActionsControl } from '@/components/ui/filesystemBrowser/FilesystemBrowserRow';
+import { useWorkspaceOpenActions } from '@/components/appShell/workspace/useWorkspaceOpenActions';
 
 export type RepositoryTreeRowActionMenuItemId =
     | 'repository-tree-menuitem-rename'
@@ -21,6 +22,7 @@ const renderNoTrigger = () => null;
 
 export function RepositoryTreeRowActionsMenu(props: Readonly<{
     path: string;
+    href?: string | null;
     kind: 'file' | 'directory';
     disableWriteActions: boolean;
     downloadActionsEnabled: boolean;
@@ -29,6 +31,7 @@ export function RepositoryTreeRowActionsMenu(props: Readonly<{
     control?: FilesystemBrowserRowActionsControl;
 }>) {
     const { theme } = useUnistyles();
+    const workspaceOpen = useWorkspaceOpenActions(props.kind === 'file' ? props.href ?? null : null);
 
     const items = React.useMemo<RepositoryTreeRowActionItem[]>(() => {
         const renameItem: RepositoryTreeRowActionItem = {
@@ -100,10 +103,13 @@ export function RepositoryTreeRowActionsMenu(props: Readonly<{
     return (
         <ItemRowActions
             title={props.path.split('/').filter(Boolean).at(-1) ?? props.path}
-            actions={items.map((item) => ({
+            actions={[...workspaceOpen.items.map(item => ({
+                id: item.id, title: item.title, icon: item.icon,
+                onPress: () => { workspaceOpen.select(item.id); },
+            })), ...items.map((item) => ({
                 ...item,
                 onPress: () => props.onSelect(item.id as RepositoryTreeRowActionMenuItemId),
-            }))}
+            }))]}
             overflowTriggerTestID={triggerId}
             compactThreshold={Number.POSITIVE_INFINITY}
             compactActionIds={[]}

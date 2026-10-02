@@ -21,6 +21,7 @@ import {
     resolvePreferredShareableServerUrl,
     resolveValidatedShareableServerUrl,
 } from '@/sync/domains/server/url/shareableServerUrl';
+import { buildStoredContentPublicShareUrlV1 } from '@happier-dev/protocol';
 
 type PublicLinkState = Readonly<{
     epoch: number;
@@ -80,14 +81,14 @@ export function useSessionPublicLinkController(input: SessionPublicLinkControlle
      * `publicLinkEnabled` decision and the Home's own capability check remain
      * the authority.
      */
-    const client = useCallback((options?: Readonly<{ onBearerIssued?: (issued: string) => void }>) => createSessionAccessClient({
+    const client = useCallback((options?: Readonly<{ onLinkIssued?: (issued: Readonly<{ lookupId: string; secret: string }>) => void }>) => createSessionAccessClient({
         // Rebuilt from the qualified fields so a fresh prop object cannot
         // restart the read loop through a changed callback identity.
         scope: { serverId: scope.serverId, accountId: scope.accountId },
         sessionId,
         availability: 'unavailable',
         isCurrent,
-        ...(options?.onBearerIssued ? { onPublicLinkBearerIssued: options.onBearerIssued } : {}),
+        ...(options?.onLinkIssued ? { onPublicLinkIssued: options.onLinkIssued } : {}),
     }), [isCurrent, scope.accountId, scope.serverId, sessionId]);
     const applyAuthoritativePublication = useCallback((publication: SessionPublicLinkPublication | null) => {
         ++requestRevision.current;
@@ -193,19 +194,21 @@ export function useSessionPublicLinkController(input: SessionPublicLinkControlle
             ...(desired.maxUses === null ? {} : { maxUses: desired.maxUses }),
             isConsentRequired: desired.isConsentRequired,
         };
-        const issued: { token: string | null } = { token: null };
+        const issued: { material: Readonly<{ lookupId: string; secret: string }> | null } = { material: null };
         let created: SessionPublicLinkPublication | null = null;
         try {
-            const settings = await client({ onBearerIssued: (token) => { issued.token = token; } }).createPublicLink(input);
+            const settings = await client({ onLinkIssued: (material) => { issued.material = material; } }).createPublicLink(input);
             assertCurrent();
-            if (!issued.token) throw new SessionAccessApiError('outcome_unknown');
-            created = { ...settings, token: issued.token };
+            if (!issued.material || !settings.isolatedOrigin || settings.keyDerivation !== 'fragment_v1') throw new SessionAccessApiError('outcome_unknown');
+            created = { ...settings, token: issued.material.lookupId,
+                publicUrl: buildStoredContentPublicShareUrlV1({ origin: settings.isolatedOrigin, ...issued.material }),
+            };
         } catch (error) {
             if (!created) {
                 if (error instanceof SessionAccessApprovalPendingError && isCurrent()) {
-                    // The approving host receives the one-time bearer, never this
-                    // origin: an executed approval settles to the authoritative
-                    // publication, whose link can be copied by creating it again.
+                    // Approval settles at its trusted host. That host must have
+                    // local link custody; neither the approval result nor a
+                    // subsequent settings read can return the fragment secret.
                     holdForApproval(error, 'session.public_link.create', { sessionId, ...input }, reload);
                     return null;
                 }

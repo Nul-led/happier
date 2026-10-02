@@ -12,6 +12,7 @@ import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAre
 import { t } from '@/text';
 import { resolveOptionalSessionScreenTestId, useSessionScreenTestIdsEnabled } from '../shell/sessionScreenTestIds';
 import { Icon } from '@/components/ui/icons/Icon';
+import { SessionHeaderPullHost, SessionHeaderPullTarget } from '@/components/sessions/shell/SessionHeaderPull';
 import {
     HEADER_BAND_HORIZONTAL_PADDING_PX,
     HEADER_BAND_SUBTITLE_TEXT,
@@ -41,6 +42,11 @@ interface ChatHeaderViewProps {
      * header. The share viewer has no sidebar and keeps it.
      */
     showBackButton?: boolean;
+    /**
+     * Phone: pulling the identity or title down opens All tabs (`SessionHeaderPull`). Absent where
+     * there is nothing to switch to (the share viewer).
+     */
+    onPullAllTabs?: () => void;
 }
 
 export const ChatHeaderView = React.memo(function ChatHeaderView({
@@ -57,6 +63,7 @@ export const ChatHeaderView = React.memo(function ChatHeaderView({
     constrainWidth = true,
     includeTopInset = true,
     showBackButton = true,
+    onPullAllTabs,
 }: ChatHeaderViewProps): React.ReactElement {
     const { theme } = useUnistyles();
     const navigation = useNavigation();
@@ -93,7 +100,9 @@ export const ChatHeaderView = React.memo(function ChatHeaderView({
     return (
         <View style={[styles.container, { paddingTop: includeTopInset ? insets.top : 0, backgroundColor: theme.colors.surface.base }]}>
             <View style={[styles.contentWrapper, constrainWidth ? null : { alignItems: 'stretch' }]}>
-                <View
+                <HeaderBand
+                    onPullAllTabs={onPullAllTabs}
+                    hintTop={0}
                     testID="session-header-band"
                     style={[
                         styles.content,
@@ -118,6 +127,7 @@ export const ChatHeaderView = React.memo(function ChatHeaderView({
                     </Pressable>
                 ) : null}
 
+                <HeaderPullTarget pullable={onPullAllTabs !== undefined} style={styles.identityAndTitle}>
                 {leadingIdentity ? (
                     <View style={styles.avatarLeading} testID={avatarButtonTestId}>
                         {leadingIdentity}
@@ -187,6 +197,7 @@ export const ChatHeaderView = React.memo(function ChatHeaderView({
                         </Text>
                     )}
                 </View>
+                </HeaderPullTarget>
 
                 {rightElement ? (
                     <View style={styles.rightElementContainer}>
@@ -194,11 +205,42 @@ export const ChatHeaderView = React.memo(function ChatHeaderView({
                     </View>
                 ) : null}
 
-                </View>
+                </HeaderBand>
             </View>
         </View>
     );
 });
+
+/**
+ * The band, and the part of it a pull can start from. Without `onPullAllTabs` these are the plain
+ * views they always were; the choice is fixed per screen (it comes from the screen's own props), so
+ * the subtree never swaps types while mounted.
+ */
+function HeaderBand(props: Readonly<{
+    onPullAllTabs?: () => void;
+    hintTop: number;
+    testID: string;
+    style: React.ComponentProps<typeof View>['style'];
+    children: React.ReactNode;
+}>) {
+    if (!props.onPullAllTabs) {
+        return <View testID={props.testID} style={props.style}>{props.children}</View>;
+    }
+    return (
+        <SessionHeaderPullHost onOpen={props.onPullAllTabs} hintTop={props.hintTop} testID={props.testID} style={props.style}>
+            {props.children}
+        </SessionHeaderPullHost>
+    );
+}
+
+function HeaderPullTarget(props: Readonly<{
+    pullable: boolean;
+    style: React.ComponentProps<typeof View>['style'];
+    children: React.ReactNode;
+}>) {
+    if (!props.pullable) return <View style={props.style}>{props.children}</View>;
+    return <SessionHeaderPullTarget style={props.style}>{props.children}</SessionHeaderPullTarget>;
+}
 
 const styles = StyleSheet.create(() => ({
     container: {
@@ -218,6 +260,13 @@ const styles = StyleSheet.create(() => ({
     },
     backButton: {
         marginRight: 8,
+    },
+    identityAndTitle: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        minWidth: 0,
+        alignSelf: 'stretch',
     },
     titleContainer: {
         flex: 1,

@@ -1,4 +1,5 @@
 import type { SessionHandle } from '@happier-dev/plugin-sdk/sessions';
+import { isHostProviderCliAttachSurface, type HostProviderCliAttachSurface } from '@/session/attach/providerCliAttach';
 import type {
     ForkAvailabilityRequestV1 as HostForkAvailabilityRequestV1,
     ForkRequestV1 as HostForkRequestV1,
@@ -15,6 +16,7 @@ import {
 } from '@/agent/runtime/session/terminal/contract';
 import type {
     AgentRuntime,
+    AgentSessionRuntimeFactory,
     AgentTerminalControlPresentation,
     AgentTerminalLaunchPlan,
 } from '@happier-dev/plugin-sdk/agents/runtime';
@@ -400,7 +402,23 @@ function bindNativeAgentAttachSurface(params: Readonly<{
 }>): BackendExecutionSurfaces['attach'] {
     const attach = params.runtime.surfaces?.attach;
     if (!attach) return null;
+    const managedAttach = isHostProviderCliAttachSurface(attach) ? attach.attachManaged.bind(attach) : null;
     return Object.freeze({
+        ...(managedAttach ? {
+            attachManaged: async (request: Parameters<HostProviderCliAttachSurface['attachManaged']>[0]) => {
+                assertCurrentNativeAgentSurfaceGeneration(params);
+                const result = await managedAttach({
+                    ...request,
+                    onAttached: async () => {
+                        assertCurrentNativeAgentSurfaceGeneration(params);
+                        await request.onAttached();
+                        assertCurrentNativeAgentSurfaceGeneration(params);
+                    },
+                });
+                assertCurrentNativeAgentSurfaceGeneration(params);
+                return result;
+            },
+        } : {}),
         ...(attach.evaluateAvailability
             ? {
                 evaluateAvailability: async (
@@ -614,6 +632,7 @@ export function resolveBackendExecutionSurfacesFromNativeAgentRuntime(params: Re
     resolveTerminalRuntimeLaunchSignal?: TerminalRuntimeLaunchSignalResolver;
     resolveTerminalRuntimeHostOrchestration?: TerminalRuntimeHostOrchestrationResolver;
     createAgentRuntimeSurfaceInvocationContext?: AgentRuntimeSurfaceInvocationContextResolver;
+    terminalPresentationFeatures?: Parameters<NonNullable<AgentSessionRuntimeFactory['resolveTerminalPresentation']>>[1]['features'];
 }>): BackendExecutionSurfaces {
     const runtimeSurfaces = params.runtime.surfaces;
     const checkpoint = runtimeSurfaces?.checkpoint ?? null;
@@ -635,10 +654,21 @@ export function resolveBackendExecutionSurfacesFromNativeAgentRuntime(params: Re
         attach || params.hostExecutionSurfaces?.attach
             || (terminal && params.declaredAgentSurfaceFamilies.has('terminalRuntime')),
     );
-    const resolveTerminalPresentation: NonNullable<BackendExecutionSurfaces['resolveTerminalPresentation']> = (selection) => {
+    const resolveTerminalPresentation: NonNullable<BackendExecutionSurfaces['resolveTerminalPresentation']> = async (selection) => {
         assertCurrentNativeAgentTerminalGeneration(params);
-        return terminalSurfaceAvailable
-            && (params.runtime.sessions?.supportsTerminalPresentation?.(selection) ?? true);
+        const resolve = params.runtime.sessions?.resolveTerminalPresentation;
+        if (!terminalSurfaceAvailable || !resolve) return { kind: 'none' };
+        if (!params.createAgentRuntimeSurfaceInvocationContext || !params.terminalPresentationFeatures) {
+            throw new Error('Agent terminal placement requires its admitted invocation context');
+        }
+        const context = await params.createAgentRuntimeSurfaceInvocationContext({ cwd: selection.cwd ?? process.cwd() });
+        assertCurrentNativeAgentTerminalGeneration(params);
+        const selected = await resolve(selection, {
+            settings: context.services.settings,
+            features: params.terminalPresentationFeatures,
+        });
+        assertCurrentNativeAgentTerminalGeneration(params);
+        return selected;
     };
     if (!terminal) return {
         resolveTerminalPresentation,
@@ -683,7 +713,7 @@ export function resolveBackendExecutionSurfacesFromNativeAgentRuntime(params: Re
         if (!host?.process.resolveAgentCliExecutable) {
             throw new Error(`Native Agent terminal launch for '${params.agentId}' requires host Agent CLI executable resolution`);
         }
-        const plan = await terminal.resolveLaunch({
+        const plan = request.preparedLaunchPlan ?? await terminal.resolveLaunch({
             sessionId: request.sessionId,
             cwd: request.directory,
             metadata: projectTerminalAgentLaunchMetadata(request.metadata),

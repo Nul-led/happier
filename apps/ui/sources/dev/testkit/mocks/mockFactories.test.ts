@@ -7,11 +7,6 @@ import { createAccountEncryptionModeModuleMock } from './accountEncryptionMode';
 import { createRegistryUiBehaviorModuleMock } from './registryUiBehavior';
 import { createTokenStorageModuleMock } from './tokenStorage';
 
-vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', async () => {
-    const { emptyBundledPluginUiAssetsModule } = await import('./bundledPluginUiAssets');
-    return emptyBundledPluginUiAssetsModule;
-});
-
 describe('UI testkit mock factories', () => {
     it('preserves account-encryption-mode exports while allowing a focused reader override', async () => {
         const fetchAccountEncryptionMode = vi.fn(async () => ({ mode: 'plain' as const, updatedAt: 0 }));
@@ -538,6 +533,35 @@ describe('UI testkit mock factories', () => {
         expect(provider.type).toBe('ModalProvider');
         expect(provider.props.active).toBe(false);
         expect(provider.props.children).toBe('child');
+    });
+
+    it('mounts opted-in custom content, updates it, and removes it on close or hideAll', async () => {
+        const { createModalModuleMock } = await import('./modal');
+        const modalMock = createModalModuleMock({ renderCustomModals: true });
+        const Content = ({ label, onClose }: { label: string; onClose(): void }) =>
+            React.createElement('button', { onClick: onClose }, label);
+        let screen!: ReturnType<typeof renderer.create>;
+        await act(async () => {
+            screen = renderer.create(React.createElement(modalMock.module.ModalProvider, null, 'child'));
+        });
+        try {
+            let id = '';
+            await act(async () => { id = modalMock.module.Modal.show({ component: Content, props: { label: 'first' } }); });
+            expect(screen.root.findByType('button').children).toEqual(['first']);
+            await act(async () => { modalMock.module.Modal.update(id, { label: 'updated' }); });
+            expect(screen.root.findByType('button').children).toEqual(['updated']);
+            await act(async () => { screen.root.findByType('button').props.onClick(); });
+            expect(screen.root.findAllByType('button')).toHaveLength(0);
+            await act(async () => {
+                modalMock.module.Modal.show({ component: Content, props: { label: 'second' } });
+                modalMock.module.Modal.show({ component: Content, props: { label: 'third' } });
+            });
+            expect(screen.root.findAllByType('button')).toHaveLength(2);
+            await act(async () => { modalMock.module.Modal.hideAll(); });
+            expect(screen.root.findAllByType('button')).toHaveLength(0);
+        } finally {
+            await act(async () => { screen.unmount(); });
+        }
     });
 
     it('creates a modal mock with caller-provided alert and prompt spies', async () => {

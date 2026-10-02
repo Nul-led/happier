@@ -13,7 +13,7 @@ import { useWebUiDeploymentFreshness } from './useWebUiDeploymentFreshness';
 
 export type AppUpdateStatus = Readonly<{
     model: AppUpdateItemModel;
-    /** When the app's last successful check settled (ms); `null` when it has none to report. */
+    /** When the app's owner last reported a settled check (ms); `null` when it has none to report. */
     checkedAt: number | null;
     /** Runs the row's action: Update (download), Restart to update, Retry, Reload, open the store. */
     run: () => Promise<void>;
@@ -34,6 +34,7 @@ export function useAppUpdateStatus(): AppUpdateStatus {
     const ota = useUpdates();
     const webUi = useWebUiDeploymentFreshness();
     const otaDownloadProgress = typeof ota.downloadProgress === 'number' ? ota.downloadProgress : null;
+    const otaCheckedAt = ota.lastCheckForUpdateTimeSinceRestart?.getTime() ?? null;
 
     const model = React.useMemo(() => buildAppUpdateItem({
         platformOs: Platform.OS,
@@ -43,11 +44,18 @@ export function useAppUpdateStatus(): AppUpdateStatus {
         webUiUpdateAvailable: webUi.updateAvailable,
         desktop,
         ota: {
+            supported: ota.otaRuntimeSupported,
+            isChecking: ota.isChecking,
             isDownloading: ota.isDownloading === true,
+            isRestarting: ota.isRestarting,
             downloadProgress: otaDownloadProgress,
+            isUpdateAvailable: ota.isUpdateAvailable,
             isUpdatePending: ota.isUpdatePending === true,
+            checkFailed: Boolean(ota.checkError),
+            downloadFailed: Boolean(ota.downloadError),
+            checkedAt: otaCheckedAt,
         },
-    }), [desktop, nativeUpdateUrl, ota.isDownloading, ota.isUpdatePending, otaDownloadProgress, webUi.updateAvailable]);
+    }), [desktop, nativeUpdateUrl, ota.checkError, ota.downloadError, ota.isChecking, ota.isDownloading, ota.isRestarting, ota.isUpdateAvailable, ota.isUpdatePending, ota.otaRuntimeSupported, otaCheckedAt, otaDownloadProgress, webUi.updateAvailable]);
 
     const reloadOta = ota.reloadApp;
     const checkOta = ota.checkForUpdates;
@@ -65,7 +73,8 @@ export function useAppUpdateStatus(): AppUpdateStatus {
                 reloadWeb();
                 return;
             case 'ota':
-                await reloadOta();
+                if (item.action.verb === 'restart') await reloadOta();
+                else await checkOta();
                 return;
             case 'desktop':
                 if (item.action.verb === 'restart') return desktopUpdater.install();
@@ -74,18 +83,19 @@ export function useAppUpdateStatus(): AppUpdateStatus {
             case 'none':
                 return;
         }
-    }, [model, nativeUpdateUrl, reloadOta, reloadWeb]);
+    }, [checkOta, model, nativeUpdateUrl, reloadOta, reloadWeb]);
 
     const checkNow = React.useCallback(async () => {
         await Promise.all([desktopUpdater.check({ force: true }), checkOta()]);
     }, [checkOta]);
 
     const skippable = model.channel === 'desktop' && model.item.state === 'available' && !model.item.skipped;
+    const checkedAt = model.channel === 'ota' ? otaCheckedAt : desktop.checkedAt;
     return React.useMemo(() => ({
         model,
-        checkedAt: desktop.checkedAt,
+        checkedAt,
         run,
         checkNow,
         skipVersion: skippable ? desktopUpdater.skipVersion : null,
-    }), [checkNow, desktop.checkedAt, model, run, skippable]);
+    }), [checkNow, checkedAt, model, run, skippable]);
 }

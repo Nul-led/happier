@@ -358,7 +358,7 @@ export function buildProviderAccountUsageSnapshotFromPluginConnectedAccountQuota
       usedPct,
       resetAtMs: resetsAt,
       resetSource: resetsAt === null ? 'unknown' as const : 'provider' as const,
-      providerLimitId: limit.id,
+      providerLimitId: limit.providerLimitId ?? limit.id,
       isExhausted: remaining !== null ? remaining <= 0 : false,
       unit: 'unknown' as const,
       utilizationPct: usedPct,
@@ -371,7 +371,7 @@ export function buildProviderAccountUsageSnapshotFromPluginConnectedAccountQuota
       limitScope: 'account' as const,
       confidence: 'exact' as const,
       details: {
-        providerLimitId: limit.id,
+        providerLimitId: limit.providerLimitId ?? limit.id,
         remainingPct,
       },
     };
@@ -4486,7 +4486,11 @@ export class ConnectedServiceQuotasCoordinator {
           if (!profileId) return;
           const target = targetsByAccountId.get(profileId);
           const profile = target?.profile;
-          if (!target || !profile || !isConnectedServiceCredentialHealthStatusUsable(profile.status)) continue;
+          if (!target || !profile) continue;
+          if (!isConnectedServiceCredentialHealthStatusUsable(profile.status)) {
+            completedProfileIds.add(profileId);
+            continue;
+          }
           try {
             const invocation = await runtime.establishedRuntimeOwner.invokeWithReceipt({
               account: profile.ref,

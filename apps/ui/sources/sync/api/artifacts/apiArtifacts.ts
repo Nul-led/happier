@@ -10,11 +10,37 @@ import {
     ArtifactAccessRecipientCensusResponseV1Schema,
     isPlainArtifactDataKeyMarker,
     ArtifactRecipientKeyEnvelopeCommitResponseV1Schema,
+    ArtifactRevisionListResponseV1Schema,
+    ArtifactQuotaExceededV1Schema,
+    ArtifactRevisionV1Schema,
+    ArtifactStorageUsageV1Schema,
+    ArtifactBlobReadResponseV1Schema,
+    type ArtifactRevisionV1,
     type ArtifactAccessGrantsListInputV1,
     type ArtifactAccessGrantSetInputV1,
     type ArtifactAccessGrantRemoveInputV1,
     type ArtifactRecipientKeyEnvelopeCommitInputV1,
 } from '@happier-dev/protocol';
+
+/** A write the server refused for an operator storage budget (`quota_exceeded`), naming the budget and its sizes. */
+export class ArtifactQuotaExceededError extends HappyError {
+    readonly quota: Readonly<{ budget: 'document' | 'account'; limitBytes: number; usedBytes: number }>;
+    constructor(quota: ArtifactQuotaExceededError['quota']) {
+        super('quota_exceeded', false, { status: 413, code: 'quota_exceeded' });
+        // HappyError installs its own prototype; retain this typed quota boundary.
+        Object.setPrototypeOf(this, new.target.prototype);
+        this.quota = quota;
+    }
+}
+
+/** The 4xx refusal of a create or update: a typed budget refusal, else the server's message. */
+async function readWriteRefusal(response: Response, fallback: string): Promise<HappyError> {
+    const value: unknown = await response.json().catch(() => null);
+    const quota = response.status === 413 ? ArtifactQuotaExceededV1Schema.safeParse(value) : null;
+    if (quota?.success) return new ArtifactQuotaExceededError({ budget: quota.data.budget, limitBytes: quota.data.limitBytes, usedBytes: quota.data.usedBytes });
+    const message = value && typeof value === 'object' && typeof Reflect.get(value, 'error') === 'string' ? String(Reflect.get(value, 'error')) : fallback;
+    return new HappyError(message, false, { status: response.status });
+}
 
 const artifactAuthorityProjectionSchema = ArtifactAccessRecipientCensusResponseV1Schema.pick({
     ownerAccountId: true, access: true, encryptionMode: true,
@@ -47,6 +73,89 @@ export type ArtifactApiOptions = Readonly<{
     /** Inventory selection only; the server remains the access authority. */
     ownerAccountId?: string;
 }>;
+
+/** Authenticated bytes only: verify the requested identity and owner mode before opening. */
+export async function fetchArtifactBlob(credentials: AuthCredentials, artifactId: string, blobId: string,
+    ownerMode: 'plain' | 'e2ee', opts: Pick<ArtifactApiOptions, 'request' | 'signal'> = {}) {
+    opts.signal?.throwIfAborted();
+    const response = await (opts.request ?? serverFetch)(`/v1/artifacts/${encodeURIComponent(artifactId)}/blobs/${encodeURIComponent(blobId)}`, {
+        headers: { Authorization: `Bearer ${credentials.token}` }, ...(opts.signal ? { signal: opts.signal } : {}),
+    }, { includeAuth: false, retry: 'none' });
+    opts.signal?.throwIfAborted();
+    if (!response.ok) throw new HappyError('Artifact file is unavailable', false,
+        { status: response.status, code: 'artifact_content_unavailable' });
+    const parsed = ArtifactBlobReadResponseV1Schema.safeParse(await response.json());
+    opts.signal?.throwIfAborted();
+    if (!parsed.success || parsed.data.blobId !== blobId) throw new HappyError('Artifact file is unavailable', false,
+        { code: 'artifact_content_unavailable' });
+    if ((ownerMode === 'plain') !== (parsed.data.content.t === 'plain')) throw new HappyError('Artifact file does not match its owner Account mode', false,
+        { code: 'artifact_account_mode_mismatch' });
+    return parsed.data;
+}
+
+/** Read the complete retained-body inventory through the captured Account transport. */
+export async function fetchArtifactRevisions(
+    credentials: AuthCredentials,
+    artifactId: string,
+    opts: Pick<ArtifactApiOptions, 'request' | 'signal'> = {},
+) {
+    opts.signal?.throwIfAborted();
+    const response = await (opts.request ?? serverFetch)(`/v1/artifacts/${encodeURIComponent(artifactId)}/revisions`, {
+        headers: { Authorization: `Bearer ${credentials.token}`, 'Content-Type': 'application/json' },
+        ...(opts.signal ? { signal: opts.signal } : {}),
+    }, { includeAuth: false, retry: 'none' });
+    opts.signal?.throwIfAborted();
+    if (!response.ok) {
+        throw new HappyError('Artifact revisions are unavailable', false, { status: response.status, code: 'artifact_content_unavailable' });
+    }
+    const parsed = ArtifactRevisionListResponseV1Schema.safeParse(await response.json());
+    opts.signal?.throwIfAborted();
+    if (!parsed.success) throw new HappyError('Artifact revision inventory is incomplete', false, { code: 'artifact_content_unavailable' });
+    return parsed.data;
+}
+
+export async function fetchArtifactStorageUsage(credentials: AuthCredentials,
+    opts: Pick<ArtifactApiOptions, 'request' | 'signal'> = {}) {
+    opts.signal?.throwIfAborted();
+    const response = await (opts.request ?? serverFetch)('/v1/artifacts/storage/usage', {
+        headers: { Authorization: `Bearer ${credentials.token}` },
+        ...(opts.signal ? { signal: opts.signal } : {}),
+    }, { includeAuth: false, retry: 'none' });
+    opts.signal?.throwIfAborted();
+    if (!response.ok) throw new HappyError('Artifact storage usage is unavailable', false,
+        { status: response.status, code: 'content_unavailable' });
+    const parsed = ArtifactStorageUsageV1Schema.safeParse(await response.json());
+    opts.signal?.throwIfAborted();
+    if (!parsed.success) throw new HappyError('Artifact storage usage is unavailable', false, { code: 'content_unavailable' });
+    return parsed.data;
+}
+
+/** The server copies retained bytes; the key holder supplies only the coherent next header. */
+export async function restoreArtifactRevision(credentials: AuthCredentials, input: Readonly<{
+    artifactId: string; bodyVersion: number; header: string; expectedRevision: ArtifactRevisionV1;
+}>, opts: Pick<ArtifactApiOptions, 'request' | 'signal'> = {}): Promise<ArtifactRevisionV1> {
+    opts.signal?.throwIfAborted();
+    const response = await (opts.request ?? serverFetch)(`/v1/artifacts/${encodeURIComponent(input.artifactId)}/revisions/${input.bodyVersion}/restore`, {
+        method: 'POST', headers: { Authorization: `Bearer ${credentials.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ header: input.header, expectedHeaderVersion: input.expectedRevision.headerVersion,
+            expectedBodyVersion: input.expectedRevision.bodyVersion }),
+        ...(opts.signal ? { signal: opts.signal } : {}),
+    }, { includeAuth: false, retry: 'none' });
+    opts.signal?.throwIfAborted();
+    if (!response.ok) throw await readWriteRefusal(response, 'Artifact restore failed');
+    const value: unknown = await response.json();
+    opts.signal?.throwIfAborted();
+    if (value && typeof value === 'object' && Reflect.get(value, 'success') === false
+        && Reflect.get(value, 'error') === 'version-mismatch') {
+        throw new HappyError('Artifact was modified by another client', false, { code: 'version_mismatch' });
+    }
+    const revision = ArtifactRevisionV1Schema.safeParse(value && typeof value === 'object' ? {
+        headerVersion: Reflect.get(value, 'headerVersion'), bodyVersion: Reflect.get(value, 'bodyVersion'),
+    } : null);
+    if (!value || typeof value !== 'object' || Reflect.get(value, 'success') !== true || !revision.success)
+        throw new HappyError('Artifact restore result is unavailable', false, { code: 'content_unavailable' });
+    return revision.data;
+}
 
 /** The existing Artifact HTTP owner carries grants and fenced recipient keys. */
 export function createArtifactAccessApi(credentials: AuthCredentials, opts: Pick<ArtifactApiOptions, 'request'> = {}) {
@@ -188,8 +297,10 @@ export async function createArtifact(
     opts: ArtifactApiOptions = {},
 ): Promise<Artifact> {
     const run = async () => {
-        const response = await (opts.request ?? ((path, init) => serverFetch(path, init, { includeAuth: false })))('/v1/artifacts', {
+        const path = request.blob ? '/v1/artifacts/content/binary' : '/v1/artifacts';
+        const response = await (opts.request ?? ((path, init) => serverFetch(path, init, { includeAuth: false })))(path, {
             method: 'POST',
+            ...(opts.signal ? { signal: opts.signal } : {}),
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
                 'Content-Type': 'application/json'
@@ -202,14 +313,7 @@ export async function createArtifact(
                 throw new HappyError('Artifact ID already exists', false, { status: 409, code: 'conflict' });
             }
             if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
-                let message = 'Failed to create artifact';
-                try {
-                    const error = await response.json();
-                    if (error?.error) message = error.error;
-                } catch {
-                    // ignore
-                }
-                throw new HappyError(message, false, { status: response.status });
+                throw await readWriteRefusal(response, 'Failed to create artifact');
             }
             throw new HappyError(`Failed to create artifact: ${response.status}`, true, { status: response.status });
         }
@@ -234,8 +338,10 @@ export async function updateArtifact(
     opts: ArtifactApiOptions = {},
 ): Promise<ArtifactUpdateResponse> {
     const run = async () => {
-        const response = await (opts.request ?? ((path, init) => serverFetch(path, init, { includeAuth: false })))(`/v1/artifacts/${artifactId}`, {
+        const path = `/v1/artifacts/${encodeURIComponent(artifactId)}${request.blob ? '/content/binary' : ''}`;
+        const response = await (opts.request ?? ((path, init) => serverFetch(path, init, { includeAuth: false })))(path, {
             method: 'POST',
+            ...(opts.signal ? { signal: opts.signal } : {}),
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
                 'Content-Type': 'application/json'
@@ -248,14 +354,7 @@ export async function updateArtifact(
                 throw new HappyError('Artifact not found', false, { status: 404, code: 'not_found' });
             }
             if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
-                let message = 'Failed to update artifact';
-                try {
-                    const error = await response.json();
-                    if (error?.error) message = error.error;
-                } catch {
-                    // ignore
-                }
-                throw new HappyError(message, false, { status: response.status });
+                throw await readWriteRefusal(response, 'Failed to update artifact');
             }
             throw new HappyError(`Failed to update artifact: ${response.status}`, true, { status: response.status });
         }
@@ -277,17 +376,24 @@ export async function updateArtifact(
 export async function deleteArtifact(
     credentials: AuthCredentials,
     artifactId: string,
-    opts: ArtifactApiOptions = {},
+    opts: ArtifactApiOptions & Readonly<{ expectedRevision?: Readonly<{ headerVersion: number; bodyVersion: number }> }> = {},
 ): Promise<void> {
     const run = async () => {
-        const response = await (opts.request ?? serverFetch)(`/v1/artifacts/${artifactId}`, {
+        opts.signal?.throwIfAborted();
+        const revision = opts.expectedRevision;
+        const path = `/v1/artifacts/${encodeURIComponent(artifactId)}${revision ? `/revision/${revision.headerVersion}/${revision.bodyVersion}` : ''}`;
+        const response = await (opts.request ?? serverFetch)(path, {
             method: 'DELETE',
+            ...(opts.signal ? { signal: opts.signal } : {}),
             headers: {
                 'Authorization': `Bearer ${credentials.token}`
             }
         }, { includeAuth: false, retry: opts.retry });
 
         if (!response.ok) {
+            if (response.status === 409 && revision) {
+                throw new HappyError('Artifact revision changed', false, { status: 409, code: 'version_mismatch' });
+            }
             if (response.status === 404) {
                 throw new HappyError('Artifact not found', false, { status: 404, code: 'not_found' });
             }

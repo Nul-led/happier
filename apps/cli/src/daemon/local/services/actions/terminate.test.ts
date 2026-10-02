@@ -120,6 +120,14 @@ function fakeControl(overrides: ControlOverrides = {}): TerminateProcessControl 
 }
 
 describe('createTerminateDetectedService', () => {
+    it('passes its grace budget to both Windows tool invocations', async () => {
+        const control = fakeControl({ platform: 'windows', aliveResults: [true, false] });
+        const terminate = createTerminateDetectedService(control, { graceMs: 730 });
+        await expect(terminate({ entry: entry(), request: request(), now: 3_000 })).resolves.toMatchObject({ status: 'succeeded' });
+        expect(control.terminateWindowsTree).toHaveBeenNthCalledWith(1, { pid: 4_321, force: false, timeoutMs: 730 });
+        expect(control.terminateWindowsTree).toHaveBeenNthCalledWith(2, { pid: 4_321, force: true, timeoutMs: 730 });
+    });
+
     it.each([4_321, 4_322])('never follows or kills a captured pid reused during the grace window (%s)', async (reusedPid) => {
         let reused = false;
         const control = fakeControl({
@@ -477,8 +485,8 @@ describe('createTerminateDetectedService', () => {
         const result = await terminate({ request: request(), entry: entry(), now: 0 });
 
         expect(result).toEqual({ status: 'succeeded' });
-        expect(control.terminateWindowsTree).toHaveBeenNthCalledWith(1, { pid: 4_321, force: false });
-        expect(control.terminateWindowsTree).toHaveBeenNthCalledWith(2, { pid: 4_321, force: true });
+        expect(control.terminateWindowsTree).toHaveBeenNthCalledWith(1, { pid: 4_321, force: false, timeoutMs: 1 });
+        expect(control.terminateWindowsTree).toHaveBeenNthCalledWith(2, { pid: 4_321, force: true, timeoutMs: 1 });
         expect(control.resolveDescendantPids).not.toHaveBeenCalled();
         expect(control.signal).not.toHaveBeenCalled();
     });

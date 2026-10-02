@@ -9,14 +9,18 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   bundleInstalledPackageWithRuntimeDependencies,
+  bundleWorkspacePackage,
   bundleWorkspacePackageWithRuntimeDependencies,
+  hasBundledWorkspacePackagesHealthy,
   materializePrepublicationWorkspacePackageRoots,
+  resolveWorkspaceBundlesFromPackageJson,
   sanitizeBundledPackageJson,
   vendorBundledPackageRuntimeDependencies,
 } from './index';
@@ -81,6 +85,17 @@ afterEach(() => {
   for (const root of tempRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+describe('CLI source runtime closure', () => {
+  it('admits every internal runtime dependency through the host bundle manifest', () => {
+    const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
+    const bundles = resolveWorkspaceBundlesFromPackageJson({
+      repoRoot,
+      hostPackageDir: join(repoRoot, 'apps', 'cli'),
+    });
+    expect(bundles.length).toBeGreaterThan(0);
+  });
 });
 
 describe('Transformers isolated runtime closure', () => {
@@ -179,6 +194,79 @@ describe('sanitizeBundledPackageJson', () => {
 });
 
 describe('bundleWorkspacePackageWithRuntimeDependencies', () => {
+  it('preserves conditional package imports and their package-root runtime targets', () => {
+    const root = createTempRoot('workspace-package-imports-');
+    const sourceDir = join(root, 'packages', 'sdk');
+    const destinationDir = join(root, 'apps', 'cli', 'node_modules', '@happier-dev', 'sdk');
+    const imports = {
+      '#http': { node: './runtime/node.js', default: './dist/fetch.js' },
+      '#fs': 'fs',
+      '#disabled': null,
+    };
+    writePackage(sourceDir, {
+      name: '@happier-dev/sdk', version: '0.0.0', type: 'module',
+      exports: { '.': './dist/connect.js' }, imports,
+    }, {
+      'dist/connect.js': 'import { transport } from "#http"; import { existsSync } from "#fs"; export const selected = transport + ":" + typeof existsSync;\n',
+      'dist/fetch.js': 'export const transport = "fetch";\n',
+      'runtime/node.js': 'export const transport = "node";\n',
+    });
+    bundleWorkspacePackageWithRuntimeDependencies({
+      packageName: '@happier-dev/sdk', srcDir: sourceDir, destDir: destinationDir,
+      dereferenceRootDir: root,
+    });
+
+    // Real Node resolution observes the published manifest, not Vitest's resolver.
+    expect(execFileSync(process.execPath, ['--input-type=module', '-e',
+      `const module = await import(${JSON.stringify(pathToFileURL(join(destinationDir, 'dist/connect.js')).href)}); console.log(module.selected);`,
+    ], { encoding: 'utf8' }).trim()).toBe('node:function');
+    expect(readPackageJson(destinationDir).imports).toEqual(imports);
+    expect(readFileSync(join(destinationDir, 'dist/fetch.js'), 'utf8')).toContain('fetch');
+    const hostDir = join(root, 'apps', 'cli');
+    writePackage(hostDir, { bundledDependencies: ['@happier-dev/sdk'] });
+    expect(hasBundledWorkspacePackagesHealthy({ repoRoot: root, hostPackageDir: hostDir })).toBe(true);
+    writeFileSync(join(destinationDir, 'runtime/node.js'), 'export const transport = "stale";\n');
+    expect(hasBundledWorkspacePackagesHealthy({ repoRoot: root, hostPackageDir: hostDir })).toBe(false);
+    writeFileSync(join(destinationDir, 'runtime/node.js'), 'export const transport = "node";\n');
+    // An installed host can outlive its source checkout. Its own imports targets
+    // still have to exist when workspace source-content comparison is unavailable.
+    rmSync(sourceDir, { recursive: true });
+    expect(hasBundledWorkspacePackagesHealthy({ repoRoot: root, hostPackageDir: hostDir })).toBe(true);
+    rmSync(join(destinationDir, 'runtime/node.js'));
+    expect(hasBundledWorkspacePackagesHealthy({ repoRoot: root, hostPackageDir: hostDir })).toBe(false);
+  });
+
+  it('detects package imports manifest drift even when all runtime files still match', () => {
+    const root = createTempRoot('workspace-package-imports-parity-');
+    const sourceDir = join(root, 'packages', 'sdk');
+    const hostDir = join(root, 'apps', 'cli');
+    const destinationDir = join(hostDir, 'node_modules', '@happier-dev', 'sdk');
+    const manifest = {
+      name: '@happier-dev/sdk', version: '0.0.0', type: 'module',
+      exports: { '.': './dist/index.js' },
+      imports: { '#http': { node: './dist/node.js', default: './dist/fetch.js' } },
+    };
+    writePackage(hostDir, { bundledDependencies: ['@happier-dev/sdk'] });
+    writePackage(sourceDir, manifest, {
+      'dist/index.js': 'export {};\n',
+      'dist/node.js': 'export const transport = "node";\n',
+      'dist/fetch.js': 'export const transport = "fetch";\n',
+    });
+    bundleWorkspacePackage({ packageName: '@happier-dev/sdk', srcDir: sourceDir, destDir: destinationDir });
+    // Establish an exact current manifest independently so this test isolates the
+    // health owner's comparison rather than the sanitizer's separate omission.
+    writeFileSync(join(destinationDir, 'package.json'), JSON.stringify({ ...readPackageJson(destinationDir), imports: manifest.imports }));
+    expect(hasBundledWorkspacePackagesHealthy({ repoRoot: root, hostPackageDir: hostDir })).toBe(true);
+    writeFileSync(join(sourceDir, 'package.json'), JSON.stringify({
+      ...manifest, imports: { '#http': { default: './dist/fetch.js', node: './dist/node.js' } },
+    }));
+    expect(hasBundledWorkspacePackagesHealthy({ repoRoot: root, hostPackageDir: hostDir })).toBe(false);
+    writeFileSync(join(sourceDir, 'package.json'), JSON.stringify({
+      ...manifest, imports: { '#http': { node: './dist/fetch.js', default: './dist/fetch.js' } },
+    }));
+    expect(hasBundledWorkspacePackagesHealthy({ repoRoot: root, hostPackageDir: hostDir })).toBe(false);
+  });
+
   it('validates the complete staged package before replacing last-green', () => {
     const repositoryRoot = createTempRoot('cli-common-workspace-stage-validation-');
     const sourceDir = join(repositoryRoot, 'packages', 'plugins', 'fixture');

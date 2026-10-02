@@ -229,10 +229,6 @@ async function requestTcpTunnelRouteGrantV2(input: Readonly<{
   tunnelId: string;
   authority: VoiceMediaApplicationAuthorityV1;
   endpointFingerprint: string;
-  destination: PeerTcpTunnelDestinationV1;
-  maxIdleMs: number;
-  maxDurationMs: number;
-  maxTotalBytes?: number;
   ephemeralPublicKeyBase64Url: string;
   timeoutMs?: number;
   signal?: AbortSignal | null;
@@ -259,8 +255,6 @@ async function requestTcpTunnelRouteGrantV2(input: Readonly<{
             applicationKind: input.authority.applicationKind,
             applicationAttemptId: input.authority.applicationAttemptId,
             applicationAuthorityDigest: input.authority.applicationAuthorityDigest,
-            maxIdleMs: input.maxIdleMs, maxDurationMs: input.maxDurationMs,
-            ...(input.maxTotalBytes ? { maxTotalBytes: input.maxTotalBytes } : {}),
           },
         }),
       },
@@ -283,9 +277,8 @@ async function requestTcpTunnelRelayAuthorization(input: Readonly<{
   authority: VoiceMediaApplicationAuthorityV1;
   relaySocketId: string;
   destination: PeerTcpTunnelDestinationV1;
-  maxIdleMs: number;
-  maxDurationMs: number;
-  maxTotalBytes: number;
+  maxDurationMs?: number;
+  maxTotalBytes?: number;
   timeoutMs?: number;
   signal?: AbortSignal | null;
 }>): Promise<OperationResult<PeerTcpTunnelRelayAuthorizationV2>> {
@@ -314,9 +307,8 @@ async function requestTcpTunnelRelayAuthorization(input: Readonly<{
             applicationKind: input.authority.applicationKind,
             applicationAttemptId: input.authority.applicationAttemptId,
             applicationAuthorityDigest: input.authority.applicationAuthorityDigest,
-            maxIdleMs: input.maxIdleMs,
-            maxDurationMs: input.maxDurationMs,
-            maxTotalBytes: input.maxTotalBytes,
+            ...(input.maxDurationMs !== undefined ? { maxDurationMs: input.maxDurationMs } : {}),
+            ...(input.maxTotalBytes !== undefined ? { maxTotalBytes: input.maxTotalBytes } : {}),
           },
         }),
       },
@@ -363,9 +355,7 @@ async function postTcpTunnelOpen(input: Readonly<{
 async function prepareDirectTunnelRouteV2(params: TunnelAttemptParams & Readonly<{
   credentials: AuthCredentials;
   endpoint: PeerLoopbackEndpointCandidateV1;
-  caps: MachineTunnelCapabilities;
 }>): Promise<PreparedDirectTunnelRoute | null> {
-  if (!params.caps.directPeer.allowedPorts.includes(params.destination.port)) return null;
   const proofHandle = createEphemeralPeerRouteProofHandleV2({ randomBytes: getRandomBytes });
   try {
     const grant = await requestTcpTunnelRouteGrantV2({
@@ -375,9 +365,6 @@ async function prepareDirectTunnelRouteV2(params: TunnelAttemptParams & Readonly
       tunnelId: params.tunnelId,
       authority: params.input.authority,
       endpointFingerprint: params.endpoint.endpointFingerprint,
-      destination: params.destination,
-      maxIdleMs: params.caps.directPeer.maxIdleMs,
-      maxDurationMs: params.caps.directPeer.maxDurationMs,
       ephemeralPublicKeyBase64Url: proofHandle.publicKeyBase64Url,
       timeoutMs: VOICE_STT_TUNNEL_FETCH_TIMEOUT_MS,
       signal: params.input.signal,
@@ -645,7 +632,6 @@ async function tryOpenServerRelayTunnel(
     authority: params.input.authority,
     relaySocketId,
     destination: params.destination,
-    maxIdleMs: Math.min(params.caps.serverRouted.maxIdleMs, voiceRelayDecision.caps.maxDurationMs),
     maxDurationMs: voiceRelayDecision.caps.maxDurationMs,
     maxTotalBytes: voiceRelayDecision.caps.maxTotalBytes,
     timeoutMs: VOICE_STT_TUNNEL_FETCH_TIMEOUT_MS,
@@ -800,7 +786,6 @@ export async function openProductionVoiceMediaTunnel(
           endpoint,
           destination,
           tunnelId,
-          caps,
         })
         : null;
       const selection = direct ? await tryOpenDirectTunnel({

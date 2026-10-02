@@ -47,6 +47,7 @@ import {
   type WorkflowProgressEnvelopeV1,
   type WorkflowRunInvocationIndexV1,
   type WorkflowRunSummaryV1,
+  type WorkflowRunStepProgressV1,
   type TriggerTargetV1,
   type WorkflowDefinitionV1,
   type MaterializeWorkflowAcceptedSnapshotV1Input,
@@ -59,7 +60,6 @@ import { readWorktreeChangeFingerprint } from '@/scm/readWorktreeChangeFingerpri
 import { getRandomBytes } from '@/api/encryption';
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { createAccountArtifactStore } from '@/api/artifacts/accountArtifactStore';
-import { requireCurrentAccountStoredContentServerCompatibility } from '@/api/clientCompatibility/accountStoredContentActivation';
 import { createWorkflowDefinitionActions } from '@/session/actions/workflowDefinitions';
 import { PushNotificationClient } from '@/api/pushNotifications';
 import { resolveWorkspaceRefById } from '@/settings/accountSettings/workspaceRefsV1';
@@ -214,6 +214,9 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
   private readonly persisted = new Map<string, PersistedInvocation>();
   private readonly materializedContainers = new Map<string, import('./input').WorkflowJsonValue>();
   private readonly loadedParentSlots = new Set<string>();
+  private readonly progressMembers = new Map<string, {
+    members: Map<string, WorkflowRunInvocationIndexV1>; completed: number;
+  }>();
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly invocationMutationTails = new Map<string, Promise<void>>();
 
@@ -222,11 +225,14 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
       accountId: string;
       runId: string;
       parentAttempt: number;
-      storage: StorageClient;
+      storage: Pick<StorageClient, 'execute'>;
       encryption: WorkflowRunEncryptionV1;
       rootRecordId: string;
       checkpoint: WorkflowCheckpointEnvelopeV1;
       revision: number;
+      authoredDefinition?: WorkflowDefinitionV1;
+      definition?: WorkflowDefinitionV1;
+      projectionExpectedRevision?: number;
     },
   ) {}
 
@@ -331,6 +337,20 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
     const current = this.currentSlots.get(slot);
     if (!current || current.recordId === record.recordId || record.attempt > current.attempt) this.currentSlots.set(slot, record);
     this.persisted.set(key, { index, progress });
+    if (index.parentRecordId) {
+      const parent = this.recordsById.get(index.parentRecordId);
+      for (const [parentKey, projection] of this.progressMembers) {
+        const previous = projection.members.get(index.memberOrdinal);
+        const ownSlot = parent?.key === parentKey && (!previous || previous.parentRecordId !== index.parentRecordId
+          || BigInt(index.attempt) >= BigInt(previous.attempt));
+        const inheritedRow = previous?.id === index.id
+          && BigInt(index.contentRevision) >= BigInt(previous.contentRevision);
+        if (ownSlot || inheritedRow) {
+          projection.completed += Number(index.lifecycle === 'completed') - Number(previous?.lifecycle === 'completed');
+          projection.members.set(index.memberOrdinal, index);
+        }
+      }
+    }
     return record;
   }
 
@@ -482,6 +502,7 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
 
   private async commitFactNow(
     fact: Parameters<WorkflowCoordinatorStore['commitFact']>[0],
+    stepProgress?: WorkflowRunStepProgressV1,
   ): Promise<WorkflowCoordinatorInvocation> {
     const current = this.records.get(fact.key);
     const persisted = this.persisted.get(fact.key);
@@ -493,7 +514,8 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
       && persisted.progress.review?.resultSource?.kind === 'published' && persisted.progress.result !== undefined;
     const progress = WorkflowProgressEnvelopeV1Schema.parse({ ...applyWorkflowInvocationFactV1(persisted.progress,
       WorkflowInvocationFactV1Schema.parse(publishedResultWins ? withoutInvalidResultReason : ownedFact)),
-      ...(review ? { review: { ...review, ...(persisted.progress.review?.resultSource ? { resultSource: persisted.progress.review.resultSource } : {}) } } : {}) });
+      ...(review ? { review: { ...review, ...(persisted.progress.review?.resultSource ? { resultSource: persisted.progress.review.resultSource } : {}) } } : {}),
+      ...(stepProgress ? { stepProgress } : {}) });
     const index = persisted.index;
     const binding = {
       v: 1 as const, purpose: 'invocation_progress' as const, accountId: this.params.accountId, runId: this.params.runId,
@@ -503,7 +525,10 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
     let updatedIndex: WorkflowRunInvocationIndexV1;
     try {
       const { parentRevision, ...updated } = WorkflowInvocationFactResultV1Schema.parse(await this.params.storage.execute({
-        operation: 'invocations.fact', runId: this.params.runId, parentAttempt: this.params.parentAttempt,
+        operation: 'invocations.fact', runId: this.params.runId,
+        ...(stepProgress && this.params.projectionExpectedRevision !== undefined
+          ? { expectedRevision: this.params.projectionExpectedRevision, resolution: 'root_list_progress' }
+          : { parentAttempt: this.params.parentAttempt }),
         accountCurrentness: this.params.encryption.witness,
         invocationId: index.id, invocationAttempt: index.attempt, expectedLifecycle: index.lifecycle, expectedContentRevision: index.contentRevision,
         lifecycle: fact.lifecycle, contentEnvelope: this.serializeProgress(binding, progress),
@@ -543,6 +568,7 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
         && (fact.input === undefined || sameStrictJsonValue(refreshed.input, fact.input))
         && (fact.container === undefined || sameStrictJsonValue(refreshed.container, fact.container))
         && (fact.containerResult === undefined || sameStrictJsonValue(refreshed.containerResult, fact.containerResult))
+        && (stepProgress === undefined || sameStrictJsonValue(this.persisted.get(fact.key)?.progress.stepProgress, stepProgress))
         && workspaceMatches
         && sharedConversationMatches) {
         return refreshed;
@@ -568,6 +594,13 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
       }
       if (refreshed?.lifecycle === 'superseded') throw error;
       if (refreshed?.contentRevision !== current.contentRevision && refreshed?.lifecycle === current.lifecycle) {
+        if (stepProgress) {
+          // An aggregate is not an independent row fact: after a competing
+          // publisher wins, recompute from current slots instead of replaying it.
+          this.loadedParentSlots.clear();
+          this.progressMembers.clear();
+          return await this.commitFactNow(fact, await this.projectStepProgress());
+        }
         return await this.commitFactNow(fact);
       }
       throw error;
@@ -577,10 +610,70 @@ export class DurableWorkflowCoordinatorStore implements WorkflowCoordinatorStore
 
   commitFact = async (
     fact: Parameters<WorkflowCoordinatorStore['commitFact']>[0],
-  ): Promise<WorkflowCoordinatorInvocation> => await this.serializedInvocation(
-    fact.key,
-    async () => await this.commitFactNow(fact),
-  );
+  ): Promise<WorkflowCoordinatorInvocation> => {
+    const result = await this.serializedInvocation(fact.key, async () => await this.commitFactNow(fact));
+    const parentId = this.persisted.get(result.key)?.index.parentRecordId;
+    const parent = parentId ? this.recordsById.get(parentId) : undefined;
+    if (parentId === this.params.rootRecordId || (parent?.blockKind === 'loop'
+      && this.persisted.get(parent.key)?.index.parentRecordId === this.params.rootRecordId)) await this.refreshStepProgress();
+    return result;
+  };
+
+  private async projectStepProgress(): Promise<WorkflowRunStepProgressV1> {
+    const definition = this.params.authoredDefinition;
+    const root = this.recordsById.get(this.params.rootRecordId);
+    if (!definition || !root) throw new Error('workflow_root_invocation_missing');
+    let completed = 0;
+    let currentLoop: WorkflowRunStepProgressV1['currentLoop'];
+    for (const [ordinal, block] of definition.blocks.entries()) {
+      const invocation = await this.readCurrent({ runId: this.params.runId, blockId: block.id,
+        scope: [], parentKey: root.key, memberOrdinal: String(ordinal) });
+      if (invocation?.lifecycle === 'completed') completed += 1;
+      if (block.kind !== 'loop' || !invocation || invocation.lifecycle === 'completed') continue;
+      const loop = invocation.container;
+      if (loop?.kind !== 'loop') continue;
+      const frozenBlock = this.params.definition?.blocks[ordinal] ?? block;
+      const total = loop.mode === 'items' ? Number(loop.itemCount) : loop.mode === 'count' ? Number(loop.count)
+        : frozenBlock.kind === 'loop' && frozenBlock.id === block.id && 'maxIterations' in frozenBlock.repetition
+          ? frozenBlock.repetition.maxIterations : undefined;
+      if (typeof total !== 'number') continue;
+      let projection = this.progressMembers.get(invocation.key);
+      if (!projection) {
+        const members = new Map((await this.listCurrentMembers(invocation.key)).map((index) => [index.memberOrdinal, index]));
+        // A local parallel frame may commit while the initial page is in flight.
+        for (const row of this.currentSlots.values()) {
+          const index = this.persisted.get(row.key)?.index;
+          if (index?.parentRecordId === invocation.recordId) {
+            const prior = members.get(index.memberOrdinal);
+            if (!prior || prior.parentRecordId !== index.parentRecordId
+              || BigInt(index.attempt) > BigInt(prior.attempt)
+              || (index.attempt === prior.attempt && BigInt(index.contentRevision) >= BigInt(prior.contentRevision))) {
+              members.set(index.memberOrdinal, index);
+            }
+          }
+        }
+        projection = { members, completed: [...members.values()].filter((index) => index.lifecycle === 'completed').length };
+        this.progressMembers.set(invocation.key, projection);
+      }
+      // nextMemberIndex is the admission frontier, not a completed-item count.
+      currentLoop = { completed: projection.completed, total };
+    }
+    return { completed, total: definition.blocks.length, ...(currentLoop ? { currentLoop } : {}) };
+  }
+
+  /** The executing/recovery owner publishes counts; list readers never reconstruct private structure. */
+  refreshStepProgress = async (): Promise<void> => {
+    const root = this.recordsById.get(this.params.rootRecordId);
+    if (!this.params.authoredDefinition || !root) return;
+    await this.serializedInvocation(root.key, async () => {
+      const stepProgress = await this.projectStepProgress();
+      const persisted = this.persisted.get(root.key);
+      if (sameStrictJsonValue(persisted?.progress.stepProgress, stepProgress)) return;
+      const currentRoot = this.recordsById.get(this.params.rootRecordId);
+      if (!currentRoot) throw new Error('workflow_root_invocation_missing');
+      await this.commitFactNow({ key: root.key, lifecycle: currentRoot.lifecycle }, stepProgress);
+    });
+  };
 
   createInteractionPersistenceTarget(key: string): AgentStateRequestPersistenceTarget {
     const persisted = this.persisted.get(key);
@@ -944,7 +1037,7 @@ export function createWorkflowRunPushNotificationClient(token: string): PushNoti
 
 export type WorkflowTriggerClaimSource =
   | Readonly<{ kind: 'inline'; definition: WorkflowDefinitionV1 }>
-  | Readonly<{ kind: 'catalog'; definition: WorkflowDefinitionV1; ref: string; version: number }>
+  | Readonly<{ kind: 'catalog'; definition: WorkflowDefinitionV1; ref: string; version: number | string }>
   | Readonly<{ kind: 'saved' } & Awaited<ReturnType<ReturnType<typeof createWorkflowDefinitionActions>['get']>>>;
 
 export type WorkflowTriggerAdmissionRefusal = Readonly<{
@@ -969,15 +1062,14 @@ export async function resolveWorkflowTriggerClaimSource(params: Readonly<{
 }>): Promise<WorkflowTriggerClaimSource | null> {
   params.signal?.throwIfAborted();
   if (params.target.kind === 'inline') return { kind: 'inline', definition: params.target.definition };
+  const artifactStore = createAccountArtifactStore({
+    credentials: params.credentials,
+    getAccountEncryptionMode: async () => params.encryption.witness.mode,
+  });
+  const definitions = createWorkflowDefinitionActions({ artifactStore });
   return resolveWorkflowDefinitionRefV1(params.target.ref, {
-    readArtifact: (definitionId, signal) => {
-      const artifactStore = createAccountArtifactStore({
-        credentials: params.credentials,
-        getAccountEncryptionMode: async () => params.encryption.witness.mode,
-        requirePlainWriteCompatibility: requireCurrentAccountStoredContentServerCompatibility,
-      });
-      return createWorkflowDefinitionActions({ artifactStore }).get({ definitionId, ...(signal ? { signal } : {}) });
-    },
+    readPluginWorkflows: definitions.readPluginWorkflows,
+    readArtifact: (definitionId, signal) => definitions.get({ definitionId, ...(signal ? { signal } : {}) }),
     ...(params.signal ? { signal: params.signal } : {}),
   });
 }
@@ -1123,6 +1215,7 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
         roleOverrides: storedDefinition.data.roleOverrides,
         admission: { kind: 'trigger', workDepth: claim.causeWorkDepth, admitLeaf: host.admitLeaf },
         context: {
+          actionCaller: { kind: 'automationRun', runId: claim.runId, automationId: claim.automationId, cause: claim.automationCause },
           inputs, machineId: params.machineId,
           executionTarget: storedDefinition.data.executionTarget,
           workspaceTarget: workspace.workspaceTarget,
@@ -1266,6 +1359,7 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
         frontier: { nextBlockOrdinal: 0, paused: false },
       });
       const rootProgress = WorkflowProgressEnvelopeV1Schema.parse({
+        stepProgress: { completed: 0, total: accepted.authoredDefinition.blocks.length },
         kind: 'happier.workflow-progress.v1', invocationPath: { blockId: '$root', scope: [] },
         blockKind: 'root', attempt: '0', logicalInvocationRecordId: rootRecordId,
       });
@@ -1300,7 +1394,10 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
     const durableStore = await DurableWorkflowCoordinatorStore.load({
       accountId: params.accountId, runId: claim.runId, parentAttempt: claim.attempt,
       storage, encryption, rootRecordId, checkpoint, revision,
+      authoredDefinition: accepted.authoredDefinition,
+      definition: accepted.definition,
     });
+    await durableStore.refreshStepProgress();
     claim.registerControlCheck?.(async () => await durableStore.readControl());
     const rootAtStart = durableStore.rootIndex;
     if (!rootAtStart) throw new Error('workflow_root_invocation_missing');
@@ -1538,6 +1635,8 @@ export function createProductionWorkflowRunCoordinator(params: Readonly<{
       frozenChildren: accepted.frozenChildren,
       workDepth: accepted.workDepth,
       authorization: accepted.authorization,
+      ...(initial.run.origin.kind === 'automation' && initial.run.origin.cause
+        ? { automationCause: initial.run.origin.cause } : {}),
       ...(accepted.origin?.originSessionId ? { originSessionId: accepted.origin.originSessionId } : {}),
       ...(claim.signal ? { signal: claim.signal } : {}) });
     let result = await runCoordinator();

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const osBoundary = vi.hoisted(() => ({ restriction: '1\n', usernsFailed: true }));
 vi.mock('node:fs/promises', async importOriginal => ({
@@ -13,6 +13,10 @@ vi.mock('node:child_process', async importOriginal => ({
 
 import { createBrowserSidecarLaunchOwnerControlAdapterFactory } from './launchOwner';
 import { managedChromiumAppArmorProfile } from './sandbox';
+
+const originalPlatform = process.platform;
+beforeEach(() => { Object.defineProperty(process, 'platform', { value: 'linux' }); });
+afterEach(() => { Object.defineProperty(process, 'platform', { value: originalPlatform }); });
 
 describe('managed Chromium sandbox diagnosis', () => {
     it('attaches the exception to exactly the managed executable, not a directory or global policy', () => {

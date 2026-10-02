@@ -13,7 +13,10 @@ import {
   type VoiceRealtimeJsonValue,
   type VoiceProviderContribution,
   type RecipientContractV1,
+  listVoiceToolActionSpecs,
 } from '@happier-dev/protocol';
+import { buildVoiceClientToolAgentPrompt } from '@happier-dev/agents/voice';
+import { resolveUiVoicePromptStackBlocks } from '@/voice/agent/resolveUiVoicePromptStackBlocks';
 import type { PluginReactNativeBundleCacheIdentity } from '@/sync/domains/plugins/ui/reactNativeRuntime';
 import { PLUGIN_UI_HOST_API_VERSION_V1 } from '@happier-dev/protocol/plugins/ui';
 import type { PluginApi } from '@happier-dev/plugin-sdk';
@@ -28,6 +31,8 @@ import type {
   VoiceHostedConversationService,
   VoiceRealtimeConnection,
   VoiceRuntimePlatform,
+  VoiceRealtimeAttemptPolicy,
+  VoiceClientToolDefinition,
 } from '@happier-dev/plugin-sdk/voice/client';
 import type { PluginUiHostApi } from '@happier-dev/plugin-sdk/ui';
 import type {
@@ -74,7 +79,7 @@ import {
 } from './externalVoiceProviderRegistrations';
 import { getProviderConversationServiceFactory } from './providerConversationService';
 import { createVoiceClientRawCredentialAccess } from '@/voice/credentials/rawCredentialClient';
-import { createVoiceClientMediatedCredentialHeadersMaterializer } from '@/voice/credentials/mediatedCredentialClient';
+import { createVoiceClientAccountOperationExecutor } from '@/voice/credentials/mediatedCredentialClient';
 import {
   isCapturedVoiceExecutionMachineCurrent,
   resolveVoiceExecutionMachineId,
@@ -516,6 +521,11 @@ export function createDeclaredVoiceClientRawCredentialAccess(input: Readonly<{
   });
 }
 
+type StandaloneAttemptPreparation = Readonly<{
+  policy: VoiceRealtimeAttemptPolicy;
+  tools: readonly VoiceClientToolDefinition[];
+}>;
+
 export function createExternalProtocol(
   host: BundledRealtimeProviderRuntimeHost,
   providerId: string,
@@ -532,6 +542,7 @@ export function createExternalProtocol(
     phase: 'prepare' | 'connection',
     signal: AbortSignal,
   ) => VoiceCredentialAccess<'prepare' | 'connection'>['raw'],
+  attemptPreparationByAttemptId = new Map<number, StandaloneAttemptPreparation>(),
 ): VoiceRealtimeProtocolAdapter {
   const providerConfigByAttemptId = new Map<number, VoiceRealtimeJsonValue>();
   const providerConversationFactory = declaration.capabilities.turn.resumption === 'resume'
@@ -591,6 +602,28 @@ export function createExternalProtocol(
       return await withVoiceProviderInvocationLifetime({
         callerSignal: prepareInput.signal,
         async run(signal) {
+          let attemptPolicy = attemptPreparationByAttemptId.get(prepareInput.attemptId)?.policy;
+          if (declaration.execution?.kind !== 'experimental_agent_session_realtime' && !attemptPolicy) {
+            const voice = voiceSettingsParse(readVoiceSettingsInput(host.getSettings()));
+            const tools = Object.freeze([...host.getRealtimeClientToolDefinitions({
+              effectCalls: declaration.capabilities.tools.effectCalls,
+              exposure: 'voice_assistant',
+            })]);
+            const extraSystemAppendBlocks = await resolveUiVoicePromptStackBlocks();
+            signal.throwIfAborted();
+            attemptPolicy = Object.freeze({
+              instructions: buildVoiceClientToolAgentPrompt({
+                actionSpecs: listVoiceToolActionSpecs(),
+                availableToolNames: tools.map((tool) => tool.name),
+                assistantLanguage: voice.assistantLanguage,
+                welcome: voice.welcome,
+                extraSystemAppendBlocks,
+              }),
+              assistantLanguage: voice.assistantLanguage,
+              welcome: Object.freeze({ enabled: voice.welcome.enabled, mode: voice.welcome.mode }),
+            });
+            attemptPreparationByAttemptId.set(prepareInput.attemptId, Object.freeze({ policy: attemptPolicy, tools }));
+          }
           const conversationSessionId = host.resolveConversationSessionId(
             prepareInput.controlSessionId,
             providerId,
@@ -607,6 +640,7 @@ export function createExternalProtocol(
             ...prepareInput,
             platform,
             providerConfig,
+            ...(attemptPolicy ? { attemptPolicy } : {}),
             credentials: createVoiceCredentialAccess({
               declaration,
               phase: 'prepare',
@@ -631,6 +665,7 @@ export function createExternalProtocol(
     },
     async releasePrepared(releaseInput) {
       providerConfigByAttemptId.delete(releaseInput.attemptId);
+      attemptPreparationByAttemptId.delete(releaseInput.attemptId);
       await leaf.releasePrepared?.(releaseInput);
     },
   });
@@ -700,6 +735,7 @@ export function createExternalVoiceProviderRuntimeContribution(input: Readonly<{
   if (supportsProviderConversationForget && !forgetProviderConversationState) {
     throw activationError('voice_provider_resumption_forget_host_unavailable');
   }
+  const attemptPreparationByAttemptId = new Map<number, StandaloneAttemptPreparation>();
   const protocol = createExternalProtocol(
     input.host,
     providerId,
@@ -709,6 +745,7 @@ export function createExternalVoiceProviderRuntimeContribution(input: Readonly<{
     input.createInvocationAccountOperations,
     input.createInvocationHostedConversation,
     input.createInvocationRawCredentials,
+    attemptPreparationByAttemptId,
   );
   const microphoneConfig = runtime.microphoneMode === 'provider_managed'
     ? {
@@ -753,6 +790,16 @@ export function createExternalVoiceProviderRuntimeContribution(input: Readonly<{
           );
           const baseUi =
             input.createInvocationUi?.(connectionInput.signal) ?? createUnavailableInvocationUi();
+          // Attached Agents use their own canonical Session tools and receive
+          // only current-UI tools here. Standalone prompts and publication share
+          // the exact catalog admitted before asynchronous preparation.
+          const tools = execution
+            ? input.host.getRealtimeClientToolDefinitions({
+                effectCalls: protocol.toolEffectCalls ?? 'none',
+                exposure: 'current_ui_only',
+              })
+            : attemptPreparationByAttemptId.get(connectionInput.attemptId)?.tools;
+          if (!tools) throw activationError('voice_attempt_preparation_unavailable');
           const connection = await runtime.createConnection(Object.freeze({
             ...providerConnectionInput,
             credentials: createVoiceCredentialAccess({
@@ -767,17 +814,7 @@ export function createExternalVoiceProviderRuntimeContribution(input: Readonly<{
               } : {}),
               raw: input.createInvocationRawCredentials?.('connection', signal) ?? null,
             }),
-            tools: bindVoiceClientToolsToAttempt(
-              input.host.getRealtimeClientToolDefinitions({
-                effectCalls: protocol.toolEffectCalls ?? 'none',
-                // An Agent-session attachment reaches Happier sessions,
-                // machines, servers, activity, and transcripts through the
-                // Agent's own canonical tools. Its realtime surface publishes
-                // only the authorized current-UI tools.
-                exposure: execution ? 'current_ui_only' : 'voice_assistant',
-              }),
-              connectionInput.signal,
-            ),
+            tools: bindVoiceClientToolsToAttempt(tools, connectionInput.signal),
             ui: createVoiceAttemptInvocationUi({
               base: baseUi,
               host: input.host,
@@ -1145,8 +1182,8 @@ export function createExternalVoiceProviderActivationScope(input: Readonly<{
                   recipientContract,
                   signal,
                   isCurrent,
-                  materializeConnectedAccountHeaders:
-                    createVoiceClientMediatedCredentialHeadersMaterializer({
+                  executeConnectedAccountOperation:
+                    createVoiceClientAccountOperationExecutor({
                       contribution: {
                         pluginId: input.pluginId,
                         localId: declaration.id,

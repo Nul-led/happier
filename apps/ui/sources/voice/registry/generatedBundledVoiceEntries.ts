@@ -11,13 +11,8 @@
 import { projectBundledVoiceManifestContributions } from './bundledVoiceManifestProjection';
 import type { BundledVoiceManifestContribution } from './bundledVoiceManifestProjection';
 import type { VoiceProviderPresentation } from './voiceProviderPresentation';
+import { createBundledVoiceProviderPresentations } from './bundledVoiceManifestProjection';
 
-import { VOICE_PROVIDER_PRESENTATIONS as CODEX_VOICE_PROVIDER_PRESENTATIONS } from '@happier-dev/plugins-codex/ui/voice';
-import { VOICE_PROVIDER_PRESENTATIONS as ELEVENLABS_VOICE_PROVIDER_PRESENTATIONS } from '@happier-dev/plugins-elevenlabs/ui/voice';
-import { VOICE_PROVIDER_PRESENTATIONS as GOOGLE_VOICE_PROVIDER_PRESENTATIONS } from '@happier-dev/plugins-google/ui/voice';
-import { VOICE_PROVIDER_PRESENTATIONS as OPENAI_VOICE_PROVIDER_PRESENTATIONS } from '@happier-dev/plugins-openai/ui/voice';
-import { VOICE_PROVIDER_PRESENTATIONS as OPENAI_COMPAT_VOICE_PROVIDER_PRESENTATIONS } from '@happier-dev/plugins-openai-compat/ui/voice';
-import { VOICE_PROVIDER_PRESENTATIONS as XAI_VOICE_PROVIDER_PRESENTATIONS } from '@happier-dev/plugins-xai/ui/voice';
 
 const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
 {
@@ -110,6 +105,7 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
                 "checkNow"
               ]
             },
+            "usageReporting": true,
             "workspaceWrites": "deny",
             "workStateSources": [
               {
@@ -432,6 +428,7 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -503,15 +500,36 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     ],
     "managedDependencies": [
       {
+        "description": "Codex ACP dependency used by the Codex ACP backend",
         "executable": "codex-acp",
         "id": "codex-acp",
         "sources": [
           {
-            "kind": "vendorRecipe",
-            "recipeId": "codex-acp"
+            "archiveLayout": "single_executable",
+            "assetNamePrefix": "codex-acp",
+            "distTag": "latest",
+            "installId": "dep.codex-acp",
+            "kind": "githubReleaseBinary",
+            "launch": {
+              "configOverrideArgument": "-c",
+              "configOverridesEnvironmentKey": "HAPPIER_CODEX_ACP_CONFIG_OVERRIDES",
+              "kind": "codexAcp",
+              "overrideEnvironmentKey": "HAPPIER_CODEX_ACP_BIN"
+            },
+            "repo": "zed-industries/codex-acp",
+            "targetByPlatform": {
+              "darwin-arm64": "aarch64-apple-darwin",
+              "darwin-x64": "x86_64-apple-darwin",
+              "linux-arm64-gnu": "aarch64-unknown-linux-gnu",
+              "linux-arm64-musl": "aarch64-unknown-linux-musl",
+              "linux-x64-gnu": "x86_64-unknown-linux-gnu",
+              "linux-x64-musl": "x86_64-unknown-linux-musl",
+              "win32-arm64": "aarch64-pc-windows-msvc",
+              "win32-x64": "x86_64-pc-windows-msvc"
+            }
           }
         ],
-        "title": "Codex ACP adapter"
+        "title": "Codex ACP"
       }
     ],
     "mcp": {
@@ -534,6 +552,7 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -808,7 +827,8 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         "title": "Codex Realtime Voice — Experimental"
       }
     ],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "OpenAI Codex coding agent.",
   "displayName": "Codex",
@@ -932,6 +952,7 @@ const ELEVENLABS_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -955,6 +976,7 @@ const ELEVENLABS_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -1728,6 +1750,12 @@ const ELEVENLABS_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
                 {
                   "format": "raw",
                   "kind": "recipientCredential",
+                  "operation": "agent",
+                  "phase": "prepare"
+                },
+                {
+                  "format": "raw",
+                  "kind": "recipientCredential",
                   "operation": "voices",
                   "phase": "settings"
                 },
@@ -2095,7 +2123,8 @@ const ELEVENLABS_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         "title": "ElevenLabs Voice"
       }
     ],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "displayName": "ElevenLabs Voice",
   "engines": {
@@ -2124,6 +2153,7 @@ const GOOGLE_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -2147,6 +2177,7 @@ const GOOGLE_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -2385,7 +2416,7 @@ const GOOGLE_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         "kind": "speech",
         "limits": {
           "synthesize": {
-            "maxInputCharacters": 1666,
+            "maxInputUtf8Bytes": 5000,
             "maxOutputBytes": 3000000
           }
         },
@@ -2492,7 +2523,8 @@ const GOOGLE_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         "title": "Google Cloud Text-to-Speech"
       }
     ],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "Google Gemini speech-to-text and Google Cloud text-to-speech.",
   "displayName": "Google Voice",
@@ -2525,6 +2557,7 @@ const OPENAI_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -2577,6 +2610,7 @@ const OPENAI_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -2905,7 +2939,8 @@ const OPENAI_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         "title": "OpenAI Realtime Voice"
       }
     ],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "displayName": "OpenAI Realtime Voice",
   "engines": {
@@ -2937,6 +2972,7 @@ const OPENAI_COMPAT_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -2960,6 +2996,7 @@ const OPENAI_COMPAT_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -3231,6 +3268,7 @@ const OPENAI_COMPAT_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         "limits": {
           "synthesize": {
             "maxInputCharacters": 200000,
+            "maxInputCharactersSettingId": "maxInputCharacters",
             "maxOutputBytes": 16777216
           }
         },
@@ -3284,6 +3322,21 @@ const OPENAI_COMPAT_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
                 "type": "string"
               },
               "title": "Confirmed insecure local machine"
+            },
+            {
+              "default": 4096,
+              "description": "OpenAI accepts 4,096 characters. For a custom endpoint, use its documented input limit.",
+              "id": "maxInputCharacters",
+              "presentation": {
+                "control": "number",
+                "step": 1
+              },
+              "schema": {
+                "maximum": 200000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "title": "Endpoint input limit (characters)"
             },
             {
               "default": "tts-1",
@@ -3352,7 +3405,8 @@ const OPENAI_COMPAT_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         "title": "OpenAI-compatible Text-to-Speech"
       }
     ],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "Batch speech-to-text and text-to-speech through a selected-machine OpenAI-compatible endpoint.",
   "displayName": "OpenAI-compatible Speech",
@@ -3386,6 +3440,7 @@ const XAI_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -3409,6 +3464,7 @@ const XAI_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -4114,7 +4170,8 @@ const XAI_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         "title": "xAI Grok Voice"
       }
     ],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "displayName": "xAI Grok Voice",
   "engines": {
@@ -4143,11 +4200,240 @@ export const BUNDLED_FIRST_PARTY_VOICE_CONTRIBUTIONS = Object.freeze([
   ...projectBundledVoiceManifestContributions(XAI_BUNDLED_PLUGIN_MANIFEST),
 ]) satisfies readonly BundledVoiceManifestContribution[];
 
-export const BUNDLED_FIRST_PARTY_VOICE_PRESENTATIONS = Object.freeze([
-  ...CODEX_VOICE_PROVIDER_PRESENTATIONS,
-  ...ELEVENLABS_VOICE_PROVIDER_PRESENTATIONS,
-  ...GOOGLE_VOICE_PROVIDER_PRESENTATIONS,
-  ...OPENAI_VOICE_PROVIDER_PRESENTATIONS,
-  ...OPENAI_COMPAT_VOICE_PROVIDER_PRESENTATIONS,
-  ...XAI_VOICE_PROVIDER_PRESENTATIONS,
-]) satisfies readonly VoiceProviderPresentation[];
+export const BUNDLED_FIRST_PARTY_VOICE_PRESENTATIONS = createBundledVoiceProviderPresentations(
+[
+  {
+    "providerId": "happier.agent.codex/realtime-codex",
+    "selectionOptions": [
+      {
+        "id": "experimental",
+        "modeId": "experimental",
+        "order": 24,
+        "subtitleKey": "settingsVoice.mode.codexRealtimeSubtitle",
+        "titleKey": "settingsVoice.mode.codexRealtime"
+      }
+    ],
+    "settingsSectionId": "voice.provider.realtime_codex"
+  },
+  {
+    "providerId": "happier.voice.elevenlabs/realtime-elevenlabs",
+    "selectionOptions": [
+      {
+        "configPatch": {
+          "billingMode": "happier"
+        },
+        "id": "happier",
+        "modeId": "happier",
+        "order": 10,
+        "subtitleKey": "settingsVoice.mode.happierSubtitle",
+        "titleKey": "settingsVoice.mode.happier"
+      },
+      {
+        "configPatch": {
+          "billingMode": "byo"
+        },
+        "id": "byo",
+        "modeId": "byo",
+        "order": 20,
+        "subtitleKey": "settingsVoice.mode.byoSubtitle",
+        "titleKey": "settingsVoice.mode.byo"
+      }
+    ],
+    "settingsSectionId": "voice.provider.realtime_elevenlabs"
+  },
+  {
+    "providerId": "happier.voice.google/gemini-stt",
+    "settingsSectionId": "voice.stt.google_gemini",
+    "settingsSpec": {
+      "credential": {
+        "promptBodyKey": "settingsVoice.local.googleGeminiStt.apiKey.promptBody",
+        "promptTitleKey": "settingsVoice.local.googleGeminiStt.apiKey.promptTitle",
+        "titleKey": "settingsVoice.local.googleGeminiStt.apiKey.title"
+      },
+      "detailKey": "settingsVoice.local.googleGeminiStt.provider.detail",
+      "fields": [
+        {
+          "fieldId": "model",
+          "searchPlaceholderKey": "settingsVoice.local.googleGeminiStt.model.searchPlaceholder",
+          "subtitleKey": "settingsVoice.local.googleGeminiStt.model.subtitle",
+          "titleKey": "settingsVoice.local.googleGeminiStt.model.title"
+        },
+        {
+          "autoSubtitleKey": "settingsVoice.local.googleGeminiStt.language.autoSubtitle",
+          "autoTitleKey": "settingsVoice.local.googleGeminiStt.language.autoTitle",
+          "fieldId": "language",
+          "subtitleKey": "settingsVoice.local.googleGeminiStt.language.subtitle",
+          "titleKey": "settingsVoice.local.googleGeminiStt.language.title"
+        }
+      ],
+      "iconName": "logo-google",
+      "subtitleKey": "settingsVoice.local.googleGeminiStt.provider.subtitle",
+      "test": null,
+      "titleKey": "settingsVoice.local.googleGeminiStt.provider.title"
+    }
+  },
+  {
+    "providerId": "happier.voice.google/google-cloud-tts",
+    "settingsSectionId": "voice.tts.google_cloud",
+    "settingsSpec": {
+      "credential": {
+        "promptBodyKey": "settingsVoice.local.googleCloudTts.apiKey.promptBody",
+        "promptTitleKey": "settingsVoice.local.googleCloudTts.apiKey.promptTitle",
+        "titleKey": "settingsVoice.local.googleCloudTts.apiKey.title"
+      },
+      "detailKey": "settingsVoice.local.googleCloudTts.provider.detail",
+      "fields": [
+        {
+          "autoSubtitleKey": "settingsVoice.local.googleCloudTts.language.allSubtitle",
+          "autoTitleKey": "settingsVoice.local.googleCloudTts.language.allTitle",
+          "fieldId": "languageCode",
+          "subtitleKey": "settingsVoice.local.googleCloudTts.language.subtitle",
+          "titleKey": "settingsVoice.local.googleCloudTts.language.title"
+        },
+        {
+          "fieldId": "voiceName",
+          "searchPlaceholderKey": "settingsVoice.local.googleCloudTts.voice.searchPlaceholder",
+          "subtitleKey": "settingsVoice.local.googleCloudTts.voice.subtitle",
+          "titleKey": "settingsVoice.local.googleCloudTts.voice.title"
+        },
+        {
+          "fieldId": "format",
+          "subtitleKey": "settingsVoice.local.googleCloudTts.format.subtitle",
+          "titleKey": "settingsVoice.local.googleCloudTts.format.title"
+        },
+        {
+          "fieldId": "speakingRate",
+          "promptBodyKey": "settingsVoice.local.googleCloudTts.speakingRate.promptBody",
+          "promptTitleKey": "settingsVoice.local.googleCloudTts.speakingRate.promptTitle",
+          "subtitleKey": "settingsVoice.local.googleCloudTts.speakingRate.subtitle",
+          "titleKey": "settingsVoice.local.googleCloudTts.speakingRate.title"
+        },
+        {
+          "fieldId": "pitch",
+          "promptBodyKey": "settingsVoice.local.googleCloudTts.pitch.promptBody",
+          "promptTitleKey": "settingsVoice.local.googleCloudTts.pitch.promptTitle",
+          "subtitleKey": "settingsVoice.local.googleCloudTts.pitch.subtitle",
+          "titleKey": "settingsVoice.local.googleCloudTts.pitch.title"
+        }
+      ],
+      "iconName": "logo-google",
+      "subtitleKey": "settingsVoice.local.googleCloudTts.provider.subtitle",
+      "test": {
+        "missingValueMessageKey": "settingsVoice.local.googleCloudTts.alerts.missingVoice"
+      },
+      "titleKey": "settingsVoice.local.googleCloudTts.provider.title"
+    }
+  },
+  {
+    "providerId": "happier.voice.openai/realtime-openai",
+    "selectionOptions": [
+      {
+        "id": "byo",
+        "modeId": "byo",
+        "order": 21,
+        "subtitleKey": "settingsVoice.mode.openaiRealtimeSubtitle",
+        "titleKey": "settingsVoice.mode.openaiRealtime"
+      }
+    ],
+    "settingsSectionId": "voice.provider.realtime_openai"
+  },
+  {
+    "providerId": "happier.voice.openai-compat/stt",
+    "settingsSectionId": "voice.stt.openai_compat",
+    "settingsSpec": {
+      "credential": {
+        "promptBodyKey": "settingsVoice.local.sttApiKeyDescription",
+        "promptTitleKey": "settingsVoice.local.sttApiKeyTitle",
+        "titleKey": "settingsVoice.local.sttApiKey"
+      },
+      "detailKey": "settingsVoice.local.openaiCompatStt.provider.detail",
+      "fields": [
+        {
+          "fieldId": "baseUrl",
+          "promptBodyKey": "settingsVoice.local.sttBaseUrlDescription",
+          "promptTitleKey": "settingsVoice.local.sttBaseUrlTitle",
+          "subtitleKey": "settingsVoice.local.sttBaseUrlDescription",
+          "titleKey": "settingsVoice.local.sttBaseUrl"
+        },
+        {
+          "fieldId": "model",
+          "promptBodyKey": "settingsVoice.local.sttModelDescription",
+          "promptTitleKey": "settingsVoice.local.sttModelTitle",
+          "subtitleKey": "settingsVoice.local.sttModelSubtitle",
+          "titleKey": "settingsVoice.local.sttModel"
+        },
+        {
+          "fieldId": "language",
+          "promptBodyKey": "settingsVoice.local.localNeuralStt.language.promptBody",
+          "promptTitleKey": "settingsVoice.local.localNeuralStt.language.promptTitle",
+          "subtitleKey": "settingsVoice.local.localNeuralStt.language.subtitle",
+          "titleKey": "settingsVoice.local.localNeuralStt.language.title"
+        }
+      ],
+      "iconName": "cloud",
+      "subtitleKey": "settingsVoice.local.openaiCompatStt.provider.subtitle",
+      "test": null,
+      "titleKey": "settingsVoice.local.openaiCompatStt.provider.title"
+    }
+  },
+  {
+    "providerId": "happier.voice.openai-compat/tts",
+    "settingsSectionId": "voice.tts.openai_compat",
+    "settingsSpec": {
+      "credential": {
+        "promptBodyKey": "settingsVoice.local.ttsApiKeyDescription",
+        "promptTitleKey": "settingsVoice.local.ttsApiKeyTitle",
+        "titleKey": "settingsVoice.local.ttsApiKey"
+      },
+      "detailKey": "settingsVoice.local.openaiCompatTts.provider.detail",
+      "fields": [
+        {
+          "fieldId": "baseUrl",
+          "promptBodyKey": "settingsVoice.local.ttsBaseUrlDescription",
+          "promptTitleKey": "settingsVoice.local.ttsBaseUrlTitle",
+          "subtitleKey": "settingsVoice.local.ttsBaseUrlDescription",
+          "titleKey": "settingsVoice.local.ttsBaseUrl"
+        },
+        {
+          "fieldId": "model",
+          "promptBodyKey": "settingsVoice.local.ttsModelDescription",
+          "promptTitleKey": "settingsVoice.local.ttsModelTitle",
+          "subtitleKey": "settingsVoice.local.ttsModelSubtitle",
+          "titleKey": "settingsVoice.local.ttsModel"
+        },
+        {
+          "fieldId": "voiceName",
+          "promptBodyKey": "settingsVoice.local.ttsVoiceDescription",
+          "promptTitleKey": "settingsVoice.local.ttsVoiceTitle",
+          "subtitleKey": "settingsVoice.local.ttsVoiceSubtitle",
+          "titleKey": "settingsVoice.local.ttsVoice"
+        },
+        {
+          "fieldId": "format",
+          "subtitleKey": "settingsVoice.local.ttsFormatSubtitle",
+          "titleKey": "settingsVoice.local.ttsFormat"
+        }
+      ],
+      "iconName": "cloud",
+      "subtitleKey": "settingsVoice.local.openaiCompatTts.provider.subtitle",
+      "test": {
+        "missingValueMessageKey": "settingsVoice.local.testTtsMissingBaseUrl"
+      },
+      "titleKey": "settingsVoice.local.openaiCompatTts.provider.title"
+    }
+  },
+  {
+    "providerId": "happier.voice.xai/realtime-grok",
+    "selectionOptions": [
+      {
+        "id": "byo",
+        "modeId": "byo",
+        "order": 22,
+        "subtitleKey": "settingsVoice.mode.grokRealtimeSubtitle",
+        "titleKey": "settingsVoice.mode.grokRealtime"
+      }
+    ],
+    "settingsSectionId": "voice.provider.realtime_grok"
+  }
+] as const,
+) satisfies readonly VoiceProviderPresentation[];

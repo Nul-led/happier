@@ -1,6 +1,8 @@
-import { rmdir, unlink } from 'node:fs/promises';
+import { readFile, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+import type { ChildProcess } from 'node:child_process';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -19,7 +21,13 @@ vi.mock('node:child_process', async (importOriginal) => {
             }
             if (Array.isArray(options?.stdio) && options.stdio.slice(0, 3).every((stream) => stream === 'inherit')) {
                 inventory.inheritedSpawns += 1;
-                return new EventEmitter();
+                const child = new EventEmitter();
+                // The real owned launcher ACKs native startup before --version exits.
+                setImmediate(() => {
+                    child.emit('message', { type: 'terminal-native-spawned' });
+                    setImmediate(() => child.emit('exit', 0, null));
+                });
+                return child;
             }
             const child = Object.assign(new EventEmitter(), {
                 stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true,
@@ -69,12 +77,279 @@ import { readTerminalHostAttachmentInfo, writeTerminalHostAttachmentInfo } from 
 import { withTempDir } from '@/testkit/fs/tempDir';
 import { resolveInheritedHerdrRuntime } from '@/terminal/runtime/inheritedHerdrRuntime';
 import { buildTerminalMetadataFromRuntimeFlags } from '@/terminal/runtime/terminalMetadata';
+import { buildTerminalMetadataFromHostHandle } from '@/terminal/runtime/terminalMetadata';
+import { acquireSessionRunnerLock } from '@/daemon/sessionRunnerLock';
+import { createSessionHooksService } from '@/plugins/runtime/hooks/session/service';
 import { createEventsFixture, createPluginContextFixture } from '../../../../../../packages/plugins/claude/src/agent/runtime/engine.testkit';
 import { createClaudeUnifiedTerminalTurnOperations } from '../../../../../../packages/plugins/claude/src/agent/runtime/terminal/unified/turnOperations';
+import { createProviderCliAttachSurface } from '@/session/attach/providerCliAttach';
+import { resolveOpenCodeAttachTarget, createOpenCodeAttachArgs } from '../../../../../../packages/plugins/opencode/src/agent/surfaces/sessions/attach/descriptor';
+import { executeTerminalHostDisposition } from '@/terminal/attachment/terminalHostDisposition';
+import { createMutableApiSessionClientFixture } from '@/testkit/backends/sessionFixtures';
+import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
 
-import { createDefaultPluginTerminalHostService, createPluginTerminalHostService } from './terminalHost';
+import { createDefaultPluginTerminalHostService, createDefaultPreparedTerminalHostOwner, createPluginTerminalHostService } from './terminalHost';
 
 describe('plugin terminal-host creation rollback', () => {
+    it('keeps the admitted Herdr endpoint before a native provider selects a different ambient configuration root', async () => {
+        await withTempDir('admitted-herdr-endpoint-', async happyHomeDir => await withHerdrApi(async admitted => await withHerdrApi(async ambient => {
+            inventory.socketPath = ambient.socketPath;
+            const params = { happyHomeDir, hasCapability: (capability: string) => capability === 'terminalHost',
+                readSessionId: () => 'admitted-endpoint-session',
+                herdrRuntime: { herdrSessionName: 'work', herdrSocketPath: admitted.socketPath } };
+            const service = createDefaultPluginTerminalHostService(params);
+            try {
+                const handle = await service.createOrAttachHost({ preference: 'herdr', sessionName: 'work',
+                    workingDirectory: tmpdir(), isolatedEnv: true,
+                    launch: { kind: 'agent-cli', agentId: 'claude', args: ['--version'], env: { HAPPIER_CLAUDE_PATH: process.execPath } } });
+                expect(handle.socketPath).toBe(admitted.socketPath);
+                expect(admitted.requests.filter(request => request.method === 'layout.apply')).toHaveLength(1);
+                expect(ambient.requests).toEqual([]);
+            } finally {
+                for (const api of [admitted, ambient]) {
+                    const layout = api.requests.find(request => request.method === 'layout.apply');
+                    const root = layout?.params.root as { command?: string[] } | undefined;
+                    const specPath = root?.command?.[2];
+                    if (specPath) { await unlink(specPath); await rmdir(dirname(specPath)); }
+                }
+            }
+        })));
+    });
+    it('retries private cleanup after positive exact physical disposal without destroying the host twice', async () => {
+        await withTempDir('prepared-host-cleanup-', async happyHomeDir => await withHerdrApi(async api => {
+            inventory.socketPath = api.socketPath;
+            const owner = createDefaultPreparedTerminalHostOwner({ happyHomeDir, readSessionId: () => 'cleanup-session',
+                herdrRuntime: { herdrSessionName: 'work', herdrSocketPath: api.socketPath } });
+            const created = await owner.createPreparedHost({ preference: 'herdr', sessionName: 'work', workingDirectory: happyHomeDir,
+                spawnArgv: [process.execPath, '--version'], spawnEnv: {} });
+            const extra = join(dirname(created.launch.specPath), 'retained.fixture');
+            await writeFile(extra, 'owned fixture');
+            try {
+                await expect(owner.dispose(created.handle, { kind: 'destroy_owned_host', reason: 'session_closed' }))
+                    .rejects.toMatchObject({ code: 'ENOTEMPTY' });
+                expect(api.requests.filter(request => request.method === 'pane.close')).toHaveLength(1);
+                await unlink(extra);
+                await expect(owner.dispose(created.handle, { kind: 'destroy_owned_host', reason: 'session_closed' })).resolves.toBeUndefined();
+                expect(api.requests.filter(request => request.method === 'pane.close')).toHaveLength(1);
+                expect(await readTerminalHostAttachmentInfo({ happyHomeDir, sessionId: 'cleanup-session' })).toBeNull();
+            } finally {
+                await unlink(extra).catch(() => undefined);
+                await created.launch.discard();
+            }
+        }));
+    });
+
+    it('keeps an unbound created presenter in the same owner until its failed exact rollback can retry', async () => {
+        await withTempDir('prepared-host-unbound-', async happyHomeDir => await withHerdrApi(async api => {
+            inventory.socketPath = api.socketPath;
+            const blockedParent = join(happyHomeDir, 'terminal');
+            api.beforeResponse.set('layout.apply', () => {
+                writeFileSync(blockedParent, 'filesystem boundary refuses binding only after physical host creation');
+            });
+            api.faults.set('pane.close', 'error');
+            const owner = createDefaultPreparedTerminalHostOwner({ happyHomeDir, readSessionId: () => 'unbound-session',
+                herdrRuntime: { herdrSessionName: 'work', herdrSocketPath: api.socketPath } });
+            const request = { preference: 'herdr' as const, sessionName: 'work', workingDirectory: happyHomeDir,
+                spawnArgv: [process.execPath, '--version'], spawnEnv: {} };
+            let specPath: string | undefined;
+            try {
+                await expect(owner.createPreparedHost(request)).rejects.toBeInstanceOf(AggregateError);
+                const root = api.requests.find(item => item.method === 'layout.apply')?.params.root as { command: string[] };
+                specPath = root.command[2];
+                expect(api.panes.has('managed')).toBe(true);
+                await expect(owner.createPreparedHost(request)).rejects.toMatchObject({ code: 'PLUGIN_TERMINAL_HOST_HANDLE_NOT_ACTIVE' });
+                expect(api.requests.filter(item => item.method === 'layout.apply')).toHaveLength(1);
+                api.faults.delete('pane.close');
+                await unlink(blockedParent);
+                await expect(owner.disposePending()).resolves.toBeUndefined();
+                expect(api.panes.has('managed')).toBe(false);
+                await expect(readFile(specPath!, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+            } finally {
+                api.faults.delete('pane.close');
+                await unlink(blockedParent).catch(() => undefined);
+                await owner.disposePending();
+            }
+        }));
+    });
+
+    it('hosts only the prepared same-server native client, retaining the admitted Session after its pane exits', async () => {
+        await withTempDir('prepared-native-host-', async happyHomeDir => await withHerdrApi(async api => {
+            inventory.socketPath = api.socketPath;
+            const sessionId = 'prepared-native-session';
+            const record = join(happyHomeDir, 'native.json');
+            const script = join(happyHomeDir, 'native.cjs');
+            await writeFile(script, `require('node:fs').writeFileSync(${JSON.stringify(record)}, JSON.stringify({args:process.argv.slice(2),herdrEnv:process.env.HERDR_ENV}));setInterval(()=>{},1000);`);
+            const metadata = createTestMetadata({ path: happyHomeDir });
+            const session = createMutableApiSessionClientFixture({ sessionId, metadata });
+            const owner = createDefaultPreparedTerminalHostOwner({ happyHomeDir, readSessionId: () => sessionId,
+                readSessionMetadata: () => session.getMetadataSnapshot() });
+            let nativeExited!: () => void;
+            const nativeCompletion = new Promise<void>(resolve => { nativeExited = resolve; });
+            const os = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+            const nativeBoundary: { child?: ChildProcess } = {};
+            api.beforeResponse.set('layout.apply', () => {
+                const root = api.requests.at(-1)?.params.root as { command: string[] };
+                const native = os.spawn(root.command[0]!, root.command.slice(1), { stdio: 'ignore' });
+                nativeBoundary.child = native;
+                native.once('error', nativeExited);
+                native.once('exit', nativeExited);
+            });
+            const surface = createProviderCliAttachSurface({ agentId: 'opencode', resolveTarget: resolveOpenCodeAttachTarget,
+                createArgs: createOpenCodeAttachArgs, env: { HERDR_ENV: '1' },
+                resolveLaunchSpec: () => ({ source: 'managed', resolvedPath: process.execPath, command: process.execPath, args: [script] }) });
+            let attached = false;
+            try {
+                const result = await surface.attachManaged({ sessionId, metadata: { path: happyHomeDir, runtimeDescriptorV1: {
+                v: 1, agentId: 'opencode', agent: { backendMode: 'server', providerSessionId: 'native-session-one',
+                    serverBaseUrl: 'http://127.0.0.1:4312', serverBaseUrlExplicit: true },
+            } }, onAttached: async () => { attached = true; nativeBoundary.child?.kill('SIGTERM'); }, hostPresentation: {
+                owner, preference: 'herdr', sessionName: 'work', workingDirectory: happyHomeDir,
+                startupDeadline: () => Date.now() + 10_000, startupPollIntervalMs: 5,
+                bindHost: async handle => { await session.updateMetadata(current => ({ ...current!, terminal: buildTerminalMetadataFromHostHandle(handle) })); },
+                waitForRetirement: async handle => {
+                    await nativeCompletion;
+                    api.panes.delete('managed');
+                    const adapter = createHerdrTerminalHostAdapter({ binary: 'herdr', sessionName: 'work',
+                        actionTimeoutMs: 500, startupTimeoutMs: 500 });
+                    const retired = await executeTerminalHostDisposition({ happyHomeDir, sessionId,
+                        expectedAttachmentId: handle.attachmentId!, adapter,
+                        intent: { kind: 'retire_confirmed_dead_attachment', reason: 'positive_dead_recovery' } });
+                    expect(retired.status).toBe('retired');
+                    return true;
+                },
+            } });
+            expect(result).toMatchObject({ ok: true });
+            expect(attached).toBe(true);
+            expect(api.requests.filter(request => request.method === 'layout.apply')).toHaveLength(1);
+            expect(JSON.parse(await readFile(record, 'utf8'))).toEqual({ args: ['attach', 'http://127.0.0.1:4312/', '--dir', happyHomeDir, '--session', 'native-session-one'] });
+            expect(await readTerminalHostAttachmentInfo({ happyHomeDir, sessionId })).toBeNull();
+            expect(session.sessionId).toBe(sessionId);
+            } finally {
+                if (nativeBoundary.child) {
+                    nativeBoundary.child.kill('SIGTERM');
+                    await nativeCompletion;
+                }
+            }
+        }));
+    });
+    it.skipIf(process.platform === 'win32').each(['missing_lock', 'missing_metadata', 'malformed', 'foreign_terminal', 'replacement', 'unknown'] as const)(
+      'keeps retained-host recovery fenced with %s evidence', async (evidence) => {
+        await withTempDir('plugin-adopt-fence-', async happyHomeDir => await withHerdrApi(async api => {
+            inventory.socketPath = api.socketPath;
+            inventory.inheritedSpawns = 0;
+            api.panes.add('original-provider');
+            const sessionId = 'adoption-fence-session';
+            const attachment = await writeTerminalHostAttachmentInfo({ happyHomeDir, sessionId, lifecycle: 'owned',
+                handle: { kind: 'herdr', sessionName: 'work', socketPath: api.socketPath,
+                    terminalId: 'original-provider', paneId: 'original-provider',
+                    attachMetadata: { attachStrategy: 'terminal_host', topology: 'shared', locality: 'same_machine', liveProbe: 'required' } } });
+            const lock = evidence === 'missing_lock' ? null
+                : await acquireSessionRunnerLock({ happyHomeDir, sessionId, pid: process.pid });
+            if (lock && !lock.ok) throw new Error('Could not admit fixture controller');
+            let terminal = buildTerminalMetadataFromHostHandle(attachment.handle);
+            if (evidence === 'malformed') {
+                await writeFile(join(happyHomeDir, 'terminal', 'sessions', `${sessionId}.host.json`), '{');
+            } else if (evidence === 'foreign_terminal' && terminal?.herdr) {
+                terminal = { ...terminal, herdr: { ...terminal.herdr, terminalId: 'foreign-provider' } };
+            } else if (evidence === 'replacement') {
+                api.beforeResponse.set('pane.process_info', () => {
+                    if (terminal?.herdr) terminal = { ...terminal, herdr: { ...terminal.herdr, terminalId: 'replacement-provider' } };
+                });
+            } else if (evidence === 'unknown') api.faults.set('pane.process_info', 'disconnect');
+            const service = createDefaultPluginTerminalHostService({ happyHomeDir,
+                hasCapability: capability => capability === 'terminalHost', readSessionId: () => sessionId,
+                readSessionMetadata: () => evidence === 'missing_metadata' ? null : ({ startedBy: 'daemon', terminal }) });
+            try {
+                await expect(service.adoptExistingHost?.()).rejects.toMatchObject({ code: 'PLUGIN_TERMINAL_HOST_UNAVAILABLE' });
+                expect(inventory.inheritedSpawns).toBe(0);
+                expect(api.requests.some(request => request.method === 'layout.apply' || request.method === 'pane.close')).toBe(false);
+                expect(api.panes.has('original-provider')).toBe(true);
+            } finally { if (lock?.ok) await lock.release(); }
+        }));
+    });
+    it.skipIf(process.platform === 'win32').each(['hook', 'statusline', 'foreign_hook', 'changed_preference'] as const)(
+      'rebinds an explicit Claude resume to its exact retained owned host without starting another provider (%s)', async (observation) => {
+        await withTempDir('plugin-adopt-retained-', async (happyHomeDir) => await withHerdrApi(async (api) => {
+            inventory.socketPath = api.socketPath;
+            inventory.inheritedSpawns = 0;
+            inventory.startedServers = [];
+            api.panes.add('original-provider');
+            const sessionId = 'retained-claude-session';
+            const attachment = await writeTerminalHostAttachmentInfo({
+                happyHomeDir, sessionId, lifecycle: 'owned', handle: {
+                    kind: 'herdr', sessionName: 'work', socketPath: api.socketPath,
+                    terminalId: 'original-provider', paneId: 'original-provider',
+                    attachMetadata: { attachStrategy: 'terminal_host', topology: 'shared', locality: 'same_machine', liveProbe: 'required' },
+                },
+            });
+            const lock = await acquireSessionRunnerLock({ happyHomeDir, sessionId, pid: process.pid });
+            if (!lock.ok) throw new Error('Could not admit the fixture controller');
+            const hooks = createSessionHooksService({ happyHomeDir, hasCapability: capability => capability === 'sessionHooks' });
+            const oldEndpoint = await hooks.startServer({ providerId: 'claude', sessionId,
+                lifecycle: { kind: 'session', sessionId }, sessionHookSecret: 'retained-session-secret',
+                permissionHookSecret: 'retained-permission-secret' });
+            await oldEndpoint.dispose();
+            const hostParams = {
+                happyHomeDir, hasCapability: (capability: string) => capability === 'terminalHost', readSessionId: () => sessionId,
+                readSessionMetadata: () => ({ startedBy: 'daemon' as const, terminal: buildTerminalMetadataFromHostHandle(attachment.handle) }),
+            };
+            const service = createDefaultPluginTerminalHostService(hostParams);
+            const transcriptPath = join(happyHomeDir, 'same-native-provider-id.jsonl');
+            await writeFile(transcriptPath, '');
+            const operations = createClaudeUnifiedTerminalTurnOperations({
+                ctx: createPluginContextFixture(service, createEventsFixture().service, {
+                    sessionHooks: hooks, transcriptFileFollowAllowedPaths: [transcriptPath],
+                }),
+                directory: tmpdir(), happierSessionId: sessionId,
+                hostPreference: observation === 'changed_preference' ? 'tmux' : 'herdr',
+                launchEnv: { HAPPIER_CLAUDE_PATH: process.execPath }, permissionMode: 'default',
+                launchIntent: { kind: 'resume_native', providerSessionId: 'same-native-provider-id' },
+                knownProviderSession: { providerSessionId: 'same-native-provider-id', transcriptPath },
+            });
+            const providerEvents: Array<{ kind: string }> = [];
+            let retainedObservationSettled!: () => void;
+            const observationSettled = new Promise<void>(resolve => { retainedObservationSettled = resolve; });
+            operations.subscribeProviderEvents(event => {
+                providerEvents.push(event);
+                if (event.kind === 'turn-cancelled') retainedObservationSettled();
+            });
+            try {
+                await expect(operations.startProviderSession()).resolves.toMatchObject({
+                    hostKind: 'herdr', hostSessionName: 'work', paneId: 'original-provider',
+                });
+                expect(inventory.inheritedSpawns).toBe(0);
+                expect(api.requests.some(request => request.method === 'layout.apply' || request.method === 'pane.close')).toBe(false);
+                expect(await readTerminalHostAttachmentInfo({ happyHomeDir, sessionId })).toEqual(attachment);
+                // A surviving Claude process does not emit a new SessionStart.
+                // Its authenticated primary observation, not the pane, proves the native ID.
+                expect(operations.readProviderIdentity()).toEqual({ sessionId: null });
+                const response = await fetch(`http://127.0.0.1:${oldEndpoint.port}/hook/${observation === 'statusline' ? 'statusline' : 'session-start'}`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-happier-hook-secret': 'retained-session-secret' },
+                    body: JSON.stringify({
+                        session_id: observation === 'foreign_hook' ? 'foreign-native-id' : 'same-native-provider-id',
+                        hook_event_name: 'PostToolUse', transcript_path: transcriptPath,
+                    }),
+                });
+                expect(response.status).toBe(200);
+                // Statusline transport intentionally ACKs before its consumer runs.
+                if (observation !== 'foreign_hook') await observationSettled;
+                expect(operations.readProviderIdentity()).toEqual({
+                    sessionId: observation === 'foreign_hook' ? null : 'same-native-provider-id',
+                });
+                expect(providerEvents.filter(event => event.kind === 'turn-cancelled')).toHaveLength(
+                    observation === 'foreign_hook' ? 0 : 1,
+                );
+            } finally {
+                await operations.disposeProviderSession('runtime_recovery');
+                await lock.release();
+                const layout = api.requests.find(request => request.method === 'layout.apply');
+                const root = layout?.params.root as { command?: string[] } | undefined;
+                const specPath = root?.command?.[2];
+                if (specPath) { await unlink(specPath).catch(() => {}); await rmdir(dirname(specPath)).catch(() => {}); }
+            }
+        }));
+    });
+
     it.skipIf(process.platform === 'win32').each(['borrowed', 'owned'] as const)(
         'refuses a metadata-recovered %s Herdr host on an unsupported running server before launching',
         async (lifecycle) => {

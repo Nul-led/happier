@@ -16,6 +16,7 @@ import type { BrowserAutomationRoutes } from '../automation/routes';
 import type { BrowserDiagnosticsActionRoutes } from '../diagnostics/actionRoutes';
 import type { BrowserRecordingActionRoutes } from '../recording/actionRoutes';
 import type { BrowserDaemonFeatureGate } from '../featureGate';
+import { executeManagedChromiumSandboxInstall } from '../sidecar/sandbox';
 import type {
   BrowserRecordingAttachToComposerInput,
   BrowserRecordingAttachToComposerResult,
@@ -241,6 +242,10 @@ export function createBrowserDaemonRuntimeActionExecutor(
     // live rejection path.
     if (!getActionSpec(args.actionId).surfaces.agent) {
       return browserRuntimeActionDisabledResult('browser_action_unbacked');
+    }
+
+    if (args.actionId === 'browser.sandbox.install') {
+      return await executeManagedChromiumSandboxInstall(args);
     }
 
     if (BROWSER_AUTOMATION_ACTION_IDS.has(args.actionId)) {

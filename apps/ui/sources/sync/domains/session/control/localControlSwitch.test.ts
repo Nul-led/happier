@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   shouldRenderChatTimelineForSession,
   shouldRequestRemoteControl,
+  shouldOfferLocalControlRelease,
   shouldRequestRemoteControlAfterPendingEnqueue,
 } from './localControlSwitch';
 import type { Session } from '@/sync/domains/state/storageTypes';
@@ -40,6 +41,25 @@ function installedAgentCatalog() {
 }
 
 describe('localControlSwitch', () => {
+  it('offers manual release of a runner-owned shared terminal without taking model control', () => {
+    const session = createSessionFixture({ active: true, agentState: {
+      controlledByUser: false,
+      localControl: { attached: true, topology: 'shared', remoteWritable: true, canDetach: true },
+    } });
+    expect(shouldOfferLocalControlRelease(session, 'logged_out')).toBe(true);
+    expect(shouldRequestRemoteControl(session, 'logged_out')).toBe(false);
+    expect(shouldRequestRemoteControlAfterPendingEnqueue(session, 'logged_out')).toBe(false);
+    expect(shouldOfferLocalControlRelease({ ...session, active: false }, 'logged_out')).toBe(false);
+  });
+
+  it.each([false, undefined])('requires explicit shared release custody (%s)', (canDetach) => {
+    const session = createSessionFixture({ active: true, agentState: { localControl: {
+      attached: true, topology: 'shared', remoteWritable: true,
+      ...(canDetach === undefined ? {} : { canDetach }),
+    } } });
+    expect(shouldOfferLocalControlRelease(session, 'logged_in')).toBe(false);
+  });
+
   it.each([
     { source: 'connected', profileId: 'work' },
     { source: 'connected', selection: 'group', groupId: 'work-pool' },
@@ -48,6 +68,7 @@ describe('localControlSwitch', () => {
       v: 2, bindingsByServiceId: { 'acme.account/subscription': binding },
     });
     expect(shouldRequestRemoteControl(session, 'logged_out', installedAgentCatalog())).toBe(true);
+    expect(shouldOfferLocalControlRelease(session, 'logged_out', installedAgentCatalog())).toBe(true);
     // Explicit takeover eligibility never makes enqueue switch control implicitly.
     expect(shouldRequestRemoteControlAfterPendingEnqueue(session, 'logged_out')).toBe(false);
   });
@@ -101,6 +122,7 @@ describe('localControlSwitch', () => {
       v: 2, bindingsByServiceId: { 'acme.account/subscription': { source: 'connected', profileId: 'work' } },
     }, 'other.agent/native');
     expect(shouldRequestRemoteControl(session, 'logged_out', installedAgentCatalog())).toBe(false);
+    expect(shouldOfferLocalControlRelease(session, 'logged_out', installedAgentCatalog())).toBe(false);
     expect(shouldRequestRemoteControl(session, 'logged_out')).toBe(false);
   });
 
@@ -139,6 +161,7 @@ describe('localControlSwitch', () => {
       },
     });
     expect(shouldRequestRemoteControl(session, 'logged_out', catalog)).toBe(false);
+    expect(shouldOfferLocalControlRelease(session, 'logged_out', catalog)).toBe(false);
   });
 
   it('normalizes retained bundled scalar bindings through the canonical ingress when no projected catalog is available', () => {

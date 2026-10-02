@@ -37,6 +37,7 @@ import { useCredentialScopedAccountModeResolver } from './useCredentialScopedAcc
 import {
     buildQuotaSnapshotScopeKey,
     getQuotaSnapshotEntry,
+    refreshQuotaSnapshot,
     retainQuotaSnapshotOnce,
     retainQuotaSnapshotPolling,
     subscribeQuotaSnapshotEntry,
@@ -46,6 +47,7 @@ import {
     buildQualifiedQuotaSnapshotScopeKey,
     getQualifiedQuotaSnapshotEntry,
     loadQualifiedQuotaSnapshotOnce,
+    refreshQualifiedQuotaSnapshot,
     retainQualifiedQuotaSnapshotPolling,
     subscribeQualifiedQuotaSnapshotEntry,
     type QualifiedQuotaSnapshotStoreContext,
@@ -96,6 +98,11 @@ export type ConnectedServiceQuotaSnapshotsResult = Readonly<{
     loadingByKey: Readonly<Record<string, boolean>>;
     /** A read of this account completed (with or without a snapshot). */
     readByKey: Readonly<Record<string, boolean>>;
+    refreshingByKey: Readonly<Record<string, boolean>>;
+    errorsByKey: Readonly<Record<string, string | null>>;
+    refreshableKeys: readonly string[];
+    /** Refresh only the selected accounts, or all admitted accounts when keys are omitted. */
+    refresh(keys?: readonly string[]): Promise<void>;
 }>;
 
 type LegacyConnectedServiceQuotaSnapshotsResult = Readonly<{
@@ -104,6 +111,10 @@ type LegacyConnectedServiceQuotaSnapshotsResult = Readonly<{
     usageRecordIdsByKey: Readonly<Record<string, ProviderAccountUsageRecordId | null>>;
     loadingByKey: Readonly<Record<string, boolean>>;
     readByKey: Readonly<Record<string, boolean>>;
+    refreshingByKey: Readonly<Record<string, boolean>>;
+    errorsByKey: Readonly<Record<string, string | null>>;
+    refreshableKeys: readonly string[];
+    refresh(keys?: readonly string[]): Promise<void>;
 }>;
 
 /**
@@ -338,11 +349,25 @@ export function useConnectedServiceQuotaSnapshots(
         };
     }, [fetchPolicy, loadContexts]);
 
+    const refresh = React.useCallback(async (keys?: readonly string[]) => {
+        const selected = keys ? new Set(keys) : null;
+        await Promise.all(loadContexts.filter((registration) => !selected || selected.has(registration.profileKey)).map((registration) => {
+            if (registration.kind === 'v4') {
+                if (getQualifiedQuotaSnapshotEntry(registration.key).supported === false) return;
+                return refreshQualifiedQuotaSnapshot(registration.key, registration.loadContext);
+            }
+            return refreshQuotaSnapshot(registration.key, registration.loadContext);
+        }));
+    }, [loadContexts]);
+
     return React.useMemo(() => {
         const snapshotsByKey: Record<string, ConnectedServiceQuotaSnapshotForUi | null> = {};
         const usageRecordIdsByKey: Record<string, ProviderAccountUsageRecordId | null> = {};
         const loadingByKey: Record<string, boolean> = {};
         const readByKey: Record<string, boolean> = {};
+        const refreshingByKey: Record<string, boolean> = {};
+        const errorsByKey: Record<string, string | null> = {};
+        const refreshableKeys: string[] = [];
         if (!quotasEnabled) {
             return {
                 profiles: normalizedProfiles,
@@ -350,6 +375,10 @@ export function useConnectedServiceQuotaSnapshots(
                 usageRecordIdsByKey,
                 loadingByKey,
                 readByKey,
+                refreshingByKey,
+                errorsByKey,
+                refreshableKeys,
+                refresh,
             } satisfies ConnectedServiceQuotaSnapshotsResult;
         }
 
@@ -370,6 +399,9 @@ export function useConnectedServiceQuotaSnapshots(
                 loadingByKey[registration.profileKey] = entry.loading;
                 usageRecordIdsByKey[registration.profileKey] = entry.usageRecordId;
                 readByKey[registration.profileKey] = entry.read;
+                refreshingByKey[registration.profileKey] = entry.refreshing;
+                errorsByKey[registration.profileKey] = entry.error;
+                if (entry.supported !== false) refreshableKeys.push(registration.profileKey);
                 continue;
             }
             const entry = getQuotaSnapshotEntry(registration.key);
@@ -377,6 +409,9 @@ export function useConnectedServiceQuotaSnapshots(
             usageRecordIdsByKey[registration.profileKey] = null;
             loadingByKey[registration.profileKey] = entry.loading;
             readByKey[registration.profileKey] = entry.read;
+            refreshingByKey[registration.profileKey] = entry.refreshing;
+            errorsByKey[registration.profileKey] = entry.error;
+            refreshableKeys.push(registration.profileKey);
         }
 
         return {
@@ -385,6 +420,10 @@ export function useConnectedServiceQuotaSnapshots(
             usageRecordIdsByKey,
             loadingByKey,
             readByKey,
+            refreshingByKey,
+            errorsByKey,
+            refreshableKeys,
+            refresh,
         } satisfies ConnectedServiceQuotaSnapshotsResult;
-    }, [loadContexts, normalizedProfiles, quotasEnabled, version]);
+    }, [loadContexts, normalizedProfiles, quotasEnabled, refresh, version]);
 }

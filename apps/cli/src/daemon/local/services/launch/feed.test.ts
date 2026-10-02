@@ -94,7 +94,7 @@ describe('createLocalServiceLauncherFeed', () => {
                 folderLabel: 'web',
                 iconToken: 'vite',
             },
-            originMode: 'path',
+            originMode: 'host',
         });
         const feed = createLocalServiceLauncherFeed({
             machineId: 'machine-a',

@@ -113,6 +113,35 @@ describe('voice provider settings catalog', () => {
     expect(JSON.stringify(migrated?.config)).not.toContain('xi_legacy');
   });
 
+  it('uses the admitted declaration for an invalid predecessor Voice id rather than importing a plugin default', () => {
+    const contribution = BUNDLED_FIRST_PARTY_VOICE_CONTRIBUTIONS.find(
+      (entry) => entry.providerId === elevenLabsProviderId,
+    );
+    if (!contribution?.declaration.settings) throw new Error('expected_elevenlabs_settings');
+    const defaultVoiceId = 'declaration-owned-default';
+    const catalog = createVoiceProviderSettingsCatalog({
+      bundledContributions: [{
+        ...contribution,
+        declaration: {
+          ...contribution.declaration,
+          settings: {
+            ...contribution.declaration.settings,
+            fields: contribution.declaration.settings.fields.map((field) => field.id === 'tts'
+              ? { ...field, default: {
+                ...(field.default && typeof field.default === 'object' && !Array.isArray(field.default) ? field.default : {}),
+                voiceId: defaultVoiceId,
+              } }
+              : field),
+          },
+        },
+      }],
+    });
+    expect(catalog.get(elevenLabsProviderId)?.migrateLegacy({ tts: { voiceId: '   ' } }))
+      .toMatchObject({ config: { tts: { voiceId: defaultVoiceId } } });
+    expect(catalog.get(elevenLabsProviderId)?.defaultLegacyConfig)
+      .toMatchObject({ tts: { voiceId: 'EST9Ui6982FZPSi7gCHi' } });
+  });
+
   it('keeps built-in settings owners available independently of bundled packages', () => {
     const disabled = createVoiceProviderSettingsCatalog(emptyBundledCatalogInput);
     expect(disabled.get('local_direct')).not.toBeNull();

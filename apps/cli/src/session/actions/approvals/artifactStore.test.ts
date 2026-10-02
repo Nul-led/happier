@@ -6,28 +6,46 @@ import type { Credentials, StoredCredentials } from '@/persistence';
 import { decodeBase64, decryptWithDataKey, encryptWithDataKey, encodeBase64, libsodiumPublicKeyFromSecretKey } from '@/api/encryption';
 import {
   ARTIFACT_PLAIN_DATA_KEY_MARKER,
+  API_TOKEN_FULL_GRANT_V1,
   ApprovalRequestV1Schema,
   ApprovalRequestV2Schema,
-  CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
-  CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
   ExecutionRunHostActionApprovalRequestV1Schema,
   TargetActionApprovalRequestV1Schema,
   encodePlainArtifactStoredContent,
   decodePlainArtifactStoredContent,
   openEncryptedDataKeyEnvelopeV1,
+  updatePromptDocInLibrary,
 } from '@happier-dev/protocol';
 
 import { createCliApprovalsArtifactStore } from './artifactStore';
 
-const { mockGet, mockPost, mockFetchServerFeaturesSnapshot } = vi.hoisted(() => ({
+const { mockGet, mockPost } = vi.hoisted(() => ({
   mockGet: vi.fn(),
   mockPost: vi.fn(),
-  mockFetchServerFeaturesSnapshot: vi.fn(),
 }));
+
+const fixtureArtifacts = vi.hoisted(() => new Map<string, Record<string, unknown>>());
 
 vi.mock('axios', () => ({
   default: {
-    get: mockGet,
+    get: vi.fn(async (url: string, config?: unknown) => {
+      if (url.endsWith('/recipients')) {
+        const artifactId = decodeURIComponent(url.split('/').at(-3) ?? '');
+        const artifact = fixtureArtifacts.get(artifactId);
+        if (!artifact) throw new Error('Missing Artifact HTTP census fixture');
+        return { status: 200, data: { artifactId, ownerAccountId: artifact.ownerAccountId,
+          access: artifact.access, encryptionMode: artifact.encryptionMode,
+          dataEncryptionKey: artifact.dataEncryptionKey, callerDataEncryptionKey: artifact.dataEncryptionKey, recipients: [] } };
+      }
+      const response = await mockGet(url, config);
+      const rows: unknown[] = Array.isArray(response?.data) ? response.data : [response?.data];
+      for (const row of rows) {
+        if (row && typeof row === 'object' && typeof Reflect.get(row, 'id') === 'string') {
+          fixtureArtifacts.set(Reflect.get(row, 'id'), row as Record<string, unknown>);
+        }
+      }
+      return response;
+    }),
     post: mockPost,
   },
 }));
@@ -38,29 +56,38 @@ vi.mock('@/configuration', () => ({
   },
 }));
 
-vi.mock('@/features/serverFeaturesClient', () => ({
-  fetchServerFeaturesSnapshot: (...args: unknown[]) =>
-    mockFetchServerFeaturesSnapshot(...args),
-}));
-
 describe('createCliApprovalsArtifactStore', () => {
+  it('refuses a prompt update based on an earlier read instead of overwriting a concurrent writer', async () => {
+    const store = createStore({ token: 'token-only', encryption: null }, 'plain');
+    let record = {
+      id: 'prompt-race', ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'plain',
+      dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+      header: encodePlainArtifactStoredContent({ v: 1, kind: 'prompt_doc.v2', title: 'Original' }),
+      body: encodePlainArtifactStoredContent({ body: JSON.stringify({ v: 1, markdown: 'original', createdAtMs: 1, updatedAtMs: 1 }) }),
+      headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1,
+    };
+    const concurrent = { ...record, headerVersion: 2, bodyVersion: 2,
+      header: encodePlainArtifactStoredContent({ v: 1, kind: 'prompt_doc.v2', title: 'Concurrent' }),
+      body: encodePlainArtifactStoredContent({ body: JSON.stringify({ v: 1, markdown: 'concurrent', createdAtMs: 1, updatedAtMs: 2 }) }),
+    };
+    mockGet.mockImplementation(async () => ({ status: 200, data: record }));
+    mockPost.mockImplementation(async (_url: string, input: { header: string; body: string; expectedHeaderVersion: number; expectedBodyVersion: number }) => {
+      if (input.expectedHeaderVersion !== record.headerVersion || input.expectedBodyVersion !== record.bodyVersion) {
+        return { status: 200, data: { success: false, error: 'version-mismatch' } };
+      }
+      record = { ...record, header: input.header, body: input.body, headerVersion: 3, bodyVersion: 3 };
+      return { status: 200, data: { success: true, headerVersion: 3, bodyVersion: 3 } };
+    });
+    await expect(updatePromptDocInLibrary({ store: store.promptLibraryStore,
+      request: { artifactId: record.id, title: 'Stale', markdown: 'stale' },
+      nowMs: () => { record = concurrent; return 3; },
+    })).rejects.toMatchObject({ code: 'version_mismatch' });
+    expect(record).toEqual(concurrent);
+  });
   beforeEach(() => {
+    fixtureArtifacts.clear();
     mockGet.mockReset();
     mockPost.mockReset();
-    mockFetchServerFeaturesSnapshot.mockReset();
-    mockFetchServerFeaturesSnapshot.mockResolvedValue({
-      status: 'ready',
-      features: {
-        capabilities: {
-          accountStoredContentCompatibility: {
-            v: 1,
-            minimumProtocolVersion: 2,
-            currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
-            declarationTransport: 'http-header-and-socket-auth-v1',
-          },
-        },
-      },
-    });
   });
 
   type DataKeyCredentials = Credentials & Readonly<{
@@ -115,7 +142,7 @@ describe('createCliApprovalsArtifactStore', () => {
     let capturedCreateBody: any = null;
     mockPost.mockImplementationOnce(async (url: string, body: any) => {
       capturedCreateBody = { url, body };
-      return { status: 200, data: { id: body.id } };
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     });
 
     const created = await store.approvalsCreate({ request, serverId: null });
@@ -183,6 +210,7 @@ describe('createCliApprovalsArtifactStore', () => {
           binding: {
             serverIdentityId: 'stable-home-identity', accountId: 'account-1', principalId: 'principal-1',
             credentialId: 'credential-1', machineId: 'machine-1',
+            grant: API_TOKEN_FULL_GRANT_V1,
             actionId: 'session.message.send', requestId: 'request-1',
             requestEnvelopeDigest: 'a'.repeat(43),
             target: { kind: 'session', sessionId: 's1' },
@@ -194,7 +222,7 @@ describe('createCliApprovalsArtifactStore', () => {
     let capturedCreateBody: any = null;
     mockPost.mockImplementationOnce(async (_url: string, body: any) => {
       capturedCreateBody = body;
-      return { status: 200, data: { id: body.id } };
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     });
 
     await store.approvalsCreate({ request, serverId: 'server-1' });
@@ -213,12 +241,14 @@ describe('createCliApprovalsArtifactStore', () => {
     });
     expect(body).toEqual({ body: JSON.stringify(request) });
     mockGet.mockResolvedValue({ status: 200, data: {
+      ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
       ...capturedCreateBody, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1,
       header: encodeBase64(encryptWithDataKey({ ...(header as Record<string, unknown>), serverIdentityId: 'wrong-home' }, dataKey!)),
     } });
     await expect(store.approvalsGet({ artifactId: capturedCreateBody.id, serverId: 'server-1' })).resolves.toBeNull();
 
     mockGet.mockResolvedValueOnce({ status: 200, data: {
+      ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
       ...capturedCreateBody, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1,
       header: encodeBase64(encryptWithDataKey({
         ...(header as Record<string, unknown>),
@@ -237,6 +267,7 @@ describe('createCliApprovalsArtifactStore', () => {
         headerVersion: 1,
         body: capturedCreateBody.body,
         bodyVersion: 1,
+        ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
         dataEncryptionKey: capturedCreateBody.dataEncryptionKey,
         seq: 1,
         createdAt: 1,
@@ -292,13 +323,14 @@ describe('createCliApprovalsArtifactStore', () => {
     let createdPayload: EncryptedArtifactPayload | null = null;
     mockPost.mockImplementationOnce(async (_url: string, body: EncryptedArtifactPayload) => {
       createdPayload = body;
-      return { status: 200, data: { id: body.id } };
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     });
     const created = await store.approvalsCreate({ request: approved, serverId: null });
     mockPost.mockClear();
     // approvalsUpdate reads once to validate the transition and once more to
     // preserve the existing encrypted data key while performing the CAS.
     mockGet.mockResolvedValue({ status: 200, data: {
+      ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
       ...createdPayload!,
       headerVersion: 1,
       bodyVersion: 1,
@@ -342,7 +374,7 @@ describe('createCliApprovalsArtifactStore', () => {
     mockGet.mockResolvedValueOnce({ status: 200, data: { mode: 'plain', updatedAt: 1 } });
     mockPost.mockImplementationOnce(async (_url: string, body: any) => {
       createdPayload = body;
-      return { status: 200, data: { id: body.id } };
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     });
     const created = await store.approvalsCreate({ request: open, serverId: 'server-1' });
 
@@ -362,6 +394,7 @@ describe('createCliApprovalsArtifactStore', () => {
       headerVersion: version,
       body,
       bodyVersion: version,
+      ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'plain',
       dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
       seq: version,
       createdAt: 1,
@@ -421,18 +454,14 @@ describe('createCliApprovalsArtifactStore', () => {
     for (const [, config] of artifactGets) {
       expect(config).toMatchObject({
         headers: {
-          'x-happier-account-stored-content-protocol': String(
-            CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION.protocolVersion,
-          ),
+          Authorization: 'Bearer token-only',
         },
       });
     }
     for (const [, , config] of artifactPosts) {
       expect(config).toMatchObject({
         headers: {
-          'x-happier-account-stored-content-protocol': String(
-            CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION.protocolVersion,
-          ),
+          Authorization: 'Bearer token-only',
         },
       });
     }
@@ -479,7 +508,7 @@ describe('createCliApprovalsArtifactStore', () => {
     let createdPayload: any = null;
     mockPost.mockImplementationOnce(async (_url: string, body: any) => {
       createdPayload = body;
-      return { status: 200, data: { id: body.id } };
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     });
 
     await store.approvalsCreate({ request, serverId: 'home-1' });
@@ -497,7 +526,7 @@ describe('createCliApprovalsArtifactStore', () => {
     mockPost.mockImplementationOnce(async (_url: string, body: any, config: any) => {
       expect(config.signal).toBe(signal);
       createdPayload = body;
-      return { status: 200, data: { id: body.id } };
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     });
 
     const artifactId = await store.promptLibraryStore.create!({
@@ -511,6 +540,7 @@ describe('createCliApprovalsArtifactStore', () => {
       headerVersion: 1,
       body: createdPayload.body,
       bodyVersion: 1,
+      ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
       dataEncryptionKey: createdPayload.dataEncryptionKey,
       seq: 1,
       createdAt: 1,
@@ -519,6 +549,7 @@ describe('createCliApprovalsArtifactStore', () => {
     mockGet.mockResolvedValueOnce({ status: 200, data: record });
     await expect(store.promptLibraryStore.read(artifactId, { signal })).resolves.toEqual({
       id: artifactId,
+      revision: { headerVersion: 1, bodyVersion: 1 },
       header: { v: 1, kind: 'prompt_doc.v2', title: 'Prompt' },
       body: JSON.stringify({ v: 1, markdown: '# Prompt', createdAtMs: 1, updatedAtMs: 1 }),
     });
@@ -526,9 +557,10 @@ describe('createCliApprovalsArtifactStore', () => {
     mockGet
       .mockResolvedValueOnce({ status: 200, data: record })
       .mockResolvedValueOnce({ status: 200, data: record });
-    mockPost.mockResolvedValueOnce({ status: 200, data: { success: true } });
+    mockPost.mockResolvedValueOnce({ status: 200, data: { success: true, headerVersion: 2, bodyVersion: 2 } });
     await expect(store.promptLibraryStore.update({
       artifactId,
+      expectedRevision: { headerVersion: 1, bodyVersion: 1 },
       header: { v: 1, kind: 'prompt_doc.v2', title: 'Updated' },
       body: JSON.stringify({ v: 1, markdown: '# Updated', createdAtMs: 1, updatedAtMs: 2 }),
       signal,
@@ -537,36 +569,6 @@ describe('createCliApprovalsArtifactStore', () => {
     expect(mockPost.mock.calls.at(-1)?.[2]?.signal).toBe(signal);
   });
 
-  it('refuses a plain approval Artifact create before POST on an immutable old-server capability snapshot', async () => {
-    const credentials: StoredCredentials = { token: 'token-only', encryption: null };
-    const store = createStore(credentials, 'plain');
-    mockFetchServerFeaturesSnapshot.mockResolvedValue({
-      status: 'ready',
-      features: {
-        capabilities: {
-          encryption: {
-            storagePolicy: 'optional',
-          },
-        },
-      },
-    });
-    const request = ApprovalRequestV1Schema.parse({
-      v: 1,
-      actionId: 'session.message.send',
-      status: 'open',
-      summary: 'Do not send',
-      createdAtMs: 1,
-      updatedAtMs: 1,
-      createdBy: { surface: 'cli', sessionId: 's1' },
-      actionArgs: { sessionId: 's1', message: 'hello' },
-    });
-
-    await expect(store.approvalsCreate({ request, serverId: null })).rejects.toMatchObject({
-      code: 'client-upgrade-required',
-      retryable: false,
-    });
-    expect(mockPost).not.toHaveBeenCalled();
-  });
 
   it('durably creates and reads a truthful target-action approval artifact', async () => {
     const credentials = createCredentials();
@@ -579,7 +581,7 @@ describe('createCliApprovalsArtifactStore', () => {
       policyFingerprint: 'b'.repeat(64), subjectFingerprint: 'a'.repeat(64), summary: 'Approve run',
     });
     let payload: any;
-    mockPost.mockImplementationOnce(async (_url: string, body: any) => { payload = body; return { status: 200, data: { id: body.id } }; });
+    mockPost.mockImplementationOnce(async (_url: string, body: any) => { payload = body; return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } }; });
     const created = await store.targetActionApprovalsCreate({ request });
     const serializedTransport = JSON.stringify(payload);
     expect(serializedTransport).not.toContain(request.qualifiedActionId);
@@ -588,6 +590,7 @@ describe('createCliApprovalsArtifactStore', () => {
     expect(serializedTransport).not.toContain('"value":"x"');
     mockGet.mockImplementationOnce(async () => ({ status: 200, data: {
       id: created.artifactId, header: payload.header, headerVersion: 1, body: payload.body, bodyVersion: 1,
+      ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
       dataEncryptionKey: payload.dataEncryptionKey, seq: 1, createdAt: 1, updatedAt: 1,
     } }));
     await expect(store.targetActionApprovalsGet({ artifactId: created.artifactId })).resolves.toEqual(request);
@@ -619,11 +622,12 @@ describe('createCliApprovalsArtifactStore', () => {
     mockPost.mockImplementationOnce(async (_url: string, body: unknown) => {
       const payload = body as EncryptedArtifactPayload;
       openPayload = payload;
-      return { status: 200, data: { id: payload.id } };
+      return { status: 200, data: { id: payload.id, headerVersion: 1, bodyVersion: 1 } };
     });
     const created = await store.executionRunHostActionApprovalsCreate({ request });
     const fullRecord = (payload: EncryptedArtifactPayload, version: number) => ({ status: 200, data: {
       id: created.artifactId, header: payload.header, headerVersion: version,
+      ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
       body: payload.body, bodyVersion: version, dataEncryptionKey: openPayload!.dataEncryptionKey,
       seq: version, createdAt: 1, updatedAt: version,
     } });
@@ -639,7 +643,7 @@ describe('createCliApprovalsArtifactStore', () => {
       .mockImplementationOnce(async () => fullRecord(openPayload!, 1));
     mockPost.mockImplementationOnce(async (_url: string, body: unknown) => {
       approvedPayload = body as EncryptedArtifactPayload;
-      return { status: 200, data: { success: true } };
+      return { status: 200, data: { success: true, headerVersion: 2, bodyVersion: 2 } };
     });
     await expect(store.executionRunHostActionApprovalsUpdate({ artifactId: created.artifactId, request: approved }))
       .resolves.toEqual({ ok: true });
@@ -675,11 +679,12 @@ describe('createCliApprovalsArtifactStore', () => {
     mockPost.mockImplementationOnce(async (_url: string, body: unknown) => {
       const record = body as Readonly<{ id: string; header: string; dataEncryptionKey: string }>;
       payload = record;
-      return { status: 200, data: { id: record.id } };
+      return { status: 200, data: { id: record.id, headerVersion: 1, bodyVersion: 1 } };
     });
     await store.executionRunHostActionApprovalsCreate({ request });
     mockGet.mockResolvedValueOnce({ status: 200, data: [{
       id: payload!.id, header: payload!.header, headerVersion: 1,
+      ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
       dataEncryptionKey: payload!.dataEncryptionKey, seq: 1, createdAt: 1, updatedAt: 1,
     }] });
 
@@ -698,10 +703,11 @@ describe('createCliApprovalsArtifactStore', () => {
       policyFingerprint: 'b'.repeat(64), subjectFingerprint: 'a'.repeat(64), summary: 'Approve run',
     });
     let payload: any;
-    mockPost.mockImplementationOnce(async (_url: string, body: any) => { payload = body; return { status: 200, data: { id: body.id } }; });
+    mockPost.mockImplementationOnce(async (_url: string, body: any) => { payload = body; return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } }; });
     const created = await store.targetActionApprovalsCreate({ request });
     mockGet.mockImplementationOnce(async () => ({ status: 200, data: {
       id: created.artifactId, header: payload.header, headerVersion: 1, body: payload.body, bodyVersion: 1,
+      ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
       dataEncryptionKey: payload.dataEncryptionKey, seq: 1, createdAt: 1, updatedAt: 1,
     } }));
     const mutated = TargetActionApprovalRequestV1Schema.parse({
@@ -725,17 +731,18 @@ describe('createCliApprovalsArtifactStore', () => {
     });
     let createdPayload: any;
     let approvedPayload: any;
-    mockPost.mockImplementationOnce(async (_url: string, body: any) => { createdPayload = body; return { status: 200, data: { id: body.id } }; });
+    mockPost.mockImplementationOnce(async (_url: string, body: any) => { createdPayload = body; return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } }; });
     const created = await store.targetActionApprovalsCreate({ request: open });
     const fullRecord = (payload: any, version: number) => ({ status: 200, data: {
       id: created.artifactId, header: payload.header, headerVersion: version,
+      ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
       body: payload.body, bodyVersion: version, dataEncryptionKey: createdPayload.dataEncryptionKey,
       seq: version, createdAt: 1, updatedAt: version,
     } });
     mockGet
       .mockImplementationOnce(async () => fullRecord(createdPayload, 1))
       .mockImplementationOnce(async () => fullRecord(createdPayload, 1));
-    mockPost.mockImplementationOnce(async (_url: string, body: any) => { approvedPayload = body; return { status: 200, data: { success: true } }; });
+    mockPost.mockImplementationOnce(async (_url: string, body: any) => { approvedPayload = body; return { status: 200, data: { success: true, headerVersion: 2, bodyVersion: 2 } }; });
     const approved = TargetActionApprovalRequestV1Schema.parse({
       ...open, status: 'approved', updatedAtMs: 2, decision: { kind: 'approve', decidedAtMs: 2 },
     });
@@ -760,7 +767,7 @@ describe('createCliApprovalsArtifactStore', () => {
       .mockImplementationOnce(async () => fullRecord(approvedPayload, 2));
     mockPost.mockImplementationOnce(async (_url: string, body: any) => {
       executingPayload = body;
-      return { status: 200, data: { success: true } };
+      return { status: 200, data: { success: true, headerVersion: 3, bodyVersion: 3 } };
     });
     await expect(store.targetActionApprovalsUpdate({ artifactId: created.artifactId, request: executing }))
       .resolves.toEqual({ ok: true });
@@ -785,7 +792,7 @@ describe('createCliApprovalsArtifactStore', () => {
       .mockImplementationOnce(async () => fullRecord(executingPayload, 3));
     mockPost.mockImplementationOnce(async (_url: string, body: any) => {
       executedPayload = body;
-      return { status: 200, data: { success: true } };
+      return { status: 200, data: { success: true, headerVersion: 4, bodyVersion: 4 } };
     });
     await expect(store.targetActionApprovalsUpdate({ artifactId: created.artifactId, request: executed }))
       .resolves.toEqual({ ok: true });
@@ -824,7 +831,7 @@ describe('createCliApprovalsArtifactStore', () => {
     let createdPayload: any = null;
     mockPost.mockImplementationOnce(async (_url: string, body: any) => {
       createdPayload = body;
-      return { status: 200, data: { id: body.id } };
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     });
     const created = await storeCreate.approvalsCreate({ request, serverId: null });
 
@@ -838,6 +845,7 @@ describe('createCliApprovalsArtifactStore', () => {
           headerVersion: 1,
           body: createdPayload.body,
           bodyVersion: 1,
+          ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
           dataEncryptionKey: createdPayload.dataEncryptionKey,
           seq: 1,
           createdAt: 1,
@@ -858,6 +866,7 @@ describe('createCliApprovalsArtifactStore', () => {
       headerVersion: 2,
       body: 'retained-encrypted-body',
       bodyVersion: 4,
+      ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
       dataEncryptionKey: 'retained-encrypted-data-key',
       seq: 3,
       createdAt: 1,
@@ -928,6 +937,7 @@ describe('createCliApprovalsArtifactStore', () => {
         headerVersion: 1,
         body: corruptHeader ? validBody : malformedPlainEnvelope,
         bodyVersion: 1,
+        ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'plain',
         dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
         seq: 1,
         createdAt: 1,
@@ -1002,6 +1012,7 @@ describe('createCliApprovalsArtifactStore', () => {
         id: `unrelated-${index}`,
         header: encodedHeader({ v: 1, kind: 'prompt_library_item.v1', title: `Other ${index}` }),
         headerVersion: 1,
+        ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'plain',
         dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
         seq: index + 1,
         createdAt: index + 1,
@@ -1011,6 +1022,7 @@ describe('createCliApprovalsArtifactStore', () => {
         id: 'approval-after-unrelated',
         header: approvalHeader,
         headerVersion: 1,
+        ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'plain',
         dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
         seq: 7,
         createdAt: 7,
@@ -1027,6 +1039,7 @@ describe('createCliApprovalsArtifactStore', () => {
             headerVersion: 1,
             body: approvalBody,
             bodyVersion: 1,
+            ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'plain',
             dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
             seq: 7,
             createdAt: 7,
@@ -1053,6 +1066,7 @@ describe('createCliApprovalsArtifactStore', () => {
         id: 'retained-approval',
         header: 'retained-encrypted-header',
         headerVersion: 2,
+        ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
         dataEncryptionKey: 'retained-encrypted-data-key',
         seq: 3,
         createdAt: 1,
@@ -1088,7 +1102,7 @@ describe('createCliApprovalsArtifactStore', () => {
     let createdPayload: any = null;
     mockPost.mockImplementationOnce(async (_url: string, body: any) => {
       createdPayload = body;
-      return { status: 200, data: { id: body.id } };
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     });
     const created = await store.approvalsCreate({ request, serverId: 'server-1' });
 
@@ -1103,6 +1117,7 @@ describe('createCliApprovalsArtifactStore', () => {
               id: created.artifactId,
               header: createdPayload.header,
               headerVersion: 1,
+              ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
               dataEncryptionKey: createdPayload.dataEncryptionKey,
               seq: 1,
               createdAt: 1,
@@ -1119,6 +1134,7 @@ describe('createCliApprovalsArtifactStore', () => {
           headerVersion: 1,
           body: createdPayload.body,
           bodyVersion: 1,
+          ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
           dataEncryptionKey: createdPayload.dataEncryptionKey,
           seq: 1,
           createdAt: 1,
@@ -1194,6 +1210,7 @@ describe('createCliApprovalsArtifactStore', () => {
           id: 'approval-raced',
           header: staleListHeader,
           headerVersion: 1,
+          ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'plain',
           dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
           seq: 1,
           createdAt: 1,
@@ -1208,6 +1225,7 @@ describe('createCliApprovalsArtifactStore', () => {
           headerVersion: 2,
           body: encodePlainArtifactStoredContent({ body: JSON.stringify(approved) }),
           bodyVersion: 2,
+          ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'plain',
           dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
           seq: 2,
           createdAt: 1,
@@ -1243,7 +1261,7 @@ describe('createCliApprovalsArtifactStore', () => {
     let createdPayload: any = null;
     mockPost.mockImplementationOnce(async (_url: string, body: any) => {
       createdPayload = body;
-      return { status: 200, data: { id: body.id } };
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     });
     const created = await store.approvalsCreate({ request, serverId: null });
 
@@ -1254,6 +1272,7 @@ describe('createCliApprovalsArtifactStore', () => {
           id: created.artifactId,
           header: createdPayload.header,
           headerVersion: 1,
+          ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
           dataEncryptionKey: createdPayload.dataEncryptionKey,
           seq: 1,
           createdAt: 1,
@@ -1268,6 +1287,7 @@ describe('createCliApprovalsArtifactStore', () => {
         headerVersion: 1,
         body: createdPayload.body,
         bodyVersion: 1,
+        ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
         dataEncryptionKey: createdPayload.dataEncryptionKey,
         seq: 1,
         createdAt: 1,
@@ -1298,7 +1318,7 @@ describe('createCliApprovalsArtifactStore', () => {
     let createdPayload: any = null;
     mockPost.mockImplementationOnce(async (_url: string, body: any) => {
       createdPayload = body;
-      return { status: 200, data: { id: body.id } };
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     });
     const created = await store.approvalsCreate({ request, serverId: 'server-2' });
 
@@ -1310,6 +1330,7 @@ describe('createCliApprovalsArtifactStore', () => {
         headerVersion: 1,
         body: createdPayload.body,
         bodyVersion: 1,
+        ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
         dataEncryptionKey: createdPayload.dataEncryptionKey,
         seq: 1,
         createdAt: 1,
@@ -1323,6 +1344,7 @@ describe('createCliApprovalsArtifactStore', () => {
         headerVersion: 1,
         body: createdPayload.body,
         bodyVersion: 1,
+        ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
         dataEncryptionKey: createdPayload.dataEncryptionKey,
         seq: 1,
         createdAt: 1,
@@ -1353,7 +1375,7 @@ describe('createCliApprovalsArtifactStore', () => {
     let createdPayload: any = null;
     mockPost.mockImplementationOnce(async (_url: string, body: any) => {
       createdPayload = body;
-      return { status: 200, data: { id: body.id } };
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     });
     const created = await store.approvalsCreate({ request, serverId: 'server-1' });
 
@@ -1365,6 +1387,7 @@ describe('createCliApprovalsArtifactStore', () => {
             id: created.artifactId,
             header: createdPayload.header,
             headerVersion: 1,
+            ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
             dataEncryptionKey: createdPayload.dataEncryptionKey,
             seq: 1,
             createdAt: 1,
@@ -1380,6 +1403,7 @@ describe('createCliApprovalsArtifactStore', () => {
           headerVersion: 1,
           body: createdPayload.body,
           bodyVersion: 1,
+          ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
           dataEncryptionKey: createdPayload.dataEncryptionKey,
           seq: 1,
           createdAt: 1,
@@ -1422,7 +1446,7 @@ describe('createCliApprovalsArtifactStore', () => {
     let createPayload: any = null;
     mockPost.mockImplementationOnce(async (_url: string, body: any) => {
       createPayload = body;
-      return { status: 200, data: { id: body.id } };
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     });
     const created = await updateStore.approvalsCreate({
       request: ApprovalRequestV1Schema.parse({ ...request, status: 'open', updatedAtMs: 1, decision: undefined }),
@@ -1435,6 +1459,7 @@ describe('createCliApprovalsArtifactStore', () => {
       headerVersion: 3,
       body: createPayload.body,
       bodyVersion: 4,
+      ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
       dataEncryptionKey: createPayload.dataEncryptionKey,
       seq: 1,
       createdAt: 1,
@@ -1518,7 +1543,7 @@ describe('createCliApprovalsArtifactStore', () => {
     let createPayload: any = null;
     mockPost.mockImplementationOnce(async (_url: string, body: any) => {
       createPayload = body;
-      return { status: 200, data: { id: body.id } };
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     });
     const created = await store.approvalsCreate({ request: open, serverId: 'server-1' });
 
@@ -1535,6 +1560,7 @@ describe('createCliApprovalsArtifactStore', () => {
         headerVersion,
         body: encodeBase64(encryptWithDataKey({ body: JSON.stringify(request) }, dataKey!)),
         bodyVersion,
+        ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
         dataEncryptionKey: createPayload.dataEncryptionKey,
         seq: headerVersion,
         createdAt: 1,
@@ -1624,7 +1650,7 @@ describe('createCliApprovalsArtifactStore', () => {
     let createPayload: any = null;
     mockPost.mockImplementationOnce(async (_url: string, body: any) => {
       createPayload = body;
-      return { status: 200, data: { id: body.id } };
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     });
     const created = await store.approvalsCreate({
       request: ApprovalRequestV1Schema.parse({ ...request, status: 'open', updatedAtMs: 1, decision: undefined }),
@@ -1639,6 +1665,7 @@ describe('createCliApprovalsArtifactStore', () => {
         headerVersion: 3,
         body: createPayload.body,
         bodyVersion: 4,
+        ownerAccountId: 'account-1', access: 'owner', encryptionMode: 'e2ee',
         dataEncryptionKey: createPayload.dataEncryptionKey,
         seq: 1,
         createdAt: 1,

@@ -295,7 +295,7 @@ async function invokeCliProbeOrInstallMethod(
         return invokeAgentCliInstallCapability(
             agentId,
             params,
-            dependencies.agentRegistrySnapshot?.agents.find((entry) => entry.id === agentId)?.runtimeSpec,
+            dependencies.agentRegistrySnapshot?.agents.find((entry) => entry.id === agentId)?.runtimeSpec ?? undefined,
         );
     }
 

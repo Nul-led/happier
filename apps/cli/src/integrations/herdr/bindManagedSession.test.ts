@@ -6,12 +6,34 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { bindHerdrAgentIfNeeded, bindManagedHerdrSession, createHerdrResumeArgv } from './bindManagedSession';
 import { logger } from '@/ui/logger';
+import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
 
 function createLifecycleSession() {
   return Object.assign(new EventEmitter(), { getAgentStateSnapshot: () => null });
 }
 
 describe('bindManagedHerdrSession', () => {
+  it.each(['retired', 'replacement'] as const)('retires only the old terminal reporter after optional presentation %s', async transition => {
+    const terminal = { mode: 'herdr' as const, herdr: { sessionName: 'work', socketPath: '/external/socket', terminalId: 'old-terminal' },
+      controlServiceabilityV1: { v: 1 as const, state: 'servable' as const, attachmentId: 'old-attachment', observedAt: 1 } };
+    let metadata = createTestMetadata({ terminal });
+    const session = Object.assign(createLifecycleSession(), { getMetadataSnapshot: () => metadata });
+    const request = vi.fn(async (_method: string, _params: unknown) => ({}));
+    bindManagedHerdrSession({ session, client: {
+      findPane: async () => ({ paneId: 'old-pane', terminalId: 'old-terminal', workspaceId: 'work', tabId: 'tab' }), request,
+    }, terminalId: 'old-terminal', agent: 'codex', sessionId: 'optional-session', preserveHostOnClose: true });
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith('pane.report_agent', expect.anything()));
+    metadata = { ...metadata, terminal: transition === 'retired'
+      ? { ...terminal, controlServiceabilityV1: { ...terminal.controlServiceabilityV1, retired: true } }
+      : { ...terminal, herdr: { ...terminal.herdr, terminalId: 'new-terminal' } } };
+    session.emit('metadata-updated');
+    expect(session.listenerCount('local-presence')).toBe(0);
+    expect(session.listenerCount('metadata-updated')).toBe(0);
+    session.emit('local-presence', { thinking: true });
+    await Promise.resolve();
+    expect(request).not.toHaveBeenCalledWith('pane.release_agent', expect.anything());
+    expect(request.mock.calls.filter(([method]) => method === 'pane.report_agent')).toHaveLength(1);
+  });
   it('records failed Herdr reporting in the file without writing to the agent terminal', async () => {
     logger.flushSync();
     const previousLogLength = existsSync(logger.getLogPath()) ? readFileSync(logger.getLogPath(), 'utf8').length : 0;

@@ -535,6 +535,10 @@ export async function startExecutionRun(args: Readonly<{
     });
     args.onPublicStateUpdated?.(runId);
 
+    // Retain the admitted launch before any provider effect, independently of
+    // best-effort machine visibility. The same owner handles later checkpoints.
+    await args.writeActivityMarker(runId, args.getNowMs(), { force: true });
+
     // Persist a daemon-visible marker so machine-wide UIs can see the run immediately.
     const startMarkerPayload = {
       pid: process.pid,

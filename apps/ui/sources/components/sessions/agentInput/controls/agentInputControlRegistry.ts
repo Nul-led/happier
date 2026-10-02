@@ -3,6 +3,8 @@ import type { AgentInputControlDescriptor, AgentInputHostControlId } from './age
 export const AGENT_INPUT_CONTROL_REGISTRY = [
     { id: 'workflow', line: 'primary' },
     { id: 'workflowInputs', line: 'primary' },
+    { id: 'workflowRoles', line: 'primary' },
+    { id: 'workflowTargets', line: 'primary' },
     { id: 'engine', line: 'primary' },
     { id: 'mode', line: 'primary' },
     { id: 'goal', line: 'primary' },

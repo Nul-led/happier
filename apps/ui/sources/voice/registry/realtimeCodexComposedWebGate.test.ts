@@ -667,6 +667,82 @@ describe('realtime_codex normal web composed gate', () => {
     browser.restore();
   });
 
+  it('sanitizes native rejection through the host classifier and closes only the bound Voice attachment', async () => {
+    rpcBoundary.sessionRpc.mockImplementation(async (input: Readonly<{
+      sessionId: string;
+      method: string;
+      payload: unknown;
+    }>) => {
+      if (input.method.endsWith('.inspect')) {
+        return { ok: true, status: 'available', transport: 'webrtc' };
+      }
+      if (input.method.endsWith('.start')) {
+        return {
+          ok: true,
+          status: 'started',
+          transport: { kind: 'webrtc', answerSdp: 'v=0\r\na=test-answer\r\n' },
+        };
+      }
+      if (input.method.endsWith('.watch')) return await new Promise(() => {});
+      if (input.method.endsWith('.stop')) return { ok: true, status: 'stopped' };
+      throw new Error(`unexpected session RPC: ${input.method}`);
+    });
+    const browser = installVoiceWebRtcBrowserBoundary();
+    const hostLease = createBundledConversationRuntimeHostLease();
+    const presentAttemptDiagnostic = vi.fn(hostLease.host.presentAttemptDiagnostic);
+    const webHost = Object.freeze({
+      ...hostLease.host,
+      getPlatform: () => 'web' as const,
+      createMicSession: () => browser.micSession,
+      presentAttemptDiagnostic,
+      acquireAudioMode: async () => Object.freeze({ release: async () => undefined }),
+    });
+    const runtime = activateCodexEntry({ host: webHost, authorityHost: hostLease.host });
+    registerVoiceAdapters([runtime.adapter]);
+
+    try {
+      const starting = runtime.adapter.start({
+        sessionId: 'codex-direct-session',
+        requestedTargetSessionAddress: { serverId: activeServerId, sessionId: 'codex-direct-session' },
+      });
+      await vi.waitFor(() => expect(browser.peer.createDataChannel).toHaveBeenCalledWith('oai-events'));
+      browser.peer.channel.open();
+      await starting;
+      expect(runtime.adapter.getSnapshot().status).toBe('connected');
+      expect(browser.peer.channel.sent.map((frame) => JSON.parse(frame).type))
+        .not.toContain('session.update');
+
+      browser.peer.channel.message(JSON.stringify({
+        type: 'error',
+        error: { message: 'Bearer private-token; private session context', code: 'private-code' },
+      }));
+      await vi.waitFor(() => expect(runtime.adapter.getSnapshot()).toMatchObject({
+        status: 'error',
+        errorCode: 'upstream_rejected',
+        errorMessage: 'upstream_rejected',
+      }));
+      expect(browser.peer.close).toHaveBeenCalledTimes(1);
+      expect(browser.micSession.teardown).toHaveBeenCalledTimes(1);
+      const stopRpcs = rpcBoundary.sessionRpc.mock.calls
+        .map(([input]) => input as Readonly<{ sessionId: string; method: string; payload: unknown }>)
+        .filter((input) => input.method.endsWith('.stop'));
+      expect(stopRpcs).toEqual([
+        expect.objectContaining({ sessionId: 'codex-direct-session', method: 'session.agentRealtime.stop' }),
+      ]);
+      expect(storage.getState().sessions['codex-direct-session']?.active).toBe(true);
+      expect(readCanonicalVoiceTranscriptSnapshot('codex-direct-session')).toEqual([]);
+      expect(presentAttemptDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
+        diagnostic: { code: 'codex_v3_upstream_error', severity: 'warning' },
+      }));
+      expect(JSON.stringify(runtime.adapter.getSnapshot())).not.toContain('private');
+      expect(JSON.stringify(presentAttemptDiagnostic.mock.calls)).not.toContain('private');
+    } finally {
+      await runtime.dispose();
+      hostLease.revoke();
+      browser.restore();
+    }
+  });
+
   it('fails closed against an old daemon with no Agent-realtime method and opens no media or fallback', async () => {
     rpcBoundary.sessionRpc.mockRejectedValue(
       Object.assign(new Error('RPC method not available'), {

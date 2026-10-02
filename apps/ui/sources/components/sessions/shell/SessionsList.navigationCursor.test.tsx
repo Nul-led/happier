@@ -85,18 +85,21 @@ async function renderListAndNeighbours(params: Readonly<{
     anchorSessionId: string;
 }>) {
     const { SessionsListView } = await import('./SessionsList');
-    const { useSessionCockpitLateralNavigation } = await import(
-        '@/components/navigation/mobile/chrome/lateralSwipe/useSessionCockpitLateralNavigation'
+    const { useSessionSwitcher } = await import(
+        '@/components/navigation/mobile/chrome/lateralSwipe/useSessionSwitcher'
     );
 
     const observed: { previous: string | null; next: string | null } = { previous: null, next: null };
     function NeighbourProbe() {
-        const navigation = useSessionCockpitLateralNavigation({
+        const switcher = useSessionSwitcher({
             sessionId: params.anchorSessionId,
             serverId: 'server_a',
         });
-        observed.previous = navigation.previous?.sessionId ?? null;
-        observed.next = navigation.next?.sessionId ?? null;
+        // The sideways switcher's rows in the default Session list order, nearest first.
+        const rows = switcher.prepare().rows;
+        const sessionIdOf = (row: (typeof rows.next)[number] | undefined) => (row?.target.kind === 'session' ? row.target.sessionId : null);
+        observed.previous = sessionIdOf(rows.previous[0]);
+        observed.next = sessionIdOf(rows.next[0]);
         return null;
     }
 

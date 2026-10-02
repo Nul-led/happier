@@ -6,6 +6,11 @@ import {
     type ConnectedServiceBindingsV2,
 } from '@happier-dev/protocol';
 import { validateEnvVarRecordStrict } from '@/terminal/runtime/envVarSanitization';
+import { resolveTerminalRequestFromSpawnOptions } from '@/terminal/runtime/terminalConfig';
+import { prepareHerdrTerminalContext } from '@/terminal/runtime/prepareHerdrTerminalContext';
+import { resolveDaemonSessionTerminalPresentation } from '../sessions/resolveTrackedSessionTerminalPresentation';
+import { resolveTerminalHostUnavailableSpawnErrorDetail } from '@/integrations/terminal/host/errors';
+import { resolveBackendExecutionSurfaces } from '@/agent/runtime/registry/engineRegistry';
 import { logger } from '@/ui/logger';
 import { resolveConcreteBackendTargetRefV2 } from '@/session/backendTargets/resolveConcreteBackendTargetRefs';
 import type { CatalogAgentId } from '@/agent/catalog/ids';
@@ -238,6 +243,7 @@ export async function executeSpawnSessionRequest(
         options = {
             ...options,
             directoryKind: prepared.directoryKind,
+            ...(prepared.runtimeDescriptorV1 ? { runtimeDescriptorV1: prepared.runtimeDescriptorV1 } : {}),
             ...(prepared.sessionCreationTag ? { sessionCreationTag: prepared.sessionCreationTag } : {}),
         };
         const managedDirectoryOwner = prepared.directoryKind === 'managed'
@@ -254,7 +260,7 @@ export async function executeSpawnSessionRequest(
         };
 
         let spawnResourceCleanupOnExit: (() => void | Promise<void>) | null = null;
-        let retainResourcesForUntrackedTmuxChild = false;
+        let retainResourcesForUntrackedHostedChild = false;
         let cleanupPendingSessionAttach: (() => Promise<void>) | null = null;
         const launchResourceScope = createProviderLaunchResourceScope({
             onCleanupError: (safeMessage) => {
@@ -509,10 +515,45 @@ export async function executeSpawnSessionRequest(
                     logger.debug('[DAEMON RUN] Workspace plugin development registration failed', error);
                 }
             }
+            // Resolve the runtime-owned placement once, before either daemon
+            // or runner commits the fresh Session. The selected descriptor
+            // travels separately from the runner's authority identity.
+            let selectedTerminalRequest = resolveTerminalRequestFromSpawnOptions({
+                happyHomeDir: configuration.happyHomeDir,
+                terminal: options.terminal,
+                environmentVariables: profileLaunchEnvironment,
+            });
+            const executionSurfaces = await resolveBackendExecutionSurfaces(effectiveBackendTargetV2, {
+                runtimeRegistry: appliedPluginRuntimeLease.registry,
+            });
+            const selectedLaunchEnvironment = Object.fromEntries(Object.entries({
+                ...(params.processEnv ?? process.env),
+                ...daemonProviderLaunch.options.environmentVariables,
+                ...profileLaunchEnvironment,
+            }).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+            const terminalPresentation = await resolveDaemonSessionTerminalPresentation(executionSurfaces, {
+                cwd: directory,
+                requestedHost: selectedTerminalRequest.requested ?? 'plain',
+                runtimeDescriptorV1: options.runtimeDescriptorV1,
+                // This is the admitted selection context, before native auth
+                // materialization. The child-environment owner prepares and
+                // preserves actual provider unset keys later in this launch.
+                launchEnvironment: { values: selectedLaunchEnvironment, unset: [] },
+                configuration: { options: Object.fromEntries(Object.entries(options.sessionConfigOptionOverrides?.overrides ?? {})
+                    .map(([id, option]) => [id, { value: option.value, updatedAtMs: option.updatedAt }])) },
+            }, normalizedExistingSessionId);
+            if (selectedTerminalRequest.requested === 'herdr' && terminalPresentation.kind !== 'none') {
+                const context = await prepareHerdrTerminalContext({ happyHomeDir: configuration.happyHomeDir,
+                    sessionName: selectedTerminalRequest.herdr.sessionName,
+                    ...(normalizedExistingSessionId ? { existingSessionId: normalizedExistingSessionId } : {}),
+                    processEnv: selectedLaunchEnvironment });
+                selectedTerminalRequest = { requested: 'herdr', herdr: context };
+            }
             const runnerAgentSessionBootstrap =
                 await prepareRunnerAgentSessionBootstrapForLease({
                     target: effectiveBackendTargetV2,
                     lease: appliedPluginRuntimeLease,
+                    ...(terminalPresentation.runtimeDescriptorV1 ? { launch: { runtimeDescriptorV1: terminalPresentation.runtimeDescriptorV1 } } : {}),
                 });
             if (runnerAgentSessionBootstrap) {
                 launchResourceScope.register(
@@ -521,6 +562,11 @@ export async function executeSpawnSessionRequest(
             }
             const optionsWithProviderIsolation = {
                 ...daemonProviderLaunch.options, directory,
+                ...(terminalPresentation.runtimeDescriptorV1 ? { runtimeDescriptorV1: terminalPresentation.runtimeDescriptorV1 } : {}),
+                ...(terminalPresentation.environmentOverlay ? { environmentVariables: {
+                    ...daemonProviderLaunch.options.environmentVariables,
+                    ...terminalPresentation.environmentOverlay,
+                } } : {}),
                 directoryKind: options.directoryKind,
                 ...(options.sessionCreationTag ? { sessionCreationTag: options.sessionCreationTag } : {}),
                 ...(options.attachMetadataIdentityPolicy ? { attachMetadataIdentityPolicy: options.attachMetadataIdentityPolicy } : {}),
@@ -838,7 +884,8 @@ export async function executeSpawnSessionRequest(
                 resolvedAgentId: catalogAgentId,
                 effectiveModelSelection: modelSelection,
                 terminal: options.terminal,
-                profileEnvironmentVariables: profileLaunchEnvironment,
+                admittedTerminalRequest: selectedTerminalRequest,
+                profileEnvironmentVariables: { ...profileLaunchEnvironment, ...terminalPresentation.environmentOverlay },
                 daemonSpawnHooks,
                 pluginRuntimeRegistry: appliedPluginRuntimeLease.registry,
                 processEnv: params.processEnv ?? process.env,
@@ -975,6 +1022,7 @@ export async function executeSpawnSessionRequest(
             let spawnResult = await routeSpawnModeAndWaitForWebhook({
                 initialAccessFilePath: initialAccessFile?.path,
                 terminalRequest,
+                terminalPresentation,
                 directory,
                 options: committedLaunchSession
                     ? withoutFreshSessionCreationFields(effectiveOptionsForSpawn)
@@ -1015,8 +1063,8 @@ export async function executeSpawnSessionRequest(
                 sanitizeDiagnosticText: childEnvironment.sanitizeDiagnosticText,
                 createStreamingSanitizer: childEnvironment.createStreamingSanitizer,
                 revalidateBeforeCommit: revalidateProviderBeforeCommit,
-                onUntrackedTmuxChild: () => {
-                    retainResourcesForUntrackedTmuxChild = true;
+                onUntrackedHostedChild: () => {
+                    retainResourcesForUntrackedHostedChild = true;
                 },
             });
             if (spawnResult.type === 'success' && spawnResult.sessionId && managedAllocation && managedDirectoryOwner) {
@@ -1030,7 +1078,7 @@ export async function executeSpawnSessionRequest(
                     });
                 }
             }
-            if (spawnResult.type === 'error' && !retainResourcesForUntrackedTmuxChild) {
+            if (spawnResult.type === 'error' && !retainResourcesForUntrackedHostedChild) {
                 if (isDefiniteReplaySeededPreAdmissionRejection(spawnResult.errorCode)) await rollbackManagedAllocation();
                 const incompleteRetirement =
                     await retireLaunchResources();
@@ -1043,16 +1091,17 @@ export async function executeSpawnSessionRequest(
                     };
                 }
             }
-            if (!providerBindingAttempt && !retainResourcesForUntrackedTmuxChild) {
+            if (!providerBindingAttempt && !retainResourcesForUntrackedHostedChild) {
                 await pluginRuntimeLease.release();
             }
             return spawnResult;
         } catch (error) {
             if (!childLaunchSubmitted) await rollbackManagedAllocation();
-            const terminalDetail = readSessionCreationTerminalSpawnErrorDetail(error);
+            const terminalDetail = readSessionCreationTerminalSpawnErrorDetail(error)
+                ?? resolveTerminalHostUnavailableSpawnErrorDetail(error);
             const errorMessage = launchResourceScope.sanitize(error);
             let incompleteRetirement: string | null = null;
-            if (!retainResourcesForUntrackedTmuxChild) {
+            if (!retainResourcesForUntrackedHostedChild) {
                 incompleteRetirement =
                     await retireLaunchResources();
             }

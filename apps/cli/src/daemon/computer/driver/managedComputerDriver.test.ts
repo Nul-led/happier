@@ -109,7 +109,7 @@ describe.skipIf(process.platform !== 'linux')('managed native computer driver (X
         startedAtMs: 0, expiresAtMs: Number.POSITIVE_INFINITY, nowMs: () => 0,
         offerFrame: () => ({ ok: true }), applyControl: () => ({ ok: true }), emitReceipt() {} });
       if (!stream.ok) throw new Error(stream.reasonCode);
-      expect(stream.session.applySidebandControl?.({ v: 1, streamId: 'stream', sourceId: source.sourceId, kind: 'tap', x: 0.1, y: 0.1 }))
+      expect(stream.session.applySidebandControl?.({ v: 1, streamId: 'stream', sourceId: source.sourceId, eventId: 'tap-1', kind: 'tap', x: 0.1, y: 0.1 }))
         .toMatchObject({ ok: true });
       await vi.waitFor(() => expect(native.tools.filter(tool => tool.name === 'click')).toHaveLength(1));
       await stream.session.stop();
@@ -151,32 +151,33 @@ describe.skipIf(process.platform !== 'linux')('managed native computer driver (X
     }
   });
   it('redacts clicked names and never guesses keyboard focus or publishes typed input', async () => {
-    let finishInput: ((value: unknown) => void) | undefined;
+    const finishInput: { resolve?: (value: unknown) => void } = {};
+    const readFinishInput = () => finishInput.resolve;
     const result = captureResult();
     native.call.mockImplementation(({ name }) => name === 'get_window_state' ? Promise.resolve({ ...result, structuredContent: {
       ...result.structuredContent, elements: [{ element_index: 0, role: 'entry',
         label: 'Open https://example.com/?token=secret', value: 'private-value', frame: { x: 20, y: 60, w: 40, h: 30 } }],
-    } }) : new Promise(resolve => { finishInput = resolve; }));
+    } }) : new Promise(resolve => { finishInput.resolve = resolve; }));
     const source = createComputerCaptureSource({ sessionId: 'session', target, executablePath: '/managed/native-driver' });
     try {
       let capture = await source.observe();
       const clicking = source.input(capture.captureId, { kind: 'click', x: 30, y: 15 }, 'agent');
-      await vi.waitFor(() => expect(finishInput).toBeDefined());
+      await vi.waitFor(() => expect(finishInput.resolve).toBeDefined());
       expect(source.status()).toMatchObject({ activity: { kind: 'click' }, activeTarget: { width: 0.1 } });
       expect(JSON.stringify(source.status())).not.toContain('secret');
-      finishInput?.({ structuredContent: { effect: 'unverifiable' } });
+      readFinishInput()?.({ structuredContent: { effect: 'unverifiable' } });
       expect(JSON.stringify(await clicking)).not.toContain('secret');
-      finishInput = undefined;
+      finishInput.resolve = undefined;
       capture = await source.observe();
       const typing = source.input(capture.captureId, { kind: 'type', text: 'typed-password' }, 'agent');
-      await vi.waitFor(() => expect(finishInput).toBeDefined());
+      await vi.waitFor(() => expect(finishInput.resolve).toBeDefined());
       expect(source.status()).toMatchObject({ activity: { kind: 'type' } });
       expect(source.status()).not.toHaveProperty('activeTarget');
       expect(source.status().activity).not.toHaveProperty('targetLabel');
       expect(JSON.stringify(source.status())).not.toContain('typed-password');
-      finishInput?.({ structuredContent: { effect: 'unverifiable' } });
+      readFinishInput()?.({ structuredContent: { effect: 'unverifiable' } });
       expect(await typing).not.toHaveProperty('targetLabel');
-    } finally { finishInput?.({ structuredContent: { effect: 'unverifiable' } }); await source.close(); }
+    } finally { readFinishInput()?.({ structuredContent: { effect: 'unverifiable' } }); await source.close(); }
   });
   it('omits an editable value masquerading as its accessible name', async () => {
     let finishInput: ((value: unknown) => void) | undefined;
@@ -219,15 +220,20 @@ describe.skipIf(process.platform !== 'linux')('managed native computer driver (X
       } } });
     } finally { await routes.dispose(); }
   });
-  it('stores the human-edited target from the blocking selection approval, preserving the agent origin and suggestion', async () => {
+  it.each([
+    { name: 'as suggested', windowId: 123, access: 'use' as const },
+    { name: 'with an edited window', windowId: 456, access: 'use' as const },
+    { name: 'with downgraded access', windowId: 123, access: 'see' as const },
+    { name: 'outside the user-side target list', windowId: 999, access: 'use' as const },
+  ])('stores the human selection $name from the blocking approval, preserving the agent origin and suggestion', async ({ windowId, access }) => {
     const [{ createCliActionExecutorHarness }, { createDaemonRuntimeActionExecutor }] = await Promise.all([
       import('@/session/actions/createCliActionExecutorHarness'), import('../../runtimeActionExecutor'),
     ]);
-    const chosen = { ...target, windowId: 456 };
+    const chosen = { ...target, windowId };
     native.call.mockImplementation(async ({ name }) => name === 'list_windows' ? { structuredContent: {
       windows: [{ pid: target.pid, window_id: target.windowId, title: 'Requested app' },
-        { pid: chosen.pid, window_id: chosen.windowId, title: 'Chosen app' }],
-    } } : { structuredContent: {} });
+        { pid: target.pid, window_id: 456, title: 'Chosen app' }],
+    } } : name === 'get_window_state' ? captureResult() : { structuredContent: {} });
     const registry = createMachineLiveStreamCaptureRegistry();
     const routes = createComputerRoutes({ machineId: 'machine', machineDisplayName: 'Workstation', registry,
       executablePath: '/managed/native-driver', defaultDisplayId: ':73' });
@@ -253,7 +259,9 @@ describe.skipIf(process.platform !== 'linux')('managed native computer driver (X
     const controller = new AbortController();
     const context = { authority: 'account_automation' as const, surface: 'agent' as const, defaultSessionId: 'session',
       serverId: 'home', actionRequestId: 'select-request', actionsSettings: ActionsSettingsV1Schema.parse({ v: 1 }), signal: controller.signal };
-    const selecting = harness.executor.execute('computer.target.select', { machineId: 'machine', requestedTarget: 'Requested app' }, context);
+    const selecting = harness.executor.execute('computer.target.select', {
+      machineId: 'machine', target, access: 'use', requestedTarget: 'Requested app',
+    }, context);
     try {
       await Promise.race([requestCreated, selecting.then(result => {
         throw new Error(`Selection returned without requesting approval: ${JSON.stringify(result)}`);
@@ -265,15 +273,25 @@ describe.skipIf(process.platform !== 'linux')('managed native computer driver (X
       }, context)).toMatchObject({ ok: false, errorCode: 'present_user_required' });
       expect(stored?.status).toBe('open');
       expect(registry.list()).toHaveLength(0);
-      expect(await harness.executor.execute('approval.request.decide', {
-        artifactId: 'selection-approval', decision: 'approve', computerTarget: chosen, computerAccess: 'see',
-      }, { ...context, surface: 'ui', authority: 'present_user' })).toMatchObject({ ok: true });
-      expect(await selecting).toMatchObject({ ok: true, result: { selectedTarget: chosen, consentGranted: false, access: 'see' } });
+      const decided = await harness.executor.execute('approval.request.decide', {
+        artifactId: 'selection-approval', decision: 'approve', computerTarget: chosen, computerAccess: access,
+      }, { ...context, surface: 'ui', authority: 'present_user' });
+      if (windowId === 999) {
+        expect(decided).toMatchObject({ ok: false, errorCode: 'computer_target_not_available' });
+        expect(stored?.status).toBe('open');
+        expect(registry.list()).toHaveLength(0);
+        return;
+      }
+      expect(decided, JSON.stringify(decided)).toMatchObject({ ok: true });
+      expect(await selecting).toMatchObject({ ok: true, result: { selectedTarget: chosen, consentGranted: false, access } });
       expect(registry.list()[0]?.computer?.target).toEqual(chosen);
+      expect(registry.list()[0]?.computer?.access).toBe(access);
       expect(stored).toMatchObject({ executionOriginV1: { authority: 'account_automation' } });
       expect(updates).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'approved',
-        actionArgs: expect.objectContaining({ target: chosen, access: 'see' }) })]));
-      expect(stored).toMatchObject({ status: 'executed', actionArgs: { access: 'see' } });
+        actionArgs: expect.objectContaining({ target: chosen, access, requestedTarget: 'Requested app' }),
+        decision: expect.objectContaining({ authority: 'present_user' }),
+      })]));
+      expect(stored).toMatchObject({ status: 'executed', actionArgs: { access } });
       expect(stored?.actionArgs).not.toHaveProperty('target');
       expect(stored?.actionArgs).not.toHaveProperty('sourceId');
     } finally { controller.abort(); await selecting.catch(() => undefined); await routes.dispose(); }

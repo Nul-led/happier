@@ -29,7 +29,8 @@ import {
 } from '../terminalHost/deadline';
 import { normalizeCapturedScreen } from '../terminalHost/controlCapture';
 import { sanitizeTerminalHostDiagnosticText } from '../terminalHost/sanitizeTerminalHostDiagnosticText';
-import { TerminalHostStartupError } from '../terminal/host/errors';
+import { TerminalHostCreationError, TerminalHostStartupError, type TerminalHostCreationFailure } from '../terminal/host/errors';
+import { logger } from '@/ui/logger';
 import { createZellijTerminalControlPort } from './control';
 import {
   inspectZellijSessionSocketPresence,
@@ -310,20 +311,24 @@ export function createZellijTerminalHostAdapter(params: Readonly<{
   }
 
   async function killManagedSession(sessionName: string): Promise<void> {
-    try {
-      await actions.killSession({
+    const result = await actions.killSession({
         zellijBinary: params.zellijBinary,
         env: baseEnv(params.socketDir),
         sessionName,
         timeoutMs: actionTimeoutMs,
       });
-    } catch {
-      // Best-effort cleanup must not mask the launch failure that triggered it.
-    }
+    if (result.exitCode !== 0) throw new Error('Zellij managed session cleanup could not be confirmed');
   }
 
-  function normalizeStartupError(error: unknown, sessionName: string): unknown {
-    if (!isZellijActionTimeoutError(error)) return error;
+  function normalizeStartupError(error: unknown, sessionName: string, creationFailure: TerminalHostCreationFailure, cleanupError?: unknown): unknown {
+    const errors = cleanupError === undefined ? [error] : [error, cleanupError];
+    if (error instanceof TerminalHostStartupError) {
+      return new TerminalHostStartupError({
+        hostKind: error.hostKind, reason: error.reason, message: error.message, diagnostics: error.diagnostics,
+        creationFailure, cause: cleanupError === undefined ? error : new AggregateError(errors, error.message, { cause: error }),
+      });
+    }
+    if (!isZellijActionTimeoutError(error)) return new TerminalHostCreationError(errors, error instanceof Error ? error.message : 'Zellij startup failed', creationFailure);
     return new TerminalHostStartupError({
       hostKind: 'zellij',
       reason: 'startup_action_timeout',
@@ -333,6 +338,8 @@ export function createZellijTerminalHostAdapter(params: Readonly<{
         sessionName,
         timeoutMs: startupActionTimeoutMs,
       },
+      creationFailure,
+      cause: cleanupError === undefined ? error : new AggregateError(errors, error.message, { cause: error }),
     });
   }
 
@@ -350,8 +357,13 @@ export function createZellijTerminalHostAdapter(params: Readonly<{
   }
 
   async function cleanupManagedSessionAndThrowStartupError(sessionName: string, error: unknown): Promise<never> {
-    await killManagedSession(sessionName);
-    throw normalizeStartupError(error, sessionName);
+    try {
+      await killManagedSession(sessionName);
+    } catch (cleanupError) {
+      logger.infoFile('[Zellij] Managed session cleanup incomplete (terminal_host_launch_cleanup_incomplete)');
+      throw normalizeStartupError(error, sessionName, { creationDisposition: 'created_or_uncertain', cleanupIncomplete: true }, cleanupError);
+    }
+    throw normalizeStartupError(error, sessionName, { creationDisposition: 'created_and_absent', cleanupIncomplete: false });
   }
 
   async function inspectLiveness(handle: TerminalHostHandle): Promise<Readonly<{

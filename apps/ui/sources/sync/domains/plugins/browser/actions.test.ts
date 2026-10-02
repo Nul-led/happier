@@ -276,7 +276,7 @@ describe('plugin browser projection normalization', () => {
         })).toBe(false);
     });
 
-    it('executes a browser presentation only through the generation-leased canonical action RPC', async () => {
+    it('executes a browser presentation through the exact contributed Action occurrence', async () => {
         const raw = createProjection();
         const model = normalizePluginBrowserProjection(raw);
         const action = model.actionsById['browserAction:acme.preview:open-preview'];
@@ -302,7 +302,7 @@ describe('plugin browser projection normalization', () => {
 
         expect(execute).toHaveBeenCalledWith('machine-1', {
             serverId: 'server-a',
-            expectedContributorOccurrenceId: '14',
+            expectedContributorOccurrenceId: 'occurrence-preview',
             qualifiedActionId: 'acme.preview/open-preview',
             input: {
                 browserSessionId: 'browser-session-1',

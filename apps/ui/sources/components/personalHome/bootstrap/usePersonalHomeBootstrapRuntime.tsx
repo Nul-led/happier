@@ -1,10 +1,13 @@
 import * as React from 'react';
 import { useRouter, useSegments } from 'expo-router';
+import { t } from '@/text';
 
 import { getCurrentAuth } from '@/auth/context/AuthContext';
 import { isPublicRouteForUnauthenticated } from '@/auth/routing/authRouting';
 import { authGetTokenAtEndpoint } from '@/auth/flows/getToken';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
+import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { getRandomBytesAsync } from '@/platform/cryptoRandom';
 import { getDefaultSystemTaskRunner, waitForSystemTaskResult } from '@/components/systemTasks';
 import { buildLocalMachineSetupSystemTaskSpec } from '@/components/systemTasks/buildLocalMachineSetupSystemTaskSpec';
@@ -32,6 +35,8 @@ import {
     getServerProfileById,
     listServerProfiles,
     preflightHomeProfileAdoption,
+    resolveSavedServerProfileByUrl,
+    resolveUniqueServerProfileByUrl,
     setActiveServerId,
     type ServerProfile,
 } from '@/sync/domains/server/serverProfiles';
@@ -211,6 +216,7 @@ export type PersonalHomeBootstrapRuntime = Readonly<{
  * Desktop bootstrap gate. It deliberately does not own any state or switch the focused Home.
  */
 export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime {
+    const profilesGeneration = useServerProfilesGeneration();
     const relay = useLocalRelayRuntimeControl();
     const daemon = useLocalDaemonControl();
     const resolveLocalUrl = React.useCallback(
@@ -224,15 +230,16 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
     const setupRelayUrl = resolveLocalUrl();
     const setupHomeIdentity = React.useMemo(() => {
         if (!setupRelayUrl) return null;
-        const profiles = listServerProfiles();
-        const local = profiles.find((profile) => profileMatchesUrl(profile, setupRelayUrl));
+        const local = resolveUniqueServerProfileByUrl(setupRelayUrl, { includeCanonicalServerUrl: true });
         return local?.serverIdentityId?.trim() || null;
-    }, [setupRelayUrl]);
+    }, [profilesGeneration, setupRelayUrl]);
+    const setupAccount = useServerCredentialAccountScopeResolution(setupHomeIdentity);
     const setupTask = useThisComputerSetupTask({
-        ...(setupRelayUrl ? {
+        ...(setupRelayUrl && setupHomeIdentity ? {
             authRequestApproval: {
                 expectedRelayUrl: setupRelayUrl,
-                ...(setupHomeIdentity ? { serverId: setupHomeIdentity } : {}),
+                serverId: setupHomeIdentity,
+                ...(setupAccount.kind === 'bound' ? { expectedAccountId: setupAccount.scope.accountId } : {}),
             } satisfies SystemTaskAuthRequestApproval,
         } : {}),
     });
@@ -259,7 +266,7 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
         const profiles = listServerProfiles();
         const localUrl = normalizeUrl(authoritativeRelayStatus?.relayUrl);
         const candidate = localUrl
-            ? profiles.find((profile) => profileMatchesUrl(profile, localUrl)) ?? null
+            ? resolveUniqueServerProfileByUrl(localUrl, { includeCanonicalServerUrl: true })
             : null;
         let completed = findPersonalHomeBootstrapCompletedProfile(profiles);
         const activeSelection = getActiveServerSnapshot();
@@ -604,6 +611,9 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
         const localUrl = resolveLocalUrl();
         if (!localUrl) {
             throw new Error('Personal Home runtime status did not provide a canonical local origin.');
+        }
+        if (resolveSavedServerProfileByUrl(localUrl, { includeCanonicalServerUrl: true }).kind === 'ambiguous') {
+            throw new Error(t('personalHome.bootstrap.homeIdentityAmbiguous'));
         }
         const identity = facts.localHomeIdentity
             ?? facts.completedPersonalHomeProfile?.serverIdentityId

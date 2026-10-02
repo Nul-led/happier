@@ -8,7 +8,7 @@ import type {
 } from '@happier-dev/protocol';
 import type { SessionStateUpdateV1 } from '@happier-dev/agents';
 import type { SessionHandle } from '@happier-dev/plugin-sdk/sessions';
-import type { AgentSessionConfigurationSnapshot } from '@happier-dev/plugin-sdk/agents/runtime';
+import type { AgentSessionConfigurationSnapshot, AgentTerminalLaunchPlan } from '@happier-dev/plugin-sdk/agents/runtime';
 
 export type HostTerminalAvailabilityOperation =
     | 'launch'
@@ -32,6 +32,8 @@ export type HostTerminalLaunchRequest = Readonly<{
     sessionId: string;
     metadata: Readonly<Record<string, unknown>>;
     configuration?: AgentSessionConfigurationSnapshot;
+    /** Selected Session preparation; a bare surface is not its identity owner. */
+    preparedLaunchPlan?: AgentTerminalLaunchPlan;
     modelSelection: ProviderBoundModelRef | null;
     runWithCurrentPublisherPermit: HostTerminalCurrentPublisherPermit;
     directory: string;
@@ -178,6 +180,8 @@ export type HostTerminalProcessService = Readonly<{
 
 export type HostTerminalControlProjection = Readonly<{
     target: HostTerminalSwitchTarget;
+    /** Selected managed runtimes have no exclusive SDK control custody. */
+    localControl?: 'unsupported';
     reason?: string;
     providerSessionId?: string;
     sessionStateUpdates?: readonly SessionStateUpdateV1[];

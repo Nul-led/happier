@@ -83,9 +83,15 @@ export function targetActionApprovalMatchesCurrentIntent(
 export function createTargetActionCurrentIntentAdapter(deps: Readonly<{
   create: (request: TargetActionApprovalRequestV1) => Promise<Readonly<{ artifactId: string }>>;
   read: (artifactId: string) => Promise<TargetActionApprovalRequestV1 | null>;
+  subscribeChanges?: (
+    artifactId: string,
+    onChange: () => void,
+    onError: (error: unknown) => void,
+  ) => Readonly<{ dispose(): void | Promise<void> }>;
   now?: () => number;
 }>): (request: TargetActionCurrentIntentRequest) => Promise<TargetActionCurrentIntentResult> {
   const coordinator = getSharedBlockingApprovalCoordinator();
+  const subscribeChanges = deps.subscribeChanges;
   return async (currentIntent) => {
     const { fingerprint, surface, invocationSurface, signal } = currentIntent;
     const requestedSurface = invocationSurface ?? surface;
@@ -105,7 +111,15 @@ export function createTargetActionCurrentIntentAdapter(deps: Readonly<{
     if (requestedSurface === 'api') {
       return { status: 'deferred', artifactId };
     }
-    const result = await coordinator.waitForDecision({ artifactId, request, signal, readRequest: () => deps.read(artifactId) });
+    const result = await coordinator.waitForDecision({
+      artifactId,
+      request,
+      signal,
+      readRequest: () => deps.read(artifactId),
+      ...(subscribeChanges ? {
+        subscribeChanges: (onChange, onError) => subscribeChanges(artifactId, onChange, onError),
+      } : {}),
+    });
     const decidedRequest = TargetActionApprovalRequestV1Schema.safeParse(result.request);
     if (!decidedRequest.success
       || decidedRequest.data.subjectFingerprint !== fingerprint

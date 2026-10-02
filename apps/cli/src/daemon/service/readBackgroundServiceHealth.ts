@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawnBackgroundSync } from '@happier-dev/cli-common/process';
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 
 import {
@@ -9,7 +9,7 @@ import {
 } from '@happier-dev/cli-common/service';
 import { readLaunchdServiceEnabled, readSystemdUnitStatus, type SystemdUnitStatus } from '@happier-dev/cli-common/service/discovery';
 
-import type { DaemonServiceAutostartMode, DaemonServiceMode } from './plan';
+import type { DaemonServiceAutostartMode, DaemonServiceInstallEnablement, DaemonServiceMode } from './plan';
 
 export type ServiceHealthSignal = Readonly<{
   runs: number | null;
@@ -100,12 +100,12 @@ function tryReadScheduledTaskActivity(label: string): BackgroundServiceActivity 
 function tryReadScheduledTaskStatus(label: string, includeAutostart = false) {
   try {
     const task = splitQualifiedWindowsScheduledTaskName(label);
-    const result = spawnSync('powershell.exe', [
+    const result = spawnBackgroundSync('powershell.exe', [
       '-NoProfile',
       '-NonInteractive',
       '-Command',
       buildReadWindowsScheduledTaskStatusPowerShellCommand({ ...task, includeAutostart }),
-    ], { encoding: 'utf-8', timeout: 5_000, windowsHide: true });
+    ], { encoding: 'utf-8', timeout: 5_000 });
     return result.status === 0 ? parseWindowsScheduledTaskStatusPowerShellJson(String(result.stdout ?? '')) : null;
   } catch {
     return null;
@@ -120,30 +120,51 @@ export function readBackgroundServiceAutostartMode(params: Readonly<{
   mode?: DaemonServiceMode | null;
   installedMode: DaemonServiceAutostartMode | null;
 }>): DaemonServiceAutostartMode | null {
+  return readBackgroundServiceLoginState(params).autostart;
+}
+
+/** OS enablement is independent of a definition's at-login/on-demand trigger. */
+export function readBackgroundServiceEnablement(params: Readonly<{
+  platform: NodeJS.Platform;
+  uid: number | null;
+  label: string;
+  mode?: DaemonServiceMode | null;
+}>): DaemonServiceInstallEnablement | null {
+  return readBackgroundServiceLoginState({ ...params, installedMode: null }).enablement;
+}
+
+function readBackgroundServiceLoginState(params: Readonly<{
+  platform: NodeJS.Platform;
+  uid: number | null;
+  label: string;
+  mode?: DaemonServiceMode | null;
+  installedMode: DaemonServiceAutostartMode | null;
+}>): Readonly<{ enablement: DaemonServiceInstallEnablement | null; autostart: DaemonServiceAutostartMode | null }> {
+  const unknown = { enablement: null, autostart: null };
   if (params.platform === 'linux') {
     const state = tryReadSystemdStatus({ unitName: normalizeSystemdUnitName(params.label), mode: params.mode ?? 'user', uid: params.uid, includeEnablement: true })?.unitFileState;
-    if (state === 'enabled' || state === 'enabled-runtime') return 'at-login';
-    if (state === 'disabled') return 'on-demand';
-    return null;
+    if (state === 'enabled' || state === 'enabled-runtime') return { enablement: 'enabled', autostart: 'at-login' };
+    if (state === 'disabled') return { enablement: 'disabled', autostart: 'on-demand' };
+    return unknown;
   }
   if (params.platform === 'win32') {
     const status = tryReadScheduledTaskStatus(params.label, true);
-    if (!status?.exists) return null;
-    if (!status.enabled) return 'on-demand';
-    return typeof status.autostart === 'boolean' ? status.autostart ? 'at-login' : 'on-demand' : null;
+    if (!status?.exists) return unknown;
+    if (!status.enabled) return { enablement: 'disabled', autostart: 'on-demand' };
+    return { enablement: 'enabled', autostart: typeof status.autostart === 'boolean' ? status.autostart ? 'at-login' : 'on-demand' : null };
   }
   if (params.platform === 'darwin' && params.uid !== null) {
     const args = ['print-disabled', `gui/${params.uid}`];
     try {
-      const result = spawnSync('launchctl', args, { encoding: 'utf-8', timeout: 2_000, env: buildServiceCommandEnv({ cmd: 'launchctl', args, env: process.env }) });
-      if (result.status !== 0) return null;
+      const result = spawnBackgroundSync('launchctl', args, { encoding: 'utf-8', timeout: 2_000, env: buildServiceCommandEnv({ cmd: 'launchctl', args, env: process.env }) });
+      if (result.status !== 0) return unknown;
       const enabled = readLaunchdServiceEnabled({ output: String(result.stdout ?? '').trim() || null, label: params.label });
-      return enabled === false ? 'on-demand' : enabled === true ? params.installedMode : null;
+      return enabled === false ? { enablement: 'disabled', autostart: 'on-demand' } : enabled === true ? { enablement: 'enabled', autostart: params.installedMode } : unknown;
     } catch {
-      return null;
+      return unknown;
     }
   }
-  return null;
+  return unknown;
 }
 
 function readLaunchdHealth(params: Readonly<{
@@ -195,7 +216,7 @@ function systemdScopeArgs(mode: DaemonServiceMode): readonly string[] {
 function tryReadLaunchctl(uid: number, label: string): string {
   try {
     const args = ['print', `gui/${uid}/${label}`];
-    const result = spawnSync('launchctl', args, {
+    const result = spawnBackgroundSync('launchctl', args, {
       encoding: 'utf-8',
       timeout: 2_000,
       env: buildServiceCommandEnv({ cmd: 'launchctl', args, env: process.env }),
@@ -221,7 +242,7 @@ function tryReadSystemdStatus(params: Readonly<{
     '--no-pager',
   ];
   try {
-    const result = spawnSync('systemctl', args, {
+    const result = spawnBackgroundSync('systemctl', args, {
       encoding: 'utf-8',
       timeout: 2_000,
       env: buildServiceCommandEnv({ cmd: 'systemctl', args, env: process.env, uid: params.uid }),
@@ -247,7 +268,7 @@ function tryReadJournalctlLastErrorLine(params: Readonly<{
     '--no-pager',
   ];
   try {
-    const result = spawnSync('journalctl', args, {
+    const result = spawnBackgroundSync('journalctl', args, {
       encoding: 'utf-8',
       timeout: 2_000,
       env: buildServiceCommandEnv({ cmd: 'journalctl', args, env: process.env, uid: params.uid }),

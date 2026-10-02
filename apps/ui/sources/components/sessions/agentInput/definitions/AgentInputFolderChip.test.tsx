@@ -10,7 +10,7 @@ const platformBoundary = vi.hoisted(() => ({ os: 'web' }));
 installAgentInputCommonModuleMocks({
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-        const mock = createReactNativeWebMock();
+        const mock = await createReactNativeWebMock();
         Object.defineProperty(mock.Platform, 'OS', { configurable: true, get: () => platformBoundary.os });
         return mock;
     },

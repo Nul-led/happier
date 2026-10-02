@@ -263,8 +263,19 @@ describe('Work › Roles and Notes', () => {
 
     it('keeps a cross-owner worker\'s copied roles and notes read-only', async () => {
         const roles = await renderScreen(<SessionRolesSection sessionId="worker" copiedAtSpawn />);
+        expect(declared(roles, 'session-work-roles.all', 'onPress')).toBeNull();
         expect(roles.findByTestId('session-work-roles.add')).toBeNull();
         const notes = await renderScreen(<SessionNotesSection sessionId="worker" copiedAtSpawn />);
         expect(notes.findByTestId('session-work-notes.edit')).toBeNull();
+    });
+
+    it('withdraws an open notes editor when copied ownership becomes known', async () => {
+        const notes = await renderScreen(<SessionNotesSection sessionId="worker" />);
+        await act(async () => { notes.findByTestId('session-work-notes.edit')!.props.onPress(); });
+        expect(notes.findByTestId('session-work-notes.field')).toBeTruthy();
+        await act(async () => { notes.update(<SessionNotesSection sessionId="worker" copiedAtSpawn />); });
+        expect(notes.findByTestId('session-work-notes.field')).toBeNull();
+        expect(notes.findByTestId('session-work-notes.save')).toBeNull();
+        expect(writes()).toEqual([]);
     });
 });

@@ -59,8 +59,6 @@ export interface NewSessionData {
     backendNewSessionOptionStateByTargetKey?: BackendNewSessionOptionStateByTargetKey;
     agentNewSessionOptionStateByAgentId?: BackendNewSessionOptionStateByTargetKey;
     resumeSessionId?: string;
-    taskId?: string;
-    taskTitle?: string;
     /**
      * One-shot continuation recipe for a configurable Replay-seeded child.
      *

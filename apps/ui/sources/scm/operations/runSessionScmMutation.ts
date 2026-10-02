@@ -23,6 +23,7 @@ type ScmMutationInput<T extends ScmMutationResponse> = Readonly<{
     run: () => Promise<T | 'cancelled'>;
     fallbackError: string;
     successDetail?: (response: T) => string | undefined;
+    refreshAfterSuccess?: () => Promise<void>;
     setScmOperationBusy?: (busy: boolean) => void;
     setScmOperationStatus?: (status: string | null) => void;
 }>;
@@ -103,6 +104,23 @@ async function runScmMutation<T extends ScmMutationResponse>(input: SessionScmMu
                 tracking: null,
             });
             return response;
+        }
+        if (input.refreshAfterSuccess) {
+            try {
+                await input.refreshAfterSuccess();
+            } catch (error) {
+                const refreshOutcome: ScmOperationOutcome = outcome.effect ? {
+                    v: 1, kind: 'effect_applied_with_warning', effect: outcome.effect,
+                    errorCode: SCM_OPERATION_ERROR_CODES.REPOSITORY_REFRESH_FAILED, nextActions: [{ kind: 'refresh' }],
+                } : createScmOperationUnknownOutcome({ kind: 'repository_status', ...(input.cwd ? { cwd: input.cwd } : {}) });
+                reportOperation({
+                    operation: input.operation, status: 'failed', outcome: refreshOutcome,
+                    errorCode: refreshOutcome.errorCode,
+                    detail: error instanceof Error ? error.message : String(error ?? ''),
+                    surface: 'update', tracking: null,
+                });
+                return response;
+            }
         }
         const detail = input.successDetail?.(response as T);
         reportOperation({

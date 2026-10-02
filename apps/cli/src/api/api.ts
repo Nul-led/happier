@@ -47,9 +47,6 @@ import {
   buildCurrentAccountStoredContentCompatibilityHttpHeaders,
   readCliClientUpgradeRequired,
 } from '@/api/clientCompatibility/cliClientCompatibility';
-import {
-  AccountStoredContentClientUpgradeRequiredError,
-} from '@/api/clientCompatibility/accountStoredContentActivation';
 import { z } from 'zod';
 import { logger } from '@/ui/logger'
 import type {
@@ -109,9 +106,6 @@ import {
 import { serializeAxiosErrorForLog } from './client/serializeAxiosErrorForLog';
 import { logServerEndpointFailure } from './client/serverEndpointFailureLog';
 import { resolveServerHttpBaseUrl } from './client/serverHttpBaseUrl';
-import {
-  requireCurrentAccountStoredContentServerCompatibility,
-} from './clientCompatibility/accountStoredContentActivation';
 import { resolveConnectedServicesServerApiTimeoutMs } from './client/connectedServicesServerApiTimeout';
 import { SessionCreationPlacementError } from './session/sessionCreationPlacementError';
 import {
@@ -855,12 +849,6 @@ export class ApiClient {
           ? readSessionInitialAccessServerError(error.response?.data, status)
           : null;
         if (initialAccessServerError) throw initialAccessServerError;
-        if (
-          error
-          instanceof AccountStoredContentClientUpgradeRequiredError
-        ) {
-          throw error;
-        }
         const isRetryable5xx = typeof status === 'number' && status >= 500 && status < 600;
         if (isRetryable5xx && attempt < retryMaxAttempts) {
           // Do not log raw Axios errors: they can contain bearer tokens or vendor keys.
@@ -1070,12 +1058,6 @@ export class ApiClient {
   }): Promise<Machine> {
     const accountMode = await this.getAccountEncryptionMode();
     const machineStorageMode = accountMode === 'plain' ? 'plain' : 'e2ee';
-    if (machineStorageMode === 'plain') {
-      await requireCurrentAccountStoredContentServerCompatibility({
-        resolveSnapshot: async () =>
-          await this.getServerFeaturesSnapshot({ refresh: true }),
-      });
-    }
     const encryptionContext = machineStorageMode === 'e2ee'
       ? resolveMachineEncryptionContext(this.credential)
       : null;
@@ -1468,14 +1450,7 @@ export class ApiClient {
 
   async getAccountEncryptionMode(options?: Readonly<{ refresh?: boolean; signal?: AbortSignal }>): Promise<ConnectedServiceAccountEncryptionMode> {
     const mode = await this.connectedServiceCredentialApi.getAccountEncryptionMode(options);
-    if (mode === 'plain') {
-      options?.signal?.throwIfAborted();
-      await requireCurrentAccountStoredContentServerCompatibility({
-        resolveSnapshot: async () =>
-          await this.getServerFeaturesSnapshot({ refresh: true, signal: options?.signal }),
-      });
-      options?.signal?.throwIfAborted();
-    }
+    if (mode === 'plain') options?.signal?.throwIfAborted();
     return mode;
   }
 

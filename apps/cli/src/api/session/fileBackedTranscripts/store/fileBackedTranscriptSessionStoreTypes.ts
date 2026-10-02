@@ -1,4 +1,4 @@
-import type { TranscriptOpenedAgentStateV1, TranscriptOpenedSharedMetadataV1 } from '@happier-dev/protocol';
+import type { TranscriptFollowChangeV1, TranscriptOpenedAgentStateV1, TranscriptOpenedSharedMetadataV1 } from '@happier-dev/protocol';
 
 export type FileBackedTranscriptSessionStoreLifecycleState =
     | 'hot_attached'
@@ -38,6 +38,10 @@ export interface FileBackedTranscriptSessionStore<TItem = unknown, TActivity = u
     readAfter(params?: unknown): Promise<FileBackedTranscriptReadAfterResult<TItem>>;
     getTailCursor(): string | null;
     subscribe(listener?: FileBackedTranscriptSubscriptionListener<TItem>): () => void;
+    observeChanges?(listener: (change: TranscriptFollowChangeV1) => void, onError: (error: unknown) => void): Readonly<{
+        ready: Promise<void>;
+        dispose: () => Promise<void>;
+    }>;
     getTitle(): Promise<string | null>;
     getWorkingDirectory(): Promise<string | null>;
     getActivity(): Promise<TActivity | null>;

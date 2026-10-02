@@ -3,7 +3,6 @@ import type {
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import { PluginError } from '@happier-dev/plugin-sdk';
 import type {
-    TerminalHostAdapter,
     TerminalHostHandle,
     TerminalHostPreference,
     TerminalInputInjectionResult,
@@ -17,9 +16,14 @@ import {
 import type { CatalogAgentLookupId } from '@/agent/catalog/ids';
 import { resolveTerminalHost } from '@/integrations/terminal/host/resolveTerminalHost';
 import type { TerminalHostResolution } from '@/integrations/terminal/host/_types';
+import type { TerminalHostAdapter } from '@/integrations/terminal/host/_types';
+import { createTerminalLaunchSpec, type TerminalLaunchSpec } from '@/terminal/host/launchSpec';
+import { resolveTerminalHostCreationFailure } from '@/integrations/terminal/host/errors';
 import { createDefaultTerminalHostAdapterInventory } from '@/integrations/terminal/host/defaultAdapters';
 import {
     readTerminalHostAttachmentInfo,
+    readTerminalHostAttachmentState,
+    terminalMetadataMatchesHostHandle,
     writeTerminalHostAttachmentInfo,
 } from '@/terminal/attachment/terminalAttachmentInfo';
 import {
@@ -44,6 +48,10 @@ import {
 } from '@/terminal/runtime/terminalMetadata';
 import type { Metadata } from '@/api/types';
 import { logger } from '@/ui/logger';
+import { readSessionRunnerLockStatus } from '@/daemon/sessionRunnerLock';
+import { probeTerminalHostForRecovery } from '@/integrations/terminal/host/recoveryLiveness';
+import type { TerminalRuntimeFlags } from '@/terminal/runtime/terminalRuntimeFlags';
+import { resolveHerdrTerminalContext } from '@/terminal/runtime/prepareHerdrTerminalContext';
 
 type AgentTerminalHostService = NonNullable<AgentSessionHostServices['terminalHost']>;
 type AgentTerminalHostCreateOrAttachRequest =
@@ -115,6 +123,11 @@ export type CreatePluginTerminalHostServiceParams = Readonly<{
         lifecycle: 'owned' | 'borrowed';
     }> | null>;
     launchCurrentHostProcess?: typeof launchBorrowedTerminalProcess;
+    resolveExistingHostForAdoption?: () => Promise<Readonly<{
+        handle: TerminalHostHandle;
+        adapter: TerminalHostAdapter;
+        lifecycle: 'owned';
+    }> | null>;
     onHostCreated?: (handle: TerminalHostHandle, lifecycle: 'owned' | 'borrowed') => Promise<TerminalHostHandle | void> | TerminalHostHandle | void;
     disposeHost: (input: Readonly<{
         handle: TerminalHostHandle;
@@ -128,7 +141,9 @@ export type CreateDefaultPluginTerminalHostServiceParams = Readonly<{
     happyHomeDir: string;
     hasCapability: (capability: string) => boolean;
     readSessionId?: () => string | null;
+    readSessionMetadata?: () => Readonly<Pick<Metadata, 'terminal' | 'startedBy'>> | null;
     currentTerminalMetadata?: Readonly<Pick<Metadata, 'terminal' | 'startedBy'>>;
+    herdrRuntime?: Readonly<Pick<TerminalRuntimeFlags, 'herdrSessionName' | 'herdrSocketPath'>>;
     resolvePromptSubmitVerification?: (() => Promise<TerminalPromptSubmitVerificationPolicy | null>) | undefined;
     platform?: NodeJS.Platform;
     arch?: NodeJS.Architecture;
@@ -140,6 +155,31 @@ type ActiveTerminalHost = Readonly<{
     lifecycle: 'owned' | 'borrowed';
     currentHostProcess?: BorrowedTerminalProcess;
     currentHostState?: { exited: boolean };
+    launch?: TerminalLaunchSpec;
+    physicalDisposition?: Promise<void>;
+    rollbackCreation?(): Promise<void>;
+}>;
+
+export type PreparedTerminalHostRequest = Readonly<{
+    preference: TerminalHostPreference;
+    sessionName: string;
+    label?: string;
+    workingDirectory: string;
+    spawnArgv: readonly string[];
+    spawnEnv: Readonly<Record<string, string>>;
+    windowsVerbatimArguments?: boolean;
+    signal?: AbortSignal;
+    beforeSpawn?(): void;
+}>;
+
+export type PreparedTerminalHostOwner = Readonly<{
+    service: AgentTerminalHostService;
+    createPreparedHost(request: PreparedTerminalHostRequest): Promise<Readonly<{
+        handle: TerminalHostHandle;
+        launch: TerminalLaunchSpec;
+    }>>;
+    dispose(handle: TerminalHostHandle, intent: AgentTerminalHostDisposeIntent): Promise<void>;
+    disposePending(): Promise<void>;
 }>;
 
 const TERMINAL_HOST_CAPABILITY = 'terminalHost';
@@ -264,9 +304,106 @@ async function requireResolvedHost(
 export function createPluginTerminalHostService(
     params: CreatePluginTerminalHostServiceParams,
 ): AgentTerminalHostService {
+    return createPluginTerminalHostOwner(params).service;
+}
+
+function createPluginTerminalHostOwner(params: CreatePluginTerminalHostServiceParams): Readonly<{
+    service: AgentTerminalHostService;
+    prepared: PreparedTerminalHostOwner;
+}> {
     const activeHosts = new Map<TerminalHostHandle, ActiveTerminalHost>();
+    let retainedLaunch: TerminalLaunchSpec | null = null;
+    // Public plugin launches and host-private native presentations share the exact
+    // adapter, binding, rollback and disposition owner, not a second launch path.
+    const createHost = async (request: Readonly<{
+        preference: TerminalHostPreference;
+        sessionName: string;
+        label?: string;
+        workingDirectory: string;
+        spawnArgv: readonly string[];
+        spawnEnv: Readonly<Record<string, string>>;
+        unsetEnvKeys?: readonly string[];
+        isolatedEnv: boolean;
+        preparedLaunch?: TerminalLaunchSpec;
+        beforeSpawn?(): void;
+        signal?: AbortSignal;
+    }>): Promise<TerminalHostHandle> => {
+        const current = await params.resolveCurrentHost?.() ?? null;
+        const resolution = await requireResolvedHost(params, current?.handle.kind ?? request.preference);
+        const currentHandle = current?.handle ?? null;
+        if (currentHandle && currentHandle.kind !== resolution.adapter.kind) {
+            throw new PluginTerminalHostError('PLUGIN_TERMINAL_HOST_HANDLE_KIND_MISMATCH',
+                'Current terminal host kind does not match the resolved terminal host adapter');
+        }
+        if (currentHandle && request.preparedLaunch) {
+            throw new PluginTerminalHostError('PLUGIN_TERMINAL_HOST_UNSUPPORTED_LAUNCH',
+                'Prepared optional presentations require a separately owned host');
+        }
+        const lifecycle = current?.lifecycle ?? 'owned';
+        if (currentHandle) await resolution.adapter.validateExistingHostAdmission?.(currentHandle);
+        request.signal?.throwIfAborted();
+        request.beforeSpawn?.();
+        const currentHostProcess = currentHandle
+            ? await (params.launchCurrentHostProcess ?? launchBorrowedTerminalProcess)({
+                spawnArgv: request.spawnArgv, workingDirectory: request.workingDirectory, spawnEnv: request.spawnEnv,
+            }) : undefined;
+        const createdHandle = currentHandle ?? await resolution.adapter.createOrAttachHost({
+            sessionName: request.sessionName,
+            ...(request.label !== undefined ? { label: request.label } : {}),
+            workingDirectory: request.workingDirectory, spawnArgv: request.spawnArgv, spawnEnv: request.spawnEnv,
+            ...(request.unsetEnvKeys ? { unsetEnvKeys: request.unsetEnvKeys } : {}),
+            isolatedEnv: request.isolatedEnv,
+            ...(request.preparedLaunch ? { preparedLaunch: request.preparedLaunch } : {}),
+        });
+        const currentHostState = currentHostProcess ? { exited: false } : undefined;
+        const active = {
+            adapter: resolution.adapter, handle: createdHandle, lifecycle,
+            ...(currentHostProcess ? { currentHostProcess, currentHostState } : {}),
+            ...(request.preparedLaunch ? { launch: request.preparedLaunch } : {}),
+            rollbackCreation: async () => {
+                if (currentHostProcess) await currentHostProcess.terminate();
+                else await resolution.adapter.dispose(createdHandle);
+            },
+        };
+        // Custody starts on physical creation, before binding can fail.
+        activeHosts.set(createdHandle, active);
+        let handle = createdHandle;
+        try {
+            handle = await params.onHostCreated?.(createdHandle, lifecycle) ?? createdHandle;
+        } catch (error) {
+            try {
+                await service.dispose(createdHandle, { kind: 'destroy_owned_host', reason: 'session_closed' });
+            } catch (cleanupError) {
+                logger.warn('[terminal-host] Binding failed and launch rollback could not be confirmed', {
+                    hostKind: createdHandle.kind, lifecycle,
+                });
+                throw new AggregateError([error, cleanupError],
+                    'Terminal-host binding and launch rollback failed. Inspect the terminal host before retrying.', { cause: error });
+            }
+            throw error;
+        }
+        if (currentHostProcess && currentHostState) {
+            void currentHostProcess.whenExited.then(
+                () => { currentHostState.exited = true; },
+                () => { currentHostState.exited = true; },
+            );
+        }
+        activeHosts.delete(createdHandle);
+        const { rollbackCreation: _rollback, ...bound } = active;
+        activeHosts.set(handle, { ...bound, handle });
+        return handle;
+    };
 
     const service: AgentTerminalHostService = Object.freeze({
+        ...(params.resolveExistingHostForAdoption ? {
+            async adoptExistingHost() {
+                assertCapability(params);
+                const existing = await params.resolveExistingHostForAdoption!();
+                if (!existing) return null;
+                activeHosts.set(existing.handle, existing);
+                return existing.handle;
+            },
+        } : {}),
         async resolve(request: Parameters<AgentTerminalHostService['resolve']>[0]) {
             assertCapability(params);
             const current = await params.resolveCurrentHost?.() ?? null;
@@ -280,8 +417,6 @@ export function createPluginTerminalHostService(
                     'ctx.terminalHost can only launch host-resolved agent CLIs',
                 );
             }
-            const current = await params.resolveCurrentHost?.() ?? null;
-            const resolution = await requireResolvedHost(params, current?.handle.kind ?? request.preference);
             const launch = params.resolveAgentCliLaunch(request.launch);
             if (!launch.command || launch.command.trim().length === 0) {
                 throw new PluginTerminalHostError(
@@ -298,68 +433,8 @@ export function createPluginTerminalHostService(
                 AGENT_CHILD_LAUNCH_ENVIRONMENT_TRANSFORMERS.get(service);
             const spawnArgv = [launch.command, ...launch.args, ...(request.launch.args ?? [])];
             const spawnEnv = transform ? transform(mergedSpawnEnvironment) : mergedSpawnEnvironment;
-            const currentHandle = current?.handle ?? null;
-            if (currentHandle && currentHandle.kind !== resolution.adapter.kind) {
-                throw new PluginTerminalHostError(
-                    'PLUGIN_TERMINAL_HOST_HANDLE_KIND_MISMATCH',
-                    'Current terminal host kind does not match the resolved terminal host adapter',
-                );
-            }
-            const lifecycle = current?.lifecycle ?? 'owned';
-            if (currentHandle) await resolution.adapter.validateExistingHostAdmission?.(currentHandle);
-            const currentHostProcess = currentHandle
-                ? await (params.launchCurrentHostProcess ?? launchBorrowedTerminalProcess)({
-                    spawnArgv,
-                    workingDirectory: request.workingDirectory,
-                    spawnEnv,
-                })
-                : undefined;
-            const createdHandle = currentHandle ?? await resolution.adapter.createOrAttachHost({
-                sessionName: request.sessionName,
-                ...(request.label !== undefined ? { label: request.label } : {}),
-                workingDirectory: request.workingDirectory,
-                spawnArgv,
-                spawnEnv,
-                ...(request.launch.unsetEnvKeys
-                    ? { unsetEnvKeys: request.launch.unsetEnvKeys }
-                    : {}),
-                isolatedEnv: request.isolatedEnv,
-            });
-            let handle = createdHandle;
-            try {
-                handle = await params.onHostCreated?.(createdHandle, lifecycle) ?? createdHandle;
-            } catch (error) {
-                try {
-                    if (currentHostProcess) await currentHostProcess.terminate();
-                    else await resolution.adapter.dispose(createdHandle);
-                } catch (cleanupError) {
-                    // Never serialize causes: launch/persistence failures can contain private inputs.
-                    logger.warn('[terminal-host] Binding failed and launch rollback could not be confirmed', {
-                        hostKind: createdHandle.kind,
-                        lifecycle,
-                    });
-                    throw new AggregateError(
-                        [error, cleanupError],
-                        'Terminal-host binding and launch rollback failed. Inspect the terminal host before retrying.',
-                        { cause: error },
-                    );
-                }
-                throw error;
-            }
-            const currentHostState = currentHostProcess ? { exited: false } : undefined;
-            if (currentHostProcess && currentHostState) {
-                void currentHostProcess.whenExited.then(
-                    () => { currentHostState.exited = true; },
-                    () => { currentHostState.exited = true; },
-                );
-            }
-            activeHosts.set(handle, {
-                adapter: resolution.adapter,
-                handle,
-                lifecycle,
-                ...(currentHostProcess ? { currentHostProcess, currentHostState } : {}),
-            });
-            return handle;
+            return await createHost({ ...request, spawnArgv, spawnEnv,
+                ...(request.launch.unsetEnvKeys ? { unsetEnvKeys: request.launch.unsetEnvKeys } : {}) });
         },
         async injectUserPrompt(
             handle: Parameters<AgentTerminalHostService['injectUserPrompt']>[0],
@@ -398,17 +473,61 @@ export function createPluginTerminalHostService(
             intent: Parameters<AgentTerminalHostService['dispose']>[1],
         ) {
             const active = resolveActiveHost(activeHosts, handle);
-            await active.currentHostProcess?.terminate();
-            await params.disposeHost({
-                handle: active.handle,
-                adapter: active.adapter,
-                intent,
-                lifecycle: active.lifecycle,
+            const physicalDisposition = active.physicalDisposition ?? Promise.resolve().then(async () => {
+                if (active.rollbackCreation) await active.rollbackCreation();
+                else {
+                    await active.currentHostProcess?.terminate();
+                    await params.disposeHost({ handle: active.handle, adapter: active.adapter, intent, lifecycle: active.lifecycle });
+                }
             });
+            activeHosts.set(handle, { ...active, physicalDisposition });
+            try { await physicalDisposition; }
+            catch (error) {
+                if (activeHosts.get(handle)?.physicalDisposition === physicalDisposition) activeHosts.set(handle, active);
+                throw error;
+            }
+            await active.launch?.discard();
             activeHosts.delete(handle);
+            if (active.launch === retainedLaunch) retainedLaunch = null;
         },
     });
-    return service;
+    return { service, prepared: {
+        service,
+        async createPreparedHost(request) {
+            if (activeHosts.size > 0 || retainedLaunch) throw new PluginTerminalHostError('PLUGIN_TERMINAL_HOST_HANDLE_NOT_ACTIVE',
+                'An owned terminal presentation still requires exact retirement before another can start');
+            request.signal?.throwIfAborted();
+            const prepared = await createTerminalLaunchSpec({
+                workingDirectory: request.workingDirectory, spawnArgv: request.spawnArgv, spawnEnv: request.spawnEnv,
+                envPassthroughKeys: ['TERM', 'COLORTERM', 'TERM_PROGRAM', 'TERM_PROGRAM_VERSION'],
+                windowsVerbatimArguments: request.windowsVerbatimArguments, reportNativeSpawn: true,
+            });
+            const launch: TerminalLaunchSpec = { ...prepared, async discard() {
+                await prepared.discard();
+                if (retainedLaunch === launch) retainedLaunch = null;
+            } };
+            retainedLaunch = launch;
+            let submitted = false;
+            try {
+                const handle = await createHost({ ...request, spawnArgv: launch.argv, preparedLaunch: launch, isolatedEnv: true,
+                    beforeSpawn() { request.beforeSpawn?.(); submitted = true; } });
+                return { handle, launch };
+            } catch (error) {
+                // An ambiguous create or retained handle owns the handoff until exact retirement.
+                if (activeHosts.size === 0 && (!submitted || resolveTerminalHostCreationFailure(error).creationDisposition !== 'created_or_uncertain')) {
+                    try { await launch.discard(); }
+                    catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Native presentation cleanup failed', { cause: error }); }
+                }
+                throw error;
+            }
+        },
+        dispose: service.dispose,
+        async disposePending() {
+            for (const handle of activeHosts.keys()) await service.dispose(handle, { kind: 'destroy_owned_host', reason: 'session_closed' });
+            if (retainedLaunch) throw new PluginTerminalHostError('PLUGIN_TERMINAL_HOST_HANDLE_NOT_ACTIVE',
+                'An uncertain terminal launch still requires exact physical retirement before private inputs can be removed');
+        },
+    } };
 }
 
 async function resolveDefaultTerminalHost(
@@ -418,17 +537,19 @@ async function resolveDefaultTerminalHost(
     const platform = params.platform ?? process.platform;
     const promptSubmitVerification = await params.resolvePromptSubmitVerification?.() ?? null;
     const sessionId = params.readSessionId?.()?.trim() ?? '';
-    const savedAttachment = preference === 'herdr' && sessionId
-        ? await readTerminalHostAttachmentInfo({ happyHomeDir: params.happyHomeDir, sessionId })
-        : null;
-    const savedHerdrSessionName = savedAttachment && savedAttachment.version !== 1 && savedAttachment.handle.kind === 'herdr'
-        ? savedAttachment.handle.sessionName
+    const herdrContext = preference === 'herdr'
+        ? await resolveHerdrTerminalContext({ happyHomeDir: params.happyHomeDir, existingSessionId: sessionId,
+            sessionName: params.herdrRuntime?.herdrSessionName ?? 'default', socketPath: params.herdrRuntime?.herdrSocketPath })
         : undefined;
+    if (herdrContext === null) {
+        throw new PluginTerminalHostError('PLUGIN_TERMINAL_HOST_UNAVAILABLE',
+            'The recorded Herdr attachment could not be verified before server admission');
+    }
     const inventory = await createDefaultTerminalHostAdapterInventory({
         happyHomeDir: params.happyHomeDir,
         preference,
         platform,
-        ...(savedHerdrSessionName ? { herdrSessionName: savedHerdrSessionName } : {}),
+        ...(herdrContext ? { herdrSessionName: herdrContext.sessionName, herdrSocketPath: herdrContext.socketPath } : {}),
         ...(promptSubmitVerification ? { promptSubmitVerification } : {}),
     });
 
@@ -455,7 +576,18 @@ function buildProviderCliProcessEnv(input: AgentTerminalHostLaunchInput): NodeJS
 export function createDefaultPluginTerminalHostService(
     params: CreateDefaultPluginTerminalHostServiceParams,
 ): AgentTerminalHostService {
-    return createPluginTerminalHostService({
+    return createDefaultTerminalHostOwner(params).service;
+}
+
+/** Consumed only by the host's admitted provider-attach runtime, never by plugins. */
+export function createDefaultPreparedTerminalHostOwner(
+    params: Omit<CreateDefaultPluginTerminalHostServiceParams, 'hasCapability' | 'currentTerminalMetadata'>,
+): PreparedTerminalHostOwner {
+    return createDefaultTerminalHostOwner({ ...params, hasCapability: () => false }).prepared;
+}
+
+function createDefaultTerminalHostOwner(params: CreateDefaultPluginTerminalHostServiceParams) {
+    return createPluginTerminalHostOwner({
         hasCapability: params.hasCapability,
         resolveTerminalHost: (preference) => resolveDefaultTerminalHost(params, preference),
         resolveAgentCliLaunch: (launch) => requireAgentCliLaunchSpec(launch.agentId as CatalogAgentLookupId, {
@@ -475,6 +607,46 @@ export function createDefaultPluginTerminalHostService(
                 handle,
                 lifecycle: resolveExistingTerminalHostLifecycle(metadata, attachmentInfo) ?? 'owned',
             };
+        },
+        resolveExistingHostForAdoption: async () => {
+            // A foreground launch in a user's current terminal takes the existing
+            // borrowing path, never historical owned-host adoption.
+            if (params.currentTerminalMetadata?.terminal
+                && buildActiveTerminalHostHandleFromMetadata(params.currentTerminalMetadata.terminal)) return null;
+            const sessionId = params.readSessionId?.()?.trim() ?? '';
+            if (!sessionId) return null;
+            const attachmentState = await readTerminalHostAttachmentState({ happyHomeDir: params.happyHomeDir, sessionId });
+            if (attachmentState.status === 'absent') return null;
+            const reject = (): never => {
+                throw new PluginTerminalHostError('PLUGIN_TERMINAL_HOST_UNAVAILABLE',
+                    'Retained terminal-host recovery could not confirm current owned host and runner custody');
+            };
+            if (attachmentState.status !== 'present') return reject();
+            const attachment = attachmentState.info;
+            if (attachment.version === 3) return null;
+            if (attachment.version !== 2) return reject();
+            const terminal = params.readSessionMetadata?.()?.terminal;
+            if (!terminal || terminal.controlServiceabilityV1?.attachmentId !== attachment.attachmentId
+                || !terminalMetadataMatchesHostHandle(terminal, attachment.handle)) return reject();
+            const ownership = await readSessionRunnerLockStatus({ happyHomeDir: params.happyHomeDir, sessionId });
+            if (!ownership.ok || ownership.lock.pid !== process.pid) return reject();
+            const resolution = await resolveDefaultTerminalHost(params, attachment.handle.kind);
+            if (resolution.status !== 'resolved') return reject();
+            await resolution.adapter.validateExistingHostAdmission?.(attachment.handle);
+            const probe = await probeTerminalHostForRecovery({ adapter: resolution.adapter, handle: attachment.handle });
+            if (probe.status !== 'alive') return reject();
+            const current = await readTerminalHostAttachmentState({ happyHomeDir: params.happyHomeDir, sessionId });
+            const currentTerminal = params.readSessionMetadata?.()?.terminal;
+            const currentOwnership = await readSessionRunnerLockStatus({ happyHomeDir: params.happyHomeDir, sessionId });
+            if (params.readSessionId?.()?.trim() !== sessionId
+                || current.status !== 'present' || current.info.version !== 2
+                || current.info.attachmentId !== attachment.attachmentId
+                || !terminalMetadataMatchesHostHandle(terminal, current.info.handle)
+                || !currentTerminal || currentTerminal.controlServiceabilityV1?.attachmentId !== attachment.attachmentId
+                || !terminalMetadataMatchesHostHandle(currentTerminal, attachment.handle)
+                || !currentOwnership.ok || currentOwnership.lock.pid !== ownership.lock.pid
+                || currentOwnership.lock.acquiredAtMs !== ownership.lock.acquiredAtMs) return reject();
+            return { handle: attachment.handle, adapter: resolution.adapter, lifecycle: 'owned' };
         },
         onHostCreated: async (handle, lifecycle) => {
             const sessionId = params.readSessionId?.()?.trim() ?? '';

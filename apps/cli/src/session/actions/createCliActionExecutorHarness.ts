@@ -9,16 +9,12 @@ import {
 
 import { createActionSettingsProvider, type RuntimeActionSettingsProvider } from '@/settings/actionsSettingsProvider';
 import { createCliBrowserRuntimeActionExecutor } from '@/daemon/browser/actions/controlTransport';
+import { observeAccountChanges } from '@/api/observeAccountChanges';
+import { resolveServerHttpBaseUrl, runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 
 import { createCliActionDeps } from './createCliActionDeps';
 import { createActionExecutionHookDeps } from './createActionExecutionHookDeps';
 import { getSharedBlockingApprovalCoordinator } from './approvals/blockingApprovalCoordinator';
-
-function normalizePollIntervalMs(raw: unknown): number {
-  const parsed = typeof raw === 'number' ? raw : Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 250;
-  return Math.max(1, Math.min(60_000, Math.floor(parsed)));
-}
 
 type MutableActionExecutorDeps = {
   -readonly [Key in keyof ActionExecutorDeps]: ActionExecutorDeps[Key];
@@ -84,15 +80,23 @@ export function createCliActionExecutorHarness(
   const rawDeps: MutableActionExecutorDeps = {
     ...baseDepsForRuntime,
     approvalsWaitForDecision: async (args: ApprovalWaitForDecisionArgs) => {
+      const serverUrl = params.serverHttpBaseUrl ?? resolveServerHttpBaseUrl();
       const result = await coordinator.waitForDecision({
         artifactId: args.artifactId,
         request: args.request,
         serverId: args.serverId,
         signal: args.signal,
-        pollIntervalMs: normalizePollIntervalMs(process.env.HAPPIER_BLOCKING_APPROVAL_POLL_INTERVAL_MS),
+        subscribeChanges: (onChange, onError) => observeAccountChanges({
+          token: params.token,
+          serverUrl,
+          entityId: args.artifactId,
+        }, { onChange, onError }),
         readRequest: async () => {
           const getApproval = rawDeps.approvalsGet;
-          return getApproval ? await getApproval({ artifactId: args.artifactId, serverId: args.serverId ?? null }) : null;
+          return getApproval ? await runWithServerHttpBaseUrl(serverUrl, () => getApproval({
+            artifactId: args.artifactId,
+            serverId: args.serverId ?? null,
+          })) : null;
         },
       });
       return { ...result, request: ApprovalRequestSchema.parse(result.request) };

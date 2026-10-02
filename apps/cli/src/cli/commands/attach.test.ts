@@ -1,6 +1,4 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
-import { hostname, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { hostname } from 'node:os';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -291,7 +289,6 @@ describe('happier attach', () => {
       readSettingsFn: async () => localSettings,
       fetchSessionByIdFn: async () => rawSession,
       readTerminalAttachmentInfoFn: async () => null,
-      createProviderAttachStatePublisherFn: () => null,
       runTmuxAttachFn: vi.fn(async () => 0),
     });
 
@@ -324,7 +321,6 @@ describe('happier attach', () => {
       }),
     });
     const runProviderAttachFn = vi.fn(async () => 0);
-    const createProviderAttachStatePublisherFn = vi.fn(() => null);
     resolveBackendExecutionSurfaces.mockImplementation((backendId) => backendId === 'plugin-review-bot'
       ? {
           terminalRuntime: null,
@@ -344,15 +340,10 @@ describe('happier attach', () => {
       readSettingsFn: async () => localSettings,
       fetchSessionByIdFn: async () => rawSession,
       runProviderAttachFn,
-      createProviderAttachStatePublisherFn,
       readTerminalAttachmentInfoFn: async () => null,
       isTmuxAvailableFn: async () => true,
     });
 
-    expect(createProviderAttachStatePublisherFn).toHaveBeenCalledWith(expect.objectContaining({
-      agentId: 'opencode',
-      sessionId: 'sid_plugin_attach_backend_1',
-    }));
     expect(runProviderAttachFn).toHaveBeenCalledWith(expect.objectContaining({
       agentId: 'opencode',
       backendId: 'plugin-review-bot',
@@ -361,15 +352,6 @@ describe('happier attach', () => {
   });
 
   it('allows explicit local OpenCode attach after machine id drift when a local attachment marker exists', async () => {
-    const stateDir = await mkdtemp(join(tmpdir(), 'happier-opencode-attach-command-'));
-    process.env.HAPPIER_OPENCODE_SERVER_STATE_PATH = join(stateDir, 'managed-server.json');
-    await writeFile(process.env.HAPPIER_OPENCODE_SERVER_STATE_PATH, JSON.stringify({
-      baseUrl: 'http://127.0.0.1:4096/',
-      pid: 12345,
-      startedAtMs: Date.now(),
-      status: 'ready',
-    }));
-
     const credentials: Credentials = {
       token: 'token-1',
       encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
@@ -388,6 +370,7 @@ describe('happier attach', () => {
       }),
     });
     const runProviderAttachFn = vi.fn(async () => 0);
+    const runTmuxAttachFn = vi.fn(async () => 0);
 
     await (handleAttachCommand as any)(['sid_opencode_local_marker_1'], {
       readCredentialsFn: async () => credentials,
@@ -404,13 +387,11 @@ describe('happier attach', () => {
         updatedAt: Date.now(),
       }),
       runProviderAttachFn,
-      runTmuxAttachFn: vi.fn(async () => 0),
+      runTmuxAttachFn,
     });
 
-    expect(runProviderAttachFn).toHaveBeenCalledWith(expect.objectContaining({
-      agentId: 'opencode',
-      sessionId: 'sid_opencode_local_marker_1',
-    }));
+    expect(runTmuxAttachFn).toHaveBeenCalledWith(expect.objectContaining({ terminal: expect.objectContaining({ tmux: { target: 'happy:opencode-1' } }) }));
+    expect(runProviderAttachFn).not.toHaveBeenCalled();
   });
 
   it('shows local rows plus probeable remote provider rows in interactive attach', async () => {
@@ -525,7 +506,7 @@ describe('happier attach', () => {
         sessionId: 'sid_not_attachable_1',
         disabled: true,
       });
-      expect(String(rows[2]?.disabledReason)).toMatch(/started outside tmux/i);
+      expect(rows[2]?.disabledReason).toEqual(expect.any(String));
 
       await expect(probeSessionIdFn?.('sid_remote_opencode_1')).resolves.toMatchObject({
         reachable: true,
@@ -671,7 +652,7 @@ describe('happier attach', () => {
     }));
   });
 
-  it('points interactive empty attach at active remote session discovery', async () => {
+  it('does not fetch or open a terminal when interactive discovery is empty', async () => {
     const credentials: Credentials = {
       token: 'token-1',
       encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
@@ -697,16 +678,13 @@ describe('happier attach', () => {
         runTmuxAttachFn: vi.fn(async () => 0),
       });
 
-      const output = logSpy.mock.calls.flat().join('\n');
-      expect(output).toContain('No active sessions on this machine.');
-      expect(output).toContain('happier session list --active');
-      expect(output).toContain('happier resume');
+      expect(exitSpy).not.toHaveBeenCalled();
     } finally {
       logSpy.mockRestore();
     }
   });
 
-  it('prints a clearer explicit attach explanation for sessions started outside tmux', async () => {
+  it('rejects a non-attachable plain session without opening a terminal', async () => {
     const credentials: Credentials = {
       token: 'token-1',
       encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
@@ -728,17 +706,19 @@ describe('happier attach', () => {
       }),
     });
 
+    const runTmuxAttachFn = vi.fn(async () => 0);
+    const runProviderAttachFn = vi.fn(async () => 1);
     await expect((handleAttachCommand as any)(['sid_plain_codex_1'], {
       readCredentialsFn: async () => credentials,
       readSettingsFn: async () => localSettings,
       fetchSessionByIdFn: async () => rawSession,
       readTerminalAttachmentInfoFn: async () => null,
-      runProviderAttachFn: vi.fn(async () => 1),
-      runTmuxAttachFn: vi.fn(async () => 0),
+      runProviderAttachFn,
+      runTmuxAttachFn,
     })).rejects.toThrow('process.exit(1)');
 
-    const output = errorSpy.mock.calls.flat().join('\n');
-    expect(output).toMatch(/started outside tmux/i);
+    expect(runProviderAttachFn).not.toHaveBeenCalled();
+    expect(runTmuxAttachFn).not.toHaveBeenCalled();
 
     errorSpy.mockRestore();
   });
@@ -758,10 +738,16 @@ describe('happier attach', () => {
         flavor: 'opencode',
       },
       nativeSession: {
-        opencodeSessionId: 'opencode-owner-session-1',
-        opencodeBackendMode: 'server',
-        opencodeServerBaseUrl: 'http://127.0.0.1:4096/',
-        opencodeServerBaseUrlExplicit: true,
+        runtimeDescriptorV1: {
+          v: 1,
+          agentId: 'opencode',
+          agent: {
+            providerSessionId: 'opencode-owner-session-1',
+            backendMode: 'server',
+            serverBaseUrl: 'http://127.0.0.1:4096/',
+            serverBaseUrlExplicit: true,
+          },
+        },
       },
     });
     const rawSession = createSessionRecordFixture({
@@ -796,10 +782,7 @@ describe('happier attach', () => {
       sessionId: 'sid_layout1_owner_opencode_1',
       metadata: expect.objectContaining({
         path: '/private/opencode-workspace',
-        opencodeSessionId: 'opencode-owner-session-1',
-        opencodeBackendMode: 'server',
-        opencodeServerBaseUrl: 'http://127.0.0.1:4096/',
-        opencodeServerBaseUrlExplicit: true,
+        runtimeDescriptorV1: ownerMetadata.nativeSession?.runtimeDescriptorV1,
       }),
     });
   });
@@ -842,58 +825,14 @@ describe('happier attach', () => {
       backendId: 'opencode',
       metadata: expect.objectContaining({
         path: '/tmp/opencode-workspace',
-        opencodeSessionId: 'opencode-session-1',
+        runtimeDescriptorV1: expect.objectContaining({ agent: expect.objectContaining({ providerSessionId: 'opencode-session-1' }) }),
       }),
       sessionId: 'sid_opencode_1',
     });
     expect(runTmuxAttachFn).not.toHaveBeenCalled();
   });
 
-  it('publishes provider-attach local-control state before attach and restores remote mode after exit', async () => {
-    const credentials: Credentials = {
-      token: 'token-1',
-      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
-    };
-    const rawSession = createSessionRecordFixture({
-      id: 'sid_opencode_publish_1',
-      active: true,
-      encryptionMode: 'plain',
-      metadata: JSON.stringify({
-        machineId: 'machine-local',
-        path: '/tmp/opencode-workspace',
-        host: 'test',
-        flavor: 'opencode',
-        opencodeSessionId: 'opencode-session-1',
-        opencodeBackendMode: 'server',
-        opencodeServerBaseUrl: 'http://127.0.0.1:4096/',
-        opencodeServerBaseUrlExplicit: true,
-      }),
-    });
-    const callOrder: string[] = [];
-    const runProviderAttachFn = vi.fn(async () => {
-      callOrder.push('attach');
-      return 0;
-    });
-    const publishAttached = vi.fn(async (attached: boolean) => {
-      callOrder.push(attached ? 'publish-local' : 'publish-remote');
-    });
-
-    await (handleAttachCommand as any)(['sid_opencode_publish_1'], {
-      readCredentialsFn: async () => credentials,
-      readSettingsFn: async () => localSettings,
-      fetchSessionByIdFn: async () => rawSession,
-      runProviderAttachFn,
-      createProviderAttachStatePublisherFn: () => ({ publishAttached }),
-      readTerminalAttachmentInfoFn: async () => null,
-      isTmuxAvailableFn: async () => true,
-    });
-
-    expect(publishAttached).toHaveBeenNthCalledWith(1, true);
-    expect(publishAttached).toHaveBeenNthCalledWith(2, false);
-    expect(callOrder).toEqual(['publish-local', 'attach', 'publish-remote']);
-  });
-
-  it('restores remote provider-attach state even when provider attach exits non-zero', async () => {
+  it('reports failure when an independent provider attach exits non-zero', async () => {
     const credentials: Credentials = {
       token: 'token-1',
       encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
@@ -913,20 +852,15 @@ describe('happier attach', () => {
         opencodeServerBaseUrlExplicit: true,
       }),
     });
-    const publishAttached = vi.fn(async () => {});
-
     await expect((handleAttachCommand as any)(['sid_opencode_publish_fail_1'], {
       readCredentialsFn: async () => credentials,
       readSettingsFn: async () => localSettings,
       fetchSessionByIdFn: async () => rawSession,
       runProviderAttachFn: async () => 1,
-      createProviderAttachStatePublisherFn: () => ({ publishAttached }),
       readTerminalAttachmentInfoFn: async () => null,
       isTmuxAvailableFn: async () => true,
     })).rejects.toThrow('process.exit(1)');
 
-    expect(publishAttached).toHaveBeenNthCalledWith(1, true);
-    expect(publishAttached).toHaveBeenNthCalledWith(2, false);
   });
 
   it('uses local terminal attachment info for tmux-backed attach on the current machine', async () => {

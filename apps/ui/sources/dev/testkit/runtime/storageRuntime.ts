@@ -306,6 +306,8 @@ export function createStorageModuleStub<TOverrides extends object>(
         useAllSessionListAttentionRows: () => allSessionListAttentionRows,
         useMachine: (machineId: string) => store.getState().machines[machineId] ?? null,
         useSession: () => null,
+        // No session records in the stub, so every projection sees the absent source.
+        useSessionDisplayNameProjections: <T,>(addresses: ReadonlyArray<unknown>, project: (source: null) => T): readonly T[] => addresses.map(() => project(null)),
         useSessionWorkspacePath: () => null,
         useSessionRpcAvailabilityState: () => ({
             sessionExists: false,

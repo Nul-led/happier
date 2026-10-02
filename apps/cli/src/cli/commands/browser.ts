@@ -1,8 +1,7 @@
 import type { CommandContext } from '@/cli/commandRegistry';
 import { handleActionCliRootCommand, renderActionCliRootHelp } from '@/cli/actions/rootCommand';
-import { getBrowserChromiumArchiveDownloadInstallableAdapter } from '@/packagedRuntime/installables/sourceAdapters/browserChromium';
 import { resolveManagedBrowserSidecarCandidate } from '@/daemon/browser/sidecar/source';
-import { installManagedChromiumAppArmorProfile, managedChromiumAppArmorProfile } from '@/daemon/browser/sidecar/sandbox';
+import { installManagedChromiumSandbox, managedChromiumAppArmorProfile } from '@/daemon/browser/sidecar/sandbox';
 
 /** Explicit local OS prerequisite installation; delegates artifact acquisition to the managed owner. */
 export async function handleBrowserCliCommand(context: CommandContext): Promise<void> {
@@ -22,17 +21,13 @@ export async function handleBrowserCliCommand(context: CommandContext): Promise<
         throw new Error('Usage: happier browser sandbox install [--print]');
     }
     if (process.platform !== 'linux') throw new Error('Browser sandbox profile installation applies only to Linux with AppArmor.');
-    let candidate = await resolveManagedBrowserSidecarCandidate();
-    if (candidate && !candidate.available && !args.includes('--print')) {
-        const installed = await getBrowserChromiumArchiveDownloadInstallableAdapter().installOrUpgrade();
-        if (!installed.ok) throw new Error(installed.errorMessage);
-        candidate = await resolveManagedBrowserSidecarCandidate();
-    }
-    if (!candidate?.available || !candidate.executablePath) throw new Error('Managed Chromium is not installed. Open an agent browser first, then run this command.');
     if (args.includes('--print')) {
+        const candidate = await resolveManagedBrowserSidecarCandidate();
+        if (!candidate?.available || !candidate.executablePath) throw new Error('Managed Chromium is not installed. Open an agent browser first, then run this command.');
         console.log(managedChromiumAppArmorProfile(candidate.executablePath).content);
         return;
     }
-    await installManagedChromiumAppArmorProfile(candidate.executablePath);
+    const installed = await installManagedChromiumSandbox();
+    if (installed.status === 'failed') throw new Error(`Browser sandbox installation failed: ${installed.code}`);
     console.log('Managed Chromium sandbox profile installed. Retry the browser action.');
 }

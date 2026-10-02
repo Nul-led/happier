@@ -227,7 +227,7 @@ export type PluginSurfaceActionDispatchOutcome =
     }>;
 
 export type DispatchPluginSurfaceActionInput = Readonly<{
-    /** Stable host request identity used only by the daemon's operation observer. */
+    /** Exact host request identity for Action approval custody and daemon operation observation. */
     actionRequestId?: string;
     /**
      * The one admission moment for host-side Action-operation presentation.
@@ -1055,6 +1055,7 @@ async function executeHostAction(
 
     const result = await binding.execute(actionId, input.input, {
         ...binding.context,
+        ...(input.actionRequestId ? { actionRequestId: input.actionRequestId } : {}),
         ...(input.signal ? { signal: input.signal } : {}),
         surface: 'plugin',
         ...(caller
@@ -1219,6 +1220,8 @@ export type CreatePluginSurfaceActionDispatchHandlerInput = Readonly<{
     resolveContributedAction?: PluginSurfaceContributedActionDescriptorResolver;
     isContributedActionAvailable?: () => boolean;
     isCurrent?: () => boolean;
+    /** Observes only successfully delivered results, irrespective of execution placement. */
+    onActionResult?: (result: PluginUiJsonValueV1) => void;
 }>;
 
 /**
@@ -1270,6 +1273,7 @@ export function createPluginSurfaceActionDispatchHandler(
         }
 
         const outcome = await dispatchPluginSurfaceAction({
+            actionRequestId: request.requestId,
             callerPluginId: input.pluginId,
             callerSourceCustody: input.callerSourceCustody,
             ...(callerContributionLocalId
@@ -1297,9 +1301,9 @@ export function createPluginSurfaceActionDispatchHandler(
             ...(selectedActionInput ? { selectedActionInput } : {}),
             ...(input.isCurrent ? { isCurrent: input.isCurrent } : {}),
         });
-        return outcome.ok
-            ? outcome.result
-            : createPluginSurfaceHostApiError(outcome.code, [outcome.reason]);
+        if (!outcome.ok) return createPluginSurfaceHostApiError(outcome.code, [outcome.reason]);
+        input.onActionResult?.(outcome.result);
+        return outcome.result;
     };
 }
 
@@ -1372,6 +1376,8 @@ export function createPluginSurfaceActionHostApi(input: Readonly<{
     /** Retires effects owned by `mountedHostApiHandlers` with this same mount. */
     disposeMountedHostApiHandlers?: () => void;
     isCurrent?: () => boolean;
+    /** The mount's custody owner observes successfully delivered Action results. */
+    onActionResult?: (result: PluginUiJsonValueV1) => void;
 }>): PluginSurfaceHostApiV1 {
     // Workspace-file viewers are a distinct semantic role. The concrete
     // openable binding is its authority, so install exactly its context/stat/read
@@ -1422,6 +1428,7 @@ export function createPluginSurfaceActionHostApi(input: Readonly<{
     const resourceDisposeHostResource = resourceWatch?.disposeHostResource;
     const executeAction = createPluginSurfaceActionDispatchHandler({
         pluginId: input.surfaceContext.pluginId,
+        ...(input.onActionResult ? { onActionResult: input.onActionResult } : {}),
         ...(input.callerSourceCustody
             ? { callerSourceCustody: input.callerSourceCustody }
             : {}),

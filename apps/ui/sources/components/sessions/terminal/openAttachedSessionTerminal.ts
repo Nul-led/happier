@@ -12,6 +12,7 @@ import { useSessionTerminalAvailability } from './useSessionTerminalAvailability
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { createSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
+import { t } from '@/text';
 import { useDestinationPaneScopeId } from '@/components/appShell/workspace/DestinationInstanceHost';
 
 export type AttachedSessionTerminalUnavailableReason =
@@ -20,6 +21,29 @@ export type AttachedSessionTerminalUnavailableReason =
     | 'missing_machine'
     | 'terminal_disabled'
     | 'cli_update_required';
+
+/**
+ * Why the agent's own terminal cannot be shown, in words. `session_not_attachable` names the host
+ * requirement only where the caller offers the terminal itself (the pane's + menu); the chat card
+ * stays silent for it because it never offers the terminal then.
+ */
+export function resolveAttachedTerminalUnavailableMessage(
+    reason: AttachedSessionTerminalUnavailableReason | null,
+    options?: Readonly<{ includeNotAttachable?: boolean }>,
+): string | null {
+    switch (reason) {
+        case 'missing_machine':
+            return t('terminalEmbedded.errors.missingMachineTarget');
+        case 'terminal_disabled':
+            return t('terminalEmbedded.errors.disabled');
+        case 'cli_update_required':
+            return t('deps.ui.notAvailableUpdateCli');
+        case 'session_not_attachable':
+            return options?.includeNotAttachable ? t('terminalWorkspace.agentNotAttachable') : null;
+        default:
+            return null;
+    }
+}
 
 export function useOpenAttachedSessionTerminal(sessionId: string | null, serverId?: string | null, suppliedSession?: Session | null): Readonly<{
     available: boolean;

@@ -7,6 +7,8 @@ import type { Machine } from '@/sync/domains/state/storageTypes';
 import type { UpdatesSummary } from '@/updates/items/buildUpdatesSummary';
 import { storage } from '@/sync/domains/state/storageStore';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import type { UpdatesContentModel } from '@/updates/useUpdatesContentModel';
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -45,19 +47,33 @@ vi.mock('@/components/ui/overlays/FloatingOverlay', () => ({
 
 // Machine RPC (a network boundary) and the modal host (a presentation boundary): Update is the
 // consent, so no modal may be asked for.
-const rpc = vi.hoisted(() => ({ invoke: vi.fn(async (_machineId: string, request: { method: string }) => ({
-    supported: true,
-    response: {
-        ok: true,
-        result: request.method === 'start'
-            ? { taskId: 't1' }
-            : { events: [], nextCursor: 0, pendingPrompt: null, result: { protocolVersion: 1, taskId: 't1', ok: true, data: { started: true } } },
-    },
-})) }));
-vi.mock('@/sync/ops', async (importOriginal) => ({
-    ...(await importOriginal<Record<string, unknown>>()),
-    machineCapabilitiesInvoke: rpc.invoke,
+const rpc = vi.hoisted(() => ({
+    // Generic RPC response typing belongs to the adapter; this is its untyped wire boundary.
+    machineRpc: vi.fn(),
+    invoke: vi.fn(async (_machineId: string, request: { method: string }, _options?: { serverId?: string | null }) => ({
+        supported: true,
+        response: {
+            ok: true,
+            result: request.method === 'start'
+                ? { taskId: 't1' }
+                : { events: [], nextCursor: 0, pendingPrompt: null, result: { protocolVersion: 1, taskId: 't1', ok: true, data: { started: true } } },
+        },
+    })),
 }));
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', async () => {
+    const { createServerScopedMachineRpcBoundaryMock } = await import('@/dev/testkit/mocks/serverScopedRpc');
+    rpc.machineRpc.mockImplementation(async (request: { machineId: string; method: string; payload: unknown; serverId?: string | null }) => {
+        if (request.method === RPC_METHODS.CAPABILITIES_DETECT) return { protocolVersion: 1, results: {} };
+        const payload = request.payload;
+        if (request.method !== RPC_METHODS.CAPABILITIES_INVOKE || !payload || typeof payload !== 'object'
+            || !('method' in payload) || typeof payload.method !== 'string') {
+            return { error: 'Unsupported fixture RPC' };
+        }
+        const result = await rpc.invoke(request.machineId, { ...payload, method: payload.method }, { serverId: request.serverId });
+        return result.response;
+    });
+    return createServerScopedMachineRpcBoundaryMock(rpc.machineRpc);
+});
 const modal = vi.hoisted(() => ({ confirm: vi.fn(async () => true) }));
 vi.mock('@/modal', async (importOriginal) => {
     const actual = await importOriginal<{ Modal: Record<string, unknown> }>();
@@ -195,5 +211,27 @@ describe('UpdatesPopoverButton', () => {
         );
         const labels = screen.findAll((node) => typeof node.props?.accessibilityLabel === 'string').map((node) => String(node.props.accessibilityLabel));
         expect(labels.some((label) => label.includes('updates.row.restartsService'))).toBe(true);
+    });
+
+    it.each(['screen', 'popover'] as const)('shows session impact by item identity for this computer in %s', async (presentation) => {
+        const { UpdatesContent } = await import('./UpdatesContent');
+        const item = {
+            id: 'local:happier-cli', subject: { kind: 'happier-cli' }, machineId: 'local', title: 'Happier CLI',
+            currentVersion: '0.2.12', latestVersion: '0.2.13', state: 'available', progressPercent: null, step: null,
+            managedBy: 'happier', action: { kind: 'run', verb: 'update' }, failure: null, skipped: false,
+        } as const;
+        const model: UpdatesContentModel = {
+            summary: { ...TWO, actionableCount: 1 },
+            groups: [{ id: 'this-computer', kind: 'thisComputer', machineName: 'local', machineId: 'unrelated-group-id', online: true, lastSeenAt: null, items: [item] }],
+            checkedAt: null, uncheckedMachineCount: 0, sessionsRunningOn: new Set(['local']),
+            runItem: async () => {}, updateGroup: async () => {}, updateAll: async () => {}, stopAfterCurrent: () => {}, batch: null,
+            checkNow: () => {}, skipAppVersion: null, openWhatsNew: () => {}, whatsNewUnread: false,
+        };
+        const screen = await renderScreen(<UpdatesContent model={model} presentation={presentation} />);
+        const hasNote = () => screen.findAll((node) => typeof node.props?.accessibilityLabel === 'string')
+            .some((node) => String(node.props.accessibilityLabel).includes('updates.row.restartsService'));
+        expect(hasNote()).toBe(true);
+        await screen.update(<UpdatesContent model={{ ...model, sessionsRunningOn: new Set(['unrelated-group-id']) }} presentation={presentation} />);
+        expect(hasNote()).toBe(false);
     });
 });

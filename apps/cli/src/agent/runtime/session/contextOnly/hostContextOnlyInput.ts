@@ -35,8 +35,10 @@ export type HostContextOnlyInputPort = Readonly<{
 
 export type HostPreparedContext = SessionFollowPreparedContext & Readonly<{
   workerUpdates?: readonly WorkerUpdateV1[];
-  /** Final allowance fit for the optional wake already taken by this turn; null means omit it. */
+  /** Final allowance fit for the optional wake already taken by this turn. */
   contextOnlyWorkerUpdate?: WorkerUpdateV1 | null;
+  /** A retained wake that cannot fit keeps its custody until an input/context edge. */
+  contextOnlyWorkerDisposition?: 'deferred';
   recheckAdmission?: (signal: AbortSignal) => Promise<boolean>;
 }>;
 

@@ -171,6 +171,7 @@ export const Alert = {
 export const Easing = {
     linear: () => 0,
     bezier: () => () => 0,
+    in: (fn: (value: number) => number) => fn,
     out: (fn: any) => fn,
     inOut: (fn: any) => fn,
     cubic: () => 0,

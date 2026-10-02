@@ -1,7 +1,7 @@
 import { statSync, utimesSync } from 'node:fs';
 import { chmod, mkdir, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnBackgroundSync } from '@happier-dev/cli-common/process';
 
 import { buildServiceCommandEnv, isBenignServiceAbsenceFailure } from '@happier-dev/cli-common/service';
 
@@ -20,7 +20,7 @@ type CommandResult = Readonly<{ ok: boolean; out: string | null; status: number 
 function runCommand(command: DaemonServicePlannedCommand): CommandResult {
   try {
     const timeoutMs = readPositiveIntEnv('HAPPIER_DAEMON_SERVICE_COMMAND_TIMEOUT_MS', 30_000);
-    const res = spawnSync(command.cmd, [...command.args], {
+    const res = spawnBackgroundSync(command.cmd, [...command.args], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: buildServiceCommandEnv({ cmd: command.cmd, args: command.args, env: process.env }),
       timeout: timeoutMs,
@@ -138,7 +138,7 @@ function runLaunchctlWithRetry(command: DaemonServicePlannedCommand): CommandRes
   let result = runCommand(command);
   if (result.ok) return result;
   for (const ms of delaysMs) {
-    const { status } = spawnSync('sleep', [(ms / 1000).toFixed(3)]);
+    const { status } = spawnBackgroundSync('sleep', [(ms / 1000).toFixed(3)]);
     if (status !== 0) {
       // Fallback to a busy wait in the rare environment without `sleep`.
       const deadline = Date.now() + ms;

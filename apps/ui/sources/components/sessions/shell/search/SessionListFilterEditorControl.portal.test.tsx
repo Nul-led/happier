@@ -18,6 +18,9 @@ installPopoverCommonModuleMocks({
 
 const labels = {
     search: 'Search filters', show: 'Show', myWork: 'My work', assignedToMe: 'Assigned to me',
+    scope: 'Scope', sessions: 'Sessions', runs: 'Runs', both: 'Both', startedBy: 'Started by',
+    startedByYou: 'You', startedByTriggers: 'Triggers', startedByAgents: 'Agents',
+    runsNeedingYouAlwaysShow: 'Runs that need you always show',
     following: 'Following', involvingMe: 'Involving me', allAccessible: 'All accessible',
     attention: 'Attention', anyAttention: 'Any', needsMyAttention: 'Only sessions that need me',
     inactiveSessions: 'Inactive sessions', showInactive: 'Show', hideInactive: 'Hide', homes: 'Homes',

@@ -1,9 +1,38 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ActionExecutorDeps, ApprovalRequestV1 } from '@happier-dev/protocol';
 import * as persistence from '@/persistence';
 
 import { createCliActionExecutorHarness } from './createCliActionExecutorHarness';
+
+// Socket.IO is the external transport boundary. The socket factory, managed
+// supervisor, Account observer and approval coordinator all remain real.
+const wire = vi.hoisted(() => {
+  const sockets: Array<{ connected: boolean; listenerCount: () => number }> = [];
+  return { sockets, io: vi.fn(() => {
+    const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
+    const emit = (event: string, ...args: unknown[]) => {
+      for (const listener of [...(listeners.get(event) ?? [])]) listener(...args);
+    };
+    const socket = {
+      connected: false,
+      io: { timeout() {}, on() {}, off() {} },
+      on(event: string, listener: (...args: unknown[]) => void) {
+        const group = listeners.get(event) ?? new Set<(...args: unknown[]) => void>();
+        group.add(listener); listeners.set(event, group);
+      },
+      off(event: string, listener: (...args: unknown[]) => void) { listeners.get(event)?.delete(listener); },
+      connect() { socket.connected = true; emit('connect'); },
+      disconnect() { socket.connected = false; emit('disconnect', 'client disconnect'); },
+      removeAllListeners() { listeners.clear(); },
+      offAny() {},
+      listenerCount: () => [...listeners.values()].reduce((total, group) => total + group.size, 0),
+    };
+    sockets.push(socket);
+    return socket;
+  }) };
+});
+vi.mock('socket.io-client', () => ({ io: wire.io }));
 
 function createApprovalRequest(overrides: Partial<ApprovalRequestV1> = {}): ApprovalRequestV1 {
   return {
@@ -30,6 +59,7 @@ async function expectPromiseStillPending(promise: Promise<unknown>): Promise<voi
 }
 
 describe('createCliActionExecutorHarness', () => {
+  beforeEach(() => { wire.sockets.length = 0; wire.io.mockClear(); });
   it('places default browser actions on the authenticated daemon and consumes its result', async () => {
     // Daemon discovery reads the filesystem, and fetch crosses the local HTTP boundary.
     const state = vi.spyOn(persistence, 'readDaemonState').mockResolvedValue({
@@ -123,6 +153,7 @@ describe('createCliActionExecutorHarness', () => {
     const harness = createCliActionExecutorHarness(
       {
         token: 'token',
+        serverHttpBaseUrl: 'https://approval-home.example.test',
         sessionId: 'sess_1',
         mode: 'e2ee',
         ctx: {
@@ -139,22 +170,28 @@ describe('createCliActionExecutorHarness', () => {
     expect(waitForDecision).toBeDefined();
     if (!waitForDecision) throw new Error('expected approvalsWaitForDecision');
 
+    const abort = new AbortController();
     const pending = waitForDecision({
       artifactId: 'approval_1',
       request: createApprovalRequest(),
+      signal: abort.signal,
     });
-
-    await harness.deps.approvalsUpdate?.({
-      artifactId: 'approval_1',
-      request: createApprovalRequest({
-        status: 'rejected',
-        decision: { kind: 'reject', decidedAtMs: 2 },
-      }),
-      serverId: null,
-    });
-
-    await expect(pending).resolves.toMatchObject({ decision: 'reject' });
-    expect(approvalsUpdate).toHaveBeenCalledTimes(1);
+    try {
+      await harness.deps.approvalsUpdate?.({
+        artifactId: 'approval_1',
+        request: createApprovalRequest({
+          status: 'rejected',
+          decision: { kind: 'reject', decidedAtMs: 2 },
+        }),
+        serverId: null,
+      });
+      await expect(pending).resolves.toMatchObject({ decision: 'reject' });
+      expect(approvalsUpdate).toHaveBeenCalledTimes(1);
+      expect(wire.sockets.every((socket) => !socket.connected && socket.listenerCount() === 0)).toBe(true);
+    } finally {
+      abort.abort();
+      await pending.catch(() => undefined);
+    }
   });
 
   it('keeps approved blocking waiters claimed by the explicit approval decision seam', async () => {
@@ -162,6 +199,7 @@ describe('createCliActionExecutorHarness', () => {
     const harness = createCliActionExecutorHarness(
       {
         token: 'token',
+        serverHttpBaseUrl: 'https://approval-home.example.test',
         sessionId: 'sess_1',
         mode: 'e2ee',
         ctx: {
@@ -183,29 +221,34 @@ describe('createCliActionExecutorHarness', () => {
       throw new Error('expected blocking approval hooks');
     }
 
+    const abort = new AbortController();
     const pending = waitForDecision({
       artifactId: 'approval_approved_1',
       request: createApprovalRequest(),
+      signal: abort.signal,
     });
-
-    const approvedRequest = createApprovalRequest({
-      status: 'approved',
-      decision: { kind: 'approve', decidedAtMs: 2 },
-    });
-    await harness.deps.approvalsUpdate?.({
-      artifactId: 'approval_approved_1',
-      request: approvedRequest,
-      serverId: null,
-    });
-
-    await expectPromiseStillPending(pending);
-
-    await expect(resolveBlockingDecision({
-      artifactId: 'approval_approved_1',
-      decision: 'approve',
-      request: approvedRequest,
-      serverId: null,
-    })).resolves.toEqual({ resolved: true });
-    await expect(pending).resolves.toMatchObject({ decision: 'approve' });
+    try {
+      const approvedRequest = createApprovalRequest({
+        status: 'approved',
+        decision: { kind: 'approve', decidedAtMs: 2 },
+      });
+      await harness.deps.approvalsUpdate?.({
+        artifactId: 'approval_approved_1',
+        request: approvedRequest,
+        serverId: null,
+      });
+      await expectPromiseStillPending(pending);
+      await expect(resolveBlockingDecision({
+        artifactId: 'approval_approved_1',
+        decision: 'approve',
+        request: approvedRequest,
+        serverId: null,
+      })).resolves.toEqual({ resolved: true });
+      await expect(pending).resolves.toMatchObject({ decision: 'approve' });
+      expect(wire.sockets.every((socket) => !socket.connected && socket.listenerCount() === 0)).toBe(true);
+    } finally {
+      abort.abort();
+      await pending.catch(() => undefined);
+    }
   });
 });

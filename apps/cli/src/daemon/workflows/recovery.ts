@@ -8,6 +8,7 @@ import {
   WorkflowRunInvocationIndexV1Schema,
   WorkflowRunSummaryV1Schema,
   openWorkflowAcceptedSnapshotStoredEnvelopeV1,
+  openWorkflowCheckpointStoredEnvelopeV1,
   openWorkflowProgressStoredEnvelopeV1,
   parseWorkflowStoredContentEnvelopeV1,
   sealWorkflowProgressStoredEnvelopeV1,
@@ -34,6 +35,8 @@ import {
 import type { WorkflowRunStorageOperation } from './workflowRunStorageClient';
 import { isWorkflowJsonObject } from './input';
 import { createWorkflowRunReviewEntryNotificationHandler } from '@/notifications/activity/dispatchWorkflowRunUpdateNotification';
+import { DurableWorkflowCoordinatorStore } from './production';
+import { logger } from '@/ui/logger';
 
 const RECOVERABLE_INVOCATION_LIFECYCLES = [
   'pending',
@@ -68,7 +71,7 @@ function openMode(encryption: WorkflowRunEncryptionV1) {
 type RecoveryCandidate = Readonly<{ run: WorkflowRunSummaryV1; parentAttempt: number }>;
 
 export type WorkflowInvocationRecoveryObservation =
-  | Readonly<{ kind: 'unresolved'; code?: string }>
+  | Readonly<{ kind: 'unresolved'; code?: string; waitForCompletion?: () => Promise<void> }>
   | Readonly<{ kind: 'completed'; result: JsonValue; usage?: WorkflowUsageV1 }>
   | Readonly<{ kind: 'failed'; code: string; message?: string; usage?: WorkflowUsageV1 }>
   | Readonly<{ kind: 'cancelled'; code?: string; usage?: WorkflowUsageV1 }>
@@ -140,6 +143,33 @@ export function createWorkflowInvocationRecoveryFactWriter(params: Readonly<{
       return opened.kind === 'available' ? opened.content : undefined;
     })();
     return await acceptedSnapshot;
+  };
+  const refreshRootStepProgress = async () => {
+    const accepted = await readAcceptedSnapshot();
+    if (!accepted) return;
+    const body = record(await params.storage.execute({ operation: 'get', runId: params.run.id },
+      params.signal ? { signal: params.signal } : {}));
+    if (typeof body?.checkpointEnvelope !== 'string') return;
+    const opened = openWorkflowCheckpointStoredEnvelopeV1({ ...openMode(params.encryption),
+      binding: { v: 1, purpose: 'checkpoint', accountId: params.accountId, runId: params.run.id },
+      envelope: parseWorkflowStoredContentEnvelopeV1(body.checkpointEnvelope) });
+    if (opened.kind !== 'available') return;
+    const root = await readInvocation(opened.content.rootRecordId);
+    if (!root || root.progress.blockKind !== 'root'
+      || ['completed', 'failed', 'cancelled', 'skipped', 'superseded', 'outcome_uncertain'].includes(root.index.lifecycle)) return;
+    // Reuse the executing owner's exact current-slot selection and publisher;
+    // reattach never acquires a coordinator claim or changes root lifecycle.
+    const store = await DurableWorkflowCoordinatorStore.load({ accountId: params.accountId, runId: params.run.id,
+      parentAttempt: params.parentAttempt ?? 0,
+      ...(params.expectedRevision === undefined ? {} : { projectionExpectedRevision: params.expectedRevision }),
+      revision: WorkflowRunSummaryV1Schema.parse(body.run).revision,
+      encryption: params.encryption, rootRecordId: opened.content.rootRecordId, checkpoint: opened.content,
+      authoredDefinition: accepted.authoredDefinition,
+      definition: accepted.definition,
+      storage: { execute: async (operation, options) => await params.storage.execute(operation,
+        { ...options, ...(params.signal ? { signal: params.signal } : {}) }) },
+    });
+    await store.refreshStepProgress();
   };
   const resolveFrozenLeaf = async (invocation: NonNullable<Awaited<ReturnType<typeof readInvocation>>>) => {
     const accepted = await readAcceptedSnapshot();
@@ -249,8 +279,7 @@ export function createWorkflowInvocationRecoveryFactWriter(params: Readonly<{
       || (params.expectedRevision !== undefined && observation.kind === 'outcome_uncertain')
       || (currentLifecycle === 'outcome_uncertain' && observation.kind === 'outcome_uncertain')) return null;
     const resolvingUncertain = currentLifecycle === 'outcome_uncertain';
-    const stopStillPending = observation.kind === 'cancelled' && observation.code === 'session_input_turn_cancel_requested';
-    const stoppedWithUncertainEffects = resolvingUncertain && !stopStillPending
+    const stoppedWithUncertainEffects = resolvingUncertain
       && (observation.kind === 'failed' || observation.kind === 'cancelled');
     const reviewRequired = classifyWorkflowReviewEntryV1({
       mayEnterReview: !TERMINAL_RUN_STATES.has(params.run.state) && currentLifecycle !== 'cancel_requested',
@@ -259,7 +288,7 @@ export function createWorkflowInvocationRecoveryFactWriter(params: Readonly<{
       inputCompleted: observed.kind === 'completed',
       observation,
     }) === 'waiting_for_review';
-    const lifecycle: WorkflowInvocationLifecycleV1 = stopStillPending ? 'cancel_requested' : reviewRequired ? 'waiting_for_review' : stoppedWithUncertainEffects
+    const lifecycle: WorkflowInvocationLifecycleV1 = reviewRequired ? 'waiting_for_review' : stoppedWithUncertainEffects
       ? 'needs_attention'
       : observation.kind;
     const nextProgress: WorkflowProgressEnvelopeV1 = {
@@ -302,6 +331,7 @@ export function createWorkflowInvocationRecoveryFactWriter(params: Readonly<{
       }
       return null;
     }
+    await refreshRootStepProgress();
     if (reviewRequired) await params.onReviewEntered?.({ runId: params.run.id });
     const fresh = await readInvocation(exactIndex.id);
     return { id: exactIndex.id, expectedLifecycle: lifecycle, lifecycle,
@@ -330,6 +360,7 @@ async function recoverInvocationCustody(params: Readonly<{
   signal?: AbortSignal;
   parentAttempt: number;
   onReviewEntered?: (entry: Readonly<{ runId: string }>) => Promise<void>;
+  onCompletionPending?: (index: WorkflowRunInvocationIndexV1, wait: () => Promise<void>) => void;
 }>): Promise<ReconciledInvocationCustody | null> {
   const reconciled: ReconciledInvocationTransition[] = [];
   let allResolved = true;
@@ -407,12 +438,31 @@ async function recoverInvocationCustody(params: Readonly<{
       const transition = await commitObservation(invocation, observed);
       if (!transition) {
         allResolved = false;
+        if (observed.kind === 'unresolved' && observed.waitForCompletion) {
+          params.onCompletionPending?.(exactIndex, observed.waitForCompletion);
+        }
         continue;
       }
       reconciled.push(transition);
     }
     cursor = typeof pageBody.nextCursor === 'string' ? pageBody.nextCursor : undefined;
   } while (cursor && !params.signal?.aborted);
+  if (allResolved && !params.signal?.aborted && !cancellationRequested && !TERMINAL_RUN_STATES.has(params.run.state)) {
+    // An earlier pass may have settled the cancelled root before its child
+    // reached terminal. That durable root fact is no longer in the active index.
+    const body = record(await params.storage.execute({ operation: 'get', runId: params.run.id },
+      params.signal ? { signal: params.signal } : {}));
+    const envelope = parseWorkflowStoredContentEnvelopeV1(body?.checkpointEnvelope);
+    if (envelope) {
+      const opened = openWorkflowCheckpointStoredEnvelopeV1({ ...openMode(params.encryption),
+        binding: { v: 1, purpose: 'checkpoint', accountId: params.accountId, runId: params.run.id }, envelope });
+      if (opened.kind === 'available') {
+        const root = await readInvocation(opened.content.rootRecordId);
+        cancellationRequested = root?.index.parentRecordId === null && root.index.lifecycle === 'cancelled'
+          && root.progress.blockKind === 'root';
+      }
+    }
+  }
   return allResolved && !params.signal?.aborted
     ? { invocationTransitions: reconciled, cancellationRequested }
     : null;
@@ -507,7 +557,73 @@ export function createWorkflowRunRecoveryReader(params: Readonly<{
   onReviewEntered?: (entry: Readonly<{ runId: string }>) => Promise<void>;
 }>): (trigger: WorkflowRecoveryTrigger, signal?: AbortSignal) => Promise<void> {
   let inFlight: Promise<void> | null = null;
+  const completionWaits = new Set<string>();
   const onReviewEntered = params.onReviewEntered ?? createWorkflowRunReviewEntryNotificationHandler();
+  const recoverCandidate = async (
+    candidate: RecoveryCandidate,
+    trigger: WorkflowRecoveryTrigger,
+    accountEncryption: AvailableAutomationAccountEncryptionV1,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    const { run } = candidate;
+    if (signal?.aborted) return;
+    const census = WorkflowRunRecipientCensusResponseV1Schema.parse(await params.storage.execute({
+      operation: 'run-key.census', runId: run.id,
+    }, signal ? { signal } : {}));
+    const resolved = resolveWorkflowRunDataKeyV1({ encryption: accountEncryption, census });
+    if (resolved.kind !== 'available' || census.ownerAccountId !== params.accountId) return;
+    const encryption = resolved.encryption;
+    await runWorkflowRecipientKeyPreparationV1({ runId: run.id, runCrypto: encryption.runCrypto,
+      openedDataEncryptionKey: census.callerDataEncryptionKey, randomBytes: getRandomBytes,
+      readCensus: async () => WorkflowRunRecipientCensusResponseV1Schema.parse(await params.storage.execute({ operation: 'run-key.census', runId: run.id }, signal ? { signal } : {})),
+      commit: async input => WorkflowRunRecipientKeyEnvelopeCommitResponseV1Schema.parse(await params.storage.execute({ operation: 'run-key.commit', ...input }, signal ? { signal } : {})),
+      ...(signal ? { signal } : {}),
+    });
+    const reconciledCustody = await recoverInvocationCustody({
+      accountId: params.accountId, run, parentAttempt: candidate.parentAttempt, trigger, encryption, storage: params.storage,
+      reconcileInvocation: params.reconcileInvocation, ...(signal ? { signal } : {}),
+      onReviewEntered,
+      onCompletionPending: (index, wait) => {
+        const key = JSON.stringify([run.id, candidate.parentAttempt, index.id, index.attempt]);
+        if (completionWaits.has(key) || signal?.aborted) return;
+        completionWaits.add(key);
+        void (async () => {
+          await wait();
+          // Join any indexed pass already publishing facts, including the pass
+          // attaching this wait when the child was terminal before attachment.
+          await inFlight;
+          if (signal?.aborted) return;
+          const rowBody = record(await params.storage.execute({ operation: 'invocations.get', runId: run.id,
+            invocationId: index.id }, signal ? { signal } : {}));
+          const currentIndex = WorkflowRunInvocationIndexV1Schema.safeParse(record(rowBody?.invocation)?.index);
+          if (!currentIndex.success || currentIndex.data.id !== index.id || currentIndex.data.runId !== run.id
+            || currentIndex.data.attempt !== index.attempt) return;
+          const body = record(await params.storage.execute({ operation: 'get', runId: run.id }, signal ? { signal } : {}));
+          const current = WorkflowRunSummaryV1Schema.safeParse(body?.run);
+          if (!current.success || current.data.id !== run.id || current.data.machineId !== params.machineId
+            || current.data.workflowCustodyState !== 'pending') return;
+          // Native terminal facts wake only this Run through the same recovery
+          // path. Fresh Account/key evidence and existing CAS still own writes.
+          await recoverCandidate({ ...candidate, run: current.data }, trigger,
+            await params.resolveAccountEncryption(signal), signal);
+        })().catch((error: unknown) => {
+          if (!signal?.aborted) logger.warn('[workflowRecovery] Child completion observation failed; custody remains pending', { runId: run.id, invocationId: index.id, error });
+        }).finally(() => { completionWaits.delete(key); });
+      },
+    });
+    if (reconciledCustody
+      && (TERMINAL_RUN_STATES.has(run.state) || reconciledCustody.cancellationRequested)) {
+      await settleRecoveredRun({
+        runId: run.id,
+        parentAttempt: candidate.parentAttempt,
+        encryption,
+        storage: params.storage,
+        invocationTransitions: reconciledCustody.invocationTransitions,
+        cancellationRequested: reconciledCustody.cancellationRequested,
+        ...(signal ? { signal } : {}),
+      });
+    }
+  };
   return async (trigger, signal) => {
     if (inFlight) return await inFlight;
     const operation = (async () => {
@@ -520,37 +636,8 @@ export function createWorkflowRunRecoveryReader(params: Readonly<{
           ...(cursor ? { cursor } : {}),
         }, signal ? { signal } : {}));
         for (const candidate of page.candidates) {
-          const { run } = candidate;
           if (signal?.aborted) return;
-          const census = WorkflowRunRecipientCensusResponseV1Schema.parse(await params.storage.execute({
-            operation: 'run-key.census', runId: run.id,
-          }, signal ? { signal } : {}));
-          const resolved = resolveWorkflowRunDataKeyV1({ encryption: accountEncryption, census });
-          if (resolved.kind !== 'available' || census.ownerAccountId !== params.accountId) continue;
-          const encryption = resolved.encryption;
-          await runWorkflowRecipientKeyPreparationV1({ runId: run.id, runCrypto: encryption.runCrypto,
-            openedDataEncryptionKey: census.callerDataEncryptionKey, randomBytes: getRandomBytes,
-            readCensus: async () => WorkflowRunRecipientCensusResponseV1Schema.parse(await params.storage.execute({ operation: 'run-key.census', runId: run.id }, signal ? { signal } : {})),
-            commit: async input => WorkflowRunRecipientKeyEnvelopeCommitResponseV1Schema.parse(await params.storage.execute({ operation: 'run-key.commit', ...input }, signal ? { signal } : {})),
-            ...(signal ? { signal } : {}),
-          });
-          const reconciledCustody = await recoverInvocationCustody({
-            accountId: params.accountId, run, parentAttempt: candidate.parentAttempt, trigger, encryption, storage: params.storage,
-            reconcileInvocation: params.reconcileInvocation, ...(signal ? { signal } : {}),
-            onReviewEntered,
-          });
-          if (reconciledCustody
-            && (TERMINAL_RUN_STATES.has(run.state) || reconciledCustody.cancellationRequested)) {
-            await settleRecoveredRun({
-              runId: run.id,
-              parentAttempt: candidate.parentAttempt,
-              encryption,
-              storage: params.storage,
-              invocationTransitions: reconciledCustody.invocationTransitions,
-              cancellationRequested: reconciledCustody.cancellationRequested,
-              ...(signal ? { signal } : {}),
-            });
-          }
+          await recoverCandidate(candidate, trigger, accountEncryption, signal);
         }
         cursor = page.nextCursor;
       } while (cursor && !signal?.aborted);

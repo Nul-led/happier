@@ -5,6 +5,12 @@ import { isSupportedHerdrVersion, resolveHerdrRuntimeBinary } from './runtimeBin
 afterEach(() => vi.unstubAllEnvs());
 
 describe('Herdr runtime binary', () => {
+  it('probes the executable selected by admitted context rather than later ambient configuration', async () => {
+    vi.stubEnv('HERDR_BIN_PATH', '/nonexistent-provider-binary');
+    await expect(resolveHerdrRuntimeBinary({ actionTimeoutMs: 1000,
+      processEnv: { ...process.env, HERDR_BIN_PATH: process.execPath },
+    })).resolves.toBe(process.execPath);
+  });
   it('preserves a completed version probe when the host event loop stalls past its deadline', async () => {
     // The real executable supplies a stable version banner and exits immediately. Its output
     // is supported by the same semver contract; no internal deadline logic is replaced.

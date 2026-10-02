@@ -597,7 +597,7 @@ describe('createLocalServicesDaemonRuntime', () => {
             target: { scheme: 'http', host: '127.0.0.1', port: 5173 },
             initialPath: { pathname: '/', search: '?v=1' },
             display: { title: 'A', addressLabel: 'localhost:5173' },
-            originMode: 'path',
+            originMode: 'host',
         });
 
         await expect(runtime.previewRoutes.getSnapshot()).resolves.toMatchObject({

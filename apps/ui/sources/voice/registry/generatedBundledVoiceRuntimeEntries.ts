@@ -4,7 +4,7 @@
  * This file is emitted by:
  * - `apps/cli/scripts/build-owned/generateBundledPluginEntries.ts`
  *
- * Executable first-party Voice activation roots for web.
+ * Executable first-party Voice activation roots for the declared host platforms.
  * Contributions that do not declare this host platform are absent.
  */
 
@@ -105,6 +105,7 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
                 "checkNow"
               ]
             },
+            "usageReporting": true,
             "workspaceWrites": "deny",
             "workStateSources": [
               {
@@ -427,6 +428,7 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -498,15 +500,36 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     ],
     "managedDependencies": [
       {
+        "description": "Codex ACP dependency used by the Codex ACP backend",
         "executable": "codex-acp",
         "id": "codex-acp",
         "sources": [
           {
-            "kind": "vendorRecipe",
-            "recipeId": "codex-acp"
+            "archiveLayout": "single_executable",
+            "assetNamePrefix": "codex-acp",
+            "distTag": "latest",
+            "installId": "dep.codex-acp",
+            "kind": "githubReleaseBinary",
+            "launch": {
+              "configOverrideArgument": "-c",
+              "configOverridesEnvironmentKey": "HAPPIER_CODEX_ACP_CONFIG_OVERRIDES",
+              "kind": "codexAcp",
+              "overrideEnvironmentKey": "HAPPIER_CODEX_ACP_BIN"
+            },
+            "repo": "zed-industries/codex-acp",
+            "targetByPlatform": {
+              "darwin-arm64": "aarch64-apple-darwin",
+              "darwin-x64": "x86_64-apple-darwin",
+              "linux-arm64-gnu": "aarch64-unknown-linux-gnu",
+              "linux-arm64-musl": "aarch64-unknown-linux-musl",
+              "linux-x64-gnu": "x86_64-unknown-linux-gnu",
+              "linux-x64-musl": "x86_64-unknown-linux-musl",
+              "win32-arm64": "aarch64-pc-windows-msvc",
+              "win32-x64": "x86_64-pc-windows-msvc"
+            }
           }
         ],
-        "title": "Codex ACP adapter"
+        "title": "Codex ACP"
       }
     ],
     "mcp": {
@@ -529,6 +552,7 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -803,7 +827,8 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         "title": "Codex Realtime Voice — Experimental"
       }
     ],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "OpenAI Codex coding agent.",
   "displayName": "Codex",
@@ -927,6 +952,7 @@ const ELEVENLABS_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -950,6 +976,7 @@ const ELEVENLABS_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -1723,6 +1750,12 @@ const ELEVENLABS_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
                 {
                   "format": "raw",
                   "kind": "recipientCredential",
+                  "operation": "agent",
+                  "phase": "prepare"
+                },
+                {
+                  "format": "raw",
+                  "kind": "recipientCredential",
                   "operation": "voices",
                   "phase": "settings"
                 },
@@ -2090,7 +2123,8 @@ const ELEVENLABS_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         "title": "ElevenLabs Voice"
       }
     ],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "displayName": "ElevenLabs Voice",
   "engines": {
@@ -2119,6 +2153,7 @@ const OPENAI_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -2171,6 +2206,7 @@ const OPENAI_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -2499,7 +2535,8 @@ const OPENAI_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         "title": "OpenAI Realtime Voice"
       }
     ],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "displayName": "OpenAI Realtime Voice",
   "engines": {
@@ -2531,6 +2568,7 @@ const XAI_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -2554,6 +2592,7 @@ const XAI_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -3259,7 +3298,8 @@ const XAI_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
         "title": "xAI Grok Voice"
       }
     ],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "displayName": "xAI Grok Voice",
   "engines": {

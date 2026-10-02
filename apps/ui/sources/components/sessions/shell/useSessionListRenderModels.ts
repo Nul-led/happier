@@ -58,6 +58,7 @@ import {
 import { sessionTagKey } from './sessionTagUtils';
 import type { ServerCredentialAccountScopeBinding } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import type { nestSessionListReports } from '@/sync/domains/session/listing/nestSessionListReports';
 
 type SessionReachableDisplay = Readonly<{
     machineId: string | null;
@@ -287,6 +288,8 @@ export type SessionListSearchOtherMatches = Readonly<{
     matches: ReadonlyArray<SessionListSearchOutsideMatch>;
     inThisViewTitle: string;
     otherMatchesTitle: string;
+    resolveSessionRow?: Parameters<typeof nestSessionListReports>[1];
+    resolveRunOriginSession?: Parameters<typeof nestSessionListReports>[2];
 }>;
 
 export function useSessionListRenderModels(input: Readonly<{
@@ -379,6 +382,8 @@ export function useSessionListRenderModels(input: Readonly<{
             outsideMatches,
             inThisViewTitle: otherMatches.inThisViewTitle,
             otherMatchesTitle: otherMatches.otherMatchesTitle,
+            resolveSessionRow: otherMatches.resolveSessionRow,
+            resolveRunOriginSession: otherMatches.resolveRunOriginSession,
         });
     }, [input.headerFilters, input.searchOtherMatches, visibleListItems]);
     const listItems = (filteredListItems ?? []) as Array<SessionListIndexItem>;

@@ -50,7 +50,7 @@ describe('mounted terminal Actions', () => {
             await invokeSessionTerminalAction({ actionId: 'session.terminals.split', input: { scopeId, target: { kind: 'terminal_view', machineId: 'machine', terminalId: 'borrowed-drag', terminalKey: 'other', cwd: '/repo' } } });
             expect(await invokeSessionTerminalAction({ actionId: 'session.terminals.detach', input: { scopeId, terminalId: 'embedded' } })).toEqual({ ok: true });
             const detached = await invokeSessionTerminalAction({ actionId: 'session.terminals.list', input: { scopeId } });
-            if (!('workspace' in detached)) throw new Error('No workspace');
+            if (!('workspace' in detached) || !detached.workspace) throw new Error('No workspace');
             expect(detached.workspace.tabs).toHaveLength(2);
             const shellTab = detached.workspace.tabs.find((tab) => tab.terminals[0]?.id === 'embedded');
             expect(shellTab?.id).not.toBe('embedded');
@@ -112,7 +112,7 @@ describe('mounted terminal Actions', () => {
                 method: 'daemon.terminal.close', payload: { terminalId: 'pty-owned' } }));
             await invokeSessionTerminalAction({ actionId: 'session.terminals.open', input: { scopeId, target: { kind: 'machine_shell', machineId: 'machine-close', cwd: '/empty' } } });
             const listed = await invokeSessionTerminalAction({ actionId: 'session.terminals.list', input: { scopeId } });
-            if (!('workspace' in listed)) throw new Error('No workspace');
+            if (!('workspace' in listed) || !listed.workspace) throw new Error('No workspace');
             const empty = listed.workspace.tabs.at(-1)!.terminals[0];
             const emptyKey = `${scopeId}:terminal:${empty.id}`;
             replaceTerminalSurfaceState(emptyKey, { ...createEmptyTerminalSurfaceState(), terminalId: 'stale-cache-id', output: 'old output' });
@@ -162,7 +162,7 @@ describe('mounted terminal Actions', () => {
             const split = await invokeSessionTerminalAction({ actionId: 'session.terminals.split', input: { scopeId, target: { kind: 'workspace_shell' } } });
             expect(split).toMatchObject({ ok: true });
             const current = await invokeSessionTerminalAction({ actionId: 'session.terminals.list', input: { scopeId } });
-            if (!('workspace' in current)) throw new Error('No workspace');
+            if (!('workspace' in current) || !current.workspace) throw new Error('No workspace');
             const root = current.workspace.tabs.find((tab) => tab.id === terminalId)?.root;
             if (root?.kind !== 'split') throw new Error('No split');
             const beforeResize = state;

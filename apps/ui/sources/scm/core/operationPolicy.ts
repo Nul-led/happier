@@ -1,4 +1,4 @@
-import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
+import type { ScmOperationState, ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import { scmUiBackendRegistry } from '@/scm/registry/scmUiBackendRegistry';
 import type { ScmCommitStrategy } from '@/scm/settings/commitStrategy';
 import { isAtomicCommitStrategy } from '@/scm/settings/commitStrategy';
@@ -6,6 +6,7 @@ import {
     evaluateScmRemoteMutationPolicy,
     scmPathMatchesScopePath,
     type ScmRemoteMutationReason,
+    type ScmRemotePolicy,
 } from '@happier-dev/protocol/scm';
 import { mapUiSnapshotToRemotePolicySnapshot } from '@/scm/core/snapshotMappers';
 
@@ -52,7 +53,8 @@ export function evaluateScmOperationPreflight(input: {
     commitStrategy?: ScmCommitStrategy;
     commitSelectionPaths?: string[] | null;
     sourceRef?: string | null;
-    operation?: 'merge' | 'rebase' | null;
+    operation?: ScmOperationState['kind'] | null;
+    remotePolicy?: ScmRemotePolicy;
 }): ScmOperationPreflightResult {
     const {
         intent,
@@ -132,7 +134,7 @@ export function evaluateScmOperationPreflight(input: {
                 requireUpstreamWhenNoExplicitTarget: true,
                 requireActiveHead: policy.changeSetModel === 'working-copy',
                 blockPushOnConflicts: true,
-                blockPushWhenBehind: policy.changeSetModel === 'index',
+                blockPushWhenBehind: policy.changeSetModel === 'index' && input.remotePolicy?.pushMode !== 'force_with_lease',
                 requireCleanPull: true,
             },
         });

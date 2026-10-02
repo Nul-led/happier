@@ -526,7 +526,7 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{
   const previewSummary = parsed.kind === 'built_in' ? readApprovalPreviewSummary(parsed.request.preview) : null;
 
   return (
-    <ItemList presentation="page">
+    <ItemList>
       <PageHeader
         testID="approvals.header"
         alwaysShowTitle

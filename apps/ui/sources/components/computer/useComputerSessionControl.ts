@@ -1,5 +1,6 @@
 import * as React from 'react';
 import type { ComputerControlStatusResponseV1, ComputerSelectedTargetResponseV1 } from '@happier-dev/protocol';
+import type { HappierPresenceTakeControlResult } from '@happier-dev/plugin-ui/presentation';
 
 import type { BrowserCopresence } from '@/sync/domains/browser/automation/copresence';
 import {
@@ -47,7 +48,7 @@ export type ComputerSessionControl = Readonly<{
     busy: 'handBack' | 'check' | null;
     /** The last refusal code from the owner, for the one line that says what happened. */
     failure: string | null;
-    takeControl: () => void;
+    takeControl: () => Promise<HappierPresenceTakeControlResult>;
     handBack: () => void;
     checkAgain: () => void;
     /** End the share: the owner drains the agent first and keeps the window if it cannot confirm that. */
@@ -134,18 +135,21 @@ export function useComputerSessionControl(input: Readonly<{
         void refreshStatus();
     }, [refreshKey, refreshStatus]);
 
-    const takeControl = React.useCallback(() => {
+    const takeControl = React.useCallback(async (): Promise<HappierPresenceTakeControlResult> => {
         const owner = client;
-        if (!owner) return;
+        if (!owner) return { status: 'failed' };
         setStopRequested(true);
         setFailure(null);
-        void (async () => {
-            const result = await owner.interrupt();
-            if (clientRef.current !== owner) return;
-            if (!result.ok) setFailure(result.code);
-            await refreshStatus();
-            setStopRequested(false);
-        })();
+        const result = await owner.interrupt();
+        if (clientRef.current !== owner) return { status: 'unknown' };
+        if (!result.ok) setFailure(result.code);
+        else if (result.value.status === 'failed') setFailure(result.value.code);
+        await refreshStatus();
+        if (clientRef.current !== owner) return { status: 'unknown' };
+        setStopRequested(false);
+        return { status: !result.ok
+            ? result.code === 'machine_unreachable' || result.code === 'invalid_action_output' ? 'unknown' : 'failed'
+            : result.value.status === 'interrupted' || result.value.status === 'dispatched' ? 'accepted' : 'failed' };
     }, [client, refreshStatus]);
 
     const handBack = React.useCallback(() => {

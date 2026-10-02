@@ -339,6 +339,7 @@ export function registerActionSpecRpcHandlers(params: RegisterActionSpecRpcHandl
                     ...(externalActionTarget ? { externalActionTarget } : {}),
                     ...(execution.signal ? { signal: execution.signal } : {}),
                     ...(context?.callerAuthority ? { callerAuthority: context.callerAuthority } : {}),
+                    ...(context?.sessionActionOrigin ? { sessionActionOrigin: context.sessionActionOrigin } : {}),
                     ...(
                         context?.localActionContext || actionRequestId || execution.operationProgress || execution.operationOwnerUpdate
                             ? {

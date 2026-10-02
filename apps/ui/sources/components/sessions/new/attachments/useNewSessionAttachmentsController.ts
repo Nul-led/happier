@@ -50,6 +50,7 @@ import { fireAndForget } from '@/utils/system/fireAndForget';
 import {
     clearAcceptedNewSessionAttachmentDrafts,
     readNewSessionAttachmentDrafts,
+    subscribeNewSessionAttachmentDraftRemoval,
     writeNewSessionAttachmentDrafts,
 } from './newSessionAttachmentDraftStore';
 import { resolveNewSessionReviewCommentsScope } from './resolveNewSessionReviewCommentsScope';
@@ -159,10 +160,28 @@ export function useNewSessionAttachmentsController(params: Readonly<{
     );
     const hasReviewCommentDrafts = hasDiscoverableReviewCommentDrafts && includedReviewCommentDrafts.length > 0;
 
+    const removedFlowRef = React.useRef<string | null>(null);
     React.useEffect(() => {
-        if (!normalizedFlowId || !attachmentsUploadsEnabled) return;
+        removedFlowRef.current = null;
+        if (!normalizedFlowId) return;
+        return subscribeNewSessionAttachmentDraftRemoval(normalizedFlowId, () => {
+            removedFlowRef.current = normalizedFlowId;
+            initialDraftsRef.current = [];
+            replaceDrafts([]);
+        });
+    }, [normalizedFlowId, replaceDrafts]);
+
+    React.useEffect(() => {
+        if (!normalizedFlowId) return;
+        // A late picker/upload update cannot restore an authoritatively removed
+        // flow while navigation is still unmounting its old controller.
+        if (removedFlowRef.current === normalizedFlowId) {
+            if (drafts.length > 0) replaceDrafts([]);
+            return;
+        }
+        if (!attachmentsUploadsEnabled) return;
         writeNewSessionAttachmentDrafts(normalizedFlowId, drafts);
-    }, [attachmentsUploadsEnabled, drafts, normalizedFlowId]);
+    }, [attachmentsUploadsEnabled, drafts, normalizedFlowId, replaceDrafts]);
 
     const clearDraftsForFlow = React.useCallback((accepted: readonly AttachmentDraft[]) => {
         replaceDrafts(clearAcceptedNewSessionAttachmentDrafts(normalizedFlowId, accepted, getDraftsSnapshot()));

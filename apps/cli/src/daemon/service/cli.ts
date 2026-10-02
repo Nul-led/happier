@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { basename, join } from 'node:path';
-import { isPidPresent } from '@happier-dev/cli-common/process';
+import { isPidPresent, spawnBackgroundSync } from '@happier-dev/cli-common/process';
 import { spawnSync } from 'node:child_process';
 
 import { configuration, reloadConfiguration } from '@/configuration';
@@ -445,7 +445,7 @@ async function stopCurrentWindowsServiceOwnerIfNeeded(params: Readonly<{
 
 function runCommandCaptureBestEffort(command: Readonly<{ cmd: string; args: readonly string[] }>): { ok: boolean; out: string | null } {
   try {
-    const res = spawnSync(command.cmd, [...command.args], {
+    const res = spawnBackgroundSync(command.cmd, [...command.args], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: buildServiceCommandEnv({ cmd: command.cmd, args: command.args, env: process.env }),
     });
@@ -1180,7 +1180,7 @@ function mapDaemonServiceListEntriesToInventory(
         : ['--user', 'is-active', unitName];
 
       try {
-        const res = spawnSync('systemctl', args, {
+        const res = spawnBackgroundSync('systemctl', args, {
           stdio: ['ignore', 'pipe', 'pipe'],
           timeout: runningStateTimeoutMs,
           env: buildServiceCommandEnv({ cmd: 'systemctl', args, env: process.env }),
@@ -1209,7 +1209,7 @@ function mapDaemonServiceListEntriesToInventory(
       }
       const args = ['print', `gui/${uid}/${label}`];
       try {
-        const res = spawnSync('launchctl', args, {
+        const res = spawnBackgroundSync('launchctl', args, {
           stdio: ['ignore', 'pipe', 'pipe'],
           timeout: runningStateTimeoutMs,
           env: buildServiceCommandEnv({ cmd: 'launchctl', args, env: process.env }),
@@ -1234,7 +1234,7 @@ function mapDaemonServiceListEntriesToInventory(
       });
       const args = ['/Query', '/TN', taskName, '/FO', 'LIST', '/V'];
       try {
-        const res = spawnSync('schtasks', args, {
+        const res = spawnBackgroundSync('schtasks', args, {
           stdio: ['ignore', 'pipe', 'pipe'],
           timeout: runningStateTimeoutMs,
           env: buildServiceCommandEnv({ cmd: 'schtasks', args, env: process.env }),

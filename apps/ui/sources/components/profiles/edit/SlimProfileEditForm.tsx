@@ -165,7 +165,7 @@ export function SlimProfileEditForm(props: SlimProfileEditFormProps) {
     }, [handleSave, props.saveRef]);
 
     return (
-        <ItemList style={props.containerStyle} keyboardShouldPersistTaps="handled" presentation="page">
+        <ItemList style={props.containerStyle} keyboardShouldPersistTaps="handled">
             {props.header}
             <ProfileNameSection
                 testIDPrefix="profile-slim"

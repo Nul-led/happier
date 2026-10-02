@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildBrowserAdapterCapabilities } from './capabilities';
 import type { DesktopWebViewSupport } from './desktopWebView';
-import { INJECTED_PAGE_AUTOMATION_ACTIONS } from '../automation/injectedPageActions';
+import { INJECTED_PAGE_AUTOMATION_ACTIONS } from '@happier-dev/peer-mediation/browser/collector/actions';
 
 const DESKTOP_AUTOMATION_SUPPORT = {
     navigation: true,

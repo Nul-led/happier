@@ -16,12 +16,12 @@ describe('daemon spawn control response serialization', () => {
     app.setSerializerCompiler(serializerCompiler);
     app.get('/failure', { schema: { response: { 500: SpawnSessionControlErrorResponseSchema } } }, async (_request, reply) => {
       reply.code(500);
-      return projectSpawnSessionControlErrorResponse({ errorCode: 'spawn_failed', errorMessage: 'Spawn failed.' });
+      return projectSpawnSessionControlErrorResponse({ errorCode: 'SPAWN_FAILED', errorMessage: 'Spawn failed.' });
     });
     try {
       const response = await app.inject({ method: 'GET', url: '/failure' });
       expect(response.statusCode).toBe(500);
-      expect(response.json()).toEqual({ success: false, errorCode: 'spawn_failed', error: 'Spawn failed.' });
+      expect(response.json()).toEqual({ success: false, errorCode: 'SPAWN_FAILED', error: 'Spawn failed.' });
     } finally {
       await app.close();
     }

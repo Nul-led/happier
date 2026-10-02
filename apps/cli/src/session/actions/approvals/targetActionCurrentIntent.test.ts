@@ -6,6 +6,34 @@ import { getSharedBlockingApprovalCoordinator } from './blockingApprovalCoordina
 const developmentCustody = { kind: 'development', registeredRootId: 'root-7' } as const;
 
 describe('target action current-intent adapter', () => {
+  it('observes a decision from another device through its artifact invalidation subscription', async () => {
+    const stored: { request: TargetActionApprovalRequestV1 | null } = { request: null };
+    let onChange = () => {};
+    let subscribedArtifactId = '';
+    const dispose = vi.fn();
+    const adapter = createTargetActionCurrentIntentAdapter({
+      now: () => 1,
+      create: async (request) => { stored.request = request; return { artifactId: 'approval-other-device' }; },
+      read: async () => stored.request,
+      subscribeChanges: (artifactId, change) => {
+        subscribedArtifactId = artifactId;
+        onChange = change;
+        return { dispose };
+      },
+    });
+    const pending = adapter({
+      action: { qualifiedId: 'acme.alpha/actions/run', pluginId: 'acme.alpha', localId: 'run', occurrenceId: '7', sourceCustody: developmentCustody, dangerLevel: 'destructive', scopes: ['global'], surfaces: ['cli'], hostAccess: [], input: { x: 1 }, policyFingerprint: 'b'.repeat(64), confirmation: { title: 'Run action' } },
+      fingerprint: 'a'.repeat(64), surface: 'cli',
+    });
+    await Promise.resolve();
+    expect(subscribedArtifactId).toBe('approval-other-device');
+    if (!stored.request) throw new Error('approval_not_created');
+    stored.request = { ...stored.request, status: 'approved', updatedAtMs: 2, decision: { kind: 'approve', decidedAtMs: 2 } };
+    onChange();
+    await expect(pending).resolves.toEqual({ status: 'approved', fingerprint: 'a'.repeat(64) });
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
   it('persists the exact subject and admits only the matching durable approval', async () => {
     let stored: any;
     const adapter = createTargetActionCurrentIntentAdapter({

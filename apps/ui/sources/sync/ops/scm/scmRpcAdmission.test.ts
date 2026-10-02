@@ -13,6 +13,11 @@ describe('SCM producer policy admission', () => {
                 capabilities: createScmCapabilities(),
                 branch: { head: 'main', upstream: null, ahead: 0, behind: 0, detached: false },
                 hasConflicts: false,
+                hostingProvider: { id: 'scm.github', kind: 'github', displayName: 'GitHub', baseUrl: 'https://github.com' },
+                pullRequestStatus: {
+                    provider: { id: 'scm.github', kind: 'github', displayName: 'GitHub', baseUrl: 'https://github.com' },
+                    headBranch: 'feature', baseBranch: 'main', openPullRequest: null,
+                },
                 entries: [
                     { path: 'new.txt', kind: 'untracked', includeStatus: '?', pendingStatus: '?', hasPendingDelta: true, stats: { pendingAdded: 2, isComplete: false } },
                     { path: 'renamed.txt', previousPath: 'old.txt', kind: 'renamed', includeStatus: 'R', pendingStatus: '.', hasIncludedDelta: true },
@@ -27,9 +32,12 @@ describe('SCM producer policy admission', () => {
             call: async () => wire,
         });
         expect(response).toBe(wire);
-        if (!response.snapshot) throw new Error('Expected status snapshot');
+        if (!response.success || !('snapshot' in response) || !response.snapshot) throw new Error('Expected status snapshot');
         const mapped = mapProtocolSnapshotToUiSnapshot(response.snapshot, 'machine:/repo');
         expect(mapped.entries).toEqual(ScmStatusSnapshotResponseSchema.parse(wire).snapshot?.entries);
+        expect(mapped.hostingProvider).toMatchObject({ urlSafety: { allowedSchemes: ['https:'] } });
+        expect(mapped.pullRequestStatus?.provider).toMatchObject({ urlSafety: { allowedSchemes: ['https:'] } });
+        expect(wire.snapshot.hostingProvider).not.toHaveProperty('urlSafety');
         expect(mapped.entries[0]).toEqual({
             path: 'new.txt', previousPath: null, kind: 'untracked', includeStatus: '?', pendingStatus: '?', hasIncludedDelta: false, hasPendingDelta: true,
             stats: { includedAdded: 0, includedRemoved: 0, pendingAdded: 2, pendingRemoved: 0, isBinary: false, isComplete: false },
@@ -46,6 +54,7 @@ describe('SCM producer policy admission', () => {
 
     it('prevents an older daemon from silently ignoring advanced write policy', async () => {
         const cases = [
+            { method: RPC_METHODS.SCM_COMMIT_UNDO_LAST, request: { expectedHeadOid: 'a'.repeat(40) } },
             { method: RPC_METHODS.SCM_COMMIT_CREATE, request: { mode: 'amend' as const } },
             { method: RPC_METHODS.SCM_COMMIT_CREATE, request: { signOff: true } },
             { method: RPC_METHODS.SCM_REMOTE_PUSH, request: { pushMode: 'force_with_lease' as const } },
@@ -71,6 +80,19 @@ describe('SCM producer policy admission', () => {
         call.mockClear();
         await runScmRpcWithAdmission({ method: RPC_METHODS.SCM_COMMIT_CREATE, request: { cwd: '/selected-repo' }, call });
         expect(call.mock.calls).toEqual([[RPC_METHODS.SCM_COMMIT_CREATE, { cwd: '/selected-repo' }]]);
+    });
+
+    it('dispatches undo only with the exact target capability and keeps the HEAD guard', async () => {
+        const request = { cwd: '/selected-repo', expectedHeadOid: 'a'.repeat(40) };
+        const call = vi.fn(async (method: string) => method === RPC_METHODS.SCM_BACKEND_DESCRIBE
+            ? { success: true, capabilities: createScmCapabilities({ writeCommitUndoLast: true }) }
+            : { success: true, undoneCommitSha: request.expectedHeadOid });
+        expect(await runScmRpcWithAdmission({ method: RPC_METHODS.SCM_COMMIT_UNDO_LAST, request, call }))
+            .toMatchObject({ success: true, undoneCommitSha: request.expectedHeadOid });
+        expect(call.mock.calls).toEqual([
+            [RPC_METHODS.SCM_BACKEND_DESCRIBE, { cwd: '/selected-repo' }],
+            [RPC_METHODS.SCM_COMMIT_UNDO_LAST, request],
+        ]);
     });
 
     it('does not dispatch an advanced mutation when its exact-target descriptor is unavailable', async () => {

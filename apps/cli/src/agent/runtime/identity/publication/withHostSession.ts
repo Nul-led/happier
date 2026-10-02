@@ -100,10 +100,10 @@ function wrapRuntimeTurnOperationsWithPublication(params: Readonly<{
           },
         }
       : {}),
-    ...(typeof params.runtime.prepareProviderCliAttach === 'function'
+    ...(typeof params.runtime.prepareTerminalPresentation === 'function'
       ? {
-          async prepareProviderCliAttach() {
-            return await params.runtime.prepareProviderCliAttach!();
+          async prepareTerminalPresentation(request: Parameters<NonNullable<RuntimeTurnOperations['prepareTerminalPresentation']>>[0]) {
+            return await params.runtime.prepareTerminalPresentation!(request);
           },
         }
       : {}),
@@ -195,6 +195,9 @@ export function withHostSessionRuntimeIdentityPublication(params: Readonly<{
           }),
           nativeRuntime,
           terminalRemoteModeLoop,
+          ...(createdRuntime.prepareStartupPresentation
+            ? { prepareStartupPresentation: createdRuntime.prepareStartupPresentation }
+            : {}),
           ...(configuration ? { configuration } : {}),
           ...(admittedProviderBindingHandoff
             ? { admittedProviderBindingHandoff }

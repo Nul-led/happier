@@ -1,6 +1,6 @@
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { CliAuthStatusData } from '@/sync/api/capabilities/capabilitiesProtocol';
-import { isSessionExclusiveLocalControl } from '@/sync/domains/session/control/sessionLocalControl';
+import { getSessionLocalControlState, isSessionExclusiveLocalControl } from '@/sync/domains/session/control/sessionLocalControl';
 import { getAgentCore, resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
 import { ConnectedServiceBindingsV2IngressSchema, readBuiltInLegacyConnectedAccountServiceKeyIngress } from '@happier-dev/protocol';
 import type { ResolvedAgentCatalogEntry } from '@/agents/backendCatalog/agentCatalogProjection';
@@ -34,6 +34,17 @@ export function shouldRequestRemoteControl(
         const binding = bindings.data.bindingsByServiceId[key];
         return binding !== undefined && binding.source !== 'native';
     });
+}
+
+/** An explicit shared release detaches the runner-owned terminal, not model control. */
+export function shouldOfferLocalControlRelease(
+    session: Session | null,
+    authState?: SessionControlAuthState,
+    agentCatalogEntry?: Pick<ResolvedAgentCatalogEntry, 'agentId' | 'qualifiedId' | 'connectedAccounts'> | null,
+): boolean {
+    const localControl = getSessionLocalControlState(session);
+    if (localControl?.topology === 'shared') return localControl.attached && localControl.canDetach;
+    return shouldRequestRemoteControl(session, authState, agentCatalogEntry);
 }
 
 export function shouldRequestRemoteControlAfterPendingEnqueue(session: Session | null, authState?: SessionControlAuthState): boolean {

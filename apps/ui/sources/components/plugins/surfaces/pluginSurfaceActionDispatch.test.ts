@@ -75,6 +75,7 @@ import {
     type PluginSurfaceHostActionExecute,
 } from './pluginSurfaceActionDispatch';
 import { createBoundPluginSurfaceController } from './boundPluginSurfaceController';
+import { createPluginSurfaceStoredImageOwner } from './pluginSurfaceStoredImage';
 import { dispatchPluginResolvedSemanticCommand } from './dispatchPluginResolvedSemanticCommand';
 import { getPluginUiEphemeralSharedScope } from './pluginUiEphemeralSharedScope';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
@@ -486,6 +487,63 @@ function executeActionRequest(payload: PluginUiJsonValueV1): PluginUiHostApiRequ
         payload,
     };
 }
+
+describe('stored image custody from delivered Actions', () => {
+    it.each(['raw Session events', 'contributed result'] as const)(
+        'admits a native image from a successful %s, never before delivery or after failure',
+        async (source) => {
+            const media = { mediaId: 'image-delivered', mediaKind: 'image', width: 100, height: 60, sizeBytes: 24,
+                file: { sessionId: 'session-1', storage: 'daemon', path: '.happier/uploads/artifacts/session-1/image.png',
+                    sha256: 'a'.repeat(64), mimeType: 'image/png' } } satisfies PluginUiJsonValueV1;
+            // getSessionEvents success page, including the real semantic-item and pagination shape.
+            const result = { ok: true, sessionId: 'session-1', items: [{ id: 'message-image', seq: 1, createdAt: 1,
+                storedMessageRole: 'agent', semanticRole: 'assistant', role: 'assistant', kind: 'message', raw: { image: media } }],
+                nextCursor: null, hasMore: false,
+                diagnostics: { rawRowsScanned: 1, pagesFetched: 1, scanLimitReached: false, payloadTruncations: 0 } };
+            const image = { bytesBase64: 'cG5n', mimeType: 'image/png' as const, width: 100, height: 60 };
+            const readRequest = { ...executeActionRequest({}), method: 'readStoredImage' as const,
+                payload: { image: { sessionId: 'session-1', mediaId: media.mediaId } } };
+            const readInputs: unknown[] = [];
+            const owner = createPluginSurfaceStoredImageOwner({ pluginId: CALLER_PLUGIN_ID, occurrenceId: 'occ-1',
+                machineId: 'machine-1', serverId: null, isCurrent: () => true, lifetimeSignal: new AbortController().signal,
+                // The daemon read transport is the boundary; real result admission and custody stay intact.
+                read: async (_machineId, input) => { readInputs.push(input); return { ok: true, image }; } });
+            let succeeds = false;
+            const delivered: PluginUiJsonValueV1[] = [];
+            const deps = {
+                // Session event retrieval is the authenticated network/data port; Action execution remains real.
+                sessionEventsGet: async () => succeeds ? result
+                    : { ok: false, errorCode: 'media_unavailable', error: 'media_unavailable' },
+            } satisfies Partial<ActionExecutorDeps>;
+            // The boundary fixture supplies only the exercised Session read port, not unrelated Agent services.
+            const executor = createActionExecutor(deps as unknown as ActionExecutorDeps);
+            const api = createPluginSurfaceActionHostApi({ surfaceContext: surfaceContext(), callerBinding: mountedCallerBinding(),
+                hostAction: { execute: executor.execute },
+                contributedAction: { ...mountedActionBinding(), execute: async () => ({ supported: true,
+                    result: succeeds ? { ok: true, result } : { ok: false, code: 'media_unavailable' } }) },
+                onActionResult: (value) => { delivered.push(value); owner.retainActionResult(value); },
+                mountedHostApiHandlers: { readStoredImage: owner.readStoredImage },
+            });
+            const action = source === 'raw Session events' ? 'session.events.get' : { pluginId: 'acme.media', localId: 'read' };
+            const actionRequest = executeActionRequest({ action, input: { sessionId: 'session-1', includeRaw: true } });
+            try {
+                expect(await api.handleRequest(readRequest)).toMatchObject({ code: 'unavailable' });
+                expect(await api.handleRequest(actionRequest)).toMatchObject({ code: 'unavailable' });
+                expect(await api.handleRequest(readRequest)).toMatchObject({ code: 'unavailable' });
+                expect(readInputs).toEqual([]);
+                expect(delivered).toEqual([]);
+                succeeds = true;
+                expect(await api.handleRequest(actionRequest)).toEqual(result);
+                expect(await api.handleRequest(readRequest)).toEqual(image);
+                expect(readInputs).toEqual([{ callerPluginId: CALLER_PLUGIN_ID, expectedCallerOccurrenceId: 'occ-1', media }]);
+                expect(delivered).toEqual([result]);
+            } finally {
+                api.dispose?.();
+                owner.dispose();
+            }
+        },
+    );
+});
 
 async function runMountedHomeApproval(custody: PluginSourceCustodyV1, retireBeforeReplay = false) {
     let stored: ApprovalRequest | null = null;
@@ -1537,6 +1595,54 @@ describe('plugin-surface action branch selection', () => {
         expect(PLUGIN_INVOCABLE_ACTION_IDS).not.toContain('refresh-index');
     });
 
+    it.each(['reject', 'approve'] as const)('settles each mounted host capture viewing through canonical Action approval (%s)', async (decision) => {
+        let stored: ApprovalRequest | undefined;
+        const approvalRequests: ApprovalRequest[] = [];
+        const settings = normalizeActionsSettingsV1({ v: 1 });
+        // Storage, mount currentness and the person's decision are external boundaries.
+        const deps = {
+            isActionApprovalRequired: (actionId, context) => isApprovalRequiredByActionsSettings(actionId, settings, context),
+            approvalsCreate: async ({ request }) => {
+                stored = ApprovalRequestV2Schema.parse(request);
+                approvalRequests.push(stored);
+                return { artifactId: `capture-approval-${approvalRequests.length}` };
+            },
+            approvalsUpdate: async ({ request }) => {
+                stored = ApprovalRequestV2Schema.parse(request);
+                return { ok: true as const };
+            },
+            approvalsWaitForDecision: async () => ({ decision, request: stored! }),
+            isApprovalExecutionOriginCurrent: async () => true,
+        } satisfies Partial<ActionExecutorDeps>;
+        // Unrelated Session/Agent ports are outside this boundary fixture's exercised path.
+        const executor = createActionExecutor(deps as unknown as ActionExecutorDeps);
+        const api = createPluginSurfaceActionHostApi({
+            surfaceContext: surfaceContext(),
+            callerBinding: mountedCallerBinding(),
+            callerSourceCustody: { kind: 'development', registeredRootId: 'inspector-root' },
+            hostAction: {
+                execute: executor.execute,
+                context: { serverId: 'home-1', runtimeAccountId: 'account-1', actionRequestId: 'stale-mount-request' },
+            },
+        });
+        try {
+            for (const requestId of ['view-1', 'view-2']) {
+                const captureInput = { sourceId: 'host-screen', sourceOccurrenceId: `screen-occurrence-${requestId}` };
+                const response = await api.handleRequest({
+                    ...executeActionRequest({ action: 'capture.view', input: captureInput }),
+                    requestId,
+                });
+                expect(response).toEqual(decision === 'reject'
+                    ? { code: 'unavailable', diagnostics: ['approval_rejected'] }
+                    : { admitted: true, ...captureInput });
+            }
+            expect(approvalRequests).toHaveLength(2);
+            expect(approvalRequests.map(request => request.executionOriginV1?.requestId)).toEqual(['view-1', 'view-2']);
+        } finally {
+            api.dispose?.();
+        }
+    });
+
     it.each([
         { kind: 'bundled_first_party', packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-current' } },
         { kind: 'managed', immutableGenerationId: 'installed-current', installSource: 'archive' },
@@ -2551,6 +2657,7 @@ describe('mounted executeAction handler', () => {
             surface: surfaceContext('acme.other-app-surface'),
         })).resolves.toEqual({});
         expect(execute).toHaveBeenCalledWith(HOST_ACTION_ID, { pluginId: CALLER_PLUGIN_ID }, {
+            actionRequestId: 'request-1',
             surface: 'plugin',
             actionCaller: {
                 kind: 'plugin',
@@ -2888,6 +2995,7 @@ describe('composed public SDK client to canonical plugin-surface dispatcher', ()
         ).success).toBe(true);
         expect(executeHostAction).toHaveBeenCalledTimes(1);
         expect(executeHostAction).toHaveBeenCalledWith(HOST_ACTION_ID, { pluginId: CALLER_PLUGIN_ID }, {
+            actionRequestId: expect.any(String),
             actionCaller: {
                 kind: 'plugin',
                 pluginId: CALLER_PLUGIN_ID,
@@ -3196,6 +3304,7 @@ describe('composed React Native host API to canonical plugin-surface dispatcher'
         await expect(adapter.api.executeAction(HOST_ACTION_ID, { pluginId: CALLER_PLUGIN_ID }))
             .resolves.toEqual({ reloaded: true });
         expect(executeHostAction).toHaveBeenCalledWith(HOST_ACTION_ID, { pluginId: CALLER_PLUGIN_ID }, {
+            actionRequestId: 'rn-dispatch:1',
             serverId: 'server-rn',
             surface: 'plugin',
             actionCaller: {

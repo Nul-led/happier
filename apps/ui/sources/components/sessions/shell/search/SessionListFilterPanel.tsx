@@ -23,6 +23,9 @@ export type SessionListFilterDrillSection = 'tags' | 'audiences';
 
 export type SessionListFilterPanelCopy = Readonly<{
     show: string;
+    scope: string;
+    startedBy: string;
+    runsNeedingYouAlwaysShow: string;
     needsMeOnly: string;
     needsMeOnlyDescription: string;
     inactiveSessions: string;
@@ -209,6 +212,7 @@ const FilterChip = React.memo(function FilterChip(props: Readonly<{
     label: string;
     selected?: boolean;
     disabled?: boolean;
+    targetSize?: 'platform';
     /** A chip that opens more choices instead of toggling one. */
     kind?: 'toggle' | 'more';
     onPress(): void;
@@ -226,6 +230,7 @@ const FilterChip = React.memo(function FilterChip(props: Readonly<{
             onPress={props.onPress}
             style={(state) => [
                 styles.chip,
+                props.targetSize === 'platform' ? { minHeight: MINIMUM_INTERACTIVE_TARGET_SIZE, minWidth: MINIMUM_INTERACTIVE_TARGET_SIZE } : null,
                 selected ? styles.chipSelected : null,
                 state.pressed && !selected ? styles.chipPressed : null,
                 props.disabled ? styles.chipDisabled : null,
@@ -268,6 +273,10 @@ export const SessionListFilterPanel = React.memo(function SessionListFilterPanel
     }, [onSelect]);
 
     const attentionOptions = staticOptions(rootStep, 'attention');
+    const showOptions = staticOptions(rootStep, 'work-kind');
+    const starterOptions = staticOptions(rootStep, 'started-by');
+    const showTabs = React.useMemo(() => (showOptions ?? []).map((option) => ({ id: option.id, label: option.label })), [showOptions]);
+    const activeShowTab = showTabs.find((tab) => selectedIds.has(tab.id))?.id ?? showTabs[0]?.id;
     const inactiveOptions = staticOptions(rootStep, 'inactive');
     const homeOptions = staticOptions(rootStep, 'homes');
     const audienceOptions = staticOptions(rootStep, 'audiences');
@@ -314,16 +323,49 @@ export const SessionListFilterPanel = React.memo(function SessionListFilterPanel
                 keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator
             >
-                {scopeTiles.length > 0 ? (
+                {showOptions && activeShowTab ? (
                     <>
                         <Text style={[styles.sectionLabel, styles.sectionLabelFirst]}>{labels.show}</Text>
+                        <SegmentedTabBar<string>
+                            role="radiogroup"
+                            tabs={showTabs}
+                            activeTabId={activeShowTab}
+                            onSelectTab={onSelect}
+                            slidingThumb
+                            accessibilityLabel={labels.show}
+                            testIDPrefix="session-list-filter"
+                            targetSize="platform"
+                        />
+                    </>
+                ) : null}
+                {starterOptions ? (
+                    <>
+                        <Text style={[styles.sectionLabel, !showOptions ? styles.sectionLabelFirst : null]}>{labels.startedBy}</Text>
+                        <View style={styles.chips} accessibilityLabel={labels.startedBy}>
+                            {starterOptions.map((option) => (
+                                <FilterChip
+                                    key={option.id}
+                                    testID={`session-list-filter:${option.id}`}
+                                    label={option.label}
+                                    selected={selectedIds.has(option.id)}
+                                    targetSize="platform"
+                                    onPress={() => onSelect(option.id)}
+                                />
+                            ))}
+                        </View>
+                        <Text style={[styles.rowSubtitle, { marginTop: 8 }]}>{labels.runsNeedingYouAlwaysShow}</Text>
+                    </>
+                ) : null}
+                {scopeTiles.length > 0 ? (
+                    <>
+                        <Text style={[styles.sectionLabel, !showOptions && !starterOptions ? styles.sectionLabelFirst : null]}>{labels.scope}</Text>
                         <SelectionTiles<string>
                             options={scopeTiles}
                             value={selectedScopeId}
                             onChange={handleScopeChange}
                             density="compact"
                             minimumColumns={2}
-                            accessibilityLabel={labels.show}
+                            accessibilityLabel={labels.scope}
                             testIdPrefix="session-list-filter-scope"
                         />
                     </>

@@ -4,7 +4,6 @@
 // Voice activation imports. Data-only projections do not make a package required.
 export const REQUIRED_BUNDLED_PLUGIN_PACKAGES = Object.freeze([
   '@happier-dev/plugins-claude',
-  '@happier-dev/plugins-cliproxyapi',
   '@happier-dev/plugins-codex',
   '@happier-dev/plugins-elevenlabs',
   '@happier-dev/plugins-openai',

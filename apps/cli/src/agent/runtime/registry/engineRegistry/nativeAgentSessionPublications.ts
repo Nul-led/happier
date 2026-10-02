@@ -24,7 +24,8 @@ export type NativeAgentSessionPublications = Readonly<{
 
 export function createNativeAgentSessionPublications(params: Readonly<{
   agentId: string;
-  session: PublicationSession;
+  /** Only the main Session owns the readiness projection; Run contexts pass null. */
+  session: PublicationSession | null;
   signal: AbortSignal;
   isCurrent(): boolean;
   supportsInFlightSteer: boolean;
@@ -122,6 +123,7 @@ export function createNativeAgentSessionPublications(params: Readonly<{
     if (!activeInputBinding) {
       throw new Error('Native Agent active-input status requires an active session binding');
     }
+    if (!params.session) return;
     updateAgentStateBestEffort(
       params.session,
       (state) => ({

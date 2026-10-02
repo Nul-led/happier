@@ -331,12 +331,14 @@ export function resolveSessionListRowViewModelAdjacency(
     index: number,
 ): SessionListRowViewModelAdjacency {
     const item = listItems[index];
-    if (!item || item.type !== 'session') return { isFirst: true, isLast: true, isSingle: true };
+    if (!item || item.type === 'header') return { isFirst: true, isLast: true, isSingle: true };
     // A group sheet runs from one heading to the next: consecutive rows share it even when their
     // placement groups differ (a working band flowing into its section), and a header that draws no
     // heading (no title, `resolveSessionListHeaderViewState`) does not cut it, so no sheet is unlabeled.
-    const isFirst = neighbourOf(listItems, index, -1)?.type !== 'session';
-    const isLast = neighbourOf(listItems, index, 1)?.type !== 'session';
+    const previous = neighbourOf(listItems, index, -1);
+    const next = neighbourOf(listItems, index, 1);
+    const isFirst = previous == null || previous.type === 'header';
+    const isLast = next == null || next.type === 'header';
     return { isFirst, isLast, isSingle: isFirst && isLast };
 }
 

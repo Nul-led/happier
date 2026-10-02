@@ -25,7 +25,7 @@ type WaitForSessionWebhookParams = {
   onSuccess?: (session: TrackedSession) => void | Promise<void>;
 };
 
-function resolveTimeoutMs(explicitTimeoutMs: number | undefined): number {
+export function resolveSessionStartupTimeoutMs(explicitTimeoutMs?: number): number {
   if (typeof explicitTimeoutMs === 'number' && explicitTimeoutMs > 0) {
     return explicitTimeoutMs;
   }
@@ -145,7 +145,7 @@ export function armSessionWebhookStartupCustody(
 export function waitForSessionWebhook(
   params: WaitForSessionWebhookParams,
 ): SessionWebhookCompletion {
-  const timeoutMs = resolveTimeoutMs(params.timeoutMs);
+  const timeoutMs = resolveSessionStartupTimeoutMs(params.timeoutMs);
   const requestTrackedSession = params.pidToTrackedSession?.get(params.pid);
   let isPending = () => true;
   let settleFailure!: SessionWebhookCompletion['settleFailure'];

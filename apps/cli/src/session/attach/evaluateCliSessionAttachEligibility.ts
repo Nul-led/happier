@@ -202,16 +202,6 @@ export async function evaluateCliSessionAttachEligibility(params: Readonly<{
       metadata: null,
     };
   }
-  if (params.rawSession.active !== true) {
-    return {
-      eligible: false,
-      agentId: null,
-      reasonCode: 'inactive',
-      reason: 'Session is not active and cannot be attached.',
-      metadata: null,
-    };
-  }
-
   const metadata = asRecord(tryDecryptSessionOwnerMetadataView({
     credentials: params.credentials,
     rawSession: params.rawSession,
@@ -223,8 +213,8 @@ export async function evaluateCliSessionAttachEligibility(params: Readonly<{
     return {
       eligible: false,
       agentId,
-      reasonCode: 'metadata_unavailable',
-      reason: 'Failed to decrypt session metadata.',
+      reasonCode: params.rawSession.active === true ? 'metadata_unavailable' : 'inactive',
+      reason: params.rawSession.active === true ? 'Failed to decrypt session metadata.' : 'Session is not active and cannot be attached.',
       metadata: null,
     };
   }
@@ -234,6 +224,29 @@ export async function evaluateCliSessionAttachEligibility(params: Readonly<{
   const hasLocalTerminalEvidence = params.localAttachmentInfo !== null;
   const hasSyncedTerminalMetadata = asRecord(metadata?.terminal) !== null;
   const sessionId = resolveSessionId(params.rawSession);
+  const sameMachineIdentity = Boolean(sessionMachineId && params.currentMachineId && sessionMachineId === params.currentMachineId);
+  const sameHostAsCurrentMachine = compareMachineHosts(sessionHost, params.currentMachineHost ?? null);
+  const recordedTerminal = params.localAttachmentInfo?.terminal ?? asRecord(metadata.terminal);
+  const recordedHerdr = asRecord(recordedTerminal?.herdr);
+  const hasLocalHerdrRestorationCandidate = recordedTerminal?.mode === 'herdr'
+    && asRecord(recordedTerminal.controlServiceabilityV1)?.retired !== true
+    && typeof recordedHerdr?.paneId === 'string' && recordedHerdr.paneId.trim().length > 0
+    && (hasLocalTerminalEvidence || Boolean(sessionMachineId && (sameMachineIdentity || sameHostAsCurrentMachine)));
+  if (params.rawSession.active !== true) {
+    // A recorded local pane can activate Herdr's own deferred resume. It is
+    // placement intent only; opening it does not admit a Session/controller.
+    if (hasLocalHerdrRestorationCandidate) {
+      return buildTerminalAttachEligibility({
+        metadata, localAttachmentInfo: params.localAttachmentInfo,
+        insideTmux: params.insideTmux,
+        currentTmuxSocketPath: params.currentTmuxSocketPath ?? null,
+      });
+    }
+    return {
+      eligible: false, agentId, reasonCode: 'inactive',
+      reason: 'Session is not active and cannot be attached.', metadata,
+    };
+  }
   if (params.localAttachmentInfo) {
     const hosted = buildTerminalAttachEligibility({
       metadata,
@@ -296,8 +309,6 @@ export async function evaluateCliSessionAttachEligibility(params: Readonly<{
   }
 
   const terminalRuntimeOps = backendExecutionSurfaces?.terminalRuntime ?? null;
-  const sameMachineIdentity = Boolean(sessionMachineId && params.currentMachineId && sessionMachineId === params.currentMachineId);
-  const sameHostAsCurrentMachine = compareMachineHosts(sessionHost, params.currentMachineHost ?? null);
 
   if (hasLocalTerminalEvidence || (hasSyncedTerminalMetadata && sessionMachineId && (sameMachineIdentity || sameHostAsCurrentMachine))) {
     return buildTerminalAttachEligibility({

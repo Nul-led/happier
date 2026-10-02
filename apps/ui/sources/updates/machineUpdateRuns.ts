@@ -9,11 +9,130 @@ import { presentAgentInstallJobFailure, presentAgentInstallJobRpcFailure } from 
 import { MACHINE_RPC_POLL_INTERVAL_MS } from '@/sync/ops/machineRpcPollInterval';
 import { t } from '@/text';
 
-import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { serverAccountScopeKeySuffix, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { recordUpdateCompleted } from './updateCompletions';
 export { markUpdateCompletionsSeen, readUnseenUpdateCompletions, recordUpdateCompleted, useUnseenUpdateCompletions } from './updateCompletions';
 import type { UpdateItem, UpdateItemStep } from './items/updateItem';
 import type { UpdateRunObservation } from './items/buildMachineUpdateItems';
+import { planUpdateAll, type UpdateAllPlan } from './items/buildUpdatesSummary';
+
+export type UpdateAllProgress = Readonly<{ done: number; total: number; stopping: boolean }>;
+
+// Explicit presses supply already-discovered rows. Detail views observe this action-owned state;
+// closing them neither cancels the plan nor loses its Stop intent. Separate groups may run together.
+type UpdateBatchRun = Readonly<{ plan: UpdateAllPlan; progress: UpdateAllProgress }>;
+type UpdateBatchScope = Readonly<{
+    groups: ReadonlyMap<string | null, UpdateBatchRun>;
+    progress: UpdateAllProgress;
+}>;
+const batchesByScope = new Map<string, UpdateBatchScope>();
+const batchListeners = new Set<() => void>();
+
+function publishUpdateBatch(key: string, groupId: string | null, run: UpdateBatchRun | null): void {
+    const groups = new Map(batchesByScope.get(key)?.groups);
+    if (run) groups.set(groupId, run);
+    else groups.delete(groupId);
+    if (groups.size === 0) batchesByScope.delete(key);
+    else {
+        let done = 0;
+        let total = 0;
+        let stopping = false;
+        for (const group of groups.values()) {
+            done += group.progress.done;
+            total += group.progress.total;
+            stopping ||= group.progress.stopping;
+        }
+        batchesByScope.set(key, { groups, progress: { done, total, stopping } });
+    }
+    for (const listener of batchListeners) listener();
+}
+
+export function readUpdateBatch(scope: ServerAccountScope | null): UpdateAllProgress | null {
+    return scope ? batchesByScope.get(serverAccountScopeKeySuffix(scope))?.progress ?? null : null;
+}
+
+export function stopUpdateBatch(scope: ServerAccountScope | null): void {
+    if (!scope) return;
+    const key = serverAccountScopeKeySuffix(scope);
+    for (const [groupId, run] of batchesByScope.get(key)?.groups ?? []) {
+        if (!run.progress.stopping) publishUpdateBatch(key, groupId, { ...run, progress: { ...run.progress, stopping: true } });
+    }
+}
+
+export async function runUpdateBatch(
+    scope: ServerAccountScope,
+    items: readonly UpdateItem[],
+    executeItem: (item: UpdateItem) => Promise<void>,
+    groupId: string | null = null,
+): Promise<void> {
+    const key = serverAccountScopeKeySuffix(scope);
+    const running = batchesByScope.get(key)?.groups;
+    if (running && (groupId === null || running.has(null) || running.has(groupId))) return;
+    const plan = planUpdateAll(items);
+    if (plan.total === 0) return;
+    // Disjoint machine groups may run together; overlapping groups cannot bypass the existing
+    // per-machine helper → agent → CLI order with another presentation id.
+    if (running && [...running.values()].some((run) =>
+        (run.plan.appItemId !== null && plan.appItemId !== null)
+        || run.plan.machines.some((current) => plan.machines.some((next) => current.machineId === next.machineId)),
+    )) return;
+    const byId = new Map(items.map((item) => [item.id, item]));
+    publishUpdateBatch(key, groupId, { plan, progress: { done: 0, total: plan.total, stopping: false } });
+    const settle = () => {
+        const run = batchesByScope.get(key)?.groups.get(groupId);
+        if (run) publishUpdateBatch(key, groupId, { ...run, progress: { ...run.progress, done: run.progress.done + 1 } });
+    };
+    const shouldStop = () => batchesByScope.get(key)?.groups.get(groupId)?.progress.stopping === true;
+    try {
+        const results = await Promise.allSettled([
+            ...plan.machines.map(async (machine) => {
+                for (const itemId of machine.itemIds) {
+                    if (shouldStop()) return;
+                    const item = byId.get(itemId);
+                    if (item) await executeItem(item);
+                    settle();
+                }
+            }),
+            (async () => {
+                const appItem = plan.appItemId ? byId.get(plan.appItemId) : undefined;
+                if (!appItem || shouldStop()) return;
+                if (appItem.action.kind === 'run' && appItem.action.verb === 'update') await executeItem(appItem);
+                settle();
+            })(),
+        ]);
+        for (const result of results) if (result.status === 'rejected') throw result.reason;
+    } finally {
+        publishUpdateBatch(key, groupId, null);
+    }
+}
+
+export function useUpdateBatch(
+    scope: ServerAccountScope | null,
+    items: readonly UpdateItem[],
+    executeItem: (item: UpdateItem) => Promise<void>,
+): Readonly<{
+    batch: UpdateAllProgress | null;
+    updateAll: () => Promise<void>;
+    updateGroup: (group: Readonly<{ id: string; items: readonly UpdateItem[] }>) => Promise<void>;
+    stopAfterCurrent: () => void;
+}> {
+    const key = scope ? serverAccountScopeKeySuffix(scope) : null;
+    const read = React.useCallback(() => key ? batchesByScope.get(key)?.progress ?? null : null, [key]);
+    const batch = React.useSyncExternalStore(
+        React.useCallback((listener: () => void) => {
+            batchListeners.add(listener);
+            return () => { batchListeners.delete(listener); };
+        }, []), read, read,
+    );
+    const updateAll = React.useCallback(async () => {
+        if (scope) await runUpdateBatch(scope, items, executeItem);
+    }, [executeItem, items, scope]);
+    const updateGroup = React.useCallback(async (group: Readonly<{ id: string; items: readonly UpdateItem[] }>) => {
+        if (scope) await runUpdateBatch(scope, group.items, executeItem, group.id);
+    }, [executeItem, scope]);
+    const stopAfterCurrent = React.useCallback(() => stopUpdateBatch(scope), [scope]);
+    return { batch, updateAll, updateGroup, stopAfterCurrent };
+}
 
 /**
  * The one record of machine-side update runs started from this app (agent CLIs, helper

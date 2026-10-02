@@ -362,6 +362,48 @@ describe('submitSessionUserMessage Pending action ownership', () => {
         });
     });
 
+    it.each([false, true])('keeps Composer custody after cancelled enqueue (exact Account=%s)', async (exactAccount) => {
+        const harness = createPort();
+        const account = createAccountLifetime();
+        let draft = 'Please fix the review comments';
+        const onOutboundHandoff = vi.fn(() => { draft = ''; });
+        harness.port.enqueuePendingMessage = async () => ({ localId: 'cancelled-local', accepted: true, cancelled: true });
+
+        await expect(submitSessionUserMessage(harness.port, {
+            ...submitOptions(createSession()),
+            ...(exactAccount ? { accountLifetime: account.lifetime } : {}),
+            onOutboundHandoff,
+        })).resolves.toMatchObject({ type: 'rejected', persistence: 'none', errorCode: 'PENDING_MESSAGE_CANCELLED' });
+
+        expect(draft).toBe('Please fix the review comments');
+        expect(onOutboundHandoff).not.toHaveBeenCalled();
+    });
+
+    it.each(['enqueue', 'unconfirmed_enqueue', 'wake'] as const)('reports pending custody when exact Account retires after %s acceptance', async (phase) => {
+        const harness = createPort();
+        const account = createAccountLifetime();
+        const onOutboundHandoff = vi.fn();
+        harness.port.enqueuePendingMessage = async () => {
+            if (phase !== 'wake') account.retire();
+            return { localId: 'accepted-local', accepted: phase !== 'unconfirmed_enqueue' };
+        };
+        harness.ensureSessionRuntimeForPendingInput.mockImplementationOnce(async () => {
+            account.retire();
+            return { type: 'success' };
+        });
+
+        await expect(submitSessionUserMessage(harness.port, {
+            ...submitOptions(createSession({ active: false, presence: 0 })),
+            requestedAction: { v: 1, kind: 'send_now' },
+            resumeTargetOverride: { machineId: 'm1', directory: '/tmp/project' },
+            accountLifetime: account.lifetime,
+            onOutboundHandoff,
+        })).resolves.toMatchObject({
+            type: 'send_failed', persistence: 'pending', localId: 'accepted-local', errorCode: 'session_account_scope_retired',
+        });
+        expect(onOutboundHandoff).not.toHaveBeenCalled();
+    });
+
     it('does not hand off Composer custody until Pending persistence succeeds', async () => {
         const session = createSession();
         const { port, enqueuePendingMessage } = createPort();

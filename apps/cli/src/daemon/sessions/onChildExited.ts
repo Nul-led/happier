@@ -151,7 +151,7 @@ export function createOnChildExited(params: Readonly<{
     trackedSession: TrackedSession;
     exit: ChildExit;
     unexpected: boolean;
-  }>) => boolean;
+  }>) => boolean | Promise<boolean>;
   onFinalTrackedSessionExitStaged?: (input: Readonly<{
     pid: number;
     trackedSession: TrackedSession;
@@ -277,7 +277,7 @@ export function createOnChildExited(params: Readonly<{
       const finalSessionId = normalizeSessionId(tracked.happySessionId);
       const hasServerBackedSession = Boolean(finalSessionId) && isServerBackedSessionId(finalSessionId);
       const actionableUnexpectedExit = shouldReportSessionEnd && isUnexpected && hasServerBackedSession;
-      const shouldPreserveMarker = hasServerBackedSession && shouldPreserveSessionMarkerOnExit?.({
+      const shouldPreserveMarker = hasServerBackedSession && await shouldPreserveSessionMarkerOnExit?.({
         pid,
         trackedSession: tracked,
         exit,

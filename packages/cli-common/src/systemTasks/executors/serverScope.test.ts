@@ -235,6 +235,20 @@ describe('server scope for an explicit Home', () => {
       HAPPIER_LOCAL_SERVER_URL: 'http://127.0.0.1:3005',
       HAPPIER_PUBLIC_SERVER_URL: 'https://relay-x.example.test',
       HAPPIER_WEBAPP_URL: 'https://app-x.example.test',
+      HAPPIER_DAEMON_SERVICE_SERVER_URL: 'https://service-x.example.test',
+      HAPPIER_DAEMON_SERVICE_WEBAPP_URL: 'https://service-app-x.example.test',
+      HAPPIER_DAEMON_SERVICE_PUBLIC_SERVER_URL: 'https://public-x.example.test',
+      HAPPIER_DAEMON_SERVICE_CHANNEL: 'publicdev',
+      HAPPIER_DAEMON_SERVICE_NODE_PATH: '/other/node',
+      HAPPIER_DAEMON_SERVICE_ENTRY_PATH: '/other/entry',
+      HAPPIER_DAEMON_SERVICE_INSTANCE_ID: 'other',
+      HAPPIER_DAEMON_SERVICE_PLATFORM: 'win32',
+      HAPPIER_DAEMON_SERVICE_UID: '999',
+      HAPPIER_DAEMON_SERVICE_USER_HOME_DIR: '/other',
+      HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: '/other/.happier',
+      HAPPIER_DAEMON_SERVICE_MODE: 'system',
+      HAPPIER_DAEMON_SERVICE_SYSTEM_USER: 'other',
+      HAPPIER_DAEMON_SERVICE_BUNDLE_ID: 'dev.other.app',
     };
     const scoped = scopeHappierJsonExecutor(executor, { serverId: 'home-y', targetMode: 'pinned' }, pinned);
 

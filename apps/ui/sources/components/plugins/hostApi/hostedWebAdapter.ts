@@ -134,6 +134,7 @@ const HOSTED_WEB_PRODUCED_SUBSCRIPTION_METHODS = new Set<PluginUiHostMethodV1>(
         'watchComposer',
         'acquireComposerInputLock',
         'watchSession',
+        'watchLiveStream',
     ] as const satisfies readonly PluginUiHostMethodV1[],
 );
 const HOSTED_WEB_HOST_RESOURCE_SUBSCRIPTION_METHODS = new Set<PluginUiHostMethodV1>(
@@ -142,6 +143,7 @@ const HOSTED_WEB_HOST_RESOURCE_SUBSCRIPTION_METHODS = new Set<PluginUiHostMethod
         'watchComposer',
         'acquireComposerInputLock',
         'watchSession',
+        'watchLiveStream',
     ] as const satisfies readonly PluginUiHostMethodV1[],
 );
 const CANONICAL_SUBSCRIPTION_METHODS = new Set<PluginUiHostMethodV1>(

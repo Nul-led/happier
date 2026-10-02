@@ -1,6 +1,7 @@
 import {
     isInProgressAgentActivityStatus,
     isTerminalAgentActivityStatus,
+    isTerminalAutomationRunStateV3,
     type AgentActivityStatusV1,
     type SessionAwarenessProjectionV1,
     type SessionOperationalReasonV1,
@@ -113,7 +114,7 @@ const STEP_STATUS: Readonly<Record<WorkStatusStepLifecycle, StatusShape>> = {
 
 /** Presentation settlement mirrors the incumbent lifecycle contract; no state is transitioned. */
 export function isTerminalWorkflowRunState(state: WorkflowRunStateV1): boolean {
-    return RUN_STATUS[state].bucket === 'finished';
+    return isTerminalAutomationRunStateV3(state);
 }
 
 export function isTerminalWorkflowInvocationLifecycle(lifecycle: WorkflowInvocationLifecycleV1): boolean {

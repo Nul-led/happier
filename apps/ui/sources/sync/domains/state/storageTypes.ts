@@ -366,6 +366,7 @@ export interface ScmCapabilities {
     writeInclude: boolean;
     writeExclude: boolean;
     writeCommit: boolean;
+    writeCommitUndoLast?: boolean;
     writeCommitPathSelection?: boolean;
     writeCommitLineSelection?: boolean;
     writeBackout: boolean;
@@ -463,7 +464,9 @@ export interface ScmWorkingSnapshot {
     capabilities?: ScmCapabilities;
     branch: {
         head: string | null;
+        headOid?: string;
         upstream: string | null;
+        upstreamOid?: string;
         ahead: number;
         behind: number;
         detached: boolean;

@@ -133,6 +133,26 @@ describe('useScmRemoteOperations', () => {
         expect(loadCommitHistory).toHaveBeenCalledWith({ reset: true });
     });
 
+    it('pushes only the observed upstream lease after explicit confirmation, even when confirmations are skipped', async () => {
+        const { useScmRemoteOperations } = await import('./useScmRemoteOperations');
+        const expectedRemoteOid = 'a'.repeat(40);
+        const hook = await renderHook(() => useScmRemoteOperations({
+            sessionId: 'session-1', sessionPath: '/repo',
+            scmSnapshot: { ...snapshot, capabilities: { ...snapshot.capabilities, writeRemoteForceWithLease: true },
+                branch: { ...snapshot.branch, head: 'local-name', upstream: 'upstream/feature', upstreamOid: expectedRemoteOid, behind: 2 } },
+            scmWriteEnabled: true, scmCommitStrategy: 'atomic', scmRemoteConfirmPolicy: 'never',
+            scmPushRejectPolicy: 'prompt_fetch', refreshScmData, loadCommitHistory,
+        }));
+        await act(async () => {
+            await hook.getCurrent().runRemoteOperation('push', { skipConfirmation: true, policy: { pushMode: 'force_with_lease', expectedRemoteOid } });
+        });
+        expect(modalMock.spies.confirm).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.objectContaining({ destructive: true }));
+        expect(sessionScmRemotePush).toHaveBeenCalledWith('session-1', {
+            remote: 'upstream', branch: 'feature', pushMode: 'force_with_lease', expectedRemoteOid,
+        }, undefined);
+        expect(sessionScmRemoteFetch).not.toHaveBeenCalled();
+    });
+
     it('offers stale Git index-lock recovery and retries remote push once', async () => {
         sessionScmRemotePush
             .mockResolvedValueOnce({

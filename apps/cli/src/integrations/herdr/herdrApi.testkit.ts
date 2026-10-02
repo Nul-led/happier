@@ -1,6 +1,7 @@
 import { createServer, type Socket } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { mkdir } from 'node:fs/promises';
 
 import { withTempDir } from '@/testkit/fs/tempDir';
 
@@ -16,11 +17,14 @@ export async function withHerdrApi<T>(run: (api: Readonly<{
   beforeResponse: Map<string, () => void>;
   setEmpty(): void;
   setServerVersion(version: string): void;
-}>) => Promise<T>): Promise<T> {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}>) => Promise<T>, options: Readonly<{ maxInitialRequestBytes?: number; socketPath?: string }> = {}): Promise<T> {
   return await withTempDir('herdr-api-', async (directory) => {
-    const socketPath = process.platform === 'win32'
+    const socketPath = options.socketPath ?? (process.platform === 'win32'
       ? `\\\\.\\pipe\\happier-herdr-test-${randomUUID()}`
-      : join(directory, 'api.sock');
+      : join(directory, 'api.sock'));
+    if (process.platform !== 'win32') await mkdir(dirname(socketPath), { recursive: true });
     const faults = new Map<string, ApiFault>();
     const panes = new Set<string>();
     const tabs = new Set<string>();
@@ -37,6 +41,11 @@ export async function withHerdrApi<T>(run: (api: Readonly<{
       socket.on('data', (chunk: string) => {
         buffer += chunk;
         const newline = buffer.indexOf('\n');
+        if (options.maxInitialRequestBytes !== undefined
+          && Buffer.byteLength(newline < 0 ? buffer : buffer.slice(0, newline)) > options.maxInitialRequestBytes) {
+          socket.end();
+          return;
+        }
         if (newline < 0) return;
         const request = JSON.parse(buffer.slice(0, newline)) as {
           id: string; method: string; params: Record<string, unknown>;
@@ -68,6 +77,9 @@ export async function withHerdrApi<T>(run: (api: Readonly<{
                 workspace_id: 'w1', tab_id: 'managed-tab',
               })) };
               break;
+            case 'pane.process_info':
+              result = { process_info: { shell_pid: null, foreground_processes: [] } };
+              break;
             case 'pane.close':
               panes.delete(String(request.params.pane_id));
               tabs.delete('managed-tab');
@@ -87,15 +99,19 @@ export async function withHerdrApi<T>(run: (api: Readonly<{
           : { id: request.id, result })}\n`);
       });
     });
-    await new Promise<void>((resolve, reject) => {
+    const start = async () => await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
       server.listen(socketPath, resolve);
     });
-    try {
-      return await run({ socketPath, faults, panes, tabs, requests, beforeResponse, setEmpty: () => { empty = true; }, setServerVersion: (version) => { serverVersion = version; } });
-    } finally {
+    const stop = async () => {
       for (const socket of sockets) socket.destroy();
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      if (server.listening) await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    };
+    await start();
+    try {
+      return await run({ socketPath, faults, panes, tabs, requests, beforeResponse, start, stop, setEmpty: () => { empty = true; }, setServerVersion: (version) => { serverVersion = version; } });
+    } finally {
+      await stop();
     }
   });
 }

@@ -92,6 +92,7 @@ export {
     sessionScmChangeInclude,
     sessionScmCommitBackout,
     sessionScmCommitCreate,
+    sessionScmCommitUndoLast,
     sessionScmDiffCommit,
     sessionScmDiffFile,
     sessionScmLogList,

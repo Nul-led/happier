@@ -3,6 +3,7 @@ import { Platform, View, type ScrollViewProps } from 'react-native';
 
 import { Text } from '@/components/ui/text/Text';
 import { Item } from '@/components/ui/lists/Item';
+import { WorkspaceDestinationRow } from '@/components/appShell/workspace/WorkspaceDestinationRow';
 import { FileIcon } from '@/components/ui/media/FileIcon';
 import { Typography } from '@/constants/Typography';
 import type { FileItem } from '@/sync/domains/input/suggestionFile';
@@ -20,6 +21,7 @@ type SearchResultsListProps = {
     searchResultsQuery?: string;
     searchResults: FileItem[];
     onFilePress: (file: FileItem) => void;
+    fileHref?: (fullPath: string) => string | null;
     onFilePressPinned?: (file: FileItem) => void;
     onFolderPress?: (folder: FileItem) => void;
     onLayout?: ScrollViewProps['onLayout'];
@@ -54,6 +56,7 @@ export const SearchResultsList = React.memo(({
     searchResultsQuery,
     searchResults,
     onFilePress,
+    fileHref,
     onFilePressPinned,
     onFolderPress,
     onLayout,
@@ -121,6 +124,7 @@ export const SearchResultsList = React.memo(({
     ), [isSearching, searchQuery]);
 
     const renderItem = React.useCallback(({ item: file, index }: { item: FileItem; index: number }) => (
+        <WorkspaceDestinationRow href={file.fileType === 'file' ? fileHref?.(file.fullPath) ?? null : null}>
         <Item
             title={(
                 <InlineRepoPathLabel
@@ -156,7 +160,9 @@ export const SearchResultsList = React.memo(({
                 paddingHorizontal: 12,
             }}
         />
+        </WorkspaceDestinationRow>
     ), [
+        fileHref,
         onFilePress,
         onFilePressPinned,
         onFolderPress,

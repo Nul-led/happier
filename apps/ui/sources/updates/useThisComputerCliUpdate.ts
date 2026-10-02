@@ -7,6 +7,7 @@ import {
 } from '@/components/settings/machines/localControl/localDaemonSharedState';
 import { readKeptCliUpdateCommand, readLocalDaemonStatusData, type LocalDaemonStatusData } from '@/components/settings/machines/localControl/useLocalDaemonControl';
 import { getSystemTasksRunner } from '@/components/systemTasks/systemTasksRuntime';
+import { buildLocalDaemonServiceSystemTaskSpec } from '@/components/systemTasks/specs/localControl/buildLocalDaemonServiceSystemTaskSpec';
 import { useSystemTaskSnapshot } from '@/components/systemTasks/useSystemTaskSnapshot';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useActiveServerAccountScope } from '@/sync/domains/state/storage';
@@ -61,10 +62,15 @@ export function useThisComputerCliUpdate(): ThisComputerCliUpdate {
 
     const serverId = useActiveServerSnapshot().serverId;
     const activeScope = useActiveServerAccountScope();
+    const startContext = React.useMemo(() => activeScope?.serverId === serverId ? {
+        scope: activeScope,
+        spec: buildLocalDaemonServiceSystemTaskSpec('cli.update.v1'),
+        machineId,
+    } : null, [activeScope, machineId, serverId]);
     const run = React.useCallback(async () => {
-        if (!activeScope || activeScope.serverId !== serverId) return;
-        await startLocalCliUpdate(runner, readLocalDaemonStatusData);
-    }, [activeScope, runner, serverId]);
+        if (!startContext) return;
+        await startLocalCliUpdate(runner, readLocalDaemonStatusData, startContext);
+    }, [runner, startContext]);
 
     return React.useMemo(() => ({ item, machineId, run: desktop ? run : NOOP }), [desktop, item, machineId, run]);
 }

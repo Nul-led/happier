@@ -1684,7 +1684,7 @@ async function createPublicAcpConversationFromAwaitableAdapter(
           try {
             promptContent = await buildAcpPromptContentBlocks({
               cwd: request.cwd,
-              sessionId: request.sessionId,
+              sessionId: 'sessionId' in request ? request.sessionId : undefined,
               text: sendRequest.input.text,
               ...(sendRequest.input.structuredInput === undefined
                 ? {}
@@ -1753,7 +1753,7 @@ async function createPublicAcpConversationFromAwaitableAdapter(
       try {
         promptContent = await buildAcpPromptContentBlocks({
           cwd: request.cwd,
-          sessionId: request.sessionId,
+          sessionId: 'sessionId' in request ? request.sessionId : undefined,
           text: sendRequest.input.text,
           ...(sendRequest.input.structuredInput === undefined
             ? {}

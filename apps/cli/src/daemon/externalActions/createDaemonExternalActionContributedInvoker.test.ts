@@ -22,6 +22,10 @@ import {
   createPluginContributionIdentity,
   StrictJsonValueSchema,
   TargetActionApprovalRequestV1Schema,
+  WorkflowRunSummaryV1Schema,
+  WorkflowRunStartRequestV1Schema,
+  openWorkflowAcceptedSnapshotStoredEnvelopeV1,
+  parseWorkflowStoredContentEnvelopeV1,
   type ApprovalExecutionOriginV1,
   type PluginMachineExecutionOriginV1,
   type TargetActionApprovalReplayPlacementV1,
@@ -32,6 +36,8 @@ import {
   signExternalActionApprovalInputV1,
   verifyExternalActionApprovalInputV1,
   type ActionExecutorDeps,
+  createWorkflowAccountRunActionOwner,
+  type WorkflowAccountRunActionDeps,
 } from '@happier-dev/protocol/actions';
 import type {
   JsonValue,
@@ -62,6 +68,7 @@ import {
 import {
   createUnavailablePluginServicesFactory,
 } from '@/plugins/runtime/invocation/services/factory';
+import { createProductionPluginInvocationServiceOwners } from '@/plugins/runtime/invocation/services/production';
 import {
   createUnavailablePluginServices,
 } from '@/plugins/runtime/invocation/services/unavailable';
@@ -69,6 +76,7 @@ import { encryptSessionPayload } from '@/session/transport/encryption/sessionEnc
 import { encodeBase64 } from '@/api/encryption';
 import type { PluginActionsServiceSeed } from '@/plugins/runtime/invocation/services/actions';
 import { createCliActionExecutor } from '@/session/actions/createCliActionExecutor';
+import { registerActionSpecRpcHandlers } from '@/rpc/handlers/registerActionSpecRpcHandlers';
 
 import {
   createDaemonExternalActionContributedApprovalReplay,
@@ -101,7 +109,7 @@ function createApiActionApprovalOrigin(defaultSessionId?: string): ApprovalExecu
 function createExternalActionRuntime(
   scope: 'global' | 'session' = 'session',
   pluginId = 'acme.external',
-  onActionInvocation?: () => void | Promise<void>,
+  onActionInvocation?: (context: PluginInvocationContext) => void | Promise<void>,
   resolveCurrentPluginExecutionOrigin?: (
     pluginId: string,
   ) => PluginMachineExecutionOriginV1 | null,
@@ -109,6 +117,7 @@ function createExternalActionRuntime(
     pluginId: string,
   ) => TargetActionApprovalReplayPlacementV1 | null,
   onServicesSeed?: (seed: PluginActionsServiceSeed) => void,
+  serviceOwners?: Pick<ReturnType<typeof createProductionPluginInvocationServiceOwners>, 'createServices' | 'resolveHostBinding'>,
 ): ResolvedExecutablePluginRuntimeRegistry {
   const plugin = {
     pluginId,
@@ -200,7 +209,7 @@ function createExternalActionRuntime(
         family: 'actions',
         localId: registeredAction.definition.id,
         value: async (_input: JsonValue, context: PluginInvocationContext) => {
-          await onActionInvocation?.();
+          await onActionInvocation?.(context);
           return {
             surface: context.surface,
             caller: context.caller?.kind ?? null,
@@ -238,11 +247,11 @@ function createExternalActionRuntime(
       scopedGrants: [],
       operatingSystemAuthorization: [],
     }),
-    resolveHostBinding: createTargetActionHostBindingResolver(),
+    resolveHostBinding: serviceOwners?.resolveHostBinding ?? createTargetActionHostBindingResolver(),
     resolveHostPolicy: createTargetActionHostPolicyResolver(),
     createServices: (seed, binding) => {
       onServicesSeed?.(seed);
-      return createUnavailablePluginServicesFactory()(seed, binding);
+      return (serviceOwners?.createServices ?? createUnavailablePluginServicesFactory())(seed, binding);
     },
   });
 
@@ -361,6 +370,37 @@ function createExternalActionIngressExecutor(scope: 'global' | 'session' = 'sess
 }
 
 describe('createDaemonExternalActionContributedInvoker', () => {
+  it('invokes the committed contributor through authenticated exact-machine Action RPC without borrowing plugin identity', async () => {
+    const executor = createExternalActionIngressExecutor();
+    const handlers = new Map<string, (input: unknown) => Promise<unknown>>();
+    const controller = new AbortController();
+    registerActionSpecRpcHandlers({
+      rpcHandlerManager: { registerHandler: (method, handler) => {
+        handlers.set(method, (input) => handler(input, { signal: controller.signal, callerAuthority: 'present_user' }));
+      } },
+      actionExecutor: executor,
+      actionIds: ['action.invoke'],
+      targetMachineId: 'machine-local',
+    });
+    const { createUiAccountActionTransport } = await import('../../../../ui/sources/sync/ops/actions/accountActionTransport');
+    const action = createUiAccountActionTransport({
+      account: { serverId: 'server-external', accountId: 'account-1', assertCurrent: () => undefined },
+      resolveFallbackMachineId: () => null,
+      transport: async ({ method, payload }) => {
+        const handler = handlers.get(method);
+        if (!handler) return { ok: false, errorCode: 'method_not_found' };
+        return handler(payload);
+      },
+    });
+    const request = { actionId: 'action.invoke' as const, input: { action: { pluginId: 'acme.external', localId: 'inspect' }, input: {} },
+      context: { serverId: 'server-external', runtimeAccountId: 'account-1', defaultSessionId: 'session-origin',
+        externalActionTarget: { kind: 'machine' as const, machineId: 'machine-local' } } };
+    await expect(action(request)).resolves.toEqual({ surface: 'api', caller: null, sessionId: 'session-origin' });
+    await expect(action({ ...request, context: { ...request.context,
+      externalActionTarget: { kind: 'machine', machineId: 'wrong-machine' } } })).resolves.toMatchObject({ ok: false });
+    controller.abort();
+    await expect(action(request)).resolves.toMatchObject({ ok: false });
+  });
   it('feeds current committed plugin definitions to API Action discovery without retaining the runtime lease', async () => {
     const runtime = createExternalActionRuntime('global');
     let runtimeAvailable = true;
@@ -1041,8 +1081,9 @@ describe('createDaemonExternalActionContributedInvoker', () => {
     expect(actionInvocations).toBe(1);
   });
 
-  it('defers and replays a materializationless bundled API Action at its exact daemon placement', async () => {
+  it('defers and replays a materializationless bundled API Action with its admitting Workflow starter at its exact daemon placement', async () => {
     const previousSettings = process.env.HAPPIER_ACTIONS_SETTINGS_V1;
+    let serviceOwners: ReturnType<typeof createProductionPluginInvocationServiceOwners> | undefined;
     process.env.HAPPIER_ACTIONS_SETTINGS_V1 = JSON.stringify({
       v: 1,
       actions: {
@@ -1053,15 +1094,54 @@ describe('createDaemonExternalActionContributedInvoker', () => {
     });
     try {
       let actionInvocations = 0;
+      const runId = '99999999-9999-4999-8999-999999999999';
+      let acceptedEnvelope: string | undefined;
+      const run = WorkflowRunSummaryV1Schema.parse({ id: runId, sourceArtifactId: null,
+        ownerAccountId: 'account-1', visibleTeamId: null, origin: { kind: 'direct' }, state: 'queued', revision: 0,
+        machineId: 'machine-local', workflowCustodyState: 'pending', originDeliveryAckRevision: null,
+        availability: { pause: true, resumeBoundary: false, restoreWorkspace: false, cancel: true, inspectExecution: false, disabledReasons: [] },
+        createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' });
+      const workflowDeps: WorkflowAccountRunActionDeps = {
+        resolveAccountId: async () => 'account-1',
+        storage: { execute: async operation => {
+          if (operation.operation === 'get') throw Object.assign(new Error('run_not_found'), { code: 'run_not_found' });
+          if (operation.operation !== 'admit') throw new Error('unexpected_storage_operation');
+          acceptedEnvelope = String(operation.acceptedEnvelope);
+          return { kind: 'created', run };
+        } },
+        definitions: { get: async () => { throw new Error('inline_definition_only'); } },
+        resolveEncryption: async () => ({ kind: 'available', witness: { mode: 'plain', version: 1, contentKeyFingerprint: null } }),
+        normalizeAbsolutePath: directory => directory.startsWith('/') ? directory : null,
+        randomBytes: () => { throw new Error('plain_account_does_not_need_keys'); },
+        prepareWorkspace: async () => ({ ok: true, workspaceTarget: { project: { machineId: 'machine-local', directory: '/repo', checkoutRootPath: '/repo' } } }),
+        resolveMaterializationContext: async () => ({ effects: { resolveTargetAvailability: async () => true } }),
+      };
+      const owner = createWorkflowAccountRunActionOwner(workflowDeps);
+      serviceOwners = createProductionPluginInvocationServiceOwners({
+        invokeContributedAction: async () => { throw new Error('no_further_plugin_edge'); },
+        actionExecutor: { execute: async (actionId, input, context) => {
+          if (actionId !== 'workflow.run.start') throw new Error('unexpected_host_action');
+          return { ok: true, result: await owner.execute({ actionId, input: WorkflowRunStartRequestV1Schema.parse(input),
+            context: { ...context, callerPermissionMode: 'default',
+              externalActionTarget: { kind: 'machine', machineId: 'machine-local', project: { machineId: 'machine-local', directory: '/repo' } } } }) };
+        } },
+      });
       const runtime = createExternalActionRuntime(
         'global',
         'happier.channels',
-        () => { actionInvocations += 1; },
+        async context => {
+          actionInvocations += 1;
+          await context.services.actions.execute('workflow.run.start', { runId, source: { kind: 'inline', definition: {
+            version: 1, blocks: [{ kind: 'wait', id: 'wait', document: { text: 'Review', references: [], attachments: [] } }],
+          } } });
+        },
         () => null,
         () => ({
           serverId: 'server-bundled',
           machineId: 'machine-local',
         }),
+        undefined,
+        serviceOwners,
       );
       const lease: PluginRuntimeRegistryLease = {
         registry: runtime,
@@ -1131,10 +1211,11 @@ describe('createDaemonExternalActionContributedInvoker', () => {
         targetActionApprovals,
         now: () => 2,
       });
-      await expect(replay({
+      const replayed = await replay({
         artifactId: 'approval-bundled-1',
         decision: 'approve',
-      })).resolves.toMatchObject({
+      });
+      expect(replayed, JSON.stringify(replayed)).toMatchObject({
         ok: true,
         result: {
           ok: true,
@@ -1143,6 +1224,11 @@ describe('createDaemonExternalActionContributedInvoker', () => {
         },
       });
       expect(actionInvocations).toBe(1);
+      expect(openWorkflowAcceptedSnapshotStoredEnvelopeV1({ mode: 'plain',
+        binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
+        envelope: parseWorkflowStoredContentEnvelopeV1(acceptedEnvelope),
+      })).toMatchObject({ kind: 'available', content: { startedBy: 'user',
+        authorization: { principal: { kind: 'plugin', pluginId: 'happier.channels', contributionLocalId: 'inspect' } } } });
 
       await expect(replay({
         artifactId: 'approval-bundled-1',
@@ -1153,6 +1239,7 @@ describe('createDaemonExternalActionContributedInvoker', () => {
       });
       expect(actionInvocations).toBe(1);
     } finally {
+      await serviceOwners?.dispose();
       if (previousSettings === undefined) delete process.env.HAPPIER_ACTIONS_SETTINGS_V1;
       else process.env.HAPPIER_ACTIONS_SETTINGS_V1 = previousSettings;
     }

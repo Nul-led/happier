@@ -1,12 +1,19 @@
 import type {
-  TerminalHostAdapter,
+  TerminalHostAdapter as AgentTerminalHostAdapter,
   TerminalHostKind,
   TerminalHostPreference,
 } from '@happier-dev/agents';
 import type { AgentTerminalHostResolutionReason } from '@happier-dev/plugin-sdk/agents/runtime';
+import type { TerminalLaunchSpec } from '@/terminal/host/launchSpec';
+
+/** Host-private prepared native invocation; never exposed through the plugin SDK. */
+export type TerminalHostAdapter = Omit<AgentTerminalHostAdapter, 'createOrAttachHost'> & Readonly<{
+  createOrAttachHost(opts: Parameters<AgentTerminalHostAdapter['createOrAttachHost']>[0] & Readonly<{
+    preparedLaunch?: TerminalLaunchSpec;
+  }>): ReturnType<AgentTerminalHostAdapter['createOrAttachHost']>;
+}>;
 
 export type {
-  TerminalHostAdapter,
   TerminalHostAttachMetadata,
   TerminalHostHandle,
   TerminalHostKind,

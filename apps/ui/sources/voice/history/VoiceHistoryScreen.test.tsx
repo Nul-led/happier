@@ -3,9 +3,6 @@ import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  createCapturingLegendListMock,
-  createExpoVectorIconsMock,
-  createModalModuleMock,
   createDeferred,
   renderScreen,
 } from '@/dev/testkit';
@@ -17,7 +14,6 @@ import {
   type VoiceHistoryConsumerDeps,
   type VoiceHistoryProviderSource,
 } from './voiceHistoryConsumer';
-import { AccountStoredContentClientUpgradeRequiredError } from '@/sync/api/capabilities/accountStoredContentCompatibility';
 import {
   clearMountedSessionRealtimeTranscriptConsumers,
   readMountedSessionRealtimeTranscriptConsumerSessionIds,
@@ -25,15 +21,24 @@ import {
 } from '@/sync/runtime/sessionRealtimeTranscriptConsumers';
 import { planSessionTranscriptEviction } from '@/sync/engine/sessions/sessionTranscriptRetention';
 
-const legendListMock = createCapturingLegendListMock({ renderItems: true });
-const modalMock = createModalModuleMock({ confirmResult: true });
+const { legendListMock, modalMock } = await vi.hoisted(async () => {
+  const { createCapturingLegendListMock } = await import('@/dev/testkit/mocks/legendList');
+  const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+  return {
+    legendListMock: createCapturingLegendListMock({ renderItems: true }),
+    modalMock: createModalModuleMock({ confirmResult: true }),
+  };
+});
 
 // The canonical list testkit supplies the virtualized list boundary. Mocking
 // the app abstraction keeps Vitest from parsing Legend's native distribution.
 vi.mock('@/components/ui/lists/virtualized', () => ({
   VirtualizedList: legendListMock.module.LegendList,
 }));
-vi.mock('@expo/vector-icons', () => createExpoVectorIconsMock());
+vi.mock('@expo/vector-icons', async () => {
+  const { createExpoVectorIconsMock } = await import('@/dev/testkit/mocks/icons');
+  return createExpoVectorIconsMock();
+});
 vi.mock('@/modal', () => modalMock.module);
 // The History page is a settings page: its header reads the current route.
 vi.mock('expo-router', async () => {
@@ -790,11 +795,11 @@ describe('VoiceHistoryScreen', () => {
     expect(supersededScreen.findByTestId('voice-history-superseded')).not.toBeNull();
   });
 
-  it('projects the non-retryable stored-content compatibility failure without exposing its error details', async () => {
+  it('uses ordinary error recovery for a server refusal without exposing its details', async () => {
     const { VoiceHistoryScreen } = await import('./VoiceHistoryScreen');
     const upgradeConsumer = createVoiceHistoryConsumer(createDeps([], {
       discoverHistorySession: async () => {
-        throw new AccountStoredContentClientUpgradeRequiredError('server-too-old');
+        throw Object.assign(new Error('private server response'), { code: 'client-upgrade-required' });
       },
     }));
 
@@ -803,9 +808,8 @@ describe('VoiceHistoryScreen', () => {
     );
     await flushAsyncState();
 
-    expect(screen.findByTestId('voice-history-upgrade-required')).not.toBeNull();
-    expect(screen.findByTestId('voice-history-upgrade-required-action')).toBeNull();
-    expect(screen.findByTestId('voice-history-error')).toBeNull();
+    expect(screen.findByTestId('voice-history-error')).not.toBeNull();
+    expect(screen.findByTestId('voice-history-error-action')).not.toBeNull();
   });
 
   it('drops the previous Account rows as soon as the server-account scope changes, before the new Account read resolves', async () => {

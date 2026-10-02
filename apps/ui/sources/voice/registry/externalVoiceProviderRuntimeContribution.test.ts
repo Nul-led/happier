@@ -64,6 +64,8 @@ import { createRealtimeToolBarrierForVoiceHandlers } from '@/voice/tools/default
 import { createVoiceToolHandlers } from '@/voice/tools/handlers';
 import type { VoiceAdapterController, VoiceSessionSnapshot } from '@/voice/session/types';
 import { storage } from '@/sync/domains/state/storage';
+import { voiceSettingsParse } from '@/sync/domains/settings/voiceSettings';
+import { activate as activateOpenAiVoice } from '../../../../../packages/plugins/openai/src/ui/voice/runtime';
 import type { PluginReactNativeBundleCacheIdentity } from '@/sync/domains/plugins/ui/reactNativeRuntime';
 import { createVoiceClientRawCredentialAccess } from '@/voice/credentials/rawCredentialClient';
 import { createSessionFixture } from '@/dev/testkit';
@@ -684,6 +686,60 @@ describe('external Voice provider host composition', () => {
     ]);
   });
 
+  it('composes the admitted standalone attempt policy through the real OpenAI mint boundary', async () => {
+    const previous = storage.getState();
+    onTestFinished(() => storage.setState({ settings: previous.settings, artifacts: previous.artifacts }));
+    storage.setState({
+      settings: {
+        ...previous.settings,
+        promptStacksV1: { v: 1, surfaces: { coding: [], profilesById: {}, voice: [{
+          id: 'voice-policy', ref: { kind: 'doc', artifactId: 'voice-policy-doc' },
+          enabled: true, placement: 'system_append', editPolicy: 'user_only',
+        }] } },
+        voice: voiceSettingsParse({ providerId, assistantLanguage: 'fr-FR', welcome: { enabled: true, mode: 'on_first_turn' } }),
+      },
+      artifacts: {
+        ...previous.artifacts,
+        'voice-policy-doc': {
+          id: 'voice-policy-doc', title: 'Voice policy', isDecrypted: true,
+          headerVersion: 1, seq: 1, createdAt: 1, updatedAt: 1,
+          body: JSON.stringify({ v: 1, markdown: 'Use the project terminology.', createdAtMs: 1, updatedAtMs: 1 }),
+        },
+      },
+    });
+    const register = vi.fn();
+    activateOpenAiVoice({ voiceProviders: { register } });
+    const leaf = register.mock.calls[0]![1] as RealtimeVoiceProviderRuntime;
+    const request = vi.fn(async (_input: Parameters<NonNullable<VoiceCredentialAccess<'prepare'>['mediated']>['request']>[0]) => ({
+      status: 200, finalUrl: 'https://api.openai.com/v1/realtime/client_secrets',
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ value: 'ephemeral', expires_at: Math.floor(Date.now() / 1_000) + 60,
+        session: { type: 'realtime', object: 'realtime.session', id: 'sess_policy', model: 'gpt-realtime' },
+      })),
+    }));
+    const fixture = createHostFixture({
+      transcriptEvents: [], lifecycleEvents: [],
+      readProviderConfig: () => ({ model: { kind: 'pinned', id: 'gpt-realtime' }, voice: 'marin',
+        instructions: 'Keep responses practical.', turnDetection: 'server_vad', inputTranscriptionModel: null }),
+      getRealtimeClientToolDefinitions: () => [{
+        name: 'readCurrentUiContext', description: 'Read current UI', parameters: {}, execute: async () => null,
+      }],
+    });
+    const protocol = createExternalProtocol({ ...fixture, getSettings: () => storage.getState().settings },
+      providerId, 'web', declaration, leaf.protocol, () => ({ request }));
+    await expect(protocol.prepare({ controlSessionId: 'voice-policy', attemptId: 1, reason: 'initial',
+      request: null, signal: new AbortController().signal })).resolves.toMatchObject({ kind: 'prepared' });
+    const parameters = request.mock.calls[0]![0].parameters as { body: { session: { instructions: string } } };
+    const instructions = parameters.body.session.instructions;
+    expect(instructions).toContain('readCurrentUiContext');
+    expect(instructions).not.toContain('sendSessionMessage');
+    expect(instructions).not.toContain('searchActionSpecs');
+    expect(instructions).toContain('fr-FR');
+    expect(instructions).toContain('On your first reply');
+    expect(instructions).toContain('Use the project terminology.');
+    expect(instructions).toContain('Keep responses practical.');
+  });
+
   it('hands initial prepare one immutable preflight snapshot and consumes it before every settlement', async () => {
     let currentConfig: unknown = { mode: 'default', voice: 'calm' };
     let preflightResult: 'ready' | 'declined' | 'aborted' = 'ready';
@@ -1052,7 +1108,7 @@ describe('external Voice provider host composition', () => {
     }) as never);
     mediatedCredentialMachineRpc.mockResolvedValue({
       ok: true,
-      headers: { authorization: 'Bearer connected-account-token' },
+      response: { status: 200, finalUrl: 'https://voice.example.test/v1/session', headers: { 'content-type': 'application/json' }, bodyBase64: 'eyJvayI6dHJ1ZX0=' },
     });
     const providerFetch = vi.fn(async () => new Response('{"ok":true}', {
       status: 200,
@@ -1165,7 +1221,7 @@ describe('external Voice provider host composition', () => {
       expect(mediatedCredentialMachineRpc).toHaveBeenCalledTimes(1);
       expect(mediatedCredentialMachineRpc).toHaveBeenCalledWith(expect.objectContaining({
         machineId: 'machine-1',
-        method: RPC_METHODS.DAEMON_VOICE_CLIENT_MEDIATED_CREDENTIAL_MATERIALIZE,
+        method: RPC_METHODS.DAEMON_VOICE_CLIENT_ACCOUNT_OPERATION,
         payload: expect.objectContaining({
           contribution,
           phase: declaredPhase,
@@ -1189,7 +1245,7 @@ describe('external Voice provider host composition', () => {
           },
         }),
       }));
-      expect(providerFetch).toHaveBeenCalledTimes(1);
+      expect(providerFetch).not.toHaveBeenCalled();
     } finally {
       await scope.unwind();
       storage.setState((current) => ({ ...current, settings: previousSettings }));
@@ -1770,7 +1826,7 @@ describe('external Voice provider host composition', () => {
           close: driverClose,
         }),
         input: Object.freeze({ sampleRate: 24_000, chunkMs: 100 }),
-        output: Object.freeze({ sampleRate: 24_000, maxBufferedMs: 240 }),
+        output: Object.freeze({ sampleRate: 24_000 }),
         onInputChunk,
         onInputError,
       });
@@ -2414,7 +2470,9 @@ describe('Agent-session realtime host-authored context and tool scoping', () => 
         lifecycleEvents: [],
         getRealtimeClientToolDefinitions: ({ exposure }) => {
           exposures.push(exposure);
-          return exposure === 'current_ui_only' ? [CURRENT_UI_TOOL] : [CROSS_SESSION_TOOL, CURRENT_UI_TOOL];
+          // A later settings projection cannot replace the admitted attempt catalog.
+          return exposure === 'current_ui_only' || exposures.length > 1
+            ? [CURRENT_UI_TOOL] : [CROSS_SESSION_TOOL, CURRENT_UI_TOOL];
         },
         voiceHooks: {
           onStarted: (_sessionId, scope) => {

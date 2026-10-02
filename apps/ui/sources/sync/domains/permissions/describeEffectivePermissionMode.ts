@@ -85,7 +85,7 @@ export function describeEffectivePermissionMode(_params: {
         reasons.push({ code: 'plan_not_supported_for_provider' });
     }
 
-    const providerNative = resolveProviderNativePermissionModeForAgent({ agentId, mode: effectiveMode });
+    const providerNative = resolveProviderNativePermissionModeForAgent({ agentId, mode: _params.selectedMode });
     if (providerNative !== effectiveMode) {
         reasons.push({ code: 'mode_mapped_for_provider', params: { providerMode: providerNative } });
     }

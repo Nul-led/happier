@@ -698,6 +698,7 @@ export type HostSessionRuntimeRunOptions = {
   primaryTeamId?: string | null;
   teamCredentialBindings?: import('@happier-dev/protocol/teams').SessionTeamCredentialBindingIntentListV1;
   directory?: string;
+  runtimeDescriptorV1?: import('@happier-dev/protocol').RuntimeDescriptorV1;
   backendTarget?: BackendTargetRefV2Input;
   startedBy?: 'daemon' | 'terminal';
   terminalRuntime?: import('@/terminal/runtime/terminalRuntimeFlags').TerminalRuntimeFlags | null;
@@ -1450,6 +1451,7 @@ export async function runHostSessionRuntime(
     initialPermissionMode = startupSeed.permissionMode;
     const createdSessionMetadata = createSessionMetadataFn({
       flavor: config.flavor,
+      runtimeDescriptorV1: runtimeOpts.runtimeDescriptorV1,
       machineId,
       directory: runtimeOpts.directory,
       startedBy: runtimeOpts.startedBy,
@@ -1860,7 +1862,7 @@ export async function runHostSessionRuntime(
       ? fitWorkerUpdateWithinHostContextAllowance(contextOnlyWorkerUpdate, allowance.maxUtf8Bytes)
       : undefined;
     if (fittedWake === null) return {
-      updates: [], contextOnlyWorkerUpdate: null, acknowledgeAccepted: () => undefined,
+      updates: [], contextOnlyWorkerUpdate: null, contextOnlyWorkerDisposition: 'deferred', acknowledgeAccepted: () => undefined,
     };
     let remainingBytes = Math.max(0, allowance.maxUtf8Bytes - (fittedWake
       ? measureSessionFollowUtf8Bytes(renderWorkerUpdatePromptBlockV1(fittedWake)) + 2
@@ -2186,7 +2188,7 @@ export async function runHostSessionRuntime(
       if (signal.aborted) abort();
       try {
         return await Promise.race([
-          waitForSessionFollowWakeInvalidation(observedSessionFollowWakeGeneration, controller.signal),
+          waitForSessionFollowWakeInvalidation(readSessionFollowWakeInvalidationGeneration(), controller.signal),
           ...(currentLifecycleSession.waitForExecutionRunWorkerUpdateChange
             ? [currentLifecycleSession.waitForExecutionRunWorkerUpdateChange(controller.signal)] : []),
           ...(readWorkflowInputPort() ? [readWorkflowInputPort()!.waitForChange(controller.signal)] : []),
@@ -2331,6 +2333,7 @@ export async function runHostSessionRuntime(
         ...(workDepth === undefined ? {} : { workDepth }),
       };
     },
+    getActiveTurnAdmissionWitness: () => runtimeForInFlightSteer?.readActiveTurnAdmissionWitness?.() ?? null,
     getRuntimeLifetimeSignal: () => runtimeForInFlightSteer?.getRuntimeLifetimeSignal?.() ?? null,
     getBackendTarget: () => runtimeOpts.backendTarget
       ? runtimeOpts.backendTarget.kind === 'agent'
@@ -2541,9 +2544,11 @@ export async function runHostSessionRuntime(
   const {
     runtime,
     nativeRuntime,
-    terminalRemoteModeLoop,
+    terminalRemoteModeLoop: initialTerminalRemoteModeLoop,
     admittedProviderBindingHandoff,
   } = resolveHostSessionRuntimeFactoryResult(createdRuntime);
+  let terminalRemoteModeLoop = initialTerminalRemoteModeLoop;
+  let presentationOwnsCurrentTerminalDisplay = false;
   const hookRuntime = (nativeRuntime ?? runtime) as HostSessionRuntimeHookRuntime;
   constructedRuntimeForConstructionCleanup = hookRuntime;
   if (typeof hookRuntime.setOnPromptDeliveryOutcome !== 'function') {
@@ -2993,6 +2998,11 @@ export async function runHostSessionRuntime(
     claimedSession,
     await preparation,
   );
+  if (createdRuntime.prepareStartupPresentation) {
+    const presentation = await createdRuntime.prepareStartupPresentation();
+    terminalRemoteModeLoop = presentation.terminalRemoteModeLoop;
+    presentationOwnsCurrentTerminalDisplay = presentation.ownsCurrentTerminalDisplay;
+  }
   const initialGoal = readInitialGoalFromEnv();
   if (initialGoal || commitPendingFirstInputAfterRuntimeReady) {
     startupCoordinatorStart = async () => {
@@ -3265,6 +3275,7 @@ export async function runHostSessionRuntime(
       opts: runtimeOpts,
       config: {
         ...config,
+        ...(presentationOwnsCurrentTerminalDisplay ? { shouldRenderTerminalDisplay: () => false } : {}),
         onRuntimeStopReady: (stop) => {
           runtimeStopDelegate = stop;
           dispatchRuntimeStop();
@@ -3272,6 +3283,7 @@ export async function runHostSessionRuntime(
         publishHostRuntimeEvent: (event) => {
           if (event.kind === 'usage-observed' && event.context) {
             latestSessionContextUsage = event.context;
+            publishSessionFollowWakeInvalidation();
           }
           config.publishHostRuntimeEvent?.(event);
         },

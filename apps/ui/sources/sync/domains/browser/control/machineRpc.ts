@@ -83,14 +83,14 @@ export async function dispatchBrowserDaemonControlCommandViaMachineRpc(
 }
 
 /**
- * Build the fire-and-forget `sendDaemonCommand` the control adapter consumes. The daemon applies the
+ * Build the result-bearing `sendDaemonCommand` the control adapter consumes. The daemon applies the
  * command. Its validated authoritative response events feed the surface's canonical event reducer;
  * the optional `onResult` sink remains observability only.
  */
 export type BrowserDaemonControlCommandSender = (
     command: BrowserCommandV1,
     onEvents?: (events: readonly BrowserEventV1[]) => void,
-) => void;
+) => Promise<BrowserDaemonControlDispatchClientResult>;
 
 export function createBrowserDaemonControlCommandSender(
     input: Readonly<{
@@ -99,16 +99,14 @@ export function createBrowserDaemonControlCommandSender(
         onResult?: (result: BrowserDaemonControlDispatchClientResult) => void;
     }>,
 ): BrowserDaemonControlCommandSender {
-    return (command, onEvents) => {
-        void dispatchBrowserDaemonControlCommandViaMachineRpc({
+    return async (command, onEvents) => {
+        const result = await dispatchBrowserDaemonControlCommandViaMachineRpc({
             machineId: input.machineId,
             serverId: input.serverId,
             command,
-        }).then((result) => {
-            if (result.ok && result.result.status === 'dispatched') onEvents?.(result.result.events);
-            input.onResult?.(result);
-        }).catch(() => {
-            input.onResult?.({ ok: false, reason: 'request_failed' });
         });
+        if (result.ok && result.result.status === 'dispatched') onEvents?.(result.result.events);
+        input.onResult?.(result);
+        return result;
     };
 }

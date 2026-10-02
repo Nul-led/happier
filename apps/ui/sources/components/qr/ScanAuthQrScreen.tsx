@@ -58,7 +58,11 @@ export function ScanAuthQrScreen(props: ScanAuthQrScreenProps) {
         } as const;
     const { processAuthUrl } = useScannedAuthUrlProcessor(processorOptions);
     const [view, setView] = React.useState<'scanner' | 'paste'>('scanner');
-    const showScanner = React.useCallback(() => setView('scanner'), []);
+    const [scannerPaused, setScannerPaused] = React.useState(false);
+    const showScanner = React.useCallback(() => {
+        setScannerPaused(false);
+        setView('scanner');
+    }, []);
 
     // Camera and paste share one processor: the restore flow's link form is the
     // canonical manual-entry surface, so this screen switches views instead of
@@ -77,29 +81,63 @@ export function ScanAuthQrScreen(props: ScanAuthQrScreenProps) {
         );
     }
 
-    return (
-        <QrCodeScannerView
-            embedded
-            testIDPrefix={props.testIDPrefix}
-            title={props.title}
-            subtitle={props.subtitle}
-            permissionRequiredMessage={props.permissionRequiredMessage}
-            onCancel={handleBack}
-            onScan={async (data) => {
-                if (data.trim()) {
-                    await processAuthUrl(data.trim());
-                }
-            }}
-            footer={
-                <View style={{ width: '100%', maxWidth: 360 }}>
-                    <RoundButton
-                        testID={`${props.testIDPrefix}-enter-url`}
-                        size="normal"
-                        title={t('connect.enterUrlManually')}
-                        onPress={() => setView('paste')}
-                    />
-                </View>
-            }
+    const manualEntryButton = (
+        <RoundButton
+            testID={`${props.testIDPrefix}-enter-url`}
+            size="normal"
+            display={scannerPaused ? 'secondary' : 'default'}
+            title={t('connect.enterUrlManually')}
+            onPress={() => setView('paste')}
         />
+    );
+
+    return (
+        <View style={{ flex: 1 }}>
+            <QrCodeScannerView
+                active={!scannerPaused}
+                embedded
+                testIDPrefix={props.testIDPrefix}
+                title={props.title}
+                subtitle={props.subtitle}
+                permissionRequiredMessage={props.permissionRequiredMessage}
+                onCancel={handleBack}
+                onScan={async (data) => {
+                    if (data.trim()) {
+                        try {
+                            await processAuthUrl(data.trim());
+                        } finally {
+                            // Leaving the QR in view must not reopen a declined approval
+                            // or error as soon as the camera's in-flight guard releases.
+                            setScannerPaused(true);
+                        }
+                    }
+                }}
+                footer={
+                    <View style={{ width: '100%', maxWidth: 360 }}>
+                        {manualEntryButton}
+                    </View>
+                }
+            />
+            {scannerPaused ? (
+                <View style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, paddingHorizontal: 24, alignItems: 'center', justifyContent: 'center' }}>
+                    <View style={{ width: '100%', maxWidth: 360, gap: 10 }}>
+                        <RoundButton
+                            testID={`${props.testIDPrefix}-scan-again`}
+                            size="normal"
+                            title={t('connect.scanNewQr')}
+                            onPress={showScanner}
+                        />
+                        {manualEntryButton}
+                        <RoundButton
+                            testID={`${props.testIDPrefix}-cancel`}
+                            size="normal"
+                            display="inverted"
+                            title={t('common.back')}
+                            onPress={handleBack}
+                        />
+                    </View>
+                </View>
+            ) : null}
+        </View>
     );
 }

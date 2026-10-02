@@ -87,6 +87,7 @@ describe('connectedAccountSettingsRoute', () => {
         const route = buildNewConnectedAccountPoolRoute(service);
 
         expect(route.params).toEqual({ ...service, newPool: '1' });
+        if (!('pluginId' in route.params)) throw new Error('New pool route must carry the qualified service');
         expect(resolveConnectedAccountSettingsRoute(route.params, entries)).toMatchObject({ service, focus: { kind: 'newPool' } });
         // A draft is never also an account or a pool.
         expect(resolveConnectedAccountSettingsRoute({ ...route.params, groupId: 'work' }, entries)).toBeNull();
@@ -124,7 +125,7 @@ describe('connectedAccountSettingsRoute', () => {
         };
 
         const route = buildConnectedAccountSettingsRoute(service, focus);
-
+        if (!('pluginId' in route.params)) throw new Error('Focused route must carry the qualified service');
         expect(resolveConnectedAccountSettingsRoute(route.params, entries)).toMatchObject({
             service,
             focus,

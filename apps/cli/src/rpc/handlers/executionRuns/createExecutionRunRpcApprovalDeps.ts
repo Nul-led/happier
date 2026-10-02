@@ -16,12 +16,8 @@ import {
 } from '@/plugins/runtime/reload/runtimeLease';
 
 import type { ExecutionRunRpcApprovalDeps } from './dispatchExecutionRunRpcAction';
-
-function normalizePollIntervalMs(raw: unknown): number {
-  const parsed = typeof raw === 'number' ? raw : Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 250;
-  return Math.max(1, Math.min(60_000, Math.floor(parsed)));
-}
+import { observeAccountChanges } from '@/api/observeAccountChanges';
+import { resolveServerHttpBaseUrl, runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 
 function staleReviewHostActionError(): Error & { code: string } {
   return Object.assign(new Error('execution_run_host_action_stale'), {
@@ -59,16 +55,25 @@ export function createExecutionRunRpcApprovalDeps(params: Readonly<{
     ...(params.isApprovalExecutionOriginCurrent
       ? { isApprovalExecutionOriginCurrent: params.isApprovalExecutionOriginCurrent }
       : {}),
-    executionRunHostActionCurrentIntent: createExecutionRunHostActionCurrentIntentAdapter({
-      create: async (request) => {
-        const store = await resolveStore();
-        return await store.executionRunHostActionApprovalsCreate({ request });
-      },
-      read: async (artifactId) => {
-        const store = await resolveStore();
-        return await store.executionRunHostActionApprovalsGet({ artifactId });
-      },
-    }),
+    executionRunHostActionCurrentIntent: async (subject) => {
+      try {
+        const credentials = await params.readCredentials();
+        if (!credentials) return { status: 'unavailable', code: 'execution_run_host_action_current_intent_unavailable' };
+        const store = createCliApprovalsArtifactStore({ credentials });
+        const serverUrl = resolveServerHttpBaseUrl();
+        return await runWithServerHttpBaseUrl(serverUrl, () => createExecutionRunHostActionCurrentIntentAdapter({
+          create: (request) => store.executionRunHostActionApprovalsCreate({ request }),
+          read: (artifactId) => store.executionRunHostActionApprovalsGet({ artifactId }),
+          subscribeChanges: (artifactId, onChange, onError) => observeAccountChanges({
+            token: credentials.token,
+            serverUrl,
+            entityId: artifactId,
+          }, { onChange, onError }),
+        })(subject));
+      } catch {
+        return { status: 'unavailable', code: 'execution_run_host_action_current_intent_unavailable' };
+      }
+    },
     reviewCommentAction: async ({ actionId, input, reviewCommentPrincipal }) => {
       const credentials = await params.readCredentials();
       if (!credentials) throw new Error('review_comment_credentials_unavailable');
@@ -131,18 +136,25 @@ export function createExecutionRunRpcApprovalDeps(params: Readonly<{
         decision: args.decision,
       }),
     approvalsWaitForDecision: async (args) => {
+      const credentials = await params.readCredentials();
+      if (!credentials) throw new Error('approval_credentials_unavailable');
+      const store = createCliApprovalsArtifactStore({ credentials });
+      const serverUrl = resolveServerHttpBaseUrl();
       const result = await coordinator.waitForDecision({
         artifactId: args.artifactId,
         request: args.request,
         serverId: args.serverId,
         signal: args.signal,
-        pollIntervalMs: normalizePollIntervalMs(process.env.HAPPIER_BLOCKING_APPROVAL_POLL_INTERVAL_MS),
+        subscribeChanges: (onChange, onError) => observeAccountChanges({
+          token: credentials.token,
+          serverUrl,
+          entityId: args.artifactId,
+        }, { onChange, onError }),
         readRequest: async () => {
-          const store = await resolveStore();
-          return await store.approvalsGet({
+          return await runWithServerHttpBaseUrl(serverUrl, () => store.approvalsGet({
             artifactId: args.artifactId,
             serverId: args.serverId ?? null,
-          });
+          }));
         },
       });
       return { ...result, request: ApprovalRequestSchema.parse(result.request) };

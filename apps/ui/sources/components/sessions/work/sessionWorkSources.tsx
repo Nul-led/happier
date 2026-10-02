@@ -209,4 +209,5 @@ export const IDLE_SESSION_MANAGED_WORKFLOW_RUNS: SessionManagedWorkflowRunsState
     runs: Object.freeze([]),
     attentionRunIds: new Set<string>(),
     refreshFailed: false,
+    retry: () => {},
 });

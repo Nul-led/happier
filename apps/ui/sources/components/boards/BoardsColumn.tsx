@@ -38,6 +38,7 @@ const LiveBoardRow = React.memo(function LiveBoardRow(props: Readonly<{ board: W
     return (
         <CollectionNavigationRow
             testID={`boards-column:board:${props.board.id}`}
+            href={createBoardRoute(props.board.id)}
             title={props.board.name}
             subtitle={line.text}
             subtitleLeading={line.needYou > 0
@@ -58,6 +59,7 @@ const BoardRow = React.memo(function BoardRow(props: Readonly<{ board: WorkBoard
     return (
         <CollectionNavigationRow
             testID={`boards-column:board:${board.id}`}
+            href={createBoardRoute(board.id)}
             title={board.name}
             subtitle={`${t('boards.meta.handPicked')} · ${t('boards.meta.empty')}`}
             icon={<Icon name="squares-four" />}

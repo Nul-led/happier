@@ -1,13 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { ed25519, x25519 } from '@noble/curves/ed25519';
+import { z } from 'zod';
 
 import { ARTIFACT_PLAIN_DATA_KEY_MARKER, encodePlainArtifactStoredContent,
   encodeBase64, decodeBase64, signAccountContentKeyBindingV1, computeContentPublicKeyFingerprint,
-  sealEncryptedDataKeyEnvelopeV1, openEncryptedDataKeyEnvelopeV1 } from '@happier-dev/protocol';
+  sealEncryptedDataKeyEnvelopeV1, openEncryptedDataKeyEnvelopeV1, createWorkflowDefinitionActions,
+  workflowDefinitionArtifactSharingAdapterV1, readLaunchProfileArtifactV1,
+  launchProfileArtifactSharingAdapterV1 } from '@happier-dev/protocol';
+import { ArtifactBlobWriteV1Schema, type ArtifactBlobReadResponseV1 } from '@happier-dev/protocol';
 import { encryptWithDataKey } from '@/api/encryption';
 
-import { createAccountArtifactStore, createCredentialedAccountArtifactStore } from './accountArtifactStore';
+import { createAccountArtifactStore, createCredentialedAccountArtifactStore, encodeAccountArtifactListCursor } from './accountArtifactStore';
 
 const { mockDelete, mockGet, mockPost } = vi.hoisted(() => ({
   mockDelete: vi.fn(),
@@ -25,6 +29,109 @@ describe('createAccountArtifactStore', () => {
     mockPost.mockReset();
   });
 
+  it.each(['plain', 'e2ee'] as const)('round trips binary content under the same Artifact key in %s mode and rejects corrupted bytes', async (mode) => {
+    const secret = randomBytes(32);
+    const store = createAccountArtifactStore({ credentials: { token: 'token', encryption: mode === 'plain' ? null : {
+      type: 'dataKey', publicKey: x25519.getPublicKey(secret), machineKey: secret,
+    } }, getAccountEncryptionMode: async () => mode });
+    const bytes = Uint8Array.from([0, 255, 128, 10, 42]);
+    let stored: Record<string, unknown> = {};
+    let blob: ArtifactBlobReadResponseV1 | undefined;
+    const blobs = new Map<string, ArtifactBlobReadResponseV1>();
+    let version = 0;
+    mockPost.mockImplementation(async (url: string, input: Record<string, unknown>) => {
+      if (!url.endsWith('/v1/artifacts/content/binary') && !url.endsWith('/v1/artifacts/binary/content/binary')) {
+        return { status: 404, data: { error: 'Not Found' } };
+      }
+      version += 1;
+      stored = { ...stored, ...input, id: 'binary', ownerAccountId: 'owner', access: 'owner', encryptionMode: mode,
+        headerVersion: version, bodyVersion: version, seq: version, createdAt: 1, updatedAt: version };
+      const write = ArtifactBlobWriteV1Schema.parse(input.blob);
+      if (write.content) {
+        blob = { blobId: write.blobId, content: write.content };
+        blobs.set(blob.blobId, blob);
+      } else blob = blobs.get(write.blobId);
+      if (!blob) return { status: 404, data: { error: 'Artifact blob not found' } };
+      return { status: 200, data: { ...stored, success: true } };
+    });
+    mockGet.mockImplementation(async (url: string) => ({ status: 200, data: url.includes('/blobs/') ? blobs.get(url.split('/blobs/')[1])
+      : url.endsWith('/recipients') ? { artifactId: 'binary', ownerAccountId: 'owner', access: 'owner', encryptionMode: mode,
+        dataEncryptionKey: stored.dataEncryptionKey, callerDataEncryptionKey: stored.dataEncryptionKey, recipients: [] }
+      : stored }));
+    await store.create({ artifactId: 'binary', header: { title: 'Image', excerpt: 'stale preview' }, binary: { bytes, mime: 'image/png' } });
+    const document = await store.read('binary');
+    expect(document?.body).toEqual({ blobId: blob?.blobId, mime: 'image/png', sizeBytes: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex') });
+    expect(document?.header).toEqual({ title: 'Image' });
+    expect(blob?.content).toMatchObject({ t: mode === 'plain' ? 'plain' : 'encrypted' });
+    await expect(store.readBinary({ artifactId: 'binary', body: document!.body! })).resolves.toEqual(bytes);
+    const nextBytes = Uint8Array.from([42, 0, 128, 255]);
+    await expect(store.update({ artifactId: 'binary', expectedRevision: document!.revision, header: document!.header,
+      binary: { bytes: nextBytes, mime: 'application/pdf' } })).resolves.toMatchObject({ ok: true, revision: { bodyVersion: 2 } });
+    const updated = await store.read('binary');
+    expect(updated?.body).toMatchObject({ mime: 'application/pdf', sizeBytes: nextBytes.length,
+      sha256: createHash('sha256').update(nextBytes).digest('hex') });
+    await expect(store.readBinary({ artifactId: 'binary', body: updated!.body! })).resolves.toEqual(nextBytes);
+    await expect(store.update({ artifactId: 'binary', expectedRevision: updated!.revision, header: { title: 'Renamed file' },
+      body: updated!.body! })).resolves.toMatchObject({ ok: true, revision: { bodyVersion: 3 } });
+    await expect(store.readBinary({ artifactId: 'binary', body: document!.body! })).resolves.toEqual(bytes);
+    await expect(store.readBinary({ artifactId: 'binary', body: updated!.body! })).resolves.toEqual(nextBytes);
+    blob = { blobId: blob!.blobId, content: { t: 'plain', v: Buffer.from([1, 2]).toString('base64') } };
+    blobs.set(blob.blobId, blob);
+    await expect(store.readBinary({ artifactId: 'binary', body: updated!.body! })).rejects.toMatchObject({ code: 'artifact_content_unavailable' });
+  });
+
+  it.each(['role.v1', 'approval_request.v1'])('refuses binary writes to specialized text document %s before committing content', async (kind) => {
+    const store = createAccountArtifactStore({ credentials: { token: 'token', encryption: null },
+      getAccountEncryptionMode: async () => 'plain' });
+    mockPost.mockImplementation(async (_url: string, input: Record<string, unknown>) => ({ status: 200,
+      data: { id: input.id, success: true, headerVersion: 1, bodyVersion: 1 } }));
+    mockGet.mockResolvedValue({ status: 200, data: { id: 'typed', header: encodePlainArtifactStoredContent({ kind: 'role.v1' }),
+      body: encodePlainArtifactStoredContent({ body: '{}' }), dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+      ownerAccountId: 'owner', access: 'owner', encryptionMode: 'plain', headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 } });
+    const binary = { bytes: Uint8Array.from([0, 255]), mime: 'image/png' };
+    await expect(store.create({ artifactId: 'typed', header: { kind }, binary }))
+      .rejects.toMatchObject({ code: 'artifact_content_unavailable' });
+    await expect(store.update({ artifactId: 'typed', expectedRevision: { headerVersion: 1, bodyVersion: 1 },
+      header: { kind }, binary })).rejects.toMatchObject({ code: 'artifact_content_unavailable' });
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  it('does not mutate a text-only Artifact server when the binary operation is unavailable', async () => {
+    const store = createAccountArtifactStore({ credentials: { token: 'token', encryption: null },
+      getAccountEncryptionMode: async () => 'plain' });
+    let mutations = 0;
+    const stored = { id: 'existing', header: encodePlainArtifactStoredContent({ title: 'Keep' }),
+      body: encodePlainArtifactStoredContent({ body: 'original' }), dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+      ownerAccountId: 'owner', access: 'owner', encryptionMode: 'plain', headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
+    // Mutation schemas mirror ../0.2 at 388915739e64655b454e0bee8198833a54e6eabc.
+    // Its text routes strip unknown blob fields; newer read authority is supplied separately.
+    const oldCreate = z.object({ id: z.string().uuid(), header: z.string(), body: z.string(), dataEncryptionKey: z.string() });
+    const oldUpdate = z.object({ header: z.string().optional(), expectedHeaderVersion: z.number().int().min(0).optional(),
+      body: z.string().optional(), expectedBodyVersion: z.number().int().min(0).optional() });
+    mockPost.mockImplementation(async (url: string, input: Record<string, unknown>) => {
+      if (url.endsWith('/v1/artifacts')) {
+        const parsed = oldCreate.parse(input);
+        mutations += 1;
+        return { status: 200, data: { id: parsed.id, headerVersion: 2, bodyVersion: 2 } };
+      }
+      if (url.endsWith('/v1/artifacts/existing')) {
+        const parsed = oldUpdate.parse(input);
+        mutations += 1;
+        if (parsed.body !== undefined) stored.body = parsed.body;
+        return { status: 200, data: { success: true, headerVersion: 2, bodyVersion: 2 } };
+      }
+      return { status: 404, data: { error: 'Not Found' } };
+    });
+    mockGet.mockResolvedValue({ status: 200, data: stored });
+    const binary = { bytes: Uint8Array.from([0, 255]), mime: 'image/png' };
+    await expect(store.create({ artifactId: '22222222-2222-4222-8222-222222222222', header: {}, binary })).rejects.toMatchObject({ code: 'create_failed' });
+    await expect(store.update({ artifactId: 'existing', expectedRevision: { headerVersion: 1, bodyVersion: 1 }, header: {}, binary }))
+      .resolves.toMatchObject({ ok: false });
+    expect(mutations).toBe(0);
+    await expect(store.read('existing')).resolves.toMatchObject({ body: 'original', revision: { bodyVersion: 1 } });
+  });
+
   it('owns plain Artifact create/read/CAS/delete semantics for typed consumers', async () => {
     const credentials = { token: 'token', encryption: null } as const;
     const store = createAccountArtifactStore({
@@ -34,7 +141,7 @@ describe('createAccountArtifactStore', () => {
     let created: Record<string, unknown> | undefined;
     mockPost.mockImplementationOnce(async (_url: string, body: Record<string, unknown>) => {
       created = body;
-      return { status: 200, data: { id: body.id } };
+      return { status: 200, data: { id: body.id, headerVersion: 1, bodyVersion: 1 } };
     });
 
     const result = await store.create({
@@ -72,6 +179,49 @@ describe('createAccountArtifactStore', () => {
     await expect(store.delete('artifact-1')).resolves.toEqual({ ok: true });
   });
 
+  it.each(['plain', 'e2ee'] as const)('derives bounded header excerpts on %s create/update and clears stale previews for empty content', async (mode) => {
+    const secret = randomBytes(32);
+    const store = createAccountArtifactStore({ credentials: { token: 'token', encryption: mode === 'plain' ? null : {
+      type: 'dataKey', publicKey: x25519.getPublicKey(secret), machineKey: secret,
+    } }, getAccountEncryptionMode: async () => mode });
+    let stored: Record<string, unknown> = {};
+    let version = 0;
+    mockPost.mockImplementation(async (_url: string, input: Record<string, unknown>) => {
+      version += 1;
+      stored = { ...stored, ...input, id: 'note', ownerAccountId: 'owner', access: 'owner', encryptionMode: mode,
+        headerVersion: version, bodyVersion: version, seq: version, createdAt: 1, updatedAt: version };
+      return { status: 200, data: version === 1 ? stored : { success: true, headerVersion: version, bodyVersion: version } };
+    });
+    mockGet.mockImplementation(async (url: string) => ({ status: 200, data: url.endsWith('/recipients')
+      ? { artifactId: 'note', ownerAccountId: 'owner', access: 'owner', encryptionMode: mode,
+        dataEncryptionKey: stored.dataEncryptionKey, callerDataEncryptionKey: stored.dataEncryptionKey, recipients: [] }
+      : stored }));
+    const metadata = { kind: 'published.v1', title: 'Keep title', source: { sessionId: 'session', machineId: 'machine', path: 'note.md' } };
+    const body = 'private'.repeat(100);
+    await store.create({ artifactId: 'note', header: { ...metadata, excerpt: 'stale caller preview' }, body });
+    const created = await store.read('note');
+    expect(created?.header).toEqual({ ...metadata, excerpt: body.slice(0, 600) });
+    expect(created?.body).toBe(body);
+    if (mode === 'e2ee') expect(JSON.stringify(mockPost.mock.calls[0]?.[1])).not.toContain(body.slice(0, 600));
+
+    await expect(store.update({ artifactId: 'note', expectedRevision: { headerVersion: 1, bodyVersion: 1 },
+      header: created!.header, body: 'Fresh content' })).resolves.toMatchObject({ ok: true });
+    const updated = await store.read('note');
+    expect(updated?.header).toEqual({ ...metadata, excerpt: 'Fresh content' });
+    expect(updated?.body).toBe('Fresh content');
+    const unicodeBody = `${'x'.repeat(599)}😀tail`;
+    await expect(store.update({ artifactId: 'note', expectedRevision: { headerVersion: 2, bodyVersion: 2 },
+      header: updated!.header, body: unicodeBody })).resolves.toMatchObject({ ok: true });
+    const unicodeUpdated = await store.read('note');
+    expect(unicodeUpdated?.header).toEqual({ ...metadata, excerpt: 'x'.repeat(599) });
+    expect(unicodeUpdated?.body).toBe(unicodeBody);
+    await expect(store.update({ artifactId: 'note', expectedRevision: { headerVersion: 3, bodyVersion: 3 },
+      header: unicodeUpdated!.header, body: '' })).resolves.toMatchObject({ ok: true });
+    const emptied = await store.read('note');
+    expect(emptied?.header).toEqual(metadata);
+    expect(emptied?.body).toBe('');
+  });
+
   it('rejects incomplete current Artifact authority projections on read and list', async () => {
     const store = createAccountArtifactStore({ credentials: { token: 'token', encryption: null },
       getAccountEncryptionMode: async () => 'plain' });
@@ -84,15 +234,222 @@ describe('createAccountArtifactStore', () => {
     await expect(store.list()).rejects.toMatchObject({ code: 'artifact_encryption_material_unavailable' });
   });
 
+  it('searches and sorts decrypted headers across transport pages without sending private filters', async () => {
+    const store = createAccountArtifactStore({ credentials: { token: 'token', encryption: null },
+      getAccountEncryptionMode: async () => 'plain' });
+    const row = (id: string, title: string, kind: string, updatedAt: number) => ({
+      id, header: encodePlainArtifactStoredContent({ title, kind, source: { sessionId: 'session', machineId: 'machine', path: 'result.md' } }),
+      headerVersion: 1, dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, seq: 1, createdAt: updatedAt, updatedAt,
+      ownerAccountId: 'owner', access: 'owner', encryptionMode: 'plain',
+    });
+    const first = Array.from({ length: 500 }, (_, i) => row(`other-${i}`, 'Other', 'other.v1', 1000 - i));
+    const second = [row('z', 'Private zebra', 'published.v1', 2), row('a', 'Private alpha', 'published.v1', 1)];
+    mockGet.mockImplementation(async (url: string) => ({ status: 200, data: new URL(url).searchParams.has('cursor') ? second : first }));
+    const options = { search: 'PRIVATE', kind: 'published.v1', sort: 'title_asc' as const, limit: 1 };
+    const page = await store.list(options);
+    expect(page.items.map((item) => item.artifactId)).toEqual(['a']);
+    expect(page.items[0]?.header.source).toEqual({ sessionId: 'session', machineId: 'machine', path: 'result.md' });
+    expect(page.nextCursor).toBeDefined();
+    const next = await store.list({ ...options, cursor: page.nextCursor });
+    expect(next.items.map((item) => item.artifactId)).toEqual(['z']);
+    expect(next.nextCursor).toBeUndefined();
+    for (const [url] of mockGet.mock.calls) {
+      expect(new URL(url).searchParams.has('search')).toBe(false);
+      expect(new URL(url).searchParams.has('kind')).toBe(false);
+      expect(new URL(url).searchParams.has('sort')).toBe(false);
+    }
+  });
+
+  it('returns an updated-desc page without opening later transport pages before the caller requests them', async () => {
+    const store = createAccountArtifactStore({ credentials: { token: 'token', encryption: null },
+      getAccountEncryptionMode: async () => 'plain' });
+    const rows = Array.from({ length: 500 }, (_, i) => ({ id: `artifact-${i}`,
+      header: encodePlainArtifactStoredContent({ title: `Note ${i}` }), headerVersion: 1,
+      dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, seq: i, createdAt: 1, updatedAt: 1000 - i,
+      ownerAccountId: 'owner', access: 'owner', encryptionMode: 'plain' }));
+    mockGet.mockImplementation(async (rawUrl: string) => {
+      const url = new URL(rawUrl);
+      if (url.searchParams.has('cursor')) return { status: 503, data: { error: 'temporarily_unavailable' } };
+      return { status: 200, data: rows.slice(0, Number(url.searchParams.get('limit') ?? 500)) };
+    });
+    await expect(store.list({ sort: 'updated_desc', limit: 1 })).resolves.toMatchObject({
+      items: [{ artifactId: 'artifact-0' }], nextCursor: expect.any(String),
+    });
+  });
+
+  it('keeps logical updated-desc limits larger than a transport page and omitted limits complete', async () => {
+    const store = createAccountArtifactStore({ credentials: { token: 'token', encryption: null },
+      getAccountEncryptionMode: async () => 'plain' });
+    const rows = Array.from({ length: 502 }, (_, i) => ({ id: `artifact-${i}`,
+      header: encodePlainArtifactStoredContent({ title: `Note ${i}` }), headerVersion: 1,
+      dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, seq: i, createdAt: 1, updatedAt: 1000 - i,
+      ownerAccountId: 'owner', access: 'owner', encryptionMode: 'plain' }));
+    mockGet.mockImplementation(async (rawUrl: string) => {
+      const url = new URL(rawUrl);
+      const limit = Number(url.searchParams.get('limit') ?? 500);
+      if (limit > 500) return { status: 400, data: { error: 'invalid_limit' } };
+      return { status: 200, data: url.searchParams.has('cursor') ? rows.slice(500) : rows.slice(0, limit) };
+    });
+    const page = await store.list({ sort: 'updated_desc', limit: 501 });
+    expect(page.items).toHaveLength(501);
+    expect(page.nextCursor).toBeDefined();
+    const next = await store.list({ sort: 'updated_desc', limit: 501, cursor: page.nextCursor });
+    expect(next.items.map((item) => item.artifactId)).toEqual(['artifact-501']);
+    expect(next.nextCursor).toBeUndefined();
+    const complete = await store.list({ sort: 'updated_desc' });
+    expect(complete.items).toHaveLength(502);
+    expect(complete.nextCursor).toBeUndefined();
+  });
+
+  it.each(['prior', null, { blobId: '11111111-1111-4111-8111-111111111111', mime: 'image/png', sizeBytes: 0,
+    sha256: createHash('sha256').update(new Uint8Array()).digest('hex') }])('decodes retained body %s with the Artifact owner codec and restores through revision CAS', async (priorBody) => {
+    const store = createAccountArtifactStore({ credentials: { token: 'token', encryption: null },
+      getAccountEncryptionMode: async () => 'e2ee' });
+    const artifact = { id: 'shared', ownerAccountId: 'other', access: 'edit', encryptionMode: 'plain',
+      header: encodePlainArtifactStoredContent({ title: 'Shared', excerpt: 'Current preview' }), body: encodePlainArtifactStoredContent({ body: 'current' }),
+      headerVersion: 3, bodyVersion: 4, dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, seq: 1, createdAt: 1, updatedAt: 2 };
+    mockGet.mockImplementation(async (url: string) => ({ status: 200, data: url.endsWith('/revisions')
+      ? { revisions: [{ bodyVersion: 2, body: encodePlainArtifactStoredContent({ body: priorBody }), createdAt: 1, sizeBytes: 20 }], retentionCount: 10 }
+      : artifact }));
+    await expect(store.revisions.list({ artifactId: 'shared' })).resolves.toEqual({ artifactId: 'shared',
+      revisions: [{ bodyVersion: 2, body: priorBody, createdAt: 1, sizeBytes: 20 }], retentionCount: 10 });
+    mockPost.mockResolvedValueOnce({ status: 200, data: { success: true, headerVersion: 4, bodyVersion: 5 } });
+    await expect(store.revisions.restore({ artifactId: 'shared', bodyVersion: 2, expectedRevision: { headerVersion: 3, bodyVersion: 4 } }))
+      .resolves.toEqual({ ok: true, revision: { headerVersion: 4, bodyVersion: 5 } });
+    expect(mockPost).toHaveBeenCalledWith(expect.stringContaining('/shared/revisions/2/restore'),
+      { expectedHeaderVersion: 3, expectedBodyVersion: 4,
+        header: encodePlainArtifactStoredContent({ title: 'Shared', ...(typeof priorBody === 'string' ? { excerpt: priorBody } : {}) }) }, expect.any(Object));
+  });
+
+  it('restores a Workflow body while keeping current metadata and its header usable and sharable at the new revision', async () => {
+    const store = createAccountArtifactStore({ credentials: { token: 'token', encryption: null },
+      getAccountEncryptionMode: async () => 'plain' });
+    const definitionId = '11111111-1111-4111-8111-111111111111';
+    const revision = { headerVersion: 3, bodyVersion: 4 };
+    const metadata = { title: 'Current title', description: 'Current description' };
+    const savedBy = { kind: 'person', accountId: 'owner' };
+    const workflowBody = (text: string) => JSON.stringify({ kind: 'workflow-definition.v1', definition: {
+      version: 1, defaults: { agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } } },
+      blocks: [{ kind: 'step', id: 'review', document: { text, references: [], attachments: [] }, input: [], result: { kind: 'text' } }],
+    } });
+    const priorBody = workflowBody('Prior review');
+    let stored = { id: definitionId, ownerAccountId: 'owner', access: 'owner', encryptionMode: 'plain',
+      header: encodePlainArtifactStoredContent({ kind: 'workflow-definition.v1', definitionId, revision, metadata, savedBy }),
+      body: encodePlainArtifactStoredContent({ body: workflowBody('Current review') }),
+      ...revision, dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, seq: 1, createdAt: 1, updatedAt: 2 };
+    mockGet.mockImplementation(async (url: string) => ({ status: 200, data: url.endsWith('/revisions')
+      ? { revisions: [{ bodyVersion: 2, body: encodePlainArtifactStoredContent({ body: priorBody }), createdAt: 1, sizeBytes: 50 }], retentionCount: 10 }
+      : stored }));
+    mockPost.mockImplementation(async (_url: string, input: Record<string, unknown>) => {
+      stored = { ...stored, header: typeof input.header === 'string' ? input.header : stored.header,
+        body: encodePlainArtifactStoredContent({ body: priorBody }), headerVersion: 4, bodyVersion: 5 };
+      return { status: 200, data: { success: true, headerVersion: stored.headerVersion, bodyVersion: stored.bodyVersion } };
+    });
+    const workflows = createWorkflowDefinitionActions({ artifactStore: store,
+      encodeListCursor: encodeAccountArtifactListCursor, assertDefinitionWriteAllowed: () => undefined });
+    await expect(workflows.get({ definitionId })).resolves.toMatchObject({ metadata, savedBy, revision });
+    await expect(store.revisions.restore({ artifactId: definitionId, bodyVersion: 2, expectedRevision: revision }))
+      .resolves.toEqual({ ok: true, revision: { headerVersion: 4, bodyVersion: 5 } });
+    await expect(workflows.get({ definitionId })).resolves.toMatchObject({ metadata, savedBy,
+      revision: { headerVersion: 4, bodyVersion: 5 },
+      definition: { blocks: [{ document: { text: 'Prior review' } }] } });
+    const restored = await store.read(definitionId);
+    expect(restored && workflowDefinitionArtifactSharingAdapterV1.canShare(restored)).toBe(true);
+  });
+
+  it('restores a renamed launch profile with a matching usable and sharable header', async () => {
+    const store = createAccountArtifactStore({ credentials: { token: 'token', encryption: null },
+      getAccountEncryptionMode: async () => 'plain' });
+    const content = (name: string) => ({ kind: 'launch-profile.v1', profile: {
+      v: 2, id: 'work', name, createdAt: 1, updatedAt: 1, extraEnvironmentVariables: [], envVarRequirements: [],
+    }, secretBindings: {} });
+    const prior = content('Prior name');
+    let stored = { id: 'profile-artifact', ownerAccountId: 'owner', access: 'owner', encryptionMode: 'plain',
+      header: encodePlainArtifactStoredContent({ kind: 'launch-profile.v1', profileId: 'work', name: 'Current name', title: 'Current name', custom: 'keep' }),
+      body: encodePlainArtifactStoredContent({ body: JSON.stringify(content('Current name')) }),
+      headerVersion: 3, bodyVersion: 4, dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, seq: 1, createdAt: 1, updatedAt: 2 };
+    mockGet.mockImplementation(async (url: string) => ({ status: 200, data: url.endsWith('/revisions')
+      ? { revisions: [{ bodyVersion: 2, body: encodePlainArtifactStoredContent({ body: JSON.stringify(prior) }), createdAt: 1, sizeBytes: 50 }], retentionCount: 10 }
+      : stored }));
+    mockPost.mockImplementation(async (_url: string, input: Record<string, unknown>) => {
+      stored = { ...stored, header: typeof input.header === 'string' ? input.header : stored.header,
+        body: encodePlainArtifactStoredContent({ body: JSON.stringify(prior) }), headerVersion: 4, bodyVersion: 5 };
+      return { status: 200, data: { success: true, headerVersion: stored.headerVersion, bodyVersion: stored.bodyVersion } };
+    });
+    const current = await store.read('profile-artifact');
+    expect(current && readLaunchProfileArtifactV1(current)?.profile.name).toBe('Current name');
+    await expect(store.revisions.restore({ artifactId: 'profile-artifact', bodyVersion: 2,
+      expectedRevision: { headerVersion: 3, bodyVersion: 4 } })).resolves.toMatchObject({ ok: true });
+    const restored = await store.read('profile-artifact');
+    expect(restored && readLaunchProfileArtifactV1(restored)?.profile.name).toBe('Prior name');
+    expect(restored?.header).toMatchObject({ name: 'Prior name', title: 'Prior name', custom: 'keep' });
+    expect(restored && launchProfileArtifactSharingAdapterV1.canShare(restored)).toBe(true);
+  });
+
+  it.each([{ headerVersion: 2, bodyVersion: 4 }, { headerVersion: 3, bodyVersion: 2 }])(
+    'refuses restore before mutation when either expected revision is stale: %j', async (expectedRevision) => {
+      const store = createAccountArtifactStore({ credentials: { token: 'token', encryption: null },
+        getAccountEncryptionMode: async () => 'plain' });
+      mockGet.mockResolvedValue({ status: 200, data: { id: 'shared', ownerAccountId: 'owner', access: 'owner', encryptionMode: 'plain',
+        header: encodePlainArtifactStoredContent({ title: 'Current title' }), body: encodePlainArtifactStoredContent({ body: 'current' }),
+        headerVersion: 3, bodyVersion: 4, dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, seq: 1, createdAt: 1, updatedAt: 2 } });
+      mockPost.mockResolvedValue({ status: 200, data: { success: true, headerVersion: 4, bodyVersion: 5 } });
+      await expect(store.revisions.restore({ artifactId: 'shared', bodyVersion: 1, expectedRevision }))
+        .resolves.toEqual({ ok: false, errorCode: 'version_mismatch', error: 'artifact_version_mismatch' });
+      expect(mockPost).not.toHaveBeenCalled();
+    });
+
+  it('refuses malformed decrypted bodies consistently for current content and revision history', async () => {
+    const store = createAccountArtifactStore({ credentials: { token: 'token', encryption: null },
+      getAccountEncryptionMode: async () => 'plain' });
+    const row = { id: 'artifact', ownerAccountId: 'owner', access: 'owner', encryptionMode: 'plain',
+      header: encodePlainArtifactStoredContent({ title: 'Private' }), body: encodePlainArtifactStoredContent({ wrong: 'content' }),
+      headerVersion: 1, bodyVersion: 2, dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, seq: 1, createdAt: 1, updatedAt: 2 };
+    mockGet.mockImplementation(async (url: string) => ({ status: 200, data: url.endsWith('/revisions')
+      ? { revisions: [{ bodyVersion: 1, body: row.body, createdAt: 1, sizeBytes: 10 }], retentionCount: 10 } : row }));
+    await expect(store.read('artifact')).rejects.toMatchObject({ code: 'artifact_encryption_material_unavailable' });
+    await expect(store.revisions.list({ artifactId: 'artifact' })).rejects.toMatchObject({ code: 'artifact_encryption_material_unavailable' });
+  });
+
+  it('preserves typed quota details on writes and exposes the configured Account storage usage', async () => {
+    const store = createAccountArtifactStore({ credentials: { token: 'token', encryption: null },
+      getAccountEncryptionMode: async () => 'plain' });
+    const quota = { error: 'quota_exceeded', budget: 'account', limitBytes: 100, usedBytes: 120 };
+    mockPost.mockResolvedValueOnce({ status: 413, data: quota });
+    await expect(store.create({ header: {}, body: 'content' })).rejects.toMatchObject({ code: 'quota_exceeded',
+      details: { budget: 'account', limitBytes: 100, usedBytes: 120 } });
+    const usage = { usedBytes: 80, limitBytes: 100, documentLimitBytes: null, revisionRetentionCount: 10 };
+    mockGet.mockResolvedValueOnce({ status: 200, data: usage });
+    await expect(store.storageUsage()).resolves.toEqual(usage);
+  });
+
   it('creates plain content from Account mode without probing older server support', async () => {
     const store = createCredentialedAccountArtifactStore({ token: 'token', encryption: null });
     mockGet.mockImplementation(async (url: string) => {
       if (!url.endsWith('/v1/account/encryption')) throw new Error('unexpected_server_probe');
       return { status: 200, data: { mode: 'plain', updatedAt: 1 } };
     });
-    mockPost.mockResolvedValueOnce({ status: 200, data: { id: 'artifact-1' } });
+    mockPost.mockResolvedValueOnce({ status: 200, data: { id: 'artifact-1', headerVersion: 1, bodyVersion: 1 } });
     await expect(store.create({ artifactId: 'artifact-1', header: { title: 'Note' }, body: 'note' }))
       .resolves.toMatchObject({ artifactId: 'artifact-1' });
+  });
+
+  it('preserves current create revisions and rejects incomplete create/update acknowledgements', async () => {
+    const store = createAccountArtifactStore({ credentials: { token: 'token', encryption: null },
+      getAccountEncryptionMode: async () => 'plain' });
+    const input = { artifactId: 'artifact-1', header: { title: 'Note' }, body: 'note' };
+    mockPost.mockResolvedValueOnce({ status: 200, data: { id: 'artifact-1', headerVersion: 7, bodyVersion: 9 } });
+    await expect(store.create(input)).resolves.toMatchObject({ revision: { headerVersion: 7, bodyVersion: 9 } });
+    mockPost.mockResolvedValueOnce({ status: 200, data: { id: 'artifact-1' } });
+    await expect(store.create(input)).rejects.toMatchObject({ code: 'artifact_content_unavailable' });
+    mockPost.mockResolvedValueOnce({ status: 200, data: { id: 'different-artifact', headerVersion: 1, bodyVersion: 1 } });
+    await expect(store.create(input)).rejects.toMatchObject({ code: 'artifact_content_unavailable' });
+    mockGet.mockResolvedValueOnce({ status: 200, data: { id: 'artifact-1', ownerAccountId: 'owner', access: 'owner', encryptionMode: 'plain',
+      header: encodePlainArtifactStoredContent(input.header), body: encodePlainArtifactStoredContent({ body: input.body }),
+      dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, headerVersion: 7, bodyVersion: 9, seq: 1, createdAt: 1, updatedAt: 1 } });
+    mockPost.mockResolvedValueOnce({ status: 200, data: { success: true } });
+    await expect(store.update({ ...input, expectedRevision: { headerVersion: 7, bodyVersion: 9 } }))
+      .rejects.toMatchObject({ code: 'artifact_content_unavailable' });
   });
 
   it('rejects malformed Artifact transport versions instead of manufacturing numeric currentness', async () => {
@@ -168,12 +525,12 @@ describe('createAccountArtifactStore', () => {
     await expect(store.list()).resolves.toMatchObject({ items: [{ artifactId: 'shared-1', ownerAccountId: 'other-owner', access: 'edit' }] });
   });
 
-  it('opens actual 0.2 Artifact writer bytes through current authenticated read and list projections', async () => {
+  it('opens actual 0.2 Artifact writer bytes through current authenticated read, list, and restore projections', async () => {
     // Produced by the clean sibling at 17ba05df68d4d3d4cad1c1241b58e63805db37ed:
     // apps/cli/src/api/encryption.ts encryptWithDataKeyAndNonce and Protocol's
     // serializedJsonValue.ts, boxBundle.ts, encryptedDataKeyEnvelopeV1.ts.
-    const dataEncryptionKey = 'AKwBsiCehjVPuFMje13g9PqxPH/L9DOmHAGTaWF/7PELBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEFp2vL9F4qtFp456Ip/CLBk3sduq0hPJdydpvcpyDvxcC/u5pBQ8RJx6w/6IzrX2B';
-    const row = { id: 'retained-0.2', ownerAccountId: 'owner', access: 'owner', encryptionMode: 'e2ee',
+    const dataEncryptionKey = 'AKwBsiCehjVPuFMje13g9PqxPH/L9DOmHAGTaWF/7PELBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEFp2vL9F4qtFp456Ip/CLBk3sduq0hPJdydpvcpyDvxcC/u5pBQ8RJx6w/6IzrX2B';
+    let row = { id: 'retained-0.2', ownerAccountId: 'owner', access: 'owner', encryptionMode: 'e2ee',
       header: 'AAEBAQEBAQEBAQEBAQ3D1uj43px+uLGuchVFGVDEkm6RfN1IfDZnIg4T0WCK4Ih8wul2qaIqCzhu40TM8/10hyBxnIk+zjfCKuxZp+HAkzJVLPYUHU1qOQ7EUGS6LvI+dmsnbtYcvYynDW3Ibd9W',
       body: 'AAICAgICAgICAgICAmGWtlgzisVXczX05IfwpRumehKfFPxZ26hckiVv9O1CoOzi80adELG3z4GDttWiQ8EdZyWk1R/XZ7VZ/aIRpitcie/cum50+I58YJfP2KxJGI0nuiw2TLYejO/u6/bxTVjAoaQIdw==',
       dataEncryptionKey, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
@@ -183,9 +540,19 @@ describe('createAccountArtifactStore', () => {
     mockGet.mockImplementation(async (url: string) => ({ status: 200, data: url.endsWith('/recipients')
       ? { artifactId: row.id, ownerAccountId: 'owner', access: 'owner', encryptionMode: 'e2ee',
         dataEncryptionKey, callerDataEncryptionKey: dataEncryptionKey, recipients: [] }
-      : url.endsWith('/v1/artifacts') ? [row] : row }));
+      : url.endsWith('/revisions') ? { revisions: [{ bodyVersion: 1, body: row.body, createdAt: 1, sizeBytes: 50 }], retentionCount: 10 }
+        : url.endsWith('/v1/artifacts') ? [row] : row }));
     await expect(store.read(row.id)).resolves.toMatchObject({ header: { title: '0.2 note' }, body: 'retained note', access: 'owner' });
     await expect(store.list()).resolves.toMatchObject({ items: [{ header: { title: '0.2 note' }, ownerAccountId: 'owner', access: 'owner' }] });
+    mockPost.mockImplementationOnce(async (_url: string, input: Record<string, unknown>) => {
+      if (typeof input.header !== 'string') throw new Error('missing encoded restore header');
+      row = { ...row, header: input.header, headerVersion: 2, bodyVersion: 2 };
+      return { status: 200, data: { success: true, headerVersion: 2, bodyVersion: 2 } };
+    });
+    await expect(store.revisions.restore({ artifactId: row.id, bodyVersion: 1,
+      expectedRevision: { headerVersion: 1, bodyVersion: 1 } })).resolves.toMatchObject({ ok: true });
+    await expect(store.read(row.id)).resolves.toMatchObject({ header: { title: '0.2 note' }, body: 'retained note',
+      revision: { headerVersion: 2, bodyVersion: 2 } });
   });
 
   it('prepares a late Team recipient on a key-holding editor open through the fenced envelope writer', async () => {
@@ -216,5 +583,19 @@ describe('createAccountArtifactStore', () => {
     expect(request.expectedDataEncryptionKey).toBe(ownerEnvelope);
     expect(request.recipientKeyEnvelopes).toHaveLength(1);
     expect(openEncryptedDataKeyEnvelopeV1({ envelope: decodeBase64(request.recipientKeyEnvelopes[0].encryptedDataKey), recipientSecretKeyOrSeed: recipientSecret })).toEqual(new Uint8Array(dataKey));
+
+    // A key-holder opening history must deliver the same key to a late member,
+    // even when it does not open the current Artifact through read().
+    const readCurrent = mockGet.getMockImplementation();
+    if (!readCurrent) throw new Error('missing HTTP fixture');
+    mockGet.mockImplementation(async (url: string) => url.endsWith('/revisions') ? { status: 200, data: {
+      revisions: [{ bodyVersion: 1, body: encodeBase64(encryptWithDataKey({ body: 'prior role' }, dataKey)), createdAt: 1, sizeBytes: 20 }], retentionCount: 10,
+    } } : readCurrent(url));
+    mockPost.mockClear();
+    await expect(store.revisions.list({ artifactId: 'shared-1' })).resolves.toMatchObject({ revisions: [{ body: 'prior role' }] });
+    const revisionRecipient = mockPost.mock.calls[0]?.[1]?.recipientKeyEnvelopes?.[0];
+    expect(revisionRecipient).toMatchObject({ recipientAccountId: 'late-member' });
+    expect(openEncryptedDataKeyEnvelopeV1({ envelope: decodeBase64(revisionRecipient.encryptedDataKey), recipientSecretKeyOrSeed: recipientSecret }))
+      .toEqual(new Uint8Array(dataKey));
   });
 });

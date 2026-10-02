@@ -304,9 +304,6 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
         return t('settingsVoice.history.loading');
       case 'error':
         return `${t('settingsVoice.history.errorTitle')}. ${t('settingsVoice.history.errorBody')}`;
-      case 'upgrade_required':
-        return `${t('settingsVoice.history.upgradeRequiredTitle')}. `
-          + t('settingsVoice.history.upgradeRequiredBody');
       case 'superseded':
         return `${t('settingsVoice.history.supersededTitle')}. `
           + t('settingsVoice.history.supersededBody');
@@ -351,18 +348,6 @@ const VoiceHistoryScreenBody = React.memo(function VoiceHistoryScreenBody(
         title={t('settingsVoice.history.errorTitle')}
         body={t('settingsVoice.history.errorBody')}
         retry={() => { void open(); }}
-      />,
-    );
-  }
-
-  if (loadState === 'upgrade_required') {
-    return withPageState(
-      <VoiceHistoryStateMessage
-        testID="voice-history-upgrade-required"
-        kind="warning"
-        icon="arrow-up"
-        title={t('settingsVoice.history.upgradeRequiredTitle')}
-        body={t('settingsVoice.history.upgradeRequiredBody')}
       />,
     );
   }

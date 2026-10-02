@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { ActionIdSchema, createActionExecutor, RPC_METHODS } from '@happier-dev/protocol';
+import { ActionIdSchema, ApprovalRequestSchema, createActionExecutor, RPC_METHODS } from '@happier-dev/protocol';
 import type { RpcHandler } from '@/api/rpc/types';
 import { registerScmHandlers } from '@/rpc/handlers/scm';
 import { createBlockingApprovalCoordinator } from '@happier-dev/protocol/actions';
@@ -31,6 +31,24 @@ describe('SCM Action execution at the Git backend', () => {
       actionId: 'scm.change.include', input: { paths: ['../outside'] },
       registry, workingDirectory: '/not-used', rpcCompatibility: true,
     })).resolves.toMatchObject({ success: false, errorCode: 'INVALID_REQUEST' });
+  });
+
+  it('undoes an observed commit through the registered semantic Action and refuses replay on newer HEAD', async () => {
+    const fixture = createLocalScmRepositoryFixture({ executable: 'git', repoMode: '.git', prefix: 'happier-scm-undo-action-' });
+    repositories.push(fixture.rootPath);
+    await writeFile(join(fixture.rootPath, fixture.trackedPath), 'undo through Action\n');
+    runScmExecutable(fixture.rootPath, 'git', ['commit', '-am', 'undo through Action']);
+    const expectedHeadOid = runScmExecutable(fixture.rootPath, 'git', ['rev-parse', 'HEAD']);
+    await expect(executeScmActionOperation({
+      actionId: 'scm.commit.undoLast', input: { cwd: fixture.rootPath, expectedHeadOid },
+      registry, workingDirectory: fixture.rootPath,
+    })).resolves.toMatchObject({ success: true, undoneCommitSha: expectedHeadOid, headOid: fixture.headCommit, outcome: { kind: 'succeeded' } });
+    expect(runScmExecutable(fixture.rootPath, 'git', ['rev-parse', 'HEAD'])).toBe(fixture.headCommit);
+    expect(runScmExecutable(fixture.rootPath, 'git', ['diff', '--cached', '--name-only'])).toBe(fixture.trackedPath);
+    await expect(executeScmActionOperation({
+      actionId: 'scm.commit.undoLast', input: { cwd: fixture.rootPath, expectedHeadOid },
+      registry, workingDirectory: fixture.rootPath,
+    })).resolves.toMatchObject({ success: false, errorCode: 'COMMIT_UNDO_HEAD_CHANGED', outcome: { kind: 'needs_input' } });
   });
 
   it('admits advanced pull and expected-OID lease Actions from the Git contribution', async () => {
@@ -77,6 +95,8 @@ describe('SCM Action execution at the Git backend', () => {
       sessionPermissionRespond: unused, sessionUserActionAnswer: unused, sessionTargetPrimarySet: unused,
       sessionTargetTrackedSet: unused, sessionList: unused, sessionActivityGet: unused,
       sessionRecentMessagesGet: unused, resetGlobalVoiceAgent: unused,
+      sessionModeSet: unused, sessionModesList: unused,
+      daemonMemorySearch: unused, daemonMemoryGetWindow: unused, daemonMemoryEnsureUpToDate: unused,
       // These are durable-artifact and human-decision transport boundaries.
       // The Action admission and live blocking coordinator remain real.
       approvalsCreate: async ({ request }) => {
@@ -91,7 +111,7 @@ describe('SCM Action execution at the Git backend', () => {
         approved = true;
         const decision = await pending;
         if (!('actionId' in decision.request)) throw new Error('Expected a canonical Action approval decision');
-        return { ...decision, request: decision.request };
+        return { ...decision, request: ApprovalRequestSchema.parse(decision.request) };
       },
       scmActionExecute: async ({ actionId, input }) => {
         expect(approved).toBe(true);

@@ -29,6 +29,7 @@ import {
     shouldNormalizeManifestOnlyAcpBackend,
 } from './runtimeCore';
 import { resolveLeasedAgentRuntime } from './agentRuntimeLease';
+import { createNativeAgentFeatureService } from './nativeAgentSessionHostServiceOwners';
 import { createAgentExternalSessionsExecutionSurface } from '../agentExternalSessionsExecutionSurface';
 import type { ExternalSessionExecutionSurface } from '@/session/external/providerOps';
 import type {
@@ -154,6 +155,7 @@ export async function resolveEngineAdapterResolutionFromRegistry(params: Readonl
     const shouldLeaseDaemonRuntime = !runnerRuntimeSource;
     const runnerRuntimeCoreParams = runnerRuntimeSource
         ? {
+            startupRuntimeDescriptorV1: runnerRuntimeSource.startupRuntimeDescriptorV1,
             nativeAgentRuntimeVoiceAuthority:
                 runnerRuntimeSource.agentSessionRealtimeVoiceAuthority,
             createNativeAgentRuntime:
@@ -178,6 +180,8 @@ export async function resolveEngineAdapterResolutionFromRegistry(params: Readonl
                 runnerRuntimeSource.daemonModelTransitionAuthorizer,
             externalSessionHostOperations:
                 runnerRuntimeSource.externalSessionHostOperations,
+            resolveProviderCliAttachManagedServiceAccess:
+                runnerRuntimeSource.resolveProviderCliAttachManagedServiceAccess,
             ...(runnerRuntimeSource.managedServiceEndpointReadPort
                 ? {
                     managedServiceEndpointReadPort:
@@ -224,7 +228,9 @@ export async function resolveEngineAdapterResolutionFromRegistry(params: Readonl
     const engineEntry = runtimeRegistry
         ? readRuntimeRegistryBackendEngineEntry(runtimeRegistry, backend)
         : undefined;
-    const entry = agent.catalogEntry ?? null;
+    const entry = runtimeRegistry?.acquireAgentCatalogEntry
+        ? await runtimeRegistry.acquireAgentCatalogEntry(agent.id)
+        : agent.catalogEntry ?? null;
     const runtimeOwner = resolveBackendRuntimeOwner({
         backend,
         agent,
@@ -262,6 +268,7 @@ export async function resolveEngineAdapterResolutionFromRegistry(params: Readonl
             diagnostics,
             createAgentRuntimeSurfaceInvocationContext:
                 engineEntry!.createAgentRuntimeSurfaceInvocationContext,
+            terminalPresentationFeatures: createNativeAgentFeatureService(runtimeRegistry),
         })
         : createEmptyBackendExecutionSurfaces();
     const registeredAgentSurfaces = resolveRegisteredAgentAuxiliarySurfaces(

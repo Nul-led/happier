@@ -15,6 +15,7 @@ import type {
 } from '@/network/pinnedHttp';
 import {
   dispatchActivityNotificationAsync,
+  listActivityNotificationChannels,
   resolveActivityNotificationPolicyEvent,
 } from './dispatchActivityNotification';
 import type { ActivityNotificationEvent } from './activityNotificationEvent';
@@ -30,6 +31,41 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 describe('dispatchActivityNotificationAsync', () => {
+  it('marks push unavailable until a token is registered and preserves configured webhook availability in quiet hours', async () => {
+    const settings = accountSettingsParse({ notificationChannelsV1: [
+      { id: 'configured-hook', kind: 'webhook', enabled: true, url: 'https://hooks.example.test/happier' },
+      { id: 'disabled-hook', kind: 'webhook', enabled: false, url: 'https://hooks.example.test/happier' },
+    ], attentionDeliveryPolicyV1: { v: 1,
+      quietHours: { enabled: true, timezone: 'UTC', windows: [{ startLocalTime: '00:00', endLocalTime: '23:59' }] },
+    } });
+    expect(await listActivityNotificationChannels({ settings, pluginNotifications: null,
+      pushTokenReader: { fetchPushTokens: async () => [] },
+    })).toEqual([
+      { value: 'builtin:expo_push', label: 'Push notifications', disabled: true },
+      { value: 'configured-hook', label: 'configured-hook', disabled: false },
+      { value: 'disabled-hook', label: 'disabled-hook', disabled: true },
+    ]);
+    expect((await listActivityNotificationChannels({ settings, pluginNotifications: null,
+      pushTokenReader: { fetchPushTokens: async () => [{ id: 'device', token: 'ExponentPushToken[test]', createdAt: 1, updatedAt: 1 }] },
+    }))[0]).toMatchObject({ value: 'builtin:expo_push', disabled: false });
+  });
+
+  it('projects disabled Notify me policy through the same channel owner, including real plugin channels', async () => {
+    const pluginNotifications = createStablePluginNotificationsOwner({ categories: [],
+      channels: [{ provenance: 'external', source: { kind: 'path' }, pluginId: 'acme.delivery',
+        definition: { id: 'digest', kind: 'plugin', title: 'Digest', configurable: true, defaultEnabled: true } }],
+      activateChannel: async () => {},
+      readChannel: () => ({ occurrenceId: 'current', isCurrent: () => true,
+        send: async (request) => ({ deliveryId: request.deliveryId, channelId: request.channelId, status: 'accepted', evidence: 'provider' }) }),
+    });
+    const read = (enabled: boolean) => listActivityNotificationChannels({ pluginNotifications,
+      settings: accountSettingsParse({ attentionDeliveryPolicyV1: { v: 1, events: { notify_me: { enabled } } } }),
+      pushTokenReader: { fetchPushTokens: async () => [] },
+    });
+    expect((await read(false)).every((channel) => channel.disabled)).toBe(true);
+    expect((await read(true)).some((channel) => channel.value !== 'builtin:expo_push' && !channel.disabled)).toBe(true);
+  });
+
   it('restricts Notify me channels, applies previews and suppresses request replays', async () => {
     const sendToAllDevicesAsync = vi.fn(async () => {});
     const settings = accountSettingsParse({ attentionDeliveryPolicyV1: { v: 1 }, notificationChannelsV1: [{

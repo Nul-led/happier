@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -6,6 +6,13 @@ import { dirname, join } from 'node:path';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 
 import { spawnSleepyDetachedProcess } from './testkit/fakeDaemonLifecycle.testkit';
+
+const { readFileSyncMock } = vi.hoisted(() => ({ readFileSyncMock: vi.fn() }));
+// Only the filesystem boundary is replaced; selection, definitions and status remain real.
+vi.mock('node:fs', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:fs')>(),
+  readFileSync: readFileSyncMock,
+}));
 
 const envScope = createEnvKeyScope([
   'HAPPIER_HOME_DIR',
@@ -24,6 +31,13 @@ const envScope = createEnvKeyScope([
 
 describe('multiDaemon daemon ownership path resolution', () => {
   let homeDir = '';
+
+  beforeEach(async () => {
+    const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    readFileSyncMock.mockReset();
+    readFileSyncMock.mockImplementation(fs.readFileSync);
+    envScope.patch({ HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID: undefined });
+  });
 
   afterEach(() => {
     envScope.restore();
@@ -348,5 +362,45 @@ describe('multiDaemon daemon ownership path resolution', () => {
     expect(byId.get('cloud')?.service).toMatchObject({ installed: true, installedPath: defaultServicePath });
     expect(byId.get('company')?.service.installed).toBe(false);
     expect(byId.get('company')?.service.installedPath).not.toBe(defaultServicePath);
+    const cloudPinnedPath = writeServiceDefinition({ targetMode: 'pinned', serverId: 'cloud', serverUrl: 'https://api.happier.dev' });
+    const withPinnedWinner = await listDaemonStatusesForAllKnownServers();
+    expect(withPinnedWinner.find((entry) => entry.serverId === 'cloud')?.service)
+      .toMatchObject({ installed: true, installedPath: cloudPinnedPath });
+  });
+
+  it.each(['EACCES', 'EIO'])('preserves %s from authoritative definition reads rather than claiming absence (A15-03)', async (code) => {
+    homeDir = join(tmpdir(), `happier-w16-read-error-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    envScope.patch({
+      HAPPIER_HOME_DIR: homeDir,
+      HAPPIER_DAEMON_SERVICE_PLATFORM: 'linux',
+      HAPPIER_DAEMON_SERVICE_USER_HOME_DIR: homeDir,
+      HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: homeDir,
+      HAPPIER_DAEMON_SERVICE_TARGET_MODE: undefined,
+      HAPPIER_DAEMON_SERVICE_INSTANCE_ID: undefined,
+    });
+    mkdirSync(homeDir, { recursive: true });
+    writeFileSync(join(homeDir, 'settings.json'), JSON.stringify({
+      activeServerId: 'cloud',
+      servers: { cloud: { id: 'cloud', name: 'Cloud', serverUrl: 'https://api.happier.dev', webappUrl: 'https://app.happier.dev' } },
+    }), 'utf-8');
+    const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const cause = Object.assign(new Error('cannot read service definition'), { code });
+    readFileSyncMock.mockImplementation((...args: Parameters<typeof fs.readFileSync>) => {
+      if (String(args[0]).endsWith('.service')) throw cause;
+      return fs.readFileSync(...args);
+    });
+    vi.resetModules();
+    const { listDaemonStatusesForAllKnownServers } = await import('./multiDaemon');
+    await expect(listDaemonStatusesForAllKnownServers()).rejects.toMatchObject({ code: 'service_inventory_unavailable', cause });
+
+    // The same authoritative reader governs inventory; optional mode metadata remains nullable.
+    const { discoverInstalledDaemonServiceEntries, readInstalledDaemonServiceAutostartMode } = await import('./service/discoverInstalledDaemonServiceEntries');
+    const servicePath = join(homeDir, '.config', 'systemd', 'user', 'happier-daemon.default.service');
+    mkdirSync(dirname(servicePath), { recursive: true });
+    writeFileSync(servicePath, '[Service]\nExecStart=/managed/happier daemon start-sync\n', 'utf-8');
+    expect(readInstalledDaemonServiceAutostartMode({ platform: 'linux', path: servicePath })).toBeNull();
+    await expect(discoverInstalledDaemonServiceEntries({
+      platform: 'linux', userHomeDir: homeDir, happierHomeDir: homeDir, mode: 'user', serversById: {},
+    })).rejects.toMatchObject({ code: 'service_inventory_unavailable', cause });
   });
 });

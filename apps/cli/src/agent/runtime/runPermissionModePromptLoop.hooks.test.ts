@@ -14,6 +14,8 @@ import { createSessionFollowContextReconciler } from '@/agent/runtime/session/fo
 import { createSessionFollowSourceHydrator } from '@/agent/runtime/session/follow/sessionFollowSourceHydrator';
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import { createWorkflowStepWithdrawal } from '@/agent/runtime/session/contextOnly/workflowStepWithdrawal';
+import { fitWorkerUpdateWithinHostContextAllowance } from '@/agent/runtime/session/contextOnly/hostContextOnlyInput';
+import { createDeferred } from '@/testkit/async/deferred';
 
 const { loggerDebugMock } = vi.hoisted(() => ({
   loggerDebugMock: vi.fn(),
@@ -180,6 +182,122 @@ async function runSingleSpecialCommand(params: Readonly<{
     readSendReadyCount: () => sendReadyCount,
   };
 }
+
+describe('context allowance deferral', () => {
+  it.each(['allowance', 'metadata', 'admission', 'user input', 'source withdrawal'] as const)('parks a retained no-fit worker until %s changes', async (edge) => {
+    const abort = new AbortController();
+    const prepared = createDeferred<void>();
+    const wake = createDeferred<boolean>();
+    const queue = createModeQueue();
+    const update: WorkerUpdateV1 = { v: 1, workerKind: 'execution_run', workerId: 'worker-a',
+      ownerState: 'succeeded', wake: 'finished', headline: 'Result', result: 'retained result', canInspect: true,
+      transcriptPointer: { kind: 'execution_run', sessionId: 'session-a', runId: 'worker-a' } };
+    let allowance = 0;
+    let selections = 0;
+    let preparations = 0;
+    let accepted = false;
+    let sourceCurrent = true;
+    const committed: string[] = [];
+    let metadataWake: ((changed: boolean) => void) | undefined;
+    const consumer = createSessionProviderInputConsumer({
+      messageQueue: queue,
+      session: { waitForMetadataUpdate: (signal) => new Promise<boolean>((resolve) => {
+        metadataWake = resolve;
+        signal?.addEventListener('abort', () => resolve(false), { once: true });
+      }) },
+      takeContextOnlyInput: async () => {
+        if (accepted) return null;
+        selections += 1;
+        if (!sourceCurrent) {
+          abort.abort();
+          return null;
+        }
+        // Terminate the defective immediate retry so RED does not starve the event loop.
+        if (selections > 1 && allowance === 0) abort.abort();
+        return { message: { text: '', localId: 'worker-a', hostContextOnly: {
+          kind: 'worker_update' as const, update,
+          recheckAdmission: async () => sourceCurrent,
+          acknowledgeAccepted: () => { accepted = true; },
+          commitHostEvent: async () => { committed.push('worker-a'); },
+        } }, mode: { permissionMode: 'default' as const, suppressUserEcho: true }, isolate: true, hash: 'worker-a' };
+      },
+      waitForContextOnlyInputChange: async (signal) => await Promise.race([
+        wake.promise, new Promise<boolean>((resolve) => {
+          signal.addEventListener('abort', () => resolve(false), { once: true });
+        }),
+      ]),
+    });
+    const runtime = createRuntime();
+    runtime.sendTurnPrompt.mockImplementation(async () => {
+      if (edge === 'user input' && committed.length === 0) {
+        allowance = 10_000;
+        return;
+      }
+      accepted = true;
+      abort.abort();
+    });
+    const session = createMutableApiSessionClientFixture<Metadata>();
+    session.__setMetadata(createTestMetadata({ permissionMode: 'default', permissionModeUpdatedAt: 0 }));
+    const loop = runPermissionModePromptLoop({
+      providerName: 'Test Agent', agentMessageType: 'qwen', explicitPermissionMode: undefined,
+      session, messageQueue: queue, inputConsumer: consumer,
+      runtime, permissionHandler: { setPermissionMode() {}, reset() {} },
+      prepareHostContext: async () => {
+        preparations += 1;
+        // Bound the defective retry of a withdrawn wake so RED can settle.
+        if (edge === 'source withdrawal' && preparations > 2) abort.abort();
+        const fitted = fitWorkerUpdateWithinHostContextAllowance(update, allowance);
+        prepared.resolve();
+        return { updates: [], contextOnlyWorkerUpdate: fitted,
+          ...(fitted ? {} : { contextOnlyWorkerDisposition: 'deferred' as const }), acknowledgeAccepted() {} };
+      },
+      createOverrideSynchronizer: () => ({ syncFromMetadata() {}, async flushPendingAfterStart() {} }),
+      messageBuffer: new MessageBuffer(), shouldExit: () => abort.signal.aborted,
+      getAbortSignal: () => abort.signal, keepAlive() {}, setThinking() {}, sendReady() {},
+      currentPermissionModeUpdatedAt: 0, setCurrentPermissionMode() {}, setCurrentPermissionModeUpdatedAt() {},
+      formatPromptErrorMessage: String, registerProviderAcceptedEffect() {},
+    });
+    try {
+      await prepared.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(selections).toBe(1);
+      expect(preparations).toBe(1);
+      expect(committed).toEqual([]);
+      expect(runtime.sendTurnPrompt).not.toHaveBeenCalled();
+      if (edge === 'allowance') {
+        allowance = 10_000;
+        wake.resolve(true);
+      } else if (edge === 'metadata') {
+        allowance = 10_000;
+        metadataWake!(true);
+      } else if (edge === 'admission') {
+        const disposition = { kind: 'action_required' as const, reason: 'group_unavailable' as const,
+          serviceId: 'service', groupId: 'group' };
+        await consumer.enforceProviderInputAdmission(disposition);
+        allowance = 10_000;
+        await consumer.clearProviderInputAdmission(disposition);
+      } else if (edge === 'source withdrawal') {
+        sourceCurrent = false;
+        wake.resolve(true);
+      } else queue.pushImmediate({ text: 'human input', localId: 'human' }, { permissionMode: 'default' });
+      await loop;
+      if (edge === 'source withdrawal') {
+        expect(runtime.sendTurnPrompt).not.toHaveBeenCalled();
+        expect(committed).toEqual([]);
+        expect(accepted).toBe(false);
+        expect(preparations).toBe(2);
+        expect(selections).toBe(2);
+        return;
+      }
+      expect(runtime.sendTurnPrompt).toHaveBeenCalledTimes(edge === 'user input' ? 2 : 1);
+      expect(committed).toEqual(['worker-a']);
+      expect(selections).toBe(1);
+    } finally {
+      abort.abort();
+      await loop;
+    }
+  });
+});
 
 /**
  * The real Follow reconciler and source hydrator for one wake edge. Only the
@@ -1023,7 +1141,7 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
     expect(pumpPendingWhileActive).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps a dequeued compact command behind enforcement that wins before provider dispatch', async () => {
+  it('keeps enforcement behind a compact dispatch already applying runtime configuration', async () => {
     const session = createMutableApiSessionClientFixture<Metadata>({
       overrides: {
         sessionId: 'session-compact-enforcement-first',
@@ -1097,13 +1215,19 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
       groupId: 'primary',
       epochId: 'dispatch:compact',
     });
-    await expect(enforcement).resolves.toMatchObject({ status: 'enforced' });
-
-    releaseRuntimeConfig();
+    let enforced = false;
+    void enforcement.then(() => { enforced = true; });
     await new Promise<void>((resolve) => setImmediate(resolve));
     try {
+      // Permission configuration is inside the same accepted dispatch custody as compaction.
+      expect(enforced).toBe(false);
       expect(runtime.compactContext).not.toHaveBeenCalled();
+      releaseRuntimeConfig();
+      await expect(enforcement).resolves.toMatchObject({ status: 'enforced' });
+      await loop;
+      expect(runtime.compactContext).toHaveBeenCalledWith('/compact keep the credential transition boundary');
     } finally {
+      releaseRuntimeConfig();
       await inputConsumer.clearProviderInputAdmission({
         serviceId: 'claude-subscription',
         groupId: 'primary',
@@ -1111,8 +1235,6 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
       });
     }
 
-    await loop;
-    expect(runtime.compactContext).toHaveBeenCalledWith('/compact keep the credential transition boundary');
   });
 
   it('keeps enforcement behind an ordinary dispatch already paused in prompt preparation', async () => {

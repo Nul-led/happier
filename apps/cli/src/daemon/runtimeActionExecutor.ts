@@ -102,11 +102,14 @@ export function createDaemonRuntimeActionExecutor(
     }
     // The browser executor falls back to local services, simulator, and peer mediation. Refresh all
     // of their caches before selecting a leaf so every family remains fail-closed on server-disable.
-    await Promise.all([
-      browserDaemonFeatureGate.refresh(),
-      localServicesDaemonFeatureGate.refresh(),
-      simulatorDaemonFeatureGate.refresh(),
-    ]);
+    // OS prerequisite recovery is not decided by unrelated server/browser availability.
+    if (args.actionId !== 'browser.sandbox.install') {
+      await Promise.all([
+        browserDaemonFeatureGate.refresh(),
+        localServicesDaemonFeatureGate.refresh(),
+        simulatorDaemonFeatureGate.refresh(),
+      ]);
+    }
     args.context.signal?.throwIfAborted();
 
     const routes = input.resolveRouteOwners();
@@ -163,8 +166,8 @@ export function createDaemonRuntimeActionExecutor(
       featureGate: browserDaemonFeatureGate,
       fallback: localServicesRuntimeActionExecutor,
     });
-    const result = await browserRuntimeActionExecutor(args);
-    args.context.signal?.throwIfAborted();
-    return result;
+    // Once dispatched, the owning leaf settles cancellation and effect completion. Admission
+    // aborts above must not overwrite an acknowledged or explicitly uncertain owner result.
+    return browserRuntimeActionExecutor(args);
   };
 }

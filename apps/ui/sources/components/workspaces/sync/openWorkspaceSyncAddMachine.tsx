@@ -310,7 +310,7 @@ function WorkspaceSyncAddMachineModal(props: AddMachineProps) {
     useModalCardChrome(props.setChrome, chrome);
 
     return (
-        <ItemList keyboardAware style={{ paddingTop: 0 }}>
+        <ItemList presentation="grouped" keyboardAware style={{ paddingTop: 0 }}>
             {hub ? <Item
                 title={t('workspaceSync.endpoint.source', {
                     label: formatPathRelativeToHome(hub.rootPath, hubMachine?.metadata?.homeDir ?? undefined),

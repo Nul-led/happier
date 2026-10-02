@@ -26,6 +26,20 @@ import {
 import { getStorage, useSessionMetadata } from '@/sync/domains/state/storage';
 import { roleActions } from '@/sync/ops/roles/roleActions';
 import { t } from '@/text';
+import type { Session } from '@/sync/domains/state/storageTypes';
+import { isSessionAccessOwner } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+
+/** Inheritance alone does not make a same-owner worker's configuration read-only. */
+export function isSessionRoleSnapshotCopiedAcrossOwners(session: Session | null, lead: Session | null, accountId: string | null): boolean {
+    const inheritedFrom = readSessionRolesV1(session?.metadata)?.inheritedFrom;
+    if (!session || !lead || inheritedFrom !== lead.id || !session.serverId || !lead.serverId
+        || !areServerProfileIdentifiersEquivalent(session.serverId, lead.serverId)) return false;
+    const owner = (row: Session) => row.owner ?? (isSessionAccessOwner(row.access, row.accessLevel) ? accountId : null);
+    const workerOwner = owner(session);
+    const leadOwner = owner(lead);
+    return workerOwner !== null && leadOwner !== null && workerOwner !== leadOwner;
+}
 
 /** The session's own role id, as a primitive: closed chrome re-renders only when the role changes. */
 export function useSessionRoleId(sessionId: string): string | null {
@@ -35,7 +49,8 @@ export function useSessionRoleId(sessionId: string): string | null {
 /**
  * The Agent target this session runs on, as a primitive, through the session-action default owner
  * (the same resolvers the composer uses). Read only by an open Role popover: a role on another Agent
- * says "Starts a new session". The session already runs on its Agent, so no enabled-Agents filter.
+ * explains that its engine applies when starting the role. The session already runs on its Agent,
+ * so no enabled-Agents filter.
  */
 function useSessionAgentTargetKey(sessionId: string): string | null {
     return getStorage()((state) => {
@@ -123,8 +138,8 @@ export function SessionHandsOffRow(props: Readonly<{ sessionId: string; roleId: 
 
 /**
  * The Roles rail for one live session — the same controlled rail the composer and the Work tab's
- * Role popover show. Choosing writes `session.role.set`; a role on another Agent says "Starts a new
- * session" (S-5); Hands-off for the current role sits at the foot.
+ * Role popover show. Choosing writes `session.role.set`; a role on another Agent explains that its
+ * engine applies when starting the role; Hands-off for the current role sits at the foot.
  */
 export function useSessionRolesRailParams(input: Readonly<{
     sessionId: string;
@@ -138,7 +153,7 @@ export function useSessionRolesRailParams(input: Readonly<{
     }, [sessionId]);
     const describeConsequence = React.useCallback((item: RoleRailItem) => (
         item.agentTargetKey && currentAgentTargetKey && item.agentTargetKey !== currentAgentTargetKey
-            ? t('roles.rail.startsNewSession')
+            ? t('roles.rail.engineAppliesOnStart')
             : null
     ), [currentAgentTargetKey]);
     const onManageRoles = React.useCallback(() => { router.push('/settings/roles' as never); }, [router]);
@@ -197,6 +212,7 @@ export function SessionRolePopover(props: Readonly<{
 export const SessionRoleValueRow = React.memo(function SessionRoleValueRow(props: Readonly<{
     sessionId: string;
     testID?: string;
+    copiedAtSpawn?: boolean;
 }>) {
     const { sessionId } = props;
     const roleId = useSessionRoleId(sessionId);
@@ -223,10 +239,10 @@ export const SessionRoleValueRow = React.memo(function SessionRoleValueRow(props
                     detail={value}
                     density="compact"
                     accessibilityLabel={t('sessionWork.role.a11y', { role: value })}
-                    onPress={openPopover}
+                    onPress={props.copiedAtSpawn ? undefined : openPopover}
                 />
             </View>
-            {popoverOpen ? (
+            {popoverOpen && !props.copiedAtSpawn ? (
                 <SessionRolePopover sessionId={sessionId} anchorRef={anchorRef} onRequestClose={closePopover} />
             ) : null}
         </>

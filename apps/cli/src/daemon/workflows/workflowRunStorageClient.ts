@@ -4,6 +4,7 @@ import { isWorkflowRunExecutorStorageOperationV1 } from '@happier-dev/protocol/w
 
 import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/clientCompatibility/cliClientCompatibility';
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { observeAccountChanges } from '@/api/observeAccountChanges';
 import {
   createDefaultPluginInstallationPublisherHeader,
   type CreatePluginInstallationPublisherHeader,
@@ -30,6 +31,8 @@ export function createWorkflowRunStorageClient(params: Readonly<{
   const baseUrl = params.serverHttpBaseUrl ?? resolveServerHttpBaseUrl();
   const createPublisherHeader = params.createPublisherHeader ?? createDefaultPluginInstallationPublisherHeader;
   return {
+    observeChanges: (runId: string, onChange: () => void, onError: (error: unknown) => void) =>
+      observeAccountChanges({ token: params.token, serverUrl: baseUrl, entityId: `workflow-run:${runId}` }, { onChange, onError }),
     execute: async (operation: WorkflowRunStorageOperation, options: Readonly<{ signal?: AbortSignal }> = {}): Promise<unknown> => {
       const executorOperation = isWorkflowRunExecutorStorageOperationV1(operation.operation);
       if (executorOperation && !params.machineId) {
@@ -46,9 +49,8 @@ export function createWorkflowRunStorageClient(params: Readonly<{
           'Content-Type': 'application/json',
           ...(publisherHeader ? { [PLUGIN_INSTALLATION_MANIFEST_PUBLISHER_HEADER_V1]: publisherHeader } : {}),
         },
-        // Workflow wait is a server long-poll whose authored observation
-        // deadline and caller AbortSignal are already carried by the request.
-        // Axios must not impose a separate fixed platform deadline.
+        // The wait owner carries the authored observation deadline and abort.
+        // Its exact snapshot read must not impose a competing fixed cutoff.
         timeout: operation.operation === 'wait' ? 0 : 30_000,
         ...(options.signal ? { signal: options.signal } : {}),
       });

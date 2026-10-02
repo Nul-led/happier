@@ -33,13 +33,15 @@ import {
 import {
     admitScmRemotePolicy,
     admitScmCommitPolicy,
+    admitScmCommitUndoLast,
     normalizeScmOperationOutcome,
     ScmOperationOutcomeSchema,
 } from '@happier-dev/protocol/scm';
-import type * as scm from '@happier-dev/protocol';
+import type * as scm from '@happier-dev/protocol/scm';
 import { projectScmLegacyRpcResponse } from './scmRpcCompatibility';
 
-import type { FilesystemAccessPolicy } from '@/rpc/handlers/fileSystem/accessPolicy/filesystemAccessPolicy';
+import { resolveFilesystemAccessPolicy, type FilesystemAccessPolicy } from '@/rpc/handlers/fileSystem/accessPolicy/filesystemAccessPolicy';
+import { authorizeFilesystemPath } from '@/rpc/handlers/fileSystem/accessPolicy/filesystemPathAuthorization';
 import type { ScmBackendRegistry } from '@/scm/registry';
 import { resolveCwd } from '@/scm/runtime';
 import { createNonRepositoryScmSnapshotResponse, notRepositoryResponse, runScmRoute } from '@/scm/rpc/dispatch';
@@ -199,6 +201,21 @@ function runLocalScmAction(params: ExecuteScmActionOperationParams & Readonly<{
                     : { success: false, errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED, error: 'SCM backend operation is unavailable' },
             }));
         }
+        case 'scm.commit.undoLast': {
+            const request = params.input as scm.ScmCommitUndoLastRequest;
+            return runMutation(async () => runScmRoute<scm.ScmCommitUndoLastRequest, scm.ScmCommitUndoLastResponse>({
+                request,
+                ...routeBase,
+                onNonRepository: async () => notRepositoryResponse<scm.ScmCommitUndoLastResponse>(),
+                runWithBackend: async ({ context, selection }) => {
+                    const admission = admitScmCommitUndoLast(selection.backend.getCapabilities({ mode: selection.mode }));
+                    if (!admission.success) return admission;
+                    return selection.backend.commitUndoLast
+                        ? await selection.backend.commitUndoLast({ context, request })
+                        : { success: false, errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED, error: 'SCM undo is unavailable' };
+                },
+            }));
+        }
         case 'scm.log.list': {
             const request = params.input as scm.ScmLogListRequest;
             return runScmRoute<scm.ScmLogListRequest, scm.ScmLogListResponse>({
@@ -337,9 +354,19 @@ function runLocalScmAction(params: ExecuteScmActionOperationParams & Readonly<{
                 request,
                 ...routeBase,
                 onNonRepository: async () => notRepositoryResponse<scm.ScmWorktreeRemoveResponse>(),
-                runWithBackend: async ({ context, selection }) => selection.backend.worktreeRemove
-                    ? await selection.backend.worktreeRemove({ context, request })
-                    : { success: false, errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED, error: 'SCM backend operation is unavailable' },
+                runWithBackend: async ({ context, selection }) => {
+                    const target = authorizeFilesystemPath({
+                        targetPath: request.worktreePath,
+                        defaultDirectory: context.cwd,
+                        accessPolicy: routeBase.accessPolicy ?? resolveFilesystemAccessPolicy(),
+                    });
+                    if (!target.valid) {
+                        return { success: false, errorCode: SCM_OPERATION_ERROR_CODES.INVALID_PATH, error: target.error };
+                    }
+                    return selection.backend.worktreeRemove
+                        ? await selection.backend.worktreeRemove({ context, request: { ...request, worktreePath: target.resolvedPath } })
+                        : { success: false, errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED, error: 'SCM backend operation is unavailable' };
+                },
             }));
         }
         case 'scm.worktree.prune': {

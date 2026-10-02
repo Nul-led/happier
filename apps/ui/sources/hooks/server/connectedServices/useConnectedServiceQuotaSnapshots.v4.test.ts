@@ -10,6 +10,7 @@ import {
     renderHook,
     standardCleanup,
 } from '@/dev/testkit';
+import { act } from 'react-test-renderer';
 
 const credentials = {
     token: 'token',
@@ -397,6 +398,33 @@ describe('useConnectedServiceQuotaSnapshots V4 transport', () => {
             hook.getCurrent().list.snapshotsByKey['anthropic/work']
                 ?.meters[0]?.meterId,
         ).toBe('weekly');
+        await hook.unmount();
+    });
+
+    it('refreshes selected list accounts through the shared quota owner while retaining the visible reading', async () => {
+        const { useConnectedServiceQuotaSnapshots } = await import('./useConnectedServiceQuotaSnapshots');
+        const { useQualifiedConnectedAccountQuota } = await import('./useQualifiedConnectedAccountQuota');
+        const hook = await renderHook(() => ({
+            list: useConnectedServiceQuotaSnapshots([{ serviceId: 'anthropic', profileId: 'work' }], { fetchPolicy: 'once' }),
+            detail: useQualifiedConnectedAccountQuota(ref),
+        }));
+        await flushHookEffects({ cycles: 8, turns: 8 });
+        let finishRefresh!: () => void;
+        requestQualifiedRefreshSpy.mockImplementationOnce(() => new Promise<void>((resolve) => { finishRefresh = resolve; }));
+        getQualifiedSpy.mockResolvedValue(serverBResponse);
+        let refresh!: Promise<void>;
+        await act(async () => { refresh = hook.getCurrent().list.refresh(['anthropic/work']); });
+        expect(hook.getCurrent().list.refreshingByKey['anthropic/work']).toBe(true);
+        expect(hook.getCurrent().list.snapshotsByKey['anthropic/work']?.fetchedAt).toBe(1);
+        await act(async () => { finishRefresh(); await refresh; });
+        await flushHookEffects({ cycles: 8, turns: 8 });
+        expect(hook.getCurrent().list.snapshotsByKey['anthropic/work']?.fetchedAt).toBe(2);
+        expect(hook.getCurrent().detail.snapshot?.fetchedAt).toBe(2);
+        expect(hook.getCurrent().list.refreshingByKey['anthropic/work']).toBe(false);
+        expect(hook.getCurrent().list.errorsByKey['anthropic/work']).toBeNull();
+        requestQualifiedRefreshSpy.mockClear();
+        await act(async () => { await hook.getCurrent().list.refresh(['missing/account']); });
+        expect(requestQualifiedRefreshSpy).not.toHaveBeenCalled();
         await hook.unmount();
     });
 });

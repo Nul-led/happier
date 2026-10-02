@@ -4,9 +4,13 @@ import {
   buildRecoveryCreditConsumeIdempotencyKey,
   ConnectedServiceQuotaRecoveryCreditConsumeRequestV1Schema,
   ConnectedServiceQuotaRecoveryCreditConsumeResponseV1Schema,
+  AccountSettingMutationV1Schema,
+  CONNECTED_ACCOUNT_CONTROL_COMMAND_RPC_METHOD,
+  ConnectedAccountControlCommandRequestSchema,
   type ActionExecutorDeps,
   type ActionExecutorContext,
 } from '@happier-dev/protocol';
+import { qualifyPluginContributionReferenceV1 } from '@happier-dev/protocol/plugins/contribution-identity';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import type { StoredCredentials } from '@/persistence';
 import { readAgentCatalogSnapshot } from '@/agent/catalog/snapshot';
@@ -44,14 +48,22 @@ export function createCliConnectedServiceAction(params: Readonly<{
           prepareMutation: async (raw) => {
             const next = mutate(raw);
             const keys = ['connectedServicesProfileLabelByKey', 'connectedAccountPurposeBindingsV1', 'connectedServicesDefaultAuthByAgentIdV1'] as const;
-            return { operations: keys.filter((key) => next[key] !== raw[key]).map((key) => ({ op: 'set' as const, key, value: next[key] })) };
+            return AccountSettingMutationV1Schema.parse({ operations: keys.filter((key) => next[key] !== undefined).map((key) => (
+              next[key] === null ? { op: 'reset', key } : { op: 'set', key, value: next[key] }
+            )) });
           }, ...(signal ? { signal } : {}),
         });
         if (!['applied', 'satisfied', 'unchanged'].includes(result.status)) throw Object.assign(new Error(`account_settings_${result.status}`), { code: `account_settings_${result.status}` });
       },
       resolveAgent: async (agentId) => {
         const agent = readAgentCatalogSnapshot().agentDefinitionsById.get(agentId);
-        return agent ? { agentId, title: agentId, identity: agent.identity ?? null, connectedAccounts: agent.richDefinition?.definition.connectedAccounts ?? [] } : null;
+        if (!agent?.pluginId) return null;
+        const pluginId = agent.pluginId;
+        return { agentId, title: agentId, identity: agent.identity ?? null,
+          connectedAccounts: (agent.richDefinition?.definition.connectedAccounts ?? []).map((declaration) => ({
+            ...declaration, service: qualifyPluginContributionReferenceV1(declaration.service, pluginId),
+          })),
+        };
       },
       resetQuota: async ({ machineId, serviceId, profileId, providerCreditId, sourceSnapshotFetchedAtMs }) => {
         const request = ConnectedServiceQuotaRecoveryCreditConsumeRequestV1Schema.parse({ serviceId, profileId,
@@ -63,6 +75,12 @@ export function createCliConnectedServiceAction(params: Readonly<{
           method: RPC_METHODS.DAEMON_CONNECTED_SERVICE_QUOTA_RECOVERY_CREDIT_CONSUME, request, ...(signal ? { signal } : {}),
         }));
       },
+      controlCommand: async (machineId, command) => params.callMachineAction({
+        machineId, ...(params.serverId ? { serverId: params.serverId } : {}),
+        method: CONNECTED_ACCOUNT_CONTROL_COMMAND_RPC_METHOD,
+        request: ConnectedAccountControlCommandRequestSchema.parse({ v: 1, machineId, command }),
+        ...(signal ? { signal } : {}),
+      }),
     }, actionId, input);
     return params.serverHttpBaseUrl ? runWithServerHttpBaseUrl(params.serverHttpBaseUrl, run) : run();
   };

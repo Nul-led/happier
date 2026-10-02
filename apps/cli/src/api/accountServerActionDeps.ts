@@ -49,6 +49,8 @@ import {
   projectSessionPublicLinkActionResultV1,
   SessionAccessErrorCodeV1Schema,
   type ActionExecutorContext,
+  type ArtifactPublicLinkIssuedV1,
+  buildStoredContentPublicShareUrlV1,
 } from '@happier-dev/protocol';
 import { z } from 'zod';
 
@@ -201,6 +203,8 @@ export function createAccountServerActionDeps(input: Readonly<{
   externalActionMachineInstallationId?: string;
   /** Exact Account credential material used only by trusted host-side encryption adapters. */
   credentials?: StoredCredentials;
+  /** Trusted local key custody; never projected through Action results. */
+  onPublicLinkIssued?: (link: ArtifactPublicLinkIssuedV1) => void | Promise<void>;
   /** Incumbent credential/scope owner; checked around private direct-grant materialization. */
   isCredentialCurrent?: () => boolean | Promise<boolean>;
   /** Cryptographic Home identity observed from the bound endpoint's feature projection. */
@@ -473,6 +477,7 @@ export function createAccountServerActionDeps(input: Readonly<{
       const mutation = spec.sideEffectClass !== 'none' && spec.sideEffectClass !== 'read';
       const publicRequest = bindSessionAccessActionHttpRequestV1(actionId, actionInput);
       let request = publicRequest;
+      let localPublication: Awaited<ReturnType<typeof materializeSessionPublicLinkCreateBody>> | null = null;
       let retainedEnvelopeFallback = false;
       if (actionId === 'session.public_link.create') {
         if (signal?.aborted) {
@@ -498,6 +503,8 @@ export function createAccountServerActionDeps(input: Readonly<{
             ...(input.isCredentialCurrent ? { isCurrent: input.isCredentialCurrent } : {}),
             ...(signal ? { signal } : {}),
           });
+          if (!input.onPublicLinkIssued) return { ok: false, errorCode: 'public_link_custody_unavailable', error: 'public_link_custody_unavailable' };
+          localPublication = materialized;
           const baseBody = publicRequest.body !== null && typeof publicRequest.body === 'object'
             ? publicRequest.body as Readonly<Record<string, unknown>>
             : {};
@@ -505,7 +512,8 @@ export function createAccountServerActionDeps(input: Readonly<{
             ...publicRequest,
             body: {
               ...baseBody,
-              token: materialized.token,
+              lookupId: materialized.lookupId,
+              keyDerivation: materialized.keyDerivation,
               ...(materialized.encryptedDataKey !== undefined ? { encryptedDataKey: materialized.encryptedDataKey } : {}),
             },
           };
@@ -651,7 +659,13 @@ export function createAccountServerActionDeps(input: Readonly<{
         }
         if (actionId === 'session.public_link.get' || actionId === 'session.public_link.create') {
           const projected = projectSessionPublicLinkActionResultV1(response.data);
-          return spec.outputSchema?.parse(projected) ?? projected;
+          const result = spec.outputSchema?.parse(projected) ?? projected;
+          if (localPublication && input.onPublicLinkIssued) {
+            if (!projected || !projected.id || !projected.isolatedOrigin || projected.keyDerivation !== 'fragment_v1') throw new Error('public_link_publication_unconfirmed');
+            await input.onPublicLinkIssued({ lookupId: localPublication.lookupId, secret: localPublication.secret, shareId: projected.id,
+              url: buildStoredContentPublicShareUrlV1({ origin: projected.isolatedOrigin, lookupId: localPublication.lookupId, secret: localPublication.secret }) });
+          }
+          return result;
         }
         return spec.outputSchema?.parse(response.data) ?? response.data;
       } catch (error) {

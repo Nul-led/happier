@@ -362,8 +362,11 @@ export async function readManagedPnpmMinimumReleaseAgeMs(
     }
   };
 
-  const configured = Number(await ask(['config', 'get', 'minimumReleaseAge']));
-  if (Number.isFinite(configured) && configured >= 0) return configured * 60_000;
+  const configuredValue = await ask(['config', 'get', 'minimumReleaseAge']);
+  if (configuredValue !== null && configuredValue !== '') {
+    const configured = Number(configuredValue);
+    if (Number.isFinite(configured) && configured >= 0) return configured * 60_000;
+  }
 
   const major = Number.parseInt(String(await ask(['--version']) ?? ''), 10);
   if (!Number.isFinite(major)) return null;

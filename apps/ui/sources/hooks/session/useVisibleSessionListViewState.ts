@@ -1,11 +1,17 @@
 import * as React from 'react';
 import { usePathname } from 'expo-router';
+import { normalizeSessionListFilterV1, sameStrictJsonValue, type SessionListFilterV1 } from '@happier-dev/protocol';
+import { useWorkflowRunWindow, type WorkflowRunWindow } from '@/components/workflows/library/workflowLibraryReads';
+import { useWorkflowsAvailability } from '@/components/workflows/gating/workflowsAvailability';
+import { areServerProfileIdentifiersEquivalent, resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
+import { resolveWorkflowRunUnavailableHomes } from '@/sync/domains/session/listing/sessionListWorkFilter';
 
 import {
     useLocalSetting,
     useSessionListRowsByServerId,
     useSessionOrganizationProjections,
     useSetting,
+    useActiveServerAccountScope,
 } from '@/sync/domains/state/storage';
 import { computeVisibleSessionListIndex } from '@/sync/domains/session/listing/computeVisibleSessionListIndex';
 import { normalizeSessionListWorkingPlacementMode } from '@/sync/domains/session/listing/sessionListAttentionPlacement';
@@ -64,6 +70,7 @@ import { useSessionListFeatureHomeSupportByServerId } from '@/sync/domains/sessi
 import { areSessionListGroupOrderMapsEqual } from '@/sync/domains/session/listing/sessionListOrderingStateV1';
 import { areSessionWorkspaceOrderMapsEqual } from '@/sync/domains/session/listing/sessionWorkspaceOrderStateV1';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
+import type { resolveSessionListQueryPresentation } from '@/sync/domains/session/listing/sessionListIndexPresentation';
 
 type SessionListGroupOrderV1 = Readonly<Record<string, ReadonlyArray<string> | undefined>>;
 type PinnedSessionKeysV1 = ReadonlyArray<string>;
@@ -74,6 +81,8 @@ export type VisibleSessionListViewState = Readonly<{
     folderFocus: SessionFolderFocusScope | null;
     folderFeatureEnabledServerIds: ReadonlyArray<string>;
     query?: ReturnType<typeof useVisibleSessionListSourceState>['query'];
+    workflowRunWindow?: WorkflowRunWindow;
+    workflowRunUnavailableHomes?: Parameters<typeof resolveSessionListQueryPresentation>[0]['workflowRunUnavailableHomes'];
 }>;
 
 export type VisibleSessionListViewStateOptions = Readonly<{
@@ -84,6 +93,7 @@ export type VisibleSessionListViewStateOptions = Readonly<{
     queryHomes?: VisibleSessionListSourceStateOptions['queryHomes'];
     emptyQuerySelectionComplete?: boolean;
     corpusStorage?: 'active' | 'archived';
+    workFilter?: SessionListFilterV1;
 }>;
 
 function buildFolderAwareSessionListIndex(params: Readonly<{
@@ -346,6 +356,10 @@ function areVisibleSessionListProjectionInputsEqual(
         ? right.normalizedWorkspaceOrder
         : right.sessionWorkspaceOrderV1;
     return areSessionListIndexesEqual(left.source, right.source)
+        && sameStrictJsonValue(left.workFilter, right.workFilter)
+        && left.workflowRuns.length === right.workflowRuns.length
+        && left.workflowRuns.every((run, index) => run.serverId === right.workflowRuns[index]?.serverId
+            && run.summary === right.workflowRuns[index]?.summary)
         && areSessionListRowSourcesEqual(left.sessionRowStateByServerId, right.sessionRowStateByServerId, right.source)
         && left.hideInactiveSessions === right.hideInactiveSessions
         && areSetsEqual(left.serverFilteredInactiveServerIds, right.serverFilteredInactiveServerIds)
@@ -393,6 +407,8 @@ function resolveRetainedWorkingSessionKeys(
 
 function buildVisibleSessionListIndex(params: Readonly<{
     source: ReadonlyArray<SessionListIndexItem>;
+    workFilter: SessionListFilterV1;
+    workflowRuns: NonNullable<Parameters<typeof computeVisibleSessionListIndex>[0]['workflowRuns']>;
     sessionRowStateByServerId: ReturnType<typeof useSessionListRowsByServerId>;
     hideInactiveSessions: boolean;
     serverFilteredInactiveServerIds: ReadonlySet<string> | null;
@@ -422,7 +438,7 @@ function buildVisibleSessionListIndex(params: Readonly<{
     retainWorkingSessionKeys: ReadonlyArray<string>;
     nowMs: number;
 }>): ReadonlyArray<SessionListIndexItem> | null {
-    const folderAwareSource = buildFolderAwareSessionListIndex(params).items;
+    const folderAwareSource = buildFolderAwareSessionListIndex(params);
     const resolveSessionRow = (
         serverId: string | null | undefined,
         sessionId: string,
@@ -432,7 +448,10 @@ function buildVisibleSessionListIndex(params: Readonly<{
         sessionId,
     );
     const visible = computeVisibleSessionListIndex({
-        source: folderAwareSource,
+        source: folderAwareSource.items,
+        folderFocus: folderAwareSource.folderFocus,
+        workFilter: params.workFilter,
+        workflowRuns: params.workflowRuns,
         resolveSessionRow,
         hideInactiveSessions: params.hideInactiveSessions,
         serverFilteredInactiveServerIds: params.serverFilteredInactiveServerIds,
@@ -482,6 +501,41 @@ export function useVisibleSessionListViewState(
         queryHomes: options.queryHomes,
         emptyQuerySelectionComplete: options.emptyQuerySelectionComplete,
     });
+    const surfaceDataActive = options.sessionListSurfaceDataActive !== false;
+    const activeAccountScope = useActiveServerAccountScope();
+    const workflowsAvailability = useWorkflowsAvailability();
+    const workFilter = React.useMemo(() => normalizeSessionListFilterV1(options.workFilter ?? {
+        homeServerIds: selection.allowedServerIds.length > 0
+            ? selection.allowedServerIds
+            : selection.activeServerId ? [selection.activeServerId] : [],
+    }), [options.workFilter, selection.activeServerId, selection.allowedServerIds]);
+    const runServerId = activeAccountScope
+        ? resolveServerProfileScopeIdForIdentifier(activeAccountScope.serverId)
+        : null;
+    const workflowRunsEnabled = surfaceDataActive
+        && options.corpusStorage !== 'archived'
+        && workFilter.show !== 'sessions'
+        && workflowsAvailability.available
+        && runServerId !== null
+        && areServerProfileIdentifiersEquivalent(runServerId, selection.activeServerId)
+        && workFilter.homeServerIds.some((serverId) => areServerProfileIdentifiersEquivalent(serverId, runServerId));
+    const workflowWindow = useWorkflowRunWindow('all', { enabled: workflowRunsEnabled });
+    const workflowRunWindow = workflowRunsEnabled ? workflowWindow : undefined;
+    const workflowRunUnavailableHomes = React.useMemo(() => {
+        if (!surfaceDataActive || options.corpusStorage === 'archived' || workFilter.show === 'sessions') return undefined;
+        const mountedHomes = selection.allowedServerIds.length > 0 ? selection.allowedServerIds
+            : selection.activeServerId ? [selection.activeServerId] : [];
+        return resolveWorkflowRunUnavailableHomes({
+            selectedHomeServerIds: workFilter.homeServerIds,
+            mountedHomeServerIds: mountedHomes,
+            servedHomeServerId: workflowRunsEnabled ? runServerId : null,
+        });
+    }, [options.corpusStorage, runServerId, selection.activeServerId, selection.allowedServerIds,
+        surfaceDataActive, workFilter.homeServerIds, workFilter.show, workflowRunsEnabled]);
+    const workflowRuns = React.useMemo<VisibleSessionListProjectionInputs['workflowRuns']>(() => {
+        if (!workflowRunsEnabled || !runServerId) return [];
+        return workflowWindow.rows.flatMap((row) => row.summary ? [{ serverId: runServerId, summary: row.summary }] : []);
+    }, [runServerId, workflowRunsEnabled, workflowWindow.rows]);
     const sessionRowStateByServerId = useSessionListRowsByServerId();
     const hideInactiveSessions = useSetting('hideInactiveSessions') as boolean | null;
     // Every Home whose membership was applied by the strict query already answered
@@ -493,10 +547,12 @@ export function useVisibleSessionListViewState(
         if (!query.active) return null;
         const serverIds = new Set<string>();
         for (const [serverId, state] of Object.entries(queryStatesByServerId)) {
-            if (state?.appliedSourceKind === 'query') serverIds.add(serverId);
+            if (state?.appliedSourceKind === 'query'
+                && options.queryHomes?.some((home) => areServerProfileIdentifiersEquivalent(home.serverId, serverId)
+                    && home.query.includeInactive === false)) serverIds.add(serverId);
         }
         return serverIds.size > 0 ? serverIds : null;
-    }, [query.active, queryStatesByServerId]);
+    }, [options.queryHomes, query.active, queryStatesByServerId]);
     const sessionListOrderingModeV1 = useSetting('sessionListOrderingModeV1') as
         | 'custom'
         | 'created'
@@ -615,11 +671,12 @@ export function useVisibleSessionListViewState(
     // contributes the earliest freshness expiry of the visible rows as its
     // wake horizon so the index recomputes exactly when placement can change
     // without a store update.
-    const surfaceDataActive = options.sessionListSurfaceDataActive !== false;
     const runtimeNowMs = useSessionListRuntimeNowMs(surfaceDataActive);
 
     const projectionInputs = React.useMemo<VisibleSessionListProjectionInputs>(() => ({
         source: source ?? [],
+        workFilter,
+        workflowRuns,
         activeSessionId,
         sessionRowStateByServerId,
         hideInactiveSessions: hideInactiveSessions === true,
@@ -680,10 +737,12 @@ export function useVisibleSessionListViewState(
         sessionWorkspaceOrderV1,
         source,
         storageFilter,
+        workFilter,
+        workflowRuns,
     ]);
 
     const visibleSessionListIndex = React.useMemo(() => {
-        if (!source) return source;
+        if (!source && (!workflowRunWindow || workflowRunWindow.status === 'loading')) return source;
         const cachedProjection = previousVisibleSessionListIndexForRetention
             ? retainedVisibleSessionListProjections.get(previousVisibleSessionListIndexForRetention)
             : undefined;
@@ -702,7 +761,7 @@ export function useVisibleSessionListViewState(
             previousVisibleSessionListIndexForRetention,
             buildVisibleSessionListIndex({ ...projectionInputs, nowMs: runtimeNowMs }),
         );
-    }, [previousVisibleSessionListIndexForRetention, projectionInputs, runtimeNowMs, source]);
+    }, [previousVisibleSessionListIndexForRetention, projectionInputs, runtimeNowMs, source, workflowRunWindow?.status]);
 
     React.useEffect(() => {
         previousVisibleSessionListIndexRef.current = visibleSessionListIndex;
@@ -787,5 +846,7 @@ export function useVisibleSessionListViewState(
         folderFocus,
         folderFeatureEnabledServerIds,
         query,
-    }), [folderFeatureEnabledServerIds, folderFocus, hasHiddenInactiveSessions, query, visibleSessionListIndex]);
+        workflowRunWindow,
+        workflowRunUnavailableHomes,
+    }), [folderFeatureEnabledServerIds, folderFocus, hasHiddenInactiveSessions, query, visibleSessionListIndex, workflowRunWindow, workflowRunUnavailableHomes]);
 }

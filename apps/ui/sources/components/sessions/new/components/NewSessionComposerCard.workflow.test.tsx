@@ -29,7 +29,9 @@ vi.mock('@/text', async () => {
 
 function panelProps(): NewSessionSimplePanelProps {
     return {
-            popoverBoundaryRef: React.createRef(), headerHeight: 0, safeAreaTop: 0, safeAreaBottom: 0,
+            // Native refs begin unmounted; this fixture does not measure the popover boundary.
+            popoverBoundaryRef: React.createRef() as NewSessionSimplePanelProps['popoverBoundaryRef'],
+            headerHeight: 0, safeAreaTop: 0, safeAreaBottom: 0,
             newSessionTopPadding: 0, newSessionSidePadding: 0, newSessionBottomPadding: 0, containerStyle: {},
             promptStore: createNewSessionPromptStore('Keep this brief'), setSessionPrompt: () => {},
             handleCreateSession: () => {}, canCreate: true, isCreating: false,
@@ -38,6 +40,7 @@ function panelProps(): NewSessionSimplePanelProps {
             handlePermissionModeChange: undefined, modelMode: 'default', setModelMode: undefined,
             modelOptions: [], connectionStatus: undefined, machineName: undefined, selectedPath: '/repo',
             useProfiles: false, selectedProfileId: null,
+            showResumePicker: false, resumeSessionId: null, isResumeSupportChecking: false,
         } satisfies NewSessionSimplePanelProps;
 }
 
@@ -49,7 +52,7 @@ describe('New workflow entry', () => {
     });
     it('keeps typed text as the first text input, then withdraws that private draft on Account change', async () => {
         getStorage().setState({ profileScope: { serverId: 'server-a', accountId: 'account-a' } });
-        const props = panelProps();
+        const props = { ...panelProps(), selectedMachineId: 'machine-1', targetServerId: 'server-a' };
         const hook = await renderHook(() => useNewSessionWorkflowStart({ panelProps: props, prompt: 'Keep this brief' }));
         const content = hook.getCurrent().chip.collapsedContentPopover?.renderContent;
         if (typeof content !== 'function') throw new Error('Workflow picker content is missing');
@@ -61,6 +64,8 @@ describe('New workflow entry', () => {
         if (composer === null) throw new Error('Selected workflow composer is missing');
         const screen = await renderScreen(composer);
         expect(screen.findByTestId('new-session-composer-input')?.props.value).toBe('Keep this brief');
+        // No Home feature snapshot has advertised Workflow support in this fixture.
+        expect(screen.findByTestId('workflow-run-inputs-run')?.props.disabled).toBe(true);
         await act(async () => { getStorage().setState({ profileScope: { serverId: 'server-a', accountId: 'account-b' } }); });
         expect(hook.getCurrent().composer).toBeNull();
     });

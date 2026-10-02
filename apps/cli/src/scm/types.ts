@@ -19,10 +19,10 @@ import type {
     ScmChangeDiscardResponse,
     ScmCommitBackoutRequest,
     ScmCommitBackoutResponse,
+    ScmCommitUndoLastRequest,
+    ScmCommitUndoLastResponse,
     ScmCommitCreateRequest,
     ScmCommitCreateResponse,
-    ScmConflictAcceptSideRequest,
-    ScmConflictMarkResolvedRequest,
     ScmDiffCommitRequest,
     ScmDiffCommitResponse,
     ScmDiffFileRequest,
@@ -90,6 +90,7 @@ import type {
     WorkspaceCheckoutKind,
     WorkspaceLocationScm,
 } from '@happier-dev/protocol';
+import type { ScmConflictAcceptSideRequest, ScmConflictMarkResolvedRequest } from '@happier-dev/protocol/scm';
 
 import type { ScmWorkspaceIntegrationCheckoutMaterializationRequest } from './workspace/checkoutMaterialization';
 import type {
@@ -124,6 +125,8 @@ export type ScmBackendContext = {
     projectKey: string;
     detection: ScmRepoDetection;
     signal?: AbortSignal;
+    /** Host policy check for backend-derived filesystem mutation targets. */
+    assertFilesystemPathAuthorized?: (targetPath: string) => void;
 };
 
 export type ScmBackendSelection = {
@@ -285,6 +288,7 @@ export interface ScmBackend {
         context: ScmBackendContext;
         request: ScmCommitCreateRequest;
     }): Promise<ScmCommitCreateResponse>;
+    commitUndoLast?(input: { context: ScmBackendContext; request: ScmCommitUndoLastRequest }): Promise<ScmCommitUndoLastResponse>;
     commitBackout(input: {
         context: ScmBackendContext;
         request: ScmCommitBackoutRequest;

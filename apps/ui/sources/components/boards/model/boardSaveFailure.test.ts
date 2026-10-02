@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createWorkBoardRecordPortV1, createWorkBoardV1, WorkBoardsV1Schema, type WorkBoardIntentV1 } from '@happier-dev/protocol';
+import { createWorkBoardArtifactPortV1, createWorkBoardV1, WorkBoardsV1Schema, type WorkBoardIntentV1 } from '@happier-dev/protocol';
+import { createWorkBoardArtifactBoundary } from '@/dev/testkit/harness/workBoardArtifactBoundary';
 
 import { resolveBoardSaveFailure, resolveCollectionSaveFailure } from './boardSaveFailure';
 import { createWorkBoardSaveQueue, projectDisplayedWorkBoards } from './workBoardSaveQueue';
@@ -23,11 +24,9 @@ describe('resolveBoardSaveFailure', () => {
 describe('resolveCollectionSaveFailure', () => {
     it('keeps a board whose delete was refused and says so in the Boards collection, not only on that board', async () => {
         const acknowledged = WorkBoardsV1Schema.parse({ v: 1, boards: [createWorkBoardV1({ id: 'b1', name: 'Overview' }), createWorkBoardV1({ id: 'b2', name: 'Release' })] });
-        // The Account KV boundary refuses this write (the server is unreachable).
-        const queue = createWorkBoardSaveQueue({ port: createWorkBoardRecordPortV1({
-            read: async () => ({ value: acknowledged, version: 0 }),
-            compareAndSet: async () => { throw new Error('offline'); },
-        }) });
+        const persistence = createWorkBoardArtifactBoundary(acknowledged);
+        persistence.offline(true);
+        const queue = createWorkBoardSaveQueue({ port: createWorkBoardArtifactPortV1(persistence.transport) });
 
         await queue.dispatch({ kind: 'delete', boardId: 'b2' });
 

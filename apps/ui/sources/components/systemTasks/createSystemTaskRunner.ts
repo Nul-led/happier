@@ -184,6 +184,9 @@ export function createSystemTaskRunner(options: Readonly<{
         })().catch(() => {
             // Publication and bridge failures are retryable. The prompt remains
             // current and a remounted owner may register a fresh continuation.
+            console.warn('[systemTasks] Prompt continuation failed; the current prompt can be retried', {
+                taskId, promptKind: prompt.kind,
+            });
         }).finally(() => {
             record.inFlightPromptSignatures.delete(signature);
             if (record.promptContinuation !== continuation
@@ -269,7 +272,7 @@ export function createSystemTaskRunner(options: Readonly<{
                 inFlightPromptSignatures: new Set(),
             };
             tasks.set(taskId, record);
-            record.unlistenBridge = await options.bridge.subscribe(taskId, {
+            const unlistenBridge = await options.bridge.subscribe(taskId, {
                 onEvent: (payload) => {
                     applyEvent(taskId, payload);
                 },
@@ -277,6 +280,8 @@ export function createSystemTaskRunner(options: Readonly<{
                     applyResult(taskId, payload);
                 },
             } satisfies SystemTaskBridgeListenerSet);
+            if (record.state.result) unlistenBridge();
+            else record.unlistenBridge = unlistenBridge;
             notifyTask(taskId);
             return taskId;
         },

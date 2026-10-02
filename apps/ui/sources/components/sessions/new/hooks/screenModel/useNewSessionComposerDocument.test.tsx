@@ -177,6 +177,7 @@ describe('useNewSessionComposerDocument', () => {
         const promptStore = createNewSessionPromptStore('Submitted');
         const hook = await renderHook(() => useNewSessionComposerDocument({
             draftId: 'flush-handoff', promptStore, persistedAttachments: [],
+            composerAttachmentEntriesById: {},
             scopeKey: 'flush-handoff', canSubmitRef: { current: true }, isSubmitting: false,
         }));
         const flush = () => { promptStore.setPrompt('Typed during creation'); };

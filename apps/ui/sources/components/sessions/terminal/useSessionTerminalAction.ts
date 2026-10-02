@@ -4,7 +4,6 @@ import { usePaneActionRailRightPaneHiddenByDetails } from '@/components/appShell
 
 import { useAppPaneScope } from '@/components/appShell/panes/hooks/useAppPaneScope';
 import { parseSessionPaneScopeId } from '@/components/sessions/panes/sessionPaneScopeId';
-import { isTerminalDetailsTab } from '@/components/terminal/terminalDetailsTabModel';
 import { closeEmbeddedTerminalOutsideDockLocation, openEmbeddedTerminalInDockLocation } from './embeddedTerminalDocking';
 import { useSessionTerminalAvailability } from './useSessionTerminalAvailability';
 import { setSessionTerminalMode } from './sessionTerminalMode';
@@ -24,15 +23,6 @@ export function useSessionTerminalAction(params: Readonly<{
     const scopeState = pane.scopeState;
     const rightTerminalActive = Boolean(scopeState?.right.isOpen) && scopeState?.right.activeTabId === 'terminal';
     const bottomTerminalActive = Boolean(scopeState?.bottom?.isOpen) && scopeState?.bottom?.activeTabId === 'terminal';
-    const activeDetailsTab = scopeState?.details.activeTabKey
-        ? scopeState.details.tabs.find((tab) => tab.key === scopeState.details.activeTabKey) ?? null
-        : null;
-    const detailsTerminalActive = Boolean(scopeState?.details.isOpen)
-        && activeDetailsTab != null
-        && isTerminalDetailsTab({
-            resource: activeDetailsTab.resource,
-            tabKey: activeDetailsTab.key,
-        });
 
     const onPress = React.useCallback(() => {
         if (!terminalEnabled) return;
@@ -45,18 +35,8 @@ export function useSessionTerminalAction(params: Readonly<{
                 pane.closeBottom();
                 return;
             }
-            closeEmbeddedTerminalOutsideDockLocation({ pane, dockLocation: 'bottom' });
+            // Terminals opened in Details are per-tab moves (lab M); showing the pane leaves them be.
             openEmbeddedTerminalInDockLocation({ pane, dockLocation: 'bottom' });
-            return;
-        }
-
-        if (dockLocation === 'details') {
-            if (detailsTerminalActive) {
-                pane.closeDetailsTab(activeDetailsTab.key);
-                return;
-            }
-            closeEmbeddedTerminalOutsideDockLocation({ pane, dockLocation: 'details' });
-            openEmbeddedTerminalInDockLocation({ pane, dockLocation: 'details' });
             return;
         }
 
@@ -70,13 +50,11 @@ export function useSessionTerminalAction(params: Readonly<{
         openEmbeddedTerminalInDockLocation({ pane, dockLocation: 'sidebar' });
     }, [
         bottomTerminalActive,
-        detailsTerminalActive,
         dockLocation,
         pane,
         rightTerminalActive,
         rightPaneHiddenByDetails,
         terminalEnabled,
-        activeDetailsTab,
         params.sessionId,
         serverId,
         scopeState,
@@ -84,9 +62,7 @@ export function useSessionTerminalAction(params: Readonly<{
 
     const active = dockLocation === 'bottom'
         ? bottomTerminalActive
-        : dockLocation === 'details'
-            ? detailsTerminalActive
-            : rightTerminalActive && !rightPaneHiddenByDetails;
+        : rightTerminalActive && !rightPaneHiddenByDetails;
 
     return { available: terminalEnabled, active: terminalEnabled && active, onPress };
 }

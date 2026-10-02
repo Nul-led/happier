@@ -69,6 +69,8 @@ export type MachineLiveStreamRelayClientInput = Readonly<{
     streamId: string;
     streamFamily: string;
     sourceId?: string;
+    /** Exact mounted source occurrence, checked by the capture owner (not a relay grant). */
+    sourceOccurrenceId?: string;
     viewerSocketId?: string | null;
     caps: MachineLiveStreamCapsV1;
     codecId?: MachineLiveStreamCodecIdV1;
@@ -117,7 +119,7 @@ export async function openMachineLiveStreamRelayClient(input: MachineLiveStreamR
     const daemonStarted = await startDaemonRelay({
         machineId: input.sourceMachineId,
         serverId: input.serverId,
-        startRequest: started.startRequest,
+        startRequest: { ...started.startRequest, ...(input.sourceOccurrenceId ? { sourceOccurrenceId: input.sourceOccurrenceId } : {}) },
         ...(typeof input.timeoutMs === 'number' ? { timeoutMs: input.timeoutMs } : {}),
     });
     if (!daemonStarted.ok) return { ok: false, reasonCode: daemonStarted.reasonCode };

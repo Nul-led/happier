@@ -326,7 +326,13 @@ export async function runCompiledActionCliCommand(params: Readonly<{
     return;
   }
 
-  const requestSignal = requestSignalForCommand(command, params.signal);
+  const observation = command.binding.observation ? new AbortController() : null;
+  const onInterrupt = () => observation?.abort();
+  if (observation) process.on('SIGINT', onInterrupt);
+  const callerSignal = observation
+    ? params.signal ? AbortSignal.any([params.signal, observation.signal]) : observation.signal
+    : params.signal;
+  const requestSignal = requestSignalForCommand(command, callerSignal);
   let result: ActionExecuteResult;
   try {
     const serverFeaturesStore = deps.createServerFeaturesSnapshotStoreFn({
@@ -385,6 +391,12 @@ export async function runCompiledActionCliCommand(params: Readonly<{
       actionRequestId: invocationId,
       defaultSessionId: typeof input.sessionId === 'string' ? input.sessionId : null,
       ...(requestSignal ? { signal: requestSignal } : {}),
+      ...(fixedServer ? { serverId: fixedServer.serverId } : {}),
+      ...(command.binding.observation === 'changes' ? {
+        onWaitSnapshot: async (snapshot: unknown) => writeJsonStdout({
+          kind, target: input.target, condition: input.condition, snapshot,
+        }),
+      } : {}),
     });
   } catch (error) {
     const mapped = mapUnknownErrorToControlError(error);
@@ -398,6 +410,8 @@ export async function runCompiledActionCliCommand(params: Readonly<{
       help: null,
     });
     return;
+  } finally {
+    if (observation) process.removeListener('SIGINT', onInterrupt);
   }
 
   const normalized = normalizeActionExecuteResult(result);

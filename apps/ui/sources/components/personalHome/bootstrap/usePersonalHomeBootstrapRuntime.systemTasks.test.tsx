@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
-import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { renderHook } from '@/dev/testkit/hooks/renderHook';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
+import { installLocalStorageMock } from '@/auth/storage/tokenStorage.web.testHelpers';
 import type { ServerCredentialLookupOptions } from '@/auth/storage/tokenStorage';
 import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
 import type { PersonalHomeFacts } from './personalHomeBootstrapTypes';
+import { usePersonalHomeBootstrapRuntime } from './usePersonalHomeBootstrapRuntime';
 
 /**
  * Production-composition regression test for the Desktop Personal Home bootstrap.
@@ -30,7 +34,8 @@ const harness = vi.hoisted(() => {
     const SYSTEM_TASK_PROTOCOL_VERSION = 1;
     const CANONICAL_SERVER_URL = 'http://127.0.0.1:3005';
     const HOME_B_IDENTITY = 'srv_home_b_identity';
-    const HOME_B_TOKEN = 'home-b-token';
+    // Credential boundary mirrors the account subject returned by this Home's account endpoint.
+    const HOME_B_TOKEN = 'eyJhbGciOiJub25lIn0.eyJzdWIiOiJhY2N0X2hvbWVfYiJ9.fixture';
     const DEFAULT_HOME_DESCRIPTOR = {
         v: 1,
         homeServerIdentityId: HOME_B_IDENTITY,
@@ -475,6 +480,14 @@ const harness = vi.hoisted(() => {
         recordedResults: () => recordedResults,
         events: () => [...events],
         state: () => ({ ...runtime }),
+        installExistingHome() {
+            runtime.installed = true;
+            runtime.healthy = true;
+            runtime.serviceActive = true;
+            runtime.purpose = { kind: 'personal-home', canonicalServerUrl: CANONICAL_SERVER_URL };
+            runtime.version = '0.3.0-manual-bridge';
+            credentialsStore = { token: HOME_B_TOKEN };
+        },
         resultForTask: (taskId: string) => recordedResults.find((entry) => entry.taskId === taskId)?.data ?? null,
         endpointAuthCalls: () => endpointAuthCalls,
         persistCalls: () => persistCalls,
@@ -809,8 +822,79 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
             await resetProfileRegistry();
         } finally {
             await harness.reset();
+            const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+            vi.mocked(TokenStorage.getCredentialsForServerUrl).mockImplementation(async () => await harness.storage.readCredentials());
             vi.useRealTimers();
         }
+    });
+
+    it.each(['primary', 'canonical-alias'] as const)('does not prepare this computer when the runtime URL names two saved Home identities (%s)', async (matching) => {
+        const storage = installLocalStorageMock();
+        vi.stubGlobal('window', { localStorage: globalThis.localStorage });
+        vi.stubGlobal('document', {});
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        profiles.resetServerProfilesRuntimeForTests();
+        try {
+            harness.installExistingHome();
+            const profile = await profiles.adoptPersonalHomeProfileAndComplete({
+                descriptor: { serverUrl: harness.CANONICAL_SERVER_URL, homeServerIdentityId: harness.HOME_B_IDENTITY },
+                source: 'desktop-personal-home',
+            });
+            const persisted = [...storage.store.entries()].find(([key]) => key.includes('server-state-v1'))!;
+            // Seed the genuine persistence boundary: live adoption correctly refuses conflicting identities.
+            const state = JSON.parse(persisted[1]) as { servers: Record<string, ServerProfile> };
+            state.servers['same-url-other-home'] = {
+                ...profile, id: 'same-url-other-home', serverIdentityId: 'srv_other_home',
+                ...(matching === 'canonical-alias' ? {
+                    serverUrl: 'https://other-home.example.test', canonicalServerUrl: harness.CANONICAL_SERVER_URL,
+                } : {}),
+            };
+            storage.store.set(persisted[0], JSON.stringify(state));
+            profiles.resetServerProfilesRuntimeForTests();
+            expect(profiles.resolveSavedServerProfileByUrl(harness.CANONICAL_SERVER_URL, { includeCanonicalServerUrl: true }).kind).toBe('ambiguous');
+            const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+            const facts = await runHookOperation(() => hook.getCurrent().readFacts());
+            await expect(runHookOperation(() => hook.getCurrent().operations['prepare-computer']!(facts))).rejects.toBeInstanceOf(Error);
+            expect(harness.endpointRequests().filter((request) => request.path === '/v1/auth/response')).toEqual([]);
+        } finally {
+            standardCleanup();
+            storage.restore();
+            vi.unstubAllGlobals();
+            profiles.resetServerProfilesRuntimeForTests();
+        }
+    });
+
+    it.each(['replacement', 'first-adoption'])('pairs the newly adopted exact Home at an unchanged URL (%s)', async (scenario) => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        harness.installExistingHome();
+        const previous = scenario === 'replacement' ? await profiles.adoptPersonalHomeProfileAndComplete({
+            descriptor: { serverUrl: harness.CANONICAL_SERVER_URL, homeServerIdentityId: 'srv_home_a_identity' },
+            source: 'desktop-personal-home',
+        }) : null;
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        vi.mocked(TokenStorage.getCredentialsForServerUrl).mockImplementation(async (_url, options) => (
+            options?.serverId === harness.HOME_B_IDENTITY ? { token: harness.HOME_B_TOKEN } : null
+        ));
+        const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+        // Settle the native status read while the predecessor (or no profile) is
+        // still present, so the mounted approval owner has already seen this URL.
+        await act(async () => { vi.runOnlyPendingTimers(); });
+        await flushHookEffects();
+        expect(hook.getCurrent().localServerUrl).toBe(harness.CANONICAL_SERVER_URL);
+        await act(async () => {
+            if (previous) await profiles.removeServerProfile(previous.id);
+            await profiles.adoptPersonalHomeProfileAndComplete({
+                descriptor: { serverUrl: harness.CANONICAL_SERVER_URL, homeServerIdentityId: harness.HOME_B_IDENTITY },
+                source: 'desktop-personal-home',
+            });
+        });
+        const facts = await runHookOperation(() => hook.getCurrent().readFacts());
+        await runHookOperation(() => hook.getCurrent().operations['prepare-computer']!(facts));
+        expect(harness.recordedPromptAnswers()).toEqual([expect.objectContaining({ answer: { approved: true } })]);
+        expect(harness.endpointRequests().filter((request) => request.path === '/v1/auth/response')).toEqual([
+            expect.objectContaining({ serverId: harness.HOME_B_IDENTITY, authorization: `Bearer ${harness.HOME_B_TOKEN}` }),
+        ]);
+        vi.mocked(TokenStorage.getCredentialsForServerUrl).mockImplementation(async () => await harness.storage.readCredentials());
     });
 
     it('drives the real relay runtime control and bootstrap helper through canonical install/update readbacks and ends healthy with signup closed', async () => {

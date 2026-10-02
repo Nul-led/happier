@@ -3,7 +3,10 @@ import { ScrollView, View, type LayoutChangeEvent } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { usePaneHeaderSlotContent } from '@/components/appShell/panes/paneHeaderSlot';
-import { SessionRoleValueRow } from '@/components/roles/session/sessionRole';
+import { SessionRoleValueRow, isSessionRoleSnapshotCopiedAcrossOwners } from '@/components/roles/session/sessionRole';
+import { readSessionRolesV1 } from '@happier-dev/protocol';
+import { useActiveServerAccountScope } from '@/sync/domains/state/storage';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { SessionAgentsLaunchMenu } from '@/components/sessions/agents/launch/SessionAgentsLaunchMenu';
 import { useSessionGoalControlEntry } from '@/components/sessions/workState/openSessionGoalControl';
 import { SessionGoalValueRow } from '@/components/sessions/workState/SessionGoalControlContent';
@@ -53,8 +56,9 @@ import { SessionWorkMoreMenu } from './SessionWorkMoreMenu';
 import { createSessionWorkMapDetailsTab } from './SessionWorkMapDetailsView';
 import { projectSessionWorkMap } from './workMapProducer';
 import { WorkItemRow, WorkViewportContext, useWorkScrollViewport } from './WorkItemRow';
+import { SessionWorkNotifications } from './SessionWorkNotifications';
 import { WorkFlatSheet, WorkSection } from './WorkSection';
-import { groupWorkByState, type WorkItem, type WorkProjection, type WorkStateGroups } from './workProjection';
+import { groupWorkByState, resolveWorkReadPresentation, type WorkItem, type WorkProjection, type WorkStateGroups } from './workProjection';
 
 /**
  * The Session's Work tab (ORC §3.8; lab `session-A`, `session-G`, `session-S`).
@@ -149,6 +153,12 @@ export const SessionWorkView = React.memo((props: Readonly<{
     const deviceType = useDeviceType();
     const session = useSessionViewShellSession(props.sessionId, props.serverId);
     const sessionServerId = props.serverId ?? session?.serverId ?? null;
+    const inheritedFrom = readSessionRolesV1(session?.metadata)?.inheritedFrom ?? '';
+    const inheritedLead = useSessionViewShellSession(inheritedFrom, sessionServerId);
+    const accountScope = useActiveServerAccountScope();
+    const accountId = accountScope && sessionServerId && areServerProfileIdentifiersEquivalent(accountScope.serverId, sessionServerId)
+        ? accountScope.accountId : null;
+    const copiedAtSpawn = isSessionRoleSnapshotCopiedAcrossOwners(session, inheritedLead, accountId);
     const sources = useSessionWorkSources();
     const projection = sources?.projection ?? null;
     const agentActivity = sources?.agentActivity ?? null;
@@ -276,24 +286,19 @@ export const SessionWorkView = React.memo((props: Readonly<{
                 onAddTrigger={hasTriggersSection ? scrollToTriggers : null}
                 onKeepGoing={goalControlEntry.available ? goalControlEntry.open : null}
             />
-            <SessionWorkMoreMenu sessionId={props.sessionId} hasReports={hasReports} />
+            <SessionWorkMoreMenu sessionId={props.sessionId} hasReports={hasReports} copiedAtSpawn={copiedAtSpawn} />
         </View>
-    ), [canExpandMap, goalControlEntry, hasReports, hasTriggersSection, launcher, openMapInDetails, props.sessionId, scrollToTriggers, styles.headerActions, view]);
+    ), [canExpandMap, copiedAtSpawn, goalControlEntry, hasReports, hasTriggersSection, launcher, openMapInDetails, props.sessionId, scrollToTriggers, styles.headerActions, view]);
     const subtitle = projection ? readSubtitle(projection) : null;
+    const { nothingYet, managedLoading, managedUnavailable } = resolveWorkReadPresentation({
+        projection, managedRuns: sources?.managedRuns ?? null, transcriptLoaded: useSessionTranscriptLoaded(props.sessionId),
+    });
     const headerLine = React.useMemo(
-        () => ({ segments: [subtitle ?? t('sessionWork.subtitle.nothingStarted')] }),
-        [subtitle],
+        () => ({ segments: subtitle ? [subtitle] : nothingYet ? [t('sessionWork.subtitle.nothingStarted')] : [] }),
+        [nothingYet, subtitle],
     );
     usePaneHeaderSlotContent(React.useMemo(() => ({ line: headerLine, action: headerAction }), [headerAction, headerLine]));
 
-    const managedLoading = sources?.managedRuns.phase === 'loading';
-    const itemCount = projection
-        ? projection.sessions.length + projection.workflows.length + projection.backgroundRuns.length + projection.agents.length
-        : 0;
-    // Agent rows come from the transcript: before it is read, an empty list is unknown, not empty
-    // (pane-states lab "L"), so the invite waits for it.
-    const transcriptLoaded = useSessionTranscriptLoaded(props.sessionId);
-    const nothingYet = projection !== null && !managedLoading && transcriptLoaded && itemCount === 0;
     const unavailableText = resolveUnavailableText(launcher, machineName);
     const workMap = React.useMemo(
         () => (view === 'map' && projection
@@ -342,11 +347,13 @@ export const SessionWorkView = React.memo((props: Readonly<{
                     testID="session-work-lead-archived"
                     reason={t('sessionWork.leadArchived', { count: projection?.summary.outstanding ?? 0 })}
                 />
-            ) : sources?.managedRuns.refreshFailed && sources.managedRuns.phase === 'loaded' ? (
+            ) : null}
+            {sources?.managedRuns.refreshFailed && sources.managedRuns.phase === 'loaded' ? (
                 <SurfaceFreshnessLine
                     testID="session-work-runs-stale"
                     tone="warning"
                     reason={t('sessionWork.runsStale')}
+                    action={{ label: t('common.retry'), onPress: sources.managedRuns.retry }}
                 />
             ) : null}
             <WorkViewportContext.Provider value={workViewport.viewport}>
@@ -363,11 +370,17 @@ export const SessionWorkView = React.memo((props: Readonly<{
                     {/* The top value rows (Role, Goal; lab `convo-W8full`) lie flat on the pane like the
                         sections below (INT r0.4 §6 I4): page `Item` rows on the flat sheet, on the list's inset. */}
                     <WorkFlatSheet testID="session-work-top">
-                        <SessionRoleValueRow sessionId={props.sessionId} testID="session-work-role" />
+                        <SessionRoleValueRow sessionId={props.sessionId} copiedAtSpawn={copiedAtSpawn} testID="session-work-role" />
                         {/* FIN 04's slot: the Goal row opens the one Goal control, the composer's. */}
                         <SessionGoalValueRow sessionId={props.sessionId} entry={goalControlEntry} testID="session-work-goal" />
+                        <SessionWorkNotifications sessionId={props.sessionId} serverId={sessionServerId} />
                     </WorkFlatSheet>
                     <SessionAgentStartDraftRows drafts={startDrafts} onOpen={setActiveDetailsTab} />
+                    {managedUnavailable ? (
+                        <SurfaceStateCard testID="session-work-runs-unavailable" size="line" kind="error"
+                            title={t('common.unavailable')}
+                            action={sources ? { label: t('common.retry'), onPress: sources.managedRuns.retry } : undefined} />
+                    ) : null}
                     {/* With no work yet, Triggers is what the Session can set up first (lab `convo-ST`). */}
                     {nothingYet ? triggersSlot : null}
                     {nothingYet ? (
@@ -430,9 +443,9 @@ export const SessionWorkView = React.memo((props: Readonly<{
                     {nothingYet ? null : triggersSlot}
                     <View testID="session-work-roles-slot" style={styles.slot}>
                         {/* Lane U2's section. */}
-                        <SessionRolesSection sessionId={props.sessionId} />
+                        <SessionRolesSection sessionId={props.sessionId} copiedAtSpawn={copiedAtSpawn} />
                     </View>
-                    <SessionNotesSection sessionId={props.sessionId} />
+                    <SessionNotesSection sessionId={props.sessionId} copiedAtSpawn={copiedAtSpawn} />
                 </ScrollView>
             </WorkViewportContext.Provider>
         </View>

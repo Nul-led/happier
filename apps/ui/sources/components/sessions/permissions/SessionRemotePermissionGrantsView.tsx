@@ -254,7 +254,7 @@ export function SessionRemotePermissionGrantsView(props: Readonly<{
 
     if (state.kind === 'loading') {
         return (
-            <ItemList presentation="page" style={{ paddingTop: 0 }}>
+            <ItemList style={{ paddingTop: 0 }}>
                 {header}
                 <ItemGroup surface="none">
                     <SurfaceStateCard
@@ -271,7 +271,7 @@ export function SessionRemotePermissionGrantsView(props: Readonly<{
 
     if (state.kind === 'unavailable') {
         return (
-            <ItemList presentation="page" style={{ paddingTop: 0 }}>
+            <ItemList style={{ paddingTop: 0 }}>
                 {header}
                 <ItemGroup surface="none">
                     <SurfaceStateCard
@@ -290,7 +290,7 @@ export function SessionRemotePermissionGrantsView(props: Readonly<{
 
     if (state.grants.length === 0 && !state.nextCursor) {
         return (
-            <ItemList presentation="page" style={{ paddingTop: 0 }}>
+            <ItemList style={{ paddingTop: 0 }}>
                 {header}
                 <ItemGroup surface="none">
                     <SurfaceStateCard
@@ -307,7 +307,7 @@ export function SessionRemotePermissionGrantsView(props: Readonly<{
     }
 
     return (
-        <ItemList presentation="page" style={{ paddingTop: 0 }}>
+        <ItemList style={{ paddingTop: 0 }}>
             {header}
 
             {operationIssue ? (

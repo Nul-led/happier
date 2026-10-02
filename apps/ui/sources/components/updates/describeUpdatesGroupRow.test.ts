@@ -59,6 +59,18 @@ describe('describeUpdatesGroupRow — one row per machine, one state, at most on
         expect(row.action).toEqual({ kind: 'group', label: 'updates.action.update' });
     });
 
+    it('includes the canonical CLI session note for the items its action runs, including this computer', () => {
+        const group = machine([cli, codex], { kind: 'thisComputer', machineId: 'different-group-id' });
+        expect(describeUpdatesGroupRow(group, { sessionsRunningOn: new Set(['studio']) }).status)
+            .toContain('updates.row.restartsService');
+        expect(describeUpdatesGroupRow(group, { sessionsRunningOn: new Set(['different-group-id']) }).status)
+            .not.toContain('updates.row.restartsService');
+        expect(describeUpdatesGroupRow(machine([current(cli), codex]), { sessionsRunningOn: new Set(['studio']) }).status)
+            .not.toContain('updates.row.restartsService');
+        expect(describeUpdatesGroupRow(machine([{ ...cli, skipped: true }, codex]), { sessionsRunningOn: new Set(['studio']) }).status)
+            .not.toContain('updates.row.restartsService');
+    });
+
     it('says an offline machine is offline and when it was last seen, with nothing to press', () => {
         const row = describeUpdatesGroupRow(machine([{ ...cli, state: 'offline', action: { kind: 'none' } }], { online: false, lastSeenAt: 1_000 }), {
             formatLastSeen: (at) => `t${at}`,

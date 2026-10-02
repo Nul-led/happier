@@ -31,6 +31,8 @@ import { createSpawnConnectedServicesTeamResourceCatalogResolver } from '@/sessi
 import { createSessionFollowSourceKeyPreparationAfterSet } from '@/agent/runtime/session/follow/createSessionFollowSourceKeyPreparationAfterSet';
 import { resolveInvocationAuthority } from '@happier-dev/protocol/actions/invocationAuthority';
 import { resolveEffectiveTerminalPresentUserPolicy } from '@/settings/accountSettings/resolveEffectiveTerminalPresentUserPolicy';
+import { observeAccountChanges } from '@/api/observeAccountChanges';
+import { resolveServerHttpBaseUrl, runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 
 type CliActionExecutorParams = Parameters<typeof createCliActionExecutorHarness>[0]
   & CliTranscriptActionExecutorOptions
@@ -63,15 +65,26 @@ export function createCredentialedTargetActionCurrentIntent(
   credentials: StoredCredentials,
 ): (request: TargetActionCurrentIntentRequest) => Promise<TargetActionCurrentIntentResult> {
   const store = createCliApprovalsArtifactStore({ credentials });
-  return createTargetActionCurrentIntentAdapter({
-    create: (request) => store.targetActionApprovalsCreate({ request }),
-    read: (artifactId) => store.targetActionApprovalsGet({ artifactId }),
-  });
+  return async (currentIntent) => {
+    const serverUrl = resolveServerHttpBaseUrl();
+    return await runWithServerHttpBaseUrl(serverUrl, () => createTargetActionCurrentIntentAdapter({
+      create: (request) => store.targetActionApprovalsCreate({ request }),
+      read: (artifactId) => store.targetActionApprovalsGet({ artifactId }),
+      subscribeChanges: (artifactId, onChange, onError) => observeAccountChanges({
+        token: credentials.token,
+        serverUrl,
+        entityId: artifactId,
+      }, { onChange, onError }),
+    })(currentIntent));
+  };
 }
 
 export function createCliActionExecutor(
   params: CliActionExecutorParams,
 ): ReturnType<typeof createCliActionExecutorHarness>['executor'] {
+  const invokeContributedAction: ActionExecutorDeps['invokeContributedAction'] = params.invokeContributedAction
+    ?? (params.pluginActionExecutionOwner === 'current_process' ? undefined
+      : async (request) => pluginExecutor!.invokeContributedAction(request));
   const actionSettingsProvider = params.actionsSettingsProvider ?? createActionSettingsProvider({
     scopeKey: resolveAccountSettingsScopeKeyForToken(params.token),
   });
@@ -106,8 +119,8 @@ export function createCliActionExecutor(
       ...(params.runtimeActionExecute
         ? { runtimeActionExecute: params.runtimeActionExecute }
         : {}),
-      ...(params.invokeContributedAction
-        ? { invokeContributedAction: params.invokeContributedAction }
+      ...(invokeContributedAction
+        ? { invokeContributedAction }
         : {}),
       ...(params.targetActionApprovalReplay
         ? { targetActionApprovalReplay: params.targetActionApprovalReplay }
@@ -175,9 +188,9 @@ export function createCliActionExecutor(
     },
   );
   const base = harness.executor;
-  const daemonAware = params.pluginActionExecutionOwner === 'current_process'
-    ? base
-    : createDaemonPluginActionExecutor({ base });
+  const pluginExecutor = params.pluginActionExecutionOwner === 'current_process'
+    ? null : createDaemonPluginActionExecutor({ base });
+  const daemonAware = pluginExecutor ?? base;
   const resolveContext = (context: Parameters<typeof base.execute>[2]) => {
     const currentWorkspaceWrites = harness.deps.getCurrentWorkspaceWrites?.();
     const credential = params.credentials && hasStoredSessionCredentialProvenance(params.credentials) ? 'terminal' : 'api_token';

@@ -53,7 +53,7 @@ import { tryDecryptSessionOwnerMetadataView } from '@/session/transport/encrypti
 import { callMachineRpc } from '@/session/transport/rpc/machineRpc';
 import { updateSessionMetadataWithRetry } from '@/session/metadata/updateSessionMetadataWithRetry';
 import { summarizeSessionRecord, type SessionSummary } from '@/cli/output/session/sessionSummary';
-import { delay } from '@/utils/time';
+import { openSessionEventSource } from '@/session/transport/socket/sessionSocketAgentState';
 import { logger } from '@/utils/logger';
 import { sendSessionMessage } from './sendSessionMessage';
 import { ensureSessionMachineAccessKeyBinding } from '@/api/session/ensureSessionMachineAccessKeyBinding';
@@ -80,7 +80,7 @@ export type DirectSpawnedSessionTransport = Readonly<{
   ) => Promise<unknown>;
   resolveSpawnSessionByNonce: (
     spawnNonce: string,
-    options?: Readonly<{ signal?: AbortSignal }>,
+    options?: Readonly<{ signal?: AbortSignal; timeoutMs?: number }>,
   ) => Promise<SpawnSessionNonceResolution>;
 }>;
 
@@ -238,7 +238,6 @@ function readForkFilesNotCopied(metadata: unknown): SessionForkFilesNotCopiedV1 
 }
 
 const DEFAULT_SPAWNED_SESSION_FETCH_TIMEOUT_MS = 10_000;
-const DEFAULT_SPAWNED_SESSION_FETCH_POLL_INTERVAL_MS = 200;
 const SPAWN_TRANSIENT_ERROR_MARKERS = [
   'Request failed: /spawn-session, The socket connection was closed unexpectedly',
 ] as const;
@@ -262,27 +261,34 @@ async function waitForSpawnedSessionVisibility(params: Readonly<{
   token: string;
   sessionId: string;
   timeoutMs: number;
-  pollIntervalMs: number;
   signal?: AbortSignal;
 }>): Promise<SpawnedSessionVisibility> {
   const deadlineMs = Date.now() + params.timeoutMs;
-  while (true) {
-    if (params.signal?.aborted) return { type: 'cancelled' };
-    let session: Awaited<ReturnType<typeof fetchSessionById>>;
-    try {
-      session = await fetchSessionById({
-        token: params.token,
-        sessionId: params.sessionId,
-        ...(params.signal ? { signal: params.signal } : {}),
-      });
-    } catch (error) {
+  // The account stream is available before the newly created Session is visible.
+  const events = openSessionEventSource({ ...params, scope: 'user' });
+  try {
+    while (true) {
+      const revision = events.currentRevision();
       if (params.signal?.aborted) return { type: 'cancelled' };
-      return { type: 'failed' };
+      let session: Awaited<ReturnType<typeof fetchSessionById>>;
+      try {
+        session = await fetchSessionById({
+          token: params.token,
+          sessionId: params.sessionId,
+          ...(params.signal ? { signal: params.signal } : {}),
+        });
+      } catch {
+        return { type: params.signal?.aborted ? 'cancelled' : 'failed' };
+      }
+      if (session) return { type: 'visible', session };
+      if (!(await events.waitForChange(revision, { deadlineMs, signal: params.signal }))) {
+        return { type: params.signal?.aborted ? 'cancelled' : 'unavailable' };
+      }
     }
-    if (session) return { type: 'visible', session };
-    if (Date.now() >= deadlineMs) return { type: 'unavailable' };
-    // Avoid tight loops when callers set absurdly low env overrides.
-    await delay(Math.max(25, params.pollIntervalMs));
+  } catch {
+    return { type: params.signal?.aborted ? 'cancelled' : 'failed' };
+  } finally {
+    await events.close();
   }
 }
 
@@ -1213,20 +1219,20 @@ export async function createSpawnedSession(
     try {
       if (params.directTransport) {
         return normalizeSpawnSessionNonceResolution(
-          await params.directTransport.resolveSpawnSessionByNonce(nonce, { signal }),
+          await params.directTransport.resolveSpawnSessionByNonce(nonce, { signal, ...(timeoutMs !== undefined ? { timeoutMs } : {}) }),
         );
       }
       const resolved = params.machineActionTransport
         ? await params.machineActionTransport(
           RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE_BY_NONCE,
-          { spawnNonce: nonce },
+          { spawnNonce: nonce, ...(timeoutMs !== undefined ? { timeoutMs } : {}) },
           signal ? { signal } : undefined,
         )
         : await callMachineRpc({
           credentials: params.credentials,
           machineId: exactMachineId,
           method: RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE_BY_NONCE,
-          request: { spawnNonce: nonce },
+          request: { spawnNonce: nonce, ...(timeoutMs !== undefined ? { timeoutMs } : {}) },
           ...(typeof timeoutMs === 'number' && timeoutMs > 0 ? { timeoutMs } : {}),
           ...(signal ? { signal } : {}),
         });
@@ -1285,7 +1291,7 @@ export async function createSpawnedSession(
       abandonSpawnedSessionBestEffort({
         spawnNonce,
         reason: settledSpawn.errorMessage,
-        resolveSpawnSessionByNonce: (nonce) => resolveSpawnSessionByNonce(nonce),
+        resolveSpawnSessionByNonce: (nonce, timeoutMs) => resolveSpawnSessionByNonce(nonce, undefined, timeoutMs),
         stopSession: async (sessionId) => {
           const stopped = await requestSessionStop({ credentials: params.credentials, idOrPrefix: sessionId });
           return stopped.ok && stopped.stopped;
@@ -1333,12 +1339,10 @@ export async function createSpawnedSession(
     ...(params.signal ? { signal: params.signal } : {}),
   });
   const fetchTimeoutMs = resolvePositiveIntFromEnv('HAPPIER_SESSION_SPAWN_FETCH_TIMEOUT_MS', DEFAULT_SPAWNED_SESSION_FETCH_TIMEOUT_MS);
-  const pollIntervalMs = resolvePositiveIntFromEnv('HAPPIER_SESSION_SPAWN_FETCH_POLL_INTERVAL_MS', DEFAULT_SPAWNED_SESSION_FETCH_POLL_INTERVAL_MS);
   const visibility = await waitForSpawnedSessionVisibility({
     token: params.credentials.token,
     sessionId,
     timeoutMs: fetchTimeoutMs,
-    pollIntervalMs,
     ...(params.signal ? { signal: params.signal } : {}),
   });
   if (visibility.type === 'failed') {

@@ -293,6 +293,7 @@ export function createDaemonMachineBootstrapRuntime(
             ...(params.serviceLabel ? { serviceLabel: params.serviceLabel } : null),
           }, {
             isDaemonQuiescing: params.isShuttingDown,
+            ...(params.liveStreamCaptureRegistry ? { liveStreamCaptureRegistry: params.liveStreamCaptureRegistry } : {}),
             resolveHostedSessionWorkingDirectory: params.resolveHostedSessionWorkingDirectory,
             ...(workspaceSyncHandoffAdapter
               ? { workspaceSyncHandoffAdapter }

@@ -36,11 +36,13 @@ export const SessionNotesSection = React.memo(function SessionNotesSection(props
     const [draft, setDraft] = React.useState(notes);
 
     const startEditing = React.useCallback(() => {
+        if (props.copiedAtSpawn) return;
         setDraft(notes);
         setEditing(true);
-    }, [notes]);
+    }, [notes, props.copiedAtSpawn]);
     // The editor closes only once the notes are saved; a refusal keeps the draft for retry.
     const save = async () => {
+        if (props.copiedAtSpawn) return;
         if (draft !== notes && !await settleSessionRoleWrite(await roleActions.setSessionNotes(props.sessionId, draft))) return;
         setEditing(false);
     };
@@ -65,7 +67,7 @@ export const SessionNotesSection = React.memo(function SessionNotesSection(props
                 />
             )}
         >
-            {editing ? (
+            {editing && !props.copiedAtSpawn ? (
                 <View style={styles.inset}>
                     <FieldTextInput
                         testID="session-work-notes.field"

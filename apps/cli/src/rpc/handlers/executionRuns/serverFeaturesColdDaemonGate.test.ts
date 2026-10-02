@@ -26,11 +26,13 @@ function unusedBridgeMethod(): never {
 
 function createUnusedExecutionRunBridge(): ExecutionRunHostBridgeContract {
   return {
+    recoverRetainedRuns: async () => {},
     get: () => null,
     getRunningCount: () => 0,
     getStructuredMeta: () => null,
     getLatestToolResult: () => null,
     waitForTerminal: async () => unusedBridgeMethod(),
+    waitForRunStateChange: async () => unusedBridgeMethod(),
     waitForInputTurn: async () => unusedBridgeMethod(),
     getPublic: () => null,
     listPublic: () => [],
@@ -45,6 +47,7 @@ function createUnusedExecutionRunBridge(): ExecutionRunHostBridgeContract {
     readTurnStream: async () => unusedBridgeMethod(),
     cancelTurnStream: async () => unusedBridgeMethod(),
     stop: async () => unusedBridgeMethod(),
+    cancelCurrentTurn: async () => unusedBridgeMethod(),
     respondToPermissionRequest: async () => unusedBridgeMethod(),
     completePermissionRequest: async () => unusedBridgeMethod(),
     applyAction: async () => unusedBridgeMethod(),

@@ -59,7 +59,7 @@ export function buildQualifiedConnectedAccountProfileOptionsByServiceId(params: 
             // derived identities must not be promoted into a generic name field.
             label: presentation ? presentation.primaryLabel
                 : resolveQualifiedConnectedAccountLabel({
-                    labelsByKey: params.labelsByKey, service: account.ref.service, accountId: account.ref.accountId,
+                    labelsByKey: params.labelsByKey, service: account.ref.service, legacyServiceId: null, accountId: account.ref.accountId,
                 }) ?? (account.displayName?.trim() || null),
         });
     }

@@ -13,12 +13,14 @@ export function isSupportedHerdrVersion(value: string): boolean {
 
 export async function resolveHerdrRuntimeBinary(params: Readonly<{
   actionTimeoutMs: number;
+  processEnv?: NodeJS.ProcessEnv;
 }>): Promise<string | null> {
-  const binary = process.env.HERDR_BIN_PATH?.trim() || 'herdr';
+  const binary = (params.processEnv ?? process.env).HERDR_BIN_PATH?.trim() || 'herdr';
   try {
     const { stdout } = await execFileWithDeadline(binary, ['--version'], {
       timeout: params.actionTimeoutMs,
       windowsHide: true,
+      ...(params.processEnv ? { env: params.processEnv } : {}),
     });
     return isSupportedHerdrVersion(stdout.toString()) ? binary : null;
   } catch {

@@ -11,16 +11,16 @@ import { storage } from '@/sync/domains/state/storageStore';
 import { resolveSessionMachineId } from '@/sync/domains/session/external/resolveSessionMachineId';
 
 import { buildMachineUpdateGroups, readUpdatableInstallables, type UpdatesGroup } from './buildMachineUpdateGroups';
-import { buildUpdatesSummary, planUpdateAll, type UpdatesSummary } from './items/buildUpdatesSummary';
+import { buildUpdatesSummary, type UpdatesSummary } from './items/buildUpdatesSummary';
 import type { UpdateItem } from './items/updateItem';
 import { useMachinesCapabilitySnapshots } from './machineCapabilitySnapshots';
-import { markUpdateCompletionsSeen, refreshMachineUpdateFacts, runMachineItemUpdate, useMachineUpdateRuns, useUnseenUpdateCompletions } from './machineUpdateRuns';
+import { markUpdateCompletionsSeen, refreshMachineUpdateFacts, runMachineItemUpdate, useMachineUpdateRuns, useUnseenUpdateCompletions, useUpdateBatch, type UpdateAllProgress } from './machineUpdateRuns';
 import { useAppUpdateStatus } from './useAppUpdateStatus';
 import { useThisComputerCliUpdate } from './useThisComputerCliUpdate';
 
 export type { UpdatesGroup };
 
-export type UpdateAllProgress = Readonly<{ done: number; total: number; stopping: boolean }>;
+export type { UpdateAllProgress } from './machineUpdateRuns';
 
 export type UpdatesContentModel = Readonly<{
     summary: UpdatesSummary;
@@ -137,74 +137,7 @@ export function useUpdatesContentModel(): UpdatesContentModel {
         await executeItem(item);
     }, [executeItem]);
 
-    // One machine's waiting updates, one after another in the plan's order (helpers, agents, then the
-    // Happier CLI, which restarts the daemon the others travel through). Shared by both batch actions.
-    const runMachinePlan = React.useCallback(async (
-        itemIds: readonly string[],
-        byId: ReadonlyMap<string, UpdateItem>,
-        onSettled: () => void,
-        shouldStop: () => boolean,
-    ) => {
-        for (const itemId of itemIds) {
-            if (shouldStop()) return;
-            const item = byId.get(itemId);
-            if (item) await executeItem(item);
-            onSettled();
-        }
-    }, [executeItem]);
-
-    const runningGroupsRef = React.useRef(new Set<string>());
-    const updateGroup = React.useCallback(async (group: UpdatesGroup) => {
-        if (runningGroupsRef.current.has(group.id)) return;
-        const plan = planUpdateAll(group.items);
-        if (plan.total === 0) return;
-        runningGroupsRef.current.add(group.id);
-        try {
-            const byId = new Map(group.items.map((item) => [item.id, item]));
-            await Promise.all(plan.machines.map((machine) => runMachinePlan(machine.itemIds, byId, () => {}, () => false)));
-            const appItem = plan.appItemId ? byId.get(plan.appItemId) : undefined;
-            if (appItem) await runItem(appItem);
-        } finally {
-            runningGroupsRef.current.delete(group.id);
-        }
-    }, [runItem, runMachinePlan]);
-
-    const [batch, setBatch] = React.useState<UpdateAllProgress | null>(null);
-    const stopRef = React.useRef(false);
-    const itemsRef = React.useRef(allItems);
-    itemsRef.current = allItems;
-
-    const updateAll = React.useCallback(async () => {
-        if (batch) return;
-        const plan = planUpdateAll(itemsRef.current);
-        if (plan.total === 0) return;
-
-        stopRef.current = false;
-        let done = 0;
-        setBatch({ done, total: plan.total, stopping: false });
-        const byId = new Map(itemsRef.current.map((item) => [item.id, item]));
-        const settle = () => {
-            done += 1;
-            setBatch((current) => (current ? { ...current, done } : current));
-        };
-        // Per machine in order (the Happier CLI last, it restarts the daemon the others travel
-        // through); machines side by side; the app only downloads — its restart is the person's.
-        await Promise.all([
-            ...plan.machines.map((machine) => runMachinePlan(machine.itemIds, byId, settle, () => stopRef.current)),
-            (async () => {
-                const appItem = plan.appItemId ? byId.get(plan.appItemId) : undefined;
-                if (!appItem || stopRef.current) return;
-                if (appItem.action.kind === 'run' && appItem.action.verb === 'update') await app.run();
-                settle();
-            })(),
-        ]);
-        setBatch(null);
-    }, [app, batch, runMachinePlan]);
-
-    const stopAfterCurrent = React.useCallback(() => {
-        stopRef.current = true;
-        setBatch((current) => (current ? { ...current, stopping: true } : current));
-    }, []);
+    const { batch, updateAll, updateGroup, stopAfterCurrent } = useUpdateBatch(updateScope, allItems, executeItem);
 
     const checkNow = React.useCallback(() => {
         void app.checkNow();

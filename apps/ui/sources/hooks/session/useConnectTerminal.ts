@@ -5,7 +5,8 @@ import {
     TokenStorage,
     type AuthCredentials,
 } from '@/auth/storage/tokenStorage';
-import { approveTerminalPairing } from '@/auth/terminal/approveTerminalPairing';
+import { approveTerminalPairing, resolveTerminalPairingStorageMode } from '@/auth/terminal/approveTerminalPairing';
+import { focusTerminalConnectHome } from '@/auth/terminal/focusTerminalConnectHome';
 import {
     buildEstablishedHomeTransportDescriptor,
     resolveHomeEnrollmentTransport,
@@ -20,6 +21,7 @@ import {
     type ServerProfile,
 } from '@/sync/domains/server/serverProfiles';
 import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
+import { getActiveServerHomeCarrier, getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { normalizeServerUrl } from '@/sync/domains/server/activeServerSwitch';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { resolveEffectiveServerUrlOverride } from '@/sync/domains/server/url/serverUrlOverridePolicy';
@@ -37,14 +39,21 @@ import { promptLegacyPairingUpdateRequired } from '@/auth/pairing/legacyPairingU
 
 interface UseConnectTerminalOptions {
     onSuccess?: () => void;
-    onError?: (error: any) => void;
+    onError?: (error: unknown) => void;
     allowLoopbackServerOverride?: boolean;
+    approvalRequest?: ParsedTerminalConnectUrl | null;
 }
+
+type TerminalConnectApprovalDetails =
+    | Readonly<{ kind: 'loading' | 'error' }>
+    | Readonly<{ kind: 'needs_sign_in'; homeUrl: string }>
+    | Readonly<{ kind: 'ready'; homeUrl: string; storageMode: 'plain' | 'e2ee' }>;
 
 type TerminalApprovalTarget = Readonly<{
     endpointUrl: string;
     serverId?: string;
     descriptor?: HomeConnectionDescriptorV1;
+    transportOptions?: Parameters<typeof resolveHomeEnrollmentTransport>[1];
     credentials: AuthCredentials | null;
 }>;
 
@@ -81,45 +90,70 @@ function findSignedInProfileForTerminalLink(params: Readonly<{
 }
 
 async function resolveTerminalApprovalTarget(params: Readonly<{
-    requestedEndpointUrl: string | null;
-    focusedEndpointUrl: string;
-    expectedServerIdentityId: string;
-    descriptor?: HomeConnectionDescriptorV1;
+    parsed: ParsedTerminalConnectUrl;
+    allowLoopbackServerOverride: boolean;
 }>): Promise<TerminalApprovalTarget> {
-    if (params.descriptor && params.descriptor.homeServerIdentityId !== params.expectedServerIdentityId) {
+    const focusedEndpointUrl = normalizeServerUrl(getActiveServerUrl());
+    const expectedServerIdentityId = params.parsed.serverIdentityId ?? '';
+    const suppliedDescriptor = params.parsed.homeConnectionDescriptor;
+    const effectiveRequestedEndpointUrl = resolveEffectiveServerUrlOverride({
+        requestedServerUrl: params.parsed.serverUrl ?? suppliedDescriptor?.canonicalServerUrl,
+        activeServerUrl: focusedEndpointUrl,
+        allowLoopbackOverride: params.allowLoopbackServerOverride,
+    });
+    if (suppliedDescriptor && suppliedDescriptor.homeServerIdentityId !== expectedServerIdentityId) {
         throw new Error('Terminal pairing descriptor identity does not match the link destination');
     }
-    const endpointUrl = params.descriptor?.canonicalServerUrl
-        || params.requestedEndpointUrl
-        || params.focusedEndpointUrl;
-    if (!endpointUrl) throw new Error('Terminal pairing requires an explicit target server');
+    const requestedEndpointUrl = suppliedDescriptor?.canonicalServerUrl
+        || effectiveRequestedEndpointUrl
+        || focusedEndpointUrl;
+    if (!requestedEndpointUrl) throw new Error('Terminal pairing requires an explicit target server');
 
     const profile = findSignedInProfileForTerminalLink({
-        expectedServerIdentityId: params.expectedServerIdentityId,
-        endpointUrl,
+        expectedServerIdentityId,
+        endpointUrl: requestedEndpointUrl,
     });
-    // Descriptor precedence: the link's verified descriptor, then the Home's published one,
-    // then this device's own established connection to that Home. The last case is the only
-    // one available for a Home reachable over loopback HTTP, which publishes no descriptor at
-    // all while the CLI still issues identity-bearing URL-only links for it.
-    const descriptor = params.descriptor
-        ?? (profile
-            ? buildHomeConnectionDescriptorForProfile(profile)
-                ?? (profile.serverIdentityId
-                    ? buildEstablishedHomeTransportDescriptor({
-                        canonicalServerUrl: profile.canonicalServerUrl ?? profile.serverUrl,
-                        homeServerIdentityId: profile.serverIdentityId,
-                    })
-                    : null)
-            : null);
+    const endpointUrl = profile ? profile.canonicalServerUrl ?? profile.serverUrl : requestedEndpointUrl;
+    // A link is discovery advice, not authority to reroute a saved Home's bearer.
+    // Known credentials use that profile's published or established transport.
+    // Loopback Homes publish no descriptor, so their established connection remains
+    // the local-only fallback for identity-bearing URL-only pairing links.
+    const publishedDescriptor = profile ? buildHomeConnectionDescriptorForProfile(profile) : null;
+    const descriptor = profile
+        ? publishedDescriptor
+            ?? (profile.serverIdentityId
+                ? buildEstablishedHomeTransportDescriptor({
+                    canonicalServerUrl: profile.canonicalServerUrl ?? profile.serverUrl,
+                    homeServerIdentityId: profile.serverIdentityId,
+                })
+                : null)
+        : suppliedDescriptor;
     if (!profile || !descriptor) {
         return { endpointUrl, ...(descriptor ? { descriptor } : {}), credentials: null };
     }
-    const serverId = params.expectedServerIdentityId.trim();
+    const serverId = expectedServerIdentityId.trim();
     const credentials = await TokenStorage.getCredentialsForServerUrl(
         profile.serverUrl,
         serverId ? { serverId } : {},
     );
+    if (credentials && !publishedDescriptor) {
+        const active = getActiveServerSnapshot();
+        const isExactActiveHome = active.serverId === profile.serverIdentityId
+            && createServerUrlComparableKey(active.serverUrl) === createServerUrlComparableKey(endpointUrl);
+        const homeCarrier = isExactActiveHome ? getActiveServerHomeCarrier() : null;
+        if (isExactActiveHome && (active.runtimeOrigin || homeCarrier)) {
+            // The connection owner has already authenticated this transport. Borrow it
+            // while exact descriptor reconciliation is pending; never use QR advice.
+            return { endpointUrl, serverId, descriptor, credentials, transportOptions: {
+                runtimeOrigin: active.runtimeOrigin,
+                runtimeCarrier: active.carrier,
+                homeCarrier,
+            } };
+        }
+        if (profile.descriptorProvenance === 'advisory-only') {
+            throw new Error('Terminal pairing requires the saved Home\'s verified transport');
+        }
+    }
     return { endpointUrl, ...(serverId ? { serverId } : {}), descriptor, credentials };
 }
 
@@ -127,6 +161,65 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
     const router = useDestinationRouter();
     const auth = useAuth();
     const [isLoading, setIsLoading] = React.useState(false);
+    const approvalRequest = options?.approvalRequest;
+    const [detailsRead, setDetailsRead] = React.useState<Readonly<{
+        request: ParsedTerminalConnectUrl;
+        credentials: AuthCredentials;
+        details: TerminalConnectApprovalDetails;
+    }> | null>(null);
+    const [detailsRetry, retryApprovalDetails] = React.useReducer((attempt: number) => attempt + 1, 0);
+
+    const resolveApprovalDetails = React.useCallback(async (parsed: ParsedTerminalConnectUrl): Promise<Readonly<{
+        homeUrl: string;
+        storageMode: 'plain' | 'e2ee' | null;
+        needsSignIn: boolean;
+    }>> => {
+        const target = await resolveTerminalApprovalTarget({
+            parsed,
+            allowLoopbackServerOverride: options?.allowLoopbackServerOverride === true,
+        });
+        if (!target.credentials) {
+            return { homeUrl: target.endpointUrl, storageMode: null, needsSignIn: true };
+        }
+        if (!target.descriptor) throw new Error('Terminal pairing requires a verified Home connection descriptor');
+        const resolution = await resolveHomeEnrollmentTransport(target.descriptor, target.transportOptions);
+        if (!resolution.ok) throw new Error(`Terminal pairing transport unavailable: ${resolution.reason}`);
+        try {
+            const storageMode = await resolveTerminalPairingStorageMode({
+                target: resolution.transport,
+                targetCredentials: target.credentials,
+            });
+            return { homeUrl: resolution.transport.canonicalServerUrl, storageMode, needsSignIn: false };
+        } finally {
+            await resolution.transport.close();
+        }
+    }, [options?.allowLoopbackServerOverride]);
+
+    React.useEffect(() => {
+        const credentials = auth.credentials;
+        if (!approvalRequest || !credentials) return;
+        let cancelled = false;
+        setDetailsRead(null);
+        void resolveApprovalDetails(approvalRequest).then((result) => {
+            if (cancelled) return;
+            setDetailsRead({
+                request: approvalRequest,
+                credentials,
+                details: result.storageMode
+                    ? { kind: 'ready', homeUrl: result.homeUrl, storageMode: result.storageMode }
+                    : { kind: 'needs_sign_in', homeUrl: result.homeUrl },
+            });
+        }).catch(() => {
+            if (!cancelled) setDetailsRead({ request: approvalRequest, credentials, details: { kind: 'error' } });
+        });
+        return () => { cancelled = true; };
+    }, [approvalRequest, auth.credentials, detailsRetry, resolveApprovalDetails]);
+
+    // A previous Account/link read cannot disclose a mode for the current approval.
+    const approvalDetails: TerminalConnectApprovalDetails = detailsRead && detailsRead.request === approvalRequest
+        && detailsRead.credentials === auth.credentials
+        ? detailsRead.details
+        : { kind: 'loading' };
 
     const processParsedAuthUrl = React.useCallback(async (parsed: ParsedTerminalConnectUrl) => {
         if (parsed.compatibility?.admission === 'update_required') {
@@ -138,22 +231,14 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
         setIsLoading(true);
         try {
             const currentServerUrl = normalizeServerUrl(getActiveServerUrl());
-            const effectiveParsedServerUrl = resolveEffectiveServerUrlOverride({
-                requestedServerUrl: parsed.serverUrl ?? parsed.homeConnectionDescriptor?.canonicalServerUrl,
-                activeServerUrl: currentServerUrl,
-                allowLoopbackOverride: options?.allowLoopbackServerOverride === true,
-            });
-
             const target = await resolveTerminalApprovalTarget({
-                requestedEndpointUrl: effectiveParsedServerUrl,
-                focusedEndpointUrl: currentServerUrl,
-                expectedServerIdentityId: parsed.serverIdentityId ?? '',
-                ...(parsed.homeConnectionDescriptor ? { descriptor: parsed.homeConnectionDescriptor } : {}),
+                parsed,
+                allowLoopbackServerOverride: options?.allowLoopbackServerOverride === true,
             });
             const activeCredentials = target.credentials;
 
             if (!activeCredentials) {
-                const preAuthTarget = resolveTerminalConnectPreAuthTarget({
+                const preAuthTarget = await resolveTerminalConnectPreAuthTarget({
                     requestedServerUrl: parsed.serverUrl ?? parsed.homeConnectionDescriptor?.canonicalServerUrl,
                     activeServerUrl: currentServerUrl,
                     ...(parsed.homeConnectionDescriptor ? { homeConnectionDescriptor: parsed.homeConnectionDescriptor } : {}),
@@ -200,6 +285,10 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
                         return false;
                     }
                     setPendingTerminalConnect(pendingConnect);
+                    if (parsed.homeConnectionDescriptor) {
+                        const profile = await focusTerminalConnectHome({ descriptor: parsed.homeConnectionDescriptor, refreshAuth: auth.refreshFromActiveServer });
+                        if (!profile) return false;
+                    }
                     router.replace(buildTerminalConnectAuthRedirectHref({ serverUrl: pendingServerUrl }));
                     return false;
                 }
@@ -209,6 +298,10 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
                     t('modals.pleaseSignInFirst'),
                     [{ text: t('common.continue') }],
                 );
+                if (parsed.homeConnectionDescriptor) {
+                    const profile = await focusTerminalConnectHome({ descriptor: parsed.homeConnectionDescriptor, refreshAuth: auth.refreshFromActiveServer });
+                    if (!profile) return false;
+                }
                 router.replace(buildTerminalConnectAuthRedirectHref({ serverUrl: pendingServerUrl }));
                 return false;
             }
@@ -227,7 +320,7 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
             if (!target.descriptor) {
                 throw new Error('Terminal pairing requires a verified Home connection descriptor');
             }
-            const transportResolution = await resolveHomeEnrollmentTransport(target.descriptor);
+            const transportResolution = await resolveHomeEnrollmentTransport(target.descriptor, target.transportOptions);
             if (!transportResolution.ok) {
                 throw new Error(`Terminal pairing transport unavailable: ${transportResolution.reason}`);
             }
@@ -287,7 +380,7 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
         } finally {
             setIsLoading(false);
         }
-    }, [auth.credentials, options, router]);
+    }, [auth.credentials, auth.refreshFromActiveServer, options, router]);
 
     const processAuthUrl = React.useCallback(async (url: string) => {
         const parsed = parseTerminalConnectUrl(url);
@@ -317,5 +410,7 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
         isLoading,
         processAuthUrl,
         processParsedAuthUrl,
+        approvalDetails,
+        retryApprovalDetails,
     };
 }

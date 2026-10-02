@@ -273,6 +273,25 @@ describe('buildSessionListRowViewModels', () => {
         ]);
     });
 
+    it('keeps interleaved Sessions and workflow Runs in the same group sheet', () => {
+        const session = (sessionId: string) => ({
+            type: 'session', sessionId, serverId: 'server_a', storageKind: 'persisted', groupKey: 'home', groupKind: 'project',
+        }) satisfies SessionListIndexItem;
+        const heading = { type: 'header', title: 'Project', headerKind: 'project', groupKey: 'home' } satisfies SessionListIndexItem;
+        const run = { type: 'workflow_run', runId: 'run-a', serverId: 'server_a', groupKey: 'home' } as const;
+        const items: readonly SessionListIndexItem[] = [
+            heading,
+            session('before'),
+            run,
+            session('after'),
+        ];
+        expect([1, 2, 3].map((index) => resolveSessionListRowViewModelAdjacency(items, index))).toEqual([
+            { isFirst: true, isLast: false, isSingle: false },
+            { isFirst: false, isLast: false, isSingle: false },
+            { isFirst: false, isLast: true, isSingle: false },
+        ]);
+    });
+
     it('selects only the exact Home-qualified row when session ids collide', () => {
         const firstItem = {
             type: 'session',

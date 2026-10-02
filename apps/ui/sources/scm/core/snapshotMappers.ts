@@ -1,4 +1,5 @@
 import type { ScmWorkingSnapshotInput as ProtocolScmWorkingSnapshot } from '@happier-dev/protocol/scm';
+import { ScmHostingProviderRefSchema, ScmPullRequestStatusProjectionSchema } from '@happier-dev/protocol/scm';
 
 import type { ScmCapabilities, ScmWorkingEntry, ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 
@@ -11,6 +12,7 @@ export const EMPTY_SCM_CAPABILITIES: ScmCapabilities = {
     writeInclude: false,
     writeExclude: false,
     writeCommit: false,
+    writeCommitUndoLast: false,
     writeCommitPathSelection: false,
     writeCommitLineSelection: false,
     writeBackout: false,
@@ -91,15 +93,17 @@ export function mapProtocolSnapshotToUiSnapshot(
         capabilities: mergeScmCapabilities(snapshot.capabilities),
         branch: {
             head: snapshot.branch.head,
+            ...(snapshot.branch.headOid === undefined ? {} : { headOid: snapshot.branch.headOid }),
             upstream: snapshot.branch.upstream,
+            ...(snapshot.branch.upstreamOid === undefined ? {} : { upstreamOid: snapshot.branch.upstreamOid }),
             ahead: snapshot.branch.ahead,
             behind: snapshot.branch.behind,
             detached: snapshot.branch.detached,
         },
         stashCount: snapshot.stashCount ?? 0,
         operationState: snapshot.operationState ?? null,
-        hostingProvider: snapshot.hostingProvider ?? null,
-        pullRequestStatus: snapshot.pullRequestStatus ?? null,
+        hostingProvider: snapshot.hostingProvider == null ? null : ScmHostingProviderRefSchema.parse(snapshot.hostingProvider),
+        pullRequestStatus: snapshot.pullRequestStatus == null ? null : ScmPullRequestStatusProjectionSchema.parse(snapshot.pullRequestStatus),
         hasConflicts: snapshot.hasConflicts,
         entries: snapshot.entries.map(mapProtocolEntryToUiEntry),
         totals: {

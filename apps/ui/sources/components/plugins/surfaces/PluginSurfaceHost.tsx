@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { PluginLiveStreamViewer } from './PluginLiveStreamViewer';
 import { useSurfaceStateSize } from '@/components/ui/surfaces/surfaceStateSize';
 import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 import { useRouter } from '@/components/appShell/workspace/destinationRoute';
@@ -18,6 +19,7 @@ import {
     type PluginProjectionV2,
     type SessionExecutionTargetV1,
 } from '@happier-dev/protocol';
+import { qualifyPluginContributionReferenceV1 } from '@happier-dev/protocol/plugins/contribution-identity';
 import {
     buildPluginHostedWebStaticAssetPreviewId,
     isPluginUiSurfaceBindingAdmittedAtRuntimeV1,
@@ -213,11 +215,13 @@ import {
 } from './DeclarativeDocumentSource';
 import {
     createPluginUiPrivatePresentationHost,
+    type PluginDestinationRowInput,
     type PluginUiPrivateBrandTarget,
     type PluginUiPresentationBrand,
     type PluginUiPrivateTargetedSurfacePresentation,
 } from './pluginUiPrivatePresentationHost';
 import { PluginSessionPartMountScope, renderPluginSessionPart } from './PluginSessionPartHost';
+import { usePluginDestinationRowRenderer } from '@/components/appShell/workspace/usePluginDestinationRowRenderer';
 import { useIsBeneathPluginSurfaceNestingBoundary } from './pluginSurfaceNesting';
 import {
     captureActiveServerAccountScopeLifetime,
@@ -647,6 +651,7 @@ function DeclarativePluginSurfaceWithDocumentSource(
     props: DeclarativePluginSurfaceWithDocumentSourceProps,
 ) {
     const environment = props.environment;
+    const presented = useLayoutPresentationActive();
     const surface = React.useMemo(() => createPluginSurfaceContext({
         mount: props.surfaceMount,
         target: props.surfaceTarget,
@@ -757,7 +762,7 @@ function DeclarativePluginSurfaceWithDocumentSource(
             surfaceActivity={{
                 active: props.controller.isCurrent()
                     && props.interactionEnabled
-                    && props.focusEligible === true,
+                    && presented,
             }}
             {...(props.composerRef === undefined ? {} : { composerRef: props.composerRef })}
         >
@@ -1262,6 +1267,9 @@ function PluginHostedWebBrowserArtifactFramePane(props: Readonly<{
 }
 
 function PluginReactNativeSurfaceHost(props: Readonly<{
+    readLiveStreamViewing: BoundPluginSurfaceController['readLiveStreamViewing'];
+    liveStreamMachineId: string | null;
+    liveStreamServerId: string | null;
     surfaceId: string;
     mountInstanceKey?: PluginUiInstanceKeyV1;
     /** Existing host-owned mount/catalog identity for local error recovery. */
@@ -1537,11 +1545,19 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
     // The container the mount sits in (a session sidebar tab is a `pane`, a phone surface `phone`), so
     // a plugin's unsized states size themselves like the host's own states around them.
     const hostStateSize = useSurfaceStateSize();
+    const destinationRowRenderer = usePluginDestinationRowRenderer();
+    const renderDestinationRow = React.useCallback((input: PluginDestinationRowInput) => destinationRowRenderer({
+        ...input,
+        destination: qualifyPluginContributionReferenceV1(input.destination, canonicalRenderIdentity.pluginId),
+    }), [canonicalRenderIdentity.pluginId, destinationRowRenderer]);
     const canonicalPrivatePresentationHost = React.useMemo(
         () => createPluginUiPrivatePresentationHost(
             canonicalRenderIdentity.brand,
             {
                 direction: environment.direction,
+                renderLiveStream: (input) => <PluginLiveStreamViewer {...input} hostApi={props.hostApi}
+                    surface={props.requestSurface} mountLifetime={props.mountLifetime} readViewing={props.readLiveStreamViewing}
+                    machineId={props.liveStreamMachineId} serverId={props.liveStreamServerId} />,
                 ...(brandTargetPresentation
                     ? {
                         resolveBrandTarget: brandTargetPresentation.resolveBrandTarget,
@@ -1563,6 +1579,7 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
                     : { targetedSurfaceUnavailableReason: props.targetedSurfaceUnavailableReason }),
                 // Same-realm RN/RNW mounts only: hosted-web and declarative adapters never receive it.
                 renderSessionPart: renderPluginSessionPart,
+                renderDestinationRow,
                 isFocusEligible,
                 palette: hostPalette,
                 pageChrome: hostPageChrome,
@@ -1572,6 +1589,7 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
             },
         ),
         [
+            renderDestinationRow,
             hostStateSize,
             detailsPaneBinding,
             paneHeaderBinding,
@@ -1591,6 +1609,8 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
             isBrandTargetPresentationCurrent,
             renderTargetedSurface,
             props.targetedSurfaceUnavailableReason,
+            props.hostApi, props.requestSurface, props.mountLifetime, props.readLiveStreamViewing,
+            props.liveStreamMachineId, props.liveStreamServerId,
         ],
     );
     const canonicalPrivateDataClient = props.dataClient ?? undefined;
@@ -1621,6 +1641,7 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
         props.composerRef,
         canonicalEphemeralSharedScope,
     ]);
+    const presented = useLayoutPresentationActive();
     const canonicalRenderContext = React.useMemo<RenderContext>(() => {
         const identity = canonicalRenderIdentity;
         const context = {
@@ -1628,7 +1649,9 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
             surface: identity.surface,
             hostApi: canonicalHostApiAdapter.api,
             signal,
-            activity: Object.freeze({ active: isFocusEligible() }),
+            activity: Object.freeze({
+                active: rendererMount.isCurrent() && props.interactionEnabled && presented,
+            }),
             // EU-5a: absent launch input stays absent. Spreading a `{ launchInput:
             // undefined }` key would make "opened without input" indistinguishable
             // from "opened with an explicit undefined" for an author reading the key.
@@ -1642,8 +1665,8 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
         signal,
         canonicalHostApiAdapter,
         canonicalRenderIdentity,
-        isFocusEligible,
-        props.focusEligible,
+        rendererMount.isCurrent,
+        presented,
         props.interactionEnabled,
         props.launchInput,
         props.subPath,
@@ -1653,7 +1676,6 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
         canonicalHostApiAdapter.dispose();
     }, [canonicalHostApiAdapter]);
 
-    const presented = useLayoutPresentationActive();
     return (
         <PluginSessionPartMountScope accountLifetime={canonicalAccountLifetime} presented={presented} focusEligible={props.focusEligible}>
         <PluginReactNativeSurface
@@ -3841,6 +3863,9 @@ function PluginSurfaceHostMount(props: Readonly<(
                 ?? descriptor!.id;
         return renderWithTargetedSurfaceBoundary(
             <PluginReactNativeSurfaceHost
+                readLiveStreamViewing={controller.readLiveStreamViewing}
+                liveStreamMachineId={machineId ?? null}
+                liveStreamServerId={serverId ?? null}
                 surfaceId={mountedSurfaceId}
                 mountInstanceKey={mountInstanceKey}
                 {...((composerBoundaryResetKey ?? ephemeralBoundaryResetKey) === undefined

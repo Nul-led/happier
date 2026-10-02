@@ -20,13 +20,9 @@ type SocketStub = ReturnType<typeof createSocketIoBoundaryStub>['socket'];
 
 const rpcBoundary = vi.hoisted(() => ({
     socket: null as SocketStub | null,
-    requirePlainCompatibility: async () => {},
 }));
 
 vi.mock('socket.io-client', () => ({ io: () => rpcBoundary.socket }));
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', () => ({
-    requireCurrentAccountStoredContentServerCompatibility: () => rpcBoundary.requirePlainCompatibility(),
-}));
 vi.mock('@/sync/runtime/connectivity/serverReachabilitySupervisorPool', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool')>();
     return {
@@ -88,10 +84,8 @@ function emittedMethods(socket: SocketStub, event: string): string[] {
 async function bootApiSocket(params: Readonly<{
     socket: SocketStub;
     getMachineEncryption: (machineId: string) => unknown;
-    requirePlainCompatibility?: () => Promise<void>;
 }>) {
     rpcBoundary.socket = params.socket;
-    rpcBoundary.requirePlainCompatibility = params.requirePlainCompatibility ?? (async () => {});
     apiSocket.initialize(
         { endpoint: 'https://api.example.test', token: 'token-a' },
         {
@@ -114,10 +108,61 @@ afterEach(() => {
 });
 
 describe('apiSocket inbound machine-scoped reverse RPC (RU2 G1)', () => {
+    it.each(['cancel', 'disconnect', 'retire'] as const)('delivers reverse RPC %s to the deferred page owner', async (interruption) => {
+        const { socket, trigger } = createSocketStub();
+        await bootApiSocket({ socket, getMachineEncryption: () => createFakeMachineEncryption() });
+        const view = { browserSessionId: 'socket-session', viewId: 'socket-view', sessionId: 'happier-session' };
+        let began!: () => void;
+        const started = new Promise<void>(resolve => { began = resolve; });
+        let effectSignal: AbortSignal | undefined;
+        let settle!: () => void;
+        const service = createBrowserAutomationControlService({ nowMs: Date.now });
+        service.registerOwner({ ...view, ownerId: 'socket-engine', authority: 'uiLocal', navigationGeneration: 0,
+            adapterKind: 'localPreview', fidelity: 'injectedPage', trustedInput: false, supportedActions: ['click'],
+            executeAction: async (_request, context) => {
+                effectSignal = context.signal;
+                began();
+                await new Promise<void>(resolve => { settle = resolve; });
+                return { status: 'succeeded' };
+            },
+        });
+        const state = applyBrowserControlEvent(applyBrowserControlEvent(createBrowserControlState(), {
+            kind: 'sessionCreated', browserSessionId: view.browserSessionId, eventId: 'session', profileId: 'profile', occurredAt: 1,
+        }), {
+            kind: 'viewOpened', ...view, eventId: 'view', occurredAt: 2, platform: 'web', adapterKind: 'localPreview', engineKind: 'webIframe',
+            target: { kind: 'externalUrl', targetId: 'page', url: 'https://example.test', display: { title: 'Page', addressLabel: 'example.test' } },
+            adapterCapabilities: buildBrowserAdapterCapabilities({ adapterKind: 'localPreview', supportedTargetKinds: ['externalUrl'], supportedRenderEngines: ['webIframe'] }),
+        });
+        const disposeOwner = registerBrowserRuntimeControlAdapter({ browserSessionId: view.browserSessionId,
+            control: { readState: () => state, applyDispatchResult: () => {} }, automation: { controlService: service } });
+        const disposeHandler = apiSocket.installBrowserAutomationReverseDispatch('machine-1', view);
+        const receive = getRegisteredHandler(socket, SOCKET_RPC_EVENTS.REQUEST)!;
+        const ack = new Promise<unknown>(resolve => receive({ requestId: 'effect-request',
+            method: `machine-1:${uiBrowserAutomationDispatchMethod(view)}`, params: machineEncryptParams({
+                v: 1, sessionId: view.sessionId, actionId: 'browser.automation.click', authority: 'account_automation', input: {
+                    v: 1, browserSessionId: view.browserSessionId, viewId: view.viewId, automationRequestId: 'socket-click',
+                    actionKind: 'click', navigationGeneration: 0, requestedBy: 'agent', requesterRef: { kind: 'agent', id: 'agent' },
+                    timeoutMs: 1000, payload: { selector: '#go' },
+                },
+            }) }, resolve));
+        try {
+            await started;
+            if (interruption === 'cancel') trigger(SOCKET_RPC_EVENTS.CANCEL, { requestId: 'effect-request' });
+            else if (interruption === 'disconnect') trigger('disconnect', 'transport close');
+            else disposeHandler();
+            expect(effectSignal?.aborted).toBe(true);
+        } finally {
+            settle();
+            expect(machineDecryptAck(await ack)).toMatchObject({ status: 'interrupted', completion: 'unknown' });
+            disposeHandler();
+            disposeOwner();
+        }
+    });
+
     it('dispatches encrypted automation to the existing mounted owner and retires its exact handler', async () => {
         const { socket } = createSocketStub();
         const apiSocket = await bootApiSocket({ socket, getMachineEncryption: () => createFakeMachineEncryption() });
-        const view = { browserSessionId: 'socket-session', viewId: 'socket-view' };
+        const view = { browserSessionId: 'socket-session', viewId: 'socket-view', sessionId: 'happier-session' };
         const service = createBrowserAutomationControlService({ nowMs: Date.now });
         service.registerOwner({ ...view, ownerId: 'socket-engine', authority: 'uiLocal', navigationGeneration: 0,
             adapterKind: 'localPreview', fidelity: 'injectedPage', trustedInput: false, supportedActions: ['click'],
@@ -136,8 +181,8 @@ describe('apiSocket inbound machine-scoped reverse RPC (RU2 G1)', () => {
         const method = `machine-1:${uiBrowserAutomationDispatchMethod(view)}`;
         const requestHandler = getRegisteredHandler(socket, SOCKET_RPC_EVENTS.REQUEST)!;
         const call = () => new Promise<unknown>((resolve) => requestHandler({ method, params: machineEncryptParams({
-            v: 1, actionId: 'browser.automation.click', authority: 'account_automation', input: {
-                v: 1, ...view, automationRequestId: 'socket-click', actionKind: 'click', navigationGeneration: 0,
+            v: 1, sessionId: view.sessionId, actionId: 'browser.automation.click', authority: 'account_automation', input: {
+                v: 1, browserSessionId: view.browserSessionId, viewId: view.viewId, automationRequestId: 'socket-click', actionKind: 'click', navigationGeneration: 0,
                 requestedBy: 'agent', requesterRef: { kind: 'agent', id: 'agent' }, timeoutMs: 1000, payload: { selector: '#go' },
             },
         }) }, resolve));
@@ -203,46 +248,8 @@ describe('apiSocket inbound machine-scoped reverse RPC (RU2 G1)', () => {
             );
         });
 
-        expect(handler).toHaveBeenCalledWith({ hello: 'world' });
+        expect(handler).toHaveBeenCalledWith({ hello: 'world' }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
         expect(ack).toEqual({ echoed: { hello: 'world' } });
-        storage.getState().applyMachines([], true);
-    });
-
-    it('refuses plaintext Machine RPC before socket emission when the server compatibility is not active', async () => {
-        const { socket } = createSocketStub();
-        const upgradeRequired = Object.assign(new Error('upgrade required'), {
-            code: 'client-upgrade-required',
-            retryable: false as const,
-        });
-        const apiSocket = await bootApiSocket({
-            socket,
-            getMachineEncryption: () => null,
-            requirePlainCompatibility: vi.fn(async () => {
-                throw upgradeRequired;
-            }),
-        });
-        const { storage } = await import('@/sync/domains/state/storage');
-        storage.getState().applyMachines([{
-            id: 'machine-plain-old-server',
-            seq: 1,
-            createdAt: 1,
-            updatedAt: 1,
-            active: true,
-            activeAt: 1,
-            revokedAt: null,
-            metadata: null,
-            metadataVersion: 0,
-            daemonState: null,
-            daemonStateVersion: 0,
-            storageMode: 'plain',
-        }], true);
-
-        await expect(apiSocket.machineRPC(
-            'machine-plain-old-server',
-            'demo.forward',
-            { hello: 'daemon' },
-        )).rejects.toBe(upgradeRequired);
-        expect(socket.emitWithAck).not.toHaveBeenCalled();
         storage.getState().applyMachines([], true);
     });
 
@@ -269,7 +276,7 @@ describe('apiSocket inbound machine-scoped reverse RPC (RU2 G1)', () => {
         });
 
         // Params were decrypted with the machine key before reaching the handler.
-        expect(handler).toHaveBeenCalledWith({ hello: 'world' });
+        expect(handler).toHaveBeenCalledWith({ hello: 'world' }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
         // The ack was re-encrypted with the machine key and carries the handler result.
         expect(machineDecryptAck(ack)).toEqual({ echoed: { hello: 'world' } });
     });

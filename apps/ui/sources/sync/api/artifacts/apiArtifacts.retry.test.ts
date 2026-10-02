@@ -56,4 +56,27 @@ describe('apiArtifacts retry modes', () => {
         const artifactCalls = runtimeFetchSpy.mock.calls.filter(([callUrl]) => String(callUrl ?? '').includes('/v1/artifacts'));
         expect(artifactCalls).toHaveLength(1);
     });
+
+    it('reads a complete revision inventory through the captured request and rejects an incomplete response', async () => {
+        const { fetchArtifactRevisions } = await import('./apiArtifacts');
+        const revision = { bodyVersion: 2, body: 'retained-body', createdAt: 100, sizeBytes: 42 };
+        const request = vi.fn(async () => new Response(JSON.stringify({ revisions: [revision], retentionCount: 10 })));
+        await expect(fetchArtifactRevisions({ token: 'captured-token' }, 'artifact-id', { request }))
+            .resolves.toEqual({ revisions: [revision], retentionCount: 10 });
+        request.mockResolvedValueOnce(new Response(JSON.stringify({ retentionCount: 10 })));
+        await expect(fetchArtifactRevisions({ token: 'captured-token' }, 'artifact-id', { request })).rejects.toThrow();
+    });
+
+    it.each([
+        { encryptionMode: 'plain', dataEncryptionKey: 'encrypted-envelope' },
+        { encryptionMode: 'e2ee', dataEncryptionKey: 'plain' },
+    ])('rejects owner Account-mode $encryptionMode content-marker disagreement before opening content', async ({ encryptionMode, dataEncryptionKey }) => {
+        const { fetchArtifact } = await import('./apiArtifacts');
+        const { ARTIFACT_PLAIN_DATA_KEY_MARKER } = await import('@happier-dev/protocol');
+        const request = vi.fn(async () => Response.json({ id: 'document', ownerAccountId: 'owner', access: 'owner',
+            encryptionMode, dataEncryptionKey: dataEncryptionKey === 'plain' ? ARTIFACT_PLAIN_DATA_KEY_MARKER : dataEncryptionKey,
+            header: 'stored-header', headerVersion: 1, body: 'stored-body', bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 }));
+        await expect(fetchArtifact({ token: 'captured-token' }, 'document', { request, retry: 'none' }))
+            .rejects.toMatchObject({ code: 'artifact_account_mode_mismatch' });
+    });
 });

@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 
-import { PersonalHomeBootstrapGate, usePersonalHomeBootReadiness } from './PersonalHomeBootstrapGate';
+import { PersonalHomeBootstrapContent, PersonalHomeBootstrapGate, usePersonalHomeBootReadiness } from './PersonalHomeBootstrapGate';
 import type { PersonalHomeFacts } from './personalHomeBootstrapTypes';
 
 const reducedMotionSpy = vi.hoisted(() => vi.fn(() => false));
@@ -79,15 +79,18 @@ async function renderBootstrapThroughHomeReady() {
             readFacts={async () => homeReady ? homeReadyFacts : pendingFacts}
             operations={{ 'ensure-home-ready': ensureHomeReady }}
         >
-            <View testID="normal-shell" />
+            <View testID="normal-shell">
+                <PersonalHomeBootstrapContent><View testID="ready-home-content" /></PersonalHomeBootstrapContent>
+            </View>
             <ReadinessProbe />
         </PersonalHomeBootstrapGate>,
     );
 
     await flushHookEffects({ cycles: 4, turns: 2 });
-    // Automatic startup belongs inside the normal shell; no full-frame setup covers it.
+    // Automatic startup owns only Home content; the normal shell remains reachable.
     expect(ensureHomeReady).toHaveBeenCalled();
-    expect(screen.findByTestId('personal-home-setup-surface')).toBeNull();
+    expect(screen.findByTestId('personal-home-setup-surface')).not.toBeNull();
+    expect(screen.findByTestId('ready-home-content')).toBeNull();
     expect(screen.findByTestId('normal-shell')).not.toBeNull();
     expect(screen.findByTestId('boot-starting')).not.toBeNull();
 
@@ -133,8 +136,9 @@ describe('Personal Home shell reveal', () => {
         const screen = await renderBootstrapThroughHomeReady();
 
         expect(screen.findByTestId('normal-shell')).not.toBeNull();
-        expect(screen.findByTestId('personal-home-setup-reveal')).toBeNull();
-        expect(screen.findByTestId('personal-home-setup-surface')).toBeNull();
+        expect(screen.findByTestId('ready-home-content')).not.toBeNull();
+        expect(screen.findByTestId('personal-home-setup-reveal')).not.toBeNull();
+        expect(screen.findByTestId('personal-home-setup-reveal')?.props.pointerEvents).toBe('none');
     });
 
     it('also keeps the shell as the only frame under reduced motion', async () => {

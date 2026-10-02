@@ -1,10 +1,6 @@
 import { SessionLookupByTagsResponseV2Schema } from '@happier-dev/protocol';
 
 import { apiSocket } from '@/sync/api/session/apiSocket';
-import {
-  isAccountStoredContentClientUpgradeRequiredError,
-  requireCurrentAccountStoredContentServerCompatibility,
-} from '@/sync/api/capabilities/accountStoredContentCompatibility';
 import type { Message } from "@happier-dev/session-core/messages";
 import { readStoredSessionMessages } from "@happier-dev/session-core/messages";
 import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
@@ -39,7 +35,6 @@ import { discoverVoiceHistorySession } from './voiceHistorySessionDiscovery';
 
 type VoiceHistoryLoadStage =
   | 'capture_scope'
-  | 'compatibility'
   | 'lookup'
   | 'hydrate'
   | 'refresh';
@@ -88,7 +83,6 @@ function rethrowVoiceHistoryLoadFailure(
   if (
     error instanceof VoiceHistoryLoadError
     || isVoiceHistoryOperationSupersededError(error)
-    || isAccountStoredContentClientUpgradeRequiredError(error)
   ) {
     throw error;
   }
@@ -153,7 +147,6 @@ type DefaultVoiceHistoryCapturedScope = VoiceHistoryCapturedScope & Readonly<{
 export type DefaultVoiceHistoryRuntime = Readonly<{
   readActiveScope(): ServerAccountScope | null;
   captureAuthority(scope: ServerAccountScope): Promise<ServerAccountRequestAuthority>;
-  prepareSessionLookup(authority: ServerAccountRequestAuthority): Promise<void>;
   lookupByTags(
     tags: readonly string[],
     authority: ServerAccountRequestAuthority,
@@ -209,10 +202,6 @@ export function createDefaultVoiceHistoryConsumerFromRuntime(
       },
     ),
     discoverHistorySession: (scope) => discoverVoiceHistorySession({
-      prepareLookup: () => runVoiceHistoryLoadStage(
-        'compatibility',
-        () => runtime.prepareSessionLookup(scope.authority),
-      ),
       lookupByTags: (tags) => runVoiceHistoryLoadStage(
         'lookup',
         () => runtime.lookupByTags(tags, scope.authority),
@@ -269,10 +258,6 @@ export function createDefaultVoiceHistoryConsumer() {
       captureServerRequestAuthorityForServerAccountScope({
         scope,
         activeRequest: (path, init) => apiSocket.request(path, init),
-      }),
-    prepareSessionLookup: (authority) =>
-      requireCurrentAccountStoredContentServerCompatibility({
-        serverId: authority.scope.serverId,
       }),
     lookupByTags: async (tags, authority) => {
       const response = await authority.request('/v2/sessions/lookup-by-tags', {

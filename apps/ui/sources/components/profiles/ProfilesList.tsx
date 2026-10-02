@@ -65,7 +65,6 @@ export interface ProfilesListProps {
         custom?: string;
         builtIn?: string;
     };
-    builtInGroupFooter?: string;
     /**
      * `page` renders the list as a configuration page (Settings › Profiles): sections carry
      * descriptions and adding a profile is the last row of your own profiles, which always shows.
@@ -344,7 +343,7 @@ export function ProfilesList(props: ProfilesListProps) {
     ]);
 
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation={props.presentation}>
+        <ItemList style={{ paddingTop: 0 }} presentation={props.presentation ?? 'grouped'}>
             {props.header}
             {showFavoritesGroup && (
                 <ItemGroup
@@ -476,7 +475,6 @@ export function ProfilesList(props: ProfilesListProps) {
             <ItemGroup
                 title={props.groupTitles?.builtIn ?? t('profiles.groups.builtIn')}
                 description={props.groupDescriptions?.builtIn}
-                footer={props.builtInGroupFooter}
                 selectableItemCountOverride={
                     Math.max(
                         1,

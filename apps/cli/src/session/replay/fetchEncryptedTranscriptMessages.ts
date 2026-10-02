@@ -55,6 +55,10 @@ export async function fetchEncryptedTranscriptMessagesPage(params: Readonly<{
   deadlineAtMs?: number;
 }>): Promise<FetchEncryptedTranscriptMessagesPageResult> {
   const serverUrl = resolveServerHttpBaseUrl();
+  const beforeSeq = typeof params.beforeSeq === 'number' && Number.isFinite(params.beforeSeq)
+    ? Math.max(0, Math.floor(params.beforeSeq)) : undefined;
+  const afterSeq = typeof params.afterSeq === 'number' && Number.isFinite(params.afterSeq)
+    ? Math.max(0, Math.floor(params.afterSeq)) : undefined;
   const remainingMs = params.deadlineAtMs === undefined
     ? null
     : Math.floor(params.deadlineAtMs - Date.now());
@@ -67,8 +71,8 @@ export async function fetchEncryptedTranscriptMessagesPage(params: Readonly<{
     sessionId: params.sessionId,
     scope: params.scope ?? 'main',
     limit: params.limit,
-    ...(typeof params.beforeSeq === 'number' && Number.isFinite(params.beforeSeq) ? { beforeSeq: Math.max(0, Math.floor(params.beforeSeq)) } : {}),
-    ...(typeof params.afterSeq === 'number' && Number.isFinite(params.afterSeq) ? { afterSeq: Math.max(0, Math.floor(params.afterSeq)) } : {}),
+    ...(beforeSeq !== undefined ? { beforeSeq } : {}),
+    ...(afterSeq !== undefined ? { afterSeq } : {}),
     ...(params.sidechainId ? { sidechainId: params.sidechainId } : {}),
     ...(params.role ? { role: params.role } : {}),
     ...(params.roles?.length ? { roles: params.roles } : {}),
@@ -115,12 +119,21 @@ export async function fetchEncryptedTranscriptMessagesPage(params: Readonly<{
     };
   }
   const page = SessionMessagesPageV1Schema.safeParse(response.data);
-  if (!page.success) throw createSessionTranscriptStoredContentUnavailableError();
+  if (!page.success || typeof page.data.hasMore !== 'boolean') throw createSessionTranscriptStoredContentUnavailableError();
+  const nextBeforeSeq = page.data.nextBeforeSeq ?? null;
+  const nextAfterSeq = page.data.nextAfterSeq ?? null;
+  // Ordinary released pages prove completeness explicitly. Unlike the separate
+  // external-shareable projection, they cannot carry a blocked continuation.
+  if (page.data.hasMore && (page.data.messages.length === 0 || (afterSeq !== undefined
+    ? nextAfterSeq === null || nextAfterSeq <= afterSeq
+    : nextBeforeSeq === null || (beforeSeq !== undefined && nextBeforeSeq >= beforeSeq)))) {
+    throw createSessionTranscriptStoredContentUnavailableError();
+  }
   return {
     messages: page.data.messages,
-    hasMore: page.data.hasMore ?? false,
-    nextBeforeSeq: page.data.nextBeforeSeq ?? null,
-    nextAfterSeq: page.data.nextAfterSeq ?? null,
+    hasMore: page.data.hasMore,
+    nextBeforeSeq,
+    nextAfterSeq,
   };
 }
 

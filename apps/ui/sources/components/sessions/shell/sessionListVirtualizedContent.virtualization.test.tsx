@@ -4,6 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { installSessionShellCommonModuleMocks } from './sessionShellTestHelpers';
 
+// Genuine third-party render boundary; none of these list tests renders Markdown.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({
+    splitStreamingRevealTextParts: (text: string) => [{ text, reveal: false }],
+}));
+
 const virtualizationState = vi.hoisted(() => ({
     platformOS: 'web',
     flatListProps: null as any,
@@ -80,6 +85,9 @@ function buildNodes(count: number) {
     }));
 }
 
+// Keep the large shell import outside the test's observable assertion budget.
+await import('./sessionListVirtualizedContent');
+
 function buildVirtualizedContentProps(props: Partial<React.ComponentProps<any>> = {}) {
     return {
         nodes: buildNodes(2),
@@ -112,6 +120,13 @@ describe('SessionListVirtualizedContent virtualization', () => {
 
     afterEach(() => {
         standardCleanup();
+    });
+
+    it('gives mixed Run cells a row height class rather than recycling a header cell', async () => {
+        virtualizationState.platformOS = 'ios';
+        await renderVirtualizedContent({ nodes: [{ id: 'workflow_run:["home","run"]' }] });
+        expect(virtualizationState.legendListProps.getItemType({ id: 'workflow_run:["home","run"]' }, 0)).toBe('workflow_run:default:body');
+        expect(virtualizationState.legendListProps.getItemType({ id: 'workflow_run:["home","run"]', isGroupTail: true }, 0)).toBe('workflow_run:default:tail');
     });
 
     it('keeps small web lists on non-virtualized React Native Web FlatList', async () => {

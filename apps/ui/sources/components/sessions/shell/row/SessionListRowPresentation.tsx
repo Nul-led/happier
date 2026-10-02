@@ -4,6 +4,8 @@ import { StyleSheet } from 'react-native-unistyles';
 
 import { Text, type AppTextProps } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
+import type { WorkStatusTone } from '@/components/work/status/resolveWorkStatusTone';
+import { workStatusSurfaceStyle } from '@/components/work/status/workStatusTreatment';
 
 import {
     SESSION_LIST_ROW_CORNER_RADIUS,
@@ -105,6 +107,7 @@ export function SessionListRowPresentation(props: RowDensityProps & Readonly<{
     last?: boolean;
     selected?: boolean;
     separator?: boolean;
+    statusTone?: WorkStatusTone;
     identity?: React.ReactNode;
     title: React.ReactNode;
     children?: React.ReactNode;
@@ -144,6 +147,7 @@ export function SessionListRowPresentation(props: RowDensityProps & Readonly<{
         // Keep the incumbent geometry at normal scale. Large text may grow so the
         // title and context remain readable instead of being clipped by a fixed height.
         largeText ? { minHeight: scaledRowHeight, height: undefined } : null,
+        props.statusTone ? workStatusSurfaceStyle(props.statusTone) : null,
     ];
     const pressContent = <>
         {hasIdentity ? <View style={[

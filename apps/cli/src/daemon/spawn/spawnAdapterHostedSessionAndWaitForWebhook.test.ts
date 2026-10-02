@@ -94,6 +94,7 @@ describe('spawnAdapterHostedSessionAndWaitForWebhook', () => {
         removeAcceptedSpawnMarkerIfOwned: vi.fn(async () => true),
       },
       cleanupSpawnResources: vi.fn(async () => {}),
+      onUntrackedHostedChild: () => {},
       logDebug: vi.fn(),
       warn: vi.fn(),
     })).resolves.toMatchObject({ type: 'success', sessionId: 'session-1' });

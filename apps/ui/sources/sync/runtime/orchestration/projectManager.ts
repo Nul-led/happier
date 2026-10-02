@@ -62,6 +62,7 @@ export type ScmProjectOperationKind =
     | 'unstage'
     | 'discard'
     | 'commit'
+    | 'commit_undo'
     | 'fetch'
     | 'pull'
     | 'push'

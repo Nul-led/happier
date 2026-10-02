@@ -52,7 +52,7 @@ import {
 } from '@/sync/domains/session/sessionAddress';
 import { classifySessionTupleApplyCurrentness } from '@/sync/store/domains/sessionTupleApplyCurrentness';
 import { projectManager } from '@/sync/runtime/orchestration/projectManager';
-import { notifyExecutionRunActivity } from '@/sync/runtime/executionRuns/executionRunActivityBus';
+import { notifyExecutionRunActivityFromUpdate } from '@/sync/runtime/executionRuns/executionRunActivityBus';
 import { notifyTeamCredentialUsageChanged } from '@/sync/engine/teams/teamCredentialUsageChanges';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { resolveSessionLiveConsumption } from '@/sync/runtime/sessionLiveConsumption';
@@ -2485,13 +2485,7 @@ export function handleEphemeralSocketUpdate(params: {
         addMachineActivityUpdate({ id: updateData.id, active: updateData.active, activeAt: updateData.activeAt });
     } else if (updateData.type === 'execution-run-updated') {
         if (!shouldContinue()) return Promise.resolve();
-        const address = normalizeSessionAddress(sourceServerId, updateData.sessionId);
-        // The ephemeral carries the exact Run it is about, so a surface mounted
-        // on one Run is not woken by its siblings.
-        const updatedRunId = typeof updateData.run?.runId === 'string' && updateData.run.runId.trim().length > 0
-            ? updateData.run.runId.trim()
-            : null;
-        if (address) notifyExecutionRunActivity(address, { runId: updatedRunId });
+        notifyExecutionRunActivityFromUpdate(sourceServerId, updateData);
     } else if (updateData.type === 'team-credential-usage-changed') {
         if (!shouldContinue() || !sourceServerId) return Promise.resolve();
         notifyTeamCredentialUsageChanged({ serverId: sourceServerId, resourceId: updateData.resourceId });

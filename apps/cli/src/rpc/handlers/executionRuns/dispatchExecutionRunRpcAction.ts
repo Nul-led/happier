@@ -323,6 +323,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
     if (!isAuthoritativeScope(sessionId)) return beforeStart(executionRunScopeMismatch());
     const disabled = ensureEnabled();
     if (disabled) return beforeStart(disabled);
+    await params.manager.recoverRetainedRuns();
     const parsed = ExecutionRunStartRequestSchema.safeParse(raw);
     if (!parsed.success) return beforeStart(invalidParams());
     if (
@@ -605,6 +606,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
+      await params.manager.recoverRetainedRuns();
       const listRequest = ExecutionRunListRequestSchema.parse(request);
       return { runs: params.manager.listPublicForRequest(listRequest, sessionId) };
     },
@@ -612,6 +614,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
+      await params.manager.recoverRetainedRuns();
       const parsed = ExecutionRunGetRequestSchema.parse(request);
       if (!getRunInAuthoritativeScope(parsed.runId, sessionId)) return executionRunNotFound();
       const observedInputTurn = parsed.waitForInputId
@@ -639,6 +642,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
+      await params.manager.recoverRetainedRuns();
       const parsed = ExecutionRunSendRequestSchema.parse(request);
       if (!getRunInAuthoritativeScope(parsed.runId, sessionId)) return executionRunNotFound();
       const permissionRequestStore = readPermissionRequestStore(actionOptions?.permissionRequestStore);
@@ -681,6 +685,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
+      await params.manager.recoverRetainedRuns();
       const parsed = ExecutionRunEnsureRequestSchema.parse(request);
       if (!getRunInAuthoritativeScope(parsed.runId, sessionId)) return executionRunNotFound();
       const ensured = await params.manager.ensure(parsed.runId, {
@@ -702,6 +707,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
+      await params.manager.recoverRetainedRuns();
       const parsed = ExecutionRunEnsureOrStartRequestSchema.parse(request);
       const runId = typeof parsed.runId === 'string' ? parsed.runId.trim() : '';
       if (runId) {
@@ -730,6 +736,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
+      await params.manager.recoverRetainedRuns();
       const parsed = ExecutionRunTurnStreamStartRequestSchema.parse(request);
       if (!getRunInAuthoritativeScope(parsed.runId, sessionId)) return executionRunNotFound();
       const started = await params.manager.startTurnStream(parsed.runId, {
@@ -749,6 +756,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
+      await params.manager.recoverRetainedRuns();
       const parsed = ExecutionRunTurnStreamReadRequestSchema.parse(request);
       if (!getRunInAuthoritativeScope(parsed.runId, sessionId)) return executionRunNotFound();
       const read = await params.manager.readTurnStream(parsed.runId, {
@@ -767,6 +775,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
+      await params.manager.recoverRetainedRuns();
       const parsed = ExecutionRunTurnStreamCancelRequestSchema.parse(request);
       if (!getRunInAuthoritativeScope(parsed.runId, sessionId)) return executionRunNotFound();
       const cancelled = await params.manager.cancelTurnStream(parsed.runId, { streamId: parsed.streamId });
@@ -779,6 +788,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
+      await params.manager.recoverRetainedRuns();
       const parsed = ExecutionRunCancelTurnRequestSchema.parse(request);
       if (!getRunInAuthoritativeScope(parsed.runId, sessionId)) return executionRunNotFound();
       return await params.manager.cancelCurrentTurn(parsed.runId, parsed);
@@ -787,6 +797,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
+      await params.manager.recoverRetainedRuns();
       const parsed = ExecutionRunGetRequestSchema.parse(request);
       if (!getRunInAuthoritativeScope(parsed.runId, sessionId)) return executionRunNotFound();
       const stopped = await params.manager.stop(parsed.runId);
@@ -803,6 +814,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
+      await params.manager.recoverRetainedRuns();
       const parsed = ExecutionRunActionRequestSchema.parse(request);
       const runState = getRunInAuthoritativeScope(parsed.runId, sessionId);
       if (!runState && params.manager.get(parsed.runId)) return executionRunScopeMismatch();
@@ -870,6 +882,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
+      await params.manager.recoverRetainedRuns();
 
       const runId = typeof request.runId === 'string' ? request.runId.trim() : '';
       if (!runId) return invalidParams();
@@ -880,10 +893,13 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       return await waitForExecutionRunTerminal({
         runId,
         timeoutMs: normalizeExecutionRunWaitTimeoutMs(request.timeoutSeconds),
+        ...(request.condition ? { condition: request.condition } : {}),
+        ...(request.after ? { after: request.after } : {}),
         ...(opts?.signal ? { signal: opts.signal } : {}),
         waitForTerminal: async (observedRunId, signal) => {
           await params.manager.waitForTerminal(observedRunId, { signal });
         },
+        waitForChange: (observedRunId, signal) => params.manager.waitForRunStateChange(observedRunId, signal),
         readRun: async ({ runId: observedRunId }) => {
           if (!getRunInAuthoritativeScope(observedRunId, sessionId)) {
             return { ok: false, code: 'execution_run_not_found', message: 'Not found' } as const;

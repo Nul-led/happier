@@ -1,11 +1,6 @@
 import { type SessionMessageV1 } from '@happier-dev/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', async () => {
-    const { emptyBundledPluginUiAssetsModule } = await import('@/dev/testkit/mocks/bundledPluginUiAssets');
-    return emptyBundledPluginUiAssetsModule;
-});
-
 import type { MessageActionReferenceV1 } from '@happier-dev/protocol';
 
 import type { Session } from '@/sync/domains/state/storageTypes';
@@ -88,6 +83,39 @@ function buildLifecycleContent(message: SessionMessageV1) {
 }
 
 describe('runSessionMessagesPagePipeline', () => {
+    it.each(['scope', 'session', 'cipher', 'superseded'] as const)('stops decrypt batches when %s retires during a yield', async (retirement) => {
+        let current = true;
+        let known = true;
+        let continuePaging = true;
+        const decryptedIds: string[] = [];
+        const encryption: SessionMessagesEncryption = { decryptMessages: async rows => {
+            decryptedIds.push(...rows.map(row => row.id));
+            return rows.map(row => buildTextContent(row));
+        } };
+        let reader = encryption;
+        const received = new Map<string, Map<string, number>>();
+        const applied: NormalizedMessage[] = [];
+        const result = await runSessionMessagesPagePipeline({
+            sessionId: 's1', purpose: 'newer', lifecyclePolicy: 'suppress',
+            page: { direction: 'newer', requestPath: '/messages', scope: 'main' },
+            getSessionEncryption: () => reader, isCurrent: () => current,
+            isSessionKnown: () => known, shouldContinue: () => continuePaging,
+            messageDecryptBatchSize: 1,
+            yieldToMessageDecryptBatch: async () => {
+                if (retirement === 'scope') current = false;
+                if (retirement === 'session') known = false;
+                if (retirement === 'cipher') reader = { decryptMessages: encryption.decryptMessages };
+                if (retirement === 'superseded') continuePaging = false;
+            },
+            request: async () => Response.json({ messages: [1, 2, 3].map(seq => buildEncryptedApiMessage({ id: `m${seq}`, seq })), nextAfterSeq: null }),
+            sessionReceivedMessages: received, applyMessages: (_id, rows) => { applied.push(...rows); },
+            log: { log: () => {} },
+        });
+        expect(decryptedIds).toEqual(['m1']);
+        expect(applied).toEqual([]);
+        expect(received.size).toBe(0);
+        expect(result.applied).toBe(0);
+    });
     it.each(['new-message', 'message-updated'] as const)(
         'does not disclose or consume a plain row delivered to an E2EE Session by %s',
         async (updateType) => {

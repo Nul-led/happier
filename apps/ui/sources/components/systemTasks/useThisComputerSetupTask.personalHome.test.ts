@@ -321,6 +321,36 @@ describe('useThisComputerSetupTask Personal Home composition', () => {
             expect(manual.bridge.respond).toHaveBeenCalledWith(taskId, { approved: false, reason: 'credentials_unavailable' });
         });
 
+        it.each(['owner-a', 'owner-b', null])('binds a late approval to the initiating account when current credential subject is %s', async (subject) => {
+            const token = subject === null ? 'malformed-current-token'
+                : `e30.${Buffer.from(JSON.stringify({ sub: subject })).toString('base64')}.signature`;
+            approvalMocks.readCredentials.mockResolvedValue({ token });
+            approvalMocks.endpointFetch
+                .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'pending', supportsV2: true }), { status: 200 }))
+                .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
+            const manual = createManualRunner();
+            const hook = await renderHook(() => useThisComputerSetupTask({ runner: manual.runner,
+                authRequestApproval: { expectedRelayUrl: 'https://initiating-home.example', serverId: 'initiating-home' },
+            }));
+            let taskId = '';
+            await act(async () => {
+                taskId = await hook.getCurrent().start(buildLocalMachineSetupSystemTaskSpec({
+                    activeRelayUrl: 'https://initiating-home.example', activeWebappUrl: 'https://initiating-home.example',
+                    activeAccountId: 'owner-a',
+                }));
+            });
+            await hook.unmount();
+            emitApprovalPrompt(manual, taskId, 'https://initiating-home.example');
+            await flushHookEffects({ cycles: 3, turns: 2 });
+            if (subject === 'owner-a') {
+                expect(manual.bridge.respond).toHaveBeenCalledWith(taskId, { approved: true });
+                expect(approvalMocks.endpointFetch.mock.calls.some(([path]) => path === '/v1/auth/response')).toBe(true);
+            } else {
+                expect(approvalMocks.createServerFetchAtEndpoint).not.toHaveBeenCalled();
+                expect(manual.bridge.respond).toHaveBeenCalledWith(taskId, { approved: false, reason: 'credentials_unavailable' });
+            }
+        });
+
         it('approves a managed CLI silently, with nothing asked of the user', async () => {
             approvalMocks.readCredentials.mockResolvedValue({ token: 'home-b-bearer' });
             approvalMocks.endpointFetch

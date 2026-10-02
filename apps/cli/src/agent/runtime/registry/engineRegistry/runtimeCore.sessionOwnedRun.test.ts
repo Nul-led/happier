@@ -4,6 +4,7 @@ import type {
   AgentExecutionRunRuntime,
   AgentExecutionRunRuntimeContextV1,
   AgentRuntime,
+  AgentSessionRuntime,
   AgentSessionRuntimeContext,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import type {
@@ -13,20 +14,26 @@ import type {
 import { createExecutionRunOccurrenceWitnessRegistry } from '@/agent/runtime/bridges/executionRun/runOccurrenceWitness';
 import type { AgentInvocationTurnAdmissionWitness } from '@/plugins/runtime/invocation/services/types';
 import type { ExecutionRunController } from '@/agent/executionRuns/controllers/types';
+import type { AgentState, Metadata } from '@/api/types';
+import { createNativeAgentSessionWorkStateService } from './nativeAgentSessionWorkState';
 
 import { createEmptyBackendExecutionSurfaces } from '../engineRegistryTypes';
 import type { NativeAgentSessionRunToolBindingRequest } from '../engineRegistryTypes';
 import { resolveBackendRuntimeCore } from './runtimeCore';
 
-const acpProtocolParams = vi.hoisted(() => [] as Array<Record<string, unknown>>);
-vi.mock('@/agent/acp/runtime/publicSession/createPublicAcpRuntimeProtocols', () => ({
-  createPublicAcpRuntimeProtocols: (params: Record<string, unknown>) => {
-    acpProtocolParams.push(params);
-    return Object.freeze({ acp: Object.freeze({ open: vi.fn(), openExecutionRunV1: vi.fn() }) });
-  },
-}));
-
 const AGENT_ID = 'acme.session-agent';
+
+vi.mock('node:fs', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...fs,
+    readFileSync: (...args: Parameters<typeof fs.readFileSync>) => {
+      // Source runtime tests do not consume a remote host's ignored package-build failures.
+      if (String(args[0]).replaceAll('\\', '/').endsWith('/.project/tmp/bundled-plugin-publication/failures.json')) return '[]';
+      return fs.readFileSync(...args);
+    },
+  };
+});
 
 function createContributions() {
   const backend = {
@@ -57,6 +64,7 @@ function createContributions() {
             delivery: ['newTurn'],
             cancel: true,
             executionRunContext: { versions: [1] },
+            workStateSources: [{ id: 'tasks', itemKinds: ['task'] }],
           },
         },
       },
@@ -67,6 +75,79 @@ function createContributions() {
 }
 
 describe('resolveBackendRuntimeCore Session-owned Execution Run scope', () => {
+  it('keeps parent tasks and readiness authoritative across retained siblings and late child publications', async () => {
+    const { backend, agent } = createContributions();
+    let metadata = { path: '/parent', machineId: 'machine-a' } as Metadata;
+    let agentState: AgentState = { capabilities: { inFlightSteerAvailable: true } };
+    const parent = {
+      sessionId: 'session-a',
+      getMetadataSnapshot: () => metadata,
+      updateMetadata: async (update: (value: Metadata) => Metadata) => { metadata = update(metadata); },
+      updateAgentState: async (update: (value: AgentState) => AgentState) => { agentState = update(agentState); },
+    };
+    const publication = {
+      sourceSequence: 1, observedAtMs: 1,
+      items: [{ localId: 'parent-task', kind: 'task' as const, origin: 'vendor' as const,
+        status: 'active' as const, title: 'Parent task', updatedAtMs: 1 }],
+    };
+    const parentPublication = await createNativeAgentSessionWorkStateService({
+      session: parent, pluginId: AGENT_ID, contributionId: AGENT_ID, agentId: AGENT_ID,
+      occurrenceId: 'agent-occurrence', declarations: [{ id: 'tasks', itemKinds: ['task'] }],
+      isCurrent: () => true,
+    }).publisher('tasks').publish(publication);
+    expect(parentPublication.status).toBe('applied');
+    const parentMetadata = structuredClone(metadata);
+    const parentReadiness = structuredClone(agentState);
+    const contexts: AgentSessionRuntimeContext[] = [];
+    const adapter = await resolveBackendRuntimeCore({
+      backend, agent, executionSurfaces: createEmptyBackendExecutionSurfaces(),
+      runtimeOwner: { backendId: AGENT_ID,
+        selected: { kind: 'plugin_engine', ownerId: AGENT_ID, provenance: 'external', pluginId: AGENT_ID }, candidates: [] },
+      nativeAgentRuntime: { sessions: { open: async (_request, context) => {
+        contexts.push(context);
+        return { send: async () => ({ status: 'admitted' as const }), cancel: async () => ({ status: 'notRunning' as const }),
+          watch: () => ({ dispose() {} }), dispose() {} } satisfies AgentSessionRuntime;
+      } } } satisfies AgentRuntime,
+      nativeAgentRuntimeIdentity: { pluginId: AGENT_ID, pluginVersion: '1.0.0', agentId: AGENT_ID,
+        occurrenceId: 'agent-occurrence', isCurrent: () => true },
+    } as never);
+    const runs = [];
+    for (const runId of ['child-a', 'child-b']) {
+      const run = adapter!.runtimeCore.createExecutionRunBackend({
+        scope: 'session_owned', cwd: '/parent', runId, controllerOccurrenceId: `${runId}-occurrence`,
+        callId: `${runId}-call`, sidechainId: runId, backendId: AGENT_ID, permissionMode: 'default',
+        start: { intent: 'delegate', runClass: 'long_lived', retentionPolicy: 'resumable' },
+        sessionInteractionHost: { session: parent, machineId: 'machine-a', permissionHandler: {
+          handleToolCall: async () => ({ decision: 'approved' }), abortPendingRequestAndFlush: async () => undefined,
+        } },
+      } as never)!;
+      await run.provisionRuntime();
+      runs.push(run);
+    }
+    for (const context of contexts) {
+      await context.workState.publisher('tasks').publish({ ...publication,
+        items: [{ ...publication.items[0], localId: 'child-task', title: 'Child task' }] });
+      context.session.services.activeInput.bind({
+        isTurnInFlight: () => false, canSteer: () => false, onPromptQueued() {},
+        applyPermissionIntentDuringTurn: () => { throw new Error('Not exercised by publication test'); },
+        clearTerminalComposer: () => { throw new Error('Not exercised by publication test'); }, interruptPendingInputAndRun() {},
+      });
+      context.session.services.activeInput.publishStatus({
+        steerAvailable: false, steerUnavailableReason: 'turn_settling', stateUpdatedAtMs: 2,
+        terminalComposerDraftPresent: false, terminalComposerClearSupported: false,
+        inFlightConfigurationApplySupported: false, pendingInputInterruptAndRunLocalId: null,
+        pendingInputInterruptAndRunStateAt: null,
+      });
+    }
+    expect(metadata).toEqual(parentMetadata);
+    expect(agentState).toEqual(parentReadiness);
+    await runs[0].dispose();
+    await expect(contexts[0].workState.publisher('tasks').publish({ ...publication, sourceSequence: 2 }))
+      .rejects.toThrow();
+    expect(metadata).toEqual(parentMetadata);
+    expect(agentState).toEqual(parentReadiness);
+    await runs[1].dispose();
+  });
   it.each([
     {
       label: 'retained',
@@ -297,9 +378,6 @@ describe('resolveBackendRuntimeCore Session-owned Execution Run scope', () => {
 
     // The Run's own tool profile reached the provider open request.
     expect(openedMcpServers).toEqual({ happier: { command: 'happier-mcp', args: ['--run', 'run-a'] } });
-    // The same Run-bound profile reaches the generic ACP composer, so an ACP-backed Agent opened
-    // inside this Run sees the Happier bridge and configured servers exactly like a native one.
-    expect(acpProtocolParams.at(-1)?.mcpServers).toEqual({ happier: { command: 'happier-mcp', args: ['--run', 'run-a'] } });
     expect(composeRunToolBinding).toHaveBeenCalledTimes(1);
     expect(toolBindingRequest!.runId).toBe('run-a');
     expect(toolBindingRequest!.cwd).toBe('/run/a');

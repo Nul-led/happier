@@ -76,7 +76,9 @@ import {
   buildProviderAccountUsageSnapshotFromConnectedServiceQuotaObservation,
 } from '../accountUsage/fromConnectedServiceQuotaObservation';
 import { ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore } from '../accountGroups/quotas/ConnectedServiceAuthGroupRuntimeQuotaSnapshotStore';
-import { DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1 } from '../accountGroups/selection/selectConnectedServiceAuthGroupCandidate';
+import { DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1, selectConnectedServiceAuthGroupCandidate } from '../accountGroups/selection/selectConnectedServiceAuthGroupCandidate';
+import { projectProviderAccountUsageSnapshotToAuthGroupRuntimeState } from '../accountGroups/quotas/projection';
+import { ConnectedServiceAuthGroupSwitchCoordinator, InMemoryConnectedServiceAuthGroupSwitchLeaseRegistry, type ConnectedServiceAuthGroupSwitchState } from '../accountGroups/switching/ConnectedServiceAuthGroupSwitchCoordinator';
 import { HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY } from '../connectedServiceChildEnvironment';
 import { buildConnectedServiceAuthGroupCommittedGenerationFact } from '../sessionAuthSwitch/connectedServiceAuthSwitchOutcome';
 import {
@@ -2023,7 +2025,7 @@ describe('ConnectedServiceQuotasCoordinator', () => {
     expect(loadQuota).not.toHaveBeenCalled();
   });
 
-  it.each(['enumerated', 'aggregate', 'aggregate_timeout', 'aggregate_network', 'aggregate_malformed', 'read_failure', 'not_available', 'nothing_to_reset', 'already_consumed', 'manual_selected', 'manual_next', 'manual_not_available', 'manual_missing'] as const)('schedules a novel qualified account through the plugin quota leaf and canonical V4 usage writer (%s recovery)', async (recoveryMode) => {
+  it.each(['quota_family', 'unusable_spare', 'enumerated', 'aggregate', 'aggregate_timeout', 'aggregate_network', 'aggregate_malformed', 'read_failure', 'not_available', 'nothing_to_reset', 'already_consumed', 'manual_selected', 'manual_next', 'manual_not_available', 'manual_missing'] as const)('schedules a novel qualified account through the plugin quota leaf and canonical V4 usage writer (%s recovery)', async (recoveryMode) => {
     const now = 1_000_000;
     const accountMode = recoveryMode === 'enumerated' ? 'e2ee' as const : 'plain' as const;
     const manual = recoveryMode.startsWith('manual_');
@@ -2132,7 +2134,8 @@ describe('ConnectedServiceQuotasCoordinator', () => {
             observedAtMs: ${now},
             ${accountMode === 'e2ee' ? `subscription: ${JSON.stringify(failedSubscription)},` : ''}
             limits: [{
-              id: 'monthly',
+              id: ${JSON.stringify(recoveryMode === 'quota_family' ? 'codex_spark:primary' : 'monthly')},
+              ${recoveryMode === 'quota_family' ? "providerLimitId: 'codex_spark'," : ''}
               used: consumed ? 0 : 25,
               remaining: consumed ? 100 : 75,
               resetsAtMs: ${now + 60_000}
@@ -2290,7 +2293,12 @@ describe('ConnectedServiceQuotasCoordinator', () => {
       establishedRuntimeOwner,
       listScheduledAccounts,
       listAccounts: async () => [profile],
-      listGroupQuotaTargets: async () => [{ profile, groupGeneration: 4 }],
+      listGroupQuotaTargets: async () => [
+        { profile, groupGeneration: 4 },
+        ...(recoveryMode === 'unusable_spare' ? [{ profile: {
+          ...profile, ref: { ...profile.ref, accountId: 'dead' }, status: 'needs_reauth' as const,
+        }, groupGeneration: 4 }] : []),
+      ],
       readQuota,
       writeProviderAccountUsage,
     } as unknown as QualifiedConnectedAccountQuotaRuntime;
@@ -2360,7 +2368,7 @@ describe('ConnectedServiceQuotasCoordinator', () => {
         subscription: expectedSubscription,
         accountSubject: { kind: 'providerSubject', id: 'provider-account-a' },
         accountLabel: 'Novel Work',
-        meters: [expect.objectContaining({ meterId: 'monthly', used: 25, remaining: 75 })],
+        meters: [expect.objectContaining({ meterId: recoveryMode === 'quota_family' ? 'codex_spark:primary' : 'monthly', used: 25, remaining: 75 })],
       }));
       expect(accountUsageStore.listSnapshots()).toEqual([
         expect.objectContaining({
@@ -2370,6 +2378,50 @@ describe('ConnectedServiceQuotasCoordinator', () => {
           subscription: expectedSubscription,
         }),
       ]);
+      if (recoveryMode === 'quota_family' || recoveryMode === 'unusable_spare') {
+        const serviceId = 'acme.novel.accounts/work-cloud';
+        await expect(coordinator.probeGroupQuotaSnapshots({
+          serviceId, groupId: 'team', profileIds: recoveryMode === 'unusable_spare' ? ['dead', 'account-a'] : ['account-a'],
+        })).resolves.toMatchObject({ status: 'complete', completedProfileCount: recoveryMode === 'unusable_spare' ? 2 : 1 });
+        const snapshot = accountUsageStore.resolveBySource({ serviceId, profileId: 'account-a', bindingKind: 'group_member', groupId: 'team', groupGeneration: 4 });
+        if (!snapshot) throw new Error('Expected the probed group quota snapshot');
+        const healthyState = projectProviderAccountUsageSnapshotToAuthGroupRuntimeState(snapshot);
+        if (!healthyState) throw new Error('Expected usable group quota evidence');
+        if (recoveryMode === 'quota_family') {
+          expect(snapshot.meters).toMatchObject([{ meterId: 'codex_spark:primary', providerLimitId: 'codex_spark' }]);
+          const selection = selectConnectedServiceAuthGroupCandidate({
+            nowMs: now, quotaFreshnessMs: 60_000, activeProfileId: null,
+            policy: { ...DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1, strategy: 'least_limited', quotaLimitSelection: { mode: 'selected', providerLimitIds: ['codex_spark'] } },
+            members: [{ profileId: 'account-a', priority: 1, createdAtMs: 1, enabled: true }],
+            memberStatesByProfileId: new Map([['account-a', healthyState]]),
+          });
+          expect(selection.selected).toMatchObject({ profileId: 'account-a', leastLimitedScore: 75 });
+        } else {
+          const current: ConnectedServiceAuthGroupSwitchState = {
+            serviceId, groupId: 'team', activeProfileId: 'primary', generation: 4,
+            policy: { ...DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1, strategy: 'priority', autoSwitch: true },
+            members: ['primary', 'dead', 'account-a'].map((profileId, priority) => ({ profileId, priority, createdAtMs: priority, enabled: true })),
+            memberStatesByProfileId: new Map([
+              ['primary', { credentialHealthStatus: 'connected', quotaSnapshot: { capturedAtMs: now, effectiveRemainingPercent: 0, exhausted: true } }],
+              ['dead', { credentialHealthStatus: 'needs_reauth' }],
+              ['account-a', { ...healthyState, credentialHealthStatus: 'connected' }],
+            ]),
+          };
+          const switcher = new ConnectedServiceAuthGroupSwitchCoordinator({
+            leases: new InMemoryConnectedServiceAuthGroupSwitchLeaseRegistry(),
+            nowMs: () => now, quotaFreshnessMs: 60_000,
+            loadState: async () => current,
+            probeQuotaSnapshotsForGroup: (input) => coordinator.probeGroupQuotaSnapshots(input),
+            commitSwitch: async ({ toProfileId }) => ({ ...current, activeProfileId: toProfileId, generation: 5 }),
+            applyGeneration: async () => ({ ok: true as const }),
+          });
+          await expect(switcher.switchBeforeTurn({ serviceId, groupId: 'team', reason: 'usage_limit' }))
+            .resolves.toMatchObject({ status: 'switched', activeProfileId: 'account-a', generation: 5 });
+          await expect(coordinator.probeGroupQuotaSnapshots({ serviceId, groupId: 'team', profileIds: ['missing'] }))
+            .resolves.toMatchObject({ status: 'incomplete', completedProfileCount: 0, reason: 'probe_unavailable' });
+        }
+        return;
+      }
       const request = { serviceId: 'acme.novel.accounts/work-cloud', profileId: 'account-a', groupId: 'team',
         automaticResetContext: { groupId: 'team', ...(recoveryMode === 'enumerated' ? { sessionId: 'session-a' } : {}) },
       } as const;

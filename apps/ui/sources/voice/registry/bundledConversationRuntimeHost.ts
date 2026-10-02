@@ -24,9 +24,6 @@ import type { VoiceHostedConversationService } from '@happier-dev/plugin-sdk/voi
 import { createRealtimeReadOnlyClientTools } from '@/realtime/realtimeClientTools';
 import { fetchHappierVoiceToken, completeHappierVoiceSession, releaseHappierVoiceSession } from '@/sync/api/voice/apiVoice';
 import { apiSocket } from '@/sync/api/session/apiSocket';
-import {
-  requireCurrentAccountStoredContentServerCompatibility,
-} from '@/sync/api/capabilities/accountStoredContentCompatibility';
 import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { readVoicePrivacySettings } from '@/sync/domains/settings/readVoicePrivacySettings';
@@ -738,10 +735,17 @@ export function createBundledConversationRuntimeHostLease(input: Readonly<{
     createWebRtcConnection: createHostWebRtcConnection,
     createWebSocketPcmConnection,
     createWebSocketPcmMedia,
-    createToolBarrier: (deps) => createDefaultRealtimeToolBarrier({
-      ...deps,
-      ...(input.currentUiContext ? { currentUiContext: input.currentUiContext } : {}),
-    }),
+    createToolBarrier: ({ controlSessionId, adapterId, ...deps }) => {
+      const binding = voiceConversationBindingResolver.resolveByControlSessionId({ controlSessionId, adapterId });
+      // Capture the connected attempt's Home/Session, not later navigation or
+      // target selection. Home Voice still has an Account-owned carrier address.
+      const currentSessionAddress = binding?.conversationSessionAddress ?? null;
+      return createDefaultRealtimeToolBarrier({
+        ...deps,
+        currentSessionAddress,
+        ...(input.currentUiContext ? { currentUiContext: input.currentUiContext } : {}),
+      });
+    },
     getPlatform: () => {
       if (Platform.OS === 'ios' || Platform.OS === 'android') return Platform.OS;
       return 'web';
@@ -1133,9 +1137,6 @@ export function createBundledConversationRuntimeHostLease(input: Readonly<{
         });
         try {
         const conversationSessionId = await discoverVoiceHistorySession({
-          prepareLookup: () => requireCurrentAccountStoredContentServerCompatibility({
-            serverId: authority.scope.serverId,
-          }),
           lookupByTags: async (tags) => {
             const response = await authority.request('/v2/sessions/lookup-by-tags', {
               method: 'POST',

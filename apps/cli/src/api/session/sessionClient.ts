@@ -122,6 +122,7 @@ import {
     type CommittedUserMessageSeqListener,
 } from './committedUserMessageSeqTracker';
 import { loadCommittedTranscriptLocalIdBaseline } from './client/transcript/committedTranscriptLocalIdBaseline';
+import { fetchCommittedTranscriptIdentitySnapshot } from './transcriptQueries';
 import { fetchEncryptedTranscriptMessagesPage } from '@/session/replay/fetchEncryptedTranscriptMessages';
 import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { findTranscriptEncryptedMessageByLocalIdV2 } from './transcriptMessageLookup';
@@ -2303,7 +2304,7 @@ export class ApiSessionClient extends EventEmitter {
             Parameters<ReturnType<typeof createSessionClientUsageObservationPublisher>['publish']>[0],
             'sessionId'
         >,
-    ): Promise<void> {
+    ): ReturnType<ReturnType<typeof createSessionClientUsageObservationPublisher>['publish']> {
         return this.usageObservationPublisher.publish({
             sessionId: this.sessionId,
             ...input,
@@ -2399,6 +2400,16 @@ export class ApiSessionClient extends EventEmitter {
         const update = this.transcriptApi.enqueueAgentMessageCommitted(provider, body, opts);
         this.trackPendingUpdate(this.pendingTranscriptMessageUpdates, update);
         return update;
+    }
+
+    async fetchCommittedTranscriptIdentitySnapshot(opts?: Readonly<{ signal?: AbortSignal }>) {
+        const request = async () => await this.runSessionRequest(async () => fetchCommittedTranscriptIdentitySnapshot({
+            token: this.token, sessionId: this.sessionId, ...this.getTranscriptQueryContext(),
+            ...(opts?.signal ? { signal: opts.signal } : {}),
+        }));
+        return this.sessionConnectionSupervisor
+            ? await runSupervisedRequest({ supervisor: this.sessionConnectionSupervisor, requireAuth: true, requireOnline: false, request })
+            : await request();
     }
 
     async fetchCommittedTranscriptLocalIdBaseline(opts?: {

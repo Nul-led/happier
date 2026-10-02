@@ -186,6 +186,7 @@ export type UseSessionListViewFiltersInput = Readonly<{
     defaults: SessionListViewFilterDefaultsInput;
     /** Fixed destination semantics, independent of its retention key or catalog. */
     viewContext?: SessionListViewContext;
+    fixedShow?: SessionListViewFilters['show'];
     /** Existing exact-Home credential owner projection for every contributing Home. */
     accountScopeResolutions: ReadonlyMap<string, ServerCredentialAccountScopeResolution>;
     /**
@@ -206,13 +207,14 @@ export function useSessionListViewFilters(input: UseSessionListViewFiltersInput)
     removeAuthoritativelyDeletedSelections: (deleted: SessionListFilterDeletedSelections) => void;
     resetFilters: () => void;
 }> {
+    const defaults = input.fixedShow ? { ...input.defaults, show: input.fixedShow } : input.defaults;
     const contextKey = input.contextKey.trim();
     const key = retentionKey(contextKey);
     const retained = React.useMemo(
-        () => getOrCreateEntry(contextKey, input.defaults),
+        () => getOrCreateEntry(contextKey, defaults),
         [contextKey],
     );
-    retained.defaults = input.defaults;
+    retained.defaults = defaults;
     const [state, setState] = React.useState<Readonly<{
         key: string;
         filters: SessionListViewFilters;
@@ -222,7 +224,7 @@ export function useSessionListViewFilters(input: UseSessionListViewFiltersInput)
         retained,
         input.accountScopeResolutions,
         input.authoritativeHomeServerIds,
-        input.defaults,
+        defaults,
     );
 
     let currentState = state;
@@ -251,7 +253,7 @@ export function useSessionListViewFilters(input: UseSessionListViewFiltersInput)
     }
 
     const mountedDefaultHomeServerIds = input.followDefaultHomeSelection === true
-        ? createSessionListViewFilterDefaults(input.defaults).homeServerIds
+        ? createSessionListViewFilterDefaults(defaults).homeServerIds
         : currentState.filters.homeServerIds;
     if (
         input.followDefaultHomeSelection === true
@@ -274,11 +276,11 @@ export function useSessionListViewFilters(input: UseSessionListViewFiltersInput)
             const requested = typeof value === 'function'
                 ? (value as (previous: SessionListViewFilters) => SessionListViewFilters)(currentFilters)
                 : value;
-            const filters = normalizeSessionListViewFilters(requested, input.viewContext);
+            const filters = normalizeSessionListViewFilters(requested, input.viewContext, input.fixedShow);
             retained.filters = filters;
             return { key, filters };
         });
-    }, [input.viewContext, key, retained]);
+    }, [input.fixedShow, input.viewContext, key, retained]);
 
     const setSearchQuery = React.useCallback<React.Dispatch<React.SetStateAction<string>>>((value) => {
         updateFilters((current) => ({
@@ -299,8 +301,8 @@ export function useSessionListViewFilters(input: UseSessionListViewFiltersInput)
         });
     }, [input.viewContext, key, retained]);
 
-    const latestDefaults = React.useRef(input.defaults);
-    latestDefaults.current = input.defaults;
+    const latestDefaults = React.useRef(defaults);
+    latestDefaults.current = defaults;
     const resetFilters = React.useCallback(() => {
         const defaults = createSessionListViewFilterDefaults(latestDefaults.current);
         // Clearing re-enters default-following: the restored selection becomes the

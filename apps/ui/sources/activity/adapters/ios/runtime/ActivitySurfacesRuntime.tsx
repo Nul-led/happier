@@ -77,7 +77,7 @@ type IosActivityInteractionEvent = Readonly<{
     data?: unknown;
 }>;
 type LiveActivityHandle = Readonly<{
-    update: (props: LiveActivitySnapshot) => Promise<void>;
+    update: (props: LiveActivitySnapshot, staleDate?: Date) => Promise<void>;
     end: (
         dismissalPolicy?: 'default' | 'immediate' | { after: Date },
         props?: LiveActivitySnapshot,
@@ -894,7 +894,7 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
                     }
 
                     try {
-                        await existingHandle.update(snapshot);
+                        await existingHandle.update(snapshot, new Date(snapshot.staleAt));
                         liveActivityLastSnapshots.set(activityKey, snapshot);
                         liveActivityLastAppliedAt.set(activityKey, activityNowMs);
                         rememberLiveActivityBackgroundWakeSnapshot(snapshot);
@@ -925,6 +925,7 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
                             snapshot.sessionId,
                             resolveRouteServerId(snapshot.serverId),
                         ),
+                        new Date(snapshot.staleAt),
                     );
                     liveActivityStartFailuresRef.current.delete(activityKey);
                     liveActivityHandles.set(activityKey, nextHandle);

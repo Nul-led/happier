@@ -119,8 +119,9 @@ describe('withHostSessionRuntimeIdentityPublication', () => {
         agent: { providerSessionId: 'thread-live-1' },
       },
     };
-    const prepareProviderCliAttach = vi.fn(async () => metadata);
-    const runtime = createRuntimeTurnOperations({ prepareProviderCliAttach });
+    const presentation = { kind: 'provider_attach' as const, metadata };
+    const prepareTerminalPresentation = vi.fn(async () => presentation);
+    const runtime = createRuntimeTurnOperations({ prepareTerminalPresentation });
     const plan = {
       kind: HOST_SESSION_RUNTIME_PLAN_KIND,
       agentId: 'codex',
@@ -141,8 +142,8 @@ describe('withHostSessionRuntimeIdentityPublication', () => {
 
     const created = await wrapped.config.createSessionRuntime?.({} as never);
 
-    await expect(created?.operations.prepareProviderCliAttach?.()).resolves.toEqual(metadata);
-    expect(prepareProviderCliAttach).toHaveBeenCalledOnce();
+    await expect(created?.operations.prepareTerminalPresentation?.()).resolves.toEqual(presentation);
+    expect(prepareTerminalPresentation).toHaveBeenCalledOnce();
   });
 
   it('preserves the explicit terminal mode binding alongside runtime publication decoration', async () => {

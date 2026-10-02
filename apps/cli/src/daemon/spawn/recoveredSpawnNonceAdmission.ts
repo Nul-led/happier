@@ -10,7 +10,8 @@ import type { TrackedSession } from '../types';
 export type RecoveredSpawnNonceAdmissionResult =
   | Readonly<{ type: 'not_found' }>
   | Readonly<{ type: 'pending' }>
-  | Extract<SpawnSessionResult, { type: 'success' | 'error' }>;
+  | (Extract<SpawnSessionResult, { type: 'success' }> & Readonly<{ sessionId: string }>)
+  | Extract<SpawnSessionResult, { type: 'error' }>;
 
 export async function resolveRecoveredSpawnNonceAdmission(input: Readonly<{
   spawnNonce: string;

@@ -1,5 +1,6 @@
 import { buildNewSessionAuthoringDraftFromPersistedDraft, buildNewSessionAuthoringDraftFromTempData, buildNewSessionTempDataFromAuthoringDraft, buildPersistedNewSessionDraftFromAuthoringDraft } from '@/components/sessions/authoring/draft/sessionAuthoringDraftAdapters';
 import { afterEach, describe, expect, it } from 'vitest';
+import { seedNewSessionDraftV1 } from '@/components/sessions/new/newSessionDraftSeed';
 
 import type { ComposerAttachmentDraftV1 } from '@happier-dev/protocol';
 import type {
@@ -68,6 +69,45 @@ function cataloguedNewSessionAuthoring(
 }
 
 describe('newSessionDraftRepositoryAdapter', () => {
+    it('keeps an explicit placement-only seed without keeping ordinary empty authoring edits', () => {
+        writeNewSessionDraftToRepository({
+            scope,
+            draftId: 'ordinary-empty-edit',
+            draft: authoringDraft({ input: '' }),
+        });
+        expect(readNewSessionDraftFromRepository({ scope, draftId: 'ordinary-empty-edit' })).toBeNull();
+
+        const draftId = seedNewSessionDraftV1({
+            scope,
+            createDraftId: () => 'placement-only-seed',
+            seed: { placement: { kind: 'exactTarget', serverId: 'server-b', machineId: 'machine-b' } },
+        });
+        expect(draftId).toBe('placement-only-seed');
+        expect(readNewSessionDraftFromRepository({ scope, draftId: draftId! })).toMatchObject({
+            input: '',
+            executionTarget: { kind: 'machine', target: { serverId: 'server-b', machineId: 'machine-b' } },
+        });
+    });
+
+    it('keeps the Zen source in the local draft through seed, reload and ordinary authoring edits', () => {
+        const zenTaskSource = { kind: 'zen_task', taskId: 'task-1', scope, title: 'Fix the task' } as const;
+        const draftId = seedNewSessionDraftV1({
+            scope,
+            createDraftId: () => 'zen-task-draft',
+            seed: { prompt: { text: 'Work on this task', mode: 'replace' }, ...{ zenTaskSource } },
+        });
+        expect(draftId).toBe('zen-task-draft');
+        const reloaded = readNewSessionDraftFromRepository({ scope, draftId: draftId! });
+        expect(reloaded).toMatchObject({ zenTaskSource, input: 'Work on this task' });
+        writeNewSessionAuthoringDraftToRepository({
+            scope, draftId: draftId!, draft: { ...reloaded!, selectedPath: '/changed' },
+        });
+        expect(readNewSessionDraftFromRepository({ scope, draftId: draftId! })).toMatchObject({ zenTaskSource });
+        const snapshot = getSessionDraftSnapshot(scope, { kind: 'newSession', draftId: draftId! });
+        expect(snapshot?.localSupplement.newSessionLocalState).toMatchObject({ zenTaskSource });
+        expect(JSON.stringify(snapshot?.document)).not.toContain('zen_task');
+        expect(readNewSessionDraftFromRepository({ scope: { ...scope, accountId: 'other' }, draftId: draftId! })).toBeNull();
+    });
     it('writes and clears only the Temporary computer activation reference', () => {
         const draftId = 'temporary-computer-reference-only';
         const executionTarget = {

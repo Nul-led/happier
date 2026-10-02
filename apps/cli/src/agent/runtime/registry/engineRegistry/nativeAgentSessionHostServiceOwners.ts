@@ -98,7 +98,7 @@ export type NativeAgentSessionHostServiceOwners = Readonly<{
 
 type Disposable = Readonly<{ dispose(): void | Promise<void> }>;
 
-function createNativeAgentFeatureService(
+export function createNativeAgentFeatureService(
     runtimeRegistry: ResolvedExecutablePluginRuntimeRegistry | null,
 ): AgentSessionHostServices['features'] {
     return Object.freeze({
@@ -432,6 +432,7 @@ export function createNativeAgentSessionHostServiceOwners(params: Readonly<{
             happyHomeDir: storePaths.happyHomeDir,
             hasCapability,
             readSessionId: () => params.sessionId,
+            readSessionMetadata: () => params.hostSession.session.getMetadataSnapshot(),
             ...(params.currentTerminalMetadata ? { currentTerminalMetadata: params.currentTerminalMetadata } : {}),
             ...(catalogEntry?.getTerminalPromptSubmitVerificationPolicy
                 ? {

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { RPC_ERROR_CODES, RPC_METHODS } from '@happier-dev/protocol/rpc';
-import type { ScmRemoteResponse } from '@happier-dev/protocol/scm';
 import { assertScmResponse, scmFallbackError } from './scmRpcFailure';
 
 describe('SCM RPC failure normalization', () => {
@@ -14,7 +13,7 @@ describe('SCM RPC failure normalization', () => {
             { method: RPC_METHODS.SCM_STASH_POP, request: { cwd: '/repo', stashRef: 'stash@{0}' }, reconciliation: { kind: 'stash' } },
         ];
         for (const { method, request, reconciliation } of cases) {
-            const result = scmFallbackError<ScmRemoteResponse>(error, { method, request });
+            const result = scmFallbackError(error, { method, request });
             expect(result).toMatchObject({ success: false, errorCode: 'COMMAND_OUTCOME_UNKNOWN', outcome: { kind: 'outcome_unknown', reconciliation, nextActions: [{ kind: 'refresh' }] } });
             expect(JSON.stringify(result)).not.toContain('private diagnostics');
         }
@@ -22,17 +21,17 @@ describe('SCM RPC failure normalization', () => {
 
     it('keeps explicit no-dispatch errors and failed queries as known failures', () => {
         for (const rpcErrorCode of [RPC_ERROR_CODES.METHOD_NOT_FOUND, RPC_ERROR_CODES.METHOD_NOT_AVAILABLE]) {
-            const response = scmFallbackError<ScmRemoteResponse>({ rpcErrorCode }, { method: RPC_METHODS.SCM_REMOTE_PUSH, request: {} });
+            const response = scmFallbackError({ rpcErrorCode }, { method: RPC_METHODS.SCM_REMOTE_PUSH, request: {} });
             expect(response.outcome?.kind).not.toBe('outcome_unknown');
         }
-        const query = scmFallbackError<ScmRemoteResponse>(new Error('timeout'), { method: RPC_METHODS.SCM_STATUS_SNAPSHOT, request: {} });
+        const query = scmFallbackError(new Error('timeout'), { method: RPC_METHODS.SCM_STATUS_SNAPSHOT, request: {} });
         expect(query.errorCode).toBe('BACKEND_UNAVAILABLE');
     });
 
     it('does not claim a malformed mutation response proves no effect', () => {
         let error: unknown;
         try { assertScmResponse(undefined); } catch (caught) { error = caught; }
-        expect(scmFallbackError<ScmRemoteResponse>(error, { method: RPC_METHODS.SCM_COMMIT_CREATE, request: { cwd: '/repo' } }).outcome?.kind).toBe('outcome_unknown');
+        expect(scmFallbackError(error, { method: RPC_METHODS.SCM_COMMIT_CREATE, request: { cwd: '/repo' } }).outcome?.kind).toBe('outcome_unknown');
     });
 
     it('rejects malformed canonical outcomes before treating their authority as fact', () => {

@@ -87,6 +87,39 @@ function startRequestWithViewerSocket(viewerSocketId: string): MachineLiveStream
 }
 
 describe('createMachineLiveStreamRelayTerminator', () => {
+    it('refuses a replaced source occurrence and stops a live capture when its exact source retires', async () => {
+        const registry = createMachineLiveStreamCaptureRegistry();
+        let captureInput: MachineLiveStreamCaptureStartInput | null = null;
+        let stopped = false;
+        const register = () => registry.register({ sourceId: 'source_1', streamFamily: 'screen',
+            capabilities: { v: 1, sourceId: 'source_1', sourceKind: 'screen', supportedCodecs: ['image.mjpeg'],
+                inputMode: 'none', sidebands: [], health: { status: 'available' } },
+            adapter: { async start(input) { captureInput = input; return { ok: true, session: { stop() { stopped = true; } } }; } },
+        });
+        register();
+        const original = registry.resolve({ sourceId: 'source_1' });
+        if (!original.ok) throw new Error('missing registered source');
+        const request = startRequest();
+        request.sourceId = 'source_1';
+        request.sourceOccurrenceId = original.source.sourceOccurrenceId;
+        request.authorization!.payload.sourceId = 'source_1';
+        register();
+        const emitted: MachineLiveStreamRelayEnvelopeV1[] = [];
+        const terminator = createMachineLiveStreamRelayTerminator({ machineId: 'machine_source', registry,
+            nowMs: () => 1_000, emitEnvelope: envelope => emitted.push(envelope) });
+        expect(await terminator.start(request)).toEqual({ ok: false, reasonCode: 'capture_source_unavailable' });
+        expect(captureInput).toBeNull();
+        const current = registry.resolve({ sourceId: 'source_1' });
+        if (!current.ok) throw new Error('missing replacement');
+        request.sourceOccurrenceId = current.source.sourceOccurrenceId;
+        expect(await terminator.start(request)).toEqual({ ok: true, streamId: 'stream_1' });
+        registry.unregister('source_1');
+        expect(stopped).toBe(true);
+        const activeInput = captureInput as MachineLiveStreamCaptureStartInput | null;
+        expect(activeInput?.offerFrame(keyframe())).toMatchObject({ ok: false });
+        expect(emitted.some(envelope => envelope.message.kind === 'receipt' && envelope.message.receipt.terminal === true)).toBe(true);
+        await terminator.dispose();
+    });
     it('refuses a signed renewal that changes the exact capture source', async () => {
         const request = startRequest();
         request.sourceId = 'source_1';
@@ -1040,6 +1073,7 @@ describe('createMachineLiveStreamRelayTerminator', () => {
 
         await vi.waitFor(() => {
             expect(stop).toHaveBeenCalledTimes(1);
+            expect(observabilityEvents).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'flow.closed' })]));
         });
         expect(terminator.applyControl({
             v: 1,

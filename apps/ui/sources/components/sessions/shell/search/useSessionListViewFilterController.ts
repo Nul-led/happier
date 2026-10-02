@@ -92,6 +92,7 @@ export type SessionListViewFilterController = Readonly<{
     retentionScopeKey: string;
     fixedHomeServerIds?: ReadonlySet<string>;
     fixedAudienceKeys?: ReadonlySet<string>;
+    fixedShow?: SessionListViewFilters['show'];
 }>;
 
 /**
@@ -103,6 +104,7 @@ export type SessionListViewFilterController = Readonly<{
 export function useSessionListViewFilterController(
     corpusStorage: SessionListCorpusStorage = 'active',
     viewContext: SessionListViewContext = GLOBAL_SESSION_LIST_VIEW_CONTEXT,
+    fixedShow?: SessionListViewFilters['show'],
 ): SessionListViewFilterController {
     const selection = useSessionListSelectionState();
     const [hideInactiveSessions, setHideInactiveSessions] = useSettingMutable('hideInactiveSessions');
@@ -129,11 +131,15 @@ export function useSessionListViewFilterController(
             ...(selection.activeServerId ? [selection.activeServerId] : []),
         ])];
     }, [selection.activeServerId, serverProfilesGeneration]);
-    const context = resolveSessionListViewContextDefaults(
+    const baseContext = resolveSessionListViewContextDefaults(
         viewContext,
         mountedHomeServerIds,
         defaultSource,
     );
+    const context = fixedShow ? {
+        contextKey: `${baseContext.contextKey}:show:${fixedShow}`,
+        defaults: { ...baseContext.defaults, show: fixedShow },
+    } : baseContext;
     const credentialServerIds = React.useMemo(() => viewContext.kind === 'team'
         ? [viewContext.team.serverId]
         : authoritativeHomeServerIds,
@@ -151,6 +157,7 @@ export function useSessionListViewFilterController(
         contextKey: context.contextKey,
         defaults: context.defaults,
         viewContext,
+        fixedShow,
         accountScopeResolutions,
         // Global Homes mount asynchronously; a Team context is fixed to its Home.
         followDefaultHomeSelection: viewContext.kind === 'global',
@@ -191,7 +198,10 @@ export function useSessionListViewFilterController(
     const queryHomes = React.useMemo(
         () => buildSessionListFilterQueryHomes(retained.filters, {
             storage: corpusStorage,
-            includeInactive,
+            // Completed step Sessions still belong beneath their Run. The query
+            // keeps them available; the list's canonical activity projection
+            // applies the person's ordinary Session preference after nesting.
+            includeInactive: includeInactive || (corpusStorage === 'active' && retained.filters.show !== 'sessions'),
             mountedHomeServerIds,
             // No selected Home can express tags structurally, so the released GET
             // adapter serves the corpus and the qualified tag selection narrows its
@@ -266,12 +276,14 @@ export function useSessionListViewFilterController(
         retentionScopeKey,
         fixedHomeServerIds,
         fixedAudienceKeys,
+        fixedShow,
     }), [
         context.defaults,
         context.contextKey,
         corpusStorage,
         fixedAudienceKeys,
         fixedHomeServerIds,
+        fixedShow,
         followingAvailable,
         homeOptions,
         includeInactive,

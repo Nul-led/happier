@@ -20,7 +20,6 @@ import {
   type ExecutionRunUserTranscriptDirective,
   type ExecutionRunBridgeLifecycleHookEventIdV1,
   type ExecutionRunListRequest,
-  ExecutionRunPublicStateSchema,
   type ExecutionRunPublicState,
   type ExecutionRunStartRequest,
   type ExecutionRunResultContractV1,
@@ -32,7 +31,6 @@ import {
   type SessionInputCausalPermissionAuthorityV1,
   type SecretReferenceOverlayV1,
   readBackendTargetRefV2,
-  projectExecutionRunRequestedConfiguration,
   buildQualifiedPluginContributionKey,
   sameQualifiedConnectedAccountRef,
   type StructuredQuestionAnswersV1,
@@ -56,6 +54,7 @@ import {
 import type { ExecutionRunStructuredMeta } from '@/agent/executionRuns/profiles/ExecutionRunIntentProfile';
 import type { ExecutionRunBackendStartContext } from '@/agent/executionRuns/registry/executionRunBackendTypes';
 import type { ExecutionRunBackendController, ExecutionRunController } from '@/agent/executionRuns/controllers/types';
+import { readBackendResumableRuntimeId } from '@/agent/executionRuns/controllers/types';
 import {
   buildExecutionRunProfileCatalog,
   resolveExecutionRunIntentProfileFromCatalog,
@@ -95,6 +94,8 @@ import { createRetainedExecutionRunInputDelivery } from './pending/retainedExecu
 import {
   acknowledgeExecutionRunWorkerUpdate,
   readPendingExecutionRunWorkerUpdates,
+  reconcileRetainedExecutionRunRecords,
+  retainExecutionRunState,
   type RetainedExecutionRunWorkerUpdate,
 } from '@/daemon/executionRunRegistry';
 import {
@@ -113,6 +114,7 @@ import type { ExecutionRunHostBridgeContract } from './executionRunBridgeContrac
 import { matchesExecutionRunLegacyBackendId } from './backendTargets';
 import {
   readExecutionRunPermissionResponseApprovedFromDispatch,
+  observeExecutionRunPermissionStore,
   readExecutionRunPermissionResponseTargetFromDispatch,
   type ExecutionRunParentSessionPermissionResponseTarget,
   type ExecutionRunPermissionRequestStore,
@@ -139,6 +141,7 @@ import { logger } from '@/ui/logger';
 import { projectSessionComposerAttachmentDispatchInput } from '@/agent/runtime/runPermissionModePromptLoop';
 import type { ActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { resolveExecutionRunLifecycle } from './resolveExecutionRunLifecycle';
+import { projectExecutionRunPublicState } from './publicState';
 import {
   LaunchSecretReferenceOverlayError,
   readLaunchSecretReferenceOverlayProviderErrorCodeV1,
@@ -385,6 +388,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
   private workerUpdateAcknowledgements: Promise<void> = Promise.resolve();
   private readonly getPermissionRequestStore: ExecutionRunPermissionRequestStoreProvider | null;
   private readonly runs = new Map<string, ExecutionRunState>();
+  private retainedRunRecovery: Promise<void> | null = null;
   private readonly controllers = new Map<string, ExecutionRunController>();
   private readonly markerWriteChains = new Map<string, Promise<void>>();
   private readonly terminalMarkerWritePromises = new Map<string, Promise<void>>();
@@ -707,6 +711,12 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
   }
 
   private emitPublicStateUpdated(runId: string): void {
+    const state = this.captureRetainedState(runId);
+    if (state) {
+      void this.enqueueMarkerWrite(runId, () => retainExecutionRunState(state)).catch(() => {
+        logger.warn('[EXECUTION RUN] Run checkpoint unavailable', { runId, code: 'execution_run_state_unavailable' });
+      });
+    }
     for (const waiter of this.runStateChangeWaiters) waiter(runId);
     const callback = this.onPublicStateUpdated;
     if (!callback) return;
@@ -729,7 +739,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     }
   }
 
-  private async waitForRunStateChange(runId: string, signal?: AbortSignal): Promise<void> {
+  async waitForRunStateChange(runId: string, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     await new Promise<void>((resolve, reject) => {
       let finished = false;
@@ -759,11 +769,13 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     nowMs: number,
     opts?: Readonly<{ force?: boolean }>,
   ): Promise<void> {
+    const state = this.captureRetainedState(runId);
     await writeExecutionRunActivityMarker({
       runId,
       nowMs,
       opts,
       runs: this.runs,
+      ...(state ? { retainedState: state } : {}),
       controllers: this.controllers,
       enqueueMarkerWrite: this.enqueueMarkerWrite.bind(this),
     });
@@ -951,6 +963,18 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       getNowMs: this.getNowMs,
       onIdleReaped: this.handleVoiceAgentIdleReaped.bind(this),
       onTerminalFailure: this.handleVoiceAgentTerminalFailure.bind(this),
+      onResumeHandleChanged: (voiceAgentId, resumeHandle) => {
+        const run = this.runs.get(voiceAgentId);
+        const controller = this.controllers.get(voiceAgentId);
+        if (
+          run?.status !== 'running'
+          || controller?.kind !== 'voice_agent'
+          || controller.cancelled
+          || controller.voiceAgentId !== voiceAgentId
+        ) return;
+        this.runs.set(voiceAgentId, { ...run, resumeHandle });
+        this.emitPublicStateUpdated(voiceAgentId);
+      },
       ...(this.sessionInteractionHost?.prepareAccountVoiceFollowContext
         ? { prepareFollowContext: this.sessionInteractionHost.prepareAccountVoiceFollowContext }
         : {}),
@@ -1020,7 +1044,15 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
         ? runScope
         : this.sessionInteractionHost?.session.sessionId)
       : undefined;
-    return createExecutionRunBridgeRuntime({
+    const readPermissionStore = () => {
+      const controller = opts.runId ? this.controllers.get(opts.runId) : null;
+      if (controller?.kind === 'backend') {
+        if (controller.currentInputPermissionRequestStore) return controller.currentInputPermissionRequestStore.store;
+        if (controller.currentInputTurn || runScope === null) return null;
+      }
+      return runScope === null ? opts.getPermissionRequestStore?.() ?? null : this.resolvePermissionRequestStore();
+    };
+    const runtime = createExecutionRunBridgeRuntime({
       cwd: opts.cwd ?? opts.start?.cwd ?? this.cwd,
       scope,
       runId: opts.runId,
@@ -1029,16 +1061,8 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       ...(opts.sidechainId ? { sidechainId: opts.sidechainId } : {}),
       ...(opts.getPermissionRequestStore || runScope !== undefined ? {
         getPermissionRequestStore: () => {
-          const controller = opts.runId ? this.controllers.get(opts.runId) : null;
-          if (controller?.kind === 'backend') {
-            if (controller.currentInputPermissionRequestStore) {
-              return controller.currentInputPermissionRequestStore.store;
-            }
-            if (controller.currentInputTurn || runScope === null) return null;
-          }
-          return runScope === null
-            ? (opts.getPermissionRequestStore?.() ?? null)
-            : this.resolvePermissionRequestStore();
+          const store = readPermissionStore();
+          return store && opts.runId ? observeExecutionRunPermissionStore(store, () => this.emitPublicStateUpdated(opts.runId!)) : store;
         },
       } : {}),
       backendId: opts.backendId,
@@ -1164,6 +1188,18 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
         ? { resolveAccountSettingsSnapshot: this.resolveAccountSettingsSnapshot }
         : {}),
     });
+    // Preserve runtime accessors (notably dynamic permission capabilities).
+    return Object.create(runtime, {
+      readPendingPermissionRequestIds: { value: () => {
+        const controller = opts.runId ? this.controllers.get(opts.runId) : null;
+        if (!controller || controller.kind !== 'backend' || controller.cancelled
+          || controller.controllerOccurrenceId !== opts.controllerOccurrenceId) return [];
+        return (readPermissionStore()?.listOutstandingRequests?.() ?? []).filter((request) => {
+          const target = readExecutionRunParentSessionPermissionResponseTarget(request.responseTarget);
+          return target !== null && target.runId === opts.runId && target.controllerOccurrenceId === controller.controllerOccurrenceId;
+        }).map((request) => request.requestId);
+      } },
+    }) as ExecutionRunHostRuntime;
   }
 
   /**
@@ -1265,6 +1301,40 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     return this.runs.get(runId) ?? null;
   }
 
+  private captureRetainedState(runId: string): ExecutionRunState | null {
+    const run = this.runs.get(runId);
+    if (!run) return null;
+    const controller = this.controllers.get(runId);
+    const runtimeId = run.retentionPolicy === 'resumable' ? readBackendResumableRuntimeId(controller ?? null) : null;
+    const inputTurns = this.projectInputTurns(run, controller);
+    return {
+      ...run, ...(inputTurns ? { inputTurns } : {}),
+      ...(runtimeId ? { resumeHandle: { kind: 'provider_session.v1' as const, backendTarget: readBackendTargetRefV2(run.backendTarget), providerSessionId: runtimeId } } : {}),
+    };
+  }
+
+  /** Baseline recovery at the existing owner, before reads, waits or resume admission. */
+  async recoverRetainedRuns(): Promise<void> {
+    if (!this.retainedRunRecovery) {
+      this.retainedRunRecovery = (async () => {
+        const records = await reconcileRetainedExecutionRunRecords({ nowMs: this.getNowMs() });
+        for (const record of records) {
+          // An alive different host retains control. Its record is not a local
+          // controller and must never authorize this bridge to resume it.
+          if (this.controllers.has(record.state.runId)) continue;
+          if (record.state.status === 'running') {
+            // A different live host may have resumed a previously recovered
+            // terminal run. Its persisted record cannot grant local control.
+            if (record.ownerPid !== process.pid) this.runs.delete(record.state.runId);
+            continue;
+          }
+          this.runs.set(record.state.runId, record.state);
+        }
+      })().finally(() => { this.retainedRunRecovery = null; });
+    }
+    await this.retainedRunRecovery;
+  }
+
   getRunningCount(): number {
     let count = 0;
     for (const run of this.runs.values()) {
@@ -1287,6 +1357,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     runId: string,
     options?: Readonly<{ signal?: AbortSignal }>,
   ): Promise<void> {
+    await this.recoverRetainedRuns();
     while (this.runs.get(runId)?.status === 'running') {
       const wait = this.waitForRunStateChange(runId, options?.signal);
       // Close the lost-wakeup window between reading state and registering.
@@ -1319,6 +1390,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     localInputId: string,
     signal?: AbortSignal,
   ): Promise<ExecutionRunObservedInputTurn | null> {
+    await this.recoverRetainedRuns();
     const readSettledOrUnobservable = (): Readonly<{
       settled: boolean;
       observation: ExecutionRunObservedInputTurn | null;
@@ -1365,43 +1437,15 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
 
   private buildPublicState(run: ExecutionRunState): ExecutionRunPublicState {
     const ctrl = this.controllers.get(run.runId) ?? null;
-    const lifecycle = resolveExecutionRunLifecycle(run, ctrl).projection;
     const inputTurns = this.projectInputTurns(run, ctrl ?? undefined);
     const availableActionIds = getExecutionRunAvailableActionIds(run, ctrl, this.executionRunProfileCatalog);
-    const requestedConfiguration = projectExecutionRunRequestedConfiguration({
-      modelId: run.launch?.modelSelection?.modelId ?? run.launch?.modelId,
-      sessionConfigOptionOverrides: run.launch?.sessionConfigOptionOverrides,
-    });
-    return ExecutionRunPublicStateSchema.parse({
-      runId: run.runId,
-      callId: run.callId,
-      sidechainId: run.sidechainId,
-      intent: run.intent,
-      backendTarget: run.backendTarget,
-      ...(run.display ? { display: run.display } : {}),
-      ...(run.launch?.launchOrigin ? { launchOrigin: run.launch.launchOrigin } : {}),
-      ...(requestedConfiguration ? { requestedConfiguration } : {}),
-      permissionMode: run.permissionMode,
-      retentionPolicy: run.retentionPolicy,
-      runClass: run.runClass,
-      ioMode: run.ioMode,
-      status: run.status,
-      ...(ctrl?.kind === 'backend' ? { turnInFlight: ctrl.turnInFlight } : {}),
-      ...(inputTurns ? { inputTurns } : {}),
-      // Only a live controller's actual retained adapter supplies this. A
-      // transcript-only or reconstructed run has no controller and therefore
-      // stays read-only for clients.
-      ...(ctrl?.kind === 'backend' && ctrl.backend.interaction
-        ? { interaction: ctrl.backend.interaction }
-        : {}),
-      lifecycle,
-      ...(availableActionIds.length > 0 ? { availableActionIds } : {}),
-      ...(run.voiceAgentConfig?.transcript ? { transcript: run.voiceAgentConfig.transcript } : {}),
-      startedAtMs: run.startedAtMs,
-      ...(run.resumeHandle ? { resumeHandle: run.resumeHandle } : {}),
-      ...(typeof run.finishedAtMs === 'number' ? { finishedAtMs: run.finishedAtMs } : {}),
-      ...(run.error ? { error: run.error } : {}),
-    });
+    const requestIds = run.status === 'running' && ctrl?.kind === 'backend'
+      ? ctrl.backend.readPendingPermissionRequestIds?.() ?? [] : [];
+    return {
+      ...projectExecutionRunPublicState({ ...run, ...(inputTurns ? { inputTurns } : {}) }, ctrl),
+      ...(availableActionIds.length > 0 ? { availableActionIds: [...availableActionIds] } : {}),
+      ...(requestIds.length > 0 ? { attention: { kind: 'permission_required' as const, requestIds: [...requestIds] } } : {}),
+    };
   }
 
   getPublic(runId: string): ExecutionRunPublicState | null {
@@ -1537,12 +1581,19 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
   }
 
   private async recoverWorkerUpdates(): Promise<void> {
+    await this.workerUpdateAcknowledgements;
+    await this.recoverRetainedRuns();
     if (!this.workerUpdateRecovery) {
       this.workerUpdateRecovery = readPendingExecutionRunWorkerUpdates().then((updates) => {
-        for (const update of updates) this.workerUpdates.set(update.localId, update);
-      }).catch((error: unknown) => {
+        const retainedIds = new Set(updates.map((update) => update.localId));
+        for (const id of this.workerUpdates.keys()) {
+          if (!retainedIds.has(id)) this.workerUpdates.delete(id);
+        }
+        for (const update of updates) {
+          if (!this.workerUpdates.has(update.localId)) this.workerUpdates.set(update.localId, update);
+        }
+      }).finally(() => {
         this.workerUpdateRecovery = null;
-        throw error;
       });
     }
     await this.workerUpdateRecovery;
@@ -1636,6 +1687,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
   }
 
   async start(params: ExecutionRunManagerStartParams): Promise<ExecutionRunStartResult> {
+    await this.recoverRetainedRuns();
     this.ensurePermissionResponseTargetHandlerRegistered();
     const resolution = await this.resolveExecutionRunProfileCatalog();
     const runtimeSnapshot = this.bindExecutionRunRuntimeSnapshot(resolution);
@@ -1848,6 +1900,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       workflowObservationSink?: ExecutionRunWorkflowObservationSink;
     }>,
   ): Promise<{ ok: boolean; errorCode?: string; error?: string }> {
+    await this.recoverRetainedRuns();
     this.ensurePermissionResponseTargetHandlerRegistered();
     const run = this.runs.get(runId) ?? null;
     if (!run) return { ok: false, errorCode: 'execution_run_not_found', error: 'Not found' };
@@ -2153,6 +2206,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     }>,
   ): Promise<ExecutionRunEnsureResult> {
+    await this.recoverRetainedRuns();
     this.ensurePermissionResponseTargetHandlerRegistered();
     const resolution = await this.resolveExecutionRunProfileCatalog();
     const runtimeSnapshot = this.bindExecutionRunRuntimeSnapshot(
@@ -2189,6 +2243,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
    * authority: absence or a transient resume failure leaves the rows queued.
    */
   async reconcilePendingExecutionRunTarget(runId: string): Promise<void> {
+    await this.recoverRetainedRuns();
     const host = this.sessionInteractionHost?.session;
     if (
       !host?.listExecutionRunPendingDeliveryStatuses
@@ -2204,14 +2259,17 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     const isPositivelyUnavailable = (): boolean => {
       const run = this.runs.get(runId);
       if (!run) return false;
-      if (run.sessionId !== host.sessionId || run.status !== 'running') return true;
+      if (run.sessionId !== host.sessionId) return true;
+      // Loss settles the interrupted input, not an already queued *new* input.
+      // Rejoin its exact retained target through ensure; never replay the lost turn.
+      if (run.status !== 'running' && run.error?.code !== 'execution_run_host_lost') return true;
       if (
         run.runClass !== 'long_lived'
         || run.retentionPolicy !== 'resumable'
         || run.ioMode !== 'streaming'
       ) return true;
       const controller = this.controllers.get(runId);
-      if (!controller) return run.resumeHandle == null;
+      if (!controller) return resolveExecutionRunLifecycle(run, null).projection.state === 'unavailable';
       return controller.cancelled
         || controller.kind !== 'backend'
         || controller.backend.interaction == null;
@@ -2221,7 +2279,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     const run = this.runs.get(runId);
     if (
       !shouldBlock
-      && run?.status === 'running'
+      && run
       && run.sessionId === host.sessionId
       && !this.controllers.has(runId)
     ) {
@@ -2284,6 +2342,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     }>,
   ): Promise<{ ok: true; streamId: string } | { ok: false; errorCode: string; error: string }> {
+    await this.recoverRetainedRuns();
     if (params.resume === true) {
       const ensured = await this.ensure(runId, {
         resume: true,
@@ -2391,6 +2450,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     runId: string,
     params: Readonly<{ occurrenceId: string; turnId: string }>,
   ): Promise<import('@happier-dev/protocol').ExecutionRunCancelTurnResponse> {
+    await this.recoverRetainedRuns();
     return await cancelCurrentExecutionRunTurn({
       runId,
       ...params,
@@ -2401,6 +2461,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
   }
 
   async stop(runId: string): Promise<{ ok: boolean; errorCode?: string; error?: string }> {
+    await this.recoverRetainedRuns();
     const run = this.runs.get(runId) ?? null;
     const result = await stopExecutionRun({
       runId,
@@ -2467,6 +2528,8 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       this.unregisterPermissionResponseTargetHandler?.();
       this.unregisterPermissionResponseTargetHandler = null;
       this.permissionResponseTargetStore = null;
+      await Promise.all(this.markerWriteChains.values());
+      await this.workerUpdateAcknowledgements;
     })();
 
     return await this.disposePromise;
@@ -2591,6 +2654,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       };
     }
     await this.writeActivityMarker(runId, this.getNowMs(), { force: true });
+    this.emitPublicStateUpdated(runId);
     return { ok: true, delivery };
   }
 
@@ -2635,6 +2699,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       decision: 'answers' in params || params.approved ? 'approved' : 'denied',
       ...('answers' in params ? { answers: params.answers } : {}),
     });
+    this.emitPublicStateUpdated(runId);
     return completed
       ? { ok: true }
       : { ok: false, errorCode: 'permission_request_not_found', error: 'Permission request not found' };
@@ -2648,6 +2713,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       effectiveCallerPermissionMode?: string;
     }>,
   ): Promise<ExecutionRunActionResult> {
+    await this.recoverRetainedRuns();
     const run = this.runs.get(runId) ?? null;
     if (!run && params.actionId !== 'review.triage') {
       return { ok: false, errorCode: 'execution_run_not_found', error: 'Not found' };

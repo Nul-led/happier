@@ -1,6 +1,7 @@
 import { createTestWorkflowCoordinator as createWorkflowCoordinator } from './workflowCoordinator.testkit';
 import { describe, expect, it, vi } from 'vitest';
 import { buildBackendTargetKeyV2, createActionExecutor, type ActionExecutorDeps } from '@happier-dev/protocol';
+import { readExecutionRunWorkflowObservationSink, type ExecutionRunWorkflowObservationSink } from '@/agent/runtime/bridges/executionRun/executionRunWorkflowObservation';
 
 import {
   projectWorkflowRetainedRuntimeSelectionV1,
@@ -148,7 +149,7 @@ describe('workflow detached Execution Run step executor', () => {
     vi.setSystemTime(1_000);
     try {
       const store = createInMemoryWorkflowCoordinatorStore();
-      let sink: RpcActionExecutorContext['executionRunWorkflowObservationSink'];
+      let sink: ExecutionRunWorkflowObservationSink | null;
       let localInputId = '';
       let enteredObservation!: () => void;
       const observing = new Promise<void>((resolve) => { enteredObservation = resolve; });
@@ -160,7 +161,7 @@ describe('workflow detached Execution Run step executor', () => {
         actionExecutor: { execute: async (actionId, value, context) => {
           if (actionId === 'execution.run.start') {
             localInputId = String(requireActionInput(value).localInputId);
-            sink = context?.executionRunWorkflowObservationSink;
+            sink = readExecutionRunWorkflowObservationSink(context?.executionRunWorkflowObservationSink);
             return { ok: true, result: { runId: 'native', callId: 'call', sidechainId: 'side' } };
           }
           if (actionId === 'execution.run.get') {
@@ -217,7 +218,9 @@ describe('workflow detached Execution Run step executor', () => {
         actionExecutor: { execute: async (actionId, value, context) => {
           actions.push(actionId);
           if (actionId === 'execution.run.send') {
-            await context!.executionRunWorkflowObservationSink!.commit({ kind: 'input_accepted', runId: 'native',
+            const sink = readExecutionRunWorkflowObservationSink(context?.executionRunWorkflowObservationSink);
+            if (!sink) throw new Error('Expected workflow observation sink');
+            await sink.commit({ kind: 'input_accepted', runId: 'native',
               localInputId: String(requireActionInput(value).localInputId), acceptedAtMs: 9_000 });
             return { ok: true, result: {} };
           }

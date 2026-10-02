@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 
-import { PersonalHomeBootstrapGate } from './PersonalHomeBootstrapGate';
+import { PersonalHomeBootstrapContent, PersonalHomeBootstrapGate } from './PersonalHomeBootstrapGate';
 import type { PersonalHomeFacts } from './personalHomeBootstrapTypes';
 
 vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
@@ -79,13 +79,16 @@ describe('Personal Home shell reveal settling', () => {
                     }),
                 }}
             >
-                <View testID="normal-shell" />
+                <View testID="normal-shell">
+                    <PersonalHomeBootstrapContent><View testID="ready-home-content" /></PersonalHomeBootstrapContent>
+                </View>
             </PersonalHomeBootstrapGate>,
         );
 
         await flushHookEffects({ cycles: 4, turns: 2 });
         expect(screen.findByTestId('normal-shell')).not.toBeNull();
-        expect(screen.findByTestId('personal-home-setup-surface')).toBeNull();
+        expect(screen.findByTestId('personal-home-setup-surface')).not.toBeNull();
+        expect(screen.findByTestId('ready-home-content')).toBeNull();
 
         releaseHome();
         await flushHookEffects({ cycles: 6, turns: 3 });
@@ -94,5 +97,6 @@ describe('Personal Home shell reveal settling', () => {
         expect(screen.findByTestId('normal-shell')).not.toBeNull();
         expect(screen.findByTestId('personal-home-setup-reveal')).toBeNull();
         expect(screen.findByTestId('personal-home-setup-surface')).toBeNull();
+        expect(screen.findByTestId('ready-home-content')).not.toBeNull();
     });
 });

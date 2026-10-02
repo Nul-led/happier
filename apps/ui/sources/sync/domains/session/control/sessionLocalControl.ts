@@ -26,7 +26,9 @@ function readAgentStateLocalControl(agentState: AgentState | null | undefined): 
     const topology = raw.topology === 'shared' ? 'shared' : 'exclusive';
     const remoteWritable = normalizeBoolean(raw.remoteWritable) === true;
     const canAttach = normalizeBoolean(raw.canAttach) ?? (!attached);
-    const canDetach = normalizeBoolean(raw.canDetach) ?? attached;
+    // Shared release needs explicit runner custody; legacy exclusive control
+    // keeps its released attached-state fallback.
+    const canDetach = normalizeBoolean(raw.canDetach) ?? (topology === 'exclusive' && attached);
 
     return {
         attached,

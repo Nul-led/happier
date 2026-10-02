@@ -283,6 +283,19 @@ function resolveRuntimeStatusFreshnessRefreshDelayMs(
     return Math.min(...delays);
 }
 
+/** Next presentation change from these Session facts, for consumers of the shared runtime clock. */
+export function readSessionStatusNextRefreshAtMs(session: SessionStatusSource, nowMs: number): number | null {
+    const delayMs = resolveRuntimeStatusFreshnessRefreshDelayMs({
+        session,
+        hasPendingPermissionRequests: hasPendingPermissionRequests(session),
+        hasPendingUserActionRequests: hasPendingUserActionRequests(session),
+        pendingRequestObservedAt: latestPendingRequestObservedAt(session),
+        hasPendingUserMessages: hasPendingUserMessagesFromSource(session),
+        optimisticPendingUserMessageAt: null,
+    }, nowMs);
+    return delayMs === null ? null : nowMs + delayMs;
+}
+
 function useRuntimeStatusFreshnessRefresh(input: RuntimeStatusFreshnessRefreshInput): void {
     // The revision is a dependency on purpose: one expiration can be followed by a later one from
     // the same unchanged facts, so the effect must re-evaluate its own next deadline after it

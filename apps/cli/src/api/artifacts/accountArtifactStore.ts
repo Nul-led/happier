@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import {
   ARTIFACT_PLAIN_DATA_KEY_MARKER,
@@ -17,6 +17,24 @@ import {
   type ArtifactCallerAccessV1,
   type ArtifactAccessGrantSetInputV1,
   type ArtifactAccessGrantRemoveInputV1,
+  ArtifactQuotaExceededV1Schema,
+  ArtifactRevisionListResponseV1Schema,
+  ArtifactStorageUsageV1Schema,
+  prepareArtifactHeaderForRevisionV1,
+  withArtifactExcerptV1,
+  artifactKindRequiresTextBodyV1,
+  createArtifactPublicLinkActionsV1,
+  type ArtifactPublicLinkActionIdV1,
+  type ArtifactPublicLinkIssuedV1,
+  ArtifactBodyV1Schema,
+  ArtifactBlobReferenceV1Schema,
+  ArtifactBlobReadResponseV1Schema,
+  frameSessionDataKeyBundleV0,
+  readSessionDataKeyBundleV0,
+  sealAesGcmPayloadWebCrypto,
+  openAesGcmPayloadWebCrypto,
+  type ArtifactBodyV1,
+  type ArtifactBlobWriteV1,
 } from '@happier-dev/protocol';
 
 import type { Credentials, StoredCredentials } from '@/persistence';
@@ -39,7 +57,7 @@ export type AccountArtifact = Readonly<{
   access: ArtifactCallerAccessV1;
   artifactId: string;
   header: Readonly<Record<string, unknown>>;
-  body: string | null;
+  body: ArtifactBodyV1 | null;
   revision: AccountArtifactRevision;
   seq: number;
   createdAt: number;
@@ -75,6 +93,24 @@ function readNonnegativeSafeInteger(value: unknown): number | null {
     && value >= 0
     ? value
     : null;
+}
+
+function readAcknowledgedRevision(value: unknown): AccountArtifactRevision {
+  const headerVersion = readNonnegativeSafeInteger(value && typeof value === 'object' ? Reflect.get(value, 'headerVersion') : undefined);
+  const bodyVersion = readNonnegativeSafeInteger(value && typeof value === 'object' ? Reflect.get(value, 'bodyVersion') : undefined);
+  if (headerVersion === null || bodyVersion === null) {
+    throw Object.assign(new Error('artifact_content_unavailable'), { code: 'artifact_content_unavailable' });
+  }
+  return { headerVersion, bodyVersion };
+}
+
+function readQuotaFailure(response: Readonly<{ status: number; data: unknown }>) {
+  if (response.status !== 413) return null;
+  const parsed = ArtifactQuotaExceededV1Schema.safeParse(response.data);
+  if (!parsed.success) return null;
+  const { budget, limitBytes, usedBytes } = parsed.data;
+  return { ok: false, errorCode: 'quota_exceeded', error: 'quota_exceeded',
+    details: { budget, limitBytes, usedBytes } } as const;
 }
 
 export const ARTIFACT_ENCRYPTION_MATERIAL_UNAVAILABLE = 'artifact_encryption_material_unavailable' as const;
@@ -144,6 +180,41 @@ function decode(codec: Codec, value: string): unknown {
     if (error instanceof ArtifactEncryptionMaterialUnavailableError) throw error;
     throw new ArtifactEncryptionMaterialUnavailableError();
   }
+}
+
+function decodeBody(codec: Codec, value: string): ArtifactBodyV1 | null {
+  const decoded = decode(codec, value);
+  if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) throw new ArtifactEncryptionMaterialUnavailableError();
+  const parsed = ArtifactBodyV1Schema.nullable().safeParse(Reflect.get(decoded, 'body'));
+  if (!parsed.success) throw new ArtifactEncryptionMaterialUnavailableError();
+  return parsed.data;
+}
+
+type ArtifactWriteContent = Readonly<{ body: ArtifactBodyV1; binary?: never } | {
+  binary: Readonly<{ bytes: Uint8Array; mime: string }>; body?: never;
+}>;
+
+async function prepareWriteContent(codec: Codec, input: ArtifactWriteContent): Promise<Readonly<{
+  body: ArtifactBodyV1; blob?: ArtifactBlobWriteV1;
+}>> {
+  if (!input.binary) {
+    const body = ArtifactBodyV1Schema.parse(input.body);
+    return { body, ...(typeof body === 'string' ? {} : { blob: { blobId: body.blobId } }) };
+  }
+  const { bytes, mime } = input.binary;
+  const body = ArtifactBlobReferenceV1Schema.parse({ blobId: randomUUID(), mime, sizeBytes: bytes.byteLength,
+    sha256: createHash('sha256').update(bytes).digest('hex') });
+  const content = codec.mode === 'plain' ? { t: 'plain' as const, v: encodeBase64(bytes) }
+    : { t: 'encrypted' as const, c: encodeBase64(frameSessionDataKeyBundleV0(await sealAesGcmPayloadWebCrypto(bytes, codec.dataKey!))) };
+  return { body, blob: { blobId: body.blobId, content } };
+}
+
+function unavailableBinary(): Error {
+  return Object.assign(new Error('artifact_content_unavailable'), { code: 'artifact_content_unavailable' });
+}
+
+function requireBodyForArtifactKind(header: Readonly<Record<string, unknown>>, body: ArtifactBodyV1 | null): void {
+  if (artifactKindRequiresTextBodyV1(header.kind) && typeof body !== 'string') throw unavailableBinary();
 }
 
 function parseStoredArtifact(raw: unknown): StoredArtifact | null {
@@ -216,18 +287,66 @@ export function createAccountArtifactStore(params: Readonly<{
     if (!stored) return null;
     const codec = await openStored(stored);
     const header = decode(codec, stored.header);
-    const body = decode(codec, stored.body) as { body?: unknown };
+    const body = decodeBody(codec, stored.body);
     if (!header || typeof header !== 'object' || Array.isArray(header)) return null;
+    requireBodyForArtifactKind(header as Readonly<Record<string, unknown>>, body);
     await prepare(stored, codec, options?.signal);
     options?.signal?.throwIfAborted();
     return { artifactId: stored.id, header: header as Readonly<Record<string, unknown>>,
       ownerAccountId: stored.ownerAccountId, access: stored.access,
-      body: typeof body?.body === 'string' ? body.body : null,
+      body,
       revision: { headerVersion: stored.headerVersion, bodyVersion: stored.bodyVersion },
       seq: stored.seq, createdAt: stored.createdAt, updatedAt: stored.updatedAt };
   };
-  return {
+  const store = {
     read,
+    publicLinks: async (args: Readonly<{ actionId: ArtifactPublicLinkActionIdV1; input: unknown; signal?: AbortSignal }>,
+      onPublicLinkIssued?: (link: ArtifactPublicLinkIssuedV1) => void | Promise<void>) => createArtifactPublicLinkActionsV1({
+        randomBytes: getRandomBytes, onPublicLinkIssued,
+        read: async (artifactId, signal) => {
+          const stored = await fetchStored(artifactId, signal);
+          if (!stored) return null;
+          const codec = await openStored(stored);
+          const header = decode(codec, stored.header);
+          if (!header || typeof header !== 'object' || Array.isArray(header)) throw new ArtifactEncryptionMaterialUnavailableError();
+          return { artifactId: stored.id, access: stored.access, header: header as Readonly<Record<string, unknown>>,
+            body: decodeBody(codec, stored.body), encryptionMode: codec.mode, dataKey: codec.dataKey,
+            revision: { headerVersion: stored.headerVersion, bodyVersion: stored.bodyVersion } };
+        },
+        request: async (request) => {
+          const url = `${resolveServerHttpBaseUrl()}${request.path}`;
+          const config = accessConfig(request.signal);
+          const response = request.method === 'GET' ? await axios.get(url, config)
+            : request.method === 'DELETE' ? await axios.delete(url, config) : await axios.post(url, request.body, config);
+          if (response.status < 200 || response.status >= 300) throw Object.assign(new Error('public_share_request_failed'), { code: 'public_share_request_failed' });
+          return response.data;
+        },
+      })(args),
+    readBinary: async (input: Readonly<{ artifactId: string; body: ArtifactBodyV1; signal?: AbortSignal }>): Promise<Uint8Array> => {
+      input.signal?.throwIfAborted();
+      const reference = ArtifactBlobReferenceV1Schema.safeParse(input.body);
+      if (!reference.success) throw unavailableBinary();
+      const stored = await fetchStored(input.artifactId, input.signal);
+      if (!stored) throw unavailableBinary();
+      const codec = await openStored(stored);
+      const response = await axios.get(`${resolveServerHttpBaseUrl()}/v1/artifacts/${encodeURIComponent(input.artifactId)}/blobs/${encodeURIComponent(reference.data.blobId)}`, accessConfig(input.signal));
+      const parsed = ArtifactBlobReadResponseV1Schema.safeParse(response.data);
+      if (response.status < 200 || response.status >= 300 || !parsed.success || parsed.data.blobId !== reference.data.blobId) throw unavailableBinary();
+      const content = parsed.data.content;
+      if ((codec.mode === 'plain') !== (content.t === 'plain')) throw unavailableBinary();
+      let bytes: Uint8Array;
+      try {
+        if (content.t === 'plain') bytes = decodeBase64(content.v);
+        else {
+          const bundle = readSessionDataKeyBundleV0(decodeBase64(content.c));
+          if (bundle.status !== 'ready') throw unavailableBinary();
+          bytes = await openAesGcmPayloadWebCrypto(bundle.payload, codec.dataKey!);
+        }
+      } catch { throw unavailableBinary(); }
+      if (bytes.byteLength !== reference.data.sizeBytes || createHash('sha256').update(bytes).digest('hex') !== reference.data.sha256) throw unavailableBinary();
+      input.signal?.throwIfAborted();
+      return bytes;
+    },
     accessGrants: {
       list: async (input: Readonly<{ artifactId: string }>, signal?: AbortSignal) => {
         const result = ArtifactAccessGrantsListResponseV1Schema.parse(requireAccessResponse(await axios.get(accessUrl(input.artifactId, 'grants'), accessConfig(signal))));
@@ -244,6 +363,65 @@ export function createAccountArtifactStore(params: Readonly<{
         await prepareCurrent(input.artifactId, signal);
         return result;
       },
+    },
+    revisions: {
+      list: async (input: Readonly<{ artifactId: string }>, signal?: AbortSignal) => {
+        signal?.throwIfAborted();
+        const stored = await fetchStored(input.artifactId, signal);
+        if (!stored) throw Object.assign(new Error('artifact_not_found'), { code: 'artifact_not_found' });
+        const codec = await openStored(stored);
+        const response = await axios.get(`${resolveServerHttpBaseUrl()}/v1/artifacts/${encodeURIComponent(input.artifactId)}/revisions`, accessConfig(signal));
+        if (response.status < 200 || response.status >= 300) {
+          throw Object.assign(new Error('artifact_revisions_unavailable'), { code: 'artifact_revisions_unavailable' });
+        }
+        const parsed = ArtifactRevisionListResponseV1Schema.safeParse(response.data);
+        if (!parsed.success) throw new ArtifactEncryptionMaterialUnavailableError();
+        const revisions = parsed.data.revisions.map((value) => {
+          return { ...value, body: decodeBody(codec, value.body) };
+        });
+        await prepare(stored, codec, signal);
+        signal?.throwIfAborted();
+        return { artifactId: input.artifactId, revisions, retentionCount: parsed.data.retentionCount };
+      },
+      restore: async (input: Readonly<{ artifactId: string; bodyVersion: number; expectedRevision: AccountArtifactRevision }>, signal?: AbortSignal) => {
+        signal?.throwIfAborted();
+        const stored = await fetchStored(input.artifactId, signal);
+        if (!stored) return { ok: false, errorCode: 'not_found', error: 'artifact_not_found' } as const;
+        const codec = await openStored(stored);
+        if (stored.headerVersion !== input.expectedRevision.headerVersion || stored.bodyVersion !== input.expectedRevision.bodyVersion) {
+          return { ok: false, errorCode: 'version_mismatch', error: 'artifact_version_mismatch' } as const;
+        }
+        const header = decode(codec, stored.header);
+        if (!header || typeof header !== 'object' || Array.isArray(header)) throw new ArtifactEncryptionMaterialUnavailableError();
+        const history = await store.revisions.list({ artifactId: input.artifactId }, signal);
+        const retained = history.revisions.find((revision) => revision.bodyVersion === input.bodyVersion);
+        if (!retained) return { ok: false, errorCode: 'not_found', error: 'artifact_not_found' } as const;
+        const nextHeader = prepareArtifactHeaderForRevisionV1({ artifactId: input.artifactId,
+          header: header as Readonly<Record<string, unknown>>, body: retained.body, expectedRevision: input.expectedRevision,
+          nextRevision: { headerVersion: stored.headerVersion + 1, bodyVersion: stored.bodyVersion + 1 } });
+        signal?.throwIfAborted();
+        const response = await axios.post(`${resolveServerHttpBaseUrl()}/v1/artifacts/${encodeURIComponent(input.artifactId)}/revisions/${input.bodyVersion}/restore`,
+          { expectedHeaderVersion: input.expectedRevision.headerVersion, expectedBodyVersion: input.expectedRevision.bodyVersion,
+            header: codec.encode(withArtifactExcerptV1(nextHeader, retained.body)) }, accessConfig(signal));
+        const quota = readQuotaFailure(response);
+        if (quota) return quota;
+        if (response.status === 409 || response.data?.error === 'version-mismatch') {
+          return { ok: false, errorCode: 'version_mismatch', error: 'artifact_version_mismatch' } as const;
+        }
+        if (response.status === 404) return { ok: false, errorCode: 'not_found', error: 'artifact_not_found' } as const;
+        return response.status >= 200 && response.status < 300 && response.data?.success === true
+          ? { ok: true, revision: readAcknowledgedRevision(response.data) } as const
+          : { ok: false, errorCode: 'restore_failed', error: 'artifact_restore_failed' } as const;
+      },
+    },
+    storageUsage: async (signal?: AbortSignal) => {
+      signal?.throwIfAborted();
+      const response = await axios.get(`${resolveServerHttpBaseUrl()}/v1/artifacts/storage/usage`, accessConfig(signal));
+      const parsed = ArtifactStorageUsageV1Schema.safeParse(response.data);
+      if (response.status < 200 || response.status >= 300 || !parsed.success) {
+        throw Object.assign(new Error('artifact_storage_usage_unavailable'), { code: 'artifact_storage_usage_unavailable' });
+      }
+      return parsed.data;
     },
     list: async (options?: Readonly<{ limit?: number; cursor?: string; signal?: AbortSignal }>): Promise<Readonly<{ items: readonly AccountArtifactHeader[]; nextCursor?: string }>> => {
       options?.signal?.throwIfAborted();
@@ -284,29 +462,44 @@ export function createAccountArtifactStore(params: Readonly<{
         : undefined;
       return { items, ...(nextCursor ? { nextCursor } : {}) };
     },
-    create: async (input: Readonly<{ artifactId?: string; header: Readonly<Record<string, unknown>>; body: string; signal?: AbortSignal }>) => {
+    create: async (input: Readonly<{ artifactId?: string; header: Readonly<Record<string, unknown>>; signal?: AbortSignal }> & ArtifactWriteContent) => {
       input.signal?.throwIfAborted();
       const codec = await createCodec({ credentials: params.credentials, mode: await params.getAccountEncryptionMode() });
       const artifactId = input.artifactId ?? randomUUID();
-      const response = await axios.post(`${resolveServerHttpBaseUrl()}/v1/artifacts`, {
-        id: artifactId, header: codec.encode(input.header), body: codec.encode({ body: input.body }), dataEncryptionKey: codec.dataEncryptionKey,
+      const content = await prepareWriteContent(codec, input);
+      requireBodyForArtifactKind(input.header, content.body);
+      input.signal?.throwIfAborted();
+      const response = await axios.post(`${resolveServerHttpBaseUrl()}/v1/artifacts${content.blob ? '/content/binary' : ''}`, {
+        id: artifactId, header: codec.encode(withArtifactExcerptV1(input.header, content.body)), body: codec.encode({ body: content.body }), dataEncryptionKey: codec.dataEncryptionKey,
+        ...(content.blob ? { blob: content.blob } : {}),
       }, { headers: headers(), timeout: 15_000, ...(input.signal ? { signal: input.signal } : {}), validateStatus: () => true });
+      const quota = readQuotaFailure(response);
+      if (quota) throw Object.assign(new Error(quota.error), { code: quota.errorCode, details: quota.details });
       if (response.status < 200 || response.status >= 300) throw Object.assign(new Error(response.status === 409 ? 'artifact_create_conflict' : 'artifact_create_failed'), { code: response.status === 409 ? 'conflict' : 'create_failed' });
-      return { artifactId: typeof response.data?.id === 'string' ? response.data.id : artifactId, revision: { headerVersion: 1, bodyVersion: 1 } };
+      if (response.data?.id !== artifactId) {
+        throw Object.assign(new Error('artifact_content_unavailable'), { code: 'artifact_content_unavailable' });
+      }
+      return { artifactId, revision: readAcknowledgedRevision(response.data) };
     },
-    update: async (input: Readonly<{ artifactId: string; expectedRevision: AccountArtifactRevision; header: Readonly<Record<string, unknown>>; body: string; signal?: AbortSignal }>) => {
+    update: async (input: Readonly<{ artifactId: string; expectedRevision: AccountArtifactRevision; header: Readonly<Record<string, unknown>>; signal?: AbortSignal }> & ArtifactWriteContent) => {
       const stored = await fetchStored(input.artifactId, input.signal);
       if (!stored) return { ok: false, errorCode: 'not_found', error: 'artifact_not_found' } as const;
       const codec = await openStored(stored);
-      const response = await axios.post(`${resolveServerHttpBaseUrl()}/v1/artifacts/${encodeURIComponent(input.artifactId)}`, {
-        header: codec.encode(input.header), expectedHeaderVersion: input.expectedRevision.headerVersion,
-        body: codec.encode({ body: input.body }), expectedBodyVersion: input.expectedRevision.bodyVersion,
+      const content = await prepareWriteContent(codec, input);
+      requireBodyForArtifactKind(input.header, content.body);
+      input.signal?.throwIfAborted();
+      const response = await axios.post(`${resolveServerHttpBaseUrl()}/v1/artifacts/${encodeURIComponent(input.artifactId)}${content.blob ? '/content/binary' : ''}`, {
+        header: codec.encode(withArtifactExcerptV1(input.header, content.body)), expectedHeaderVersion: input.expectedRevision.headerVersion,
+        body: codec.encode({ body: content.body }), expectedBodyVersion: input.expectedRevision.bodyVersion,
+        ...(content.blob ? { blob: content.blob } : {}),
       }, { headers: headers(), timeout: 15_000, ...(input.signal ? { signal: input.signal } : {}), validateStatus: () => true });
+      const quota = readQuotaFailure(response);
+      if (quota) return quota;
       if (response.status === 404) return { ok: false, errorCode: 'not_found', error: 'artifact_not_found' } as const;
       if (response.status < 200 || response.status >= 300) return { ok: false, errorCode: 'update_failed', error: 'artifact_update_failed' } as const;
       if (response.data?.success === false && response.data?.error === 'version-mismatch') return { ok: false, errorCode: 'version_mismatch', error: 'artifact_version_mismatch' } as const;
       return response.data?.success === true
-        ? { ok: true, revision: { headerVersion: Number(response.data.headerVersion ?? input.expectedRevision.headerVersion + 1), bodyVersion: Number(response.data.bodyVersion ?? input.expectedRevision.bodyVersion + 1) } } as const
+        ? { ok: true, revision: readAcknowledgedRevision(response.data) } as const
         : { ok: false, errorCode: 'update_failed', error: 'artifact_update_failed' } as const;
     },
     delete: async (artifactId: string, options?: Readonly<{ signal?: AbortSignal; expectedRevision?: AccountArtifactRevision }>) => {
@@ -322,6 +515,38 @@ export function createAccountArtifactStore(params: Readonly<{
       return response.status >= 200 && response.status < 300
         ? { ok: true } as const
         : { ok: false, errorCode: 'delete_failed', error: 'artifact_delete_failed' } as const;
+    },
+  };
+  return {
+    ...store,
+    list: async (options?: Readonly<{ limit?: number; cursor?: string; search?: string; kind?: string;
+      sort?: 'updated_desc' | 'created_desc' | 'title_asc'; signal?: AbortSignal }>) => {
+      if (!options || (options.limit !== undefined && options.limit <= 500
+        && options.search === undefined && options.kind === undefined
+        && (options.sort === undefined || options.sort === 'updated_desc'))) return store.list(options);
+      const all: AccountArtifactHeader[] = [];
+      let cursor: string | undefined;
+      do {
+        // The incumbent route accepts at most 500 structural rows per request.
+        const page = await store.list({ limit: 500, ...(cursor ? { cursor } : {}), ...(options.signal ? { signal: options.signal } : {}) });
+        all.push(...page.items);
+        cursor = page.nextCursor;
+      } while (cursor);
+      const search = options.search?.trim().toLocaleLowerCase();
+      const title = (item: AccountArtifactHeader) => typeof item.header.title === 'string' ? item.header.title : '';
+      const items = all.filter((item) => (!options.kind || item.header.kind === options.kind)
+        && (!search || title(item).toLocaleLowerCase().includes(search)));
+      items.sort((left, right) => {
+        const primary = options.sort === 'title_asc' ? title(left).localeCompare(title(right))
+          : options.sort === 'created_desc' ? right.createdAt - left.createdAt : right.updatedAt - left.updatedAt;
+        return primary || left.artifactId.localeCompare(right.artifactId);
+      });
+      const index = options.cursor ? items.findIndex((item) => encodeAccountArtifactListCursor(item) === options.cursor) : -1;
+      if (options.cursor && index < 0) throw Object.assign(new Error('artifact_list_cursor_invalid'), { code: 'invalid_cursor' });
+      const pageItems = options.limit === undefined ? items.slice(index + 1) : items.slice(index + 1, index + 1 + options.limit);
+      const last = pageItems.at(-1);
+      return { items: pageItems, ...(last && index + 1 + pageItems.length < items.length
+        ? { nextCursor: encodeAccountArtifactListCursor(last) } : {}) };
     },
   };
 }

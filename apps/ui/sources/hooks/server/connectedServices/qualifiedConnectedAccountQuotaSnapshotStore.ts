@@ -3,6 +3,7 @@ import type {
     QualifiedConnectedAccountRef,
     QualifiedConnectedAccountQuotaSnapshotV4,
 } from '@happier-dev/protocol';
+import { isRuntimeActive, subscribeToRuntimeActiveChange } from '@/utils/runtime/isRuntimeActive';
 
 import {
     resolveConnectedServiceSettingsErrorMessage,
@@ -68,6 +69,25 @@ const EMPTY_VIEW: QualifiedQuotaSnapshotStoreEntry = Object.freeze({
 
 const entries = new Map<string, InternalEntry>();
 const listenersByKey = new Map<string, Set<() => void>>();
+let detachRuntimeActivity: (() => void) | null = null;
+
+function ensureRuntimeActivityWatcher(): void {
+    if (detachRuntimeActivity) return;
+    let wasActive = isRuntimeActive();
+    detachRuntimeActivity = subscribeToRuntimeActiveChange(() => {
+        const active = isRuntimeActive();
+        if (active === wasActive) return;
+        wasActive = active;
+        for (const [key, entry] of entries) {
+            clearPollTimer(entry);
+            if (!active || entry.retainCount <= 0 || !entry.pollContext) continue;
+            // Returning to the surface invalidates freshness even before its cadence expires.
+            entry.nextFetchAtMs = 0;
+            entry.loadAttempted = true;
+            if (!entry.loadPromise && !entry.refreshPromise) void runLoad(key, entry.pollContext);
+        }
+    });
+}
 
 export function buildQualifiedQuotaSnapshotScopeKey(
     context: Pick<
@@ -153,14 +173,15 @@ function evictEntriesOutsideCredentialScope(
 
 function schedulePolling(key: string): void {
     const entry = entries.get(key);
+    if (entry) clearPollTimer(entry);
     if (
         !entry
         || entry.retainCount <= 0
         || entry.loadPromise
         || entry.refreshPromise
         || !entry.pollContext
+        || !isRuntimeActive()
     ) return;
-    clearPollTimer(entry);
     entry.pollTimer = setTimeout(() => {
         entry.pollTimer = null;
         if (
@@ -168,6 +189,7 @@ function schedulePolling(key: string): void {
             || entry.loadPromise
             || entry.refreshPromise
             || !entry.pollContext
+            || !isRuntimeActive()
         ) return;
         void runLoad(key, entry.pollContext);
     }, Math.max(0, entry.nextFetchAtMs - Date.now()));
@@ -294,13 +316,14 @@ export function retainQualifiedQuotaSnapshotPolling(
 ): () => void {
     const entry = getOrCreateEntry(key);
     entry.retainCount += 1;
+    ensureRuntimeActivityWatcher();
     entry.pollContext = context;
     entry.credentialScope = context.credentialScope;
     evictEntriesOutsideCredentialScope(context.credentialScope);
-    if (
+    if (isRuntimeActive() && (
         !entry.loadAttempted
         || (!entry.loadPromise && Date.now() >= entry.nextFetchAtMs)
-    ) {
+    )) {
         entry.loadAttempted = true;
         void runLoad(key, context);
     } else {
@@ -315,6 +338,10 @@ export function retainQualifiedQuotaSnapshotPolling(
         entry.retainCount = Math.max(0, entry.retainCount - 1);
         if (entry.retainCount === 0) {
             clearPollTimer(entry);
+        }
+        if (![...entries.values()].some((retained) => retained.retainCount > 0)) {
+            detachRuntimeActivity?.();
+            detachRuntimeActivity = null;
         }
     };
 }
@@ -352,6 +379,8 @@ export async function refreshQualifiedQuotaSnapshot(
 }
 
 export function __resetQualifiedConnectedAccountQuotaSnapshotStore(): void {
+    detachRuntimeActivity?.();
+    detachRuntimeActivity = null;
     for (const entry of entries.values()) clearPollTimer(entry);
     entries.clear();
     listenersByKey.clear();

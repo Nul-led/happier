@@ -277,6 +277,7 @@ describe('multi-Home Session creation composition', () => {
             activeTargetId: homeAScopeId,
             groups: [{ id: `home-a-group${urlSuffix}`, name: 'Home A', serverIds: [homeAScopeId] }],
         });
+        await sync!.switchServer({ token: homeAToken });
         return { profiles, homeA, homeAScopeId, homeAToken };
     }
 
@@ -652,7 +653,7 @@ describe('multi-Home Session creation composition', () => {
         await profiles.saveHomeViewState({ version: 1, activeTargetKind: 'server', activeTargetId: homeBScopeId, groups: [] });
         await profiles.setActiveServerId(homeBScopeId, { scope: 'device' });
         await profiles.setActiveServerId(homeBScopeId, { scope: 'tab' });
-        await sync!.restore({ token: homeBToken }, null);
+        await sync!.switchServer({ token: homeBToken });
         routeBoundary.params = { machineId: 'machine-b', directory: '/same-home/project', spawnServerId: homeBScopeId };
         const createHook = await renderProductionCreateCaller({ activeServerId: homeBScopeId, accountId: 'account-b', targetServerId: homeBScopeId });
         try {

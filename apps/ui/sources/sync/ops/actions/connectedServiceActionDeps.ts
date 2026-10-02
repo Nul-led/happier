@@ -21,7 +21,7 @@ export function createUiConnectedServiceAction(account: LazyActionAccountContext
                 const result: unknown = await response.json();
                 account.assertCurrent();
                 // Publish every acknowledged patch, including a prefix of a reorder that later fails.
-                if (method !== 'GET') invalidateConnectedServiceGroupsRefreshSignal();
+                if (method !== 'GET' && path.startsWith('/v4/connect/qualified/group')) invalidateConnectedServiceGroupsRefreshSignal();
                 return result;
             },
             mutateSettings: account.mutateRawSettings,
@@ -39,6 +39,10 @@ export function createUiConnectedServiceAction(account: LazyActionAccountContext
             resetQuota: async (args) => {
                 const { connectedServiceQuotaRecoveryCreditConsume } = await import('@/sync/ops/connectedServiceQuotaRecoveryCredits');
                 return await connectedServiceQuotaRecoveryCreditConsume({ ...args, serverId: account.serverId });
+            },
+            controlCommand: async (machineId, command) => {
+                const { runConnectedAccountControlCommand } = await import('@/sync/ops/connectedAccounts/connectedAccountDaemon');
+                return await runConnectedAccountControlCommand({ serverId: account.serverId, machineId, command, ...(signal ? { signal } : {}) });
             },
             ...(localSettings ? { setIdentityPrivacy: (hidden: boolean) => localSettings.getState().applyLocalSettings({ hideConnectedAccountIdentities: hidden }, { source: 'ui' }) } : {}),
         }, actionId, input);

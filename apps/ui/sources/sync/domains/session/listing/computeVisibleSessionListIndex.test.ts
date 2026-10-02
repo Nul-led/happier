@@ -60,7 +60,9 @@ function describeItems(items: ReadonlyArray<SessionListIndexItem>): string[] {
                     ? 'h:working'
                 : `h:${item.headerKind ?? 'unknown'}:${item.title}`;
         }
-        return `s:${item.sessionId}:${item.groupKind ?? 'none'}:${item.groupKey ?? 'none'}`;
+        return item.type === 'session'
+            ? `s:${item.sessionId}:${item.groupKind ?? 'none'}:${item.groupKey ?? 'none'}`
+            : `r:${item.runId}:${item.groupKind ?? 'none'}:${item.groupKey ?? 'none'}`;
     });
 }
 
@@ -648,7 +650,9 @@ describe('computeVisibleSessionListIndex', () => {
 
         expect(combined.map((item) => item.type === 'header'
             ? `h:${item.headerKind}`
-            : `s:${item.sessionId}:${item.groupKind ?? 'none'}:${item.attentionPlacementReason ?? item.workingPlacementReason ?? 'none'}`
+            : item.type === 'session'
+                ? `s:${item.sessionId}:${item.groupKind ?? 'none'}:${item.attentionPlacementReason ?? item.workingPlacementReason ?? 'none'}`
+                : `r:${item.runId}`
         )).toEqual([
             'h:attention',
             's:ready:attention:ready',
@@ -1915,7 +1919,7 @@ describe('computeVisibleSessionListIndex', () => {
 
         expect(result.map((item) => (item.type === 'header'
             ? `h:${item.headerKind}:${item.title}`
-            : `s:${item.sessionId}`
+            : item.type === 'session' ? `s:${item.sessionId}` : `r:${item.runId}`
         ))).toEqual([
             'h:active:Active',
             'h:project:~/repo',
@@ -1981,7 +1985,7 @@ describe('computeVisibleSessionListIndex', () => {
 
         expect(result.map((item) => (item.type === 'header'
             ? `h:${item.headerKind}:${item.title}`
-            : `s:${item.sessionId}`
+            : item.type === 'session' ? `s:${item.sessionId}` : `r:${item.runId}`
         ))).toEqual([
             'h:active:Active',
             'h:project:~/repo',
@@ -2208,7 +2212,7 @@ describe('computeVisibleSessionListIndex', () => {
 
         expect(result.map((item) => (item.type === 'header'
             ? `h:${item.headerKind}:${item.title}`
-            : `s:${item.sessionId}`
+            : item.type === 'session' ? `s:${item.sessionId}` : `r:${item.runId}`
         ))).toEqual([
             'h:active:Active',
             'h:project:~/repo',
@@ -2244,7 +2248,7 @@ describe('computeVisibleSessionListIndex', () => {
 
         expect(result.map((item) => (item.type === 'header'
             ? `h:${item.headerKind}:${item.title}`
-            : `s:${item.sessionId}:${item.section ?? 'unknown'}`
+            : item.type === 'session' ? `s:${item.sessionId}:${item.section ?? 'unknown'}` : `r:${item.runId}`
         ))).toEqual([
             'h:sessions:Sessions',
             'h:project:repo',
@@ -2443,7 +2447,7 @@ describe('computeVisibleSessionListIndex', () => {
 
         expect(result.map((item) => (item.type === 'header'
             ? `h:${item.headerKind}:${item.title}`
-            : `s:${item.sessionId}:${item.section ?? 'unknown'}`
+            : item.type === 'session' ? `s:${item.sessionId}:${item.section ?? 'unknown'}` : `r:${item.runId}`
         ))).toEqual([
             'h:active:Active',
             'h:project:Repo',

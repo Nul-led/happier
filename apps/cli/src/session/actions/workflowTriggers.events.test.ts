@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AutomationDefinitionCreateRequestSchema,
   AutomationDefinitionDetailSchema,
@@ -16,11 +16,11 @@ import {
   type AutomationTriggerDefinitionBindingV1,
 } from '@happier-dev/protocol';
 import { getRandomBytes } from '@/api/encryption';
+import { createCliWorkflowTriggerActions } from './workflowTriggers';
 
-const network = vi.hoisted(() => ({ get: vi.fn(), request: vi.fn(), features: vi.fn() }));
-// HTTP and server capability discovery are the external boundaries; authoring and crypto remain real.
+const network = vi.hoisted(() => ({ get: vi.fn(), request: vi.fn() }));
+// HTTP is the external boundary; authoring and crypto remain real.
 vi.mock('axios', () => ({ default: { get: network.get, request: network.request } }));
-vi.mock('@/features/serverFeaturesClient', () => ({ fetchServerFeaturesSnapshot: network.features }));
 
 const secret = new Uint8Array(32).fill(9);
 const snapshot = createAccountScopedCryptoMaterialSnapshotV1({ accountEncryptionMode: 'e2ee', material: { type: 'legacy', secret } });
@@ -41,7 +41,7 @@ const event = {
 const privateDefinition = { v: 1 as const, sourceInstanceId: event.sourceInstanceId,
   sourceConfig: event.sourceConfig, displayLabel: event.displayLabel, filter: event.filter,
   maximumObservationAgeMs: event.maximumObservationAgeMs };
-const binding: AutomationTriggerDefinitionBindingV1 = AutomationTriggerDefinitionBindingV1Schema.parse({ v: 1, automationId: 'automation', triggerId: 'trigger',
+const binding: Extract<AutomationTriggerDefinitionBindingV1, { triggerKind: 'pluginEvent' }> = AutomationTriggerDefinitionBindingV1Schema.options[0].parse({ v: 1, automationId: 'automation', triggerId: 'trigger',
   triggerRevision: 3, triggerKind: 'pluginEvent', eventRef: event.eventRef,
   sourceSelectorId: '9d5af559-2c82-4c22-b6a0-ecabce38a631' });
 const resolveUnusedWorkflow = async (): Promise<typeof definition> => {
@@ -65,7 +65,7 @@ describe('Workflow trigger encrypted Event HTTP authoring', () => {
   let stored: AutomationDefinitionDetail;
   beforeEach(() => {
     for (const adapter of Object.values(network)) adapter.mockReset();
-    network.features.mockResolvedValue({ status: 'ready', features: { capabilities: {} } });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('unexpected_capability_probe')));
     network.get.mockResolvedValue({ status: 200, data: { mode: 'e2ee', version: 1,
       signingKeyFingerprint: null,
       contentKeyFingerprint: convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(snapshot.contentPublicKeyFingerprint),
@@ -97,8 +97,8 @@ describe('Workflow trigger encrypted Event HTTP authoring', () => {
       return { status: 200, data: stored };
     });
   });
+  afterEach(() => vi.unstubAllGlobals());
   it('seals caller-visible Event facts before POST using actual Automation and trigger identities', async () => {
-    const { createCliWorkflowTriggerActions } = await import('./workflowTriggers');
     const actions = createCliWorkflowTriggerActions({ credentials, serverHttpBaseUrl: 'https://source.example', resolveWorkflow: resolveUnusedWorkflow });
     const result = await actions.add({ target: { kind: 'inline', definition }, project: { machineId: 'machine', directory: '/work' }, trigger: event });
     expect(result.set.health).toBe('available');
@@ -122,7 +122,6 @@ describe('Workflow trigger encrypted Event HTTP authoring', () => {
         randomBytes: getRandomBytes, binding, definition: privateDefinition }), 3,
       { v: 2, templateVersion: 1, triggerEvidence: null, workflow: { t: 'encrypted', c: sealAccountScopedBlobCiphertext({
         kind: 'automation_template_payload', material: snapshot.material, payload: context, randomBytes: getRandomBytes }) } });
-    const { createCliWorkflowTriggerActions } = await import('./workflowTriggers');
     const actions = createCliWorkflowTriggerActions({ credentials, serverHttpBaseUrl: 'https://source.example', resolveWorkflow: resolveUnusedWorkflow });
     const result = await actions.update({ automationId: binding.automationId, triggerId: binding.triggerId, expectedRevision: 1, patch: { enabled: false } });
     expect(result.triggerRevision).toBe(4);

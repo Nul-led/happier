@@ -14,7 +14,7 @@ vi.mock('@/voice/settings/executionMachine', () => ({
   resolveVoiceExecutionMachineId: () => ambientMachine.id,
 }));
 
-import { createVoiceClientMediatedCredentialHeadersMaterializer } from './mediatedCredentialClient';
+import { createVoiceClientAccountOperationExecutor } from './mediatedCredentialClient';
 
 const contribution = Object.freeze({ pluginId: 'happier.openai', localId: 'realtime' });
 const service = Object.freeze({ pluginId: 'happier.agent.codex', localId: 'openai-codex' });
@@ -22,6 +22,9 @@ const selection = Object.freeze({
   kind: 'account' as const,
   account: Object.freeze({ service, accountId: 'account-a' }),
 });
+const operationResponse = { status: 200, finalUrl: 'https://voice.example.test/client-secret', headers: { 'content-type': 'application/json' }, bodyBase64: 'eyJ2YWx1ZSI6ImVwaGVtZXJhbCJ9' };
+const decodedResponse = { status: 200, finalUrl: operationResponse.finalUrl, headers: operationResponse.headers, body: new TextEncoder().encode('{"value":"ephemeral"}') };
+
 const cacheIdentity = Object.freeze({
   artifactDigest: `sha256:${'a'.repeat(64)}` as const,
 });
@@ -30,7 +33,7 @@ function materializer(
   invoke: (method: string, payload: unknown, signal?: AbortSignal | null) => Promise<unknown>,
   overrides?: Readonly<{ isInvocationCurrent?: () => boolean }>,
 ) {
-  return createVoiceClientMediatedCredentialHeadersMaterializer({
+  return createVoiceClientAccountOperationExecutor({
     contribution,
     platform: 'web',
     phase: 'prepare',
@@ -42,7 +45,7 @@ function materializer(
   });
 }
 
-describe('createVoiceClientMediatedCredentialHeadersMaterializer', () => {
+describe('createVoiceClientAccountOperationExecutor', () => {
   beforeEach(() => {
     logSpy.mockReset();
     machineRpc.mockReset();
@@ -56,6 +59,7 @@ describe('createVoiceClientMediatedCredentialHeadersMaterializer', () => {
 
     await expect(materialize({
       operationId: 'mint-client-secret',
+      parameters: {},
       selection,
       signal: new AbortController().signal,
     })).rejects.toMatchObject({ code: 'execution_machine_unavailable' });
@@ -66,7 +70,7 @@ describe('createVoiceClientMediatedCredentialHeadersMaterializer', () => {
     expect(line).toContain('mint-client-secret');
   });
 
-  it('names a rejected daemon materialization distinctly from an unreachable machine', async () => {
+  it('names a rejected daemon operation distinctly from an unreachable machine', async () => {
     const materialize = materializer(async () => ({
       ok: false,
       errorCode: 'plugin_voice_provider_result_invalid',
@@ -74,6 +78,7 @@ describe('createVoiceClientMediatedCredentialHeadersMaterializer', () => {
 
     await expect(materialize({
       operationId: 'mint-client-secret',
+      parameters: {},
       selection,
       signal: new AbortController().signal,
     })).rejects.toMatchObject({ code: 'voice_account_operation_unauthorized' });
@@ -83,41 +88,55 @@ describe('createVoiceClientMediatedCredentialHeadersMaterializer', () => {
     expect(line).not.toContain('machine_unavailable');
   });
 
-  it('never logs the materialized credential headers', async () => {
+  it('never logs the ephemeral operation response', async () => {
     const materialize = materializer(async () => ({
       ok: true,
-      headers: { authorization: 'Bearer super-secret-value' },
+      response: operationResponse,
     }));
 
     await expect(materialize({
       operationId: 'mint-client-secret',
+      parameters: {},
       selection,
       signal: new AbortController().signal,
-    })).resolves.toEqual({ authorization: 'Bearer super-secret-value' });
+    })).resolves.toEqual(decodedResponse);
 
     expect(logSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects a header-export response without logging the source credential', async () => {
+    const execute = materializer(async () => ({
+      ok: true, headers: { authorization: 'Bearer long-lived-source-secret' },
+    }));
+    await expect(execute({
+      operationId: 'mint-client-secret', parameters: {}, selection,
+      signal: new AbortController().signal,
+    })).rejects.toMatchObject({ code: 'provider_response_invalid' });
+    expect(JSON.stringify(logSpy.mock.calls)).not.toContain('long-lived-source-secret');
   });
 
   it('sends the captured declaration authority and Connected Account selection to the daemon', async () => {
     const invoke = vi.fn(async () => ({
       ok: true,
-      headers: { authorization: 'Bearer account-a' },
+      response: operationResponse,
     }));
     const materialize = materializer(invoke);
 
     await expect(materialize({
       operationId: 'mint-client-secret',
+      parameters: {},
       selection,
       signal: new AbortController().signal,
-    })).resolves.toEqual({ authorization: 'Bearer account-a' });
+    })).resolves.toEqual(decodedResponse);
 
     expect(invoke).toHaveBeenCalledWith(
-      'daemon.voice.client.mediatedCredential.materialize',
+      'daemon.voice.client.accountOperation.request',
       {
         contribution,
         platform: 'web',
         phase: 'prepare',
         operationId: 'mint-client-secret',
+        parameters: {},
         declarationAuthority: { kind: 'projected', cacheIdentity },
         expectedSelection: selection,
       },
@@ -128,7 +147,7 @@ describe('createVoiceClientMediatedCredentialHeadersMaterializer', () => {
   it('refuses to materialize after the Voice execution machine captured with the authority changed', async () => {
     const invoke = vi.fn(async () => ({
       ok: true,
-      headers: { authorization: 'Bearer account-a' },
+      response: operationResponse,
     }));
     let machineIsStillCaptured = true;
     const materialize = materializer(invoke, {
@@ -138,6 +157,7 @@ describe('createVoiceClientMediatedCredentialHeadersMaterializer', () => {
 
     await expect(materialize({
       operationId: 'mint-client-secret',
+      parameters: {},
       selection,
       signal: new AbortController().signal,
     })).rejects.toMatchObject({ code: 'voice_account_operation_cancelled' });
@@ -145,11 +165,11 @@ describe('createVoiceClientMediatedCredentialHeadersMaterializer', () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it('does not return headers the pinned machine produced after the target changed mid-call', async () => {
+  it('does not return an artifact the pinned machine produced after the target changed mid-call', async () => {
     let machineIsStillCaptured = true;
     const invoke = vi.fn(async () => {
       machineIsStillCaptured = false;
-      return { ok: true, headers: { authorization: 'Bearer account-a' } };
+      return { ok: true, response: operationResponse };
     });
     const materialize = materializer(invoke, {
       isInvocationCurrent: () => machineIsStillCaptured,
@@ -157,6 +177,7 @@ describe('createVoiceClientMediatedCredentialHeadersMaterializer', () => {
 
     await expect(materialize({
       operationId: 'mint-client-secret',
+      parameters: {},
       selection,
       signal: new AbortController().signal,
     })).rejects.toMatchObject({ code: 'voice_account_operation_cancelled' });
@@ -170,8 +191,8 @@ describe('createVoiceClientMediatedCredentialHeadersMaterializer', () => {
    * authority was captured on, not to whatever the ambient resolver now names.
    */
   it('dispatches to the machine captured with the authority after the ambient target moved', async () => {
-    machineRpc.mockResolvedValue({ ok: true, headers: { authorization: 'Bearer account-a' } });
-    const materialize = createVoiceClientMediatedCredentialHeadersMaterializer({
+    machineRpc.mockResolvedValue({ ok: true, response: operationResponse });
+    const materialize = createVoiceClientAccountOperationExecutor({
       contribution,
       platform: 'web',
       phase: 'prepare',
@@ -184,20 +205,21 @@ describe('createVoiceClientMediatedCredentialHeadersMaterializer', () => {
 
     await expect(materialize({
       operationId: 'mint-client-secret',
+      parameters: {},
       selection,
       signal: new AbortController().signal,
-    })).resolves.toEqual({ authorization: 'Bearer account-a' });
+    })).resolves.toEqual(decodedResponse);
 
     expect(machineRpc).toHaveBeenCalledTimes(1);
     expect(machineRpc).toHaveBeenCalledWith(expect.objectContaining({
       machineId: 'machine-a',
-      method: 'daemon.voice.client.mediatedCredential.materialize',
+      method: 'daemon.voice.client.accountOperation.request',
     }));
   });
 
   it('reports execution-machine recovery instead of falling back to the ambient machine when no target was captured', async () => {
-    machineRpc.mockResolvedValue({ ok: true, headers: { authorization: 'Bearer account-a' } });
-    const materialize = createVoiceClientMediatedCredentialHeadersMaterializer({
+    machineRpc.mockResolvedValue({ ok: true, response: operationResponse });
+    const materialize = createVoiceClientAccountOperationExecutor({
       contribution,
       platform: 'web',
       phase: 'prepare',
@@ -210,6 +232,7 @@ describe('createVoiceClientMediatedCredentialHeadersMaterializer', () => {
 
     await expect(materialize({
       operationId: 'mint-client-secret',
+      parameters: {},
       selection,
       signal: new AbortController().signal,
     })).rejects.toMatchObject({ code: 'execution_machine_unavailable' });

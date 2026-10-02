@@ -1,6 +1,6 @@
 import {
-  buildBackendTargetKey,
   buildBackendTargetKeyV2,
+  isBackendTargetDisabledByAccountSettings,
   type AccountSettings,
   type AgentBackendInventoryItem,
 } from '@happier-dev/protocol'
@@ -8,8 +8,6 @@ import {
 import { readAgentCatalogSnapshot } from '@/agent/catalog/snapshot'
 import { readAgentContributionDisplayTitle } from '@/agent/catalog/agentDisplayTitle'
 import { listConfiguredAcpBackendsFromAccountSettings } from '@/agent/acp/catalog/configured/resolveBackend'
-
-import { isBackendEnabled } from './backendAvailability'
 
 function normalizeLimit(value: unknown): number | null {
   const parsed = Number(value)
@@ -29,11 +27,10 @@ function buildCatalogBackendInventoryItems(
         backendId: agentId,
         sourceKind: 'built_in',
       })
-      const legacyTargetKey = buildBackendTargetKey({ kind: 'builtInAgent', agentId })
       return {
         targetKey,
         label: readAgentContributionDisplayTitle(contribution, agentId) ?? agentId,
-        enabled: isBackendEnabled(accountSettings, [targetKey, legacyTargetKey]),
+        enabled: !isBackendTargetDisabledByAccountSettings(accountSettings, { kind: 'backend', backendId: agentId }),
         agentId,
         ...(contribution?.identity ? { identity: contribution.identity } : {}),
       }
@@ -54,15 +51,13 @@ export async function buildConfiguredAcpBackendInventoryItems(
       configuredBackendId: backend.backendId,
       sourceKind: 'configured',
     })
-    const legacyTargetKey = buildBackendTargetKey({
-      kind: 'configuredAcpBackend',
-      backendId: backend.backendId,
-    })
     return {
       targetKey,
       label: backend.title,
       ...(backend.description ? { description: backend.description } : {}),
-      enabled: isBackendEnabled(accountSettings, [targetKey, legacyTargetKey]),
+      enabled: !isBackendTargetDisabledByAccountSettings(accountSettings, {
+        kind: 'backend', backendId: backend.backendId, configuredBackendId: backend.backendId,
+      }),
       backendId: backend.backendId,
     }
   })

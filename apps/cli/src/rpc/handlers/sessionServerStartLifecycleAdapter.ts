@@ -50,7 +50,7 @@ export function createMachineSessionServerStartSpawnLifecycleTransport(
         resolveSpawnSessionByNonce: async (spawnNonce, resolveOptions) => {
             resolveOptions?.signal?.throwIfAborted();
             const result = options.resolveSpawnSessionByNonce
-                ? await options.resolveSpawnSessionByNonce(spawnNonce)
+                ? await options.resolveSpawnSessionByNonce(spawnNonce, resolveOptions?.timeoutMs)
                 : { status: 'unsupported' as const };
             resolveOptions?.signal?.throwIfAborted();
             return result;

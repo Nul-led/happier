@@ -3,6 +3,9 @@ import {
   UiBrowserAutomationDispatchRequestV1Schema,
   UiBrowserAutomationDispatchResultV1Schema,
   uiBrowserAutomationDispatchMethod,
+  getActionSpec,
+  createActionExecutor,
+  FeaturesResponseSchema,
   type RuntimeActionExecuteArgs,
 } from '@happier-dev/protocol';
 
@@ -10,6 +13,7 @@ import { createBrowserDaemonRuntimeActionExecutor } from '../actions/runtimeActi
 import { createBrowserSidecarCdpControlAdapter } from '../sidecar/controlAdapter';
 import { createBrowserDaemonControlBroker } from '../control/broker';
 import { createBrowserAutomationReverseDispatcher } from './reverseDispatch';
+import { createDaemonRuntimeActionExecutor } from '../../runtimeActionExecutor';
 
 const view = { browserSessionId: 'visible-session', viewId: 'visible-view' };
 const request = { v: 1, ...view, automationRequestId: 'click-1', actionKind: 'click', navigationGeneration: 0,
@@ -18,6 +22,89 @@ const args: RuntimeActionExecuteArgs = { actionId: 'browser.automation.click', i
   context: { surface: 'agent', authority: 'account_automation', defaultSessionId: 'happier-session' } };
 
 describe('daemon browser reverse dispatch protocol boundary', () => {
+  it('preserves interrupted unknown through composed daemon and public Action settlement after an issued abort', async () => {
+    const abort = new AbortController();
+    let began!: () => void;
+    const issued = new Promise<void>(resolve => { began = resolve; });
+    let finish!: () => void;
+    const uiAutomation = createBrowserAutomationReverseDispatcher({ getMachineClient: () => ({
+      hasConnectedClientRpcHandler: () => true,
+      callConnectedClientRpc: async (_method, _payload, options) => {
+        options?.onIssued?.();
+        began();
+        await new Promise<void>(resolve => { finish = resolve; });
+        return { ok: false, errorCode: 'RPC_CANCELLED' };
+      },
+    }) });
+    const broker = createBrowserDaemonControlBroker();
+    const runtimeActionExecute = createDaemonRuntimeActionExecutor({ env: {},
+      resolveRouteOwners: () => ({ browserUiAutomation: { ownsAutomationView: broker.ownsView, uiAutomation } }),
+      resolveServerFeaturesSnapshot: () => ({ status: 'ready', features: FeaturesResponseSchema.parse({ features: {
+        browser: { enabled: true, viewTargets: { enabled: true }, internal: { enabled: true },
+          sidecar: { enabled: true }, automation: { enabled: true } },
+      } }) }),
+    });
+    const unused = async () => { throw new Error('Unexpected non-browser Action dependency'); };
+    const executor = createActionExecutor({ runtimeActionExecute,
+      executionRunStart: unused, executionRunList: unused, executionRunGet: unused, detachedExecutionRunSend: unused,
+      executionRunStop: unused, executionRunAction: unused, executionRunWait: unused, sessionOpen: unused,
+      sessionFork: unused, sessionRollback: unused, sessionSpawnNew: unused, pathsListRecent: unused,
+      machinesList: unused, serversList: unused, reviewEnginesList: unused, agentsBackendsList: unused,
+      agentsModelsList: unused, sessionSendMessage: unused, sessionPermissionRespond: unused, sessionUserActionAnswer: unused,
+      sessionModeSet: unused, sessionModesList: unused, sessionTargetPrimarySet: unused, sessionTargetTrackedSet: unused,
+      sessionList: unused, sessionActivityGet: unused, sessionRecentMessagesGet: unused, resetGlobalVoiceAgent: unused,
+    });
+    const running = executor.execute(args.actionId, request, { ...args.context, bypassApprovals: true, signal: abort.signal });
+    await issued;
+    abort.abort();
+    finish();
+    await expect(running).resolves.toMatchObject({ ok: true, result: { status: 'interrupted', completion: 'unknown' } });
+  });
+
+  it('keeps pre-send unavailability distinct from unknown completion', async () => {
+    const execute = createBrowserAutomationReverseDispatcher({ getMachineClient: () => ({
+      hasConnectedClientRpcHandler: () => true,
+      callConnectedClientRpc: async () => ({ ok: false, errorCode: 'machine_socket_unavailable' }),
+    }) });
+    expect(await execute(args)).toMatchObject({ ok: false, errorCode: 'runtime_action_disabled' });
+  });
+
+  it('reports unknown completion when the UI disconnects after an effect-bearing send', async () => {
+    let sent = false;
+    const execute = createBrowserAutomationReverseDispatcher({ getMachineClient: () => ({
+      hasConnectedClientRpcHandler: () => true,
+      callConnectedClientRpc: async (_method, _payload, options) => {
+        (options as Readonly<{ onIssued?: () => void }> | undefined)?.onIssued?.();
+        sent = true;
+        return { ok: false, errorCode: 'machine_socket_unavailable' };
+      },
+    }) });
+    const result = await execute(args);
+    expect(result).toMatchObject({ status: 'interrupted', completion: 'unknown' });
+    expect(getActionSpec(args.actionId).outputSchema?.parse(result)).toMatchObject({ status: 'interrupted', completion: 'unknown' });
+    expect(sent).toBe(true);
+  });
+
+  it('propagates invoking cancellation during a deferred UI effect and reports unknown completion', async () => {
+    const abort = new AbortController();
+    let signal: AbortSignal | undefined;
+    let finish!: () => void;
+    const execute = createBrowserAutomationReverseDispatcher({ getMachineClient: () => ({
+      hasConnectedClientRpcHandler: () => true,
+      callConnectedClientRpc: async (_method, _payload, options) => {
+        signal = (options as Readonly<{ signal?: AbortSignal }> | undefined)?.signal;
+        (options as Readonly<{ onIssued?: () => void }> | undefined)?.onIssued?.();
+        await new Promise<void>(resolve => { finish = resolve; });
+        return { ok: false, errorCode: 'RPC_CANCELLED' };
+      },
+    }) });
+    const running = execute({ ...args, context: { ...args.context, signal: abort.signal } });
+    abort.abort();
+    finish();
+    await expect(running).resolves.toMatchObject({ status: 'interrupted', completion: 'unknown' });
+    expect(signal?.aborted).toBe(true);
+  });
+
   it('dispatches to the exact UI RPC and forwards present-user cancellation authority without provisioning', async () => {
     const wireRequests: unknown[] = [];
     // Connected-client RPC is the network boundary. UI behavior is exercised by its own package.
@@ -42,11 +129,11 @@ describe('daemon browser reverse dispatch protocol boundary', () => {
     });
     expect(await execute(args)).toMatchObject({ status: 'succeeded', resultSummary: { clicked: true } });
     expect(await execute({ actionId: 'browser.automation.cancelActive', input: view,
-      context: { surface: 'agent', authority: 'present_user' } }))
+      context: { surface: 'agent', authority: 'present_user', defaultSessionId: 'happier-session' } }))
       .toEqual({ v: 1, outcome: 'canceled', canceledCount: 1, completion: 'uncertain' });
     expect(wireRequests).toEqual([
-      { v: 1, actionId: args.actionId, input: request, authority: 'account_automation' },
-      { v: 1, actionId: 'browser.automation.cancelActive', input: view, authority: 'present_user' },
+      { v: 1, sessionId: 'happier-session', actionId: args.actionId, input: request, authority: 'account_automation' },
+      { v: 1, sessionId: 'happier-session', actionId: 'browser.automation.cancelActive', input: view, authority: 'present_user' },
     ]);
     expect(provisionAutomationRuntime).not.toHaveBeenCalled();
   });

@@ -3,7 +3,7 @@ import * as React from 'react';
 import type { AgentInputChipPickerOption } from '../components/AgentInputChipPickerTypes';
 import type { AgentInputExtraActionChip } from '../agentInputContracts';
 import type { AgentInputControlId } from './agentInputControlTypes';
-import type { SessionModeChipPresentation } from './resolveSessionModeChipPresentation';
+import type { resolveSessionModeChipPresentation, SessionModeChipPresentation } from './resolveSessionModeChipPresentation';
 import { buildCoreAgentInputControlNodes } from './buildCoreAgentInputControlNodes';
 import type { AgentInputFolderChipState } from '../definitions/AgentInputFolderChip';
 import { resolveRenderedAgentInputControls } from './resolveRenderedAgentInputControls';
@@ -15,10 +15,7 @@ import type { IconName } from '@/components/ui/icons/Icon';
 
 type ChipStyle = (pressed: boolean) => any;
 
-type SessionModeChipControlLike = Readonly<{
-    label: string;
-    selectedId: string;
-}>;
+type SessionModeChipControlLike = Pick<Parameters<typeof resolveSessionModeChipPresentation>[0], 'label' | 'selectedId'>;
 
 export function useRenderedAgentInputControlRows(params: Readonly<{
     layout: 'scroll' | 'wrap' | 'collapsed';

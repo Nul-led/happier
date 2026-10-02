@@ -75,7 +75,7 @@ describe('Stop attachment retirement after real runner exit', () => {
       const tracked: TrackedSession = {
         startedBy: 'daemon', pid: child.pid, childProcess: child, happySessionId: sessionId,
         processStartTimeMs: identity.processStartTimeMs,
-        spawnOptions: { terminal: { mode: 'herdr' } },
+        spawnOptions: { directory: home, terminal: { mode: 'herdr' } },
       };
       if (serviceabilitySuperseded) {
         // Genuine HTTP boundary: the canonical metadata retirement owner sees

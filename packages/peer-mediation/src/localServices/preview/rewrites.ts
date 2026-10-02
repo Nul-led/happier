@@ -18,36 +18,13 @@ function headerValues(value: ResponseHeaderValue): readonly string[] {
     return typeof value === "string" ? [value] : value;
 }
 
-function previewPathRoot(preview: LocalServicePreviewResourceV1): string {
-    return `/v1/local-services/preview/${encodeURIComponent(preview.previewId)}/`;
-}
-
 function normalizedPath(value: string | null): string {
     if (!value || value.trim().length === 0) return "/";
     return value.startsWith("/") ? value : `/${value}`;
 }
 
-function joinCookiePath(root: string, path: string): string {
-    const normalized = normalizedPath(path);
-    if (normalized === "/") return root;
-    return `${root.replace(/\/$/u, "")}${normalized}`;
-}
-
-function previewCookiePath(input: Readonly<{
-    preview: LocalServicePreviewResourceV1;
-    policy: "isolate" | "rewrite";
-    upstreamPath: string | null;
-}>): string {
-    if (input.preview.originMode === "host") {
-        return input.policy === "rewrite" ? normalizedPath(input.upstreamPath) : "/";
-    }
-    const root = previewPathRoot(input.preview);
-    return input.policy === "rewrite" ? joinCookiePath(root, input.upstreamPath ?? "/") : root;
-}
-
 function rewriteSetCookieHeader(input: Readonly<{
     rawValue: string;
-    preview: LocalServicePreviewResourceV1;
     policy: "isolate" | "rewrite";
 }>): string | null {
     const parts = input.rawValue.split(";").map((part) => part.trim()).filter(Boolean);
@@ -71,11 +48,7 @@ function rewriteSetCookieHeader(input: Readonly<{
 
     return [
         nameValue,
-        `Path=${previewCookiePath({
-            preview: input.preview,
-            policy: input.policy,
-            upstreamPath,
-        })}`,
+        `Path=${input.policy === "rewrite" ? normalizedPath(upstreamPath) : "/"}`,
         "SameSite=Lax",
         ...retainedAttributes,
     ].join("; ");
@@ -120,13 +93,7 @@ function rewriteLocationHeader(input: Readonly<{
     preview: LocalServicePreviewResourceV1;
     request: PreviewRewriteRequest;
 }>): string {
-    if ((input.preview.policy?.redirectPolicy ?? "preserve_host_origin") !== "rewrite_path_mode") {
-        return input.rawValue;
-    }
-    const targetPath = locationPathForPreviewTarget(input);
-    if (!targetPath) return input.rawValue;
-    if (input.preview.originMode === "host") return targetPath;
-    return `${previewPathRoot(input.preview).replace(/\/$/u, "")}${targetPath}`;
+    return locationPathForPreviewTarget(input) ?? input.rawValue;
 }
 
 export function rewritePreviewResponseHeaders(input: Readonly<{
@@ -145,7 +112,6 @@ export function rewritePreviewResponseHeaders(input: Readonly<{
             const rewritten = headerValues(value).flatMap((rawValue) => {
                 const cookie = rewriteSetCookieHeader({
                     rawValue,
-                    preview: input.preview,
                     policy: cookiePolicy,
                 });
                 return cookie ? [cookie] : [];

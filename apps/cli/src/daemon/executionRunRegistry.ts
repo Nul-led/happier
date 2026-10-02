@@ -11,6 +11,7 @@ import {
   type DaemonExecutionRunMarkerPersistenceRead,
   type DaemonExecutionRunMarkerOwnerWrite,
   WorkerUpdateV1Schema,
+  readBackendTargetRefV2,
 } from '@happier-dev/protocol';
 import { z } from 'zod';
 import { readOrCreateDeviceLocalSecretStorage } from './deviceLocalSecretStorage';
@@ -19,7 +20,154 @@ import {
   publishProtectedLocalStateFileIfAbsent,
   readProtectedLocalStateFile,
   removeProtectedLocalStateFile,
+  writeProtectedLocalStateFileAtomic,
 } from '../utils/fs/protectedLocalState';
+import { isPidPresent } from '@happier-dev/cli-common/process';
+import { processGenerationProvesReuse, readProcessIdentityByPid } from './processIdentity';
+import {
+  RetainedExecutionRunRecordSchema, projectRetainedExecutionRunState, projectExecutionRunHostLoss,
+  type RetainedExecutionRunRecord,
+} from '@/agent/runtime/bridges/executionRun/retainedState';
+import type { ExecutionRunState } from '@/agent/runtime/bridges/executionRun/executionRunTypes';
+import { composeExecutionRunWorkerUpdate } from '@/agent/runtime/bridges/executionRun/executionRunWorkerUpdate';
+
+function retainedStatePath(runId: string): string {
+  return join(resolveExecutionRunMarkerDir(), `state-${Buffer.from(runId).toString('base64url')}.sealed`);
+}
+
+// Serialization belongs to this file's existing persistence owner, including
+// provider-acceptance ACK writes. It does not decide Run/controller lifecycle.
+const retainedStateWrites = new Map<string, Promise<void>>();
+function serializeRetainedStateWrite<T>(runId: string, write: () => Promise<T>): Promise<T> {
+  const path = retainedStatePath(runId);
+  const previous = retainedStateWrites.get(path) ?? Promise.resolve();
+  const next = previous.then(write, write);
+  const tracked = next.then(() => {}, () => {}).finally(() => {
+    if (retainedStateWrites.get(path) === tracked) retainedStateWrites.delete(path);
+  });
+  retainedStateWrites.set(path, tracked);
+  return next;
+}
+
+async function readRetainedExecutionRunRecord(runId: string): Promise<RetainedExecutionRunRecord | null> {
+  const storage = await readOrCreateDeviceLocalSecretStorage({ path: configuration.deviceLocalSecretKeyFile });
+  try {
+    return RetainedExecutionRunRecordSchema.parse(storage.openJson({
+      purpose: 'execution_run_state', ciphertext: await readProtectedLocalStateFile(retainedStatePath(runId)),
+    }));
+  } catch (error) { if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return null; throw error; }
+}
+
+async function writeRetainedExecutionRunRecord(record: RetainedExecutionRunRecord): Promise<void> {
+  const storage = await readOrCreateDeviceLocalSecretStorage({ path: configuration.deviceLocalSecretKeyFile });
+  await writeProtectedLocalStateFileAtomic(retainedStatePath(record.state.runId), storage.sealJson({
+    purpose: 'execution_run_state', value: RetainedExecutionRunRecordSchema.parse(record),
+  }), { authority: 'owned' });
+}
+
+async function acknowledgeRetainedRunTerminal(input: RetainedExecutionRunWorkerUpdate): Promise<void> {
+  await serializeRetainedStateWrite(input.update.workerId, async () => {
+    const record = await readRetainedExecutionRunRecord(input.update.workerId);
+    if (!record) return;
+    if (record.terminalEventId && input.localId === `execution-run-worker-update:${record.terminalEventId}`) {
+      const { terminalEventId: _accepted, ...accepted } = record;
+      await writeRetainedExecutionRunRecord(accepted);
+    }
+  });
+}
+
+export async function retainExecutionRunState(state: ExecutionRunState, terminalEventId?: string): Promise<void> {
+  const identity = await readProcessIdentityByPid(process.pid);
+  await serializeRetainedStateWrite(state.runId, async () => {
+    const current = await readRetainedExecutionRunRecord(state.runId);
+    const pendingEventId = terminalEventId ?? (state.status !== 'running'
+      && current?.state.finishedAtMs === state.finishedAtMs ? current?.terminalEventId : undefined);
+    await writeRetainedExecutionRunRecord({
+      ownerPid: process.pid,
+      ...(identity?.processStartTimeMs !== undefined ? { ownerProcessStartTimeMs: identity.processStartTimeMs } : {}),
+      state: projectRetainedExecutionRunState(state), ...(pendingEventId ? { terminalEventId: pendingEventId } : {}),
+    });
+  });
+}
+
+export async function readRetainedExecutionRunRecords(): Promise<readonly RetainedExecutionRunRecord[]> {
+  await Promise.all(retainedStateWrites.values());
+  let entries: string[];
+  try { entries = (await readdir(resolveExecutionRunMarkerDir())).filter((entry) => entry.startsWith('state-') && entry.endsWith('.sealed')); }
+  catch (error) { if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return []; throw error; }
+  if (!entries.length) return [];
+  const storage = await readOrCreateDeviceLocalSecretStorage({ path: configuration.deviceLocalSecretKeyFile });
+  const records: RetainedExecutionRunRecord[] = [];
+  for (const entry of entries) {
+    const path = join(resolveExecutionRunMarkerDir(), entry);
+    try {
+      const parsed = RetainedExecutionRunRecordSchema.safeParse(storage.openJson({
+        purpose: 'execution_run_state', ciphertext: await readProtectedLocalStateFile(path),
+      }));
+      if (!parsed.success || retainedStatePath(parsed.data.state.runId) !== path) {
+        throw Object.assign(new Error('Retained execution state could not be opened'), { code: 'execution_run_state_unavailable' });
+      }
+      records.push(parsed.data);
+    } catch (error) {
+      // Terminal GC can retire ephemeral state after the directory scan.
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
+    }
+  }
+  return records;
+}
+
+/** Existing daemon process supervision feeds the lifecycle owner; transport loss never does. */
+export async function reconcileRetainedExecutionRunRecords(params: Readonly<{
+  nowMs: number;
+  isPidAlive?: (pid: number) => boolean | Promise<boolean>;
+  isPidSafeHappyProcess?: (pid: number) => boolean | Promise<boolean>;
+}>): Promise<readonly RetainedExecutionRunRecord[]> {
+  const records = await readRetainedExecutionRunRecords();
+  const reconciled: RetainedExecutionRunRecord[] = [];
+  for (const observed of records) {
+    const reconciledRecord = await serializeRetainedStateWrite(observed.state.runId, async () => {
+      // A checkpoint or acceptance ACK may have advanced the scanned record.
+      const record = await readRetainedExecutionRunRecord(observed.state.runId);
+      if (!record) return null;
+      let next = record;
+      if (record.state.status === 'running') {
+        const alive = await (params.isPidAlive ?? isPidPresent)(record.ownerPid);
+        // Process recognition can be inconclusive. Its visibility-only boolean
+        // is not authority to settle a live owner's lifecycle or admit resume.
+        const identity = alive && record.ownerProcessStartTimeMs !== undefined ? await readProcessIdentityByPid(record.ownerPid) : null;
+        const reused = processGenerationProvesReuse(record.ownerProcessStartTimeMs, identity?.processStartTimeMs);
+        if (!alive || reused) {
+          next = projectExecutionRunHostLoss(record, params.nowMs);
+          await writeRetainedExecutionRunRecord(next);
+          const run = next.state;
+          await writeExecutionRunMarker({
+            pid: record.ownerPid, happySessionId: run.sessionId, runId: run.runId, callId: run.callId,
+            sidechainId: run.sidechainId, intent: run.intent, backendTarget: readBackendTargetRefV2(run.backendTarget),
+            permissionMode: run.permissionMode, retentionPolicy: run.retentionPolicy, runClass: run.runClass,
+            ioMode: run.ioMode, status: run.status, startedAtMs: run.startedAtMs,
+            updatedAtMs: params.nowMs, finishedAtMs: params.nowMs, errorCode: 'execution_run_host_lost',
+          });
+        }
+      }
+      if (next.terminalEventId) {
+        const update = composeExecutionRunWorkerUpdate(next.state, next.terminalEventId);
+        if (update) {
+          const path = join(resolveExecutionRunMarkerDir(), resolveWorkerUpdateEntry(update.update.workerId, update.localId));
+          // An existing (even unreadable) delivery owns its immutable custody.
+          // Recovery only fills the crash window before initial publication.
+          try { await readProtectedLocalStateFile(path); }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
+            await retainExecutionRunWorkerUpdate(update);
+          }
+        }
+      }
+      return next;
+    });
+    if (reconciledRecord) reconciled.push(reconciledRecord);
+  }
+  return reconciled;
+}
 
 const ExecutionRunMarkerSchema = DaemonExecutionRunMarkerSchema;
 const ExecutionRunMarkerOwnerWriteSchema = DaemonExecutionRunMarkerOwnerWriteSchema;
@@ -121,6 +269,7 @@ export async function acknowledgeExecutionRunWorkerUpdate(input: RetainedExecuti
     if (!parsed.success || parsed.data.update.workerKind !== 'execution_run'
       || parsed.data.update.workerId !== input.update.workerId
       || parsed.data.localId !== input.localId || parsed.data.sessionId !== input.sessionId) return false;
+    await acknowledgeRetainedRunTerminal(input);
     await removeProtectedLocalStateFile(path);
     return true;
   } catch (error) {
@@ -375,6 +524,7 @@ export async function gcExecutionRunMarkers(params: Readonly<{
   isPidAlive: (pid: number) => boolean | Promise<boolean>;
   isPidSafeHappyProcess: (pid: number) => boolean | Promise<boolean>;
 }>): Promise<{ removedRunIds: string[] }> {
+  const retainedRecords = await reconcileRetainedExecutionRunRecords(params);
   const markers = await listExecutionRunMarkersRaw();
   const pendingRunIds = new Set((await listWorkerUpdateEntries()).map((entry) => readWorkerUpdateEntryIdentity(entry)![0]));
   const removedRunIds: string[] = [];
@@ -392,6 +542,8 @@ export async function gcExecutionRunMarkers(params: Readonly<{
         removedRunIds.push(marker.runId);
         continue;
       }
+      // A settled lifecycle outcome is no longer governed by process liveness.
+      continue;
     }
 
     const alive = await params.isPidAlive(marker.pid);
@@ -407,6 +559,20 @@ export async function gcExecutionRunMarkers(params: Readonly<{
       removedRunIds.push(marker.runId);
       continue;
     }
+  }
+
+  for (const record of retainedRecords) {
+    const run = record.state;
+    if (run.retentionPolicy !== 'ephemeral' || run.status === 'running'
+      || run.finishedAtMs === undefined || params.nowMs - run.finishedAtMs <= params.terminalTtlMs
+      || pendingRunIds.has(run.runId)
+      || markers.some((marker) => marker.runId === run.runId && marker.executionRunConnectedServicesCleanupReceiptV1)) continue;
+    await serializeRetainedStateWrite(run.runId, async () => {
+      const current = await readRetainedExecutionRunRecord(run.runId);
+      if (current?.state.status === run.status && current.state.finishedAtMs === run.finishedAtMs) {
+        await removeProtectedLocalStateFile(retainedStatePath(run.runId));
+      }
+    });
   }
 
   return { removedRunIds };

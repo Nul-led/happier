@@ -472,6 +472,7 @@ function snapshotQuotaResult(
     const ids = new Set<string>();
     const limits: Array<Readonly<{
         id: string;
+        providerLimitId?: string;
         used?: number;
         remaining?: number;
         resetsAtMs?: number;
@@ -479,12 +480,13 @@ function snapshotQuotaResult(
     for (const rawLimit of record.limits) {
         const limit = readStrictConnectedAccountProducerRecord(
             rawLimit,
-            ['id', 'used', 'remaining', 'resetsAtMs'],
+            ['id', 'providerLimitId', 'used', 'remaining', 'resetsAtMs'],
             ['id'],
         );
         if (
             !limit
             || !isBoundedString(limit.id, 256)
+            || (limit.providerLimitId !== undefined && !isBoundedString(limit.providerLimitId, 256))
             || ids.has(limit.id)
             || (
                 limit.used !== undefined
@@ -513,6 +515,7 @@ function snapshotQuotaResult(
         ids.add(limit.id);
         limits.push(Object.freeze({
             id: limit.id,
+            ...(typeof limit.providerLimitId === 'string' ? { providerLimitId: limit.providerLimitId } : {}),
             ...(limit.used === undefined
                 ? {}
                 : { used: Number(limit.used) }),

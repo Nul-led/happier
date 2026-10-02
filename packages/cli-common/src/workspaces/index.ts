@@ -150,6 +150,7 @@ export function sanitizeBundledPackageJson(raw: any): any {
     module,
     types,
     exports,
+    imports,
     bin,
     dependencies,
     peerDependencies,
@@ -178,6 +179,7 @@ export function sanitizeBundledPackageJson(raw: any): any {
     module,
     types,
     exports,
+    ...(imports === undefined ? {} : { imports }),
     ...(bin === undefined ? {} : { bin }),
     dependencies: preservesPrepublicationAuthoringMetadata
       ? dependencies
@@ -622,6 +624,7 @@ function collectWorkspacePackageReferencedFiles(rawPackageJson: any): Set<string
   collectPackageJsonRelativeFileTargets(rawPackageJson.module, referencedFiles);
   collectPackageJsonRelativeFileTargets(rawPackageJson.types, referencedFiles);
   collectPackageJsonRelativeFileTargets(rawPackageJson.exports, referencedFiles);
+  collectPackageJsonRelativeFileTargets(rawPackageJson.imports, referencedFiles);
   return referencedFiles;
 }
 
@@ -1221,11 +1224,7 @@ function hasBundledWorkspacePackageReferencedFiles(packageJsonPath: string): boo
   }
 
   const packageDir = dirname(packageJsonPath);
-  const relativeFileTargets = new Set<string>();
-  collectPackageJsonRelativeFileTargets(pkg.main, relativeFileTargets);
-  collectPackageJsonRelativeFileTargets(pkg.module, relativeFileTargets);
-  collectPackageJsonRelativeFileTargets(pkg.types, relativeFileTargets);
-  collectPackageJsonRelativeFileTargets(pkg.exports, relativeFileTargets);
+  const relativeFileTargets = collectWorkspacePackageReferencedFiles(pkg);
 
   for (const relPath of relativeFileTargets) {
     if (!packageFileTargetExists(packageDir, relPath)) {
@@ -1357,7 +1356,12 @@ function hasBundledWorkspacePackageManifestParity(
 
   const workspaceExports = readPackageJsonField(workspacePackageJsonPath, 'exports');
   const bundledExports = readPackageJsonField(bundledPackageJsonPath, 'exports');
-  return stableJsonStringify(workspaceExports) === stableJsonStringify(bundledExports);
+  const workspaceImports = readPackageJsonField(workspacePackageJsonPath, 'imports');
+  const bundledImports = readPackageJsonField(bundledPackageJsonPath, 'imports');
+  // Conditional imports resolve in declaration order, so sorting their keys
+  // could hide a change from the Node branch to the default branch.
+  return stableJsonStringify(workspaceExports) === stableJsonStringify(bundledExports)
+    && JSON.stringify(workspaceImports) === JSON.stringify(bundledImports);
 }
 
 function hasBundledWorkspaceRuntimeDependencyTreeHealthy(

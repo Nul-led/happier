@@ -38,11 +38,13 @@ export type ExecutionRunPermissionResponseBridgeResult =
  * the plan-only `AgentExecutionRunRuntimeBridge` noun.
  */
 export interface ExecutionRunHostBridgeContract {
+  recoverRetainedRuns(): Promise<void>;
   get(runId: string): ExecutionRunState | null;
   getRunningCount(): number;
   getStructuredMeta(runId: string): { kind: string; payload: unknown } | null;
   getLatestToolResult(runId: string): unknown | null;
   waitForTerminal(runId: string, options?: Readonly<{ signal?: AbortSignal }>): Promise<void>;
+  waitForRunStateChange(runId: string, signal?: AbortSignal): Promise<void>;
   waitForInputTurn(
     runId: string,
     localInputId: string,
@@ -111,6 +113,7 @@ export interface ExecutionRunHostBridgeContract {
     params: Readonly<{ text: string; displayText?: string; localId: string }>,
   ): Promise<{ ok: true } | { ok: false; errorCode: string; error: string }>;
   stop(runId: string): Promise<{ ok: boolean; errorCode?: string; error?: string }>;
+  cancelCurrentTurn(runId: string, params: Readonly<{ occurrenceId: string; turnId: string }>): Promise<import('@happier-dev/protocol').ExecutionRunCancelTurnResponse>;
   dispose?(): Promise<void>;
   respondToPermissionRequest(
     runId: string,

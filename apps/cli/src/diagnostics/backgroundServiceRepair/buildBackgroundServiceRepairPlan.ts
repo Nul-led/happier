@@ -3,15 +3,11 @@ import {
   type HappierService,
 } from '@happier-dev/cli-common/happierRuntime';
 import { getReleaseRingCatalogEntry, type PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
-import type { IrohRelayEnvConfig } from '@happier-dev/iroh-native/node';
-import type { HomeApplicationCarrierEligibility } from '@happier-dev/cli-common/homeEnrollment';
 
 import type { DaemonServiceListEntry } from '@/daemon/service/cli';
 import type { DaemonServiceMode } from '@/daemon/service/plan';
 import { resolveHappierHomeDirComparableKey } from '@/daemon/ownership/happierHomeDirComparableKey';
-import { resolveDaemonServiceIrohRelayConfig } from '@/daemon/service/resolveDaemonServiceIrohRelayConfig';
-import { resolveDaemonServiceHomeCarrierPolicy } from '@/daemon/service/resolveDaemonServiceHomeCarrierPolicy';
-import { readInstalledDaemonServiceInstallOptions, readInstalledDaemonServiceManagedBy } from '@/daemon/service/discoverInstalledDaemonServiceEntries';
+import { readDaemonServicePreservedInstallOptions } from '@/daemon/service/installer';
 import type { BackgroundServiceRepairPlan } from './types';
 
 const UNKNOWN_REPAIRABLE_HAPPIER_HOME_DIR = '__background_service_repair_unknown_home__';
@@ -180,43 +176,29 @@ function compareCompatibleDefaultServicePriority(
   return 0;
 }
 
-function readServiceIrohRelayConfig(service: DaemonServiceListEntry): IrohRelayEnvConfig {
-  return resolveDaemonServiceIrohRelayConfig({
-    processEnv: {},
-    installedService: {
-      platform: service.platform,
-      path: service.path,
+function readServicePreservedInstallOptions(service: DaemonServiceListEntry, uid?: number | null) {
+  return readDaemonServicePreservedInstallOptions({
+    platform: service.platform, path: service.path,
+    preserveEnablement: {
+      label: service.label,
+      uid: uid === undefined ? process.getuid?.() ?? null : uid,
+      mode: service.mode,
     },
   });
-}
-
-function readServiceHomeCarrierEligibility(service: DaemonServiceListEntry): HomeApplicationCarrierEligibility | undefined {
-  return resolveDaemonServiceHomeCarrierPolicy({
-    processEnv: {},
-    installedService: { platform: service.platform, path: service.path },
-  });
-}
-
-function readServicePreservedInstallOptions(service: DaemonServiceListEntry) {
-  const definition = { platform: service.platform, path: service.path };
-  return {
-    ...readInstalledDaemonServiceInstallOptions(definition),
-    managedBy: readInstalledDaemonServiceManagedBy(definition),
-    irohRelayConfig: readServiceIrohRelayConfig(service),
-    homeCarrierEligibility: readServiceHomeCarrierEligibility(service),
-  };
 }
 
 function readServicePreservedInstallOptionsByPath(params: Readonly<{
   services: readonly DaemonServiceListEntry[];
   path: string;
+  uid?: number | null;
 }>) {
   const service = params.services.find((candidate) => candidate.path === params.path);
-  return service ? readServicePreservedInstallOptions(service) : {};
+  return service ? readServicePreservedInstallOptions(service, params.uid) : {};
 }
 
 export function buildBackgroundServiceRepairPlan(params: Readonly<{
   currentReleaseChannel: PublicReleaseRingId;
+  uid?: number | null;
   currentHappierHomeDir?: string | null;
   currentServerId: string;
   preferredMode: DaemonServiceMode;
@@ -330,7 +312,7 @@ export function buildBackgroundServiceRepairPlan(params: Readonly<{
       (service.mode === 'system' ? 'system' : 'user') === mode,
     );
     return selectedSameOwnerService
-      ? readServicePreservedInstallOptions(selectedSameOwnerService)
+      ? readServicePreservedInstallOptions(selectedSameOwnerService, params.uid)
       : {};
   };
 
@@ -371,7 +353,7 @@ export function buildBackgroundServiceRepairPlan(params: Readonly<{
           releaseChannel: service.releaseChannel,
           targetMode: service.targetMode,
           instanceId: service.serverId,
-          ...readServicePreservedInstallOptions(service),
+          ...readServicePreservedInstallOptions(service, params.uid),
         },
       };
     }),
@@ -391,6 +373,7 @@ export function buildBackgroundServiceRepairPlan(params: Readonly<{
         targetMode: action.service.targetMode,
         instanceId: action.service.instanceId,
         ...readServicePreservedInstallOptionsByPath({
+          uid: params.uid,
           services: orderedRepairableServices,
           path: action.service.definitionPath,
         }),
@@ -424,7 +407,7 @@ export function buildBackgroundServiceRepairPlan(params: Readonly<{
           releaseChannel: service.releaseChannel,
           targetMode: service.targetMode,
           instanceId: service.serverId,
-          ...readServicePreservedInstallOptions(service),
+          ...readServicePreservedInstallOptions(service, params.uid),
         },
       });
     }

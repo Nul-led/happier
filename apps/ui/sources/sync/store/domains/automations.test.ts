@@ -16,7 +16,7 @@ import type {
     AutomationDefinitionRun,
 } from '@/sync/domains/automations/automationTypes';
 import { loadSyncTuning } from '@/sync/runtime/syncTuning';
-import { createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
+import { createAutomationRunFixture, createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
 
 import { createAutomationsDomain, createWorkflowTriggerSetSelector } from './automations';
 import type { WorkflowTriggerSetV1 } from '@happier-dev/protocol';
@@ -103,6 +103,19 @@ function createHarness(): {
     };
     return { state, get, set };
 }
+
+describe('Automation attention retention', () => {
+    it('does not release a Run projection still held by Account attention when its history window closes', () => {
+        const h = createHarness();
+        const run = createAutomationRunFixture({ id: 'pre-session', state: 'failed' });
+        h.get().setAutomationRuns(run.automationId, [run], null);
+        h.set((state) => ({ ...state, workflowRunListWindows: {
+            automationAttention: { runIds: [run.id], nextCursor: null, loaded: true },
+        } }));
+        h.get().setAutomationRuns(run.automationId, [], null);
+        expect(h.get().workflowRunsById[run.id]?.automation).toEqual(run);
+    });
+});
 
 describe('shared workflow trigger observations', () => {
     it('keeps a newer write when a delayed list returns and leaves other queries untouched', () => {

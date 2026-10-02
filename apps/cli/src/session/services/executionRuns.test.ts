@@ -12,7 +12,8 @@ vi.mock('@/session/transport/rpc/sessionRpc', () => ({
     callSessionRpc,
 }));
 
-vi.mock('@/daemon/executionRunRegistry', () => ({
+vi.mock('@/daemon/executionRunRegistry', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/daemon/executionRunRegistry')>(),
     listExecutionRunMarkers,
 }));
 

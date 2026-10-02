@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const executable = vi.hoisted(() => ({ socketPath: '', spawn: vi.fn() }));
+const executable = vi.hoisted(() => ({ socketPath: '', spawn: vi.fn(), sessionList: vi.fn() }));
 
 // Only installed executable probes and foreground process creation are OS substitutes.
 // Admission, exact-socket transport, attachment planning and pane focus stay real.
@@ -19,8 +19,8 @@ vi.mock('node:child_process', async (importOriginal) => {
       });
       return child;
     }), {
-      [Symbol.for('nodejs.util.promisify.custom')]: async () => ({
-        stdout: JSON.stringify({ sessions: [{ name: 'default', socket_path: executable.socketPath, running: true }] }),
+      [Symbol.for('nodejs.util.promisify.custom')]: async (_binary: string, _args: string[], options?: { env?: NodeJS.ProcessEnv }) => ({
+        stdout: JSON.stringify({ sessions: executable.sessionList(options?.env) }),
         stderr: '',
       }),
     }),
@@ -29,15 +29,20 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 import { EventEmitter } from 'node:events';
+import { join } from 'node:path';
 import { handleHerdrCliCommand } from '@/cli/commands/herdr';
 import { runHerdrAttach } from '@/terminal/attachment/herdrAttach';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
+import { withTempDir } from '@/testkit/fs/tempDir';
+import { createHerdrClient } from './client';
 import { withHerdrApi } from './herdrApi.testkit';
 
-const envScope = createEnvKeyScope(['HERDR_ENV', 'HERDR_SOCKET_PATH', 'HERDR_PANE_ID', 'HERDR_BIN_PATH']);
+const envScope = createEnvKeyScope(['HERDR_ENV', 'HERDR_SOCKET_PATH', 'HERDR_PANE_ID', 'HERDR_BIN_PATH', 'XDG_CONFIG_HOME']);
 beforeEach(() => {
   envScope.patch({ HERDR_ENV: undefined, HERDR_SOCKET_PATH: undefined, HERDR_PANE_ID: undefined, HERDR_BIN_PATH: undefined });
   executable.spawn.mockReset();
+  executable.sessionList.mockReset();
+  executable.sessionList.mockImplementation(() => [{ name: 'default', socket_path: executable.socketPath, running: true }]);
   executable.spawn.mockImplementation(() => {
     const child = new EventEmitter();
     queueMicrotask(() => child.emit('exit', 0));
@@ -47,6 +52,104 @@ beforeEach(() => {
 afterEach(() => envScope.restore());
 
 describe('Herdr CLI entrypoint admission', () => {
+  it.skipIf(process.platform === 'win32').each([['work', 0], ['default', 0], ['work', 5_100]] as const)('opens only the recorded restored pane after cold %s startup despite a different ambient root (delay=%s)', async (sessionName, delayMs) => {
+    const relativeSessionDir = sessionName === 'default' ? 'herdr' : `herdr/sessions/${sessionName}`;
+    await withTempDir('herdr-cold-recorded-', async root => await withHerdrApi(async (api) => {
+      executable.socketPath = api.socketPath;
+      await api.stop();
+      api.panes.add('managed');
+      envScope.patch({ XDG_CONFIG_HOME: join(root, 'ambient') });
+      let running = false;
+      let startup: Promise<void> | null = null;
+      executable.sessionList.mockImplementation((env?: NodeJS.ProcessEnv) => [
+        { name: sessionName, socket_path: env?.XDG_CONFIG_HOME === root ? api.socketPath : join(root, 'ambient', relativeSessionDir, 'herdr.sock'),
+          session_dir: env?.XDG_CONFIG_HOME === root ? join(root, relativeSessionDir) : join(root, 'ambient', relativeSessionDir), running },
+      ]);
+      executable.spawn.mockImplementation((_file: string, args: string[]) => {
+        const child = Object.assign(new EventEmitter(), { unref: () => {} });
+        if (args.includes('attach')) queueMicrotask(() => child.emit('exit', 0));
+        else {
+          // A server start may outlive the API action budget without exhausting
+          // the existing terminal-host startup operation.
+          startup = new Promise<void>(resolve => setTimeout(resolve, delayMs))
+            .then(() => api.start()).then(() => { running = true; });
+          void startup.catch(error => child.emit('error', error));
+        }
+        return child;
+      });
+      try { await expect(runHerdrAttach({ terminal: { mode: 'herdr', herdr: {
+        sessionName, socketPath: api.socketPath,
+        terminalId: 'previous-terminal', paneId: 'managed',
+      } } })).resolves.toBe(0);
+      const launches = executable.spawn.mock.calls.map(([, args, options]) => ({ args,
+        socketPath: options.env?.HERDR_SOCKET_PATH, sessionName: options.env?.HERDR_SESSION }));
+      expect(launches).toContainEqual({ args: ['server'], socketPath: api.socketPath, sessionName });
+      expect(launches).toContainEqual({ args: ['terminal', 'attach', 'terminal_1'], socketPath: api.socketPath, sessionName });
+      expect(api.requests.some((request) => request.method === 'pane.close' || request.method === 'layout.apply')).toBe(false);
+      } finally { await startup; }
+    }, { socketPath: join(root, relativeSessionDir, 'herdr.sock') }));
+  });
+
+  it.skipIf(process.platform === 'win32').each(['custom_socket', 'mismatched_inventory'])('refuses unverified cold roots without contacting a live ambient server (%s)', async evidence => {
+    await withTempDir('herdr-unverified-root-', async root => await withHerdrApi(async ambient => {
+      executable.sessionList.mockReturnValue([{ name: 'work', socket_path: ambient.socketPath,
+        session_dir: join(root, 'foreign/herdr/sessions/work'), running: true }]);
+      const socketPath = evidence === 'custom_socket' ? join(root, 'custom.sock') : join(root, 'herdr/sessions/work/herdr.sock');
+      await expect(runHerdrAttach({ terminal: { mode: 'herdr', herdr: {
+        sessionName: 'work', socketPath, terminalId: 'old-terminal', paneId: 'managed',
+      } } })).rejects.toMatchObject({ code: 'recorded_server_root_unavailable' });
+      expect(executable.spawn).not.toHaveBeenCalled();
+      expect(ambient.requests).toEqual([]);
+    }));
+  });
+
+  it('preserves a selected live endpoint without querying a same-name ambient server', async () => {
+    await withHerdrApi(async selected => await withHerdrApi(async ambient => {
+      executable.sessionList.mockReturnValue([{ name: 'work', socket_path: ambient.socketPath, running: true }]);
+      const client = createHerdrClient({ binary: 'herdr', sessionName: 'work', socketPath: selected.socketPath, actionTimeoutMs: 1000, startupTimeoutMs: 1000 });
+      await expect(client.ensureServer()).resolves.toBe(selected.socketPath);
+      expect(client.socketPath).toBe(selected.socketPath);
+      expect(selected.requests.map(request => request.method)).toEqual(['session.snapshot']);
+      expect(ambient.requests).toEqual([]);
+      expect(executable.sessionList).not.toHaveBeenCalled();
+      expect(executable.spawn).not.toHaveBeenCalled();
+    }));
+  });
+
+  it.each(['running', 'start'] as const)('discovers only the admitted environment before provider configuration changes the ambient root (%s)', async state => {
+    await withHerdrApi(async selected => await withHerdrApi(async ambient => {
+      const admittedEnv = { ...process.env, XDG_CONFIG_HOME: '/admitted-config' };
+      envScope.patch({ XDG_CONFIG_HOME: '/provider-config' });
+      let running = state === 'running';
+      executable.sessionList.mockImplementation((env?: NodeJS.ProcessEnv) => [{
+        name: 'work', socket_path: env?.XDG_CONFIG_HOME === admittedEnv.XDG_CONFIG_HOME
+          ? selected.socketPath : ambient.socketPath, running,
+      }]);
+      executable.spawn.mockImplementation((_binary: string, _args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+        running = options.env?.XDG_CONFIG_HOME === admittedEnv.XDG_CONFIG_HOME;
+        return Object.assign(new EventEmitter(), { unref: () => {} });
+      });
+      const client = createHerdrClient({ binary: 'herdr', sessionName: 'work', processEnv: admittedEnv,
+        actionTimeoutMs: 1000, startupTimeoutMs: 1000 });
+      await expect(client.ensureServer()).resolves.toBe(selected.socketPath);
+      expect(selected.requests.map(request => request.method)).toEqual(['session.snapshot']);
+      expect(ambient.requests).toEqual([]);
+      if (state === 'running') expect(executable.spawn).not.toHaveBeenCalled();
+    }));
+  });
+
+  it('refuses a lost selected endpoint rather than substituting a live ambient server', async () => {
+    await withHerdrApi(async selected => await withHerdrApi(async ambient => {
+      await selected.stop();
+      executable.sessionList.mockReturnValue([{ name: 'work', socket_path: ambient.socketPath, running: true }]);
+      const client = createHerdrClient({ binary: 'herdr', sessionName: 'work', socketPath: selected.socketPath, actionTimeoutMs: 1000, startupTimeoutMs: 1000 });
+      await expect(client.ensureServer()).rejects.toMatchObject({ code: 'unreachable' });
+      expect(client.socketPath).toBe(selected.socketPath);
+      expect(ambient.requests).toEqual([]);
+      expect(executable.spawn).not.toHaveBeenCalled();
+    }));
+  });
+
   it.skipIf(process.platform === 'win32').each(['command', 'foreground_attach', 'inside_focus'] as const)(
     'refuses an older exact server before %s despite a supported installed executable', async (entrypoint) => {
       await withHerdrApi(async (api) => {

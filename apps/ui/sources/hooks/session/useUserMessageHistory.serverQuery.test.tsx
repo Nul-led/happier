@@ -300,7 +300,10 @@ describe('useUserMessageHistory server role query', () => {
                 seq,
                 localId: null,
                 messageRole: 'user' as const,
-                content: { t: 'plain' as const, v: { role: 'user', content: { type: 'text', text: `prompt ${seq}` } } },
+                content: { t: 'plain' as const, v: {
+                    role: 'user', content: { type: 'text', text: `expanded prompt ${seq}` },
+                    meta: { displayText: `  prompt ${seq}\n` },
+                } },
                 createdAt: seq * 10,
             })),
             hasMore: false,
@@ -328,9 +331,9 @@ describe('useUserMessageHistory server role query', () => {
             await flushHookEffects();
         });
 
-        expect(hook.getCurrent().moveUp('draft')).toBe('prompt 3');
-        expect(hook.getCurrent().moveUp('prompt 3')).toBe('prompt 2');
-        expect(hook.getCurrent().moveUp('prompt 2')).toBe('prompt 1');
+        expect(hook.getCurrent().moveUp('draft')).toBe('  prompt 3\n');
+        expect(hook.getCurrent().moveUp('  prompt 3\n')).toBe('  prompt 2\n');
+        expect(hook.getCurrent().moveUp('  prompt 2\n')).toBe('  prompt 1\n');
         await hook.unmount();
     });
 

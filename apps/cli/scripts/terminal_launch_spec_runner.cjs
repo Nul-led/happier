@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const { killProcessTree } = require('./process_tree.cjs');
@@ -53,12 +54,32 @@ async function readLaunchSpecFile(specPath) {
         throw new Error('Invalid terminal launch spec path');
     }
     const raw = await fs.readFile(specPath, 'utf8');
-    await fs.unlink(specPath).catch(() => {});
+    let parsed;
+    let parseError;
+    try { parsed = JSON.parse(raw); } catch (error) { parseError = error; }
     const specDir = path.dirname(specPath);
+    const expectedSpawnResultPath = path.join(specDir, 'native-startup.json');
+    const ownsSpawnResult = parsed?.spawnResultPath === expectedSpawnResultPath;
+    let cleanupIncomplete = false;
+    const recordCleanupFailure = (error) => { if (error?.code !== 'ENOENT') cleanupIncomplete = true; };
+    await fs.unlink(specPath).catch(recordCleanupFailure);
     if (path.basename(specDir).startsWith('happier-terminal-launch-')) {
-        await fs.rmdir(specDir).catch(() => {});
+        try { await fs.rmdir(specDir); }
+        catch (error) {
+            let onlyOwnedReceipt = false;
+            if (error?.code === 'ENOTEMPTY' && ownsSpawnResult) {
+                try {
+                    const entries = await fs.readdir(specDir);
+                    onlyOwnedReceipt = entries.length === 1 && entries[0] === 'native-startup.json';
+                } catch (inspectionError) { onlyOwnedReceipt = inspectionError?.code === 'ENOENT'; }
+            }
+            if (!onlyOwnedReceipt) recordCleanupFailure(error);
+        }
     }
-    const parsed = JSON.parse(raw);
+    // The private handoff has been read. Cleanup is observable but must not
+    // replace validation/startup failures or a completed native outcome.
+    if (cleanupIncomplete) console.error('Terminal launch artifact cleanup incomplete (terminal_launch_artifact_cleanup_incomplete)');
+    if (parseError) throw parseError;
     if (!isPlainObject(parsed)) {
         throw new Error('Invalid terminal launch spec: root must be an object');
     }
@@ -71,12 +92,16 @@ async function readLaunchSpecFile(specPath) {
     if (parsed.windowsVerbatimArguments !== undefined && typeof parsed.windowsVerbatimArguments !== 'boolean') {
         throw new Error('Invalid terminal launch spec: windowsVerbatimArguments must be a boolean');
     }
+    if (parsed.spawnResultPath !== undefined && !ownsSpawnResult) {
+        throw new Error('Invalid terminal launch spec: native startup receipt must be the exact private sibling');
+    }
     return {
         command: parsed.command,
         args: readStringArray(parsed.args, 'args'),
         cwd: parsed.cwd,
         env: buildChildEnv(readEnv(parsed.env), readOptionalStringArray(parsed.envPassthroughKeys, 'envPassthroughKeys')),
         ...(parsed.windowsVerbatimArguments === true ? { windowsVerbatimArguments: true } : {}),
+        ...(ownsSpawnResult ? { spawnResultPath: expectedSpawnResultPath } : {}),
     };
 }
 
@@ -109,10 +134,21 @@ function installTerminalSignalGuards() {
     };
 }
 
-function runLaunchSpec(spec, controllerSignal) {
+function runLaunchSpec(spec, controllerSignal, controllerChannel) {
     return new Promise((resolve, reject) => {
         if (controllerSignal?.aborted) { resolve(1); return; }
-        const child = spawn(spec.command, spec.args, {
+        let nativeSpawnReported = false;
+        const reportNativeSpawnResult = (status) => {
+            if (!spec.spawnResultPath) return;
+            // Startup is an observed event, not the eventual process outcome.
+            // Node can emit an operation error after a successful executable spawn.
+            if (nativeSpawnReported) return;
+            nativeSpawnReported = true;
+            try { fsSync.writeFileSync(spec.spawnResultPath, JSON.stringify({ status }), { mode: 0o600 }); }
+            catch { console.error('Native terminal startup receipt could not be written (terminal_native_startup_unknown)'); }
+        };
+        let child;
+        try { child = spawn(spec.command, spec.args, {
             cwd: spec.cwd,
             env: spec.env,
             shell: false,
@@ -121,26 +157,54 @@ function runLaunchSpec(spec, controllerSignal) {
             ...(spec.windowsVerbatimArguments === true
                 ? { windowsVerbatimArguments: true }
                 : {}),
-        });
+        }); } catch (error) {
+            reportNativeSpawnResult('failed');
+            reject(error);
+            return;
+        }
         const removeSignalGuards = installTerminalSignalGuards();
         let controllerCleanup = null;
         const onControllerClosed = () => {
             // The surviving launcher owns this tree; no polling or independent host policy.
-            controllerCleanup = killProcessTree(child).catch(() => {
+            controllerCleanup ??= killProcessTree(child).catch(() => {
                 console.error('Owned terminal process cleanup could not be verified (terminal_controller_cleanup_incomplete)');
+                report({ type: 'terminal-native-signal-failed' });
             });
         };
         controllerSignal?.addEventListener('abort', onControllerClosed, { once: true });
         let settled = false;
+        const report = (message) => {
+            if (!controllerChannel?.connected) return;
+            controllerChannel.send(message, () => {});
+        };
+        const onSignal = (message) => {
+            if (settled || !isPlainObject(message) || message.type !== 'terminal-native-signal') return;
+            if (message.signal !== 'SIGINT' && message.signal !== 'SIGKILL') return;
+            if (message.signal === 'SIGKILL') {
+                onControllerClosed();
+                return;
+            }
+            try {
+                if (!child.kill(message.signal)) report({ type: 'terminal-native-signal-failed' });
+            }
+            catch { report({ type: 'terminal-native-signal-failed' }); }
+        };
+        controllerChannel?.on('message', onSignal);
+        child.once('spawn', () => {
+            reportNativeSpawnResult('spawned');
+            report({ type: 'terminal-native-spawned' });
+        });
         const settle = async (fn) => {
             if (settled) return;
             settled = true;
             controllerSignal?.removeEventListener('abort', onControllerClosed);
+            controllerChannel?.off('message', onSignal);
             removeSignalGuards();
             await controllerCleanup;
             fn();
         };
         child.on('error', (error) => {
+            reportNativeSpawnResult('failed');
             settle(() => reject(error));
         });
         child.on('close', (code, signal) => {
@@ -167,7 +231,7 @@ async function runLaunchSpecFile(specPath) {
         if (!process.connected) lifetime.abort();
     }
     try {
-        return await runLaunchSpec(await readLaunchSpecFile(specPath), lifetime?.signal);
+        return await runLaunchSpec(await readLaunchSpecFile(specPath), lifetime?.signal, lifetime ? process : undefined);
     } finally {
         if (lifetime) {
             process.off('disconnect', onControllerClosed);
@@ -196,7 +260,7 @@ if (require.main === module) {
             process.exit(code);
         },
         (error) => {
-            console.error(error instanceof Error ? error.message : String(error));
+            console.error('Terminal native launch failed (terminal_native_launch_failed)');
             process.exit(127);
         },
     );

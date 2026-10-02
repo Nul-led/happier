@@ -32,6 +32,54 @@ export function usePersonalHomeBootReadiness(): PersonalHomeBootReadiness {
     return React.useContext(PersonalHomeBootReadinessContext);
 }
 
+type PersonalHomeBootstrapPresentation = Readonly<{
+    gating: boolean;
+    setupProps: React.ComponentProps<typeof PersonalHomeSetupSurface>;
+    setupSurface?: PersonalHomeBootstrapGateProps['setupSurface'];
+}>;
+const PersonalHomeBootstrapPresentationContext = React.createContext<PersonalHomeBootstrapPresentation | null>(null);
+
+/** Home's content boundary; the shell and other routes retain their own viewport. */
+export function PersonalHomeBootstrapContent(props: Readonly<{ children: React.ReactNode }>): React.ReactElement {
+    const presentation = React.useContext(PersonalHomeBootstrapPresentationContext);
+    const gating = presentation?.gating === true;
+    const snapshot = presentation?.setupProps.snapshot ?? null;
+    const reducedMotion = useReducedMotionPreference();
+    const departingSnapshotRef = React.useRef<PersonalHomeBootstrapSnapshot | null>(null);
+    const [revealSnapshot, setRevealSnapshot] = React.useState<PersonalHomeBootstrapSnapshot | null>(null);
+    const handleRevealSettled = React.useCallback(() => setRevealSnapshot(null), []);
+
+    React.useEffect(() => {
+        if (gating) {
+            if (snapshot?.phase !== 'checking') departingSnapshotRef.current = snapshot;
+            setRevealSnapshot((current) => current === null ? current : null);
+            return;
+        }
+        const departing = departingSnapshotRef.current;
+        departingSnapshotRef.current = null;
+        if (!departing || reducedMotion) return;
+        setRevealSnapshot(departing);
+    }, [gating, reducedMotion, snapshot]);
+
+    const setupProps = presentation ? {
+        ...presentation.setupProps,
+        snapshot: gating ? presentation.setupProps.snapshot : revealSnapshot ?? presentation.setupProps.snapshot,
+    } : null;
+    const setupSurface = setupProps && (gating || revealSnapshot !== null)
+        ? presentation?.setupSurface ? presentation.setupSurface(setupProps) : <PersonalHomeSetupSurface {...setupProps} />
+        : null;
+    return (
+        <View style={{ flex: 1 }}>
+            {gating ? setupSurface : props.children}
+            {!gating && revealSnapshot ? (
+                <PersonalHomeSetupReveal onSettled={handleRevealSettled}>
+                    {setupSurface}
+                </PersonalHomeSetupReveal>
+            ) : null}
+        </View>
+    );
+}
+
 export type PersonalHomeBootstrapGateProps = Readonly<{
     children: React.ReactNode;
     /** Fact collection is supplied by the runtime/profile/auth owners. */
@@ -73,9 +121,8 @@ function passThroughFacts(): Promise<PersonalHomeFacts> {
 }
 
 /**
- * Desktop main-window-only shell gate. Overlay/callback windows and mobile/web hosts never enter
- * the Personal Home setup owner. The normal shell remains the child tree once Home readiness is
- * derived from facts; there is no success route or remounted frame.
+ * Desktop main-window-only bootstrap lifecycle. It projects setup into Home content while the
+ * shell/navigation stays mounted. Overlay/callback windows and mobile/web hosts bypass setup.
  */
 export function PersonalHomeBootstrapGate(props: PersonalHomeBootstrapGateProps): React.ReactElement {
     const runtimeHost = isPersonalHomeBootstrapRuntimeHost();
@@ -126,37 +173,14 @@ export function PersonalHomeBootstrapGate(props: PersonalHomeBootstrapGateProps)
         controller.refresh();
     }, [controller.refresh]);
 
-    // Automatic Home creation is not a navigation decision: keep the normal shell alive while
-    // the local Home starts. Explicit existing-Home and recovery decisions still own the frame.
-    const gating = enabled && controller.snapshot.shouldGateShell
-        && controller.snapshot.phase !== 'ensuring-home';
-    const reducedMotion = useReducedMotionPreference();
-    const departingSnapshotRef = React.useRef<PersonalHomeBootstrapSnapshot | null>(null);
-    const [revealSnapshot, setRevealSnapshot] = React.useState<PersonalHomeBootstrapSnapshot | null>(null);
-    const handleRevealSettled = React.useCallback(() => setRevealSnapshot(null), []);
-
-    React.useEffect(() => {
-        if (gating) {
-            // Only a frame the user could actually read is worth revealing from. The momentary
-            // `checking` pass before the first authoritative facts arrive is not one.
-            if (controller.snapshot.phase !== 'checking') departingSnapshotRef.current = controller.snapshot;
-            // Re-gating (an existing-runtime decision, say) cancels a settle already in flight;
-            // the live surface owns the frame again.
-            setRevealSnapshot((current) => current === null ? current : null);
-            return;
-        }
-        const departing = departingSnapshotRef.current;
-        departingSnapshotRef.current = null;
-        if (!departing || reducedMotion) return;
-        setRevealSnapshot(departing);
-    }, [controller.snapshot, gating, reducedMotion]);
+    const gating = enabled && controller.snapshot.shouldGateShell;
 
     const factTask = controller.facts?.activeTask ?? null;
     // Keep completed task diagnostics after live work ends, but never revive stale progress
     // from an earlier facts read when the subscribed runtime explicitly reports no task.
     const activeTask = props.activeTask ?? (props.activeTask === undefined || factTask?.result ? factTask : null);
     const setupProps: React.ComponentProps<typeof PersonalHomeSetupSurface> = {
-        snapshot: gating ? controller.snapshot : revealSnapshot ?? controller.snapshot,
+        snapshot: controller.snapshot,
         activeTask,
         onRetry: controller.retry,
         onOpenDetails: props.onOpenDetails,
@@ -168,23 +192,17 @@ export function PersonalHomeBootstrapGate(props: PersonalHomeBootstrapGateProps)
             ? { onKeepSignedInHome: handleKeepSignedInHome, onCreatePersonalHome: handleCreatePersonalHome }
             : {}),
     };
-    const setupSurface = gating || revealSnapshot !== null
-        ? props.setupSurface ? props.setupSurface(setupProps) : <PersonalHomeSetupSurface {...setupProps} />
-        : null;
-
-    if (!gating) {
-        // Automatic Home startup and post-shell daemon work stay scoped to a recovery strip in
-        // the same frame. Explicit choices and pre-ready errors still use the setup surface.
-        const showPostShellPending = enabled
-            && controller.error == null
-            && ((controller.snapshot.phase === 'ensuring-home' && !controller.snapshot.homeReady)
-                || (controller.isOperating && controller.snapshot.homeReady && controller.snapshot.shouldGateShell === false));
-        const showPostShellRecovery = enabled
-            && controller.error != null
-            && controller.snapshot.homeReady
-            && controller.snapshot.shouldGateShell === false;
-        return (
-            <PersonalHomeBootReadinessContext.Provider value={!enabled || controller.snapshot.homeReady ? BOOT_READY : BOOT_STARTING}>
+    // Recovery after Home readiness stays secondary; pre-ready setup belongs only to Home content.
+    const showPostShellPending = enabled
+        && controller.error == null
+        && controller.isOperating && controller.snapshot.homeReady && controller.snapshot.shouldGateShell === false;
+    const showPostShellRecovery = enabled
+        && controller.error != null
+        && controller.snapshot.homeReady
+        && controller.snapshot.shouldGateShell === false;
+    return (
+        <PersonalHomeBootReadinessContext.Provider value={!enabled || controller.snapshot.homeReady ? BOOT_READY : BOOT_STARTING}>
+            <PersonalHomeBootstrapPresentationContext.Provider value={{ gating, setupProps, setupSurface: props.setupSurface }}>
                 <View style={{ flex: 1 }}>
                     {props.children}
                     {showPostShellPending ? (
@@ -202,19 +220,8 @@ export function PersonalHomeBootstrapGate(props: PersonalHomeBootstrapGateProps)
                             onRetry={controller.retry}
                         />
                     ) : null}
-                    {revealSnapshot ? (
-                        <PersonalHomeSetupReveal onSettled={handleRevealSettled}>
-                            {setupSurface}
-                        </PersonalHomeSetupReveal>
-                    ) : null}
                 </View>
-            </PersonalHomeBootReadinessContext.Provider>
-        );
-    }
-
-    return (
-        <>
-            {setupSurface}
-        </>
+            </PersonalHomeBootstrapPresentationContext.Provider>
+        </PersonalHomeBootReadinessContext.Provider>
     );
 }

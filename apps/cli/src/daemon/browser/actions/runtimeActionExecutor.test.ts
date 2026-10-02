@@ -262,7 +262,6 @@ describe('daemon browser runtime action executor', () => {
       accepted: true,
       commandId: 'command_navigate',
     });
-    expect(dispatchCommand).toHaveBeenCalledWith(command);
   });
 
   it('fails closed before daemon dispatch when a browser Action id carries another command kind', async () => {

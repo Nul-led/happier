@@ -36,7 +36,6 @@ export function VoicePrivacySettingsScreen() {
       onContentSizeChange={focusRegistry.onContentSizeChange}
       onScroll={focusRegistry.onScroll}
       scrollEventThrottle={16}
-      presentation="page"
     >
       <SettingsPageHeader description={t('settingsVoice.intents.privacy.subtitle')} />
       <VoiceProviderProcessingDisclosureSection voice={voice} />

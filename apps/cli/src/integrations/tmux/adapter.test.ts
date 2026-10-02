@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
+import { execFile } from 'node:child_process';
+import { rmdir, unlink } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { promisify } from 'node:util';
 
 import {
   createTmuxTerminalHostAdapter,
   resolveTmuxCommandEnvironmentForHostHandle,
   type TmuxTerminalHostUtility,
 } from './adapter';
-import { TmuxUtilities } from './TmuxUtilities';
+import { TmuxUtilities, type TmuxSpawnResult } from './TmuxUtilities';
 import type { TmuxCommandResult } from './types';
 
 function createUtility(overrides?: Partial<TmuxTerminalHostUtility>): TmuxTerminalHostUtility {
@@ -16,7 +20,7 @@ function createUtility(overrides?: Partial<TmuxTerminalHostUtility>): TmuxTermin
       stderr: '',
       command: [...args],
     })),
-    spawnInTmux: vi.fn(async () => ({ success: true, sessionName: 'session-a', windowName: 'claude', windowId: '@7' })),
+    spawnInTmux: vi.fn(async (): Promise<TmuxSpawnResult> => ({ success: true, creationDisposition: 'created_or_uncertain', sessionId: 'session-a:@7', sessionName: 'session-a', windowName: 'claude', windowId: '@7', pid: 12345 })),
     captureCurrentInput: vi.fn(async () => ''),
     captureCursorPosition: vi.fn(async () => null),
     sendKeys: vi.fn(async () => true),
@@ -26,6 +30,30 @@ function createUtility(overrides?: Partial<TmuxTerminalHostUtility>): TmuxTermin
 }
 
 describe('createTmuxTerminalHostAdapter', () => {
+  it.skipIf(process.platform === 'win32')('preserves unconfirmed exclusive creation ownership across the real tmux owner', async () => {
+    let launchCommand = '';
+    class AcceptedTmux extends TmuxUtilities {
+      override async executeTmuxCommand(cmd: string[]): Promise<TmuxCommandResult | null> {
+        if (cmd[0] === 'list-sessions') return { returncode: 0, stdout: '', stderr: '', command: cmd };
+        if (cmd[0] === 'new-session') {
+          launchCommand = cmd[cmd.indexOf(';') - 1]!;
+          return { returncode: 1, stdout: '', stderr: '', command: cmd, timedOut: true };
+        }
+        return null;
+      }
+    }
+    const adapter = createTmuxTerminalHostAdapter({ tmux: new AcceptedTmux() });
+    try {
+      await expect(adapter.createOrAttachHost({
+        sessionName: 'owned-session', workingDirectory: '/workspace', spawnArgv: ['native'], spawnEnv: {}, isolatedEnv: true,
+      })).rejects.toMatchObject({ creationDisposition: 'created_or_uncertain', cleanupIncomplete: false });
+    } finally {
+      const { stdout } = await promisify(execFile)('/bin/sh', ['-c', `printf '%s\\n' ${launchCommand}`]);
+      const scriptPath = stdout.trim().split('\n')[1]!;
+      await unlink(scriptPath);
+      await rmdir(dirname(scriptPath));
+    }
+  });
   it('routes a persisted custom tmux root through the host handle', () => {
     expect(resolveTmuxCommandEnvironmentForHostHandle({
       kind: 'tmux',

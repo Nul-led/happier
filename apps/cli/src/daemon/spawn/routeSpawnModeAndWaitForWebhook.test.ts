@@ -119,7 +119,7 @@ function createParams() {
         vi.fn(async () => true),
     },
     cleanupSpawnResources: vi.fn(),
-    onUntrackedTmuxChild: vi.fn(),
+    onUntrackedHostedChild: vi.fn(),
     logDebug: vi.fn(),
     warn: vi.fn(),
   } as const;
@@ -708,10 +708,10 @@ describe('routeSpawnModeAndWaitForWebhook', () => {
     });
     const { routeSpawnModeAndWaitForWebhook } = await import('./routeSpawnModeAndWaitForWebhook');
 
-    const onUntrackedTmuxChild = vi.fn();
+    const onUntrackedHostedChild = vi.fn();
     await expect(routeSpawnModeAndWaitForWebhook({
       ...createParams(),
-      onUntrackedTmuxChild,
+      onUntrackedHostedChild,
       terminalRequest: {
         requested: 'tmux',
         tmux: {
@@ -729,7 +729,7 @@ describe('routeSpawnModeAndWaitForWebhook', () => {
 
     expect(mocks.spawnRegularProcessAndWaitForWebhook).not.toHaveBeenCalled();
     expect(mocks.spawnWindowsHostedSessionAndWaitForWebhook).not.toHaveBeenCalled();
-    expect(onUntrackedTmuxChild).toHaveBeenCalledTimes(1);
+    expect(onUntrackedHostedChild).toHaveBeenCalledTimes(1);
   }, ROUTE_SPAWN_MODE_TEST_TIMEOUT_MS);
 
   it('returns a cleanup-safe no-fallback error after exact tmux absence is verified', async () => {
@@ -739,12 +739,12 @@ describe('routeSpawnModeAndWaitForWebhook', () => {
       tmuxFallbackReason: 'exact created window was verified absent',
       tmuxCreationDisposition: 'created_and_absent',
     });
-    const onUntrackedTmuxChild = vi.fn();
+    const onUntrackedHostedChild = vi.fn();
     const { routeSpawnModeAndWaitForWebhook } = await import('./routeSpawnModeAndWaitForWebhook');
 
     await expect(routeSpawnModeAndWaitForWebhook({
       ...createParams(),
-      onUntrackedTmuxChild,
+      onUntrackedHostedChild,
       terminalRequest: {
         requested: 'tmux',
         tmux: {
@@ -759,7 +759,7 @@ describe('routeSpawnModeAndWaitForWebhook', () => {
       errorCode: 'SPAWN_FAILED',
     });
 
-    expect(onUntrackedTmuxChild).not.toHaveBeenCalled();
+    expect(onUntrackedHostedChild).not.toHaveBeenCalled();
     expect(mocks.spawnRegularProcessAndWaitForWebhook).not.toHaveBeenCalled();
     expect(mocks.spawnWindowsHostedSessionAndWaitForWebhook).not.toHaveBeenCalled();
   }, ROUTE_SPAWN_MODE_TEST_TIMEOUT_MS);

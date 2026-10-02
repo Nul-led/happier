@@ -1,3 +1,7 @@
+import type { ArtifactBodyV1, ArtifactBlobWriteV1 } from '@happier-dev/protocol';
+
+export type ArtifactBodyInput = ArtifactBodyV1 | null | Readonly<{ bytes: Uint8Array; mime: string }>;
+
 /**
  * Encrypted artifact from API
  */
@@ -48,7 +52,7 @@ export interface ArtifactHeader {
  * Decrypted artifact body
  */
 export interface ArtifactBody {
-    body: string | null;
+    body: ArtifactBodyV1 | null;
 }
 
 export type ArtifactLockedReason =
@@ -62,10 +66,12 @@ interface DecryptedArtifactBase {
     ownerAccountId?: string;
     id: string;
     header?: ArtifactHeader | null;
+    /** Exact opened storage metadata; presentation defaults must never be repersisted. */
+    rawHeader?: Readonly<Record<string, unknown>> | null;
     title: string | null;
     sessions?: string[];  // Optional array of session IDs linked to this artifact
     draft?: boolean;      // Optional draft flag - hides artifact from visible list when true
-    body?: string | null;  // Only loaded when viewing full artifact
+    body?: ArtifactBodyV1 | null;  // Only loaded when viewing full artifact
     headerVersion: number;
     bodyVersion?: number;
     seq: number;
@@ -98,6 +104,7 @@ export type DecryptedArtifact =
         }>;
         storageMode: 'plain' | 'e2ee';
         header?: null;
+        rawHeader?: null;
         title: null;
         sessions?: undefined;
         draft?: undefined;
@@ -112,12 +119,14 @@ export interface ArtifactCreateRequest {
     header: string;  // Base64 encoded encrypted header
     body: string;  // Base64 encoded encrypted body
     dataEncryptionKey: string;  // Base64 encoded encryption key (encrypted with user key)
+    blob?: ArtifactBlobWriteV1;
 }
 
 /**
  * Request to update an existing artifact
  */
 export interface ArtifactUpdateRequest {
+    blob?: ArtifactBlobWriteV1;
     header?: string;  // Base64 encoded encrypted header
     expectedHeaderVersion?: number;
     body?: string;  // Base64 encoded encrypted body

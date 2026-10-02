@@ -7,6 +7,8 @@ import {
     readSessionAttachmentEnvelopeRecordsV1,
     type BrowserScreenshotMediaReferenceV1,
     type SessionImageMediaReferenceV1,
+    hasPluginSessionAccess,
+    type PluginSessionAccessScope,
 } from '@happier-dev/protocol';
 import { normalizeSessionAttachmentUploadPath } from '@happier-dev/protocol/runtime';
 import { configuration } from '@/configuration';
@@ -106,7 +108,19 @@ export async function verifySessionStructuredImageInput(params: Readonly<{
     sessionId?: string;
     image: Readonly<Record<string, unknown>>;
     maxBytes: number;
+    /** Required only at plugin disclosure; the host resolves every fact. */
+    pluginAccess?: Readonly<{
+        scopes: readonly PluginSessionAccessScope[];
+        session: Readonly<{ id: string; machineId?: string; projectId?: string }>;
+        accountEncryptionMode: 'plain' | 'e2ee';
+        sessionEncryptionMode: 'plain' | 'e2ee';
+    }>;
 }>): Promise<SessionStructuredImageInputVerification> {
+    if (params.pluginAccess && (
+        params.sessionId !== params.pluginAccess.session.id
+        || params.pluginAccess.accountEncryptionMode !== params.pluginAccess.sessionEncryptionMode
+        || !hasPluginSessionAccess({ scopes: params.pluginAccess.scopes, session: params.pluginAccess.session, access: 'read' })
+    )) return { status: 'untrusted' };
     const provenance = params.image.provenance;
     if (
         params.image.kind !== 'localImage'

@@ -46,7 +46,8 @@ describe('useAwaitedMachineArrival', () => {
         const previousState = storage.getState();
         try {
             seedMachines();
-            const hook = await renderHook(({ baseline }: { baseline: AwaitedMachineArrivalBaseline | null }) => useAwaitedMachineArrival({ baseline }), { initialProps: { baseline: null } });
+            const initialProps: { baseline: AwaitedMachineArrivalBaseline | null } = { baseline: null };
+            const hook = await renderHook(({ baseline }: typeof initialProps) => useAwaitedMachineArrival({ baseline }), { initialProps });
             await applyMachine({ id: 'first', activeAt: Date.now() });
             expect(hook.getCurrent().machine?.id).toBe('first');
             await hook.rerender({ baseline: createAwaitedMachineArrivalBaseline('', Object.values(storage.getState().machines)) });

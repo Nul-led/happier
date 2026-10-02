@@ -1,8 +1,6 @@
 import { resolveMachineControlLocalityProof } from '@/session/machineControlLocality';
-import {
-  resolveSessionStoredContentEncryptionMode,
-  tryDecryptSessionPresentationMetadataView,
-} from '@/session/transport/encryption/sessionEncryptionContext';
+import { tryDecryptSessionOwnerMetadataView } from '@/session/transport/encryption/sessionEncryptionContext';
+import { resolveSessionTransportContext } from '@/session/services/resolveSessionTransportContext';
 import { fetchSessionById } from '@/session/transport/http/sessionsHttp';
 import type { StoredCredentials } from '@/persistence';
 import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
@@ -23,6 +21,7 @@ import type {
 import {
   type ActionExecutorDeps,
   assertNonEscalatingPermissionMode,
+  getActionSpec,
   SignedRootActionIdSchema,
   resolveEffectivePermissionMode,
   verifyExternalActionApprovalInputV1,
@@ -37,17 +36,6 @@ function readNonEmptyString(value: unknown): string | null {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
-
-type RawSessionLocalityRecord = Readonly<{
-  machineId?: unknown;
-  host?: unknown;
-  homeDir?: unknown;
-  metadata?: unknown;
-  metadataLayoutVersion?: unknown;
-  ownerMetadata?: unknown;
-  dataEncryptionKey?: unknown;
-  encryptionMode?: unknown;
-}>;
 
 type CurrentMachineExecutionOrigin = Readonly<{
   serverIdentityId: string;
@@ -87,6 +75,11 @@ export function createDaemonApprovalExecutionOriginCurrentness(input: Readonly<{
     ApprovalExecutionOriginV1['caller'],
     Readonly<{ kind: 'automationRun' }>
   >) => Promise<boolean> | boolean;
+  /** Reuses the tracked Session authority owner; a target lookup is not caller proof. */
+  isSessionCallerCurrent?: (input: Readonly<{
+    caller: Extract<ApprovalExecutionOriginV1['caller'], Readonly<{ kind: 'session' }>>;
+    signal?: AbortSignal;
+  }>) => Promise<boolean> | boolean;
   /**
    * The live Workflow admission owner's own accepted-authorization currentness
    * check, reused verbatim for replay. Its parameter shape is the daemon
@@ -218,6 +211,12 @@ export function createDaemonApprovalExecutionOriginCurrentness(input: Readonly<{
         if (!await input.isAutomationRunCurrent(origin.caller)) return false;
       }
 
+      if (origin.caller.kind === 'session') {
+        if (!input.isSessionCallerCurrent) return false;
+        if (!await input.isSessionCallerCurrent({ caller: origin.caller,
+          ...(signal ? { signal } : {}) })) return false;
+      }
+
       // A Workflow Run's durable origin carries the exact accepted
       // authorization its live admission already opened, so replay rechecks the
       // same principal through the same owner. Without that owner the principal
@@ -339,6 +338,7 @@ export function createDaemonApprovalExecutionOriginCurrentnessFromCredentials(in
   serverId: string;
   serverApiUrl: string;
   isAutomationRunCurrent?: Parameters<typeof createDaemonApprovalExecutionOriginCurrentness>[0]['isAutomationRunCurrent'];
+  isSessionCallerCurrent?: Parameters<typeof createDaemonApprovalExecutionOriginCurrentness>[0]['isSessionCallerCurrent'];
   isWorkflowRunAuthorizationCurrent?: Parameters<typeof createDaemonApprovalExecutionOriginCurrentness>[0]['isWorkflowRunAuthorizationCurrent'];
   resolveCurrentPermissionMode?: Parameters<typeof createDaemonApprovalExecutionOriginCurrentness>[0]['resolveCurrentPermissionMode'];
   resolveCurrentSessionAgentSpawnPolicyV1?: Parameters<typeof createDaemonApprovalExecutionOriginCurrentness>[0]['resolveCurrentSessionAgentSpawnPolicyV1'];
@@ -362,15 +362,17 @@ export function createDaemonApprovalExecutionOriginCurrentnessFromCredentials(in
   if (!listAccountApiTokensAction) return undefined;
 
   const readCurrentSession = async (origin: ApprovalExecutionOriginV1, signal?: AbortSignal) => {
-    if (!origin.sessionId) return null;
+    const sessionId = origin.caller.kind === 'session' ? origin.caller.sessionId : origin.sessionId;
+    if (!sessionId) return null;
     const serverFeaturesSnapshot = await input.resolveServerFeaturesSnapshot?.();
-    return await fetchSessionById({
-      token: input.credentials.token,
-      sessionId: origin.sessionId,
-      serverUrl: input.serverApiUrl,
+    const transport = await resolveSessionTransportContext({
+      credentials: input.credentials,
+      idOrPrefix: sessionId,
       ...(serverFeaturesSnapshot ? { serverFeaturesSnapshot } : {}),
       ...(signal ? { signal } : {}),
     });
+    return transport.ok && transport.sessionId === sessionId && transport.rawSession.id === sessionId
+      ? transport : null;
   };
   const checker = createDaemonApprovalExecutionOriginCurrentness({
     accountId,
@@ -412,16 +414,17 @@ export function createDaemonApprovalExecutionOriginCurrentnessFromCredentials(in
         }
       : {}),
     ...(input.isAutomationRunCurrent ? { isAutomationRunCurrent: input.isAutomationRunCurrent } : {}),
+    ...(input.isSessionCallerCurrent ? { isSessionCallerCurrent: input.isSessionCallerCurrent } : {}),
     ...(input.isWorkflowRunAuthorizationCurrent
       ? { isWorkflowRunAuthorizationCurrent: input.isWorkflowRunAuthorizationCurrent }
       : {}),
     resolveCurrentPermissionMode: input.resolveCurrentPermissionMode ?? (async (origin, signal) => {
-      const session = await readCurrentSession(origin, signal);
-      if (!session) return null;
-      const metadata = tryDecryptSessionPresentationMetadataView({
+      const transport = await readCurrentSession(origin, signal);
+      if (!transport) return null;
+      const metadata = tryDecryptSessionOwnerMetadataView({
         credentials: input.credentials,
-        accountEncryptionMode: resolveSessionStoredContentEncryptionMode(session),
-        rawSession: session,
+        accountEncryptionMode: transport.accountEncryptionCurrentness.mode,
+        rawSession: transport.rawSession,
       });
       return resolvePermissionIntentFromSessionMetadata(metadata)?.intent ?? null;
     }),
@@ -434,34 +437,40 @@ export function createDaemonApprovalExecutionOriginCurrentnessFromCredentials(in
 }
 
 function readSessionLocality(
-  session: RawSessionLocalityRecord,
+  transport: Extract<Awaited<ReturnType<typeof resolveSessionTransportContext>>, { ok: true }>,
   credentials: StoredCredentials,
 ): Readonly<{
   machineId: string | null;
   host: string | null;
   homeDir: string | null;
-}> {
-  const metadata = tryDecryptSessionPresentationMetadataView({
+}> | null {
+  const metadata = tryDecryptSessionOwnerMetadataView({
     credentials,
-    accountEncryptionMode: resolveSessionStoredContentEncryptionMode(session),
-    rawSession: session,
+    accountEncryptionMode: transport.accountEncryptionCurrentness.mode,
+    rawSession: transport.rawSession,
   });
+  // An unreadable private owner envelope is not permission to trust a raw
+  // projection. Layout-0 owner metadata retains the incumbent row fallback.
+  if (!metadata && transport.rawSession.metadataLayoutVersion === 1) return null;
+  const session = transport.rawSession;
+  const legacyRowField = (field: string) => session.metadataLayoutVersion === 1
+    ? null : readNonEmptyString(Reflect.get(session, field));
   return {
     // New rows keep owner-locality in encrypted metadata. The raw projection is
     // retained only for older rows that have no readable metadata value.
     machineId: readNonEmptyString(metadata?.machineId)
-      ?? readNonEmptyString(session.machineId),
+      ?? legacyRowField('machineId'),
     host: readNonEmptyString(metadata?.host)
-      ?? readNonEmptyString(session.host),
+      ?? legacyRowField('host'),
     homeDir: readNonEmptyString(metadata?.homeDir)
-      ?? readNonEmptyString(session.homeDir),
+      ?? legacyRowField('homeDir'),
   };
 }
 
 /**
- * Resolves the daemon-local execution target through the existing Session and
- * machine-locality owners. This runs per admitted request, immediately before
- * Action execution, so a Session target cannot rely on a stale route lookup.
+ * Rechecks the effect target through the existing Account Session owner. Only
+ * machine/session-placed execution also requires daemon locality; Account
+ * Actions may operate on an accessible Session on another machine.
  */
 export function createDaemonExternalActionTargetResolver(input: Readonly<{
   credentials: StoredCredentials;
@@ -473,7 +482,7 @@ export function createDaemonExternalActionTargetResolver(input: Readonly<{
   currentMachineHost?: string | null;
   currentMachineHomeDir?: string | null;
 }>): ResolveExternalActionTarget {
-  return async ({ target, currentMachineId, signal }) => {
+  return async ({ actionId, target, currentMachineId, signal }) => {
     if (!target) {
       return { kind: 'machine', machineId: currentMachineId };
     }
@@ -483,17 +492,27 @@ export function createDaemonExternalActionTargetResolver(input: Readonly<{
     }
 
     const serverFeaturesSnapshot = await input.resolveServerFeaturesSnapshot?.();
-    const session = await fetchSessionById({
-      token: input.credentials.token,
-      sessionId: target.sessionId,
-      ...(input.serverApiUrl ? { serverUrl: input.serverApiUrl } : {}),
+    if (getActionSpec(actionId).executionPlacement === 'account') {
+      const session = await fetchSessionById({
+        token: input.credentials.token,
+        sessionId: target.sessionId,
+        ...(input.serverApiUrl ? { serverUrl: input.serverApiUrl } : {}),
+        ...(serverFeaturesSnapshot ? { serverFeaturesSnapshot } : {}),
+        ...(signal ? { signal } : {}),
+      });
+      return session?.id === target.sessionId ? target : null;
+    }
+    const resolveTransport = () => resolveSessionTransportContext({
+      credentials: input.credentials, idOrPrefix: target.sessionId,
       ...(serverFeaturesSnapshot ? { serverFeaturesSnapshot } : {}),
       ...(signal ? { signal } : {}),
     });
-    if (!session) return null;
-
-    const localityRecord = readSessionLocality(session, input.credentials);
-    if (!localityRecord.machineId) return null;
+    const transport = input.serverApiUrl
+      ? await runWithServerHttpBaseUrl(input.serverApiUrl, resolveTransport)
+      : await resolveTransport();
+    if (!transport.ok || transport.sessionId !== target.sessionId || transport.rawSession.id !== target.sessionId) return null;
+    const localityRecord = readSessionLocality(transport, input.credentials);
+    if (!localityRecord?.machineId) return null;
 
     const locality = await resolveMachineControlLocalityProof({
       sessionMachineId: localityRecord.machineId,

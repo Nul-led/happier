@@ -553,6 +553,29 @@ describe('metro.config.js (web)', () => {
         expect(isBlocked(join(packageRoot, 'dist.staging/index.js'))).toBe(false);
     });
 
+    it('excludes workspace-private dependency trees at every discovered package depth while retaining bundle inputs', () => {
+        const uiDir = getUiDir();
+        const repoRoot = resolve(uiDir, '..', '..');
+        const config = loadMetroConfig(uiDir);
+        const blockList = Array.isArray(config.resolver.blockList) ? config.resolver.blockList : [config.resolver.blockList];
+        const isBlocked = (candidate: string) => blockList.some((entry: unknown) => entry instanceof RegExp && entry.test(candidate));
+        for (const packageRoot of ['packages/plugins/openai', 'packages/plugins/inspector', 'packages/protocol']) {
+            const privateRoot = resolve(repoRoot, packageRoot, 'node_modules');
+            for (const candidate of [join(privateRoot, 'react', 'index.js'), privateRoot]) {
+                expect(isBlocked(candidate)).toBe(true);
+                expect(isBlocked(candidate.replaceAll('/', '\\'))).toBe(true);
+            }
+            expect(isBlocked(`C:\\repo\\${packageRoot.replaceAll('/', '\\')}\\node_modules\\react\\index.js`)).toBe(true);
+            expect(isBlocked(resolve(repoRoot, packageRoot, 'src/index.ts'))).toBe(false);
+        }
+        for (const candidate of [
+            'node_modules/react/index.js',
+            'apps/ui/node_modules/react/index.js',
+            'apps/ui/node_modules/react-native/node_modules/@react-native/virtualized-lists/index.js',
+            'packages/plugins/inspector/dist/happier-plugin-ui/web.bundle',
+        ]) expect(isBlocked(resolve(repoRoot, candidate))).toBe(false);
+    });
+
     it('blocks nested dependency node_modules trees under watched app/root node_modules', () => {
         const uiDir = getUiDir();
         const config = loadMetroConfig(uiDir);

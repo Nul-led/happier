@@ -17,6 +17,7 @@ import {
   WorkflowProgressEnvelopeV1Schema,
   openWorkflowAcceptedSnapshotStoredEnvelopeV1,
   openWorkflowProgressStoredEnvelopeV1,
+  materializeWorkflowAcceptedSnapshotV1,
   parseWorkflowStoredContentEnvelopeV1,
   prepareWorkflowRunDataKeyV1,
   sealWorkflowAcceptedSnapshotStoredEnvelopeV1,
@@ -92,21 +93,21 @@ function retainedConversationDefaults() {
   return { agentTarget, conversation: { kind: 'existing_session' as const, sessionId, machineId } };
 }
 
-function sealDirectAccepted(input: Readonly<{
+async function sealDirectAccepted(input: Readonly<{
   runId: string;
   definition: WorkflowDefinitionV1;
   directory: string;
   deliverResult?: boolean;
   runCrypto?: WorkflowRunDataKeyV1;
-}>): string {
+}>): Promise<string> {
   const runCrypto = input.runCrypto ?? { mode: 'plain' as const };
   const sealMode = runCrypto.mode === 'e2ee'
     ? { ...runCrypto, randomBytes: (length: number) => new Uint8Array(length).fill(3) } : runCrypto;
-  return serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
-    ...sealMode,
-    binding: { v: 1, purpose: 'accepted_snapshot', accountId, runId: input.runId },
-    acceptedSnapshot: {
-      definition: input.definition,
+  const materialized = await materializeWorkflowAcceptedSnapshotV1({
+    definition: input.definition,
+    admission: { kind: 'user' },
+    effects: { resolveTargetAvailability: async () => true },
+    context: {
       source: { kind: 'inline' },
       inputs: {},
       machineId,
@@ -116,6 +117,12 @@ function sealDirectAccepted(input: Readonly<{
       authorization,
       ...(input.deliverResult ? { resultDelivery: { kind: 'originating_session' as const, originSessionId: sessionId } } : {}),
     },
+  });
+  if (!materialized.ok) throw new Error(materialized.error.code);
+  return serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
+    ...sealMode,
+    binding: { v: 1, purpose: 'accepted_snapshot', accountId, runId: input.runId },
+    acceptedSnapshot: { ...materialized.snapshot, authorization },
   }));
 }
 
@@ -134,7 +141,9 @@ function sessionInputBoundary(
     status: 'accepted' as const,
     localId: leafLabel(request.text),
   }));
-  const observe = vi.fn(async (request: Readonly<{ localId: string; signal?: AbortSignal }>) => {
+  const observe = vi.fn(async (request: Parameters<typeof import('./stepExecution').observeWorkflowSessionInputResult>[0]) => {
+    // The Session boundary reports the persisted input before its terminal turn.
+    await request.onInputMaterialized?.(Date.now());
     await hooks.onObserve?.(request.localId, request.signal);
     const outcome = outcomes[request.localId] ?? 'completed';
     if (typeof outcome !== 'string') {
@@ -279,7 +288,7 @@ describe('composed Workflow front door and claimed execution', () => {
     const definition: WorkflowDefinitionV1 = {
       version: 1, inputs: [], defaults: retainedConversationDefaults(), blocks: [step('work')],
     };
-    const acceptedEnvelope = sealDirectAccepted({ runId, definition, directory, deliverResult: true });
+    const acceptedEnvelope = await sealDirectAccepted({ runId, definition, directory, deliverResult: true });
     const kit = createWorkflowRunStorageTestkit({
       runId, machineId, origin: { kind: 'direct', originSessionId: sessionId },
       acceptedEnvelope, originDeliveryAckRevision: 0,
@@ -318,7 +327,7 @@ describe('composed Workflow front door and claimed execution', () => {
       blocks: [step('first'), step('must-not-run')],
       finalOutput: { kind: 'result', producer: { blockId: 'must-not-run', scope: { kind: 'current' } }, path: [] },
     };
-    const acceptedEnvelope = sealDirectAccepted({ runId, definition, directory, deliverResult: true });
+    const acceptedEnvelope = await sealDirectAccepted({ runId, definition, directory, deliverResult: true });
     const kit = createWorkflowRunStorageTestkit({
       runId,
       machineId,
@@ -365,7 +374,7 @@ describe('composed Workflow front door and claimed execution', () => {
       };
       const kit = createWorkflowRunStorageTestkit({
         runId, machineId, origin: { kind: 'direct' },
-        acceptedEnvelope: sealDirectAccepted({ runId, definition, directory }),
+        acceptedEnvelope: await sealDirectAccepted({ runId, definition, directory }),
       });
       let observationStarted!: () => void;
       const started = new Promise<void>((resolve) => { observationStarted = resolve; });
@@ -737,7 +746,7 @@ describe.each(['plain', 'e2ee'] as const)('composed exact result live/recovery p
         input: [{ kind: 'result', producer: { blockId: 'first', scope: { kind: 'current' } }, path: [] }],
       })],
     };
-    const acceptedEnvelope = sealDirectAccepted({ runId, definition, directory, runCrypto });
+    const acceptedEnvelope = await sealDirectAccepted({ runId, definition, directory, runCrypto });
     const makeKit = () => createWorkflowRunStorageTestkit({ runId, machineId, origin: { kind: 'direct' }, acceptedEnvelope,
       keyCensus: { runId, ownerAccountId: accountId, access: 'owner', visibleTeamId: null, encryptionMode: mode,
         ownerAccountCurrentness: encryption.witness, dataEncryptionKey: ownerEnvelope,
@@ -818,7 +827,7 @@ describe('composed fresh-process reconstruction over durable rows', () => {
       const definition = fanOutDefinition(failurePolicy);
       const kit = createWorkflowRunStorageTestkit({
         runId, machineId, origin: { kind: 'direct' },
-        acceptedEnvelope: sealDirectAccepted({ runId, definition, directory }),
+        acceptedEnvelope: await sealDirectAccepted({ runId, definition, directory }),
       });
 
       const first = sessionInputBoundary({ bad: 'failed' });
@@ -877,7 +886,7 @@ describe('composed fresh-process reconstruction over durable rows', () => {
     };
     const kit = createWorkflowRunStorageTestkit({
       runId, machineId, origin: { kind: 'direct' },
-      acceptedEnvelope: sealDirectAccepted({ runId, definition, directory }),
+      acceptedEnvelope: await sealDirectAccepted({ runId, definition, directory }),
     });
     const seeded = sessionInputBoundary();
     // `seed` declares a numeric result contract, so the Session leaf must
@@ -956,7 +965,7 @@ describe('composed fresh-process reconstruction over durable rows', () => {
     };
     const kit = createWorkflowRunStorageTestkit({
       runId, machineId, origin: { kind: 'direct' },
-      acceptedEnvelope: sealDirectAccepted({ runId, definition, directory }),
+      acceptedEnvelope: await sealDirectAccepted({ runId, definition, directory }),
     });
     const first = sessionInputBoundary();
     let bodyObservations = 0;
@@ -1038,15 +1047,20 @@ describe('composed boundary pause across admitted siblings', () => {
     };
     const kit = createWorkflowRunStorageTestkit({
       runId, machineId, origin: { kind: 'direct' },
-      acceptedEnvelope: sealDirectAccepted({ runId, definition, directory }),
+      acceptedEnvelope: await sealDirectAccepted({ runId, definition, directory }),
     });
 
     let releaseSlow!: () => void;
     const slowSettles = new Promise<void>((resolve) => { releaseSlow = resolve; });
+    let markSlowAdmitted!: () => void;
+    const slowAdmitted = new Promise<void>((resolve) => { markSlowAdmitted = resolve; });
     let slowAborted = false;
     const sessionInput = sessionInputBoundary({}, {
       onObserve: async (label, signal) => {
+        // Pause tests an already admitted sibling, not competing preparation.
+        if (label === 'quick-1') await slowAdmitted;
         if (label !== 'slow-1') return;
+        markSlowAdmitted();
         signal?.addEventListener('abort', () => { slowAborted = true; });
         await slowSettles;
       },
@@ -1103,7 +1117,7 @@ describe('composed durable rows carry no fabricated defaults', () => {
     };
     const kit = createWorkflowRunStorageTestkit({
       runId, machineId, origin: { kind: 'direct' },
-      acceptedEnvelope: sealDirectAccepted({ runId, definition, directory }),
+      acceptedEnvelope: await sealDirectAccepted({ runId, definition, directory }),
     });
     // Neither sibling may settle before both are admitted. A fabricated
     // concurrency fallback of one would deadlock this gate rather than merely
@@ -1156,7 +1170,7 @@ describe('composed durable rows carry no fabricated defaults', () => {
     };
     const kit = createWorkflowRunStorageTestkit({
       runId, machineId, origin: { kind: 'direct' },
-      acceptedEnvelope: sealDirectAccepted({ runId, definition, directory }),
+      acceptedEnvelope: await sealDirectAccepted({ runId, definition, directory }),
     });
     const lifecycles: string[] = [];
     const storage = {
@@ -1195,7 +1209,7 @@ describe('composed off-page child attention discovery', () => {
     };
     const kit = createWorkflowRunStorageTestkit({
       runId, machineId, origin: { kind: 'direct' },
-      acceptedEnvelope: sealDirectAccepted({ runId, definition, directory }),
+      acceptedEnvelope: await sealDirectAccepted({ runId, definition, directory }),
       // One row per page, so the nested attention row cannot be on page one.
       invocationPageSize: 1,
     });
@@ -1406,8 +1420,13 @@ describe('composed Session approvals and observation deadlines', () => {
     const store = createInMemoryWorkflowCoordinatorStore();
     const observedDeadlines: Array<unknown> = [];
     const enqueue = vi.fn(async () => ({ status: 'accepted' as const, localId: 'local-1' }));
-    const observe = vi.fn(async (input: { deadlineMs?: number }) => {
-      observedDeadlines.push(input.deadlineMs);
+    const observe = vi.fn(async (input: Parameters<typeof import('./stepExecution').observeWorkflowSessionInputResult>[0]) => {
+      const acceptedAtMs = Date.now();
+      await input.onInputMaterialized?.(acceptedAtMs);
+      // An initial observation derives its deadline from the persisted input;
+      // a reobservation receives the already frozen absolute deadline instead.
+      observedDeadlines.push(input.deadlineMs ?? (input.timeoutAfterInputMs === undefined
+        ? undefined : acceptedAtMs + input.timeoutAfterInputMs));
       return { ok: true as const, sessionId: 'session-1', localId: 'local-1', result: { kind: 'final_text' as const, text: 'done' } };
     });
     const sessionOwner = createWorkflowSessionStepExecutor({

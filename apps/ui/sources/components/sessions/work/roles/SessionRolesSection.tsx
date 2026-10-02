@@ -107,10 +107,10 @@ export const SessionRolesSection = React.memo(function SessionRolesSection(props
                     testID="session-work-roles.all"
                     title={t('roles.session.allRoles')}
                     detail={t('roles.session.inUse', { count: enabledCount })}
-                    onPress={() => setRolePopoverOpen(true)}
+                    onPress={props.copiedAtSpawn ? undefined : () => setRolePopoverOpen(true)}
                 />
             </View>
-            {rolePopoverOpen ? (
+            {rolePopoverOpen && !props.copiedAtSpawn ? (
                 <SessionRolePopover
                     sessionId={sessionId}
                     anchorRef={allRolesRef}

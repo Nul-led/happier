@@ -34,7 +34,7 @@ function refuse(errorCode: string) {
 }
 
 /** Storage readers recover malformed persisted values. Action writes must reject them, never save a fallback. */
-function writeSchema(schema: z.ZodType): z.ZodType {
+function writeSchema(schema: z.core.$ZodType): z.core.$ZodType {
     return schema instanceof z.ZodCatch ? writeSchema(schema.removeCatch()) : schema;
 }
 
@@ -96,7 +96,7 @@ export function createSettingsDeclarationAction(owner: SettingsDeclarationOwner)
             const storedValue = binding.invertBoolean ? !requested.value : requested.value;
             const value = binding.scope === 'account'
                 ? ACCOUNT_SETTING_DEFINITIONS[binding.key].parseMutationValue(storedValue)
-                : writeSchema(LOCAL_SETTING_ARTIFACTS.shape[binding.key]).safeParse(storedValue);
+                : z.safeParse(writeSchema(LOCAL_SETTING_ARTIFACTS.shape[binding.key]), storedValue);
             if (!value.success) return refuse('invalid_setting_value');
             const scalarValue = SettingsDeclarationValueV1Schema.parse(value.data);
             if (binding.scope === 'account') {

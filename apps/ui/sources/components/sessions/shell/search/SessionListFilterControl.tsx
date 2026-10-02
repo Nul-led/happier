@@ -44,6 +44,15 @@ export function buildSessionListFilterEditorLabels(): SessionListFilterEditorPro
         title: t('sessionsList.filtersTitle'),
         search: t('sessionsList.filtersSearch'),
         show: t('sessionsList.filtersShow'),
+        scope: t('sessionsList.filtersScope'),
+        sessions: t('sessionsList.filtersShowSessions'),
+        runs: t('sessionsList.filtersShowRuns'),
+        both: t('sessionsList.filtersShowBoth'),
+        startedBy: t('sessionsList.filtersStartedBy'),
+        startedByYou: t('sessionsList.filtersStartedByYou'),
+        startedByTriggers: t('sessionsList.filtersStartedByTriggers'),
+        startedByAgents: t('sessionsList.filtersStartedByAgents'),
+        runsNeedingYouAlwaysShow: t('sessionsList.filtersRunsNeedingYouAlwaysShow'),
         myWork: t('sessionsList.filtersMyWork'),
         assignedToMe: t('sessionsList.filtersAssignedToMe'),
         following: t('sessionsList.filtersFollowing'),
@@ -80,6 +89,30 @@ export function buildSessionListFilterEditorLabels(): SessionListFilterEditorPro
     };
 }
 
+/** Quiet summary of the two work-kind facets, shared by the Sessions and Runs headers. */
+export function readSessionListWorkFilterSummary(
+    controller: Pick<SessionListViewFilterController, 'filters' | 'defaultFilters' | 'fixedShow'>,
+): string | null {
+    const { filters, defaultFilters } = controller;
+    const startersMatch = filters.startedBy.length === defaultFilters.startedBy.length
+        && filters.startedBy.every((starter) => defaultFilters.startedBy.includes(starter));
+    if (filters.show === (controller.fixedShow ?? defaultFilters.show) && startersMatch) return null;
+    const labels = buildSessionListFilterEditorLabels();
+    const showLabel = filters.show === 'sessions'
+        ? labels.sessions
+        : filters.show === 'runs' ? labels.runs : t('sessionsList.filtersShowBothSummary');
+    if (filters.show === 'sessions') return showLabel;
+    const starterLabels = [
+        ['you', labels.startedByYou],
+        ['triggers', labels.startedByTriggers],
+        ['agents', labels.startedByAgents],
+    ] as const;
+    const selectedStarters = starterLabels
+        .filter(([starter]) => filters.startedBy.includes(starter))
+        .map(([, label]) => label);
+    return `${showLabel} · ${selectedStarters.length > 0 ? selectedStarters.join(', ') : t('sessionsList.filtersStartedByNone')}`;
+}
+
 export const SessionListFilterControl = React.memo(function SessionListFilterControl(props: Readonly<{
     controller: SessionListViewFilterController;
     organizationProjectionsByServerId: Readonly<Record<string, SessionOrganizationProjection>>;
@@ -108,6 +141,9 @@ export const SessionListFilterControl = React.memo(function SessionListFilterCon
     }, [controller.filters.homeServerIds, controller.homeOptions]);
     // The trigger's label already names the scope, so "narrowed" means a facet beyond it.
     const active = controller.filters.attention !== 'any'
+        || controller.filters.show !== (controller.fixedShow ?? controller.defaultFilters.show)
+        || controller.filters.startedBy.length !== controller.defaultFilters.startedBy.length
+        || controller.filters.startedBy.some((starter) => !controller.defaultFilters.startedBy.includes(starter))
         || !controller.includeInactive
         || !allMountedHomesSelected
         || controller.filters.audiences.length > 0
@@ -151,6 +187,7 @@ export const SessionListFilterControl = React.memo(function SessionListFilterCon
                 labels,
                 fixedHomeServerIds: controller.fixedHomeServerIds,
                 fixedAudienceKeys: controller.fixedAudienceKeys,
+                fixedShow: controller.fixedShow,
                 updateFilters: controller.updateFilters,
                 removeAuthoritativelyDeletedSelections: controller.removeAuthoritativelyDeletedSelections,
                 setIncludeInactive: controller.setIncludeInactive,

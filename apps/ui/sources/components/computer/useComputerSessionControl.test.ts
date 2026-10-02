@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
-import { createActionExecutor, createUnavailableRuntimeActionExecutor, type ComputerControlStatusResponseV1 } from '@happier-dev/protocol';
+import { createActionExecutor, createUnavailableRuntimeActionExecutor, type ActionExecutorDeps, type ComputerControlStatusResponseV1 } from '@happier-dev/protocol';
 
 import { createDeferred, renderHook } from '@/dev/testkit';
 import { createComputerRuntimeActionExecutor, type ComputerMachineRpc } from '@/sync/domains/computer/actions/runtimeActionExecutor';
@@ -54,10 +54,44 @@ function createMachine() {
     return { machine: vi.fn(machine), interrupt, calls };
 }
 
-async function renderControl(machine: ComputerMachineRpc) {
-    const executor = createActionExecutor({
+function executorWith(machine: ComputerMachineRpc) {
+    // These unrelated host transport ports are absent from this computer fixture. Reject any escape
+    // into one instead of inventing a successful response; the real Action/compiler contracts stay intact.
+    const unavailablePort = async (): Promise<never> => { throw new Error('Unexpected non-computer host transport'); };
+    return createActionExecutor({
+        executionRunStart: unavailablePort,
+        executionRunList: unavailablePort,
+        executionRunGet: unavailablePort,
+        detachedExecutionRunSend: unavailablePort,
+        executionRunStop: unavailablePort,
+        executionRunAction: unavailablePort,
+        executionRunWait: unavailablePort,
+        sessionOpen: unavailablePort,
+        sessionFork: unavailablePort,
+        sessionRollback: unavailablePort,
+        sessionSpawnNew: unavailablePort,
+        pathsListRecent: unavailablePort,
+        machinesList: unavailablePort,
+        serversList: unavailablePort,
+        reviewEnginesList: unavailablePort,
+        agentsBackendsList: unavailablePort,
+        agentsModelsList: unavailablePort,
+        sessionSendMessage: unavailablePort,
+        sessionModeSet: unavailablePort,
+        sessionModesList: unavailablePort,
+        sessionList: unavailablePort,
+        sessionActivityGet: unavailablePort,
+        sessionRecentMessagesGet: unavailablePort,
+        resetGlobalVoiceAgent: unavailablePort,
+        daemonMemorySearch: unavailablePort,
+        daemonMemoryGetWindow: unavailablePort,
+        daemonMemoryEnsureUpToDate: unavailablePort,
         runtimeActionExecute: createComputerRuntimeActionExecutor({ executeOnMachine: machine, fallback: createUnavailableRuntimeActionExecutor() }),
-    });
+    } satisfies ActionExecutorDeps);
+}
+
+async function renderControl(machine: ComputerMachineRpc) {
+    const executor = executorWith(machine);
     return await renderHook(() => useComputerSessionControl({
         scope: { sessionId: 'session_1', machineId: 'machine_1' },
         execute: executor.execute,
@@ -65,11 +99,28 @@ async function renderControl(machine: ComputerMachineRpc) {
 }
 
 describe('useComputerSessionControl', () => {
+    it.each(['refused', 'connection-lost'] as const)('returns a settled takeover result when the owner is unchanged after %s', async (outcome) => {
+        let current = status('agent');
+        const machine: ComputerMachineRpc = async ({ actionId }) => {
+            if (actionId === 'computer.target.get') return selection;
+            if (actionId === 'computer.control.status') return current;
+            if (outcome === 'connection-lost') return { ok: false, errorCode: 'machine_unreachable', error: 'machine_unreachable' };
+            return { ...identity, status: 'failed', code: 'computer_permission_denied' };
+        };
+        const hook = await renderControl(machine);
+        let result: unknown;
+        await act(async () => { result = await hook.getCurrent().takeControl(); });
+        expect(result).toEqual({ status: outcome === 'refused' ? 'failed' : 'unknown' });
+        expect(hook.getCurrent().presence.kind).toBe('agent');
+
+        current = status('human', { controlEpoch: 2 });
+        await act(async () => { hook.getCurrent().refresh(); });
+        expect(hook.getCurrent().presence.kind).toBe('human');
+    });
+
     it('sends see-only access through the real Action front door to the computer owner', async () => {
         const machine = vi.fn<ComputerMachineRpc>(async () => ({ ...selection, access: 'see' }));
-        const executor = createActionExecutor({ runtimeActionExecute: createComputerRuntimeActionExecutor({
-            executeOnMachine: machine, fallback: createUnavailableRuntimeActionExecutor(),
-        }) });
+        const executor = executorWith(machine);
         const client = createComputerControlClient({ sessionId: 'session_1', machineId: 'machine_1' }, executor.execute);
         expect(await client.selectTarget(target, 'see')).toMatchObject({ ok: true, value: { access: 'see' } });
         expect(machine).toHaveBeenCalledWith(expect.objectContaining({ input: { machineId: 'machine_1', target, access: 'see' } }));

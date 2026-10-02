@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { deriveAutomationOccurrenceKeyV1 } from '@happier-dev/protocol';
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { listAutomationDefinitionRuns } from './apiAutomationRuns';
@@ -27,7 +28,18 @@ const eventRun = {
         triggerId: '11111111-1111-4111-8111-111111111111',
         triggerRevision: 1,
         triggerKind: 'pluginEvent' as const,
-        occurrenceKey: 'occurrence-1',
+        occurrenceKey: deriveAutomationOccurrenceKeyV1({
+            triggerId: '11111111-1111-4111-8111-111111111111',
+            evidence: {
+                v: 1,
+                kind: 'pluginEvent',
+                eventRef: { pluginId: 'example.github', localId: 'push' },
+                sourceSelectorId: '22222222-2222-4222-8222-222222222222',
+                occurrenceId: 'occurrence-1',
+                occurredAt: 1_786_257_600_000,
+                payload: {},
+            },
+        }),
         occurredAt: 1_786_257_600_000,
         evidence: {
             eventRef: { pluginId: 'example.github', localId: 'push' },
@@ -58,6 +70,20 @@ describe('apiAutomationRuns', () => {
         vi.restoreAllMocks();
     });
 
+    it('reads Account attention in one paged summary request with cancellation', async () => {
+        const request = vi.fn(async () => new Response(JSON.stringify({
+            runs: [{ ...eventRun, state: 'failed', errorCode: 'machine_unavailable' }], nextCursor: 'next',
+        }), { status: 200 }));
+        const controller = new AbortController();
+        const result = await listAutomationDefinitionRuns({
+            credentials, attention: 'required', limit: 25, cursor: 'cursor', signal: controller.signal,
+            requestContext: { serverId: 'test', request },
+        });
+        expect(result.runs[0]).toMatchObject({ state: 'failed', producedSessionId: null });
+        expect(request).toHaveBeenCalledExactlyOnceWith('/v3/automations/runs?limit=25&cursor=cursor&attention=required',
+            expect.objectContaining({ signal: controller.signal }), { includeAuth: false });
+    });
+
     it('reads Event run summaries only through the current owner', async () => {
         const fetchSpy = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => ({
             ok: true,
@@ -74,16 +100,16 @@ describe('apiAutomationRuns', () => {
         });
 
         expect(result).toEqual({ runs: [eventRun], nextCursor: null });
-        expect(fetchSpy.mock.calls).toHaveLength(1);
-        expect(String(fetchSpy.mock.calls[0]?.[0])).toContain(
-            '/v3/automations/automation-event-1/runs?limit=25&cursor=cursor-event-1',
-        );
-        expect(String(fetchSpy.mock.calls[0]?.[0])).not.toContain('/v2/');
+        const requestUrls = fetchSpy.mock.calls.map(([input]) => String(input));
+        expect(requestUrls).toEqual(expect.arrayContaining([
+            expect.stringContaining('/v3/automations/automation-event-1/runs?limit=25&cursor=cursor-event-1'),
+        ]));
+        expect(requestUrls.some((url) => url.includes('/v2/'))).toBe(false);
     });
 
     it('reads current run history without the retired API epoch advertisement', async () => {
         const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
-            if (!String(input).includes('/v3/automations/automation-event-1/runs')) throw new Error('unexpected_capability_probe');
+            if (String(input).includes('/features') || String(input).includes('/v2/')) throw new Error('unexpected_capability_probe');
             return new Response(JSON.stringify({ runs: [eventRun], nextCursor: null }), { status: 200 });
         });
         vi.stubGlobal('fetch', fetchSpy as unknown as typeof fetch);
@@ -92,6 +118,7 @@ describe('apiAutomationRuns', () => {
             credentials,
             automationId: 'automation-event-1',
         })).resolves.toEqual({ runs: [eventRun], nextCursor: null });
+        expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('/features'))).toBe(false);
     });
 
 });

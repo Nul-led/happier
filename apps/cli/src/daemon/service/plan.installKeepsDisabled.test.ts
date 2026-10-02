@@ -55,7 +55,7 @@ describe('service install keeps a disabled service disabled (R12 convergence)', 
       preserveRunningWhenDisabled: true,
     }));
     const startIndex = kept.findIndex((line) => platform === 'linux'
-      ? /systemctl .*\btry-restart\b/u.test(line)
+      ? /systemctl .*\brestart\b/u.test(line) && !/try-restart/u.test(line)
       : platform === 'darwin'
         ? /launchctl kickstart\b/u.test(line)
         : /schtasks \/Run\b/u.test(line));

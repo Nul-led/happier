@@ -1,4 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { reloadConfiguration } from '@/configuration';
+import { listExecutionRunMarkers } from '@/daemon/executionRunRegistry';
 
 import type { AgentMessage } from '@/agent/core/AgentMessage';
 import type {
@@ -19,30 +24,88 @@ import {
 import { observeWorkflowDetachedExecutionRunInput } from '@/daemon/workflows/stepExecution';
 import { createWorkflowInteractionCapacityError } from '@/agent/permissions/interactionPersistenceError';
 import { buildRunScopedExecutionPermissionRequestId } from '@/agent/executionRuns/policy/runScopedExecutionPermissionHandler';
+import { AgentStateRequestStore } from '@/agent/permissions/agentStateRequestStore';
+import type { AgentState } from '@/api/types';
+import { waitForExecutionRunTerminal } from '@happier-dev/protocol';
+import type { ExecutionRunPermissionRequestStore, ExecutionRunPermissionRequestStoreProvider } from './executionRunPermissionResponseTarget';
+import { buildExecutionRunPermissionRequestEnvelope } from '@/agent/executionRuns/policy/executionRunPermissionInteractionPolicy';
 
 const runtimeFactoryMock = vi.hoisted(() => ({
   createExecutionRunBridgeRuntime: vi.fn(),
-}));
-const markerWriterMock = vi.hoisted(() => ({
-  writeExecutionRunMarker: vi.fn(async () => {}),
 }));
 
 vi.mock('./createExecutionRunBridgeRuntime', () => ({
   createExecutionRunBridgeRuntime: runtimeFactoryMock.createExecutionRunBridgeRuntime,
 }));
 
-vi.mock('@/daemon/executionRunRegistry', () => ({
-  writeExecutionRunMarker: markerWriterMock.writeExecutionRunMarker,
-}));
-
 import { ExecutionRunHostBridge } from './ExecutionRunHostBridge';
 
 const TEST_BACKEND_ID = `${'task'}.${'backend'}` as never;
+let directory: string;
+afterEach(() => {
+  vi.unstubAllEnvs();
+  reloadConfiguration();
+  rmSync(directory, { recursive: true, force: true });
+});
 
 describe('ExecutionRunHostBridge detached task scope', () => {
   beforeEach(() => {
+    directory = mkdtempSync(join(tmpdir(), 'happier-detached-scope-'));
+    vi.stubEnv('HAPPIER_HOME_DIR', directory);
+    reloadConfiguration();
     runtimeFactoryMock.createExecutionRunBridgeRuntime.mockReset();
-    markerWriterMock.writeExecutionRunMarker.mockClear();
+  });
+
+  it('observes persisted permission attention and its removal at the live run owner without settling terminal waiters', async () => {
+    let state: AgentState = {};
+    const store = new AgentStateRequestStore({ logPrefix: '[test]', target: {
+      scopeId: 'workflow-input', readState: () => state,
+      updateState: async (update) => { state = update(state); },
+    } });
+    let getStore: ExecutionRunPermissionRequestStoreProvider | undefined;
+    let occurrence = '';
+    let finishTurn: (() => void) | undefined;
+    runtimeFactoryMock.createExecutionRunBridgeRuntime.mockImplementation((options: { getPermissionRequestStore?: ExecutionRunPermissionRequestStoreProvider; controllerOccurrenceId: string }) => {
+      getStore = options.getPermissionRequestStore;
+      occurrence = options.controllerOccurrenceId;
+      return createTestExecutionRunHostRuntime({ onSendPrompt: async () => {},
+        onWaitForTurnCompletion: async () => await new Promise<void>((resolve) => { finishTurn = resolve; }) });
+    });
+    const manager = new ExecutionRunHostBridge({ parentProvider: TEST_BACKEND_ID, cwd: process.cwd(), sendAcp: async () => {} });
+    const abort = new AbortController();
+    try {
+      const started = await manager.start({ sessionId: null, intent: 'agent',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_BACKEND_ID }, permissionMode: 'default',
+        instructions: 'Await permission in this exact input', localInputId: 'permission-input',
+        retentionPolicy: 'resumable', runClass: 'long_lived', ioMode: 'request_response', getPermissionRequestStore: () => store });
+      await vi.waitFor(() => expect(getStore?.()).toBeTruthy());
+      const observer = waitForExecutionRunTerminal({ runId: started.runId, timeoutMs: null, condition: 'needs_attention',
+        signal: abort.signal, readRun: async ({ runId }) => ({ ok: true as const, data: { run: manager.getPublic(runId) } }),
+        waitForTerminal: (id, signal) => manager.waitForTerminal(id, { signal }),
+        waitForChange: (id, signal) => manager.waitForRunStateChange(id, signal),
+      });
+      void observer.catch(() => {});
+      let terminalSettled = false;
+      const terminal = manager.waitForTerminal(started.runId).then(() => { terminalSettled = true; });
+      expect(occurrence).toBeTruthy();
+      const responseTarget = buildExecutionRunPermissionRequestEnvelope({ sessionId: null, runId: started.runId,
+        callId: started.callId, sidechainId: started.sidechainId, backendId: TEST_BACKEND_ID, runtimeKind: 'native_agent_session',
+        controllerOccurrenceId: occurrence, providerRequestId: 'permission-native', permissionMode: 'default',
+        providerPayload: {}, toolName: 'bash', reason: 'bash' }).responseTarget;
+      const requestId = buildRunScopedExecutionPermissionRequestId({ runId: started.runId,
+        controllerOccurrenceId: occurrence, providerRequestId: 'permission-native' });
+      await getStore?.()?.publishRequestAndWait?.({ requestId, toolName: 'bash', toolInput: {}, createdAt: 1, responseTarget });
+      await expect(observer).resolves.toMatchObject({ disposition: 'needs_attention', result: { run: {
+        attention: { kind: 'permission_required', requestIds: [requestId] },
+      } } });
+      expect(terminalSettled).toBe(false);
+      const change = manager.waitForRunStateChange(started.runId);
+      await getStore?.()?.completeRequest?.({ requestId, status: 'denied' });
+      await change;
+      expect(manager.getPublic(started.runId)?.attention).toBeUndefined();
+      await manager.stop(started.runId);
+      await terminal;
+    } finally { abort.abort(); finishTurn?.(); await manager.dispose(); }
   });
 
   it('removes one aborted terminal observer without disturbing the run or its sibling observer', async () => {
@@ -125,11 +188,12 @@ describe('ExecutionRunHostBridge detached task scope', () => {
     const secondTurnControl: { release: (() => void) | null } = { release: null };
     let completionCount = 0;
     const runtimeOptions: Array<Record<string, unknown>> = [];
-    const observedStores: unknown[] = [];
+    const observedStores: ExecutionRunPermissionRequestStore[] = [];
     const runtime = createTestExecutionRunHostRuntime({
       onSendPrompt: async () => {
-        const current = runtimeOptions[0]?.getPermissionRequestStore as (() => unknown) | undefined;
-        observedStores.push(current?.());
+        const current = runtimeOptions[0]?.getPermissionRequestStore as ExecutionRunPermissionRequestStoreProvider | undefined;
+        const store = current?.();
+        if (store) observedStores.push(store);
       },
       onWaitForTurnCompletion: async () => {
         completionCount += 1;
@@ -236,7 +300,8 @@ describe('ExecutionRunHostBridge detached task scope', () => {
         decision: 'approved',
         answers: { 'Which branch?': ['dev'] },
       });
-      expect(observedStores).toEqual([storeA, storeB]);
+      expect(observedStores[0]?.readOutstandingRequest?.(permissionRequestId)).toBeNull();
+      expect(observedStores[1]?.readOutstandingRequest?.(permissionRequestId)).toEqual(outstandingB);
 
       const booleanPermissionRequestId = buildRunScopedExecutionPermissionRequestId({
         runId: run.runId,
@@ -496,10 +561,10 @@ describe('ExecutionRunHostBridge detached task scope', () => {
       expect(committed).not.toHaveBeenCalled();
       expect(parentSessionMutation).not.toHaveBeenCalled();
       expect(publicRuns).toEqual([]);
-      expect(markerWriterMock.writeExecutionRunMarker).toHaveBeenCalledWith(expect.objectContaining({
+      expect(await listExecutionRunMarkers()).toEqual(expect.arrayContaining([expect.objectContaining({
         runId: started.runId,
         happySessionId: null,
-      }));
+      })]));
     } finally {
       await manager.dispose();
     }

@@ -14,23 +14,27 @@ describe('requestSessionStop machine transport', () => {
   const secret = new Uint8Array(32).fill(1);
   const credentials = { token: 'test-token', encryption: { type: 'legacy' as const, secret } };
   let calls: string[];
+  let events: EventEmitter;
+  let active = false;
 
   beforeEach(() => {
     vi.useFakeTimers();
     calls = [];
+    active = false;
     // Only the network adapters are replaced; resolution, encryption, request disposition,
     // and Stop outcome classification all execute through their production owners.
     vi.spyOn(axios, 'get').mockImplementation(async (url) => {
       if (String(url).includes('/v1/machines/')) return { status: 200, data: { machine: { id: 'owning-machine' } } };
       return { status: 200, data: { session: {
-        id: sessionId, seq: 0, createdAt: 0, updatedAt: 0, active: false, activeAt: 0,
+        id: sessionId, seq: 0, createdAt: 0, updatedAt: 0, active, activeAt: 0,
         metadata: encodeBase64(encrypt(secret, 'legacy', { machineId: 'owning-machine' })),
         metadataVersion: 0, agentState: null, agentStateVersion: 0, dataEncryptionKey: null,
         machineId: 'owning-machine',
       } } };
     });
-    const events = new EventEmitter();
+    events = new EventEmitter();
     boundary.socket = {
+      io: { timeout: () => {}, on: () => {}, off: () => {} },
       on: events.on.bind(events), off: events.off.bind(events),
       connect: () => boundary.mode === 'connect_error'
         ? events.emit('connect_error', new Error('Connection refused'))
@@ -39,6 +43,7 @@ describe('requestSessionStop machine transport', () => {
       emit: (event: string, _payload: unknown, callback?: (response: unknown) => void) => {
         calls.push(event);
         if (event !== SOCKET_RPC_EVENTS.CALL) return;
+        if (boundary.mode === 'stopped') callback?.({ ok: true, result: encodeBase64(encrypt(secret, 'legacy', { status: 'stopped' })) });
         if (boundary.mode === 'disconnect') events.emit('disconnect', 'transport close');
         if (boundary.mode === 'forbidden') callback?.({ ok: false, error: 'Forbidden', errorCode: 'RPC_FORBIDDEN' });
         if (boundary.mode === 'unavailable') callback?.({ ok: false, error: 'RPC method not available', errorCode: 'RPC_METHOD_NOT_AVAILABLE' });
@@ -49,6 +54,21 @@ describe('requestSessionStop machine transport', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it('waits for inactive evidence without quiet rereads and catches it on reconnect', async () => {
+    boundary.mode = 'stopped';
+    active = true;
+    const result = requestSessionStop({ credentials, idOrPrefix: sessionId });
+    await vi.advanceTimersByTimeAsync(0);
+    const reads = vi.mocked(axios.get).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(vi.mocked(axios.get).mock.calls).toHaveLength(reads);
+    active = false;
+    events.emit('connect');
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(result).resolves.toMatchObject({ ok: true, sessionId, stopped: true });
+    expect(calls.filter((event) => event === SOCKET_RPC_EVENTS.CALL)).toHaveLength(1);
   });
 
   it.each(['timeout', 'disconnect'])('preserves ambiguous %s after emission even when session metadata is inactive', async (mode) => {

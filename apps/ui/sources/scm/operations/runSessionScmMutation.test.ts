@@ -31,6 +31,18 @@ function createOperationState(options?: { busy?: boolean }) {
 }
 
 describe('runSessionScmMutation', () => {
+    it('retains an applied effect when its following repository refresh fails, without repeating the write', async () => {
+        const state = createOperationState();
+        const effect = { kind: 'branch' as const, name: 'feature', headOid: 'a'.repeat(40) };
+        const run = vi.fn(async () => ({ success: true, outcome: { v: 1 as const, kind: 'succeeded' as const, effect, nextActions: [] } }));
+        const refreshAfterSuccess = vi.fn(async () => { throw new Error('Repository is unavailable'); });
+        await runSessionScmMutation({ state, sessionId: 's1', operation: 'commit_undo', cwd: '/repo', fallbackError: 'failed', run, refreshAfterSuccess });
+        expect(selectScmWriteOperation({ inFlight: null, log: state.log, machineReachable: true })).toMatchObject({
+            phase: 'effect_applied_with_warning', action: 'commit_undo', outcome: { effect, errorCode: 'REPOSITORY_REFRESH_FAILED', nextActions: [{ kind: 'refresh' }] },
+        });
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(state.inFlight).toBeNull();
+    });
     it('records a successful branch switch in the one operation log the outcome line reads', async () => {
         const state = createOperationState();
         const result = await runSessionScmMutation({

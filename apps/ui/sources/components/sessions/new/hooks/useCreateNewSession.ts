@@ -24,6 +24,9 @@ import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
 import type { SavedSecretReferenceResolution } from '@/sync/store/settings/savedSecretCatalogSnapshot';
 import { areServerAccountScopesEqual, type ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import type { ZenTaskSource } from '@/sync/domains/todos/todoStoredContent';
+import { linkTaskToSession } from '@/sync/domains/todos/taskSessionLink';
+import { TodoSessionLinkError } from '@/sync/domains/todos/todoOps';
 import { resolveEffectiveWindowsRemoteSessionLaunchMode } from '@/sync/domains/session/spawn/windowsRemoteSessionLaunchMode';
 import { getAgentCore, isBundledAgentId, type AgentId } from '@/agents/catalog/catalog';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
@@ -367,6 +370,9 @@ export function useCreateNewSession(params: Readonly<{
         'mergedBackendProjectionById' | 'mergedProviderProjectionById'
     > | null;
     draftScope?: ServerAccountScope | null;
+    zenTaskSource?: ZenTaskSource | null;
+    /** Qualified target Account captured by the creator, including cross-Home launches. */
+    targetAccountScope?: ServerAccountScope | null;
     /** Qualified target authority for Temporary-computer activation and Session presentation. */
     temporaryComputerTargetScope?: ServerAccountScope | null;
     /** Commits the exact draft into the target Account before activation custody can begin. */
@@ -550,12 +556,18 @@ export function useCreateNewSession(params: Readonly<{
                         publishLaunchAttempt(launchAttempt);
                     }
                     createdSessionCompletion ??= createCreatedNewSessionCompletion({
-                        ...(opts.afterCreated
+                        ...(current.zenTaskSource || opts.afterCreated
                             ? { followUp: async (): Promise<void> => {
                                 if (verifiedUploadedAttachments === null) {
                                     throw new Error('runner_creator_attachments_not_verified');
                                 }
-                                await opts.afterCreated!({
+                                if (current.zenTaskSource) {
+                                    await linkTaskToSession({
+                                        source: current.zenTaskSource,
+                                        session: { scope: capturedTargetScope, sessionId },
+                                    });
+                                }
+                                await opts.afterCreated?.({
                                     sessionId,
                                     effectiveSpawnServerId: resolvedTargetServerId,
                                     launchAttempt,
@@ -967,7 +979,10 @@ export function useCreateNewSession(params: Readonly<{
                     pluginSettings: current.pluginSettings,
                     machineId: selectedMachineId,
                     resumeSessionId: current.resumeSessionId,
-                    newSessionOptions: current.agentNewSessionOptions,
+                    newSessionOptions: {
+                        ...(current.agentNewSessionOptions ?? {}),
+                        targetServerId: resolvedTargetServerId,
+                    },
                     sessionConfigOptionOverrides: current.sessionConfigOptionOverrides,
                     updatedAt: spawnPermissionModeUpdatedAt,
                 })
@@ -1252,6 +1267,16 @@ export function useCreateNewSession(params: Readonly<{
                     } else {
                         endLaunchAttemptWithoutSession();
                     }
+                    if ('terminalHostError' in actionResult.result && actionResult.result.terminalHostError?.kind === 'terminal_host_unavailable') {
+                        Modal.alert(
+                            t('newSession.terminalHostUnavailableTitle'),
+                            t('newSession.terminalHostUnavailableBody', {
+                                host: actionResult.result.terminalHostError.host === 'herdr' ? 'Herdr' : 'Zellij',
+                            }),
+                        );
+                        current.setIsCreating(false);
+                        return;
+                    }
                     if (actionResult.result.code === 'machine_offline') {
                         showDaemonUnavailableAlert({
                             titleKey: 'newSession.daemonRpcUnavailableTitle',
@@ -1409,24 +1434,33 @@ export function useCreateNewSession(params: Readonly<{
                 };
 
                 const runAfterCreatedFollowUp = async (): Promise<void> => {
-                    if (!opts?.afterCreated) {
-                        return;
-                    }
                     try {
-                        await opts.afterCreated({
+                        // This is the incumbent post-create setup checkpoint. A
+                        // retained retry must not replay a completed built-in action.
+                        postSpawnFailurePhase = 'uploading_attachments';
+                        if (current.zenTaskSource) {
+                            const targetScope = current.targetAccountScope ?? current.draftScope;
+                            if (!targetScope || !areServerProfileIdentifiersEquivalent(targetScope.serverId, resolvedTargetServerId)) {
+                                throw new TodoSessionLinkError('task_scope_mismatch');
+                            }
+                            await linkTaskToSession({
+                                source: current.zenTaskSource,
+                                session: { scope: targetScope, sessionId: createdSessionId },
+                            });
+                        }
+                        await opts?.afterCreated?.({
                             sessionId: createdSessionId,
                             effectiveSpawnServerId: resolvedTargetServerId,
                             launchAttempt,
                         });
                     } catch (error) {
-                        postSpawnFailurePhase = 'uploading_attachments';
                         postSpawnFollowUpError = error;
                         postSpawnFollowUpRetryRef.current = runAfterCreatedFollowUp;
                         throw error;
                     }
                 };
                 const createdSessionCompletion = createCreatedNewSessionCompletion({
-                    ...(opts?.afterCreated ? { followUp: runAfterCreatedFollowUp } : {}),
+                    ...(current.zenTaskSource || opts?.afterCreated ? { followUp: runAfterCreatedFollowUp } : {}),
                     present: () => presentCreatedSessionRoute(),
                     ...(!opts?.deferAcceptedDraftClearToDocument
                         ? { clearCapturedDraft: async () => {
@@ -1500,7 +1534,7 @@ export function useCreateNewSession(params: Readonly<{
                     storage.getState().updateSessionModelMode(createdSessionId, current.modelMode);
                 }
 
-                if (!postSpawnFollowUpError && opts?.afterCreated) {
+                if (!postSpawnFollowUpError && (current.zenTaskSource || opts?.afterCreated)) {
                     try {
                         await createdSessionCompletion.followUp();
                     } catch (error) {
@@ -1508,7 +1542,13 @@ export function useCreateNewSession(params: Readonly<{
                     }
                 }
 
-                const classifyCurrentPostSpawnFailure = (failure: unknown) => classifyLaunchRetryFailure({
+                const classifyCurrentPostSpawnFailure = (failure: unknown) => failure instanceof TodoSessionLinkError && failure.code === 'task_link_failed'
+                    ? {
+                        kind: 'retryable' as const,
+                        titleKey: 'common.error' as const,
+                        bodyKey: 'inbox.actionOperations.followUpNeedsAttention' as const,
+                    }
+                    : classifyLaunchRetryFailure({
                     phase: postSpawnFailurePhase === 'uploading_attachments' ? 'upload' : 'send',
                     failure,
                 });

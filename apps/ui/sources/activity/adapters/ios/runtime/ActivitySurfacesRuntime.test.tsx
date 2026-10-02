@@ -7,6 +7,7 @@ import {
 } from '@happier-dev/protocol';
 
 import { settingsParse } from '@/sync/domains/settings/settings';
+import type { LiveActivitySnapshot } from '../liveActivities/buildLiveActivitySnapshots';
 
 import { createSessionFixture as createBaseSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { renderScreen } from '@/dev/testkit';
@@ -250,7 +251,7 @@ const liveActivityInstances = vi.hoisted(() => [] as Array<{
     getPushToken?: () => Promise<string | null>;
 }>);
 const liveActivityStart = vi.hoisted(() =>
-    vi.fn(() => {
+    vi.fn((_props: LiveActivitySnapshot, _url?: string, _staleDate?: Date) => {
         const instance = {
             update: liveActivityUpdate,
             end: liveActivityEnd,
@@ -276,7 +277,7 @@ const liveActivityStart = vi.hoisted(() =>
         return instance;
     }),
 );
-const liveActivityUpdate = vi.hoisted(() => vi.fn(async () => {}));
+const liveActivityUpdate = vi.hoisted(() => vi.fn(async (_props: unknown, _staleDate?: Date) => {}));
 const liveActivityEnd = vi.hoisted(() => vi.fn(async () => {}));
 const liveActivityGetInstances = vi.hoisted(() => vi.fn(() => liveActivityInstances));
 const registerLiveActivityTarget = vi.hoisted(() =>
@@ -805,6 +806,7 @@ describe('ActivitySurfacesRuntime', () => {
                 sessionId: 'permission',
             }),
             '/session/permission?serverId=server-a',
+            expect.any(Date),
         );
 
         await act(async () => {
@@ -876,6 +878,7 @@ describe('ActivitySurfacesRuntime', () => {
                 defaultTarget: 'open-session:permission?serverId=server-a',
             }),
             '/session/permission?serverId=server-a',
+            expect.any(Date),
         );
 
         await act(async () => {
@@ -921,6 +924,7 @@ describe('ActivitySurfacesRuntime', () => {
                 sessionId: 'permission',
             }),
             '/session/permission?serverId=server-a',
+            expect.any(Date),
         );
 
         await act(async () => {
@@ -975,6 +979,7 @@ describe('ActivitySurfacesRuntime', () => {
                 statusText: null,
             }),
             '/session/permission?serverId=server-a',
+            expect.any(Date),
         );
 
         await act(async () => {
@@ -1107,6 +1112,7 @@ describe('ActivitySurfacesRuntime', () => {
                 relevanceScore: 89,
             }),
             '/session/permission?serverId=server-a',
+            expect.any(Date),
         );
 
         await act(async () => {
@@ -1472,6 +1478,12 @@ describe('ActivitySurfacesRuntime', () => {
         expect(liveActivityStart).toHaveBeenCalledTimes(1);
 
         vi.setSystemTime(new Date('2026-05-03T12:00:05.000Z'));
+        const startedSnapshot = liveActivityStart.mock.calls[0]![0];
+        expect(liveActivityStart).toHaveBeenLastCalledWith(
+            startedSnapshot,
+            expect.any(String),
+            new Date(startedSnapshot.staleAt),
+        );
         sessionsState.value = [{
             ...session,
             metadata: {
@@ -1502,6 +1514,16 @@ describe('ActivitySurfacesRuntime', () => {
         });
 
         expect(liveActivityUpdate).toHaveBeenCalledTimes(1);
+
+        const appliedSnapshot = liveActivityUpdate.mock.calls[0]![0];
+        if (typeof appliedSnapshot !== 'object' || appliedSnapshot === null
+            || !('staleAt' in appliedSnapshot) || typeof appliedSnapshot.staleAt !== 'number') {
+            throw new Error('Native live activity update omitted its numeric staleAt');
+        }
+        expect(liveActivityUpdate).toHaveBeenLastCalledWith(
+            expect.objectContaining({ staleAt: appliedSnapshot.staleAt }),
+            new Date(appliedSnapshot.staleAt),
+        );
 
         await act(async () => {
             screen.tree.unmount();

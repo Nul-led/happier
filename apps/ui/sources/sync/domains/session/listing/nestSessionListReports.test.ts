@@ -22,7 +22,7 @@ function rows(leads: Record<string, string | null>) {
 }
 
 function shape(items: SessionListIndexItem[]) {
-    return items.map((item) => (item.type === 'header' ? `# ${item.groupKey}` : `${item.sessionId}:${item.reportsDepth ?? 0}`));
+    return items.map((item) => (item.type === 'header' ? `# ${item.groupKey}` : `${item.type === 'session' ? item.sessionId : item.runId}:${item.reportsDepth ?? 0}`));
 }
 
 describe('nestSessionListReports', () => {
@@ -52,6 +52,12 @@ describe('nestSessionListReports', () => {
         const items = [session('a'), session('b')];
         const nested = nestSessionListReports(items, rows({ a: 'b', b: 'a' }));
         expect(nested.map((item) => (item.type === 'session' ? item.sessionId : null)).sort()).toEqual(['a', 'b']);
+    });
+
+    it('keeps a transient reportsTo cycle in its own group before the following header', () => {
+        const nested = nestSessionListReports([header('g1'), session('a'), session('b'), header('g2'), session('solo', 'g2')],
+            rows({ a: 'b', b: 'a', solo: null }));
+        expect(shape(nested)).toEqual(['# g1', 'a:0', 'b:1', '# g2', 'solo:0']);
     });
 
     it('returns a report to its own level once it is detached', () => {
