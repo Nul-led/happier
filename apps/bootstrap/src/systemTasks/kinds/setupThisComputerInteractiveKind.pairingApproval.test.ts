@@ -4,7 +4,7 @@ import {
   deriveBoxPublicKeyFromSeed,
   openTerminalProvisioningV3Response,
 } from '@happier-dev/protocol';
-import { createSystemTasksRunner, type SetupMachineRecipeExecutor } from '@happier-dev/cli-common/systemTasks';
+import { createSetupMachineRecipeExecutorFromHappierJsonExecutor, createSystemTasksRunner, type SetupMachineRecipeExecutor } from '@happier-dev/cli-common/systemTasks';
 
 import { createSetupThisComputerInteractiveTaskKind } from './setupThisComputerInteractiveKind.js';
 
@@ -145,6 +145,52 @@ function eventJson(events: ReadonlyArray<unknown>): string {
 }
 
 describe('setup.thisComputer.v1 pairing approval', () => {
+  it('repairs local registration through the instrumented executor without exposing pairing secrets', async () => {
+    const fixture = createPairingFixture();
+    const request = {
+      publicKey: fixture.publicKeyB64,
+      pairing: { secretB64Url: fixture.pairingSecretB64Url, createdAtMs: fixture.createdAtMs, expiresAtMs: fixture.expiresAtMs },
+      supportsTokenOnly: true,
+    };
+    let approved = false;
+    const executor = createSetupMachineRecipeExecutorFromHappierJsonExecutor({
+      executor: {
+        runHappierText: async () => ({ status: 0, stdout: '', stderr: '' }),
+        // The CLI process boundary validates what the real recipe and instrumentation send.
+        runHappierJson: async (args, opts) => {
+          if (args.includes('status')) return { ok: true, data: {
+            authenticated: true, credentialState: 'valid', machineRegistrationState: 'local-only', machineId: null,
+          } };
+          if (args.includes('request')) return request;
+          if (args.includes('approve')) {
+            expect(args).toContain('--request-json-stdin');
+            expect(JSON.parse(opts?.input ?? 'null')).toEqual(request);
+            approved = true;
+            return { ok: true };
+          }
+          if (args.includes('wait')) return { machineId: 'machine-repaired' };
+          return { ok: true };
+        },
+      },
+    });
+    const kind = createSetupThisComputerInteractiveTaskKind({
+      exposeHappierCliOnPath: async () => ({ changed: false, shellReloadHint: null, failure: null, existingCommand: null }),
+      ensureLocalHappierTools: async () => MANAGED_CLI,
+      readActiveRelayProfile: async () => ({ serverUrl: RELAY_SERVER_URL, webappUrl: RELAY_WEBAPP_URL, localServerUrl: null }),
+      createRecipeExecutor: () => executor,
+      ...noGuidanceDeps(),
+    });
+    const runner = createSystemTasksRunner({ kinds: { 'setup.thisComputer.v1': kind } });
+    await runner.start({ taskId: 'setup-repair-envelope', kind: 'setup.thisComputer.v1', params: {
+      surface: 'desktop.ui', target: 'thisComputer', activeRelayUrl: RELAY_SERVER_URL, activeWebappUrl: RELAY_WEBAPP_URL,
+      installService: false, startService: false, verifyService: false,
+    } });
+    const finalPoll = await waitForResult(runner, { taskId: 'setup-repair-envelope', cursor: 0 });
+    expect(finalPoll.result, JSON.stringify(finalPoll.result)).toMatchObject({ ok: true, data: { machineId: 'machine-repaired' } });
+    expect(approved).toBe(true);
+    expect(eventJson(finalPoll.events)).not.toContain(fixture.pairingSecretB64Url);
+  });
+
   it('configures the explicit relay before reading auth status and pairing', async () => {
     const invocations: string[] = [];
     const fixture = createPairingFixture();
