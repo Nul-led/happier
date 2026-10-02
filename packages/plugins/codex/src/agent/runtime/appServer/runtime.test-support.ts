@@ -55,6 +55,7 @@ const clientState = vi.hoisted(() => {
   let deferredLoginStart: {
     promise: Promise<unknown>;
     resolve: (value: unknown) => void;
+    reject: (error: unknown) => void;
   } | null = null;
 
   const createDeferred = (): {
@@ -201,6 +202,11 @@ const clientState = vi.hoisted(() => {
     resolveDeferredLoginStart() {
       if (!deferredLoginStart) throw new Error('No deferred account/login/start request is pending');
       deferredLoginStart.resolve({ ok: true });
+      deferredLoginStart = null;
+    },
+    rejectDeferredLoginStart(error: Error) {
+      if (!deferredLoginStart) throw new Error('No deferred account/login/start request is pending');
+      deferredLoginStart.reject(error);
       deferredLoginStart = null;
     },
     async request(

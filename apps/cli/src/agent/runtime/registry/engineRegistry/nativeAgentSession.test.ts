@@ -8956,7 +8956,7 @@ describe('native Agent session host adapter', () => {
                 sequence: 6,
                 sessionId: 'session-1',
                 emittedAtMs: 6,
-                kind: 'turn-agent-id-observed',
+                kind: 'turn-progress',
                 turnId: 'turn-1',
                 agentTurnId: 'conflicting-agent-turn',
             });

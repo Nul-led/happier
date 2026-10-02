@@ -316,6 +316,12 @@ export function createAgentSessionTurnInvariant(params: Readonly<{
                 const turn = turns.get(turnId);
                 if (!turn) return reject('agent_runtime_turn_unknown', event);
                 if (activeTurnId !== turnId) return reject('agent_runtime_turn_not_active', event);
+                // An explicit observation replaces the native attempt identity of an
+                // open logical turn. Ordinary activity still requires the current ID.
+                if (event.kind === 'turn-agent-id-observed') {
+                    turn.agentTurnId = event.agentTurnId;
+                    return accept(event);
+                }
                 const identityFailure = validateAgentTurnId(turn, event);
                 if (identityFailure) return identityFailure;
                 const observedAgentTurnId = readAgentTurnId(event);

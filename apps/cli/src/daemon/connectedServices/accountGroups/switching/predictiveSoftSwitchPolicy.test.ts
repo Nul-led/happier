@@ -13,15 +13,12 @@ describe('evaluatePredictiveSoftSwitchPolicy', () => {
     });
   });
 
-  it('suppresses predictive soft-threshold switching while a turn is in flight', () => {
+  it('allows supported predictive soft-threshold switching while a turn is in flight', () => {
     expect(evaluatePredictiveSoftSwitchPolicy({
       reason: 'soft_threshold',
       predictiveSoftSwitchMode: 'supported',
       turnState: { inFlight: true },
-    })).toEqual({
-      status: 'suppress',
-      reason: 'predictive_soft_switch_turn_in_flight',
-    });
+    })).toEqual({ status: 'allow' });
   });
 
   it('keeps hard usage-limit switching enabled even when predictive soft switching is disabled', () => {
@@ -46,15 +43,12 @@ describe('evaluatePredictiveSoftSwitchPolicy', () => {
     })).toEqual({ status: 'allow' });
   });
 
-  it('defers proven same-provider-account exhaustion fanout while a sibling turn is in flight', () => {
+  it('allows supported same-provider-account exhaustion fanout while a sibling turn is in flight', () => {
     expect(evaluatePredictiveSoftSwitchPolicy({
       reason: 'same_provider_account_exhausted',
       predictiveSoftSwitchMode: 'supported',
       turnState: { inFlight: true },
-    })).toEqual({
-      status: 'defer',
-      reason: 'predictive_soft_switch_defer_until_turn_boundary',
-    });
+    })).toEqual({ status: 'allow' });
   });
 
 });

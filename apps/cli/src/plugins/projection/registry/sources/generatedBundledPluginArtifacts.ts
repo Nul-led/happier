@@ -5888,8 +5888,8 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
       "createdAtMs": 0,
       "files": [
         {
-          "byteLength": 6771374,
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-S2TRQ4LN.js"
+          "byteLength": 6777108,
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-H4LTRY4I.js"
         },
         {
           "byteLength": 197,
@@ -7396,15 +7396,15 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "dist/agent/runtime/appServer/runtime.d.ts"
         },
         {
-          "byteLength": 138439,
+          "byteLength": 145418,
           "relativePath": "dist/agent/runtime/appServer/runtime.d.ts.map"
         },
         {
-          "byteLength": 129982,
+          "byteLength": 137527,
           "relativePath": "dist/agent/runtime/appServer/runtime.js"
         },
         {
-          "byteLength": 228255,
+          "byteLength": 240336,
           "relativePath": "dist/agent/runtime/appServer/runtime.js.map"
         },
         {
@@ -8356,7 +8356,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-76a1ec3a-980f-4c22-8983-0b7260fb8245",
+      "immutableGenerationId": "bundled-885c9657-cedf-4432-a458-c2b33b52ea6e",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.codex",
       "schemaVersion": 1,

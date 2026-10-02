@@ -273,11 +273,32 @@ export type CodexAppServerRuntime = CodexAppServerSession & Readonly<{
 type CodexAppServerAccountUsageService =
   AgentSessionRuntimeContext['session']['services']['accountUsage'];
 
+type CodexAuthHandoffIntent = {
+  state: 'pending' | 'applied' | 'failed' | 'cancelled';
+  interrupted: boolean;
+  terminalPublished: boolean;
+  cancelled: Promise<void>;
+  cancel: () => void;
+};
+
+function createCodexAuthHandoffIntent(): CodexAuthHandoffIntent {
+  let wakeCancellation!: () => void;
+  const cancelled = new Promise<void>(resolve => { wakeCancellation = resolve; });
+  const intent: CodexAuthHandoffIntent = {
+    state: 'pending', interrupted: false, terminalPublished: false, cancelled,
+    cancel: () => { intent.state = 'cancelled'; wakeCancellation(); },
+  };
+  return intent;
+}
+
 type PendingTurn = {
   threadId: string;
   sessionTurnId: string;
   agentTurnId: string | null;
   providerStartAcknowledged: boolean;
+  ownsPromptContinuation: boolean;
+  ownsAuthContinuation: boolean;
+  authHandoff: CodexAuthHandoffIntent | null;
   deferredTerminalNotifications: Map<string, Readonly<{
     method: 'turn/completed' | 'turn/interrupted';
     params: unknown;
@@ -809,6 +830,9 @@ function createPendingTurn(
     sessionTurnId,
     agentTurnId: null,
     providerStartAcknowledged: false,
+    ownsPromptContinuation: false,
+    ownsAuthContinuation: false,
+    authHandoff: null,
     deferredTerminalNotifications: new Map(),
     providerPrompt,
     startUserMessageSeq,
@@ -892,6 +916,7 @@ export function createCodexAppServerRuntime(
   let publishedThreadId: string | null = null;
   let turnSeq = 0;
   let pendingTurn: PendingTurn | null = null;
+  let authHandoffTurn: PendingTurn | null = null;
   let connectedServiceAuthApplyTail: Promise<void> = Promise.resolve();
   let connectedServiceAuthApplyCount = 0;
   const terminatedProviderTurnIds = new Set<string>();
@@ -900,6 +925,11 @@ export function createCodexAppServerRuntime(
   let turnCompletionSettling = false;
   const hasProviderWorkInFlight = (): boolean => (
     pendingTurn !== null || turnCompletionSettling || preAckCancelledTurns.size > 0
+  );
+  const canContinueAfterAuthHandoff = (): boolean => Boolean(
+    pendingTurn?.ownsPromptContinuation && pendingTurn.agentTurnId
+    && pendingTurn.providerStartAcknowledged && !turnCompletionSettling
+    && preAckCancelledTurns.size === 0,
   );
   let pendingTurnCompletionTimer: ReturnType<typeof setTimeout> | null = null;
   let scheduledPendingTurnCompletion: Readonly<{
@@ -1713,11 +1743,15 @@ export function createCodexAppServerRuntime(
     originalTemporaryRecoverableFailure = null;
     setActive(false);
     if (status === 'interrupted' || isCodexTurnInterruptedStatus(readCodexTurnStatus(notificationParams))) {
-      publishRuntimeEvent({
-        kind: 'turn-cancelled',
-        turnId: activeTurn.sessionTurnId,
-        ...(agentTurnId ? { agentTurnId } : {}),
-      });
+      if (activeTurn.authHandoff) activeTurn.authHandoff.interrupted = true;
+      if (activeTurn.authHandoff?.state !== 'pending') {
+        if (activeTurn.authHandoff) activeTurn.authHandoff.terminalPublished = true;
+        publishRuntimeEvent({
+          kind: 'turn-cancelled',
+          turnId: activeTurn.sessionTurnId,
+          ...(agentTurnId ? { agentTurnId } : {}),
+        });
+      }
     } else {
       publishRuntimeEvent({
         kind: 'turn-complete',
@@ -1887,14 +1921,16 @@ export function createCodexAppServerRuntime(
     options: Readonly<{
       deferBackendError?: boolean;
       preserveProviderPromptForRetry?: boolean;
+      ownedTurn?: PendingTurn;
+      publishBackendError?: boolean;
     }> = {},
   ): void => {
-    const activeTurn = pendingTurn;
+    const activeTurn = options.ownedTurn ?? pendingTurn;
     if (!activeTurn) return;
     if (activeTurn.agentTurnId) terminatedProviderTurnIds.add(activeTurn.agentTurnId);
     clearPendingTurnCompletionTimer();
     flushAssistantReasoningProjection('abort');
-    pendingTurn = null;
+    if (pendingTurn === activeTurn) pendingTurn = null;
     clearPendingHappierTitleToolNamesForTurn(activeTurn.sessionTurnId);
     const providerPromptWasPending = activeTurn.providerPrompt
       ? pendingProviderPrompts.has(activeTurn.providerPrompt)
@@ -1909,6 +1945,7 @@ export function createCodexAppServerRuntime(
       deferredTemporaryRecoverableFailure = null;
       providerPromptForDeferredTemporaryRecoverableRetry = null;
       terminalPendingTurnFailure = resolveTerminalPendingTurnFailure(error);
+      if (activeTurn.authHandoff) activeTurn.authHandoff.terminalPublished = true;
       reportProviderCapacityFailureForRecovery(terminalPendingTurnFailure);
       const agentTurnId = activeTurn.agentTurnId;
       publishRuntimeEvent({
@@ -1917,7 +1954,7 @@ export function createCodexAppServerRuntime(
         ...(agentTurnId ? { agentTurnId } : {}),
         issue: buildCodexAppServerTurnFailureIssue(terminalPendingTurnFailure, activeTurn),
       });
-      publishRuntimeEvent({
+      if (options.publishBackendError !== false) publishRuntimeEvent({
         kind: 'backend-error',
         error: {
           code: CODEX_APP_SERVER_TURN_FAILURE_CODE,
@@ -1936,7 +1973,8 @@ export function createCodexAppServerRuntime(
 
   const shouldDeferTemporaryRecoverableFailure = (error: Error): boolean => {
     return isCodexAppServerTemporaryRecoverableTurnFailureError(error)
-      && temporaryRecoverableRetryAttemptCount === 0;
+      && temporaryRecoverableRetryAttemptCount === 0
+      && !pendingTurn?.authHandoff;
   };
 
   const resolveTerminalPendingTurnFailure = (error: Error): Error => {
@@ -2035,7 +2073,15 @@ export function createCodexAppServerRuntime(
       const exitDescription = result.signal
         ? `signal ${result.signal}`
         : `exit code ${result.exitCode ?? 'unknown'}`;
-      failPendingTurn(new Error(`Codex app-server exited unexpectedly (${exitDescription}).`));
+      const interruptedOwner = authHandoffTurn?.authHandoff?.interrupted
+        && !authHandoffTurn.authHandoff.terminalPublished ? authHandoffTurn : null;
+      failPendingTurn(new Error(`Codex app-server exited unexpectedly (${exitDescription}).`), {
+        ...(pendingTurn ? {} : interruptedOwner ? { ownedTurn: interruptedOwner } : {}),
+        publishBackendError: false,
+      });
+      // Native exit is terminal proof even while the independent auth reply is held.
+      // Wake the completion owner after publishing its actual failure.
+      interruptedOwner?.authHandoff?.cancel();
       publishRuntimeEvent({
         kind: 'session-ended',
         reason: 'codex_app_server_unexpected_exit',
@@ -2367,6 +2413,7 @@ export function createCodexAppServerRuntime(
   const startTurnPromptAttempt = async (
     input: CodexAppServerInput,
     options?: CodexAppServerSendOptions,
+    continuesLogicalTurn = false,
   ): Promise<void> => {
     const prompt = input.text;
     while (connectedServiceAuthApplyCount > 0) {
@@ -2390,13 +2437,15 @@ export function createCodexAppServerRuntime(
       pendingProviderPrompt,
       latestConnectedServiceRuntimeIdentity,
     );
+    activeTurn.ownsPromptContinuation = true;
+    activeTurn.ownsAuthContinuation = continuesLogicalTurn;
     pendingTurn = activeTurn;
     activeTurnHadMeaningfulActivity = false;
     deferredTemporaryRecoverableFailure = null;
     terminalPendingTurnFailure = null;
     void activeTurn.promise.catch(() => undefined);
     setActive(true);
-    publishRuntimeEvent({
+    if (!continuesLogicalTurn) publishRuntimeEvent({
       kind: 'turn-start',
       turnId: activeTurn.sessionTurnId,
       startedBy: 'user',
@@ -2548,7 +2597,7 @@ export function createCodexAppServerRuntime(
 
   const waitForTurnCompletion = async (): Promise<void> => {
     while (true) {
-      const activeTurn = pendingTurn;
+      const activeTurn = pendingTurn ?? authHandoffTurn;
       if (!activeTurn) {
         const terminalFailure = terminalPendingTurnFailure;
         if (terminalFailure) {
@@ -2570,17 +2619,70 @@ export function createCodexAppServerRuntime(
       }
       try {
         await activeTurn.promise;
+        const handoff = activeTurn.authHandoff;
+        if (handoff) {
+          // The logical prompt already succeeded when natural completion won the interrupt.
+          // Its outcome is independent of the still serialized account apply.
+          if (!handoff.interrupted) {
+            if (authHandoffTurn === activeTurn) authHandoffTurn = null;
+            return;
+          }
+          while (connectedServiceAuthApplyCount > 0 && handoff.state !== 'cancelled') {
+            await Promise.race([connectedServiceAuthApplyTail, handoff.cancelled]);
+          }
+          if (authHandoffTurn === activeTurn) authHandoffTurn = null;
+          if (terminalPendingTurnFailure) throw terminalPendingTurnFailure;
+          if (handoff.state === 'failed') {
+            const failure = new Error('Codex connected-service auth handoff failed');
+            failPendingTurn(failure, { ownedTurn: activeTurn });
+            throw failure;
+          }
+          if (handoff.state === 'cancelled' && handoff.interrupted && !handoff.terminalPublished && !disposed) {
+            handoff.terminalPublished = true;
+            publishRuntimeEvent({ kind: 'turn-cancelled', turnId: activeTurn.sessionTurnId, ...(activeTurn.agentTurnId ? { agentTurnId: activeTurn.agentTurnId } : {}) });
+          }
+          if (handoff.state === 'applied' && handoff.interrupted) {
+            // Recovery after this point retries only the already accepted work's continuation.
+            inputForTemporaryRecoverableRetry = { text: temporaryRecoverableTurnContinuationPrompt };
+            await startTurnPromptAttempt(
+              { text: temporaryRecoverableTurnContinuationPrompt },
+              { turnId: activeTurn.sessionTurnId },
+              true,
+            );
+            continue;
+          }
+        }
         return;
       } catch (error) {
+        if (authHandoffTurn === activeTurn) authHandoffTurn = null;
         const failure = error instanceof Error ? error : new Error(String(error));
+        const continuesLogicalTurn = activeTurn.ownsAuthContinuation
+          || (activeTurn.authHandoff?.state === 'applied' && activeTurn.authHandoff.interrupted);
+        if ((activeTurn.authHandoff && !continuesLogicalTurn) || (continuesLogicalTurn && terminalPendingTurnFailure)) {
+          if (!terminalPendingTurnFailure && !disposed) failPendingTurn(failure, { ownedTurn: activeTurn });
+          throw resolveTerminalPendingTurnFailure(failure);
+        }
         const retryInput = resolveTemporaryRecoverableRetryInput(failure);
         const retryProviderPrompt = providerPromptForDeferredTemporaryRecoverableRetry;
         providerPromptForDeferredTemporaryRecoverableRetry = null;
-        if (!retryInput) throw resolveTerminalPendingTurnFailure(failure);
-        await startTurnPromptAttempt(
-          retryInput,
-          buildRuntimeSendOptionsForPendingProviderPrompt(retryProviderPrompt),
-        );
+        if (!retryInput) {
+          if (continuesLogicalTurn && !terminalPendingTurnFailure && !disposed) failPendingTurn(failure, { ownedTurn: activeTurn });
+          throw resolveTerminalPendingTurnFailure(failure);
+        }
+        // Retain the existing retry budget/decision without restarting this logical task
+        // or resending the input IDs and structured input accepted before auth handoff.
+        try {
+          await startTurnPromptAttempt(
+            continuesLogicalTurn ? { text: retryInput.text } : retryInput,
+            continuesLogicalTurn ? { turnId: activeTurn.sessionTurnId } : buildRuntimeSendOptionsForPendingProviderPrompt(retryProviderPrompt),
+            continuesLogicalTurn,
+          );
+        } catch (retryError) {
+          if (continuesLogicalTurn && !terminalPendingTurnFailure && !disposed) {
+            failPendingTurn(retryError instanceof Error ? retryError : new Error(String(retryError)), { ownedTurn: activeTurn });
+          }
+          throw retryError;
+        }
       }
     }
   };
@@ -2871,6 +2973,8 @@ export function createCodexAppServerRuntime(
   };
 
   const resetOrDisposeRuntime = async (): Promise<void> => {
+    if (authHandoffTurn?.authHandoff) authHandoffTurn.authHandoff.cancel();
+    authHandoffTurn = null;
     disposed = true;
     await realtimeConversation.dispose();
     clearAllPendingProviderPrompts(new Error('Codex runtime disposed before provider input acceptance was observed'));
@@ -2973,90 +3077,105 @@ export function createCodexAppServerRuntime(
         error: 'invalid_request',
       };
     }
-    const appServerClient = await ensureClient();
-    if (hasProviderWorkInFlight()) {
+    if (hasProviderWorkInFlight() && !canContinueAfterAuthHandoff()) {
       return { ok: false, errorCode: 'turn_in_flight', error: 'turn_in_flight' };
     }
-    const applied = await applyCodexConnectedServiceAuthGeneration({
-      client: appServerClient,
-      canApplyAuth: () => !hasProviderWorkInFlight(),
-      candidate: request.credential,
-      forcedWorkspaceId: request.forcedWorkspaceId,
-      forcedLoginMethod: request.forcedLoginMethod,
-      refreshSelection: request.selection,
-      updateRefreshSelection: async (selection) => {
-        const previousSelection = activeChatGptAuthTokensRefreshSelection;
-        activeChatGptAuthTokensRefreshSelection = selection;
-        return () => {
-          activeChatGptAuthTokensRefreshSelection = previousSelection;
-        };
-      },
-    });
-    if (!applied.applied) {
-      if (applied.appliedVia === 'direct_live_hot_auth' && applied.activeAccountId) {
-        activeChatGptAccessTokenFingerprint = computeCodexAccessTokenFingerprint(
-          request.credential.oauth.accessToken,
-        );
-        latestConnectedServiceRuntimeIdentity = buildConnectedServiceRuntimeIdentity(
-          request,
-          applied.activeAccountId,
-          null,
-        );
-      }
-      return {
-        ok: false,
-        errorCode: applied.reason,
-        error: applied.reason,
-        ...(applied.appliedVia ? { appliedVia: applied.appliedVia } : {}),
-        ...(applied.activeAccountId ? { activeAccountId: applied.activeAccountId } : {}),
-        ...(applied.recovery ? { recovery: applied.recovery } : {}),
-      };
+    const handoffTurn = pendingTurn;
+    const handoff = hasProviderWorkInFlight() && handoffTurn
+      ? createCodexAuthHandoffIntent()
+      : null;
+    if (handoff && handoffTurn) {
+      handoffTurn.authHandoff = handoff;
+      authHandoffTurn = handoffTurn;
     }
-    if (disposed) {
+    try {
+      if (handoff) await cancelTurn();
+      const appServerClient = await ensureClient();
+      if (hasProviderWorkInFlight()) return { ok: false, errorCode: 'turn_in_flight', error: 'turn_in_flight' };
+      const applied = await applyCodexConnectedServiceAuthGeneration({
+        client: appServerClient,
+        canApplyAuth: () => !hasProviderWorkInFlight(),
+        candidate: request.credential,
+        forcedWorkspaceId: request.forcedWorkspaceId,
+        forcedLoginMethod: request.forcedLoginMethod,
+        refreshSelection: request.selection,
+        updateRefreshSelection: async (selection) => {
+          const previousSelection = activeChatGptAuthTokensRefreshSelection;
+          activeChatGptAuthTokensRefreshSelection = selection;
+          return () => {
+            activeChatGptAuthTokensRefreshSelection = previousSelection;
+          };
+        },
+      });
+      if (!applied.applied) {
+        if (applied.appliedVia === 'direct_live_hot_auth' && applied.activeAccountId) {
+          activeChatGptAccessTokenFingerprint = computeCodexAccessTokenFingerprint(
+            request.credential.oauth.accessToken,
+          );
+          latestConnectedServiceRuntimeIdentity = buildConnectedServiceRuntimeIdentity(
+            request,
+            applied.activeAccountId,
+            null,
+          );
+        }
+        return {
+          ok: false,
+          errorCode: applied.reason,
+          error: applied.reason,
+          ...(applied.appliedVia ? { appliedVia: applied.appliedVia } : {}),
+          ...(applied.activeAccountId ? { activeAccountId: applied.activeAccountId } : {}),
+          ...(applied.recovery ? { recovery: applied.recovery } : {}),
+        };
+      }
+      if (disposed) {
+        return {
+          ok: false,
+          errorCode: 'runtime_replaced_during_auth_apply',
+          error: 'runtime_replaced_during_auth_apply',
+          appliedVia: applied.appliedVia,
+          activeAccountId: applied.activeAccountId,
+          recovery: 'restart_resume',
+        };
+      }
+
+      activeChatGptAccessTokenFingerprint = computeCodexAccessTokenFingerprint(
+        request.credential.oauth.accessToken,
+      );
+      const appliedRuntimeIdentity = buildConnectedServiceRuntimeIdentity(
+        request,
+        applied.activeAccountId,
+        null,
+      );
+      latestConnectedServiceRuntimeIdentity = appliedRuntimeIdentity;
+      // Exact provider application and durable auth-store persistence settle the
+      // auth operation. The canonical account-usage owner performs the optional
+      // live-account verification and quota publication afterward, fenced by the
+      // exact identity that was just applied. A slow diagnostic must not turn a
+      // successful in-process hot swap into a restart-required fan-out result.
+      void (async () => {
+        try {
+          const result = await readCodexRuntimeRateLimitsSnapshot(appServerClient);
+          await recordProviderAccountUsageSnapshot(result.rawSnapshot, {
+            operationIdentity: appliedRuntimeIdentity,
+            includeLiveAccountIdentity: true,
+          });
+        } catch (error) {
+          params.host.logger.debug('Codex app-server quota snapshot failed after connected-service auth apply (ignored)', {
+            errorName: error instanceof Error ? error.name : typeof error,
+          });
+        }
+      })();
+
+      if (handoff?.state === 'pending') handoff.state = 'applied';
       return {
-        ok: false,
-        errorCode: 'runtime_replaced_during_auth_apply',
-        error: 'runtime_replaced_during_auth_apply',
+        ok: true,
         appliedVia: applied.appliedVia,
         activeAccountId: applied.activeAccountId,
-        recovery: 'restart_resume',
+        verification: buildConnectedServiceApplicationVerification(appliedRuntimeIdentity),
       };
+    } finally {
+      if (handoff?.state === 'pending') handoff.state = 'failed';
     }
-
-    activeChatGptAccessTokenFingerprint = computeCodexAccessTokenFingerprint(
-      request.credential.oauth.accessToken,
-    );
-    const appliedRuntimeIdentity = buildConnectedServiceRuntimeIdentity(
-      request,
-      applied.activeAccountId,
-      null,
-    );
-    latestConnectedServiceRuntimeIdentity = appliedRuntimeIdentity;
-    // Exact provider application and durable auth-store persistence settle the
-    // auth operation. The canonical account-usage owner performs the optional
-    // live-account verification and quota publication afterward, fenced by the
-    // exact identity that was just applied. A slow diagnostic must not turn a
-    // successful in-process hot swap into a restart-required fan-out result.
-    void (async () => {
-      try {
-        const result = await readCodexRuntimeRateLimitsSnapshot(appServerClient);
-        await recordProviderAccountUsageSnapshot(result.rawSnapshot, {
-          operationIdentity: appliedRuntimeIdentity,
-          includeLiveAccountIdentity: true,
-        });
-      } catch (error) {
-        params.host.logger.debug('Codex app-server quota snapshot failed after connected-service auth apply (ignored)', {
-          errorName: error instanceof Error ? error.name : typeof error,
-        });
-      }
-    })();
-
-    return {
-      ok: true,
-      appliedVia: applied.appliedVia,
-      activeAccountId: applied.activeAccountId,
-      verification: buildConnectedServiceApplicationVerification(appliedRuntimeIdentity),
-    };
   });
 
   const readRuntimeAuthIdentity = async (
@@ -3096,7 +3215,7 @@ export function createCodexAppServerRuntime(
       },
       runtime: {
         safeToProbe: true,
-        safeToApply: !hasProviderWorkInFlight() && connectedServiceAuthApplyCount === 0,
+        safeToApply: (!hasProviderWorkInFlight() || canContinueAfterAuthHandoff()) && connectedServiceAuthApplyCount === 0,
         inProviderTurn: hasProviderWorkInFlight(),
         profileId: identity.profileId,
         ...(identity.groupId ? { groupId: identity.groupId } : {}),
@@ -3149,10 +3268,19 @@ export function createCodexAppServerRuntime(
       return acceptedSendResult();
     },
     async cancel(expectedTurnId?: string) {
-      if (expectedTurnId !== undefined && pendingTurn?.sessionTurnId !== expectedTurnId) {
+      const ownedTurn = pendingTurn ?? authHandoffTurn;
+      if (expectedTurnId !== undefined && ownedTurn?.sessionTurnId !== expectedTurnId) {
         return cancelledResult('not_running');
       }
-      const hadActiveTurn = pendingTurn !== null;
+      const hadActiveTurn = ownedTurn !== null;
+      if (authHandoffTurn?.authHandoff) {
+        const handoff = authHandoffTurn.authHandoff;
+        handoff.cancel();
+        if (!pendingTurn && handoff.interrupted && !handoff.terminalPublished) {
+          handoff.terminalPublished = true;
+          publishRuntimeEvent({ kind: 'turn-cancelled', turnId: authHandoffTurn.sessionTurnId, ...(authHandoffTurn.agentTurnId ? { agentTurnId: authHandoffTurn.agentTurnId } : {}) });
+        }
+      }
       await cancelTurn();
       return cancelledResult(hadActiveTurn ? 'cancelled' : 'not_running');
     },

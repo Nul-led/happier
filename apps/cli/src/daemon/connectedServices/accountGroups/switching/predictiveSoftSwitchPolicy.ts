@@ -47,18 +47,6 @@ export function evaluatePredictiveSoftSwitchPolicy(input: Readonly<{
       reason: 'predictive_soft_switch_restart_required',
     };
   }
-  if (input.turnState?.inFlight === true) {
-    if (input.reason === 'same_provider_account_exhausted') {
-      return {
-        status: 'defer',
-        reason: 'predictive_soft_switch_defer_until_turn_boundary',
-      };
-    }
-    return {
-      status: 'suppress',
-      reason: 'predictive_soft_switch_turn_in_flight',
-    };
-  }
   return { status: 'allow' };
 }
 

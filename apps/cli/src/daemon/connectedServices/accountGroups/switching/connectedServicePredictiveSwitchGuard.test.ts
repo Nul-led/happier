@@ -31,7 +31,7 @@ describe('createConnectedServicePredictiveSwitchGuard', () => {
     });
   });
 
-  it('suppresses predictive soft-threshold switching while the canonical turn state is still in flight', async () => {
+  it('allows supported predictive soft-threshold switching while the canonical turn state is still in flight', async () => {
     const guard = createConnectedServicePredictiveSwitchGuard({
       resolvePredictiveSoftSwitchMode: vi.fn(async () => 'supported' as const),
       readTurnState: vi.fn(() => ({ inFlight: true })),
@@ -43,10 +43,7 @@ describe('createConnectedServicePredictiveSwitchGuard', () => {
       groupId: 'team',
       activeProfileId: 'active',
       reason: 'soft_threshold',
-    })).resolves.toEqual({
-      status: 'suppress',
-      reason: 'predictive_soft_switch_turn_in_flight',
-    });
+    })).resolves.toEqual({ status: 'allow' });
   });
 
 });

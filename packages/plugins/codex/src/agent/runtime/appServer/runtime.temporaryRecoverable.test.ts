@@ -3220,7 +3220,7 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     }
   });
 
-  it('refuses active-turn auth mutation and applies it after the turn completes', async () => {
+  it.each([['success', 'soft_threshold'], ['success', 'manual'], ['auth_failure', 'soft_threshold'], ['user_abort', 'soft_threshold'], ['terminal_failure', 'soft_threshold']] as const)('interrupts and continues an owned prompt for a connected-service auth handoff: %s (%s)', async (outcome, reason) => {
     const codexHome = await mkdtemp(join(tmpdir(), 'happier-codex-plugin-live-auth-busy-'));
     try {
       await mkdir(codexHome, { recursive: true });
@@ -3239,16 +3239,20 @@ describe('Codex app-server temporary recoverable turn failures', () => {
           },
         },
       });
-      clientState.deferTurnStartForPrompt('busy prompt');
-      const send = runtime.send({ v: 1, text: 'busy prompt' });
-      await waitForRequestCount('turn/start', 1);
+      await runtime.send({ v: 1, text: 'busy prompt' }, { turnId: 'host-turn-handoff', localInputIds: ['accepted-input-1'], userMessageSeq: 11 });
+      const completion = waitForCodexAppServerRuntimeTurnCompletion(runtime);
+      void completion.catch(() => undefined);
+      let completionSettled = false;
+      void completion.then(() => { completionSettled = true; }, () => { completionSettled = true; });
+      const events: CodexAppServerEvent[] = [];
+      runtime.events.subscribe(event => events.push(event));
       const loginCountBeforeIdentityChange = clientState.requests.filter(
         ({ method }) => method === 'account/login/start',
       ).length;
 
       const applyRequest = {
         serviceId: 'openai-codex',
-        reason: 'same_provider_account_exhausted',
+        reason,
         requireDirectLiveHotApply: true,
         authGeneration: {
           credential: buildConnectedCodexCredential('backup'),
@@ -3260,20 +3264,36 @@ describe('Codex app-server temporary recoverable turn failures', () => {
           },
         },
       } as const;
-      await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({
-        ok: false,
-        errorCode: 'turn_in_flight',
-      });
-
-      expect(clientState.requests.filter(
-        ({ method }) => method === 'account/login/start',
-      )).toHaveLength(loginCountBeforeIdentityChange);
-      clientState.resolveDeferredTurnStart('turn-busy');
-      await send;
-      const completion = waitForCodexAppServerRuntimeTurnCompletion(runtime);
-      emitNotification('turn/completed', completedTurn('turn-busy'));
-      await completion;
-      await expect(runtime.runtimeAuth.apply(applyRequest)).resolves.toMatchObject({ ok: true, activeAccountId: 'acct_target' });
+      clientState.deferNextLoginStart();
+      const apply = runtime.runtimeAuth.apply(applyRequest);
+      await waitForRequestCount('turn/interrupt', 1);
+      expect(clientState.requests.filter(({ method }) => method === 'account/login/start')).toHaveLength(loginCountBeforeIdentityChange);
+      emitNotification('turn/completed', { threadId: 'thread-1', turn: { id: 'turn-1', status: outcome === 'terminal_failure' ? 'failed' : 'interrupted', ...(outcome === 'terminal_failure' ? { error: { message: 'synthetic terminal failure', codexErrorInfo: 'other' } } : {}) } });
+      await waitForRequestCount('account/login/start', loginCountBeforeIdentityChange + 1);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(clientState.requests.filter(({ method }) => method === 'turn/start')).toHaveLength(1);
+      expect(completionSettled).toBe(outcome === 'terminal_failure');
+      if (outcome === 'user_abort') await runtime.cancel('host-turn-handoff');
+      if (outcome === 'auth_failure') clientState.rejectDeferredLoginStart(new Error('synthetic auth failure'));
+      else clientState.resolveDeferredLoginStart();
+      if (outcome === 'auth_failure') {
+        await expect(apply).resolves.toMatchObject({ ok: false });
+        await expect(completion).rejects.toThrow('auth handoff failed');
+      } else {
+        await expect(apply).resolves.toMatchObject({ ok: true, activeAccountId: 'acct_target' });
+        if (outcome === 'terminal_failure') await expect(completion).rejects.toThrow('Codex app-server turn failed');
+        else if (outcome === 'user_abort') await completion;
+        else {
+          await waitForRequestCount('turn/start', 2);
+          expect(events.filter(event => event.kind === 'turn-cancelled')).toHaveLength(0);
+          const starts = clientState.requests.filter(({ method }) => method === 'turn/start');
+          expect(starts[1].params).toMatchObject({ threadId: 'thread-1', input: [{ text: 'Please continue the interrupted work from the recovered Codex turn. Do not restart or repeat completed work.' }] });
+          expect(starts[1].params).not.toHaveProperty('clientUserMessageId');
+          emitNotification('turn/completed', completedTurn('turn-2'));
+          await completion;
+        }
+      }
+      expect(clientState.requests.filter(({ method }) => method === 'turn/start')).toHaveLength(outcome === 'success' ? 2 : 1);
       expect(clientState.requests.filter(({ method }) => method === 'account/login/start')).toHaveLength(loginCountBeforeIdentityChange + 1);
       await runtime.dispose();
     } finally {

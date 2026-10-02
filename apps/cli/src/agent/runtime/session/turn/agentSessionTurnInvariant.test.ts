@@ -3,6 +3,20 @@ import { describe, expect, it } from 'vitest';
 import { createAgentSessionTurnInvariant } from './agentSessionTurnInvariant';
 
 describe('createAgentSessionTurnInvariant', () => {
+    it('reattaches an explicitly observed native attempt only on an active logical turn', () => {
+        const invariant = createAgentSessionTurnInvariant({ sessionId: 'session-1' });
+        let sequence = 0;
+        const observe = (event: Record<string, unknown>) => invariant.observe({ sequence: ++sequence, sessionId: 'session-1', emittedAtMs: sequence, ...event });
+        expect(observe({ kind: 'input-accepted', inputIds: ['accepted-1'], delivery: { kind: 'newTurn', turnId: 'work' } })).toMatchObject({ status: 'accepted' });
+        expect(observe({ kind: 'turn-start', startedBy: 'host', turnId: 'work', agentTurnId: 'native-A' })).toMatchObject({ status: 'accepted' });
+        expect(observe({ kind: 'turn-agent-id-observed', turnId: 'work', agentTurnId: 'native-B' })).toMatchObject({ status: 'accepted' });
+        expect(observe({ kind: 'turn-progress', turnId: 'work', agentTurnId: 'native-A' })).toMatchObject({ status: 'rejected', diagnostic: { code: 'agent_runtime_agent_turn_conflict' } });
+        expect(observe({ kind: 'turn-complete', turnId: 'work', agentTurnId: 'native-A' })).toMatchObject({ status: 'rejected', diagnostic: { code: 'agent_runtime_agent_turn_conflict' } });
+        expect(observe({ kind: 'turn-progress', turnId: 'work', agentTurnId: 'native-B' })).toMatchObject({ status: 'accepted' });
+        expect(observe({ kind: 'turn-complete', turnId: 'work', agentTurnId: 'native-B' })).toMatchObject({ status: 'accepted' });
+        expect(observe({ kind: 'turn-agent-id-observed', turnId: 'work', agentTurnId: 'native-C' })).toMatchObject({ status: 'rejected', diagnostic: { code: 'agent_runtime_turn_not_active' } });
+    });
+
     it('rejects malformed, cross-session, and stale events without mutating accepted state', () => {
         const invariant = createAgentSessionTurnInvariant({ sessionId: 'session-1' });
 
