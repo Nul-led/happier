@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import tweetnacl from "tweetnacl";
-import { encodeBase64 } from "@happier-dev/protocol";
 import {
     ACCOUNT_DIRECTORY_SIGNING_DOMAIN,
     accountDirectorySigningKeyMetadata,
@@ -43,7 +42,7 @@ describe("Account Directory Home login assertion signer", () => {
             issuerSubjectId: "account-1",
             audienceHomeServerIdentityId: "srv_home",
             credentialDestinationDigestBase64Url: CREDENTIAL_DESTINATION_DIGEST,
-            clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(32).fill(1)),
+            clientBoxPublicKeyBase64: encodeBase64(new Uint8Array(32).fill(1)),
             issuedAtMs: 1_700_000_000_000,
             expiresAtMs: 1_700_000_180_000,
             keyId: "a".repeat(64),
@@ -70,7 +69,7 @@ describe("Account Directory Home login assertion signer", () => {
             issuerSubjectId: "account-1",
             audienceHomeServerIdentityId: "srv_home",
             credentialDestinationDigestBase64Url: CREDENTIAL_DESTINATION_DIGEST,
-            clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(32).fill(1)),
+            clientBoxPublicKeyBase64: encodeBase64(new Uint8Array(32).fill(1)),
             issuedAtMs: 1_700_000_000_000,
             expiresAtMs: 1_700_000_180_000,
             keyId: "b".repeat(64),
@@ -114,7 +113,7 @@ describe("Account Directory Home login assertion signer", () => {
             issuerSubjectId: "account-1",
             audienceHomeServerIdentityId: "srv_home",
             credentialDestinationDigestBase64Url: CREDENTIAL_DESTINATION_DIGEST,
-            clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(32).fill(1)),
+            clientBoxPublicKeyBase64: encodeBase64(new Uint8Array(32).fill(1)),
             issuedAtMs: 1_700_000_000_000,
             expiresAtMs: 1_700_000_180_000,
             keyId: "c".repeat(64),
@@ -156,7 +155,7 @@ describe("Account Directory Home login assertion signer", () => {
             issuerSubjectId: "account-1",
             audienceHomeServerIdentityId: "srv_home",
             credentialDestinationDigestBase64Url: CREDENTIAL_DESTINATION_DIGEST,
-            clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(32).fill(1)),
+            clientBoxPublicKeyBase64: encodeBase64(new Uint8Array(32).fill(1)),
             issuedAtMs: 1_700_000_000_000,
             expiresAtMs: 1_700_000_180_000,
             keyId: "d".repeat(64),
@@ -177,7 +176,7 @@ describe("Account Directory Home login assertion signer", () => {
             issuerSubjectId: "account-42",
             audienceHomeServerIdentityId: "srv_home",
             credentialDestinationDigestBase64Url: CREDENTIAL_DESTINATION_DIGEST,
-            clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(32).fill(2)),
+            clientBoxPublicKeyBase64: encodeBase64(new Uint8Array(32).fill(2)),
             nowMs,
             env,
         });
