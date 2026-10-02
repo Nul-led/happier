@@ -21,74 +21,7 @@ import { SessionUsageLimitRecoveryBanner } from './SessionUsageLimitRecoveryBann
 
 describe('overload recovery countdown', () => {
     let restoreAppState: (() => void) | null = null;
-    afterEach(() => { restoreAppState?.(); vi.unstubAllGlobals(); vi.useRealTimers(); });
-    it('pauses its real countdown on Tauri blur without hiding and resumes on focus', async () => {
-        vi.useFakeTimers();
-        vi.setSystemTime(1_700_000_000_000);
-        let focused = true;
-        const doc = new EventTarget();
-        Object.defineProperties(doc, {
-            visibilityState: { value: 'visible' },
-            hasFocus: { value: () => focused },
-        });
-        const win = new EventTarget();
-        vi.stubGlobal('isTauri', true);
-        vi.stubGlobal('document', doc);
-        vi.stubGlobal('window', win);
-        const screen = await renderScreen(<SessionUsageLimitRecoveryBanner testID="focus-recovery"
-            title="Model overloaded" body="Waiting" surfaceFocused
-            temporaryThrottle={{ nextCheckAtMs: Date.now() + 12_000, attemptCount: 2 }} />);
-        try {
-            expect(screen.getTextContent()).toContain('12 seconds');
-            expect(vi.getTimerCount()).toBe(1);
-            focused = false;
-            await act(async () => { win.dispatchEvent(new Event('blur')); });
-            expect(vi.getTimerCount()).toBe(0);
-            await act(async () => { vi.advanceTimersByTime(3_000); });
-            expect(screen.getTextContent()).toContain('12 seconds');
-            focused = true;
-            await act(async () => { win.dispatchEvent(new Event('focus')); });
-            expect(vi.getTimerCount()).toBe(1);
-            expect(screen.getTextContent()).toContain('9 seconds');
-            await act(async () => { vi.advanceTimersByTime(1_000); });
-            expect(screen.getTextContent()).toContain('8 seconds');
-        } finally {
-            await act(async () => { screen.tree.unmount(); });
-        }
-        expect(vi.getTimerCount()).toBe(0);
-    });
-
-    it('starts its real countdown when an initially unfocused Tauri window gains focus', async () => {
-        vi.useFakeTimers();
-        vi.setSystemTime(1_700_000_000_000);
-        let focused = false;
-        const doc = new EventTarget();
-        Object.defineProperties(doc, {
-            visibilityState: { value: 'visible' },
-            hasFocus: { value: () => focused },
-        });
-        const win = new EventTarget();
-        vi.stubGlobal('isTauri', true);
-        vi.stubGlobal('document', doc);
-        vi.stubGlobal('window', win);
-        const screen = await renderScreen(<SessionUsageLimitRecoveryBanner testID="focus-recovery"
-            title="Model overloaded" body="Waiting" surfaceFocused
-            temporaryThrottle={{ nextCheckAtMs: Date.now() + 12_000, attemptCount: 2 }} />);
-        try {
-            expect(vi.getTimerCount()).toBe(0);
-            await act(async () => { vi.advanceTimersByTime(3_000); });
-            focused = true;
-            await act(async () => { win.dispatchEvent(new Event('focus')); });
-            expect(vi.getTimerCount()).toBe(1);
-            expect(screen.getTextContent()).toContain('9 seconds');
-            await act(async () => { vi.advanceTimersByTime(1_000); });
-            expect(screen.getTextContent()).toContain('8 seconds');
-        } finally {
-            await act(async () => { screen.tree.unmount(); });
-        }
-        expect(vi.getTimerCount()).toBe(0);
-    });
-
+    afterEach(() => { restoreAppState?.(); vi.useRealTimers(); });
     it('updates only the banner leaf and removes its timer when no scheduled retry remains', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(1_700_000_000_000);

@@ -8,10 +8,7 @@ import { isTauriMainWindowActivelyViewed } from '@/desktop/window/isTauriMainWin
 import { subscribeToNowMs } from '@/hooks/time/nowMsClockStore';
 
 function readViewed() { return isRuntimeActive() && (!isTauriDesktop() || isTauriMainWindowActivelyViewed()); }
-function subscribeToViewedChange(listener: () => void) {
-    return subscribeToRuntimeActiveChange(listener, { includeWindowFocus: true });
-}
-function useViewed() { return React.useSyncExternalStore(subscribeToViewedChange, readViewed, readViewed); }
+function useViewed() { return React.useSyncExternalStore(subscribeToRuntimeActiveChange, readViewed, readViewed); }
 
 type Props = React.ComponentProps<typeof SessionWarningActionBanner> & Readonly<{
     temporaryThrottle?: Readonly<{ nextCheckAtMs: number | null; attemptCount: number }>;

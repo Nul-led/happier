@@ -101,12 +101,12 @@ export function subscribeToRuntimeActiveChange(
     };
 }
 
-/** Only an explicit focused computer window can mute another device's push. */
+/** Only an explicitly focused, visible computer window can mute another device's push. */
 export function readComputerUiFocusState(): Readonly<{ computer: boolean; focused: boolean }> {
     const computer = Platform.OS === 'web' && (isTauriDesktop() || !isWebMobileHost());
     return {
         computer,
-        focused: computer && readHostWindowFocus() === true,
+        focused: computer && readDocument()?.visibilityState === 'visible' && readHostWindowFocus() === true,
     };
 }
 

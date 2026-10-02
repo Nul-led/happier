@@ -126,6 +126,20 @@ describe('computer focus lifecycle', () => {
 
 describe('focused computer facts', () => {
     afterEach(() => { vi.unstubAllGlobals(); });
+    it('does not mute phone pushes for a hidden computer window that still has focus', async () => {
+        runtimeState.platformOs = 'web';
+        runtimeState.isTauriDesktop = false;
+        vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' });
+        vi.stubGlobal('document', { visibilityState: 'hidden', hasFocus: () => true });
+        const { readComputerUiFocusState } = await import('./isRuntimeActive');
+        expect(readComputerUiFocusState()).toEqual({ computer: true, focused: false });
+        runtimeState.isTauriDesktop = true;
+        expect(readComputerUiFocusState()).toEqual({ computer: true, focused: false });
+        vi.stubGlobal('document', { visibilityState: 'visible', hasFocus: () => true });
+        expect(readComputerUiFocusState()).toEqual({ computer: true, focused: true });
+        runtimeState.isTauriDesktop = false;
+    });
+
     it('requires explicit physical focus and excludes mobile/native hosts', async () => {
         runtimeState.platformOs = 'web';
         runtimeState.isTauriDesktop = false;
@@ -133,13 +147,26 @@ describe('focused computer facts', () => {
         vi.stubGlobal('document', {});
         const { readComputerUiFocusState } = await import('./isRuntimeActive');
         expect(readComputerUiFocusState()).toEqual({ computer: true, focused: false });
-        vi.stubGlobal('document', { hasFocus: () => true });
+        vi.stubGlobal('document', { visibilityState: 'visible', hasFocus: () => true });
         expect(readComputerUiFocusState()).toEqual({ computer: true, focused: true });
         vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)' });
         expect(readComputerUiFocusState()).toEqual({ computer: false, focused: false });
         runtimeState.platformOs = 'ios';
         expect(readComputerUiFocusState()).toEqual({ computer: false, focused: false });
         runtimeState.platformOs = 'web';
+    });
+
+    it('does not suppress pushes when document focus or visibility is unknown', async () => {
+        runtimeState.platformOs = 'web';
+        runtimeState.isTauriDesktop = false;
+        vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' });
+        const { readComputerUiFocusState } = await import('./isRuntimeActive');
+        vi.stubGlobal('document', { hasFocus: () => true });
+        expect(readComputerUiFocusState()).toEqual({ computer: true, focused: false });
+        vi.stubGlobal('document', { visibilityState: 'visible', hasFocus: () => { throw new Error('Focus unavailable'); } });
+        expect(readComputerUiFocusState()).toEqual({ computer: true, focused: false });
+        vi.stubGlobal('document', undefined);
+        expect(readComputerUiFocusState()).toEqual({ computer: true, focused: false });
     });
 });
 

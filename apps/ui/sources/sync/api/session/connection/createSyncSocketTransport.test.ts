@@ -273,4 +273,30 @@ describe('computer focus publication', () => {
         expect(socket.emit).toHaveBeenLastCalledWith('ui-focus', { computer: false, focused: false });
         await transport.destroy();
     });
+
+    it('publishes an unfocused computer when a still-focused window becomes hidden', async () => {
+        const doc = Object.assign(new EventTarget(), { visibilityState: 'visible', hasFocus: () => true });
+        vi.stubGlobal('document', doc);
+        vi.stubGlobal('window', doc);
+        vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' });
+        const socket = createSocketStub();
+        vi.doMock('socket.io-client', () => ({ io: () => socket }));
+        const { createSyncSocketTransport } = await import('./createSyncSocketTransport');
+        const { transport } = createSyncSocketTransport({ endpoint: 'https://api.example.test', token: 't' });
+        try {
+            await transport.connect();
+            expect(socket.emit).toHaveBeenLastCalledWith('ui-focus', { computer: true, focused: true });
+            doc.visibilityState = 'hidden';
+            doc.dispatchEvent(new Event('visibilitychange'));
+            expect(socket.emit).toHaveBeenLastCalledWith('ui-focus', { computer: true, focused: false });
+            await transport.disconnect();
+            await transport.connect();
+            expect(socket.emit).toHaveBeenLastCalledWith('ui-focus', { computer: true, focused: false });
+            doc.visibilityState = 'visible';
+            doc.dispatchEvent(new Event('visibilitychange'));
+            expect(socket.emit).toHaveBeenLastCalledWith('ui-focus', { computer: true, focused: true });
+        } finally {
+            await transport.destroy();
+        }
+    });
 });
