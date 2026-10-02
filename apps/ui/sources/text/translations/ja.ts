@@ -3443,8 +3443,6 @@ localTailscale: {
       reconnectSubtitle: "このプロファイルを再認証します",
       replaceTokenSubtitle: "このプロファイルの認証情報を置き換えます",
       connectionGroupTitle: "接続",
-      composerExtraMetersTitle: '追加の使用量ゲージ',
-      composerExtraMetersSubtitle: 'メインゲージの横に表示する使用量の期間を選択します。',
       connectedVia: "接続方法",
       connectedViaToken: "アクセストークン",
       connectedViaOauth: "OAuth",
@@ -6905,9 +6903,6 @@ localTailscale: {
     dropToAttach: "ドロップして添付",
     providerUsage: {
       title: "プロバイダー使用量",
-      windowSession: "5時間",
-      windowWeekly: "今週",
-      usedPercent: ({ percent }: { percent: string }) => `使用済み ${percent}`,
       titleForProvider: ({ provider }: { provider: string }) => `${provider} 使用量`,
       activeAccount: ({ account }: { account: string }) => `アカウント: ${account}`,
       accessibilityLabel: ({ value }: { value: string }) =>
@@ -8504,7 +8499,7 @@ settingsSession: {
       providerUsageGauge: {
         title: "プロバイダー使用量",
         footer:
-          "信頼できるプロバイダー使用量があるとき、入力欄の横に表示するクォータゲージを設定します。",
+          "信頼できるプロバイダー使用量があるとき、入力欄の横に表示するクォータゲージを設定します。接続済みアカウントで使用量ウィンドウをピン留めすると、追加のゲージとして表示されます。",
         visibilityTitle: "プロバイダー使用量ゲージを表示",
         visibilityEnabledSubtitle:
           "利用可能な場合、入力欄の横にプロバイダーの残りクォータを表示します。",

@@ -3266,8 +3266,6 @@ export const pt: TranslationStructure = {
       reconnectSubtitle: "Reautenticar este perfil",
       replaceTokenSubtitle: "Substituir credenciais deste perfil",
       connectionGroupTitle: "Conexão",
-      composerExtraMetersTitle: 'Indicadores adicionais',
-      composerExtraMetersSubtitle: 'Escolha as janelas de uso a mostrar junto ao indicador principal.',
       connectedVia: "Conectado via",
       connectedViaToken: "Token de acesso",
       connectedViaOauth: "OAuth",
@@ -6764,9 +6762,6 @@ export const pt: TranslationStructure = {
     dropToAttach: "Solte para anexar arquivos",
     providerUsage: {
       title: "Uso do provedor",
-      windowSession: "5 h",
-      windowWeekly: "Semana",
-      usedPercent: ({ percent }: { percent: string }) => `${percent} usado`,
       titleForProvider: ({ provider }: { provider: string }) => `Uso de ${provider}`,
       activeAccount: ({ account }: { account: string }) => `Conta: ${account}`,
       accessibilityLabel: ({ value }: { value: string }) =>
@@ -8376,7 +8371,7 @@ settingsSession: {
       providerUsageGauge: {
         title: "Uso do provedor",
         footer:
-          "Controla o medidor de cota mostrado ao lado do compositor quando há uso confiável do provedor.",
+          "Controla o medidor de cota mostrado ao lado do compositor quando há uso confiável do provedor. Fixe uma janela de uso numa conta conectada para mostrá-la como indicador adicional.",
         visibilityTitle: "Mostrar medidor de uso do provedor",
         visibilityEnabledSubtitle:
           "Mostra a cota restante do provedor ao lado do compositor quando disponível.",

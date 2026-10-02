@@ -2918,8 +2918,6 @@ export const de: TranslationStructure = {
             reconnectSubtitle: 'Dieses Profil neu authentifizieren',
             replaceTokenSubtitle: 'Zugangsdaten für dieses Profil ersetzen',
             connectionGroupTitle: 'Verbindung',
-            composerExtraMetersTitle: 'Zusätzliche Nutzungsanzeigen',
-            composerExtraMetersSubtitle: 'Nutzungsfenster auswählen, die neben der Hauptanzeige erscheinen.',
             connectedVia: 'Verbunden über',
             connectedViaToken: 'Access Token',
             connectedViaOauth: 'OAuth',
@@ -6263,9 +6261,6 @@ export const de: TranslationStructure = {
         dropToAttach: 'Zum Anhängen hierher ziehen',
         providerUsage: {
             title: 'Provider-Nutzung',
-            windowSession: '5 Std.',
-            windowWeekly: 'Woche',
-            usedPercent: ({ percent }: { percent: string }) => `${percent} verbraucht`,
             titleForProvider: ({ provider }: { provider: string }) => `${provider} Nutzung`,
             activeAccount: ({ account }: { account: string }) => `Konto: ${account}`,
             accessibilityLabel: ({ value }: { value: string }) => `Provider-Nutzung: ${value}`,
@@ -7803,7 +7798,7 @@ settingsSession: {
           },
           providerUsageGauge: {
               title: 'Provider-Nutzung',
-              footer: 'Steuert die Kontingentanzeige neben dem Composer, wenn verlässliche Provider-Nutzungsdaten vorliegen.',
+              footer: 'Steuert die Kontingentanzeige neben dem Composer, wenn verlässliche Provider-Nutzungsdaten vorliegen. Hefte ein Nutzungsfenster an einem verbundenen Konto an, um es als zusätzliche Anzeige zu zeigen.',
               visibilityTitle: 'Nutzungsanzeige des Providers zeigen',
               visibilityEnabledSubtitle: 'Das verbleibende Provider-Kontingent neben dem Composer zeigen, wenn verfügbar.',
               visibilityHiddenSubtitle: 'Das Provider-Kontingent im Composer ausblenden.',

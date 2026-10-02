@@ -3102,8 +3102,6 @@ export const ru: TranslationStructure = {
       reconnectSubtitle: "Повторно авторизовать этот профиль",
       replaceTokenSubtitle: "Заменить учётные данные этого профиля",
       connectionGroupTitle: "Подключение",
-      composerExtraMetersTitle: 'Дополнительные индикаторы',
-      composerExtraMetersSubtitle: 'Выберите периоды использования для отображения рядом с основным индикатором.',
       connectedVia: "Подключено через",
       connectedViaToken: "Токен доступа",
       connectedViaOauth: "OAuth",
@@ -6635,9 +6633,6 @@ export const ru: TranslationStructure = {
       dropToAttach: "Перетащите, чтобы прикрепить файлы",
       providerUsage: {
         title: "Использование провайдера",
-        windowSession: "5 ч",
-        windowWeekly: "Неделя",
-        usedPercent: ({ percent }: { percent: string }) => `${percent} использовано`,
         titleForProvider: ({ provider }: { provider: string }) => `Использование ${provider}`,
         activeAccount: ({ account }: { account: string }) => `Аккаунт: ${account}`,
         accessibilityLabel: ({ value }: { value: string }) =>
@@ -8242,7 +8237,7 @@ settingsSession: {
       providerUsageGauge: {
         title: "Использование провайдера",
         footer:
-          "Управляет индикатором квоты рядом с полем ввода, когда доступны надёжные данные использования провайдера.",
+          "Управляет индикатором квоты рядом с полем ввода, когда доступны надёжные данные использования провайдера. Закрепите окно использования в подключённом аккаунте, чтобы показать его как дополнительный индикатор.",
         visibilityTitle: "Показывать индикатор использования провайдера",
         visibilityEnabledSubtitle:
           "Показывать оставшуюся квоту провайдера рядом с полем ввода, когда она доступна.",

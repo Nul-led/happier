@@ -3486,8 +3486,6 @@ export const it: TranslationStructure = {
       reconnectSubtitle: "Ri-autentica questo profilo",
       replaceTokenSubtitle: "Sostituisci le credenziali per questo profilo",
       connectionGroupTitle: "Connessione",
-      composerExtraMetersTitle: 'Indicatori aggiuntivi',
-      composerExtraMetersSubtitle: 'Scegli le finestre di utilizzo da mostrare accanto all’indicatore principale.',
       connectedVia: "Connesso tramite",
       connectedViaToken: "Token di accesso",
       connectedViaOauth: "OAuth",
@@ -6975,9 +6973,6 @@ export const it: TranslationStructure = {
     dropToAttach: "Rilascia per allegare file",
     providerUsage: {
       title: "Utilizzo provider",
-      windowSession: "5 ore",
-      windowWeekly: "Settimana",
-      usedPercent: ({ percent }: { percent: string }) => `${percent} usato`,
       titleForProvider: ({ provider }: { provider: string }) => `Utilizzo ${provider}`,
       activeAccount: ({ account }: { account: string }) => `Account: ${account}`,
       accessibilityLabel: ({ value }: { value: string }) =>
@@ -8586,7 +8581,7 @@ settingsSession: {
       providerUsageGauge: {
         title: "Uso del provider",
         footer:
-          "Controlla l'indicatore di quota mostrato accanto al compositore quando è disponibile un uso affidabile del provider.",
+          "Controlla l'indicatore di quota mostrato accanto al compositore quando è disponibile un uso affidabile del provider. Fissa una finestra di utilizzo su un account collegato per mostrarla come indicatore aggiuntivo.",
         visibilityTitle: "Mostra l'indicatore di uso del provider",
         visibilityEnabledSubtitle:
           "Mostra la quota restante del provider accanto al compositore quando disponibile.",

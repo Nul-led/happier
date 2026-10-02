@@ -2422,7 +2422,7 @@ describe('SessionView (direct sessions)', () => {
       serviceId: 'openai-codex',
       providerDisplayName: 'connectedServices.serviceNames.openaiCodex',
       activeAccountDisplayLabel: 'Native Codex account',
-      ringValueLabel: '62',
+      ringValueLabel: '38',
     }));
   });
 
@@ -2475,7 +2475,7 @@ describe('SessionView (direct sessions)', () => {
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
       serviceId: 'openai-codex',
       activeAccountDisplayLabel: 'View-backed Codex account',
-      ringValueLabel: '82',
+      ringValueLabel: '18',
     }));
   });
 
@@ -2546,7 +2546,7 @@ describe('SessionView (direct sessions)', () => {
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
       serviceId: 'openai-codex',
       activeAccountDisplayLabel: 'Active Codex account',
-      ringValueLabel: '35',
+      ringValueLabel: '65',
     }));
   });
 
@@ -2603,7 +2603,7 @@ describe('SessionView (direct sessions)', () => {
 
     expect(connectedServiceAuthGroupsState.requestedServiceIds).toContain('openai-codex');
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
-      ringValueLabel: '20',
+      ringValueLabel: '80',
     }));
   });
 
@@ -2672,11 +2672,27 @@ describe('SessionView (direct sessions)', () => {
       profileId: 'work',
     }));
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
-      ringValueLabel: '45',
+      ringValueLabel: '55',
       recoveryCreditSummary: null,
     }));
     expect(findAgentInput(screen).props.onProviderUsageRecoveryCreditPress).toBeUndefined();
     expect(screen.findByTestId('session-usageLimit-recovery-consumeResetCredit')).toBeNull();
+  });
+
+  it('adds the connected account\'s pinned meters as extra composer rings', async () => {
+    featureEnabledState['connectedServices.quotas'] = true;
+    installConnectedServiceWorkProfileRecoveryCreditSession();
+    const snapshot = buildOpenAiCodexWorkQuotaSnapshot({ fetchedAt: 2_000, used: 82 });
+    quotaSnapshotsState.current = {
+      'openai-codex/work': { ...snapshot, meters: [...snapshot.meters, { ...snapshot.meters[0]!, meterId: 'five_hour', label: '5-hour', used: 30 }] },
+    };
+
+    settingByKeyState.current.connectedServicesQuotaPinnedMeterIdsByKey = { 'openai-codex/work': ['five_hour'] };
+
+    const screen = await renderSessionViewAndSettle({ routeServerId: 'server-route-1' });
+    expect(findAgentInput(screen).props.providerUsageGauge.usageRings
+      .map((ring: { meterId: string; ringValueLabel: string }) => [ring.meterId, ring.ringValueLabel]))
+      .toEqual([['weekly', '18'], ['five_hour', '70']]);
   });
 
   it('uses connected-service reset-credit consumption from the connected-service quota view for connected-service-bound account usage', async () => {
@@ -2802,7 +2818,7 @@ describe('SessionView (direct sessions)', () => {
 
     const screen = await renderSessionViewAndSettle({ routeServerId: 'server-route-1' });
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
-      ringValueLabel: '82',
+      ringValueLabel: '18',
       recoveryCreditSummary: expect.objectContaining({ availableCount: 1 }),
     }));
     expect(screen.findByTestId('session-usageLimit-recovery-consumeResetCredit')).toBeTruthy();
@@ -2825,7 +2841,7 @@ describe('SessionView (direct sessions)', () => {
     await updateSessionViewAndSettle(screen, { routeServerId: 'server-route-polled' });
 
     expect(findAgentInput(screen).props.providerUsageGauge).toEqual(expect.objectContaining({
-      ringValueLabel: '45',
+      ringValueLabel: '55',
       recoveryCreditSummary: null,
     }));
     expect(findAgentInput(screen).props.onProviderUsageRecoveryCreditPress).toBeUndefined();

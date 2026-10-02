@@ -73,7 +73,6 @@ describe('settings registry completeness', () => {
         expect(ACCOUNT_SETTING_ARTIFACTS.definitions.sessionProviderUsageGaugeWindowMode.storageScope).toBe('account');
         expect(ACCOUNT_SETTING_ARTIFACTS.defaults).toHaveProperty('sessionProviderUsageGaugeWindowMode', 'most_constrained');
         expect(ACCOUNT_SETTING_ARTIFACTS.defaults).toHaveProperty('sessionUsageGaugeLabels', false);
-        expect(ACCOUNT_SETTING_ARTIFACTS.defaults).toHaveProperty('connectedServicesSessionUsageMeterIdsByKey', {});
         expect(ACCOUNT_SETTING_ARTIFACTS.defaults.usageLimitRecoverySettingsV1).toMatchObject({
             promptMode: 'standard',
             resumePromptMode: 'standard',

@@ -1,7 +1,7 @@
 import React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderScreen, withPopoverWebGlobals } from '@/dev/testkit';
+import { renderScreen } from '@/dev/testkit';
 import { connectedServicesModuleState, installConnectedServicesCommonModuleMocks } from '../connectedServicesTestHelpers';
 import type { UseConnectedServiceQuotaSnapshotResult } from '@/hooks/server/connectedServices/useConnectedServiceQuotaSnapshot';
 
@@ -10,7 +10,7 @@ import type { UseConnectedServiceQuotaSnapshotResult } from '@/hooks/server/conn
 const NOW_MS = 1_700_000_000_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const applySettingsSpy = vi.fn(async (_delta: Record<string, unknown>) => {});
+const applySettingsSpy = vi.fn(async () => {});
 const modalSpies = vi.hoisted(() => ({
   confirm: vi.fn(),
   prompt: vi.fn(),
@@ -149,21 +149,9 @@ vi.mock('@/sync/sync', () => ({
   sync: { refreshProfile: vi.fn(async () => {}), applySettings: vi.fn(async () => {}) },
 }));
 
-// Keep the real settings writer. The synchronized mutation boundary commits
-// immediately while the rendered settings snapshot stays unchanged until rerender.
-vi.mock('@/sync/runtime/getSyncSingleton', () => ({
-  getSyncSingleton: () => ({ applySettings: (delta: Record<string, unknown>) => {
-    applySettingsSpy(delta);
-    settingsState.current = { ...settingsState.current, ...delta };
-  } }),
+vi.mock('@/sync/store/settingsWriters', () => ({
+  useApplySettings: () => applySettingsSpy,
 }));
-vi.mock('@/sync/domains/state/storageStore', async () => {
-  const actual = await vi.importActual<typeof import('@/sync/domains/state/storageStore')>('@/sync/domains/state/storageStore');
-  const store = actual.getStorage();
-  return { ...actual, getStorage: () => Object.assign(store.bind(undefined), store, {
-    getState: () => ({ ...store.getState(), settings: settingsState.current }),
-  }) };
-});
 
 vi.mock('@/sync/domains/connectedServices/storeConnectedServiceCredentialForAccount', () => ({
   storeConnectedServiceCredentialForAccount: connectedServiceCredentialSpies.storeConnectedServiceCredentialForAccount,
@@ -261,95 +249,8 @@ describe('ConnectedServiceProfileDetailView', () => {
     const screen = await renderScreen(<ConnectedServiceProfileDetailView />);
 
     expect(findByTestId(screen.tree, 'connected-service-profile-account')).toBeTruthy();
-    expect(findByTestId(screen.tree, 'connected-service-composer-extra-meters')).toBeTruthy();
     // The shared quota hook is mounted for the connected account.
     expect(quotaHookState.callSpy).toHaveBeenCalled();
-  });
-
-  it('selects real extra meters without changing account pins or discarding temporarily absent selections', async () => {
-    await withPopoverWebGlobals(async () => {
-    quotaHookState.value = buildQuotaResult({ snapshot: {
-      ...buildQuotaResult().snapshot!,
-      meters: [{ meterId: 'five_hour', label: '5-hour', used: null, limit: null, unit: 'unknown', utilizationPct: 20,
-        resetsAt: null, status: 'ok', details: {} }],
-    } });
-    settingsState.current = { ...settingsState.current,
-      connectedServicesSessionUsageMeterIdsByKey: { 'openai-codex/work': ['absent'], 'anthropic/other': ['weekly'] },
-      connectedServicesQuotaPinnedMeterIdsByKey: { 'openai-codex/work': ['weekly'] },
-    };
-    const { ConnectedServiceProfileDetailView } = await import('./ConnectedServiceProfileDetailView');
-    const screen = await renderScreen(<ConnectedServiceProfileDetailView />, {
-      // Native host measurement is the platform boundary; keep the real dropdown and popover.
-      createNodeMock: () => ({ measureInWindow: (callback: (x: number, y: number, width: number, height: number) => void) => callback(0, 0, 400, 48) }),
-    });
-    await screen.pressByTestIdAsync('connected-service-composer-extra-meters');
-    await act(flushAsyncHandlers);
-    // Flush the real Switch's Deferred host mount, rather than replacing this
-    // interaction owner with a test double.
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
-    const choice = screen.findAll((node) => typeof node.type === 'string' && node.props.testID === 'connected-service-composer-meter:five_hour')[0];
-    expect(choice).toBeTruthy();
-    await act(async () => {
-      choice?.props.onValueChange(true);
-      // RN Web's checkbox click bubbles through its rendered ancestors. Drive
-      // only host press handlers, keeping the real dropdown/Item/Switch owners.
-      for (let ancestor = choice?.parent; ancestor; ancestor = ancestor.parent) {
-        if (typeof ancestor.type === 'string' && typeof ancestor.props.onPress === 'function') {
-          ancestor.props.onPress({ target: choice, currentTarget: ancestor });
-        }
-      }
-    });
-    expect(applySettingsSpy).toHaveBeenCalledOnce();
-    expect(applySettingsSpy).toHaveBeenCalledWith({ connectedServicesSessionUsageMeterIdsByKey: {
-      'openai-codex/work': ['absent', 'five_hour'], 'anthropic/other': ['weekly'],
-    } });
-    });
-  });
-
-  it('keeps its hook order when the connected-services feature becomes enabled', async () => {
-    featureState.connectedServices = false;
-    const { ConnectedServiceProfileDetailView } = await import('./ConnectedServiceProfileDetailView');
-    const screen = await renderScreen(React.createElement(ConnectedServiceProfileDetailView, { key: 'profile', ...{ testRenderRevision: 0 } }));
-    featureState.connectedServices = true;
-    await screen.update(React.createElement(ConnectedServiceProfileDetailView, { key: 'profile', ...{ testRenderRevision: 1 } }));
-    expect(findByTestId(screen.tree, 'connected-service-composer-extra-meters')).toBeTruthy();
-  });
-
-  it('preserves two meter selections made before a settings rerender', async () => {
-    await withPopoverWebGlobals(async () => {
-      quotaHookState.value = buildQuotaResult({ snapshot: {
-        ...buildQuotaResult().snapshot!,
-        meters: ['five_hour', 'weekly'].map((meterId) => ({ meterId, label: meterId, used: null, limit: null,
-          unit: 'unknown', utilizationPct: 20, resetsAt: null, status: 'ok', details: {} })),
-      } });
-      settingsState.current = { ...settingsState.current, connectedServicesSessionUsageMeterIdsByKey: {
-        'openai-codex/work': ['absent'], 'anthropic/other': ['weekly'],
-      } };
-      const { ConnectedServiceProfileDetailView } = await import('./ConnectedServiceProfileDetailView');
-      const screen = await renderScreen(<ConnectedServiceProfileDetailView />, {
-        createNodeMock: () => ({ measureInWindow: (callback: (x: number, y: number, width: number, height: number) => void) => callback(0, 0, 400, 48) }),
-      });
-      await screen.pressByTestIdAsync('connected-service-composer-extra-meters');
-      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
-      const choices = ['five_hour', 'weekly'].map((meterId) => screen.findAll((node) => typeof node.type === 'string'
-        && node.props.testID === `connected-service-composer-meter:${meterId}`)[0]);
-      expect(choices.every(Boolean)).toBe(true);
-      await act(async () => {
-        choices[0]?.props.onValueChange(true);
-        choices[1]?.props.onValueChange(true);
-      });
-      expect(applySettingsSpy).toHaveBeenCalledTimes(2);
-      expect(applySettingsSpy).toHaveBeenLastCalledWith({ connectedServicesSessionUsageMeterIdsByKey: {
-        'openai-codex/work': ['absent', 'five_hour', 'weekly'], 'anthropic/other': ['weekly'],
-      } });
-      await act(async () => { choices[0]?.props.onValueChange(true); });
-      expect(applySettingsSpy).toHaveBeenCalledTimes(2);
-      await act(async () => { choices[0]?.props.onValueChange(false); });
-      expect(applySettingsSpy).toHaveBeenCalledTimes(3);
-      expect(applySettingsSpy).toHaveBeenLastCalledWith({ connectedServicesSessionUsageMeterIdsByKey: {
-        'openai-codex/work': ['absent', 'weekly'], 'anthropic/other': ['weekly'],
-      } });
-    });
   });
 
   it('renders the shared AccountBlock for retryable refresh-failure profiles', async () => {

@@ -63,11 +63,11 @@ function areProviderUsageWindowRingsEqual(
     return left.every((ring, index) => {
         const other = right[index];
         return !!other
-            && ring.window === other.window
             && ring.label === other.label
             && ring.meterId === other.meterId
             && ring.usedPct === other.usedPct
             && ring.ringValueLabel === other.ringValueLabel
+            && ring.valueLabel === other.valueLabel
             && ring.tone === other.tone;
     });
 }
@@ -152,11 +152,14 @@ export const AgentInputProviderUsageBadge = React.memo(function AgentInputProvid
     const rings = props.viewModel.usageRings.length > 0
         ? props.viewModel.usageRings
         : [{ meterId: props.viewModel.effectiveMeter.meterId, label: props.viewModel.effectiveMeter.label,
-            usedPct: props.viewModel.usedPct, ringValueLabel: props.viewModel.ringValueLabel, tone: props.viewModel.tone }];
+            usedPct: props.viewModel.usedPct, ringValueLabel: props.viewModel.ringValueLabel,
+            valueLabel: props.viewModel.valueLabel, tone: props.viewModel.tone }];
+    // Remaining-first, like the ring numbers. Extra rings are named so each one can be told apart.
+    const ringAccessibilityValues = rings.length === 1
+        ? [props.viewModel.badgeLabel]
+        : rings.map((ring) => `${ring.label} ${ring.valueLabel}`);
     const accessibilityLabel = t('agentInput.providerUsage.accessibilityLabel', {
-        value: rings.map((ring) => `${ring.label} ${t('agentInput.providerUsage.usedPercent', {
-            percent: `${ring.ringValueLabel}%`,
-        })}`).join(', '),
+        value: ringAccessibilityValues.join(', '),
     });
     const title = props.viewModel.providerDisplayName
         ? t('agentInput.providerUsage.titleForProvider', { provider: props.viewModel.providerDisplayName })
@@ -202,7 +205,7 @@ export const AgentInputProviderUsageBadge = React.memo(function AgentInputProvid
                             <TokenUsageRing
                                 used={ring.usedPct}
                                 limit={100}
-                                label={`${ring.label} ${t('agentInput.providerUsage.usedPercent', { percent: `${ring.ringValueLabel}%` })}`}
+                                label={rings.length === 1 ? accessibilityLabel : ringAccessibilityValues[index]}
                                 value={ring.ringValueLabel}
                                 tone={mapQuotaToneToTokenTone(ring.tone)}
                                 ringTestID={`agent-input-provider-usage-ring${testIdSuffix}`}

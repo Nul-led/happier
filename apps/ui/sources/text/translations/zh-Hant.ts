@@ -1782,8 +1782,6 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
             reconnectSubtitle: '重新驗證此設定檔',
             replaceTokenSubtitle: '替換此設定檔的憑證',
             connectionGroupTitle: '連線',
-            composerExtraMetersTitle: '額外用量儀表',
-            composerExtraMetersSubtitle: '選擇在主儀表旁顯示的用量週期。',
             connectedVia: '連線方式',
             connectedViaToken: '存取權杖',
             connectedViaOauth: 'OAuth',
@@ -5568,9 +5566,6 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
         dropToAttach: '拖放以附加檔案',
         providerUsage: {
             title: '提供者使用量',
-            windowSession: '5小時',
-            windowWeekly: '本週',
-            usedPercent: ({ percent }: { percent: string }) => `已用 ${percent}`,
             titleForProvider: ({ provider }: { provider: string }) => `${provider} 使用量`,
             activeAccount: ({ account }: { account: string }) => `帳號：${account}`,
             accessibilityLabel: ({ value }: { value: string }) => `提供者使用量：${value}`,
@@ -6943,7 +6938,7 @@ settingsSession: {
         },
         providerUsageGauge: {
             title: '提供者使用量',
-            footer: '當有可靠的提供者使用量資料時，控制輸入框旁顯示的配額儀表。',
+            footer: '當有可靠的提供者使用量資料時，控制輸入框旁顯示的配額儀表。在已連結的帳戶中釘選一個使用量視窗，即可將其顯示為額外的儀表。',
             visibilityTitle: '顯示提供者使用量儀表',
             visibilityEnabledSubtitle: '可用時在輸入框旁顯示提供者剩餘配額。',
             visibilityHiddenSubtitle: '在輸入框旁隱藏提供者配額。',

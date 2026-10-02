@@ -6,8 +6,6 @@ import { useUnistyles } from 'react-native-unistyles';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { isConnectedServiceQuotaMeterPercentRankable } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
 import { Switch } from '@/components/ui/forms/Switch';
 import { EmptyState } from '@/components/ui/empty/EmptyState';
 import { StatusPill } from '@/components/ui/status/StatusPill';
@@ -19,7 +17,6 @@ import { useAuth } from '@/auth/context/AuthContext';
 import { sync } from '@/sync/sync';
 import { useProfile, useSettings } from '@/sync/store/hooks';
 import { useApplySettings } from '@/sync/store/settingsWriters';
-import { getStorage } from '@/sync/domains/state/storageStore';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useConnectedServiceQuotaSnapshot } from '@/hooks/server/connectedServices/useConnectedServiceQuotaSnapshot';
 import { deleteConnectedServiceCredentialForAccount } from '@/sync/domains/connectedServices/storeConnectedServiceCredentialForAccount';
@@ -89,40 +86,15 @@ const ConnectionSection = React.memo(function ConnectionSection(props: Readonly<
   providerEmail?: string | null;
   connectedVia: string;
   testID: string;
-  additionalMeterIds: readonly string[];
-  onMeterSelectionChange: (meterId: string, checked?: boolean) => void;
 }>) {
   const { snapshot } = useConnectedServiceQuotaSnapshot({
     serviceId: props.serviceId,
     profileId: props.profileId,
   });
   const lastRefreshed = formatLastRefreshed(snapshot?.fetchedAt ?? null);
-  const [extraMetersOpen, setExtraMetersOpen] = React.useState(false);
-  // Details are demanded by the open picker; selection survives temporary absent meters.
-  const meterOptions = extraMetersOpen ? (snapshot?.meters ?? [])
-    .filter(isConnectedServiceQuotaMeterPercentRankable)
-    .map((meter) => ({
-      id: meter.meterId, title: meter.label,
-      rightElement: <Switch testID={`connected-service-composer-meter:${meter.meterId}`} compact accessibilityLabel={meter.label}
-        value={props.additionalMeterIds.includes(meter.meterId)}
-        onValueChange={(checked) => props.onMeterSelectionChange(meter.meterId, checked)} />,
-    })) : [];
 
   return (
     <ItemGroup title={t('connectedServices.profile.connectionGroupTitle')}>
-      <DropdownMenu
-        open={extraMetersOpen} onOpenChange={setExtraMetersOpen}
-        closeOnSelect={false} search={false} rowKind="item"
-        itemRowProps={{ rightElementOutsidePressable: true }}
-        itemTrigger={{
-          title: t('connectedServices.profile.composerExtraMetersTitle'),
-          subtitle: t('connectedServices.profile.composerExtraMetersSubtitle'),
-          showSelectedDetail: false, showSelectedSubtitle: false,
-          itemProps: { testID: 'connected-service-composer-extra-meters',
-            disabled: !(snapshot?.meters.some(isConnectedServiceQuotaMeterPercentRankable)) },
-        }}
-        items={meterOptions} onSelect={props.onMeterSelectionChange}
-      />
       <Item
         title={t('connectedServices.profile.profileId')}
         subtitle={props.profileId}
@@ -404,22 +376,6 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
     onReconnect: handleReconnect,
   });
 
-  const composerExtraMetersKey = connectedServiceProfileKey({ serviceId, profileId });
-  const additionalComposerMeterIds = settings.connectedServicesSessionUsageMeterIdsByKey?.[composerExtraMetersKey] ?? [];
-  const handleComposerMeterSelectionChange = (meterId: string, checked?: boolean) => {
-    // Read the canonical local settings at write time: multiple interactions may
-    // arrive before React receives the synchronously committed settings update.
-    const valuesByKey = getStorage().getState().settings.connectedServicesSessionUsageMeterIdsByKey ?? {};
-    const current = valuesByKey[composerExtraMetersKey] ?? [];
-    const selected = current.includes(meterId);
-    const nextSelected = checked ?? !selected;
-    if (nextSelected === selected) return;
-    const ids = nextSelected ? [...current, meterId] : current.filter((id) => id !== meterId);
-    applySettings({ connectedServicesSessionUsageMeterIdsByKey: {
-      ...valuesByKey, [composerExtraMetersKey]: ids,
-    } });
-  };
-
   return (
     <ItemList>
       {isUsable ? (
@@ -540,8 +496,6 @@ export const ConnectedServiceProfileDetailView = React.memo(function ConnectedSe
           connectedVia={kind === 'token'
             ? t('connectedServices.profile.connectedViaToken')
             : t('connectedServices.profile.connectedViaOauth')}
-          additionalMeterIds={additionalComposerMeterIds}
-          onMeterSelectionChange={handleComposerMeterSelectionChange}
           testID="connected-service-profile"
         />
       ) : kind === 'oauth' && status === 'needs_reauth' ? (

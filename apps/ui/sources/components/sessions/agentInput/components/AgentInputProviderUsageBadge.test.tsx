@@ -39,7 +39,7 @@ function viewModel(): ConnectedServiceQuotaGaugeViewModel {
         remainingPct: 18,
         usedPct: 82,
         valueLabel: '18% left',
-        ringValueLabel: '82',
+        ringValueLabel: '18',
         badgeLabel: '18% left',
         scopePrefix: null,
         primaryValueSemantics: 'remaining',
@@ -81,48 +81,14 @@ function viewModel(): ConnectedServiceQuotaGaugeViewModel {
 }
 
 describe('AgentInputProviderUsageBadge', () => {
-    it('places the final selected meter in the shared popover scroller and updates rendered edge indicators', async () => {
-        const meters = Array.from({ length: 24 }, (_, index) => ({
-            meterId: `reported_${index}`, label: `Reported ${index}`, used: index, limit: 100,
-            unit: 'count' as const, utilizationPct: null, resetsAt: null, status: 'ok' as const,
-            details: { limitCategory: 'usage_limit' as const },
-        }));
-        const vm = computeConnectedServiceQuotaGaugeViewModel({
-            snapshot: { v: 1, serviceId: 'openai-codex', profileId: 'work', fetchedAt: 1_000,
-                staleAfterMs: 60_000, planLabel: null, accountLabel: null, meters: [...meters, {
-                    meterId: 'requests', label: 'Requests', used: 99, limit: 100, unit: 'requests',
-                    utilizationPct: null, resetsAt: null, status: 'ok', details: { limitCategory: 'rate_limit' as const },
-                }] },
-            windowMode: 'most_constrained', additionalMeterIds: ['requests'], nowMs: 2_000,
-            formatter: fixtureFormatter,
-        });
-        if (!vm) throw new Error('Expected reported quota');
-        const screen = await renderScreen(<AgentInputProviderUsageBadge viewModel={vm} />);
-        act(() => { screen.findByTestId('agent-input-provider-usage-badge')?.props.onPress?.(); });
-        const scroll = screen.findAll((node) => typeof node.type === 'string'
-            && String(node.type).includes('ScrollView')
-            && node.findAll((child) => child.props.testID === 'agent-input-provider-usage-meter:requests').length > 0);
-        expect(scroll).toHaveLength(1);
-        // Native I/O is supplied at the test boundary; this proves rendered edge behavior, not a physical gesture.
-        act(() => {
-            scroll[0]!.props.onLayout({ nativeEvent: { layout: { width: 280, height: 200 } } });
-            scroll[0]!.props.onContentSizeChange(280, 1_400);
-        });
-        expect(screen.findAll((node) => node.props.name === 'caret-down').length).toBeGreaterThan(0);
-        act(() => { scroll[0]!.props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 1_200 } } }); });
-        expect(screen.findAll((node) => node.props.name === 'caret-down')).toHaveLength(0);
-        expect(screen.findAll((node) => node.props.name === 'caret-up').length).toBeGreaterThan(0);
-        expect(screen.findByTestId('agent-input-provider-usage-meter:requests')).toBeTruthy();
-    });
-
-    it('includes every visible extra meter in the actual usage popover across comparison families', async () => {
+    it('renders a pinned extra as its own remaining-first ring with its own accessible name', async () => {
         const vm = computeConnectedServiceQuotaGaugeViewModel({
             snapshot: {
                 v: 1, serviceId: 'openai-codex', profileId: 'work', fetchedAt: 1_000, staleAfterMs: 60_000,
                 planLabel: null, accountLabel: null, meters: [
                     { meterId: 'weekly', label: 'Weekly', used: 82, limit: 100, unit: 'count', utilizationPct: null,
                         resetsAt: null, status: 'ok', details: { limitCategory: 'usage_limit' } },
-                    { meterId: 'requests', label: 'Requests', used: 99, limit: 100, unit: 'requests', utilizationPct: null,
+                    { meterId: 'requests', label: 'Requests', used: 30, limit: 100, unit: 'requests', utilizationPct: null,
                         resetsAt: null, status: 'ok', details: { limitCategory: 'rate_limit' } },
                 ],
             },
@@ -131,14 +97,22 @@ describe('AgentInputProviderUsageBadge', () => {
         });
         if (!vm) throw new Error('Expected a reported quota gauge');
         const screen = await renderScreen(<AgentInputProviderUsageBadge viewModel={vm} />);
-        expect(screen.findByTestId('agent-input-provider-usage-value:requests')).toBeTruthy();
+
+        expect(screen.findByTestId('agent-input-provider-usage-value')?.props.children).toBe('18');
+        expect(screen.findByTestId('agent-input-provider-usage-value:requests')?.props.children).toBe('70');
+        const imageLabels = screen.findAll((node) => typeof node.type === 'string' && node.props.accessibilityRole === 'image')
+            .map((node) => node.props.accessibilityLabel);
+        expect(imageLabels).toEqual(['Weekly 18% left', 'Requests 70% left']);
+        const aggregate = String(screen.findByTestId('agent-input-provider-usage-badge')?.props.accessibilityLabel);
+        expect(aggregate).toContain('Weekly 18% left');
+        expect(aggregate).toContain('Requests 70% left');
         act(() => { screen.findByTestId('agent-input-provider-usage-badge')?.props.onPress?.(); });
         expect(screen.findByTestId('agent-input-provider-usage-meter:requests')).toBeTruthy();
     });
 
-    it('keeps meter labels off by default and honors explicit label intent', async () => {
+    it('keeps meter labels off by default and shows them when enabled', async () => {
         const vm = { ...viewModel(), usageRings: [
-            { window: 'session' as const, meterId: 'five_hour', label: '5-hour', usedPct: 10, ringValueLabel: '10', tone: 'neutral' as const },
+            { meterId: 'five_hour', label: '5-hour', usedPct: 10, ringValueLabel: '90', valueLabel: '90% left', tone: 'neutral' as const },
         ] };
         const screen = await renderScreen(<AgentInputProviderUsageBadge viewModel={vm} />);
         expect(screen.findByTestId('agent-input-provider-usage-meter-label')).toBeNull();
@@ -146,27 +120,13 @@ describe('AgentInputProviderUsageBadge', () => {
         expect(screen.findByTestId('agent-input-provider-usage-meter-label')).toBeTruthy();
     });
 
-    it('announces the single ring without window meters as the used percent it shows', async () => {
+    it('announces the default single ring by the remaining percent it shows', async () => {
         const screen = await renderScreen(<AgentInputProviderUsageBadge viewModel={viewModel()} />);
 
-        expect(screen.findByTestId('agent-input-provider-usage-value')?.props.children).toBe('82');
+        expect(screen.findByTestId('agent-input-provider-usage-value')?.props.children).toBe('18');
         const label = String(screen.findByTestId('agent-input-provider-usage-badge')?.props.accessibilityLabel);
-        expect(label).toContain('82% used');
-        expect(label).not.toContain('left');
-    });
-
-    it('announces each real ring only by its own meter and used percent while the button retains the aggregate', async () => {
-        const vm = { ...viewModel(), usageRings: [
-            { window: 'weekly' as const, meterId: 'weekly', label: 'Weekly', usedPct: 82, ringValueLabel: '82', tone: 'warning' as const },
-            { window: 'session' as const, meterId: 'five_hour', label: '5-hour', usedPct: 20, ringValueLabel: '20', tone: 'neutral' as const },
-        ] };
-        const screen = await renderScreen(<AgentInputProviderUsageBadge viewModel={vm} />);
-        const imageLabels = screen.findAll((node) => typeof node.type === 'string' && node.props.accessibilityRole === 'image')
-            .map((node) => node.props.accessibilityLabel);
-        expect(imageLabels).toEqual(['Weekly 82% used', '5-hour 20% used']);
-        const aggregate = String(screen.findByTestId('agent-input-provider-usage-badge')?.props.accessibilityLabel);
-        expect(aggregate).toContain('Weekly 82% used');
-        expect(aggregate).toContain('5-hour 20% used');
+        expect(label).toContain('18% left');
+        expect(label).not.toContain('used');
     });
 
     it('keeps subscription details live while the usage popover remains open', async () => {

@@ -3063,8 +3063,6 @@ export const zhHans: TranslationStructure = {
       reconnectSubtitle: "重新认证此配置",
       replaceTokenSubtitle: "替换此配置的凭据",
       connectionGroupTitle: "连接",
-      composerExtraMetersTitle: '额外用量仪表',
-      composerExtraMetersSubtitle: '选择在主仪表旁显示的用量周期。',
       connectedVia: "连接方式",
       connectedViaToken: "访问令牌",
       connectedViaOauth: "OAuth",
@@ -6426,9 +6424,6 @@ export const zhHans: TranslationStructure = {
     dropToAttach: "拖放以附加文件",
     providerUsage: {
       title: "提供商使用量",
-      windowSession: "5小时",
-      windowWeekly: "本周",
-      usedPercent: ({ percent }: { percent: string }) => `已用 ${percent}`,
       titleForProvider: ({ provider }: { provider: string }) => `${provider} 使用量`,
       activeAccount: ({ account }: { account: string }) => `账号：${account}`,
       accessibilityLabel: ({ value }: { value: string }) =>
@@ -8023,7 +8018,7 @@ settingsSession: {
     providerUsageGauge: {
       title: "提供方使用量",
       footer:
-        "当有可靠的提供方使用量数据时，控制输入框旁显示的配额仪表。",
+        "当有可靠的提供方使用量数据时，控制输入框旁显示的配额仪表。在已连接的账户中固定一个用量窗口，即可将其显示为额外的仪表。",
       visibilityTitle: "显示提供方使用量仪表",
       visibilityEnabledSubtitle:
         "可用时在输入框旁显示提供方剩余配额。",

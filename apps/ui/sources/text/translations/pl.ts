@@ -3173,8 +3173,6 @@ export const pl: TranslationStructure = {
       reconnectSubtitle: "Ponownie uwierzytelnij ten profil",
       replaceTokenSubtitle: "Zastąp poświadczenia dla tego profilu",
       connectionGroupTitle: "Połączenie",
-      composerExtraMetersTitle: 'Dodatkowe wskaźniki',
-      composerExtraMetersSubtitle: 'Wybierz okresy użycia wyświetlane obok głównego wskaźnika.',
       connectedVia: "Połączono przez",
       connectedViaToken: "Token dostępu",
       connectedViaOauth: "OAuth",
@@ -6652,9 +6650,6 @@ export const pl: TranslationStructure = {
     dropToAttach: "Upuść, aby dołączyć pliki",
     providerUsage: {
       title: "Użycie dostawcy",
-      windowSession: "5 godz.",
-      windowWeekly: "Tydzień",
-      usedPercent: ({ percent }: { percent: string }) => `${percent} wykorzystano`,
       titleForProvider: ({ provider }: { provider: string }) => `Użycie ${provider}`,
       activeAccount: ({ account }: { account: string }) => `Konto: ${account}`,
       accessibilityLabel: ({ value }: { value: string }) =>
@@ -8258,7 +8253,7 @@ settingsSession: {
       providerUsageGauge: {
         title: "Użycie dostawcy",
         footer:
-          "Steruje wskaźnikiem limitu obok pola wpisywania, gdy dostępne są wiarygodne dane użycia dostawcy.",
+          "Steruje wskaźnikiem limitu obok pola wpisywania, gdy dostępne są wiarygodne dane użycia dostawcy. Przypnij okno użycia na połączonym koncie, aby pokazać je jako dodatkowy wskaźnik.",
         visibilityTitle: "Pokaż wskaźnik użycia dostawcy",
         visibilityEnabledSubtitle:
           "Pokazuj pozostały limit dostawcy obok pola wpisywania, gdy jest dostępny.",

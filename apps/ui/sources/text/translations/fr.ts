@@ -2918,8 +2918,6 @@ export const fr: TranslationStructure = {
             reconnectSubtitle: 'Ré-authentifier ce profil',
             replaceTokenSubtitle: 'Remplacer les identifiants de ce profil',
             connectionGroupTitle: 'Connexion',
-            composerExtraMetersTitle: 'Indicateurs supplémentaires',
-            composerExtraMetersSubtitle: 'Choisir les fenêtres d’utilisation à afficher à côté de l’indicateur principal.',
             connectedVia: 'Connecté via',
             connectedViaToken: 'Access token',
             connectedViaOauth: 'OAuth',
@@ -6250,9 +6248,6 @@ export const fr: TranslationStructure = {
         dropToAttach: 'Dépose pour joindre des fichiers',
         providerUsage: {
             title: 'Usage du provider',
-            windowSession: '5 h',
-            windowWeekly: 'Semaine',
-            usedPercent: ({ percent }: { percent: string }) => `${percent} utilisé`,
             titleForProvider: ({ provider }: { provider: string }) => `${provider} — usage`,
             activeAccount: ({ account }: { account: string }) => `Compte : ${account}`,
             accessibilityLabel: ({ value }: { value: string }) => `Usage du provider : ${value}`,
@@ -7790,7 +7785,7 @@ settingsSession: {
           },
           providerUsageGauge: {
               title: 'Usage du provider',
-              footer: 'Contrôle la jauge de quota affichée à côté du composer quand l’usage du provider est fiable.',
+              footer: 'Contrôle la jauge de quota affichée à côté du composer quand l’usage du provider est fiable. Épinglez une fenêtre d’usage sur un compte connecté pour l’afficher comme jauge supplémentaire.',
               visibilityTitle: 'Afficher la jauge d’usage du provider',
               visibilityEnabledSubtitle: 'Affiche le quota restant du provider à côté du composer quand il est disponible.',
               visibilityHiddenSubtitle: 'Masque le quota du provider près du composer.',

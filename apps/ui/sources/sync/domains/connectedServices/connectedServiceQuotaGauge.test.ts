@@ -98,7 +98,8 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
         expect(viewModel?.effectiveMeter.meterId).toBe('weekly');
         expect(viewModel?.remainingPct).toBe(12);
         expect(viewModel?.badgeLabel).toBe('12% left');
-        expect(viewModel?.ringValueLabel).toBe('88');
+        // Remaining-first ring number (battery model, user decision 2026-07-10).
+        expect(viewModel?.ringValueLabel).toBe('12');
         expect(viewModel?.tone).toBe('warning');
         expect(viewModel?.allMeterRows.map((row) => row.meterId)).toEqual(['daily', 'weekly']);
     });
@@ -130,7 +131,7 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
         });
     });
 
-    it('defaults to one most-constrained meter and includes only selected reported extras', () => {
+    it('shows one most-constrained ring by default and appends pinned extras, remaining-first', () => {
         const usageSnapshot = snapshot([
             meter({ meterId: 'five_hour', label: '5-hour', utilizationPct: 10, unit: 'unknown' }),
             meter({ meterId: 'seven_day', label: 'Weekly', utilizationPct: 25, unit: 'unknown' }),
@@ -139,12 +140,16 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
         const params = { snapshot: usageSnapshot, windowMode: 'most_constrained' as const, nowMs: 2_000, formatter };
         expect(computeConnectedServiceQuotaGaugeViewModel(params)?.usageRings.map((ring) => ring.meterId))
             .toEqual(['seven_day_fable']);
-        expect(computeConnectedServiceQuotaGaugeViewModel({
+        const rings = computeConnectedServiceQuotaGaugeViewModel({
             ...params, additionalMeterIds: ['seven_day_fable', 'five_hour', 'five_hour', 'missing'],
-        })?.usageRings.map((ring) => ring.meterId)).toEqual(['seven_day_fable', 'five_hour']);
+        })?.usageRings;
+        expect(rings?.map((ring) => [ring.meterId, ring.ringValueLabel, ring.valueLabel])).toEqual([
+            ['seven_day_fable', '39', '39% left'],
+            ['five_hour', '90', '90% left'],
+        ]);
     });
 
-    it('preserves the explicit primary window and allows an extra from another window', () => {
+    it('classifies seven_day as weekly, not daily, for the weekly window mode', () => {
         const viewModel = computeConnectedServiceQuotaGaugeViewModel({
             snapshot: snapshot([
                 meter({ meterId: 'five_hour', label: '5-hour', utilizationPct: 90, unit: 'unknown' }),
@@ -153,6 +158,7 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
             windowMode: 'weekly', additionalMeterIds: ['five_hour'], nowMs: 2_000, formatter,
         });
         expect(viewModel?.effectiveMeter.meterId).toBe('seven_day');
+        expect(viewModel?.scopePrefix).toBe('w.');
         expect(viewModel?.usageRings.map((ring) => ring.meterId)).toEqual(['seven_day', 'five_hour']);
     });
 

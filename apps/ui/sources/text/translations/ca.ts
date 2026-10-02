@@ -2995,8 +2995,6 @@ export const ca: TranslationStructure = {
             reconnectSubtitle: 'Torna a autenticar aquest perfil',
             replaceTokenSubtitle: 'Substitueix les credencials d’aquest perfil',
             connectionGroupTitle: 'Connexió',
-            composerExtraMetersTitle: 'Indicadors addicionals al compositor',
-            composerExtraMetersSubtitle: 'Tria les finestres d’ús que vols mostrar al costat de l’indicador principal.',
             connectedVia: 'Connectat mitjançant',
             connectedViaToken: 'Token d’accés',
             connectedViaOauth: 'OAuth',
@@ -6262,9 +6260,6 @@ deps: {
         dropToAttach: 'Deixa anar per adjuntar fitxers',
         providerUsage: {
             title: 'Ús del proveïdor',
-            windowSession: '5h',
-            windowWeekly: 'Setmana',
-            usedPercent: ({ percent }: { percent: string }) => `${percent} usat`,
             titleForProvider: ({ provider }: { provider: string }) => `Ús de ${provider}`,
             activeAccount: ({ account }: { account: string }) => `Compte: ${account}`,
             accessibilityLabel: ({ value }: { value: string }) => `Ús del proveïdor: ${value}`,
@@ -7807,7 +7802,7 @@ settingsSession: {
           },
           providerUsageGauge: {
               title: 'Ús del proveïdor',
-              footer: 'Controla l’indicador de quota que es mostra al costat del compositor quan hi ha dades fiables d’ús del proveïdor.',
+              footer: 'Controla l’indicador de quota que es mostra al costat del compositor quan hi ha dades fiables d’ús del proveïdor. Fixa una finestra d’ús en un compte connectat per mostrar-la com a indicador addicional.',
               visibilityTitle: 'Mostra l’indicador d’ús del proveïdor',
               visibilityEnabledSubtitle: 'Mostra la quota restant del proveïdor al costat del compositor quan estigui disponible.',
               visibilityHiddenSubtitle: 'Amaga la quota del proveïdor al compositor.',

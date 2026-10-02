@@ -2919,8 +2919,6 @@ export const en = {
             reconnectSubtitle: 'Re-authenticate this profile',
             replaceTokenSubtitle: 'Replace credentials for this profile',
             connectionGroupTitle: 'Connection',
-            composerExtraMetersTitle: 'Extra composer gauges',
-            composerExtraMetersSubtitle: 'Choose usage windows to show beside the main gauge.',
             connectedVia: 'Connected via',
             connectedViaToken: 'Access token',
             connectedViaOauth: 'OAuth',
@@ -6293,9 +6291,6 @@ export const en = {
         dropToAttach: 'Drop to attach files',
         providerUsage: {
             title: 'Provider usage',
-            windowSession: '5h',
-            windowWeekly: 'Week',
-            usedPercent: ({ percent }: { percent: string }) => `${percent} used`,
             titleForProvider: ({ provider }: { provider: string }) => `${provider} usage`,
             activeAccount: ({ account }: { account: string }) => `Account: ${account}`,
             accessibilityLabel: ({ value }: { value: string }) => `Provider usage: ${value}`,
@@ -7833,7 +7828,7 @@ settingsSession: {
           },
           providerUsageGauge: {
               title: 'Provider usage',
-              footer: 'Controls the quota gauge shown beside the composer when reliable provider usage is available.',
+              footer: 'Controls the quota gauge shown beside the composer when reliable provider usage is available. Pin a usage window on a connected account to show it as an extra gauge.',
               visibilityTitle: 'Show provider usage gauge',
               visibilityEnabledSubtitle: 'Show remaining provider quota next to the composer when available.',
               visibilityHiddenSubtitle: 'Hide provider quota from the composer.',

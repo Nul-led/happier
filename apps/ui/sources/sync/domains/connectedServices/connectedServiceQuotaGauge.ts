@@ -29,16 +29,16 @@ export type ConnectedServiceQuotaGaugeWindowMode =
 
 export type ConnectedServiceQuotaGaugeTone = 'neutral' | 'warning' | 'critical';
 
-export type ConnectedServiceQuotaGaugeWindow = 'session' | 'daily' | 'weekly';
+type ConnectedServiceQuotaGaugeWindow = 'session' | 'daily' | 'weekly';
 
-export type ConnectedServiceQuotaGaugeRingWindow = ConnectedServiceQuotaGaugeWindow;
-
-export type ConnectedServiceQuotaGaugeWindowRing = Readonly<{
-    window: ConnectedServiceQuotaGaugeRingWindow | null;
-    label: string;
+/** One composer ring. Its number is the remaining percent, like the main gauge. */
+export type ConnectedServiceQuotaGaugeRing = Readonly<{
     meterId: string;
+    label: string;
     usedPct: number;
     ringValueLabel: string;
+    /** Remaining-first value text, e.g. "18% left". */
+    valueLabel: string;
     tone: ConnectedServiceQuotaGaugeTone;
 }>;
 
@@ -100,8 +100,8 @@ export type ConnectedServiceQuotaGaugeViewModel = Readonly<{
     recoveryCreditSummary: ConnectedServiceQuotaRecoveryCreditSummary | null;
     effectiveMeter: ConnectedServiceQuotaMeterV1;
     allMeterRows: readonly ConnectedServiceQuotaGaugeMeterRow[];
-    /** Selected main meter, followed by explicitly selected reported extras. */
-    usageRings: readonly ConnectedServiceQuotaGaugeWindowRing[];
+    /** The main meter, followed by the account's pinned meters that the snapshot reports. */
+    usageRings: readonly ConnectedServiceQuotaGaugeRing[];
 }>;
 
 export type ConnectedServiceQuotaGaugeSourceKind =
@@ -164,7 +164,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * from its name (Claude `five_hour` / `seven_day_*`). Weekly names are checked before daily ones
  * because `seven_day` also carries a `day` token.
  */
-export function resolveConnectedServiceQuotaMeterWindow(
+function resolveConnectedServiceQuotaMeterWindow(
     meter: Pick<ConnectedServiceQuotaMeterV1, 'meterId' | 'label' | 'windowDurationMs'>,
 ): ConnectedServiceQuotaGaugeWindow | null {
     const durationMs = meter.windowDurationMs;
@@ -339,6 +339,7 @@ function buildMeterRow(
 export function computeConnectedServiceQuotaGaugeViewModel(_params: Readonly<{
     snapshot: ConnectedServiceQuotaSnapshotV1 | null;
     windowMode: ConnectedServiceQuotaGaugeWindowMode;
+    /** Pinned meters of the session's connected account, shown as extra rings. */
     additionalMeterIds?: readonly string[];
     nowMs: number;
     formatter: ConnectedServiceQuotaGaugeLabelFormatter;
@@ -375,7 +376,7 @@ export function computeConnectedServiceQuotaGaugeViewModel(_params: Readonly<{
     if (!selectedRow) return null;
 
     const displayedMeterRows = [...new Set([effectiveMeter.meterId, ...(params.additionalMeterIds ?? [])])].flatMap((meterId) => {
-        // Explicit extras may cross comparison families, but still share the reliability gate.
+        // Pinned extras may cross comparison families, but still share the reliability gate.
         const meter = params.snapshot?.meters.find((candidate) => candidate.meterId === meterId
             && isConnectedServiceQuotaMeterPercentRankable(candidate));
         const row = meter ? buildMeterRow(meter, params.nowMs, params.formatter) : null;
@@ -431,7 +432,7 @@ export function computeConnectedServiceQuotaGaugeViewModel(_params: Readonly<{
         usedPct: selectedRow.usedPct,
         primaryValueSemantics: 'remaining',
         valueLabel: remainingValueLabel,
-        ringValueLabel: String(Math.round(selectedRow.usedPct)),
+        ringValueLabel: String(roundedRemaining),
         badgeLabel: selectedWindowPrefix ? `${selectedWindowPrefix} ${remainingValueLabel}` : remainingValueLabel,
         scopePrefix: selectedWindowPrefix,
         detailRightLabel: selectedRow.detailRightLabel,
@@ -442,10 +443,17 @@ export function computeConnectedServiceQuotaGaugeViewModel(_params: Readonly<{
         recoveryCreditSummary: summarizeConnectedServiceQuotaRecoveryCredits(params.snapshot.recoveryCredits, params.nowMs),
         effectiveMeter,
         allMeterRows,
-        usageRings: displayedMeterRows.map(({ meter, row }) => ({
-            meterId: meter.meterId, label: row.label, window: resolveConnectedServiceQuotaMeterWindow(meter),
-            usedPct: row.usedPct, ringValueLabel: String(Math.round(row.usedPct)), tone: row.tone,
-        })),
+        usageRings: displayedMeterRows.map(({ meter, row }) => {
+            const ringRemaining = Math.round(row.remainingPct);
+            return {
+                meterId: meter.meterId,
+                label: row.label,
+                usedPct: row.usedPct,
+                ringValueLabel: String(ringRemaining),
+                valueLabel: params.formatter.remaining({ percent: `${ringRemaining}%` }),
+                tone: row.tone,
+            };
+        }),
     };
 }
 
