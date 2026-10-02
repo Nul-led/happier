@@ -126,6 +126,8 @@ describe('ActivitySpinner (native)', () => {
     it('draws the H with seven dots whose brightness the native driver reads from the frame table', async () => {
         const { getDotSpinnerFrames, readDotSeries } = await import('./activitySpinner/dotSpinnerFrames');
         const { screen, dots, running } = await renderDotSpinner({});
+        const { t } = await import('@/text');
+        expect(screen.findHostByTestId('spinner')!.props.accessibilityLabel).toBe(t('common.loading'));
 
         expect(screen.findAllByType('ActivityIndicator' as never)).toHaveLength(0);
         expect(dots).toHaveLength(7);
@@ -352,6 +354,8 @@ describe('ActivitySpinner (native)', () => {
 
         it('animates by default and never hands the platform component an unknown prop', async () => {
             const props = await renderClassicSpinner({});
+            const { t } = await import('@/text');
+            expect(props.accessibilityLabel).toBe(t('common.loading'));
 
             expect(props.animating).toBeUndefined();
             expect(props).not.toHaveProperty('animationEnabled');

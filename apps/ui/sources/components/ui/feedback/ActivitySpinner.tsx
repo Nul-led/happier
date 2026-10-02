@@ -15,6 +15,7 @@ import {
     type LoadingIndicatorStyleId,
 } from '@/sync/domains/settings/registry/local/loadingIndicatorStyleSetting';
 import { useLocalSetting } from '@/sync/store/hooks';
+import { t } from '@/text';
 import { DotSpinnerNative } from './activitySpinner/DotSpinnerNative';
 import { DotSpinnerWeb } from './activitySpinner/DotSpinnerWeb';
 import type { DotSpinnerInk } from './activitySpinner/dotSpinnerFrames';
@@ -93,14 +94,15 @@ export function iconMatchedSpinnerSize(iconSize: number): number {
  */
 export function ActivitySpinner(props: ActivitySpinnerProps) {
     // Native hidden spinners retain their layout host; that placeholder must not announce work.
-    const normalizedProps = Platform.OS !== 'web' && props.animating === false && props.hidesWhenStopped !== false
-        ? {
-            ...props,
+    const normalizedProps = {
+        ...props,
+        accessibilityLabel: props.accessibilityLabel ?? t('common.loading'),
+        ...(Platform.OS !== 'web' && props.animating === false && props.hidesWhenStopped !== false ? {
             accessible: false,
             accessibilityElementsHidden: true,
             importantForAccessibility: 'no-hide-descendants' as const,
-        }
-        : props;
+        } : null),
+    };
     const { theme } = useUnistyles();
     const storedStyle = useLocalSetting('loadingIndicatorStyle');
     const reduceMotion = useReducedMotionPreference();
