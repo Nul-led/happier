@@ -1,7 +1,7 @@
 import { lstat, mkdir, mkdtemp, open, readdir, readFile, rm } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 
-import { parse, stringify, type TomlTable, type TomlValue } from 'smol-toml';
+import { stringify, type TomlTable, type TomlValue } from 'smol-toml';
 
 import {
   resolveConnectedServicesProviderStateSharingPolicyV1,
@@ -23,6 +23,7 @@ import {
   importConnectedServiceSessionFiles,
   type ConnectedServiceSessionFileImportDetail,
 } from '@/daemon/connectedServices/stateSharing/importConnectedServiceSessionFiles';
+import { logger } from '@/ui/logger';
 
 import { resolveConfiguredCodexSqliteHome } from './codexStateFileNames';
 import { reconcileCodexSharedJsonlState } from './reconcileCodexSharedJsonlState';
@@ -87,17 +88,20 @@ function asTomlTable(value: TomlValue | undefined): TomlTable | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as TomlTable : null;
 }
 
-async function readCodexProfileConfig(effectiveCodexHome: string): Promise<Readonly<{
-  content: string | null;
-  hookState: TomlTable;
-}>> {
+async function readCodexProfileHookState(effectiveCodexHome: string): Promise<TomlTable> {
   const configPath = join(effectiveCodexHome, 'config.toml');
   try {
     // Only preferences owned by this profile may survive replacement. A linked
     // native config does not establish a profile-owned hook trust decision.
-    if (!(await lstat(configPath)).isFile()) return { content: null, hookState: {} };
+    if (!(await lstat(configPath)).isFile()) return {};
     const content = await readFile(configPath, 'utf8');
-    const config = parseConnectedServiceTomlConfig(content, configPath);
+    let config: TomlTable;
+    try {
+      config = parseConnectedServiceTomlConfig(content, configPath);
+    } catch (error) {
+      logger.infoFile('[Codex] Rebuilding malformed profile config from native config or defaults', error);
+      return {};
+    }
     const states = asTomlTable(asTomlTable(config.hooks)?.state);
     const ownState: TomlTable = {};
     for (const [key, value] of Object.entries(states ?? {})) {
@@ -109,15 +113,15 @@ async function readCodexProfileConfig(effectiveCodexHome: string): Promise<Reado
       if (typeof state.enabled === 'boolean') fields.enabled = state.enabled;
       if (Object.keys(fields).length > 0) ownState[key] = fields;
     }
-    return { content, hookState: ownState };
+    return ownState;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return { content: null, hookState: {} };
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return {};
     throw error;
   }
 }
 
-function mergeCodexHookState(content: string, ownState: TomlTable): string {
-  const config = parse(content, { integersAsBigInt: 'asNeeded' });
+function mergeCodexHookState(content: string, ownState: TomlTable, configPath: string): string {
+  const config = parseConnectedServiceTomlConfig(content, configPath);
   const hooks = asTomlTable(config.hooks) ?? {};
   config.hooks = { ...hooks, state: { ...asTomlTable(hooks.state), ...ownState } };
   // Retain native trust hashes verbatim. Codex remains the authority that
@@ -264,10 +268,9 @@ export async function syncCodexConnectedServiceHome(params: Readonly<{
 
     await mkdir(params.destinationCodexHome, { recursive: true });
     const manifest = await readConnectedServiceStateSharingManifest(params.destinationCodexHome);
-    const profileConfig = settings.configMode === 'isolated'
-      ? { content: null, hookState: {} }
-      : await readCodexProfileConfig(params.previousCodexHome ?? params.destinationCodexHome);
-    const hookState = profileConfig.hookState;
+    const hookState = settings.configMode === 'isolated'
+      ? {}
+      : await readCodexProfileHookState(params.previousCodexHome ?? params.destinationCodexHome);
     const configEntryNames = await resolveCodexConfigEntryNames(sourceCodexHome);
     const stateEntryNames = codexConnectedServiceStateSharingDescriptor.state.entries.map((entry) => entry.path);
 
@@ -290,11 +293,8 @@ export async function syncCodexConnectedServiceHome(params: Readonly<{
         cwd: process.cwd(),
         existingManifest: manifest,
         configEntryNames,
-        copyFallbackContentByEntry: profileConfig.content !== null
-          ? { 'config.toml': profileConfig.content }
-          : undefined,
         copyTransformByEntry: Object.keys(hookState).length > 0
-          ? { 'config.toml': (content) => mergeCodexHookState(content, hookState) }
+          ? { 'config.toml': (content) => mergeCodexHookState(content, hookState, join(sourceCodexHome, 'config.toml')) }
           : undefined,
         stateEntryNames,
         prepareSharedStateSource: preflightSourceCodexHome ? async () => {

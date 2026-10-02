@@ -472,8 +472,9 @@ describe('syncCodexConnectedServiceHome', () => {
       const config = await readFile(join(destinationCodexHome, 'config.toml'), 'utf8');
       expect(parse(config)).toMatchObject({ hooks: { state: { [trustedHook]: { trusted_hash: 'a'.repeat(64) } } } });
       expect(config.match(/trusted_hash/g)).toHaveLength(1);
-      expect(config).toContain(`model = "${sourceConfigExists ? 'source' : 'profile'}"`);
-      if (!sourceConfigExists) expect(parse(config)).toMatchObject({ features: { experimental: true } });
+      expect(parse(config).model).toBe(sourceConfigExists ? 'source' : undefined);
+      expect(parse(config).features).toBeUndefined();
+      expect(parse(config).cli_auth_credentials_store).toBe('file');
       const manifest = JSON.parse(await readFile(join(destinationCodexHome, '.happier-state-sharing.json'), 'utf8')) as { configEntries: string[] };
       expect(manifest.configEntries).toContain('config.toml');
     } finally {

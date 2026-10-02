@@ -7,6 +7,8 @@ import { buildConnectedServiceCredentialRecord } from '@happier-dev/protocol';
 import { parse } from 'smol-toml';
 import { expect, it } from 'vitest';
 
+import { logger } from '@/ui/logger';
+
 import { readConnectedServiceStateSharingManifest } from '../stateSharing/connectedServiceStateSharingManifest';
 import { materializeConnectedServicesForSpawn } from './materializeConnectedServicesForSpawn';
 import { resolveConnectedServiceMaterializedRootDir } from './resolveConnectedServiceMaterializedRootDir';
@@ -14,7 +16,7 @@ import { resolveConnectedServiceMaterializedRootDir } from './resolveConnectedSe
 const firstHooks = '{"hooks":{"Stop":[]}}\n';
 const secondHooks = '{"hooks":{"SessionStart":[]}}\n';
 
-it.each(['native', 'profile'] as const)('reports a malformed %s TOML file without exposing config content or replacing the promoted home', async (invalidOwner) => {
+it('reports malformed native TOML without exposing config content or replacing the promoted home', async () => {
   const root = await mkdtemp(join(tmpdir(), 'happier-codex-invalid-config-'));
   try {
     const sourceHome = join(root, 'native');
@@ -36,7 +38,7 @@ it.each(['native', 'profile'] as const)('reports a malformed %s TOML file withou
     });
     const first = await materialize();
     const home = first!.env.CODEX_HOME!;
-    const invalidPath = join(invalidOwner === 'native' ? sourceHome : home, 'config.toml');
+    const invalidPath = join(sourceHome, 'config.toml');
     const malformed = 'fixture_secret = "synthetic-sensitive-config"\n[broken\n';
     await writeFile(invalidPath, malformed);
     const priorConfig = await readFile(join(home, 'config.toml'), 'utf8');
@@ -49,6 +51,55 @@ it.each(['native', 'profile'] as const)('reports a malformed %s TOML file withou
     expect(reported).not.toContain('synthetic-sensitive-config');
     await expect(readFile(join(home, 'config.toml'), 'utf8')).resolves.toBe(priorConfig);
     await expect(readFile(join(home, 'hooks.json'), 'utf8')).resolves.toBe(firstHooks);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+it.each([true, false])('rebuilds malformed profile TOML and permits later spawns when native config exists: %s', async (nativeConfigExists) => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-codex-profile-recovery-'));
+  try {
+    const sourceHome = join(root, 'native');
+    await mkdir(sourceHome, { recursive: true });
+    if (nativeConfigExists) await writeFile(join(sourceHome, 'config.toml'), 'model = "native"\n');
+    await writeFile(join(sourceHome, 'hooks.json'), firstHooks);
+    const record = buildConnectedServiceCredentialRecord({
+      now: 10, serviceId: 'openai-codex', profileId: 'synthetic', kind: 'oauth', expiresAt: null,
+      oauth: { accessToken: 'synthetic-access', refreshToken: 'synthetic-refresh', idToken: 'synthetic-id',
+        scope: null, tokenType: null, providerAccountId: 'synthetic-account', providerEmail: null },
+    });
+    const materialize = () => materializeConnectedServicesForSpawn({
+      agentId: 'codex', materializationKey: 'profile-recovery', activeServerDir: join(root, 'server'), baseDir: join(root, 'profiles'),
+      recordsByServiceId: new Map([['openai-codex', record]]),
+      accountSettings: { connectedServicesProviderStateSharingSettingsV1: {
+        v: 1, defaults: { configMode: 'linked', stateMode: 'isolated' }, byAgentId: {}, acknowledgedRisksByAgentId: {},
+      } },
+      processEnv: { CODEX_HOME: sourceHome, HOME: root },
+    });
+    const first = await materialize();
+    const home = first!.env.CODEX_HOME!;
+    const configPath = join(home, 'config.toml');
+    await writeFile(configPath, 'fixture_secret = "synthetic-sensitive-config"\n[broken\n');
+
+    const recovered = await materialize();
+    expect(recovered?.env.CODEX_HOME).toBe(home);
+    const rebuilt = parse(await readFile(configPath, 'utf8'));
+    expect(rebuilt.cli_auth_credentials_store).toBe('file');
+    expect(rebuilt.model).toBe(nativeConfigExists ? 'native' : undefined);
+    expect(rebuilt.fixture_secret).toBeUndefined();
+    logger.flushSync();
+    const diagnostic = await readFile(logger.getLogPath(), 'utf8');
+    expect(diagnostic).toContain(configPath);
+    expect(diagnostic).toMatch(/line \d+, column \d+/);
+    expect(diagnostic).not.toContain('synthetic-sensitive-config');
+    await expect(readFile(join(home, 'hooks.json'), 'utf8')).resolves.toBe(firstHooks);
+
+    const hookId = `${join(home, 'hooks.json')}:stop:0:0`;
+    const trustedHash = `sha256:${'b'.repeat(64)}`;
+    await writeFile(configPath, `${await readFile(configPath, 'utf8')}\n[hooks.state.${JSON.stringify(hookId)}]\nenabled = false\ntrusted_hash = "${trustedHash}"\n`);
+    expect((await materialize())?.env.CODEX_HOME).toBe(home);
+    expect(parse(await readFile(configPath, 'utf8'))).toMatchObject({
+      cli_auth_credentials_store: 'file',
+      hooks: { state: { [hookId]: { enabled: false, trusted_hash: trustedHash } } },
+    });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
