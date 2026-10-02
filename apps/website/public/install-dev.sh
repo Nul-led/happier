@@ -247,11 +247,23 @@ installer_step_elapsed() {
   printf '  %s%s.%ss%s' "${COLOR_DIM}" "$((tenths / 10))" "$((tenths % 10))" "${COLOR_RESET}"
 }
 
-# Every step runs as a background job, and background jobs in a non-interactive shell ignore SIGINT:
-# Ctrl-C reaches only the installer, so it stops the running step itself. Callers clear the trap
-# (trap - INT) once the step has finished.
+# Launch in the caller shell so printf -v assigns its PID variable on Bash 3.2 too.
+# Monitor mode gives the background step its own group without changing later CLI handoff.
+installer_start_step_group() {
+  local result_var="$1"
+  shift
+  set -m
+  "$@" &
+  local process_group_pid=$!
+  set +m
+  printf -v "${result_var}" '%s' "${process_group_pid}"
+}
+
+# Each step has its own process group. Background descendants can preserve ignored SIGINT
+# (macOS curl does), so Ctrl-C cancels the whole step group with SIGTERM. Callers clear
+# the trap (trap - INT) once the step has finished.
 installer_stop_step_on_interrupt() {
-  trap "kill $1 2>/dev/null || true; printf '\\n' >&2; exit 130" INT
+  trap "kill -TERM -- -$1 2>/dev/null || true; printf '\\n' >&2; exit 130" INT
 }
 
 # Animates a background step until it exits, then prints its outcome row and returns its status.
@@ -294,14 +306,15 @@ run_installer_step() {
   if installer_should_animate; then
     local started
     started="$(installer_now_tenths)"
-    "$@" >"${tmp_output}" 2>&1 &
-    installer_animate_step "${label}" "$!" "${started}" || status=$?
+    local step_pid
+    installer_start_step_group step_pid "$@" >"${tmp_output}" 2>&1
+    installer_animate_step "${label}" "${step_pid}" "${started}" || status=$?
   else
     say "- [$(installer_step_pending_symbol)] ${label}"
     # A job, not "$@" || …: errexit is ignored inside a command tested by ||/if, so a failing
     # command in the step (a rejected signature) would not fail it. The animated path does the same.
-    "$@" >"${tmp_output}" 2>&1 &
-    local step_pid=$!
+    local step_pid
+    installer_start_step_group step_pid "$@" >"${tmp_output}" 2>&1
     installer_stop_step_on_interrupt "${step_pid}"
     wait "${step_pid}" || status=$?
     trap - INT
@@ -342,12 +355,13 @@ capture_installer_step_output() {
   if installer_should_animate; then
     local started
     started="$(installer_now_tenths)"
-    "$@" >"${tmp_output}" 2>"${tmp_error}" &
-    installer_animate_step "${label}" "$!" "${started}" || status=$?
+    local step_pid
+    installer_start_step_group step_pid "$@" >"${tmp_output}" 2>"${tmp_error}"
+    installer_animate_step "${label}" "${step_pid}" "${started}" || status=$?
   else
     say "- [$(installer_step_pending_symbol)] ${label}"
-    "$@" >"${tmp_output}" 2>"${tmp_error}" &
-    local step_pid=$!
+    local step_pid
+    installer_start_step_group step_pid "$@" >"${tmp_output}" 2>"${tmp_error}"
     installer_stop_step_on_interrupt "${step_pid}"
     wait "${step_pid}" || status=$?
     trap - INT
