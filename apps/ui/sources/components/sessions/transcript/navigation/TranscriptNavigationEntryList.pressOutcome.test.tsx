@@ -143,10 +143,13 @@ describe('TranscriptNavigationEntryList press outcomes', () => {
         });
 
         await screen.pressByTestIdAsync('nav-entry:turn-1');
-        expect(screen.findByTestId('nav-entry-pending:turn-1')).toBeTruthy();
-        // The pending mark is the app's loading indicator, so it follows the chosen style and pauses with the window.
-        const { ActivitySpinner } = await import('@/components/ui/feedback/ActivitySpinner');
-        expect(screen.findAllByType(ActivitySpinner as never).map((node) => node.props.testID)).toEqual(['nav-entry-pending:turn-1']);
+        const pending = screen.findByTestId('nav-entry-pending:turn-1');
+        expect(pending).toBeTruthy();
+        // This harness reaches the package's native dot boundary. Observe the H it draws rather
+        // than assuming the web frame-strip topology used by the core host in another harness.
+        expect(pending!.findAll((node) => typeof node.type === 'string' && node.props.testID === 'happier-spinner-dot'))
+            .toHaveLength(7);
+        expect(pending!.findAllByType('ActivityIndicator' as never)).toHaveLength(0);
 
         await act(async () => {
             unloadedJump.resolve({ status: 'window-rendered' });

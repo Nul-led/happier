@@ -48,7 +48,7 @@ import {
 } from '@happier-dev/protocol/plugins/availability';
 import { derivePluginUiTargetedSurfaceMountInstanceKeyV1 } from '@happier-dev/protocol/plugins/ui/targetedContributions';
 
-import { defineUiSurface } from '@happier-dev/plugin-ui';
+import { Button, defineUiSurface } from '@happier-dev/plugin-ui';
 import { defineProtocolObject, defineProtocolString } from '@happier-dev/plugin-sdk/protocol';
 import type { PluginUiDataClient } from '@happier-dev/plugin-ui/data';
 import { completePresentationPluginUiDataClient } from '@/dev/testkit/pluginUiDataClient';
@@ -198,6 +198,8 @@ const {
     activeLanguage: { value: 'en' },
     surfaceEnvironment: {
         platform: 'web' as 'web' | 'ios' | 'android',
+        appState: 'active',
+        appStateListeners: new Set<(state: string) => void>(),
         dark: false,
         rtl: false,
         fontScale: 1,
@@ -1131,6 +1133,13 @@ vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     const { createCapturingFlatListMock } = await import('@/dev/testkit/mocks/virtualizedList');
     return createReactNativeWebMock({
+        AppState: {
+            get currentState() { return surfaceEnvironment.appState; },
+            addEventListener: (_event: string, listener: (state: string) => void) => {
+                surfaceEnvironment.appStateListeners.add(listener);
+                return { remove: () => surfaceEnvironment.appStateListeners.delete(listener) };
+            },
+        },
         Platform: {
             get OS() {
                 return surfaceEnvironment.platform;
@@ -1293,6 +1302,10 @@ afterEach(async () => {
     restoreCredentialBoundary?.();
     restoreCredentialBoundary = undefined;
     vi.useRealTimers();
+    act(() => {
+        surfaceEnvironment.appState = 'active';
+        for (const listener of surfaceEnvironment.appStateListeners) listener(surfaceEnvironment.appState);
+    });
     activeLanguage.value = 'en';
     surfaceEnvironment.platform = 'web';
     surfaceEnvironment.dark = false;
@@ -8310,18 +8323,18 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
         currentUiContextMountPublisher.value = Object.freeze({
             createMount: vi.fn(() => publication),
         }) satisfies CurrentUiContextMountPublisher;
-        const CurrentUiContextProbe = (props: Readonly<{ context: RenderContext }>): React.ReactElement => {
-            observedActivities.push(props.context.activity?.active ?? false);
+        const CurrentUiContextProbe = (context: RenderContext): React.ReactElement => {
+            observedActivities.push(context.activity?.active ?? false);
             React.useLayoutEffect(() => {
-                props.context.hostApi.publishCurrentUiContext({
+                context.hostApi.publishCurrentUiContext({
                     entity: { kind: 'issue', label: 'Issue A' },
                 });
-            }, [props.context.hostApi]);
-            return React.createElement('View', { testID: 'current-ui-lifecycle-probe' });
+            }, [context.hostApi]);
+            return <Button title="Save" busy onPress={() => undefined} testID="current-ui-lifecycle-probe" />;
         };
         reactNativeSurfaceRuntime.enabled = true;
         reactNativeSurfaceRuntime.module = Object.freeze({
-            renderSurface: (context: RenderContext) => React.createElement(CurrentUiContextProbe, { context }),
+            renderSurface: defineUiSurface(CurrentUiContextProbe),
         });
         const basePlacement = generatedReactNativePlacement({
             occurrenceId: 'browser-current-ui-lifecycle-generation-77',
@@ -8394,6 +8407,22 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             expect(typeof observedActivities.at(-1)).toBe('boolean');
             expect(publicationClear).not.toHaveBeenCalled();
 
+            const spinnerStrip = () => screen!.find((node) => node.type === 'span'
+                && typeof node.props['data-happier-activity-spinner'] === 'string');
+            expect(spinnerStrip().props.style.animationName).toBe('happierActivitySpinnerFilmstrip');
+            await act(async () => {
+                surfaceEnvironment.appState = 'background';
+                for (const listener of surfaceEnvironment.appStateListeners) listener(surfaceEnvironment.appState);
+            });
+            expect(spinnerStrip().props.style.animationName).toBeUndefined();
+            expect(observedActivities.at(-1)).toBe(true);
+            expect(publicationDispose).not.toHaveBeenCalled();
+            await act(async () => {
+                surfaceEnvironment.appState = 'active';
+                for (const listener of surfaceEnvironment.appStateListeners) listener(surfaceEnvironment.appState);
+            });
+            expect(spinnerStrip().props.style.animationName).toBe('happierActivitySpinnerFilmstrip');
+
             currentUiContextMountLifecycle.active = false;
             await screen.update(renderPlacement(false));
             expect(publicationClear).not.toHaveBeenCalled();
@@ -8410,6 +8439,28 @@ describe('mounted plugin surface context (§3.2, §3.3, UI-D11/D12/D13)', () => 
             await screen.update(renderPlacement(false, false));
             expect(observedActivities.at(-1)).toBe(false);
             await screen.update(renderPlacement(true, true));
+
+            const retainedButton = screen.findHostByTestId('current-ui-lifecycle-probe');
+            const retainedContext = (reactNativeSurfaceProps.at(-1) as { renderContext: RenderContext }).renderContext;
+            pluginSurfaceConnectivity.endpointStatus = 'offline';
+            pluginSurfaceConnectivity.machineOnline = false;
+            pluginSurfaceConnectivity.daemonStateVersion += 1;
+            await screen.update(renderPlacement(false, true));
+            expect((reactNativeSurfaceProps.at(-1) as { interactionEnabled: boolean }).interactionEnabled).toBe(false);
+            expect(screen.findHostByTestId('current-ui-lifecycle-probe')).toBe(retainedButton);
+            expect(retainedContext.signal.aborted).toBe(false);
+            // The same offline content retains its public active snapshot; current private
+            // presentation eligibility must still pause its invisible busy indicator.
+            expect(observedActivities.at(-1)).toBe(true);
+            expect(spinnerStrip().props.style.animationName).toBeUndefined();
+
+            pluginSurfaceConnectivity.endpointStatus = 'online';
+            pluginSurfaceConnectivity.machineOnline = true;
+            pluginSurfaceConnectivity.daemonStateVersion += 1;
+            await screen.update(renderPlacement(true, true));
+            expect(screen.findHostByTestId('current-ui-lifecycle-probe')).toBe(retainedButton);
+            expect(spinnerStrip().props.style.animationName).toBe('happierActivitySpinnerFilmstrip');
+            expect(publicationDispose).not.toHaveBeenCalled();
         } finally {
             await screen?.unmount();
         }

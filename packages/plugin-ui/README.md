@@ -297,6 +297,17 @@ its own RN host only when a portable author contract intentionally excludes
 required private props/styles. They remain less ergonomic than the root tier,
 not host-only or plugin-private.
 
+Spinner presentation belongs to `presentation/feedback/Spinner.tsx`:
+`resolveHappierSpinnerPresentation` decides the mark and motion, and
+`HappierSpinnerHost` renders that decision for both core and plugin adapters.
+The renderer preserves each host's styles and native color values. On Android,
+the classic ring keeps its native widget and still overlay mounted together,
+so pausing motion preserves the visible mark and native layout. On native
+platforms, an explicitly stopped, hidden spinner keeps its layout slot and leaves
+accessibility traversal until it resumes. Retained surfaces and inactive tab panels narrow
+their parent's presentation activity through a private projection; this does
+not change Resource or author work lifetimes or the public Surface Context ABI.
+
 The root component props are deliberately curated. In particular, `Form` and
 `Select` accept author-visible, already-resolved option values instead of Action
 schema source instructions or host account metadata; List and overlay adapters

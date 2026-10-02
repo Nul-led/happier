@@ -65,6 +65,8 @@ export type PluginReactNativeSurfacePrivateHostBindings = Readonly<{
     /** Host-selected Composer mount ref for the cooperative carrier; never part of RenderContext. */
     composerRef?: unknown;
     presentationHost?: unknown;
+    /** Presentation-only visibility; does not narrow author or Resource activity. */
+    presentationActive?: boolean;
     dataClient?: unknown;
     /** In-process Account+plugin+immutable-generation scope; absent means unavailable. */
     ephemeralSharedScope?: unknown;
@@ -231,6 +233,9 @@ function installPluginUiPrivateHostBindings(
     }
     if (bindings.presentationHost !== undefined) {
         privateProviderProps.presentationHost = bindings.presentationHost;
+    }
+    if (bindings.presentationActive !== undefined) {
+        privateProviderProps.presentationActive = bindings.presentationActive;
     }
     if (bindings.dataClient !== undefined) {
         privateProviderProps.dataClient = bindings.dataClient;
@@ -543,7 +548,8 @@ export function PluginReactNativeSurface(props: PluginReactNativeSurfaceProps): 
     // The retained offline tree is one mounted generation. Its public context
     // and its host-only entry bindings are therefore one pair: updating either
     // half while interaction is unavailable would combine an old controller
-    // with a successor Resource/presentation scope.
+    // with a successor Resource scope. Host visibility remains a current
+    // presentation fact even while that mounted generation is retained.
     const lastInteractiveRenderStateRef = React.useRef<Readonly<{
         renderContext: RenderContext;
         privateHostBindings?: PluginReactNativeSurfacePrivateHostBindings;
@@ -565,7 +571,13 @@ export function PluginReactNativeSurface(props: PluginReactNativeSurfaceProps): 
         ? { renderContext: currentRenderContext, privateHostBindings: props.privateHostBindings }
         : lastInteractiveRenderStateRef.current;
     const renderContext = renderState.renderContext;
-    const privateHostBindings = renderState.privateHostBindings;
+    const retainedPrivateHostBindings = renderState.privateHostBindings;
+    const presentationActive = props.privateHostBindings?.presentationActive;
+    const privateHostBindings = React.useMemo(() => (
+        presentationActive === undefined
+            ? retainedPrivateHostBindings
+            : { ...retainedPrivateHostBindings, presentationActive }
+    ), [presentationActive, retainedPrivateHostBindings]);
     // A replacement launch input is a new render request for the same mounted
     // contributor, not a new mount. Keep its stateful tree alive when healthy,
     // but let a targeted child retry after its caller gives it new input.

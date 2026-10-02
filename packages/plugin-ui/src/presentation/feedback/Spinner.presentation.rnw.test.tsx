@@ -1,9 +1,25 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { mountThroughReactNativeWebAsync, type RnwMount } from '../../rnwMount.testSupport.js';
 import { HappierSpinner, resolveHappierSpinnerPresentation, resolveHappierWebSpinnerPresentation } from './Spinner.js';
 
 describe('shared web-spinner presentation', () => {
+  it.each([false, true])('keeps an explicitly stopped classic ring visible and still with reduced motion %s', (reducedMotion) => {
+    const presentation = resolveHappierSpinnerPresentation({
+      platform: 'web',
+      indicatorStyle: 'classicRing',
+      animating: false,
+      hidesWhenStopped: false,
+      animationEnabled: true,
+      reducedMotion,
+    });
+    expect(presentation?.kind).toBe('webRing');
+    if (presentation?.kind !== 'webRing') throw new Error('Expected the visible classic ring');
+    expect(presentation.style.opacity).toBe(1);
+    expect(presentation.style.animationName).toBeUndefined();
+    expect(presentation.style.animationIterationCount).toBeUndefined();
+    expect(presentation.style.willChange).toBeUndefined();
+  });
   it('keeps a reduced-motion spinner visible while removing its continuous animation', () => {
     const presentation = resolveHappierWebSpinnerPresentation({
       animating: true,
@@ -109,6 +125,7 @@ describe('HappierSpinner on web (dot styles)', () => {
     mount = null;
     for (const node of document.head.querySelectorAll('style[id^="happier-activity-spinner-"]')) node.remove();
     document.getElementById('happier-spinner-keyframes')?.remove();
+    vi.restoreAllMocks();
   });
 
   /** Every `@keyframes` name the page defines, from whatever stylesheets are in the document head. */
@@ -150,6 +167,18 @@ describe('HappierSpinner on web (dot styles)', () => {
     expect(frameSheetFor(strips[0]!)).toContain('fill="red"');
   });
 
+  it('keeps distinct valid colors in distinct frame sheets even when their former 32-bit hashes collide', async () => {
+    mount = await mountThroughReactNativeWebAsync(<>
+      <HappierSpinner color="#00018f" size={12} />
+      <HappierSpinner color="#0002d9" size={12} />
+    </>);
+    const strips = [...mount.container.querySelectorAll<HTMLElement>('[data-happier-activity-spinner]')];
+    expect(strips).toHaveLength(2);
+    expect(frameSheetFor(strips[0]!)).toContain('fill="#00018f"');
+    expect(frameSheetFor(strips[1]!)).toContain('fill="#0002d9"');
+    expect(document.head.querySelectorAll('style[id^="happier-activity-spinner-"]')).toHaveLength(2);
+  });
+
   it('defines the keyframes it animates with, so a standalone mount without the host stylesheet still moves', async () => {
     mount = await mountThroughReactNativeWebAsync(
       <>
@@ -164,6 +193,36 @@ describe('HappierSpinner on web (dot styles)', () => {
       'happierActivitySpinnerSpin',
     ]));
     expect(document.querySelectorAll('#happier-spinner-keyframes')).toHaveLength(1);
+  });
+
+  it('encodes one shared frame sheet and recovers removed sheets when another spinner mounts', async () => {
+    // Observe the real URI encoder: no frame construction or policy is mocked.
+    const encode = vi.spyOn(globalThis, 'encodeURIComponent');
+    const encodedFrameSheets = () => encode.mock.calls.filter(([input]) => (
+      typeof input === 'string' && input.startsWith('<svg')
+    )).length;
+    const renderCopies = (count: number) => <>{Array.from({ length: count }, (_, index) => (
+      <HappierSpinner key={index} color="tomato" size={12} />
+    ))}</>;
+
+    mount = await mountThroughReactNativeWebAsync(renderCopies(1));
+    const sheet = document.head.querySelector<HTMLStyleElement>('style[id^="happier-activity-spinner-"]');
+    const css = sheet?.textContent;
+    const sheetId = sheet?.id;
+    expect(css).toBeTruthy();
+    expect(encodedFrameSheets()).toBe(1);
+
+    await mount.render(renderCopies(4));
+    expect(encodedFrameSheets()).toBe(1);
+    expect(document.head.querySelectorAll('style[id^="happier-activity-spinner-"]')).toHaveLength(1);
+
+    sheet!.remove();
+    document.getElementById('happier-spinner-keyframes')!.remove();
+    await mount.render(renderCopies(5));
+    expect(encodedFrameSheets()).toBe(2);
+    expect(document.getElementById(sheetId!)?.textContent).toBe(css);
+    expect(document.querySelectorAll('#happier-spinner-keyframes')).toHaveLength(1);
+    expect(definedKeyframes()).toContain(strip().style.animationName);
   });
 
   it('holds the still H without scheduling any animation when ambient motion is paused', async () => {

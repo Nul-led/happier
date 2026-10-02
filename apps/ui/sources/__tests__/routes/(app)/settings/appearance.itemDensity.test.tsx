@@ -118,6 +118,10 @@ vi.mock('@/theme', async (importOriginal) => {
     };
 });
 
+// Load the real screen once, after the shared boundary factories have their configuration. Its
+// module graph belongs to test setup; the tests' deadlines measure rendering and interaction.
+const { default: AppearanceSettingsScreen } = await import('@/app/(app)/settings/appearance');
+
 afterEach(() => {
     standardCleanup();
     resetSessionSettingsEntryState();
@@ -201,8 +205,7 @@ describe('Appearance settings item density', () => {
     });
 
     it('renders the settings navigation sidebar toggle and updates the local setting', async () => {
-        const mod = await import('@/app/(app)/settings/appearance');
-        const screen = await renderSettingsView(React.createElement(mod.default));
+        const screen = await renderSettingsView(React.createElement(AppearanceSettingsScreen));
 
         const row = screen.findRow('settings-appearance-settings-nav-sidebar-enabled') as any;
         expect(row).toBeTruthy();
@@ -217,8 +220,7 @@ describe('Appearance settings item density', () => {
     });
 
     it('does not surface the mobile workspace experience setting from appearance settings', async () => {
-        const mod = await import('@/app/(app)/settings/appearance');
-        const screen = await renderSettingsView(React.createElement(mod.default));
+        const screen = await renderSettingsView(React.createElement(AppearanceSettingsScreen));
 
         const dropdowns = screen.findAllByType('DropdownMenu' as any);
         const workspaceModeDropdown = dropdowns.find((node: any) => node.props?.itemTrigger?.title === 'settingsAppearance.mobileWorkspaceExperience');

@@ -145,9 +145,20 @@ describe('HappierSpinner on native (dot styles)', () => {
   });
 
   it('keeps the layout box but draws nothing when stopped and hidden', () => {
-    const root = render(<HappierSpinner size={18} animating={false} />);
+    const root = render(<HappierSpinner testID="spinner" accessibilityLabel="Working" size={18} animating={false} />);
 
     expect(dots(root)).toHaveLength(0);
     expect(animated.loops).toHaveLength(0);
+    expect(root.root.findByType('View' as never).props).toMatchObject({
+      accessible: false,
+      accessibilityElementsHidden: true,
+      importantForAccessibility: 'no-hide-descendants',
+    });
+    const host = root.root.findByType('View' as never);
+    act(() => root.update(<HappierSpinner testID="spinner" accessibilityLabel="Working" size={18} />));
+    expect(root.root.findByType('View' as never)).toBe(host);
+    expect(host.props.accessibilityElementsHidden).not.toBe(true);
+    expect(host.props.importantForAccessibility).not.toBe('no-hide-descendants');
+    expect(dots(root)).toHaveLength(7);
   });
 });

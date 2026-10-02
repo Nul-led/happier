@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Animated, Platform, View, type ViewStyle } from 'react-native';
 
-import { useOptionalHappierUiAccessibility } from '../../environment/context.js';
+import { useHappierUiAnimationActivityInternal, useOptionalHappierUiAccessibility } from '../../environment/context.js';
 import type { HappierStyleProp } from '../portableTypes.js';
 
 /**
@@ -101,9 +101,10 @@ function haloStyle(size: number, color: string): ViewStyle {
 
 function MotionAwareStatusDot(props: HappierStatusDotProps) {
   const environmentAccessibility = useOptionalHappierUiAccessibility();
+  const presentationActive = useHappierUiAnimationActivityInternal();
   const reducedMotion = props.reducedMotion ?? environmentAccessibility?.reducedMotion ?? false;
 
-  if (reducedMotion) {
+  if (reducedMotion || !presentationActive) {
     return <StaticStatusDot {...props} />;
   }
   if (Platform.OS === 'web') {

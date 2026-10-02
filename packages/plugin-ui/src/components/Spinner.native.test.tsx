@@ -30,6 +30,10 @@ vi.mock('react-native', () => {
     },
     Easing: { linear: (t: number) => t, ease: (t: number) => t, inOut: (easing: unknown) => easing },
     Platform: nativePlatform,
+    Pressable: 'Pressable',
+    Text: 'Text',
+    ScrollView: 'ScrollView',
+    I18nManager: { isRTL: false },
     View: 'View',
   };
 });
@@ -37,8 +41,15 @@ vi.mock('react-native', () => {
 import { PluginUiProvider } from './PluginUiProvider.js';
 import { PluginUiProviderInternal } from './PluginUiProvider.js';
 import { Spinner } from './Spinner.js';
+import { Button, IconButton } from './Button.js';
+import { HappierListItem } from '../presentation/collection/List.js';
+import { Tabs } from './Tabs.js';
+import { HappierStatusDot } from '../presentation/status/StatusDot.js';
 import { HappierSpinner } from '../presentation/feedback/Spinner.js';
 import { createHostApiStub, createSurfaceContext } from '../surfaceFixture.testSupport.js';
+import { usePluginSurfaceActivity } from '../hostApi/context.js';
+import { HappierUiEnvironmentProvider } from '../environment/context.js';
+import { projectHappierUiEnvironment } from '../environment/projectEnvironment.js';
 
 let renderer: ReactTestRenderer | null = null;
 
@@ -59,6 +70,106 @@ function dotOpacities(): unknown[] {
 }
 
 describe('native HappierSpinner presentation', () => {
+  it('pauses a declarative busy list row through the private environment projection without a Host API provider', async () => {
+    const environment = projectHappierUiEnvironment(createSurfaceContext({ platform: 'ios' }));
+    const renderRow = (presentationActive: boolean) => (
+      <HappierUiEnvironmentProvider environment={environment} {...{ presentationActive }}>
+        <HappierListItem title="Saving" busy onPress={() => undefined} />
+      </HappierUiEnvironmentProvider>
+    );
+    await act(async () => { renderer = create(renderRow(true)); });
+    expect(running()).toBe(1);
+    await act(async () => { renderer!.update(renderRow(false)); });
+    expect(dotOpacities()).toEqual(Array(7).fill(0.85));
+    expect(running()).toBe(0);
+    await act(async () => { renderer!.update(renderRow(true)); });
+    expect(running()).toBe(1);
+  });
+  it('keeps shared status motion paused with the same private host presentation activity', async () => {
+    const context = createSurfaceContext({ platform: 'ios', reducedMotion: false });
+    const hostApi = createHostApiStub(context);
+    const renderStatus = (presentationActive: boolean) => (
+      <PluginUiProviderInternal hostApi={hostApi} context={context} surfaceActivity={{ active: true }} {...{ presentationActive }}>
+        <HappierStatusDot color={context.theme.colors.text} isPulsing />
+      </PluginUiProviderInternal>
+    );
+    await act(async () => { renderer = create(renderStatus(false)); });
+    expect(running()).toBe(0);
+    await act(async () => { renderer!.update(renderStatus(true)); });
+    expect(running()).toBe(1);
+    await act(async () => { renderer!.update(renderStatus(false)); });
+    expect(running()).toBe(0);
+  });
+  it('pauses presentation in a hidden host without ending the public surface activity', async () => {
+    const context = createSurfaceContext({ platform: 'ios', reducedMotion: false });
+    const hostApi = createHostApiStub(context);
+    let surfaceActive: boolean | undefined;
+    function Busy() {
+      surfaceActive = usePluginSurfaceActivity().active;
+      return <Button title="Save" busy onPress={() => undefined} />;
+    }
+    const renderBusy = (presentationActive: boolean) => (
+      <PluginUiProviderInternal
+        hostApi={hostApi}
+        context={context}
+        surfaceActivity={{ active: true }}
+        {...{ presentationActive }}
+      >
+        <Busy />
+      </PluginUiProviderInternal>
+    );
+    await act(async () => { renderer = create(renderBusy(true)); });
+    expect(running()).toBe(1);
+    await act(async () => { renderer!.update(renderBusy(false)); });
+    expect(dotOpacities()).toEqual(Array(7).fill(0.85));
+    expect(running()).toBe(0);
+    expect(surfaceActive).toBe(true);
+    await act(async () => { renderer!.update(renderBusy(true)); });
+    expect(running()).toBe(1);
+  });
+  it('pauses every busy control and list spinner with its retained surface, and resumes without replacing the host subscription', async () => {
+    const context = createSurfaceContext({ platform: 'ios', reducedMotion: false });
+    const watchContext = vi.fn(async () => ({ dispose() {} }));
+    const hostApi = createHostApiStub(context, { watchContext });
+    const renderBusy = (active: boolean) => (
+      <PluginUiProviderInternal hostApi={hostApi} context={context} surfaceActivity={{ active }}>
+        <Spinner />
+        <Button title="Save" busy onPress={() => undefined} />
+        <IconButton accessibilityLabel="Save" icon={null} busy onPress={() => undefined} />
+        <HappierListItem title="Saving" busy onPress={() => undefined} />
+      </PluginUiProviderInternal>
+    );
+    await act(async () => { renderer = create(renderBusy(false)); });
+    expect(dotOpacities()).toEqual(Array(28).fill(0.85));
+    expect(running()).toBe(0);
+    await act(async () => { renderer!.update(renderBusy(true)); });
+    expect(running()).toBe(1);
+    await act(async () => { renderer!.update(renderBusy(false)); });
+    expect(running()).toBe(0);
+    expect(watchContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases busy-control motion in a retained inactive tab and resumes on return', async () => {
+    const context = createSurfaceContext({ platform: 'ios', reducedMotion: false });
+    const hostApi = createHostApiStub(context);
+    const renderTabs = (value: string) => (
+      <PluginUiProviderInternal hostApi={hostApi} context={context} surfaceActivity={{ active: true }}>
+        <Tabs value={value} onValueChange={() => undefined} ariaLabel="Sections">
+          <Tabs.Item value="busy" title="Busy" retention="retain">
+            <Button title="Save" busy onPress={() => undefined} />
+          </Tabs.Item>
+          <Tabs.Item value="other" title="Other" />
+        </Tabs>
+      </PluginUiProviderInternal>
+    );
+    await act(async () => { renderer = create(renderTabs('busy')); });
+    expect(running()).toBe(1);
+    await act(async () => { renderer!.update(renderTabs('other')); });
+    expect(dotOpacities()).toEqual(Array(7).fill(0.85));
+    expect(running()).toBe(0);
+    await act(async () => { renderer!.update(renderTabs('busy')); });
+    expect(running()).toBe(1);
+  });
   it('keeps an indeterminate spinner visible, breathing the still H, when the projected reduced-motion preference is on', async () => {
     const context = createSurfaceContext({ platform: 'ios', reducedMotion: true });
 

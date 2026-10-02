@@ -1410,6 +1410,7 @@ Declaration: `dist/presentation/index.d.ts`
 - type `HappierSkeletonRowsProps` from `dist/presentation/index.d.ts`
 - value `HappierSpinner` from `dist/presentation/index.d.ts`
 - type `HappierSpinnerDotBoxStyle` from `dist/presentation/index.d.ts`
+- value `HappierSpinnerHost` from `dist/presentation/index.d.ts`
 - type `HappierSpinnerPresentation` from `dist/presentation/index.d.ts`
 - type `HappierSpinnerPresentationInput` from `dist/presentation/index.d.ts`
 - type `HappierSpinnerProps` from `dist/presentation/index.d.ts`

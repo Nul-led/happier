@@ -1,11 +1,12 @@
-import { useMemo } from 'react';
+import { useMemo, type ReactElement } from 'react';
 import {
   ActivityIndicator as ReactNativeActivityIndicator,
   Platform,
   View,
+  type ActivityIndicatorProps,
 } from 'react-native';
 
-import { useOptionalHappierUiAccessibility, useOptionalHappierUiTheme } from '../../environment/context.js';
+import { useHappierUiAnimationActivityInternal, useOptionalHappierUiAccessibility, useOptionalHappierUiTheme } from '../../environment/context.js';
 import type { HappierActivityIndicatorHostProps } from '../portableTypes.js';
 import { HAPPIER_TONE_COLOR_TOKEN } from '../semantics.js';
 import { DotSpinnerNative } from './DotSpinnerNative.js';
@@ -20,7 +21,8 @@ import { normalizeHappierSpinnerStyleId, type DotSpinnerStyleId } from './spinne
  * The default mark is the H of Happier drawn in dots with light moving through it; the style is
  * chosen by the host (Happier core reads its Settings → Appearance choice; plugin surfaces draw the
  * default wave). The original rotating ring stays available as the `classicRing` style: on web a
- * CSS-transform ring (stepped below the small-spinner threshold), on native the platform indicator.
+ * CSS-transform ring (stepped below the small-spinner threshold), on native the platform indicator
+ * with a still ring overlay on Android, whose platform widget hides when stopped.
  *
  * Paused spinners stay VISIBLE — dot styles hold the full H still and the ring stops turning —
  * because a missing spinner says the work ended. Reduced motion replaces the travelling light with a
@@ -186,7 +188,7 @@ export function resolveHappierWebSpinnerPresentation(
       borderWidth: resolveSpinnerBorderWidth(resolvedSize),
       borderColor: typeof color === 'string' ? color : 'currentColor',
       borderTopColor: 'transparent',
-      ...(animationEnabled && !reducedMotion ? {
+      ...(animating && animationEnabled && !reducedMotion ? {
         animationDuration: '850ms',
         animationIterationCount: 'infinite',
         animationName: SPINNER_ANIMATION_NAME,
@@ -195,15 +197,15 @@ export function resolveHappierWebSpinnerPresentation(
           : 'linear',
         willChange: 'transform',
       } : null),
-      opacity: animating ? 1 : 0,
+      opacity: 1,
     },
   };
 }
 
 /**
  * The one spinner decision, for every host and platform: which mark to draw (dots, the web ring, or
- * the native ring), its box, its ink, and how it moves. `HappierSpinner` renders it for plugin
- * surfaces; Happier core renders it on its own RN host so its private style contract stays there.
+ * the native ring), its box, its ink, and how it moves. `HappierSpinnerHost` renders the result for
+ * both plugin surfaces and Happier core, preserving each caller's host props and style contract.
  */
 export function resolveHappierSpinnerPresentation(
   input: HappierSpinnerPresentationInput,
@@ -259,8 +261,8 @@ export function resolveHappierSpinnerPresentation(
 const FALLBACK_DOT_INK = 'gray';
 
 /**
- * The dots of one spinner, drawn inside a host box of `model.size` that clips its overflow. Exported
- * so Happier core can place them in its own RN host.
+ * The dots of one spinner, drawn inside a host box of `model.size` that clips its overflow.
+ * `HappierSpinnerHost` uses this primitive; it is also available for portable author composition.
  */
 export function HappierDotSpinner(props: Readonly<{ model: HappierDotSpinnerModel }>) {
   const { styleId, size, motion, ink } = props.model;
@@ -278,10 +280,105 @@ export function HappierDotSpinner(props: Readonly<{ model: HappierDotSpinnerMode
   return <DotSpinnerNative styleId={styleId} size={size} ink={stableInk} motion={motion} />;
 }
 
+/**
+ * The shared renderer for the spinner decision. The host carrier preserves core's complete native
+ * styles and opaque colours without making the public presentation declarations depend on RN.
+ * Stopped hidden spinners retain their layout host but leave accessibility traversal; motion pauses
+ * remain visible and accessible. Android's native widget and still overlay stay mounted together.
+ */
+export function HappierSpinnerHost<HostProps extends Readonly<{
+  size?: HappierActivityIndicatorHostProps['size'];
+  color?: unknown;
+  style?: unknown;
+}>>(props: Readonly<{
+  presentation: HappierSpinnerPresentation;
+  hostProps: HostProps;
+}>): ReactElement {
+  const { presentation } = props;
+  // RN is the actual host boundary. The neutral carrier keeps its types out of public declarations.
+  const {
+    size,
+    color,
+    style,
+    animating: _animating,
+    hidesWhenStopped: _hidesWhenStopped,
+    ...forwardedProps
+  } = props.hostProps as ActivityIndicatorProps;
+  const hidden = presentation.kind === 'dots'
+    ? presentation.dots === null
+    : presentation.kind === 'nativeRing' && presentation.animating === false && presentation.hidesWhenStopped !== false;
+  const hostProps = hidden ? {
+    ...forwardedProps,
+    accessible: false,
+    accessibilityElementsHidden: true,
+    importantForAccessibility: 'no-hide-descendants' as const,
+  } : forwardedProps;
+
+  if (presentation.kind === 'nativeRing') {
+    const resolvedColor = color ?? presentation.color;
+    if (Platform.OS === 'android') {
+      const resolvedSize = resolveSpinnerSize(size);
+      const showStillRing = presentation.animating === false && !hidden;
+      return (
+        <View
+          {...hostProps}
+          accessibilityRole={hostProps.accessibilityRole ?? 'progressbar'}
+          style={[{ alignItems: 'center', justifyContent: 'center' }, style]}
+        >
+          <ReactNativeActivityIndicator
+            animating={presentation.animating !== false}
+            color={resolvedColor}
+            size={size}
+            accessible={false}
+            importantForAccessibility="no-hide-descendants"
+          />
+          <View
+            pointerEvents="none"
+            accessible={false}
+            importantForAccessibility="no-hide-descendants"
+            style={{
+              width: resolvedSize,
+              height: resolvedSize,
+              alignSelf: 'center',
+              borderRadius: resolvedSize / 2,
+              borderWidth: resolveSpinnerBorderWidth(resolvedSize),
+              borderColor: resolvedColor,
+              borderTopColor: 'transparent',
+              position: 'absolute',
+              opacity: showStillRing ? 1 : 0,
+            }}
+          />
+        </View>
+      );
+    }
+    return (
+      <ReactNativeActivityIndicator
+        {...hostProps}
+        style={style}
+        size={size}
+        color={resolvedColor}
+        animating={presentation.animating}
+        hidesWhenStopped={presentation.hidesWhenStopped}
+      />
+    );
+  }
+
+  return (
+    <View
+      {...hostProps}
+      accessibilityRole={hostProps.accessibilityRole ?? presentation.accessibilityRole}
+      style={[presentation.style, style]}
+    >
+      {presentation.kind === 'dots' && presentation.dots ? <HappierDotSpinner model={presentation.dots} /> : null}
+    </View>
+  );
+}
+
 export function HappierSpinner(props: HappierSpinnerProps) {
   useHappierSpinnerKeyframes();
   const theme = useOptionalHappierUiTheme();
   const environmentAccessibility = useOptionalHappierUiAccessibility();
+  const presentationActive = useHappierUiAnimationActivityInternal();
   const {
     animating,
     animationEnabled,
@@ -299,7 +396,7 @@ export function HappierSpinner(props: HappierSpinnerProps) {
     color,
     size,
     animating,
-    animationEnabled,
+    animationEnabled: (animationEnabled ?? true) && presentationActive,
     hidesWhenStopped,
     reducedMotion: reducedMotion ?? environmentAccessibility?.reducedMotion ?? false,
   });
@@ -307,26 +404,7 @@ export function HappierSpinner(props: HappierSpinnerProps) {
   if (!presentation) {
     return null;
   }
-  if (presentation.kind === 'nativeRing') {
-    return (
-      <ReactNativeActivityIndicator
-        {...hostProps}
-        style={style}
-        size={size}
-        color={presentation.color}
-        animating={presentation.animating}
-        hidesWhenStopped={presentation.hidesWhenStopped}
-      />
-    );
-  }
-
   return (
-    <View
-      {...hostProps}
-      accessibilityRole={props.accessibilityRole ?? presentation.accessibilityRole}
-      style={[presentation.style, style]}
-    >
-      {presentation.kind === 'dots' && presentation.dots ? <HappierDotSpinner model={presentation.dots} /> : null}
-    </View>
+    <HappierSpinnerHost presentation={presentation} hostProps={{ ...hostProps, size, color, style }} />
   );
 }

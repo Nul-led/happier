@@ -90,6 +90,25 @@ function frameSheetFor(strip: { props: Record<string, unknown> } | undefined): s
 }
 
 describe('ActivitySpinner (web)', () => {
+    it.each(['wave', 'classicRing'] as const)('provides a localized accessible name for %s and preserves caller labels', async (variant) => {
+        const { setPreferredLanguageFromSettings, t } = await import('@/text');
+        setPreferredLanguageFromSettings('fr');
+        try {
+            const { ActivitySpinner } = await import('./ActivitySpinner');
+            const { screen } = await renderSpinner({ variant });
+            const host = screen.findHostByTestId('spinner')!;
+            expect(host.props.accessibilityRole).toBe('progressbar');
+            expect(host.props.accessibilityLabel).toBe(t('common.loading'));
+
+            await screen.update(<ActivitySpinner testID="spinner" variant={variant} accessibilityLabel="Upload progress" />);
+            expect(host.props.accessibilityLabel).toBe('Upload progress');
+            await screen.update(<ActivitySpinner testID="spinner" variant={variant} accessibilityLabel="" />);
+            expect(host.props.accessibilityLabel).toBe('');
+        } finally {
+            setPreferredLanguageFromSettings(null);
+        }
+    });
+
     it('draws the H wave by default as a frame strip stepped by one transform animation', async () => {
         const { screen, spinner, strip } = await renderSpinner({ size: 12, color: 'red' });
 

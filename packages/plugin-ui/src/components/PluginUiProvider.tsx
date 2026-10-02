@@ -83,6 +83,8 @@ export type PluginUiProviderInternalProps = PluginUiProviderProps & Readonly<{
   mountedPluginId?: string;
   composerRef?: ComposerRefV1 | null;
   surfaceActivity?: Readonly<{ active: boolean }>;
+  /** Private host visibility; does not alter the public surface lifetime. */
+  presentationActive?: boolean;
   presentationHost?: PluginUiPresentationHost;
   dataClient?: PluginUiDataClient;
   ephemeralSharedScope?: PluginUiEphemeralSharedScope | null;
@@ -148,6 +150,7 @@ export function PluginUiProviderInternal({
   mountedPluginId,
   composerRef,
   surfaceActivity,
+  presentationActive,
   presentationHost,
   dataClient,
   ephemeralSharedScope,
@@ -248,6 +251,7 @@ export function PluginUiProviderInternal({
       {...(mountedPluginId === undefined ? {} : { mountedPluginId })}
       {...(composerRef === undefined ? {} : { composerRef })}
       {...(surfaceActivity === undefined ? {} : { surfaceActivity })}
+      {...(presentationActive === undefined ? {} : { presentationActive })}
       {...(ephemeralSharedScope === undefined ? {} : { ephemeralSharedScope })}
     >
       <PluginSurfaceContextContext.Provider value={effectiveContext}>
