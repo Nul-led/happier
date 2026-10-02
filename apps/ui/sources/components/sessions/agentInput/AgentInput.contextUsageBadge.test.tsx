@@ -576,7 +576,7 @@ describe('AgentInput (context usage badge)', () => {
         expect(screen.findByTestId('agent-input-provider-usage-popover')).toBeTruthy();
         expect(screen.findByTestId('agent-input-provider-usage-meter:weekly')).toBeTruthy();
         // Plain quota detail rows use the shared scroll owner; match their overlay by content.
-        const providerUsageOverlays = screen.findAll((node) => node.type === 'FloatingOverlay'
+        const providerUsageOverlays = screen.findAll((node) => String(node.type) === 'FloatingOverlay'
             && node.findAll((child) => child.props.testID === 'agent-input-provider-usage-meter:weekly').length > 0);
         expect(providerUsageOverlays).toHaveLength(1);
         expect(providerUsageOverlays[0]?.props.scrollEnabled).toBe(true);
