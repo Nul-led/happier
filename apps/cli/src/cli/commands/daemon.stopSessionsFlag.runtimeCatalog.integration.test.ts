@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { DaemonRunningInspection } from '@/daemon/controlClient';
 import type { HappyProcessInfo } from '@/daemon/doctor';
@@ -41,6 +41,22 @@ import { handleDaemonCliCommand } from './daemon';
 
 describe('handleDaemonCliCommand: daemon stop --kill-sessions', () => {
   const envScope = createEnvKeyScope(['HAPPIER_DAEMON_PROCESS_INVENTORY_FALLBACK']);
+
+  beforeEach(() => {
+    stopAllDaemonsBestEffortMock.mockResolvedValue({ status: 'stopped', stoppedCount: 1 });
+  });
+
+  it('reports no running daemons from stop-all when the durable inventory is empty', async () => {
+    stopAllDaemonsBestEffortMock.mockResolvedValue({ status: 'not_running' });
+    vi.spyOn(process, 'exit').mockImplementation((() => { throw new Error('exit:0'); }) as never);
+    const stdout = captureStdout();
+    try {
+      await expect(handleDaemonCliCommand({ args: ['daemon', 'stop', '--all'] } as never)).rejects.toThrow('exit:0');
+      expect(stdout.text()).toContain('No daemons were running');
+    } finally {
+      stdout.restore();
+    }
+  });
 
   afterEach(() => {
     envScope.restore();

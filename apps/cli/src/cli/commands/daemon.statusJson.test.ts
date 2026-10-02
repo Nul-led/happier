@@ -29,6 +29,7 @@ type MockDaemonStatusEntry = {
     pid: number | null;
     httpPort: number | null;
     running: boolean;
+    presence: 'running' | 'not_running' | 'unverified';
     staleStateFile: boolean;
     installed?: boolean;
   };
@@ -182,6 +183,7 @@ describe('happier daemon status --json', () => {
           pid: 4321,
           httpPort: 7777,
           running: true,
+          presence: 'running',
           staleStateFile: false,
         },
       },

@@ -14,7 +14,7 @@ const readStoredCredentialsMock = vi.hoisted(() => vi.fn<() => Promise<StoredCre
 const readSettingsMock = vi.hoisted(() => vi.fn<() => Promise<Partial<Settings>>>(async () => ({})));
 const clearCredentialsMock = vi.hoisted(() => vi.fn(async () => {}));
 const clearMachineIdMock = vi.hoisted(() => vi.fn<(opts?: unknown) => Promise<void>>(async () => {}));
-const stopDaemonMock = vi.hoisted(() => vi.fn(async () => {}));
+const stopDaemonMock = vi.hoisted(() => vi.fn(async () => ({ status: 'not_running' as const })));
 const isDaemonStopIncompleteErrorMock = vi.hoisted(() => vi.fn((error: unknown) => (
   typeof error === 'object'
   && error !== null
@@ -88,8 +88,23 @@ describe('happier auth login', () => {
     clearCredentialsMock.mockReset();
     clearMachineIdMock.mockReset();
     stopDaemonMock.mockReset();
+    stopDaemonMock.mockResolvedValue({ status: 'not_running' });
     isDaemonStopIncompleteErrorMock.mockClear();
     vi.resetModules();
+  });
+
+  it('does not announce a stopped daemon when force login found none running', async () => {
+    stopDaemonMock.mockResolvedValue({ status: 'not_running' });
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const { handleAuthLogin } = await import('./login');
+      await handleAuthLogin(['--force']);
+      const text = output.mock.calls.flat().join('\n');
+      expect(text).toContain('No daemon was running');
+      expect(text).not.toContain('Stopped daemon');
+    } finally {
+      output.mockRestore();
+    }
   });
 
   it('sets HAPPIER_AUTH_METHOD before running the auth flow', async () => {

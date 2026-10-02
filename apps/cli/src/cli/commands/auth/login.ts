@@ -78,8 +78,8 @@ export async function handleAuthLogin(args: string[], signal?: AbortSignal): Pro
 
     try {
       logger.debug('Stopping daemon for force auth...');
-      await stopDaemon();
-      console.log(ok('Stopped daemon'));
+      const stopped = await stopDaemon();
+      console.log(ok(stopped.status === 'stopped' ? 'Stopped daemon' : 'No daemon was running'));
     } catch (error) {
       if (isDaemonStopIncompleteError(error)) throw error;
       logger.debug('Daemon was not running or failed to stop:', error);
@@ -108,8 +108,8 @@ export async function handleAuthLogin(args: string[], signal?: AbortSignal): Pro
 
         try {
           logger.debug('Stopping daemon before auth repair...');
-          await stopDaemon();
-          console.log(ok('Stopped daemon'));
+          const stopped = await stopDaemon();
+          console.log(ok(stopped.status === 'stopped' ? 'Stopped daemon' : 'No daemon was running'));
         } catch (error) {
           if (isDaemonStopIncompleteError(error)) throw error;
           logger.debug('Daemon was not running or failed to stop during auth repair:', error);

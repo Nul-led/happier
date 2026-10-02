@@ -472,7 +472,7 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
     const stopOptions = { stopSessions };
     const steps = createStepPrinter({ enabled: !args.includes('--json') });
     if (args.includes('--all')) {
-      await steps.run('Stopping all daemons', () => stopAllDaemonsBestEffort(stopOptions), () => 'Stopped all daemons');
+      await steps.run('Stopping all daemons', () => stopAllDaemonsBestEffort(stopOptions), (result) => result.status === 'stopped' ? 'Stopped all daemons' : 'No daemons were running');
       process.exit(0);
     }
     const ownership = await evaluateCurrentDaemonOwner();
@@ -765,6 +765,7 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
             daemon: {
               installed: entry.service.installed,
               running: entry.daemon.running,
+              presence: entry.daemon.presence,
               pid: entry.daemon.pid,
               httpPort: entry.daemon.httpPort ?? null,
               staleStateFile: Boolean(entry.daemon.staleStateFile),
@@ -789,7 +790,7 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
     if (args.includes('--all')) {
       const statuses = await listDaemonStatusesForAllKnownServers();
       for (const entry of statuses) {
-        const state = entry.daemon.running ? `running (pid ${entry.daemon.pid ?? '—'})` : 'not running';
+        const state = entry.daemon.presence === 'unverified' ? 'unverified (authenticated control unavailable)' : entry.daemon.running ? `running (pid ${entry.daemon.pid ?? '—'})` : 'not running';
         console.log(sectionTitle(`${entry.name} (${entry.serverId})`));
         if (entry.serverUrl) console.log(`  ${kv('Relay:', entry.serverUrl)}`);
         console.log(`  ${kv('Daemon:', state)}`);

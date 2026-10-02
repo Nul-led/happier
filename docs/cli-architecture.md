@@ -1315,6 +1315,29 @@ migration callbacks are prepared before slot publication and promoted through
 the server's atomic Collection owner. Slot replacement never infers Collection
 absence; the server-owned `absenceEpoch` continues to fence deletion and
 re-creation.
+### Confirmed daemon stop outcomes (development)
+
+Current 0.3 development source distinguishes `not_running` from confirmed `stopped`.
+`controlClient.stopDaemon` retains its existing incarnation-aware single-daemon stop owner.
+Publication presence shares authenticated control probing for PIDs hidden from the caller.
+Transient control failures remain unverified. After observing a hidden owner through
+authenticated ping or accepted authenticated stop, stop confirmation requires release of its previously captured lifecycle-lock snapshot, because control closes
+before shutdown cleanup completes. Ordinary exited publications remain absent when no hidden
+owner was observed. Persistence owns lock parsing and inspection; control transport retains
+its canonical token headers. Initial startup-only locks with no observable PID or endpoint
+remain outside this namespace proof. Status output preserves unverified publication presence.
+`persistence.inspectDaemonLockOwner` classifies startup locks through the same lifecycle
+incarnation classifier, including lock paths supplied by stop-all; it does not acquire or
+remove another owner's lock.
+
+`multiDaemon.stopAllDaemonsBestEffort` uses its durable servers-directory publication inventory,
+including removed profiles and every release-ring filename. Stop-all opts into startup-only
+lock discovery, while direct Action ingress retains its published-state-only inventory.
+Stop-all attempts siblings after failures, counts only confirmed stopped owners, and repeats
+that inventory after shutdown to reject live successors or startup locks before
+`auth logout --all` deletes the home. Publication cleanup remains owned by the lifecycle
+holder. Hidden successor uncertainty is scoped to the exact observed publication and lock
+path; unrelated stale release-ring siblings retain ordinary absence. An empty inventory reports `not_running`, and incomplete stop preserves the home.
 
 ```mermaid
 graph TB
