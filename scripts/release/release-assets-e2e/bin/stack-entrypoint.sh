@@ -191,7 +191,7 @@ bootstrap_stack_credentials() {
   fi
 
   # Approve using the bootstrap token.
-  HAPPIER_HOME_DIR="$STACK_APPROVER_HOME_DIR" "${HAPPIER_PREFIX[@]}" auth approve --json --public-key "$public_key" >/dev/null
+  printf '%s\n' "$req_json" | HAPPIER_HOME_DIR="$STACK_APPROVER_HOME_DIR" "${HAPPIER_PREFIX[@]}" auth approve --json --public-key "$public_key" --request-json-stdin >/dev/null
 
   # Claim and write real credentials to STACK_CLI_HOME_DIR.
   HAPPIER_HOME_DIR="$STACK_CLI_HOME_DIR" "${HAPPIER_PREFIX[@]}" auth wait --json --public-key "$public_key" >/dev/null

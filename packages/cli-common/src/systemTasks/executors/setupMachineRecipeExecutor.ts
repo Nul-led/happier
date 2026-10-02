@@ -282,8 +282,10 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
       return { machineId: machineId || null };
     },
 
-    async approveAuthPairing(publicKey: string) {
-      await executor.runHappierJson(['auth', 'approve', '--public-key', publicKey, '--json']);
+    async approveAuthPairing(publicKey: string, requestPayload: Readonly<Record<string, unknown>>) {
+      await executor.runHappierJson(['auth', 'approve', '--public-key', publicKey, '--request-json-stdin', '--json'], {
+        input: JSON.stringify({ publicKey, pairing: requestPayload.pairing, supportsTokenOnly: requestPayload.supportsTokenOnly }),
+      });
     },
 
     async installDaemonService(opts) {
