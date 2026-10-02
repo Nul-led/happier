@@ -413,16 +413,24 @@ describe('createActionExecutor (inventory/discovery)', () => {
     );
   });
 
-  it('preserves failed execution-run service envelope codes and messages in fanout results', async () => {
+  it.each(['returned', 'thrown', 'unknown'] as const)('preserves native launch creation evidence for %s fanout failures', async (failureKind) => {
     const deps = createDeps();
     deps.reviewEnginesList = vi.fn(async () => ({
       items: [{ value: 'coderabbit', label: 'CodeRabbit' }],
     }));
-    deps.executionRunStart = vi.fn(async () => ({
-      ok: false,
-      code: 'execution_run_not_allowed',
-      message: 'Unable to resolve a default base branch for CodeRabbit review.',
-    }));
+    const message = 'Unable to resolve a default base branch for CodeRabbit review.';
+    const details = { executionRunStart: { v: 1, runCreation: 'noRunCreated' } } as const;
+    deps.executionRunStart = vi.fn(async () => {
+      if (failureKind === 'thrown') {
+        throw Object.assign(new Error(message), { code: 'execution_run_not_allowed', details });
+      }
+      return {
+        ok: false,
+        code: 'execution_run_not_allowed',
+        message,
+        ...(failureKind === 'returned' ? { details } : {}),
+      };
+    });
     const executor = createActionExecutor(deps);
 
     const res = await executor.execute('review.start', {
@@ -444,9 +452,16 @@ describe('createActionExecutor (inventory/discovery)', () => {
             ok: false,
             errorCode: 'execution_run_not_allowed',
             error: 'Unable to resolve a default base branch for CodeRabbit review.',
+            details: { executionRunStart: { v: 1, runCreation: failureKind === 'unknown' ? 'outcomeUnknown' : 'noRunCreated' } },
           },
         ],
       },
+    });
+    if (!res.ok) throw new Error('Review Action did not dispatch');
+    expect(getActionSpec('review.start').completion?.launched(res.result)).toEqual({
+      runs: [],
+      failed: [{ key: 'coderabbit', errorCode: 'execution_run_not_allowed',
+        runCreation: failureKind === 'unknown' ? 'outcomeUnknown' : 'noRunCreated' }],
     });
   });
 

@@ -1150,6 +1150,75 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     }));
   });
 
+  it.each([
+    ['structured context exhaustion', 'context_window_exceeded', 'Input rejected.', 'agent_context_window_exceeded'],
+    ['unclassified context prose', 'other', 'Codex ran out of room in the context window.', 'codex_app_server_turn_failed'],
+    ['temporary provider capacity', 'other', 'Selected model is at capacity. Please try a different model.', 'codex_app_server_turn_failed'],
+  ])('publishes the native failure fact for %s and admits a distinct next turn in the same session', async (
+    _caseName, codexErrorInfo, message, expectedCode,
+  ) => {
+    const core = createRuntime({
+      processEnv: { HAPPIER_CODEX_APP_SERVER_TURN_COMPLETION_SETTLE_MS: '0' },
+    });
+    const runtime = createCodexNativeAppServerSessionRuntime(core, 'session-1');
+    const events: AgentSessionRuntimeEvent[] = [];
+    runtime.watch((event) => events.push(event));
+    try {
+      await expect(runtime.send({
+        inputIds: ['input-part-original'],
+        input: { text: 'original evidence part' },
+        delivery: { kind: 'newTurn', turnId: 'host-turn-original' },
+      })).resolves.toEqual({ status: 'admitted' });
+      emitNotification('turn/completed', {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        turn: {
+          id: 'turn-1',
+          status: 'failed',
+          error: { message, codex_error_info: codexErrorInfo },
+        },
+      });
+      await expect(waitForCodexAppServerRuntimeTurnCompletion(core))
+        .rejects.toThrow('Codex app-server turn failed.');
+      expect(events.filter((event) => event.kind === 'runtime-ended')).toHaveLength(
+        expectedCode === 'agent_context_window_exceeded' ? 0 : 1,
+      );
+      expect(events.filter((event) => event.kind === 'turn-failed')).toEqual([
+        expect.objectContaining({
+          turnId: 'host-turn-original',
+          agentTurnId: 'turn-1',
+          diagnostic: expect.objectContaining({ code: expectedCode }),
+        }),
+      ]);
+      expect(clientState.requests.filter(({ method }) => method === 'turn/start')).toHaveLength(1);
+
+      await expect(runtime.send({
+        inputIds: ['input-part-next'],
+        input: { text: 'next distinct evidence part' },
+        delivery: { kind: 'newTurn', turnId: 'host-turn-next' },
+      })).resolves.toEqual({ status: 'admitted' });
+      const nextCompletion = waitForCodexAppServerRuntimeTurnCompletion(core);
+      emitNotification('turn/completed', completedTurn('turn-2'));
+      await nextCompletion;
+      expect(events).toContainEqual(expect.objectContaining({
+        kind: 'turn-complete',
+        turnId: 'host-turn-next',
+        agentTurnId: 'turn-2',
+      }));
+      expect(clientState.requests.filter(({ method }) => method === 'thread/start')).toHaveLength(1);
+      expect(clientState.requests.filter(({ method }) => method === 'turn/start')).toEqual([
+        expect.objectContaining({ params: expect.objectContaining({
+          threadId: 'thread-1', input: [{ type: 'text', text: 'original evidence part' }],
+        }) }),
+        expect.objectContaining({ params: expect.objectContaining({
+          threadId: 'thread-1', input: [{ type: 'text', text: 'next distinct evidence part' }],
+        }) }),
+      ]);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
   it('reports the safe cause of a workspace routing 401 in the issue and daemon log', async () => {
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const runtime = createRuntime({ ctx: { logger } });

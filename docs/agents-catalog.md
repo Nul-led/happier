@@ -652,6 +652,18 @@ while an updater downloads. Update availability and latest-version knowledge are
 an Agent without an npm or managed GitHub release source has an unknown latest version, even
 when its vendor updater can run. A vendor recipe alone does not establish a latest-version source.
 
+### Agent native sign-in (0.3 development)
+
+Native sign-in uses the existing daemon terminal owner through
+`packages/protocol/src/daemon/startAgentSignIn.ts`. Its start result carries the
+acquired `terminalId` alongside `terminalKey`. Cancel and Restart Actions require
+that acquired ID and verify it against the sign-in terminal key before closing;
+an old request cannot close a replacement process. They use the same authenticated
+machine transport and Action admission as Start. In the app, Actions and presenters
+share `agents/machineAgents/signIn/useAgentSignIn.ts`'s Account-scoped custody.
+Closing a presenter does not transfer process ownership to its terminal renderer.
+This is current development behavior, not a released availability claim.
+
 ### Checklist id conventions
 
 Checklist ids are treated as stable API between daemon and app:
