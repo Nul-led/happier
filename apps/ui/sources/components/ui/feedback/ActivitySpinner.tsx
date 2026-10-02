@@ -92,6 +92,15 @@ export function iconMatchedSpinnerSize(iconSize: number): number {
  * styles (the H of Happier with light moving through it) or the classic ring.
  */
 export function ActivitySpinner(props: ActivitySpinnerProps) {
+    // Native hidden spinners retain their layout host; that placeholder must not announce work.
+    const normalizedProps = Platform.OS !== 'web' && props.animating === false && props.hidesWhenStopped !== false
+        ? {
+            ...props,
+            accessible: false,
+            accessibilityElementsHidden: true,
+            importantForAccessibility: 'no-hide-descendants' as const,
+        }
+        : props;
     const { theme } = useUnistyles();
     const storedStyle = useLocalSetting('loadingIndicatorStyle');
     const reduceMotion = useReducedMotionPreference();
@@ -106,7 +115,7 @@ export function ActivitySpinner(props: ActivitySpinnerProps) {
         size,
         variant,
         ...viewProps
-    } = props;
+    } = normalizedProps;
     const styleId = variant ?? normalizeLoadingIndicatorStyleId(storedStyle);
     const resolvedColor = color ?? theme.colors.text.secondary;
     const inkColor = typeof resolvedColor === 'string' ? resolvedColor : theme.colors.text.secondary;
@@ -120,13 +129,13 @@ export function ActivitySpinner(props: ActivitySpinnerProps) {
     );
 
     if (styleId === 'classicRing') {
-        return <ClassicRingSpinner {...props} color={resolvedColor} reduceMotion={reduceMotion} hostVisible={hostVisible} />;
+        return <ClassicRingSpinner {...normalizedProps} color={resolvedColor} reduceMotion={reduceMotion} hostVisible={hostVisible} />;
     }
 
     const hidden = !animating && hidesWhenStopped !== false;
     const motion = resolveSpinnerMotion({ paused: !animating || !animationEnabled || !hostVisible, reduceMotion });
     const resolvedSize = resolveSpinnerSize(size ?? DEFAULT_NUMERIC_SPINNER_SIZE);
-    const accessibleViewProps = { ...viewProps, accessibilityRole: props.accessibilityRole ?? 'progressbar' as const };
+    const accessibleViewProps = { ...viewProps, accessibilityRole: normalizedProps.accessibilityRole ?? 'progressbar' as const };
 
     if (Platform.OS !== 'web') {
         return (

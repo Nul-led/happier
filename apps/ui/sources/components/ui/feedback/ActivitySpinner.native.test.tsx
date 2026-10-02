@@ -186,11 +186,48 @@ describe('ActivitySpinner (native)', () => {
         }
     });
 
-    it('keeps the layout box but draws nothing when stopped and hidden', async () => {
-        const { dots, running } = await renderDotSpinner({ animating: false });
+    it.each([
+        { os: 'android', variant: 'classicRing' },
+        { os: 'android', variant: 'wave' },
+        { os: 'ios', variant: 'classicRing' },
+        { os: 'ios', variant: 'wave' },
+    ] as const)('hides the stopped $os $variant placeholder from accessibility and restores caller flags on resume', async ({ os, variant }) => {
+        nativeBoundary.os = os;
+        const { ActivitySpinner } = await import('./ActivitySpinner');
+        const props = {
+            variant,
+            testID: 'spinner',
+            size: 18,
+            accessible: true,
+            accessibilityElementsHidden: false,
+            importantForAccessibility: 'yes' as const,
+        };
+        const screen = await renderScreen(<ActivitySpinner {...props} />);
+        mountedScreens.push(screen);
+        const host = screen.findHostByTestId('spinner')!;
+        const callerFlags = { accessible: true, accessibilityElementsHidden: false, importantForAccessibility: 'yes' };
+        expect(host.props).toMatchObject(callerFlags);
 
-        expect(dots).toHaveLength(0);
-        expect(running).toBe(0);
+        await screen.update(<ActivitySpinner {...props} animating={false} />);
+        expect(screen.findHostByTestId('spinner')).toBe(host);
+        expect(host.props).toMatchObject({
+            accessible: false,
+            accessibilityElementsHidden: true,
+            importantForAccessibility: 'no-hide-descendants',
+        });
+        if (variant === 'wave') {
+            expect(findDots(screen)).toHaveLength(0);
+            expect(await runningNativeLoops()).toBe(0);
+        }
+        await screen.update(<ActivitySpinner {...props} animating={false} hidesWhenStopped={true} />);
+        expect(host.props).toMatchObject({ accessible: false, accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' });
+
+        await screen.update(<ActivitySpinner {...props} animationEnabled={false} />);
+        expect(host.props).toMatchObject(callerFlags);
+        await screen.update(<ActivitySpinner {...props} />);
+        expect(host.props).toMatchObject(callerFlags);
+        await screen.update(<ActivitySpinner {...props} animating={false} hidesWhenStopped={false} />);
+        expect(host.props).toMatchObject(callerFlags);
     });
 
     it('animates aurora colour on the native driver too, through the theme accents', async () => {
