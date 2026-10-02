@@ -202,7 +202,8 @@ export function createConnectedServiceSwitchDeferralQueue(
 
     const captureTurnBoundary = (sessionId: string): Readonly<{ wait: () => Promise<void> }> => {
         const state = readTurnState(sessionId);
-        const boundaryEpoch = state.boundaryEpoch;
+        let boundaryEpoch = state.boundaryEpoch;
+        let deadlineAtMs: number | null = null;
         return { wait: () => {
             if (state.closedReason) {
                 return Promise.reject(new ConnectedServiceSwitchDeferralConflictError({
@@ -210,20 +211,36 @@ export function createConnectedServiceSwitchDeferralQueue(
                     message: `Connected-service auth wait cancelled: ${state.closedReason}`,
                 }));
             }
+            // One captured observation owns the configured budget across native refusals.
+            // Capturing before the RPC does not admit the budget until the first wait.
+            deadlineAtMs ??= nowMs() + timeoutMs;
+            const remainingMs = deadlineAtMs - nowMs();
+            if (remainingMs <= 0) {
+                return Promise.reject(new ConnectedServiceSwitchDeferralConflictError({
+                    code: 'switch_execution_timeout',
+                    message: 'Connected-service auth still awaits a safe provider turn boundary',
+                }));
+            }
             // A completion delivered while the provider refusal was in flight already
             // supplies the safe boundary, unless a newer turn has since started.
-            if (state.boundaryEpoch > boundaryEpoch && !state.inFlight) return Promise.resolve();
+            if (state.boundaryEpoch > boundaryEpoch && !state.inFlight) {
+                boundaryEpoch = state.boundaryEpoch;
+                return Promise.resolve();
+            }
             return new Promise<void>((resolve, reject) => {
                 const settle = (error?: unknown): void => {
                     clearTimeout(timer);
                     state.boundaryWaiters.delete(waiter);
-                    if (error) reject(error); else resolve();
+                    if (error) reject(error); else {
+                        boundaryEpoch = state.boundaryEpoch;
+                        resolve();
+                    }
                 };
                 const waiter: TurnBoundaryWaiter = { resolve: () => settle(), reject: (error) => settle(error) };
                 const timer = setTimeout(() => waiter.reject(new ConnectedServiceSwitchDeferralConflictError({
                     code: 'switch_execution_timeout',
                     message: 'Connected-service auth still awaits a safe provider turn boundary',
-                })), timeoutMs);
+                })), remainingMs);
                 state.boundaryWaiters.add(waiter);
             });
         } };

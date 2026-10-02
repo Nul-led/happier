@@ -1,10 +1,117 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildConnectedServiceCredentialRecord } from '@happier-dev/protocol';
+import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
+import { createApiSessionSocketStub } from '@/testkit/backends/apiSessionSocketHarness';
+import { createResolvedSessionConnectedServiceAuthTransport } from '@/session/runtime/control/transport';
+import { projectAgentConnectedAccountLaunchCatalogEntry } from '@/plugins/projection/registry/agentCatalogEntryHooks';
+import { createCodexConnectedAccountNativeAuthCodec, createCodexConnectedServiceRuntimeAuthAdapter } from '../../../../../../packages/plugins/codex/src/agent/auth/services/runtime/control/runtimeAuthAdapter';
+import { codexStateSharingDescriptor } from '../../../../../../packages/plugins/codex/src/agent/auth/services/state/sharing/descriptor';
+import { createConnectedServiceSessionAuthSwitchCore } from '../runtimeAuth/connectedServiceSessionAuthSwitchCore';
+import { runSerializedConnectedServiceTransition } from './locking/runSerializedConnectedServiceTransition';
+
+
+
 import type { ConnectedServiceProviderRuntimeAuthAdapter } from '../runtimeAuth/types';
 import { createConnectedServiceSwitchDeferralQueue } from './connectedServiceSwitchDeferralQueue';
 import { createSessionConnectedServiceAuthHotApply } from './sessionConnectedServiceAuthHotApply';
 
+const { createUserScopedSocket } = vi.hoisted(() => ({ createUserScopedSocket: vi.fn() }));
+// Only the external Session RPC socket is substituted; plugin adapter/projection, codec, queue and lock are real.
+vi.mock('@/api/session/sockets', () => ({ createUserScopedSocket }));
+
 describe('createSessionConnectedServiceAuthHotApply', () => {
+  it.each(['timeout', 'success'] as const)('retains one boundary budget and releases the actual session lock through Session RPC: %s', async outcome => {
+    vi.useFakeTimers();
+    const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 1000, disableDeferral: false });
+    const core = createConnectedServiceSessionAuthSwitchCore();
+    const requests: unknown[] = [];
+    const root = await mkdtemp(join(tmpdir(), 'auth-boundary-budget-'));
+    const serviceId = 'happier.agent.codex/openai-codex';
+    let providerBusy = true;
+    createUserScopedSocket.mockImplementation(() => createApiSessionSocketStub({
+      emit: (event, [envelope, acknowledge]) => {
+        if (event !== SOCKET_RPC_EVENTS.CALL) return;
+        requests.push((envelope as { params: unknown }).params);
+        (acknowledge as (result: unknown) => void)({ ok: true, result: providerBusy
+          ? { ok: false, errorCode: 'turn_in_flight', error: 'turn_in_flight' }
+          : { ok: true, serviceId: 'happier.agent.codex/openai-codex', appliedVia: 'direct_live_hot_auth' } });
+      },
+    }));
+    const record = buildConnectedServiceCredentialRecord({ now: 1000, serviceId: 'openai-codex', profileId: 'work', kind: 'oauth', expiresAt: 2000,
+      oauth: { accessToken: 'synthetic-access', refreshToken: 'synthetic-refresh', idToken: 'synthetic-id', scope: null, tokenType: null,
+        providerAccountId: 'acct_work', providerEmail: null } });
+    const transport = createResolvedSessionConnectedServiceAuthTransport({ token: 'synthetic-token', sessionId: 'sess_1', mode: 'plain', ctx: null });
+    const entry = projectAgentConnectedAccountLaunchCatalogEntry({ agentId: 'codex', isCurrent: () => true,
+      connectedAccountLaunch: { stateSharingDescriptor: codexStateSharingDescriptor, continuity: {
+        nativeAuthCodec: createCodexConnectedAccountNativeAuthCodec(), runtimeAuthAdapter: createCodexConnectedServiceRuntimeAuthAdapter(),
+      } },
+    });
+    const adapter = await entry.getConnectedServiceRuntimeAuthAdapter!();
+    const apply = createSessionConnectedServiceAuthHotApply({ resolveRuntimeAuthAdapter: async () => adapter, turnDeferralQueue: queue });
+    const input: Parameters<typeof apply>[0] = {
+      tracked: { startedBy: 'daemon' as const, happySessionId: 'sess_1', pid: 123,
+        spawnOptions: { directory: '/tmp/project', backendTarget: { kind: 'backend' as const, backendId: 'codex', sourceKind: 'built_in' as const } } },
+      normalizedBindings: { v: 1 as const, bindingsByServiceId: {
+        [serviceId]: { source: 'connected' as const, selection: 'profile' as const, profileId: 'work' },
+      } },
+      runtimeAuthSelectionsByServiceId: new Map([[serviceId, { serviceId, credential: record, profileId: 'work',
+        nativeHome: {
+          readFiles: async () => ({ 'auth.json': await readFile(join(root, 'auth.json')) }),
+          replaceFiles: async (files: Readonly<Record<string, Uint8Array>>) => {
+            for (const [fileId, bytes] of Object.entries(files)) await writeFile(join(root, fileId), bytes);
+          },
+        },
+        applyConnectedServiceAuthGeneration: async (request: Parameters<typeof transport.applyConnectedServiceAuthGeneration>[0]) => {
+          const result = await transport.applyConnectedServiceAuthGeneration(request);
+          return result.ok ? result.value : { ok: false, error: result.error, errorCode: result.code };
+        },
+      }]]),
+    };
+    queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'task_started' });
+    let settled: unknown;
+    const first = runSerializedConnectedServiceTransition({ core, sessionId: 'sess_1', reason: 'manual', execute: async () => await apply(input) })
+      .then(result => { settled = result; return result; });
+    let nextEntered = false;
+    let second: Promise<void> | undefined;
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ serviceId: serviceId });
+      second = runSerializedConnectedServiceTransition({ core, sessionId: 'sess_1', reason: 'manual', execute: async () => { nextEntered = true; } });
+      await vi.advanceTimersByTimeAsync(800);
+      queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'assistant_message_end' });
+      queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'task_started' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(requests).toHaveLength(2);
+      expect(nextEntered).toBe(false);
+      if (outcome === 'success') {
+        providerBusy = false;
+        queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'assistant_message_end' });
+        await expect(first).resolves.toMatchObject({ ok: true });
+        expect(JSON.parse(await readFile(join(root, 'auth.json'), 'utf8')).tokens.access_token).toBe('synthetic-access');
+      } else {
+        await vi.advanceTimersByTimeAsync(200);
+        expect(settled).toMatchObject({ ok: false, errorCode: 'hot_apply_failed', underlyingError: expect.stringContaining('(code=switch_execution_timeout)') });
+        expect(queue.isTurnInFlight('sess_1')).toBe(true);
+        await first;
+      }
+      await second;
+      expect(nextEntered).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await queue.cancelSession('sess_1', 'session_terminated');
+      await first;
+      await second;
+      await rm(root, { recursive: true, force: true });
+      createUserScopedSocket.mockReset();
+      vi.useRealTimers();
+    }
+  });
+
   it.each(['timeout', 'session_terminated', 'daemon_shutdown'] as const)('preserves earlier service effects when boundary waiting fails on %s', async (reason) => {
     vi.useFakeTimers();
     try {

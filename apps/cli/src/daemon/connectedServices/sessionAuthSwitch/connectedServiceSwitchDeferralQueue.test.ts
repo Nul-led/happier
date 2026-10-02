@@ -31,6 +31,46 @@ describe('connectedServiceSwitchDeferralQueue', () => {
         expect(queue.isTurnInFlight('sess_1')).toBe(true);
     });
 
+    it('shares one budget from the first wait across successive boundaries without closing live work', async () => {
+      const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 1000, disableDeferral: false });
+      const boundary = queue.captureTurnBoundary('sess_1');
+      await vi.advanceTimersByTimeAsync(500); // Capture alone does not admit a wait.
+      queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'task_started' });
+      const first = boundary.wait();
+      await vi.advanceTimersByTimeAsync(800);
+      queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'assistant_message_end' });
+      await first;
+      queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'task_started' });
+      let failure: unknown;
+      const second = boundary.wait().catch(error => { failure = error; });
+      try {
+        await vi.advanceTimersByTimeAsync(200);
+        expect(failure).toMatchObject({ code: 'switch_execution_timeout' });
+        expect(queue.isTurnInFlight('sess_1')).toBe(true);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        await queue.cancelSession('sess_1', 'session_terminated');
+        await second;
+      }
+    });
+
+    it('consumes an observed boundary before waiting for a later refusal at an idle projection', async () => {
+      const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 1000, disableDeferral: false });
+      const boundary = queue.captureTurnBoundary('sess_1');
+      const first = boundary.wait();
+      queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'assistant_message_end' });
+      await first;
+      let settled = false;
+      const second = boundary.wait().then(() => { settled = true; });
+      await Promise.resolve();
+      const reusedOldBoundary = settled;
+      queue.recordTurnLifecycleEvent({ sessionId: 'sess_1', event: 'turn_cancelled' });
+      await second;
+      expect(reusedOldBoundary).toBe(false);
+      expect(settled).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
     it('retains a boundary delivered while an auth refusal was in flight', async () => {
         const queue = createConnectedServiceSwitchDeferralQueue({ timeoutMs: 1000, disableDeferral: false });
         const boundary = queue.captureTurnBoundary('sess_1');

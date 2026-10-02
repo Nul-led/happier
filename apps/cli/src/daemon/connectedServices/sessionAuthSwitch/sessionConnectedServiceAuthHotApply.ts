@@ -241,7 +241,7 @@ export function createSessionConnectedServiceAuthHotApply(deps?: Readonly<{
       });
       const sessionId = input.tracked.happySessionId;
       const queue = deps?.turnDeferralQueue;
-      let boundary = sessionId && queue ? queue.captureTurnBoundary(sessionId) : null;
+      const boundary = sessionId && queue ? queue.captureTurnBoundary(sessionId) : null;
       let underlyingError: string | undefined;
       let result = await adapter.hotApply(request);
       while (result.reason === 'turn_in_flight' && boundary && queue && sessionId) {
@@ -252,7 +252,6 @@ export function createSessionConnectedServiceAuthHotApply(deps?: Readonly<{
           underlyingError = summarizeConnectedServiceSwitchApplyError(error);
           break;
         }
-        boundary = queue.captureTurnBoundary(sessionId);
         result = await adapter.hotApply(request);
       }
       if (!resultApplied(result)) {
