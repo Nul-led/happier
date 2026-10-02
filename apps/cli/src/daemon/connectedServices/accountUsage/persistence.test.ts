@@ -51,11 +51,7 @@ type PersistenceModule = Readonly<{
   }>): Readonly<{
     recordInBandSnapshot(
       snapshot: ProviderAccountUsageSnapshotV1,
-      options?: Readonly<{
-        source?: ConnectedServiceUsageSourceV1;
-        sources?: readonly ConnectedServiceUsageSourceV1[];
-        onPersisted?: () => void;
-      }>,
+      options?: Readonly<{ source?: ConnectedServiceUsageSourceV1; sources?: readonly ConnectedServiceUsageSourceV1[] }>,
     ): Promise<
       | Readonly<{ status: 'enqueued'; enqueue: 'accepted' | 'coalesced' }>
       | Readonly<{ status: 'already_persisted'; reason: string }>
@@ -103,43 +99,6 @@ function createCredentials(): Credentials {
 }
 
 describe('provider account usage persistence', () => {
-  it('releases confirmation custody when a terminal paused payload is actually evicted', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(1_500);
-    const { createProviderAccountUsagePersistenceScheduler } = await import('./persistence');
-    let writesSucceed = false;
-    const scheduler = createProviderAccountUsagePersistenceScheduler({
-      api: {
-        getAccountEncryptionMode: async () => 'plain',
-        registerProviderAccountUsageSnapshotPlain: async () => {
-          if (!writesSucceed) throw new Error('temporary outage');
-        },
-      },
-      now: () => Date.now(),
-      fingerprintKey: new Uint8Array(32).fill(9),
-    });
-    const evictedConfirmation = vi.fn();
-    const currentConfirmation = vi.fn();
-    try {
-      await scheduler.recordInBandSnapshot(createSnapshot(), { onPersisted: evictedConfirmation });
-      await vi.runAllTimersAsync();
-      // Fully pause each distinct key before adding the next: this pressure
-      // evicts paused custody rather than merely discarding a queued write.
-      for (let index = 0; index < 500; index += 1) {
-        await scheduler.recordInBandSnapshot(createSnapshot(createKey(`pressure_${index}`)));
-        await vi.runAllTimersAsync();
-      }
-      writesSucceed = true;
-      await scheduler.recordInBandSnapshot({ ...createSnapshot(), planLabel: 'Max' }, { onPersisted: currentConfirmation });
-      await vi.runAllTimersAsync();
-      expect(evictedConfirmation).not.toHaveBeenCalled();
-      expect(currentConfirmation).toHaveBeenCalledOnce();
-    } finally {
-      scheduler.dispose();
-      vi.useRealTimers();
-    }
-  });
-
   it('omits subscription but preserves usage when the server subscription decision is absent', async () => {
     const { createProviderAccountUsagePersistenceScheduler } = await import('./persistence');
     const base = createSnapshot();
@@ -268,116 +227,6 @@ describe('provider account usage persistence', () => {
         status: 'already_persisted',
         reason: 'unchanged',
       });
-    } finally {
-      scheduler.dispose();
-    }
-  });
-
-  it('confirms a queued in-band write once the server accepts it', async () => {
-    const module = await loadPersistenceModule();
-    expect(module).not.toBeNull();
-    const serverWrite: { accept: (() => void) | null } = { accept: null };
-    const scheduler = module!.createProviderAccountUsagePersistenceScheduler({
-      api: {
-        getAccountEncryptionMode: async () => 'plain',
-        registerProviderAccountUsageSnapshotPlain: () => new Promise<void>((resolve) => { serverWrite.accept = resolve; }),
-      },
-      now: () => 1_000,
-      fingerprintKey: new Uint8Array(32).fill(9),
-    });
-    const onPersisted = vi.fn();
-    try {
-      await expect(scheduler.recordInBandSnapshot(createSnapshot(), { onPersisted }))
-        .resolves.toEqual({ status: 'enqueued', enqueue: 'accepted' });
-      await vi.waitFor(() => expect(serverWrite.accept).not.toBeNull());
-      expect(onPersisted).not.toHaveBeenCalled();
-
-      serverWrite.accept?.();
-      await scheduler.flush(1_000);
-      expect(onPersisted).toHaveBeenCalledOnce();
-    } finally {
-      scheduler.dispose();
-    }
-  });
-
-  it('does not confirm a queued in-band write the server rejects', async () => {
-    const module = await loadPersistenceModule();
-    expect(module).not.toBeNull();
-    const scheduler = module!.createProviderAccountUsagePersistenceScheduler({
-      api: {
-        getAccountEncryptionMode: async () => 'plain',
-        registerProviderAccountUsageSnapshotPlain: async () => { throw new Error('server unavailable'); },
-      },
-      now: () => 1_000,
-      fingerprintKey: new Uint8Array(32).fill(9),
-    });
-    const onPersisted = vi.fn();
-    try {
-      await scheduler.recordInBandSnapshot(createSnapshot(), { onPersisted });
-      await scheduler.flush(1_000);
-      expect(onPersisted).not.toHaveBeenCalled();
-    } finally {
-      scheduler.dispose();
-    }
-  });
-
-  it('confirms a queued in-band write that lands on a retry after the server first fails', async () => {
-    const module = await loadPersistenceModule();
-    expect(module).not.toBeNull();
-    let attempts = 0;
-    const scheduler = module!.createProviderAccountUsagePersistenceScheduler({
-      api: {
-        getAccountEncryptionMode: async () => 'plain',
-        registerProviderAccountUsageSnapshotPlain: async () => {
-          attempts += 1;
-          if (attempts === 1) throw new Error('server unavailable');
-        },
-      },
-      now: () => 1_000,
-      fingerprintKey: new Uint8Array(32).fill(9),
-    });
-    const onPersisted = vi.fn();
-    try {
-      await scheduler.recordInBandSnapshot(createSnapshot(), { onPersisted });
-      await vi.waitFor(async () => {
-        await scheduler.flush(1_000);
-        expect(attempts).toBeGreaterThanOrEqual(2);
-      }, { timeout: 10_000 });
-      expect(onPersisted).toHaveBeenCalledOnce();
-    } finally {
-      scheduler.dispose();
-    }
-  });
-
-  it('confirms a write queued behind an in-flight write that fails, once the queued write lands', async () => {
-    const module = await loadPersistenceModule();
-    expect(module).not.toBeNull();
-    const writes: Array<{ settle: (error?: Error) => void }> = [];
-    const scheduler = module!.createProviderAccountUsagePersistenceScheduler({
-      api: {
-        getAccountEncryptionMode: async () => 'plain',
-        registerProviderAccountUsageSnapshotPlain: () => new Promise<void>((resolve, reject) => {
-          writes.push({ settle: (error) => (error ? reject(error) : resolve()) });
-        }),
-      },
-      now: () => 1_000,
-      fingerprintKey: new Uint8Array(32).fill(9),
-    });
-    const firstPersisted = vi.fn();
-    const secondPersisted = vi.fn();
-    try {
-      await scheduler.recordInBandSnapshot(createSnapshot(), { onPersisted: firstPersisted });
-      await vi.waitFor(() => expect(writes).toHaveLength(1));
-      await expect(scheduler.recordInBandSnapshot({ ...createSnapshot(), planLabel: 'Max' }, { onPersisted: secondPersisted }))
-        .resolves.toMatchObject({ status: 'enqueued' });
-
-      writes[0]!.settle(new Error('server unavailable'));
-      await vi.waitFor(() => expect(writes.length).toBeGreaterThanOrEqual(2), { timeout: 10_000 });
-      writes[writes.length - 1]!.settle();
-      await scheduler.flush(1_000);
-      // The record exists once any write for it lands, so both observations may now reference it.
-      expect(secondPersisted).toHaveBeenCalledOnce();
-      expect(firstPersisted).toHaveBeenCalledOnce();
     } finally {
       scheduler.dispose();
     }

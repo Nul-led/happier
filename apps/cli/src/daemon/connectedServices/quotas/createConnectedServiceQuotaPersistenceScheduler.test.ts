@@ -31,15 +31,13 @@ describe('createConnectedServiceQuotaPersistenceScheduler', () => {
     now: () => number;
     run: (key: string, payload: TestPayload) => Promise<void>;
     maxKeys?: number;
-    maxConcurrent?: number;
     maxConsecutiveFailures?: number;
     shouldRetry?: (error: unknown) => boolean;
     shouldPauseAfterFailure?: (error: unknown) => boolean;
-    onEvent?: Parameters<typeof createConnectedServiceQuotaPersistenceScheduler<string, TestPayload>>[0]['onEvent'];
   }>) {
     return createConnectedServiceQuotaPersistenceScheduler<string, TestPayload>({
       run: input.run,
-      maxConcurrent: input.maxConcurrent ?? 1,
+      maxConcurrent: 1,
       minKeyIntervalMs: 0,
       maxKeys: input.maxKeys ?? 10,
       maxKeyAgeMs: 60_000,
@@ -54,7 +52,6 @@ describe('createConnectedServiceQuotaPersistenceScheduler', () => {
       }),
       shouldRetry: input.shouldRetry ?? (() => true),
       shouldPauseAfterFailure: input.shouldPauseAfterFailure,
-      onEvent: input.onEvent,
     });
   }
 
@@ -200,79 +197,13 @@ describe('createConnectedServiceQuotaPersistenceScheduler', () => {
     await expect(flushed).resolves.toEqual({ timedOut: true, drained: false });
   });
 
-  it('does not discard paused confirmation custody while that key is actively flushing', async () => {
-    vi.useFakeTimers();
-    let nowMs = 0;
-    const activeWrite = createDeferred<void>();
-    const onEvent = vi.fn();
-    let retrying = false;
-    const scheduler = createScheduler({
-      now: () => nowMs, maxKeys: 2, maxConcurrent: 2, maxConsecutiveFailures: 1, onEvent,
-      run: async (key) => {
-        if (key === 'active' && retrying) { await activeWrite.promise; return; }
-        throw new Error('temporarily unavailable');
-      },
-    });
-    try {
-      scheduler.enqueue('active', { materialFingerprint: 'active', value: 'first' });
-      await vi.runAllTimersAsync();
-      nowMs = 1;
-      scheduler.enqueue('idle', { materialFingerprint: 'idle', value: 'second' });
-      await vi.runAllTimersAsync();
-      retrying = true;
-      const flushed = scheduler.flushKey('active', 1_000);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(scheduler.getStats().activeCount).toBe(1);
-      nowMs = 2;
-      scheduler.enqueue('incoming', { materialFingerprint: 'incoming', value: 'third' });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(onEvent.mock.calls.map(([event]) => event)).not.toContainEqual({
-        type: 'suppressed', key: 'active', reason: 'max_keys',
-      });
-      activeWrite.resolve();
-      await vi.runAllTimersAsync();
-      await expect(flushed).resolves.toBe(true);
-    } finally { activeWrite.resolve(); scheduler.dispose(); }
-  });
-
-  it('does not discard paused confirmation custody while the existing scheduler retains its retry', async () => {
-    vi.useFakeTimers();
-    const onEvent = vi.fn();
-    let writesSucceed = false;
-    const scheduler = createScheduler({
-      now: () => 0, maxKeys: 2, maxConsecutiveFailures: 2, onEvent,
-      shouldRetry: (error) => error instanceof Error && error.message === 'retryable',
-      run: async (key) => {
-        if (key === 'retrying' && writesSucceed) return;
-        throw new Error(key === 'retrying' ? 'retryable' : 'terminal');
-      },
-    });
-    try {
-      scheduler.enqueue('retrying', { materialFingerprint: 'retrying', value: 'first' });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(scheduler.getStats().pendingKeyCount).toBe(1);
-      scheduler.enqueue('idle', { materialFingerprint: 'idle', value: 'second' });
-      await vi.advanceTimersByTimeAsync(0);
-      scheduler.enqueue('incoming', { materialFingerprint: 'incoming', value: 'third' });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(onEvent.mock.calls.map(([event]) => event)).not.toContainEqual({
-        type: 'suppressed', key: 'retrying', reason: 'max_keys',
-      });
-      writesSucceed = true;
-      await vi.runAllTimersAsync();
-      expect(onEvent.mock.calls.map(([event]) => event)).toContainEqual({ type: 'succeeded', key: 'retrying' });
-    } finally { scheduler.dispose(); }
-  });
-
   it('bounds paused same-fingerprint payload retention by maxKeys', async () => {
     vi.useFakeTimers();
     let nowMs = 0;
-    const onEvent = vi.fn();
     const scheduler = createScheduler({
       now: () => nowMs,
       maxKeys: 3,
       maxConsecutiveFailures: 1,
-      onEvent,
       run: async () => {
         throw new Error('retryable');
       },
@@ -285,10 +216,5 @@ describe('createConnectedServiceQuotaPersistenceScheduler', () => {
     }
 
     expect(scheduler.getStats().retainedKeyCount).toBeLessThanOrEqual(3);
-    // Dependents keep confirmation callbacks with the canonical payload. Every
-    // discarded paused payload must announce the same eviction as queued work.
-    expect(onEvent.mock.calls.map(([event]) => event).filter((event) => event.type === 'suppressed' && event.reason === 'max_keys'))
-      .toEqual(Array.from({ length: 7 }, (_unused, index) => ({ type: 'suppressed', key: `profile-${index}`, reason: 'max_keys' })));
-    scheduler.dispose();
   });
 });

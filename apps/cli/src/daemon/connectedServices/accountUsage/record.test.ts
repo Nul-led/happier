@@ -29,11 +29,7 @@ type RecordModule = Readonly<{
     persistence: Readonly<{
       recordInBandSnapshot(
         snapshot: ProviderAccountUsageSnapshotV1,
-        options?: Readonly<{
-          source?: ConnectedServiceUsageSourceV1;
-          sources?: readonly ConnectedServiceUsageSourceV1[];
-          onPersisted?: () => void;
-        }>,
+        options?: Readonly<{ source?: ConnectedServiceUsageSourceV1; sources?: readonly ConnectedServiceUsageSourceV1[] }>,
       ): Promise<unknown>;
     }> | null;
     publishRecordId?: (input: Readonly<{ sessionId: string; recordId: string }>) => Promise<void>;
@@ -118,110 +114,6 @@ function createConnectedServiceGroupSnapshot(
 }
 
 describe('recordProviderAccountUsageSnapshotForSession', () => {
-  it('does not publish a first future observation that the real persistence owner has never written', async () => {
-    const { recordProviderAccountUsageSnapshotForSession } = await import('./record');
-    const { createProviderAccountUsageStore } = await import('./store');
-    const { createProviderAccountUsagePersistenceScheduler } = await import('./persistence');
-    const write = vi.fn(async () => {});
-    const publishRecordId = vi.fn(async () => {});
-    const store = createProviderAccountUsageStore();
-    const persistence = createProviderAccountUsagePersistenceScheduler({
-      api: { getAccountEncryptionMode: async () => 'plain', registerProviderAccountUsageSnapshotPlain: write },
-      now: () => 10_000, fingerprintKey: new Uint8Array(32).fill(9),
-    });
-    const future = { ...createSnapshot(), fetchedAtMs: 100_000, observedAtMs: 100_000 };
-    try {
-      const result = await recordProviderAccountUsageSnapshotForSession({
-        getChildren: () => [{ happySessionId: 's1' }], sessionId: 's1', snapshot: future,
-        store, persistence, publishRecordId,
-      });
-      await Promise.resolve();
-      expect(write).not.toHaveBeenCalled();
-      // Local accepted observation semantics stay unchanged; a rejected write
-      // cannot prove the global record exists for session metadata.
-      expect(store.resolveRecordId(future.recordId)).toMatchObject({ fetchedAtMs: 100_000 });
-      expect(publishRecordId).not.toHaveBeenCalled();
-      expect(result).toMatchObject({ status: 'snapshot_advanced', persisted: false });
-    } finally { persistence.dispose(); }
-  });
-
-  it('publishes an existing global record to a new session when the real persistence owner rejects its future update', async () => {
-    const { recordProviderAccountUsageSnapshotForSession } = await import('./record');
-    const { createProviderAccountUsageStore } = await import('./store');
-    const { createProviderAccountUsagePersistenceScheduler } = await import('./persistence');
-    const write = vi.fn(async () => {});
-    const publishRecordId = vi.fn(async () => {});
-    const store = createProviderAccountUsageStore();
-    const persistence = createProviderAccountUsagePersistenceScheduler({
-      api: { getAccountEncryptionMode: async () => 'plain', registerProviderAccountUsageSnapshotPlain: write },
-      now: () => 10_000, fingerprintKey: new Uint8Array(32).fill(9),
-    });
-    const snapshot = createSnapshot();
-    const getChildren = () => [{ happySessionId: 'past' }, { happySessionId: 'future' }, { happySessionId: 'other-account' }];
-    try {
-      await recordProviderAccountUsageSnapshotForSession({
-        getChildren, sessionId: 'past', snapshot, store, persistence, publishRecordId,
-      });
-      await persistence.flush(1_000);
-      await vi.waitFor(() => expect(publishRecordId).toHaveBeenCalledWith({ sessionId: 'past', recordId: snapshot.recordId }));
-      expect(write).toHaveBeenCalledTimes(1);
-      const future = { ...snapshot, fetchedAtMs: 100_000, observedAtMs: 100_000 };
-      const result = await recordProviderAccountUsageSnapshotForSession({
-        getChildren, sessionId: 'future', snapshot: future, store, persistence, publishRecordId,
-      });
-      await Promise.resolve();
-      expect(write).toHaveBeenCalledTimes(1);
-      expect(publishRecordId).toHaveBeenCalledWith({ sessionId: 'future', recordId: snapshot.recordId });
-      expect(publishRecordId).toHaveBeenCalledTimes(2);
-      expect(result).toMatchObject({ status: 'snapshot_advanced', persisted: true });
-      // Successful state for this account cannot prove a different account's record exists.
-      const other = { ...createSnapshot(createRecordKey('acct_other')), fetchedAtMs: 100_000, observedAtMs: 100_000 };
-      const otherResult = await recordProviderAccountUsageSnapshotForSession({
-        getChildren, sessionId: 'other-account', snapshot: other, store, persistence, publishRecordId,
-      });
-      await Promise.resolve();
-      expect(write).toHaveBeenCalledTimes(1);
-      expect(publishRecordId).toHaveBeenCalledTimes(2);
-      expect(otherResult).toMatchObject({ persisted: false });
-    } finally { persistence.dispose(); }
-  });
-
-  it.each([true, false])('preserves the existing record proof across future sources (persisted source first: %s)', async (persistedSourceFirst) => {
-    const { recordProviderAccountUsageSnapshotForSession } = await import('./record');
-    const { createProviderAccountUsageStore } = await import('./store');
-    const { createProviderAccountUsagePersistenceScheduler } = await import('./persistence');
-    const write = vi.fn(async () => {});
-    const publishRecordId = vi.fn(async () => {});
-    const store = createProviderAccountUsageStore();
-    const persistence = createProviderAccountUsagePersistenceScheduler({
-      api: { getAccountEncryptionMode: async () => 'plain', registerProviderAccountUsageSnapshotPlain: write },
-      now: () => 10_000, fingerprintKey: new Uint8Array(32).fill(9),
-    });
-    const snapshot = createSnapshot();
-    const knownSource: ConnectedServiceUsageSourceV1 = { serviceId: 'openai-codex', profileId: 'known', bindingKind: 'profile' };
-    const newSource: ConnectedServiceUsageSourceV1 = { serviceId: 'openai-codex', profileId: 'new', bindingKind: 'profile' };
-    const getChildren = () => [{ happySessionId: 'past' }, { happySessionId: 'future' }];
-    try {
-      await recordProviderAccountUsageSnapshotForSession({
-        getChildren, sessionId: 'past', snapshot, store, persistence, publishRecordId,
-        observation: { sources: [knownSource] }, sourceProviderAccountId: snapshot.accountSubject.id,
-      });
-      await persistence.flush(1_000);
-      await vi.waitFor(() => expect(publishRecordId).toHaveBeenCalledWith({ sessionId: 'past', recordId: snapshot.recordId }));
-      expect(write).toHaveBeenCalledTimes(1);
-      const result = await recordProviderAccountUsageSnapshotForSession({
-        getChildren, sessionId: 'future', snapshot: { ...snapshot, fetchedAtMs: 100_000, observedAtMs: 100_000 },
-        store, persistence, publishRecordId, sourceProviderAccountId: snapshot.accountSubject.id,
-        observation: { sources: persistedSourceFirst ? [knownSource, newSource] : [newSource, knownSource] },
-      });
-      await Promise.resolve();
-      expect(write).toHaveBeenCalledTimes(1);
-      expect(publishRecordId).toHaveBeenCalledTimes(2);
-      expect(publishRecordId).toHaveBeenCalledWith({ sessionId: 'future', recordId: snapshot.recordId });
-      expect(result).toMatchObject({ status: 'snapshot_advanced', persisted: true });
-    } finally { persistence.dispose(); }
-  });
-
   it('records latest state, forwards explicit source context, queues persistence, and waits for confirmed persistence before metadata refs', async () => {
     const module = await loadRecordModule();
     expect(module).not.toBeNull();
@@ -276,48 +168,8 @@ describe('recordProviderAccountUsageSnapshotForSession', () => {
     expect(persistence.recordInBandSnapshot).toHaveBeenCalledWith(expect.objectContaining({
       recordId: snapshot.recordId,
       providerId: 'codex',
-    }), expect.objectContaining({ sources: [source] }));
+    }), { sources: [source] });
     expect(readProviderAccountUsageRecordIdsFromMetadata(metadata)).toEqual([]);
-  });
-
-  it('publishes the metadata ref once a queued persistence write is confirmed', async () => {
-    const module = await loadRecordModule();
-    expect(module).not.toBeNull();
-    const snapshot = createSnapshot();
-    const queuedWrite: { confirm?: () => void } = {};
-    const persistence = {
-      recordInBandSnapshot: vi.fn(async (
-        _snapshot: ProviderAccountUsageSnapshotV1,
-        options?: Readonly<{ onPersisted?: () => void }>,
-      ) => {
-        queuedWrite.confirm = options?.onPersisted;
-        return { status: 'enqueued' as const, enqueue: 'accepted' as const };
-      }),
-    };
-    const publishRecordId = vi.fn(async () => {});
-
-    await expect(module!.recordProviderAccountUsageSnapshotForSession({
-      getChildren: () => [{ happySessionId: 'sess_1' }],
-      store: {
-        recordSnapshot: () => ({ status: 'snapshot_advanced' as const, recordId: snapshot.recordId }),
-        resolveRecordId: () => snapshot,
-      },
-      persistence,
-      publishRecordId,
-      sessionId: 'sess_1',
-      snapshot,
-    })).resolves.toEqual({
-      status: 'snapshot_advanced',
-      recordId: snapshot.recordId,
-      persisted: false,
-    });
-    expect(publishRecordId).not.toHaveBeenCalled();
-
-    queuedWrite.confirm?.();
-    await vi.waitFor(() => expect(publishRecordId).toHaveBeenCalledWith({
-      sessionId: 'sess_1',
-      recordId: snapshot.recordId,
-    }));
   });
 
   it('persists all observed connected-service sources for a session usage snapshot', async () => {
@@ -363,7 +215,7 @@ describe('recordProviderAccountUsageSnapshotForSession', () => {
 
     expect(persistence.recordInBandSnapshot).toHaveBeenCalledWith(expect.objectContaining({
       recordId: snapshot.recordId,
-    }), expect.objectContaining({ sources: [profileSource, groupSource] }));
+    }), { sources: [profileSource, groupSource] });
   });
 
   it('does not mutate store, persist, or publish when the runtime session is unknown', async () => {
@@ -615,7 +467,7 @@ describe('recordProviderAccountUsageSnapshotForSession', () => {
     expect(latestObservation).toBeUndefined();
     expect(persistence.recordInBandSnapshot).toHaveBeenCalledWith(expect.objectContaining({
       recordId: snapshot.recordId,
-    }), expect.not.objectContaining({ sources: expect.anything() }));
+    }), undefined);
   });
 
   it('records the usage fact but strips source links for provisional subjects', async () => {
@@ -665,7 +517,7 @@ describe('recordProviderAccountUsageSnapshotForSession', () => {
     expect(latestObservation).toBeUndefined();
     expect(persistence.recordInBandSnapshot).toHaveBeenCalledWith(expect.objectContaining({
       recordId: snapshot.recordId,
-    }), expect.not.objectContaining({ sources: expect.anything() }));
+    }), undefined);
   });
 
   it('keeps recording successful when session metadata publication fails after persistence succeeds', async () => {

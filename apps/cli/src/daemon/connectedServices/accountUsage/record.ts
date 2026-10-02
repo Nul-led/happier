@@ -182,7 +182,16 @@ export async function recordProviderAccountUsageSnapshotForSession(input: Readon
   });
   const recorded = input.store.recordSnapshot(snapshot, authorizedObservation);
 
-  const publishRecordId = (): void => {
+  let persisted = false;
+  if (input.persistence) {
+    const result = await input.persistence.recordInBandSnapshot(
+      input.store.resolveRecordId(recorded.recordId) ?? snapshot,
+      authorizedObservation?.sources?.length ? { sources: authorizedObservation.sources } : undefined,
+    ) as ProviderAccountUsagePersistenceResult;
+    persisted = result.status === 'persisted' || result.status === 'already_persisted';
+  }
+
+  if (persisted) {
     void Promise.resolve().then(async () => {
       await input.publishRecordId?.({
         sessionId: input.sessionId,
@@ -191,24 +200,7 @@ export async function recordProviderAccountUsageSnapshotForSession(input: Readon
     }).catch(() => {
       // Session metadata refs are a best-effort projection over the canonical persisted record.
     });
-  };
-
-  let persisted = false;
-  if (input.persistence) {
-    const result = await input.persistence.recordInBandSnapshot(
-      input.store.resolveRecordId(recorded.recordId) ?? snapshot,
-      {
-        ...(authorizedObservation?.sources?.length ? { sources: authorizedObservation.sources } : {}),
-        // A queued write is confirmed later, when it lands; only then may sessions reference it.
-        onPersisted: publishRecordId,
-      },
-    ) as ProviderAccountUsagePersistenceResult;
-    // Future rejection leaves local intake accepted but does not prove a first server record exists.
-    persisted = result.status === 'persisted'
-      || (result.status === 'already_persisted' && result.reason !== 'future');
   }
-
-  if (persisted) publishRecordId();
 
   return {
     status: recorded.status,
