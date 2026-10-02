@@ -575,8 +575,11 @@ describe('AgentInput (context usage badge)', () => {
 
         expect(screen.findByTestId('agent-input-provider-usage-popover')).toBeTruthy();
         expect(screen.findByTestId('agent-input-provider-usage-meter:weekly')).toBeTruthy();
-        const providerUsageOverlay = screen.findByType('FloatingOverlay');
-        expect(providerUsageOverlay?.props.scrollEnabled).toBe(false);
+        // Plain quota detail rows use the shared scroll owner; match their overlay by content.
+        const providerUsageOverlays = screen.findAll((node) => node.type === 'FloatingOverlay'
+            && node.findAll((child) => child.props.testID === 'agent-input-provider-usage-meter:weekly').length > 0);
+        expect(providerUsageOverlays).toHaveLength(1);
+        expect(providerUsageOverlays[0]?.props.scrollEnabled).toBe(true);
         expect(screen.getTextContent()).toContain('Claude usage');
         expect(screen.getTextContent()).toContain('Work account');
         expect(screen.getTextContent()).toContain('18% left · resets in 2h');
