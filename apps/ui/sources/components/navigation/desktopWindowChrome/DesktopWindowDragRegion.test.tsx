@@ -114,7 +114,7 @@ describe('useDesktopWindowDragMouseProps', () => {
     it('preserves presses on a real React Native Web control without a button role', async () => {
         const { Pressable } = await vi.importActual<typeof import('react-native')>('react-native-web');
         const host = document.createElement('div');
-        // Matches Header's current role-free default back-button Pressable shape.
+        // Header actions can use Pressable without an explicit button role.
         host.innerHTML = renderToStaticMarkup(
             <Pressable onPress={() => {}}><span data-testid="back-icon" /></Pressable>,
         );
