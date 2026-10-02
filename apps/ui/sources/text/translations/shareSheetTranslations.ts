@@ -4,6 +4,7 @@
  * sharing rules for workflows, roles and launch profiles. Session level words stay with the session adapter (`session.access`).
  */
 type ShareSheetTranslations = Readonly<{
+    publicLink: Readonly<{ description: string; grants: string; audit: string; auditEmpty: string }>;
     whoHasAccess: string;
     whoHasAccessStale: string;
     owner: string;
@@ -31,9 +32,12 @@ type ShareSheetTranslations = Readonly<{
     documents: Readonly<{
         title: string;
         shareTitle: (params: Readonly<{ name: string }>) => string;
-        levels: Readonly<{ canUse: string; canEdit: string; admin: string }>;
+        levels: Readonly<{ canUse: string; canRead: string; canEdit: string; admin: string }>;
         help: Readonly<{
             workflowUse: string;
+            documentUse: string;
+            promptUse: string;
+            boardUse: string;
             roleUse: string;
             profileUse: string;
             editForEveryone: string;
@@ -46,6 +50,7 @@ type ShareSheetTranslations = Readonly<{
 
 export const shareSheetTranslations = {
     en: {
+        publicLink: { description: "Anyone with the link can read this document, without an account.", grants: "Read-only document.", audit: "Access log", auditEmpty: "No visits recorded yet." },
         whoHasAccess: 'Who has access',
         whoHasAccessStale: 'Who has access · may be out of date',
         owner: 'Owner',
@@ -73,11 +78,14 @@ export const shareSheetTranslations = {
         documents: {
             title: 'Sharing',
             shareTitle: ({ name }) => `Share ${name}`,
-            levels: { canUse: 'Can use', canEdit: 'Can edit', admin: 'Admin' },
+            levels: { canUse: 'Can use', canRead: 'Can read', canEdit: 'Can edit', admin: 'Admin' },
             help: {
                 workflowUse: 'see and run it',
                 roleUse: 'use it; their own changes stay in their Settings',
                 profileUse: 'start sessions with it',
+                documentUse: 'open and copy it on any of their devices',
+                promptUse: 'use it in their sessions',
+                boardUse: 'see the board; each card opens only what they can already open',
                 editForEveryone: 'change it for everyone it’s shared with',
                 adminOwnerShares: 'change it; the owner manages sharing',
             },
@@ -97,6 +105,7 @@ export const shareSheetTranslations = {
         },
     },
     fr: {
+        publicLink: { description: "Toute personne disposant du lien peut lire ce document sans compte.", grants: "Document en lecture seule.", audit: "Journal des accès", auditEmpty: "Aucune visite enregistrée." },
         whoHasAccess: 'Qui a accès',
         whoHasAccessStale: 'Qui a accès · peut-être pas à jour',
         owner: 'Propriétaire',
@@ -124,11 +133,14 @@ export const shareSheetTranslations = {
         documents: {
             title: 'Partage',
             shareTitle: ({ name }) => `Partager ${name}`,
-            levels: { canUse: 'Peut utiliser', canEdit: 'Peut modifier', admin: 'Administration' },
+            levels: { canUse: 'Peut utiliser', canRead: 'Peut lire', canEdit: 'Peut modifier', admin: 'Administration' },
             help: {
                 workflowUse: 'le voir et le lancer',
                 roleUse: 'l’utiliser ; ses propres changements restent dans ses Réglages',
                 profileUse: 'démarrer des sessions avec',
+                documentUse: 'l’ouvrir et le copier sur tous ses appareils',
+                promptUse: 'l’utiliser dans ses sessions',
+                boardUse: 'voir le tableau ; chaque carte n’ouvre que ce qu’il peut déjà ouvrir',
                 editForEveryone: 'le modifier pour toutes les personnes concernées',
                 adminOwnerShares: 'le modifier ; le propriétaire gère le partage',
             },
@@ -148,6 +160,7 @@ export const shareSheetTranslations = {
         },
     },
     de: {
+        publicLink: { description: "Alle mit dem Link können dieses Dokument ohne Konto lesen.", grants: "Dokument nur zum Lesen.", audit: "Zugriffsprotokoll", auditEmpty: "Noch keine Besuche erfasst." },
         whoHasAccess: 'Wer Zugriff hat',
         whoHasAccessStale: 'Wer Zugriff hat · möglicherweise nicht aktuell',
         owner: 'Eigentümer',
@@ -175,11 +188,14 @@ export const shareSheetTranslations = {
         documents: {
             title: 'Teilen',
             shareTitle: ({ name }) => `${name} teilen`,
-            levels: { canUse: 'Kann nutzen', canEdit: 'Kann bearbeiten', admin: 'Verwalten' },
+            levels: { canUse: 'Kann nutzen', canRead: 'Kann lesen', canEdit: 'Kann bearbeiten', admin: 'Verwalten' },
             help: {
                 workflowUse: 'ansehen und ausführen',
                 roleUse: 'nutzen; eigene Änderungen bleiben in den eigenen Einstellungen',
                 profileUse: 'Sitzungen damit starten',
+                documentUse: 'es auf allen eigenen Geräten öffnen und kopieren',
+                promptUse: 'es in eigenen Sitzungen verwenden',
+                boardUse: 'das Board sehen; jede Karte öffnet nur, was bereits zugänglich ist',
                 editForEveryone: 'für alle ändern, mit denen es geteilt ist',
                 adminOwnerShares: 'ändern; der Eigentümer verwaltet das Teilen',
             },
@@ -199,6 +215,7 @@ export const shareSheetTranslations = {
         },
     },
     es: {
+        publicLink: { description: "Cualquiera que tenga el enlace puede leer este documento sin una cuenta.", grants: "Documento de solo lectura.", audit: "Registro de acceso", auditEmpty: "Aún no hay visitas registradas." },
         whoHasAccess: 'Quién tiene acceso',
         whoHasAccessStale: 'Quién tiene acceso · puede no estar actualizado',
         owner: 'Propietario',
@@ -226,11 +243,14 @@ export const shareSheetTranslations = {
         documents: {
             title: 'Compartir',
             shareTitle: ({ name }) => `Compartir ${name}`,
-            levels: { canUse: 'Puede usar', canEdit: 'Puede editar', admin: 'Administrar' },
+            levels: { canUse: 'Puede usar', canRead: 'Puede leer', canEdit: 'Puede editar', admin: 'Administrar' },
             help: {
                 workflowUse: 'verlo y ejecutarlo',
                 roleUse: 'usarlo; sus propios cambios quedan en sus Ajustes',
                 profileUse: 'iniciar sesiones con él',
+                documentUse: 'abrirlo y copiarlo en cualquiera de sus dispositivos',
+                promptUse: 'usarlo en sus sesiones',
+                boardUse: 'ver el tablero; cada tarjeta abre solo lo que ya puede abrir',
                 editForEveryone: 'cambiarlo para todas las personas con acceso',
                 adminOwnerShares: 'cambiarlo; el propietario gestiona el uso compartido',
             },
@@ -250,6 +270,7 @@ export const shareSheetTranslations = {
         },
     },
     it: {
+        publicLink: { description: "Chiunque abbia il link può leggere questo documento senza un account.", grants: "Documento di sola lettura.", audit: "Registro degli accessi", auditEmpty: "Nessuna visita registrata." },
         whoHasAccess: 'Chi ha accesso',
         whoHasAccessStale: 'Chi ha accesso · potrebbe non essere aggiornato',
         owner: 'Proprietario',
@@ -277,11 +298,14 @@ export const shareSheetTranslations = {
         documents: {
             title: 'Condivisione',
             shareTitle: ({ name }) => `Condividi ${name}`,
-            levels: { canUse: 'Può usare', canEdit: 'Può modificare', admin: 'Amministra' },
+            levels: { canUse: 'Può usare', canRead: 'Può leggere', canEdit: 'Può modificare', admin: 'Amministra' },
             help: {
                 workflowUse: 'vederlo ed eseguirlo',
                 roleUse: 'usarlo; le proprie modifiche restano nelle proprie Impostazioni',
                 profileUse: 'avviare sessioni con esso',
+                documentUse: 'aprirlo e copiarlo su qualsiasi suo dispositivo',
+                promptUse: 'usarlo nelle sue sessioni',
+                boardUse: 'vedere la bacheca; ogni scheda apre solo ciò che può già aprire',
                 editForEveryone: 'modificarlo per tutti quelli con cui è condiviso',
                 adminOwnerShares: 'modificarlo; il proprietario gestisce la condivisione',
             },
@@ -301,6 +325,7 @@ export const shareSheetTranslations = {
         },
     },
     pt: {
+        publicLink: { description: "Qualquer pessoa com o link pode ler este documento sem uma conta.", grants: "Documento somente para leitura.", audit: "Registro de acesso", auditEmpty: "Nenhuma visita registrada." },
         whoHasAccess: 'Quem tem acesso',
         whoHasAccessStale: 'Quem tem acesso · pode estar desatualizado',
         owner: 'Proprietário',
@@ -328,11 +353,14 @@ export const shareSheetTranslations = {
         documents: {
             title: 'Compartilhamento',
             shareTitle: ({ name }) => `Compartilhar ${name}`,
-            levels: { canUse: 'Pode usar', canEdit: 'Pode editar', admin: 'Administrar' },
+            levels: { canUse: 'Pode usar', canRead: 'Pode ler', canEdit: 'Pode editar', admin: 'Administrar' },
             help: {
                 workflowUse: 'ver e executar',
                 roleUse: 'usar; as próprias alterações ficam nas próprias Configurações',
                 profileUse: 'iniciar sessões com ele',
+                documentUse: 'abri-lo e copiá-lo em qualquer um dos seus dispositivos',
+                promptUse: 'usá-lo nas suas sessões',
+                boardUse: 'ver o quadro; cada cartão abre só o que já pode abrir',
                 editForEveryone: 'alterar para todos com quem é compartilhado',
                 adminOwnerShares: 'alterar; o proprietário gerencia o compartilhamento',
             },
@@ -352,6 +380,7 @@ export const shareSheetTranslations = {
         },
     },
     ca: {
+        publicLink: { description: "Qualsevol persona amb l’enllaç pot llegir aquest document sense un compte.", grants: "Document només de lectura.", audit: "Registre d’accés", auditEmpty: "Encara no hi ha visites registrades." },
         whoHasAccess: 'Qui hi té accés',
         whoHasAccessStale: 'Qui hi té accés · pot estar desactualitzat',
         owner: 'Propietari',
@@ -379,11 +408,14 @@ export const shareSheetTranslations = {
         documents: {
             title: 'Compartició',
             shareTitle: ({ name }) => `Comparteix ${name}`,
-            levels: { canUse: 'Pot fer servir', canEdit: 'Pot editar', admin: 'Administrar' },
+            levels: { canUse: 'Pot fer servir', canRead: 'Pot llegir', canEdit: 'Pot editar', admin: 'Administrar' },
             help: {
                 workflowUse: 'veure’l i executar-lo',
                 roleUse: 'fer-lo servir; els seus canvis queden a la seva Configuració',
                 profileUse: 'iniciar sessions amb ell',
+                documentUse: 'obrir-lo i copiar-lo a qualsevol dels seus dispositius',
+                promptUse: 'fer-lo servir a les seves sessions',
+                boardUse: 'veure el tauler; cada targeta obre només el que ja pot obrir',
                 editForEveryone: 'canviar-lo per a tothom amb qui es comparteix',
                 adminOwnerShares: 'canviar-lo; el propietari gestiona la compartició',
             },
@@ -403,6 +435,7 @@ export const shareSheetTranslations = {
         },
     },
     ru: {
+        publicLink: { description: "Любой, у кого есть ссылка, может читать этот документ без аккаунта.", grants: "Документ только для чтения.", audit: "Журнал доступа", auditEmpty: "Посещений пока нет." },
         whoHasAccess: 'У кого есть доступ',
         whoHasAccessStale: 'У кого есть доступ · может быть неактуально',
         owner: 'Владелец',
@@ -430,11 +463,14 @@ export const shareSheetTranslations = {
         documents: {
             title: 'Общий доступ',
             shareTitle: ({ name }) => `Поделиться: ${name}`,
-            levels: { canUse: 'Может использовать', canEdit: 'Может редактировать', admin: 'Управление' },
+            levels: { canUse: 'Может использовать', canRead: 'Может читать', canEdit: 'Может редактировать', admin: 'Управление' },
             help: {
                 workflowUse: 'просматривать и запускать',
                 roleUse: 'использовать; собственные изменения остаются в своих Настройках',
                 profileUse: 'запускать с ним сессии',
+                documentUse: 'открывать и копировать на любом своём устройстве',
+                promptUse: 'использовать в своих сессиях',
+                boardUse: 'видеть доску; каждая карточка открывает только то, что уже доступно',
                 editForEveryone: 'изменять для всех, с кем им поделились',
                 adminOwnerShares: 'изменять; доступом управляет владелец',
             },
@@ -454,6 +490,7 @@ export const shareSheetTranslations = {
         },
     },
     pl: {
+        publicLink: { description: "Każdy, kto ma link, może czytać ten dokument bez konta.", grants: "Dokument tylko do odczytu.", audit: "Historia dostępu", auditEmpty: "Nie zarejestrowano jeszcze wizyt." },
         whoHasAccess: 'Kto ma dostęp',
         whoHasAccessStale: 'Kto ma dostęp · może być nieaktualne',
         owner: 'Właściciel',
@@ -481,11 +518,14 @@ export const shareSheetTranslations = {
         documents: {
             title: 'Udostępnianie',
             shareTitle: ({ name }) => `Udostępnij: ${name}`,
-            levels: { canUse: 'Może używać', canEdit: 'Może edytować', admin: 'Zarządzanie' },
+            levels: { canUse: 'Może używać', canRead: 'Może czytać', canEdit: 'Może edytować', admin: 'Zarządzanie' },
             help: {
                 workflowUse: 'wyświetlać i uruchamiać',
                 roleUse: 'używać; własne zmiany zostają we własnych Ustawieniach',
                 profileUse: 'uruchamiać z nim sesje',
+                documentUse: 'otwierać i kopiować na dowolnym swoim urządzeniu',
+                promptUse: 'używać go w swoich sesjach',
+                boardUse: 'widzieć tablicę; każda karta otwiera tylko to, do czego ma już dostęp',
                 editForEveryone: 'zmieniać dla wszystkich, którym udostępniono',
                 adminOwnerShares: 'zmieniać; udostępnianiem zarządza właściciel',
             },
@@ -505,6 +545,7 @@ export const shareSheetTranslations = {
         },
     },
     ja: {
+        publicLink: { description: "リンクを持つ人は、アカウントなしでこの文書を閲覧できます。", grants: "閲覧専用の文書。", audit: "アクセス履歴", auditEmpty: "アクセスはまだ記録されていません。" },
         whoHasAccess: 'アクセスできるユーザー',
         whoHasAccessStale: 'アクセスできるユーザー · 最新でない可能性があります',
         owner: 'オーナー',
@@ -532,11 +573,14 @@ export const shareSheetTranslations = {
         documents: {
             title: '共有',
             shareTitle: ({ name }) => `${name} を共有`,
-            levels: { canUse: '使用可', canEdit: '編集可', admin: '管理' },
+            levels: { canUse: '使用可', canRead: '閲覧可', canEdit: '編集可', admin: '管理' },
             help: {
                 workflowUse: '表示と実行',
                 roleUse: '使用。各自の変更は各自の設定に残ります',
                 profileUse: 'これでセッションを開始',
+                documentUse: '自分のどのデバイスでも開いてコピーできます',
+                promptUse: '自分のセッションで使えます',
+                boardUse: 'ボードを表示できます。各カードはすでに開けるものだけを開きます',
                 editForEveryone: '共有先の全員に向けて変更',
                 adminOwnerShares: '変更。共有はオーナーが管理します',
             },
@@ -556,6 +600,7 @@ export const shareSheetTranslations = {
         },
     },
     'zh-Hans': {
+        publicLink: { description: "任何持有链接的人都可以阅读此文档，无需账户。", grants: "只读文档。", audit: "访问记录", auditEmpty: "尚无访问记录。" },
         whoHasAccess: '谁有访问权限',
         whoHasAccessStale: '谁有访问权限 · 可能不是最新',
         owner: '所有者',
@@ -583,11 +628,14 @@ export const shareSheetTranslations = {
         documents: {
             title: '共享',
             shareTitle: ({ name }) => `共享 ${name}`,
-            levels: { canUse: '可使用', canEdit: '可编辑', admin: '管理' },
+            levels: { canUse: '可使用', canRead: '可查看', canEdit: '可编辑', admin: '管理' },
             help: {
                 workflowUse: '查看并运行',
                 roleUse: '使用；各自的更改保留在各自的设置中',
                 profileUse: '用它启动会话',
+                documentUse: '在其任意设备上打开和复制',
+                promptUse: '在其会话中使用',
+                boardUse: '查看看板；每张卡片只打开其已有权限的内容',
                 editForEveryone: '为所有共享对象更改',
                 adminOwnerShares: '更改；由所有者管理共享',
             },
@@ -607,6 +655,7 @@ export const shareSheetTranslations = {
         },
     },
     'zh-Hant': {
+        publicLink: { description: "任何持有連結的人都可以閱讀此文件，無需帳戶。", grants: "唯讀文件。", audit: "存取記錄", auditEmpty: "尚無存取記錄。" },
         whoHasAccess: '誰有存取權',
         whoHasAccessStale: '誰有存取權 · 可能不是最新',
         owner: '擁有者',
@@ -634,11 +683,14 @@ export const shareSheetTranslations = {
         documents: {
             title: '共享',
             shareTitle: ({ name }) => `共享 ${name}`,
-            levels: { canUse: '可使用', canEdit: '可編輯', admin: '管理' },
+            levels: { canUse: '可使用', canRead: '可檢視', canEdit: '可編輯', admin: '管理' },
             help: {
                 workflowUse: '檢視並執行',
                 roleUse: '使用；各自的變更保留在各自的設定中',
                 profileUse: '用它啟動工作階段',
+                documentUse: '在其任何裝置上開啟和複製',
+                promptUse: '在其工作階段中使用',
+                boardUse: '檢視看板；每張卡片只開啟其已有權限的內容',
                 editForEveryone: '為所有共享對象變更',
                 adminOwnerShares: '變更；由擁有者管理共享',
             },

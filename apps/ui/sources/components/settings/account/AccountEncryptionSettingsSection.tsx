@@ -24,7 +24,7 @@ import { AccountEncryptionMigrateInvalidParamsReasonSchema, AccountEncryptionMig
 import { createEncryptionFromAuthCredentials } from '@/auth/encryption/createEncryptionFromAuthCredentials';
 import { fetchMachineRows } from '@/sync/engine/machines/syncMachines';
 import { fetchAccountEncryptionMigrationKvInventory } from '@/sync/ops/account/fetchAccountEncryptionMigrationKvInventory';
-import { createArtifactAccessApi, fetchArtifact, fetchArtifacts } from '@/sync/api/artifacts/apiArtifacts';
+import { createArtifactAccessApi, fetchArtifact, fetchArtifacts, fetchArtifactRevisions, fetchArtifactBlob } from '@/sync/api/artifacts/apiArtifacts';
 import { buildAccountEncryptionMigrationStorageDirectives } from '@/sync/ops/account/buildAccountEncryptionMigrationStorageDirectives';
 import { fetchAccountEncryptionMigrationSessionInventory } from '@/sync/ops/account/fetchAccountEncryptionMigrationSessionInventory';
 import { fetchReviewCommentAccountEncryptionMigrationInventory } from '@/sync/domains/reviews/comments/accountEncryptionMigrationApi';
@@ -521,15 +521,15 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                     artifactList.map(
                                                         (artifact) =>
                                                             async () => {
-                                                                const full =
-                                                                    await fetchArtifact(
-                                                                        credentials,
-                                                                        artifact.id,
-                                                                        {
-                                                                            retry: 'none',
+                                                                const [full, retained] =
+                                                                    await Promise.all([
+                                                                        fetchArtifact(credentials, artifact.id, {
+                                                                            retry: 'none', request: homeRequest,
+                                                                        }),
+                                                                        fetchArtifactRevisions(credentials, artifact.id, {
                                                                             request: homeRequest,
-                                                                        },
-                                                                    );
+                                                                        }),
+                                                                    ]);
                                                                 if (
                                                                     typeof full.body
                                                                         !==
@@ -554,6 +554,7 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                                         full.bodyVersion,
                                                                     dataEncryptionKey:
                                                                         full.dataEncryptionKey,
+                                                                    revisions: retained.revisions,
                                                                 };
                                                             },
                                                     ),
@@ -575,6 +576,7 @@ export const AccountEncryptionSettingsSection = React.memo(function AccountEncry
                                                     workspace: workspaceRows,
                                                     artifacts: artifactRows,
                                                     readArtifactRecipients: createArtifactAccessApi(credentials, { request: homeRequest }).readRecipients,
+                                                    readArtifactBlob: (artifactId, blobId) => fetchArtifactBlob(credentials, artifactId, blobId, currentness.mode, { request: homeRequest }),
                                                     sessions: sessionRows,
                                                     reviewCommentsInventory,
                                                     sessionOrganizationInventory,

@@ -58,7 +58,9 @@ import { providerCollectionTranslations } from './providerCollectionTranslations
 import { settingsSearchKeywordsTranslations } from './settingsSearchKeywordsTranslations';
 import { automationPageTranslations } from './automationPageTranslations';
 import { settingsSessionPagesTranslations } from './settingsSessionPagesTranslations';
-import { workspaceTabTranslations } from './workspaceTabTranslations';
+import { workspaceTabKeyboardTranslations, workspaceTabTranslations } from './workspaceTabTranslations';
+import { terminalWorkspaceKeyboardTranslations, terminalWorkspaceTranslations } from './terminalWorkspaceTranslations';
+import { phoneNavigationTranslations } from './phoneNavigationTranslations';
 import { workspaceBarTranslations } from './workspaceBarTranslations';
 import { settingsProfilesRemoteHostsPageTranslations } from './settingsProfilesRemoteHostsPageTranslations';
 import { profilesPageTranslations } from './profilesPageTranslations';
@@ -74,6 +76,7 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { detailPageTranslations } from './detailPageTranslations';
 import { rolesTranslations } from './rolesTranslations';
 import { boardsTranslations } from './boardsTranslations';
+import { artifactsBrowserTranslations } from './artifactsBrowserTranslations';
 import { workStatusTranslations } from './workStatusTranslations';
 import { shareSheetTranslations } from './shareSheetTranslations';
 import { surfaceStateTranslations } from './surfaceStateTranslations';
@@ -922,6 +925,8 @@ export const ru = {
         setShortcutInvalidMessage: 'Введите хотя бы одну немодифицирующую клавишу, опционально с помощью Mod, Ctrl, Shift или Alt.',
         resetCommandAccessibility: ({ command }: { command: string }) => `Reset ${command} shortcut`,
         commands: {
+            ...workspaceTabKeyboardTranslations,
+            ...terminalWorkspaceKeyboardTranslations,
             composerAbortConfirm: 'Подтвердить остановку',
             composerFocus: 'Перейти к вводу',
             composerSendImmediate: 'Отправить сразу',
@@ -5951,6 +5956,8 @@ export const ru = {
   },
 
   newSession: {
+    terminalHostUnavailableTitle: "Терминал недоступен",
+    terminalHostUnavailableBody: ({ host }: { host: string }) => `Установите или обновите ${host} и перезапустите его сервер на этой машине либо выберите другой терминал. Черновик сохранён.`,
     folder: folderlessSessionTranslations.ru.composer,
     ...newSessionMcpTranslationExtension,
     ...acpCatalogTranslationExtension.newSession,
@@ -12561,7 +12568,9 @@ settingsSession: {
             },
   },
 
-  terminal: {
+    terminal: {
+        plaintextStorage: 'Home-managed (not end-to-end encrypted)',
+        plaintextStorageDescription: 'This Home can read Account data. The connection response is encrypted for this terminal.',
     // Used by terminal connection screens
     webBrowserRequired: "Требуется веб-браузер",
     webBrowserRequiredDescription:
@@ -12601,12 +12610,10 @@ settingsSession: {
       selectAllAction: 'Выбрать весь вывод терминала',
       openLinkAction: 'Открыть выбранную ссылку',
     },
-    dockMenuA11y: "Закрепить терминал",
     largePasteTitle: "Вставить большой ввод в терминал?",
     largePasteDescription: "Этот вставляемый текст большой и может выполнить команды в терминале. Проверьте его перед продолжением.",
     largePasteConfirm: "Вставить в терминал",
     settings: {
-      locationTitle: "Расположение встроенного терминала",
       rendererTitle: "Рендерер терминала",
       rendererAuto: "Автоматически",
       rendererAutoDescription: "Предпочитает нативный рендерер, если все нативные проверки безопасности пройдены и экранный диктор не активен; при активном экранном дикторе переключается на доступное веб-представление xterm.js.",
@@ -12621,11 +12628,6 @@ settingsSession: {
       ctrlC: "Ctrl + C",
       ctrlD: "Ctrl + D",
       enter: "Ввод",
-    },
-    location: {
-      sidebar: "Боковая панель",
-      details: "Панель деталей",
-      bottom: "Нижняя панель",
     },
     errors: {
       missingMachineTarget: "В этой сессии отсутствует цель машины.",
@@ -13161,11 +13163,9 @@ settingsSession: {
     unknownPath: "неизвестный путь",
     previousSessionsTitle: "Предыдущие сессии (до 5 последних)",
     tmux: {
-      overrideTitle: "Переопределить глобальные настройки tmux",
-      overrideEnabledSubtitle:
-        "Пользовательские настройки tmux применяются к новым сессиям на этой машине.",
-      overrideDisabledSubtitle:
-        "Новые сессии используют глобальные настройки tmux.",
+      overrideTitle: "Переопределить значение аккаунта",
+      overrideEnabledSubtitle: "Эта машина использует свой терминал для новых сессий.",
+      overrideDisabledSubtitle: "Новые сессии наследуют терминал аккаунта.",
       notDetectedSubtitle: "tmux не обнаружен на этой машине.",
       notDetectedMessage:
         "tmux не обнаружен на этой машине. Установите tmux и обновите обнаружение.",
@@ -13446,6 +13446,7 @@ settingsSession: {
     },
 
     artifacts: {
+        browser: artifactsBrowserTranslations.ru,
     // Artifacts feature
     title: "Артефакты",
     countSingular: "1 артефакт",
@@ -13462,8 +13463,6 @@ settingsSession: {
       }
       return `${count} артефактов`;
     },
-    empty: "Артефактов пока нет",
-    emptyDescription: "Создайте первый артефакт, чтобы начать",
     new: "Новый артефакт",
     edit: "Редактировать артефакт",
     delete: "Удалить",
@@ -13478,15 +13477,13 @@ settingsSession: {
     deleteConfirmDescription: "Это действие нельзя отменить",
     noContent: "Нет содержимого",
     untitled: "Без названия",
-    titleLabel: "ЗАГОЛОВОК",
     titlePlaceholder: "Введите заголовок для вашего артефакта",
-    bodyLabel: "СОДЕРЖИМОЕ",
+    bodyLabel: "Содержимое",
     bodyPlaceholder: "Напишите ваш контент здесь...",
     emptyFieldsError: "Пожалуйста, введите заголовок или содержимое",
     createError: "Не удалось создать артефакт. Пожалуйста, попробуйте снова.",
     save: "Сохранить",
     saving: "Сохранение...",
-    loading: "Загрузка артефактов...",
     error: "Не удалось загрузить артефакт",
   },
 
@@ -14229,6 +14226,8 @@ settingsSession: {
    ...automationPageTranslations.ru,
     ...settingsSessionPagesTranslations.ru,
     ...workspaceTabTranslations.ru,
+    ...terminalWorkspaceTranslations.ru,
+    ...phoneNavigationTranslations.ru,
     ...workspaceBarTranslations.ru,
    ...settingsProfilesRemoteHostsPageTranslations.ru,
    ...profilesPageTranslations.ru,

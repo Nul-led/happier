@@ -1,8 +1,10 @@
 import * as React from 'react';
+import { useLocalSearchParams } from '@/components/appShell/workspace/destinationRoute';
 
 import { useAuth } from '@/auth/context/AuthContext';
 import { formatHomeEnrollmentTargetLabel } from '@/auth/pairing/pairingPresentation';
 import { HomePairingPanel } from '@/components/auth/pairing/HomePairingPanel';
+import { useHomeSetupDismissals } from '@/components/hub/layout/useHomeSetupDismissals';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
@@ -20,6 +22,8 @@ import { t } from '@/text';
  */
 export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
     const auth = useAuth();
+    const { setupStep } = useLocalSearchParams<{ setupStep?: string }>();
+    const { dismiss } = useHomeSetupDismissals();
     const profilesGeneration = useServerProfilesGeneration();
     // The default target is whichever Home has focus when pairing starts; the live
     // subscription lives in usePairingSession, so a plain read is enough here.
@@ -42,7 +46,7 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
     const isAuthenticated = auth.isAuthenticated;
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader description={t('connect.addPhonePage.description')} />
 
             {!isAuthenticated ? (
@@ -89,6 +93,10 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
                         layout="page"
                         testIDPrefix="add-phone"
                         targetProfileId={selectedHomeId}
+                        // A checklist launch completes only its own Home's setup step; pairing
+                        // another retained Home or opening this page elsewhere does not.
+                        onCompleted={setupStep === 'addPhone' && targetProfileId === activeServerId
+                            ? () => dismiss('addPhone') : undefined}
                     />
                 </ItemGroup>
             ) : null}

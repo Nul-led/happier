@@ -51,6 +51,7 @@ function endpointProtocolLabel(protocol: ProviderWireProtocol): string {
 export function BuiltInProviderAuthoringView(props: Readonly<{
     /** The managed machine the provider is added on (its chip). */
     contextBar?: React.ReactNode;
+    nameField?: React.ReactNode;
     machineId: string;
     currentMachineName: string;
     providerName: string | null;
@@ -90,11 +91,10 @@ export function BuiltInProviderAuthoringView(props: Readonly<{
             title: t('settingsProviders.links.providerWebsite'),
             onSelect: () => props.onOpenWebsite(props.websiteUrl!),
         }] : []),
-        { id: 'discard', title: t('settingsProvidersCollection.discard'), onSelect: props.onDiscard },
     ];
     const connectBlocked = Boolean(props.previewCredential?.required && !props.savedSecretSelectionEnabled);
     return (
-        <ItemList presentation="page" testID="settings-provider-authoring-built-in">
+        <ItemList testID="settings-provider-authoring-built-in">
             {props.contextBar}
             <PageHeader
                 testID="settings-provider-authoring-header"
@@ -128,10 +128,19 @@ export function BuiltInProviderAuthoringView(props: Readonly<{
                             // Connect acts only on a reviewed destination.
                             onPress={props.preview?.status === 'resolved' && !props.previewLoading ? props.onSave : undefined}
                         />
-                        <PageHeaderMenu testID="settings-provider-authoring-menu" actions={menuActions} />
+                        <RoundButton
+                            testID="settings-provider-authoring-cancel"
+                            size="small"
+                            display="secondary"
+                            title={t('common.cancel')}
+                            disabled={props.savePending}
+                            onPress={props.onDiscard}
+                        />
+                        {menuActions.length > 0 ? <PageHeaderMenu testID="settings-provider-authoring-menu" actions={menuActions} /> : null}
                     </ProviderHeaderActions>
                 )}
             />
+            {props.nameField}
             {props.error ? <ItemGroup><ProviderErrorItems error={props.error} retry={props.errorRetry} /></ItemGroup> : null}
             {props.previewCredential ? (
                 <ItemGroup title={t('settingsProviders.detail.apiKeyTitle')} description={t('settingsProviders.detail.apiKeyFooter')}>

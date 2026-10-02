@@ -64,7 +64,7 @@ export const HomeAddDraftScreen = React.memo(function HomeAddDraftScreen() {
     }, [router]);
 
     return (
-        <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+        <ItemList keyboardShouldPersistTaps="handled">
             <PageHeader
                 testID="settings.homes.draft.header"
                 alwaysShowTitle

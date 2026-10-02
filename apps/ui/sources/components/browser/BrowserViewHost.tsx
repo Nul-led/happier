@@ -12,7 +12,7 @@ import { BrowserFrameLoading } from '@/components/browser/frame/BrowserFrameLoad
 import { BrowserLocalPreviewElsewhere, BrowserLocalPreviewPublicLinkControls } from '@/components/browser/frame/BrowserLocalPreviewElsewhere';
 import { resolveBrowserAdapterUnavailableReason } from '@/sync/domains/browser/adapters/availability';
 import type { BrowserAutomationControlService } from '@/sync/domains/browser/automation';
-import { INJECTED_PAGE_AUTOMATION_ACTIONS } from '@/sync/domains/browser/automation/injectedPageActions';
+import { INJECTED_PAGE_AUTOMATION_ACTIONS } from '@happier-dev/peer-mediation/browser/collector/actions';
 import { resolveHostedPluginBrowserPolicyUnavailableReason } from '@/sync/domains/browser/policy/evaluate';
 import type {
     BrowserControlCommandEffect,

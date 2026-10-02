@@ -151,8 +151,6 @@ const AnchoredTriggerRow = React.memo(function AnchoredTriggerRow(props: Readonl
 /** The kinds a session's popover lists but cannot add here, each with its reason (07 S16). */
 const SESSION_UNAVAILABLE_KINDS = {
     sessionStarts: 'workflows.triggers.kindDescription.sessionStarts',
-    prComment: 'workflows.triggers.kindDescription.pullRequestUnavailable',
-    ciFailed: 'workflows.triggers.kindDescription.pullRequestUnavailable',
 } as const;
 
 type OpenPopover = Readonly<{ anchor: React.RefObject<View | null>; row: SessionTriggerRowModel | null }>;
@@ -257,6 +255,7 @@ export const SessionTriggersSection = React.memo(function SessionTriggersSection
                     whenKinds={SESSION_TRIGGER_WHEN_KINDS}
                     unavailableKinds={Object.fromEntries(Object.entries(SESSION_UNAVAILABLE_KINDS).map(([kind, key]) => [kind, t(key)]))}
                     sessionId={props.sessionId}
+                    pullRequestLinks={read.pullRequestLinks}
                     initial={initial}
                     {...(row === null && boundWhen !== undefined ? { initialWhen: boundWhen } : {})}
                     workflowOptions={thenOptions.workflowOptions}

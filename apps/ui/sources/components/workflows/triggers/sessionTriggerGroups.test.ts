@@ -34,6 +34,22 @@ function set(automationId: string, overrides: Record<string, unknown>): Workflow
 }
 
 describe('projectSessionTriggerGroups', () => {
+    it('keeps PR comments and CI failures grouped by their exact pull request, not just its number', () => {
+        const groups = projectSessionTriggerGroups({
+            sets: ['one/repo', 'other/repo'].flatMap((repository) => ['prComment', 'ciFailed'].map((kind) =>
+                set(`${repository}:${kind}`, { target: inline(['Review']), triggers: [{
+                    ...daily(`${repository}:${kind}`, '0 9 * * *'), kind,
+                    pullRequest: { repository, number: 42 },
+                }] }))),
+            lastRunAtByAutomationId: {}, resolveWorkflowTitle: () => null, formatAge: String,
+        });
+        expect(groups).toHaveLength(4);
+        expect(groups.every((group) => group.rows.length === 1)).toBe(true);
+        expect(groups.map((group) => group.title)).toEqual(expect.arrayContaining([
+            'workflows.triggers.kind.prComment · one/repo #42',
+            'workflows.triggers.kind.ciFailed · other/repo #42',
+        ]));
+    });
     it('names an inline Action target instead of returning an undefined row title', () => {
         const groups = projectSessionTriggerGroups({
             sets: [set('action', { target: inline([{ kind: 'action', id: 'action-1', actionId: 'workflows.references.available', input: {} }]),

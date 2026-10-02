@@ -2,7 +2,12 @@ import * as React from 'react';
 import { useIsFocused } from '@/components/appShell/workspace/destinationRoute';
 
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { Modal } from '@/modal';
+import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
+import { FieldItem } from '@/components/ui/forms/FieldItem';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { t } from '@/text';
 import { createActionInputForm } from '@/components/plugins/actions/actionInputForm';
 import { presentActionInputForm } from '@/components/plugins/actions/presentActionInputForm';
@@ -18,6 +23,61 @@ import {
 } from './pluginScaffoldUiModeOptions';
 import { usePluginAuthoringSession } from './usePluginAuthoringSession';
 import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
+
+function PluginSourceRootDraft(props: Readonly<{
+    available: boolean;
+    isPending: (sourceRootPath: string) => boolean;
+    onSave: (sourceRootPath: string) => void;
+    onCancel: () => void;
+}>) {
+    const [sourceRootPath, setSourceRootPath] = React.useState('');
+    const pending = props.isPending(sourceRootPath.trim());
+    return (
+        <>
+            <ItemGroup
+                title={t('settingsPlugins.developmentSourceInstall')}
+                description={t('settingsPlugins.developmentSourceInstallBody')}
+            >
+                <SectionContentRow>
+                    <FieldItem label={t('settingsPlugins.developmentSourceInstallTitle')}>
+                        <FieldTextInput
+                            testID="settings.plugins.development.sourceRootPath"
+                            accessibilityLabel={t('settingsPlugins.developmentSourceInstallTitle')}
+                            value={sourceRootPath}
+                            onChangeText={setSourceRootPath}
+                            placeholder={t('settingsPlugins.developmentSourceInstallPlaceholder')}
+                            autoCapitalize="none"
+                            editable={!pending}
+                            monospace
+                        />
+                    </FieldItem>
+                </SectionContentRow>
+            </ItemGroup>
+            <ItemGroup surface="none">
+                <SectionButtonRow>
+                    <RoundButton
+                        testID="settings.plugins.development.sourceRootPath.save"
+                        size="small"
+                        title={t('common.save')}
+                        loading={pending}
+                        disabled={!sourceRootPath.trim() || !props.available}
+                        onPress={() => {
+                            if (props.available && sourceRootPath.trim()) props.onSave(sourceRootPath.trim());
+                        }}
+                    />
+                    <RoundButton
+                        testID="settings.plugins.development.sourceRootPath.cancel"
+                        size="small"
+                        display="secondary"
+                        title={t('common.cancel')}
+                        disabled={pending}
+                        onPress={props.onCancel}
+                    />
+                </SectionButtonRow>
+            </ItemGroup>
+        </>
+    );
+}
 
 /**
  * Settings → Plugins → Development.
@@ -40,9 +100,11 @@ export const PluginDevelopmentScreen = React.memo(function PluginDevelopmentScre
         pluginId: string;
         sourceRootPath: string;
     }> | null>(null);
+    const [sourceRootDraftOpen, setSourceRootDraftOpen] = React.useState(false);
 
     React.useEffect(() => {
         setCreatedPlugin(null);
+        setSourceRootDraftOpen(false);
     }, [state.executionMachineId, state.executionServerId]);
 
     const openCreatedPluginWithAgent = React.useCallback((created: Readonly<{
@@ -134,23 +196,13 @@ export const PluginDevelopmentScreen = React.memo(function PluginDevelopmentScre
     // development source. The path the user types
     // here is the exact thing the daemon will be asked to trust, so it is echoed
     // back verbatim in the trust decision rather than being summarised.
-    const developPluginSourceRoot = React.useCallback(async () => {
+    const developPluginSourceRoot = React.useCallback(() => {
         if (!state.daemonOperationsAvailable || !state.developmentSourceInstallAvailable) return;
-        const sourceRootPath = (await Modal.prompt(
-            t('settingsPlugins.developmentSourceInstallTitle'),
-            t('settingsPlugins.developmentSourceInstallBody'),
-            {
-                placeholder: t('settingsPlugins.developmentSourceInstallPlaceholder'),
-                confirmText: t('common.continue'),
-                cancelText: t('common.cancel'),
-            },
-        ))?.trim();
-        if (!sourceRootPath) return;
-        state.runDevelopmentSourceInstall(sourceRootPath);
-    }, [state]);
+        setSourceRootDraftOpen(true);
+    }, [state.daemonOperationsAvailable, state.developmentSourceInstallAvailable]);
 
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }} keyboardShouldPersistTaps="handled">
             <SettingsPageHeader
                 description={t('settingsPlugins.developerDevelopmentSubtitle')}
                 actions={(
@@ -171,6 +223,14 @@ export const PluginDevelopmentScreen = React.memo(function PluginDevelopmentScre
                     onRetry={state.refreshPluginTruth}
                 />
             ) : null}
+            {sourceRootDraftOpen ? (
+                <PluginSourceRootDraft
+                    available={state.daemonOperationsAvailable && state.developmentSourceInstallAvailable}
+                    isPending={state.isPluginActionInFlight}
+                    onSave={state.runDevelopmentSourceInstall}
+                    onCancel={() => setSourceRootDraftOpen(false)}
+                />
+            ) : null}
             <DevelopmentPluginsSection
                 developmentPlugins={state.developmentPlugins}
                 createAvailable={state.developmentCreateAvailable}
@@ -188,9 +248,7 @@ export const PluginDevelopmentScreen = React.memo(function PluginDevelopmentScre
                 }}
                 onStartCreatedDevelopment={state.runDevelopmentSourceInstall}
                 onCreateWithAgentFromCreated={openCreatedPluginWithAgent}
-                onDevelopSourceRoot={() => {
-                    void developPluginSourceRoot();
-                }}
+                onDevelopSourceRoot={developPluginSourceRoot}
                 onEditWithAgent={editDevelopmentPluginWithAgent}
                 onRunAction={state.runDevelopmentAction}
             />

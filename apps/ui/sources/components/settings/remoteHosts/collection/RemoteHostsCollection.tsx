@@ -74,7 +74,7 @@ const RemoteHostsUnavailablePage = React.memo(function RemoteHostsUnavailablePag
 }>) {
     const desktopOnly = props.availability === 'desktopOnly';
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader description={t('settingsRemoteHostsPage.pageDescription')} />
             <ItemGroup
                 title={t('settingsRemoteHostsPage.savedHostsSection')}
@@ -234,7 +234,7 @@ export const RemoteHostsSettingsIndex = React.memo(function RemoteHostsSettingsI
     if (view === 'pending') return null;
     if (view === 'land') return <RemoteHostsLanding />;
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader
                 testID="settings.remoteHosts.header"
                 description={t('settingsRemoteHostsPage.pageDescription')}
@@ -269,7 +269,7 @@ export const RemoteHostsAccessPage = React.memo(function RemoteHostsAccessPage()
         handleAccessEndpointRemediationActionPress,
     } = useRemoteHostsCollection();
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader
                 testID="settings.remoteHosts.access.header"
                 alwaysShowTitle

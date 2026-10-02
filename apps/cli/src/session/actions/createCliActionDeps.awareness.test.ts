@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createSocketTransportAdapter } from '@happier-dev/sync-client';
 import axios from 'axios';
 import {
   FeaturesResponseSchema,
@@ -13,6 +15,14 @@ import {
 } from '@/testkit/backends/sessionFixtures';
 import { createCliActionDeps } from './createCliActionDeps';
 vi.mock('axios', () => ({ default: { get: vi.fn(), isAxiosError: () => false } }));
+const { socketBoundary } = vi.hoisted(() => ({ socketBoundary: { socket: null as EventEmitter | null } }));
+// Socket transport and HTTP are system boundaries; awareness, observation and predicates stay real.
+vi.mock('@/api/session/sockets', () => ({
+  createUserScopedSocketConnection: () => {
+    const socket = Object.assign(socketBoundary.socket!, { connected: false, connect() {}, disconnect() {}, close() {} });
+    return { socket, transport: createSocketTransportAdapter(socket) };
+  },
+}));
 const credentials = { token: 'test-token', encryption: null } as const;
 const sessionId = 'c123456789012345678901234';
 /** No external-Action authorization: these reads carry the daemon credential. */
@@ -29,19 +39,22 @@ function collaborationFeatures() {
 }
 describe('CLI activity compatibility awareness', () => {
   beforeEach(() => vi.clearAllMocks());
+  afterEach(() => { vi.useRealTimers(); socketBoundary.socket = null; });
   it('publishes only the bound child own report under fresh reportsTo and refuses workflow steps', async () => {
     const row = createSessionRecordFixture({ id: sessionId, encryptionMode: 'plain', metadata: '{}', reportsTo: { sessionId: 'lead' } });
     vi.mocked(axios.get).mockResolvedValue({ status: 200, data: { session: row } });
-    const committed: string[] = [];
+    const committed: unknown[] = [];
+    const deliverables = [{ kind: 'workspace_file' as const, sessionId, path: 'docs/result.md' }, { kind: 'artifact' as const, artifactId: 'document-1' }];
     const owner = createCliActionDeps({ token: credentials.token, credentials, sessionId, mode: 'plain', ctx: null,
-      publishWorkerReport: async (summary) => { committed.push(summary); return { persisted: true, localId: 'worker-report-1' }; } });
-    expect(await owner.sessionWorkerPublish!({ context, summary: 'Partial finding' })).toEqual({ sessionId, leadSessionId: 'lead', localId: 'worker-report-1' });
+      publishWorkerReport: async (report) => { committed.push(report); return { persisted: true, localId: 'worker-report-1' }; } });
+    expect(await owner.sessionWorkerPublish!({ context, summary: 'Partial finding', deliverables })).toEqual({ sessionId, leadSessionId: 'lead', localId: 'worker-report-1' });
+    expect(await owner.sessionWorkerPublish!({ context, summary: 'Foreign source', deliverables: [{ kind: 'workspace_file', sessionId: 'other', path: 'docs/result.md' }] })).toMatchObject({ ok: false, errorCode: 'session_worker_deliverable_scope_mismatch' });
     delete row.reportsTo;
     expect(await owner.sessionWorkerPublish!({ context, summary: 'Unrelated' })).toMatchObject({ ok: false, errorCode: 'session_worker_requires_reports_to' });
     row.reportsTo = { sessionId: 'lead' };
     row.origin = { kind: 'run_step', runId: 'workflow-run' };
     expect(await owner.sessionWorkerPublish!({ context, summary: 'Wrong carrier' })).toMatchObject({ ok: false, errorCode: 'session_worker_run_step_requires_publish_draft' });
-    expect(committed).toEqual(['Partial finding']);
+    expect(committed).toEqual([{ summary: 'Partial finding', deliverables }]);
   });
   it('projects status through awareness while retaining released pending count fields', async () => {
     const now = Date.now();
@@ -52,7 +65,7 @@ describe('CLI activity compatibility awareness', () => {
       throw new Error(`Unexpected request: ${url}`);
     });
     expect(await deps().sessionActivityGet({ context, sessionId})).toMatchObject({
-      ok:true,sessionId,presence:null,working:true,blocked:false,pendingCount:2,
+      ok:true,sessionId,presence:'online',working:true,blocked:false,pendingCount:2,
       pendingPermissionRequestCount:0,pendingUserActionRequestCount:0,
     });
   });
@@ -102,6 +115,47 @@ describe('CLI activity compatibility awareness', () => {
     expect(result).toMatchObject({v:1,sessionId,operational:{primary:'working'}});
     expect(result).not.toHaveProperty('ok');
     expect(result).not.toHaveProperty('pendingCount');
+  });
+  it.each(['idle', 'ready'] as const)('waits for %s from current V2 presence and follows presence changes without a cadence', async (kind) => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    const row = createSessionRecordFixture({ id: sessionId, encryptionMode: 'plain', metadata: '{}',
+      updatedAt: now, active: false, activeAt: now, latestTurnStatus: 'completed',
+      latestTurnStatusObservedAt: now, pendingPermissionRequestCount: 0, pendingUserActionRequestCount: 0 });
+    vi.mocked(axios.get).mockImplementation(async (url) => {
+      if (String(url).endsWith('/encryption/currentness')) return { status: 200, data: createAccountEncryptionCurrentnessFixture() };
+      if (String(url).endsWith(`/v2/sessions/${sessionId}`)) return { status: 200, data: { session: row } };
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const socket = new EventEmitter();
+    socketBoundary.socket = socket;
+    const owner = createCliActionDeps({ token: credentials.token, credentials, sessionId, mode: 'plain', ctx: null, serverId: 'home' });
+    const settled = vi.fn();
+    const waiting = owner.sessionAwarenessWait!({ context,
+      input: { target: { kind: 'session', serverId: 'home', sessionId }, condition: { kind } },
+      options: { deadlineMs: now + 10_000 },
+      readAwareness: () => owner.sessionActivityGet({ context, sessionId, view: 'awareness' }),
+    }).then((result) => { settled(result); return result; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).not.toHaveBeenCalled();
+    const reads = vi.mocked(axios.get).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(500);
+    expect(vi.mocked(axios.get).mock.calls).toHaveLength(reads);
+    row.active = true;
+    row.activeAt = Date.now();
+    row.updatedAt = Date.now();
+    socket.emit('ephemeral', { type: 'activity', id: 'unrelated-session', active: true, activeAt: Date.now() });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).not.toHaveBeenCalled();
+    socket.emit('ephemeral', { type: 'activity', id: sessionId, active: true, activeAt: row.activeAt });
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(waiting).resolves.toMatchObject({ disposition: 'matched', snapshot: {
+      awareness: { runtime: 'idle', freshness: 'live', availability: 'complete' },
+    } });
+    expect(socket.listenerCount('ephemeral')).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    row.active = false;
+    expect(await owner.sessionActivityGet({ context, sessionId })).toMatchObject({ presence: 'offline' });
   });
   it.each([
     ['Team', { kind: 'team' as const, teamId: 'team-1', requiredByTeamPolicy: false }],

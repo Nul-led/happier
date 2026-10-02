@@ -1,4 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { SessionWorkerPublishInputV1 } from '@happier-dev/protocol';
 
 import type { HappyMcpSessionClient } from '@/mcp/startHappyServer';
 import { logger } from '@/ui/logger';
@@ -58,6 +59,7 @@ import { createSessionBoardActionDeps } from '@/session/board/sessionBoardAction
 import { createAccountServerActionDeps } from '@/api/accountServerActionDeps';
 import { createSessionFollowActionDeps } from '@/api/sessionFollowActionDeps';
 import { createSessionFollowSourceKeyPreparationAfterSet } from '@/agent/runtime/session/follow/createSessionFollowSourceKeyPreparationAfterSet';
+import { createSessionAccountActionExecutor } from '@/mcp/runtime/createSessionAccountActionExecutor';
 
 const MCP_SESSION_STATE_CAPABILITIES: SessionStateCapabilitiesV1 = {
   display: {
@@ -229,7 +231,7 @@ export function createHappierMcpServer(
   const mcp = new McpServer({
     name: 'Happier MCP',
     version: '1.0.0',
-  });
+  }, { capabilities: { resources: { subscribe: true } } });
 
   // Only the host-only Action-context arm supplies options; every other method
   // keeps the plain two-argument local invocation it has always used rather than
@@ -282,9 +284,10 @@ export function createHappierMcpServer(
       normalizeExecutionRunRpcPayload(
         await (client.executionRuns?.action?.(request) ?? sessionScopedRpc('execution.run.action', request)),
       ),
-    wait: async (request: unknown) =>
+    wait: async (request: unknown, signal?: AbortSignal) =>
       normalizeExecutionRunRpcPayload(
-        await (client.executionRuns?.wait?.(request) ?? sessionScopedRpc('execution.run.wait', request)),
+        await (client.executionRuns?.wait?.(request, signal ? { signal } : undefined)
+          ?? sessionScopedRpc('execution.run.wait', request, signal ? { signal } : undefined)),
       ),
   };
   const executionRunScopeMismatch = () => ({
@@ -335,7 +338,7 @@ export function createHappierMcpServer(
       ...(credentials ? { credentials } : {}),
       sessionId: client.sessionId,
       ...(client.enqueueSessionEventCommitted ? {
-        publishWorkerReport: (summary: string) => client.enqueueSessionEventCommitted!({ type: 'worker-report', summary }),
+        publishWorkerReport: (report: SessionWorkerPublishInputV1) => client.enqueueSessionEventCommitted!({ type: 'worker-report', ...report }),
       } : {}),
       ...cryptoContext,
       rawSession,
@@ -370,6 +373,7 @@ export function createHappierMcpServer(
         : {}),
     },
     {
+      invokeContributedAction: async (request) => localExecutor.invokeContributedAction(request),
       ...(credentials
         ? {
             ...createAccountServerActionDeps({
@@ -479,7 +483,7 @@ export function createHappierMcpServer(
       executionRunGet: async (sessionId, request) => await runForBoundSession(sessionId, async () => await executionRuns.get(request)),
       executionRunStop: async (sessionId, request) => await runForBoundSession(sessionId, async () => await executionRuns.stop(request)),
       executionRunAction: async (sessionId, request) => await runForBoundSession(sessionId, async () => await executionRuns.action(request)),
-      executionRunWait: async (sessionId, request) => await runForBoundSession(sessionId, async () => await executionRuns.wait(request)),
+      executionRunWait: async (sessionId, request, options) => await runForBoundSession(sessionId, async () => await executionRuns.wait(request, options?.signal)),
 
       ...(opts?.sessionList ? { sessionList: opts.sessionList } : {}),
 
@@ -542,7 +546,8 @@ export function createHappierMcpServer(
   );
 
   const scopedPluginRuntimeRegistryLease = opts?.pluginRuntimeRegistryLease;
-  const executor = scopedPluginRuntimeRegistryLease
+  const boundCallerSessionId = client.sessionId.trim();
+  const localExecutor = scopedPluginRuntimeRegistryLease
     ? createPluginActionExecutor({
         base: harness.executor,
         requestPluginActionExecution: async (request, options) => await executeContributedAction({
@@ -555,17 +560,19 @@ export function createHappierMcpServer(
             : {}),
           context: {
             surface: request.surface,
+            // The client is bound by the Session host; request targets and surfaces do not establish provenance.
+            ...(boundCallerSessionId ? {
+              initiatingActionCaller: { kind: 'session' as const, sessionId: boundCallerSessionId },
+            } : {}),
             ...(request.defaultSessionId ? { defaultSessionId: request.defaultSessionId } : {}),
             ...(options?.signal ? { signal: options.signal } : {}),
           },
         }),
       })
-    : createDaemonPluginActionExecutor({ base: harness.executor });
-
-  registerHappierMcpResources(mcp as any, {
-    surface: toolSurface,
-    isActionEnabled,
-  });
+    : createDaemonPluginActionExecutor({ base: harness.executor,
+        ...(boundCallerSessionId ? { initiatingActionCaller: { kind: 'session', sessionId: boundCallerSessionId } } : {}),
+      });
+  const executor = createSessionAccountActionExecutor({ base: localExecutor, client });
 
   const actionToolBridge = createActionToolExecutorBridge({
     executor,
@@ -595,6 +602,13 @@ export function createHappierMcpServer(
     defaultSessionMachineId: sessionLocation?.machineId ?? null,
   });
 
+  registerHappierMcpResources(mcp, {
+    surface: toolSurface,
+    isActionEnabled,
+    watch: { server: mcp, execute: actionToolBridge.executeActionByToolName,
+      defaultSessionId: client.sessionId, isEnabled: () => isActionEnabled('wait') },
+  });
+
   const toolDeps = {
     changeTitle: createChangeTitleToolHandler({
       executor,
@@ -619,7 +633,7 @@ export function createHappierMcpServer(
 
   return {
     mcp,
-    toolNames,
+    toolNames: [...toolNames, 'watch'],
     executeTool: async (request) => await dispatchBuiltInHappierTool({
       toolName: request.toolName,
       args: request.args,

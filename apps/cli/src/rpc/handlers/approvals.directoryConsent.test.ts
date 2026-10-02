@@ -14,6 +14,7 @@ function createBoundaryDeps(overrides: Partial<ActionExecutorDeps>): ActionExecu
         pathsListRecent: unused, machinesList: unused, serversList: unused, reviewEnginesList: unused,
         agentsBackendsList: unused, agentsModelsList: unused, sessionSendMessage: unused,
         sessionPermissionRespond: unused, sessionUserActionAnswer: unused,
+        sessionModeSet: unused, sessionModesList: unused,
         sessionTargetPrimarySet: unused, sessionTargetTrackedSet: unused, sessionList: unused,
         sessionActivityGet: unused, sessionRecentMessagesGet: unused,
         daemonMemorySearch: unused, daemonMemoryGetWindow: unused, daemonMemoryEnsureUpToDate: unused,

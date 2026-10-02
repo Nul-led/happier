@@ -20,6 +20,19 @@ function buildLifetime(params: Readonly<{
 }
 
 describe('subscribeVisibleWorkflowRunListInvalidation', () => {
+    it('uses Account Automation changes for the Automation attention window only', () => {
+        const invalidate = vi.fn();
+        const unsubscribe = subscribeVisibleWorkflowRunListInvalidation({
+            lifetime: buildLifetime(), source: 'automation',
+            isVisibleWindowLoaded: () => true, invalidate,
+        });
+        publishHomeAccountChange('server-a', ['workflow-run:run-a']);
+        publishHomeAccountChange('server-b', ['automation:definition-a']);
+        expect(invalidate).not.toHaveBeenCalled();
+        publishHomeAccountChange('server-a', ['automation:definition-a']);
+        expect(invalidate).toHaveBeenCalledTimes(1);
+        unsubscribe();
+    });
     it('refreshes demanded Run detail on a scoped wake without relying on a parent revision', () => {
         const invalidate = vi.fn();
         let demanded = true;

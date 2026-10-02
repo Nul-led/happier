@@ -167,7 +167,8 @@ function createModel(options: Readonly<{
         resolveActionOperation: vi.fn(),
         workGroups,
         workflowAttention: options.workflowStale
-            ? { ...EMPTY_WORKFLOW_ATTENTION_SOURCE, available: true, phase: 'loaded', refreshFailed: true, knownAt: NOW - 60_000 }
+            ? { ...EMPTY_WORKFLOW_ATTENTION_SOURCE, available: true, phase: 'loaded', refreshFailed: true,
+                runIds: needsYou ? ['library-run'] : [], knownAt: NOW - 60_000 }
             : EMPTY_WORKFLOW_ATTENTION_SOURCE,
         settle: vi.fn(async () => {}),
         setReminder: vi.fn(async () => {}),
@@ -285,6 +286,33 @@ describe('InboxContent grouped by work root (ORC R-10, lab inbox-I1)', () => {
         expect(line.props.asOf).toBe(NOW - 60_000);
         expect(line.props.action.onPress).toBe(model.workflowAttention.retry);
         expect(tree.root.findByProps({ testID: 'inbox.group.run:library-run' })).toBeTruthy();
+    });
+
+    it.each(['screen', 'popover'] as const)('shows unavailable with retry instead of empty on the %s', async (presentation) => {
+        const { InboxContent } = await import('./InboxContent');
+        const retry = vi.fn();
+        const base = createModel({ needsYou: false });
+        const model = { ...base, friendRequests: [],
+            sessionPresentation: { ...base.sessionPresentation, readySessions: [], markAllReadTargets: [] },
+            hasPrimaryAttention: false, showCaughtUp: false,
+            workflowAttention: { ...EMPTY_WORKFLOW_ATTENTION_SOURCE, available: true, phase: 'failed' as const,
+                refreshFailed: true, retry },
+        };
+        const { tree, pressByTestId } = await renderScreen(<InboxContent model={model} presentation={presentation} />);
+
+        expect(tree.root.findAllByProps({ testID: 'inbox.empty' })).toHaveLength(0);
+        expect(tree.root.findAllByProps({ testID: 'inbox.workflow_stale' })).toHaveLength(0);
+        expect(tree.root.findAllByProps({ testID: 'inbox.workflow_unavailable' }).length).toBeGreaterThan(0);
+        pressByTestId('inbox.workflow_retry');
+        expect(retry).toHaveBeenCalledOnce();
+    });
+
+    it('keeps an empty stale workflow list truthful instead of adding a caught-up state', async () => {
+        const { InboxContent } = await import('./InboxContent');
+        const model = createModel({ needsYou: false, workflowStale: true });
+        const { tree } = await renderScreen(<InboxContent model={model} />);
+        expect(tree.root.findAllByProps({ testID: 'inbox.empty' })).toHaveLength(0);
+        expect(tree.root.findAllByProps({ testID: 'inbox.workflow_unavailable' }).length).toBeGreaterThan(0);
     });
 
     it('keeps finished sessions and people in Updates, with mark-all as that section action', async () => {

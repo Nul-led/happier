@@ -25,7 +25,7 @@ export const ProfileDefaultEnvironmentScreen = React.memo(function ProfileDefaul
     const collection = useProfilesCollection();
     const favorite = collection.isFavorite(DEFAULT_ENVIRONMENT_FAVORITE_ID);
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <PageHeader
                 testID="settings.profiles.defaultEnvironment.header"
                 alwaysShowTitle

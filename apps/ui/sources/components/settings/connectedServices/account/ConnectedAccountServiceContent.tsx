@@ -75,7 +75,7 @@ function FocusedScreenNotice(props: Readonly<{
     subtitle?: string;
 }>) {
     return (
-        <ItemList testID={props.testID} presentation="page">
+        <ItemList testID={props.testID}>
             <SettingsPageHeader title={props.pageTitle} alwaysShowTitle />
             <ItemGroup>
                 <Item

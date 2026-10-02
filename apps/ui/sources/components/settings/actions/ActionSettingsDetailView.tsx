@@ -11,6 +11,7 @@ import {
 } from '@happier-dev/protocol';
 
 import { SearchHeader } from '@/components/ui/forms/SearchHeader';
+import { SegmentedTabBar } from '@/components/ui/navigation/SegmentedTabBar';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { AttentionBanner } from '@/components/ui/lists/AttentionBanner';
@@ -172,6 +173,13 @@ export const ActionSettingsDetailContent = React.memo(function ActionSettingsDet
             ? buildActionSettingsContributedActions(daemonMergedProjection.inputs.pluginProjectionById)
             : []
     ), [daemonMergedProjection.inputs, executionTarget]);
+    const captureViewingPlugins = React.useMemo(() => (
+        props.actionId === 'capture.view' && executionTarget && daemonMergedProjection.inputs
+            ? Object.values(daemonMergedProjection.inputs.pluginProjectionById)
+                .filter((plugin) => plugin.title.toLowerCase().includes(searchQuery.trim().toLowerCase()))
+                .sort((left, right) => left.title.localeCompare(right.title))
+            : []
+    ), [daemonMergedProjection.inputs, executionTarget, props.actionId, searchQuery]);
     const voiceShareDeviceInventory = voiceSettings?.privacy?.shareDeviceInventory !== false;
     const availability = React.useMemo(() => ({
         executionRunsEnabled,
@@ -271,7 +279,7 @@ export const ActionSettingsDetailContent = React.memo(function ActionSettingsDet
 
     if (!entry) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <PageHeader
                     title={t('settingsActions.invalidActionTitle')}
                     description={t('settingsActions.invalidActionSubtitle')}
@@ -282,7 +290,7 @@ export const ActionSettingsDetailContent = React.memo(function ActionSettingsDet
     }
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <PageHeader
                 testID={`settings-actions:action:${entry.actionId}:header`}
                 title={entry.title}
@@ -375,6 +383,42 @@ export const ActionSettingsDetailContent = React.memo(function ActionSettingsDet
                 </ItemGroup>
             ))}
 
+            {captureViewingPlugins.length > 0 ? (
+                <ItemGroup title={t('settingsActions.targets.plugin.title')} description={t('settingsActions.approvalHelpBody')}>
+                    {captureViewingPlugins.map((plugin) => {
+                        const waived = settings.pluginHostCaptureApprovalWaived?.includes(plugin.pluginId) === true;
+                        const control = (
+                            <SegmentedTabBar
+                                role="radiogroup"
+                                accessibilityLabel={plugin.title}
+                                testIDPrefix={`settings-actions:host-capture:${plugin.pluginId}:mode`}
+                                targetSize="platform"
+                                tabs={[
+                                    { id: 'ask_first', label: t('settingsActions.modes.askFirst') },
+                                    { id: 'allowed', label: t('settingsActions.modes.allowed') },
+                                ]}
+                                activeTabId={waived ? 'allowed' : 'ask_first'}
+                                disabled={!entry.enabled}
+                                onSelectTab={(value) => {
+                                    const remaining = settings.pluginHostCaptureApprovalWaived?.filter(id => id !== plugin.pluginId) ?? [];
+                                    commitSettings({ ...settings, pluginHostCaptureApprovalWaived:
+                                        value === 'allowed' ? [...remaining, plugin.pluginId] : remaining });
+                                }}
+                            />
+                        );
+                        return <Item
+                            key={plugin.pluginId}
+                            testID={`settings-actions:host-capture:${plugin.pluginId}`}
+                            title={plugin.title}
+                            disabled={!entry.enabled}
+                            showChevron={false}
+                            accessoryLayout="adaptive"
+                            rightElement={control}
+                        />;
+                    })}
+                </ItemGroup>
+            ) : null}
+
             {toolExposureTargets.length > 0 ? (
                 <ItemGroup
                     title={t('settingsActions.toolExposure.title')}
@@ -430,7 +474,7 @@ export const ActionSettingsDetailView = React.memo(function ActionSettingsDetail
         return (
             <>
                 <Stack.Screen options={invalidActionScreenOptions} />
-                <ItemList presentation="page">
+                <ItemList>
                     <PageHeader
                         title={invalidActionTitle}
                         description={t('settingsActions.invalidActionSubtitle')}

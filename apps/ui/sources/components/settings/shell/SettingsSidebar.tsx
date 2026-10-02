@@ -209,6 +209,7 @@ export const SettingsSidebar = React.memo(function SettingsSidebar() {
         return (
             <React.Fragment key={node.id}>
                 <CollectionNavigationRow
+                    href={node.route ?? null}
                     testID={`settings-sidebar.item.${node.id}`}
                     title={readSettingsPageTitle(node)}
                     {...(hasChildren
@@ -269,7 +270,7 @@ export const SettingsSidebar = React.memo(function SettingsSidebar() {
                     // The rail scrolls, so it carries the app's canonical edge affordances: a fade into
                     // the plane's colour plus a caret at whichever end still has content behind it.
                     <View style={styles.listHost}>
-                        <ItemList
+                        <ItemList presentation="grouped"
                             style={styles.listSurface}
                             onLayout={scrollFades.onViewportLayout}
                             onContentSizeChange={scrollFades.onContentSizeChange}

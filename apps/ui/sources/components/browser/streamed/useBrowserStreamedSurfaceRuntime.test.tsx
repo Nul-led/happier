@@ -14,6 +14,7 @@ const boundary = vi.hoisted(() => ({
     sent: [] as unknown[],
     listeners: new Set<(raw: unknown) => void>(),
     requests: [] as unknown[],
+    disconnect: vi.fn(async () => undefined),
 }));
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
@@ -33,7 +34,7 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineLiveStr
         onEnvelope: (listener: (raw: unknown) => void) => {
             boundary.listeners.add(listener); return () => { boundary.listeners.delete(listener); };
         },
-        disconnect: async () => undefined,
+        disconnect: boundary.disconnect,
     }),
 }));
 
@@ -71,6 +72,7 @@ describe('useBrowserStreamedSurfaceRuntime', () => {
         boundary.sent = [];
         boundary.listeners.clear();
         boundary.requests = [];
+        boundary.disconnect.mockClear();
     });
 
     it('discovers and admits the session daemon view before any view is seeded in the host', async () => {
@@ -163,5 +165,33 @@ describe('useBrowserStreamedSurfaceRuntime', () => {
             serverId: 'server_1',
         }));
         expect(hook.getCurrent()).toBeNull();
+    });
+
+    it('pauses hidden stream subscriptions while retaining the discovered source and socket across show/hide/show', async () => {
+        boundary.views = [daemonView({ v: 1, sourceId: 'browser-view-key-1', sourceKind: 'browser',
+            supportedCodecs: ['image.mjpeg'], inputMode: 'shared', sidebands: [], health: { status: 'available' } })];
+        const { useBrowserStreamedSurfaceRuntime } = await import('./useBrowserStreamedSurfaceRuntime');
+        const hook = await renderHook((enabled: boolean) => useBrowserStreamedSurfaceRuntime({
+            view, machineId: 'machine_1', serverId: 'server_1', enabled,
+        }), { initialProps: true });
+        await flushHookEffects({ cycles: 6, turns: 6 });
+        const input = hook.getCurrent()?.input;
+        const playerState = hook.getCurrent()?.playerState;
+        expect(input?.sourceId).toBe('browser-view-key-1');
+        expect(boundary.listeners.size).toBe(1);
+
+        await hook.rerender(false);
+        expect(boundary.listeners.size).toBe(0);
+        expect(boundary.disconnect).not.toHaveBeenCalled();
+        expect(hook.getCurrent()?.input).toBe(input);
+        expect(hook.getCurrent()?.playerState).toBe(playerState);
+
+        await hook.rerender(true);
+        await flushHookEffects({ cycles: 6, turns: 6 });
+        expect(boundary.listeners.size).toBe(1);
+        expect(hook.getCurrent()?.input?.streamId).toBe(input?.streamId);
+        expect(boundary.disconnect).not.toHaveBeenCalled();
+        await hook.unmount();
+        expect(boundary.listeners.size).toBe(0);
     });
 });

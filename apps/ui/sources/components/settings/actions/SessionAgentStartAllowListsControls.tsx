@@ -65,7 +65,7 @@ function AllowListField(props: Readonly<{
             <SettingRow setting={ACTIONS_CREATE_SESSION_SETTINGS.settings[props.listKey]} testID={testID}
                 showDivider={props.showDivider}
                 disabled={props.disabled} showChevron={false} accessoryLayout="adaptive"
-                accessibilityState={{ expanded: open, disabled: props.disabled === true }}
+                accessibilityExpanded={open}
                 onPress={() => { if (!props.disabled) setOpen(true); }}
                 rightElement={renderDropdownItemTriggerRightElement({
                     detail, open, detailColor: theme.colors.text.primary, chevronColor: theme.colors.text.secondary,

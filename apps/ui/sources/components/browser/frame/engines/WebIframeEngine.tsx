@@ -19,6 +19,10 @@ import {
     parseInjectedBrowserDiagnosticsMessage,
 } from '../../adapters/diagnostics';
 import { createWebIframeAutomationOwner } from '../../adapters/automation';
+import {
+    COOPERATIVE_COLLECTOR_STATE_QUERY, buildCooperativeCollectorNavigationUrl,
+    cooperativeCollectorIdentity, isCooperativeCollectorMessage, parseCooperativeCollectorConfig,
+} from '@happier-dev/peer-mediation/browser/collector/cooperative';
 
 const iframeStyle: React.CSSProperties = {
     border: 0,
@@ -94,6 +98,8 @@ export function WebIframeEngine(props: Readonly<{
     const iframeRef = React.useRef<HTMLIFrameElement | null>(null);
     const hasLoadedCurrentNavigationRef = React.useRef(false);
     const [loadedDocumentRevision, setLoadedDocumentRevision] = React.useState(0);
+    const [cooperativeReadyUrl, setCooperativeReadyUrl] = React.useState<string | null>(null);
+    const cooperativeDocumentRetiredRef = React.useRef(false);
     const diagnosticsRef = React.useRef(props.diagnostics);
     const automationRef = React.useRef(props.automation);
     diagnosticsRef.current = props.diagnostics;
@@ -134,10 +140,79 @@ export function WebIframeEngine(props: Readonly<{
         props.diagnostics?.valueCapture,
     ]);
 
+    const cooperativeNavigation = React.useMemo(() => {
+        const diagnostics = props.diagnostics;
+        const sourceOrigin = normalizePostMessageOrigin(diagnostics?.sourceOrigin);
+        const parentOrigin = normalizePostMessageOrigin(diagnostics?.webPostMessageTargetOrigin);
+        const sandbox = props.sandbox.split(/\s+/);
+        if (!props.url || !diagnostics || props.automation?.adapterKind !== 'localPreview'
+            || !sourceOrigin || !parentOrigin || sourceOrigin === parentOrigin
+            || !sandbox.includes('allow-scripts') || !sandbox.includes('allow-same-origin')) return null;
+        try {
+            const url = new URL(props.url);
+            if (url.origin !== sourceOrigin || !['http:', 'https:'].includes(url.protocol)) return null;
+            const config = parseCooperativeCollectorConfig(JSON.stringify({
+                browserSessionId: diagnostics.browserSessionId, viewId: diagnostics.viewId,
+                navigationGeneration: diagnostics.navigationGeneration,
+                collector: { collectorId: diagnostics.collectorId, nonce: diagnostics.nonce, version: diagnostics.collectorVersion },
+                webPostMessageTargetOrigin: parentOrigin,
+                ...(diagnostics.consoleValueCapture === true ? { ownerConsoleValueCapture: true } : {}),
+                ...(diagnostics.valueCapture === true ? { ownerDiagnosticsValueCapture: true } : {}),
+            }));
+            if (!config) return null;
+            return { url: buildCooperativeCollectorNavigationUrl(url.href, config), config, sourceOrigin };
+        } catch { return null; }
+    }, [props.url, props.sandbox, props.automation?.adapterKind, collectorScript, props.diagnostics?.sourceOrigin]);
+
     React.useLayoutEffect(() => {
         hasLoadedCurrentNavigationRef.current = false;
         bridgeDocumentRetiredRef.current = false;
-    }, [props.navigationKey, props.url, props.html]);
+        cooperativeDocumentRetiredRef.current = false;
+        setCooperativeReadyUrl(null);
+    }, [props.navigationKey, props.url, props.html, cooperativeNavigation?.url]);
+
+    React.useLayoutEffect(() => {
+        if (!cooperativeNavigation || typeof window === 'undefined') return;
+        const listener = (event: MessageEvent) => {
+            if (cooperativeDocumentRetiredRef.current || event.origin !== cooperativeNavigation.sourceOrigin
+                || !iframeRef.current?.contentWindow || event.source !== iframeRef.current.contentWindow || typeof event.data !== 'string') return;
+            let message: unknown;
+            try { message = JSON.parse(event.data); } catch { return; }
+            if (isCooperativeCollectorMessage(message, 'browser.collector.ready', cooperativeNavigation.config)) {
+                setCooperativeReadyUrl(cooperativeNavigation.url);
+            } else if (isCooperativeCollectorMessage(message, 'browser.collector.retire', cooperativeNavigation.config)) {
+                cooperativeDocumentRetiredRef.current = true;
+                setCooperativeReadyUrl(null);
+            }
+        };
+        window.addEventListener('message', listener);
+        return () => window.removeEventListener('message', listener);
+    }, [cooperativeNavigation]);
+
+    React.useEffect(() => {
+        if (!cooperativeNavigation || !hasLoadedCurrentNavigationRef.current
+            || cooperativeReadyUrl === cooperativeNavigation.url || cooperativeDocumentRetiredRef.current) return;
+        const controller = new AbortController();
+        const url = new URL(cooperativeNavigation.url);
+        url.search += `&${COOPERATIVE_COLLECTOR_STATE_QUERY}=1`;
+        // With script-src 'none' the guest cannot report its own refusal. The same authorized
+        // proxy returns only its CSP decision, including meta policies, without cloning the page.
+        const rejectUnavailable = () => {
+            if (!controller.signal.aborted) automationRef.current?.onRegistrationRejected?.('runtime_unavailable');
+        };
+        void fetch(url.href, { credentials: 'include', signal: controller.signal }).then(async (response) => {
+            if (!response.ok || new URL(response.url).origin !== cooperativeNavigation.sourceOrigin) { rejectUnavailable(); return; }
+            const result: unknown = await response.json();
+            if (!controller.signal.aborted && result && typeof result === 'object' && 'state' in result
+                && result.state === 'collector_blocked_by_csp') {
+                automationRef.current?.onRegistrationRejected?.('collector_blocked_by_csp');
+            } else if (!controller.signal.aborted && result && typeof result === 'object' && 'state' in result
+                && result.state === 'runtime_unavailable') {
+                rejectUnavailable();
+            }
+        }).catch(rejectUnavailable);
+        return () => controller.abort();
+    }, [cooperativeNavigation, cooperativeReadyUrl, loadedDocumentRevision]);
 
     React.useEffect(() => {
         const diagnostics = props.diagnostics;
@@ -168,6 +243,14 @@ export function WebIframeEngine(props: Readonly<{
             if (typeof event.data !== 'string') {
                 diagnostics.onRejectedMessage?.('schema_invalid');
                 return;
+            }
+            // Readiness belongs to the engine admission handshake, not diagnostics ingestion.
+            if (cooperativeNavigation) {
+                try {
+                    const message: unknown = JSON.parse(event.data);
+                    if (isCooperativeCollectorMessage(message, 'browser.collector.ready', cooperativeNavigation.config)
+                        || isCooperativeCollectorMessage(message, 'browser.collector.retire', cooperativeNavigation.config)) return;
+                } catch { /* The diagnostics parser reports malformed messages below. */ }
             }
 
             const parsed = parseInjectedBrowserDiagnosticsMessage(event.data, {
@@ -210,12 +293,13 @@ export function WebIframeEngine(props: Readonly<{
         return () => {
             window.removeEventListener('message', listener);
         };
-    }, [props.diagnostics, collectorScript]);
+    }, [props.diagnostics, collectorScript, cooperativeNavigation]);
 
     // Callback/request changes do not reinstall the collector or retire in-flight actions.
     const automationActionsKey = JSON.stringify(props.automation?.supportedActions ?? []);
     React.useEffect(() => {
-        if (!hasLoadedCurrentNavigationRef.current) return;
+        const cooperative = cooperativeNavigation !== null;
+        if (cooperative ? cooperativeReadyUrl !== cooperativeNavigation.url || cooperativeDocumentRetiredRef.current : !hasLoadedCurrentNavigationRef.current) return;
         if (typeof window === 'undefined') return;
         const diagnostics = diagnosticsRef.current;
         const automation = automationRef.current;
@@ -232,9 +316,9 @@ export function WebIframeEngine(props: Readonly<{
             automation?.onRegistrationRejected?.('cross_origin_frame_unavailable');
             return;
         }
-        let targetDocument: Document;
+        let targetDocument: Document | undefined;
         let previousRuntime: unknown;
-        try {
+        if (!cooperative) try {
             targetDocument = targetWindow.document;
             if (targetWindow.location.origin !== sourceOrigin) throw new Error('origin_mismatch');
             previousRuntime = Reflect.get(targetWindow, '__happierBrowserRuntime');
@@ -243,7 +327,8 @@ export function WebIframeEngine(props: Readonly<{
             return;
         }
         let runtime: unknown;
-        try {
+        if (!cooperative) try {
+            if (!targetDocument) throw new Error('runtime_unavailable');
             const script = targetDocument.createElement('script');
             script.textContent = collectorScript;
             try {
@@ -256,21 +341,23 @@ export function WebIframeEngine(props: Readonly<{
             automation?.onRegistrationRejected?.('runtime_unavailable');
             return;
         }
-        if (!runtime || runtime === previousRuntime || typeof runtime !== 'object'
+        if (!cooperative && (!runtime || runtime === previousRuntime || typeof runtime !== 'object'
             || !('browserSessionId' in runtime) || runtime.browserSessionId !== diagnostics.browserSessionId
             || !('viewId' in runtime) || runtime.viewId !== diagnostics.viewId
             || !('navigationGeneration' in runtime) || runtime.navigationGeneration !== diagnostics.navigationGeneration
             || !('teardown' in runtime) || typeof runtime.teardown !== 'function'
             || !('modules' in runtime) || !runtime.modules || typeof runtime.modules !== 'object'
             || !('automation' in runtime.modules) || !runtime.modules.automation || typeof runtime.modules.automation !== 'object'
-            || !('execute' in runtime.modules.automation) || typeof runtime.modules.automation.execute !== 'function') {
+            || !('execute' in runtime.modules.automation) || typeof runtime.modules.automation.execute !== 'function')) {
             automation?.onRegistrationRejected?.('runtime_unavailable');
             return;
         }
-        const teardownRuntime = runtime.teardown;
+        const teardownRuntime = runtime && typeof runtime === 'object' && 'teardown' in runtime && typeof runtime.teardown === 'function' ? runtime.teardown : null;
         const retireRuntime = () => {
             try {
-                if (Reflect.get(targetWindow, '__happierBrowserRuntime') === runtime) teardownRuntime();
+                if (cooperativeNavigation) {
+                    targetWindow.postMessage(JSON.stringify({ v: 1, kind: 'browser.collector.retire', ...cooperativeCollectorIdentity(cooperativeNavigation.config) }), sourceOrigin);
+                } else if (teardownRuntime && Reflect.get(targetWindow, '__happierBrowserRuntime') === runtime) teardownRuntime();
             } catch {
                 // Navigating away may already have destroyed the guest realm.
             }
@@ -304,7 +391,7 @@ export function WebIframeEngine(props: Readonly<{
             targetWindow: {
                 postMessage(message, origin) {
                     try {
-                        if (targetWindow.document !== targetDocument || targetWindow.location.origin !== sourceOrigin) {
+                        if (cooperative ? cooperativeDocumentRetiredRef.current : targetWindow.document !== targetDocument || targetWindow.location.origin !== sourceOrigin) {
                             throw new Error('cross_origin_frame_unavailable');
                         }
                     } catch {
@@ -346,7 +433,9 @@ export function WebIframeEngine(props: Readonly<{
         };
     }, [
         collectorScript,
-        loadedDocumentRevision,
+        cooperativeNavigation,
+        cooperativeReadyUrl,
+        cooperativeNavigation ? null : loadedDocumentRevision,
         props.navigationKey,
         props.url,
         props.html,
@@ -566,6 +655,10 @@ export function WebIframeEngine(props: Readonly<{
     }, [props.navigationCommand?.commandId, props.navigationCommand?.kind]);
 
     const handleLoad = React.useCallback(() => {
+        if (cooperativeNavigation && hasLoadedCurrentNavigationRef.current) {
+            cooperativeDocumentRetiredRef.current = true;
+            setCooperativeReadyUrl(null);
+        }
         if (props.revokeOnUnexpectedNavigation && hasLoadedCurrentNavigationRef.current) {
             bridgeDocumentRetiredRef.current = true;
             props.onUnexpectedNavigation?.();
@@ -574,7 +667,7 @@ export function WebIframeEngine(props: Readonly<{
         hasLoadedCurrentNavigationRef.current = true;
         setLoadedDocumentRevision((revision) => revision + 1);
         props.onLoad?.();
-    }, [props.onLoad, props.onUnexpectedNavigation, props.revokeOnUnexpectedNavigation]);
+    }, [props.onLoad, props.onUnexpectedNavigation, props.revokeOnUnexpectedNavigation, cooperativeNavigation]);
 
     return (
         <View testID={`${props.testID}-container`} style={browserFrameStyles.root}>
@@ -588,7 +681,7 @@ export function WebIframeEngine(props: Readonly<{
                 referrerPolicy: props.referrerPolicy ?? 'no-referrer',
                 ...(props.csp ? { csp: props.csp } : {}),
                 sandbox: props.sandbox,
-                ...(props.html === undefined ? { src: props.url } : { srcDoc: props.html }),
+                ...(props.html === undefined ? { src: cooperativeNavigation?.url ?? props.url } : { srcDoc: props.html }),
                 style: iframeStyle,
                 title: props.title,
             })}

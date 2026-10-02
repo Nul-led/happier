@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { WorkflowBlock, WorkflowStep } from '@happier-dev/protocol/workflows/workflowV1';
+import { WorkflowDefinitionV1Schema, type WorkflowBlock, type WorkflowStep } from '@happier-dev/protocol/workflows/workflowV1';
 
 import {
   bindWorkflowTriggerEvidenceInputs,
@@ -49,6 +49,16 @@ function draftWith(blocks: readonly WorkflowBlock[]): WorkflowEditorDraft {
 }
 
 describe('draft validation through the canonical validator', () => {
+  it('keeps portable role declarations in the current draft admitted by Run now', () => {
+    const definition = WorkflowDefinitionV1Schema.parse({ version: 1, inputs: [],
+      defaults: { engine: { role: 'portable_builder' } }, blocks: [step('build')],
+      roles: [{ roleId: 'portable_builder', name: 'Builder', instructions: 'Build carefully', runsAs: { kind: 'session' } }],
+    });
+    const draft = buildWorkflowEditorDraftFromDefinition({ draftId: 'draft-1', name: 'Portable', definition });
+    const validation = validateWorkflowEditorDraft(draft);
+    expect(validation.valid).toBe(true);
+    expect(validation.normalizedDefinition?.roles).toEqual(definition.roles);
+  });
   it('accepts an ordinary two-step draft and returns the normalized definition', () => {
     const draft = draftWith([step('analyze'), step('implement')]);
     const validation = validateWorkflowEditorDraft(draft);

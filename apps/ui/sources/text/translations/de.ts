@@ -72,7 +72,9 @@ import { providerCollectionTranslations } from './providerCollectionTranslations
 import { settingsSearchKeywordsTranslations } from './settingsSearchKeywordsTranslations';
 import { automationPageTranslations } from './automationPageTranslations';
 import { settingsSessionPagesTranslations } from './settingsSessionPagesTranslations';
-import { workspaceTabTranslations } from './workspaceTabTranslations';
+import { workspaceTabKeyboardTranslations, workspaceTabTranslations } from './workspaceTabTranslations';
+import { terminalWorkspaceKeyboardTranslations, terminalWorkspaceTranslations } from './terminalWorkspaceTranslations';
+import { phoneNavigationTranslations } from './phoneNavigationTranslations';
 import { workspaceBarTranslations } from './workspaceBarTranslations';
 import { settingsProfilesRemoteHostsPageTranslations } from './settingsProfilesRemoteHostsPageTranslations';
 import { profilesPageTranslations } from './profilesPageTranslations';
@@ -88,6 +90,7 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { detailPageTranslations } from './detailPageTranslations';
 import { rolesTranslations } from './rolesTranslations';
 import { boardsTranslations } from './boardsTranslations';
+import { artifactsBrowserTranslations } from './artifactsBrowserTranslations';
 import { workStatusTranslations } from './workStatusTranslations';
 import { shareSheetTranslations } from './shareSheetTranslations';
 import { surfaceStateTranslations } from './surfaceStateTranslations';
@@ -766,6 +769,8 @@ export const de: TranslationStructure = {
         setShortcutInvalidMessage: 'Gib mindestens eine Nicht-Modifikatortaste ein, optional mit Mod, Ctrl, Shift oder Alt.',
         resetCommandAccessibility: ({ command }: { command: string }) => `Zurücksetzen ${command} Kürzel`,
         commands: {
+            ...workspaceTabKeyboardTranslations,
+            ...terminalWorkspaceKeyboardTranslations,
             composerAbortConfirm: 'Abbruch bestätigen',
             composerFocus: 'Composer fokussieren',
             composerSendImmediate: 'Sofort senden',
@@ -6303,6 +6308,8 @@ export const de: TranslationStructure = {
     },
 
     newSession: {
+      terminalHostUnavailableTitle: "Terminal-Host nicht verfügbar",
+      terminalHostUnavailableBody: ({ host }: { host: string }) => `Installiere oder aktualisiere ${host} und starte dessen Server auf diesem Rechner neu, oder wähle einen anderen Terminal-Host. Dein Entwurf bleibt erhalten.`,
         folder: folderlessSessionTranslations.de.composer,
         ...newSessionMcpTranslationExtension,
         ...acpCatalogTranslationExtension.newSession,
@@ -13012,6 +13019,8 @@ settingsSession: {
     },
 
     terminal: {
+        plaintextStorage: 'Home-managed (not end-to-end encrypted)',
+        plaintextStorageDescription: 'This Home can read Account data. The connection response is encrypted for this terminal.',
         // Used by terminal connection screens
         webBrowserRequired: 'Webbrowser erforderlich',
         webBrowserRequiredDescription: 'Links zum Verbinden eines Terminals lassen sich aus Sicherheitsgründen nur in einem Webbrowser öffnen. Nutze den QR-Code-Scanner oder öffne diesen Link auf einem Computer.',
@@ -13046,12 +13055,10 @@ settingsSession: {
             selectAllAction: 'Gesamte Terminalausgabe auswählen',
             openLinkAction: 'Ausgewählten Link öffnen',
         },
-        dockMenuA11y: 'Terminal andocken',
         largePasteTitle: 'Große Eingabe ins Terminal einfügen?',
         largePasteDescription: 'Diese Eingabe ist groß und führt im Terminal womöglich Befehle aus. Prüf sie, bevor du weitermachst.',
         largePasteConfirm: 'Ins Terminal einfügen',
         settings: {
-            locationTitle: 'Ort des eingebetteten Terminals',
             rendererTitle: 'Terminal-Renderer',
             rendererAuto: 'Automatisch',
             rendererAutoDescription: 'Bevorzugt den nativen Renderer, wenn alle nativen Sicherheitsprüfungen bestanden sind und kein Screenreader aktiv ist; wechselt bei aktiven Screenreadern zur barrierefreien xterm.js-WebView.',
@@ -13066,11 +13073,6 @@ settingsSession: {
             ctrlC: 'Strg+C',
             ctrlD: 'Strg+D',
             enter: 'Enter',
-        },
-        location: {
-            sidebar: 'Seitenleiste',
-            details: 'Detail-Panel',
-            bottom: 'Unteres Panel',
         },
         errors: {
             missingMachineTarget: 'Dieser Session fehlt ein Zielrechner.',
@@ -13798,9 +13800,9 @@ settingsSession: {
         unknownPath: 'unbekannter Pfad',
         previousSessionsTitle: 'Frühere Sessions (bis zu 5 aktuelle)',
         tmux: {
-            overrideTitle: 'Globale tmux-Einstellungen überschreiben',
-            overrideEnabledSubtitle: 'Eigene tmux-Einstellungen gelten für neue Sessions auf diesem Rechner.',
-            overrideDisabledSubtitle: 'Neue Sessions nutzen die globalen tmux-Einstellungen.',
+            overrideTitle: "Kontostandard überschreiben",
+            overrideEnabledSubtitle: "Dieser Rechner nutzt einen eigenen Terminal-Host für neue Sessions.",
+            overrideDisabledSubtitle: "Neue Sessions übernehmen den Terminal-Host deines Kontos.",
             notDetectedSubtitle: 'tmux wurde auf diesem Rechner nicht erkannt.',
             notDetectedMessage: 'tmux wurde auf diesem Rechner nicht erkannt. Installier tmux und aktualisiere die Erkennung.',
         },
@@ -14077,12 +14079,11 @@ settingsSession: {
     },
 
     artifacts: {
+        browser: artifactsBrowserTranslations.de,
         // Artifacts feature
         title: 'Artefakte',
         countSingular: '1 Artefakt',
         countPlural: ({ count }: { count: number }) => `${count} Artefakte`,
-        empty: 'Noch keine Artefakte',
-        emptyDescription: 'Leg dein erstes Artefakt an, um loszulegen',
         new: 'Neues Artefakt',
         edit: 'Artefakt bearbeiten',
         delete: 'Löschen',
@@ -14095,15 +14096,13 @@ settingsSession: {
         deleteConfirmDescription: 'Das lässt sich nicht rückgängig machen',
         noContent: 'Kein Inhalt',
         untitled: 'Ohne Titel',
-        titleLabel: 'TITEL',
         titlePlaceholder: 'Gib deinem Artefakt einen Titel',
-        bodyLabel: 'INHALT',
+        bodyLabel: 'Inhalt',
         bodyPlaceholder: 'Schreib hier deinen Inhalt…',
         emptyFieldsError: 'Gib bitte einen Titel oder Inhalt ein',
         createError: 'Das Artefakt ließ sich nicht anlegen. Versuch es noch einmal.',
         save: 'Speichern',
         saving: 'Wird gespeichert…',
-        loading: 'Artefakte werden geladen…',
         error: 'Das Artefakt ließ sich nicht laden',
     },
 
@@ -14786,6 +14785,8 @@ settingsSession: {
    ...automationPageTranslations.de,
     ...settingsSessionPagesTranslations.de,
     ...workspaceTabTranslations.de,
+    ...terminalWorkspaceTranslations.de,
+    ...phoneNavigationTranslations.de,
     ...workspaceBarTranslations.de,
    ...settingsProfilesRemoteHostsPageTranslations.de,
    ...profilesPageTranslations.de,

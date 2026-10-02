@@ -16,6 +16,7 @@ import {
 } from '@happier-dev/protocol';
 import { createPeerMediationLoopbackApp } from '@/daemon/peer/mediation/loopback/server';
 import { PROVIDER_BROKER_PRIVATE_CLOSE_PATH } from './providerBrokerPrivateProtocol';
+import { createBrokerProviderRegistry } from './providerBroker.testkit';
 import {
   computeTeamCredentialSourceMemberKeyV1,
   TEAM_CREDENTIAL_EXTERNAL_PROVIDER_APPLICATION_HTTP_PATH_V1,
@@ -626,12 +627,14 @@ describe('startDaemonProviderBrokerRuntime', () => {
       retireAll: vi.fn(async () => 0),
     });
     const openConnectedServicesSource = createConnectedServicesBrokerSourceOpen({
+      withRegistry: async (read) => await read(createBrokerProviderRegistry()),
       readResource,
       resolveBindingIntentSelection,
       custody,
     });
     const sourceOwner = createTeamCredentialBrokerSourceOwner({
       selectConnectedServicesSourceMember: createConnectedServicesBrokerSourceMemberSelect({
+        withRegistry: async (read) => await read(createBrokerProviderRegistry()),
         resolveBindingIntentSelection,
       }),
       custody: { retire: async () => true },
@@ -1384,9 +1387,11 @@ describe('Provider-broker admission precedes source custody (machine/1 admission
         machineId: 'broker-machine',
         custody,
         selectConnectedServicesSourceMember: createConnectedServicesBrokerSourceMemberSelect({
+          withRegistry: async (read) => await read(createBrokerProviderRegistry()),
           resolveBindingIntentSelection,
         }),
         openConnectedServicesSource: createConnectedServicesBrokerSourceOpen({
+          withRegistry: async (read) => await read(createBrokerProviderRegistry()),
           readResource: async () => ({ ...brokerResource, revision: resourceRevision() }),
           resolveBindingIntentSelection,
           custody,

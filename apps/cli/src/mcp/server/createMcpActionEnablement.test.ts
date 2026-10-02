@@ -38,7 +38,7 @@ function createEnablement(snapshot: CliServerFeaturesSnapshot | undefined) {
 }
 
 describe('Lane 10 Action feature availability', () => {
-  it('keeps scoped Session and Machine Actions available without advertising Account operations', () => {
+  it('advertises Account Actions for authenticated session agents without bypassing feature gates', () => {
     const snapshot = readySnapshot({
       sessions: { enabled: true, board: { enabled: true }, conversations: { enabled: true } },
       sharing: { session: { enabled: true } },
@@ -54,7 +54,9 @@ describe('Lane 10 Action feature availability', () => {
       ...policy,
       authorityScope: 'session',
     });
-    expect(restricted('machines.list')).toBe(false);
+    expect(restricted('machines.list')).toBe(true);
+    expect(restricted('notifications.notify_me')).toBe(true);
+    expect(restricted('workflow.trigger.list')).toBe(false);
     expect(restricted('session.board.get')).toBe(true);
     expect(restricted('session.discussion.list')).toBe(true);
     // Transcript reads are Machine-placed, but the exact Session read remains

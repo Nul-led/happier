@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 
-import { INJECTED_ELEMENTS_RUNTIME } from './elements';
+import { INJECTED_ELEMENTS_RUNTIME } from '@happier-dev/peer-mediation/browser/collector/elements';
 
 /**
  * The injected automation runtime is a JavaScript source string, so nothing in the TypeScript build

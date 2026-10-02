@@ -205,7 +205,6 @@ const ApiTokensListPage = React.memo(function ApiTokensListPage(props: Readonly<
                     tintColor={theme.colors.text.secondary}
                 />
             )}
-            presentation="page"
         >
             <SettingsPageHeader
                 description={t('settingsApiTokens.entrySubtitle')}

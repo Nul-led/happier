@@ -23,7 +23,7 @@ export const PluginDiagnosticsScreen = React.memo(function PluginDiagnosticsScre
     const state = usePluginSettingsScreenState({ focused: isFocused });
 
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             <SettingsPageHeader
                 description={t('settingsPlugins.developerDiagnosticsSubtitle')}
                 actions={(

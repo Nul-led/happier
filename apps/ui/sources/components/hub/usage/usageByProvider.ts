@@ -27,6 +27,8 @@ export type UsageAccountInput = Readonly<{
     accountEmail: string | null;
     accountId: string | null;
     planLabel: string | null;
+    /** This account's reading time, never another account's or a combined timestamp. */
+    fetchedAt?: number | null;
     /** `ready`: windows read; `loading`: being read; `unavailable`: the provider reported nothing. */
     state: 'ready' | 'loading' | 'unavailable';
     meters: readonly UsageWindowInput[];
@@ -48,6 +50,7 @@ export type UsageAccountRow = Readonly<{
     email: string | null;
     accountId: string | null;
     planLabel: string | null;
+    fetchedAt: number | null;
     state: UsageAccountInput['state'];
     windows: readonly UsageWindowRow[];
     /** Every window was read and has comfortable room left. */
@@ -104,6 +107,7 @@ export function groupUsageByProvider(accounts: readonly UsageAccountInput[]): Us
                         email: account.accountEmail,
                         accountId: account.accountId,
                         planLabel: account.planLabel,
+                        fetchedAt: account.fetchedAt ?? null,
                         state: account.state,
                         windows,
                         healthy: account.state === 'ready'

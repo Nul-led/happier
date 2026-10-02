@@ -256,7 +256,7 @@ const PromptCollectionLanding = React.memo(function PromptCollectionLanding(prop
     const landingId = resolvePromptCollectionLandingId(collection, readLastVisitedPromptCollectionId(props.kind));
     if (landingId) return <Redirect href={promptCollectionItemHref(props.kind, landingId) as never} />;
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <View style={styles.emptyPane}>
                 <PromptCollectionEmpty kind={props.kind} />
             </View>
@@ -272,7 +272,7 @@ const PromptCollectionPage = React.memo(function PromptCollectionPage(props: Rea
     const collection = usePromptCollection(props.kind, query);
     const rows = collection.groups.flatMap((group) => group.rows);
     return (
-        <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+        <ItemList keyboardShouldPersistTaps="handled">
             <SettingsPageHeader
                 testID={`${copy.testID}.header`}
                 description={copy.description}

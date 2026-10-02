@@ -11,6 +11,7 @@ import { EmptyState } from '@/components/ui/empty/EmptyState';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
 import { SurfaceFreshnessLine } from '@/components/ui/surfaces/SurfaceFreshnessLine';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { Text } from '@/components/ui/text/Text';
 import { UserCard } from '@/components/ui/cards/UserCard';
 import { Typography } from '@/constants/Typography';
@@ -96,7 +97,10 @@ export const InboxContent = React.memo(function InboxContent(props: Readonly<{
     const otherInline = page || rootGroups.length === 0;
     const needsYouCount = countInboxNeedsYou(model);
     const updatesCount = countInboxUpdates(model);
-    const workflowStale = model.workflowAttention.refreshFailed && model.workflowAttention.phase === 'loaded';
+    const workflowUnavailable = model.workflowAttention.available
+        && (model.workflowAttention.phase === 'failed' || model.workflowAttention.refreshFailed);
+    const workflowStale = workflowUnavailable && model.workflowAttention.phase === 'loaded'
+        && model.workflowAttention.runIds.length > 0;
 
     const otherExtra = (
         <>
@@ -188,6 +192,17 @@ export const InboxContent = React.memo(function InboxContent(props: Readonly<{
                                 action={{ label: t('inbox.work.stale.retry'), onPress: model.workflowAttention.retry }}
                             />
                         </View>
+                    ) : workflowUnavailable ? (
+                        <View style={page ? styles.freshnessPage : styles.freshnessFlat}>
+                            <SurfaceStateCard
+                                testID="inbox.workflow_unavailable"
+                                kind="unavailable"
+                                size="line"
+                                title={t('workflows.destination.history.loadFailedTitle')}
+                                reason={t('inbox.work.stale.reason')}
+                                action={{ label: t('inbox.work.stale.retry'), onPress: model.workflowAttention.retry, testID: 'inbox.workflow_retry' }}
+                            />
+                        </View>
                     ) : null}
 
                     {rootGroups.map((group, index) => (
@@ -252,10 +267,10 @@ export const InboxContent = React.memo(function InboxContent(props: Readonly<{
                         </View>
                     ) : null}
 
-                    {!loading && needsYouCount === 0 && page && updatesCount === 0
+                    {!model.isLoading && !workflowUnavailable && needsYouCount === 0 && page && updatesCount === 0
                         // Nothing anywhere: the page's calm caught-up state.
                         ? renderEmpty(t('inbox.emptyTitle'), t('inbox.emptyDescription'))
-                        : !loading && needsYouCount === 0 && (page || updatesCount === 0)
+                        : !model.isLoading && !workflowUnavailable && needsYouCount === 0 && (page || updatesCount === 0)
                             ? renderEmpty(t('inbox.work.empty.title'), t('inbox.work.empty.description'))
                             : null}
                 </>

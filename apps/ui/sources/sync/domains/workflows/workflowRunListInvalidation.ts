@@ -5,10 +5,10 @@ import {
     type HomeAccountChangeEvent,
 } from '@/sync/runtime/orchestration/homeAccountChange';
 
-function accountChangeAffectsWorkflowRunList(event: HomeAccountChangeEvent, runId?: string): boolean {
+function accountChangeAffectsWorkflowRunList(event: HomeAccountChangeEvent, runId?: string, source: 'workflow' | 'automation' = 'workflow'): boolean {
     return event.entityIds === undefined
         || event.entityIds.some((entityId) => runId === undefined
-            ? entityId.startsWith('workflow-run:')
+            ? entityId.startsWith(source === 'automation' ? 'automation:' : 'workflow-run:')
             : entityId === `workflow-run:${runId}`);
 }
 
@@ -22,13 +22,14 @@ function accountChangeAffectsWorkflowRunList(event: HomeAccountChangeEvent, runI
 export function subscribeVisibleWorkflowRunListInvalidation(params: Readonly<{
     lifetime: ActiveServerAccountScopeLifetime;
     runId?: string;
+    source?: 'workflow' | 'automation';
     isVisibleWindowLoaded: () => boolean;
     invalidate: () => void;
 }>): () => void {
     const unsubscribe = subscribeHomeAccountChange((event) => {
         if (!params.lifetime.isCurrent()) return;
         if (!areServerProfileIdentifiersEquivalent(event.serverId, params.lifetime.scope.serverId)) return;
-        if (!accountChangeAffectsWorkflowRunList(event, params.runId)) return;
+        if (!accountChangeAffectsWorkflowRunList(event, params.runId, params.source)) return;
         if (!params.isVisibleWindowLoaded()) return;
         params.invalidate();
     });

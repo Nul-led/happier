@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createActionExecutor, getActionSpec, type ActionExecutorDeps } from '@happier-dev/protocol';
 import type { HomeHubLayoutValue } from './homeHubLayout';
+import { getPersistenceStorage } from '@/sync/domains/state/persistenceStorage';
+import { readHomeReachNudge, recordFailedHomeReach } from '@/sync/runtime/connectivity/homeReachFailures';
 
 const builtins = [
     { id: 'start', hideable: false },
@@ -15,6 +17,57 @@ const widgets = [
 ];
 
 describe('Home layout Actions through the real layout owner', () => {
+    it('lets an agent complete or dismiss one setup step in the synced layout, then show it again', async () => {
+        const { createHomeHubLayoutAction } = await import('./homeHubLayoutAction');
+        let layout: HomeHubLayoutValue = {
+            order: ['start', 'future-section', 'setup'], hidden: ['usage', 'setup:addMachine'],
+            sections: { setup: { frameStyle: 'plain' } },
+        };
+        const action = createHomeHubLayoutAction({
+            builtins, isClientTargetCurrent: () => true, readWidgets: () => widgets,
+            read: async () => layout, mutate: async (update) => { layout = update(layout); },
+        });
+        const executor = createActionExecutor({ homeHubLayoutAction: action } as ActionExecutorDeps);
+        const setHidden = (hidden: boolean) => executor.execute('home.hub.layout.update', {
+            intent: { kind: 'setup_visibility', stepId: 'addPhone', hidden },
+        }, { surface: 'agent' });
+        expect(await setHidden(true)).toMatchObject({ ok: true, result: { hiddenSetupStepIds: ['addMachine', 'addPhone'] } });
+        const completed = layout;
+        await setHidden(true);
+        expect(layout).toBe(completed);
+        expect(layout.order).toEqual(['start', 'future-section', 'setup']);
+        expect(layout.sections).toEqual({ setup: { frameStyle: 'plain' } });
+        expect(await setHidden(false)).toMatchObject({ ok: true, result: { hiddenSetupStepIds: ['addMachine'] } });
+        expect(layout.hidden).toEqual(['usage', 'setup:addMachine']);
+    });
+    it('permanently dismisses the local reach nudge without reading or writing Account settings', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const profile = await profiles.upsertServerProfile({ serverUrl: 'https://nudge-action.example.test', name: 'Home' });
+        await profiles.setServerProfileIdentityForUrl(profile.serverUrl, 'srv_nudge_action');
+        const { createHomeHubLayoutAction } = await import('./homeHubLayoutAction');
+        const action = createHomeHubLayoutAction({
+            builtins, isClientTargetCurrent: () => true, readWidgets: () => widgets,
+            // Account persistence is outside this device-local operation.
+            read: async () => { throw new Error('Unexpected Account settings read'); },
+            mutate: async () => { throw new Error('Unexpected Account settings write'); },
+        });
+        const executor = createActionExecutor({ homeHubLayoutAction: action } as ActionExecutorDeps);
+        try {
+            for (let index = 0; index < 3; index++) recordFailedHomeReach('srv_nudge_action', Date.now());
+            expect(readHomeReachNudge('srv_nudge_action', Date.now()).show).toBe(true);
+            expect(await executor.execute('home.reachNudge.dismiss', { homeServerId: profile.id }, { surface: 'agent' })).toMatchObject({
+                ok: true, result: { homeIdentityId: 'srv_nudge_action', dismissed: true },
+            });
+            expect(readHomeReachNudge('srv_nudge_action', Date.now()).show).toBe(false);
+            expect(await executor.execute('home.reachNudge.dismiss', { homeServerId: 'unknown' }, { surface: 'agent' })).toMatchObject({
+                ok: false, errorCode: 'home_not_found',
+            });
+        } finally {
+            await profiles.removeServerProfile(profile.id);
+            getPersistenceStorage().delete('home-reach-failures-v2');
+            getPersistenceStorage().delete('home-reach-nudge-dismissed-v1');
+        }
+    });
     it('sets a personal frame override through the canonical Action and preserves it through layout changes', async () => {
         const { createHomeHubLayoutAction } = await import('./homeHubLayoutAction');
         let layout: HomeHubLayoutValue = { order: [], hidden: [] };

@@ -228,7 +228,7 @@ export function ConnectedServicesProviderStateSharingSettingsView() {
     );
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader description={t('connectedServicesSettings.perAgentPurpose')} />
             <ConnectedServicesProviderStateSharingBackendGroups
                 settings={normalizedProviderStateSharingSettings}

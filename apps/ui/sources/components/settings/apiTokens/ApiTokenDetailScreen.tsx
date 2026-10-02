@@ -57,7 +57,7 @@ export const ApiTokenDetailScreen = React.memo(function ApiTokenDetailScreen() {
     if (!token) {
         if ((state.phase === 'idle' || state.phase === 'loading') && state.tokens.length === 0) {
             return (
-                <ItemList presentation="page">
+                <ItemList>
                     <SettingsPageHeader />
                     <ItemGroup>
                         <ItemLoadStateRows testID="settings-api-token-detail-loading" state={{ kind: 'loading' }} rows={4} lines={2}
@@ -123,7 +123,7 @@ const ApiTokenDetail = React.memo(function ApiTokenDetail(props: Readonly<{ toke
     ];
 
     return (
-        <ItemList presentation="page" testID="settings-api-token-detail">
+        <ItemList testID="settings-api-token-detail">
             <SettingsPageHeader
                 title={token.label}
                 alwaysShowTitle

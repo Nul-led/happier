@@ -145,7 +145,7 @@ export const McpServerCollection = React.memo(function McpServerCollection(props
     }
 
     return (
-        <ItemList presentation="page" testID="settings.mcpServers.page">
+        <ItemList testID="settings.mcpServers.page">
             <SettingsPageHeader description={t('mcpSettings.purpose')} actions={addMenu} />
             {searchable ? (
                 <CompactSearchField

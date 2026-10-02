@@ -4,6 +4,7 @@ import { View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { Switch } from '@/components/ui/forms/Switch';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
@@ -14,6 +15,8 @@ import { SettingAnchor } from '@/components/settings/shell/SettingRow';
 import { NOTIFICATIONS_SETTINGS } from '@/components/settings/notifications/notificationsSettings';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
+import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
+import { accountSettingsScopeKeySuffix } from '@/sync/domains/settings/scope/accountSettingsScope';
 import {
     hasConfiguredSecretStringValue,
     type NotificationChannelV1,
@@ -31,68 +34,29 @@ type NotificationWebhooksSectionProps = Readonly<{
     setWebhookChannels: (nextChannels: ReadonlyArray<NotificationChannelV1>) => void;
 }>;
 
-export function NotificationWebhooksSection({
+export function NotificationWebhooksSection(props: NotificationWebhooksSectionProps): React.ReactElement {
+    const scope = useAccountSettingsScope();
+    // Draft URLs and secrets belong to the Account that opened the editor.
+    return <AccountNotificationWebhooksSection key={scope ? accountSettingsScopeKeySuffix(scope) : 'unbound'} {...props} />;
+}
+
+function AccountNotificationWebhooksSection({
     webhookChannels,
     setWebhookChannels,
 }: NotificationWebhooksSectionProps): React.ReactElement {
     const { theme } = useUnistyles();
     // A webhook's settings open in place; a newly added one opens so it can be configured.
     const [expandedChannelId, setExpandedChannelId] = React.useState<string | null>(null);
+    const [addingWebhook, setAddingWebhook] = React.useState(false);
+    const [editingUrlChannelId, setEditingUrlChannelId] = React.useState<string | null>(null);
+    const [editingSecretChannelId, setEditingSecretChannelId] = React.useState<string | null>(null);
+    const [secretDraft, setSecretDraft] = React.useState('');
+    const closeSecretEditor = () => {
+        setSecretDraft('');
+        setEditingSecretChannelId(null);
+    };
 
-    const promptWebhookUrl = React.useCallback(async (defaultValue?: string) => {
-        const raw = await Modal.prompt(
-            t('settingsNotifications.webhooks.urlPromptTitle'),
-            t('settingsNotifications.webhooks.urlPromptSubtitle'),
-            {
-                defaultValue,
-                placeholder: t('settingsNotifications.webhooks.urlPromptPlaceholder'),
-                confirmText: defaultValue ? t('common.save') : t('common.add'),
-                cancelText: t('common.cancel'),
-            },
-        );
-        const nextUrl = raw?.trim();
-        if (!nextUrl) {
-            return null;
-        }
-
-        try {
-            const parsed = new URL(nextUrl);
-            if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-                throw new Error('unsupported protocol');
-            }
-            return nextUrl;
-        } catch {
-            await Modal.alert(
-                t('settingsNotifications.webhooks.invalidUrlTitle'),
-                t('settingsNotifications.webhooks.invalidUrlSubtitle'),
-            );
-            return null;
-        }
-    }, []);
-
-    const promptWebhookSigningSecret = React.useCallback(async (channel: WebhookNotificationChannelV1) => {
-        const raw = await Modal.prompt(
-            t('settingsNotifications.webhooks.signingSecretPromptTitle'),
-            hasConfiguredSecretStringValue(channel.signingSecret)
-                ? t('settingsNotifications.webhooks.signingSecretPromptSubtitleReplace')
-                : t('settingsNotifications.webhooks.signingSecretPromptSubtitleAdd'),
-            {
-                placeholder: t('settingsNotifications.webhooks.signingSecretPromptPlaceholder'),
-                confirmText: t('common.save'),
-                cancelText: t('common.cancel'),
-                inputType: 'secure-text',
-            },
-        );
-        const nextSecret = raw?.trim();
-        return nextSecret ? { _isSecretValue: true as const, value: nextSecret } : null;
-    }, []);
-
-    const handleAddWebhook = React.useCallback(async () => {
-        const url = await promptWebhookUrl();
-        if (!url) {
-            return;
-        }
-
+    const handleAddWebhook = (url: string) => {
         const nextChannels = addWebhookNotificationChannel({
             channels: webhookChannels,
             url,
@@ -100,20 +64,17 @@ export function NotificationWebhooksSection({
         setWebhookChannels(nextChannels);
         const added = nextChannels.find((channel) => !webhookChannels.some((existing) => existing.id === channel.id));
         if (added) setExpandedChannelId(added.id);
-    }, [promptWebhookUrl, setWebhookChannels, webhookChannels]);
+        setAddingWebhook(false);
+    };
 
-    const handleEditWebhook = React.useCallback(async (channel: WebhookNotificationChannelV1) => {
-        const url = await promptWebhookUrl(channel.url);
-        if (!url) {
-            return;
-        }
-
+    const handleEditWebhook = (channel: WebhookNotificationChannelV1, url: string) => {
         setWebhookChannels(updateNotificationChannelById({
             channels: webhookChannels,
             channelId: channel.id,
             patch: { url },
         }));
-    }, [promptWebhookUrl, setWebhookChannels, webhookChannels]);
+        setEditingUrlChannelId(null);
+    };
 
     const handleDeleteWebhook = React.useCallback(async (channel: WebhookNotificationChannelV1) => {
         const confirmed = await Modal.confirm(
@@ -135,18 +96,16 @@ export function NotificationWebhooksSection({
         }));
     }, [setWebhookChannels, webhookChannels]);
 
-    const handleSetWebhookSigningSecret = React.useCallback(async (channel: WebhookNotificationChannelV1) => {
-        const signingSecret = await promptWebhookSigningSecret(channel);
-        if (!signingSecret) {
-            return;
-        }
-
+    const handleSetWebhookSigningSecret = (channel: WebhookNotificationChannelV1) => {
+        const nextSecret = secretDraft.trim();
+        if (!nextSecret) return;
         setWebhookChannels(updateNotificationChannelById({
             channels: webhookChannels,
             channelId: channel.id,
-            patch: { signingSecret },
+            patch: { signingSecret: { _isSecretValue: true, value: nextSecret } },
         }));
-    }, [promptWebhookSigningSecret, setWebhookChannels, webhookChannels]);
+        closeSecretEditor();
+    };
 
     const handleClearWebhookSigningSecret = React.useCallback(async (channel: WebhookNotificationChannelV1) => {
         const confirmed = await Modal.confirm(
@@ -206,12 +165,21 @@ export function NotificationWebhooksSection({
                         display="inverted"
                         title={t(NOTIFICATIONS_SETTINGS.settings.addWebhook.titleKey)}
                         leading={<Icon name="plus" size={14} color={theme.colors.text.secondary} />}
-                        onPress={() => { void handleAddWebhook(); }}
+                        disabled={addingWebhook}
+                        onPress={() => setAddingWebhook(true)}
                     />
                 </SettingAnchor>
             )}
         >
-            {webhookChannels.length === 0 ? (
+            {addingWebhook ? (
+                <WebhookUrlEditor
+                    testID="settings-notifications-webhook-new-url"
+                    initialUrl=""
+                    onSave={handleAddWebhook}
+                    onCancel={() => setAddingWebhook(false)}
+                />
+            ) : null}
+            {webhookChannels.length === 0 && !addingWebhook ? (
                 <Item
                     title={t('settingsNotifications.webhooks.emptyTitle')}
                     subtitle={t('settingsNotifications.webhooks.emptySubtitle')}
@@ -228,7 +196,11 @@ export function NotificationWebhooksSection({
                             key={channel.id}
                             testID={`settings-notifications-webhook-${channel.id}-row`}
                             expanded={expandedChannelId === channel.id}
-                            onExpandedChange={(next) => setExpandedChannelId(next ? channel.id : null)}
+                            onExpandedChange={(next) => {
+                                setExpandedChannelId(next ? channel.id : null);
+                                setEditingUrlChannelId(null);
+                                closeSecretEditor();
+                            }}
                             header={({ headerProps }) => (
                                 <Item
                                     {...headerProps}
@@ -256,7 +228,14 @@ export function NotificationWebhooksSection({
                                 )}
                                 showChevron={false}
                             />
-                            <Item
+                            {editingUrlChannelId === channel.id ? (
+                                <WebhookUrlEditor
+                                    testID={`settings-notifications-webhook-${channel.id}-url`}
+                                    initialUrl={channel.url}
+                                    onSave={(url) => handleEditWebhook(channel, url)}
+                                    onCancel={() => setEditingUrlChannelId(null)}
+                                />
+                            ) : <Item
                                 title={t('settingsNotifications.webhooks.urlPromptTitle')}
                                 subtitle={channel.url}
                                 showChevron={false}
@@ -266,10 +245,10 @@ export function NotificationWebhooksSection({
                                         size="small"
                                         display="inverted"
                                         title={t('common.edit')}
-                                        onPress={() => { void handleEditWebhook(channel); }}
+                                        onPress={() => setEditingUrlChannelId(channel.id)}
                                     />
                                 )}
-                            />
+                            />}
                             <Item
                                 testID={`settings-notifications-webhook-${channel.id}-signing-secret`}
                                 title={t('settingsNotifications.webhooks.signingSecretTitle')}
@@ -277,7 +256,21 @@ export function NotificationWebhooksSection({
                                     ? t('settingsNotifications.webhooks.signingSecretConfiguredSubtitle')
                                     : t('settingsNotifications.webhooks.signingSecretEmptySubtitle')}
                                 showChevron={false}
+                                accessoryLayout="adaptive"
                                 rightElement={(
+                                    editingSecretChannelId === channel.id ? (
+                                        <FieldTextInput
+                                            testID={`settings-notifications-webhook-${channel.id}-secret-input`}
+                                            accessibilityLabel={t('settingsNotifications.webhooks.signingSecretTitle')}
+                                            placeholder={t('settingsNotifications.webhooks.signingSecretPromptPlaceholder')}
+                                            value={secretDraft}
+                                            onChangeText={setSecretDraft}
+                                            onSubmitEditing={() => handleSetWebhookSigningSecret(channel)}
+                                            secureTextEntry
+                                            autoComplete="off"
+                                            autoFocus
+                                        />
+                                    ) : (
                                     <View style={{ flexDirection: 'row', gap: 8 }}>
                                         {secretConfigured ? (
                                             <RoundButton
@@ -295,11 +288,35 @@ export function NotificationWebhooksSection({
                                             title={secretConfigured
                                                 ? t('settingsNotifications.webhooks.signingSecretReplaceAction')
                                                 : t('settingsNotifications.webhooks.signingSecretAddAction')}
-                                            onPress={() => { void handleSetWebhookSigningSecret(channel); }}
+                                            onPress={() => {
+                                                setSecretDraft('');
+                                                setEditingSecretChannelId(channel.id);
+                                            }}
                                         />
                                     </View>
+                                    )
                                 )}
                             />
+                            {editingSecretChannelId === channel.id ? (
+                                <SectionContentRow continuesRow>
+                                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
+                                        <RoundButton
+                                            testID={`settings-notifications-webhook-${channel.id}-secret-cancel`}
+                                            size="small"
+                                            display="secondary"
+                                            title={t('common.cancel')}
+                                            onPress={closeSecretEditor}
+                                        />
+                                        <RoundButton
+                                            testID={`settings-notifications-webhook-${channel.id}-secret-save`}
+                                            size="small"
+                                            title={t('common.save')}
+                                            disabled={!secretDraft.trim()}
+                                            onPress={() => handleSetWebhookSigningSecret(channel)}
+                                        />
+                                    </View>
+                                </SectionContentRow>
+                            ) : null}
                             {renderTopicSwitch(channel, 'readyTitle', 'readySubtitle',
                                 channel.topics.ready !== false,
                                 !channelEnabled,
@@ -336,5 +353,56 @@ export function NotificationWebhooksSection({
                 })
             )}
         </ItemGroup>
+    );
+}
+
+/** Creation and replacement share the same inline URL editor and validation. */
+function WebhookUrlEditor(props: Readonly<{
+    testID: string;
+    initialUrl: string;
+    onSave: (url: string) => void;
+    onCancel: () => void;
+}>) {
+    const [draft, setDraft] = React.useState(props.initialUrl);
+    const [error, setError] = React.useState<string | null>(null);
+    const save = () => {
+        const url = draft.trim();
+        if (!url) return;
+        try {
+            const parsed = new URL(url);
+            if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('unsupported protocol');
+        } catch {
+            setError(t('settingsNotifications.webhooks.invalidUrlSubtitle'));
+            return;
+        }
+        props.onSave(url);
+    };
+    return (
+        <>
+            <Item
+                title={t('settingsNotifications.webhooks.urlPromptTitle')}
+                subtitle={t('settingsNotifications.webhooks.urlPromptSubtitle')}
+                showChevron={false}
+                accessoryLayout="adaptive"
+                rightElement={(
+                    <FieldTextInput
+                        testID={props.testID}
+                        accessibilityLabel={t('settingsNotifications.webhooks.urlPromptTitle')}
+                        placeholder={t('settingsNotifications.webhooks.urlPromptPlaceholder')}
+                        value={draft}
+                        onChangeText={(next) => { setDraft(next); setError(null); }}
+                        onSubmitEditing={save}
+                        error={error}
+                        autoFocus
+                    />
+                )}
+            />
+            <SectionContentRow continuesRow>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
+                    <RoundButton testID={`${props.testID}-cancel`} size="small" display="secondary" title={t('common.cancel')} onPress={props.onCancel} />
+                    <RoundButton testID={`${props.testID}-save`} size="small" title={props.initialUrl ? t('common.save') : t('common.add')} disabled={!draft.trim()} onPress={save} />
+                </View>
+            </SectionContentRow>
+        </>
     );
 }

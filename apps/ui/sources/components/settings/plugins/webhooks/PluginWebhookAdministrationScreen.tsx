@@ -549,7 +549,7 @@ export const PluginWebhookAdministrationScreen = React.memo(function PluginWebho
 
     if (!webhooksAvailable) {
         return (
-            <ItemList style={{ paddingTop: 0 }} testID="settings.plugins.webhooks.screen" presentation="page">
+            <ItemList style={{ paddingTop: 0 }} testID="settings.plugins.webhooks.screen">
                 <SettingsPageHeader description={t('settingsPlugins.webhookAdministration.footer')} />
                 <ItemGroup>
                     <Item
@@ -565,7 +565,7 @@ export const PluginWebhookAdministrationScreen = React.memo(function PluginWebho
     }
 
     return (
-        <ItemList style={{ paddingTop: 0 }} testID="settings.plugins.webhooks.screen" presentation="page">
+        <ItemList style={{ paddingTop: 0 }} testID="settings.plugins.webhooks.screen">
             <SettingsPageHeader
                 description={t('settingsPlugins.webhookAdministration.footer')}
                 actions={(

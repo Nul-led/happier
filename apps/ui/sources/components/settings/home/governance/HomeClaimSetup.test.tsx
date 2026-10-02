@@ -23,11 +23,6 @@ import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelp
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 installSettingsViewCommonModuleMocks();
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')>(),
-    // Artifact protocol compatibility is covered by its owner; this suite exercises the claim.
-    requireCurrentAccountStoredContentServerCompatibility: vi.fn(async () => undefined),
-}));
 vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', () => ({
     BUNDLED_PLUGIN_UI_APP_ARTIFACTS: [],
 }));

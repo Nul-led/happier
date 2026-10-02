@@ -133,16 +133,16 @@ describe('SettingsCollectionLayout', () => {
         expect(detailMounts.count).toBe(1);
     });
 
-    it('hosts its real detail body without a nested route stack and preserves it across width changes', async () => {
+    it('keeps shared detail content mounted while measuring and across width changes', async () => {
         detailMounts.count = 0;
         const screen = await renderScreen(
             <SettingsCollectionLayout navigator="machines" rootPathname="/settings/machines"
                 resolveChildRoute={() => '[id]'} rail={<View testID="machines-rail" />}
-                railWidthPx={272} detailMinWidthPx={480} testID="settings-machines">
-                <DetailProbe />
-            </SettingsCollectionLayout>,
+                railWidthPx={272} detailMinWidthPx={480} testID="settings-machines"
+                detailTop={<DetailProbe />}
+            />,
         );
-        expect(currentMode(screen)).toBe('stacked');
+        expect(currentMode(screen)).toBe('measuring');
         await layoutAt(screen, 1200);
         expect(currentMode(screen)).toBe('split');
         await layoutAt(screen, 390);

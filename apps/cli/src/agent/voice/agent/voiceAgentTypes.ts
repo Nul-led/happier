@@ -113,7 +113,7 @@ export type ResolveVoiceSystemAppendBlocksArgs = Readonly<{
   workingDirectory?: string | null;
 }>;
 
-export type VoiceAgentTurn = { role: 'user' | 'assistant'; text: string };
+export type VoiceAgentTurn = { role: 'user' | 'assistant' | 'context'; text: string };
 
 export type VoiceAgentTurnStreamState = {
   id: string;

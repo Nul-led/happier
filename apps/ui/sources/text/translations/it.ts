@@ -58,7 +58,9 @@ import { providerCollectionTranslations } from './providerCollectionTranslations
 import { settingsSearchKeywordsTranslations } from './settingsSearchKeywordsTranslations';
 import { automationPageTranslations } from './automationPageTranslations';
 import { settingsSessionPagesTranslations } from './settingsSessionPagesTranslations';
-import { workspaceTabTranslations } from './workspaceTabTranslations';
+import { workspaceTabKeyboardTranslations, workspaceTabTranslations } from './workspaceTabTranslations';
+import { terminalWorkspaceKeyboardTranslations, terminalWorkspaceTranslations } from './terminalWorkspaceTranslations';
+import { phoneNavigationTranslations } from './phoneNavigationTranslations';
 import { workspaceBarTranslations } from './workspaceBarTranslations';
 import { settingsProfilesRemoteHostsPageTranslations } from './settingsProfilesRemoteHostsPageTranslations';
 import { profilesPageTranslations } from './profilesPageTranslations';
@@ -74,6 +76,7 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { detailPageTranslations } from './detailPageTranslations';
 import { rolesTranslations } from './rolesTranslations';
 import { boardsTranslations } from './boardsTranslations';
+import { artifactsBrowserTranslations } from './artifactsBrowserTranslations';
 import { workStatusTranslations } from './workStatusTranslations';
 import { shareSheetTranslations } from './shareSheetTranslations';
 import { surfaceStateTranslations } from './surfaceStateTranslations';
@@ -905,6 +908,8 @@ export const it = {
         setShortcutInvalidMessage: 'Inserisci almeno un tasto non modificatore, facoltativamente con Mod, Ctrl, Maiusc o Alt.',
         resetCommandAccessibility: ({ command }: { command: string }) => `Reset ${command} shortcut`,
         commands: {
+            ...workspaceTabKeyboardTranslations,
+            ...terminalWorkspaceKeyboardTranslations,
             composerAbortConfirm: 'Conferma interruzione',
             composerFocus: 'Metti a fuoco il compositore',
             composerSendImmediate: 'Invia subito',
@@ -6399,6 +6404,8 @@ export const it = {
   },
 
   newSession: {
+    terminalHostUnavailableTitle: "Host del terminale non disponibile",
+    terminalHostUnavailableBody: ({ host }: { host: string }) => `Installa o aggiorna ${host} e riavvia il suo server su questa macchina, oppure scegli un altro host del terminale. La bozza viene conservata.`,
     folder: folderlessSessionTranslations.it.composer,
     ...newSessionMcpTranslationExtension,
     ...acpCatalogTranslationExtension.newSession,
@@ -12940,7 +12947,9 @@ settingsSession: {
             },
   },
 
-  terminal: {
+    terminal: {
+        plaintextStorage: 'Home-managed (not end-to-end encrypted)',
+        plaintextStorageDescription: 'This Home can read Account data. The connection response is encrypted for this terminal.',
     // Used by terminal connection screens
     webBrowserRequired: "Browser web richiesto",
     webBrowserRequiredDescription:
@@ -12980,12 +12989,10 @@ settingsSession: {
       selectAllAction: "Seleziona tutto l'output del terminale",
       openLinkAction: 'Apri il link selezionato',
     },
-    dockMenuA11y: "Aggancia terminale",
     largePasteTitle: "Incollare un input grande nel terminale?",
     largePasteDescription: "Questo testo incollato è grande e potrebbe eseguire comandi nel terminale. Controllalo prima di continuare.",
     largePasteConfirm: "Incolla nel terminale",
     settings: {
-      locationTitle: "Posizione del terminale incorporato",
       rendererTitle: "Renderer del terminale",
       rendererAuto: "Automatico",
       rendererAutoDescription: "Preferisce il renderer nativo quando tutti i controlli di sicurezza nativi sono superati e nessuno screen reader è attivo; passa alla visualizzazione Web accessibile di xterm.js mentre uno screen reader è attivo.",
@@ -13000,11 +13007,6 @@ settingsSession: {
       ctrlC: "Ctrl + C",
       ctrlD: "Ctrl + D",
       enter: "Invio",
-    },
-    location: {
-      sidebar: "Barra laterale",
-      details: "Pannello dettagli",
-      bottom: "Pannello inferiore",
     },
     errors: {
       missingMachineTarget: "Questa sessione non ha una macchina di destinazione.",
@@ -13606,11 +13608,9 @@ settingsSession: {
     unknownPath: "percorso sconosciuto",
     previousSessionsTitle: "Sessioni precedenti (fino alle 5 più recenti)",
     tmux: {
-      overrideTitle: "Sovrascrivi le impostazioni tmux globali",
-      overrideEnabledSubtitle:
-        "Le impostazioni tmux personalizzate si applicano alle nuove sessioni su questa macchina.",
-      overrideDisabledSubtitle:
-        "Le nuove sessioni usano le impostazioni tmux globali.",
+      overrideTitle: "Sovrascrivi il valore dell’account",
+      overrideEnabledSubtitle: "Questa macchina usa un proprio host del terminale per le nuove sessioni.",
+      overrideDisabledSubtitle: "Le nuove sessioni ereditano l’host del terminale dell’account.",
       notDetectedSubtitle: "tmux non è rilevato su questa macchina.",
       notDetectedMessage:
         "tmux non è rilevato su questa macchina. Installa tmux e aggiorna il rilevamento.",
@@ -13874,12 +13874,11 @@ settingsSession: {
     },
 
     artifacts: {
+        browser: artifactsBrowserTranslations.it,
     // Artifacts feature
     title: "Artefatti",
     countSingular: "1 artefatto",
     countPlural: ({ count }: { count: number }) => `${count} artefatti`,
-    empty: "Nessun artefatto",
-    emptyDescription: "Crea il tuo primo artefatto per iniziare",
     new: "Nuovo artefatto",
     edit: "Modifica artefatto",
     delete: "Elimina",
@@ -13893,15 +13892,13 @@ settingsSession: {
     deleteConfirmDescription: "Questa azione non può essere annullata",
     noContent: "Nessun contenuto",
     untitled: "Senza titolo",
-    titleLabel: "TITOLO",
     titlePlaceholder: "Inserisci un titolo per il tuo artefatto",
-    bodyLabel: "CONTENUTO",
+    bodyLabel: "Contenuto",
     bodyPlaceholder: "Scrivi il tuo contenuto qui...",
     emptyFieldsError: "Inserisci un titolo o un contenuto",
     createError: "Impossibile creare l'artefatto. Riprova.",
     save: "Salva",
     saving: "Salvataggio...",
-    loading: "Caricamento artefatti...",
     error: "Impossibile caricare l'artefatto",
   },
 
@@ -14296,6 +14293,8 @@ settingsSession: {
    ...automationPageTranslations.it,
     ...settingsSessionPagesTranslations.it,
     ...workspaceTabTranslations.it,
+    ...terminalWorkspaceTranslations.it,
+    ...phoneNavigationTranslations.it,
     ...workspaceBarTranslations.it,
    ...settingsProfilesRemoteHostsPageTranslations.it,
    ...profilesPageTranslations.it,

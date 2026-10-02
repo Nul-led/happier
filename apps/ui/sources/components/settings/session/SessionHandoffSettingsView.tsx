@@ -70,7 +70,7 @@ export const SessionHandoffSettingsView = React.memo(function SessionHandoffSett
     ].filter(Boolean).join(' · ');
 
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settingsSessionPages.handoff.pageDescription')} />
             {/* The globs row exists only while ignored files are "Include selected"; the section answers otherwise. */}
             <SettingSection section={HANDOFF_SETTINGS.sectionRefs.workspace}>

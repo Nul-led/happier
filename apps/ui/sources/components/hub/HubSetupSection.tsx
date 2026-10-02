@@ -75,9 +75,8 @@ const PROGRESS_METER_WIDTH = 72;
 /**
  * What is left to set up. Steps are the things whose completion this device can truthfully see —
  * a first machine (once the Home's machine list is known) and the recovery key (saved or dismissed
- * counts as done) — and each disappears once done. Ways to connect a device and browsing plugins
- * (when the plugins machine reported none installed) are actions: the Account contract does not
- * project signed-in phones, so phone setup cannot truthfully be marked done here.
+ * counts as done), plus Add your phone once its launched pairing flow succeeds or is dismissed.
+ * Each disappears once done. Connecting a computer and browsing plugins remain actions.
  *
  * `tiles` (Home) shows, on a computer, Add your phone · Add a machine;
  * on a phone, Connect a computer · Add a machine (lab I1/I1p). Every tile has a dismiss that the
@@ -106,6 +105,7 @@ function useSetupDevice(): Readonly<{ isComputer: boolean; isPhone: boolean }> {
 function useSetupEntries(presentation: SetupPresentation) {
     const router = useRouter();
     const auth = useAuth();
+    const { hidden, dismiss } = useHomeSetupDismissals();
     const { isComputer, isPhone } = useSetupDevice();
     const { connectTerminal, isLoading: isConnectingTerminal } = useConnectTerminal();
     const { processAuthUrl } = useScannedAuthUrlProcessor(TERMINAL_AUTH_URL_PROCESSOR_OPTIONS);
@@ -119,6 +119,7 @@ function useSetupEntries(presentation: SetupPresentation) {
     const tiles = presentation === 'tiles';
 
     const steps: SetupStep[] = [
+        ...(isComputer && auth.isAuthenticated ? [{ id: 'addPhone' as const, done: hidden.has('addPhone') }] : []),
         ...(machineListSettled ? [{ id: 'addMachine' as const, done: hasMachine }] : []),
         ...(recoveryKey.step !== null ? [{ id: 'recoveryKey' as const, done: recoveryKey.step === 'done' }] : []),
     ];
@@ -154,7 +155,7 @@ function useSetupEntries(presentation: SetupPresentation) {
             action: { id: 'recoveryKey' as const, label: t('settingsOverview.setupActionSaveKey'), testID: 'hub-setup.recoveryKey.action' },
             kind: 'step' as const,
         }] : []),
-        ...(isComputer && auth.isAuthenticated ? [{
+        ...(open.has('addPhone') ? [{
             id: 'addPhone' as const,
             testID: 'settings-add-your-phone-shortcut',
             icon: 'device-mobile' as const,
@@ -166,7 +167,7 @@ function useSetupEntries(presentation: SetupPresentation) {
                 testID: 'settings-add-your-phone-shortcut.action',
             },
             panel: 'pairPhone' as const,
-            kind: 'action' as const,
+            kind: 'step' as const,
         }] : []),
         // Connecting a computer from a phone is one step with two ways to do it: scan the code its
         // terminal shows, or paste its link. On Home the scan opens the camera in place.
@@ -213,7 +214,7 @@ function useSetupEntries(presentation: SetupPresentation) {
             return;
         }
         if (id === 'showAddPhonePage') {
-            router.push('/settings/add-phone');
+            router.push('/settings/add-phone?setupStep=addPhone');
             return;
         }
         if (id === 'browsePlugins') {
@@ -237,13 +238,12 @@ function useSetupEntries(presentation: SetupPresentation) {
         }
     }, [connectTerminal, processAuthUrl, recoveryKey.markSaved, recoveryKey.secret, router]);
 
-    return { entries, steps, open, runAction, isPhone };
+    return { entries, steps, open, runAction, isPhone, hidden, dismiss };
 }
 
 /** Home's Get set up: tiles on a computer, rows on a phone; each grows in place when it can. */
 function HubSetupTiles(props: HubSectionProps) {
-    const { entries, runAction, isPhone } = useSetupEntries('tiles');
-    const { hidden, dismiss } = useHomeSetupDismissals();
+    const { entries, runAction, isPhone, hidden, dismiss } = useSetupEntries('tiles');
     // The Homes journeys' steps lead the row (lab order: J6 laptop nudge, J2 reconcile, K1 "Already
     // use Happier?"); they share this row's morph and its dismissed-steps store.
     const journeyItems = useHomesJourneySetupItems({ onDismiss: dismiss });
@@ -276,7 +276,7 @@ function HubSetupTiles(props: HubSectionProps) {
                 }}
             />
         ),
-        ...(entry.panel ? { renderPanel: ({ close }: Readonly<{ close: () => void }>) => renderSetupPanel(entry.panel!, close) } : {}),
+        ...(entry.panel ? { renderPanel: ({ close }: Readonly<{ close: () => void }>) => renderSetupPanel(entry.panel!, close, () => dismiss('addPhone')) } : {}),
     }));
 
     const allItems = [
@@ -298,7 +298,7 @@ export function HubSetupGridView(props: Readonly<{ items: readonly SetupBlockIte
     );
 }
 
-function renderSetupPanel(panel: SetupEntryPanel, close: () => void): React.ReactNode {
+function renderSetupPanel(panel: SetupEntryPanel, close: () => void, onPhoneCompleted: () => void): React.ReactNode {
     if (panel === 'scanComputer') return <ConnectComputerPanel testIDPrefix="hub-setup.connect-computer" close={close} />;
     if (panel === 'addMachine') return <AddMachinePanel testIDPrefix="hub-setup.add-machine" close={close} />;
     return (
@@ -307,6 +307,7 @@ function renderSetupPanel(panel: SetupEntryPanel, close: () => void): React.Reac
             layout="inline"
             testIDPrefix="hub-setup.pairing"
             onClose={close}
+            onCompleted={onPhoneCompleted}
         />
     );
 }

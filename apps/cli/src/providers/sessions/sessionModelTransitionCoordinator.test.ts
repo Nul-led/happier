@@ -367,8 +367,8 @@ describe('createSessionModelTransitionCoordinator', () => {
     const harness = createHarness({
       initial,
       authorize: createSessionModelTransitionAuthorizer({
-        agentId: 'claude', machineId: 'm1', sessionId: 's1', nativeModelApplyPolicy: 'live',
-        readActiveTarget: () => ({ selection: initial, sessionBindingMetadata: null, runtimeBindingBasis: null }),
+        agentId: 'claude', agentTargetKey: 'agent:happier.agent.claude/claude', machineId: 'm1', sessionId: 's1', nativeModelApplyPolicy: 'live',
+        readActiveTarget: () => authorized(initial),
       }),
     });
     const unrestricted = harness.coordinator.submit(requested, { source: 'command' });

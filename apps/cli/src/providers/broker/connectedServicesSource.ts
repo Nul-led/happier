@@ -1,4 +1,5 @@
-import { resolveCLIProxyAPIManagedPurposeFamily } from '@happier-dev/plugins-cliproxyapi';
+import { resolveManagedProviderBrokerPurpose } from './applicationProjection';
+import type { ProviderConnectionRegistryReader } from './providerConnectionSource';
 import {
   type TeamCredentialResourceSummaryV1,
   type TeamCredentialSourceBindingV1,
@@ -39,22 +40,23 @@ type ConnectedSelectionInput = Pick<ConnectedOpenInput, 'source' | 'application'
  * selector.
  */
 async function resolveConnectedServicesBrokerSelection(
+  withRegistry: ProviderConnectionRegistryReader,
   resolveBindingIntentSelection: ConnectedAccountPurposeBindingOwner['resolveBindingIntentSelection'],
   request: ConnectedSelectionInput,
 ) {
-  const family = resolveCLIProxyAPIManagedPurposeFamily({
-    endpointTemplateId: request.application.endpointTemplateId,
-    protocol: request.application.protocol,
-  });
+  const family = await withRegistry((registry) => (
+    isCLIProxyAPIBrokerApplication(registry, request.application)
+      ? resolveManagedProviderBrokerPurpose({ registry, application: request.application })
+      : null
+  ));
   if (
     !family
-    || !isCLIProxyAPIBrokerApplication(request.application)
     || (
       request.source.target.kind === 'account'
-        ? request.source.target.account.service.pluginId !== family.connectedAccount.service.pluginId
-          || request.source.target.account.service.localId !== family.connectedAccount.service.localId
-        : request.source.target.service.pluginId !== family.connectedAccount.service.pluginId
-          || request.source.target.service.localId !== family.connectedAccount.service.localId
+        ? request.source.target.account.service.pluginId !== family.service.pluginId
+          || request.source.target.account.service.localId !== family.service.localId
+        : request.source.target.service.pluginId !== family.service.pluginId
+          || request.source.target.service.localId !== family.service.localId
     )
   ) return null;
   const purpose = {
@@ -64,7 +66,7 @@ async function resolveConnectedServicesBrokerSelection(
   const selection = await resolveBindingIntentSelection({
     purpose,
     target: request.source.target,
-    serviceRefs: [family.connectedAccount.service],
+    serviceRefs: [family.service],
     signal: request.signal,
   }).catch(() => null);
   if (!selection) return null;
@@ -78,10 +80,11 @@ async function resolveConnectedServicesBrokerSelection(
 
 /** Selects the current source member without acquiring anything. */
 export function createConnectedServicesBrokerSourceMemberSelect(input: Readonly<{
+  withRegistry: ProviderConnectionRegistryReader;
   resolveBindingIntentSelection: ConnectedAccountPurposeBindingOwner['resolveBindingIntentSelection'];
 }>): (request: ConnectedSelectionInput) => Promise<TeamCredentialSourceMemberV1 | null> {
   return async (request) => (
-    await resolveConnectedServicesBrokerSelection(input.resolveBindingIntentSelection, request)
+    await resolveConnectedServicesBrokerSelection(input.withRegistry, input.resolveBindingIntentSelection, request)
   )?.sourceMember ?? null;
 }
 
@@ -92,6 +95,7 @@ export function createConnectedServicesBrokerSourceMemberSelect(input: Readonly<
  * only connects that current authority to existing managed Provider custody.
  */
 export function createConnectedServicesBrokerSourceOpen(input: Readonly<{
+  withRegistry: ProviderConnectionRegistryReader;
   readResource(
     resourceId: string,
     signal: AbortSignal,
@@ -121,6 +125,7 @@ export function createConnectedServicesBrokerSourceOpen(input: Readonly<{
         && sameSource(resource.source, request.source);
     };
     const chosen = await resolveConnectedServicesBrokerSelection(
+      input.withRegistry,
       input.resolveBindingIntentSelection,
       request,
     );
@@ -138,9 +143,9 @@ export function createConnectedServicesBrokerSourceOpen(input: Readonly<{
       connectedAccounts: [{
         purpose: family.purpose,
         title: family.title,
-        service: family.connectedAccount.service,
-        required: family.connectedAccount.required,
-        materializationKinds: [...family.connectedAccount.materializationKinds],
+        service: family.service,
+        required: family.required,
+        materializationKinds: family.materializationKinds,
       }],
       purposeBindingIntents: {
         v: 1,

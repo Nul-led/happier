@@ -2,21 +2,25 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { WorkflowRunStartRequestV1Schema, type WorkflowRunStartResultV1 } from '@happier-dev/protocol';
+import { Modal, ModalProvider } from '@/modal';
+import { getStorage } from '@/sync/domains/state/storageStore';
+import { retireActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
 import { DestinationInstanceHost } from '@/components/appShell/workspace/DestinationInstanceHost';
 
 import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
+import { installShippedNativeFrameScheduler } from '@/dev/testkit/legend/shippedNativeLegendRuntime';
 import {
     createWorkflowDefinitionFixture,
     createWorkflowInvocationIndexFixture,
     createWorkflowRunSummaryFixture,
 } from '@/dev/testkit/fixtures/workflowRunFixtures';
-import type { WorkflowRunNowRequest } from '../run/useWorkflowRunNowController';
 import { readWorkflowReviewedRunSeed } from '@/sync/domains/workflows/workflowReviewedRunSeed';
 import { WorkflowRunScreen } from './WorkflowRunScreen';
-import type { WorkflowRunsDomain } from '@/sync/store/domains/workflowRuns';
 
 type WorkflowRunContentProps = React.ComponentProps<
     typeof import('../run/WorkflowRunContent').WorkflowRunContent
@@ -50,9 +54,11 @@ function respondToRequest(
     return answer;
 }
 
-const runNowSpy = vi.hoisted(() => vi.fn<(request: WorkflowRunNowRequest) => Promise<unknown>>(async () => null));
+const actionTransport = vi.hoisted(() => vi.fn());
+const startResponse = vi.hoisted(() => vi.fn());
 const routerSpy = vi.hoisted(() => ({ push: vi.fn(), back: vi.fn() }));
 const routeState = vi.hoisted(() => ({ runId: 'run-1' }));
+// Per-Action transport replies. The real detail client still parses every reply.
 const detailActions = vi.hoisted(() => ({
     getRun: vi.fn(),
     listInvocations: vi.fn(),
@@ -64,71 +70,36 @@ const detailActions = vi.hoisted(() => ({
     cancelRun: vi.fn(),
     deleteRun: vi.fn(),
 }));
-const storeState = vi.hoisted(() => {
-    const listeners = new Set<() => void>();
-    const state = {
-        workflowRunsById: {} as WorkflowRunsDomain['workflowRunsById'],
-        workflowRunInvocationsByRunId: {} as WorkflowRunsDomain['workflowRunInvocationsByRunId'],
-        workflowRunListWindows: {} as WorkflowRunsDomain['workflowRunListWindows'],
-    };
-    return {
-        state,
-        listeners,
-        emit(): void { for (const listener of listeners) listener(); },
-        reset(): void {
-            state.workflowRunsById = {};
-            state.workflowRunInvocationsByRunId = {};
-            state.workflowRunListWindows = {};
-        },
-    };
-});
+const storeState = {
+    get state() { return getStorage().getState(); },
+    reset(): void {
+        const base = createMachineFixture();
+        const machine = createMachineFixture({ metadata: { ...base.metadata!, homeDir: '/Users/me' } });
+        getStorage().setState({
+            profileScope: { serverId: 'server-a', accountId: 'account-a' },
+            machines: { [machine.id]: machine }, machineListByServerId: {},
+            workflowRunsById: {}, workflowRunInvocationsByRunId: {}, workflowRunListWindows: {},
+        });
+    },
+};
 type MachineRpcCall = Readonly<{
     onIssued?: () => void;
     signal?: AbortSignal;
     [key: string]: unknown;
 }>;
 const machineRpcSpy = vi.hoisted(() => vi.fn<(params: MachineRpcCall) => Promise<unknown>>());
-const accountScopeHarness = vi.hoisted(() => {
-    type Scope = Readonly<{ serverId: string; accountId: string }>;
-    type Retirement = Readonly<{ dispose: () => void }>;
-    type Lifetime = Readonly<{
-        scope: Scope;
-        isCurrent: () => boolean;
-        onRetire: (listener: () => void) => Retirement;
-    }>;
-
-    let current: Lifetime & { retire: () => void };
-    const createLifetime = (scope: Scope): Lifetime & { retire: () => void } => {
-        const listeners = new Set<() => void>();
-        const lifetime = {
-            scope,
-            isCurrent: () => current === lifetime,
-            onRetire: (listener: () => void) => {
-                listeners.add(listener);
-                return { dispose: () => listeners.delete(listener) };
-            },
-            retire: () => {
-                for (const listener of listeners) listener();
-                listeners.clear();
-            },
-        };
-        return lifetime;
-    };
-    current = createLifetime({ serverId: 'server-a', accountId: 'account-a' });
-
-    return {
-        capture: () => current,
-        scope: () => current.scope,
-        switchTo(scope: Scope): void {
-            current.retire();
-            current = createLifetime(scope);
-        },
-        reset(): void {
-            current.retire();
-            current = createLifetime({ serverId: 'server-a', accountId: 'account-a' });
-        },
-    };
-});
+const appliedRuntime = vi.hoisted(() => ({ serverId: 'server-a' }));
+const accountScopeHarness = {
+    switchTo(scope: Readonly<{ serverId: string; accountId: string }>): void {
+        retireActiveServerAccountScopeLifetime();
+        appliedRuntime.serverId = scope.serverId;
+        getStorage().setState({ profileScope: scope });
+    },
+    reset(): void {
+        retireActiveServerAccountScopeLifetime();
+        appliedRuntime.serverId = 'server-a';
+    },
+};
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -146,78 +117,34 @@ vi.mock('@/modal', async () => {
     const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
     // Run again really does repeat effects, so it is confirmed. These cases are
     // about what the confirmed repeat carries, not about the gate itself.
-    return createModalModuleMock({ confirmResult: true }).module;
+    return createModalModuleMock({ confirmResult: true, renderCustomModals: true }).module;
 });
-vi.mock('expo-router', () => ({
-    useRouter: () => routerSpy,
-    useLocalSearchParams: () => ({ runId: routeState.runId }),
-}));
-vi.mock('expo-crypto', () => ({ randomUUID: () => 'next-run-id' }));
-vi.mock('@/sync/domains/workflows/workflowRunDetailActions', () => ({
-    workflowRunDetailActions: detailActions,
-}));
-vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
-    captureActiveServerAccountScopeLifetime: () => accountScopeHarness.capture(),
-}));
-vi.mock('@/sync/domains/state/storage', async () => {
-    // Only the environment's storage subscription is replaced; all Run/index
-    // merging stays in the real canonical store owner.
-    const { createWorkflowRunsDomain } = await import('@/sync/store/domains/workflowRuns');
-    const domain: WorkflowRunsDomain = createWorkflowRunsDomain<WorkflowRunsDomain>({
-        get: () => ({ ...domain, ...storeState.state }),
-        set: (update) => {
-            const next = typeof update === 'function' ? update({ ...domain, ...storeState.state }) : update;
-            Object.assign(storeState.state, next);
-            storeState.emit();
-        },
-    });
-    const api = { getState: () => ({ ...domain, ...storeState.state }) };
-    const useStore = (selector: (state: unknown) => unknown) => React.useSyncExternalStore(
-        (listener: () => void) => {
-            storeState.listeners.add(listener);
-            return () => storeState.listeners.delete(listener);
-        },
-        () => selector(storeState.state),
-        () => selector(storeState.state),
-    );
-    return {
-        getStorage: () => Object.assign(useStore, api),
-        useActiveServerAccountScope: () => accountScopeHarness.scope(),
-        useMachine: () => ({ id: 'machine-1', metadata: { homeDir: '/Users/me' } }),
-        useWorkflowRun: (runId: string | null) => React.useSyncExternalStore(
-            (listener: () => void) => {
-                storeState.listeners.add(listener);
-                return () => storeState.listeners.delete(listener);
-            },
-            () => (runId === null ? null : storeState.state.workflowRunsById[runId] ?? null),
-            () => (runId === null ? null : storeState.state.workflowRunsById[runId] ?? null),
-        ),
-    };
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ router: routerSpy, params: () => ({ runId: routeState.runId }) }).module;
 });
-vi.mock('@/utils/runtime/useHostActivelyViewed', () => ({ useHostActivelyViewed: () => true }));
-vi.mock('@/components/ui/layout/layout', () => ({ useLayoutMaxWidthStyle: () => ({ maxWidth: 960 }) }));
-vi.mock('@/components/projects/useOpenProject', () => ({ useOpenProject: () => () => true }));
+vi.mock('expo-crypto', async () => ({ randomUUID: (await import('node:crypto')).randomUUID }));
+vi.mock('@/sync/ops/actions/frontDoorRuntimeActionExecutor', () => ({
+    createFrontDoorActionExecute: () => actionTransport,
+}));
+vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
+    getAppliedActiveServerSnapshot: () => appliedRuntime,
+    isAppliedActiveServerRuntimeAvailable: () => true,
+}));
 vi.mock('@/utils/ui/clipboard', () => ({ setClipboardStringSafe: async () => true }));
-vi.mock('@/hooks/session/sessionRouteServerScope', () => ({
-    buildScopedSessionRouteHref: () => '/session/s-1',
-}));
 // The machine transport is a real system boundary; everything below it — the
 // screen's own in-flight bookkeeping and staleness guards — stays real.
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
     machineRpcWithServerScope: machineRpcSpy,
 }));
-vi.mock('../run/useWorkflowRunNowController', () => ({
-    useWorkflowRunNowController: () => ({ runNow: runNowSpy, stateFor: () => 'idle' }),
-}));
-vi.mock('../run/useWorkflowRunComposerModal', () => ({ useWorkflowRunComposerModal: () => {} }));
-vi.mock('../run/useWorkflowCompletionMoment', () => ({ useWorkflowCompletionMoment: () => false }));
-vi.mock('../accessibility/useWorkflowAnnouncements', () => ({ useWorkflowAnnouncements: () => {} }));
-vi.mock('../run/WorkflowRunContent', () => ({
-    WorkflowRunContent: (props: WorkflowRunContentProps) => {
+vi.mock('../run/WorkflowRunContent', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../run/WorkflowRunContent')>();
+    return { ...actual, WorkflowRunContent: (props: WorkflowRunContentProps) => {
+        // Observe the host projection without replacing any child behavior.
         latestContentProps = props;
-        return React.createElement('WorkflowRunContent', { testID: 'workflow-run-content' });
-    },
-}));
+        return React.createElement(actual.WorkflowRunContent, props);
+    } };
+});
 
 const DEFINITION = createWorkflowDefinitionFixture({
     blocks: [
@@ -228,22 +155,39 @@ const DEFINITION = createWorkflowDefinitionFixture({
             input: [],
             result: { kind: 'text' },
         },
-    ] as never,
+    ],
 });
 
 const ACCEPTED_CONTEXT = {
+    startedBy: 'user' as const,
     source: { kind: 'inline' as const },
     inputs: {},
     machineId: 'machine-1',
     executionTarget: { kind: 'detached_run' as const },
+    materializedLeaves: [],
     workspaceTarget: {
-        project: { machineId: 'machine-1', directory: '/Users/me/project' },
+        project: { machineId: 'machine-1', directory: '/Users/me/project', checkoutRootPath: '/Users/me/project' },
     },
     origin: { kind: 'direct' as const },
 };
 
 function invocationPage(invocations: readonly unknown[]) {
     return { invocations, parentRevision: 1 };
+}
+
+function runStartCalls() {
+    return actionTransport.mock.calls.filter(([action]) => action === 'workflow.run.start');
+}
+
+function createRunScreenElement() {
+    return <ModalProvider><WorkflowRunScreen /></ModalProvider>;
+}
+
+async function reviewRunAgain(screen: Awaited<ReturnType<typeof renderScreen>>) {
+    await screen.pressByTestIdAsync('workflow-run-run-again');
+    expect(runStartCalls()).toHaveLength(0);
+    expect(screen.findByTestId('workflow-run-inputs-preview')).not.toBeNull();
+    expect(screen.findByTestId('workflow-start-where-chip')).not.toBeNull();
 }
 
 function permissionInvocationResponse(params: Readonly<{
@@ -262,11 +206,17 @@ function permissionInvocationResponse(params: Readonly<{
                 blockKind: 'step',
                 attempt: '0',
                 logicalInvocationRecordId: 'analyze-row',
-                execution: { kind: 'detached_run', runId: params.executionRunId ?? 'exec-1' },
+                execution: {
+                    kind: 'detached_run', runId: params.executionRunId ?? 'exec-1',
+                    localInputId: 'input-1', runtimeSelection: {},
+                },
                 interaction: {
                     requests: Object.fromEntries(params.requestIds.map((requestId, index) => [
                         requestId,
-                        { tool: index === 0 ? 'Write' : 'Read', createdAt: index + 1 },
+                        {
+                            tool: index === 0 ? 'Write' : 'Read', createdAt: index + 1,
+                            arguments: { file_path: '/Users/me/project/README.md', ...(index === 0 ? { content: 'work' } : {}) },
+                        },
                     ])),
                 },
             },
@@ -332,7 +282,6 @@ async function renderRunScreen(overrides: Readonly<{
         ...(overrides.finalOutputInvocationId === undefined
             ? {}
             : { finalOutputInvocationId: overrides.finalOutputInvocationId }),
-        availability: run.availability,
     });
     if (overrides.invocationListFailure === undefined) {
         detailActions.listInvocations.mockImplementation(async (input: Readonly<{ lifecycles?: readonly string[] }>) => (
@@ -348,18 +297,47 @@ async function renderRunScreen(overrides: Readonly<{
     } else {
         detailActions.listInvocations.mockRejectedValue(overrides.invocationListFailure);
     }
-    const element = React.createElement(WorkflowRunScreen);
+    const element = createRunScreenElement();
     const screen = await renderScreen(overrides.wrap ? overrides.wrap(element) : element);
     await act(async () => {});
     return screen;
 }
 
 beforeEach(() => {
+    installShippedNativeFrameScheduler();
     latestContentProps = null;
     routeState.runId = 'run-1';
     accountScopeHarness.reset();
     storeState.reset();
-    runNowSpy.mockClear();
+    Modal.hideAll();
+    actionTransport.mockReset();
+    startResponse.mockReset();
+    startResponse.mockImplementation(async (input: unknown) => {
+        const request = WorkflowRunStartRequestV1Schema.parse(input);
+        return { admission: 'created', run: createWorkflowRunSummaryFixture({
+            id: request.runId, state: 'queued', origin: { kind: 'direct' },
+        }) };
+    });
+    actionTransport.mockImplementation(async (action: string, input: Record<string, unknown>, context: {
+        signal?: AbortSignal; externalActionTarget?: { machineId: string };
+    }) => {
+        let result: unknown;
+        switch (action) {
+            case 'workflow.run.start': result = await startResponse(input); break;
+            case 'workflow.run.get': result = await detailActions.getRun(input.runId, context.signal); break;
+            case 'workflow.run.invocations.list': result = await detailActions.listInvocations(input, context.signal); break;
+            case 'workflow.run.invocations.get': result = await detailActions.getInvocation(input, context.signal); break;
+            case 'workflow.run.pause': result = await detailActions.pauseRun(input, context.signal); break;
+            case 'workflow.run.cancel': result = await detailActions.cancelRun(input, context.signal); break;
+            case 'workflow.run.invocations.retry': result = await detailActions.retryInvocation(input, context.signal); break;
+            case 'workflow.run.delete': result = await detailActions.deleteRun(input, context.signal); break;
+            case 'workflow.run.resume': result = context.externalActionTarget
+                ? await detailActions.restoreWorkspace(input, context.externalActionTarget.machineId, context.signal)
+                : await detailActions.resumeRun(input, context.signal); break;
+            default: return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action' };
+        }
+        return { ok: true, result };
+    });
     routerSpy.push.mockClear();
     routerSpy.back.mockClear();
     machineRpcSpy.mockReset();
@@ -417,7 +395,6 @@ describe('WorkflowRunScreen', () => {
             checkpoint: null,
             result: 'Authoritative result preview',
             finalOutputInvocationId: 'inv-final-off-page',
-            availability: run.availability,
         });
         detailActions.listInvocations.mockImplementation(async (input: Readonly<{ lifecycles?: readonly string[] }>) => (
             input.lifecycles?.length === 1 && input.lifecycles[0] === 'failed'
@@ -500,15 +477,21 @@ describe('WorkflowRunScreen', () => {
         expect(latestContentProps?.invocationsLoaded).toBe(true);
     });
 
-    it('does not let a late Run-again completion navigate after this mounted screen changes Runs', async () => {
-        const admission = createDeferred<Readonly<{ run: { id: string } }>>();
-        runNowSpy.mockImplementationOnce(async () => admission.promise);
+    it('submits the accepted Run identity for a confirmed repeat rather than only its flattened definition', async () => {
         const screen = await renderRunScreen();
-        const runAgain = latestContentProps?.onRunAgain;
+        await reviewRunAgain(screen);
+        await screen.pressByTestIdAsync('workflow-run-inputs-run');
+        const request = WorkflowRunStartRequestV1Schema.parse(runStartCalls()[0]?.[1]);
+        expect(request.source).toMatchObject({ kind: 'inline', replay: { runId: 'run-1' } });
+    });
 
-        act(() => { runAgain?.(); });
-        await Promise.resolve();
-        expect(runNowSpy).toHaveBeenCalledTimes(1);
+    it('does not let a late Run-again completion navigate after this mounted screen changes Runs', async () => {
+        const admission = createDeferred<WorkflowRunStartResultV1>();
+        startResponse.mockImplementationOnce(async () => admission.promise);
+        const screen = await renderRunScreen();
+        await reviewRunAgain(screen);
+        await screen.pressByTestIdAsync('workflow-run-inputs-run');
+        expect(runStartCalls()).toHaveLength(1);
 
         routeState.runId = 'run-2';
         const runB = createWorkflowRunSummaryFixture({
@@ -519,14 +502,13 @@ describe('WorkflowRunScreen', () => {
             definition: DEFINITION,
             acceptedContext: ACCEPTED_CONTEXT,
             checkpoint: null,
-            availability: runB.availability,
         });
         detailActions.listInvocations.mockResolvedValue(invocationPage([]));
-        await screen.update(React.createElement((await import('./WorkflowRunScreen')).WorkflowRunScreen));
+        await screen.update(createRunScreenElement());
         await act(async () => {});
         expect(latestContentProps?.run.id).toBe('run-2');
 
-        admission.resolve({ run: { id: 'run-again-from-a' } });
+        admission.resolve({ admission: 'created', run: createWorkflowRunSummaryFixture({ id: 'run-again-from-a' }) });
         await act(async () => {});
 
         expect(routerSpy.push).not.toHaveBeenCalled();
@@ -560,18 +542,16 @@ describe('WorkflowRunScreen', () => {
      * and pushing its route would take over whatever the person opened instead.
      */
     it('does not let a late Run-again completion navigate after this screen closes', async () => {
-        const admission = createDeferred<Readonly<{ run: { id: string } }>>();
-        runNowSpy.mockImplementationOnce(async () => admission.promise);
+        const admission = createDeferred<WorkflowRunStartResultV1>();
+        startResponse.mockImplementationOnce(async () => admission.promise);
         const screen = await renderRunScreen();
-        const runAgain = latestContentProps?.onRunAgain;
-
-        act(() => { runAgain?.(); });
-        await Promise.resolve();
-        expect(runNowSpy).toHaveBeenCalledTimes(1);
+        await reviewRunAgain(screen);
+        await screen.pressByTestIdAsync('workflow-run-inputs-run');
+        expect(runStartCalls()).toHaveLength(1);
 
         await screen.unmount();
 
-        admission.resolve({ run: { id: 'run-again-after-close' } });
+        admission.resolve({ admission: 'created', run: createWorkflowRunSummaryFixture({ id: 'run-again-after-close' }) });
         await act(async () => {});
 
         expect(routerSpy.push).not.toHaveBeenCalled();
@@ -583,7 +563,7 @@ describe('WorkflowRunScreen', () => {
      * the shared row nor pops a route this screen no longer owns.
      */
     it('does not let a late delete completion retire the shared row or navigate back after this screen closes', async () => {
-        const deletion = createDeferred<Readonly<{ ok: true }>>();
+        const deletion = createDeferred<Readonly<{ deleted: true; runId: string }>>();
         detailActions.deleteRun.mockImplementationOnce(async () => deletion.promise);
         const screen = await renderRunScreen({
             run: createWorkflowRunSummaryFixture({
@@ -603,7 +583,7 @@ describe('WorkflowRunScreen', () => {
 
         await screen.unmount();
 
-        deletion.resolve({ ok: true });
+        deletion.resolve({ deleted: true, runId: 'run-1' });
         await act(async () => {});
 
         expect(routerSpy.back).not.toHaveBeenCalled();
@@ -611,17 +591,20 @@ describe('WorkflowRunScreen', () => {
     });
 
     it('repeats a Run under exactly the execution target its accepted context froze', async () => {
-        await renderRunScreen();
+        const screen = await renderRunScreen();
         expect(latestContentProps?.onRunAgain).toBeTypeOf('function');
-
-        await act(async () => requireDefined(latestContentProps?.onRunAgain, 'Expected a Run again handler')());
-        await act(async () => {});
-
-        expect(runNowSpy).toHaveBeenCalledTimes(1);
-        expect(runNowSpy.mock.calls[0]?.[0]).toMatchObject({
+        await reviewRunAgain(screen);
+        await screen.pressByTestIdAsync('workflow-run-inputs-run');
+        expect(runStartCalls()).toHaveLength(1);
+        expect(runStartCalls()[0]?.[1]).toMatchObject({
             executionTarget: { kind: 'detached_run' },
-            project: { machineId: 'machine-1', directory: '/Users/me/project' },
         });
+        expect(runStartCalls()[0]?.[2]).toMatchObject({
+            externalActionTarget: { kind: 'machine', machineId: 'machine-1', project: { directory: '/Users/me/project' } },
+        });
+        const admittedId = WorkflowRunStartRequestV1Schema.parse(runStartCalls()[0]?.[1]).runId;
+        expect(storeState.state.workflowRunsById[admittedId]?.summary).toMatchObject({ id: admittedId, state: 'queued' });
+        expect(routerSpy.push).toHaveBeenCalledWith({ pathname: '/workflows/runs/[runId]', params: { runId: admittedId } });
     });
 
     it('supplies the derived structural identity of unopened rows to the shared Run body', async () => {
@@ -674,7 +657,7 @@ describe('WorkflowRunScreen', () => {
                 // new Run is genuinely reachable rather than blocked behind
                 // `workflow_outcome_unresolved`.
                 workflowCustodyState: 'settled',
-                availability: { cancel: false, pause: false, retry: true },
+                availability: { cancel: false, pause: false },
             }),
             invocations,
         });
@@ -693,7 +676,7 @@ describe('WorkflowRunScreen', () => {
 
         // When exact restoration is unavailable, D4 opens a reviewed new Run.
         // Nothing may be admitted before the person presses Run there.
-        expect(runNowSpy).not.toHaveBeenCalled();
+        expect(runStartCalls()).toHaveLength(0);
         const route = routerSpy.push.mock.calls.at(-1)?.[0] as {
             pathname: string; params: { reviewedRunSeedId: string };
         } | undefined;
@@ -780,8 +763,8 @@ describe('WorkflowRunScreen', () => {
                     },
                 },
             }],
-        }, 'machine-1');
-        expect(runNowSpy).not.toHaveBeenCalled();
+        }, 'machine-1', undefined);
+        expect(runStartCalls()).toHaveLength(0);
         expect(routerSpy.push).not.toHaveBeenCalledWith(expect.objectContaining({ pathname: '/workflows/new' }));
     });
 
@@ -809,16 +792,18 @@ describe('WorkflowRunScreen', () => {
                     retry: { kind: 'available', causalInvocationIds: ['analyze-row'] },
                     continueSameConversation: { kind: 'available' },
                     continueFreshAgent: { kind: 'unavailable', reason: 'recovery_not_prepared' },
+                    restoreWorkspace: { kind: 'unavailable', reason: 'recovery_not_prepared' },
                 },
             },
         });
         detailActions.retryInvocation.mockResolvedValue({
             run: createWorkflowRunSummaryFixture({ id: 'run-1', state: 'running' }),
+            invocation: invocations[1], disposition: 'accepted',
         });
         await renderRunScreen({
             run: createWorkflowRunSummaryFixture({
                 id: 'run-1', state: 'interrupted', origin: { kind: 'direct' },
-                availability: { cancel: false, pause: false, retry: true },
+                availability: { cancel: false, pause: false },
             }),
             invocations,
         });
@@ -894,19 +879,22 @@ describe('WorkflowRunScreen', () => {
                     retry: { kind: 'available', causalInvocationIds: ['root', 'analyze-row', 'cancelled-row'] },
                     continueSameConversation: { kind: 'available' },
                     continueFreshAgent: { kind: 'unavailable', reason: 'recovery_not_prepared' },
+                    restoreWorkspace: { kind: 'unavailable', reason: 'recovery_not_prepared' },
                 },
             },
         });
         detailActions.resumeRun.mockResolvedValue({
             run: createWorkflowRunSummaryFixture({ id: 'run-1', state: 'running' }),
+            intent: 'resumed',
         });
         detailActions.retryInvocation.mockResolvedValue({
             run: createWorkflowRunSummaryFixture({ id: 'run-1', state: 'running' }),
+            invocation: invocations[1], disposition: 'accepted',
         });
         await renderRunScreen({
             run: createWorkflowRunSummaryFixture({
                 id: 'run-1', state: 'interrupted', origin: { kind: 'direct' },
-                availability: { cancel: false, pause: false,  },
+                availability: { cancel: false, pause: false },
             }),
             invocations,
         });
@@ -967,12 +955,12 @@ describe('WorkflowRunScreen', () => {
         });
         const run = createWorkflowRunSummaryFixture({
             id: 'run-1', state: 'running', revision: 1, origin: { kind: 'direct' },
-            availability: { pause: true, cancel: true, retry: true },
+            availability: { pause: true, cancel: true },
         });
-        const pause = createDeferred<Readonly<{ run: typeof run }>>();
+        const pause = createDeferred<Readonly<{ run: typeof run; intent: 'pause_requested' }>>();
         detailActions.pauseRun.mockImplementationOnce(() => pause.promise);
-        detailActions.cancelRun.mockResolvedValue({ run: { ...run, state: 'cancelled', revision: 3 } });
-        detailActions.retryInvocation.mockResolvedValue({ run: { ...run, revision: 3 } });
+        detailActions.cancelRun.mockResolvedValue({ run: { ...run, state: 'cancelled', revision: 3 }, intent: 'cancelled' });
+        detailActions.retryInvocation.mockResolvedValue({ run: { ...run, revision: 3 }, invocation: invocations[1], disposition: 'accepted' });
         await renderRunScreen({ run, invocations });
         await act(async () => latestContentProps?.onSelectInvocation('analyze-row'));
         await act(async () => {});
@@ -993,7 +981,7 @@ describe('WorkflowRunScreen', () => {
         expect(detailActions.cancelRun).not.toHaveBeenCalled();
         expect(detailActions.retryInvocation).not.toHaveBeenCalled();
 
-        pause.resolve({ run: { ...run, state: 'pause_requested', revision: 2 } });
+        pause.resolve({ run: { ...run, state: 'pause_requested', revision: 2 }, intent: 'pause_requested' });
         await act(async () => {});
         expect(latestContentProps?.pendingControl).toBeNull();
         expect(latestContentProps?.run.revision).toBe(2);
@@ -1013,7 +1001,7 @@ describe('WorkflowRunScreen', () => {
         const runA = createWorkflowRunSummaryFixture({
             id: 'run-1', state: 'running', revision: 1, origin: { kind: 'direct' }, availability: { cancel: true },
         });
-        const cancel = createDeferred<Readonly<{ run: typeof runA }>>();
+        const cancel = createDeferred<Readonly<{ run: typeof runA; intent: 'cancelled' }>>();
         detailActions.cancelRun.mockImplementationOnce(() => cancel.promise);
         const screen = await renderRunScreen({ run: runA });
         act(() => { latestContentProps?.onCancel?.(); });
@@ -1024,22 +1012,22 @@ describe('WorkflowRunScreen', () => {
             id: 'run-2', state: 'running', revision: 5, origin: { kind: 'direct' }, availability: { cancel: true },
         });
         detailActions.getRun.mockResolvedValue({
-            run: runB, definition: DEFINITION, acceptedContext: ACCEPTED_CONTEXT, checkpoint: null, availability: runB.availability,
+            run: runB, definition: DEFINITION, acceptedContext: ACCEPTED_CONTEXT, checkpoint: null,
         });
         detailActions.listInvocations.mockResolvedValue(invocationPage([]));
-        await screen.update(React.createElement((await import('./WorkflowRunScreen')).WorkflowRunScreen));
+        await screen.update(createRunScreenElement());
         await act(async () => {});
         expect(latestContentProps?.run.id).toBe('run-2');
         // The new Run starts with no operation in flight; A's cancel is not its business.
         expect(latestContentProps?.pendingControl).toBeNull();
 
-        detailActions.cancelRun.mockResolvedValueOnce({ run: { ...runB, state: 'cancelled', revision: 6 } });
+        detailActions.cancelRun.mockResolvedValueOnce({ run: { ...runB, state: 'cancelled', revision: 6 }, intent: 'cancelled' });
         act(() => { latestContentProps?.onCancel?.(); });
         await act(async () => {});
         expect(detailActions.cancelRun).toHaveBeenCalledTimes(2);
         expect(latestContentProps?.run.revision).toBe(6);
 
-        cancel.resolve({ run: { ...runA, state: 'cancelled', revision: 2 } });
+        cancel.resolve({ run: { ...runA, state: 'cancelled', revision: 2 }, intent: 'cancelled' });
         await act(async () => {});
         expect(latestContentProps?.run.id).toBe('run-2');
         expect(latestContentProps?.run.revision).toBe(6);
@@ -1238,22 +1226,21 @@ describe('WorkflowRunScreen', () => {
         const firstSignal = machineRpcSpy.mock.calls[0]?.[0].signal;
         expect(firstSignal?.aborted).toBe(false);
 
-        accountScopeHarness.switchTo({ serverId: 'server-b', accountId: 'account-b' });
+        act(() => accountScopeHarness.switchTo({ serverId: 'server-b', accountId: 'account-b' }));
         const runB = createWorkflowRunSummaryFixture({ id: 'run-1', state: 'running', machineId: 'machine-1' });
         detailActions.getRun.mockResolvedValue({
             run: runB,
             definition: DEFINITION,
             acceptedContext: ACCEPTED_CONTEXT,
             checkpoint: null,
-            availability: runB.availability,
         });
         detailActions.listInvocations.mockResolvedValue(invocationPage([]));
-        await screen.update(React.createElement((await import('./WorkflowRunScreen')).WorkflowRunScreen));
+        await screen.update(createRunScreenElement());
         await act(async () => {});
         expect(firstSignal?.aborted).toBe(true);
 
-        accountScopeHarness.switchTo({ serverId: 'server-a', accountId: 'account-a' });
-        await screen.update(React.createElement((await import('./WorkflowRunScreen')).WorkflowRunScreen));
+        act(() => accountScopeHarness.switchTo({ serverId: 'server-a', accountId: 'account-a' }));
+        await screen.update(createRunScreenElement());
         await act(async () => {});
         await act(async () => latestContentProps?.onSelectInvocation('analyze-row'));
         await act(async () => {});
@@ -1293,15 +1280,13 @@ describe('WorkflowRunScreen', () => {
             definition: DEFINITION,
             acceptedContext: ACCEPTED_CONTEXT,
             checkpoint: null,
-            availability: run.availability,
         });
         detailActions.listInvocations.mockImplementation(async (input: Record<string, unknown>) => (
             input?.lifecycles === undefined
                 ? { ...invocationPage(overrides.history ?? []), nextCursor: overrides.historyNextCursor }
                 : { ...invocationPage(overrides.attention ?? []), nextCursor: overrides.attentionNextCursor }
         ));
-        const { WorkflowRunScreen } = await import('./WorkflowRunScreen');
-        const screen = await renderScreen(React.createElement(WorkflowRunScreen));
+        const screen = await renderScreen(createRunScreenElement());
         await act(async () => {});
         return screen;
     }
@@ -1387,10 +1372,9 @@ describe('WorkflowRunScreen', () => {
             definition: DEFINITION,
             acceptedContext: ACCEPTED_CONTEXT,
             checkpoint: null,
-            availability: runB.availability,
         });
         detailActions.listInvocations.mockImplementation(async () => invocationPage([]));
-        await screen.update(React.createElement((await import('./WorkflowRunScreen')).WorkflowRunScreen));
+        await screen.update(createRunScreenElement());
         await act(async () => {});
         expect(latestContentProps?.run.id).toBe('run-2');
         expect(latestContentProps?.loadMoreInvocationsFailed).toBe(false);
@@ -1506,7 +1490,7 @@ describe('WorkflowRunScreen', () => {
 
             // A retained workspace tab is hidden even while the host remains visible.
             destinationVisible = false;
-            await screen.update(wrap(React.createElement(WorkflowRunScreen)));
+            await screen.update(wrap(createRunScreenElement()));
             detailActions.listInvocations.mockClear();
             detailActions.getInvocation.mockClear();
             await act(async () => publishHomeAccountChange('server-a', ['workflow-run:run-1']));
@@ -1514,7 +1498,7 @@ describe('WorkflowRunScreen', () => {
             expect(detailActions.getInvocation).not.toHaveBeenCalled();
 
             destinationVisible = true;
-            await screen.update(wrap(React.createElement(WorkflowRunScreen)));
+            await screen.update(wrap(createRunScreenElement()));
             expect(detailActions.listInvocations).toHaveBeenCalled();
             expect(detailActions.getInvocation).toHaveBeenCalled();
         });

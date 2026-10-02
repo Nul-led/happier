@@ -35,10 +35,10 @@ describe('machine add retained draft', () => {
         const first = await renderHook(() => useMachineAddFlowDraft());
         const second = await renderHook(() => useMachineAddFlowDraft());
         await act(async () => first.getCurrent().update((draft) => ({ ...draft, serverId: 'home-clock', path: 'anotherComputer', startedAtMs: Date.now() })));
-        await act(async () => vi.advanceTimersByTime(5 * 60_000 - 1));
+        await act(async () => { vi.advanceTimersByTime(5 * 60_000 - 1); });
         expect(first.getCurrent().notSeeing).toBe(false);
         await first.unmount();
-        await act(async () => vi.advanceTimersByTime(1));
+        await act(async () => { vi.advanceTimersByTime(1); });
         expect(second.getCurrent().notSeeing).toBe(true);
         const resumed = await renderHook(() => useMachineAddFlowDraft());
         expect(resumed.getCurrent().notSeeing).toBe(true);

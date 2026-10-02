@@ -58,7 +58,9 @@ import { providerCollectionTranslations } from './providerCollectionTranslations
 import { settingsSearchKeywordsTranslations } from './settingsSearchKeywordsTranslations';
 import { automationPageTranslations } from './automationPageTranslations';
 import { settingsSessionPagesTranslations } from './settingsSessionPagesTranslations';
-import { workspaceTabTranslations } from './workspaceTabTranslations';
+import { workspaceTabKeyboardTranslations, workspaceTabTranslations } from './workspaceTabTranslations';
+import { terminalWorkspaceKeyboardTranslations, terminalWorkspaceTranslations } from './terminalWorkspaceTranslations';
+import { phoneNavigationTranslations } from './phoneNavigationTranslations';
 import { workspaceBarTranslations } from './workspaceBarTranslations';
 import { settingsProfilesRemoteHostsPageTranslations } from './settingsProfilesRemoteHostsPageTranslations';
 import { profilesPageTranslations } from './profilesPageTranslations';
@@ -74,6 +76,7 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { detailPageTranslations } from './detailPageTranslations';
 import { rolesTranslations } from './rolesTranslations';
 import { boardsTranslations } from './boardsTranslations';
+import { artifactsBrowserTranslations } from './artifactsBrowserTranslations';
 import { workStatusTranslations } from './workStatusTranslations';
 import { shareSheetTranslations } from './shareSheetTranslations';
 import { surfaceStateTranslations } from './surfaceStateTranslations';
@@ -897,6 +900,8 @@ export const ca = {
         setShortcutInvalidMessage: 'Introduïu almenys una tecla no modificadora, opcionalment amb Mod, Ctrl, Maj o Alt.',
         resetCommandAccessibility: ({ command }: { command: string }) => `Reset ${command} shortcut`,
         commands: {
+            ...workspaceTabKeyboardTranslations,
+            ...terminalWorkspaceKeyboardTranslations,
             composerAbortConfirm: 'Confirma la interrupció',
             composerFocus: 'Enfoca el compositor',
             composerSendImmediate: 'Envia immediatament',
@@ -5361,6 +5366,8 @@ export const ca = {
     },
 
   newSession: {
+    terminalHostUnavailableTitle: "Terminal no disponible",
+    terminalHostUnavailableBody: ({ host }: { host: string }) => `Instal·la o actualitza ${host} i reinicia el seu servidor en aquesta màquina, o tria un altre terminal. Es conserva l’esborrany.`,
     folder: folderlessSessionTranslations.ca.composer,
     ...newSessionMcpTranslationExtension,
     ...acpCatalogTranslationExtension.newSession,
@@ -11546,6 +11553,8 @@ settingsSession: {
     },
 
     terminal: {
+        plaintextStorage: 'Home-managed (not end-to-end encrypted)',
+        plaintextStorageDescription: 'This Home can read Account data. The connection response is encrypted for this terminal.',
         // Used by terminal connection screens
         webBrowserRequired: 'Es requereix un navegador web',
         webBrowserRequiredDescription: 'Els enllaços de connexió de terminal només es poden obrir en un navegador web per raons de seguretat. Utilitza l\'escàner de codi QR o obre aquest enllaç en un ordinador.',
@@ -11580,12 +11589,10 @@ settingsSession: {
             selectAllAction: 'Selecciona tota la sortida del terminal',
             openLinkAction: "Obre l'enllaç seleccionat",
         },
-        dockMenuA11y: 'Acoblar terminal',
         largePasteTitle: 'Vols enganxar una entrada gran al terminal?',
         largePasteDescription: "Aquest contingut enganxat és gran i pot executar ordres al terminal. Revisa'l abans de continuar.",
         largePasteConfirm: 'Enganxa al terminal',
         settings: {
-            locationTitle: 'Ubicació del terminal incrustat',
             rendererTitle: 'Renderitzador del terminal',
             rendererAuto: 'Automàtic',
             rendererAutoDescription: 'Prefereix el renderitzador natiu quan es superin totes les comprovacions de seguretat natives i no hi hagi cap lector de pantalla actiu; canvia al WebView accessible de xterm.js mentre hi hagi un lector de pantalla actiu.',
@@ -11600,11 +11607,6 @@ settingsSession: {
             ctrlC: 'Ctrl + C',
             ctrlD: 'Ctrl + D',
             enter: 'Intro',
-        },
-        location: {
-            sidebar: 'Barra lateral',
-            details: 'Panell de detalls',
-            bottom: 'Panell inferior',
         },
         errors: {
             missingMachineTarget: 'Aquesta sessió no té un objectiu de màquina.',
@@ -12115,9 +12117,9 @@ settingsSession: {
         unknownPath: 'camí desconegut',
         previousSessionsTitle: 'Sessions anteriors (fins a les 5 més recents)',
         tmux: {
-            overrideTitle: 'Sobreescriu la configuració global de tmux',
-            overrideEnabledSubtitle: 'La configuració personalitzada de tmux s\'aplica a les noves sessions d\'aquesta màquina.',
-            overrideDisabledSubtitle: 'Les noves sessions utilitzen la configuració global de tmux.',
+            overrideTitle: "Sobreescriu el valor predeterminat del compte",
+            overrideEnabledSubtitle: "Aquesta màquina utilitza el seu propi terminal per a les sessions noves.",
+            overrideDisabledSubtitle: "Les sessions noves hereten el terminal del compte.",
             notDetectedSubtitle: 'tmux no s\'ha detectat en aquesta màquina.',
             notDetectedMessage: 'tmux no s\'ha detectat en aquesta màquina. Instal·la tmux i actualitza la detecció.',
         },
@@ -12362,11 +12364,10 @@ settingsSession: {
       },
 
     artifacts: {
+        browser: artifactsBrowserTranslations.ca,
         title: 'Artefactes',
         countSingular: '1 artefacte',
         countPlural: ({ count }: { count: number }) => `${count} artefactes`,
-        empty: 'Encara no hi ha artefactes',
-        emptyDescription: 'Crea el teu primer artefacte per desar i organitzar contingut',
         new: 'Nou artefacte',
         edit: 'Edita artefacte',
         delete: 'Elimina',
@@ -12383,10 +12384,8 @@ settingsSession: {
         bodyPlaceholder: 'Escriu aquí el contingut...',
         save: 'Desa',
         saving: 'Desant...',
-        loading: 'Carregant...',
         error: 'Error en carregar els artefactes',
-        titleLabel: 'TÍTOL',
-        bodyLabel: 'CONTINGUT',
+        bodyLabel: 'Contingut',
         emptyFieldsError: 'Si us plau, introdueix un títol o contingut',
         createError: 'No s\'ha pogut crear l\'artefacte. Si us plau, torna-ho a provar.',
     },
@@ -13056,6 +13055,8 @@ settingsSession: {
    ...automationPageTranslations.ca,
     ...settingsSessionPagesTranslations.ca,
     ...workspaceTabTranslations.ca,
+    ...terminalWorkspaceTranslations.ca,
+    ...phoneNavigationTranslations.ca,
     ...workspaceBarTranslations.ca,
    ...settingsProfilesRemoteHostsPageTranslations.ca,
    ...profilesPageTranslations.ca,

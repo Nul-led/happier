@@ -202,7 +202,8 @@ async function actionResponse(url: string, init?: RequestInit): Promise<Response
     if (pathname === '/v1/account/encryption') return Response.json({ mode: 'plain', updatedAt: 0 });
     if (pathname === '/v1/artifacts' && init?.method === 'POST') {
         const request = input as unknown as ArtifactCreateRequest;
-        const artifact = { ...request, headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
+        const artifact: Artifact = { ...request, ownerAccountId: 'account-a', access: 'owner', encryptionMode: 'plain',
+            headerVersion: 1, bodyVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 };
         boundaries.artifacts.set(request.id, artifact);
         return Response.json(artifact);
     }

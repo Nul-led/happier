@@ -58,7 +58,9 @@ import { providerCollectionTranslations } from './providerCollectionTranslations
 import { settingsSearchKeywordsTranslations } from './settingsSearchKeywordsTranslations';
 import { automationPageTranslations } from './automationPageTranslations';
 import { settingsSessionPagesTranslations } from './settingsSessionPagesTranslations';
-import { workspaceTabTranslations } from './workspaceTabTranslations';
+import { workspaceTabKeyboardTranslations, workspaceTabTranslations } from './workspaceTabTranslations';
+import { terminalWorkspaceKeyboardTranslations, terminalWorkspaceTranslations } from './terminalWorkspaceTranslations';
+import { phoneNavigationTranslations } from './phoneNavigationTranslations';
 import { workspaceBarTranslations } from './workspaceBarTranslations';
 import { settingsProfilesRemoteHostsPageTranslations } from './settingsProfilesRemoteHostsPageTranslations';
 import { profilesPageTranslations } from './profilesPageTranslations';
@@ -74,6 +76,7 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { detailPageTranslations } from './detailPageTranslations';
 import { rolesTranslations } from './rolesTranslations';
 import { boardsTranslations } from './boardsTranslations';
+import { artifactsBrowserTranslations } from './artifactsBrowserTranslations';
 import { workStatusTranslations } from './workStatusTranslations';
 import { shareSheetTranslations } from './shareSheetTranslations';
 import { surfaceStateTranslations } from './surfaceStateTranslations';
@@ -956,6 +959,8 @@ export const pt = {
         setShortcutInvalidMessage: 'Insira pelo menos uma tecla não modificadora, opcionalmente com Mod, Ctrl, Shift ou Alt.',
         resetCommandAccessibility: ({ command }: { command: string }) => `Reset ${command} shortcut`,
         commands: {
+            ...workspaceTabKeyboardTranslations,
+            ...terminalWorkspaceKeyboardTranslations,
             composerAbortConfirm: 'Confirmar interrupção',
             composerFocus: 'Focar compositor',
             composerSendImmediate: 'Enviar imediatamente',
@@ -6163,6 +6168,8 @@ export const pt = {
   },
 
   newSession: {
+    terminalHostUnavailableTitle: "Host de terminal indisponível",
+    terminalHostUnavailableBody: ({ host }: { host: string }) => `Instale ou atualize ${host} e reinicie seu servidor nesta máquina, ou escolha outro host de terminal. Seu rascunho é mantido.`,
     folder: folderlessSessionTranslations.pt.composer,
     ...newSessionMcpTranslationExtension,
     ...acpCatalogTranslationExtension.newSession,
@@ -12716,7 +12723,9 @@ settingsSession: {
             },
   },
 
-  terminal: {
+    terminal: {
+        plaintextStorage: 'Home-managed (not end-to-end encrypted)',
+        plaintextStorageDescription: 'This Home can read Account data. The connection response is encrypted for this terminal.',
     // Used by terminal connection screens
     webBrowserRequired: "Navegador web necessário",
     webBrowserRequiredDescription:
@@ -12756,12 +12765,10 @@ settingsSession: {
       selectAllAction: 'Selecionar toda a saída do terminal',
       openLinkAction: 'Abrir link selecionado',
     },
-    dockMenuA11y: "Ancorar terminal",
     largePasteTitle: "Colar uma entrada grande no terminal?",
     largePasteDescription: "Esta colagem é grande e pode executar comandos no terminal. Revise antes de continuar.",
     largePasteConfirm: "Colar no terminal",
     settings: {
-      locationTitle: "Local do terminal incorporado",
       rendererTitle: "Renderizador do terminal",
       rendererAuto: "Automático",
       rendererAutoDescription: "Prefere o renderizador nativo quando todas as verificações de segurança nativas passarem e nenhum leitor de ecrã estiver ativo; muda para a WebView acessível do xterm.js enquanto houver um leitor de ecrã ativo.",
@@ -12776,11 +12783,6 @@ settingsSession: {
       ctrlC: "Ctrl + C",
       ctrlD: "Ctrl + D",
       enter: "Enter ↵",
-    },
-    location: {
-      sidebar: "Barra lateral",
-      details: "Painel de detalhes",
-      bottom: "Painel inferior",
     },
     errors: {
       missingMachineTarget: "Esta sessão está sem um destino de máquina.",
@@ -13383,11 +13385,9 @@ settingsSession: {
     unknownPath: "caminho desconhecido",
     previousSessionsTitle: "Sessões anteriores (até as 5 mais recentes)",
     tmux: {
-      overrideTitle: "Substituir configurações globais do tmux",
-      overrideEnabledSubtitle:
-        "As configurações personalizadas do tmux se aplicam a novas sessões nesta máquina.",
-      overrideDisabledSubtitle:
-        "Novas sessões usam as configurações globais do tmux.",
+      overrideTitle: "Substituir o padrão da conta",
+      overrideEnabledSubtitle: "Esta máquina usa seu próprio host de terminal para novas sessões.",
+      overrideDisabledSubtitle: "Novas sessões herdam o host de terminal da sua conta.",
       notDetectedSubtitle: "tmux não foi detectado nesta máquina.",
       notDetectedMessage:
         "tmux não foi detectado nesta máquina. Instale o tmux e atualize a detecção.",
@@ -13649,12 +13649,10 @@ settingsSession: {
     },
 
     artifacts: {
+        browser: artifactsBrowserTranslations.pt,
     title: "Artefatos",
     countSingular: "1 artefato",
     countPlural: ({ count }: { count: number }) => `${count} artefatos`,
-    empty: "Ainda não há artefatos",
-    emptyDescription:
-      "Crie seu primeiro artefato para salvar e organizar conteúdo",
     new: "Novo artefato",
     edit: "Editar artefato",
     delete: "Excluir",
@@ -13672,10 +13670,8 @@ settingsSession: {
     bodyPlaceholder: "Digite o conteúdo aqui...",
     save: "Salvar",
     saving: "Salvando...",
-    loading: "Carregando...",
     error: "Falha ao carregar artefatos",
-    titleLabel: "TÍTULO",
-    bodyLabel: "CONTEÚDO",
+    bodyLabel: "Conteúdo",
     emptyFieldsError: "Por favor, insira um título ou conteúdo",
     createError: "Falha ao criar artefato. Por favor, tente novamente.",
   },
@@ -14416,6 +14412,8 @@ settingsSession: {
    ...automationPageTranslations.pt,
     ...settingsSessionPagesTranslations.pt,
     ...workspaceTabTranslations.pt,
+    ...terminalWorkspaceTranslations.pt,
+    ...phoneNavigationTranslations.pt,
     ...workspaceBarTranslations.pt,
    ...settingsProfilesRemoteHostsPageTranslations.pt,
    ...profilesPageTranslations.pt,

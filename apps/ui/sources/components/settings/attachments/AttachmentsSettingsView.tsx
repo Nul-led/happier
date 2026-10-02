@@ -1,7 +1,7 @@
 import React from 'react';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
-import { Modal } from '@/modal';
+import { FieldValueItem } from '@/components/ui/forms/FieldValueItem';
 import { t, type TranslationKeyNoParams } from '@/text';
 import { useSettingMutable } from '@/sync/domains/state/storage';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
@@ -51,19 +51,6 @@ const VCS_IGNORE_OPTIONS: ReadonlyArray<{
     },
 ];
 
-/** "25 MB" for a byte count on a whole binary unit, otherwise the exact byte count. */
-function formatByteSize(bytes: number): string {
-    const units = ['KB', 'MB', 'GB'] as const;
-    let value = bytes;
-    let unit: string = 'B';
-    for (const next of units) {
-        if (value < 1024 || value % 1024 !== 0) break;
-        value /= 1024;
-        unit = next;
-    }
-    return `${value.toLocaleString()} ${unit}`;
-}
-
 function normalizeWorkspaceRelativeDir(input: string): string | null {
     const trimmed = input.trim();
     if (!trimmed) return null;
@@ -89,6 +76,8 @@ export const AttachmentsSettingsView = React.memo(function AttachmentsSettingsVi
     const [vcsIgnoreStrategy, setVcsIgnoreStrategy] = useSettingMutable('attachmentsUploadsVcsIgnoreStrategy');
     const [vcsIgnoreWritesEnabled, setVcsIgnoreWritesEnabled] = useSettingMutable('attachmentsUploadsVcsIgnoreWritesEnabled');
     const [maxFileBytes, setMaxFileBytes] = useSettingMutable('attachmentsUploadsMaxFileBytes');
+    const [directoryError, setDirectoryError] = React.useState<string | null>(null);
+    const [maxFileBytesError, setMaxFileBytesError] = React.useState<string | null>(null);
 
     const effectiveUploadLocation = uploadLocation === 'os_temp' ? 'os_temp' : 'workspace';
     const effectiveIgnoreStrategy =
@@ -99,7 +88,7 @@ export const AttachmentsSettingsView = React.memo(function AttachmentsSettingsVi
 
     if (!attachmentsEnabled) {
         return (
-            <ItemList style={{ paddingTop: 0 }} presentation="page">
+            <ItemList style={{ paddingTop: 0 }}>
                 <SettingsPageHeader description={t('settingsAttachments.pageDescription')} />
                 <AttentionBanner
                     testID="settings-attachments-disabled"
@@ -111,23 +100,8 @@ export const AttachmentsSettingsView = React.memo(function AttachmentsSettingsVi
         );
     }
 
-    const promptUploadsDirectory = async () => {
-        const raw = await Modal.prompt(
-            t('settingsAttachments.workspaceDirectory.uploadsDirectory.promptTitle'),
-            t('settingsAttachments.workspaceDirectory.uploadsDirectory.promptMessage'),
-            { placeholder: effectiveWorkspaceRelativeDir },
-        );
-        if (raw === null) return;
-        const normalized = normalizeWorkspaceRelativeDir(raw);
-        if (!normalized) {
-            Modal.alert(t('settingsAttachments.workspaceDirectory.uploadsDirectory.invalidDirectoryTitle'), t('settingsAttachments.workspaceDirectory.uploadsDirectory.invalidDirectoryMessage'));
-            return;
-        }
-        setWorkspaceRelativeDir(normalized);
-    };
-
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settingsAttachments.pageDescription')} />
             <ItemGroup
                 title={t('settingsAttachments.uploadLocation.title')}
@@ -148,16 +122,31 @@ export const AttachmentsSettingsView = React.memo(function AttachmentsSettingsVi
                         }))}
                     />
                 </SettingAnchor>
-                <SettingRow
-                    testID="settings-attachments-uploads-directory"
-                    setting={ATTACHMENTS_SETTINGS.settings.uploadsDirectory}
-                    // The directory applies only to workspace uploads; it stays editable so it is ready.
-                    subtitle={effectiveUploadLocation === 'workspace'
-                        ? effectiveWorkspaceRelativeDir
-                        : `${effectiveWorkspaceRelativeDir} · ${t('settingsAttachments.workspaceDirectory.usedForWorkspace')}`}
-                    subtitleLines={0}
-                    onPress={() => { void promptUploadsDirectory(); }}
-                />
+                <SettingAnchor setting={ATTACHMENTS_SETTINGS.settings.uploadsDirectory}>
+                    <FieldValueItem
+                        testID="settings-attachments-uploads-directory"
+                        fieldTestID="settings-attachments-uploads-directory-input"
+                        title={t(ATTACHMENTS_SETTINGS.settings.uploadsDirectory.titleKey)}
+                        // The directory stays editable while uploads use the temporary folder.
+                        subtitle={effectiveUploadLocation === 'workspace'
+                            ? t('settingsAttachments.workspaceDirectory.uploadsDirectory.promptMessage')
+                            : t('settingsAttachments.workspaceDirectory.usedForWorkspace')}
+                        subtitleLines={0}
+                        value={effectiveWorkspaceRelativeDir}
+                        monospace
+                        error={directoryError}
+                        onDraftChange={() => setDirectoryError(null)}
+                        onCommit={(draft) => {
+                            const normalized = normalizeWorkspaceRelativeDir(draft);
+                            if (!normalized) {
+                                setDirectoryError(t('settingsAttachments.workspaceDirectory.uploadsDirectory.invalidDirectoryMessage'));
+                                return;
+                            }
+                            setWorkspaceRelativeDir(normalized);
+                            return normalized;
+                        }}
+                    />
+                </SettingAnchor>
             </ItemGroup>
 
             <ItemGroup
@@ -193,25 +182,27 @@ export const AttachmentsSettingsView = React.memo(function AttachmentsSettingsVi
             </ItemGroup>
 
             <ItemGroup title={t('settingsAttachments.limits.title')} description={t('settingsAttachments.limits.footer')}>
-                <SettingRow
-                    testID="settings-attachments-max-size"
-                    setting={ATTACHMENTS_SETTINGS.settings.maxAttachmentSize}
-                    subtitle={typeof maxFileBytes === 'number' ? formatByteSize(maxFileBytes) : t('common.default')}
-                    onPress={async () => {
-                        const raw = await Modal.prompt(
-                            t('settingsAttachments.limits.maxAttachmentSize.promptTitle'),
-                            t('settingsAttachments.limits.maxAttachmentSize.promptMessage'),
-                            { placeholder: typeof maxFileBytes === 'number' ? String(maxFileBytes) : '26214400' },
-                        );
-                        if (raw === null) return;
-                        const parsed = parsePositiveInt(raw, { min: 1024, max: 1024 * 1024 * 1024 });
-                        if (parsed == null) {
-                            Modal.alert(t('settingsAttachments.limits.invalidValueTitle'), t('settingsAttachments.limits.maxAttachmentSize.invalidValueMessage'));
-                            return;
-                        }
-                        setMaxFileBytes(parsed);
-                    }}
-                />
+                <SettingAnchor setting={ATTACHMENTS_SETTINGS.settings.maxAttachmentSize}>
+                    <FieldValueItem
+                        testID="settings-attachments-max-size"
+                        fieldTestID="settings-attachments-max-size-input"
+                        title={t(ATTACHMENTS_SETTINGS.settings.maxAttachmentSize.titleKey)}
+                        subtitle={t('settingsAttachments.limits.maxAttachmentSize.promptMessage')}
+                        subtitleLines={0}
+                        value={typeof maxFileBytes === 'number' ? String(maxFileBytes) : '26214400'}
+                        error={maxFileBytesError}
+                        onDraftChange={() => setMaxFileBytesError(null)}
+                        onCommit={(draft) => {
+                            const parsed = parsePositiveInt(draft, { min: 1024, max: 1024 * 1024 * 1024 });
+                            if (parsed == null) {
+                                setMaxFileBytesError(t('settingsAttachments.limits.maxAttachmentSize.invalidValueMessage'));
+                                return;
+                            }
+                            setMaxFileBytes(parsed);
+                            return String(parsed);
+                        }}
+                    />
+                </SettingAnchor>
             </ItemGroup>
         </ItemList>
     );

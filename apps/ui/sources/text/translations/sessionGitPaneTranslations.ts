@@ -36,6 +36,21 @@ const en = {
         selection: ({ count }: { count: number }) => (count === 1 ? '1 file' : `${count} files`),
     },
     flow: {
+        undo: {
+            action: 'Undo last commit',
+            description: 'Keep its changes staged for the next commit',
+            running: 'Undoing the last commit…',
+            done: 'Undid the last commit',
+            staged: 'Your changes are still staged',
+            failed: 'The commit could not be undone',
+        },
+        lease: {
+            push: 'Force push with lease…',
+            description: 'Replace the observed remote history',
+            fetchFirst: 'Fetch first to observe the remote branch',
+            confirmTitle: 'Replace the remote branch?',
+            confirmBody: ({ target, oid }: { target: string; oid: string }) => `Replace ${target} with your local history only if it still points to ${oid}. Other people’s commits may be removed from that branch. If it has changed, Git refuses the push.`,
+        },
         choices: {
             dirtyTitle: ({ count, formatted }: { count: number; formatted: string }) => (count === 1 ? `You have 1 uncommitted change` : `You have ${formatted} uncommitted changes`),
             dirtyBody: 'Pulling could touch them. Keep them aside while pulling (they come back right after), or let Git pull only if nothing overlaps.',
@@ -226,6 +241,21 @@ const ca: typeof en = {
         selection: ({ count }) => (count === 1 ? '1 fitxer' : `${count} fitxers`),
     },
     flow: {
+        undo: {
+            action: 'Undo last commit',
+            description: 'Keep its changes staged for the next commit',
+            running: 'Undoing the last commit…',
+            done: 'Undid the last commit',
+            staged: 'Your changes are still staged',
+            failed: 'The commit could not be undone',
+        },
+        lease: {
+            push: 'Force push with lease…',
+            description: 'Replace the observed remote history',
+            fetchFirst: 'Fetch first to observe the remote branch',
+            confirmTitle: 'Replace the remote branch?',
+            confirmBody: ({ target, oid }: { target: string; oid: string }) => `Replace ${target} with your local history only if it still points to ${oid}. Other people’s commits may be removed from that branch. If it has changed, Git refuses the push.`,
+        },
         choices: {
             dirtyTitle: ({ count, formatted }) => (count === 1 ? `Tens 1 canvi sense confirmar` : `Tens ${formatted} canvis sense confirmar`),
             dirtyBody: 'Baixar-los els podria tocar. Desa’ls a part mentre baixes (tornen de seguida) o deixa que Git baixi només si res no se solapa.',
@@ -413,6 +443,21 @@ const de: typeof en = {
         selection: ({ count }) => (count === 1 ? '1 Datei' : `${count} Dateien`),
     },
     flow: {
+        undo: {
+            action: 'Undo last commit',
+            description: 'Keep its changes staged for the next commit',
+            running: 'Undoing the last commit…',
+            done: 'Undid the last commit',
+            staged: 'Your changes are still staged',
+            failed: 'The commit could not be undone',
+        },
+        lease: {
+            push: 'Force push with lease…',
+            description: 'Replace the observed remote history',
+            fetchFirst: 'Fetch first to observe the remote branch',
+            confirmTitle: 'Replace the remote branch?',
+            confirmBody: ({ target, oid }: { target: string; oid: string }) => `Replace ${target} with your local history only if it still points to ${oid}. Other people’s commits may be removed from that branch. If it has changed, Git refuses the push.`,
+        },
         choices: {
             dirtyTitle: ({ count, formatted }) => (count === 1 ? `Du hast 1 nicht committete Änderung` : `Du hast ${formatted} nicht committete Änderungen`),
             dirtyBody: 'Ein Pull könnte sie berühren. Lege sie während des Pulls beiseite (sie kommen gleich zurück) oder lass Git nur pullen, wenn sich nichts überschneidet.',
@@ -600,6 +645,21 @@ const es: typeof en = {
         selection: ({ count }) => (count === 1 ? '1 archivo' : `${count} archivos`),
     },
     flow: {
+        undo: {
+            action: 'Undo last commit',
+            description: 'Keep its changes staged for the next commit',
+            running: 'Undoing the last commit…',
+            done: 'Undid the last commit',
+            staged: 'Your changes are still staged',
+            failed: 'The commit could not be undone',
+        },
+        lease: {
+            push: 'Force push with lease…',
+            description: 'Replace the observed remote history',
+            fetchFirst: 'Fetch first to observe the remote branch',
+            confirmTitle: 'Replace the remote branch?',
+            confirmBody: ({ target, oid }: { target: string; oid: string }) => `Replace ${target} with your local history only if it still points to ${oid}. Other people’s commits may be removed from that branch. If it has changed, Git refuses the push.`,
+        },
         choices: {
             dirtyTitle: ({ count, formatted }) => (count === 1 ? `Tienes 1 cambio sin confirmar` : `Tienes ${formatted} cambios sin confirmar`),
             dirtyBody: 'Bajar podría tocarlos. Guárdalos aparte mientras bajas (vuelven enseguida) o deja que Git baje solo si nada se solapa.',
@@ -787,6 +847,21 @@ const fr: typeof en = {
         selection: ({ count }) => (count === 1 ? '1 fichier' : `${count} fichiers`),
     },
     flow: {
+        undo: {
+            action: 'Undo last commit',
+            description: 'Keep its changes staged for the next commit',
+            running: 'Undoing the last commit…',
+            done: 'Undid the last commit',
+            staged: 'Your changes are still staged',
+            failed: 'The commit could not be undone',
+        },
+        lease: {
+            push: 'Force push with lease…',
+            description: 'Replace the observed remote history',
+            fetchFirst: 'Fetch first to observe the remote branch',
+            confirmTitle: 'Replace the remote branch?',
+            confirmBody: ({ target, oid }: { target: string; oid: string }) => `Replace ${target} with your local history only if it still points to ${oid}. Other people’s commits may be removed from that branch. If it has changed, Git refuses the push.`,
+        },
         choices: {
             dirtyTitle: ({ count, formatted }) => (count === 1 ? `Vous avez 1 modification non commitée` : `Vous avez ${formatted} modifications non commitées`),
             dirtyBody: 'Récupérer pourrait les toucher. Mettez-les de côté pendant la récupération (elles reviennent juste après) ou laissez Git récupérer seulement si rien ne se chevauche.',
@@ -974,6 +1049,21 @@ const it: typeof en = {
         selection: ({ count }) => (count === 1 ? '1 file' : `${count} file`),
     },
     flow: {
+        undo: {
+            action: 'Undo last commit',
+            description: 'Keep its changes staged for the next commit',
+            running: 'Undoing the last commit…',
+            done: 'Undid the last commit',
+            staged: 'Your changes are still staged',
+            failed: 'The commit could not be undone',
+        },
+        lease: {
+            push: 'Force push with lease…',
+            description: 'Replace the observed remote history',
+            fetchFirst: 'Fetch first to observe the remote branch',
+            confirmTitle: 'Replace the remote branch?',
+            confirmBody: ({ target, oid }: { target: string; oid: string }) => `Replace ${target} with your local history only if it still points to ${oid}. Other people’s commits may be removed from that branch. If it has changed, Git refuses the push.`,
+        },
         choices: {
             dirtyTitle: ({ count, formatted }) => (count === 1 ? `Hai 1 modifica non nel commit` : `Hai ${formatted} modifiche non nel commit`),
             dirtyBody: 'Il pull potrebbe toccarle. Mettile da parte durante il pull (tornano subito dopo) o lascia che Git faccia il pull solo se nulla si sovrappone.',
@@ -1161,6 +1251,21 @@ const ja: typeof en = {
         selection: ({ count }) => `${count} ファイル`,
     },
     flow: {
+        undo: {
+            action: 'Undo last commit',
+            description: 'Keep its changes staged for the next commit',
+            running: 'Undoing the last commit…',
+            done: 'Undid the last commit',
+            staged: 'Your changes are still staged',
+            failed: 'The commit could not be undone',
+        },
+        lease: {
+            push: 'Force push with lease…',
+            description: 'Replace the observed remote history',
+            fetchFirst: 'Fetch first to observe the remote branch',
+            confirmTitle: 'Replace the remote branch?',
+            confirmBody: ({ target, oid }: { target: string; oid: string }) => `Replace ${target} with your local history only if it still points to ${oid}. Other people’s commits may be removed from that branch. If it has changed, Git refuses the push.`,
+        },
         choices: {
             dirtyTitle: ({ count, formatted }) => (count === 1 ? `未コミットの変更が 1 件あります` : `未コミットの変更が ${formatted} 件あります`),
             dirtyBody: 'プルで変更に影響する可能性があります。プルの間は退避し（直後に戻ります）、または重なりがない場合のみ Git にプルさせてください。',
@@ -1348,6 +1453,21 @@ const pl: typeof en = {
         selection: ({ count }) => `Pliki: ${count}`,
     },
     flow: {
+        undo: {
+            action: 'Undo last commit',
+            description: 'Keep its changes staged for the next commit',
+            running: 'Undoing the last commit…',
+            done: 'Undid the last commit',
+            staged: 'Your changes are still staged',
+            failed: 'The commit could not be undone',
+        },
+        lease: {
+            push: 'Force push with lease…',
+            description: 'Replace the observed remote history',
+            fetchFirst: 'Fetch first to observe the remote branch',
+            confirmTitle: 'Replace the remote branch?',
+            confirmBody: ({ target, oid }: { target: string; oid: string }) => `Replace ${target} with your local history only if it still points to ${oid}. Other people’s commits may be removed from that branch. If it has changed, Git refuses the push.`,
+        },
         choices: {
             dirtyTitle: ({ count, formatted }) => (count === 1 ? `Masz 1 niezatwierdzoną zmianę` : `Niezatwierdzone zmiany: ${formatted}`),
             dirtyBody: 'Ściąganie może je naruszyć. Odłóż je na czas ściągania (wrócą zaraz potem) albo pozwól Git ściągnąć tylko, jeśli nic się nie nakłada.',
@@ -1535,6 +1655,21 @@ const pt: typeof en = {
         selection: ({ count }) => (count === 1 ? '1 ficheiro' : `${count} ficheiros`),
     },
     flow: {
+        undo: {
+            action: 'Undo last commit',
+            description: 'Keep its changes staged for the next commit',
+            running: 'Undoing the last commit…',
+            done: 'Undid the last commit',
+            staged: 'Your changes are still staged',
+            failed: 'The commit could not be undone',
+        },
+        lease: {
+            push: 'Force push with lease…',
+            description: 'Replace the observed remote history',
+            fetchFirst: 'Fetch first to observe the remote branch',
+            confirmTitle: 'Replace the remote branch?',
+            confirmBody: ({ target, oid }: { target: string; oid: string }) => `Replace ${target} with your local history only if it still points to ${oid}. Other people’s commits may be removed from that branch. If it has changed, Git refuses the push.`,
+        },
         choices: {
             dirtyTitle: ({ count, formatted }) => (count === 1 ? `Você tem 1 alteração sem commit` : `Você tem ${formatted} alterações sem commit`),
             dirtyBody: 'Puxar pode tocá-las. Guarde-as à parte enquanto puxa (elas voltam logo depois) ou deixe o Git puxar só se nada se sobrepuser.',
@@ -1722,6 +1857,21 @@ const ru: typeof en = {
         selection: ({ count }) => `Файлов: ${count}`,
     },
     flow: {
+        undo: {
+            action: 'Undo last commit',
+            description: 'Keep its changes staged for the next commit',
+            running: 'Undoing the last commit…',
+            done: 'Undid the last commit',
+            staged: 'Your changes are still staged',
+            failed: 'The commit could not be undone',
+        },
+        lease: {
+            push: 'Force push with lease…',
+            description: 'Replace the observed remote history',
+            fetchFirst: 'Fetch first to observe the remote branch',
+            confirmTitle: 'Replace the remote branch?',
+            confirmBody: ({ target, oid }: { target: string; oid: string }) => `Replace ${target} with your local history only if it still points to ${oid}. Other people’s commits may be removed from that branch. If it has changed, Git refuses the push.`,
+        },
         choices: {
             dirtyTitle: ({ count, formatted }) => (count === 1 ? `У вас 1 изменение без коммита` : `Изменений без коммита: ${formatted}`),
             dirtyBody: 'Загрузка может их затронуть. Отложите их на время загрузки (они сразу вернутся) или позвольте Git загрузить, только если ничего не пересекается.',
@@ -1909,6 +2059,21 @@ const zhHans: typeof en = {
         selection: ({ count }) => `${count} 个文件`,
     },
     flow: {
+        undo: {
+            action: 'Undo last commit',
+            description: 'Keep its changes staged for the next commit',
+            running: 'Undoing the last commit…',
+            done: 'Undid the last commit',
+            staged: 'Your changes are still staged',
+            failed: 'The commit could not be undone',
+        },
+        lease: {
+            push: 'Force push with lease…',
+            description: 'Replace the observed remote history',
+            fetchFirst: 'Fetch first to observe the remote branch',
+            confirmTitle: 'Replace the remote branch?',
+            confirmBody: ({ target, oid }: { target: string; oid: string }) => `Replace ${target} with your local history only if it still points to ${oid}. Other people’s commits may be removed from that branch. If it has changed, Git refuses the push.`,
+        },
         choices: {
             dirtyTitle: ({ count, formatted }) => (count === 1 ? `你有 1 项未提交的更改` : `你有 ${formatted} 项未提交的更改`),
             dirtyBody: '拉取可能会影响它们。拉取时先暂存（之后马上恢复），或仅在没有重叠时让 Git 拉取。',
@@ -2096,6 +2261,21 @@ const zhHant: typeof en = {
         selection: ({ count }) => `${count} 個檔案`,
     },
     flow: {
+        undo: {
+            action: 'Undo last commit',
+            description: 'Keep its changes staged for the next commit',
+            running: 'Undoing the last commit…',
+            done: 'Undid the last commit',
+            staged: 'Your changes are still staged',
+            failed: 'The commit could not be undone',
+        },
+        lease: {
+            push: 'Force push with lease…',
+            description: 'Replace the observed remote history',
+            fetchFirst: 'Fetch first to observe the remote branch',
+            confirmTitle: 'Replace the remote branch?',
+            confirmBody: ({ target, oid }: { target: string; oid: string }) => `Replace ${target} with your local history only if it still points to ${oid}. Other people’s commits may be removed from that branch. If it has changed, Git refuses the push.`,
+        },
         choices: {
             dirtyTitle: ({ count, formatted }) => (count === 1 ? `你有 1 項未提交的變更` : `你有 ${formatted} 項未提交的變更`),
             dirtyBody: '拉取可能會影響它們。拉取時先暫存（之後馬上恢復），或僅在沒有重疊時讓 Git 拉取。',

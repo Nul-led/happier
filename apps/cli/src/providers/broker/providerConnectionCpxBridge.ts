@@ -1,7 +1,9 @@
 import { Buffer } from 'node:buffer';
 
 import type { ManagedServiceRequest, ManagedServiceResponse } from '@happier-dev/plugin-sdk/managed-services';
-import { PROVIDER_ENDPOINT_SAFETY_LIMITS } from '@happier-dev/protocol';
+import { PROVIDER_ENDPOINT_SAFETY_LIMITS, type ProviderBrokerApplicationBindingV1, type ProviderWireProtocol } from '@happier-dev/protocol';
+import type { ProviderContributionRegistryView } from '@/providers/registry';
+import { projectManagedProviderBrokerApplication } from './applicationProjection';
 
 import type { ManagedProviderExplicitStartCustody } from '@/providers/connections/publicManagedRuntimeStart';
 import type {
@@ -11,6 +13,30 @@ import type {
 import { acquireBrokerSourceOperation } from './brokerSourceOperationAcquisition';
 
 const SOURCE_CREDENTIAL_HEADER = 'x-happier-provider-source-credential';
+
+/** This transport implements CLIProxyAPI's private source-envelope contract.
+ * Its target is fixed; endpoint and protocol admission remain registry-owned. */
+export function projectProviderConnectionBrokerApplication(input: Readonly<{
+  registry: ProviderContributionRegistryView;
+  agentTargetKey: string;
+  protocol: ProviderWireProtocol;
+  expectedApplication?: ProviderBrokerApplicationBindingV1;
+}>): ProviderBrokerApplicationBindingV1 | null {
+  const identity = { pluginId: 'happier.provider.cliproxyapi', localId: 'cliproxyapi' };
+  if (input.expectedApplication && (
+    input.expectedApplication.implementationIdentity.pluginId !== identity.pluginId
+    || input.expectedApplication.implementationIdentity.localId !== identity.localId
+    || input.expectedApplication.agentTargetKey !== input.agentTargetKey
+    || input.expectedApplication.protocol !== input.protocol
+  )) return null;
+  return projectManagedProviderBrokerApplication({
+    registry: input.registry,
+    implementationIdentity: identity,
+    agentTargetKey: input.agentTargetKey,
+    protocol: input.protocol,
+    ...(input.expectedApplication ? { endpointTemplateId: input.expectedApplication.endpointTemplateId } : {}),
+  });
+}
 const SOURCE_DESCRIPTOR_HEADER = 'x-happier-provider-source';
 const PRIVATE_REQUEST_HEADERS = new Set([
   'authorization',

@@ -36,11 +36,11 @@ function WorkflowRunComposerModal(
 }
 
 export function useWorkflowRunComposerModal(params: Readonly<{
-    /** The caller's explicit intent to collect declared inputs. */
+    /** The caller's explicit intent to review and start this workflow. */
     open: boolean;
     /**
-     * Sheet props, or `null` while the definition they describe is unread. A
-     * null value closes the sheet rather than presenting an empty form.
+     * Composer props, or `null` while the definition they describe is unread.
+     * A null value closes the presentation rather than showing an empty form.
      */
     props: WorkflowRunComposerModalProps | null;
     testID?: string;
@@ -51,7 +51,7 @@ export function useWorkflowRunComposerModal(params: Readonly<{
         open: params.open && params.anchorRef === undefined,
         component: WorkflowRunComposerModal,
         props: params.props,
-        title: t('workflows.inputs.runSheetTitle'),
+        title: params.props?.workflowName ?? t('workflows.start.workflow'),
         testID: params.testID ?? 'workflow-run-inputs-modal',
         ...(params.props === null ? {} : { onRequestClose: params.props.onCancel }),
     });

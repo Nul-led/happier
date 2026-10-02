@@ -169,7 +169,7 @@ export const PushNotificationTroubleshootingView = React.memo(function PushNotif
     });
 
     return (
-        <ItemList testID="settings-notifications-push-troubleshooting" presentation="page">
+        <ItemList testID="settings-notifications-push-troubleshooting">
             <SettingsPageHeader description={t('settingsNotifications.pushTroubleshooting.pageDescription')} />
             <ItemGroup
                 title={t('settingsNotifications.pushTroubleshooting.status.title')}

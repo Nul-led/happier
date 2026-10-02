@@ -132,7 +132,7 @@ export const HomeHub = React.memo(function HomeHub() {
         // A Home that does not answer turns this into "Can't reach {Home}" with Retry, not an endless wait.
         return (
             <HomeReachabilityGate variant="pane">
-                <ItemList presentation="page" testID="home-hub.loading">{null}</ItemList>
+                <ItemList testID="home-hub.loading">{null}</ItemList>
             </HomeReachabilityGate>
         );
     }
@@ -145,7 +145,6 @@ export const HomeHub = React.memo(function HomeHub() {
     return (
         <ItemList
             ref={listRef}
-            presentation="page"
             testID="home-hub"
             onScroll={tracker.onScroll}
             onLayout={tracker.onLayout}

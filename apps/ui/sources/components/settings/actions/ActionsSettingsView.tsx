@@ -230,7 +230,7 @@ export const ActionsSettingsView = React.memo(function ActionsSettingsView() {
     }, [compactLayout, handleActionEnabledChange, openActionDetails, settings, styles.actionStatusSubtitle]);
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader
                 description={t('settings.actionsSubtitle')}
                 actions={(

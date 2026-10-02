@@ -570,7 +570,7 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
         />
     );
     const conditionPage = (condition: React.ReactNode) => (
-        <ItemList presentation="page">
+        <ItemList>
             {draftHeader()}
             {condition}
         </ItemList>
@@ -671,7 +671,7 @@ export const TeamCreateScreen = React.memo(function TeamCreateScreen(props: Read
         : eligibility.refresh;
 
     return (
-        <ItemList keyboardAware presentation="page">
+        <ItemList keyboardAware>
             {draftHeader({
                 details: error && committedTeam === null ? (
                     <Text

@@ -58,6 +58,7 @@ export type UseSimulatorRelayIngestionInput = Readonly<{
     streamId: string;
     streamFamily: string;
     sourceId?: string;
+    sourceOccurrenceId?: string;
     caps: MachineLiveStreamCapsV1;
     sourceCodecs: readonly MachineLiveStreamCodecIdV1[];
     viewerCapabilities?: LiveStreamViewerCapabilities;
@@ -76,20 +77,24 @@ export type UseSimulatorRelayIngestionResult = Readonly<{
 const EMPTY_PLAYER_STATES: Readonly<Record<string, SimulatorPreviewStreamState | undefined>> = {};
 
 function createStreamIdentityKey(input: Readonly<{
+    serverId?: string | null;
     simulatorId: string;
     sourceMachineId: string;
     targetMachineId: string;
     streamId: string;
     streamFamily: string;
     sourceId?: string;
+    sourceOccurrenceId?: string;
 }>): string {
     return [
+        input.serverId ?? '',
         input.simulatorId,
         input.streamId,
         input.sourceMachineId,
         input.targetMachineId,
         input.streamFamily,
         input.sourceId ?? '',
+        input.sourceOccurrenceId ?? '',
     ].join('\u0000');
 }
 
@@ -142,6 +147,7 @@ export function useSimulatorRelayIngestion(
         streamId,
         streamFamily,
         sourceId,
+        sourceOccurrenceId,
     } = input;
 
     React.useEffect(() => {
@@ -155,12 +161,14 @@ export function useSimulatorRelayIngestion(
         };
 
         const streamIdentityKey = createStreamIdentityKey({
+            serverId,
             simulatorId,
             sourceMachineId,
             targetMachineId,
             streamId,
             streamFamily,
             sourceId,
+            sourceOccurrenceId,
         });
         const openEvent: SimulatorRelayIngestionEvent = {
             type: 'open',
@@ -199,6 +207,7 @@ export function useSimulatorRelayIngestion(
         const clientInput: MachineLiveStreamRelayClientInput = {
             serverId, sourceMachineId, targetMachineId, streamId, streamFamily,
             ...(sourceId ? { sourceId } : {}),
+            ...(sourceOccurrenceId ? { sourceOccurrenceId } : {}),
             ...(viewerSocketId ? { viewerSocketId } : {}),
             caps: latestRef.current.caps,
             codecId: codec.codecId,
@@ -304,13 +313,16 @@ export function useSimulatorRelayIngestion(
             unsubscribe();
             stop();
         };
-    }, [enabled, transport, serverId, simulatorId, sourceMachineId, targetMachineId, streamId, streamFamily, sourceId]);
+    }, [enabled, transport, serverId, simulatorId, sourceMachineId, targetMachineId, streamId, streamFamily, sourceId, sourceOccurrenceId]);
 
     const onFrameDecoded = React.useCallback(() => dispatch({ type: 'frame_decoded', streamId }), [streamId]);
+    const streamIdentityKey = createStreamIdentityKey({ serverId, simulatorId, sourceMachineId, targetMachineId, streamId, streamFamily, sourceId, sourceOccurrenceId });
     const playerStatesBySimulatorId = React.useMemo<UseSimulatorRelayIngestionResult['playerStatesBySimulatorId']>(() => {
-        if (!enabled) return EMPTY_PLAYER_STATES;
+        // A suspended subscriber retains its exact stream's last frame. Never
+        // project that frame under a different source while the surface is hidden.
+        if (openedStreamIdentityKeyRef.current !== streamIdentityKey) return EMPTY_PLAYER_STATES;
         return { [simulatorId]: { ...toSimulatorPreviewStreamState(state), onFrameDecoded } };
-    }, [enabled, simulatorId, state, onFrameDecoded]);
+    }, [streamIdentityKey, simulatorId, state, onFrameDecoded]);
 
     return React.useMemo(() => ({ playerStatesBySimulatorId }), [playerStatesBySimulatorId]);
 }

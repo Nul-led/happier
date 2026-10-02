@@ -23,12 +23,14 @@ import { resolvePreferredMachineId } from '@/components/settings/pickers/resolve
 import { useNewSessionPreflightModelsState } from '@/components/sessions/new/hooks/screenModel/useNewSessionPreflightModelsState';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Text } from '@/components/ui/text/Text';
-import { Modal } from '@/modal';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { FieldItem } from '@/components/ui/forms/FieldItem';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { useSetting } from '@/sync/domains/state/storage';
 import { useAllMachines } from '@/sync/store/hooks';
 import { t } from '@/text';
-import { fireAndForget } from '@/utils/system/fireAndForget';
 import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
 import { Icon } from '@/components/ui/icons/Icon';
 
@@ -62,6 +64,7 @@ export function LlmTaskRunnerConfigV1BackendModelPicker(props: Readonly<{
   const machines = useAllMachines();
   const recentMachinePaths = useAuthoringMemoryField('recentMachinePaths');
   const [openMenu, setOpenMenu] = React.useState<null | 'backend' | 'model'>(null);
+  const [customModelDraft, setCustomModelDraft] = React.useState<string | null>(null);
 
   const modelId = normalizeNonEmptyString(props.value?.modelId) ?? 'default';
   const preflightMachineId = React.useMemo(() => {
@@ -157,6 +160,21 @@ export function LlmTaskRunnerConfigV1BackendModelPicker(props: Readonly<{
     return opt?.title ?? trimmed;
   }, [modelId, selectableModelMenuItems]);
 
+  // A different backend/model retires an unfinished custom id instead of applying it to another agent.
+  const selectedBackendKey = selectedBackendEntry?.backendTargetKey ?? null;
+  React.useEffect(() => setCustomModelDraft(null), [selectedBackendKey, props.value?.modelId]);
+  const customModelTestID = `${props.modelTestID ?? 'llm-task-runner-model'}.custom`;
+  const saveCustomModel = () => {
+    if (customModelDraft === null || !selectedBackendEntry) return;
+    props.onChange({
+      v: 1,
+      backendTarget: convertBackendTargetRefV2ToV1(resolveTaskRunnerBackendTarget(selectedBackendEntry)),
+      modelId: customModelDraft.trim() || 'default',
+      permissionMode: 'no_tools',
+    });
+    setCustomModelDraft(null);
+  };
+
   // Without labels the two selects are rows of the caller's section: no wrapper, a divider between them.
   const Wrapper = showLabels ? LabelledPickerStack : React.Fragment;
   return (
@@ -246,21 +264,7 @@ export function LlmTaskRunnerConfigV1BackendModelPicker(props: Readonly<{
           }
           if (id === '__custom__') {
             setOpenMenu(null);
-            fireAndForget((async () => {
-              const raw = await Modal.prompt(
-                t('settingsSession.replayResume.summaryRunner.modelTitle'),
-                t('settingsSession.replayResume.summaryRunner.modelPlaceholder'),
-                { placeholder: modelId || 'default' },
-              );
-              if (raw === null) return;
-              const nextModelId = String(raw).trim();
-              props.onChange({
-                v: 1,
-                backendTarget: convertBackendTargetRefV2ToV1(resolveTaskRunnerBackendTarget(selectedBackendEntry)),
-                modelId: nextModelId || 'default',
-                permissionMode: 'no_tools',
-              });
-            })(), { tag: 'LlmTaskRunnerConfigV1BackendModelPicker.prompt.modelId' });
+            setCustomModelDraft(modelId);
             return;
           }
 
@@ -275,6 +279,27 @@ export function LlmTaskRunnerConfigV1BackendModelPicker(props: Readonly<{
           setOpenMenu(null);
         }}
       />
+      {customModelDraft !== null ? (
+        <>
+          <FieldItem label={t('settingsSession.replayResume.summaryRunner.customTitle')}>
+            <FieldTextInput
+              testID={customModelTestID}
+              accessibilityLabel={t('settingsSession.replayResume.summaryRunner.modelTitle')}
+              placeholder={t('settingsSession.replayResume.summaryRunner.modelPlaceholder')}
+              value={customModelDraft}
+              onChangeText={setCustomModelDraft}
+              onSubmitEditing={saveCustomModel}
+              autoFocus
+            />
+          </FieldItem>
+          <SectionContentRow>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
+              <RoundButton testID={`${customModelTestID}.cancel`} size="small" display="secondary" title={t('common.cancel')} onPress={() => setCustomModelDraft(null)} />
+              <RoundButton testID={`${customModelTestID}.save`} size="small" title={t('common.save')} onPress={saveCustomModel} />
+            </View>
+          </SectionContentRow>
+        </>
+      ) : null}
       </Wrapper>
     </>
   );

@@ -4,6 +4,7 @@ import type { TeamCredentialResourceSummaryV1 } from '@happier-dev/protocol/team
 import type { ManagedProviderExplicitStartCustody } from '@/providers/connections/publicManagedRuntimeStart';
 import type { ConnectedAccountPurposeBindingOwner } from '@/daemon/connectedServices/purposeBindings/ConnectedAccountPurposeBindingOwner';
 import { createConnectedServicesBrokerSourceOpen } from './connectedServicesSource';
+import { createBrokerProviderRegistry } from './providerBroker.testkit';
 
 const source = Object.freeze({
   v: 1 as const,
@@ -103,6 +104,31 @@ function bindingSelectionResolver() {
 }
 
 describe('Connected Services Team credential broker source', () => {
+  it('refuses an excluded managed Provider before selecting credentials or acquiring custody', async () => {
+    const readResource = vi.fn(async () => resource());
+    const resolveBindingIntentSelection = bindingSelectionResolver();
+    const acquire = vi.fn(async () => ({
+      access: { endpointUrl: () => 'http://127.0.0.1:43120/v1', request: vi.fn() },
+      isCurrent: () => true,
+      cleanup: async () => {},
+    }));
+    const open = createConnectedServicesBrokerSourceOpen({
+      readResource,
+      resolveBindingIntentSelection,
+      withRegistry: async (read) => await read({ providersByContributionKey: new Map() }),
+      custody: {
+        acquire,
+        retire: async () => {},
+        retireExternalApiKey: async () => {},
+        revalidateRetainedClaims: async () => {},
+        retireAll: async () => {},
+      },
+    });
+    expect(await open(request())).toBeNull();
+    expect(resolveBindingIntentSelection).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+  });
+
   it('reuses the CLIProxyAPI purpose owner and exact managed-runtime custody claim', async () => {
     const readResource = vi.fn(async () => resource());
     const resolveBindingIntentSelection = bindingSelectionResolver();
@@ -122,6 +148,7 @@ describe('Connected Services Team credential broker source', () => {
       retireAll: vi.fn(async () => 0),
     });
     const open = createConnectedServicesBrokerSourceOpen({
+      withRegistry: async (read) => await read(createBrokerProviderRegistry()),
       readResource,
       resolveBindingIntentSelection,
       custody,
@@ -167,6 +194,7 @@ describe('Connected Services Team credential broker source', () => {
       retireAll: vi.fn(async () => 0),
     });
     const open = createConnectedServicesBrokerSourceOpen({
+      withRegistry: async (read) => await read(createBrokerProviderRegistry()),
       readResource,
       resolveBindingIntentSelection: bindingSelectionResolver(),
       custody,
@@ -175,7 +203,9 @@ describe('Connected Services Team credential broker source', () => {
     const opened = await open(request());
     expect(opened).not.toBeNull();
     readResource.mockRejectedValueOnce(new Error('Home unreachable'));
-    await expect(opened!.sourceCurrentness.isCurrent()).rejects.toThrow('Home unreachable');
+    // The shared operation owner denies an uncertain read without retiring custody;
+    // the next authoritative read can recover the same operation.
+    await expect(opened!.sourceCurrentness.isCurrent()).resolves.toBe(false);
     revision = 8;
     await expect(opened!.sourceCurrentness.isCurrent()).resolves.toBe(true);
     // A real withdrawal of the resource still ends the operation.
@@ -205,6 +235,7 @@ describe('Connected Services Team credential broker source', () => {
     const open = createConnectedServicesBrokerSourceOpen({
       readResource,
       resolveBindingIntentSelection: bindingSelectionResolver(),
+      withRegistry: async (read) => await read(createBrokerProviderRegistry()),
       custody,
     });
 
@@ -221,6 +252,7 @@ describe('Connected Services Team credential broker source', () => {
       retireAll: vi.fn(async () => 0),
     });
     const open = createConnectedServicesBrokerSourceOpen({
+      withRegistry: async (read) => await read(createBrokerProviderRegistry()),
       readResource: vi.fn(async () => resource()),
       resolveBindingIntentSelection: bindingSelectionResolver(),
       custody,
@@ -253,6 +285,7 @@ describe('Connected Services Team credential broker source', () => {
       retireAll: vi.fn(async () => 0),
     });
     const open = createConnectedServicesBrokerSourceOpen({
+      withRegistry: async (read) => await read(createBrokerProviderRegistry()),
       readResource,
       resolveBindingIntentSelection: bindingSelectionResolver(),
       custody,
@@ -300,6 +333,7 @@ describe('Connected Services Team credential broker source', () => {
     });
     const resolveBindingIntentSelection = vi.fn(resolveSelection);
     const open = createConnectedServicesBrokerSourceOpen({
+      withRegistry: async (read) => await read(createBrokerProviderRegistry()),
       readResource: vi.fn(async () => resource({
         source: poolSource,
         sourcePresentation: { kind: 'connected_service', service: poolSource.target.service },

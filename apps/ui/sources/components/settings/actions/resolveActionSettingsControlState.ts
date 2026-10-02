@@ -66,7 +66,7 @@ function resolveApprovalControlSurface(params: Readonly<{
     target?: ActionSettingsTargetDefinition;
     available: boolean;
 }>): keyof ActionSurfaces | null {
-    if (!params.available || isActionSettingsApprovalAction(params.actionId)) {
+    if (!params.available || isActionSettingsApprovalAction(params.actionId) || params.actionId === 'capture.view') {
         return null;
     }
     return resolveActionSettingsApprovalSurface(params.actionId, params.targetId, params.target);

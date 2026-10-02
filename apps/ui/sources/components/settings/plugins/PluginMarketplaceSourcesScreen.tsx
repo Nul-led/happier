@@ -1,10 +1,13 @@
 import * as React from 'react';
-import { useIsFocused } from '@/components/appShell/workspace/destinationRoute';
+import { useIsFocused, useNavigation } from '@/components/appShell/workspace/destinationRoute';
 import type { MarketplaceSourceV1 } from '@happier-dev/protocol/marketplace';
 
 import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
-import { createActionInputForm } from '@/components/plugins/actions/actionInputForm';
-import { presentActionInputForm } from '@/components/plugins/actions/presentActionInputForm';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
 import { Switch } from '@/components/ui/forms/Switch';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
@@ -13,6 +16,8 @@ import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
 import { buildActionRowAccessibilityLabel } from '@/components/ui/lists/actionRowAccessibility';
 import { Modal } from '@/modal';
 import { t } from '@/text';
+import { useUnsavedDraftNavigationGuard } from '@/utils/navigation/useUnsavedDraftNavigationGuard';
+import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
 
 import { NpmRegistryProfilesSection } from './NpmRegistryProfilesSection';
 import { usePluginSettingsScreenState } from './model/usePluginSettingsScreenState';
@@ -40,90 +45,85 @@ async function presentSourceMutationSettlement(
     }
 }
 
-async function readSourceDraft(): Promise<Readonly<{
-    sourceUrl: string;
-}> | null> {
-    const sourceUrl = (await Modal.prompt(
-        t('settingsPlugins.sourceAdministration.sourceUrl'),
-        t('settingsPlugins.sourceAdministration.subtitle'),
-        {
-            placeholder: 'https://plugins.example.com/index.json',
-            confirmText: t('common.save'),
-            cancelText: t('common.cancel'),
-        },
-    ))?.trim();
-    if (!sourceUrl) return null;
-    return { sourceUrl };
+type SourceDraft = Readonly<{ sourceUrl: string; title: string; description: string }>;
+
+function MarketplaceSourceEditor(props: Readonly<{
+    source: MarketplaceSourceV1 | null;
+    disabled: boolean;
+    onSave: (draft: SourceDraft) => Promise<void>;
+    onCancel: () => void;
+}>) {
+    const navigation = useNavigation();
+    const [draft, setDraft] = React.useState<SourceDraft>(() => ({
+        sourceUrl: props.source?.sourceUrl ?? '',
+        title: props.source?.title ?? '',
+        description: props.source?.description ?? '',
+    }));
+    useUnsavedDraftNavigationGuard({
+        navigation,
+        isDirty: draft.sourceUrl !== (props.source?.sourceUrl ?? '')
+            || draft.title !== (props.source?.title ?? '')
+            || draft.description !== (props.source?.description ?? ''),
+        onDiscard: props.onCancel,
+        tag: 'marketplace-source-draft',
+    });
+    return <>
+        {(props.source ? ['sourceUrl', 'title', 'description'] as const : ['sourceUrl'] as const).map((name) => {
+            const label = t(name === 'sourceUrl' ? 'settingsPlugins.sourceAdministration.sourceUrl'
+                : name === 'title' ? 'settingsPlugins.sourceAdministration.displayName'
+                    : 'settingsPlugins.sourceAdministration.description');
+            return <Item key={name} title={label} showChevron={false}
+                accessoryLayout={name === 'description' ? 'stacked' : 'adaptive'}
+                rightElement={<FieldTextInput
+                    testID={`settings.plugins.sources.draft.${name}`}
+                    accessibilityLabel={label}
+                    value={draft[name]}
+                    editable={!props.disabled}
+                    autoCapitalize="none"
+                    multiline={name === 'description'}
+                    onChangeText={(value) => setDraft((current) => ({ ...current, [name]: value }))}
+                />}
+            />;
+        })}
+        <SectionContentRow><SectionButtonRow>
+            <RoundButton testID="settings.plugins.sources.draft.save" title={t('common.save')} size="small"
+                disabled={props.disabled || !draft.sourceUrl.trim() || (props.source !== null && !draft.title.trim())}
+                onPress={() => { void props.onSave(draft); }} />
+            <RoundButton testID="settings.plugins.sources.draft.cancel" title={t('common.cancel')} size="small"
+                display="secondary" disabled={props.disabled} onPress={props.onCancel} />
+        </SectionButtonRow></SectionContentRow>
+    </>;
 }
 
 export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketplaceSourcesScreen() {
     const isFocused = useIsFocused();
     const state = usePluginSettingsScreenState({ focused: isFocused });
     const [busySourceId, setBusySourceId] = React.useState<string | null>(null);
+    const [editingSourceId, setEditingSourceId] = React.useState<string | null>(null);
+    React.useEffect(() => { setEditingSourceId(null); }, [state.executionMachineId, state.executionServerId]);
     const configuredSources = state.marketplaceSourceRegistry?.sources ?? [];
     const mutationsDisabled = !state.daemonAdministrationAvailable
         || busySourceId !== null
         || state.marketplaceSourceRegistryMutationInFlight;
 
-    const add = React.useCallback(async () => {
-        const draft = await readSourceDraft();
-        if (!draft) return;
-        setBusySourceId('new');
+    const saveSource = React.useCallback(async (draft: SourceDraft, source: MarketplaceSourceV1 | null) => {
+        const sourceUrl = draft.sourceUrl.trim();
+        const title = draft.title.trim();
+        if (!sourceUrl || (source !== null && !title)) return;
+        setBusySourceId(source?.id ?? 'new');
         try {
-            await presentSourceMutationSettlement(await state.upsertMarketplaceSource({ ...draft, origin: 'user', enabled: true }));
+            const settlement = await state.upsertMarketplaceSource({
+                sourceUrl, origin: 'user', enabled: source?.enabled ?? true,
+                ...(source ? { sourceId: source.id, title, description: draft.description.trim() || null,
+                    registryProfileId: source.registryProfileId } : {}),
+            });
+            await presentSourceMutationSettlement(settlement);
+            if (settlement.status === 'success' || settlement.status === 'outcomeUnknown') setEditingSourceId(null);
         } catch {
             await alertSourceOperationFailed();
         } finally {
             setBusySourceId(null);
         }
-    }, [state]);
-
-    const edit = React.useCallback((source: MarketplaceSourceV1) => {
-        if (source.origin !== 'user') return;
-        // One incumbent form keeps all safe fields editable together and
-        // retains them after rejection. Registry validation and writes remain
-        // with the exact-target administration owner.
-        const form = createActionInputForm({
-            presentation: {
-                title: t('settingsPlugins.sourceAdministration.edit'),
-                description: t('settingsPlugins.sourceAdministration.subtitle'),
-                inputHints: {
-                    submitLabel: t('common.save'),
-                    fields: [
-                        { path: 'sourceUrl', title: t('settingsPlugins.sourceAdministration.sourceUrl'), widget: 'url', required: true },
-                        { path: 'title', title: t('settingsPlugins.sourceAdministration.displayName'), widget: 'text', required: true },
-                        { path: 'description', title: t('settingsPlugins.sourceAdministration.description'), widget: 'textarea' },
-                    ],
-                },
-            },
-            submit: async (candidate) => {
-                const sourceUrl = typeof candidate.sourceUrl === 'string' ? candidate.sourceUrl.trim() : '';
-                const title = typeof candidate.title === 'string' ? candidate.title.trim() : '';
-                if (!sourceUrl || !title) return { ok: false };
-                const description = typeof candidate.description === 'string' ? candidate.description.trim() || null : null;
-                setBusySourceId(source.id);
-                try {
-                    const settlement = await state.upsertMarketplaceSource({
-                        sourceUrl, title, description,
-                        sourceId: source.id,
-                        origin: 'user',
-                        enabled: source.enabled,
-                        registryProfileId: source.registryProfileId,
-                    });
-                    await presentSourceMutationSettlement(settlement);
-                    // Never offer an immediate repeat of an uncertain write.
-                    // The registry owner and refresh remain its recovery path.
-                    return { ok: settlement.status !== 'unavailable' };
-                } catch {
-                    await alertSourceOperationFailed();
-                    return { ok: false };
-                } finally {
-                    setBusySourceId(null);
-                }
-            },
-        });
-        form.replaceInput({ sourceUrl: source.sourceUrl, title: source.title, description: source.description ?? '' });
-        presentActionInputForm({ form });
     }, [state]);
 
     const remove = React.useCallback(async (source: MarketplaceSourceV1) => {
@@ -144,7 +144,7 @@ export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketpl
     }, [state]);
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader
                 description={t('settingsPlugins.sourceAdministration.subtitle')}
                 actions={(
@@ -163,12 +163,19 @@ export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketpl
                         testID="settings.plugins.sources.add"
                         title={t('settingsPlugins.sourceAdministration.add')}
                         icon="plus"
-                        onPress={() => { void add(); }}
+                        onPress={() => { void runGuardedNavigation(() => setEditingSourceId('new')); }}
                         disabled={mutationsDisabled || state.marketplaceSourceRegistry === null}
                         loading={busySourceId === 'new'}
                     />
                 )}
             >
+                {editingSourceId === 'new' ? (
+                    <ExpandableItem expanded onExpandedChange={(next) => { if (!next) setEditingSourceId(null); }}
+                        header={({ headerProps }) => <Item {...headerProps} title={t('settingsPlugins.sourceAdministration.add')} showChevron={false} />}>
+                        <MarketplaceSourceEditor source={null} disabled={mutationsDisabled}
+                            onSave={(draft) => saveSource(draft, null)} onCancel={() => setEditingSourceId(null)} />
+                    </ExpandableItem>
+                ) : null}
                 <Item
                     testID="settings.plugins.sources.communityNpm"
                     title={t('settingsPlugins.sourceAdministration.communityTitle')}
@@ -238,11 +245,15 @@ export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketpl
                                 source supports, curated and user alike, through the
                                 same setEnabled owner; editing and removal stay
                                 user-only. */}
-                            <Item
+                            <ExpandableItem
+                                expanded={userOwned && editingSourceId === source.id}
+                                onExpandedChange={(next) => { void runGuardedNavigation(() => setEditingSourceId(next && userOwned ? source.id : null)); }}
+                                header={({ headerProps }) => <Item
+                                {...(userOwned ? headerProps : {})}
                                 testID={`settings.plugins.sources.source.${source.id}`}
                                 title={source.title}
                                 subtitle={`${source.sourceUrl}\n${t(source.enabled ? 'settingsPlugins.sourceAdministration.enabled' : 'settingsPlugins.sourceAdministration.disabled')} · ${t(userOwned ? 'settingsPlugins.sourceAdministration.user' : 'settingsPlugins.sourceAdministration.curated')}`}
-                                onPress={userOwned ? () => { void edit(source); } : undefined}
+                                onPress={userOwned ? () => { void runGuardedNavigation(() => setEditingSourceId(source.id)); } : undefined}
                                 mode={userOwned ? 'interactive' : 'info'}
                                 disabled={userOwned && mutationsDisabled}
                                 loading={busySourceId === source.id}
@@ -264,7 +275,12 @@ export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketpl
                                     />
                                 )}
                                 rightElementOutsidePressable={userOwned}
-                            />
+                            />}
+                            >
+                            {userOwned && editingSourceId === source.id ? <MarketplaceSourceEditor
+                                key={source.id} source={source} disabled={mutationsDisabled}
+                                onSave={(draft) => saveSource(draft, source)} onCancel={() => setEditingSourceId(null)} /> : null}
+                            </ExpandableItem>
                             {userOwned ? (
                                 <Item
                                     testID={`settings.plugins.sources.remove.${source.id}`}

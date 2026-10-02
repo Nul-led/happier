@@ -92,7 +92,7 @@ export const SessionResumeSettingsView = React.memo(function SessionResumeSettin
     }, [sessionReplayMaxSeedChars, setSessionReplayMaxSeedChars]);
 
     return (
-        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }} presentation="page">
+        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settingsSessionPages.resume.pageDescription')} />
             <SettingSection section={SESSION_RESUME_SETTINGS.sectionRefs.replay}>
                 <ItemGroup title={t('settingsSession.replayResume.title')} description={t('settingsSession.replayResume.footer')}>

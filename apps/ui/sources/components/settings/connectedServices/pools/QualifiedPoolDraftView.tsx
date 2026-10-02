@@ -59,7 +59,7 @@ export const QualifiedPoolDraftView = React.memo(function QualifiedPoolDraftView
     }, []);
 
     return (
-        <ItemList testID={TEST_ID} presentation="page">
+        <ItemList testID={TEST_ID}>
             <SettingsPageHeader
                 title={trimmed || t('connectedServicesPool.newPoolTitle')}
                 alwaysShowTitle

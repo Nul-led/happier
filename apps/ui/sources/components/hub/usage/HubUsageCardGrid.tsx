@@ -10,6 +10,7 @@ import { AccountUsageResetsLine } from '@/components/settings/connectedServices/
 import { UsageMeterRow, UsageMeterStack } from '@/components/settings/connectedServices/usage/UsageMeterRow';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { SurfaceCard } from '@/components/ui/cards/SurfaceCard';
+import { SurfaceAsOfLabel } from '@/components/ui/surfaces/SurfaceAsOfLabel';
 import { Icon } from '@/components/ui/icons/Icon';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
@@ -25,7 +26,6 @@ export type HubUsageCardFacts = Readonly<{
     inUseAccountKeys: ReadonlySet<string>;
     recoveryCreditsByKey: Readonly<Record<string, ConnectedServiceQuotaRecoveryCreditsV1 | null | undefined>>;
     accountsNeedingSignIn: readonly ConnectedServiceAccountNeedingSignIn[];
-    asOf: number | null;
     onSignInAgain?: (account: ConnectedServiceAccountNeedingSignIn) => void;
 }>;
 
@@ -33,7 +33,6 @@ const NO_FACTS: HubUsageCardFacts = {
     inUseAccountKeys: new Set(),
     recoveryCreditsByKey: {},
     accountsNeedingSignIn: [],
-    asOf: null,
 };
 
 /**
@@ -58,7 +57,6 @@ export const HubUsageCardGrid = React.memo(function HubUsageCardGrid(props: Read
                     present={present}
                     inUse={facts.inUseAccountKeys.has(entry.key)}
                     recoveryCredits={facts.recoveryCreditsByKey[entry.key] ?? null}
-                    asOf={facts.asOf}
                 />
             ))}
             {facts.accountsNeedingSignIn.map((account) => (
@@ -91,7 +89,6 @@ const HubUsageCard = React.memo(function HubUsageCard(props: Readonly<{
     present: ConnectedAccountIdentityPresenter;
     inUse: boolean;
     recoveryCredits: ConnectedServiceQuotaRecoveryCreditsV1 | null;
-    asOf: number | null;
 }>) {
     const { theme } = useUnistyles();
     const { entry } = props;
@@ -112,6 +109,7 @@ const HubUsageCard = React.memo(function HubUsageCard(props: Readonly<{
                     </View>
                 ) : null}
             </View>
+            {entry.fetchedAt != null ? <SurfaceAsOfLabel at={entry.fetchedAt} testID={`hub-usage.${entry.key}:as-of`} /> : null}
             <View style={stylesheet.meters}>
                 <UsageMeterStack>
                     {entry.meters.map((meter) => (
@@ -131,7 +129,7 @@ const HubUsageCard = React.memo(function HubUsageCard(props: Readonly<{
                     recoveryCredits={props.recoveryCredits}
                     legacyServiceId={entry.legacyServiceId ?? null}
                     accountId={entry.accountId ?? null}
-                    snapshotFetchedAtMs={props.asOf}
+                    snapshotFetchedAtMs={entry.fetchedAt ?? null}
                     now={now}
                     onApplied={noop}
                 />

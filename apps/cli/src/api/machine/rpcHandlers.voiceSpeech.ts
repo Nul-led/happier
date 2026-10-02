@@ -34,6 +34,8 @@ import {
   buildQualifiedPluginContributionKey,
   resolveAccountSettingsVoiceCredentialSource,
   resolveVoiceSpeechSettingsCorrespondence,
+  resolveVoiceSpeechSynthesisInputLimits,
+  isVoiceSpeechSynthesisInputWithinLimits,
   resolveVoiceSpeechEndpointPolicy,
   type VoiceCredentialAccessPhase,
   type VoiceProviderContribution,
@@ -936,14 +938,16 @@ export function registerMachineVoiceSpeechRpcHandlers(params: Readonly<{
     }
     try {
       lease = await resolveSpeechRuntime(target);
-      if (
-        input.length > (lease.contribution.limits?.synthesize?.maxInputCharacters ?? 200_000)
-        || !lease.runtime.synthesize
-      ) return invalid;
+      if (!lease.runtime.synthesize) return invalid;
       return await runBounded(async (signal) => {
         assertOperationMayPublish(lease!, signal);
         const operation = createSpeechOperationContext(lease!, signal);
         const synthesisSettings = operation.correspondence.synthesize;
+        if (!isVoiceSpeechSynthesisInputWithinLimits(input, resolveVoiceSpeechSynthesisInputLimits({
+          contribution: lease!.contribution, settings: operation.context.settings,
+        }))) {
+          throw Object.assign(new Error('provider_settings_invalid'), { code: 'provider_settings_invalid' });
+        }
         if (!synthesisSettings || synthesisSettings.format === null) {
           throw Object.assign(new Error('provider_settings_invalid'), { code: 'provider_settings_invalid' });
         }

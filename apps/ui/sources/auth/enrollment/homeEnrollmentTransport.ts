@@ -92,6 +92,8 @@ export async function resolveHomeEnrollmentTransport(
     options: Readonly<{
         runtimeOrigin?: string | null;
         runtimeCarrier?: 'https' | 'iroh';
+        /** Already verified by the caller's exact Home connection; its owner retains the lease. */
+        homeCarrier?: HomeCarrier | null;
         verification?: IrohHomeTunnelVerification;
     }> = {},
 ): Promise<HomeEnrollmentTransportResolution> {
@@ -100,9 +102,9 @@ export async function resolveHomeEnrollmentTransport(
         ? approvedApplicationOrigin(options.runtimeOrigin)
         : null;
     const irohEndpoint = descriptor.endpoints.find((endpoint) => endpoint.kind === 'iroh') ?? null;
-    if (resolvedRuntimeOrigin
+    if ((resolvedRuntimeOrigin || options.homeCarrier)
         && readHomeApplicationCarrierEligibility() === 'standard_only'
-        && (options.runtimeCarrier ?? (irohEndpoint ? 'iroh' : 'https')) === 'iroh') {
+        && (options.homeCarrier || (options.runtimeCarrier ?? (irohEndpoint ? 'iroh' : 'https')) === 'iroh')) {
         return { ok: false, homeServerIdentityId: descriptor.homeServerIdentityId, reason: 'iroh_transport_unavailable' };
     }
 
@@ -113,7 +115,12 @@ export async function resolveHomeEnrollmentTransport(
     let homeCarrier: HomeCarrier | null = null;
     let close = async (): Promise<void> => {};
 
-    if (resolvedRuntimeOrigin) {
+    if (options.homeCarrier) {
+        endpointUrl = canonicalEndpointUrl;
+        homeCarrier = options.homeCarrier;
+        carrier = 'iroh';
+        authenticatedCredentialDestination = { kind: 'iroh', endpointId: homeCarrier.endpointId };
+    } else if (resolvedRuntimeOrigin) {
         endpointUrl = canonicalEndpointUrl;
         runtimeOrigin = resolvedRuntimeOrigin;
         carrier = options.runtimeCarrier ?? (irohEndpoint ? 'iroh' : 'https');

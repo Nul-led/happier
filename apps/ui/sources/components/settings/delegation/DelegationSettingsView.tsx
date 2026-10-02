@@ -40,7 +40,7 @@ export const DelegationSettingsView = React.memo(function DelegationSettingsView
     })), [limit]);
 
     return (
-        <ItemList presentation="page" testID="settings.delegation">
+        <ItemList testID="settings.delegation">
             <SettingsPageHeader description={t('roles.delegation.description')} />
             <SettingSection section={DELEGATION_SETTINGS.sectionRefs.approvalReviewer}>
                 <ItemGroup title={t('roles.delegation.approvalReviewer')}>

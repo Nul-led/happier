@@ -33,6 +33,8 @@ type ActionExecutorLike = Readonly<{
       runtimeRunId?: string;
       actionsSettings?: ActionsSettingsV1 | null;
       actionRequestId?: string | null;
+      signal?: AbortSignal;
+      onWaitSnapshot?: (snapshot: unknown) => void | Promise<void>;
       expectedContributorOccurrenceId?: string;
       sessionListAccess?: 'current_session' | 'led_subtree';
       reviewCommentPrincipal?: ReviewCommentPrincipalHeaderV1;
@@ -65,6 +67,8 @@ export type ResolveActionOptionsInput = Readonly<{
 }> & Readonly<Record<string, unknown>>;
 
 export type ActionToolExecutionOptions = Readonly<{
+  signal?: AbortSignal;
+  onWaitSnapshot?: (snapshot: unknown) => void | Promise<void>;
   approvalOrigin?: ApprovalRequestOriginV1 | null;
   /** Host-stamped invocation identity; independent from descriptive transcript provenance. */
   actionRequestId?: string | null;
@@ -141,6 +145,7 @@ async function buildActionExecutorContext(params: Readonly<{
   expectedContributorOccurrenceId?: string;
   sessionListAccess?: 'current_session' | 'led_subtree';
   reviewCommentPrincipal?: ReviewCommentPrincipalHeaderV1;
+  onWaitSnapshot?: (snapshot: unknown) => void | Promise<void>;
 }>> {
   const callerPermissionMode = params.surface === 'agent' && params.resolveCallerPermissionMode
     ? await params.resolveCallerPermissionMode()
@@ -193,6 +198,8 @@ async function buildActionExecutorContext(params: Readonly<{
         ? { sessionListAccess: 'led_subtree' as const }
         : {}),
     ...(params.options?.approvalOrigin ? { approvalOrigin: params.options.approvalOrigin } : {}),
+    ...(params.options?.signal ? { signal: params.options.signal } : {}),
+    ...(params.options?.onWaitSnapshot ? { onWaitSnapshot: params.options.onWaitSnapshot } : {}),
     ...(actionRequestId ? { actionRequestId } : {}),
     ...(callerPermissionMode ? { callerPermissionMode } : {}),
     ...(hasActiveTurnPermissionWitnessResolver

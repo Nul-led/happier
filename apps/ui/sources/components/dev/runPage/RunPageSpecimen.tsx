@@ -205,7 +205,6 @@ export function RunPageSpecimen(props: Readonly<{ frame: string | null }>) {
                         resolveFieldOptions={() => []}
                         backendSectionLabel={t('runPage.launcher.who.review')}
                         multiSelect
-                        instructionsLabel={t('runPage.launcher.focus.review')}
                         onSelectBackend={noop}
                         onSelectProfile={noop}
                         onPatch={noop}

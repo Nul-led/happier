@@ -86,6 +86,13 @@ export const LOCAL_SETTING_DEFINITIONS = defineSettingDefinitions({
         description: 'Whether Connected services lists its accounts or shows them as cards on this device',
         storageScope: 'local',
     },
+    artifactsBrowserViewV1: {
+        // Grid or List for the Artifacts browser on this device; unset follows the device (phones list, else grid).
+        schema: z.object({ presentation: z.enum(['grid', 'list']).optional() }).catch({}),
+        default: {},
+        description: 'Whether the Artifacts browser shows cards or a list on this device',
+        storageScope: 'local',
+    },
     pluginsCollectionViewV1: {
         // Grid (default) or List, remembered per Plugins view on this device.
         schema: z.object({

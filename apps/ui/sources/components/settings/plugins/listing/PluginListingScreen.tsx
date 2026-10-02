@@ -130,7 +130,7 @@ export const PluginListingView = React.memo(function PluginListingView(props: Re
     const title = entry?.title ?? props.pluginId;
 
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page" testID="settings.plugins.listing">
+        <ItemList style={{ paddingTop: 0 }} testID="settings.plugins.listing">
             {pane ? null : <View style={[styles.crumbs, maxWidthStyle]} accessibilityRole="toolbar">
                 {/* Back within the history when the home is there; a deep link replaces the listing. */}
                 <Crumb label={t(pluginsHomeTitleKey(host))} onPress={() => router.dismissTo(buildPluginsHomeRoute(host))} testID="settings.plugins.listing.crumb.plugins" />

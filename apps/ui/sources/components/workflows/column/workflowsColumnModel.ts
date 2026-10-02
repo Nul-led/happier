@@ -1,4 +1,5 @@
 import type { WorkflowRunSummaryV1 } from '@happier-dev/protocol/workflows/workflowProgressV1';
+import type { WorkflowPluginSourceV1 } from '@happier-dev/protocol/workflows';
 
 import type { WorkflowLibraryDefinition } from '@/components/workflows/library/workflowLibraryReads';
 import { isTerminalWorkflowRunState } from '@/components/workflows/presentation/workflowLifecyclePresentation';
@@ -12,16 +13,20 @@ import { isTerminalWorkflowRunState } from '@/components/workflows/presentation/
  * Your saved workflows and the ones shared with you. The definition list names the caller's access
  * on each row; a row without it, or with `owner`, is yours.
  */
-export function splitLibraryDefinitions(definitions: readonly WorkflowLibraryDefinition[]): Readonly<{
+export function splitLibraryDefinitions(
+    definitions: readonly WorkflowLibraryDefinition[],
+    pluginWorkflows: readonly WorkflowPluginSourceV1[] = [],
+): Readonly<{
     library: readonly WorkflowLibraryDefinition[];
     sharedWithYou: readonly WorkflowLibraryDefinition[];
+    fromPlugins: readonly WorkflowPluginSourceV1[];
 }> {
     const library: WorkflowLibraryDefinition[] = [];
     const sharedWithYou: WorkflowLibraryDefinition[] = [];
     for (const definition of definitions) {
         (definition.access === undefined || definition.access === 'owner' ? library : sharedWithYou).push(definition);
     }
-    return { library, sharedWithYou };
+    return { library, sharedWithYou, fromPlugins: pluginWorkflows };
 }
 
 /**

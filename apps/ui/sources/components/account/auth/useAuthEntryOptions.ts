@@ -5,11 +5,13 @@ import type { HomeTargetInput } from '@happier-dev/cli-common/homeTarget';
 import type { HomeSignInServicePolicyV1 } from '@happier-dev/protocol';
 
 import type { AccountDirectoryAuthTransport } from '@/auth/accountDirectory/accountDirectoryAuthClient';
+import type { HomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
 import { fetchHomeAuthEntry } from '@/auth/entry/authEntryClient';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import {
     getCachedServerFeaturesSnapshot,
     getServerFeaturesSnapshot,
+    probeServerFeaturesAtUrl,
     subscribeServerFeaturesSnapshot,
     type ServerFeaturesSnapshot,
 } from '@/sync/api/capabilities/serverFeaturesClient';
@@ -29,6 +31,7 @@ import {
     type HomeAuthenticationAction,
 } from '@/auth/capabilities/authMethodCapabilities';
 import { resolveHomeDisplayLabel } from '@/components/settings/server/homeDisplayName';
+import { fireAndForget } from '@/utils/system/fireAndForget';
 
 type AuthEntryServerAvailability = 'loading' | 'ready' | 'legacy' | 'unavailable' | 'incompatible';
 
@@ -213,6 +216,19 @@ export function resolvePreferredProvisionProviderId(features: FeaturesResponse |
 
 export function useAuthEntryOptions(): AuthEntryOptions {
     const activeServerSnapshot = useActiveServerSnapshot();
+    const activeProfile = activeServerSnapshot.serverId
+        ? getServerProfileById(activeServerSnapshot.serverId)
+        : null;
+    const activeHomeCarrier = activeServerSnapshot.serverId ? getActiveServerHomeCarrier() : null;
+    const enrollmentDescriptor = !activeServerSnapshot.runtimeOrigin && !activeHomeCarrier
+        ? activeProfile?.homeConnectionDescriptor
+        : undefined;
+    const [enrollmentRead, setEnrollmentRead] = React.useState<Readonly<{
+        serverId: string;
+        generation: number;
+        descriptor: typeof enrollmentDescriptor;
+        transport: HomeEnrollmentTransport;
+    }> | null>(null);
     const readCachedServerFeaturesSnapshot = React.useCallback(
         () => getCachedServerFeaturesSnapshot({ serverId: activeServerSnapshot.serverId || undefined }),
         [activeServerSnapshot.serverId],
@@ -271,6 +287,13 @@ export function useAuthEntryOptions(): AuthEntryOptions {
         let mounted = true;
         let authEntryController: AbortController | null = null;
         let authEntryTimeout: ReturnType<typeof setTimeout> | null = null;
+        let enrollmentTransport: HomeEnrollmentTransport | null = null;
+        const releaseEnrollmentTransport = () => {
+            const transport = enrollmentTransport;
+            enrollmentTransport = null;
+            if (transport) fireAndForget(transport.close(), { tag: 'useAuthEntryOptions.releaseEnrollmentTransport' });
+        };
+        setEnrollmentRead(null);
         const retainedObservation = lastUsableObservationRef.current?.key === activeObservationKey
             ? lastUsableObservationRef.current.observation
             : cachedObservationRef.current;
@@ -306,6 +329,22 @@ export function useAuthEntryOptions(): AuthEntryOptions {
                     setOptions(createUnobservedAuthEntryOptions());
                 }
 
+                // Sign-in owns an anonymous, mount-scoped enrollment carrier.
+                // It does not publish or replace the authenticated active lease.
+                if (enrollmentDescriptor) {
+                    const { resolveHomeEnrollmentTransport } = await import('@/auth/enrollment/homeEnrollmentTransport');
+                    const resolved = await resolveHomeEnrollmentTransport(enrollmentDescriptor);
+                    if (!resolved.ok) {
+                        commitTerminalUnavailable('unavailable');
+                        return;
+                    }
+                    enrollmentTransport = resolved.transport;
+                    if (!mounted) {
+                        releaseEnrollmentTransport();
+                        return;
+                    }
+                }
+
                 const serverCheckTimeoutMs = readWelcomeServerCheckTimeoutMs();
                 authEntryController = new AbortController();
                 authEntryTimeout = setTimeout(() => {
@@ -318,7 +357,15 @@ export function useAuthEntryOptions(): AuthEntryOptions {
                 let authEntry: Awaited<ReturnType<typeof fetchHomeAuthEntry>>;
                 try {
                     [featuresSnapshot, authEntry] = await Promise.all([
-                        getServerFeaturesSnapshot({
+                        enrollmentTransport ? probeServerFeaturesAtUrl({
+                            endpointUrl: enrollmentTransport.canonicalServerUrl,
+                            runtimeOrigin: enrollmentTransport.runtimeOrigin,
+                            ...(enrollmentTransport.homeCarrier ? { homeCarrier: enrollmentTransport.homeCarrier } : {}),
+                            serverId: enrollmentTransport.homeServerIdentityId,
+                            force: forceServerCheck,
+                            timeoutMs: serverCheckTimeoutMs,
+                            signal: authEntryController.signal,
+                        }) : getServerFeaturesSnapshot({
                             timeoutMs: serverCheckTimeoutMs,
                             // A retry nonce grants one forced revalidation. Keeping force
                             // sticky after the retry succeeds turns an identity update into
@@ -327,7 +374,15 @@ export function useAuthEntryOptions(): AuthEntryOptions {
                             // again. Generation-only rechecks consume the canonical cache.
                             force: forceServerCheck,
                         }),
-                        fetchHomeAuthEntry({ signal: authEntryController.signal }),
+                        fetchHomeAuthEntry({
+                            signal: authEntryController.signal,
+                            ...(enrollmentTransport ? {
+                                endpointUrl: enrollmentTransport.canonicalServerUrl,
+                                runtimeOrigin: enrollmentTransport.runtimeOrigin,
+                                ...(enrollmentTransport.homeCarrier ? { homeCarrier: enrollmentTransport.homeCarrier } : {}),
+                                serverId: enrollmentTransport.homeServerIdentityId,
+                            } : {}),
+                        }),
                     ]);
                 } finally {
                     clearTimeout(authEntryTimeout);
@@ -335,22 +390,33 @@ export function useAuthEntryOptions(): AuthEntryOptions {
                 }
 
                 if (featuresSnapshot.status === 'error') {
+                    releaseEnrollmentTransport();
                     if (retainedObservation) commitRetainedUnavailable(retainedObservation);
                     else commitTerminalUnavailable('unavailable');
                     return;
                 }
 
                 if (featuresSnapshot.status === 'unsupported' && featuresSnapshot.reason === 'invalid_payload') {
+                    releaseEnrollmentTransport();
+                    commitTerminalUnavailable('incompatible');
+                    return;
+                }
+
+                if (enrollmentTransport && (featuresSnapshot.status !== 'ready'
+                    || featuresSnapshot.features.capabilities.serverIdentity.serverIdentityId !== enrollmentTransport.homeServerIdentityId)) {
+                    releaseEnrollmentTransport();
                     commitTerminalUnavailable('incompatible');
                     return;
                 }
 
                 if (authEntry.kind === 'incompatible'
                     || (authEntry.kind === 'ready' && authEntry.projection.state === 'update_required')) {
+                    releaseEnrollmentTransport();
                     commitTerminalUnavailable('incompatible');
                     return;
                 }
                 if (authEntry.kind === 'ready' && authEntry.projection.state !== 'ready') {
+                    releaseEnrollmentTransport();
                     // The Home answered and refused entry. That is its decision,
                     // not an outage to paper over with the feature catalog.
                     commitTerminalUnavailable('unavailable');
@@ -373,8 +439,24 @@ export function useAuthEntryOptions(): AuthEntryOptions {
                         : null,
                     authEntryUnavailable,
                 });
+                if (mounted && enrollmentTransport) {
+                    setEnrollmentRead({
+                        serverId: activeServerSnapshot.serverId,
+                        generation: activeServerGeneration,
+                        descriptor: enrollmentDescriptor,
+                        transport: enrollmentTransport,
+                    });
+                }
                 commitUsableObservation(observation);
                 if (observation.serverAvailability === 'ready' && mounted) {
+                    if (enrollmentTransport) {
+                        // This reader has no explicit transport seam. Do not ask a
+                        // different machine at the canonical loopback address.
+                        setOptions((current) => ({ ...current, retentionDisclosure: {
+                            kind: 'unreadable', retry: () => setServerCheckNonce((nonce) => nonce + 1),
+                        } }));
+                        return;
+                    }
                     // Sign-in never waits on this: the disclosure fills in beside the actions.
                     readRetentionDisclosure({
                         serverId: activeServerSnapshot.serverId,
@@ -388,6 +470,7 @@ export function useAuthEntryOptions(): AuthEntryOptions {
                     });
                 }
             } catch {
+                releaseEnrollmentTransport();
                 if (retainedObservation) commitRetainedUnavailable(retainedObservation);
                 else commitTerminalUnavailable('unavailable');
             }
@@ -397,23 +480,24 @@ export function useAuthEntryOptions(): AuthEntryOptions {
             mounted = false;
             authEntryController?.abort('welcome-auth-entry-unmounted');
             if (authEntryTimeout) clearTimeout(authEntryTimeout);
+            releaseEnrollmentTransport();
         };
     // A server lifecycle can leave and restore the same canonical URL (the
     // onboarding demo relay is one example) while invalidating the feature
     // snapshot for that server. URL equality alone would retain the previous
     // unavailable result forever. The active-server owner increments generation
     // for that lifecycle transition, so re-run the canonical feature probe.
-    }, [activeObservationKey, activeServerComparableKey, activeServerGeneration, serverCheckNonce, serverFeaturesRecoveryNonce]);
+    }, [activeObservationKey, activeServerComparableKey, activeServerGeneration, enrollmentDescriptor, serverCheckNonce, serverFeaturesRecoveryNonce]);
 
-    const activeProfile = activeServerSnapshot.serverId
-        ? getServerProfileById(activeServerSnapshot.serverId)
-        : null;
-    const activeHomeCarrier = activeServerSnapshot.serverId ? getActiveServerHomeCarrier() : null;
     const carrierSnapshot = activeHomeCarrier ? getActiveServerSnapshot() : null;
     const exactActiveHomeCarrier = carrierSnapshot?.serverId === activeServerSnapshot.serverId
         && carrierSnapshot.generation === activeServerSnapshot.generation
         ? activeHomeCarrier
         : null;
+    const exactEnrollmentTransport = enrollmentRead?.serverId === activeServerSnapshot.serverId
+        && enrollmentRead.generation === activeServerGeneration
+        && enrollmentRead.descriptor === enrollmentDescriptor
+        ? enrollmentRead.transport : null;
     return {
         serverAvailability,
         serverUrlForCopy,
@@ -430,9 +514,18 @@ export function useAuthEntryOptions(): AuthEntryOptions {
                 ? { homeTransport: { homeCarrier: exactActiveHomeCarrier } }
                 : activeServerSnapshot.runtimeOrigin
                     ? { homeTransport: { runtimeOrigin: activeServerSnapshot.runtimeOrigin } }
+                    : exactEnrollmentTransport
+                        ? { homeTransport: {
+                            ...(exactEnrollmentTransport.runtimeOrigin ? { runtimeOrigin: exactEnrollmentTransport.runtimeOrigin } : {}),
+                            ...(exactEnrollmentTransport.homeCarrier ? { homeCarrier: exactEnrollmentTransport.homeCarrier } : {}),
+                        } }
                     : {}),
         } : {}),
         ...options,
+        ...(enrollmentDescriptor && !exactEnrollmentTransport ? {
+            showAuthActions: false,
+            serverAvailability: serverAvailability === 'ready' || serverAvailability === 'legacy' ? 'loading' as const : serverAvailability,
+        } : {}),
         retryServerCheck: React.useCallback(() => {
             setServerCheckNonce((value) => value + 1);
         }, []),

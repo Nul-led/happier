@@ -43,6 +43,34 @@ describe('createHappierMcpServer real host admission', () => {
   beforeEach(resetEnvironment);
   afterEach(unmockCaseModules);
 
+  it('returns the daemon authority refusal for an advertised Account Action from a session-scoped runtime', async () => {
+    delete process.env.HAPPIER_AGENT_RUNTIME_DAEMON_SERVICE_AUTHORITY_FILE;
+    const sessionId = 'session-account-authority';
+    const runtime = createHappierMcpServer({
+      sessionId,
+      rpcHandlerManager: new RpcHandlerManager({ scopePrefix: sessionId, encryptionMode: 'plain' }),
+      updateMetadata() {},
+      getServerBinding: getTestServerBinding,
+      getServerFeaturesSnapshot: () => ({
+        status: 'ready', provenance: 'authenticated',
+        features: FeaturesResponseSchema.parse({ features: {}, capabilities: {} }),
+      }),
+      getActiveTurnPermissionWitness: () => ({
+        turnId: 'turn-account', inputId: 'input-account', userMessageSeq: 1, userMessageSeqs: [1],
+        causalPermissionAuthority: { kind: 'admittedSessionInputV1', admittedPermissionCeiling: 'yolo' },
+      }),
+    }, {
+      authorityScope: 'session',
+      sessionCredentials: { token: 'restricted-session-token', encryption: null },
+    });
+    const result = await runtime.executeTool({ toolName: 'action_execute', args: {
+      actionId: 'notifications.notify_me', input: { message: 'Session notification' },
+    } });
+    expect(JSON.stringify(result)).toContain('target_unavailable');
+    expect(JSON.stringify(result)).not.toContain('action_disabled');
+    expect(JSON.stringify(result)).not.toContain('content_unavailable');
+  });
+
   it.each([
     ['plain', false, 1, 2], ['e2ee', false, 1, 2], ['plain', true, 1, 2], ['e2ee', true, 1, 2],
     ['plain', false, 3, 0],

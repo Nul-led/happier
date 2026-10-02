@@ -7,12 +7,14 @@ import { homeAdministrationRuntimePath } from '@/components/settings/home/govern
 import { HomeMark } from '@/components/homes/HomeMark';
 import { resolveHomeDisplayLabel } from '@/components/settings/server/homeDisplayName';
 import { resolveServerProfileScopeId } from '@/sync/domains/server/serverProfiles';
+import { dismissHomeReachNudge } from '@/sync/runtime/connectivity/homeReachFailures';
 import { t } from '@/text';
 
 import { HomeAddForm } from '../add/HomeAddForm';
 import { AlreadyUseHappierTile } from './alreadyUse/AlreadyUseHappierTile';
 import type { AlreadyUsePath } from './alreadyUse/alreadyUsePaths';
-import { LaptopHomeNudgeTile, useLaptopHomeNudgeFacts } from './nudge/LaptopHomeNudgeTile';
+import { LaptopHomeNudgeTile } from './nudge/LaptopHomeNudgeTile';
+import { useLaptopHomeNudgeFacts } from './nudge/useLaptopHomeNudgeFacts';
 import { presentReconcileHomesSheet } from './reconcile/ReconcileHomesSheet';
 import { presentUseServiceAsHomeSheet } from './serviceHome/UseServiceAsHomeSheet';
 import { useAlreadyUseHappierOffer, useHomesReconcileState } from './useHomesJourneyState';
@@ -71,7 +73,7 @@ export function useHomesJourneySetupItems(input: Readonly<{
                         serviceName={service.hostsHome ? service.name : null}
                         onMoveHome={() => router.push(homeAdministrationRuntimePath(nudge.homeServerId) as never)}
                         onUseService={openServiceAsHome}
-                        onDismiss={onDismiss ? () => onDismiss(HOMES_JOURNEY_SETUP_ITEM_IDS.laptopNudge) : undefined}
+                        onDismiss={() => dismissHomeReachNudge(nudge.homeIdentityId)}
                     />
                 ),
             });

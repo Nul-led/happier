@@ -76,7 +76,7 @@ export function createMachineAddSshTaskAction(runnerOverride?: SystemTaskRunner)
         if (actionId === 'machines.add.ssh.status') {
             const result = snapshot.result;
             const data = result?.ok ? result.data : null;
-            const machineId = data && typeof data === 'object' && !Array.isArray(data) && typeof data.machineId === 'string' ? data.machineId : null;
+            const machineId = data && typeof data === 'object' && !Array.isArray(data) && 'machineId' in data && typeof data.machineId === 'string' ? data.machineId : null;
             return { taskId, status: snapshot.status, currentStepId: snapshot.currentStepId, awaitingInput: prompt !== null && !snapshot.cancelRequested,
                 prompt: snapshot.cancelRequested || !prompt ? null : {
                     kind: prompt.kind, message: prompt.message,
@@ -99,7 +99,7 @@ export function createMachineAddSshTaskAction(runnerOverride?: SystemTaskRunner)
             : 'replaceExistingServices' in answer ? answer.replaceExistingServices : answer.switchDefaultReleaseChannel;
         const spec = handle.runner.getTaskSpec?.(taskId);
         const params = spec?.params;
-        const resolution = ResolutionSchema.parse(params && typeof params === 'object' && !Array.isArray(params) ? params.promptResolution ?? {} : {});
+        const resolution = ResolutionSchema.parse(params && typeof params === 'object' && !Array.isArray(params) && 'promptResolution' in params ? params.promptResolution ?? {} : {});
         const nextTaskId = await startMachineAddTask('ssh', handle.runner, async (isCurrent) => {
             if (!isCurrent() || !areAccountSettingsScopesEqual(storage.getState().settingsScope, scope)) return null;
             return (await continueRemoteSshBootstrapTask({ options: { ...target(), runner: handle.runner }, form: form(),

@@ -73,6 +73,44 @@ async function mount(editAccess = true) {
 }
 
 describe('Saved Secrets editor continuity through the settings screen', () => {
+    it('commits inline names and exact replacement bytes through the canonical shared resource writer', async () => {
+        const { screen, scope, entries } = await mount(false);
+        const secret = entries[0]!;
+        const resourceId = 'secret-a';
+        const path = '/v1/account/saved-secrets/resources/update';
+        const materials = '/v1/account/saved-secrets/resources/materials';
+        harness.answer(scope.serverId, materials, { body: { resources: [{
+            resourceId, encryptionMode: 'plain', entry: secret,
+            storedContent: { t: 'plain', v: { v: 1, name: 'secret-a', kind: 'apiKey', value: 'original-secret' } },
+            recipientEnvelope: null,
+        }] } });
+        harness.answer(scope.serverId, path, { body: { resourceId, revision: 4 } });
+        await screen.pressByTestIdAsync(`saved-secret:${secret.ref}:header`);
+        await screen.pressByTestIdAsync(`saved-secret:${secret.ref}:rename`);
+        expect(harness.requestsFor(path)).toHaveLength(0);
+        await act(async () => screen.changeTextByTestId(`saved-secret:${secret.ref}:edit-input`, '  Renamed key  '));
+        await screen.pressByTestIdAsync(`saved-secret:${secret.ref}:edit-save`);
+        await vi.waitFor(() => expect(harness.requestsFor(path)).toHaveLength(1));
+        expect(harness.requestsFor(path)[0]?.input).toEqual(expect.objectContaining({
+            resourceId, expectedRevision: 3, displayName: 'Renamed key',
+            storedContent: { t: 'plain', v: { v: 1, name: 'Renamed key', kind: 'apiKey', value: 'original-secret' } },
+        }));
+        await vi.waitFor(() => expect(screen.findByTestId(`saved-secret:${secret.ref}:edit-input`)).toBeNull());
+
+        await screen.pressByTestIdAsync(`saved-secret:${secret.ref}:rotate`);
+        const input = screen.findAllByTestId(`saved-secret:${secret.ref}:edit-input`).find((node) => typeof node.props.onChangeText === 'function');
+        expect(input?.props.secureTextEntry).toBe(true);
+        expect(input?.props.value).toBe('');
+        await act(async () => screen.changeTextByTestId(`saved-secret:${secret.ref}:edit-input`, '  exact replacement\n'));
+        await screen.pressByTestIdAsync(`saved-secret:${secret.ref}:edit-save`);
+        await vi.waitFor(() => expect(harness.requestsFor(path)).toHaveLength(2));
+        expect(harness.requestsFor(path)[1]?.input).toEqual(expect.objectContaining({
+            resourceId, expectedRevision: 3,
+            storedContent: { t: 'plain', v: { v: 1, name: 'secret-a', kind: 'apiKey', value: '  exact replacement\n' } },
+        }));
+        await vi.waitFor(() => expect(screen.findByTestId(`saved-secret:${secret.ref}:edit-input`)).toBeNull());
+    });
+
     it('preserves a new secret when collapse is declined and discards only after confirmation', async () => {
         const { screen } = await mount(false);
         await screen.pressByTestIdAsync('saved-secret-add');
@@ -112,21 +150,40 @@ describe('Saved Secrets editor continuity through the settings screen', () => {
     it('keeps a dirty recipient draft until the person confirms switching to another secret', async () => {
         const { screen, entries } = await mount();
         await screen.pressByTestIdAsync(`saved-secret:${entries[1]!.ref}:header`);
-        await screen.pressByTestIdAsync(`saved-secret:${entries[1]!.ref}:manageAccess`);
         expect(alert).toHaveBeenCalledOnce();
         const buttons = alert.mock.calls[0]?.[2] as Array<{ style?: string; onPress?: () => void }>;
         await act(async () => buttons.find((button) => button.style === 'cancel')?.onPress?.());
-        // A is still editing and B still offers Manage.
-        expect(screen.findByTestId(`saved-secret:${entries[1]!.ref}:manageAccess`)).not.toBeNull();
+        // A is still editing and B's attempted expansion was declined.
+        expect(screen.findByTestId(`saved-secret:${entries[1]!.ref}:manageAccess`)).toBeNull();
         expect(screen.findByTestId(`saved-secret:${entries[0]!.ref}:manageAccess`)).toBeNull();
-        await screen.pressByTestIdAsync(`saved-secret:${entries[1]!.ref}:manageAccess`);
+        await screen.pressByTestIdAsync(`saved-secret:${entries[1]!.ref}:header`);
         const discardButtons = alert.mock.calls[1]?.[2] as Array<{ style?: string; onPress?: () => void }>;
         await act(async () => discardButtons.find((button) => button.style === 'destructive')?.onPress?.());
-        expect(screen.findByTestId(`saved-secret:${entries[0]!.ref}:manageAccess`)).not.toBeNull();
+        expect(screen.findByTestId(`saved-secret:${entries[1]!.ref}:manageAccess`)).not.toBeNull();
+        await screen.pressByTestIdAsync(`saved-secret:${entries[1]!.ref}:manageAccess`);
         expect(screen.findByTestId(`saved-secret:${entries[1]!.ref}:manageAccess`)).toBeNull();
         // The replacement starts clean; the same canonical guard also covers global navigation.
         const navigate = vi.fn();
         await act(async () => { await runGuardedNavigation(navigate); });
         expect(navigate).toHaveBeenCalledOnce();
+    });
+
+    it('keeps a typed name when switching editor is declined, then retires it before access opens', async () => {
+        const { screen, entries } = await mount(false);
+        const ref = entries[0]!.ref;
+        await screen.pressByTestIdAsync(`saved-secret:${ref}:header`);
+        await screen.pressByTestIdAsync(`saved-secret:${ref}:rename`);
+        await act(async () => screen.changeTextByTestId(`saved-secret:${ref}:edit-input`, 'Unsaved name'));
+        await screen.pressByTestIdAsync(`saved-secret:${ref}:manageAccess`);
+        expect(alert).toHaveBeenCalledOnce();
+        const buttons = alert.mock.calls[0]?.[2] as Array<{ style?: string; onPress?: () => void }>;
+        await act(async () => buttons.find((button) => button.style === 'cancel')?.onPress?.());
+        expect(screen.findByTestId(`saved-secret:${ref}:edit-input`)?.props.value).toBe('Unsaved name');
+        expect(screen.findByTestId('saved-secret-access-save')).toBeNull();
+        await screen.pressByTestIdAsync(`saved-secret:${ref}:manageAccess`);
+        const discard = alert.mock.calls[1]?.[2] as Array<{ style?: string; onPress?: () => void }>;
+        await act(async () => discard.find((button) => button.style === 'destructive')?.onPress?.());
+        expect(screen.findByTestId(`saved-secret:${ref}:edit-input`)).toBeNull();
+        expect(screen.findByTestId('saved-secret-access-save')).not.toBeNull();
     });
 });

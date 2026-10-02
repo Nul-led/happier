@@ -332,7 +332,7 @@ export const PromptRegistryItemDetailsScreen = React.memo(function PromptRegistr
   const installDisabled = executionTarget === null || installing || !installType || targetInput.trim().length === 0 || (installScope === 'project' && workspacePath.trim().length === 0);
 
   return (
-    <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+    <ItemList keyboardShouldPersistTaps="handled">
       <PageHeader
         testID="promptRegistries.details.header"
         alwaysShowTitle

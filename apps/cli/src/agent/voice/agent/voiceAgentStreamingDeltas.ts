@@ -1,4 +1,4 @@
-import { VOICE_ACTIONS_BLOCK } from '@happier-dev/protocol';
+import { VOICE_ACTIONS_BLOCK, resolveVoiceSpeechSegmentLength } from '@happier-dev/protocol';
 
 type VoiceOutputDeltaEvent = Readonly<{
   t: 'voice_output';
@@ -12,8 +12,6 @@ type VoiceOutputDeltaEvent = Readonly<{
   }>;
 }>;
 
-const TARGET_SPEECH_SEGMENT_CHARS = 320;
-const MAX_SPEECH_SEGMENT_CHARS = 1_024;
 const MAX_STREAMED_SPEECH_CHARS = 65_536;
 
 type VoiceStreamingOutputState = Readonly<{
@@ -38,16 +36,6 @@ type VoiceStreamingOutputPatch = (next: Readonly<{
   outputSegmentIndex?: number;
 }>) => void;
 
-function resolveSegmentLength(buffer: string, force: boolean): number {
-  if (force) return Math.min(buffer.length, MAX_SPEECH_SEGMENT_CHARS);
-  if (buffer.length < TARGET_SPEECH_SEGMENT_CHARS) return 0;
-  const scanEnd = Math.min(buffer.length, MAX_SPEECH_SEGMENT_CHARS);
-  for (let index = scanEnd - 1; index >= TARGET_SPEECH_SEGMENT_CHARS - 1; index -= 1) {
-    if (/\s|[.!?;,:]/.test(buffer[index]!)) return index + 1;
-  }
-  return scanEnd === MAX_SPEECH_SEGMENT_CHARS ? scanEnd : 0;
-}
-
 function appendSpeechText(stream: VoiceStreamingOutputState, patch: VoiceStreamingOutputPatch, text: string): void {
   const remaining = Math.max(0, MAX_STREAMED_SPEECH_CHARS - stream.outputSpeechChars - stream.outputSpeechBuffer.length);
   if (remaining === 0) return;
@@ -60,7 +48,7 @@ export function flushVoiceAgentStreamingSpeech(
   force = false,
 ): void {
   while (stream.outputSpeechBuffer) {
-    const segmentLength = resolveSegmentLength(stream.outputSpeechBuffer, force);
+    const segmentLength = resolveVoiceSpeechSegmentLength(stream.outputSpeechBuffer, { force, firstSegment: stream.outputSegmentIndex === 0 });
     if (segmentLength === 0) return;
     const text = stream.outputSpeechBuffer.slice(0, segmentLength);
     stream.events.push({
@@ -102,7 +90,6 @@ export function ingestVoiceAgentStreamingDelta(
   if (stream.suppressActionDeltas) return;
 
   const startTag = VOICE_ACTIONS_BLOCK.startTag;
-  const maxHold = Math.max(0, startTag.length - 1);
   const combined = `${stream.deltaHold}${textDelta}`;
   const tagIndex = combined.indexOf(startTag);
   if (tagIndex >= 0) {
@@ -115,7 +102,9 @@ export function ingestVoiceAgentStreamingDelta(
     return;
   }
 
-  const safeLen = Math.max(0, combined.length - maxHold);
+  let heldLength = Math.min(combined.length, startTag.length - 1);
+  while (heldLength > 0 && !startTag.startsWith(combined.slice(-heldLength))) heldLength -= 1;
+  const safeLen = combined.length - heldLength;
   const emit = combined.slice(0, safeLen);
   const nextHold = combined.slice(safeLen);
   patch({ deltaHold: nextHold });

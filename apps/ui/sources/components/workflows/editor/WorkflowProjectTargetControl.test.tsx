@@ -20,6 +20,7 @@ const browser = vi.hoisted(() => ({ open: vi.fn() }));
 const scm = vi.hoisted(() => ({ snapshot: null as ScmWorkingSnapshot | null }));
 const settings = vi.hoisted(() => ({
     values: {} as Record<string, unknown>,
+    recentMachinePaths: [] as Array<{ machineId: string; path: string }>,
 }));
 
 vi.mock('react-native', async () => {
@@ -43,8 +44,12 @@ vi.mock('@/components/ui/icons/Icon', async (importOriginal) => ({
     Icon: (props: Record<string, unknown>) => React.createElement('Icon', props),
 }));
 vi.mock('@/sync/domains/state/storage', async () => {
-    const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    const { createLiveStorageStoreMock, createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
+    const { authoringMemoryDefaults } = await import('@/sync/store/domains/authoringMemory');
     return createStorageModuleStub({
+        storage: createLiveStorageStoreMock(() => ({
+            authoringMemory: { ...authoringMemoryDefaults, recentMachinePaths: settings.recentMachinePaths },
+        })),
         useSetting: (key: string) => settings.values[key] ?? null,
         useActiveServerAccountScope: () => ({ serverId: 'server-a', accountId: 'account-a' }),
     });
@@ -106,8 +111,8 @@ function workspaceRef(id: string, rootPath: string) {
 beforeEach(() => {
     browser.open.mockReset();
     scm.snapshot = repoSnapshot();
+    settings.recentMachinePaths = [{ machineId: 'machine-2', path: '/home/me/service' }];
     settings.values = {
-        recentMachinePaths: [{ machineId: 'machine-2', path: '/home/me/service' }],
         workspaceRefsV1: [
             workspaceRef('ref-main', '/repo/payments'),
             workspaceRef('ref-feature', '/repo/payments-feature-auth'),

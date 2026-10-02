@@ -21,6 +21,11 @@ const bridge = vi.hoisted(() => ({
     nextId: 0,
     runner: null as unknown,
     managedMode: 'at-login' as string | null,
+    defaultInstalled: true,
+    pinned: false,
+    managedInstalled: true as boolean | null | undefined,
+    rowsComplete: true,
+    userOwnedPin: false,
     setResult: { ok: true } as { ok: true } | { ok: false; error: { code: string; message: string } },
 }));
 vi.mock('@/components/systemTasks/systemTasksRuntime', () => ({ getSystemTasksRunner: () => bridge.runner }));
@@ -55,12 +60,17 @@ function freshRunner(): SystemTaskRunner {
                         taskId,
                         ok: true,
                         data: {
-                            serviceInstalled: true,
-                            daemonRunning: true,
+                            serviceInstalled: bridge.defaultInstalled || bridge.userOwnedPin,
+                            daemonRunning: bridge.defaultInstalled || bridge.userOwnedPin,
                             needsAuth: false,
                             serviceAutostart: bridge.managedMode,
-                            serviceRowsComplete: true,
-                            serviceRows: [{ relayUrl: 'https://home.example.test', state: 'connected', appManaged: true, serviceTargetMode: 'default-following', actions: ['stop'] }],
+                            ...(bridge.managedInstalled === undefined ? {} : { managedServiceInstalled: bridge.managedInstalled }),
+                            runningManagedServiceCount: bridge.managedInstalled == null ? null : bridge.defaultInstalled && !bridge.userOwnedPin ? 1 : 0,
+                            serviceRowsComplete: bridge.rowsComplete,
+                            serviceRows: [
+                                ...(bridge.userOwnedPin ? [{ relayUrl: 'https://home.example.test', state: 'connected', appManaged: false, serviceTargetMode: 'pinned', actions: [] }] : bridge.defaultInstalled ? [{ relayUrl: 'https://home.example.test', state: 'connected', appManaged: true, serviceTargetMode: 'default-following', actions: ['stop'] }] : []),
+                                ...(bridge.pinned ? [{ relayUrl: 'https://pin.example.test', state: 'offline', appManaged: true, serviceTargetMode: 'pinned', actions: ['start'] }] : []),
+                            ],
                         },
                     });
                 });
@@ -76,6 +86,11 @@ describe('useDesktopLoginStart (R16 b, A13-02)', () => {
     beforeEach(() => {
         bridge.starts.length = 0;
         bridge.managedMode = 'at-login';
+        bridge.defaultInstalled = true;
+        bridge.pinned = false;
+        bridge.managedInstalled = true;
+        bridge.rowsComplete = true;
+        bridge.userOwnedPin = false;
         bridge.setResult = { ok: true };
         bridge.runner = freshRunner();
     });
@@ -98,10 +113,59 @@ describe('useDesktopLoginStart (R16 b, A13-02)', () => {
 
     it('shows no mode to flip when the managed services disagree', async () => {
         bridge.managedMode = null;
+        bridge.pinned = true;
         await refreshLocalDaemonStatus(bridge.runner as SystemTaskRunner);
         const hook = await renderHook(() => useDesktopLoginStart());
         await flushHookEffects();
         expect(hook.getCurrent()).toMatchObject({ mode: null, installed: true, loading: false });
+        await hook.unmount();
+    });
+
+    it('reports an installed managed pin even when the scoped default service is absent (A15-01/A15-05 port)', async () => {
+        bridge.defaultInstalled = false;
+        bridge.pinned = true;
+        await refreshLocalDaemonStatus(bridge.runner as SystemTaskRunner);
+        const hook = await renderHook(() => useDesktopLoginStart());
+        expect(hook.getCurrent()).toMatchObject({ installed: true, mode: 'at-login', loading: false });
+        await hook.unmount();
+    });
+
+    it('reports the stopped managed default hidden behind a user-owned serving pin (A16-01)', async () => {
+        bridge.userOwnedPin = true;
+        await refreshLocalDaemonStatus(bridge.runner as SystemTaskRunner);
+        const hook = await renderHook(() => useDesktopLoginStart());
+        expect(hook.getCurrent()).toMatchObject({ installed: true, mode: 'at-login', loading: false });
+        await hook.unmount();
+    });
+
+    it('keeps managed presence unknown when incomplete inventory has no rows (A16-01)', async () => {
+        bridge.defaultInstalled = false;
+        bridge.managedInstalled = null;
+        bridge.managedMode = null;
+        bridge.rowsComplete = false;
+        await refreshLocalDaemonStatus(bridge.runner as SystemTaskRunner);
+        const hook = await renderHook(() => useDesktopLoginStart());
+        expect(hook.getCurrent()).toMatchObject({ installed: null, mode: null, loading: false });
+        await hook.unmount();
+    });
+
+    it.each([false, true])('reports complete managed absence with a user-owned serving pin: %s', async (userOwnedPin) => {
+        bridge.defaultInstalled = false;
+        bridge.userOwnedPin = userOwnedPin;
+        bridge.managedInstalled = false;
+        bridge.managedMode = null;
+        await refreshLocalDaemonStatus(bridge.runner as SystemTaskRunner);
+        const hook = await renderHook(() => useDesktopLoginStart());
+        expect(hook.getCurrent()).toMatchObject({ installed: false, mode: null, loading: false });
+        await hook.unmount();
+    });
+
+    it('keeps presence unknown when an older status omits the managed inventory fact', async () => {
+        bridge.managedInstalled = undefined;
+        bridge.userOwnedPin = true;
+        await refreshLocalDaemonStatus(bridge.runner as SystemTaskRunner);
+        const hook = await renderHook(() => useDesktopLoginStart());
+        expect(hook.getCurrent()).toMatchObject({ installed: null, mode: 'at-login', loading: false });
         await hook.unmount();
     });
 

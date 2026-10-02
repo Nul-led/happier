@@ -3,6 +3,7 @@ import type { DaemonProviderConnectionViewV1 } from '@happier-dev/protocol/rpc';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { FieldValueItem } from '@/components/ui/forms/FieldValueItem';
 import { StatusPill } from '@/components/ui/status/StatusPill';
 import { presentProviderCompatibilityReasons } from '@/providers/connection/compatibilityReasonPresentation';
 import { t } from '@/text';
@@ -72,14 +73,16 @@ export function ProviderEndpointOverridesSection(props: Readonly<{
                             ? t('settingsProviders.detail.endpointMachine')
                             : t('settingsProviders.detail.endpointDefault')}
                     />,
-                    <Item
+                    <FieldValueItem
                         key={`${endpoint.endpointTemplateId}:account`}
+                        fieldTestID={`provider-connection-endpoint.${endpoint.endpointTemplateId}.account`}
                         title={t('settingsProviders.detail.endpointDefault')}
                         accessibilityLabel={`${endpoint.protocol}, ${t('settingsProviders.detail.endpointDefault')}`}
                         subtitle={accountBaseUrl ?? t('settingsProviders.detail.resetDefaultEndpoint')}
-                        onPress={() => props.onSetOverride({
+                        value={accountBaseUrl ?? endpoint.baseUrl}
+                        onCommit={(baseUrl) => props.onSetOverride({
                             endpointTemplateId: endpoint.endpointTemplateId,
-                            currentUrl: accountBaseUrl ?? endpoint.baseUrl,
+                            currentUrl: baseUrl,
                             scope: 'account',
                         })}
                     />,
@@ -98,14 +101,16 @@ export function ProviderEndpointOverridesSection(props: Readonly<{
                         })}
                     />);
                 }
-                rows.push(<Item
+                rows.push(<FieldValueItem
                     key={`${endpoint.endpointTemplateId}:machine`}
+                    fieldTestID={`provider-connection-endpoint.${endpoint.endpointTemplateId}.machine`}
                     title={t('settingsProviders.detail.endpointMachine')}
                     accessibilityLabel={`${endpoint.protocol}, ${t('settingsProviders.detail.endpointMachine')}`}
                     subtitle={machineBaseUrl ?? t('settingsProviders.detail.endpointMachineDescription')}
-                    onPress={() => props.onSetOverride({
+                    value={machineBaseUrl ?? accountBaseUrl ?? endpoint.baseUrl}
+                    onCommit={(baseUrl) => props.onSetOverride({
                         endpointTemplateId: endpoint.endpointTemplateId,
-                        currentUrl: machineBaseUrl ?? accountBaseUrl ?? endpoint.baseUrl,
+                        currentUrl: baseUrl,
                         scope: 'machine',
                     })}
                 />);

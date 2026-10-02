@@ -31,7 +31,6 @@ export const FEATURES_SETTINGS = defineSettingsPage({
         optionalFeatures: {
             titleKey: 'settingsFeatures.localTogglesTitle',
             settings: Object.assign({}, declareToggles(false), {
-                terminalLocation: { storage: { scope: 'local', key: 'embeddedTerminalDockLocation', access: 'read_write' }, titleKey: 'terminalEmbedded.settings.locationTitle' },
                 terminalRenderer: { storage: { scope: 'local', key: 'terminalRendererPreference', access: 'read_write' }, titleKey: 'terminalEmbedded.settings.rendererTitle', host: settingsHosts.notWeb },
             } satisfies Readonly<Record<string, SettingDeclaration>>),
         },

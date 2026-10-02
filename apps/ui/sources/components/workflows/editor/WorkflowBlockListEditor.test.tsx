@@ -901,7 +901,8 @@ describe('workflow block list editor', () => {
         // A value choice announces checked (D14A radio semantics, owned by the data editor).
         expect(screen.findByTestId('workflow-editor-step-root-step-input-0-item-field-count')?.props.accessibilityState)
             .toMatchObject({ checked: true });
-        expect(harness.validateWorkflowEditorDraft(draft).issues.map((issue) => issue.code))
+        const validation = harness.validateWorkflowEditorDraft(draft);
+        expect(validation.issues.map((issue) => issue.code), JSON.stringify(validation.issues))
             .toContain('invalid_reference_scope');
     });
 });

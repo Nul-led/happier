@@ -12,6 +12,7 @@ import { presentAccountSubscription } from '@/sync/domains/connectedServices/pre
 import { t } from '@/text';
 import { formatAsOfTime } from '@/utils/time/formatAsOfTime';
 import { formatResetAtTime } from '@/utils/time/formatResetAtTime';
+import { ConnectedServiceIdSchema } from '@happier-dev/protocol';
 import type {
     ConnectedServiceId,
     ConnectedServiceQuotaRecoveryCreditsV1,
@@ -85,8 +86,8 @@ export type AccountUsageResetsAction = Readonly<{ onUse: () => void; pending: bo
 
 export const AccountUsageResetsLine = React.memo(function AccountUsageResetsLine(props: Readonly<{
     recoveryCredits: ConnectedServiceQuotaRecoveryCreditsV1 | null | undefined;
-    /** Needed for the connected-account consume; null when `action` owns "Use one". */
-    legacyServiceId: ConnectedServiceId | null;
+    /** Cached identity stays open-ended; only built-in service IDs enable connected-account consume. */
+    legacyServiceId: string | null;
     accountId: string | null;
     snapshotFetchedAtMs: number | null;
     now: number;
@@ -101,7 +102,14 @@ export const AccountUsageResetsLine = React.memo(function AccountUsageResetsLine
 }>) {
     const summary = summarizeConnectedServiceQuotaRecoveryCredits(props.recoveryCredits, props.now);
     if (!summary) return null;
-    return <ResetsLineView {...props} summary={summary} />;
+    const legacyServiceId = ConnectedServiceIdSchema.safeParse(props.legacyServiceId);
+    return (
+        <ResetsLineView
+            {...props}
+            summary={summary}
+            legacyServiceId={legacyServiceId.success ? legacyServiceId.data : null}
+        />
+    );
 });
 
 const ResetsLineView = React.memo(function ResetsLineView(props: Readonly<{

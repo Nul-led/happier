@@ -58,7 +58,7 @@ const mark = (agent: MachineAgent, size = 20) => (
 function MachinePage(props: Readonly<{ children: React.ReactNode }>) {
     const { theme } = useUnistyles();
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <PageHeader
                 testID="agent-setup-specimen.header"
                 alwaysShowTitle
@@ -184,7 +184,7 @@ function SpecimenFrame(props: Readonly<{ frame: string }>) {
             );
         case 'S1':
             return (
-                <ItemList presentation="page">
+                <ItemList>
                     <ItemGroup title="This computer" surface="none">
                         <MachineAgentCardGrid testID="agent-setup-specimen.cards">
                             {[FIXTURE_AGENTS.claude, { ...FIXTURE_AGENTS.codex, state: 'ready' as const }, FIXTURE_AGENTS.opencode].map((agent) => (
@@ -201,7 +201,7 @@ function SpecimenFrame(props: Readonly<{ frame: string }>) {
             const fresh = [FIXTURE_AGENTS.claude, FIXTURE_AGENTS.codex, FIXTURE_AGENTS.gemini, FIXTURE_AGENTS.opencode, FIXTURE_AGENTS.antigravity]
                 .map((agent) => ({ ...agent, state: 'notInstalled' as const, installed: false, version: null, job: null, signIn: { ...agent.signIn, status: 'unknown' as const, via: null } }));
             return (
-                <ItemList presentation="page">
+                <ItemList>
                     <ItemGroup title="Get set up" surface="none">
                         <FirstAgentSetupBlock
                             testID="agent-setup-specimen.first"
@@ -260,7 +260,7 @@ function StatesBoard() {
         ['Unsupported on this machine', { ...FIXTURE_AGENTS.antigravity, state: 'unsupported', platform: { supported: false, reason: 'arch' } }],
     ];
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <ItemGroup title="Rows">
                 {rows.map(([label, agent, session], index) => (
                     <MachineAgentRow key={label} testID={`agent-setup-specimen.row.${index}`} agent={agent} mark={mark(agent)} session={session ?? IDLE_SESSION} onAction={() => {}} showDivider={index < rows.length - 1} />

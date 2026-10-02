@@ -17,7 +17,7 @@ const modalMocks = vi.hoisted(() => ({
 installAccountCommonModuleMocks({
     modal: async () => {
         const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
-        return createModalModuleMock({ spies: modalMocks }).module;
+        return createModalModuleMock({ spies: modalMocks, renderCustomModals: true }).module;
     },
 });
 
@@ -231,6 +231,10 @@ vi.mock('@/sync/http/client', () => ({
     ) => serverFetchSpy(path, init, { ...options, requestContext }),
 }));
 
+// Collect the real page graph after configuring the shared platform/modal boundaries,
+// rather than loading it inside a timed test or before that configuration exists.
+const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
+
 describe('AddPhoneSettingsView', () => {
     beforeEach(() => {
         homeState.activeServerId = 'profile-test';
@@ -256,6 +260,38 @@ describe('AddPhoneSettingsView', () => {
         modalMocks.alertAsync.mockClear();
     });
 
+    it('issues and cancels the modal code on its displayed Home while another Home stays focused', async () => {
+        homeState.savedProfiles.push({
+            id: 'profile-home-b', name: 'Home B',
+            serverUrl: 'https://home-b.example.test', canonicalServerUrl: 'https://home-b.example.test',
+            serverIdentityId: 'srv_home_b',
+        });
+        pairingStatusResponse = {
+            ok: true, status: 200,
+            json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: pairingExpiresAt }),
+        };
+        const { Modal, ModalProvider } = await import('@/modal');
+        const { showHomePairingModal } = await import('@/components/auth/pairing/HomePairingModal');
+        Modal.hideAll();
+        const screen = await renderScreen(<ModalProvider>{null}</ModalProvider>);
+        await act(async () => showHomePairingModal('phone', 'profile-home-b'));
+        await flushHookEffects({ cycles: 4 });
+
+        expect(screen.findByTestId('home-pairing-modal-qr')).toBeTruthy();
+        const start = serverFetchSpy.mock.calls.find((call) => call[0] === '/v1/auth/pairing/start');
+        expect(start?.[2]?.requestContext).toMatchObject({
+            serverId: 'profile-home-b', endpointUrl: 'https://home-b.example.test',
+        });
+        expect(homeState.activeServerId).toBe('profile-test');
+
+        await act(async () => Modal.hideAll());
+        await flushHookEffects({ cycles: 2 });
+        const cancel = serverFetchSpy.mock.calls.find((call) => call[0] === '/v1/auth/pairing/consume');
+        expect(JSON.parse(String(cancel?.[1]?.body))).toEqual({ pairId: 'pair_123', intent: 'cancel' });
+        expect(cancel?.[2]?.requestContext).toMatchObject({ serverId: 'profile-home-b' });
+        expect(screen.findByTestId('home-pairing-modal-qr')).toBeNull();
+    });
+
     it('renders a pairing QR code after starting a session', async () => {
         homeState.activeServerUrl = 'https://stack.example.test';
         pairingStatusResponse = {
@@ -263,7 +299,6 @@ describe('AddPhoneSettingsView', () => {
             status: 200,
             json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: pairingExpiresAt }),
         } as any;
-        const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
 
         const screen = await renderScreen(<AddPhoneSettingsView />);
         await flushHookEffects({ cycles: 4 });
@@ -302,7 +337,6 @@ describe('AddPhoneSettingsView', () => {
             status: 200,
             json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: pairingExpiresAt }),
         } as any;
-        const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
         const screen = await renderScreen(<AddPhoneSettingsView />);
         await flushHookEffects({ cycles: 4 });
         serverFetchSpy.mockClear();
@@ -328,7 +362,6 @@ describe('AddPhoneSettingsView', () => {
             status: 404,
             json: async () => ({ error: 'not_found' }),
         } as any;
-        const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
 
         const screen = await renderScreen(<AddPhoneSettingsView />);
         await flushHookEffects({ cycles: 1 });
@@ -365,7 +398,6 @@ describe('AddPhoneSettingsView', () => {
             return baseline(path, init, options);
         });
         try {
-            const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
             const screen = await renderScreen(<AddPhoneSettingsView />);
 
             // The lifecycle notices the expiry on its own poll schedule (real timers), so wait for the
@@ -391,7 +423,6 @@ describe('AddPhoneSettingsView', () => {
             status: 200,
             json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: pairingExpiresAt }),
         } as any;
-        const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
 
         const screen = await renderScreen(<AddPhoneSettingsView />);
         await flushHookEffects({ cycles: 4 });
@@ -411,7 +442,6 @@ describe('AddPhoneSettingsView', () => {
             status: 200,
             json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: pairingExpiresAt }),
         } as any;
-        const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
 
         const screen = await renderScreen(<AddPhoneSettingsView />);
 
@@ -428,7 +458,6 @@ describe('AddPhoneSettingsView', () => {
             status: 200,
             json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: pairingExpiresAt }),
         } as any;
-        const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
 
         const screen = await renderScreen(<AddPhoneSettingsView />);
         await flushHookEffects({ cycles: 4 });
@@ -490,7 +519,6 @@ describe('AddPhoneSettingsView', () => {
             json: async () => ({ error: 'already_completed' }),
         } as any;
         serverFetchSpy.mockClear();
-        const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
 
         const screen = await renderScreen(<AddPhoneSettingsView />);
         await flushHookEffects({ cycles: 4 });
@@ -553,7 +581,6 @@ describe('AddPhoneSettingsView', () => {
             }),
         } as any;
         accountApprovalResponse = new Response(null, { status: 403 });
-        const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
         const screen = await renderScreen(<AddPhoneSettingsView />);
         await flushHookEffects({ cycles: 4 });
 
@@ -589,7 +616,6 @@ describe('AddPhoneSettingsView', () => {
             status: 200,
             json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: pairingExpiresAt }),
         } as any;
-        const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
 
         const screen = await renderScreen(<AddPhoneSettingsView />);
         await flushHookEffects({ cycles: 2 });
@@ -636,7 +662,6 @@ describe('AddPhoneSettingsView', () => {
             status: 200,
             json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: pairingExpiresAt }),
         } as any;
-        const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
 
         const screen = await renderScreen(<AddPhoneSettingsView />);
         await flushHookEffects({ cycles: 2 });
@@ -663,7 +688,6 @@ describe('AddPhoneSettingsView', () => {
             status: 200,
             json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: pairingExpiresAt }),
         } as any;
-        const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
         const screen = await renderScreen(<AddPhoneSettingsView />);
         await flushHookEffects({ cycles: 2 });
         expect(screen.findByTestId('add-phone-qr')).toBeTruthy();

@@ -23,6 +23,8 @@ const IGNORED_UNTRANSLATED_KEYS = new Set([
     'widgetAdd.noteSubtitle',
     'widgetAdd.interactiveViewSubtitle',
     'widgetAdd.findMoreSubtitle',
+    // Companion Changes glance: its source is the product name Git.
+    'widgetGlances.changesSource',
     // Server settings groups named by product: Apple's Live Activities, WorkOS, and "Plugins", the
     // word these locales already use for the Plugins page.
     'homeSettings.groups.liveActivity',
@@ -112,6 +114,8 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
     // "password" is the ordinary Italian word for it; "parola d'ordine" is not
     // what anyone types into a credential form.
     it: new Set([
+        // Widgets (Appearance) and the surfaces a widget sits on: the word these locales use.
+        'widgetFrame.surfaceHome',
         // Boards (INT §5.1): the ordinary words these locales use (Board, Canvas, Offline, Online, Workflow, Session(s), Machine(s), Name, Layout).
         'boards.header.canvas',
         'workStatus.buckets.offline',
@@ -158,6 +162,8 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'settingsSourceControl.page.generator.agentTitle',
     ]),
     pt: new Set([
+        // Widgets (Appearance) and the surfaces a widget sits on: the word these locales use.
+        'widgetFrame.appearanceTitle',
         // Boards (INT §5.1): the ordinary words these locales use (Board, Canvas, Offline, Online, Workflow, Session(s), Machine(s), Name, Layout).
         'workStatus.buckets.offline',
         'boards.card.machine.online',
@@ -179,6 +185,8 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
         'settingsProvidersCollection.endpointsTitle',
     ]),
     fr: new Set([
+        // Widgets (Appearance) and the surfaces a widget sits on: the word these locales use.
+        'widgetFrame.appearanceTitle',
         // Boards (INT §5.1): the ordinary words these locales use (Board, Canvas, Offline, Online, Workflow, Session(s), Machine(s), Name, Layout).
         'boards.sections.filter.title',
         'boards.kinds.session',
@@ -543,6 +551,9 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
     // German noun is spelled. A key here is a decision, not a gap — translating one would make
     // the UI read worse, not better.
     de: new Set([
+        // Widgets (Appearance) and the surfaces a widget sits on: the word these locales use.
+        'widgetFrame.appearanceTitle',
+        'widgetFrame.surfaceBoard',
         // Boards (INT §5.1): the ordinary words these locales use (Board, Canvas, Offline, Online, Workflow, Session(s), Machine(s), Name, Layout).
         'boards.title',
         'boards.header.canvas',
@@ -959,6 +970,8 @@ const IGNORED_UNTRANSLATED_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<s
     ]),
     // "Personal" is spelled the same in Spanish and Catalan ("Keep it: Personal | Shared").
     es: new Set([
+        // Widgets (Appearance) and the surfaces a widget sits on: the word these locales use.
+        'widgetFrame.appearanceTitle',
         // Folder-less sessions: the ordinary word in this locale.
         'session.folderless.chats',
         // Roles: "Roles" is the ordinary Spanish plural of "rol".

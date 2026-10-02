@@ -22,7 +22,7 @@ export const PromptStacksScreen = React.memo(() => {
   const voiceCount = promptStacks?.surfaces?.voice?.length ?? 0;
 
   return (
-    <ItemList presentation="page">
+    <ItemList>
       <SettingsPageHeader description={t('promptLibrary.surface.stacksPageDescription')} />
       <ItemGroup title={t('promptLibrary.surface.stacksSection')} description={t('promptLibrary.surface.stacksSectionDescription')}>
         <Item

@@ -28,7 +28,7 @@ import {
 import { QRCode } from '@/components/qr/QRCode';
 import { HappierPressable } from '@happier-dev/plugin-ui/presentation';
 import { Typography } from '@/constants/Typography';
-import { usePairingSession, type PairingFailureCause, type PairingPresentation } from '@/hooks/auth/usePairingSession';
+import { usePairingSession, type PairingContext, type PairingFailureCause, type PairingPresentation } from '@/hooks/auth/usePairingSession';
 import { Modal } from '@/modal';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
@@ -122,6 +122,7 @@ export const HomePairingPanel = React.memo(function HomePairingPanel(props: Read
     /** The saved Home the code adds a device to; the focused Home when omitted. */
     targetProfileId?: string | null;
     onClose?: () => void;
+    onCompleted?: (context: PairingContext) => void;
 }>) {
     const { theme } = useUnistyles();
     const auth = useAuth();
@@ -133,6 +134,7 @@ export const HomePairingPanel = React.memo(function HomePairingPanel(props: Read
         enabled: canRequestPairing,
         isAuthenticated: canRequestPairing,
         targetProfileId: props.targetProfileId ?? null,
+        onCompleted: props.onCompleted,
     });
     const [stopped, setStopped] = React.useState(false);
     const [cancelling, setCancelling] = React.useState(false);

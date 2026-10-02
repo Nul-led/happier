@@ -132,13 +132,21 @@ export async function listSessionTriggerSets(
     request: z.input<typeof SessionTriggerListRequestV1Schema>,
     options: CallOptions = {},
 ): Promise<readonly WorkflowTriggerSetV1[]> {
+    return (await listSessionTriggers(request, options)).sets;
+}
+
+/** Preserve the binding-owned PR links alongside the session's trigger sets. */
+export async function listSessionTriggers(
+    request: z.input<typeof SessionTriggerListRequestV1Schema>,
+    options: CallOptions = {},
+): Promise<z.output<typeof SessionTriggerListResultV1Schema>> {
     const result = await callTriggerAction(
         'session.trigger.list',
         SessionTriggerListRequestV1Schema.parse(request),
         (value) => SessionTriggerListResultV1Schema.parse(value),
         options,
     );
-    return result.sets;
+    return result;
 }
 
 export async function addSessionTrigger(request: z.input<typeof SessionTriggerAddRequestV1Schema>, options: CallOptions = {}): Promise<WorkflowTriggerWriteResult> {

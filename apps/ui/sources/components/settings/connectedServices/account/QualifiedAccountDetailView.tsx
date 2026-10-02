@@ -210,7 +210,7 @@ export const QualifiedAccountDetailView = React.memo(function QualifiedAccountDe
     }, [disconnectPending, onDisconnect, presentation.accessibilityLabel, serviceLabel]);
 
     return (
-        <ItemList testID={testID} presentation="page">
+        <ItemList testID={testID}>
             <SettingsPageHeader
                 title={presentation.primaryLabel}
                 alwaysShowTitle

@@ -27,7 +27,7 @@ import { isDesktopHost } from '@/utils/platform/desktopHost';
 export type DesktopLoginStartState = Readonly<{
     supported: boolean;
     mode: DesktopServiceAutostartMode | null;
-    /** Whether a background service is installed here; `null` until this computer's status is known. */
+    /** Whether a managed background service is installed here; `null` when presence is unproved. */
     installed: boolean | null;
     loading: boolean;
     error: string | null;
@@ -66,7 +66,7 @@ export function useDesktopLoginStart(): DesktopLoginStartState {
         // A13-02: the setting is every managed service's common mode, not the scoped service's.
         mode: status?.serviceAutostart ?? null,
         // Whether the app manages any background service here (the setting has nothing to govern otherwise).
-        installed: status ? (status.serviceRows ? status.serviceRows.some((row) => row.appManaged) : status.serviceInstalled) : null,
+        installed: status?.managedServiceInstalled ?? null,
         loading: supported && (writing || status === null),
         error,
         setMode,

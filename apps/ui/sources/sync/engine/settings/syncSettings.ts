@@ -60,7 +60,6 @@ import {
     sealAccountScopedBlobCiphertext,
     type AccountSettingMutationV1,
     type AccountSettingsStoredContentEnvelope,
-    type LegacyAuthoringMemorySettingsKey,
 } from '@happier-dev/protocol';
 import {
     readAccountSettingsBaseline,
@@ -184,7 +183,10 @@ export type SyncSettingsParams<TOneShotMutationValue = never> = {
         ) => Readonly<{
             settings: Record<string, unknown>;
             value: TOneShotMutationValue;
-        }>;
+        }> | Promise<Readonly<{
+            settings: Record<string, unknown>;
+            value: TOneShotMutationValue;
+        }>>;
         /**
          * Lets another Home transaction commit the canonical prepared Settings
          * envelope. Promotion uses this seam so resource creation and every
@@ -205,7 +207,7 @@ export async function retireLegacyAuthoringMemoryKey(params: Readonly<{
     accountMode: 'plain' | 'e2ee';
     settingsScope: AccountSettingsScope;
     requestContext: NonNullable<SyncSettingsParams['requestContext']>;
-    key: LegacyAuthoringMemorySettingsKey;
+    key: typeof LEGACY_AUTHORING_MEMORY_SETTINGS_KEYS[number];
     expectedSettingsVersion: number;
 }>): Promise<OneShotAccountSettingsMutationResult<void>> {
     if (!LEGACY_AUTHORING_MEMORY_SETTINGS_KEYS.includes(params.key)) {
@@ -814,7 +816,7 @@ export async function syncSettings<TOneShotMutationValue = never>(
                 });
             }
             const oneShotMutation = params.oneShotServerSettingsMutation
-                ? params.oneShotServerSettingsMutation.mutate(baseline.raw ?? {})
+                ? await params.oneShotServerSettingsMutation.mutate(baseline.raw ?? {})
                 : null;
             const immutableMutation = params.accountSettingsMutation
                 ? applyAccountSettingMutationV1(

@@ -27,10 +27,14 @@ export function EnrolledComputerSetup(props: Readonly<{
         serverId: props.profileId,
     }), [profile?.serverUrl, props.profileId]);
     const ownedTaskIdRef = React.useRef<string | null>(null);
+    const [ownedTaskId, setOwnedTaskId] = React.useState<string | null>(null);
     const onTaskIdChange = React.useCallback((taskId: string | null) => {
         ownedTaskIdRef.current = taskId;
+        setOwnedTaskId(taskId);
     }, []);
     const task = useThisComputerSetupTask({
+        // Enrollment owns cancellation on leave; it must not adopt another surface's setup.
+        taskId: ownedTaskId,
         authRequestApproval: approval,
         onSucceeded: props.onSucceeded,
         onTaskIdChange,

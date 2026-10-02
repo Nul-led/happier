@@ -19,7 +19,6 @@ import { MACHINE_ADMINISTRATION_SELECTION_KEYS_V1 } from '@/sync/domains/machine
 import { useMachineAdministrationTargetSelection } from '@/sync/domains/machines/administration/useTargetSelection';
 import type { ScmCommitStrategy } from '@/scm/settings/commitStrategy';
 import type { ScmDiffArea } from '@happier-dev/protocol';
-import { Modal } from '@/modal';
 import { t, type TranslationKey } from '@/text';
 import { Switch } from '@/components/ui/forms/Switch';
 import type {
@@ -36,6 +35,7 @@ import {
     shouldConfirmRemoteOperation,
 } from '@/scm/settings/remoteConfirmationPolicy';
 import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { FieldValueItem } from '@/components/ui/forms/FieldValueItem';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { SegmentedChoiceItem } from '@/components/ui/lists/SegmentedChoiceItem';
 import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
@@ -279,7 +279,7 @@ export const SourceControlSettingsView = React.memo(function SourceControlSettin
     ));
 
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             <SettingsPageHeader
                 description={t('settingsSourceControl.page.description')}
                 actions={(
@@ -320,22 +320,22 @@ export const SourceControlSettingsView = React.memo(function SourceControlSettin
                     showChevron={false}
                 />
                 {effectiveCommitMessageGeneratorEnabled ? (
-                    <SettingRow
-                        subtitleLines={0}
-                        setting={SOURCE_CONTROL_SETTINGS.settings.commitMessageAgent}
-                        detail={effectiveCommitMessageGeneratorBackendId}
-                        onPress={async () => {
-                            const next = await Modal.prompt(t('settingsSourceControl.commitMessageGenerator.backendPromptTitle'), t('settingsSourceControl.commitMessageGenerator.backendPromptMessage'), {
-                                defaultValue: effectiveCommitMessageGeneratorBackendId,
-                                placeholder: DEFAULT_AGENT_ID,
-                                confirmText: t('common.save'),
-                                cancelText: t('common.cancel'),
-                            });
-                            if (typeof next === 'string' && next.trim()) {
-                                setScmCommitMessageGeneratorBackendId(next.trim());
-                            }
-                        }}
-                    />
+                    <SettingAnchor setting={SOURCE_CONTROL_SETTINGS.settings.commitMessageAgent}>
+                        <FieldValueItem
+                            subtitleLines={0}
+                            title={t(SOURCE_CONTROL_SETTINGS.settings.commitMessageAgent.titleKey)}
+                            subtitle={t('settingsSourceControl.page.generator.agentDescription')}
+                            fieldTestID="settings.sourceControl.commitMessageAgent"
+                            placeholder={DEFAULT_AGENT_ID}
+                            value={effectiveCommitMessageGeneratorBackendId}
+                            onCommit={(draft) => {
+                                const next = draft.trim();
+                                if (!next) return effectiveCommitMessageGeneratorBackendId;
+                                setScmCommitMessageGeneratorBackendId(next);
+                                return next;
+                            }}
+                        />
+                    </SettingAnchor>
                 ) : null}
                 {effectiveCommitMessageGeneratorEnabled ? (
                     <SettingRow

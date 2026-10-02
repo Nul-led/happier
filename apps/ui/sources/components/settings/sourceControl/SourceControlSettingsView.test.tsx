@@ -178,7 +178,7 @@ vi.mock('@/components/ui/lists/ItemGroup', () => ({
 }));
 
 vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: any) => React.createElement('Item', props),
+    Item: (props: any) => React.createElement('Item', props, props.rightElement),
 }));
 
 type SegmentedControlProps = Readonly<{
@@ -608,5 +608,20 @@ describe('SourceControlSettingsView', () => {
         });
 
         expect(setScmCommitMessageGeneratorInstructions).toHaveBeenCalledWith('Use imperative mood');
+    });
+
+    it('commits a trimmed inline agent draft on submit and ignores an empty draft', async () => {
+        setScmCommitMessageGeneratorBackendId.mockClear();
+        const { SourceControlSettingsView } = await import('./SourceControlSettingsView');
+        const screen = await renderSettingsView(<SourceControlSettingsView />);
+        expect(screen.findByTestId('settings.sourceControl.commitMessageAgent')).toBeTruthy();
+        act(() => screen.changeTextByTestId('settings.sourceControl.commitMessageAgent', ' custom-agent '));
+        expect(setScmCommitMessageGeneratorBackendId).not.toHaveBeenCalled();
+        act(() => screen.findByTestId('settings.sourceControl.commitMessageAgent')!.props.onSubmitEditing());
+        expect(setScmCommitMessageGeneratorBackendId).toHaveBeenCalledWith('custom-agent');
+        setScmCommitMessageGeneratorBackendId.mockClear();
+        act(() => screen.changeTextByTestId('settings.sourceControl.commitMessageAgent', ' '));
+        act(() => screen.findByTestId('settings.sourceControl.commitMessageAgent')!.props.onBlur());
+        expect(setScmCommitMessageGeneratorBackendId).not.toHaveBeenCalled();
     });
 });

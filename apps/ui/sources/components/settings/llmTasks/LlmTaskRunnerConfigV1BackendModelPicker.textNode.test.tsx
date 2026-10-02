@@ -1,5 +1,6 @@
 import * as React from 'react';
 import renderer from 'react-test-renderer';
+import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers';
@@ -200,6 +201,28 @@ vi.mock('@/components/ui/overlays/FloatingOverlay', () => ({
 }));
 
 describe('LlmTaskRunnerConfigV1BackendModelPicker', () => {
+
+    it('edits a custom model inline, cancels without saving, and saves an empty id as default', async () => {
+        dropdownMenuProps.length = 0;
+        const onChange = vi.fn();
+        const { LlmTaskRunnerConfigV1BackendModelPicker } = await import('./LlmTaskRunnerConfigV1BackendModelPicker');
+        const screen = await renderScreen(<LlmTaskRunnerConfigV1BackendModelPicker
+            value={{ v: 1, backendTarget: { kind: 'configuredAcpBackend', backendId: 'custom-backend' }, modelId: 'old-model', permissionMode: 'no_tools' }}
+            onChange={onChange}
+            modelTestID="runner-model"
+        />);
+        const customMenu = () => dropdownMenuProps.filter((props) => props.items.some((item: { id: string }) => item.id === '__custom__')).at(-1);
+        act(() => customMenu().onSelect('__custom__'));
+        expect(screen.findByTestId('runner-model.custom')).toBeTruthy();
+        act(() => screen.changeTextByTestId('runner-model.custom', 'discard-me'));
+        act(() => screen.pressByTestId('runner-model.custom.cancel'));
+        expect(onChange).not.toHaveBeenCalled();
+        act(() => customMenu().onSelect('__custom__'));
+        expect(screen.findByTestId('runner-model.custom')!.props.value).toBe('old-model');
+        act(() => screen.changeTextByTestId('runner-model.custom', ' '));
+        act(() => screen.pressByTestId('runner-model.custom.save'));
+        expect(onChange).toHaveBeenCalledWith({ v: 1, backendTarget: { kind: 'configuredAcpBackend', backendId: 'custom-backend' }, modelId: 'default', permissionMode: 'no_tools' });
+    });
 
     it('writes the legacy task-runner backend contract from a selected current catalog entry', async () => {
         dropdownMenuProps.length = 0;

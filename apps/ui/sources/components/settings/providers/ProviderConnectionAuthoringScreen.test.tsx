@@ -365,6 +365,45 @@ describe('ProviderConnectionAuthoringScreen', () => {
             .toBe('Boundary provider');
     });
 
+    it('edits a built-in connection name in the shared draft and writes it only on Connect', async () => {
+        const { ProviderConnectionAuthoringScreen } = await import('./ProviderConnectionAuthoringScreen');
+        const screen = await renderScreen(
+            <ProviderConnectionAuthoringScreen contributionKey="acme.plugin/ollama" displayName="Local models" />,
+        );
+        const name = screen.findByTestId('settings-provider-authoring-name');
+        expect(name?.props.value).toBe('Local models');
+        await React.act(async () => {
+            name?.props.onChangeText('Renamed local models');
+            await flushHookEffects();
+        });
+        expect(run).not.toHaveBeenCalled();
+        expect(describeProviderConnections).toHaveBeenLastCalledWith(expect.objectContaining({
+            authoringPreview: expect.objectContaining({ displayName: 'Renamed local models' }),
+        }));
+        await React.act(async () => {
+            screen.findByTestId('settings-provider-authoring-connect')?.props.onPress?.();
+            await flushHookEffects();
+        });
+        expect(run).toHaveBeenCalledWith(expect.objectContaining({
+            action: 'createContribution', displayName: 'Renamed local models',
+        }), 'save');
+    });
+
+    it('cancels a named built-in draft without creating a connection', async () => {
+        const { ProviderConnectionAuthoringScreen } = await import('./ProviderConnectionAuthoringScreen');
+        const screen = await renderScreen(
+            <ProviderConnectionAuthoringScreen contributionKey="acme.plugin/ollama" displayName="Local models" />,
+        );
+        const cancel = screen.findByTestId('settings-provider-authoring-cancel');
+        expect(cancel).toBeTruthy();
+        await React.act(async () => {
+            cancel?.props.onPress?.();
+            await flushHookEffects();
+        });
+        expect(run).not.toHaveBeenCalled();
+        expect(routerReplace).toHaveBeenCalledWith('/(app)/settings/providers');
+    });
+
     it('opens the projected API-key destination without mutating the Provider draft', async () => {
         state.credential = { required: true, keyUrl: 'https://keys.example.test' };
         describeProviderConnections.mockResolvedValueOnce({
@@ -1575,7 +1614,7 @@ describe('ProviderConnectionAuthoringScreen', () => {
             .toBeNull();
     });
 
-    it('renders a thrown probe failure as typed retry recovery without invoking save', async () => {
+    it('renders an opaque probe failure with its canonical recovery without invoking save', async () => {
         probeProviderDraft
             .mockRejectedValueOnce(new Error('socket implementation detail'))
             .mockResolvedValueOnce({ status: 'success', models: [], requestFingerprint: 'probe-request:v1:retry' });
@@ -1597,9 +1636,9 @@ describe('ProviderConnectionAuthoringScreen', () => {
             await new Promise((resolve) => setTimeout(resolve, 0));
         });
         expect(screen.findAllByType('Item').map((item) => item.props.title))
-            .toContain('settingsProviders.errors.rpcResponseInvalidTitle');
+            .toContain('externalSessions.operationStatusFailed');
         expect(screen.findAllByType('Item').map((item) => item.props.title))
-            .toContain('settingsProviders.errors.actions.retry');
+            .toContain('settingsProviders.errors.actions.reviewConnection');
         expect(run).not.toHaveBeenCalled();
     });
 });

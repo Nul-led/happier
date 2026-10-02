@@ -968,7 +968,7 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
         const failure = detail.error;
         const message = failure ? teamReadFailureLabel(failure) : t('teams.errors.notFound');
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <PageHeader testID="team-group-header" title={t('teams.tabs.groups')} alwaysShowTitle meta={[
                     { key: 'team', text: context.team.name },
                     { key: 'home', icon: 'house', text: context.homeName },

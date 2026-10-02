@@ -97,7 +97,7 @@ function renderHost(automationEnabled: boolean, machineId?: string) {
         <BrowserSurfaceHost
             browserSessionId={browserSessionId}
             platform="web"
-            pluginBrowserActionContext={machineId ? { machineId } : undefined}
+            pluginBrowserActionContext={machineId ? { machineId, sessionId: 'session_1' } : undefined}
             initialBrowserState={openViewState({
                 browserSessionId,
                 viewId,
@@ -134,8 +134,9 @@ describe('BrowserSurfaceHost in-app automation control service wiring', () => {
         const call = registration.mock.calls.find(([, method]) => method === uiBrowserAutomationDispatchMethod({ browserSessionId, viewId }));
         expect(call).toBeTruthy();
         const handler = call![2];
-        const request = { v: 1, actionId: 'browser.automation.cancelActive', input: { browserSessionId, viewId }, authority: 'present_user' };
+        const request = { v: 1, actionId: 'browser.automation.cancelActive', input: { browserSessionId, viewId }, authority: 'present_user', sessionId: 'session_1' };
         expect(await handler(request)).toMatchObject({ outcome: 'no_active', canceledCount: 0 });
+        expect(await handler({ ...request, sessionId: 'another-session' })).toMatchObject({ ok: false });
         await screen.unmount();
         expect(await handler(request)).toMatchObject({ errorCode: 'runtime_action_disabled' });
     });

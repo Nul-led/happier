@@ -14,6 +14,12 @@ const sessionMobileSurfaceSchema = z.custom<SessionMobileSurface>((value) => (
     typeof value === 'string' && normalizeSessionMobileSurface(value) === value
 ));
 
+const TERMINAL_ARROW_PAD_PLACEMENT_SCHEMA = z.object({
+    side: z.enum(['left', 'right']),
+    y: z.number().finite().min(0).max(1),
+    tucked: z.boolean(),
+}).strict();
+
 const compactAppDestinationIdSchema = z.string().trim().min(1).max(256);
 const compactAppDestinationPreferencesSchema = z.object({
     orderedDestinationIds: z.array(compactAppDestinationIdSchema).max(128).default([]),
@@ -104,13 +110,6 @@ export const LAYOUT_LOCAL_SETTING_DEFINITIONS = {
         description: 'Container height basis for bottom pane height scaling',
         storageScope: 'local',
     },
-    embeddedTerminalDockLocation: {
-        schema: z.enum(['sidebar', 'details', 'bottom']),
-        default: 'bottom',
-        description: 'Embedded terminal dock location',
-        storageScope: 'local',
-        analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'device_user' },
-    },
     terminalRendererPreference: {
         schema: z.preprocess(
             (value) => value === 'native-experimental' ? 'native' : value,
@@ -120,6 +119,17 @@ export const LAYOUT_LOCAL_SETTING_DEFINITIONS = {
         description: 'Preferred terminal renderer on this device',
         storageScope: 'local',
         analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'device_user' },
+    },
+    terminalArrowPadPlacement: {
+        // The phone terminal's floating arrow pad (terminal lab P1): side, height fraction and
+        // whether it is tucked into a dot, remembered per orientation on this device only.
+        schema: z.object({
+            portrait: TERMINAL_ARROW_PAD_PLACEMENT_SCHEMA.nullable(),
+            landscape: TERMINAL_ARROW_PAD_PLACEMENT_SCHEMA.nullable(),
+        }).strict().catch({ portrait: null, landscape: null }),
+        default: { portrait: null, landscape: null },
+        description: 'Where the phone terminal arrow pad rests, per orientation',
+        storageScope: 'local',
     },
     terminalNativeRendererQuarantine: {
         schema: z.object({
@@ -167,10 +177,12 @@ export const LAYOUT_LOCAL_SETTING_DEFINITIONS = {
             serializeCurrent: objectKeyCount,
         },
     },
-    sessionCockpitPinnedSurfaceIds: {
-        schema: z.array(z.string().trim().min(1)).max(3).default([]),
-        default: [],
-        description: 'User-pinned qualified destinations in the Session mobile cockpit',
+    sessionCockpitBarSurfaceIds: {
+        // The person's Session bar in order; null until they change it (host defaults apply).
+        // No count cap: the bar's width decides what fits, the rest scrolls or waits in More.
+        schema: z.array(z.string().trim().min(1)).nullable().catch(null),
+        default: null,
+        description: 'Tools the person keeps on the Session mobile cockpit bar, in order',
         storageScope: 'local',
         analytics: {
             trackCurrentState: true,
@@ -178,7 +190,7 @@ export const LAYOUT_LOCAL_SETTING_DEFINITIONS = {
             valueKind: 'count',
             privacy: 'count_only',
             identityScope: 'device_user',
-            serializeCurrent: (value: readonly string[]) => value.length,
+            serializeCurrent: (value: readonly string[] | null) => value?.length ?? 0,
         },
     },
     compactAppDestinationPreferencesV1: {

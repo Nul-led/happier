@@ -5,16 +5,13 @@ import { basename, dirname, join, delimiter as PATH_DELIMITER } from 'node:path'
 import type { InstallableDependencyDescriptor } from '@happier-dev/protocol';
 import { GH_INSTALLABLE_DESCRIPTOR, GH_RUNTIME_INSTALLABLE_POLICY } from '@happier-dev/protocol';
 import {
-  CODEX_ACP_RUNTIME_INSTALLABLE_POLICY,
-  hasCodexAcpRuntimeInstallableAdapterPolicy,
-} from '@happier-dev/plugins-codex/agent/installables/codexAcp';
-import {
   createManagedToolScratchDir,
   downloadGitHubReleaseAsset,
   AgentCliDownloadError,
   extractGitHubReleaseAsset,
   promoteManagedCurrentInstall,
   resolveHappyHomeDirFromEnvironment,
+  selectManagedDependencyReleaseAsset,
 } from '@happier-dev/cli-common/agents';
 import { extractReleasePayloadRootFromArchive } from '@happier-dev/cli-common/firstPartyRuntime';
 import { ExecFileTerminationError, resolveWindowsCommandOnPath } from '@happier-dev/cli-common/process';
@@ -434,12 +431,19 @@ export async function getGitHubReleaseBinaryRuntimeInstallableAdapter(
   if (!isGitHubReleaseBinaryDescriptor(descriptor)) {
     return null;
   }
-  if (hasCodexAcpRuntimeInstallableAdapterPolicy(descriptor)) {
+  if (descriptor.source.assetNamePrefix && descriptor.source.targetByPlatform) {
+    const source = descriptor.source;
+    const assetNamePrefix = source.assetNamePrefix;
+    const targetByPlatform = source.targetByPlatform;
+    if (!assetNamePrefix || !targetByPlatform) throw new Error('Managed release launch declaration has no asset selection');
     const hostAdapter = createGenericGitHubReleaseBinaryRuntimeInstallable(
       descriptor,
-      CODEX_ACP_RUNTIME_INSTALLABLE_POLICY,
+      {
+        archiveLayout: source.archiveLayout ?? 'bin_directory',
+        selectReleaseAsset: (release) => selectManagedDependencyReleaseAsset(release, { assetNamePrefix, targetByPlatform }),
+      },
     );
-    return createCodexAcpRuntimeInstallableAdapter(descriptor, hostAdapter);
+    return source.launch?.kind === 'codexAcp' ? createCodexAcpRuntimeInstallableAdapter(descriptor, hostAdapter) : hostAdapter;
   }
   if (descriptor.key === GH_INSTALLABLE_DESCRIPTOR.key) {
     const hostAdapter = createGenericGitHubReleaseBinaryRuntimeInstallable(

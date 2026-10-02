@@ -23,7 +23,7 @@ export function showAgentSignInTerminalSheet(target: AgentSignInTerminalTarget):
     modalId = Modal.show({
         component: AgentSignInTerminalModal,
         onRequestClose: close,
-        props: { target, onClose: close },
+        props: { target },
     });
 }
 

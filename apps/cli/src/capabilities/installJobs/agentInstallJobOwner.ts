@@ -6,6 +6,7 @@ import {
   DaemonAgentInstallReadRequestSchema,
   DaemonAgentInstallCancelRequestSchema,
   PluginAgentCliInstallMetadataSchema,
+  buildQualifiedPluginContributionKey,
   type AgentInstallJob,
   type AgentInstallJobEvent,
   type AgentInstallJobFailureCode,
@@ -123,15 +124,15 @@ export function createAgentInstallJobOwner(options: AgentInstallJobOwnerOptions 
         const required = new Set(dependencyId ? [dependencyId] : []);
         const contributions = registry.managedDependencies ?? [];
         const dependencyRegistry = resolveExecutableManagedDependenciesRegistry(contributions, host);
-        const declarations = contributions.filter((candidate) => candidate.pluginId === agent.pluginId && required.has(candidate.definition.id));
+        const declarations = contributions.filter((candidate) => candidate.pluginId && required.has(buildQualifiedPluginContributionKey({ pluginId: candidate.pluginId, localId: candidate.definition.id })));
         const support = resolveAgentSetupPlatform({
           cli: agent.cliMetadata ?? { install: PluginAgentCliInstallMetadataSchema.parse({ managed: spec.managedInstall, manual: spec.manualInstallKind === 'none'
             ? { kind: 'none' } : { kind: spec.manualInstallKind, recipes: spec.manualInstallRecipes ?? undefined } }) },
-          dependencies: declarations.flatMap((candidate) => 'sources' in candidate.definition ? [candidate.definition] : []),
+          dependencies: declarations.flatMap((candidate) => 'version' in candidate.definition ? [] : [candidate.definition]),
           platform: host.platform, arch: host.architecture,
         });
         const dependencies = selectExecutableManagedDependencies(declarations, host);
-        const unresolved = [...required].find((id) => !selectExecutableManagedDependencies(declarations.filter((candidate) => candidate.definition.id === id), host).length);
+        const unresolved = dependencyId && dependencies.length === 0 ? dependencyId : null;
         if (!support.supported) {
           result = fail('unsupported_platform', 'The agent or its required dependency does not support this host platform.');
         } else if (unresolved) {

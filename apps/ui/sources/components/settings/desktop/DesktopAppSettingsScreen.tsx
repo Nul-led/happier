@@ -18,7 +18,7 @@ export const DesktopAppSettingsScreen = React.memo(function DesktopAppSettingsSc
     const showOverlaySettings = settingRendersOnHost(DESKTOP_SETTINGS.settings.enabled);
 
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settingsDesktop.footer')} />
             {!loginStart.supported && !showOverlaySettings ? (
                 // Opened outside the desktop app (a shared link): say where these settings live.

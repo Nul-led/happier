@@ -58,7 +58,9 @@ import { providerCollectionTranslations } from './providerCollectionTranslations
 import { settingsSearchKeywordsTranslations } from './settingsSearchKeywordsTranslations';
 import { automationPageTranslations } from './automationPageTranslations';
 import { settingsSessionPagesTranslations } from './settingsSessionPagesTranslations';
-import { workspaceTabTranslations } from './workspaceTabTranslations';
+import { workspaceTabKeyboardTranslations, workspaceTabTranslations } from './workspaceTabTranslations';
+import { terminalWorkspaceKeyboardTranslations, terminalWorkspaceTranslations } from './terminalWorkspaceTranslations';
+import { phoneNavigationTranslations } from './phoneNavigationTranslations';
 import { workspaceBarTranslations } from './workspaceBarTranslations';
 import { settingsProfilesRemoteHostsPageTranslations } from './settingsProfilesRemoteHostsPageTranslations';
 import { profilesPageTranslations } from './profilesPageTranslations';
@@ -74,6 +76,7 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { detailPageTranslations } from './detailPageTranslations';
 import { rolesTranslations } from './rolesTranslations';
 import { boardsTranslations } from './boardsTranslations';
+import { artifactsBrowserTranslations } from './artifactsBrowserTranslations';
 import { workStatusTranslations } from './workStatusTranslations';
 import { shareSheetTranslations } from './shareSheetTranslations';
 import { surfaceStateTranslations } from './surfaceStateTranslations';
@@ -905,6 +908,8 @@ export const zhHans = {
         setShortcutInvalidMessage: '输入至少一个非修饰键，可以选择使用 Mod、Ctrl、Shift 或 Alt。',
         resetCommandAccessibility: ({ command }: { command: string }) => `Reset ${command} shortcut`,
         commands: {
+            ...workspaceTabKeyboardTranslations,
+            ...terminalWorkspaceKeyboardTranslations,
             composerAbortConfirm: '确认中止',
             composerFocus: '聚焦输入框',
             composerSendImmediate: '立即发送',
@@ -5901,6 +5906,8 @@ export const zhHans = {
   },
 
   newSession: {
+    terminalHostUnavailableTitle: "终端宿主不可用",
+    terminalHostUnavailableBody: ({ host }: { host: string }) => `请在此设备上安装或更新 ${host} 并重启其服务器，或选择其他终端宿主。草稿已保留。`,
     folder: folderlessSessionTranslations.zhHans.composer,
     ...newSessionMcpTranslationExtension,
     ...acpCatalogTranslationExtension.newSession,
@@ -12237,7 +12244,9 @@ settingsSession: {
             },
   },
 
-  terminal: {
+    terminal: {
+        plaintextStorage: 'Home-managed (not end-to-end encrypted)',
+        plaintextStorageDescription: 'This Home can read Account data. The connection response is encrypted for this terminal.',
     // Used by terminal connection screens
     webBrowserRequired: "需要 Web 浏览器",
     webBrowserRequiredDescription:
@@ -12276,12 +12285,10 @@ settingsSession: {
       selectAllAction: '选择全部终端输出',
       openLinkAction: '打开所选链接',
     },
-    dockMenuA11y: "停靠终端",
     largePasteTitle: "要粘贴大量终端输入吗？",
     largePasteDescription: "这段粘贴内容较大，可能会在终端中执行命令。继续前请先检查。",
     largePasteConfirm: "粘贴到终端",
     settings: {
-      locationTitle: "嵌入式终端位置",
       rendererTitle: "终端渲染器",
       rendererAuto: "自动",
       rendererAutoDescription: "当所有原生安全检查通过且屏幕阅读器未开启时优先使用原生渲染器；屏幕阅读器开启期间切换到可访问性更好的 xterm.js 网页视图。",
@@ -12296,11 +12303,6 @@ settingsSession: {
       ctrlC: "Ctrl + C",
       ctrlD: "Ctrl + D",
       enter: "回车",
-    },
-    location: {
-      sidebar: "侧边栏",
-      details: "详情面板",
-      bottom: "底部面板",
     },
     errors: {
       missingMachineTarget: "此会话缺少机器目标。",
@@ -12890,9 +12892,9 @@ settingsSession: {
     unknownPath: "未知路径",
     previousSessionsTitle: "之前的会话（最多最近 5 个）",
     tmux: {
-      overrideTitle: "覆盖全局 tmux 设置",
-      overrideEnabledSubtitle: "自定义 tmux 设置将应用于此设备上的新会话。",
-      overrideDisabledSubtitle: "新会话使用全局 tmux 设置。",
+      overrideTitle: "覆盖账户默认值",
+      overrideEnabledSubtitle: "此设备的新会话使用自己的终端宿主。",
+      overrideDisabledSubtitle: "新会话继承账户的终端宿主。",
       notDetectedSubtitle: "此设备未检测到 tmux。",
       notDetectedMessage: "此设备未检测到 tmux。请安装 tmux 并刷新检测。",
     },
@@ -13148,11 +13150,10 @@ settingsSession: {
   },
 
     artifacts: {
+        browser: artifactsBrowserTranslations['zh-Hans'],
     title: "工件",
     countSingular: "1 个工件",
     countPlural: ({ count }: { count: number }) => `${count} 个工件`,
-    empty: "暂无工件",
-    emptyDescription: "创建您的第一个工件来保存和组织内容",
     new: "新建工件",
     edit: "编辑工件",
     delete: "删除",
@@ -13169,9 +13170,7 @@ settingsSession: {
     bodyPlaceholder: "在此输入内容...",
     save: "保存",
     saving: "保存中...",
-    loading: "加载中...",
     error: "加载工件失败",
-    titleLabel: "标题",
     bodyLabel: "内容",
     emptyFieldsError: "请输入标题或内容",
     createError: "创建工件失败。请重试。",
@@ -13882,6 +13881,8 @@ settingsSession: {
    ...automationPageTranslations['zh-Hans'],
     ...settingsSessionPagesTranslations['zh-Hans'],
     ...workspaceTabTranslations['zh-Hans'],
+    ...terminalWorkspaceTranslations['zh-Hans'],
+    ...phoneNavigationTranslations['zh-Hans'],
     ...workspaceBarTranslations['zh-Hans'],
    ...settingsProfilesRemoteHostsPageTranslations['zh-Hans'],
    ...profilesPageTranslations['zh-Hans'],

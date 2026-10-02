@@ -37,7 +37,8 @@ export type TriggerWhenValue =
         sourceTurnId?: string;
     }>
     | Readonly<{ kind: 'needsYou' | 'sessionArchived' | 'sessionStarts' }>
-    | Readonly<{ kind: 'schedule'; schedule: SimpleSchedule | null; expression: string; timezone: string | null }>;
+    | Readonly<{ kind: 'schedule'; schedule: SimpleSchedule | null; expression: string; timezone: string | null }>
+    | Readonly<{ kind: 'prComment' | 'ciFailed'; pullRequest: Readonly<{ repository: string; number: number }> | null }>;
 
 export const TRIGGER_THEN_KINDS = ['sendPrompt', 'doAction', 'notifyMe', 'runWorkflow'] as const;
 export type TriggerThenKind = (typeof TRIGGER_THEN_KINDS)[number];
@@ -82,12 +83,18 @@ export function readDeviceTimeZone(): string | null {
     }
 }
 
-export function createDefaultWhen(kind: SessionTriggerWhenKind | 'schedule'): TriggerWhenValue {
+export function createDefaultWhen(
+    kind: SessionTriggerWhenKind | 'schedule',
+    pullRequestLinks: readonly Readonly<{ repository: string; number: number }>[] = [],
+): TriggerWhenValue {
     if (kind === 'schedule') {
         const schedule: SimpleSchedule = { repeat: 'daily', hour: 9, minute: 0, day: 1 };
         return { kind: 'schedule', schedule, expression: buildSimpleScheduleCron(schedule), timezone: readDeviceTimeZone() };
     }
-    if (kind === 'prComment' || kind === 'ciFailed') return { kind: 'turnEnds' };
+    if (kind === 'prComment' || kind === 'ciFailed') {
+        const link = pullRequestLinks.length === 1 ? pullRequestLinks[0] : undefined;
+        return { kind, pullRequest: link ? { repository: link.repository, number: link.number } : null };
+    }
     return { kind };
 }
 
@@ -117,6 +124,9 @@ export function buildTriggerDefinition(params: Readonly<{
         return { kind: 'schedule', enabled, schedule: { kind: 'cron', scheduleExpr: expression, everyMs: null, timezone: when.timezone } };
     }
     if (params.sessionId === null) return null;
+    if (when.kind === 'prComment' || when.kind === 'ciFailed') {
+        return when.pullRequest === null ? null : { kind: when.kind, enabled, pullRequest: when.pullRequest };
+    }
     return {
         kind: 'sessionLifecycle',
         enabled,
@@ -249,6 +259,9 @@ type SetTrigger = WorkflowTriggerSetV1['triggers'][number];
 
 /** Reads a saved trigger back as the When it was written with. */
 export function readTriggerWhen(trigger: SetTrigger): TriggerWhenValue | null {
+    if (trigger.kind === 'prComment' || trigger.kind === 'ciFailed') {
+        return { kind: trigger.kind, pullRequest: trigger.pullRequest };
+    }
     if (trigger.kind === 'schedule') {
         const expression = trigger.schedule.scheduleExpr ?? '';
         return { kind: 'schedule', schedule: parseSimpleSchedule(expression), expression, timezone: trigger.schedule.timezone };

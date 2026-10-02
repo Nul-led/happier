@@ -172,7 +172,7 @@ export const ConnectedServicesSettingsView = React.memo(function ConnectedServic
     // First run (P0): no rail, the promise and the set-up blocks; nothing to add says why.
     const canAdd = agentConnectable.length > 0 || projectionLoading;
     return (
-      <ItemList presentation="page">
+      <ItemList>
         <SettingsPageHeader description={t('settings.connectedServicesSubtitle')} />
         {banner}
         {canAdd ? connectMore : !projectionFailed ? (

@@ -44,6 +44,7 @@ import {
 } from '@/sync/domains/workflows/workflowEditorDraft';
 import { setWorkflowDefaultField, setWorkflowStepExecutionField } from '@happier-dev/protocol/workflows/workflowDefinitionEditV1';
 import { useWorkflowRunNowController } from '../run/useWorkflowRunNowController';
+import { workflowBlockReferenceLabel } from '@/sync/domains/workflows/workflowBlockLabel';
 import {
     resolveAdmittedWorkflowExecutionTarget,
     resolveWorkflowRunAsTargets,
@@ -495,16 +496,6 @@ export function WorkflowEditorHostScreen(props: Readonly<{
     const authoringHost = useWorkflowAuthoringHost({
         projectTarget,
         serverId: activeAccountScope?.serverId ?? null,
-        extraActionChips: [{
-            ...createExecutionRunStartContentChip({
-                key: 'workflow-start-where', icon: 'folder', title: t('workflows.page.where.label'),
-                label: formatWorkflowWhereSummary({ target: projectTarget, machineName }) ?? t('workflows.page.where.choose'),
-                testID: 'workflow-start-where-chip',
-                renderContent: <WorkflowProjectTargetControl target={projectTarget} machineName={machineName}
-                    machines={machines} onChange={(target) => { if (isWorkflowProjectTarget(target)) setProjectTarget(target); }}
-                    testIDPrefix="workflow-start-where" />,
-            }), controlId: 'machine',
-        }],
     });
 
     /**
@@ -538,6 +529,7 @@ export function WorkflowEditorHostScreen(props: Readonly<{
 
     const startRun = React.useCallback(async (
         inputs: Readonly<Record<string, JsonValue>> | undefined,
+        roleOverrides?: WorkflowRunComposerModalProps['roleOverrides'],
     ): Promise<void> => {
         if (draft === null || projectTarget === null || projectTarget.directory.trim().length === 0) return;
         const validation = validateWorkflowEditorDraft(draft);
@@ -573,6 +565,7 @@ export function WorkflowEditorHostScreen(props: Readonly<{
                 },
             },
             ...(inputs === undefined ? {} : { inputs }),
+            ...(roleOverrides === undefined ? {} : { roleOverrides: [...roleOverrides] }),
             project: projectTarget,
         });
         // `null` means nothing was admitted by this call, so the caller-allocated
@@ -589,34 +582,42 @@ export function WorkflowEditorHostScreen(props: Readonly<{
 
     const handleRunNow = React.useCallback(() => {
         if (draft === null) return;
-        // Declared inputs are collected before admission, in declaration order.
-        if (draft.inputs.length > 0) {
-            setInputSheetOpen(true);
-            return;
-        }
-        void startRun(undefined);
-    }, [draft, startRun]);
+        // Every Run is reviewed in the composer, including a no-input recipe.
+        setInputSheetOpen(true);
+    }, [draft]);
 
     const dismissInputSheet = React.useCallback(() => {
         setInputSheetOpen(false);
     }, []);
 
     const inputModalProps = React.useMemo<WorkflowRunComposerModalProps | null>(() => draft === null ? null : ({
+        definition: validateWorkflowEditorDraft(draft).normalizedDefinition,
+        sourceArtifactId: saved?.definitionId ?? null,
         inputs: draft.inputs,
         values: inputValues,
         onChangeValues: setInputValues,
         rawTextValues: inputRawTextValues,
         onChangeRawTextValues: setInputRawTextValues,
         workflowName: draft.name,
-        preview: description || JSON.stringify(draft.blocks, null, 2),
+        preview: description || draft.blocks.map(workflowBlockReferenceLabel).join('\n'),
         includesUnsavedEdits: !pluginJsonValuesEqual(draft, savedDraftRef.current ?? initialDraftBaselineRef.current)
             || description !== savedDescriptionRef.current,
         machineId: projectTarget?.machineId ?? null,
         serverId: activeAccountScope?.serverId ?? null,
-        onRun: (inputs) => { void startRun(inputs); },
+        extraActionChips: [{
+            ...createExecutionRunStartContentChip({
+                key: 'workflow-start-where', icon: 'folder', title: t('workflows.page.where.label'),
+                label: formatWorkflowWhereSummary({ target: projectTarget, machineName }) ?? t('workflows.page.where.choose'),
+                testID: 'workflow-start-where-chip',
+                renderContent: <WorkflowProjectTargetControl target={projectTarget} machineName={machineName}
+                    machines={machines} onChange={(target) => { if (isWorkflowProjectTarget(target)) setProjectTarget(target); }}
+                    testIDPrefix="workflow-start-where" />,
+            }), controlId: 'machine',
+        }],
+        onRun: (inputs, roleOverrides) => { void startRun(inputs, roleOverrides); },
         onCancel: dismissInputSheet,
         pending: runNow.stateFor(pendingRunIdRef.current ?? '') === 'submitting',
-    }), [activeAccountScope?.serverId, description, dismissInputSheet, draft, inputRawTextValues, inputValues, machineName, machines, projectTarget, runNow, startRun]);
+    }), [activeAccountScope?.serverId, description, dismissInputSheet, draft, inputRawTextValues, inputValues, machineName, machines, projectTarget, runNow, saved?.definitionId, startRun]);
 
     const runComposer = useWorkflowRunComposerModal({ open: inputSheetOpen, props: inputModalProps, anchorRef: runNowAnchorRef });
 

@@ -160,7 +160,7 @@ function ConnectMoreFrame(props: Readonly<{ request: ConnectedServiceSetupTarget
     const model = useModel({ accounts: true });
     const [request, setRequest] = React.useState<ConnectedServiceSetupTarget | null>(props.request);
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <PageHeader title={t('settings.connectedServices')} description={t('settings.connectedServicesSubtitle')} />
             <ConnectedServicesConnectMore
                 model={model}
@@ -178,7 +178,7 @@ function ConnectMoreFrame(props: Readonly<{ request: ConnectedServiceSetupTarget
 function FirstRunFrame() {
     const model = useModel({ accounts: false });
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <PageHeader title={t('settings.connectedServices')} description={t('settings.connectedServicesSubtitle')} />
             <ItemGroup surface="none">
                 <ConnectedServicesConnectMore
@@ -198,7 +198,7 @@ function FirstRunFrame() {
 function SetupStatesFrame() {
     const now = Date.now();
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <PageHeader title="Setup states" description="With a code (ChatGPT), browser + code (Claude), key (Anthropic): waiting and expired." />
             <ItemGroup title={t('connectedServicesSettings.modeDeviceCode')} surface="none">
                 <View style={styles.cells}>
@@ -264,7 +264,7 @@ function HomeFrame(props: Readonly<{ stage: 'rest' | 'open' | 'after' }>) {
         ...(services ? [services] : []),
     ];
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <ItemGroup title={t('settingsOverview.setupTitle')} surface="none">
                 <SetupBlockGrid
                     testID="hub-setup.grid"
@@ -282,7 +282,7 @@ function HomeFrame(props: Readonly<{ stage: 'rest' | 'open' | 'after' }>) {
 const HOME_USAGE = [
     { key: 'claude/work', serviceLabel: 'Claude', legacyServiceId: 'claude-subscription', profileLabel: 'Work', planLabel: 'Max', meters: [{ meterId: '5h', label: '5-hour', remainingPct: 42, resetsAt: Date.now() + 2 * HOUR }, { meterId: 'wk', label: 'Weekly', remainingPct: 64, resetsAt: Date.now() + 4 * DAY }] },
     { key: 'codex/personal', serviceLabel: 'ChatGPT', legacyServiceId: 'openai-codex', profileLabel: 'Personal', planLabel: 'Pro', meters: [{ meterId: '5h', label: '5-hour', remainingPct: 71, resetsAt: Date.now() + 3 * HOUR }, { meterId: 'wk', label: 'Weekly', remainingPct: 22, resetsAt: Date.now() + 2 * DAY }] },
-];
+].map((entry) => ({ ...entry, fetchedAt: Date.now() - 12 * MIN }));
 
 const styles = StyleSheet.create(() => ({
     cells: {

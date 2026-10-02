@@ -108,7 +108,7 @@ export const PermissionsSettingsView = React.memo(function PermissionsSettingsVi
     const globalStorageLabel = storageLabel(accountTranscriptStorageDefaults.globalDefault);
 
     return (
-        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }} presentation="page">
+        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settings.permissionsSubtitle')} />
             <SettingAnchor setting={PERMISSIONS_SETTINGS.settings.defaultPermissions}>
                 <ItemGroup title={t('settingsSession.defaultPermissions.title')} description={t('settingsSession.defaultPermissions.footer')}>

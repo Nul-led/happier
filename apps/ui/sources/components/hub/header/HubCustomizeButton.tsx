@@ -6,6 +6,8 @@ import { IconButton } from '@/components/ui/buttons/IconButton';
 import { FloatingOverlay } from '@/components/ui/overlays/FloatingOverlay';
 import { Popover } from '@/components/ui/popover';
 import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
+import { CustomModal } from '@/modal/components/CustomModal';
+import type { CustomModalConfig, CustomModalInjectedProps } from '@/modal/types';
 import { t } from '@/text';
 import { useIsTablet } from '@/utils/platform/responsive';
 
@@ -14,10 +16,15 @@ import { HomeLayoutEditor } from '../layout/HomeLayoutEditor';
 const CUSTOMIZE_POPOVER_WIDTH_PX = 360;
 const CUSTOMIZE_POPOVER_MAX_HEIGHT_PX = 640;
 
+function HomeCustomizeSheetContent(_props: CustomModalInjectedProps) {
+    return <HomeLayoutEditor presentation="popover" />;
+}
+
 /**
  * "Customize" in Home's header: the layout editor in a popover anchored to the button, over the live
  * page (every change shows behind it at once). A section's "⋯ → Customize" opens the same popover,
- * so the open state belongs to Home. The editor mounts only while open.
+ * so the open state belongs to Home. Phones use the shared modal's bottom sheet with the same editor.
+ * The editor mounts only while open.
  */
 export const HubCustomizeButton = React.memo(function HubCustomizeButton(props: Readonly<{
     open: boolean;
@@ -29,6 +36,19 @@ export const HubCustomizeButton = React.memo(function HubCustomizeButton(props: 
     const close = React.useCallback(() => onOpenChange(false), [onOpenChange]);
     // A phone's header has no room beside the greeting for a labelled button: the glyph alone (I1p).
     const compact = !useIsTablet();
+    const sheetTitle = t('homeIndex.customizeTitle');
+    const sheetConfig = React.useMemo<CustomModalConfig>(() => ({
+        id: 'home-customize',
+        type: 'custom',
+        component: HomeCustomizeSheetContent,
+        chrome: {
+            kind: 'card',
+            header: 'none',
+            title: sheetTitle,
+            phonePresentation: 'sheet',
+            testID: 'home-hub.customize.sheet',
+        },
+    }), [sheetTitle]);
     return (
         <View ref={anchorRef} collapsable={false} style={styles.anchor}>
             {compact ? (
@@ -47,7 +67,9 @@ export const HubCustomizeButton = React.memo(function HubCustomizeButton(props: 
                     onPress={toggle}
                 />
             )}
-            {props.open ? (
+            {props.open && compact ? (
+                <CustomModal visible config={sheetConfig} onClose={close} />
+            ) : props.open ? (
                 <Popover
                     open
                     anchorRef={anchorRef}

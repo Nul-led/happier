@@ -146,32 +146,28 @@ export const SecretsSettingsScreen = React.memo(function SecretsSettingsScreen()
             return;
         }
         await catalog.reload();
+        return true;
         } catch (cause) {
             if (currentScopeKey.current !== requestedScopeKey) return;
             if (isTeamActionApprovalPendingError(cause)) {
                 approval.requestApproval(cause.registration);
-                return;
+                return true;
             }
             setSharedMutationPending(false);
             Modal.alert(t('common.error'), t('secrets.catalog.operationFailed'));
         }
     }, [approval, catalog, scope, scopeKey, sharedMutationPending]);
 
-    const renameShared = React.useCallback(async (entry: SavedSecretCatalogEntryV1) => {
-        const nextName = await Modal.prompt(t('secrets.prompts.renameTitle'), undefined, {
-            defaultValue: entry.name ?? '', placeholder: t('secrets.placeholders.nameExample'),
-        });
-        const normalized = nextName?.trim();
-        if (!normalized || normalized === entry.name) return;
-        await updateResource(entry, { nextName: normalized });
+    const renameShared = React.useCallback(async (entry: SavedSecretCatalogEntryV1, nextName: string) => {
+        const normalized = nextName.trim();
+        if (!normalized) return;
+        if (normalized === entry.name) return true;
+        return updateResource(entry, { nextName: normalized });
     }, [updateResource]);
 
-    const rotateShared = React.useCallback(async (entry: SavedSecretCatalogEntryV1) => {
-        const nextValue = await Modal.prompt(t('secrets.prompts.replaceValueTitle'), undefined, {
-            placeholder: t('secrets.placeholders.valueExample'), inputType: 'secure-text',
-        });
-        if (nextValue === null || nextValue.length === 0) return;
-        await updateResource(entry, { nextValue });
+    const rotateShared = React.useCallback(async (entry: SavedSecretCatalogEntryV1, nextValue: string) => {
+        if (nextValue.length === 0) return;
+        return updateResource(entry, { nextValue });
     }, [updateResource]);
 
     // Changing where a shared secret is kept is an explicit owner intent on the
@@ -361,6 +357,8 @@ export const SecretsSettingsScreen = React.memo(function SecretsSettingsScreen()
 
     return (
         <SecretsSettingsPage
+            key={scopeKey}
+            onBeginEdit={clearEditors}
             personalSecrets={catalog.personalSecrets}
             sharedEntries={catalog.sharedEntries}
             corruptEntries={catalog.corruptEntries}
@@ -377,8 +375,8 @@ export const SecretsSettingsScreen = React.memo(function SecretsSettingsScreen()
             sharedMutationsDisabled={sharedMutationPending || approval.approvalPending}
             approvalId={catalog.sharedEnabled ? approvalId : null}
             onOpenApproval={catalog.sharedEnabled ? openApproval : undefined}
-            onRenameShared={catalog.sharedEnabled ? (entry) => { void renameShared(entry); } : undefined}
-            onRotateShared={catalog.sharedEnabled ? (entry) => { void rotateShared(entry); } : undefined}
+            onRenameShared={catalog.sharedEnabled ? renameShared : undefined}
+            onRotateShared={catalog.sharedEnabled ? rotateShared : undefined}
             onMakeSharedHomeManaged={catalog.sharedEnabled && plaintextStorageEnabled
                 ? (entry) => { void convertSharedMode(entry, 'plain'); }
                 : undefined}

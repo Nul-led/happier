@@ -79,7 +79,7 @@ export const SkillBundleSupportingFileEditorScreen = React.memo(function SkillBu
     }, [artifactState, canSave, content, navigation, path, props.artifactId, router]);
 
     return (
-        <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+        <ItemList keyboardShouldPersistTaps="handled">
             <PageHeader
                 testID="skillSupportingFile.header"
                 alwaysShowTitle

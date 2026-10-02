@@ -17,7 +17,7 @@ export const MachinesSettingsView = React.memo(function MachinesSettingsView() {
     const viewModel = useMachinesSettingsViewModel();
     const addOptions = useMachineAddOptions(viewModel.visibleMachineGroups);
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader
                 testID="settings.machines.header"
                 description={t('settingsMachines.pageDescription')}

@@ -1,4 +1,4 @@
-import type { SystemTaskResult } from '@happier-dev/protocol';
+import type { SystemTaskResult, SystemTaskSpec } from '@happier-dev/protocol';
 
 import { waitForSystemTaskResult } from '@/components/systemTasks/createSystemTaskRunner';
 import type { SystemTaskRunner } from '@/components/systemTasks/types';
@@ -6,9 +6,14 @@ import { isSystemTaskBridgeUnavailableError, readSystemTaskStartErrorMessage } f
 import { buildLocalDaemonServiceSystemTaskSpec } from '@/components/systemTasks/specs/localControl/buildLocalDaemonServiceSystemTaskSpec';
 import { t } from '@/text';
 import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { buildUpdateItemId } from '@/updates/items/updateItem';
 import { recordUpdateCompleted } from '@/updates/updateCompletions';
 import type { LocalDaemonStatusData } from './useLocalDaemonControl';
+import { createThisComputerSetupPromptContinuation } from '@/components/systemTasks/useThisComputerSetupTask';
+import type { SystemTaskAuthRequestApproval } from '@/components/systemTasks/approveSystemTaskAuthRequestPrompt';
+import { resolveSystemTaskFailureMessage } from '@/components/systemTasks/resolveSystemTaskFailureMessage';
 
 /**
  * S-10 — the state every surface describing this computer shares, per system-task runner: the
@@ -20,6 +25,13 @@ import type { LocalDaemonStatusData } from './useLocalDaemonControl';
  */
 export type LocalDaemonSharedState<TStatus> = Readonly<{
     status: TStatus | null;
+    setup: Readonly<{
+        taskId: string | null;
+        starting: boolean;
+        rereading: boolean;
+        errorMessage: string | null;
+        scope: Readonly<{ serverId: string | null; serverUrl: string; accountId: string | null }> | null;
+    }>;
     cliUpdate: Readonly<{
         taskId: string | null;
         starting: boolean;
@@ -41,7 +53,8 @@ function resolveStore<TStatus>(runner: SystemTaskRunner): Store<TStatus> {
     const existing = storesByRunner.get(runner);
     if (existing) return existing as Store<TStatus>;
     const created: Store<unknown> = {
-        state: { status: null, cliUpdate: { taskId: null, starting: false, errorMessage: null, rereading: false } },
+        state: { status: null, setup: { taskId: null, starting: false, rereading: false, errorMessage: null, scope: null },
+            cliUpdate: { taskId: null, starting: false, errorMessage: null, rereading: false } },
         listeners: new Set(),
     };
     storesByRunner.set(runner, created);
@@ -70,6 +83,67 @@ export function readLocalDaemonSharedState<TStatus>(runner: SystemTaskRunner): L
 
 export function publishLocalDaemonStatus<TStatus>(runner: SystemTaskRunner, status: TStatus): void {
     update<TStatus>(runner, (state) => (state.status === status ? state : { ...state, status }));
+}
+
+/** One explicit repair/CLI-choice operation, including delayed launch and post-result inspection. */
+export async function startLocalComputerSetup<TStatus>(
+    runner: SystemTaskRunner,
+    spec: SystemTaskSpec,
+    approval: SystemTaskAuthRequestApproval,
+    parseStatus: (result: SystemTaskResult) => TStatus | null,
+): Promise<string | null> {
+    const params = spec.params;
+    const scope = { serverId: approval.serverId ?? null, serverUrl: approval.expectedRelayUrl,
+        accountId: params !== null && typeof params === 'object' && !Array.isArray(params)
+            && 'activeAccountId' in params && typeof params.activeAccountId === 'string' ? params.activeAccountId : null };
+    const statusScope = {
+        relayUrl: params !== null && typeof params === 'object' && !Array.isArray(params)
+            && 'activeRelayUrl' in params && typeof params.activeRelayUrl === 'string' ? params.activeRelayUrl : scope.serverUrl,
+        serverIdentityId: params !== null && typeof params === 'object' && !Array.isArray(params)
+            && 'activeServerIdentityId' in params && typeof params.activeServerIdentityId === 'string' ? params.activeServerIdentityId : null,
+    };
+    const current = readLocalDaemonSharedState(runner).setup;
+    if (current.starting || current.rereading || (current.taskId && runner.getSnapshot(current.taskId)?.result === null)) {
+        return current.scope?.serverId === scope.serverId && current.scope.serverUrl === scope.serverUrl
+            && current.scope.accountId === scope.accountId ? current.taskId : null;
+    }
+    const setSetup = (patch: Partial<LocalDaemonSharedState<TStatus>['setup']>) =>
+        update<TStatus>(runner, (state) => ({ ...state, setup: { ...state.setup, ...patch } }));
+    setSetup({ taskId: null, starting: true, errorMessage: null, scope });
+    let taskId: string;
+    try {
+        taskId = await runner.start(spec);
+        runner.registerPromptContinuation?.(taskId, createThisComputerSetupPromptContinuation(approval, spec));
+        setSetup({ taskId, starting: false });
+    } catch (error) {
+        setSetup({ starting: false, errorMessage: isSystemTaskBridgeUnavailableError(error)
+            ? t('settings.systemTaskBridgeUnavailable')
+            : (readSystemTaskStartErrorMessage(error) ?? t('settings.systemTaskStartFailed')) });
+        return null;
+    }
+    const setRun = (patch: Partial<LocalDaemonSharedState<TStatus>['setup']>) =>
+        update<TStatus>(runner, (state) => state.setup.taskId === taskId
+            ? { ...state, setup: { ...state.setup, ...patch } } : state);
+    void (async () => {
+        const result = await waitForSystemTaskResult(runner, taskId);
+        if (!result.ok) {
+            setRun({ errorMessage: resolveSystemTaskFailureMessage(result.error) ?? result.error.message });
+            return;
+        }
+        setRun({ rereading: true });
+        const statusTaskId = await runner.start(buildLocalDaemonServiceSystemTaskSpec('daemon.service.status.v1', statusScope));
+        const statusResult = await waitForSystemTaskResult(runner, statusTaskId);
+        const status = parseStatus(statusResult);
+        const activeScope = getActiveServerAccountScope();
+        if (status && activeScope && areServerProfileIdentifiersEquivalent(activeScope.serverId, scope.serverId)
+            && (scope.accountId === null || activeScope.accountId === scope.accountId)) publishLocalDaemonStatus(runner, status);
+        if (!status) setRun({ errorMessage: statusResult.ok ? t('settings.systemTaskStartFailed') : statusResult.error.message });
+    })().catch((error: unknown) => {
+        setRun({ errorMessage: readSystemTaskStartErrorMessage(error) ?? t('settings.systemTaskStartFailed') });
+    }).finally(() => {
+        setRun({ rereading: false });
+    });
+    return taskId;
 }
 
 /**
@@ -105,21 +179,29 @@ export function isLocalCliUpdateRunning(runner: SystemTaskRunner): boolean {
  * exit code: after the run (or when another update already held the lock) the status is read once
  * and published to every surface through `parseStatus`.
  */
+export type CliUpdateStartContext = Readonly<{
+    scope: ServerAccountScope;
+    spec: SystemTaskSpec;
+    machineId: string | null;
+}>;
+
 export async function startLocalCliUpdate<TStatus>(
     runner: SystemTaskRunner,
     parseStatus: (result: SystemTaskResult) => TStatus | null,
+    context?: CliUpdateStartContext,
 ): Promise<void> {
     if (runner.mode === 'unavailable' || isLocalCliUpdateRunning(runner)) return;
     // Completion belongs to the initiating account, not whichever surface later observes it.
-    const scope = getActiveServerAccountScope();
-    const machineId = readLocalDaemonSharedState<LocalDaemonStatusData>(runner).status?.machineId;
+    const scope = context?.scope ?? getActiveServerAccountScope();
+    const machineId = context ? context.machineId : readLocalDaemonSharedState<LocalDaemonStatusData>(runner).status?.machineId;
+    const spec = context?.spec ?? buildLocalDaemonServiceSystemTaskSpec('cli.update.v1');
     const setCli = (patch: Partial<LocalDaemonSharedState<TStatus>['cliUpdate']>) =>
         update<TStatus>(runner, (state) => ({ ...state, cliUpdate: { ...state.cliUpdate, ...patch } }));
 
     setCli({ starting: true, errorMessage: null });
     let taskId: string;
     try {
-        taskId = await runner.start(buildLocalDaemonServiceSystemTaskSpec('cli.update.v1'));
+        taskId = await runner.start(spec);
     } catch (error) {
         setCli({
             starting: false,
@@ -148,10 +230,13 @@ export async function startLocalCliUpdate<TStatus>(
     }
     setCli({ rereading: true });
     try {
-        const statusTaskId = await runner.start(buildLocalDaemonServiceSystemTaskSpec('daemon.service.status.v1'));
+        const statusTaskId = await runner.start({ ...spec, kind: 'daemon.service.status.v1' });
         const statusResult = await waitForSystemTaskResult(runner, statusTaskId);
         const status = parseStatus(statusResult);
-        if (status) publishLocalDaemonStatus(runner, status);
+        const activeScope = getActiveServerAccountScope();
+        if (status && (!scope || (activeScope?.serverId === scope.serverId && activeScope.accountId === scope.accountId))) {
+            publishLocalDaemonStatus(runner, status);
+        }
     } catch (error) {
         console.warn('Failed to re-read this computer after a CLI update:', error);
     } finally {

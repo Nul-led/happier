@@ -19,7 +19,7 @@ function PluginsPageColumn(props: Readonly<{ children?: React.ReactNode }>) {
 /** The Plugins page's one scroller: the settings page anatomy, the page's content column. */
 function renderPluginsPageScroller(children: React.ReactNode): React.ReactNode {
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page" pageColumn="wide">
+        <ItemList style={{ paddingTop: 0 }} pageColumn="wide">
             <PluginsPageColumn>{children}</PluginsPageColumn>
         </ItemList>
     );

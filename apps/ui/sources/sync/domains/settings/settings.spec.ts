@@ -540,7 +540,7 @@ describe('settings', () => {
             expect((parsed as any).actionsSettingsV1).toEqual(DEFAULT_ACTIONS_SETTINGS_V1);
         });
 
-        it('keeps valid actions settings action ids when one entry is invalid', () => {
+        it('retains known and unknown action policy rows', () => {
             const parsed = settingsParse({
                 actionsSettingsV1: {
                     v: 1,
@@ -554,6 +554,14 @@ describe('settings', () => {
                 v: 1,
                 actions: {
                     'review.start': {
+                        enabled: false,
+                        enabledPlacements: [],
+                        disabledSurfaces: [],
+                        disabledPlacements: [],
+                        approvalRequiredSurfaces: [],
+                        toolExposureModes: {},
+                    },
+                    'unknown.action': {
                         enabled: false,
                         enabledPlacements: [],
                         disabledSurfaces: [],
@@ -1141,7 +1149,7 @@ describe('settings', () => {
 
         it('retains bounded legacy authoring carriers while projecting only current typed selections', () => {
             const codexTargetKey = resolveBackendTargetKeyV2({ kind: 'backend', backendId: 'codex' });
-            const retainedRememberedSelections = {
+            const retainedRememberedSelections: typeof authoringMemoryDefaults.lastEngineSelectionsByScopeV1 = {
                 [`server-1:${codexTargetKey}`]: {
                     v: 1,
                     modelId: 'gpt-5.4',
@@ -1376,7 +1384,7 @@ describe('settings', () => {
                 pushEnabled: true,
                 ready: true,
                 readyIncludeMessageText: true,
-                requestIncludeMessageText: false,
+                requestIncludeMessageText: true,
                 foregroundBehavior: 'full',
                 permissionRequest: true,
                 userActionRequest: true,
@@ -1399,7 +1407,7 @@ describe('settings', () => {
                         connectedServiceQuotaRecovered: true,
                     },
                     readyIncludeMessageText: true,
-                    requestIncludeMessageText: false,
+                    requestIncludeMessageText: true,
                 },
             ]);
             expect((settingsDefaults as any).attentionDeliveryPolicyV1).toEqual(

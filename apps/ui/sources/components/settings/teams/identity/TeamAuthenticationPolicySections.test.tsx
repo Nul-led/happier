@@ -20,11 +20,6 @@ import {
 } from '@/sync/api/capabilities/serverFeaturesClient';
 import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
 
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')>(),
-    requireCurrentAccountStoredContentServerCompatibility: vi.fn(async () => undefined),
-}));
-
 import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelpers';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

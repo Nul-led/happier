@@ -269,7 +269,7 @@ export const PromptDocEditorScreen = React.memo((props: Readonly<{ artifactId: s
   }, [discard, entryActions, leave, props.artifactId]);
 
   return (
-    <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+    <ItemList keyboardShouldPersistTaps="handled">
       <PromptEditorHeader
         testID="promptDoc.header"
         mark="file-text"

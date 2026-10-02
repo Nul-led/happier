@@ -10,7 +10,6 @@ import type {
   TeamCredentialSourceBindingV1,
   TeamCredentialSourceMemberV1,
 } from '@happier-dev/protocol/teams';
-import { resolveCLIProxyAPIManagedPurposeFamily } from '@happier-dev/plugins-cliproxyapi';
 
 import type { ActiveAccountSettingsSnapshot } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import type { SavedSecretCatalogResourceInputV1 } from '@/settings/secrets/savedSecretCatalog';
@@ -566,16 +565,6 @@ function sameSource(
   return left !== null && JSON.stringify(left) === JSON.stringify(right);
 }
 
-function isCpxApplication(
-  application: ProviderConnectionOpenInput['application'],
-): boolean {
-  return resolveCLIProxyAPIManagedPurposeFamily({
-    endpointTemplateId: application.endpointTemplateId,
-    protocol: application.protocol,
-  }) !== null
-    && isCLIProxyAPIBrokerApplication(application);
-}
-
 /**
  * Connects the exact Provider Connection owner to the private CPX/SVC09 data
  * plane. Registry and Settings authority are re-entered for every currentness
@@ -630,7 +619,7 @@ export function createProviderConnectionBrokerSourceOpen(input: Readonly<{
     if (
       request.brokerMachineId !== input.machineId
       || request.signal.aborted
-      || !isCpxApplication(request.application)
+      || !await input.withRegistry((registry) => isCLIProxyAPIBrokerApplication(registry, request.application))
     ) return null;
 
     const readsResourceCurrent = async (

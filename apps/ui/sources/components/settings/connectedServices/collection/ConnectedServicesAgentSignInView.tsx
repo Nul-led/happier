@@ -76,7 +76,7 @@ export const ConnectedServicesAgentSignInView = React.memo(function ConnectedSer
     }, [index.transport, router]);
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader
                 title={t('connectedServicesCollection.agentSignInTitle')}
                 description={t('connectedServicesSettings.usageDescription')}

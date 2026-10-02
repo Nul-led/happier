@@ -302,7 +302,7 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
   }, [router]);
 
   return (
-    <ItemList style={{ paddingTop: 0 }} testID="system-status-screen" presentation="page">
+    <ItemList style={{ paddingTop: 0 }} testID="system-status-screen">
       <SettingsPageHeader
         description={t('systemStatus.pageDescription')}
         actions={(

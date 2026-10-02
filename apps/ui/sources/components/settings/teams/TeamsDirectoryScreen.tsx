@@ -150,7 +150,7 @@ const TeamsCollectionLanding = React.memo(function TeamsCollectionLanding(props:
     if (props.sourceHint) {
         // Sharing a credential: the rail beside this page is the choice.
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <PageHeader
                     testID="teams-share-header"
                     title={t('teams.credentials.create.title')}
@@ -164,7 +164,7 @@ const TeamsCollectionLanding = React.memo(function TeamsCollectionLanding(props:
     // loading state; the pane keeps only its header meanwhile.
     if (active.kind === 'loading' && active.rows.length === 0) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <PageHeader testID="teams-directory-header" title={t('teams.title')} description={t('teams.pages.directory')} />
             </ItemList>
         );
@@ -173,7 +173,7 @@ const TeamsCollectionLanding = React.memo(function TeamsCollectionLanding(props:
     if (landing) return <Redirect href={teamDetailPath(landing) as never} />;
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <PageHeader testID="teams-directory-header" title={t('teams.title')} description={t('teams.pages.directory')} />
             <TeamsEmptyState collection={collection} onCreate={() => router.push(teamsCreatePath() as never)} />
             <UnavailableHomes

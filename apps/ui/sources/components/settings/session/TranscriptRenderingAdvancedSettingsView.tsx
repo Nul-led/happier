@@ -93,7 +93,7 @@ export const TranscriptRenderingAdvancedSettingsView = React.memo(function Trans
     const canAdjustMotion = normalizedMotionPreset !== 'off';
 
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settingsSessionPages.transcript.advancedPageDescription')} />
             <ItemGroup
                 title={t('settingsSession.transcript.advanced.performanceTitle')}

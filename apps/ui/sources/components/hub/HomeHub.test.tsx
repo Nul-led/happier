@@ -1,9 +1,12 @@
 import * as React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
+import { NavigationContext, useNavigation } from '@react-navigation/native';
 
 import { flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
 import { widgetInstalledPackage, widgetProjectionOf } from '@/dev/testkit/fixtures/pluginWidgetProjectionFixtures';
+import { AppShellPluginUiProjectionValueProvider } from '@/components/appShell/plugins/AppShellPluginUiProjection';
+import { HomeHub } from './HomeHub';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -17,6 +20,7 @@ const settings = vi.hoisted(() => ({
     guidanceKind: 'select_session' as string,
     machineCount: 0,
     machineMounts: 0,
+    viewport: { width: 800, height: 600 },
 }));
 
 // Plugin widgets: the app shell's projection, each widget's own data (inside the plugin, behind the
@@ -41,7 +45,7 @@ const usage = vi.hoisted(() => ({
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-    return createReactNativeWebMock();
+    return createReactNativeWebMock({ useWindowDimensions: () => settings.viewport });
 });
 vi.mock('react-native-unistyles', async () => {
     const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
@@ -103,6 +107,13 @@ vi.mock('@/components/ui/overlays/FloatingOverlay', async (importOriginal) => {
     const ReactModule = await import('react');
     return { ...(await importOriginal<Record<string, unknown>>()), FloatingOverlay: (props: { children: React.ReactNode }) => ReactModule.createElement(ReactModule.Fragment, null, props.children) };
 });
+// Native/web modal placement and focus containment are platform boundaries; the real modal chrome
+// and Home editor below them still render, including their live layout writes.
+vi.mock('@/modal/components/BaseModal', () => ({
+    BaseModal: ({ children, ...props }: React.PropsWithChildren<Record<string, unknown>>) => (
+        React.createElement('BaseModal', props, children)
+    ),
+}));
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
     return createExpoRouterMock().module;
@@ -188,6 +199,7 @@ afterEach(() => {
     settings.guidanceKind = 'select_session';
     settings.machineCount = 0;
     settings.machineMounts = 0;
+    settings.viewport = { width: 800, height: 600 };
     settings.listeners.clear();
     usage.summary = { entries: [], asOf: null, source: 'none' };
     usage.listeners.clear();
@@ -202,10 +214,15 @@ afterEach(() => {
     widgets.focusListeners.clear();
 });
 
+function RoutedHomeBoundary({ children }: React.PropsWithChildren) {
+    return <NavigationContext.Provider value={useNavigation()}>{children}</NavigationContext.Provider>;
+}
+
 async function renderHome() {
-    const { HomeHub } = await import('./HomeHub');
-    const { AppShellPluginUiProjectionValueProvider } = await import('@/components/appShell/plugins/AppShellPluginUiProjection');
     const element = () => (
+        // The route adapter reads navigator presence before consulting useIsFocused.
+        // Model a routed Home, rather than a preview that is always focused.
+        <RoutedHomeBoundary>
         <AppShellPluginUiProjectionValueProvider
             value={{
                 pluginUiProjection: widgets.projection as never,
@@ -222,6 +239,7 @@ async function renderHome() {
         >
             <HomeHub />
         </AppShellPluginUiProjectionValueProvider>
+        </RoutedHomeBoundary>
     );
     const rendered = await renderScreen(element());
     const screen = Object.assign(rendered, {
@@ -309,6 +327,33 @@ describe('HomeHub', () => {
         await flushHookEffects({ cycles: 2 });
         expect(settings.layout.hidden).toEqual([]);
         expect(screen.findByTestId('home-layout.hiddenSetupSteps')).toBeNull();
+    });
+
+    it('customizes Home in a phone sheet, applies changes behind it, and dismisses back to Home', async () => {
+        settings.viewport = { width: 390, height: 844 };
+        const screen = await renderHome();
+        await act(async () => screen.pressByTestId('home-hub.customize'));
+        await flushHookEffects({ cycles: 2 });
+
+        expect(screen.findByTestId('home-hub.customize.popover')).toBeNull();
+        const modal = screen.findByType('BaseModal');
+        expect(modal.props.placement).toBe('bottom');
+        const { ModalCardFrame } = await import('@/modal/components/card/ModalCardFrame');
+        expect(screen.findByType(ModalCardFrame).props.presentation).toBe('sheet');
+        await act(async () => {
+            screen.findByTestId('home-layout.machines.shown')!.props.onValueChange(true);
+        });
+        await flushHookEffects({ cycles: 2 });
+        expect(shownSections(screen.getTextContent())).toContain('machines');
+        expect(settings.layout.hidden).not.toContain('machines');
+
+        await act(async () => modal.props.onClose());
+        await flushHookEffects({ cycles: 2 });
+        expect(screen.findByTestId('home-layout.machines.shown')).toBeNull();
+        expect(shownSections(screen.getTextContent())).toContain('machines');
+        await act(async () => screen.pressByTestId('home-hub.customize'));
+        await flushHookEffects({ cycles: 2 });
+        expect(screen.findByType('BaseModal').props.placement).toBe('bottom');
     });
 
     it('keeps the Machines section mounted while usage arrives and goes away', async () => {

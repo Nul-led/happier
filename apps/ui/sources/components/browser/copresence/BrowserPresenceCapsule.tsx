@@ -2,6 +2,7 @@ import {
     HappierPresenceCapsule,
     type HappierPresenceCapsuleCopy,
     type HappierPresenceCapsulePlacement,
+    type HappierPresenceCapsuleProps,
 } from '@happier-dev/plugin-ui/presentation';
 import * as React from 'react';
 
@@ -37,7 +38,7 @@ export type BrowserPresenceCapsuleProps = Readonly<{
     presence: BrowserCopresence;
     agent: BrowserPresenceAgent;
     /** Absent when this surface has no route to take control. */
-    onTakeControl?: () => void;
+    onTakeControl?: HappierPresenceCapsuleProps['onTakeControl'];
     /** Absent when the owner offers no hand back from this surface. */
     onHandBack?: () => void;
     /**

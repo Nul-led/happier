@@ -282,7 +282,7 @@ export const AcpBackendEditorScreen = React.memo(function AcpBackendEditorScreen
     if (!isNew && !existing) {
         if (deletedRef.current || !settingsLoaded) return null;
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <PageHeader
                     testID={`${TEST_ID}.header`}
                     alwaysShowTitle
@@ -300,7 +300,7 @@ export const AcpBackendEditorScreen = React.memo(function AcpBackendEditorScreen
     }));
 
     return (
-        <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+        <ItemList keyboardShouldPersistTaps="handled">
             <PageHeader
                 testID={`${TEST_ID}.header`}
                 alwaysShowTitle

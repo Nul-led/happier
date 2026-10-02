@@ -642,7 +642,6 @@ async function invokeAction(params: Readonly<{
     actionId: params.actionId,
     input: {},
     surface: 'cli',
-    authority: 'account_automation',
   }, { target: params.daemon.target });
 }
 

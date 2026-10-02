@@ -16,6 +16,8 @@ import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { Text } from '@/components/ui/text/Text';
+import { WorkflowProjectTargetControl, formatWorkflowWhereSummary } from '../editor/WorkflowProjectTargetControl';
+import { createExecutionRunStartContentChip } from '@/components/sessions/runs/launcher/executionRunStartChips';
 import { t } from '@/text';
 import { workflowBlockReferenceLabel } from '@/sync/domains/workflows/workflowBlockLabel';
 import { walkWorkflowBlocks } from '@happier-dev/protocol/workflows/workflowDefinitionEditV1';
@@ -85,6 +87,7 @@ import {
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
 import type { ExecutionRunPromptResponse } from '@/components/tools/shell/permissions/executionRunPromptResponseTarget';
+import { RunWorkNotifications } from '@/components/sessions/work/RunWorkNotifications';
 
 /**
  * The exact managed Run route.
@@ -1256,21 +1259,27 @@ export function WorkflowRunScreen(): React.ReactElement {
     }, [contentIdentity, isContentIdentityCurrent, issueRunOperation, router, runId, summary]);
 
     const admitRunAgain = React.useCallback(async (inputs: Readonly<Record<string, JsonValue>> | undefined) => {
-        if (visibleDefinition === null || visibleAcceptedContext === null) return;
+        if (visibleDefinition === null || visibleAcceptedContext === null || summary === null) return;
         const requestIdentity = contentIdentity;
         const nextRunId = pendingRunAgainIdRef.current ?? randomUUID();
         pendingRunAgainIdRef.current = nextRunId;
+        const repeatDefinition = buildWorkflowReviewedRunSeed({ run: summary, definition: visibleDefinition,
+            acceptedContext: visibleAcceptedContext }).definition;
         const admitted = await runNow.runNow({
             runId: nextRunId,
             ...(visibleAcceptedContext.metadata ? { metadata: visibleAcceptedContext.metadata } : {}),
             source: {
                 kind: 'inline',
-                definition: { ...visibleDefinition, inputs: [...visibleDefinition.inputs], blocks: [...visibleDefinition.blocks] },
+                definition: { ...repeatDefinition, inputs: [...repeatDefinition.inputs], blocks: [...repeatDefinition.blocks] },
+                replay: { runId: summary.id },
             },
             // "Run again" repeats this Run. Its accepted runtime is part of what
             // it was: dropping it would silently repeat effectful work under
             // different execution, approval and lifecycle semantics.
             executionTarget: visibleAcceptedContext.executionTarget,
+            ...(visibleAcceptedContext.roleOverrides === undefined ? {} : { roleOverrides: [...visibleAcceptedContext.roleOverrides] }),
+            ...('origin' in visibleAcceptedContext && visibleAcceptedContext.origin.originSessionId
+                ? { originSessionId: visibleAcceptedContext.origin.originSessionId } : {}),
             project: projectAcceptedWorkflowRunTarget(visibleAcceptedContext.workspaceTarget.project),
             ...(inputs === undefined ? {} : { inputs }),
         });
@@ -1278,25 +1287,14 @@ export function WorkflowRunScreen(): React.ReactElement {
         pendingRunAgainIdRef.current = null;
         setRunAgainInputOpen(false);
         router.push({ pathname: '/workflows/runs/[runId]', params: { runId: admitted.run.id } } as never);
-    }, [contentIdentity, isContentIdentityCurrent, router, runNow, visibleAcceptedContext, visibleDefinition]);
+    }, [contentIdentity, isContentIdentityCurrent, router, runNow, summary, visibleAcceptedContext, visibleDefinition]);
 
     const requestRunAgain = React.useCallback(async () => {
         if (visibleDefinition === null || visibleAcceptedContext === null) return;
-        const requestIdentity = contentIdentity;
-        const confirmed = await Modal.confirm(
-            t('workflows.run.runAgain'),
-            t('workflows.recovery.repeatedEffectWarning'),
-            { cancelText: t('common.cancel'), confirmText: t('workflows.recovery.startReviewedRun') },
-        );
-        if (!confirmed || !isContentIdentityCurrent(requestIdentity)) return;
         setRunAgainValues(visibleAcceptedContext.inputs);
         setRunAgainRawTextValues({});
-        if (visibleDefinition.inputs.length > 0) {
-            setRunAgainInputOpen(true);
-            return;
-        }
-        void admitRunAgain(undefined);
-    }, [admitRunAgain, contentIdentity, isContentIdentityCurrent, visibleAcceptedContext, visibleDefinition]);
+        setRunAgainInputOpen(true);
+    }, [visibleAcceptedContext, visibleDefinition]);
 
     /**
      * D4's second arm: when the recorded workspace cannot be used and no
@@ -1399,19 +1397,34 @@ export function WorkflowRunScreen(): React.ReactElement {
 
     const runAgainModalProps = React.useMemo<WorkflowRunComposerModalProps | null>(
         () => visibleDefinition === null ? null : ({
+            definition: visibleDefinition,
+            materializedLeaves: visibleAcceptedContext?.materializedLeaves,
+            roleOverrides: visibleAcceptedContext?.roleOverrides,
             inputs: visibleDefinition.inputs,
             values: runAgainValues,
             onChangeValues: setRunAgainValues,
             rawTextValues: runAgainRawTextValues,
             onChangeRawTextValues: setRunAgainRawTextValues,
             workflowName: visibleAcceptedContext?.metadata?.title,
-            preview: visibleAcceptedContext?.metadata?.description || JSON.stringify(visibleDefinition.blocks, null, 2),
+            notice: t('workflows.recovery.repeatedEffectWarning'),
+            preview: visibleAcceptedContext?.metadata?.description || visibleDefinition.blocks.map(workflowBlockReferenceLabel).join('\n'),
             machineId: visibleAcceptedContext?.machineId ?? null,
+            ...(visibleAcceptedContext === null ? {} : { extraActionChips: [{
+                ...createExecutionRunStartContentChip({
+                    key: 'workflow-start-where', icon: 'folder', title: t('workflows.page.where.label'),
+                    label: formatWorkflowWhereSummary({ target: visibleAcceptedContext.workspaceTarget.project,
+                        machineName: getMachineDisplayName(runMachine) }) ?? visibleAcceptedContext.machineId,
+                    testID: 'workflow-start-where-chip',
+                    // No setter: this is the accepted target, not another authored choice.
+                    renderContent: <WorkflowProjectTargetControl target={visibleAcceptedContext.workspaceTarget.project}
+                        machineName={getMachineDisplayName(runMachine)} testIDPrefix="workflow-repeat-where" />,
+                }), controlId: 'machine' as const,
+            }] }),
             onRun: (inputs) => { void admitRunAgain(inputs); },
             onCancel: () => setRunAgainInputOpen(false),
             pending: runNow.stateFor(pendingRunAgainIdRef.current ?? '') === 'submitting',
         }),
-        [admitRunAgain, runAgainRawTextValues, runAgainValues, runNow, visibleAcceptedContext, visibleDefinition],
+        [admitRunAgain, runAgainRawTextValues, runAgainValues, runMachine, runNow, visibleAcceptedContext, visibleDefinition],
     );
 
     useWorkflowRunComposerModal({
@@ -1458,6 +1471,11 @@ export function WorkflowRunScreen(): React.ReactElement {
             style={styles.root}
         >
             <WorkflowRunContent
+                notificationOperation={activeAccountScope !== null && visibleAcceptedContext !== null
+                    && !isTerminalWorkflowRunState(summary.state) ? <RunWorkNotifications
+                        source={{ kind: 'workflow_run', runId: summary.id }}
+                        project={projectAcceptedWorkflowRunTarget(visibleAcceptedContext.workspaceTarget.project)}
+                        serverId={activeAccountScope.serverId} /> : undefined}
                 run={summary}
                 machineName={getMachineDisplayName(runMachine)}
                 {...(runMachine === null || runMachine === undefined

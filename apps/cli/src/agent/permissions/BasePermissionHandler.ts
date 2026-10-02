@@ -3881,6 +3881,7 @@ export abstract class BasePermissionHandler {
             toolInput: input,
             createdAt: Date.now(),
             ...(turnId ? { turnId } : {}),
+            ...(options?.causalPermissionContext?.lifetime ? { lifetime: options.causalPermissionContext.lifetime } : {}),
             ...(source ? { source } : {}),
             ...(owner ? { owner } : {}),
         }, { signal: options?.signal });
@@ -4040,6 +4041,10 @@ export abstract class BasePermissionHandler {
                 logger.debug(`${this.getLogPrefix()} Error rejecting legacy pending request:`, err);
             }
         }
+    }
+
+    async cancelByPluginTurn(pluginId: string, turnId: string, reason: string): Promise<void> {
+        await this.requestCoordinator.cancelByPluginTurn(pluginId, turnId, reason);
     }
 
     async cancelByPlugin(pluginId: string, reason: string = 'plugin_deactivated'): Promise<void> {

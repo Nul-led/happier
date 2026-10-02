@@ -128,6 +128,7 @@ type HomesJourneysTranslation = Readonly<{
     // The laptop nudge.
     nudgeTitle: (params: Readonly<{ count: number }>) => string;
     nudgeBody: string;
+    nudgeDismiss: string;
     moveHome: string;
     useService: (params: Service) => string;
 }>;
@@ -237,10 +238,9 @@ const en: HomesJourneysTranslation = {
     noComputerYet: 'No computer yet?',
     aboutYourHome: 'About your Home',
 
-    nudgeTitle: ({ count }) => count === 1
-        ? 'Your phone couldn’t reach this Home once this week'
-        : `Your phone couldn’t reach this Home ${count} times this week`,
-    nudgeBody: 'It lives on this computer, so it’s out of reach while the computer sleeps. Move it somewhere that stays on to follow sessions any time.',
+    nudgeTitle: ({ count }) => `Home unreachable ${count} times this week — move Home?`,
+    nudgeBody: 'If this Home runs on a computer that sleeps, moving it to an always-on host can help.',
+    nudgeDismiss: 'Dismiss forever on this device',
     moveHome: 'Move Home…',
     useService: ({ service }) => `Use ${service}`,
 };
@@ -350,10 +350,9 @@ const ca: HomesJourneysTranslation = {
     noComputerYet: 'Encara no tens ordinador?',
     aboutYourHome: 'Quant al teu Home',
 
-    nudgeTitle: ({ count }) => count === 1
-        ? 'Aquesta setmana el teu telèfon no ha pogut arribar a aquest Home una vegada'
-        : `Aquesta setmana el teu telèfon no ha pogut arribar a aquest Home ${count} vegades`,
-    nudgeBody: 'És en aquest ordinador, així que no està disponible mentre l’ordinador dorm. Mou-lo a un lloc que estigui sempre encès per seguir les sessions en qualsevol moment.',
+    nudgeTitle: ({ count }) => `Home inaccessible ${count} vegades aquesta setmana — el vols moure?`,
+    nudgeBody: 'Si aquest Home funciona en un ordinador que dorm, moure’l a un servidor sempre encès pot ajudar.',
+    nudgeDismiss: 'Descarta-ho per sempre en aquest dispositiu',
     moveHome: 'Mou el Home…',
     useService: ({ service }) => `Fes servir ${service}`,
 };
@@ -463,10 +462,9 @@ const de: HomesJourneysTranslation = {
     noComputerYet: 'Noch kein Computer?',
     aboutYourHome: 'Über dein Home',
 
-    nudgeTitle: ({ count }) => count === 1
-        ? 'Dein Telefon konnte dieses Home diese Woche einmal nicht erreichen'
-        : `Dein Telefon konnte dieses Home diese Woche ${count}-mal nicht erreichen`,
-    nudgeBody: 'Es liegt auf diesem Computer und ist daher nicht erreichbar, solange der Computer schläft. Verschiebe es an einen Ort, der immer läuft, um Sitzungen jederzeit zu verfolgen.',
+    nudgeTitle: ({ count }) => `Home diese Woche ${count}-mal nicht erreichbar — Home verschieben?`,
+    nudgeBody: 'Wenn dieses Home auf einem Computer läuft, der in den Ruhezustand geht, kann ein ständig eingeschalteter Host helfen.',
+    nudgeDismiss: 'Auf diesem Gerät dauerhaft ausblenden',
     moveHome: 'Home verschieben…',
     useService: ({ service }) => `${service} nutzen`,
 };
@@ -576,10 +574,9 @@ const es: HomesJourneysTranslation = {
     noComputerYet: '¿Todavía no tienes ordenador?',
     aboutYourHome: 'Acerca de tu Home',
 
-    nudgeTitle: ({ count }) => count === 1
-        ? 'Esta semana tu teléfono no pudo llegar a este Home una vez'
-        : `Esta semana tu teléfono no pudo llegar a este Home ${count} veces`,
-    nudgeBody: 'Está en este ordenador, así que no está disponible mientras el ordenador duerme. Muévelo a un lugar que esté siempre encendido para seguir tus sesiones en cualquier momento.',
+    nudgeTitle: ({ count }) => `Home inaccesible ${count} veces esta semana — ¿mover el Home?`,
+    nudgeBody: 'Si este Home funciona en un ordenador que entra en reposo, moverlo a un servidor siempre encendido puede ayudar.',
+    nudgeDismiss: 'Descartar para siempre en este dispositivo',
     moveHome: 'Mover el Home…',
     useService: ({ service }) => `Usar ${service}`,
 };
@@ -689,10 +686,9 @@ const fr: HomesJourneysTranslation = {
     noComputerYet: 'Pas encore d’ordinateur ?',
     aboutYourHome: 'À propos de ton Home',
 
-    nudgeTitle: ({ count }) => count === 1
-        ? 'Ton téléphone n’a pas pu joindre ce Home une fois cette semaine'
-        : `Ton téléphone n’a pas pu joindre ce Home ${count} fois cette semaine`,
-    nudgeBody: 'Il se trouve sur cet ordinateur, il est donc injoignable pendant la mise en veille. Déplace-le vers un endroit toujours allumé pour suivre tes sessions à tout moment.',
+    nudgeTitle: ({ count }) => `Home injoignable ${count} fois cette semaine — déplacer le Home ?`,
+    nudgeBody: 'Si ce Home fonctionne sur un ordinateur qui se met en veille, le déplacer vers un serveur toujours allumé peut aider.',
+    nudgeDismiss: 'Masquer définitivement sur cet appareil',
     moveHome: 'Déplacer le Home…',
     useService: ({ service }) => `Utiliser ${service}`,
 };
@@ -802,10 +798,9 @@ const it: HomesJourneysTranslation = {
     noComputerYet: 'Non hai ancora un computer?',
     aboutYourHome: 'Informazioni sul tuo Home',
 
-    nudgeTitle: ({ count }) => count === 1
-        ? 'Questa settimana il tuo telefono non ha raggiunto questo Home una volta'
-        : `Questa settimana il tuo telefono non ha raggiunto questo Home ${count} volte`,
-    nudgeBody: 'Si trova su questo computer, quindi non è raggiungibile mentre il computer è in stop. Spostalo in un posto sempre acceso per seguire le sessioni in qualsiasi momento.',
+    nudgeTitle: ({ count }) => `Home non raggiungibile ${count} volte questa settimana — spostarlo?`,
+    nudgeBody: 'Se questo Home funziona su un computer che va in stop, spostarlo su un server sempre acceso può aiutare.',
+    nudgeDismiss: 'Nascondi per sempre su questo dispositivo',
     moveHome: 'Sposta Home…',
     useService: ({ service }) => `Usa ${service}`,
 };
@@ -915,10 +910,9 @@ const pt: HomesJourneysTranslation = {
     noComputerYet: 'Ainda não tem computador?',
     aboutYourHome: 'Sobre o seu Home',
 
-    nudgeTitle: ({ count }) => count === 1
-        ? 'O seu telemóvel não conseguiu chegar a este Home uma vez esta semana'
-        : `O seu telemóvel não conseguiu chegar a este Home ${count} vezes esta semana`,
-    nudgeBody: 'Está neste computador, por isso fica inacessível enquanto o computador está em repouso. Mova-o para um sítio sempre ligado para acompanhar as sessões a qualquer momento.',
+    nudgeTitle: ({ count }) => `Home inacessível ${count} vezes esta semana — mover o Home?`,
+    nudgeBody: 'Se este Home funciona num computador que entra em repouso, movê-lo para um servidor sempre ligado pode ajudar.',
+    nudgeDismiss: 'Ocultar para sempre neste dispositivo',
     moveHome: 'Mover o Home…',
     useService: ({ service }) => `Usar ${service}`,
 };
@@ -1026,8 +1020,9 @@ const ja: HomesJourneysTranslation = {
     noComputerYet: 'まだコンピューターがありませんか？',
     aboutYourHome: 'Home について',
 
-    nudgeTitle: ({ count }) => `今週、スマートフォンからこの Home に ${count} 回接続できませんでした`,
-    nudgeBody: 'このコンピューター上にあるため、スリープ中は接続できません。常時オンの場所に移動すれば、いつでもセッションを追えます。',
+    nudgeTitle: ({ count }) => `今週 Home に ${count} 回接続できませんでした — Home を移動しますか？`,
+    nudgeBody: 'この Home がスリープするコンピューターで動作している場合、常時稼働するホストへの移動が役立つことがあります。',
+    nudgeDismiss: 'このデバイスでは今後表示しない',
     moveHome: 'Home を移動…',
     useService: ({ service }) => `${service} を使う`,
 };
@@ -1137,10 +1132,9 @@ const pl: HomesJourneysTranslation = {
     noComputerYet: 'Nie masz jeszcze komputera?',
     aboutYourHome: 'O Twoim Home',
 
-    nudgeTitle: ({ count }) => count === 1
-        ? 'Twój telefon raz w tym tygodniu nie mógł połączyć się z tym Home'
-        : `Twój telefon ${count} razy w tym tygodniu nie mógł połączyć się z tym Home`,
-    nudgeBody: 'Znajduje się na tym komputerze, więc jest nieosiągalny, gdy komputer śpi. Przenieś go w miejsce, które zawsze działa, aby śledzić sesje w dowolnej chwili.',
+    nudgeTitle: ({ count }) => `Home nieosiągalny ${count} ${count === 1 ? 'raz' : 'razy'} w tym tygodniu — przenieść Home?`,
+    nudgeBody: 'Jeśli ten Home działa na komputerze, który przechodzi w stan uśpienia, przeniesienie go na stale włączony serwer może pomóc.',
+    nudgeDismiss: 'Ukryj na zawsze na tym urządzeniu',
     moveHome: 'Przenieś Home…',
     useService: ({ service }) => `Użyj ${service}`,
 };
@@ -1257,8 +1251,9 @@ const ru: HomesJourneysTranslation = {
     noComputerYet: 'Ещё нет компьютера?',
     aboutYourHome: 'О вашем Home',
 
-    nudgeTitle: ({ count }) => `На этой неделе телефону ${count} ${ruTimes(count)} не удалось подключиться к этому Home`,
-    nudgeBody: 'Он находится на этом компьютере, поэтому недоступен, пока компьютер спит. Перенесите его туда, где он всегда включён, чтобы следить за сессиями в любое время.',
+    nudgeTitle: ({ count }) => `Home недоступен ${count} ${ruTimes(count)} на этой неделе — перенести Home?`,
+    nudgeBody: 'Если этот Home работает на компьютере, который переходит в спящий режим, перенос на постоянно включённый сервер может помочь.',
+    nudgeDismiss: 'Больше не показывать на этом устройстве',
     moveHome: 'Перенести Home…',
     useService: ({ service }) => `Использовать ${service}`,
 };
@@ -1366,8 +1361,9 @@ const zhHans: HomesJourneysTranslation = {
     noComputerYet: '还没有电脑？',
     aboutYourHome: '关于你的 Home',
 
-    nudgeTitle: ({ count }) => `本周你的手机有 ${count} 次无法连接此 Home`,
-    nudgeBody: '它位于这台电脑上，因此电脑休眠时无法访问。把它移到始终开机的地方，随时都能跟进会话。',
+    nudgeTitle: ({ count }) => `本周有 ${count} 次无法连接 Home — 移动 Home？`,
+    nudgeBody: '如果此 Home 运行在会休眠的电脑上，将其移到始终开机的主机可能会有帮助。',
+    nudgeDismiss: '在此设备上不再显示',
     moveHome: '移动 Home…',
     useService: ({ service }) => `使用 ${service}`,
 };
@@ -1475,8 +1471,9 @@ const zhHant: HomesJourneysTranslation = {
     noComputerYet: '還沒有電腦？',
     aboutYourHome: '關於你的 Home',
 
-    nudgeTitle: ({ count }) => `本週你的手機有 ${count} 次無法連線到此 Home`,
-    nudgeBody: '它位於這台電腦上，因此電腦休眠時無法存取。把它移到一直開機的地方，隨時都能追蹤工作階段。',
+    nudgeTitle: ({ count }) => `本週有 ${count} 次無法連線到 Home — 移動 Home？`,
+    nudgeBody: '如果此 Home 執行於會休眠的電腦，將它移到持續開機的主機可能有幫助。',
+    nudgeDismiss: '在此裝置上不再顯示',
     moveHome: '移動 Home…',
     useService: ({ service }) => `使用 ${service}`,
 };

@@ -40,7 +40,9 @@ import { providerCollectionTranslations } from './providerCollectionTranslations
 import { settingsSearchKeywordsTranslations } from './settingsSearchKeywordsTranslations';
 import { automationPageTranslations } from './automationPageTranslations';
 import { settingsSessionPagesTranslations } from './settingsSessionPagesTranslations';
-import { workspaceTabTranslations } from './workspaceTabTranslations';
+import { workspaceTabKeyboardTranslations, workspaceTabTranslations } from './workspaceTabTranslations';
+import { terminalWorkspaceKeyboardTranslations, terminalWorkspaceTranslations } from './terminalWorkspaceTranslations';
+import { phoneNavigationTranslations } from './phoneNavigationTranslations';
 import { workspaceBarTranslations } from './workspaceBarTranslations';
 import { settingsProfilesRemoteHostsPageTranslations } from './settingsProfilesRemoteHostsPageTranslations';
 import { profilesPageTranslations } from './profilesPageTranslations';
@@ -55,6 +57,7 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { detailPageTranslations } from './detailPageTranslations';
 import { rolesTranslations } from './rolesTranslations';
 import { boardsTranslations } from './boardsTranslations';
+import { artifactsBrowserTranslations } from './artifactsBrowserTranslations';
 import { workStatusTranslations } from './workStatusTranslations';
 import { shareSheetTranslations } from './shareSheetTranslations';
 import { surfaceStateTranslations } from './surfaceStateTranslations';
@@ -760,6 +763,8 @@ export const en = {
         setShortcutInvalidMessage: 'Enter at least one non-modifier key, optionally with Mod, Ctrl, Shift, or Alt.',
         resetCommandAccessibility: ({ command }: { command: string }) => `Reset ${command} shortcut`,
         commands: {
+            ...workspaceTabKeyboardTranslations,
+            ...terminalWorkspaceKeyboardTranslations,
             composerAbortConfirm: 'Confirm abort',
             composerFocus: 'Focus composer',
             composerSendImmediate: 'Send immediately',
@@ -6380,6 +6385,8 @@ export const en = {
     },
 
     newSession: {
+      terminalHostUnavailableTitle: "Terminal host unavailable",
+      terminalHostUnavailableBody: ({ host }: { host: string }) => `Install or update ${host} and restart its server on this machine, or choose another terminal host. Your draft is kept.`,
         folder: folderlessSessionTranslations.en.composer,
         ...newSessionMcpTranslationExtension,
         ...acpCatalogTranslationExtension.newSession,
@@ -8828,8 +8835,8 @@ export const en = {
             attachedTerminalNotice: {
                 header: 'Terminal dialog',
                 question: 'The agent is showing a dialog. Open the attached terminal to review it and choose how to continue.',
-                openTerminal: 'Open attached terminal',
-                description: 'Review and answer the dialog in the attached terminal.',
+                openTerminal: 'Show the agent’s terminal',
+                description: 'Answer the dialog where the agent is asking, in its own terminal.',
             },
             submit: 'Submit Answer',
             multipleQuestions: ({ count }: { count: number }) => `${count} questions`,
@@ -13366,6 +13373,8 @@ settingsSession: {
     },
 
     terminal: {
+        plaintextStorage: 'Home-managed (not end-to-end encrypted)',
+        plaintextStorageDescription: 'This Home can read Account data. The connection response is encrypted for this terminal.',
         // Used by terminal connection screens
         webBrowserRequired: 'Web Browser Required',
         webBrowserRequiredDescription: 'Terminal connection links can only be opened in a web browser for security reasons. Please use the QR code scanner or open this link on a computer.',
@@ -13400,12 +13409,10 @@ settingsSession: {
             selectAllAction: 'Select all terminal output',
             openLinkAction: 'Open selected link',
         },
-        dockMenuA11y: 'Dock terminal',
         largePasteTitle: 'Paste large terminal input?',
         largePasteDescription: 'This paste is large and may run commands in the terminal. Review it before continuing.',
         largePasteConfirm: 'Paste into terminal',
         settings: {
-            locationTitle: 'Embedded terminal location',
             rendererTitle: 'Terminal renderer',
             rendererAuto: 'Automatic',
             rendererAutoDescription: 'Prefers the native renderer when all native safety checks pass and no screen reader is active; switches to the accessible xterm.js WebView while a screen reader is in use.',
@@ -13420,11 +13427,6 @@ settingsSession: {
             ctrlC: 'Ctrl+C',
             ctrlD: 'Ctrl+D',
             enter: 'Enter',
-        },
-        location: {
-            sidebar: 'Sidebar',
-            details: 'Details panel',
-            bottom: 'Bottom panel',
         },
         errors: {
             missingMachineTarget: 'This session is missing a machine target.',
@@ -14153,9 +14155,9 @@ settingsSession: {
         unknownPath: 'unknown path',
         previousSessionsTitle: 'Previous Sessions (up to 5 most recent)',
         tmux: {
-            overrideTitle: 'Override global tmux settings',
-            overrideEnabledSubtitle: 'Custom tmux settings apply to new sessions on this machine.',
-            overrideDisabledSubtitle: 'New sessions use the global tmux settings.',
+            overrideTitle: "Override account default",
+            overrideEnabledSubtitle: "This machine uses its own terminal host for new sessions.",
+            overrideDisabledSubtitle: "New sessions inherit your account’s terminal host.",
             notDetectedSubtitle: 'tmux is not detected on this machine.',
             notDetectedMessage: 'tmux is not detected on this machine. Install tmux and refresh detection.',
         },
@@ -14432,12 +14434,11 @@ settingsSession: {
     },
 
     artifacts: {
+        browser: artifactsBrowserTranslations.en,
         // Artifacts feature
         title: 'Artifacts',
         countSingular: '1 artifact',
         countPlural: ({ count }: { count: number }) => `${count} artifacts`,
-        empty: 'No artifacts yet',
-        emptyDescription: 'Create your first artifact to get started',
         new: 'New Artifact',
         edit: 'Edit Artifact',
         delete: 'Delete',
@@ -14450,15 +14451,13 @@ settingsSession: {
         deleteConfirmDescription: 'This action cannot be undone',
         noContent: 'No content',
         untitled: 'Untitled',
-        titleLabel: 'TITLE',
         titlePlaceholder: 'Enter a title for your artifact',
-        bodyLabel: 'CONTENT',
+        bodyLabel: 'Content',
         bodyPlaceholder: 'Write your content here...',
         emptyFieldsError: 'Please enter a title or content',
         createError: 'Failed to create artifact. Please try again.',
         save: 'Save',
         saving: 'Saving...',
-        loading: 'Loading artifacts...',
         error: 'Failed to load artifact',
     },
 
@@ -15144,6 +15143,8 @@ settingsSession: {
    ...automationPageTranslations.en,
     ...settingsSessionPagesTranslations.en,
     ...workspaceTabTranslations.en,
+    ...terminalWorkspaceTranslations.en,
+    ...phoneNavigationTranslations.en,
     ...workspaceBarTranslations.en,
    ...settingsProfilesRemoteHostsPageTranslations.en,
    ...profilesPageTranslations.en,

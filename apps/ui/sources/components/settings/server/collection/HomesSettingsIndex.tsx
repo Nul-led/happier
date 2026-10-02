@@ -24,7 +24,7 @@ export const HomesSettingsIndex = React.memo(function HomesSettingsIndex() {
 /** The Homes list as a page: where no rail shows, and the onboarding stage's Homes surface. */
 export const HomesSettingsListPage = React.memo(function HomesSettingsListPage() {
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader description={t('server.page.description')} />
             <HomesCollectionList variant="page" />
         </ItemList>

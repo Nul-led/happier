@@ -20,11 +20,6 @@ import type { HomeAdministrationContext } from './homeAdministrationContext';
 import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelpers';
 
 installSettingsViewCommonModuleMocks();
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')>(),
-    // Artifact protocol compatibility is covered by its owner; this suite exercises the policy save.
-    requireCurrentAccountStoredContentServerCompatibility: vi.fn(async () => undefined),
-}));
 // The generated bundled-artifact inventory is an unrelated build product absent from remote
 // source mirrors; the empty projection keeps this suite on the real Action path.
 vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', () => ({

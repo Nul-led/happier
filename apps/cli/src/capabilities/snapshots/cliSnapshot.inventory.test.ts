@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { PluginManifestV2Schema, projectMachineAgentsDetectResponse } from '@happier-dev/protocol';
+import { PluginManifestV2Schema, PluginManagedDependencyContributionV2Schema, projectMachineAgentsDetectResponse } from '@happier-dev/protocol';
 import { PLUGIN_MANIFEST as ANTIGRAVITY_MANIFEST } from '@happier-dev/plugins-antigravity/manifest';
 import { PLUGIN_MANIFEST as CODEX_MANIFEST } from '@happier-dev/plugins-codex/manifest';
 
@@ -44,11 +44,12 @@ describe('machine agent inventory on the daemon', () => {
             pluginDiagnosticsByPluginId: {}, activatedPluginIds: new Set<string>(),
             activateContributionsOnDemand: async () => [], resolvePromptAssetBlocks: async () => [],
             createAgentInvocationServices: async () => { throw new Error('No plugin invocation in this inventory fixture'); },
+            resolveCaptureSource: async () => null,
             retireConsumers: () => {}, dispose: async () => {},
         } satisfies ResolvedExecutablePluginRuntimeRegistry;
         await pluginReloadController.adoptPreparedRuntimeRegistry({
             registry, changedPluginIds: [], isDevelopmentCandidateCurrent: () => true,
-            runningSessionDisposition: 'keepRunningSessions',
+            runningSessionDisposition: 'retainRunningSessions',
         });
     });
     afterAll(async () => { await pluginReloadController.shutdown(); });
@@ -65,11 +66,10 @@ describe('machine agent inventory on the daemon', () => {
                 entry.pluginId === 'happier.agent.antigravity' && entry.definition.id === 'agy-acp-server'
             ));
             expect(contribution).toBeDefined();
-            const definition = contribution?.definition;
-            if (!definition || !('sources' in definition)) throw new Error('Missing managed dependency fixture definition');
+            const definition = PluginManagedDependencyContributionV2Schema.parse(contribution?.definition);
             const source = definition.sources.find((entry) => entry.kind === 'pinnedArchive');
             if (!source || source.kind !== 'pinnedArchive') throw new Error('Missing pinned fixture source');
-            const asset = source.assetsByPlatform[`${process.platform}-${process.arch}`];
+            const asset = Object.entries(source.assetsByPlatform).find(([key]) => key === `${process.platform}-${process.arch}`)?.[1];
             if (!asset) throw new Error('Inventory fixture requires a supported Antigravity host');
             const root = join(fixture.dir, 'tools', source.installId, 'current');
             await mkdir(root, { recursive: true });

@@ -181,7 +181,7 @@ export const HomeConsoleSidebar = React.memo(function HomeConsoleSidebar(props: 
                     ) : null}
                 </View>
             </View>
-            <ItemList style={[styles.scroller, appShellColumnSurface.plane]} accessibilityLabel={t('homeGovernance.console.navigation')}>
+            <ItemList presentation="grouped" style={[styles.scroller, appShellColumnSurface.plane]} accessibilityLabel={t('homeGovernance.console.navigation')}>
                 {groups.map((group, index) => (
                     <React.Fragment key={group[0]!.id}>
                         {index > 0 ? <View style={styles.groupGap} /> : null}

@@ -10,7 +10,8 @@ import { createManagedServiceProcessSupervisorHost } from '@/plugins/runtime/inv
 import { createConnectedAccountPurposeBindingOwner } from '@/daemon/connectedServices/purposeBindings/ConnectedAccountPurposeBindingOwner';
 import type { ManagedProviderExplicitStartCustody } from '@/providers/connections/publicManagedRuntimeStart';
 
-import { projectCLIProxyAPIProviderConnectionApplication } from '@happier-dev/plugins-cliproxyapi';
+import { projectProviderConnectionBrokerApplication } from './providerConnectionCpxBridge';
+import { createBrokerProviderRegistry } from './providerBroker.testkit';
 
 import {
   createTeamCredentialBrokerSourceOwner,
@@ -112,6 +113,7 @@ function sourceCustodyHarness() {
   const owner = createTeamCredentialBrokerSourceOwner({
     machineId: 'broker-machine', custody, selectConnectedServicesSourceMember: async () => null,
     openConnectedServicesSource: createConnectedServicesBrokerSourceOpen({
+      withRegistry: async (read) => await read(createBrokerProviderRegistry()),
       readResource, resolveBindingIntentSelection: purposes.resolveBindingIntentSelection, custody,
     }),
     openProviderConnectionSource: unusedBoundary,
@@ -337,17 +339,21 @@ describe('Team credential broker source owner', () => {
   });
 
   it('takes the CLIProxyAPI application identity from the contribution projection', () => {
-    const projected = projectCLIProxyAPIProviderConnectionApplication({
+    const registry = createBrokerProviderRegistry();
+    const projected = projectProviderConnectionBrokerApplication({
+      registry,
       agentTargetKey: 'agent:happier.agent.codex/codex',
       protocol: 'openai-chat',
     });
     expect(projected).not.toBeNull();
-    expect(isCLIProxyAPIBrokerApplication(projected!)).toBe(true);
-    expect(isCLIProxyAPIBrokerApplication({
+    expect(isCLIProxyAPIBrokerApplication(registry, projected!)).toBe(true);
+    expect(isCLIProxyAPIBrokerApplication({ providersByContributionKey: new Map() }, projected!)).toBe(false);
+    expect(isCLIProxyAPIBrokerApplication(registry, { ...projected!, endpointTemplateId: 'cliproxyapi-anthropic' })).toBe(false);
+    expect(isCLIProxyAPIBrokerApplication(registry, {
       ...projected!,
       implementationIdentity: { pluginId: 'happier.provider.other', localId: 'other' },
     })).toBe(false);
-    expect(isCLIProxyAPIBrokerApplication({
+    expect(isCLIProxyAPIBrokerApplication(registry, {
       ...projected!,
       protocol: 'not-a-managed-protocol',
     })).toBe(false);

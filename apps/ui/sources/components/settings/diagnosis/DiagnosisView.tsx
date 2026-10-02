@@ -337,7 +337,7 @@ export const DiagnosisView = React.memo(function DiagnosisView() {
     }, [failedMachineNames.length, report, running]);
 
     return (
-        <ItemList style={{ paddingTop: 0 }} testID="diagnosis-screen" presentation="page">
+        <ItemList style={{ paddingTop: 0 }} testID="diagnosis-screen">
             <SettingsPageHeader
                 description={t('diagnosis.pageDescription')}
                 actions={(

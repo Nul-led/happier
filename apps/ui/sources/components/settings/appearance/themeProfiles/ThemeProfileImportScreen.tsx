@@ -69,7 +69,7 @@ export const ThemeProfileImportScreen = React.memo(function ThemeProfileImportSc
     }, []);
 
     return (
-        <ItemList testID="settings-theme-profile-import-screen" style={{ paddingTop: 0 }} presentation="page" keyboardShouldPersistTaps="handled">
+        <ItemList testID="settings-theme-profile-import-screen" style={{ paddingTop: 0 }} keyboardShouldPersistTaps="handled">
             <SettingsPageHeader
                 description={t('settingsAppearance.themeProfiles.importPageDescription')}
                 actions={(

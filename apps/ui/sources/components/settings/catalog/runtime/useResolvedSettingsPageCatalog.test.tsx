@@ -719,11 +719,11 @@ describe('useResolvedSettingsPageCatalog', () => {
         const hook = await renderHook(() => useResolvedSettingsPageCatalog());
 
         // Runtime is reached from Sessions; its settings belong to Sessions but live on their own route.
-        expect(hook.getCurrent().search('runtime.tmuxTitle')).toContainEqual(expect.objectContaining({
+        expect(hook.getCurrent().search('profiles.tmuxSession')).toContainEqual(expect.objectContaining({
             id: 'session',
-            route: '/settings/session/runtime?setting=session.runtime.tmux',
+            route: '/settings/session/runtime?setting=session.runtime.sessionName',
             setting: expect.objectContaining({
-                anchor: 'session.runtime.tmux',
+                anchor: 'session.runtime.sessionName',
                 path: ['settings.sessions', 'settingsSession.runtime.title', 'settingsSessionPages.runtime.terminalSection'],
             }),
         }));

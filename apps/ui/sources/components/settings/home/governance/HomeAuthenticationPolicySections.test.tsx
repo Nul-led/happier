@@ -43,12 +43,6 @@ vi.mock('@/sync/ops/home/homeGovernanceOperations', async (importOriginal) => {
         },
     };
 });
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')>(),
-    // Artifact protocol compatibility is independently covered by its owner;
-    // this suite exercises policy state across the shared approval lifecycle.
-    requireCurrentAccountStoredContentServerCompatibility: vi.fn(async () => undefined),
-}));
 // The generated bundled-artifact inventory is an unrelated build product and
 // is deliberately absent from remote source mirrors. Keep this policy suite on
 // the real Action path while supplying the inventory boundary's valid empty

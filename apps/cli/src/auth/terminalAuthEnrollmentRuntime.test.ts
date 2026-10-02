@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HomeConnectionDescriptorV1Schema } from '@happier-dev/protocol';
-import { createNodeIrohHomeTunnelSession, type NodeIrohNativeModule } from '@happier-dev/iroh-native/node';
+import { createNodeIrohHomeTunnelSession } from '@happier-dev/iroh-native/node';
 import { join } from 'node:path';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 
 import { acquireTerminalAuthEnrollmentRuntime } from './terminalAuthEnrollmentRuntime';
+
+type NodeIrohNativeModule = NonNullable<Parameters<typeof createNodeIrohHomeTunnelSession>[0]['native']>;
 
 const DESCRIPTOR = HomeConnectionDescriptorV1Schema.parse({
   v: 1,
@@ -43,24 +45,34 @@ describe('acquireTerminalAuthEnrollmentRuntime', () => {
     const origins = new Map<string, string>();
     const activeOrigins = new Set<string>();
     let nextEndpoint = 0;
+    const unusedNativeOperation = async (): Promise<never> => { throw new Error('Unexpected native operation'); };
     const native = {
+      getAvailability: (): never => { throw new Error('Unexpected availability read'); },
+      startHomeAcceptor: unusedNativeOperation, stopHomeAcceptor: unusedNativeOperation,
+      getEndpointStatus: unusedNativeOperation, getTunnelStatus: unusedNativeOperation,
+      startMachineAcceptor: unusedNativeOperation, stopMachineAcceptor: unusedNativeOperation,
+      getMachineAcceptorStatus: unusedNativeOperation, startMachineTunnel: unusedNativeOperation,
+      startMachineHttpTunnel: unusedNativeOperation, stopMachineTunnel: unusedNativeOperation,
+      getMachineTunnelStatus: unusedNativeOperation,
       createEndpoint: async ({ keyPath }: Readonly<{ keyPath?: string }>) => {
         const endpointHandle = keyPath ?? `helper-${++nextEndpoint}`;
         const runtimeOrigin = origins.get(endpointHandle) ?? `http://127.0.0.1:${48123 + origins.size}`;
         origins.set(endpointHandle, runtimeOrigin);
         activeOrigins.add(runtimeOrigin);
-        return { endpointHandle, endpointId: 'b'.repeat(64) };
+        return { endpointHandle, endpointId: 'b'.repeat(64), relayPolicy: 'automatic' as const,
+          relayMode: 'custom' as const, capProfile: 'account_client', relayUrls: [] };
       },
       ensureHomeTunnel: async ({ endpointHandle }: Readonly<{ endpointHandle: string }>) => ({
         tunnelId: `tunnel-${endpointHandle}`, endpointHandle,
         homeServerIdentityId: DESCRIPTOR.homeServerIdentityId,
         homeEndpointId: 'a'.repeat(64), runtimeOrigin: origins.get(endpointHandle)!, observedPath: 'relay' as const,
+        carrier: 'iroh' as const, startedAtMs: 1,
       }),
       releaseHomeTunnel: async () => undefined,
       shutdownEndpoint: async ({ endpointHandle }: Readonly<{ endpointHandle: string }>) => {
         activeOrigins.delete(origins.get(endpointHandle)!);
       },
-    } as NodeIrohNativeModule;
+    } satisfies NodeIrohNativeModule;
     const createSession = vi.fn(async (input: Readonly<{ keylessEndpoint: 'account_client' }>) =>
       await createNodeIrohHomeTunnelSession({ ...input, native }),
     );

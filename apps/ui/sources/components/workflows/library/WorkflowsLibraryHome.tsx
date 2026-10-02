@@ -9,6 +9,7 @@ import {
     type CollectionRowActions,
 } from '@happier-dev/plugin-ui';
 import type { HappierCollectionWindow } from '@happier-dev/plugin-ui/presentation';
+import type { WorkflowPluginSourceV1 } from '@happier-dev/protocol/workflows';
 
 import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
@@ -55,7 +56,9 @@ type LibraryRow = Readonly<{
     key: string;
     group: 'library' | 'sharedWithYou';
     definition: WorkflowLibraryDefinition;
-}>;
+}> | Readonly<{ key: string; group: 'fromPlugins'; plugin: WorkflowPluginSourceV1 }>;
+
+const rowTitle = (row: LibraryRow) => row.group === 'fromPlugins' ? row.plugin.title : row.definition.metadata.title;
 
 type LibraryRowCommands = Readonly<{
     /** Opens the exact run the summary names as needing you, at its first actionable item. */
@@ -75,6 +78,7 @@ const LIBRARY_GROUPS = {
         return [
             { key: 'library', title: t('workflows.destination.sections.library') },
             { key: 'sharedWithYou', title: t('workflows.destination.sections.sharedWithYou') },
+            { key: 'fromPlugins', title: t('workflows.plugins.fromPlugins') },
         ];
     },
     groupOf: (row: LibraryRow) => row.group,
@@ -96,14 +100,15 @@ export function WorkflowsLibraryHome(): React.ReactElement {
     const library = useWorkflowDefinitionLibrary();
     const history = useWorkflowRunWindow('all');
     const [query, setQuery] = React.useState('');
-    const split = React.useMemo(() => splitLibraryDefinitions(library.definitions), [library.definitions]);
+    const split = React.useMemo(() => splitLibraryDefinitions(library.definitions, library.pluginWorkflows), [library.definitions, library.pluginWorkflows]);
     const rows = React.useMemo((): readonly LibraryRow[] => [
         ...split.library.map((definition) => ({ key: definition.definitionId, group: 'library' as const, definition })),
         ...split.sharedWithYou.map((definition) => ({ key: definition.definitionId, group: 'sharedWithYou' as const, definition })),
-    ], [split.library, split.sharedWithYou]);
+        ...split.fromPlugins.map((plugin) => ({ key: plugin.workflow, group: 'fromPlugins' as const, plugin })),
+    ], [split.library, split.sharedWithYou, split.fromPlugins]);
     const needle = query.trim().toLocaleLowerCase();
     const filter = React.useCallback(
-        (row: LibraryRow) => needle.length === 0 || row.definition.metadata.title.toLocaleLowerCase().includes(needle),
+        (row: LibraryRow) => needle.length === 0 || rowTitle(row).toLocaleLowerCase().includes(needle),
         [needle],
     );
     const window = React.useMemo((): HappierCollectionWindow => (library.hasMore ? {
@@ -127,7 +132,7 @@ export function WorkflowsLibraryHome(): React.ReactElement {
         openKey: null,
         onOpenChange: openDefinition,
     });
-    const summaryIds = React.useMemo(() => rows.map((row) => row.definition.definitionId), [rows]);
+    const summaryIds = React.useMemo(() => rows.flatMap((row) => row.group === 'fromPlugins' ? [] : [row.definition.definitionId]), [rows]);
     const summaries = useWorkflowLibrarySummaries(summaryIds);
     const anatomy = useLibraryAnatomy(summaries);
     const commands = useLibraryRowCommands(summaries);
@@ -136,6 +141,7 @@ export function WorkflowsLibraryHome(): React.ReactElement {
     const importWorkflow = () => router.push(WORKFLOWS_IMPORT_ROUTE as never);
 
     const firstVisit = library.status === 'loaded' && library.definitions.length === 0
+        && library.pluginWorkflows.length === 0
         && history.status === 'loaded' && history.rows.length === 0;
     if (firstVisit) return <WorkflowsFirstVisit onNewWorkflow={newWorkflow} onImport={importWorkflow} />;
 
@@ -238,7 +244,7 @@ function LibraryPageColumn(props: Readonly<{ children?: React.ReactNode }>) {
 
 function renderLibraryPageScroller(children: React.ReactNode): React.ReactNode {
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <LibraryPageColumn>{children}</LibraryPageColumn>
         </ItemList>
     );
@@ -248,8 +254,9 @@ function useLibraryAnatomy(summaries: ReadonlyMap<string, WorkflowLibraryRunSumm
     const { theme } = useUnistyles();
     return React.useMemo(() => ({
         glyph: () => <Icon name="tree-structure" size={18} color={theme.colors.text.secondary} />,
-        title: (row) => row.definition.metadata.title,
+        title: rowTitle,
         where: (row) => {
+            if (row.group === 'fromPlugins') return row.plugin.description ?? `${row.plugin.pluginId} · ${row.plugin.version}`;
             const lastRun = summaries?.get(row.definition.definitionId)?.lastRun ?? null;
             const createdAt = lastRun === null ? Number.NaN : Date.parse(lastRun.createdAt);
             return Number.isFinite(createdAt)
@@ -257,6 +264,7 @@ function useLibraryAnatomy(summaries: ReadonlyMap<string, WorkflowLibraryRunSumm
                 : row.definition.metadata.description ?? null;
         },
         reason: (row) => {
+            if (row.group === 'fromPlugins') return t('workflows.plugins.readOnly');
             const summary = summaries?.get(row.definition.definitionId);
             if (summary === undefined || summary.recent.length === 0) return null;
             return (
@@ -266,8 +274,8 @@ function useLibraryAnatomy(summaries: ReadonlyMap<string, WorkflowLibraryRunSumm
                 />
             );
         },
-        accessibilityLabel: (row) => row.definition.metadata.title,
-        testID: (row) => `workflows-home:row:${row.definition.definitionId}`,
+        accessibilityLabel: rowTitle,
+        testID: (row) => `workflows-home:row:${row.key}`,
         columnTitles: { title: t('workflows.title') },
     }), [summaries, theme.colors.text.secondary]);
 }
@@ -277,13 +285,13 @@ function useLibraryRowActions(row: LibraryRow): CollectionRowActions {
     const commands = React.useContext(LibraryRowCommandsContext);
     const { theme } = useUnistyles();
     const owned = row.group === 'library';
-    const needsYouRunId = commands?.summaries?.get(row.definition.definitionId)?.needsYouRunId ?? null;
+    const needsYouRunId = row.group === 'fromPlugins' ? null : commands?.summaries?.get(row.definition.definitionId)?.needsYouRunId ?? null;
     return {
         // Navigation only: the run's own page answers; this never does (07 S2, M3).
         ...(needsYouRunId === null || commands === null ? {} : {
             accessory: (
                 <RoundButton
-                    testID={`workflows-home:row:${row.definition.definitionId}:needsYou`}
+                    testID={`workflows-home:row:${row.key}:needsYou`}
                     size="small"
                     display="inverted"
                     title={t('workflows.destination.sections.needsYou')}
@@ -296,11 +304,15 @@ function useLibraryRowActions(row: LibraryRow): CollectionRowActions {
         secondaryActions: [
             { id: 'run', label: t('workflows.destination.rowMenu.runNow') },
             ...(owned ? [{ id: 'share', label: t('workflows.destination.rowMenu.share') }] : []),
-            { id: 'export', label: t('workflows.exportJson') },
+            ...(row.group === 'fromPlugins' ? [] : [{ id: 'export', label: t('workflows.exportJson') }]),
             ...(owned ? [{ id: 'delete', label: t('common.delete') }] : []),
         ],
         onSecondaryAction: (id) => {
             if (commands === null) return;
+            if (row.group === 'fromPlugins') {
+                if (id === 'run') commands.run(row.plugin.workflow);
+                return;
+            }
             const definitionId = row.definition.definitionId;
             if (id === 'run') commands.run(definitionId);
             else if (id === 'share') commands.share(definitionId, row.definition.metadata.title);
@@ -375,7 +387,7 @@ async function exportDefinition(definitionId: string): Promise<void> {
  */
 function WorkflowsFirstVisit(props: Readonly<{ onNewWorkflow: () => void; onImport: () => void }>) {
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <LibraryPageColumn>
                 <EmptyState
                     testID="workflows-home:firstVisit"

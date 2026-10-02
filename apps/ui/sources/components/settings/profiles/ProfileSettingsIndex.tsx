@@ -33,7 +33,7 @@ export const ProfileSettingsIndex = React.memo(function ProfileSettingsIndex() {
 const ProfilesOffPage = React.memo(function ProfilesOffPage(props: Readonly<{ collection: ProfilesCollection }>) {
     const { useProfiles, setUseProfiles } = props.collection;
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settingsProfilesPage.pageDescription')} />
             <ItemGroup
                 title={t('settingsProfilesPage.useProfilesSection')}

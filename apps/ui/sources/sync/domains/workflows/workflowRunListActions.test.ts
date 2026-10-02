@@ -6,6 +6,9 @@ import { WorkflowActionError } from './workflowActionError';
 
 const executeMock = vi.hoisted(() => vi.fn());
 
+// Third-party rendering boundary; this Action client does not render Markdown.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({ splitStreamingRevealTextParts: () => [] }));
+
 vi.mock('@/sync/ops/actions/frontDoorRuntimeActionExecutor', () => ({
     createFrontDoorActionExecute: () => executeMock,
 }));
@@ -92,15 +95,6 @@ describe('workflow Run list Action client', () => {
         expect(executeMock.mock.calls[0]![1]).toEqual({ attention: 'required' });
     });
 
-    it('lists Triggered history by the run\'s frozen cause, so a deleted trigger\'s runs stay findable', async () => {
-        executeMock.mockResolvedValueOnce({ ok: true, result: { runs: [], metadataByRunId: {} } });
-
-        await listWorkflowRuns({ filter: buildWorkflowRunListFilter('triggered') });
-
-        // Membership is the retained run's origin, not whether a trigger still exists.
-        expect(executeMock.mock.calls[0]![1]).toEqual({ origin: 'automation' });
-    });
-
     it('raises the one canonical workflow error with its closed code, not a generic Error', async () => {
         executeMock.mockResolvedValueOnce({
             ok: false,
@@ -160,7 +154,7 @@ describe('workflow Run list Action client', () => {
 
     it('reports a deleted exact Run as run_not_found so the row is removed', async () => {
         const { getWorkflowRunSummary } = await import('./workflowRunListActions');
-        executeMock.mockResolvedValueOnce({ ok: true, result: { runs: [] } });
+        executeMock.mockResolvedValueOnce({ ok: true, result: { runs: [], metadataByRunId: {} } });
 
         const failure = await getWorkflowRunSummary('run-1').then(() => null, (error: unknown) => error);
 

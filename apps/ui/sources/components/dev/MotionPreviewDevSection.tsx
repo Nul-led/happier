@@ -292,7 +292,7 @@ function showMotionVariantsPreview(): void {
 export function MotionPreviewDevSection(): React.ReactElement {
     const { theme } = useUnistyles();
     return (
-        <ItemGroup title="Motion Primitives" footer="Slide transition variants for visual QA">
+        <ItemGroup title="Motion Primitives" description="Slide transition variants for visual QA">
             <Item
                 testID="dev-motion-preview-slide-variants"
                 title="Slide Transition Variants"

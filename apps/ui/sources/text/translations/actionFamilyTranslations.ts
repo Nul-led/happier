@@ -3,8 +3,29 @@
  * lives with the family presentation owner (`components/settings/actions/actionSettingsFamily.ts`);
  * the strings live here, one block per locale, spread into each locale root.
  */
+import type { ActionIdFamilyV1 } from '@happier-dev/protocol';
+
+// Newly projected surface families follow the existing Workspace English-fallback convention.
+const surfaceFamilyLabels = {
+    observation: 'Waiting',
+    capture_viewing: 'Captures',
+    session_terminals: 'Session terminals',
+    workspace_layout: 'Workspace layout',
+    scope: 'Scope',
+    connected_services_configuration: 'Connected accounts',
+    boards: 'Boards',
+    artifacts: 'Artifacts',
+    settings_declarations: 'Settings',
+    home_hub_layout: 'Home layout',
+    machine_connection: 'Machine connections',
+    session_organization_resources: 'Projects and tags',
+    command_palette: 'Search',
+};
+
 const english = {
     actionFamilies: {
+        ...surfaceFamilyLabels,
+        app_shell: 'Workspace',
         roles: 'Roles',
         launch_profiles: 'Launch profiles',
         discovery: 'Action discovery',
@@ -74,7 +95,7 @@ const english = {
         teams: 'Teams',
         saved_secret_sharing: 'Shared secrets',
     },
-};
+} satisfies { actionFamilies: Record<ActionIdFamilyV1, string> };
 
 function translated(value: typeof english): typeof english {
     return value;
@@ -84,6 +105,8 @@ export const actionFamilyTranslations = {
     en: english,
     ca: translated({
         actionFamilies: {
+            ...surfaceFamilyLabels,
+            app_shell: 'Workspace',
             roles: 'Rols',
             launch_profiles: 'Perfils d’inici',
             discovery: 'Descobriment d’accions',
@@ -156,6 +179,8 @@ export const actionFamilyTranslations = {
     }),
     de: translated({
         actionFamilies: {
+            ...surfaceFamilyLabels,
+            app_shell: 'Workspace',
             roles: 'Rollen',
             launch_profiles: 'Startprofile',
             discovery: 'Aktionssuche',
@@ -228,6 +253,8 @@ export const actionFamilyTranslations = {
     }),
     es: translated({
         actionFamilies: {
+            ...surfaceFamilyLabels,
+            app_shell: 'Workspace',
             roles: 'Roles de agente',
             launch_profiles: 'Perfiles de inicio',
             discovery: 'Descubrimiento de acciones',
@@ -300,6 +327,8 @@ export const actionFamilyTranslations = {
     }),
     fr: translated({
         actionFamilies: {
+            ...surfaceFamilyLabels,
+            app_shell: 'Workspace',
             roles: 'Rôles',
             launch_profiles: 'Profils de lancement',
             discovery: 'Découverte des actions',
@@ -372,6 +401,8 @@ export const actionFamilyTranslations = {
     }),
     it: translated({
         actionFamilies: {
+            ...surfaceFamilyLabels,
+            app_shell: 'Workspace',
             roles: 'Ruoli',
             launch_profiles: 'Profili di avvio',
             discovery: 'Scoperta delle azioni',
@@ -444,6 +475,8 @@ export const actionFamilyTranslations = {
     }),
     ja: translated({
         actionFamilies: {
+            ...surfaceFamilyLabels,
+            app_shell: 'Workspace',
             roles: 'ロール',
             launch_profiles: '起動プロファイル',
             discovery: 'アクションの検出',
@@ -516,6 +549,8 @@ export const actionFamilyTranslations = {
     }),
     pl: translated({
         actionFamilies: {
+            ...surfaceFamilyLabels,
+            app_shell: 'Workspace',
             roles: 'Role',
             launch_profiles: 'Profile uruchamiania',
             discovery: 'Wyszukiwanie akcji',
@@ -588,6 +623,8 @@ export const actionFamilyTranslations = {
     }),
     pt: translated({
         actionFamilies: {
+            ...surfaceFamilyLabels,
+            app_shell: 'Workspace',
             roles: 'Funções',
             launch_profiles: 'Perfis de inicialização',
             discovery: 'Descoberta de ações',
@@ -660,6 +697,8 @@ export const actionFamilyTranslations = {
     }),
     ru: translated({
         actionFamilies: {
+            ...surfaceFamilyLabels,
+            app_shell: 'Workspace',
             roles: 'Роли',
             launch_profiles: 'Профили запуска',
             discovery: 'Поиск действий',
@@ -732,6 +771,8 @@ export const actionFamilyTranslations = {
     }),
     'zh-Hans': translated({
         actionFamilies: {
+            ...surfaceFamilyLabels,
+            app_shell: 'Workspace',
             roles: '角色',
             launch_profiles: '启动配置',
             discovery: '操作发现',
@@ -804,6 +845,8 @@ export const actionFamilyTranslations = {
     }),
     'zh-Hant': translated({
         actionFamilies: {
+            ...surfaceFamilyLabels,
+            app_shell: 'Workspace',
             roles: '角色',
             launch_profiles: '啟動設定檔',
             discovery: '動作探索',

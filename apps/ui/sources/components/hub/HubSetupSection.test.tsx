@@ -2,23 +2,33 @@ import * as React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
-import { flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createMachineFixture, flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
 import { HubSetupSection } from './HubSetupSection';
+import { AddPhoneSettingsView } from '@/components/settings/account/AddPhoneSettingsView';
 import { ListPresentationProvider } from '@/components/ui/lists/listPresentation';
 import { discardMachineAddFlowDraft } from '@/components/machines/add/machineAddFlowStore';
 import { getActiveServerId, removeServerProfile, setActiveServerId, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
+import type { HomeHubLayoutValue } from './layout/homeHubLayout';
+import type { getServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
+import type { Machine } from '@/sync/domains/state/storageTypes';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const state = vi.hoisted(() => ({
-    machines: [] as unknown[],
+    machines: [] as Machine[],
     machineListSettled: true,
     dismissed: false,
     show: null as null | ((options: unknown) => void),
     window: { width: 1600, height: 900 },
     push: null as null | ((href: unknown) => void),
-    layout: { order: [] as string[], hidden: [] as string[] },
+    params: {} as { setupStep?: string },
+    layout: { order: [], hidden: [] } as HomeHubLayoutValue,
+    layoutListeners: new Set<() => void>(),
+    writeLayout: null as null | ((next: HomeHubLayoutValue) => void),
     authenticated: true,
+    featureSnapshot: vi.fn<typeof getServerFeaturesSnapshot>(async () => ({ status: 'error', reason: 'network' })),
+    pairingCredentials: null as null | { token: string },
+    request: vi.fn<(path: string, init?: RequestInit) => Promise<Response>>(),
 }));
 
 vi.mock('react-native', async () => {
@@ -38,7 +48,7 @@ vi.mock('@/text', async () => {
 });
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
-    const router = createExpoRouterMock();
+    const router = createExpoRouterMock({ params: () => state.params });
     router.spies.push.mockImplementation((href: unknown) => { state.push?.(href); });
     return router.module;
 });
@@ -53,7 +63,7 @@ vi.mock('@/modal', async () => {
 });
 vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     const React = await import('react');
-    const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
+    const { createStorageModuleMock, createUseSettingMutableMockFromReader } = await import('@/dev/testkit/mocks/storage');
     return createStorageModuleMock({ importOriginal, overrides: {
         // Preserve the real store and its live getters, including through import cycles.
         // Only the inherited section fixtures below replace hooks.
@@ -66,17 +76,33 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
         useMachinePoolListStatusByServerId: () => ({}),
         useMachinePoolAccountIdByServerId: () => ({}),
         // The Account's synced settings (the Home layout holds dismissed setup steps).
-        useSettingMutable: (key: string) => {
+        useSettingMutable: createUseSettingMutableMockFromReader((key) => {
             if (key !== 'homeHubLayoutV1') throw new Error(`unexpected setting ${key}`);
-            const [value, setValue] = React.useState(state.layout);
-            return [value, (next: typeof state.layout) => { state.layout = next; setValue(next); }] as const;
-        },
+            // The Account boundary has one shared snapshot; per-reader useState falsely made
+            // setup and its panel frame observe different layout writes.
+            const value = React.useSyncExternalStore((listener) => {
+                state.layoutListeners.add(listener);
+                return () => { state.layoutListeners.delete(listener); };
+            }, () => state.layout);
+            const write = React.useCallback((next: typeof state.layout) => {
+                state.layout = next;
+                for (const listener of state.layoutListeners) listener();
+            }, []);
+            state.writeLayout = write;
+            return [value, write] as const;
+        }),
     } });
 });
 // The Home's feature probe (HTTP): no Home answers here, so a pairing code cannot be made.
 vi.mock('@/sync/api/capabilities/serverFeaturesClient', async (importOriginal) => ({
     ...await importOriginal<typeof import('@/sync/api/capabilities/serverFeaturesClient')>(),
-    getServerFeaturesSnapshot: async () => ({ status: 'error', reason: 'network' }),
+    getServerFeaturesSnapshot: (...args: Parameters<typeof getServerFeaturesSnapshot>) => state.featureSnapshot(...args),
+    observeAuthenticatedServerFeaturesFresh: () => state.featureSnapshot({}),
+}));
+// Pairing HTTP and persisted credentials are system boundaries; the real QR lifecycle runs below them.
+vi.mock('@/sync/http/client', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/http/client')>(),
+    createServerFetchAtEndpoint: () => state.request,
 }));
 vi.mock('@/auth/context/AuthContext', () => ({
     useAuth: () => ({ isAuthenticated: state.authenticated, credentials: state.authenticated ? { token: 't', secret: 's' } : null }),
@@ -91,8 +117,8 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
             getRecoveryKeyReminderDismissed: async () => state.dismissed,
             setRecoveryKeyReminderDismissed: async (value: boolean) => { state.dismissed = value; return true; },
             getCachedRecoveryKeyReminderDismissed: () => null,
+            getCredentialsForServerUrl: async () => state.pairingCredentials,
         },
-        isLegacyAuthCredentials: (credentials: unknown) => Boolean(credentials),
     };
 });
 vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({
@@ -129,7 +155,15 @@ afterEach(() => {
     state.dismissed = false;
     state.window = { width: 1600, height: 900 };
     state.push = null;
+    state.params = {};
     state.layout = { order: [], hidden: [] };
+    state.writeLayout = null;
+    state.layoutListeners.clear();
+    state.featureSnapshot.mockReset();
+    state.featureSnapshot.mockResolvedValue({ status: 'error', reason: 'network' });
+    state.pairingCredentials = null;
+    state.request.mockReset();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     // No `vi.resetModules()`: re-importing the section's module graph for every case kept each
     // previous graph alive and ran the worker out of memory (about 1 GB per case). The device facts
@@ -152,6 +186,8 @@ const phoneWindow = () => {
 };
 
 describe('HubSetupSection on Home (tiles)', () => {
+    // Recovery is a launch-lifetime singleton; exercise its pending → saved transition before
+    // later cases mount a runtime whose recovery flag is already handled.
     it('offers saving the recovery key until it is saved or dismissed', async () => {
         let onSaved: (() => Promise<void>) | null = null;
         state.show = (options) => { onSaved = (options as { props: { onSaved: () => Promise<void> } }).props.onSaved; };
@@ -163,10 +199,87 @@ describe('HubSetupSection on Home (tiles)', () => {
         await flushHookEffects({ cycles: 2 });
         expect(screen.findByTestId('hub-setup.recoveryKey')).toBeNull();
     });
-
+    it.each(['tiles', 'checklist'] as const)('completes phone setup only after successful pairing from %s and keeps completion in the existing synced layout', async (presentation) => {
+        vi.useFakeTimers();
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { computeHomeQrBindingProofV2, FeaturesResponseSchema } = await import('@happier-dev/protocol');
+        const { parseHomeQrInviteDeepLink } = await import('@/auth/pairing/pairingUrl');
+        const { decodeBase64, encodeBase64 } = await import('@/encryption/base64');
+        const previousServerId = getActiveServerId();
+        const descriptor = {
+            v: 1 as const, homeServerIdentityId: 'srv_phone_setup', canonicalServerUrl: 'https://phone-setup.test',
+            revision: 1, endpoints: [{ kind: 'https' as const, url: 'https://phone-setup.test' }],
+        };
+        const home = await profiles.adoptHomeProfile({ descriptor, source: 'qr', descriptorAuthority: 'current_connection_observation' });
+        state.featureSnapshot.mockResolvedValue({
+            status: 'ready', serverIdentityId: descriptor.homeServerIdentityId,
+            features: FeaturesResponseSchema.parse({ features: { auth: { pairing: { boundQrV2: { enabled: true } } } }, capabilities: {}, homeConnectionDescriptor: descriptor }),
+        });
+        state.pairingCredentials = { token: 'trusted-home-token' };
+        state.dismissed = true;
+        state.layout = { order: ['setup', 'future-section'], hidden: ['usage'], sections: { setup: { frameStyle: 'plain' } } };
+        const expiresAt = new Date(Date.now() + 60_000).toISOString();
+        let requested: Record<string, unknown> | null = null;
+        state.request.mockImplementation(async (path) => {
+            const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            if (path === '/v1/auth/pairing/start') return json({ pairId: 'setup-pair', expiresAt });
+            if (path.startsWith('/v1/auth/pairing/status?')) return json(requested ?? { state: 'pending', pairId: 'setup-pair', expiresAt });
+            if (path === '/v1/auth/account/response' || path === '/v1/auth/pairing/consume') return json({ success: true });
+            throw new Error(`Unexpected pairing request: ${path}`);
+        });
+        try {
+            await setActiveServerId(home.id);
+            let screen = await renderSection(presentation);
+            state.push = (href) => {
+                state.params = { setupStep: new URL(String(href), 'https://app.test').searchParams.get('setupStep') ?? undefined };
+            };
+            await act(async () => { screen.pressByTestId('settings-add-your-phone-shortcut.action'); });
+            if (presentation === 'checklist') {
+                await screen.unmount();
+                screen = await renderScreen(<ListPresentationProvider value="page"><AddPhoneSettingsView /></ListPresentationProvider>);
+            }
+            await flushHookEffects({ cycles: 3 });
+            const code = screen.tree.root.find((node) => typeof node.props.data === 'string' && parseHomeQrInviteDeepLink(node.props.data) !== null);
+            const parsed = parseHomeQrInviteDeepLink(code.props.data);
+            if (!parsed) throw new Error('Expected the real pairing invite');
+            expect(state.layout.hidden).toEqual(['usage']);
+            // An Account layout update while pairing is pending must not be overwritten by success.
+            await act(async () => {
+                state.writeLayout?.({ ...state.layout, hidden: ['usage', 'machines'] });
+            });
+            const publicKey = new Uint8Array(32).fill(9);
+            requested = {
+                state: 'requested', pairId: parsed.invite.pairId, expiresAt, requestedPublicKey: encodeBase64(publicKey),
+                // Completion does not infer a device type from the label.
+                requestedDeviceLabel: 'Another device', homeServerIdentityId: descriptor.homeServerIdentityId,
+                bindingProof: computeHomeQrBindingProofV2({
+                    direction: parsed.invite.direction, qrSecret: decodeBase64(parsed.invite.qrSecretBase64Url, 'base64url'),
+                    pairId: parsed.invite.pairId, homeServerIdentityId: descriptor.homeServerIdentityId,
+                    requesterPublicKey: publicKey, expiresAtMs: parsed.invite.expiresAtMs,
+                }),
+            };
+            await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+            await flushHookEffects({ cycles: 3 });
+            expect(state.request.mock.calls.some(([path]) => path === '/v1/auth/account/response')).toBe(true);
+            expect(state.layout.hidden).toEqual(['usage', 'machines', 'setup:addPhone']);
+            expect(state.layout.order).toEqual(['setup', 'future-section']);
+            expect(state.layout.sections).toEqual({ setup: { frameStyle: 'plain' } });
+            expect(screen.findByTestId('settings-add-your-phone-shortcut')).toBeNull();
+            await act(async () => { screen.tree.unmount(); });
+            const reopened = await renderSection();
+            expect(reopened.findByTestId('settings-add-your-phone-shortcut')).toBeNull();
+            const checklist = await renderSection('checklist');
+            expect(checklist.findByTestId('settings-add-your-phone-shortcut')).toBeNull();
+        } finally {
+            await act(async () => {
+                await setActiveServerId(previousServerId);
+                await removeServerProfile(home.id);
+            });
+        }
+    });
     it('removes the first-machine step once the Home has a machine, keeping phone setup available', async () => {
         state.dismissed = true;
-        state.machines = [{ id: 'm1', metadata: null }];
+        state.machines = [createMachineFixture({ id: 'm1', metadata: null })];
         const screen = await renderSection();
 
         expect(screen.findByTestId('settings-add-your-phone-shortcut')).toBeTruthy();
@@ -189,6 +302,10 @@ describe('HubSetupSection on Home (tiles)', () => {
 
         expect(pushed).toEqual([]);
         expect(screen.findByTestId('hub-setup.pairing-panel')).toBeTruthy();
+        // This fixture's Home probe fails; opening or closing an unsuccessful flow is not completion.
+        expect(state.layout.hidden).toEqual([]);
+        await screen.unmount();
+        expect(state.layout.hidden).toEqual([]);
     });
 
     it('Another computer offers a Home pairing link first and keeps the terminal as an alternative', async () => {
@@ -236,6 +353,9 @@ describe('HubSetupSection on Home (tiles)', () => {
         expect(screen.findByTestId('hub-setup.addMachine')).toBeNull();
         expect(state.layout.hidden).toEqual(['setup:addMachine']);
         expect(screen.findByTestId('settings-add-your-phone-shortcut')).toBeTruthy();
+        await act(async () => { screen.pressByTestId('settings-add-your-phone-shortcut.dismiss'); });
+        expect(state.layout.hidden).toEqual(['setup:addMachine', 'setup:addPhone']);
+        expect(screen.findByTestId('settings-add-your-phone-shortcut')).toBeNull();
     });
 
     it('leaves Home once every step is done or dismissed', async () => {

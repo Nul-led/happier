@@ -18,7 +18,7 @@ export const PromptProfileStacksScreen = React.memo(() => {
   const promptStacksV1 = useSetting('promptStacksV1');
 
   return (
-    <ItemList presentation="page">
+    <ItemList>
       <SettingsPageHeader description={t('promptLibrary.surface.profileStacksPageDescription')} />
       <ItemGroup title={t('promptLibrary.surface.profilesSection')}>
         {profiles.map((profile) => {

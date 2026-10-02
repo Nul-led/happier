@@ -18,6 +18,8 @@ export function resolvePluginContributionKindLabel(kinds: readonly PluginContrib
 function labelFor(kind: PluginContributionKind): string | null {
     switch (kind) {
         case 'agent': return t('settingsPlugins.surfaces.kinds.agent');
+        case 'roles': return t('roles.rail.label');
+        case 'workflows': return t('workflows.title');
         case 'providers': return t('settingsPlugins.surfaces.kinds.providers');
         case 'scmHostingProviders': return t('settingsPlugins.surfaces.kinds.scmHostingProviders');
         case 'scmBackends': return t('settingsPlugins.surfaces.kinds.scmBackends');

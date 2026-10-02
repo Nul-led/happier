@@ -1,4 +1,7 @@
 import * as React from 'react';
+import { usePathname } from '@/components/appShell/workspace/destinationRoute';
+import { WorkspaceDestinationRow } from '@/components/appShell/workspace/WorkspaceDestinationRow';
+import { buildPluginsHomeRoute, resolvePluginsSurfaceHost } from './model/pluginsSurfaceRoutes';
 import { useHappierCollection, type CollectionAnatomy, type CollectionRowActions } from '@happier-dev/plugin-ui';
 import { ActivityIndicator, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -326,7 +329,11 @@ function projectInstalledPluginRows(
 
 /** One anatomy for the grid's cards and the list's rows. */
 function useInstalledPluginAnatomy(projectionByPluginId: PluginProjectionFactsById | undefined): CollectionAnatomy<InstalledPluginRow> {
+    const host = resolvePluginsSurfaceHost(usePathname());
     return React.useMemo(() => ({
+        wrapItem: (row, content) => <WorkspaceDestinationRow href={buildPluginsHomeRoute(host, {
+            view: 'installed', open: { kind: 'installed', pluginId: row.entry.pluginId },
+        })}>{content}</WorkspaceDestinationRow>,
         glyph: (row) => (
             <PluginMark title={row.entry.title} iconAgentId={projectionByPluginId?.[row.entry.pluginId]?.iconAgentId ?? null} />
         ),
@@ -344,7 +351,7 @@ function useInstalledPluginAnatomy(projectionByPluginId: PluginProjectionFactsBy
         accessibilityLabel: (row) => buildActionRowAccessibilityLabel([row.entry.title, t('common.details')]) ?? row.entry.title,
         testID: (row) => `settings.plugins.marketplace.installed.${row.entry.pluginId}`,
         columnTitles: { title: t('settingsPlugins.surfaces.navigationTitle') },
-    }), [projectionByPluginId]);
+    }), [host, projectionByPluginId]);
 }
 
 /**
@@ -1120,8 +1127,12 @@ function discoverListingControl(entry: PluginMarketplaceCatalogEntry, props: Dis
 function useDiscoverListingAnatomy(props: DiscoverListingActionInputs & Readonly<{
     projectionByPluginId?: PluginProjectionFactsById;
 }>): CollectionAnatomy<DiscoverListingItem> {
+    const host = resolvePluginsSurfaceHost(usePathname());
     const { installedPluginById, projectionByPluginId } = props;
     return React.useMemo(() => ({
+        wrapItem: ({ entry }, content) => <WorkspaceDestinationRow href={buildPluginsHomeRoute(host, {
+            view: 'browse', open: { kind: 'listing', sourceId: entry.sourceId, pluginId: entry.id },
+        })}>{content}</WorkspaceDestinationRow>,
         glyph: ({ entry }) => (
             <PluginMark title={entry.title} iconAgentId={projectionByPluginId?.[entry.id]?.iconAgentId ?? null} />
         ),
@@ -1150,7 +1161,7 @@ function useDiscoverListingAnatomy(props: DiscoverListingActionInputs & Readonly
         testID: ({ entry }) => `settings.plugins.marketplace.entry.${entry.sourceId}.${entry.id}`,
         columnTitles: { title: t('settingsPlugins.surfaces.navigationTitle') },
     // `props` carries the action inputs `discoverListingControl` reads; its identity is the render's.
-    }), [installedPluginById, projectionByPluginId, props]);
+    }), [host, installedPluginById, projectionByPluginId, props]);
 }
 
 const sectionStylesheet = StyleSheet.create((theme) => ({

@@ -11,6 +11,7 @@
 type HomeParams = { home: string };
 
 const en = {
+    homeIdentityAmbiguous: 'This Personal Home address matches more than one saved Home.',
     signedInHome: {
         status: 'You’re already signed in to another Home.',
         body: ({ home }: HomeParams) => `This computer is signed in to ${home}. Keep using it, or set up a Personal Home here.`,
@@ -29,6 +30,7 @@ const en = {
 export type PersonalHomeDecisionTranslation = typeof en;
 
 const de: PersonalHomeDecisionTranslation = {
+    homeIdentityAmbiguous: 'Diese Adresse des persönlichen Homes entspricht mehreren gespeicherten Homes.',
     signedInHome: {
         status: 'Du bist bereits bei einem anderen Home angemeldet.',
         body: ({ home }: HomeParams) => `Dieser Computer ist bei ${home} angemeldet. Nutze es weiter oder richte hier ein persönliches Home ein.`,
@@ -45,6 +47,7 @@ const de: PersonalHomeDecisionTranslation = {
 };
 
 const es: PersonalHomeDecisionTranslation = {
+    homeIdentityAmbiguous: 'Esta dirección del Home personal corresponde a más de un Home guardado.',
     signedInHome: {
         status: 'Ya has iniciado sesión en otro Home.',
         body: ({ home }: HomeParams) => `Este ordenador tiene la sesión iniciada en ${home}. Sigue usándolo o configura aquí un Home personal.`,
@@ -61,6 +64,7 @@ const es: PersonalHomeDecisionTranslation = {
 };
 
 const fr: PersonalHomeDecisionTranslation = {
+    homeIdentityAmbiguous: 'Cette adresse du Home personnel correspond à plusieurs Homes enregistrés.',
     signedInHome: {
         status: 'Tu es déjà connecté à un autre Home.',
         body: ({ home }: HomeParams) => `Cet ordinateur est connecté à ${home}. Continue de l’utiliser, ou configure ici un Home personnel.`,
@@ -77,6 +81,7 @@ const fr: PersonalHomeDecisionTranslation = {
 };
 
 const it: PersonalHomeDecisionTranslation = {
+    homeIdentityAmbiguous: 'Questo indirizzo dell’Home personale corrisponde a più Home salvati.',
     signedInHome: {
         status: 'Hai già effettuato l’accesso a un altro Home.',
         body: ({ home }: HomeParams) => `Questo computer ha effettuato l’accesso a ${home}. Continua a usarlo o configura qui un Home personale.`,
@@ -93,6 +98,7 @@ const it: PersonalHomeDecisionTranslation = {
 };
 
 const pt: PersonalHomeDecisionTranslation = {
+    homeIdentityAmbiguous: 'Este endereço do Home pessoal corresponde a mais de um Home salvo.',
     signedInHome: {
         status: 'Você já entrou em outro Home.',
         body: ({ home }: HomeParams) => `Este computador está conectado a ${home}. Continue usando-o ou configure aqui um Home pessoal.`,
@@ -109,6 +115,7 @@ const pt: PersonalHomeDecisionTranslation = {
 };
 
 const ca: PersonalHomeDecisionTranslation = {
+    homeIdentityAmbiguous: 'Aquesta adreça del Home personal correspon a més d’un Home desat.',
     signedInHome: {
         status: 'Ja tens la sessió iniciada en un altre Home.',
         body: ({ home }: HomeParams) => `Aquest ordinador té la sessió iniciada a ${home}. Continua fent-lo servir o configura-hi un Home personal.`,
@@ -125,6 +132,7 @@ const ca: PersonalHomeDecisionTranslation = {
 };
 
 const pl: PersonalHomeDecisionTranslation = {
+    homeIdentityAmbiguous: 'Ten adres osobistego Home odpowiada więcej niż jednemu zapisanemu Home.',
     signedInHome: {
         status: 'Jesteś już zalogowany w innym Home.',
         body: ({ home }: HomeParams) => `Ten komputer jest zalogowany w ${home}. Korzystaj z niego dalej albo skonfiguruj tutaj osobisty Home.`,
@@ -141,6 +149,7 @@ const pl: PersonalHomeDecisionTranslation = {
 };
 
 const ru: PersonalHomeDecisionTranslation = {
+    homeIdentityAmbiguous: 'Этот адрес личного Home соответствует нескольким сохранённым Home.',
     signedInHome: {
         status: 'Вы уже вошли в другой Home.',
         body: ({ home }: HomeParams) => `Этот компьютер вошёл в ${home}. Продолжайте пользоваться им или настройте здесь личный Home.`,
@@ -157,6 +166,7 @@ const ru: PersonalHomeDecisionTranslation = {
 };
 
 const ja: PersonalHomeDecisionTranslation = {
+    homeIdentityAmbiguous: 'このパーソナル Home のアドレスは、複数の保存済み Home に一致します。',
     signedInHome: {
         status: 'すでに別の Home にサインインしています。',
         body: ({ home }: HomeParams) => `このコンピューターは ${home} にサインインしています。そのまま使い続けるか、ここにパーソナル Home を設定できます。`,
@@ -173,6 +183,7 @@ const ja: PersonalHomeDecisionTranslation = {
 };
 
 const zhHans: PersonalHomeDecisionTranslation = {
+    homeIdentityAmbiguous: '此个人 Home 地址对应多个已保存的 Home。',
     signedInHome: {
         status: '你已经登录了另一个 Home。',
         body: ({ home }: HomeParams) => `这台电脑已登录 ${home}。你可以继续使用它，也可以在这里设置个人 Home。`,
@@ -189,6 +200,7 @@ const zhHans: PersonalHomeDecisionTranslation = {
 };
 
 const zhHant: PersonalHomeDecisionTranslation = {
+    homeIdentityAmbiguous: '此個人 Home 位址對應多個已儲存的 Home。',
     signedInHome: {
         status: '你已經登入了另一個 Home。',
         body: ({ home }: HomeParams) => `這台電腦已登入 ${home}。你可以繼續使用它，也可以在這裡設定個人 Home。`,

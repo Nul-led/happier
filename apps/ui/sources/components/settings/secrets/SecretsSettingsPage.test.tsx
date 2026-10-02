@@ -1,16 +1,29 @@
 import * as React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SavedSecretCatalogCorruptEntryV1, SavedSecretCatalogEntryV1 } from '@happier-dev/protocol';
 
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
+import { act } from 'react-test-renderer';
 import { installSettingsViewCommonModuleMocks } from '@/components/settings/settingsViewTestHelpers';
 import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
+import { createAccountTokenForTests, createHomeGovernanceHarness, installHomeGovernanceBoundaries } from '@/dev/testkit/harness/homeGovernanceHarness';
+import { sealSecretsDeep } from '@/sync/encryption/secretSettings';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
 
 import type { SecretsSettingsPageProps } from './SecretsSettingsPage';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 installSettingsViewCommonModuleMocks();
+const homeHarness = createHomeGovernanceHarness();
+installHomeGovernanceBoundaries(homeHarness);
+
+beforeEach(async () => {
+    await homeHarness.reset();
+    const { invalidateAccountEncryptionModeCache } = await import('@/sync/api/account/apiAccountEncryptionMode');
+    invalidateAccountEncryptionModeCache();
+});
 
 afterEach(() => {
     standardCleanup();
@@ -36,8 +49,10 @@ function ownedEntry(overrides: Partial<SavedSecretCatalogEntryV1> = {}): SavedSe
     } as SavedSecretCatalogEntryV1;
 }
 
-async function renderPage(overrides: Partial<SecretsSettingsPageProps> = {}) {
-    const { SecretsSettingsPage } = await import('./SecretsSettingsPage');
+const { SecretsSettingsPage } = await import('./SecretsSettingsPage');
+const { InjectedAuthProvider } = await import('@/auth/context/AuthContext');
+
+async function renderPage(overrides: Partial<SecretsSettingsPageProps> = {}, accountId?: string) {
     const props: SecretsSettingsPageProps = {
         personalSecrets: [PERSONAL],
         sharedEntries: [] as SavedSecretCatalogEntryV1[],
@@ -56,23 +71,82 @@ async function renderPage(overrides: Partial<SecretsSettingsPageProps> = {}) {
         accessEditor: null,
         ...overrides,
     };
-    const screen = await renderScreen(<SecretsSettingsPage {...props} />);
+    const screen = await renderScreen(
+        <InjectedAuthProvider credentials={accountId ? { token: createAccountTokenForTests(accountId) } : null}>
+            <SecretsSettingsPage {...props} />
+        </InjectedAuthProvider>,
+    );
     return { screen, props };
 }
 
 describe('SecretsSettingsPage', () => {
+    it.each(['plain', 'e2ee'] as const)('discloses personal storage from the %s Account even when the device seals the value', async (mode) => {
+        const accountId = `personal-storage-${mode}`;
+        await homeHarness.addHome({
+            name: 'Secrets Home', serverUrl: `https://secret-storage-${mode}.test`, accountId,
+            accountEncryptionMode: mode,
+        });
+        const locallySealed = sealSecretsDeep({ ...PERSONAL, id: 'personal-sealed' }, new Uint8Array(32).fill(7));
+        expect(locallySealed.encryptedValue.encryptedValue?.t).toBe('enc-v1');
+        expect(locallySealed.encryptedValue.value).toBeUndefined();
+        const shared = ownedEntry({ encryptionMode: mode === 'plain' ? 'e2ee' : 'plain' });
+        const { screen } = await renderPage({ personalSecrets: [PERSONAL, locallySealed], sharedEntries: [shared] }, accountId);
+        const label = mode === 'plain' ? 'secretsSettings.storagePlain' : 'secretsSettings.storageE2ee';
+        const otherLabel = mode === 'plain' ? 'secretsSettings.storageE2ee' : 'secretsSettings.storagePlain';
+        await vi.waitFor(() => {
+            for (const secret of [PERSONAL, locallySealed]) {
+                const header = screen.findAll((row) => row.props.testID === `saved-secret:${secret.id}:header` && typeof row.props.subtitle === 'string')[0];
+                expect(header?.props.subtitle).toContain(label);
+                expect(header?.props.subtitle).not.toContain(otherLabel);
+            }
+        });
+        const sharedHeader = screen.findAll((row) => row.props.testID === `saved-secret:${shared.ref}:header` && typeof row.props.subtitle === 'string')[0];
+        expect(sharedHeader?.props.subtitle).toContain(otherLabel);
+        await screen.pressByTestIdAsync(`saved-secret:${locallySealed.id}:header`);
+        expect(screen.findAll((row) => row.props.title === 'secretsSettings.storageTitle' && typeof row.props.subtitle === 'string')
+            .some((row) => row.props.subtitle.startsWith(`${label}.`))).toBe(true);
+        expect(screen.getTextContent()).not.toContain('sk-never-rendered');
+        expect(screen.getTextContent()).not.toContain(locallySealed.encryptedValue.encryptedValue!.c);
+    });
+
+    it('withdraws the old Account storage disclosure when the mode owner invalidates it', async () => {
+        const accountId = 'personal-storage-transition';
+        const serverId = await homeHarness.addHome({
+            name: 'Secrets Home', serverUrl: 'https://secret-storage-transition.test', accountId,
+            accountEncryptionMode: 'plain',
+        });
+        const { screen } = await renderPage({}, accountId);
+        const header = () => screen.findAll((row) => row.props.testID === `saved-secret:${PERSONAL.id}:header` && typeof row.props.subtitle === 'string')[0];
+        await vi.waitFor(() => expect(header()?.props.subtitle).toContain('secretsSettings.storagePlain'));
+        const response = createDeferred<void>();
+        homeHarness.answer(serverId, '/v1/account/encryption', {
+            body: { mode: 'e2ee', updatedAt: 2 }, respondAfter: response.promise,
+        });
+        const { invalidateAccountEncryptionModeCache } = await import('@/sync/api/account/apiAccountEncryptionMode');
+        await act(async () => { invalidateAccountEncryptionModeCache(); });
+        expect(header()?.props.subtitle).not.toContain('secretsSettings.storagePlain');
+        expect(header()?.props.subtitle).not.toContain('secretsSettings.storageE2ee');
+        await act(async () => { response.resolve(); });
+        await vi.waitFor(() => expect(header()?.props.subtitle).toContain('secretsSettings.storageE2ee'));
+    });
+
     it('never renders a secret value, and runs each personal operation from the expanded row', async () => {
         const { screen, props } = await renderPage({ onSharePersonal: vi.fn() });
 
         expect(screen.getTextContent()).not.toContain('sk-never-rendered');
         await screen.pressByTestIdAsync('saved-secret:personal-a:header');
         await screen.pressByTestIdAsync('saved-secret:personal-a:replace');
+        expect(props.onRotatePersonal).not.toHaveBeenCalled();
+        await act(async () => { screen.changeTextByTestId('saved-secret:personal-a:edit-input', 'replacement-secret'); });
+        await screen.pressByTestIdAsync('saved-secret:personal-a:edit-save');
         await screen.pressByTestIdAsync('saved-secret:personal-a:rename');
+        await act(async () => { screen.changeTextByTestId('saved-secret:personal-a:edit-input', 'Renamed key'); });
+        await screen.pressByTestIdAsync('saved-secret:personal-a:edit-save');
         await screen.pressByTestIdAsync('saved-secret:personal-a:share');
         await screen.pressByTestIdAsync('saved-secret:personal-a:delete');
 
-        expect(props.onRotatePersonal).toHaveBeenCalledWith(PERSONAL);
-        expect(props.onRenamePersonal).toHaveBeenCalledWith(PERSONAL);
+        expect(props.onRotatePersonal).toHaveBeenCalledWith(PERSONAL, 'replacement-secret');
+        expect(props.onRenamePersonal).toHaveBeenCalledWith(PERSONAL, 'Renamed key');
         expect(props.onSharePersonal).toHaveBeenCalledWith(PERSONAL);
         expect(props.onDeletePersonal).toHaveBeenCalledWith(PERSONAL);
         expect(screen.getTextContent()).not.toContain('sk-never-rendered');

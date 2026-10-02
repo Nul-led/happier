@@ -73,7 +73,7 @@ const ProviderCollectionLanding = React.memo(function ProviderCollectionLanding(
     );
     if (availabilityPresentation) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 {contextBar}
                 <ItemGroup><ProviderFeatureAvailabilityNotice presentation={availabilityPresentation} /></ItemGroup>
             </ItemList>
@@ -82,7 +82,7 @@ const ProviderCollectionLanding = React.memo(function ProviderCollectionLanding(
     // The machine could not answer: say what failed with its recovery, never a blank pane.
     if (machineId && !data && error && !loading) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 {contextBar}
                 <ItemGroup>
                     <ProviderErrorItems error={error} retry={async () => { await refresh(); }} />
@@ -91,12 +91,12 @@ const ProviderCollectionLanding = React.memo(function ProviderCollectionLanding(
         );
     }
     // Wait for the machine's answer so the invitation never flashes over an existing collection.
-    if (machineId && (loading || !data)) return <ItemList presentation="page">{contextBar}</ItemList>;
+    if (machineId && (loading || !data)) return <ItemList>{contextBar}</ItemList>;
 
     const available = data?.available ?? [];
     const marks = available.filter((provider) => provider.icon).slice(0, INVITATION_MARK_COUNT);
     return (
-        <ItemList presentation="page">
+        <ItemList>
             {contextBar}
             <>
                 <EmptyState

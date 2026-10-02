@@ -54,6 +54,7 @@ import { openExternalUrl } from '@/utils/url/openExternalUrl';
 import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { publishProviderDraftTitle } from './collection/providerDraftTitle';
+import { ProviderFieldRow } from './authoring/ProviderFieldRow';
 
 const PRESETS: readonly CustomProviderPreset[] = ['openai-responses', 'openai-chat', 'anthropic'];
 
@@ -502,24 +503,14 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
         return false;
     }, [accountStillCurrent, authoringPreview, connectionId, contribution?.credential, contributionDisplayName, contributionEndpointOverrides, draft, draftRequiresApiKey, effectiveSecretId, enableAfterSaving, machineId, mutation, pickSecret, props.contributionKey, router]);
 
-    const chooseAuthoringCandidate = React.useCallback(async (candidateId: string) => {
+    const chooseAuthoringCandidate = React.useCallback((candidateId: string) => {
         const candidate = query.data?.discoveryCandidates.find((entry) => entry.candidateId === candidateId);
         if (!accountStillCurrent()) return;
         let displayName = contributionDisplayName;
-        if (candidate?.connection.status === 'requires_named_connection' && !displayName) {
-            displayName = await Modal.prompt(
-                t('settingsProviders.local.addConnectionTitle'),
-                t('settingsProviders.local.addConnectionDescription'),
-                {
-                    defaultValue: t('settingsProviders.local.defaultConnectionName', {
-                        provider: candidate.providerName,
-                    }),
-                    confirmText: t('common.create'),
-                },
-            );
-            if (!displayName?.trim()) return;
-            if (!accountStillCurrent()) return;
-            displayName = displayName.trim();
+        if (candidate?.connection.status === 'requires_named_connection' && !displayName?.trim()) {
+            displayName = t('settingsProviders.local.defaultConnectionName', {
+                provider: candidate.providerName,
+            });
         }
         setContributionDisplayName(displayName);
         setSelectedCandidateId(candidateId);
@@ -662,7 +653,7 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
     );
     if (availabilityPresentation || !machineId) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 {contextBar}
                 <ItemGroup>
                     {availabilityPresentation
@@ -688,6 +679,21 @@ export const ProviderConnectionAuthoringScreen = React.memo(function ProviderCon
         return (
             <BuiltInProviderAuthoringView
                 contextBar={contextBar}
+                nameField={(
+                    <ItemGroup>
+                        <ProviderFieldRow
+                            ref={nameFieldRef}
+                            testID="settings-provider-authoring-name"
+                            title={t('settingsProviders.authoring.name')}
+                            placeholder={t('settingsProviders.authoring.namePlaceholder')}
+                            value={contributionDisplayName ?? ''}
+                            editable={!mutation.isPending('save')}
+                            onChangeText={(name) => {
+                                if (accountStillCurrent()) setContributionDisplayName(name);
+                            }}
+                        />
+                    </ItemGroup>
+                )}
                 machineId={machineId}
                 currentMachineName={currentMachineName}
                 providerName={contribution?.name ?? null}

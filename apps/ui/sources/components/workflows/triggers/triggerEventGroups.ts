@@ -32,5 +32,8 @@ export function resolveTriggerEventGroup(trigger: TriggerSummarySource): Trigger
             return { id: `schedule:${title}`, glyph: 'clock', title };
         case 'pluginEvent':
             return { id: `event:${trigger.eventRef.localId}:${title}`, glyph: 'lightning', title };
+        case 'prComment':
+        case 'ciFailed':
+            return { id: `event:${trigger.kind}:${title}`, glyph: trigger.kind === 'prComment' ? 'git-pull-request' : 'lightning', title };
     }
 }

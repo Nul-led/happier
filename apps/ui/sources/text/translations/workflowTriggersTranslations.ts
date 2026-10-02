@@ -7,6 +7,12 @@
 type Count = { count: number };
 
 const en = {
+    pullRequest: {
+        label: "Pull request",
+        description: "Adding this trigger links the pull request to this session.",
+        empty: "No open pull requests",
+        loadFailed: "Couldn't load pull requests",
+    },
     summary: {
         everyDayAt: ({ time }: { time: string }) => `Every day at ${time}`,
         weekdaysAt: ({ time }: { time: string }) => `Weekdays at ${time}`,
@@ -129,6 +135,12 @@ const en = {
 type WorkflowTriggersCopy = typeof en;
 
 const de: WorkflowTriggersCopy = {
+    pullRequest: {
+        label: "Pull Request",
+        description: "Dieser Trigger verknüpft den Pull Request mit dieser Sitzung.",
+        empty: "Keine offenen Pull Requests",
+        loadFailed: "Pull Requests konnten nicht geladen werden",
+    },
     summary: {
         everyDayAt: ({ time }) => `Täglich um ${time}`,
         weekdaysAt: ({ time }) => `Werktags um ${time}`,
@@ -249,6 +261,12 @@ const de: WorkflowTriggersCopy = {
 };
 
 const es: WorkflowTriggersCopy = {
+    pullRequest: {
+        label: "Pull request",
+        description: "Añadir este disparador vincula el pull request a esta sesión.",
+        empty: "No hay pull requests abiertos",
+        loadFailed: "No se pudieron cargar los pull requests",
+    },
     summary: {
         everyDayAt: ({ time }) => `Cada día a las ${time}`,
         weekdaysAt: ({ time }) => `Días laborables a las ${time}`,
@@ -369,6 +387,12 @@ const es: WorkflowTriggersCopy = {
 };
 
 const fr: WorkflowTriggersCopy = {
+    pullRequest: {
+        label: "Pull request",
+        description: "Ajouter ce déclencheur lie la pull request à cette session.",
+        empty: "Aucune pull request ouverte",
+        loadFailed: "Impossible de charger les pull requests",
+    },
     summary: {
         everyDayAt: ({ time }) => `Tous les jours à ${time}`,
         weekdaysAt: ({ time }) => `En semaine à ${time}`,
@@ -489,6 +513,12 @@ const fr: WorkflowTriggersCopy = {
 };
 
 const it: WorkflowTriggersCopy = {
+    pullRequest: {
+        label: "Pull request",
+        description: "Aggiungere questo trigger collega la pull request a questa sessione.",
+        empty: "Nessuna pull request aperta",
+        loadFailed: "Impossibile caricare le pull request",
+    },
     summary: {
         everyDayAt: ({ time }) => `Ogni giorno alle ${time}`,
         weekdaysAt: ({ time }) => `Nei giorni feriali alle ${time}`,
@@ -609,6 +639,12 @@ const it: WorkflowTriggersCopy = {
 };
 
 const pt: WorkflowTriggersCopy = {
+    pullRequest: {
+        label: "Pull request",
+        description: "Adicionar este gatilho vincula a pull request a esta sessão.",
+        empty: "Nenhuma pull request aberta",
+        loadFailed: "Não foi possível carregar as pull requests",
+    },
     summary: {
         everyDayAt: ({ time }) => `Todos os dias às ${time}`,
         weekdaysAt: ({ time }) => `Dias úteis às ${time}`,
@@ -729,6 +765,12 @@ const pt: WorkflowTriggersCopy = {
 };
 
 const ca: WorkflowTriggersCopy = {
+    pullRequest: {
+        label: "Pull request",
+        description: "Afegir aquest activador vincula la pull request a aquesta sessió.",
+        empty: "Cap pull request oberta",
+        loadFailed: "No s'han pogut carregar les pull requests",
+    },
     summary: {
         everyDayAt: ({ time }) => `Cada dia a les ${time}`,
         weekdaysAt: ({ time }) => `Els dies feiners a les ${time}`,
@@ -849,6 +891,12 @@ const ca: WorkflowTriggersCopy = {
 };
 
 const pl: WorkflowTriggersCopy = {
+    pullRequest: {
+        label: "Pull request",
+        description: "Dodanie tego wyzwalacza łączy pull request z tą sesją.",
+        empty: "Brak otwartych pull requestów",
+        loadFailed: "Nie udało się wczytać pull requestów",
+    },
     summary: {
         everyDayAt: ({ time }) => `Codziennie o ${time}`,
         weekdaysAt: ({ time }) => `W dni robocze o ${time}`,
@@ -969,6 +1017,12 @@ const pl: WorkflowTriggersCopy = {
 };
 
 const ru: WorkflowTriggersCopy = {
+    pullRequest: {
+        label: "Pull request",
+        description: "Добавление триггера связывает pull request с этой сессией.",
+        empty: "Нет открытых pull request",
+        loadFailed: "Не удалось загрузить pull request",
+    },
     summary: {
         everyDayAt: ({ time }) => `Каждый день в ${time}`,
         weekdaysAt: ({ time }) => `По будням в ${time}`,
@@ -1089,6 +1143,12 @@ const ru: WorkflowTriggersCopy = {
 };
 
 const ja: WorkflowTriggersCopy = {
+    pullRequest: {
+        label: "プルリクエスト",
+        description: "このトリガーを追加すると、プルリクエストがこのセッションにリンクされます。",
+        empty: "開いているプルリクエストはありません",
+        loadFailed: "プルリクエストを読み込めませんでした",
+    },
     summary: {
         everyDayAt: ({ time }) => `毎日 ${time}`,
         weekdaysAt: ({ time }) => `平日 ${time}`,
@@ -1209,6 +1269,12 @@ const ja: WorkflowTriggersCopy = {
 };
 
 const zhHans: WorkflowTriggersCopy = {
+    pullRequest: {
+        label: "拉取请求",
+        description: "添加此触发器会将拉取请求链接到此会话。",
+        empty: "没有开放的拉取请求",
+        loadFailed: "无法加载拉取请求",
+    },
     summary: {
         everyDayAt: ({ time }) => `每天 ${time}`,
         weekdaysAt: ({ time }) => `工作日 ${time}`,
@@ -1329,6 +1395,12 @@ const zhHans: WorkflowTriggersCopy = {
 };
 
 const zhHant: WorkflowTriggersCopy = {
+    pullRequest: {
+        label: "提取要求",
+        description: "新增此觸發器會將提取要求連結至此工作階段。",
+        empty: "沒有開啟的提取要求",
+        loadFailed: "無法載入提取要求",
+    },
     summary: {
         everyDayAt: ({ time }) => `每天 ${time}`,
         weekdaysAt: ({ time }) => `平日 ${time}`,

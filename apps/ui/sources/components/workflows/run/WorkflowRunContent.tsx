@@ -99,6 +99,8 @@ export type WorkflowRunContentProps = Readonly<{
      * means not known here, which states nothing about contact.
      */
     machineReachable?: boolean;
+    /** A quiet observation request, independent of durable Run controls. */
+    notificationOperation?: React.ReactNode;
     /** The frozen definition this Run was admitted with, when it has been read. */
     definition: WorkflowDefinitionV1 | null;
     invocations: readonly WorkflowRunInvocationIndexV1[];
@@ -610,6 +612,7 @@ export function WorkflowRunContent(props: WorkflowRunContentProps): React.ReactE
                         }),
                     })}
                 </Text>
+                {props.notificationOperation}
                 {/* Contact loss is all that is known; resume choices come from
                     the recovery owner once the current state is. */}
                 {props.machineReachable === false && !isTerminalWorkflowRunState(props.run.state) ? (

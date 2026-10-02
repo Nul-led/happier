@@ -58,7 +58,9 @@ import { providerCollectionTranslations } from './providerCollectionTranslations
 import { settingsSearchKeywordsTranslations } from './settingsSearchKeywordsTranslations';
 import { automationPageTranslations } from './automationPageTranslations';
 import { settingsSessionPagesTranslations } from './settingsSessionPagesTranslations';
-import { workspaceTabTranslations } from './workspaceTabTranslations';
+import { workspaceTabKeyboardTranslations, workspaceTabTranslations } from './workspaceTabTranslations';
+import { terminalWorkspaceKeyboardTranslations, terminalWorkspaceTranslations } from './terminalWorkspaceTranslations';
+import { phoneNavigationTranslations } from './phoneNavigationTranslations';
 import { workspaceBarTranslations } from './workspaceBarTranslations';
 import { settingsProfilesRemoteHostsPageTranslations } from './settingsProfilesRemoteHostsPageTranslations';
 import { profilesPageTranslations } from './profilesPageTranslations';
@@ -74,6 +76,7 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { detailPageTranslations } from './detailPageTranslations';
 import { rolesTranslations } from './rolesTranslations';
 import { boardsTranslations } from './boardsTranslations';
+import { artifactsBrowserTranslations } from './artifactsBrowserTranslations';
 import { workStatusTranslations } from './workStatusTranslations';
 import { shareSheetTranslations } from './shareSheetTranslations';
 import { surfaceStateTranslations } from './surfaceStateTranslations';
@@ -907,6 +910,8 @@ export const es = {
         setShortcutInvalidMessage: 'Ingrese al menos una tecla que no sea modificadora, opcionalmente con Mod, Ctrl, Shift o Alt.',
         resetCommandAccessibility: ({ command }: { command: string }) => `Reset ${command} shortcut`,
         commands: {
+            ...workspaceTabKeyboardTranslations,
+            ...terminalWorkspaceKeyboardTranslations,
             composerAbortConfirm: 'Confirmar cancelación',
             composerFocus: 'Enfocar el compositor',
             composerSendImmediate: 'Enviar de inmediato',
@@ -6040,6 +6045,8 @@ export const es = {
   },
 
   newSession: {
+    terminalHostUnavailableTitle: "Host de terminal no disponible",
+    terminalHostUnavailableBody: ({ host }: { host: string }) => `Instala o actualiza ${host} y reinicia su servidor en esta máquina, o elige otro host de terminal. Se conserva tu borrador.`,
     folder: folderlessSessionTranslations.es.composer,
     ...newSessionMcpTranslationExtension,
     ...acpCatalogTranslationExtension.newSession,
@@ -12592,7 +12599,9 @@ settingsSession: {
             },
   },
 
-  terminal: {
+    terminal: {
+        plaintextStorage: 'Home-managed (not end-to-end encrypted)',
+        plaintextStorageDescription: 'This Home can read Account data. The connection response is encrypted for this terminal.',
     // Used by terminal connection screens
     webBrowserRequired: "Se requiere navegador web",
     webBrowserRequiredDescription:
@@ -12632,12 +12641,10 @@ settingsSession: {
       selectAllAction: 'Seleccionar toda la salida del terminal',
       openLinkAction: 'Abrir enlace seleccionado',
     },
-    dockMenuA11y: "Acoplar terminal",
     largePasteTitle: "¿Pegar una entrada grande en el terminal?",
     largePasteDescription: "Este texto pegado es grande y puede ejecutar comandos en el terminal. Revísalo antes de continuar.",
     largePasteConfirm: "Pegar en el terminal",
     settings: {
-      locationTitle: "Ubicación del terminal incrustado",
       rendererTitle: "Renderizador del terminal",
       rendererAuto: "Automático",
       rendererAutoDescription: "Prefiere el renderizador nativo cuando se superen todas las comprobaciones de seguridad nativas y no haya ningún lector de pantalla activo; cambia a la vista web accesible de xterm.js mientras haya un lector de pantalla activo.",
@@ -12652,11 +12659,6 @@ settingsSession: {
       ctrlC: "Ctrl + C",
       ctrlD: "Ctrl + D",
       enter: "Intro",
-    },
-    location: {
-      sidebar: "Barra lateral",
-      details: "Panel de detalles",
-      bottom: "Panel inferior",
     },
     errors: {
       missingMachineTarget: "A esta sesión le falta un destino de máquina.",
@@ -13259,11 +13261,9 @@ settingsSession: {
     unknownPath: "ruta desconocida",
     previousSessionsTitle: "Sesiones anteriores (hasta las 5 más recientes)",
     tmux: {
-      overrideTitle: "Sobrescribir la configuración global de tmux",
-      overrideEnabledSubtitle:
-        "La configuración personalizada de tmux se aplica a las nuevas sesiones en esta máquina.",
-      overrideDisabledSubtitle:
-        "Las nuevas sesiones usan la configuración global de tmux.",
+      overrideTitle: "Sobrescribir el valor del perfil",
+      overrideEnabledSubtitle: "Esta máquina usa su propio host de terminal para las sesiones nuevas.",
+      overrideDisabledSubtitle: "Las sesiones nuevas heredan el host de terminal de tu cuenta.",
       notDetectedSubtitle: "tmux no se detecta en esta máquina.",
       notDetectedMessage:
         "tmux no se detecta en esta máquina. Instala tmux y actualiza la detección.",
@@ -13525,12 +13525,11 @@ settingsSession: {
     },
 
     artifacts: {
+        browser: artifactsBrowserTranslations.es,
     // Artifacts feature
     title: "Artefactos",
     countSingular: "1 artefacto",
     countPlural: ({ count }: { count: number }) => `${count} artefactos`,
-    empty: "No hay artefactos aún",
-    emptyDescription: "Crea tu primer artefacto para comenzar",
     new: "Nuevo artefacto",
     edit: "Editar artefacto",
     delete: "Eliminar",
@@ -13545,15 +13544,13 @@ settingsSession: {
     deleteConfirmDescription: "Esta acción no se puede deshacer",
     noContent: "Sin contenido",
     untitled: "Sin título",
-    titleLabel: "TÍTULO",
     titlePlaceholder: "Ingresa un título para tu artefacto",
-    bodyLabel: "CONTENIDO",
+    bodyLabel: "Contenido",
     bodyPlaceholder: "Escribe tu contenido aquí...",
     emptyFieldsError: "Por favor, ingresa un título o contenido",
     createError: "No se pudo crear el artefacto. Por favor, intenta de nuevo.",
     save: "Guardar",
     saving: "Guardando...",
-    loading: "Cargando artefactos...",
     error: "Error al cargar el artefacto",
   },
 
@@ -14295,6 +14292,8 @@ settingsSession: {
    ...automationPageTranslations.es,
     ...settingsSessionPagesTranslations.es,
     ...workspaceTabTranslations.es,
+    ...terminalWorkspaceTranslations.es,
+    ...phoneNavigationTranslations.es,
     ...workspaceBarTranslations.es,
    ...settingsProfilesRemoteHostsPageTranslations.es,
    ...profilesPageTranslations.es,

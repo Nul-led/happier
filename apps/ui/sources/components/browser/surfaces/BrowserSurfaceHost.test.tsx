@@ -16,6 +16,7 @@ import {
     type CurrentUiContextSnapshotV1,
 } from '@happier-dev/protocol/plugins/ui';
 import { act } from 'react-test-renderer';
+import { AppState } from 'react-native';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AnnotationCaptureSurface } from '@/components/browser/annotation';
@@ -29,7 +30,8 @@ import { resolveProjectedPluginUiClientExecutables } from '@/components/plugins/
 import type {
     PluginReactNativeLoaderBackend,
 } from '@/components/plugins/reactNative/loader';
-import { renderScreen } from '@/dev/testkit';
+import { flushHookEffects, renderScreen } from '@/dev/testkit';
+import { createReactNativeAppStateEmitter } from '@/dev/testkit/mocks/reactNative';
 import {
     createBrowserViewState,
     openBrowserTarget,
@@ -121,6 +123,29 @@ const accountEncryptionModeCredentials = vi.hoisted(() => ({
 const accountEncryptionModeFetch = vi.hoisted(() => vi.fn<
     typeof import('@/sync/api/account/apiAccountEncryptionMode').fetchAccountEncryptionMode
 >());
+const browserStreamBoundary = vi.hoisted(() => ({
+    views: [] as unknown[],
+    listeners: new Set<(raw: unknown) => void>(),
+}));
+
+// Discovery and relay socket are genuine network boundaries; host/runtime/ingestion stay real.
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
+    machineRpcWithServerScope: async (input: { method: string }) => {
+        if (input.method === 'daemon.browser.view.list') return { protocolVersion: 1, views: browserStreamBoundary.views };
+        throw new Error('offline');
+    },
+}));
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineLiveStreamRelaySocket', () => ({
+    resolveServerScopedMachineLiveStreamRelaySocket: async () => ({
+        machineId: 'machine_1', viewerId: 'viewer_1', socketId: 'tab_1',
+        sendEnvelope: () => {},
+        onEnvelope: (listener: (raw: unknown) => void) => {
+            browserStreamBoundary.listeners.add(listener);
+            return () => browserStreamBoundary.listeners.delete(listener);
+        },
+        disconnect: async () => undefined,
+    }),
+}));
 let restoreCredentialBoundary: (() => void) | undefined;
 
 vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
@@ -575,6 +600,49 @@ afterEach(() => {
 });
 
 describe('BrowserSurfaceHost', () => {
+    it('subscribes only while both the host and browser surface are visible', async () => {
+        const appState = createReactNativeAppStateEmitter('background');
+        const restore = appState.install(AppState);
+        const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
+        browserStreamBoundary.views = [{
+            browserSessionId: 'session_1', viewId: 'view_streamed', sourceId: 'browser-streamed-1',
+            target: externalTarget, platform: 'web', adapterKind: 'chromiumSidecar', events: [],
+            captureSource: { v: 1, sourceId: 'browser-streamed-1', sourceKind: 'browser', supportedCodecs: ['image.mjpeg'],
+                inputMode: 'shared', sidebands: [], health: { status: 'available' } },
+        }];
+        browserStreamBoundary.listeners.clear();
+        const initialBrowserState = createBrowserViewState();
+        const renderHost = (visible: boolean) => <BrowserSurfaceHost
+            browserSessionId="session_1" platform="web" visible={visible} initialBrowserState={initialBrowserState}
+            policy={{ browserEnabled: true, viewTargetsEnabled: true, diagnosticsEnabled: false, contextEnabled: false }}
+            pluginBrowserActionContext={{ sessionId: 'session_1', machineId: 'machine_1', serverId: 'server-1' }}
+        />;
+        try {
+            const screen = await renderScreen(renderHost(true));
+            await flushHookEffects({ cycles: 6, turns: 6 });
+            expect(browserStreamBoundary.listeners.size).toBe(0);
+            await act(async () => appState.emit('active'));
+            await flushHookEffects({ cycles: 6, turns: 6 });
+            expect(browserStreamBoundary.listeners.size).toBe(1);
+            await act(async () => appState.emit('background'));
+            expect(browserStreamBoundary.listeners.size).toBe(0);
+            await act(async () => appState.emit('active'));
+            await flushHookEffects({ cycles: 6, turns: 6 });
+            expect(browserStreamBoundary.listeners.size).toBe(1);
+            await screen.update(renderHost(false));
+            expect(browserStreamBoundary.listeners.size).toBe(0);
+            await screen.update(renderHost(true));
+            await flushHookEffects({ cycles: 6, turns: 6 });
+            expect(browserStreamBoundary.listeners.size).toBe(1);
+            await screen.unmount();
+            expect(browserStreamBoundary.listeners.size).toBe(0);
+        } finally {
+            appState.emit('active');
+            restore();
+            browserStreamBoundary.views = [];
+        }
+    });
+
     it('does not read current context or enter a client Action handler when no Account lifetime is captured', async () => {
         const { BrowserSurfaceHost } = await import('./BrowserSurfaceHost');
         const composition = getInstalledPluginUiClientExecutableComposition();

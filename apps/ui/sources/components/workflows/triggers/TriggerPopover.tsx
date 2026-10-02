@@ -38,6 +38,7 @@ import {
 } from './sessionTriggerForm';
 import { buildSimpleScheduleCron, formatClockTime, parseClockTime, type SimpleScheduleRepeat } from './triggerSchedule';
 import { useNotifyMeChannelOptions } from './useTriggerThenOptions';
+import { SessionTriggerPullRequestPicker } from './SessionTriggerPullRequestPicker';
 
 /** A choice the popover lists but cannot offer here, with the reason it says instead. */
 export type TriggerKindAvailability = Readonly<Partial<Record<SessionTriggerWhenKind, string>>>;
@@ -53,6 +54,7 @@ export type TriggerPopoverProps = Readonly<{
     unavailableKinds?: TriggerKindAvailability;
     /** The session a lifecycle kind listens to; `null` for an Account trigger. */
     sessionId: string | null;
+    pullRequestLinks?: readonly Readonly<{ repository: string; number: number }>[];
     /** `null` adds a new trigger. */
     initial: TriggerFormValue | null;
     workflowOptions: readonly TriggerWorkflowOption[];
@@ -168,7 +170,8 @@ function FieldSelect(props: Readonly<{
  */
 export function TriggerPopover(props: TriggerPopoverProps): React.ReactElement {
     const isNew = props.initial === null;
-    const [when, setWhen] = React.useState<TriggerWhenValue>(() => props.initial?.when ?? props.initialWhen ?? createDefaultWhen(props.whenKinds[0] ?? 'turnEnds'));
+    const [when, setWhen] = React.useState<TriggerWhenValue>(() => props.initial?.when ?? props.initialWhen
+        ?? createDefaultWhen(props.whenKinds[0] ?? 'turnEnds', props.pullRequestLinks));
     const [then, setThen] = React.useState<TriggerThenValue>(() => props.initial?.then ?? createDefaultThen('sendPrompt'));
     const enabled = props.initial?.enabled ?? true;
     const [pending, setPending] = React.useState(false);
@@ -237,10 +240,18 @@ export function TriggerPopover(props: TriggerPopoverProps): React.ReactElement {
                                 selectedId={when.kind}
                                 onSelect={(id) => {
                                     const kind = props.whenKinds.find((candidate) => candidate === id);
-                                    if (kind !== undefined) setWhen(createDefaultWhen(kind));
+                                    if (kind !== undefined) setWhen(createDefaultWhen(kind, props.pullRequestLinks));
                                 }}
                             />
                             {when.kind === 'schedule' ? <ScheduleRows testID={props.testID} when={when} onChange={setWhen} /> : null}
+                            {(when.kind === 'prComment' || when.kind === 'ciFailed') && props.sessionId !== null ? (
+                                <SessionTriggerPullRequestPicker
+                                    testID={`${props.testID}-pull-request`}
+                                    sessionId={props.sessionId}
+                                    selection={when.pullRequest}
+                                    onSelect={(pullRequest) => setWhen({ kind: when.kind, pullRequest })}
+                                />
+                            ) : null}
                             {props.setRows ?? null}
                             {showThen ? (
                                 <>

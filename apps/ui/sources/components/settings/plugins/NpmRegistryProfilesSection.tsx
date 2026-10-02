@@ -8,6 +8,11 @@ import type { MachineAdministrationTargetV1 } from '@happier-dev/protocol';
 import type { MarketplaceSourceV1 } from '@happier-dev/protocol/marketplace';
 
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
@@ -42,6 +47,28 @@ type LoadedSnapshot = Readonly<{
     selectionKey: string;
     snapshot: DaemonNpmRegistryProfileSnapshotV1;
 }>;
+
+function RegistryCredentialEditor(props: Readonly<{
+    disabled: boolean;
+    onSave: (secret: string) => Promise<boolean | void>;
+    onCancel: () => void;
+}>) {
+    const [secret, setSecret] = React.useState('');
+    return <SectionContentRow>
+        <FieldTextInput testID="settings.plugins.registries.login.token"
+            accessibilityLabel={t('settingsPlugins.registriesLoginTitle')}
+            placeholder={t('settingsPlugins.registriesLoginBody')}
+            value={secret} onChangeText={setSecret} secureTextEntry autoCapitalize="none" editable={!props.disabled} />
+        <SectionButtonRow>
+            <RoundButton testID="settings.plugins.registries.login.save" title={t('settingsPlugins.registriesLogin')}
+                size="small" disabled={props.disabled || !secret.trim()} onPress={() => { void (async () => {
+                    if (await props.onSave(secret.trim())) { setSecret(''); props.onCancel(); }
+                })(); }} />
+            <RoundButton testID="settings.plugins.registries.login.cancel" title={t('common.cancel')}
+                display="secondary" size="small" disabled={props.disabled} onPress={props.onCancel} />
+        </SectionButtonRow>
+    </SectionContentRow>;
+}
 
 /**
  * The "no private registry" choice in a source's binding menu.
@@ -101,6 +128,7 @@ export function NpmRegistryProfilesSection({
     const [busyProfileId, setBusyProfileId] = React.useState<string | null>(null);
     const [busyBindingSourceId, setBusyBindingSourceId] = React.useState<string | null>(null);
     const [openBindingSourceId, setOpenBindingSourceId] = React.useState<string | null>(null);
+    const [loginProfileId, setLoginProfileId] = React.useState<string | null>(null);
     const snapshot = loaded?.selectionKey === selectionKey ? loaded.snapshot : null;
 
     const resolveExactExecutionTarget = React.useCallback((
@@ -184,6 +212,7 @@ export function NpmRegistryProfilesSection({
         // An open binding menu lists the previous machine's profiles; it must
         // not survive into a selection those profiles do not belong to.
         setOpenBindingSourceId(null);
+        setLoginProfileId(null);
     }, [daemonOperationsAvailable, selectionKey]);
 
     const mutate = React.useCallback(async (
@@ -239,7 +268,7 @@ export function NpmRegistryProfilesSection({
                         setLoaded({ selectionKey: requestedSelection, snapshot: checked.snapshot });
                     }
                 }
-                return;
+                return true;
             }
             if (result.status === 'outcomeUnknown') {
                 await refresh();
@@ -252,7 +281,7 @@ export function NpmRegistryProfilesSection({
                     t('settingsPlugins.sourceAdministration.operationOutcomeUnknownTitle'),
                     t('settingsPlugins.sourceAdministration.operationOutcomeUnknownBody'),
                 );
-                return;
+                return true;
             }
             if (result.code === 'revision_conflict') {
                 await refresh();
@@ -311,17 +340,6 @@ export function NpmRegistryProfilesSection({
             }
             : { action: 'update', profileId: current.profileId, profile });
     }, [createProfileSubject, mutate]);
-
-    const login = React.useCallback(async (profileId: string) => {
-        if (!daemonOperationsAvailableRef.current) return;
-        const secret = (await Modal.prompt(
-            t('settingsPlugins.registriesLoginTitle'),
-            t('settingsPlugins.registriesLoginBody'),
-            { inputType: 'secure-text', confirmText: t('settingsPlugins.registriesLogin'), cancelText: t('common.cancel') },
-        ))?.trim();
-        if (!secret) return;
-        await mutate({ action: 'login', profileId, credential: { kind: 'bearer_token', secret } });
-    }, [mutate]);
 
     const remove = React.useCallback(async (profileId: string, displayName: string) => {
         if (!daemonOperationsAvailableRef.current) return;
@@ -409,7 +427,7 @@ export function NpmRegistryProfilesSection({
                         title: t('settingsPlugins.registriesLogin'),
                         icon: 'sign-in' as const,
                         inlineTestID: `settings.plugins.registries.login.${profile.profileId}`,
-                        onPress: () => { void login(profile.profileId); },
+                        onPress: () => setLoginProfileId(profile.profileId),
                     };
                 const actions = [
                     {
@@ -443,7 +461,9 @@ export function NpmRegistryProfilesSection({
                     disabled: mutationsDisabled,
                 }));
                 return (
-                    <Item
+                    <ExpandableItem key={profile.profileId} expanded={loginProfileId === profile.profileId}
+                        onExpandedChange={(next) => { if (!next) setLoginProfileId(null); }}
+                        header={() => <Item
                         key={profile.profileId}
                         testID={`settings.plugins.registries.profile.${profile.profileId}`}
                         title={profile.displayName}
@@ -463,7 +483,12 @@ export function NpmRegistryProfilesSection({
                                 actions={actions}
                             />
                         )}
-                    />
+                    />}>
+                        {loginProfileId === profile.profileId ? <RegistryCredentialEditor
+                            disabled={mutationsDisabled} onCancel={() => setLoginProfileId(null)}
+                            onSave={(secret) => mutate({ action: 'login', profileId: profile.profileId,
+                                credential: { kind: 'bearer_token', secret } })} /> : null}
+                    </ExpandableItem>
                 );
             })}
             {snapshot && marketplaceSources.length > 0 ? (

@@ -23,6 +23,7 @@ import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 import { t } from '@/text';
 import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
 import { fireAndForget } from '@/utils/system/fireAndForget';
+import { useHappyAction } from '@/hooks/ui/useHappyAction';
 
 import { useHomesCollection } from './HomesCollection';
 import { HOMES_COLLECTION_ROOT } from './homeCollectionModel';
@@ -34,7 +35,7 @@ import { homeGroupDraftTitle } from './homeGroupDraftTitle';
  */
 export const HomeGroupPage = React.memo(function HomeGroupPage(props: Readonly<{ groupId: string | null }>) {
     if (props.groupId === null) return <NewHomeGroupPage />;
-    return <ExistingHomeGroupPage groupId={props.groupId} />;
+    return <ExistingHomeGroupPage key={props.groupId} groupId={props.groupId} />;
 });
 
 const ExistingHomeGroupPage = React.memo(function ExistingHomeGroupPage(props: Readonly<{ groupId: string }>) {
@@ -42,6 +43,12 @@ const ExistingHomeGroupPage = React.memo(function ExistingHomeGroupPage(props: R
     const { controller, collection } = useHomesCollection();
     const row = collection.groups.find((group) => group.id === props.groupId) ?? null;
     const group = row?.group ?? null;
+    const [nameDraft, setNameDraft] = React.useState<string | null>(null);
+    const [savingName, saveName] = useHappyAction(async () => {
+        if (!group || nameDraft === null || !nameDraft.trim()) return;
+        await controller.onRenameGroup(group, nameDraft);
+        setNameDraft(null);
+    });
     const { onEditGroupMembers } = controller;
     // Membership editing follows the page's group, so it is edited without switching to it.
     React.useEffect(() => {
@@ -50,7 +57,7 @@ const ExistingHomeGroupPage = React.memo(function ExistingHomeGroupPage(props: R
 
     if (!row || !group) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <EmptyState
                     testID="settings.homes.group.missing"
                     iconName="stack"
@@ -63,7 +70,7 @@ const ExistingHomeGroupPage = React.memo(function ExistingHomeGroupPage(props: R
     }
 
     const menuActions: PageHeaderMenuAction[] = [
-        { id: 'rename', testID: 'settings.homes.group.menu.rename', title: t('common.rename'), onSelect: () => controller.onRenameGroup(group) },
+        { id: 'rename', testID: 'settings.homes.group.menu.rename', title: t('common.rename'), disabled: savingName, onSelect: () => setNameDraft(group.name) },
         {
             id: 'remove',
             testID: 'settings.homes.group.menu.remove',
@@ -77,7 +84,7 @@ const ExistingHomeGroupPage = React.memo(function ExistingHomeGroupPage(props: R
     ];
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <PageHeader
                 testID="settings.homes.group.header"
                 alwaysShowTitle
@@ -100,6 +107,19 @@ const ExistingHomeGroupPage = React.memo(function ExistingHomeGroupPage(props: R
                     </View>
                 )}
             />
+            {nameDraft !== null ? (
+                <ItemGroup>
+                    <View style={styles.fields}>
+                        <FieldItem label={t('server.serverGroupNameLabel')} labelNativeID="settings-homes-group-rename-label" style={styles.field}>
+                            <FieldTextInput testID="settings.homes.group.name" value={nameDraft} onChangeText={setNameDraft} editable={!savingName} accessibilityLabel={t('server.serverGroupNameLabel')} accessibilityLabelledBy="settings-homes-group-rename-label" onSubmitEditing={saveName} />
+                        </FieldItem>
+                        <View style={styles.headerActions}>
+                            <RoundButton testID="settings.homes.group.name.cancel" size="small" display="secondary" title={t('common.cancel')} disabled={savingName} onPress={() => setNameDraft(null)} />
+                            <RoundButton testID="settings.homes.group.name.save" size="small" title={t('common.save')} disabled={savingName || !nameDraft.trim()} loading={savingName} onPress={saveName} />
+                        </View>
+                    </View>
+                </ItemGroup>
+            ) : null}
             <ServerGroupsSection
                 groupSelectionPresentation={controller.groupSelectionPresentation}
                 groupId={controller.editedServerGroupId === group.id ? group.id : null}
@@ -152,7 +172,7 @@ const NewHomeGroupPage = React.memo(function NewHomeGroupPage() {
 
     const canSave = !saving && name.trim().length > 0 && memberIds.length > 0;
     return (
-        <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+        <ItemList keyboardShouldPersistTaps="handled">
             <PageHeader
                 testID="settings.homes.groupDraft.header"
                 alwaysShowTitle

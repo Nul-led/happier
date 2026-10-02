@@ -38,7 +38,7 @@ export function readTerminalAuthHomeIdentity(snapshot: CliServerFeaturesSnapshot
     throw new HomeFeaturesUnreadableError();
   }
   return snapshot.status === 'ready'
-    ? normalizeServerIdentityIdCapability(snapshot.features.capabilities.serverIdentity?.serverIdentityId)
+    ? normalizeServerIdentityIdCapability(snapshot.features.capabilities.serverIdentity?.serverIdentityId) ?? null
     : null;
 }
 

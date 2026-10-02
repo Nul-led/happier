@@ -1,9 +1,24 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen } from '@/dev/testkit';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
+import { storage } from '@/sync/domains/state/storageStore';
+import { renderHook } from '@/dev/testkit/hooks/renderHook';
+import { createWorkBoardV1, normalizeSessionListFilterV1 } from '@happier-dev/protocol';
+import { useBoardMembership } from '@/components/boards/model/useBoardContent';
 import { createWorkflowRunSummaryFixture } from '@/dev/testkit/fixtures/workflowRunFixtures';
+import { WorkflowsRunsRoute } from '@/app/(app)/workflows/runs/index';
+import { WorkflowsColumn } from './WorkflowsColumn';
+import { InjectedAuthProvider } from '@/auth/context/AuthContext';
+import { UniversalSearchRuntimeProvider } from '@/components/appShell/search/UniversalSearchRuntimeContext';
+
+const searchRuntime = { open: () => {}, buildCommands: () => [] };
+
+function TestAuth({ children }: React.PropsWithChildren) {
+    return <InjectedAuthProvider credentials={null}><UniversalSearchRuntimeProvider value={searchRuntime}>{children}</UniversalSearchRuntimeProvider></InjectedAuthProvider>;
+}
 
 const executeMock = vi.hoisted(() => vi.fn());
 const routerPush = vi.hoisted(() => vi.fn());
@@ -28,38 +43,41 @@ vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
     return createTextModuleMock();
 });
+// Native recycler boundary: keep the shared list and its real row renderer below it.
+vi.mock('@legendapp/list/react-native', async (importOriginal) => {
+    const original = await importOriginal<Record<string, unknown>>();
+    const { createCapturingLegendListMock } = await import('@/dev/testkit/mocks/legendList');
+    return createCapturingLegendListMock({ original }).module;
+});
 
-const enabledDecision = vi.hoisted(() => ({
-    state: 'enabled', blockedBy: null, blockerCode: 'none', diagnostics: [], evaluatedAt: 0, scope: { scopeKind: 'runtime' },
+// The capability API and applied network identity are boundaries; their real feature and Account
+// scope owners decide whether the mounted list can read the returned Run window.
+vi.mock('@/sync/api/capabilities/serverFeaturesClient', async (importOriginal) => {
+    const original = await importOriginal<typeof import('@/sync/api/capabilities/serverFeaturesClient')>();
+    const { createRootLayoutFeaturesResponse } = await import('@/dev/testkit/fixtures/featureFixtures');
+    const snapshot = { status: 'ready' as const, features: createRootLayoutFeaturesResponse() };
+    return { ...original, getCachedServerFeaturesSnapshot: () => snapshot, getServerFeaturesSnapshot: async () => snapshot };
+});
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
+    const original = await importOriginal<typeof import('@/auth/storage/tokenStorage')>();
+    return { ...original, TokenStorage: { ...original.TokenStorage,
+        getCredentialsForServerUrl: async () => ({ token: 'header.eyJzdWIiOiJhY2NvdW50LWEifQ==.signature' }),
+    } };
+});
+vi.mock('@/sync/runtime/orchestration/connectionManager', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/runtime/orchestration/connectionManager')>(),
+    getAppliedActiveServerSnapshot: () => appliedSnapshot(),
+    isAppliedActiveServerRuntimeAvailable: () => true,
 }));
-vi.mock('@/hooks/server/useFeatureDecision', () => ({
-    useFeatureDecision: () => enabledDecision,
-}));
+let appliedSnapshot: typeof import('@/sync/domains/server/serverRuntime')['getActiveServerSnapshot'];
 
-vi.mock('@/sync/domains/scope/activeServerAccountScope', async (importOriginal) => ({
-    ...(await importOriginal<typeof import('@/sync/domains/scope/activeServerAccountScope')>()),
-    captureActiveServerAccountScopeLifetime: () => ({
-        scope: { serverId: 'server-a', accountId: 'account-a' },
-        isCurrent: () => true,
-        onRetire: () => ({ dispose() {} }),
-    }),
-}));
-
-vi.mock('@/sync/domains/state/storage', async (importOriginal) => ({
-    ...(await importOriginal<typeof import('@/sync/domains/state/storage')>()),
-    useActiveServerAccountScope: () => ({ serverId: 'server-a', accountId: 'account-a' }),
-    useAutomations: () => [],
-    useSocketStatus: () => ({ status: 'connected', lastConnectedAt: 1, lastDisconnectedAt: null, lastError: null, lastErrorAt: null }),
-}));
-
-vi.mock('@/sync/sync', () => ({ sync: { refreshAutomations: async () => undefined } }));
-
-const waiting = createWorkflowRunSummaryFixture({ id: 'run-waiting', state: 'running' });
-const running = createWorkflowRunSummaryFixture({ id: 'run-live', state: 'running' });
+const waiting = createWorkflowRunSummaryFixture({ id: 'run-waiting', state: 'running', ownerAccountId: 'account-a', startedBy: 'user', attentionRequired: true });
+const running = createWorkflowRunSummaryFixture({ id: 'run-live', state: 'running', ownerAccountId: 'account-a', startedBy: 'user' });
 
 function answerLists() {
     executeMock.mockImplementation(async (actionId: string, input: Record<string, unknown>) => {
         if (actionId === 'workflow.definition.list') return { ok: true, result: { definitions: [] } };
+        if (actionId === 'workflow.trigger.list') return { ok: true, result: { sets: [] } };
         if (actionId !== 'workflow.run.list') return { ok: false, error: 'unexpected', errorCode: 'unexpected' };
         if (input.attention === 'required') {
             return { ok: true, result: { runs: [waiting], metadataByRunId: { [waiting.id]: { kind: 'available', value: { title: 'Prepare the release' } } } } };
@@ -67,41 +85,97 @@ function answerLists() {
         if (Array.isArray(input.states)) {
             return { ok: true, result: { runs: [running], metadataByRunId: { [running.id]: { kind: 'available', value: { title: 'Fix a failing test' } } } } };
         }
-        return { ok: true, result: { runs: [], metadataByRunId: {} } };
+        return { ok: true, result: { runs: [waiting, running], metadataByRunId: {
+            [waiting.id]: { kind: 'available', value: { title: 'Prepare the release' } },
+            [running.id]: { kind: 'available', value: { title: 'Fix a failing test' } },
+        } } };
     });
 }
 
+let previousStorageState = storage.getState();
+beforeEach(async () => {
+    previousStorageState = storage.getState();
+    const runtime = await import('@/sync/domains/server/serverRuntime');
+    appliedSnapshot = runtime.getActiveServerSnapshot;
+    const profile = await runtime.upsertAndActivateServer({ serverUrl: 'http://unified-column.test', name: 'Column Home' });
+    const { settingsDefaults } = await import('@/sync/domains/settings/settings');
+    storage.setState({
+        profileScope: { serverId: profile.id, accountId: 'account-a' },
+        settings: { ...settingsDefaults, experiments: true, featureToggles: { automations: true },
+            sessionListSectionModeV1: 'single', sessionListOrderingModeV1: 'updated' },
+        sessionListIndexByServerId: { [profile.id]: null }, sessionListRowsByServerId: {},
+        workflowRunListWindows: {}, workflowRunsById: {}, socketStatus: 'connected', socketLastConnectedAt: 1,
+    });
+});
+
 afterEach(async () => {
+    standardCleanup();
     const { resetWorkflowLibraryReadsForTests } = await import('@/components/workflows/library/workflowLibraryReads');
     resetWorkflowLibraryReadsForTests();
+    (await import('@/sync/domains/scope/activeServerAccountScope')).retireActiveServerAccountScopeLifetime();
     executeMock.mockReset();
     routerPush.mockReset();
+    storage.setState(previousStorageState);
 });
 
 describe('WorkflowsColumn', () => {
-    it('lists what needs you as navigation to the exact run, never as an answer', async () => {
+    it('uses the shared starter and attention predicate for a Board Runs filter', async () => {
         answerLists();
-        const { WorkflowsColumn } = await import('./WorkflowsColumn');
-        const screen = await renderScreen(<WorkflowsColumn />);
+        const serverId = storage.getState().profileScope!.serverId;
+        const board = { ...createWorkBoardV1({ id: 'run-filter', name: 'Runs' }), source: {
+            picked: [], filter: normalizeSessionListFilterV1({ show: 'runs', startedBy: [], homeServerIds: [serverId] }),
+        } };
+        const hook = await renderHook(() => useBoardMembership(board, {
+            activeServerId: serverId, mountedServerIds: [serverId], isHomeMounted: (id) => id === serverId,
+        }));
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+        expect(hook.getCurrent().members.map((member) => [member.ref.kind, member.ref.qualifiedId.id]))
+            .toEqual([['workflow_run', 'run-waiting']]);
+        expect(hook.getCurrent().complete).toBe(true);
+    });
+    it('opens the Runs deep link as the same list rather than a separate History collection', async () => {
+        answerLists();
+        const screen = await renderScreen(<WorkflowsRunsRoute />, { wrapper: TestAuth });
         await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
-        const needsYou = screen.tree.root.findAll((node) => node.props?.testID === 'workflows-column:needsYou:run-waiting' && typeof node.props.onPress === 'function')[0]!;
-        expect(needsYou.props.title).toBe('Prepare the release');
-        await act(async () => { needsYou.props.onPress(); });
+        expect(screen.tree.root.findAll((node) => node.props?.testID === 'sessions-list-keyboard-frame').length).toBeGreaterThan(0);
+        expect(screen.tree.root.findAll((node) => /^workflows-history:view:/.test(String(node.props?.testID ?? '')))).toHaveLength(0);
+        const rows = screen.tree.root.findAll((node) => node.props?.testID === 'workflow-run-row:run-waiting' && typeof node.props.onPress === 'function');
+        expect(rows.length).toBeGreaterThan(0);
+        await act(async () => { rows[0]!.props.onPress(); });
         expect(routerPush).toHaveBeenCalledWith('/workflows/runs/run-waiting');
-        // No approval or answer control is rendered anywhere in the column.
-        expect(screen.tree.root.findAll((node) => /allow|deny|approve/i.test(String(node.props?.testID ?? '')))).toHaveLength(0);
     });
 
-    it('says a running run is running without inventing progress, and hides empty sections', async () => {
+    it('lets the Runs view open a run through the shared Sessions list', async () => {
         answerLists();
-        const { WorkflowsColumn } = await import('./WorkflowsColumn');
-        const screen = await renderScreen(<WorkflowsColumn />);
+        const screen = await renderScreen(<WorkflowsColumn />, { wrapper: TestAuth });
         await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
-        const row = screen.tree.root.findAll((node) => node.props?.testID === 'workflows-column:running:run-live' && typeof node.props.onPress === 'function')[0]!;
-        expect(String(row.props.subtitle)).not.toMatch(/%/);
-        // No Account trigger holds its own step here, so there is no Triggers section.
-        expect(screen.tree.root.findAll((node) => node.props?.testID === 'workflows-column:group:triggers')).toHaveLength(0);
+        const runsTabs = screen.tree.root.findAll((node) => node.props?.testID === 'workflows-column:view:runs' && typeof node.props.onPress === 'function');
+        expect(runsTabs.length).toBeGreaterThan(0);
+        await act(async () => { runsTabs[0]!.props.onPress(); });
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+        expect(screen.tree.root.findAll((node) => node.props?.testID === 'sessions-list-keyboard-frame').length).toBeGreaterThan(0);
+        expect(screen.tree.root.findAll((node) => /workflows-column:(needsYou|running|history):/.test(String(node.props?.testID ?? '')))).toHaveLength(0);
+        const runRows = screen.tree.root.findAll((node) => node.props?.testID === 'workflow-run-row:run-waiting' && typeof node.props.onPress === 'function');
+        expect(runRows.length).toBeGreaterThan(0);
+        await act(async () => { runRows[0]!.props.onPress(); });
+        expect(routerPush).toHaveBeenCalledWith('/workflows/runs/run-waiting');
+
+        await screen.pressByTestIdAsync('session-list-search-trigger');
+        await act(async () => { screen.changeTextByTestId('session-list-search-input', 'release'); });
+        expect(screen.findByTestId('workflow-run-row:run-waiting')).toBeTruthy();
+        expect(screen.findAllHostsByTestId('session-list-filtered-no-results')).toHaveLength(0);
+        const filteredCounts = screen.tree.root.findAll((node) => node.props.controller?.fixedShow === 'runs' && typeof node.props.resultCount === 'number');
+        expect(filteredCounts.length).toBeGreaterThan(0);
+        expect(filteredCounts.map((node) => node.props.resultCount)).toEqual(filteredCounts.map(() => 1));
+        await screen.pressByTestIdAsync('workflows-column:view:definitions');
+        expect(screen.findAllHostsByTestId('session-list-search-input')).toHaveLength(0);
+        await screen.pressByTestIdAsync('workflows-column:view:runs');
+        expect(screen.findByTestId('session-list-search-input')?.props.value).toBe('release');
     });
+
 });
+// Third-party rendering boundary; the collection does not render Markdown.
+vi.mock('react-native-enriched-markdown/lib/module/web/streamingReveal.js', () => ({ splitStreamingRevealTextParts: () => [] }));

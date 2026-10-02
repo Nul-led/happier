@@ -86,6 +86,7 @@ export const PluginsNavigationColumn = React.memo(function PluginsNavigationColu
     const pluginRow = (entry: InstalledPluginEntry) => (
         <CollectionNavigationRow
             key={entry.pluginId}
+            href={buildPluginsHomeRoute('app', { view: 'installed', open: { kind: 'installed', pluginId: entry.pluginId } })}
             testID={`plugins-column:plugin:${entry.pluginId}`}
             title={entry.title}
             icon={<PluginMark title={entry.title} iconAgentId={pluginProjectionById?.[entry.pluginId]?.iconAgentId ?? null} />}
@@ -111,6 +112,7 @@ export const PluginsNavigationColumn = React.memo(function PluginsNavigationColu
                 {placed.destinations.map((destination) => (
                     <CollectionNavigationRow
                         key={destination.id}
+                        href={destination.activation === 'navigate' ? destination.routePath : null}
                         testID={destinationRowTestId(destination)}
                         title={destination.title}
                         icon={<Icon name={destination.icon} />}
@@ -124,6 +126,7 @@ export const PluginsNavigationColumn = React.memo(function PluginsNavigationColu
                     return (
                         <CollectionNavigationRow
                             key={entry.id}
+                            href={buildPluginsHomeRoute('app', { view: browse ? 'browse' : 'installed' })}
                             testID={`plugins-column:${entry.id}`}
                             title={entry.label}
                             icon={<Icon name={browse ? 'globe' : 'check'} />}

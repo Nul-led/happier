@@ -46,7 +46,7 @@ export const PromptsSettingsHome = React.memo(() => {
   const count = (value: number) => t('promptLibrary.surface.itemCount', { count: value });
 
   return (
-    <ItemList presentation="page">
+    <ItemList>
       <SettingsPageHeader description={t('promptLibrary.surface.pageDescription')} />
 
       <ItemGroup title={t('promptLibrary.library')} description={t('promptLibrary.surface.librarySectionDescription')}>

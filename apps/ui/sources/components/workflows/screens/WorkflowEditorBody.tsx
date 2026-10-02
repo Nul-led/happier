@@ -243,7 +243,7 @@ export type WorkflowEditorCommands = Readonly<{
 /** Step options on a phone: the same inspector content, in `@/modal`. */
 function WorkflowStepOptionsModal(props: WorkflowSettingsModalProps & CustomModalInjectedProps): React.ReactElement {
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <WorkflowInspector {...props.inspector} />
         </ItemList>
     );
@@ -256,7 +256,7 @@ type WorkflowSettingsModalProps = Readonly<{
 /** Workflow settings on a phone: the same inspector content, in `@/modal`. */
 function WorkflowSettingsModal(props: WorkflowSettingsModalProps & CustomModalInjectedProps): React.ReactElement {
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <WorkflowInspector {...props.inspector} />
         </ItemList>
     );
@@ -1026,7 +1026,7 @@ export function WorkflowEditorBody(props: WorkflowEditorBodyProps): React.ReactE
         return (
             <View testID={testIDPrefix} style={{ gap: theme.margins.lg }}>
                 {props.showNameField === false && props.onBackToRun === undefined ? null : identity}
-                <ItemList presentation="page" scrollEnabled={false}>
+                <ItemList scrollEnabled={false}>
                     <WorkflowInspector {...inspectorProps} />
                 </ItemList>
                 {blockList}
@@ -1221,7 +1221,7 @@ export function WorkflowEditorBody(props: WorkflowEditorBodyProps): React.ReactE
                     subtitle={t('workflows.page.flowSubtitle')}
                     onClose={pane.closeRight}
                 />
-                <ItemList presentation="page">
+                <ItemList>
                     <View style={styles.flowBody}>{flowContent}</View>
                 </ItemList>
             </View>
@@ -1236,7 +1236,7 @@ export function WorkflowEditorBody(props: WorkflowEditorBodyProps): React.ReactE
                     subtitle={t('workflows.page.settingsSubtitle')}
                     onClose={closeSettings}
                 />
-                <ItemList presentation="page">
+                <ItemList>
                     <WorkflowInspector {...inspectorProps} />
                 </ItemList>
             </View>

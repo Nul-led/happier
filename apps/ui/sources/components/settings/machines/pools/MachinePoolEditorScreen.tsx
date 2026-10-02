@@ -489,7 +489,7 @@ function MachinePoolEditorContent(props: MachinePoolEditorContentProps) {
         ? { testID: 'settings.machinePools.editor.cancel', title: t('common.cancel'), onPress: leave }
         : null;
     return <>
-        <ItemList keyboardShouldPersistTaps="handled" presentation="page">
+        <ItemList keyboardShouldPersistTaps="handled">
             <SettingsPageHeader
                 testID="settings.machinePools.editor.header"
                 alwaysShowTitle
@@ -686,7 +686,7 @@ function MachinePoolEditorContent(props: MachinePoolEditorContentProps) {
 function MachinePoolRouteUnavailable() {
     const router = useRouter();
     const navigation = useNavigation();
-    return <ItemList presentation="page">
+    return <ItemList>
         <SettingsPageHeader description={t('machinePools.benefit')} />
         <ItemGroup>
             <Item
@@ -715,7 +715,7 @@ function MachinePoolHomeChooserScreen() {
     const viewModel = useMachinesSettingsViewModel();
     const projections = useMachinePoolProjections(viewModel.visibleMachineGroups);
 
-    return <ItemList presentation="page">
+    return <ItemList>
         <SettingsPageHeader alwaysShowTitle title={t('machinePools.newPoolTitle')} description={t('machinePools.benefit')} />
         <ItemGroup title={t('homeGovernance.chooseHome')}>
             {viewModel.visibleMachineGroups.map((group, index) => {

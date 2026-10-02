@@ -7,6 +7,7 @@ import {
     type NotificationChannelV1,
     type NotificationsSettingsV1,
     type AttentionDeliveryPolicyV1,
+    WebhookNotificationChannelV1Schema,
 } from '@happier-dev/protocol';
 import { DEFAULT_ATTENTION_DEVICE_OVERRIDES_V1 } from '@/sync/domains/settings/attentionDeviceOverridesV1';
 import { renderSettingsView } from '@/dev/testkit/harness/settingsViewHarness';
@@ -18,6 +19,7 @@ const platformState = vi.hoisted(() => ({
 const tauriDesktopState = vi.hoisted(() => ({
     value: false,
 }));
+const accountScopeState = vi.hoisted(() => ({ value: { serverId: 'home-studio', accountId: 'account-a' } }));
 
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -277,7 +279,7 @@ vi.mock('@/activity/notifications/channels/tauriNotificationPlugin', () => ({
 }));
 
 vi.mock('@/sync/store/settingsWriters', () => ({
-    useAccountSettingsScope: () => null,
+    useAccountSettingsScope: () => accountScopeState.value,
     useApplySettings: () => applySettingsMock,
     useApplyLocalSettings: () => applyLocalSettingsMock,
 }));
@@ -324,6 +326,7 @@ async function selectFromMenu(screen: { findAll: (predicate: (node: any) => bool
 
 describe('NotificationsSettingsView', () => {
     beforeEach(() => {
+        accountScopeState.value = { serverId: 'home-studio', accountId: 'account-a' };
         settingsState.sessionRemoteAlertsEnabled = false;
         localSettingsState.deviceRemoteAlertsEnabled = true;
         followingFeatureState.enabled = true;
@@ -1184,7 +1187,6 @@ describe('NotificationsSettingsView', () => {
     });
 
     it('adds a webhook notification channel from the settings screen', async () => {
-        modalPromptMock.mockResolvedValue('https://hooks.example.test/notify');
 
         const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
 
@@ -1193,6 +1195,18 @@ describe('NotificationsSettingsView', () => {
         await act(async () => {
             screen.pressRow('settings-notifications-add-webhook');
         });
+
+        expect(applySettingsMock).not.toHaveBeenCalled();
+        act(() => screen.changeTextByTestId('settings-notifications-webhook-new-url', 'ftp://hooks.example.test/notify'));
+        act(() => screen.pressRow('settings-notifications-webhook-new-url-save'));
+        expect(applySettingsMock).not.toHaveBeenCalled();
+        expect(screen.findByTestId('settings-notifications-webhook-new-url.error')).toBeTruthy();
+        act(() => screen.pressRow('settings-notifications-webhook-new-url-cancel'));
+        expect(screen.findByTestId('settings-notifications-webhook-new-url')).toBeNull();
+        expect(applySettingsMock).not.toHaveBeenCalled();
+        act(() => screen.pressRow('settings-notifications-add-webhook'));
+        act(() => screen.changeTextByTestId('settings-notifications-webhook-new-url', ' https://hooks.example.test/notify '));
+        act(() => screen.pressRow('settings-notifications-webhook-new-url-save'));
 
         const delta = applySettingsMock.mock.calls[0]?.[0] as Record<string, unknown>;
         expect(delta).toEqual(expect.objectContaining({
@@ -1297,6 +1311,27 @@ describe('NotificationsSettingsView', () => {
         }));
     });
 
+    it('edits a webhook URL inline without replacing its id or topics', async () => {
+        const channel = WebhookNotificationChannelV1Schema.parse({
+            v: 1, id: 'webhook-primary', kind: 'webhook', enabled: true,
+            url: 'https://hooks.example.test/notify', signingSecret: null,
+            topics: enabledLegacyNotificationTopics,
+            readyIncludeMessageText: false, requestIncludeMessageText: false,
+        });
+        settingsState.notificationChannelsV1 = [...settingsState.notificationChannelsV1, channel];
+        const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
+        const screen = await renderSettingsView(<NotificationsSettingsView />);
+        act(() => screen.pressRow('settings-notifications-webhook-webhook-primary'));
+        act(() => screen.pressRow('settings-notifications-webhook-webhook-primary-edit'));
+        expect(screen.findByTestId('settings-notifications-webhook-webhook-primary-url')!.props.value).toBe(channel.url);
+        act(() => screen.changeTextByTestId('settings-notifications-webhook-webhook-primary-url', 'https://replacement.example.test/hook'));
+        expect(applySettingsMock).not.toHaveBeenCalled();
+        act(() => screen.pressRow('settings-notifications-webhook-webhook-primary-url-save'));
+        expect(applySettingsMock).toHaveBeenCalledWith(expect.objectContaining({
+            notificationChannelsV1: expect.arrayContaining([{ ...channel, url: 'https://replacement.example.test/hook' }]),
+        }));
+    });
+
     it('sets a webhook signing secret from the settings screen', async () => {
         settingsState.notificationChannelsV1 = [
             ...settingsState.notificationChannelsV1,
@@ -1312,7 +1347,6 @@ describe('NotificationsSettingsView', () => {
                 requestIncludeMessageText: false,
             },
         ];
-        modalPromptMock.mockResolvedValue('shared-webhook-secret');
 
         const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
 
@@ -1324,6 +1358,16 @@ describe('NotificationsSettingsView', () => {
         await act(async () => {
             await requireRow(screen, 'settings-notifications-webhook-webhook-primary-set-secret').props.onPress();
         });
+        expect(applySettingsMock).not.toHaveBeenCalled();
+        expect(screen.findByTestId('settings-notifications-webhook-webhook-primary-secret-input')!.props.secureTextEntry).toBe(true);
+        act(() => screen.changeTextByTestId('settings-notifications-webhook-webhook-primary-secret-input', 'discard-on-hide'));
+        act(() => screen.pressRow('settings-notifications-webhook-webhook-primary'));
+        act(() => screen.pressRow('settings-notifications-webhook-webhook-primary'));
+        act(() => screen.pressRow('settings-notifications-webhook-webhook-primary-set-secret'));
+        expect(screen.findByTestId('settings-notifications-webhook-webhook-primary-secret-input')!.props.value).toBe('');
+        act(() => screen.changeTextByTestId('settings-notifications-webhook-webhook-primary-secret-input', ' shared-webhook-secret '));
+        act(() => screen.pressRow('settings-notifications-webhook-webhook-primary-secret-save'));
+        expect(screen.findByTestId('settings-notifications-webhook-webhook-primary-secret-input')).toBeNull();
 
         expect(applySettingsMock).toHaveBeenCalledWith(expect.objectContaining({
             notificationChannelsV1: [
@@ -1367,6 +1411,40 @@ describe('NotificationsSettingsView', () => {
                 }),
             }),
         }));
+    });
+
+    it('retires webhook signing drafts on Account changes and explicit cancellation', async () => {
+        const channel = WebhookNotificationChannelV1Schema.parse({
+            v: 1, id: 'webhook-primary', kind: 'webhook', enabled: true,
+            url: 'https://hooks.example.test/notify', signingSecret: null,
+            topics: enabledLegacyNotificationTopics,
+            readyIncludeMessageText: false, requestIncludeMessageText: false,
+        });
+        // Load through its real page entry point before exercising the section lifecycle.
+        await import('./NotificationsSettingsView');
+        const { NotificationWebhooksSection } = await import('./NotificationWebhooksSection');
+        const save = vi.fn();
+        // Updating the real section's public props exercises its lifecycle without relying on
+        // the page's memoization or a mocked settings subscription to deliver an Account change.
+        const element = (channels: typeof channel[]) => <NotificationWebhooksSection webhookChannels={channels} setWebhookChannels={save} />;
+        const screen = await renderSettingsView(element([channel]));
+        const openSecret = () => {
+            act(() => screen.pressRow('settings-notifications-webhook-webhook-primary'));
+            act(() => screen.pressRow('settings-notifications-webhook-webhook-primary-set-secret'));
+        };
+        openSecret();
+        act(() => screen.changeTextByTestId('settings-notifications-webhook-webhook-primary-secret-input', 'discard-on-account-change'));
+        accountScopeState.value = { serverId: 'home-studio', accountId: 'account-b' };
+        await screen.update(element([channel]));
+        expect(screen.findByTestId('settings-notifications-webhook-webhook-primary-secret-input')).toBeNull();
+        openSecret();
+        expect(screen.findByTestId('settings-notifications-webhook-webhook-primary-secret-input')!.props.value).toBe('');
+        act(() => screen.changeTextByTestId('settings-notifications-webhook-webhook-primary-secret-input', 'discard-on-cancel'));
+        act(() => screen.pressRow('settings-notifications-webhook-webhook-primary-secret-cancel'));
+        expect(screen.findByTestId('settings-notifications-webhook-webhook-primary-secret-input')).toBeNull();
+        act(() => screen.pressRow('settings-notifications-webhook-webhook-primary-set-secret'));
+        expect(screen.findByTestId('settings-notifications-webhook-webhook-primary-secret-input')!.props.value).toBe('');
+        expect(save).not.toHaveBeenCalled();
     });
 
     it('clears a configured webhook signing secret from the settings screen', async () => {

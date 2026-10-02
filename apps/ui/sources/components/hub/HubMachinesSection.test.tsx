@@ -56,8 +56,8 @@ afterEach(() => {
 });
 
 // Presence is read against the clock when the section renders, so each fixture is stamped when made.
-const online = (id: string, host: string) => createMachineFixture({ id, active: true, activeAt: Date.now(), metadata: { host, displayName: host } });
-const offline = (id: string, host: string) => createMachineFixture({ id, active: false, activeAt: Date.now() - 5 * 24 * 60 * 60 * 1000, metadata: { host, displayName: host } });
+const online = (id: string, host: string) => createMachineFixture({ id, active: true, activeAt: Date.now(), metadata: { ...createMachineFixture().metadata!, host, displayName: host } });
+const offline = (id: string, host: string) => createMachineFixture({ id, active: false, activeAt: Date.now() - 5 * 24 * 60 * 60 * 1000, metadata: { ...createMachineFixture().metadata!, host, displayName: host } });
 function setMachines(machines: ReturnType<typeof online>[]) {
     storage.setState({ machineListByServerId: { [serverId]: machines }, profileScope: { serverId, accountId: 'hub-inventory-account' } });
 }

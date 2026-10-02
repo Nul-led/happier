@@ -3,10 +3,11 @@ import { act } from 'react-test-renderer';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import type { MarketplaceSourceRegistryV1 } from '@happier-dev/protocol';
 
-import { flushHookEffects, renderSettingsView, standardCleanup } from '@/dev/testkit';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { renderSettingsView } from '@/dev/testkit/harness/settingsViewHarness';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { buildActionRowAccessibilityLabel } from '@/components/ui/lists/actionRowAccessibility';
 import { t } from '@/text';
-import type { ActionInputForm } from '@/components/plugins/actions/actionInputForm';
 
 const mocks = vi.hoisted(() => ({
     prompt: vi.fn(),
@@ -26,6 +27,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@react-navigation/native', async () => (await import('@/dev/testkit/mocks/reactNavigation')).createReactNavigationNativeMock());
+vi.mock('expo-router', async () => (await import('@/dev/testkit/mocks/router')).createExpoRouterMock().module);
 vi.mock('react-native', async () => (await import('@/dev/testkit/mocks/reactNative')).createReactNativeWebMock({ View: 'View' }));
 vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock({
     theme: { colors: { accent: { indigo: 'indigo', green: 'green' } } },
@@ -69,27 +71,26 @@ vi.mock('./NpmRegistryProfilesSection', async () => ({
 vi.mock('@/components/ui/forms/Switch', async () => ({
     Switch: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('Switch'),
 }));
-vi.mock('@/components/ui/lists/Item', async () => ({
-    Item: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('Item'),
-}));
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    // A page section renders its trailing action ("Add source") beside its title.
-    ItemGroup: (props: { action?: React.ReactNode; children?: React.ReactNode }) => React.createElement(
-        'ItemGroup',
-        props,
-        props.action,
-        props.children,
-    ),
-}));
-vi.mock('@/components/ui/lists/ItemList', async () => ({
-    ItemList: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('ItemList'),
-}));
 
 import { PluginMarketplaceSourcesScreen } from './PluginMarketplaceSourcesScreen';
 
 /** The section's "Add source" action: the button owner, which carries its busy and disabled state. */
 function findAddSourceAction(screen: Awaited<ReturnType<typeof renderSettingsView>>) {
     return screen.findAll((node) => node.props?.testID === 'settings.plugins.sources.add' && 'loading' in node.props)[0] ?? null;
+}
+
+function findSourceRow(screen: Awaited<ReturnType<typeof renderSettingsView>>, testID: string) {
+    return screen.findAll((node) => node.props.testID === testID && typeof node.props.title === 'string')[0] ?? null;
+}
+
+async function editSourceField(screen: Awaited<ReturnType<typeof renderSettingsView>>, name: string, value: string) {
+    const field = screen.findAll((node) => node.props.testID === `settings.plugins.sources.draft.${name}` && typeof node.props.onChangeText === 'function')[0];
+    expect(field).toBeDefined();
+    await act(async () => { field.props.onChangeText(value); });
+}
+
+async function submitSource(screen: Awaited<ReturnType<typeof renderSettingsView>>) {
+    await act(async () => { screen.pressRow('settings.plugins.sources.draft.save'); await flushHookEffects(); });
 }
 
 function createRegistry(): MarketplaceSourceRegistryV1 {
@@ -153,14 +154,9 @@ describe('PluginMarketplaceSourcesScreen', () => {
             screen.pressRow('settings.plugins.sources.source.marketplace:user');
             await flushHookEffects();
         });
-        const form = mocks.show.mock.calls.at(-1)?.[0]?.props.form as ActionInputForm;
-        expect(form).toBeDefined();
-        expect(form.getInput()).toEqual({ sourceUrl: 'https://mine.example.test/index.json', title: 'My source', description: '' });
-        await act(async () => {
-            form.replaceInput({ ...form.getInput(), sourceUrl: 'https://renamed.example.test/index.json' });
-            form.replaceInput({ ...form.getInput(), title: 'Renamed source' });
-            await form.submit();
-        });
+        await editSourceField(screen, 'sourceUrl', 'https://renamed.example.test/index.json');
+        await editSourceField(screen, 'title', 'Renamed source');
+        await submitSource(screen);
 
         expect(mocks.upsertMarketplaceSource).toHaveBeenCalledTimes(1);
         expect(mocks.upsertMarketplaceSource).toHaveBeenCalledWith({
@@ -176,12 +172,15 @@ describe('PluginMarketplaceSourcesScreen', () => {
     });
 
     it('adds a source from its URL and lets the daemon derive its display name', async () => {
-        mocks.prompt.mockResolvedValueOnce('https://added.example.test/index.json');
         const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
         await act(async () => {
             screen.pressRow('settings.plugins.sources.add');
             await flushHookEffects();
         });
+
+        expect(mocks.upsertMarketplaceSource).not.toHaveBeenCalled();
+        await editSourceField(screen, 'sourceUrl', 'https://added.example.test/index.json');
+        await submitSource(screen);
 
         expect(mocks.upsertMarketplaceSource).toHaveBeenCalledTimes(1);
         expect(mocks.upsertMarketplaceSource).toHaveBeenCalledWith({
@@ -189,17 +188,17 @@ describe('PluginMarketplaceSourcesScreen', () => {
             origin: 'user',
             enabled: true,
         });
-        expect(mocks.prompt).toHaveBeenCalledTimes(1);
+        expect(mocks.prompt).not.toHaveBeenCalled();
     });
 
-    it('abandons the new source when its URL prompt is cancelled', async () => {
-        mocks.prompt.mockResolvedValueOnce(null);
+    it('abandons the new source when its inline draft is cancelled', async () => {
 
         const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
         await act(async () => {
             screen.pressRow('settings.plugins.sources.add');
             await flushHookEffects();
         });
+        await act(async () => { screen.pressRow('settings.plugins.sources.draft.cancel'); });
 
         expect(mocks.upsertMarketplaceSource).not.toHaveBeenCalled();
         expect(mocks.alertAsync).not.toHaveBeenCalled();
@@ -212,10 +211,8 @@ describe('PluginMarketplaceSourcesScreen', () => {
             screen.pressRow('settings.plugins.sources.source.marketplace:user');
             await flushHookEffects();
         });
-        const form = mocks.show.mock.calls.at(-1)?.[0]?.props.form as ActionInputForm;
-        expect(form).toBeDefined();
-        form.replaceInput({ ...form.getInput(), title: 'Unsaved name' });
-        form.cancel();
+        await editSourceField(screen, 'title', 'Unsaved name');
+        await act(async () => { screen.pressRow('settings.plugins.sources.draft.cancel'); });
 
         expect(mocks.upsertMarketplaceSource).not.toHaveBeenCalled();
         expect(mocks.alertAsync).not.toHaveBeenCalled();
@@ -228,29 +225,19 @@ describe('PluginMarketplaceSourcesScreen', () => {
             screen.pressRow('settings.plugins.sources.source.marketplace:user');
             await flushHookEffects();
         });
-        const form = mocks.show.mock.calls.at(-1)?.[0]?.props.form as ActionInputForm;
-        expect(form).toBeDefined();
         const draft = { sourceUrl: 'https://new.example.test/index.json', title: 'New name', description: 'Keep this description' };
-        await act(async () => {
-            form.replaceInput(draft);
-            await form.submit();
-        });
-        expect(form.isRetired()).toBe(false);
-        expect(form.getInput()).toEqual(draft);
-        await act(async () => {
-            form.replaceInput({ ...form.getInput(), title: 'Corrected name' });
-            await form.submit();
-        });
+        for (const [name, value] of Object.entries(draft)) await editSourceField(screen, name, value);
+        await submitSource(screen);
+        const descriptionField = screen.findAll((node) => node.props.testID === 'settings.plugins.sources.draft.description' && typeof node.props.onChangeText === 'function')[0];
+        expect(descriptionField?.props.value).toBe(draft.description);
+        await editSourceField(screen, 'title', 'Corrected name');
+        await submitSource(screen);
         expect(mocks.upsertMarketplaceSource).toHaveBeenLastCalledWith(expect.objectContaining({
             ...draft, title: 'Corrected name', sourceId: 'marketplace:user',
         }));
     });
 
     it('presents an error and releases the busy state when adding a source fails', async () => {
-        mocks.prompt
-            .mockResolvedValueOnce('https://added.example.test/index.json')
-            .mockResolvedValueOnce('Added source')
-            .mockResolvedValueOnce('');
         mocks.upsertMarketplaceSource.mockRejectedValueOnce(new Error('machine unreachable'));
 
         const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
@@ -259,6 +246,9 @@ describe('PluginMarketplaceSourcesScreen', () => {
             await flushHookEffects();
         });
 
+        await editSourceField(screen, 'sourceUrl', 'https://added.example.test/index.json');
+        await submitSource(screen);
+
         expect(mocks.upsertMarketplaceSource).toHaveBeenCalledTimes(1);
         expect(mocks.alertAsync).toHaveBeenCalledTimes(1);
         expect(mocks.alertAsync).toHaveBeenCalledWith(
@@ -266,14 +256,15 @@ describe('PluginMarketplaceSourcesScreen', () => {
             t('settingsPlugins.sourceAdministration.operationFailed'),
         );
         expect(findAddSourceAction(screen)?.props.loading).toBe(false);
-        expect(findAddSourceAction(screen)?.props.disabled).toBe(false);
+        expect(screen.findAll((node) => node.props.testID === 'settings.plugins.sources.draft.sourceUrl' && typeof node.props.onChangeText === 'function')[0]?.props.value)
+            .toBe('https://added.example.test/index.json');
     });
 
     it('presents an error when toggling a source fails', async () => {
         mocks.setMarketplaceSourceEnabled.mockRejectedValueOnce(new Error('request timed out'));
 
         const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
-        const sourceRow = screen.findRow('settings.plugins.sources.source.marketplace:user');
+        const sourceRow = findSourceRow(screen, 'settings.plugins.sources.source.marketplace:user');
         await act(async () => {
             sourceRow?.props.rightElement.props.onValueChange(false);
             await flushHookEffects();
@@ -285,15 +276,15 @@ describe('PluginMarketplaceSourcesScreen', () => {
             t('common.error'),
             t('settingsPlugins.sourceAdministration.operationFailed'),
         );
-        expect(screen.findRow('settings.plugins.sources.source.marketplace:user')?.props.loading).toBe(false);
-        expect(screen.findRow('settings.plugins.sources.source.marketplace:user')?.props.disabled).toBe(false);
+        expect(findSourceRow(screen, 'settings.plugins.sources.source.marketplace:user')?.props.loading).toBe(false);
+        expect(findSourceRow(screen, 'settings.plugins.sources.source.marketplace:user')?.props.disabled).toBe(false);
     });
 
     it('presents an issued mutation with an unknown outcome distinctly from a definite failure', async () => {
         mocks.setMarketplaceSourceEnabled.mockResolvedValueOnce({ status: 'outcomeUnknown' });
 
         const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
-        const sourceRow = screen.findRow('settings.plugins.sources.source.marketplace:user');
+        const sourceRow = findSourceRow(screen, 'settings.plugins.sources.source.marketplace:user');
         await act(async () => {
             sourceRow?.props.rightElement.props.onValueChange(false);
             await flushHookEffects();
@@ -313,7 +304,7 @@ describe('PluginMarketplaceSourcesScreen', () => {
         mocks.setMarketplaceSourceEnabled.mockResolvedValueOnce({ status: 'unavailable' });
 
         const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
-        const sourceRow = screen.findRow('settings.plugins.sources.source.marketplace:user');
+        const sourceRow = findSourceRow(screen, 'settings.plugins.sources.source.marketplace:user');
         await act(async () => {
             sourceRow?.props.rightElement.props.onValueChange(false);
             await flushHookEffects();
@@ -332,7 +323,7 @@ describe('PluginMarketplaceSourcesScreen', () => {
     it('exposes the enable switch for a curated source while keeping edit and removal user-only', async () => {
         const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
 
-        const curatedRow = screen.findRow('settings.plugins.sources.source.marketplace:curated');
+        const curatedRow = findSourceRow(screen, 'settings.plugins.sources.source.marketplace:curated');
         const curatedSwitch = curatedRow?.props.rightElement ?? null;
         if (!curatedSwitch) throw new Error('Expected the curated source row to expose its enable switch');
         expect(curatedSwitch.props.testID).toBe('settings.plugins.sources.enabled.marketplace:curated');
@@ -360,12 +351,12 @@ describe('PluginMarketplaceSourcesScreen', () => {
 
         const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
 
-        const enabledSwitch = screen.findRow('settings.plugins.sources.source.marketplace:curated')?.props.rightElement;
+        const enabledSwitch = findSourceRow(screen, 'settings.plugins.sources.source.marketplace:curated')?.props.rightElement;
         expect(enabledSwitch?.props.accessibilityLabel)
             .toBe(`Curated: ${t('settingsPlugins.sourceAdministration.enabled')}`);
         expect(enabledSwitch?.props.accessibilityState).toEqual({ checked: true, disabled: false });
 
-        const disabledSwitch = screen.findRow('settings.plugins.sources.source.marketplace:user')?.props.rightElement;
+        const disabledSwitch = findSourceRow(screen, 'settings.plugins.sources.source.marketplace:user')?.props.rightElement;
         expect(disabledSwitch?.props.accessibilityLabel)
             .toBe(`My source: ${t('settingsPlugins.sourceAdministration.disabled')}`);
         expect(disabledSwitch?.props.accessibilityState).toEqual({ checked: false, disabled: false });
@@ -397,7 +388,7 @@ describe('PluginMarketplaceSourcesScreen', () => {
             t('common.error'),
             t('settingsPlugins.sourceAdministration.operationFailed'),
         );
-        expect(screen.findRow('settings.plugins.sources.remove.marketplace:user')?.props.disabled).toBe(false);
+        expect(findSourceRow(screen, 'settings.plugins.sources.remove.marketplace:user')?.props.disabled).toBe(false);
     });
 
     it('names each repeated remove action with the source it removes', async () => {
@@ -493,7 +484,7 @@ describe('PluginMarketplaceSourcesScreen', () => {
         });
 
         expect(mocks.refreshMarketplaceSourceRegistry).toHaveBeenCalledTimes(1);
-        expect(screen.findRow('settings.plugins.sources.outcomeUnknown')?.props.subtitle)
+        expect(findSourceRow(screen, 'settings.plugins.sources.outcomeUnknown')?.props.subtitle)
             .toBe(t('settingsPlugins.sourceAdministration.operationOutcomeUnknownBody'));
     });
 

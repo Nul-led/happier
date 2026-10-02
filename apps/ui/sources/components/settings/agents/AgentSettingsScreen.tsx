@@ -49,7 +49,7 @@ import { AgentSignInPaneHost } from '@/components/machines/agents/AgentSignInPan
 import { useMachineAgent } from '@/agents/machineAgents/useMachineAgents';
 import { resolveAgentChannelLabelKey } from '@/components/settings/agents/agentChannelLabel';
 import { getPermissionModeOptionsForAgentType } from '@/sync/domains/permissions/permissionModeOptions';
-import type { PermissionMode } from '@/sync/domains/permissions/permissionTypes';
+import { isPermissionMode, type PermissionMode } from '@/sync/domains/permissions/permissionTypes';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { openExternalUrl } from '@/utils/url/openExternalUrl';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
@@ -57,18 +57,20 @@ import { isDesktopHost } from '@/utils/platform/desktopHost';
 import { isLegacyCompatAgentType } from '@/agents/backendCatalog/legacyCompatAgents';
 import {
     PluginContributionIdentityV1Schema,
+    PluginAgentCliSourcePreferenceSchema,
+    readAccountSettingValueForBackendTarget,
     qualifiedPurposeKey,
     resolveAgentConnectedAccountPurposeDefaults,
     writeAgentConnectedAccountPurposeDefault,
     type AgentConnectedAccountPurposeTeamResourceDefault,
     type PluginProjectedAgentConnectedAccountPurposeV2,
     type QualifiedConnectedAccountPurposeBindingTargetV1,
+    type BackendTargetRefV2Input,
 } from '@happier-dev/protocol';
 import { ConnectedAccountPurposeTargetChooser } from '@/components/settings/connectedServices/account/ConnectedAccountPurposeTargetChooser';
 import { buildBackendTargetKey } from '@happier-dev/protocol';
 import {
     getAgentBackendCompatibilityTargetKeys,
-    readBackendTargetSettingValue,
 } from '@/agents/backendCatalog/backendTargetEnablement';
 import { PluginDetailGenericSettingsSection } from '@/components/settings/plugins/detail/PluginDetailGenericSettingsSection';
 import type { ScopedPluginSettingsTarget } from '@/sync/domains/plugins/settings/scopedPluginSettingsAdapter';
@@ -238,7 +240,7 @@ const AgentSettingsNotFound = React.memo(function AgentSettingsNotFound(props: R
     targetSelection: MachineAdministrationTargetSelectionV1;
 }>) {
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <AgentSettingsStatusHeader targetSelection={props.targetSelection} />
             <ItemGroup>
                 <View style={{ alignItems: 'center', paddingVertical: 32, paddingHorizontal: 16 }}>
@@ -263,7 +265,7 @@ const AgentSettingsProjectionStatus = React.memo(function AgentSettingsProjectio
     const loading = props.phase === 'loading';
     const retryable = props.phase === 'error' && props.onRetry !== undefined;
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <AgentSettingsStatusHeader targetSelection={props.targetSelection} />
             <ItemGroup>
                 <Item
@@ -436,15 +438,16 @@ const AgentSessionDefaultsSection = React.memo(function AgentSessionDefaultsSect
     const providerTargetKey = projection.backendTargetKey;
     const defaultPermissionByTargetKey = settings.sessionDefaultPermissionModeByTargetKey;
     const permissionModeOptions = getPermissionModeOptionsForAgentType(projection.agentId);
-    const permissionMode = providerTargetKey
-        ? (
-            readBackendTargetSettingValue({
-                valuesByTargetKey: defaultPermissionByTargetKey,
-                canonicalTargetKey: providerTargetKey,
-                compatibilityTargetKeys,
-            }) ?? 'default'
-        )
-        : 'default';
+    const permissionPreference = providerTargetKey
+        ? [providerTargetKey, ...compatibilityTargetKeys]
+            .map((targetKey) => readAccountSettingValueForBackendTarget(
+                settings,
+                'sessionDefaultPermissionModeByTargetKey',
+                targetKey as BackendTargetRefV2Input,
+            ))
+            .find((value) => value !== undefined && value !== null)
+        : undefined;
+    const permissionMode = isPermissionMode(permissionPreference) ? permissionPreference : 'default';
     const setPermissionMode = (next: PermissionMode) => {
         if (!providerTargetKey || !accountSettingsAvailable) return;
         applySettings({
@@ -551,7 +554,7 @@ const AgentSettingsFallbackScreenInner = React.memo(function AgentSettingsFallba
     const machineLabel = props.machineLabel;
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <AgentMachineContextBar targetSelection={props.targetSelection} />
             <AgentDetailHeader
                 projection={props.projection}
@@ -717,16 +720,19 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
     };
 
     const backendCliSourcePreferenceByTargetKey = settings.backendCliSourcePreferenceByTargetKey;
-    const providerCliSourcePreference =
-        providerTargetKey && agentCli
-            ? (
-                readBackendTargetSettingValue({
-                    valuesByTargetKey: backendCliSourcePreferenceByTargetKey,
-                    canonicalTargetKey: providerTargetKey,
-                    compatibilityTargetKeys,
-                }) ?? agentCli.executable.sourcePreference
-            )
-            : 'system-first';
+    const cliSourcePreference = providerTargetKey && agentCli
+        ? [providerTargetKey, ...compatibilityTargetKeys]
+            .map((targetKey) => readAccountSettingValueForBackendTarget(
+                settings,
+                'backendCliSourcePreferenceByTargetKey',
+                targetKey as BackendTargetRefV2Input,
+            ))
+            .find((value) => value !== undefined && value !== null)
+        : undefined;
+    const parsedCliSourcePreference = PluginAgentCliSourcePreferenceSchema.safeParse(cliSourcePreference);
+    const providerCliSourcePreference = parsedCliSourcePreference.success
+        ? parsedCliSourcePreference.data
+        : providerTargetKey && agentCli ? agentCli.executable.sourcePreference : 'system-first';
     const setProviderCliSourcePreference = (next: 'system-first' | 'managed-first') => {
         if (!providerTargetKey || !accountSettingsAvailable) return;
         applySettings({
@@ -799,7 +805,7 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
     ], [setupGuideUrl, signInGuideUrl]);
 
     const main = (
-        <ItemList presentation="page">
+        <ItemList>
             <AgentMachineContextBar targetSelection={targetSelection} />
             <AgentDetailHeader
                 projection={projection}

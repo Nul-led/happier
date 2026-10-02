@@ -46,6 +46,8 @@ export type WorkflowRunNowRequest = Readonly<{
     metadata?: WorkflowRunStartRequestV1['metadata'];
     /** Declared-input values collected by the input sheet, in the Protocol shape. */
     inputs?: WorkflowRunStartRequestV1['inputs'];
+    /** Reviewed run-layer overrides; admission resolves and freezes them. */
+    roleOverrides?: WorkflowRunStartRequestV1['roleOverrides'];
     /**
      * Run-wide runtime choice. Session is the protocol default and is omitted
      * on the wire so older/current callers retain the same canonical shape.
@@ -81,6 +83,7 @@ async function startWorkflowRun(request: WorkflowRunNowRequest): Promise<Workflo
         source: request.source,
         ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
         ...(request.inputs === undefined ? {} : { inputs: request.inputs }),
+        ...(request.roleOverrides === undefined ? {} : { roleOverrides: request.roleOverrides }),
         ...(request.executionTarget === undefined || request.executionTarget.kind === 'session'
             ? {}
             : { executionTarget: request.executionTarget }),

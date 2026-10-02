@@ -9,6 +9,8 @@ import { IconButton } from '@/components/ui/buttons/IconButton';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { FieldValueItem } from '@/components/ui/forms/FieldValueItem';
+import { FieldItem } from '@/components/ui/forms/FieldItem';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
 import { Switch } from '@/components/ui/forms/Switch';
 import { Icon } from '@/components/ui/icons/Icon';
 import { PageHeaderMarkTile } from '@/components/ui/layout/PageHeaderEntityParts';
@@ -45,7 +47,7 @@ import {
     type QualifiedConnectedAccountUiGroup,
     type QualifiedConnectedAccountUiGroupMember,
 } from '@/sync/domains/connectedServices/qualifiedConnectedAccountUiSource';
-import { reorderConnectedServicePoolMembersV1 } from '@happier-dev/protocol';
+import { reorderConnectedServicePoolMembersV1, sameQualifiedConnectedAccountGroupRef } from '@happier-dev/protocol';
 import {
     presentQualifiedConnectedAccountTarget,
     type QualifiedConnectedAccountPresentationAccount,
@@ -443,20 +445,18 @@ export const QualifiedPoolDetailView = React.memo(function QualifiedPoolDetailVi
         await mutations.patch({ group, policy });
     }, [fallbackControlsEnabled, group, mutations]);
 
-    const rename = React.useCallback(async () => {
-        const next = await Modal.prompt(
-            t('connectedServices.detail.groupDetail.nameTitle'),
-            t('connectedServices.detail.groupDetail.namePromptBody'),
-            {
-                placeholder: t('connectedServices.detail.groupActions.displayNamePlaceholder'),
-                defaultValue: group.displayName?.trim() ?? '',
-                confirmText: t('common.save'),
-                cancelText: t('common.cancel'),
-            },
-        );
-        if (typeof next !== 'string') return;
-        await mutations.patch({ group, displayName: next.trim() || null });
-    }, [group, mutations]);
+    const [nameDraftState, setNameDraft] = React.useState<Readonly<{ ref: QualifiedConnectedAccountUiGroup['ref']; value: string }> | null>(null);
+    const nameDraft = nameDraftState && sameQualifiedConnectedAccountGroupRef(nameDraftState.ref, group.ref)
+        ? nameDraftState.value
+        : null;
+    if (nameDraftState && nameDraft === null) setNameDraft(null);
+    const rename = React.useCallback(() => {
+        if (!mutations.mutating) setNameDraft({ ref: group.ref, value: group.displayName?.trim() ?? '' });
+    }, [group.displayName, mutations.mutating]);
+    const saveName = React.useCallback(async () => {
+        if (nameDraft === null || mutations.mutating) return;
+        if (await mutations.patch({ group, displayName: nameDraft.trim() || null })) setNameDraft(null);
+    }, [group, mutations, nameDraft]);
 
     const setMemberEnabled = React.useCallback((account: QualifiedConnectedAccountRef, enabled: boolean) => {
         void mutations.patchMember({ group, account, enabled });
@@ -660,7 +660,7 @@ export const QualifiedPoolDetailView = React.memo(function QualifiedPoolDetailVi
     );
 
     return (
-        <ItemList testID={TEST_ID} presentation="page">
+        <ItemList testID={TEST_ID}>
             <SettingsPageHeader
                 testID={`${TEST_ID}:summary`}
                 title={label}
@@ -723,6 +723,21 @@ export const QualifiedPoolDetailView = React.memo(function QualifiedPoolDetailVi
                     </View>
                 )}
             />
+            {nameDraft !== null ? (
+                <ItemGroup>
+                    <SectionContentRow>
+                        <FieldItem label={t('connectedServices.detail.groupDetail.nameTitle')}>
+                            <FieldTextInput testID={`${TEST_ID}:name-field`} value={nameDraft} onChangeText={(value) => setNameDraft({ ref: group.ref, value })} editable={!mutations.mutating} accessibilityLabel={t('connectedServices.detail.groupDetail.nameTitle')} onSubmitEditing={() => { void saveName(); }} />
+                        </FieldItem>
+                    </SectionContentRow>
+                    <SectionContentRow>
+                        <View style={styles.headerActions}>
+                            <RoundButton testID={`${TEST_ID}:name-cancel`} size="small" display="secondary" title={t('common.cancel')} disabled={mutations.mutating} onPress={() => setNameDraft(null)} />
+                            <RoundButton testID={`${TEST_ID}:name-save`} size="small" title={t('common.save')} disabled={mutations.mutating} onPress={() => { void saveName(); }} />
+                        </View>
+                    </SectionContentRow>
+                </ItemGroup>
+            ) : null}
             {props.error ? (
                 <AttentionBanner testID={`${TEST_ID}:error`} title={t('common.error')} description={props.error} />
             ) : null}

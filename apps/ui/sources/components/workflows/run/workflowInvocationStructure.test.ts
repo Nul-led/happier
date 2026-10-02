@@ -184,24 +184,50 @@ describe('projectWorkflowInvocationStructure', () => {
     });
 
     it('refuses to guess which conditional branch ran when both are reachable at that ordinal', () => {
-        const definition = definitionOf([{
+        const definition = definitionOf([step('decide'), {
             kind: 'if',
             id: 'gate',
-            when: { kind: 'compare', operator: 'eq', left: { kind: 'literal', value: 1 }, right: { kind: 'literal', value: 1 } },
+            when: { kind: 'compare', operator: 'eq', left: { kind: 'result', producer: { blockId: 'decide' }, path: [] }, right: { kind: 'literal', value: 'apply' } },
             then: [step('apply')],
-            otherwise: [step('skipReport')],
+            otherwise: [{ kind: 'loop', id: 'checks',
+                repetition: { kind: 'items', items: { kind: 'literal', value: [] }, execution: 'parallel', failurePolicy: 'collect_outcomes' },
+                body: [step('check')],
+            }],
         }]);
+        // The identical public slot can be an executable leaf or a structural
+        // container. Even a complete index cannot supply an exact leaf total.
+        const invocations = [
+            root,
+            child({ id: 'decide', parentRecordId: 'root', memberOrdinal: '0', sequence: '1' }),
+            child({ id: 'gate', parentRecordId: 'root', memberOrdinal: '1', sequence: '2' }),
+            child({ id: 'selected', parentRecordId: 'gate', memberOrdinal: '0', sequence: '3' }),
+        ].map((invocation) => ({ ...invocation, lifecycle: 'completed' as const }));
         const structure = projectWorkflowInvocationStructure({
             definition,
-            invocations: [
-                root,
-                child({ id: 'gate', parentRecordId: 'root', memberOrdinal: '0', sequence: '1' }),
-                child({ id: 'selected', parentRecordId: 'gate', memberOrdinal: '0', sequence: '2' }),
-            ],
+            invocations,
         });
 
         expect(structure.get('gate')).toMatchObject({ nodeId: 'gate' });
         expect(structure.get('selected')).toMatchObject({ nodeId: null, blockId: null, coverageKind: 'unknown' });
+        expect(summarizeWorkflowInvocationCoverage(invocations, {
+            kindsByInvocationId: new Map([...structure].map(([id, entry]) => [id, entry.coverageKind])),
+            historyComplete: true,
+        })).toMatchObject({ coverage: 'partial', observedLeafCounts: { completed: 1 } });
+        // Both outcomes have exactly these public rows: the zero-item loop has
+        // no children. Only opened private progress tells whether a second
+        // executable step completed, so counting the public rows is wrong.
+        for (const [blockKind, blockId, completed] of [['step', 'apply', 2], ['loop', 'checks', 1]] as const) {
+            const opened: WorkflowProgressEnvelopeV1 = {
+                kind: 'happier.workflow-progress.v1', blockKind,
+                invocationPath: { blockId, scope: [] }, attempt: '0', logicalInvocationRecordId: 'selected',
+            };
+            const resolved = projectWorkflowInvocationStructure({ definition, invocations,
+                progressByInvocationId: new Map([['selected', opened]]) });
+            expect(summarizeWorkflowInvocationCoverage(invocations, {
+                kindsByInvocationId: new Map([...resolved].map(([id, entry]) => [id, entry.coverageKind])),
+                historyComplete: true,
+            })).toMatchObject({ coverage: 'complete', observedLeafCounts: { completed } });
+        }
     });
 
     it('prefers the authoritative opened path over derivation and uses it to resolve the ambiguous branch', () => {

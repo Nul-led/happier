@@ -22,6 +22,7 @@ import type { ProviderRuntimeStateStore } from '@/providers/runtimeState';
 import type { ResolvedProviderContribution } from '@/plugins/projection/registry/types';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
+import { createBrokerProviderRegistry } from '@/providers/broker/providerBroker.testkit';
 import { resolveProviderConnectionForMachine } from '@/providers/registry';
 import {
   resolveProviderProbeAuthorization,
@@ -115,7 +116,7 @@ describe('runtime provider model-management composition', () => {
         }],
         probes: [{ endpointTemplateId: 'chat', path: '/models', parser: 'openai-models' }],
       },
-      compatibilityOverrides: ['agent:happier.agent.codex/codex', 'agent:happier.agent.codex/codex'].map((agentTargetKey) => ({
+      compatibilityOverrides: ['agent:happier.agent.codex/codex'].map((agentTargetKey) => ({
         agentTargetKey, protocol: 'openai-chat' as const, status: 'verified' as const, reason: 'real integration',
         evidence: { sourceUrls: ['https://docs.example.test'], verifiedAt: '2026-07-11', testIds: ['real-session'] },
       })),
@@ -125,7 +126,10 @@ describe('runtime provider model-management composition', () => {
       identity: { pluginId: 'acme.gateway', localId: 'main' },
       definition,
     };
-    const registry = { providersByContributionKey: new Map([['acme.gateway/main', contribution]]) };
+    const registry = { providersByContributionKey: new Map([
+      ...createBrokerProviderRegistry().providersByContributionKey,
+      ['acme.gateway/main', contribution],
+    ]) };
     const preparedDefinition = ProviderContributionV1Schema.parse({
       ...definition,
       catalog: {
@@ -138,7 +142,9 @@ describe('runtime provider model-management composition', () => {
       },
     });
     const preparedRegistry = {
-      providersByContributionKey: new Map([['acme.gateway/main', {
+      providersByContributionKey: new Map([
+        ...createBrokerProviderRegistry().providersByContributionKey,
+        ['acme.gateway/main', {
         ...contribution,
         definition: preparedDefinition,
       } satisfies ResolvedProviderContribution]]),

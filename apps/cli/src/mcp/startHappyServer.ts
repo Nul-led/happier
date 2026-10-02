@@ -51,7 +51,7 @@ export type HappyMcpExecutionRunService = Readonly<{
     send: (request: unknown) => Promise<ExecutionRunServiceResult<unknown>>;
     stop: (request: unknown) => Promise<ExecutionRunServiceResult<unknown>>;
     action: (request: unknown) => Promise<ExecutionRunServiceResult<unknown>>;
-    wait?: (request: unknown) => Promise<ExecutionRunServiceResult<unknown> | WaitForExecutionRunResult>;
+    wait?: (request: unknown, options?: Readonly<{ signal?: AbortSignal }>) => Promise<ExecutionRunServiceResult<unknown> | WaitForExecutionRunResult>;
 }>;
 
 export type HappyMcpSessionClient = {
@@ -75,6 +75,8 @@ export type HappyMcpSessionClient = {
     /** Host-stamped Run caller, independent of confirmation/active-turn UI state. */
     getAgentStartRunCaller?(): import('@/session/actions/resolveCliAgentStartContextV1').AgentStartRunCallerBinding | null;
     getActiveTurnPermissionWitness?(): RuntimeActiveTurnPermissionWitness | null | undefined;
+    /** Full host admission identity for the existing authenticated daemon channel. */
+    getActiveTurnAdmissionWitness?(): import('@/plugins/runtime/invocation/services/types').AgentInvocationTurnAdmissionWitness | null;
     getRuntimeLifetimeSignal?(): AbortSignal | null | undefined;
     getServerFeaturesSnapshot?(): CliServerFeaturesSnapshot | undefined;
     getSessionActionConfirmationBinding?(): import('@/session/actions/approvals/sessionActionConfirmation').SessionActionConfirmationRuntimeBinding | null;

@@ -285,7 +285,7 @@ export function BrowserLaunchpad(props: Readonly<{
     const hasRows = resolvedRows.length > 0;
 
     return (
-        <ItemList
+        <ItemList presentation="grouped"
             testID={testID}
             style={stylesheet.list}
             containerStyle={stylesheet.listContent}

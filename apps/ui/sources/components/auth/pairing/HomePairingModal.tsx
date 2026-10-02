@@ -8,10 +8,14 @@ import { HomePairingPanel, type HomePairingPurpose } from './HomePairingPanel';
 /** Lab I5: the panel at its centred modal width. */
 const HOME_PAIRING_MODAL_WIDTH_PX = 460;
 
-function HomePairingModalContent(props: CustomModalInjectedProps & Readonly<{ purpose: HomePairingPurpose }>) {
+function HomePairingModalContent(props: CustomModalInjectedProps & Readonly<{
+    purpose: HomePairingPurpose;
+    targetProfileId?: string;
+}>) {
     return (
         <HomePairingPanel
             purpose={props.purpose}
+            targetProfileId={props.targetProfileId}
             layout="modal"
             testIDPrefix="home-pairing-modal"
             onClose={props.onClose}
@@ -23,10 +27,10 @@ function HomePairingModalContent(props: CustomModalInjectedProps & Readonly<{ pu
  * The pairing panel as a modal (lab I5), for entry points with no Get set up tile to grow: the page
  * stays where it is behind it. The code lives while the modal is open; closing it cancels the code.
  */
-export function showHomePairingModal(purpose: HomePairingPurpose = 'phone'): void {
+export function showHomePairingModal(purpose: HomePairingPurpose = 'phone', targetProfileId?: string): void {
     Modal.show({
         component: HomePairingModalContent,
-        props: { purpose },
+        props: { purpose, ...(targetProfileId ? { targetProfileId } : {}) },
         chrome: {
             kind: 'card',
             header: 'none',

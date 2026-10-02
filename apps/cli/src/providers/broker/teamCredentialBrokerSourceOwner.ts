@@ -1,5 +1,6 @@
 import type { ProviderBrokerApplicationBindingV1 } from '@happier-dev/protocol';
-import { projectCLIProxyAPIProviderConnectionApplication } from '@happier-dev/plugins-cliproxyapi';
+import { projectProviderConnectionBrokerApplication } from './providerConnectionCpxBridge';
+import type { ProviderContributionRegistryView } from '@/providers/registry';
 import type { ManagedServiceRequest } from '@happier-dev/plugin-sdk/managed-services';
 import {
   computeTeamCredentialSourceMemberKeyV1,
@@ -43,11 +44,14 @@ export function teamCredentialBrokerPlacementAcceptsMachine(
  * projection instead of repeating a Provider id.
  */
 export function isCLIProxyAPIBrokerApplication(
-  application: Pick<ProviderBrokerApplicationBindingV1, 'agentTargetKey' | 'protocol' | 'implementationIdentity'>,
+  registry: ProviderContributionRegistryView,
+  application: ProviderBrokerApplicationBindingV1,
 ): boolean {
-  const projected = projectCLIProxyAPIProviderConnectionApplication({
+  const projected = projectProviderConnectionBrokerApplication({
+    registry,
     agentTargetKey: application.agentTargetKey,
     protocol: application.protocol,
+    expectedApplication: application,
   });
   return projected !== null
     && projected.implementationIdentity.pluginId === application.implementationIdentity.pluginId

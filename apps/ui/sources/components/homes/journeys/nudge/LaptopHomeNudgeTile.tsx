@@ -12,28 +12,10 @@ import { happierPageTextMetrics } from '@happier-dev/plugin-ui/presentation';
 import { View } from 'react-native';
 import { useViewportClass } from '@/utils/platform/useViewportClass';
 import { StyleSheet } from 'react-native-unistyles';
+import type { LaptopHomeNudgeFacts } from './useLaptopHomeNudgeFacts';
 
 /**
- * What the laptop nudge needs to know, only once the problem has actually happened: the Personal
- * Home lives on a computer that sleeps (its host fact says `portable`), and the person's other devices
- * failed to reach it in the past week.
- *
- * Sources (`lanes/homes-capabilities.md`, both `planned`): #1 `HomeHostFact.mobility`, and the
- * missed-reach record — #4 `readRecentHomeReachFailures(homeIdentityId, nowMs)` — as the host learns it
- * from the devices that missed it. Until both answer, there is no nudge.
- */
-export type LaptopHomeNudgeFacts = Readonly<{
-    homeServerId: string;
-    homeName: string;
-    missedReachesThisWeek: number;
-}>;
-
-export function useLaptopHomeNudgeFacts(): LaptopHomeNudgeFacts | null {
-    return null;
-}
-
-/**
- * The laptop nudge (J6): the first Get set up item on the computer that hosts the Personal Home, only
+ * The reachability nudge (J6): the first Get set up item for the focused Home, only
  * after real missed reaches, naming them in numbers. Its two ways out are stacked at the end so the
  * explanation keeps the width: Move Home… (the existing relocation on the Home's Runtime page) above
  * Use <service> (J3), which appears only when the service is also a Home.
@@ -55,8 +37,8 @@ export function LaptopHomeNudgeTile(props: Readonly<{
             layout={narrow ? 'card' : 'wide'}
             accessibilityLabel={title}
             dismiss={props.onDismiss ? {
-                label: t('homeSetup.dismiss', { title }),
-                tooltip: t('homeSetup.dismissTooltip'),
+                label: t('homesJourneys.nudgeDismiss'),
+                tooltip: t('homesJourneys.nudgeDismiss'),
                 onPress: props.onDismiss,
             } : undefined}
         >

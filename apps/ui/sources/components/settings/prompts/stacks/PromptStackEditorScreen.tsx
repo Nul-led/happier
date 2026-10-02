@@ -130,7 +130,7 @@ export const PromptStackEditorScreen = React.memo((props: Readonly<{
       : t('promptLibrary.surface.profileStackEditorDescription');
 
   return (
-    <ItemList presentation="page">
+    <ItemList>
       <SettingsPageHeader title={props.title} description={description} />
       <ItemGroup
         title={t('promptLibrary.stackEntries')}

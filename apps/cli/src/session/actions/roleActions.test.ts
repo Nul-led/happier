@@ -74,7 +74,7 @@ describe('role Action effects', () => {
           set: async () => { throw new Error('Unexpected access grant set'); },
           remove: async () => { throw new Error('Unexpected access grant remove'); },
         },
-        read: async (artifactId) => ({ artifactId, header: { kind: 'role.v1' }, body: JSON.stringify(BUILT_IN_ROLES_V1.builder),
+        read: async (artifactId) => ({ artifactId, ownerAccountId: 'account-1', access: 'owner', header: { kind: 'role.v1' }, body: JSON.stringify(BUILT_IN_ROLES_V1.builder),
           revision: { headerVersion: 2, bodyVersion: 4 }, seq: 1, createdAt: 1, updatedAt: 1 }),
         create: async () => { throw new Error('Unexpected create'); }, update: async () => { throw new Error('Unexpected update'); },
         delete: async (artifactId, options) => {
@@ -160,8 +160,8 @@ describe('role Action effects', () => {
         set: async () => { throw new Error('Unexpected access grant set'); },
         remove: async () => { throw new Error('Unexpected access grant remove'); },
       },
-      list: async () => ({ items: [{ artifactId: 'shared-role', header: { kind: 'role.v1' }, access: 'view', headerVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 }] }),
-      read: async () => ({ artifactId: 'shared-role', header: { kind: 'role.v1', migratedFromV0_2: true }, body: JSON.stringify(role), revision: { headerVersion: 1, bodyVersion: 1 }, seq: 1, createdAt: 1, updatedAt: 1 }),
+      list: async () => ({ items: [{ artifactId: 'shared-role', ownerAccountId: 'other-account', header: { kind: 'role.v1' }, access: 'view', headerVersion: 1, seq: 1, createdAt: 1, updatedAt: 1 }] }),
+      read: async () => ({ artifactId: 'shared-role', ownerAccountId: 'other-account', access: 'view', header: { kind: 'role.v1', migratedFromV0_2: true }, body: JSON.stringify(role), revision: { headerVersion: 1, bodyVersion: 1 }, seq: 1, createdAt: 1, updatedAt: 1 }),
       create: async () => { throw new Error('Unexpected create'); }, update: async () => { throw new Error('Unexpected update'); }, delete: async () => { throw new Error('Unexpected delete'); },
     } });
     expect(await execute({ actionId: 'roles.list', input: {}, context: { surface: 'ui', authority: 'present_user' } })).toMatchObject({ items: expect.arrayContaining([{ roleId: 'shared-role', role, revision: { headerVersion: 1, bodyVersion: 1 }, shared: true, viewOnly: true, migratedFromV0_2: true }]) });
@@ -191,7 +191,7 @@ describe('role Action effects', () => {
           remove: async () => { throw new Error('Unexpected access grant remove'); },
         },
         list: async () => ({ items: [] }),
-        read: async (artifactId) => { const artifact = artifacts.get(artifactId); return artifact ? { artifactId, ...artifact, revision: { headerVersion: 1, bodyVersion: 1 }, seq: 1, createdAt: 1, updatedAt: 1 } : null; },
+        read: async (artifactId) => { const artifact = artifacts.get(artifactId); return artifact ? { artifactId, ...artifact, ownerAccountId: 'account-1', access: 'owner', revision: { headerVersion: 1, bodyVersion: 1 }, seq: 1, createdAt: 1, updatedAt: 1 } : null; },
         create: async ({ artifactId, header, body }) => { if (!artifactId) throw new Error('Missing id'); artifacts.set(artifactId, { header, body }); return { artifactId, revision: { headerVersion: 1, bodyVersion: 1 } }; },
         update: async () => { throw new Error('Unexpected update'); }, delete: async () => { throw new Error('Unexpected delete'); },
       },

@@ -77,6 +77,7 @@ import { BrowserPluginSurfacePlacements } from './BrowserPluginSurfacePlacements
 import { BrowserSurfaceFallback, type BrowserSurfaceUnavailableReason } from './BrowserSurfaceFallback';
 import { BrowserKeepAliveBinder } from './browserPresentationRetention';
 import { useOptionalCurrentUiContextReader } from '@/components/appShell/currentUiContext/CurrentUiContextProvider';
+import { useHostActivelyViewed } from '@/utils/runtime/useHostActivelyViewed';
 
 type BrowserSurfaceState = Readonly<{
     browserState: BrowserControlState;
@@ -395,11 +396,12 @@ export function BrowserSurfaceHost(props: Readonly<{
     // knows which session this surface belongs to.
     // The agent's own browser (a daemon-owned view) is shown as its live stream: the daemon's
     // discovery names the capture source, the shared relay owner opens it.
+    const hostActivelyViewed = useHostActivelyViewed();
     const streamedBrowserRuntime = useBrowserStreamedSurfaceRuntime({
         view: focusedView ?? null,
         browserSessionId: presenceSessionId,
         refreshKey: discoveryRefreshKey,
-        enabled: policy.browserEnabled && policy.viewTargetsEnabled && props.visible !== false,
+        enabled: policy.browserEnabled && policy.viewTargetsEnabled && props.visible !== false && hostActivelyViewed,
         machineId: props.pluginBrowserActionContext?.machineId,
         serverId: props.pluginBrowserActionContext?.serverId,
         onBrowserEvent: receiveBrowserEvent,
@@ -550,7 +552,8 @@ export function BrowserSurfaceHost(props: Readonly<{
 
     React.useEffect(() => {
         const machineId = props.pluginBrowserActionContext?.machineId?.trim();
-        if (!machineId || !focusedView || !runtimeAutomationAdapter || unavailableReason
+        const sessionId = props.pluginBrowserActionContext?.sessionId?.trim();
+        if (!machineId || !sessionId || !focusedView || !runtimeAutomationAdapter || unavailableReason
             || policy.automationEnabled !== true
             || (focusedView.engineKind !== 'webIframe' && focusedView.engineKind !== 'nativeWebView'
                 && focusedView.engineKind !== 'desktopWebView')) return;
@@ -558,7 +561,7 @@ export function BrowserSurfaceHost(props: Readonly<{
         const serverId = props.pluginBrowserActionContext?.serverId;
         // An explicitly Home-bound pane must never advertise its room on another Home's socket.
         if (serverId && (!lifetime || !areServerProfileIdentifiersEquivalent(serverId, lifetime.scope.serverId))) return;
-        const view = { browserSessionId: focusedView.browserSessionId, viewId: focusedView.viewId };
+        const view = { browserSessionId: focusedView.browserSessionId, viewId: focusedView.viewId, sessionId };
         let disposed = false;
         let unregister: (() => void) | undefined;
         const retirement = lifetime?.onRetire(() => {
@@ -577,7 +580,8 @@ export function BrowserSurfaceHost(props: Readonly<{
         };
     }, [focusedView?.browserSessionId, focusedView?.viewId, focusedView?.engineKind,
         policy.automationEnabled, props.pluginBrowserActionContext?.machineId,
-        props.pluginBrowserActionContext?.serverId, runtimeAutomationAdapter, unavailableReason]);
+        props.pluginBrowserActionContext?.serverId, props.pluginBrowserActionContext?.sessionId,
+        runtimeAutomationAdapter, unavailableReason]);
 
     const onCommand = React.useCallback((command: BrowserCommandV1) => {
         setSurfaceState((current) => {

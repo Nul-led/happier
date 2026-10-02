@@ -97,7 +97,7 @@ function PluginDetailCurrentContent(props: Readonly<{
         }] : []),
     ];
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             {/*
               * Two different facts, both true at once: the plugin EXECUTES on the
               * origin chosen under "Run on", while its settings, secrets and
@@ -273,7 +273,7 @@ export const PluginDetailView = React.memo(function PluginDetailView(props: Read
 
     if (!installed && !projection && !accountRecoveryPluginId && !state.pluginTruthSettled) {
         return state.readOnlySnapshotNotice ? (
-            <ItemList style={{ paddingTop: 0 }} presentation="page">
+            <ItemList style={{ paddingTop: 0 }}>
                 <PluginReadOnlySnapshotNotice
                     testID="settings.plugins.detail.readOnlySnapshot"
                     reason={state.readOnlySnapshotNotice.reason}
@@ -296,7 +296,7 @@ export const PluginDetailView = React.memo(function PluginDetailView(props: Read
          * selected machine, choose a different one, or go back.
          */
         return (
-            <ItemList style={{ paddingTop: 0 }} presentation="page">
+            <ItemList style={{ paddingTop: 0 }}>
                 {props.presentation === 'page' ? (
                     <MachineAdministrationContextBar
                         label={t('settingsPlugins.administrationMachineTitle')}
@@ -345,7 +345,7 @@ export const PluginDetailView = React.memo(function PluginDetailView(props: Read
     const recoveryPluginId = accountRecoveryPluginId;
     if (!recoveryPluginId) return <Redirect href={buildPluginsHomeRoute(host)} />;
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             <PluginDetailRecoveryHeader
                 pluginId={recoveryPluginId}
                 title={headerTitle}

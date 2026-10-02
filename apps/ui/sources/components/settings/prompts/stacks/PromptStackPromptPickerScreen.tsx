@@ -84,7 +84,7 @@ export const PromptStackPromptPickerScreen = React.memo((props: Readonly<{
   }, [router]);
 
   return (
-    <ItemList presentation="page">
+    <ItemList>
       <SettingsPageHeader description={t('promptLibrary.surface.stackPickerDescription')} />
       <ItemGroup
         title={t('promptLibrary.prompts')}

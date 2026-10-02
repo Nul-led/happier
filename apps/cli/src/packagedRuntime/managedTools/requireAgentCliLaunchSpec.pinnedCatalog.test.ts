@@ -40,7 +40,7 @@ describe('Agent CLI resolution from the admitted catalog', () => {
     } satisfies ResolvedExecutablePluginRuntimeRegistry;
     await pluginReloadController.adoptPreparedRuntimeRegistry({
       registry: currentRegistry, changedPluginIds: [], isDevelopmentCandidateCurrent: () => true,
-      runningSessionDisposition: 'keepRunningSessions',
+      runningSessionDisposition: 'retainRunningSessions',
     });
   });
   afterAll(async () => { await pluginReloadController.shutdown(); });

@@ -112,7 +112,7 @@ export const McpDetectedServersScreen = React.memo(function McpDetectedServersSc
 
     const executionTarget = resolveExactExecutionTarget(selectedTarget);
     return (
-        <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+        <ItemList keyboardShouldPersistTaps="handled">
             <SettingsPageHeader
                 description={t('mcpSettings.onMachinePurpose')}
                 actions={(

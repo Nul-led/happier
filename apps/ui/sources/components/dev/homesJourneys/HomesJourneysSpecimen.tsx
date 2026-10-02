@@ -22,7 +22,7 @@ import { Typography } from '@/constants/Typography';
  * so each frame can be compared side by side with the lab on a stack where the journey is not
  * reachable (a browser is never offered "Already use Happier?", which needs a computer that can run a
  * Personal Home). The service is this device's real sign-in service; the Homes in J2 are this
- * device's real saved Homes. The only illustration is J6's miss count, whose owner has not landed.
+ * device's real saved Homes. J6 uses an illustrative miss count for this visual specimen.
  * `?only=K1|K1a|K1b|K1c|K1p|J2|J3|J4|J6|label` renders one frame.
  */
 const FRAMES = ['label', 'K1', 'K1a', 'K1b', 'K1c', 'K1p', 'J2', 'J3', 'J4', 'J6'] as const;
@@ -94,7 +94,7 @@ function FrameBody(props: Readonly<{ frame: Frame }>) {
         case 'J6':
             return (
                 <LaptopHomeNudgeTile
-                    facts={{ homeServerId: 'personal', homeName: 'Personal Home', missedReachesThisWeek: 3 }}
+                    facts={{ homeServerId: 'personal', homeIdentityId: 'srv_personal', missedReachesThisWeek: 3 }}
                     serviceName={service.name}
                     onMoveHome={noop}
                     onUseService={noop}

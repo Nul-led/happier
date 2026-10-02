@@ -375,7 +375,7 @@ export const PromptAssetExportScreen = React.memo((props: Readonly<{
   const exportDisabled = busy || !artifactState || !executionTarget || !currentType || targetInput.trim().length === 0 || (scope === 'project' && !resolveProjectDirectory(workspacePath));
 
   return (
-    <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+    <ItemList keyboardShouldPersistTaps="handled">
       <PageHeader
         testID="promptAssetExport.header"
         alwaysShowTitle

@@ -53,13 +53,6 @@ vi.mock('@/sync/http/client', () => ({
 vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
     runtimeFetchWithServerReachability: runtimeFetchMock,
 }));
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')>(),
-    // Artifact protocol compatibility is covered by its owner tests. This client
-    // test keeps the real approval artifact path while isolating the independent
-    // server-capability probe boundary.
-    requireCurrentAccountStoredContentServerCompatibility: vi.fn(async () => undefined),
-}));
 vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
     const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
     return createTokenStorageModuleMock({

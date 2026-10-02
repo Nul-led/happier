@@ -35,7 +35,7 @@ const RoleCollectionLanding = React.memo(function RoleCollectionLanding() {
     });
     if (!landingId) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <SurfaceStateCard
                     testID="settings.roles.landing"
                     kind={catalog.status === 'failed' ? 'error' : 'loading'}
@@ -56,7 +56,7 @@ const RoleCollectionPage = React.memo(function RoleCollectionPage() {
     const describe = useDescribeRoleRow();
     const groups = groupRoleCatalog(catalog.entries, '');
     return (
-        <ItemList presentation="page" testID="settings.roles.page">
+        <ItemList testID="settings.roles.page">
             <SettingsPageHeader description={t('roles.settings.description')} />
             {groups.map((group) => (
                 <ItemGroup key={group.id} title={group.title}>

@@ -5,17 +5,41 @@ import { PromptBundleBodyV1Schema, PromptDocBodyV1Schema } from '@happier-dev/pr
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
+import { FieldTextInput } from '@/components/ui/forms/FieldTextInput';
+import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import { SectionActionButton } from '@/components/ui/lists/SectionActionButton';
 import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 import { Modal } from '@/modal';
-import { randomUUID } from '@/platform/randomUUID';
 import { sync } from '@/sync/sync';
 import { storage, useArtifacts, useSettingMutable } from '@/sync/domains/state/storage';
 import { updateSkillPromptBundle, readSkillMarkdownFromPromptBundleBody } from '@/sync/ops/promptLibrary/promptBundles';
 import { updatePromptDoc } from '@/sync/ops/promptLibrary/promptDocs';
-import { normalizePromptFolderName, removePromptFolder, renamePromptFolder } from '@/sync/ops/promptLibrary/promptFolders';
+import { ensurePromptFolderByName, normalizePromptFolderName, removePromptFolder, renamePromptFolder } from '@/sync/ops/promptLibrary/promptFolders';
 import { t } from '@/text';
+import { useNavigation } from '@/components/appShell/workspace/destinationRoute';
+import { useUnsavedDraftNavigationGuard } from '@/utils/navigation/useUnsavedDraftNavigationGuard';
+import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
+import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
+
+function FolderNameEditor(props: Readonly<{ name: string; onSave: (name: string) => void; onCancel: () => void }>) {
+  const navigation = useNavigation();
+  const [name, setName] = React.useState(props.name);
+  useUnsavedDraftNavigationGuard({ navigation, isDirty: name !== props.name, onDiscard: props.onCancel, tag: 'prompt-folder-draft' });
+  return <>
+    <Item title={t('promptLibrary.folderLabel')} showChevron={false} accessoryLayout="adaptive"
+      rightElement={<FieldTextInput testID="promptFolders.draft.name" accessibilityLabel={t('promptLibrary.folderLabel')}
+        placeholder={t('promptLibrary.folderPlaceholder')} value={name} onChangeText={setName} autoCapitalize="sentences" autoFocus />} />
+    <SectionContentRow><SectionButtonRow>
+      <RoundButton testID="promptFolders.draft.save" size="small" title={t('common.save')}
+        disabled={!normalizePromptFolderName(name)} onPress={() => props.onSave(name)} />
+      <RoundButton testID="promptFolders.draft.cancel" size="small" display="secondary" title={t('common.cancel')} onPress={props.onCancel} />
+    </SectionButtonRow></SectionContentRow>
+  </>;
+}
 
 /**
  * `/settings/prompts/folders`: the folders prompts and skills are filed in, each with how many items
@@ -24,6 +48,9 @@ import { t } from '@/text';
 export const PromptFoldersScreen = React.memo(function PromptFoldersScreen() {
   const artifacts = useArtifacts();
   const [promptFoldersV1, setPromptFoldersV1] = useSettingMutable('promptFoldersV1');
+  const [editingFolderId, setEditingFolderId] = React.useState<string | null>(null);
+  const scope = useAccountSettingsScope();
+  React.useEffect(() => { setEditingFolderId(null); }, [scope?.accountId, scope?.serverId]);
 
   const folders = React.useMemo(() => (
     (promptFoldersV1?.folders ?? []).slice().sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }))
@@ -39,23 +66,19 @@ export const PromptFoldersScreen = React.memo(function PromptFoldersScreen() {
     return counts;
   }, [artifacts]);
 
-  const addFolder = React.useCallback(async () => {
-    const raw = await Modal.prompt(t('promptLibrary.addFolder'), t('promptLibrary.addFolderSubtitle'));
-    const name = normalizePromptFolderName(String(raw ?? ''));
-    if (!name) return;
-    const exists = folders.some((folder) => folder.name.toLocaleLowerCase() === name.toLocaleLowerCase());
-    if (exists) return;
-    setPromptFoldersV1({
-      v: 1,
-      folders: [...folders, { id: randomUUID(), name, parentId: null }],
-    });
-  }, [folders, setPromptFoldersV1]);
+  const addFolder = React.useCallback((raw: string) => {
+    const next = ensurePromptFolderByName(promptFoldersV1, raw);
+    if (!next.folderId || next.promptFoldersV1 === promptFoldersV1) return;
+    setPromptFoldersV1(next.promptFoldersV1);
+    setEditingFolderId(null);
+  }, [promptFoldersV1, setPromptFoldersV1]);
 
-  const renameFolderAction = React.useCallback(async (folderId: string, currentName: string) => {
-    const raw = await Modal.prompt(t('promptLibrary.renameFolder'), undefined, { defaultValue: currentName });
-    const nextName = normalizePromptFolderName(String(raw ?? ''));
-    if (!nextName || nextName === currentName) return;
+  const renameFolderAction = React.useCallback((folderId: string, currentName: string, raw: string) => {
+    const nextName = normalizePromptFolderName(raw);
+    if (!nextName) return;
+    if (nextName === currentName) { setEditingFolderId(null); return; }
     setPromptFoldersV1(renamePromptFolder(promptFoldersV1, folderId, nextName));
+    setEditingFolderId(null);
   }, [promptFoldersV1, setPromptFoldersV1]);
 
   const deleteFolderAction = React.useCallback(async (folderId: string) => {
@@ -125,7 +148,7 @@ export const PromptFoldersScreen = React.memo(function PromptFoldersScreen() {
   }, [artifacts, promptFoldersV1, setPromptFoldersV1]);
 
   return (
-    <ItemList presentation="page">
+    <ItemList>
       <SettingsPageHeader description={t('promptLibrary.surface.foldersPageDescription')} />
       <ItemGroup
         title={t('promptLibrary.folders')}
@@ -135,13 +158,18 @@ export const PromptFoldersScreen = React.memo(function PromptFoldersScreen() {
             testID="promptFolders.add"
             title={t('promptLibrary.addFolder')}
             icon="plus"
-            onPress={() => { void addFolder(); }}
+            onPress={() => { void runGuardedNavigation(() => setEditingFolderId('new')); }}
           />
         )}
       >
+        {editingFolderId === 'new' ? <ExpandableItem expanded onExpandedChange={(next) => { if (!next) void runGuardedNavigation(() => setEditingFolderId(null)); }}
+          header={({ headerProps }) => <Item {...headerProps} title={t('promptLibrary.addFolder')} subtitle={t('promptLibrary.addFolderSubtitle')} />}>
+          <FolderNameEditor name="" onSave={addFolder} onCancel={() => setEditingFolderId(null)} />
+        </ExpandableItem> : null}
         {folders.length > 0 ? folders.map((folder) => (
+          <ExpandableItem key={folder.id} expanded={editingFolderId === folder.id} onExpandedChange={(next) => { void runGuardedNavigation(() => setEditingFolderId(next ? folder.id : null)); }}
+            header={() => (
           <Item
-            key={folder.id}
             testID={`promptFolders.entry.${folder.id}`}
             title={folder.name}
             subtitle={t('promptLibrary.folderUsageCount', { count: usageCountByFolderId.get(folder.id) ?? 0 })}
@@ -155,7 +183,7 @@ export const PromptFoldersScreen = React.memo(function PromptFoldersScreen() {
                     id: 'rename',
                     title: t('promptLibrary.renameFolder'),
                     icon: 'pencil',
-                    onPress: () => { void renameFolderAction(folder.id, folder.name); },
+                    onPress: () => { void runGuardedNavigation(() => setEditingFolderId(folder.id)); },
                   },
                   {
                     id: 'delete',
@@ -168,6 +196,10 @@ export const PromptFoldersScreen = React.memo(function PromptFoldersScreen() {
               />
             )}
           />
+            )}>
+            {editingFolderId === folder.id ? <FolderNameEditor name={folder.name}
+              onSave={(name) => renameFolderAction(folder.id, folder.name, name)} onCancel={() => setEditingFolderId(null)} /> : null}
+          </ExpandableItem>
         )) : (
           <Item
             testID="promptFolders.empty"

@@ -10,8 +10,8 @@ import { resolveAgentSessionStartBlock } from './machineAgentPresentation';
 export const AgentSessionStartBlocker = React.memo(function AgentSessionStartBlocker(props: Readonly<{
     agent: MachineAgent | null;
     machineName: string;
-    /** Opens the agent's setup (the engine popover's form, or the machine's Agents section). */
-    onSetUp: (agent: MachineAgent) => void;
+    /** Omitted while the consumer's setup destination is unresolved; keep the blocker visible. */
+    onSetUp?: (agent: MachineAgent) => void;
 }>) {
     const block = resolveAgentSessionStartBlock(props.agent);
     if (!block || !props.agent) return null;
@@ -26,7 +26,8 @@ export const AgentSessionStartBlocker = React.memo(function AgentSessionStartBlo
             description={block === 'notInstalled' ? t('machineAgents.blockSetUpToStart') : undefined}
             action={{
                 label: block === 'notInstalled' ? t('machineAgents.setUp') : t('machineAgents.actionSignIn'),
-                onPress: () => props.onSetUp(agent),
+                onPress: () => props.onSetUp?.(agent),
+                disabled: !props.onSetUp,
                 testID: 'new-session-agent-blocker.action',
             }}
         />

@@ -42,7 +42,7 @@ const McpCollectionLanding = React.memo(function McpCollectionLanding() {
     if (landingId) return <Redirect href={mcpServerRoute(landingId) as never} />;
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <EmptyState
                 testID="settings.mcpServers.invitation"
                 layout="page"

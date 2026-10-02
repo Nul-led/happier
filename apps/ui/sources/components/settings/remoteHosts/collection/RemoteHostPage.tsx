@@ -39,7 +39,7 @@ export const RemoteHostPage = React.memo(function RemoteHostPage(props: Readonly
     const host = props.hostId ? collection.hosts.find((entry) => entry.id === props.hostId) ?? null : null;
     if (props.hostId && !host) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <PageHeader
                     testID="settings.remoteHosts.host.header"
                     alwaysShowTitle
@@ -127,7 +127,7 @@ const RemoteHostEditorPage = React.memo(function RemoteHostEditorPage(props: Rea
     const hostTunnels = host ? collection.activeRemoteHostSshTunnels.filter((tunnel) => tunnel.remoteHostId === host.id) : [];
 
     return (
-        <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+        <ItemList keyboardShouldPersistTaps="handled">
             <PageHeader
                 testID="settings.remoteHosts.host.header"
                 alwaysShowTitle

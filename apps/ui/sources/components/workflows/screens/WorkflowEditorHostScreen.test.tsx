@@ -55,7 +55,7 @@ function storeReviewedCopyFixture(): string {
         acceptedContext: {
             source: { kind: 'inline' }, machineId: 'machine-1', origin: { kind: 'direct' },
             metadata: { title: 'Accepted title', description: 'Accepted description' },
-            inputs: { topic: 'Private accepted input' }, executionTarget: { kind: 'session' },
+            inputs: { topic: 'Private accepted input' }, executionTarget: { kind: 'session' }, materializedLeaves: [],
             workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo/project', checkoutRootPath: '/repo/project' } },
         },
     }));
@@ -545,7 +545,7 @@ describe('WorkflowEditorHostScreen composition', () => {
                 run: createWorkflowRunSummaryFixture(), definition: createWorkflowDefinitionFixture(),
                 acceptedContext: {
                     source: { kind: 'inline' }, machineId: 'machine-1', origin: { kind: 'direct' },
-                    inputs: {}, executionTarget: { kind: 'session' },
+                    inputs: {}, executionTarget: { kind: 'session' }, materializedLeaves: [],
                     workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo/project', checkoutRootPath: '/repo/project' } },
                 },
             }));

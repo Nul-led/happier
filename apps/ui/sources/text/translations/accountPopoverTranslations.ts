@@ -29,6 +29,7 @@ type AccountPopoverTranslation = Readonly<{
     allHomesSubtitle: (params: Readonly<{ count: number }>) => string;
     /** The row that opens "Add a Home". */
     addHome: string;
+    addDevice: string;
 }>;
 
 export const accountPopoverTranslations = {
@@ -53,6 +54,7 @@ export const accountPopoverTranslations = {
         allHomes: 'All Homes',
         allHomesSubtitle: ({ count }) => `${count} Homes · one list`,
         addHome: 'Add a Home…',
+        addDevice: 'Add a device',
     },
     ca: {
         pageTitle: 'Compte i Homes',
@@ -75,6 +77,7 @@ export const accountPopoverTranslations = {
         allHomes: 'Totes les Homes',
         allHomesSubtitle: ({ count }) => `${count} Homes · una sola llista`,
         addHome: 'Afegeix una Home…',
+        addDevice: 'Afegeix un dispositiu',
     },
     de: {
         pageTitle: 'Konto & Homes',
@@ -97,6 +100,7 @@ export const accountPopoverTranslations = {
         allHomes: 'Alle Homes',
         allHomesSubtitle: ({ count }) => `${count} Homes · eine Liste`,
         addHome: 'Home hinzufügen…',
+        addDevice: 'Gerät hinzufügen',
     },
     es: {
         pageTitle: 'Cuenta y Homes',
@@ -119,6 +123,7 @@ export const accountPopoverTranslations = {
         allHomes: 'Todos los Homes',
         allHomesSubtitle: ({ count }) => `${count} Homes · una sola lista`,
         addHome: 'Añadir un Home…',
+        addDevice: 'Añadir un dispositivo',
     },
     fr: {
         pageTitle: 'Compte et Homes',
@@ -141,6 +146,7 @@ export const accountPopoverTranslations = {
         allHomes: 'Tous les Homes',
         allHomesSubtitle: ({ count }) => `${count} Homes · une seule liste`,
         addHome: 'Ajouter un Home…',
+        addDevice: 'Ajouter un appareil',
     },
     it: {
         pageTitle: 'Account e Home',
@@ -163,6 +169,7 @@ export const accountPopoverTranslations = {
         allHomes: 'Tutte le Home',
         allHomesSubtitle: ({ count }) => `${count} Home · un unico elenco`,
         addHome: 'Aggiungi una Home…',
+        addDevice: 'Aggiungi un dispositivo',
     },
     ja: {
         pageTitle: 'アカウントと Home',
@@ -185,6 +192,7 @@ export const accountPopoverTranslations = {
         allHomes: 'すべての Home',
         allHomesSubtitle: ({ count }) => `${count} 件の Home · 1 つのリスト`,
         addHome: 'Home を追加…',
+        addDevice: 'デバイスを追加',
     },
     pl: {
         pageTitle: 'Konto i Home',
@@ -207,6 +215,7 @@ export const accountPopoverTranslations = {
         allHomes: 'Wszystkie Home',
         allHomesSubtitle: ({ count }) => `${count} Home · jedna lista`,
         addHome: 'Dodaj Home…',
+        addDevice: 'Dodaj urządzenie',
     },
     pt: {
         pageTitle: 'Conta e Homes',
@@ -229,6 +238,7 @@ export const accountPopoverTranslations = {
         allHomes: 'Todos os Homes',
         allHomesSubtitle: ({ count }) => `${count} Homes · uma só lista`,
         addHome: 'Adicionar um Home…',
+        addDevice: 'Adicionar um dispositivo',
     },
     ru: {
         pageTitle: 'Аккаунт и Home',
@@ -251,6 +261,7 @@ export const accountPopoverTranslations = {
         allHomes: 'Все Home',
         allHomesSubtitle: ({ count }) => `${count} Home · один список`,
         addHome: 'Добавить Home…',
+        addDevice: 'Добавить устройство',
     },
     'zh-Hans': {
         pageTitle: '账户与 Home',
@@ -273,6 +284,7 @@ export const accountPopoverTranslations = {
         allHomes: '全部 Home',
         allHomesSubtitle: ({ count }) => `${count} 个 Home · 一个列表`,
         addHome: '添加 Home…',
+        addDevice: '添加设备',
     },
     'zh-Hant': {
         pageTitle: '帳戶與 Home',
@@ -295,5 +307,6 @@ export const accountPopoverTranslations = {
         allHomes: '全部 Home',
         allHomesSubtitle: ({ count }) => `${count} 個 Home · 一個清單`,
         addHome: '新增 Home…',
+        addDevice: '新增裝置',
     },
 } as const satisfies Record<string, AccountPopoverTranslation>;

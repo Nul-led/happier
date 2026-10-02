@@ -1,13 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import {
-  BUILT_IN_ROLES_V1,
+  createAccountRoleActionExecutorV1,
   RoleActionInputSchemasV1,
   readSessionRolesV1,
   writeSessionRoleIdV1ToMetadata,
   writeSessionRoleConfigurationV1ToMetadata,
   SessionRoleConfigurationV1Schema,
-  RolesV1Schema,
-  saveRolesV1WithLegacyMigration,
   resolveRoleSelectionV1,
   snapshotSessionRolesAtSpawnV1,
   type ActionExecutorDeps,
@@ -22,10 +20,8 @@ import { createRoleSourceReader, type RoleSourceReader } from '@/session/roles/r
 import type { createAccountArtifactStore } from '@/api/artifacts/accountArtifactStore';
 import type { RegisteredSessionStateFieldMutationV1 } from '@/api/session/client/transport/mutations/sessionClientDurableMutationTypes';
 
-type RoleArtifactStore = ReturnType<typeof createAccountArtifactStore>;
-type RawSettingsWithRoles = Readonly<Record<string, unknown>> & Readonly<{
-  rolesV1: ReturnType<typeof RolesV1Schema.parse>;
-}>;
+type RoleArtifactStore = Pick<ReturnType<typeof createAccountArtifactStore>,
+  'read' | 'list' | 'create' | 'update' | 'delete' | 'accessGrants'>;
 export type RoleWorkspaceWritesPolicyPreparer = (
   workspaceWrites: 'allow' | 'deny', context: ActionExecutorContext,
 ) => Promise<Readonly<{ ok: true }> | Readonly<{ ok: false; errorCode: string }>>;
@@ -44,7 +40,7 @@ export function createRoleActionExecutor(params: Readonly<{
   readPluginRoles?: () => readonly PluginRoleContributionV1[];
   accountId?: string;
   readRawAccountSettings?: () => Promise<Readonly<Record<string, unknown>>>;
-  mutateAccountSettings?: (mutate: (raw: Readonly<Record<string, unknown>>) => Promise<RawSettingsWithRoles>, signal?: AbortSignal) => Promise<void>;
+  mutateAccountSettings?: (mutate: (raw: Readonly<Record<string, unknown>>) => Promise<Record<string, unknown>>, signal?: AbortSignal) => Promise<void>;
   readRoleSources?: RoleSourceReader;
   listReportSessions?: (leadSessionId: string, context: import('@happier-dev/protocol').ActionExecutorContext) => Promise<readonly Readonly<{ sessionId: string; ownerAccountId: string }>[]>;
   writeReportSessionRoles?: (sessionId: string, configuration: SessionRoleConfigurationV1, context: import('@happier-dev/protocol').ActionExecutorContext) => Promise<void>;
@@ -52,29 +48,7 @@ export function createRoleActionExecutor(params: Readonly<{
   prepareWorkspaceWritesPolicy?: RoleWorkspaceWritesPolicyPreparer;
 }>): NonNullable<ActionExecutorDeps['roleActionExecute']> {
   const listEntries = params.readRoleSources ?? createRoleSourceReader(params);
-  const retainLegacy = async (raw: Readonly<Record<string, unknown>>, rolesV1: ReturnType<typeof RolesV1Schema.parse>, signal?: AbortSignal) => {
-    if (!params.artifactStore || !params.accountId) refuse('not_authenticated');
-    let next: RawSettingsWithRoles = { ...raw, rolesV1 };
-    await saveRolesV1WithLegacyMigration({ rawSettings: raw, accountId: params.accountId, rolesV1,
-      ensureRoleArtifact: async (entry) => {
-        const existing = await params.artifactStore!.read(entry.artifactId, signal ? { signal } : undefined);
-        if (existing) {
-          if (existing.header.kind !== 'role.v1') refuse('artifact_kind_mismatch');
-          return;
-        }
-        try {
-          await params.artifactStore!.create({ artifactId: entry.artifactId,
-            header: { kind: 'role.v1', name: entry.role.name, migratedFromV0_2: true }, body: JSON.stringify(entry.role), ...(signal ? { signal } : {}) });
-        } catch (error) {
-          if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'conflict') throw error;
-          const retained = await params.artifactStore!.read(entry.artifactId, signal ? { signal } : undefined);
-          if (retained?.header.kind !== 'role.v1') throw error;
-        }
-      },
-      saveSettings: async (rolesV1) => { next = { ...raw, rolesV1 }; },
-    });
-    return next;
-  };
+  const accountActions = createAccountRoleActionExecutorV1({ ...params, readRoleSources: listEntries, generateId: randomUUID });
   return async ({ actionId, input, context }) => {
     context.signal?.throwIfAborted();
     const parsedInput = RoleActionInputSchemasV1[actionId].parse(input);
@@ -82,60 +56,7 @@ export function createRoleActionExecutor(params: Readonly<{
       if (!params.forwardSessionRoleAction) refuse('session_target_unavailable');
       return await params.forwardSessionRoleAction({ actionId, input: parsedInput, context });
     }
-    if (actionId === 'roles.list') {
-      RoleActionInputSchemasV1[actionId].parse(input);
-      return { items: await listEntries(context.signal) };
-    }
-    if (actionId === 'roles.get') {
-      const request = RoleActionInputSchemasV1[actionId].parse(input);
-      const entry = (await listEntries(context.signal)).find((item) => item.roleId === request.roleId);
-      if (!entry) refuse('role_target_unavailable');
-      return entry;
-    }
-    if (actionId === 'roles.override.set' || actionId === 'roles.override.reset') {
-      if (context.surface === 'agent' && !context.bypassApprovals) refuse('approval_required');
-      if (!params.mutateAccountSettings) refuse('not_authenticated');
-      const request = RoleActionInputSchemasV1[actionId].parse(input);
-      await params.mutateAccountSettings(async (raw) => {
-        const rolesV1 = RolesV1Schema.parse(Object.hasOwn(raw, 'rolesV1') ? raw.rolesV1 : { overrides: {} });
-        if (actionId === 'roles.override.reset') delete rolesV1.overrides[request.roleId];
-        else rolesV1.overrides[request.roleId] = RoleActionInputSchemasV1['roles.override.set'].parse(input);
-        return await retainLegacy(raw, rolesV1, context.signal);
-      }, context.signal);
-      return { updated: true };
-    }
-    if (actionId === 'roles.create' || actionId === 'roles.update' || actionId === 'roles.delete') {
-      if (context.surface === 'agent' && !context.bypassApprovals) refuse('approval_required');
-      if (!params.artifactStore || !params.mutateAccountSettings) refuse('not_authenticated');
-      const request = RoleActionInputSchemasV1[actionId].parse(input);
-      if (request.roleId && (Object.hasOwn(BUILT_IN_ROLES_V1, request.roleId) || request.roleId.startsWith('plugin:'))) refuse('role_read_only');
-      await params.mutateAccountSettings(async (raw) => await retainLegacy(raw,
-        RolesV1Schema.parse(Object.hasOwn(raw, 'rolesV1') ? raw.rolesV1 : { overrides: {} }), context.signal), context.signal);
-      if (actionId === 'roles.create') {
-        const request = RoleActionInputSchemasV1[actionId].parse(input);
-        const roleId = request.roleId ?? randomUUID();
-        if (Object.hasOwn(BUILT_IN_ROLES_V1, roleId) || roleId.startsWith('plugin:')) refuse('role_read_only');
-        const created = await params.artifactStore.create({ artifactId: roleId,
-          header: { kind: 'role.v1', name: request.role.name }, body: JSON.stringify(request.role), ...(context.signal ? { signal: context.signal } : {}) });
-        return { roleId: created.artifactId, revision: created.revision };
-      }
-      if (actionId === 'roles.delete') {
-        const request = RoleActionInputSchemasV1[actionId].parse(input);
-        const existing = await params.artifactStore.read(request.roleId, context.signal ? { signal: context.signal } : undefined);
-        if (!existing || existing.header.kind !== 'role.v1') refuse('role_target_unavailable');
-        const deleted = await params.artifactStore.delete(request.roleId, { expectedRevision: request.expectedRevision,
-          ...(context.signal ? { signal: context.signal } : {}) });
-        if (!deleted.ok) refuse(deleted.errorCode === 'version_mismatch' ? 'currentness_conflict' : deleted.errorCode);
-        return { deleted: true };
-      }
-      const updateRequest = RoleActionInputSchemasV1['roles.update'].parse(input);
-      const existing = await params.artifactStore.read(updateRequest.roleId, context.signal ? { signal: context.signal } : undefined);
-      if (!existing || existing.header.kind !== 'role.v1') refuse('role_target_unavailable');
-      const updated = await params.artifactStore.update({ artifactId: updateRequest.roleId, expectedRevision: updateRequest.expectedRevision,
-        header: { ...existing.header, kind: 'role.v1', name: updateRequest.role.name }, body: JSON.stringify(updateRequest.role), ...(context.signal ? { signal: context.signal } : {}) });
-      if (!updated.ok) refuse(updated.errorCode === 'version_mismatch' ? 'currentness_conflict' : updated.errorCode);
-      return { roleId: updateRequest.roleId, revision: updated.revision };
-    }
+    if (actionId.startsWith('roles.')) return await accountActions({ actionId, input: parsedInput, context });
     if (actionId === 'session.roles.apply_to_reports') {
       const request = RoleActionInputSchemasV1[actionId].parse(input);
       if (request.sessionId !== params.sessionId || !params.accountId || !params.readSessionMetadata

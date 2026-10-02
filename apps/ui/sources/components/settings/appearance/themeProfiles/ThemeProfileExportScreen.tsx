@@ -89,7 +89,7 @@ export const ThemeProfileExportScreen = React.memo(function ThemeProfileExportSc
     }, [fileName, json]);
 
     return (
-        <ItemList testID="settings-theme-profile-export-screen" style={{ paddingTop: 0 }} presentation="page">
+        <ItemList testID="settings-theme-profile-export-screen" style={{ paddingTop: 0 }}>
             <SettingsPageHeader
                 description={profile
                     ? t('settingsAppearance.themeProfiles.exportPageDescription')

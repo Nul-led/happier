@@ -60,7 +60,7 @@ export const HomeAdministrationHomesScreen = React.memo(function HomeAdministrat
     }, [onlyHomeId, router]);
     if (onlyHomeId) {
         return (
-            <ItemList presentation="page" testID="home-admin-homes-opening">
+            <ItemList testID="home-admin-homes-opening">
                 <SettingsPageHeader description={t('homeGovernance.pages.homes')} />
             </ItemList>
         );
@@ -68,7 +68,7 @@ export const HomeAdministrationHomesScreen = React.memo(function HomeAdministrat
 
     if (admission.homes.length === 0) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <SettingsPageHeader description={t('homeGovernance.pages.homes')} />
                 <EmptyState
                     testID="home-admin-homes-empty"
@@ -83,7 +83,7 @@ export const HomeAdministrationHomesScreen = React.memo(function HomeAdministrat
 
     const nothingAdministrable = admitted.length === 0 && unresolved.length === 0;
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader description={t('homeGovernance.pages.homes')} />
             {nothingAdministrable ? (
                 <ItemGroup>

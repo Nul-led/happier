@@ -28,7 +28,7 @@ export const AgentSettingsIndex = React.memo(function AgentSettingsIndex() {
     if (view === 'pending') return null;
     if (view === 'land') return <AgentCollectionLanding catalog={catalog} />;
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader
                 testID="settings.agents.index.header"
                 description={t('settingsAgents.collection.overviewDescription')}

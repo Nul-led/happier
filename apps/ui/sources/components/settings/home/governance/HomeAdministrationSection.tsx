@@ -132,7 +132,7 @@ export const HomeAdministrationSection = React.memo(function HomeAdministrationS
     // Where the console rail is not beside the page, its pages are a menu above the header.
     const consoleMenu = <HomeConsoleMenu serverId={props.serverId} />;
     const conditionPage = (condition: React.ReactNode) => (
-        <ItemList presentation="page">
+        <ItemList>
             {consoleMenu}
             {plainHeader}
             {condition}
@@ -187,7 +187,7 @@ export const HomeAdministrationSection = React.memo(function HomeAdministrationS
     if (state.kind === 'setup_required') {
         // An ownerless Home has one thing to do (lab `hcClaim-N`): the page is that Home, and claiming it.
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 {consoleMenu}
                 <PageHeader
                     testID="home-admin-page-header"
@@ -300,7 +300,7 @@ export const HomeAdministrationSection = React.memo(function HomeAdministrationS
     }
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             {consoleMenu}
             {props.childRendersHeader ? null : header}
 

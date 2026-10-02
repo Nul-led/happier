@@ -156,7 +156,6 @@ describe('localSettingsParse', () => {
         expect(typeof (parsed as any).sidebarWidthBasisPx).toBe('number');
         expect((parsed as any).bottomPaneHeightPx).toBe(320);
         expect((parsed as any).bottomPaneHeightBasisPx).toBe(900);
-        expect((parsed as any).embeddedTerminalDockLocation).toBe('bottom');
         expect((parsed as any).terminalRendererPreference).toBe('auto');
         expect(parsed).not.toHaveProperty('mobileWorkspaceExperienceV1');
     });

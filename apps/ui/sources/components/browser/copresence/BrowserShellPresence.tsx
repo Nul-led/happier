@@ -1,4 +1,4 @@
-import type { HappierAgentPageRect } from '@happier-dev/plugin-ui/presentation';
+import type { HappierAgentPageRect, HappierPresenceTakeControlResult } from '@happier-dev/plugin-ui/presentation';
 import * as React from 'react';
 
 import { getAgentCore, type AgentId } from '@/agents/catalog/catalog';
@@ -117,8 +117,11 @@ export function BrowserShellPresence(props: Readonly<{
     const nowMs = props.nowMs;
     const takeControl = React.useCallback(() => {
         if (daemonOwned) {
-            props.sendDaemonCommand?.({ kind: 'takeControl', commandId: `take-control:${view.viewId}:${nowMs?.() ?? Date.now()}`, ...viewKey });
-            return;
+            if (!props.sendDaemonCommand) return { status: 'failed' } satisfies HappierPresenceTakeControlResult;
+            return props.sendDaemonCommand({ kind: 'takeControl', commandId: `take-control:${view.viewId}:${nowMs?.() ?? Date.now()}`, ...viewKey })
+                .then((result): HappierPresenceTakeControlResult => ({ status: result.ok
+                    ? result.result.status === 'dispatched' ? 'accepted' : 'failed'
+                    : result.reason === 'unavailable' ? 'failed' : 'unknown' }));
         }
         controlService?.recordHumanInput({
             ...viewKey,

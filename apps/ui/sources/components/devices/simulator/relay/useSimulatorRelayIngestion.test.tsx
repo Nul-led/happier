@@ -468,4 +468,49 @@ describe('useSimulatorRelayIngestion', () => {
         expect(hook.getCurrent().playerStatesBySimulatorId).toEqual({});
         expect(fake.sent).toHaveLength(0);
     });
+
+    it.each([
+        { serverId: 'different-home' },
+        { sourceOccurrenceId: 'different-capture' },
+    ])('does not retain a hidden frame across a changed source scope: %j', async (scope) => {
+        const fake = createFakeTransport();
+        const input = baseInput(fake.transport);
+        const hook = await renderHook(
+            (props: UseSimulatorRelayIngestionInput) => useSimulatorRelayIngestion(props),
+            { initialProps: input },
+        );
+        await act(async () => fake.deliver(frameEnvelope(imageFrame(1))));
+        expect(hook.getCurrent().playerStatesBySimulatorId[SIMULATOR_ID]?.lastFrameUrl).toBeTruthy();
+        const hidden = await hook.rerender({ ...input, ...scope, enabled: false });
+        expect(fake.listenerCount()).toBe(0);
+        expect(hidden.playerStatesBySimulatorId).toEqual({});
+    });
+
+    it('holds the last frame while hidden, resumes fresh frames, and never projects a different hidden stream', async () => {
+        const fake = createFakeTransport();
+        const input = baseInput(fake.transport);
+        const hook = await renderHook(
+            (props: UseSimulatorRelayIngestionInput) => useSimulatorRelayIngestion(props),
+            { initialProps: input },
+        );
+        await act(async () => fake.deliver(frameEnvelope(imageFrame(1))));
+        const held = hook.getCurrent().playerStatesBySimulatorId[SIMULATOR_ID];
+        expect(held?.lastFrameUrl).toBe('data:image/jpeg;base64,AQID');
+
+        const hidden = await hook.rerender({ ...input, enabled: false });
+        expect(fake.listenerCount()).toBe(0);
+        expect(hidden.playerStatesBySimulatorId[SIMULATOR_ID]).toBe(held);
+        await act(async () => fake.deliver(frameEnvelope(imageFrame(2, { payloadBase64: 'AAAA' }))));
+        expect(hook.getCurrent().playerStatesBySimulatorId[SIMULATOR_ID]?.lastFrameUrl).toBe(held?.lastFrameUrl);
+
+        await hook.rerender(input);
+        expect(fake.listenerCount()).toBe(1);
+        expect(hook.getCurrent().playerStatesBySimulatorId[SIMULATOR_ID]?.lastFrameUrl).toBe(held?.lastFrameUrl);
+        await act(async () => fake.deliver(frameEnvelope(imageFrame(3, { payloadBase64: 'AAAA' }))));
+        expect(hook.getCurrent().playerStatesBySimulatorId[SIMULATOR_ID]?.lastFrameUrl).toBe('data:image/jpeg;base64,AAAA');
+
+        const switched = await hook.rerender({ ...input, enabled: false, simulatorId: 'sim_2', streamId: 'stream_2' });
+        expect(fake.listenerCount()).toBe(0);
+        expect(switched.playerStatesBySimulatorId).toEqual({});
+    });
 });

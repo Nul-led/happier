@@ -42,6 +42,7 @@ type FixtureWindow = readonly [meterId: string, label: string, remainingPct: num
 function entry(service: Svc, serviceLabel: string, legacyServiceId: string, accountId: string, name: string, email: string, plan: string, windows: readonly FixtureWindow[], now: number) {
     return {
         key: keyOf(service, accountId),
+        fetchedAt: now - 12 * MIN,
         serviceLabel,
         serviceGroupKey: `${service.pluginId}/${service.localId}`,
         legacyServiceId,
@@ -60,7 +61,6 @@ function useFixture(scope: 'rail' | 'session') {
     const usage = React.useMemo(() => buildUsageSummary({
         live: {
             v: 1,
-            asOf: now - 12 * MIN,
             entries: [
                 entry(CLAUDE, 'Claude', 'claude-subscription', 'work', 'Work', 'leeroy@company.com', 'Max', scope === 'session'
                     ? [['5h', '5-hour', 42, 2 * HOUR + 15 * MIN], ['wk', 'Weekly', 64, 4 * DAY + 6 * HOUR], ['wko', 'Weekly · Opus', 88, 4 * DAY + 6 * HOUR], ['wks', 'Weekly · Sonnet', 91, 4 * DAY + 6 * HOUR], ['extra', 'Extra usage', 76, DAY]]
@@ -93,7 +93,6 @@ function useFixture(scope: 'rail' | 'session') {
                     observedAtMs: now - 12 * MIN, staleAfterMs: DAY,
                 },
                 recoveryCredits: { availableCount: 3, nextExpiresAtMs: now + 5 * DAY, credits: [] },
-                snapshotFetchedAtMs: now - 12 * MIN,
             },
         },
     }), [now]);

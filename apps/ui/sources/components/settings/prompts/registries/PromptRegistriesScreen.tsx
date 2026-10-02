@@ -319,7 +319,7 @@ export const PromptRegistriesScreen = React.memo(function PromptRegistriesScreen
   const executionTarget = resolveExactExecutionTarget(selectedTarget);
 
   return (
-    <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+    <ItemList keyboardShouldPersistTaps="handled">
       <SettingsPageHeader
         description={t('promptLibrary.surface.registriesPageDescription')}
         actions={(

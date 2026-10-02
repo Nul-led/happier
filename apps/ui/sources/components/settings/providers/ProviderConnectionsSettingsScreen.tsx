@@ -20,7 +20,6 @@ import { MachineAdministrationTargetSelector } from '@/components/settings/machi
 import { ProviderErrorItems } from '@/components/settings/providers/ProviderErrorItems';
 import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHeader';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
-import { Modal } from '@/modal';
 import { randomUUID } from '@/platform/randomUUID';
 import { PROVIDER_CONNECTION_STATUS_KEY } from '@/providers/connection/presentation';
 import { ProviderIcon } from '@/providers/connection/ProviderIcon';
@@ -38,7 +37,7 @@ import {
     ProviderFeatureAvailabilityNotice,
     useProviderFeatureAvailability,
 } from './ProviderFeatureAvailability';
-import { AddProviderMenu } from './collection/AddProviderMenu';
+import { AddProviderMenu, newProviderRoute } from './collection/AddProviderMenu';
 import { providerDraftTitle } from './collection/providerDraftTitle';
 import {
     buildProviderCollection,
@@ -131,7 +130,8 @@ export const ProviderConnectionsSettingsScreen = React.memo(function ProviderCon
     const connectDetectedCandidate = React.useCallback(async (candidate: ProviderDiscoveryCandidateV1) => {
         if (!machineId) return;
         setDiscoverySelectionError(null);
-        if (!candidate.candidateId) {
+        const candidateId = candidate.candidateId;
+        if (!candidateId) {
             setDiscoverySelectionError(createProviderErrorV1('provider_authorization_changed', {
                 machineId,
                 ...(candidate.connection.status === 'matched'
@@ -140,41 +140,34 @@ export const ProviderConnectionsSettingsScreen = React.memo(function ProviderCon
             }));
             return;
         }
-        let displayName: string | null = null;
+        const openAuthoringDraft = (displayName: string | null) => {
+            const params: Array<readonly [string, string]> = [
+                ['candidateId', candidateId],
+            ];
+            if (displayName) params.push(['displayName', displayName]);
+            const queryString = params
+                .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+                .join('&');
+            navigate(`${newProviderRoute(candidate.contributionKey)}&${queryString}`);
+        };
         if (candidate.connection.status === 'requires_named_connection') {
-            displayName = await Modal.prompt(
-                t('settingsProviders.local.addConnectionTitle'),
-                t('settingsProviders.local.addConnectionDescription'),
-                {
-                    defaultValue: t('settingsProviders.local.defaultConnectionName', { provider: candidate.providerName }),
-                    confirmText: t('common.create'),
-                },
-            );
-            if (!displayName?.trim()) return;
-            displayName = displayName.trim();
+            openAuthoringDraft(t('settingsProviders.local.defaultConnectionName', { provider: candidate.providerName }));
+            return;
         }
         const connectionId = candidate.connection.status === 'matched'
             ? candidate.connection.connectionId
             : `pc_${randomUUID()}`;
         const result = await mutation.run({
             action: 'enableDetected', machineId, connectionId,
-            candidateId: candidate.candidateId,
-            displayName,
+            candidateId,
+            displayName: null,
             savedSecretId: null,
         }, `detected:${candidate.contributionKey}:${candidate.normalizedEndpointUrl}`);
         if (result?.status === 'error' && result.error.code === 'provider_secret_missing') {
             if (candidate.connection.status === 'matched') {
                 navigate(`/(app)/settings/providers/${candidate.connection.connectionId}`);
             } else {
-                const params: Array<readonly [string, string]> = [
-                    ['contributionKey', candidate.contributionKey],
-                    ['candidateId', candidate.candidateId],
-                ];
-                if (displayName) params.push(['displayName', displayName]);
-                const queryString = params
-                    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
-                    .join('&');
-                navigate(`/(app)/settings/providers/new?${queryString}`);
+                openAuthoringDraft(null);
             }
             mutation.clearError();
         }
@@ -363,7 +356,7 @@ export const ProviderConnectionsSettingsScreen = React.memo(function ProviderCon
     }
 
     return (
-        <ItemList presentation="page" testID="settings-providers-screen">
+        <ItemList testID="settings-providers-screen">
             <SettingsPageHeader
                 testID="settings-providers-header"
                 description={t('settingsProvidersCollection.description')}

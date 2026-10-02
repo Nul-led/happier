@@ -79,7 +79,7 @@ export const SessionProviderLimitsSettingsView = React.memo(function SessionProv
     ] as const;
 
     return (
-        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }} presentation="page">
+        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settingsSessionPages.providerLimits.pageDescription')} />
             {usageLimitRecoveryEnabled ? (
                 <ItemGroup

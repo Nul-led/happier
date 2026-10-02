@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WorkflowProgressEnvelopeV1 } from '@happier-dev/protocol';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
 
 import { WorkflowInvocationDetail, type WorkflowInvocationDetailProps } from './WorkflowInvocationDetail';
 import type { WorkflowInvocationRecoveryPresentation } from './workflowRunDetailPresentation';
@@ -51,9 +52,6 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
 });
 vi.mock('@/sync/ops', () => sessionOps);
 vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
-vi.mock('@/components/sessions/terminal/openAttachedSessionTerminal', () => ({
-    useOpenAttachedSessionTerminal: () => ({ available: false, unavailableReason: null, open: vi.fn() }),
-}));
 
 const recovery: WorkflowInvocationRecoveryPresentation = {
     canInspectExecution: false,
@@ -118,7 +116,7 @@ async function renderDetail(overrides: Partial<WorkflowInvocationDetailProps>) {
         testIDPrefix: 'workflow-run',
         ...overrides,
     };
-    const screen = await renderScreen(<WorkflowInvocationDetail {...props} />);
+    const screen = await renderScreen(<WorkflowInvocationDetail {...props} />, { wrapper: AppPaneProvider });
     /** A control the case requires; its absence fails the case rather than typing as nullable. */
     const get = (testID: string) => {
         const node = screen.findByTestId(testID);

@@ -80,7 +80,7 @@ export const NewSessionWizardSettingsView = React.memo(function NewSessionWizard
     }, [normalizedPresentationBySection, setPresentationBySection]);
 
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settingsSessionPages.wizard.pageDescription')} />
             <ItemGroup
                 title={t('settingsSessionPages.wizard.wideScreensSection')}

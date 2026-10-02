@@ -48,7 +48,6 @@ export const EmbedsListScreen = React.memo(function EmbedsListScreen() {
 
     return (
         <ItemList
-            presentation="page"
             refreshControl={(
                 <RefreshControl
                     refreshing={state.isRefreshing}

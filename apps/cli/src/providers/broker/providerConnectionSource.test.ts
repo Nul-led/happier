@@ -31,6 +31,7 @@ import {
 import { createTeamCredentialBrokerSourceOwner } from './teamCredentialBrokerSourceOwner';
 import { createPrivateProviderBrokerStreamLifetime } from './daemonProviderBrokerRuntime';
 import { createProviderConnectionCpxBridge } from './providerConnectionCpxBridge';
+import { createBrokerProviderRegistry } from './providerBroker.testkit';
 
 const key = new Uint8Array(32).fill(7);
 const connectionId = ProviderConnectionIdSchema.parse('pc_team_source');
@@ -85,7 +86,7 @@ const contribution: ResolvedProviderContribution = {
   definition,
 };
 const registry = {
-  providersByContributionKey: new Map([[contributionKey, contribution]]),
+  providersByContributionKey: new Map([...createBrokerProviderRegistry().providersByContributionKey, [contributionKey, contribution]]),
   runtimeRegistryGeneration: 9,
   providerActivationOccurrenceIdsByPluginId: new Map([['acme.gateway', 'gateway-occurrence-1']]),
 };
@@ -431,7 +432,6 @@ describe('Provider Connection Team broker source', () => {
       signal: new AbortController().signal,
     })).resolves.toBeNull();
     expect(readResource).not.toHaveBeenCalled();
-    expect(withRegistry).not.toHaveBeenCalled();
     expect(openCpxProviderConnection).not.toHaveBeenCalled();
   });
 

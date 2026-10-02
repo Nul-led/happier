@@ -5,6 +5,8 @@ import {
 } from '@happier-dev/protocol';
 
 const ERROR_SUMMARIES = {
+  model_not_granted: 'The selected model is not included in the access grant.',
+  permission_mode_not_granted: 'The requested permission mode is not included in the access grant.',
   provider_feature_disabled: 'Provider features are unavailable.',
   provider_connection_not_found: 'The Provider connection was not found.',
   provider_connection_changed: 'The Provider connection changed during the request.',

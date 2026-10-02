@@ -29,6 +29,9 @@ import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { PageHeader } from '@/components/ui/layout/PageHeader';
 import { PageHeaderMarkTile, PageHeaderMenu, PageHeaderStateSwitch, type PageHeaderMenuAction } from '@/components/ui/layout/PageHeaderEntityParts';
 import { SectionContentRow } from '@/components/ui/lists/SectionContentRow';
+import { SectionButtonRow } from '@/components/ui/lists/SectionButtonRow';
+import { useUnsavedDraftNavigationGuard } from '@/utils/navigation/useUnsavedDraftNavigationGuard';
+import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
 import { MachineAdministrationContextBar } from '@/components/settings/machines/MachineAdministrationContextBar';
 import { openExternalUrl } from '@/utils/url/openExternalUrl';
 import { ProviderErrorItems } from '@/components/settings/providers/ProviderErrorItems';
@@ -108,6 +111,31 @@ type ManagedPurposeDraft = Readonly<{
     targets: Readonly<Record<string, QualifiedConnectedAccountPurposeBindingTargetV1 | null>>;
 }>;
 
+function ProviderDuplicateDraft(props: Readonly<{
+    mode: 'sameSource' | 'asCustom';
+    initialName: string;
+    pending: boolean;
+    onCreate: (name: string, allowNavigation: () => void) => Promise<void>;
+    onCancel: () => void;
+}>) {
+    const navigation = useNavigation();
+    const [name, setName] = React.useState(props.initialName);
+    const guard = useUnsavedDraftNavigationGuard({ navigation, isDirty: name !== props.initialName,
+        onDiscard: props.onCancel, tag: 'provider-duplicate-draft' });
+    return <ItemGroup title={t(props.mode === 'asCustom' ? 'settingsProviders.customTitle' : 'settingsProviders.detail.duplicateTitle')}
+        description={t(props.mode === 'asCustom' ? 'settingsProviders.customFooter' : 'settingsProviders.detail.duplicateDescription')}>
+        <ProviderFieldRow testID="provider-connection-duplicate-name" title={t('settingsProviders.authoring.name')}
+            value={name} onChangeText={setName} editable={!props.pending} />
+        <SectionContentRow><SectionButtonRow>
+            <RoundButton testID="provider-connection-duplicate-save" title={t('common.create')} size="small"
+                loading={props.pending} disabled={props.pending || !name.trim()}
+                onPress={() => { void props.onCreate(name, guard.allowSavedNavigation); }} />
+            <RoundButton testID="provider-connection-duplicate-cancel" title={t('common.cancel')} size="small" display="secondary"
+                disabled={props.pending} onPress={props.onCancel} />
+        </SectionButtonRow></SectionContentRow>
+    </ItemGroup>;
+}
+
 export const ProviderConnectionDetailScreen = React.memo(function ProviderConnectionDetailScreen(
     props: Readonly<{
         connectionId: string;
@@ -180,6 +208,10 @@ export const ProviderConnectionDetailScreen = React.memo(function ProviderConnec
     const [probeState, setProbeState] = React.useState<'idle' | 'probing' | 'success' | 'notSupported'>('idle');
     const [probeError, setProbeError] = React.useState<ProviderErrorV1 | null>(null);
     const [managedPurposeDraft, setManagedPurposeDraft] = React.useState<ManagedPurposeDraft | null>(null);
+    const [duplicateMode, setDuplicateMode] = React.useState<'sameSource' | 'asCustom' | null>(null);
+    const discardDuplicate = React.useCallback(() => setDuplicateMode(null), []);
+    useRetireProviderStateOnAccountChange(discardDuplicate);
+    React.useEffect(discardDuplicate, [discardDuplicate, machineId, serverId, props.connectionId]);
     // A purpose draft names Account-scoped Connected Account targets, so it is
     // retired with the Account that authored it rather than surviving into the
     // next Account on the same machine and connection.
@@ -335,19 +367,16 @@ export const ProviderConnectionDetailScreen = React.memo(function ProviderConnec
         });
     }, [invalidateProbe, mutation, props.connectionId, selectedTargetServerMatchesActiveAccount]);
 
-    const duplicate = React.useCallback(async (mode: 'sameSource' | 'asCustom') => {
+    const duplicate = React.useCallback(async (mode: 'sameSource' | 'asCustom', name: string, allowNavigation: () => void) => {
         if (!machineId || !connection) return;
-        const name = await Modal.prompt(
-            mode === 'asCustom' ? t('settingsProviders.customTitle') : t('settingsProviders.detail.duplicateTitle'),
-            mode === 'asCustom' ? t('settingsProviders.customFooter') : t('settingsProviders.detail.duplicateDescription'),
-            { defaultValue: t('settingsProviders.detail.copyName', { name: connection.displayName }), confirmText: t('common.create') },
-        );
-        if (!name?.trim()) return;
+        if (!name.trim()) return;
         const result = await mutation.run({
             action: 'duplicate', machineId, connectionId: props.connectionId,
             newConnectionId: `pc_${randomUUID()}`, displayName: name.trim(), mode,
         }, `duplicate:${mode}`);
         if (result?.status === 'success' && result.action === 'duplicate') {
+            allowNavigation();
+            setDuplicateMode(null);
             router.replace(`/(app)/settings/providers/${result.connection.connectionId}` as never);
         }
     }, [connection, machineId, mutation, props.connectionId, router]);
@@ -382,18 +411,8 @@ export const ProviderConnectionDetailScreen = React.memo(function ProviderConnec
         reset?: boolean;
     }>) => {
         if (!machineId || !connection) return;
-        let baseUrl: string | null = null;
-        if (!input.reset) {
-            baseUrl = await Modal.prompt(
-                input.scope === 'machine'
-                    ? t('settingsProviders.detail.endpointMachine')
-                    : t('settingsProviders.detail.endpointDefault'),
-                t('settingsProviders.detail.endpointPrompt'),
-                { defaultValue: input.currentUrl, confirmText: t('common.save') },
-            );
-            if (baseUrl === null || !baseUrl.trim()) return;
-            baseUrl = baseUrl.trim();
-        }
+        const baseUrl = input.reset ? null : input.currentUrl.trim();
+        if (baseUrl === '') return;
         invalidateProbe();
         await mutation.run({
             action: 'setEndpointOverride', machineId, connectionId: props.connectionId,
@@ -694,7 +713,7 @@ export const ProviderConnectionDetailScreen = React.memo(function ProviderConnec
 
     if (availabilityPresentation) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 {contextBar}
                 <ItemGroup><ProviderFeatureAvailabilityNotice presentation={availabilityPresentation} /></ItemGroup>
             </ItemList>
@@ -702,7 +721,7 @@ export const ProviderConnectionDetailScreen = React.memo(function ProviderConnec
     }
     if (!machineId) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 {contextBar}
                 <ItemGroup><Item mode="info" title={t('settingsProviders.noMachine')} subtitle={t('settingsProviders.noMachineDescription')} /></ItemGroup>
             </ItemList>
@@ -710,7 +729,7 @@ export const ProviderConnectionDetailScreen = React.memo(function ProviderConnec
     }
     if (query.loading && !query.data) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 {contextBar}
                 <ItemGroup><Item mode="info" loading title={t('common.loading')} /></ItemGroup>
             </ItemList>
@@ -742,7 +761,7 @@ export const ProviderConnectionDetailScreen = React.memo(function ProviderConnec
     ) : null;
     if (!connection && failureItems) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 {contextBar}
                 <ItemGroup>{failureItems}</ItemGroup>
             </ItemList>
@@ -751,7 +770,7 @@ export const ProviderConnectionDetailScreen = React.memo(function ProviderConnec
     if (!connection) {
         const deleted = query.data?.deletedConnection;
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 {contextBar}
                 <PageHeader
                     testID="provider-connection-not-found"
@@ -786,13 +805,13 @@ export const ProviderConnectionDetailScreen = React.memo(function ProviderConnec
             id: 'duplicate',
             testID: 'provider-connection-menu-duplicate',
             title: t('settingsProviders.detail.duplicateTitle'),
-            onSelect: () => duplicate('sameSource'),
+            onSelect: () => { void runGuardedNavigation(() => setDuplicateMode('sameSource')); },
         },
         {
             id: 'duplicateAsCustom',
             testID: 'provider-connection-menu-duplicate-custom',
             title: t('settingsProvidersCollection.duplicateAsCustom'),
-            onSelect: () => duplicate('asCustom'),
+            onSelect: () => { void runGuardedNavigation(() => setDuplicateMode('asCustom')); },
         },
         {
             id: 'delete',
@@ -878,6 +897,10 @@ export const ProviderConnectionDetailScreen = React.memo(function ProviderConnec
 
             {failureItems ? <ItemGroup>{failureItems}</ItemGroup> : null}
 
+            {duplicateMode ? <ProviderDuplicateDraft key={duplicateMode} mode={duplicateMode}
+                initialName={t('settingsProviders.detail.copyName', { name: connection.displayName })}
+                pending={mutation.isPending(`duplicate:${duplicateMode}`)}
+                onCreate={(name, allowNavigation) => duplicate(duplicateMode, name, allowNavigation)} onCancel={discardDuplicate} /> : null}
             <ItemGroup
                 title={t('settingsProvidersCollection.connectionTitle')}
                 description={connection.credential ? t('settingsProviders.detail.apiKeyFooter') : undefined}

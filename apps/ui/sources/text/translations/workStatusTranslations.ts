@@ -135,5 +135,16 @@ const zhHant: WorkStatusTranslations = {
 };
 
 export const workStatusTranslations = {
-    en, ca, de, es, fr, it, ja, pl, pt, ru, zhHans, zhHant,
+    en: { ...en, task: { stopped: 'Stopped', linkFailed: "The session was created, but its task link wasn’t saved. Retry to link the same session." } },
+    ca: { ...ca, task: { stopped: 'Aturada', linkFailed: 'La sessió s’ha creat, però no s’ha desat l’enllaç amb la tasca. Torna-ho a provar per enllaçar la mateixa sessió.' } },
+    de: { ...de, task: { stopped: 'Gestoppt', linkFailed: 'Die Sitzung wurde erstellt, aber die Aufgabenverknüpfung wurde nicht gespeichert. Versuche erneut, dieselbe Sitzung zu verknüpfen.' } },
+    es: { ...es, task: { stopped: 'Detenida', linkFailed: 'La sesión se creó, pero no se guardó su enlace con la tarea. Reintenta para enlazar la misma sesión.' } },
+    fr: { ...fr, task: { stopped: 'Arrêtée', linkFailed: 'La session a été créée, mais son lien avec la tâche n’a pas été enregistré. Réessayez pour lier la même session.' } },
+    it: { ...it, task: { stopped: 'Interrotta', linkFailed: 'La sessione è stata creata, ma il collegamento all’attività non è stato salvato. Riprova per collegare la stessa sessione.' } },
+    ja: { ...ja, task: { stopped: '停止', linkFailed: 'セッションは作成されましたが、タスクへのリンクは保存されませんでした。再試行すると同じセッションをリンクします。' } },
+    pl: { ...pl, task: { stopped: 'Zatrzymana', linkFailed: 'Sesja została utworzona, ale jej powiązanie z zadaniem nie zostało zapisane. Spróbuj ponownie powiązać tę samą sesję.' } },
+    pt: { ...pt, task: { stopped: 'Parada', linkFailed: 'A sessão foi criada, mas o vínculo com a tarefa não foi salvo. Tente novamente para vincular a mesma sessão.' } },
+    ru: { ...ru, task: { stopped: 'Остановлена', linkFailed: 'Сессия создана, но связь с задачей не сохранена. Повторите попытку, чтобы связать ту же сессию.' } },
+    zhHans: { ...zhHans, task: { stopped: '已停止', linkFailed: '会话已创建，但未保存与任务的关联。重试将关联同一个会话。' } },
+    zhHant: { ...zhHant, task: { stopped: '已停止', linkFailed: '工作階段已建立，但未儲存與任務的關聯。重試將關聯同一個工作階段。' } },
 };

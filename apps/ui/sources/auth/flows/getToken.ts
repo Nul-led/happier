@@ -10,9 +10,6 @@ import {
     probeServerFeaturesAtUrl,
     type ServerFeaturesSnapshot,
 } from '@/sync/api/capabilities/serverFeaturesClient';
-import {
-    assertCurrentAccountStoredContentServerCompatibility,
-} from '@/sync/api/capabilities/accountStoredContentCompatibility';
 import * as serverHttp from '@/sync/http/client';
 import type { ServerFetch, ServerFetchOptions } from '@/sync/http/client';
 import {
@@ -143,9 +140,6 @@ function readAuthToken(payload: unknown): string {
 async function authGetTokenCore(params: AuthTokenCoreParams): Promise<AuthCredentials> {
     const authPaths = resolveKeyAuthPaths(params.credentialTarget);
     const serverFeaturesSnapshot = await params.probe();
-    if (params.expectedAccountId) {
-        assertCurrentAccountStoredContentServerCompatibility(serverFeaturesSnapshot);
-    }
     const mayUseReleasedV1Fallback =
         params.credentialTarget === 'ordinary_home'
         && params.expectedAccountId === undefined

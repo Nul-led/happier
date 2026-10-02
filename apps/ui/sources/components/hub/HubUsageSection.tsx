@@ -32,13 +32,12 @@ export const HubUsageSection = React.memo(function HubUsageSection(props: HubSec
         inUseAccountKeys: quota.inUseAccountKeys,
         recoveryCreditsByKey,
         accountsNeedingSignIn: quota.accountsNeedingSignIn,
-        asOf: usage.asOf,
         onSignInAgain: (account) => openConnectedServiceSetupModal({
             kind: 'reconnect',
             serviceKey: buildQualifiedPluginContributionKey(account.ref.service),
             accountId: account.ref.accountId,
         }),
-    }), [quota.accountsNeedingSignIn, quota.inUseAccountKeys, recoveryCreditsByKey, usage.asOf]);
+    }), [quota.accountsNeedingSignIn, quota.inUseAccountKeys, recoveryCreditsByKey]);
     if ((usage.source === 'none' || usage.entries.length === 0) && quota.accountsNeedingSignIn.length === 0) return null;
     return <HubUsageSectionView entries={usage.entries} facts={facts} asOf={usage.asOf} menu={props.menu} />;
 });

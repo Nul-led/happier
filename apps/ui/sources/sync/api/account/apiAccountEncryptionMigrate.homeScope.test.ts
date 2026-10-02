@@ -2,16 +2,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
-import { registerStorageStateReader } from '@/sync/domains/state/storageStateReaderBridge';
+import { installDisconnectedServerSocketBoundary } from '@/dev/testkit/harness/serverAccountConnectionHarness';
+import { loadSyncSingletonForTests } from '@/dev/testkit/harness/syncSingletonLoader';
+import { getStorage } from '@/sync/domains/state/storage';
 import { retireActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
-import type { StorageState } from '@/sync/store/types';
+import { disconnectActiveServerConnection, restoreConnectionToActiveServer } from '@/sync/runtime/orchestration/connectionManager';
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import { fetchArtifacts } from '@/sync/api/artifacts/apiArtifacts';
 import { AccountEncryptionMigrateRequestSchema, migrateAccountEncryptionMode } from './apiAccountEncryptionMigrate';
 import { captureAccountSettingsRequest } from './accountSettingsRequest';
 
-const credentials = { token: 'home-a-migration-token' };
+installDisconnectedServerSocketBoundary();
+
+function accountToken(accountId: string): string {
+    return `e30.${Buffer.from(JSON.stringify({ sub: accountId })).toString('base64url')}.signature`;
+}
+const credentials = { token: accountToken('account-home-a') };
 const migration = AccountEncryptionMigrateRequestSchema.parse({
     toMode: 'plain', expectedAccountVersion: 3,
     expectedSigningKeyFingerprint: 'aemk1_signing', expectedContentKeyFingerprint: 'aemk1_content',
@@ -27,22 +34,41 @@ const http = vi.fn<typeof fetch>();
 let sequence = 0;
 
 async function activateHome(name: string) {
+    // Apply through the connection owner, not just the selected-profile projection.
+    await disconnectActiveServerConnection();
     const serverUrl = `https://${name}-${sequence}.example.test`;
     const profile = await upsertAndActivateServer({ serverUrl, name });
     const scope = { serverId: profile.id, accountId: `account-${name}` };
-    // The real Account lifetime reads this boundary's registered persisted state.
-    registerStorageStateReader(() => ({ profileScope: scope }) as StorageState);
-    await TokenStorage.setCredentialsForServerUrl(serverUrl, { serverId: profile.id }, name === 'home-a' ? credentials : { token: 'home-b-token' });
+    const homeCredentials = name === 'home-a' ? credentials : { token: accountToken(scope.accountId) };
+    await TokenStorage.setCredentialsForServerUrl(serverUrl, { serverId: profile.id }, homeCredentials);
+    await restoreConnectionToActiveServer(homeCredentials);
+    getStorage().setState({ profileScope: scope, settingsScope: scope });
     return { target: { serverUrl, serverId: profile.id }, scope };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
     sequence += 1;
+    await loadSyncSingletonForTests();
     retireActiveServerAccountScopeLifetime();
     http.mockReset();
-    setRuntimeFetch(http);
+    // Bootstrap and transport are genuine network boundaries; Account scope,
+    // credential storage, connection application and migration logic run for real.
+    setRuntimeFetch(async (url, init) => {
+        const path = new URL(String(url)).pathname;
+        if (path === '/health' || path === '/v1/auth/ping') return Response.json({});
+        if (path === '/v1/features') return Response.json(createRootLayoutFeaturesResponse());
+        if (path === '/v1/account/encryption/currentness') return Response.json({ mode: 'plain', version: 3,
+            settingsVersion: 0, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 0,
+            recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' } });
+        if (path === '/v1/account/encryption') return Response.json({ mode: 'plain', updatedAt: 0 });
+        if (path === '/v1/account/encryption/migrate' || path === '/v1/artifacts') {
+            return await http(url, init) ?? Response.json({ error: 'not_found' }, { status: 404 });
+        }
+        return Response.json({ error: 'not_found' }, { status: 404 });
+    });
 });
-afterEach(() => {
+afterEach(async () => {
+    await disconnectActiveServerConnection();
     retireActiveServerAccountScopeLifetime();
     resetRuntimeFetch();
 });

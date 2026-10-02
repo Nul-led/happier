@@ -1,8 +1,11 @@
 import {
     HomeHubLayoutUpdateInputSchema,
+    HomeReachNudgeDismissInputSchema,
     type ActionExecutorDeps,
     type HomeHubLayoutIntent,
 } from '@happier-dev/protocol';
+import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import { dismissHomeReachNudge } from '@/sync/runtime/connectivity/homeReachFailures';
 
 import {
     applyHomeHubLayoutIntent,
@@ -54,6 +57,15 @@ export function createHomeHubLayoutAction(port: LayoutPort): NonNullable<ActionE
             }
         };
         assertCurrent();
+        if (actionId === 'home.reachNudge.dismiss') {
+            const { homeServerId } = HomeReachNudgeDismissInputSchema.parse(input);
+            const profile = getServerProfileById(homeServerId);
+            if (!profile) return { ok: false, errorCode: 'home_not_found', error: 'home_not_found' };
+            const homeIdentityId = profile.serverIdentityId;
+            if (!homeIdentityId) return { ok: false, errorCode: 'home_identity_unverified', error: 'home_identity_unverified' };
+            dismissHomeReachNudge(homeIdentityId);
+            return { homeIdentityId, dismissed: true };
+        }
         const widgets = port.readWidgets();
         let layout = await port.read();
         assertCurrent();

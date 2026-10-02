@@ -138,7 +138,7 @@ export const AccountSecuritySettingsScreen = React.memo(function AccountSecurity
         }
         // The page keeps its header and reserves its rows while the Home switch lands.
         return (
-            <ItemList style={{ paddingTop: 0 }} presentation="page">
+            <ItemList style={{ paddingTop: 0 }}>
                 <SettingsPageHeader description={t('settingsAccount.securityPageDescription')} />
                 <ItemGroup>
                     <ItemLoadStateRows
@@ -153,7 +153,7 @@ export const AccountSecuritySettingsScreen = React.memo(function AccountSecurity
     }
 
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settingsAccount.securityPageDescription')} />
             {/* While sign-in facts are unavailable the section's own state row answers for its rows. */}
             <SettingSection section={ACCOUNT_SECURITY_SETTINGS.sectionRefs.emailPassword}>

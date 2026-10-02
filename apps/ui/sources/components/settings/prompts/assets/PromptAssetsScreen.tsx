@@ -268,7 +268,7 @@ export const PromptAssetsScreen = React.memo(function PromptAssetsScreen() {
     const selectedMachineId = selectedTarget?.machineId ?? null;
 
     return (
-            <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+            <ItemList keyboardShouldPersistTaps="handled">
                 <SettingsPageHeader
                     description={t('promptLibrary.surface.externalAssetsPageDescription')}
                     actions={(

@@ -62,7 +62,7 @@ export const HomeInvitePeopleDialog = React.memo(function HomeInvitePeopleDialog
     const failed = !loading && directory.rows.length === 0 && directory.partial;
 
     return (
-        <ItemList style={{ paddingTop: 0 }} keyboardShouldPersistTaps="handled" testID="home-invite-people">
+        <ItemList presentation="grouped" style={{ paddingTop: 0 }} keyboardShouldPersistTaps="handled" testID="home-invite-people">
             {loading ? (
                 <ItemGroup>
                     <ItemLoadStateRows testID="home-invite-people-teams-loading" state={{ kind: 'loading' }} rows={1} lines={1} />

@@ -18,6 +18,7 @@ export type TriggerSummarySource =
         schedule: Readonly<{ kind: 'cron' | 'interval'; scheduleExpr: string | null; everyMs: number | null }>;
     }>
     | Readonly<{ kind: 'pluginEvent'; eventRef: Readonly<{ localId: string }>; displayLabel?: string }>
+    | Readonly<{ kind: 'prComment' | 'ciFailed'; pullRequest?: Readonly<{ repository: string; number: number }> }>
     | Readonly<{ kind: 'sessionLifecycle'; events: readonly AutomationSessionLifecycleEvent[] }>;
 
 const MINUTE_MS = 60_000;
@@ -84,6 +85,10 @@ export function formatTriggerSummary(trigger: TriggerSummarySource): string {
         }
         case 'sessionLifecycle':
             return t(`workflows.triggers.kind.${readSessionLifecycleKind(trigger.events)}`);
+        case 'prComment':
+        case 'ciFailed':
+            return t(`workflows.triggers.kind.${trigger.kind}`)
+                + (trigger.pullRequest ? ` · ${trigger.pullRequest.repository} #${trigger.pullRequest.number}` : '');
     }
 }
 

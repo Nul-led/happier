@@ -6,7 +6,7 @@ import { SettingsPageHeader } from '@/components/settings/shell/SettingsPageHead
 
 export const AcpCatalogSettingsScreen = React.memo(function AcpCatalogSettingsScreen() {
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader />
             <AcpCatalogSettingsSections />
         </ItemList>

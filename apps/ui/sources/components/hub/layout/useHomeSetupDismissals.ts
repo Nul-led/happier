@@ -5,22 +5,27 @@ import { useSettingMutable } from '@/sync/domains/state/storage';
 import { listHiddenHomeSetupSteps, setHomeSetupStepHidden } from './homeHubLayout';
 
 export type HomeSetupDismissals = Readonly<{
-    /** Step ids the person dismissed from "Get set up". */
+    /** Step ids completed or dismissed from "Get set up". */
     hidden: ReadonlySet<string>;
     dismiss: (stepId: string) => void;
 }>;
 
 /**
- * The "Get set up" steps the person dismissed, kept on the Account's home layout so every device
- * agrees. Customize → Hidden setup steps brings them back. Reads only the layout setting.
+ * Completed or dismissed "Get set up" steps, kept in the existing Account home layout and its
+ * synchronization scope. Customize → Hidden setup steps brings them back.
  */
 export function useHomeSetupDismissals(): HomeSetupDismissals {
     const [layout, setLayout] = useSettingMutable('homeHubLayoutV1');
+    const currentLayout = React.useRef(layout);
+    currentLayout.current = layout;
     const hiddenKey = listHiddenHomeSetupSteps(layout).join('\u0000');
     const hidden = React.useMemo(() => new Set(hiddenKey ? hiddenKey.split('\u0000') : []), [hiddenKey]);
     const dismiss = React.useCallback((stepId: string) => {
-        const next = setHomeSetupStepHidden(layout, stepId, true);
-        if (next !== layout) setLayout({ order: [...next.order], hidden: [...next.hidden] });
-    }, [layout, setLayout]);
+        // Pairing can finish after other layout edits. Keep those edits and the launching
+        // setter's existing Account-scope guard, rather than replacing a captured old layout.
+        const current = currentLayout.current;
+        const next = setHomeSetupStepHidden(current, stepId, true);
+        if (next !== current) setLayout({ ...next, order: [...next.order], hidden: [...next.hidden] });
+    }, [setLayout]);
     return React.useMemo(() => ({ hidden, dismiss }), [dismiss, hidden]);
 }

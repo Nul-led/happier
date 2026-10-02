@@ -16,7 +16,7 @@ const agent = { agentId: null, name: 'Claude' } as const;
 describe('BrowserPresenceCapsule', () => {
     it('narrates the accessible target for a labeled click', async () => {
         const screen = await renderScreen(
-            <BrowserPresenceCapsule presence={{ kind: 'agent', activity: 'click', target: { x: 0.5, y: 0.4, label: 'Sign in' }, controlEpoch: 0 }} agent={agent} />,
+            <BrowserPresenceCapsule testID="p" presence={{ kind: 'agent', activity: 'click', target: { x: 0.5, y: 0.4, label: 'Sign in' }, controlEpoch: 0 }} agent={agent} />,
         );
         expect(screen.getTextContent()).toContain('Sign in');
     });

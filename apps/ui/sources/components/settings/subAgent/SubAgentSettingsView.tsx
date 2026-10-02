@@ -66,7 +66,7 @@ export const SubAgentSettingsView = React.memo(function SubAgentSettingsView() {
     ), [daemonMergedProjection.inputs?.pluginProjectionById]);
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader description={t('subAgentGuidance.settings.pagePurpose')} />
 
             {executionRunsEnabled ? (

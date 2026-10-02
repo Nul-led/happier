@@ -10,8 +10,7 @@ import { WorkflowsLibraryHome } from './WorkflowsLibraryHome';
 /**
  * `/workflows`. Beside the Workflows column, main shows the library home, which carries only what the
  * column lacks. Without the column — a phone, or a collapsed column — the column is the destination's
- * first screen, so Needs you, Running, History and the Account's triggers are never lost (FIN 04
- * §3.3, §3.4).
+ * first screen, so Definitions, the shared Runs view and Account triggers remain reachable.
  */
 export const WorkflowsDestinationIndex = React.memo(function WorkflowsDestinationIndex() {
     const columnVisible = useAppShellColumn().columnVisible;

@@ -41,11 +41,22 @@ const ACCEPTED_CONTEXT: WorkflowRunAcceptedContextV1 = {
     inputs: { topic: 'release' },
     machineId: 'machine-1',
     executionTarget: { kind: 'detached_run' },
+    materializedLeaves: [],
     workspaceTarget: { project: { machineId: 'machine-1', directory: '/Users/me/project', checkoutRootPath: '/Users/me/project' } },
     origin: { kind: 'direct' },
 };
 
 describe('workflow reviewed-run seed', () => {
+    it('pins each accepted root step target rather than re-reading the current role runs-as', () => {
+        const definition = createWorkflowDefinitionFixture();
+        const seed = buildWorkflowReviewedRunSeed({ run: createWorkflowRunSummaryFixture(), definition,
+            acceptedContext: { ...ACCEPTED_CONTEXT, executionTarget: { kind: 'session' }, materializedLeaves: [{
+                sourceKey: '$root', blockId: 'step-1', kind: 'step', selection: {}, authoredWorkspace: { kind: 'inherit' },
+                executionTarget: { kind: 'detached_run' },
+            }] } });
+        expect(seed.definition.blocks[0]).toMatchObject({ execution: { executionTarget: { kind: 'detached_run' } } });
+        expect(definition.blocks[0]).not.toHaveProperty('execution');
+    });
     beforeEach(() => {
         accountHost.scope = { serverId: 'server-a', accountId: 'account-a' };
     });

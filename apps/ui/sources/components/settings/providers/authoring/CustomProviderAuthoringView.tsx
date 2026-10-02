@@ -88,7 +88,7 @@ export function CustomProviderAuthoringView(props: Readonly<{
                     ? t('settingsProviders.detail.testOnFirstSession')
                     : null;
     return (
-        <ItemList presentation="page" testID="settings-provider-authoring" keyboardShouldPersistTaps="handled">
+        <ItemList testID="settings-provider-authoring" keyboardShouldPersistTaps="handled">
             {props.contextBar}
             <PageHeader
                 testID="settings-provider-authoring-header"

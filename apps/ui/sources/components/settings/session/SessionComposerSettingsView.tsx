@@ -103,7 +103,7 @@ export const SessionComposerSettingsView = React.memo(function SessionComposerSe
     const settings = SESSION_COMPOSER_SETTINGS.settings;
 
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settingsSessionPages.composer.pageDescription')} />
             <ItemGroup
                 title={t('settingsSessionPages.composer.newSessionsSection')}

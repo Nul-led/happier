@@ -111,7 +111,7 @@ function createClient(status: 'enrolled' | 'not_enrolled' = 'enrolled') {
         changeE2eePassword: vi.fn(async () => ({ v: 1 as const, status: 'updated' as const })),
         removePlainPassword: vi.fn(),
         removeE2eePassword: vi.fn(async () => ({ v: 1 as const, status: 'removed' as const })),
-        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ policy: terminalPresentUserPolicy })),
         requestEmailChange: vi.fn(),
     };
 }

@@ -84,7 +84,7 @@ export const RoleDetailScreen = React.memo(function RoleDetailScreen(props: Read
     const entry = catalog.entries.find((candidate) => candidate.roleId === roleId) ?? null;
     if (!entry) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <SurfaceStateCard
                     testID="settings.roles.detail.unavailable"
                     kind={catalog.status === 'failed' ? 'error' : catalog.status === 'loading' ? 'loading' : 'unavailable'}
@@ -171,7 +171,7 @@ const RoleDetail = React.memo(function RoleDetail(props: Readonly<{ entry: RoleC
     ];
 
     return (
-        <ItemList presentation="page" testID={`settings.roles.detail.${entry.roleId}`}>
+        <ItemList testID={`settings.roles.detail.${entry.roleId}`}>
             <PageHeader
                 title={role.name}
                 meta={meta}
@@ -406,7 +406,7 @@ const RoleDraft = React.memo(function RoleDraft() {
         if (await reportFailure(result)) leave(router, ROLES_COLLECTION_ROOT, 'RoleDraft.created');
     };
     return (
-        <ItemList presentation="page" testID="settings.roles.draft">
+        <ItemList testID="settings.roles.draft">
             <PageHeader
                 title={name.trim() || t('roles.settings.newRoleName')}
                 alwaysShowTitle

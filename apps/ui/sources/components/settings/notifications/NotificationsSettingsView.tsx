@@ -287,7 +287,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
         && settingRendersOnHost(NOTIFICATIONS_SETTINGS.settings.enabled);
 
     return (
-        <ItemList style={{ paddingTop: 0 }} testID="settings-notifications-screen" presentation="page">
+        <ItemList style={{ paddingTop: 0 }} testID="settings-notifications-screen">
             <SettingsPageHeader description={t('settingsNotifications.pageDescription')} />
             {isDesktopHost() ? (
                 <NotificationDesktopPermissionSection />

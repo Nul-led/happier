@@ -167,7 +167,7 @@ export const TeamJoinScreen = React.memo(function TeamJoinScreen(props: Readonly
             <TeamJoinStateShell stepId="invalid" onBack={exit}>
                 <TeamJoinTerminalState>
                     <ItemList>
-                        <ItemGroup footer={t('teams.join.askForNew')}>
+                        <ItemGroup description={t('teams.join.askForNew')}>
                             <Item testID="team-join-invalid" title={t('teams.join.invalidTitle')} showChevron={false} />
                             <Item testID="team-join-back" title={t('common.back')} onPress={exit} />
                         </ItemGroup>
@@ -188,7 +188,7 @@ export const TeamJoinScreen = React.memo(function TeamJoinScreen(props: Readonly
             <TeamJoinStateShell stepId={`target-${target.kind}`} onBack={exit}>
                 <TeamJoinTerminalState>
                     <ItemList>
-                        <ItemGroup footer={t('teams.join.unresolvedHomeBody')}>
+                        <ItemGroup description={t('teams.join.unresolvedHomeBody')}>
                             <Item
                                 testID={target.kind === 'ambiguous'
                                     ? 'team-join-ambiguous-home'
@@ -225,7 +225,7 @@ export const TeamJoinScreen = React.memo(function TeamJoinScreen(props: Readonly
             <TeamJoinStateShell stepId="acquisition-failed" onBack={exit}>
                 <TeamJoinTerminalState>
                     <ItemList>
-                        <ItemGroup footer={t('server.notificationAddServerHint')}>
+                        <ItemGroup description={t('server.notificationAddServerHint')}>
                             <Item
                                 testID="team-join-unreachable-home"
                                 title={t('teams.join.unknownHomeTitle')}
@@ -250,7 +250,7 @@ export const TeamJoinScreen = React.memo(function TeamJoinScreen(props: Readonly
             <TeamJoinStateShell stepId="unknown-home" onBack={exit}>
                 <TeamJoinTerminalState>
                     <ItemList>
-                        <ItemGroup footer={t('server.notificationAddServerHint')}>
+                        <ItemGroup description={t('server.notificationAddServerHint')}>
                             <Item
                                 testID="team-join-unknown-home"
                                 title={t('teams.join.unknownHomeTitle')}
@@ -274,7 +274,7 @@ export const TeamJoinScreen = React.memo(function TeamJoinScreen(props: Readonly
             <TeamJoinStateShell stepId="scope-unknown-home" onBack={exit}>
                 <TeamJoinTerminalState>
                     <ItemList>
-                        <ItemGroup footer={t('server.notificationAddServerHint')}>
+                        <ItemGroup description={t('server.notificationAddServerHint')}>
                             <Item testID="team-join-unknown-home" title={t('teams.join.unknownHomeTitle')} showChevron={false} />
                             <Item testID="team-join-add-home" title={t('server.addServerTitle')} onPress={() => router.push('/server')} />
                             <Item testID="team-join-back" title={t('common.back')} onPress={exit} />

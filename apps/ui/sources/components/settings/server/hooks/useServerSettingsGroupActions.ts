@@ -93,18 +93,11 @@ export function useServerSettingsGroupActions(params: Readonly<{
         params.setRevision((r) => r + 1);
     }, [params]);
 
-    const onRenameGroup = React.useCallback(async (profile: ServerSelectionGroup) => {
-        const next = await Modal.prompt(
-            t('server.renameServerGroup'),
-            t('server.renameServerGroupPrompt'),
-            { defaultValue: profile.name, placeholder: t('server.serverGroupNamePlaceholder') },
-        );
-        if (!next) return;
+    const onRenameGroup = React.useCallback(async (profile: ServerSelectionGroup, next: string) => {
         const trimmed = next.trim();
         if (!trimmed) return;
-        // The prompt awaited above; another writer may have changed groups meanwhile.
-        // Derive the mutation from the state present at commit instead of the
-        // snapshot this callback captured.
+        // The page draft may have been open while another writer changed groups.
+        // Derive the mutation from current state, not the callback's snapshot.
         await params.setHomeViewSelectionSettings((current) => {
             const groups = normalizeServerSelectionGroupsForSettings(current.serverSelectionGroups);
             if (!groups.some((item) => item.id === profile.id)) return current;

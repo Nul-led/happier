@@ -42,6 +42,7 @@ function toAccount(entry: UsageSummaryEntry): UsageAccountInput {
         accountEmail: entry.accountEmail ?? null,
         accountId: entry.accountId ?? null,
         planLabel: entry.planLabel,
+        fetchedAt: entry.fetchedAt ?? null,
         state: 'ready',
         meters: entry.meters,
     };
@@ -52,9 +53,9 @@ export function buildUsageSummaryCache(summaries: readonly ConnectedServiceQuota
     if (summaries.length === 0) return null;
     return {
         v: 1,
-        asOf: Math.max(...summaries.map((summary) => summary.fetchedAt)),
         entries: summaries.map((summary) => ({
             key: summary.key,
+            fetchedAt: summary.fetchedAt,
             serviceLabel: summary.serviceLabel,
             serviceGroupKey: summary.serviceGroupKey,
             legacyServiceId: summary.legacyServiceId,
@@ -88,6 +89,7 @@ export function buildUsageSummary(input: Readonly<{
         accountEmail: account.accountEmail,
         accountId: account.accountId,
         planLabel: null,
+        fetchedAt: null,
         state: account.state,
         meters: [],
     }));
@@ -96,7 +98,9 @@ export function buildUsageSummary(input: Readonly<{
     return {
         entries: shown?.entries ?? [],
         accounts: [...(shown?.entries ?? []).map(toAccount), ...pending],
-        asOf: shown?.asOf ?? null,
+        asOf: shown && shown.entries.length > 0 && shown.entries.every((entry) => entry.fetchedAt != null)
+            ? Math.min(...shown.entries.map((entry) => entry.fetchedAt!))
+            : null,
         source: input.live ? 'live' : input.saved ? 'lastKnown' : 'none',
     };
 }

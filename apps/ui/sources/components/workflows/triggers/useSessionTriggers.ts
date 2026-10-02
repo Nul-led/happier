@@ -1,11 +1,15 @@
 import * as React from 'react';
-import type { SessionTriggerAddRequestV1, SessionTriggerUpdateRequestV1, WorkflowTriggerSetV1 } from '@happier-dev/protocol';
+import type { SessionTriggerAddRequestV1, SessionTriggerUpdateRequestV1, SessionTriggerListResultV1Schema, WorkflowTriggerSetV1 } from '@happier-dev/protocol';
+import type { z } from 'zod';
 
-import { getStorage } from '@/sync/domains/state/storage';
+import { getStorage, useActiveServerAccountScope } from '@/sync/domains/state/storage';
+import { serverAccountScopedResourceKey } from '@/sync/domains/scope/serverAccountScope';
+import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import { watchActivePluginCollectionChanges } from '@/sync/api/plugins/data/pluginCollectionChangeWatch';
 import { createWorkflowTriggerChangeSelector, createWorkflowTriggerSetSelector } from '@/sync/store/domains/automations';
 import {
     addSessionTrigger,
-    listSessionTriggerSets,
+    listSessionTriggers,
     removeSessionTrigger,
     updateSessionTrigger,
     type WorkflowTriggerWriteResult,
@@ -19,6 +23,7 @@ export type SessionTriggersRead = Readonly<{
     lastRunAtByAutomationId: Readonly<Record<string, number | null>>;
     /** The session's Machine, used for native capability observations and Action options. */
     machineId: string | null;
+    pullRequestLinks: z.output<typeof SessionTriggerListResultV1Schema>['pullRequestLinks'];
     retry: () => void;
     add: (request: Omit<SessionTriggerAddRequestV1, 'sessionId'>) => Promise<WorkflowTriggerWriteResult>;
     update: (request: Omit<SessionTriggerUpdateRequestV1, 'sessionId'>) => Promise<WorkflowTriggerWriteResult>;
@@ -35,6 +40,8 @@ export type SessionTriggersRead = Readonly<{
  * each row its last outcome.
  */
 export function useSessionTriggers(sessionId: string): SessionTriggersRead {
+    const scope = useActiveServerAccountScope();
+    const linkScopeKey = scope ? serverAccountScopedResourceKey(scope, sessionId) : null;
     const selector = React.useMemo(() => createWorkflowTriggerSetSelector(`session:${sessionId}`), [sessionId]);
     const sets = getStorage()(selector);
     const changeSelector = React.useMemo(() => createWorkflowTriggerChangeSelector(sessionId), [sessionId]);
@@ -50,25 +57,43 @@ export function useSessionTriggers(sessionId: string): SessionTriggersRead {
         () => ({ sessionId, status: 'loading' }),
     );
     const [attempt, setAttempt] = React.useState(0);
+    const [links, setLinks] = React.useState<Readonly<{ scopeKey: string | null; value: SessionTriggersRead['pullRequestLinks'] }>>(
+        () => ({ scopeKey: linkScopeKey, value: [] }),
+    );
     const options = React.useCallback(() => {
         const machineId = readMachineControlTargetForSession(sessionId)?.machineId;
         return machineId ? { context: { externalActionTarget: { kind: 'machine' as const, machineId } } } : {};
     }, [sessionId]);
 
     React.useEffect(() => {
+        if (linkScopeKey === null) return;
+        const accountLifetime = captureActiveServerAccountScopeLifetime();
+        if (!accountLifetime) return;
+        const watch = watchActivePluginCollectionChanges({
+            pluginId: 'happier.channels', collectionId: 'channel-state', accountLifetime,
+            onInvalidated: () => setAttempt((value) => value + 1),
+        });
+        return () => watch?.dispose();
+    }, [linkScopeKey]);
+
+    React.useEffect(() => {
         const controller = new AbortController();
         setState((current) => (current.sessionId === sessionId ? current : { sessionId, status: 'loading' }));
-        listSessionTriggerSets({ sessionId }, { ...options(), signal: controller.signal })
-            .then(() => {
-                if (!controller.signal.aborted) setState({ sessionId, status: 'ready' });
+        listSessionTriggers({ sessionId }, { ...options(), signal: controller.signal })
+            .then((result) => {
+                if (!controller.signal.aborted) {
+                    setLinks({ scopeKey: linkScopeKey, value: result.pullRequestLinks });
+                    setState({ sessionId, status: 'ready' });
+                }
             })
             .catch(() => {
                 if (!controller.signal.aborted) setState((current) => ({ ...current, sessionId, status: 'failed' }));
             });
         return () => controller.abort();
-    }, [attempt, changeSignal, options, sessionId]);
+    }, [attempt, changeSignal, linkScopeKey, options, sessionId]);
 
     const applyWrite = React.useCallback((result: WorkflowTriggerWriteResult) => {
+        setAttempt((value) => value + 1);
         setState((current) => (current.sessionId === sessionId
             ? { ...current, status: 'ready' }
             : current));
@@ -92,6 +117,7 @@ export function useSessionTriggers(sessionId: string): SessionTriggersRead {
     const owned = state.sessionId === sessionId;
     return {
         machineId: readMachineControlTargetForSession(sessionId)?.machineId ?? null,
+        pullRequestLinks: linkScopeKey !== null && links.scopeKey === linkScopeKey ? links.value : [],
         status: owned ? state.status : 'loading',
         sets,
         lastRunAtByAutomationId,

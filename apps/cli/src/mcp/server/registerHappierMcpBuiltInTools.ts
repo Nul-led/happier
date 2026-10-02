@@ -288,6 +288,8 @@ export function registerHappierMcpBuiltInTools(
                         requiredDirectActionIds: params.requiredDirectActionIds,
                         ...(approvalOrigin ? { approvalOrigin } : {}),
                         ...(actionRequestId ? { actionRequestId } : {}),
+                        ...((extra as McpRequestHandlerExtra | undefined)?.signal
+                            ? { signal: (extra as McpRequestHandlerExtra).signal } : {}),
                         deps: params.deps,
                     });
 

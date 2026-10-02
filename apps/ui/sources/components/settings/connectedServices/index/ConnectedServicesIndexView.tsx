@@ -332,7 +332,7 @@ export const ConnectedServicesIndexView = React.memo(function ConnectedServicesI
     );
 
     return (
-        <ItemList presentation="page" pageColumn="wide">
+        <ItemList pageColumn="wide">
             <SettingsPageHeader
                 {...(props.compact ? {} : {
                     title: t('connectedServicesCollection.indexTitle'),

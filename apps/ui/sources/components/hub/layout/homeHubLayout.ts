@@ -260,6 +260,7 @@ export function applyHomeHubLayoutIntent(
         case 'reorder': return reorderHomeHubSections(layout, builtins, widgets, intent.sectionIds);
         case 'visibility': return setHomeHubSectionHidden(layout, builtins, widgets, intent.sectionId, intent.hidden);
         case 'frameStyle': return setHomeHubSectionFrameStyle(layout, builtins, widgets, intent.sectionId, intent.frameStyle);
+        case 'setup_visibility': return setHomeSetupStepHidden(layout, intent.stepId, intent.hidden);
         case 'restore_setup': return showAllHomeSetupSteps(layout);
         case 'reset': return layout.order.length === 0 && layout.hidden.length === 0 && !layout.sections ? layout : HOME_HUB_DEFAULT_LAYOUT;
     }

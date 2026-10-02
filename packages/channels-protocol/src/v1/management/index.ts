@@ -13,6 +13,7 @@ import {
     ConversationBindingUpdateInputV1Schema,
     ConversationBindingUpdateResultV1Schema,
 } from './bindings.js';
+export * from './sessionPullRequestBindings.js';
 import {
     ConversationConnectionCreateInputV1Schema,
     ConversationConnectionCreateResultV1Schema,

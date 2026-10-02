@@ -5,6 +5,7 @@ import {
     WorkflowRunSummariesRequestV1Schema,
     WorkflowRunSummariesResultV1Schema,
     type WorkflowRunSummariesResultV1,
+    type WorkflowRunAcceptedContextV1,
 } from '@happier-dev/protocol/workflows/actionsV1';
 import type {
     WorkflowRunStateV1,
@@ -13,15 +14,15 @@ import type {
 
 import { callWorkflowAction } from './callWorkflowAction';
 import { WorkflowActionError } from './workflowActionError';
+import { workflowRunDetailActions } from './workflowRunDetailActions';
 
 /**
  * The Workflows collection's Run **list** reader.
  *
- * Scope boundary: this module reads the paged Run list for the collection
- * screen only. Exact Run detail, invocation pages and run controls are owned by
- * the Run-detail lane and are deliberately absent here, so there is one reader
- * per concern rather than two overlapping run clients. Row bodies are stored by
- * the existing Account-scoped `workflowRunsById` owner; this module never keeps
+ * Exact Run detail, invocation pages and run controls remain owned by the
+ * Run-detail reader. Role prefill composes that reader with the paged list;
+ * it does not implement another detail client. Row bodies are stored by the
+ * existing Account-scoped `workflowRunsById` owner; this module never keeps
  * a second cache.
  */
 
@@ -89,6 +90,31 @@ export async function listWorkflowRuns(params: Readonly<{
     return { runs: result.runs, metadataByRunId, nextCursor: result.nextCursor };
 }
 
+/** FIN §4.8: memory is the starter's newest accepted Run, not another preference store. */
+export async function readWorkflowRunRolePrefill(params: Readonly<{
+    sourceArtifactId: string;
+    accountId: string;
+    signal: AbortSignal;
+}>): Promise<WorkflowRunAcceptedContextV1['roleOverrides']> {
+    let cursor: string | undefined;
+    do {
+        const page = await listWorkflowRuns({ filter: { sourceArtifactId: params.sourceArtifactId },
+            ...(cursor === undefined ? {} : { cursor }), signal: params.signal });
+        const own = page.runs.find((run) => run.ownerAccountId === params.accountId
+            && run.sourceArtifactId === params.sourceArtifactId);
+        if (own) {
+            const accepted = await workflowRunDetailActions.getRun(own.id, params.signal);
+            if (accepted.run.ownerAccountId !== params.accountId
+                || accepted.run.sourceArtifactId !== params.sourceArtifactId) {
+                throw new WorkflowActionError({ message: 'Workflow role prefill unavailable', rawCode: 'run_access_denied' });
+            }
+            return accepted.acceptedContext.roleOverrides;
+        }
+        cursor = page.nextCursor;
+    } while (cursor !== undefined);
+    return undefined;
+}
+
 /** Lean batch for the rendered saved-workflow page; no Run-detail cache or reads. */
 export async function summarizeWorkflowRuns(params: Readonly<{
     sourceArtifactIds: readonly string[]; recent: number; signal?: AbortSignal;
@@ -131,8 +157,8 @@ export async function getWorkflowRunSummary(runId: string, signal?: AbortSignal)
     return { run, metadata: page.metadataByRunId[run.id] ?? null };
 }
 
-/** The canonical Runs filters History offers, in display order. */
-export const WORKFLOW_RUN_LIST_FILTERS = ['all', 'active', 'attention', 'triggered'] as const;
+/** Shared read windows; starter membership belongs to SessionListFilterV1. */
+export const WORKFLOW_RUN_LIST_FILTERS = ['all', 'active', 'attention'] as const;
 export type WorkflowRunListFilterId = (typeof WORKFLOW_RUN_LIST_FILTERS)[number];
 
 /**
@@ -150,9 +176,5 @@ export function buildWorkflowRunListFilter(id: WorkflowRunListFilterId): Workflo
             return { states: ['queued', 'claimed', 'running', 'pause_requested', 'paused', 'interrupted'] };
         case 'attention':
             return { attention: 'required' };
-        case 'triggered':
-            // Retained history by frozen cause (F24): a run a trigger started stays here after the
-            // trigger is deleted, and a direct run never appears.
-            return { origin: 'automation' };
     }
 }

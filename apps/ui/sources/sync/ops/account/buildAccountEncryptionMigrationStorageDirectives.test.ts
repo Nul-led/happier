@@ -1,19 +1,24 @@
 import { describe, expect, it, vi } from 'vitest';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { ed25519, x25519 } from '@noble/curves/ed25519';
 import * as protocol from '@happier-dev/protocol';
 import {
     ARTIFACT_PLAIN_DATA_KEY_MARKER,
     computeContentPublicKeyFingerprint,
+    decodePlainArtifactStoredContent,
     encodePlainArtifactStoredContent,
     openSessionOwnerMetadataEnvelopeV1,
     sealSessionOwnerMetadataEnvelopeV1,
     signAccountContentKeyBindingV1,
     sealEncryptedDataKeyEnvelopeV1,
     openEncryptedDataKeyEnvelopeV1,
+    WorkflowDefinitionArtifactHeaderV1Schema,
+    workflowDefinitionArtifactSharingAdapterV1,
 } from '@happier-dev/protocol';
 
 import { Encryption } from '@/sync/encryption/encryption';
+import { ArtifactEncryption } from '@/sync/encryption/artifactEncryption';
+import { AES256Encryption } from '@/sync/encryption/encryptor';
 import {
     MACHINE_PLAIN_DATA_KEY_MARKER,
     encodePlainMachineStoredContent,
@@ -46,6 +51,53 @@ describe('buildAccountEncryptionMigrationStorageDirectives', () => {
         },
     };
 
+    it('converts each distinct head and retained binary payload with the replacement Artifact key', async () => {
+        const encryption = await Encryption.create(new Uint8Array(32).fill(7));
+        const artifactId = '11111111-1111-4111-8111-111111111111';
+        const payloads = [new Uint8Array([0, 255, 128]), new Uint8Array([1, 0, 254, 12])];
+        const references = payloads.map((bytes, index) => ({
+            blobId: `00000000-0000-4000-8000-00000000000${index + 1}`,
+            mime: index === 0 ? 'image/png' : 'application/pdf', sizeBytes: bytes.length,
+            sha256: createHash('sha256').update(bytes).digest('hex'),
+        }));
+        const row = { id: artifactId, header: encodePlainArtifactStoredContent({ kind: 'artifact.legacy', title: 'Binary' }),
+            headerVersion: 1, bodyVersion: 3, dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+            body: encodePlainArtifactStoredContent({ body: references[0] }),
+            revisions: [references[1], references[0]].map((body, index) => ({ bodyVersion: index + 1, body: encodePlainArtifactStoredContent({ body }) })),
+        };
+        const inputs = { ...emptyTransitionInventories, machines: [], todos: [], sessions: [],
+            sessionSourceCredentials: tokenOnlyCredentials, sessionTargetCredentials: legacyCredentials };
+        const encrypted = await buildAccountEncryptionMigrationStorageDirectives({ ...inputs,
+            fromMode: 'plain', toMode: 'e2ee', sourceEncryption: null, targetEncryption: encryption, artifacts: [row],
+            readArtifactBlob: async (_id, blobId) => ({ blobId, content: { t: 'plain' as const,
+                v: Buffer.from(payloads[references.findIndex(ref => ref.blobId === blobId)]!).toString('base64') } }),
+        });
+        if (encrypted.artifacts.action !== 'migrate') throw new Error('Missing directive');
+        const item = encrypted.artifacts.items[0]!;
+        const key = await encryption.decryptEncryptionKey(item.dataEncryptionKey);
+        if (!key) throw new Error('Missing target Artifact key');
+        const codec = new ArtifactEncryption(key);
+        expect(item.blobs.map(blob => blob.blobId)).toEqual(references.map(ref => ref.blobId));
+        for (const [index, blob] of item.blobs.entries()) {
+            expect(blob.expectedContentSha256).toBe(references[index]!.sha256);
+            if (blob.content.t !== 'encrypted') throw new Error('Wrong target mode');
+            await expect(codec.decryptBytes(blob.content.c)).resolves.toEqual(payloads[index]);
+        }
+        const plain = await buildAccountEncryptionMigrationStorageDirectives({ ...inputs,
+            fromMode: 'e2ee', toMode: 'plain', sourceEncryption: encryption, targetEncryption: null,
+            sessionSourceCredentials: legacyCredentials, sessionTargetCredentials: null,
+            artifacts: [{ ...row, header: item.header, body: item.body, dataEncryptionKey: item.dataEncryptionKey,
+                revisions: item.revisions.map(revision => ({ bodyVersion: revision.bodyVersion, body: revision.body })) }],
+            readArtifactBlob: async (_id, blobId) => ({ blobId, content: item.blobs.find(blob => blob.blobId === blobId)!.content }),
+        });
+        if (plain.artifacts.action !== 'migrate') throw new Error('Missing plain directive');
+        expect(plain.artifacts.items[0]!.blobs.map(blob => blob.content)).toEqual(payloads.map(bytes => ({ t: 'plain', v: Buffer.from(bytes).toString('base64') })));
+        expect(plain.artifacts.items[0]!.blobs.map(blob => blob.expectedContentSha256)).toEqual(item.blobs.map(blob => {
+            if (blob.content.t !== 'encrypted') throw new Error('Wrong source mode');
+            return createHash('sha256').update(Buffer.from(blob.content.c, 'base64')).digest('hex');
+        }));
+    });
+
     it('round-trips shared and handoff workspace tabs across Account modes with their exact CAS versions', async () => {
         const encryption = await Encryption.create(new Uint8Array(32).fill(7));
         const record = { v: 1, tabsById: { tab: { id: 'tab', target: { kind: 'session', params: { sessionId: 'private-session' } }, pinned: true } }, order: ['tab'], pairs: [] };
@@ -74,9 +126,15 @@ describe('buildAccountEncryptionMigrationStorageDirectives', () => {
         const fingerprint = computeContentPublicKeyFingerprint(contentPublic);
         const signature = signAccountContentKeyBindingV1({ accountSigningSecretKey: new Uint8Array([...signingSecret, ...signingPublic]), contentPublicKey: contentPublic });
         const oldEnvelope = Buffer.from(sealEncryptedDataKeyEnvelopeV1({ dataKey: randomBytes(32), recipientPublicKey: contentPublic, randomBytes })).toString('base64');
-        const rows = [{ id: artifactId, header: encodePlainArtifactStoredContent({ title: 'Shared' }),
-            body: encodePlainArtifactStoredContent({ body: 'Private content' }), headerVersion: 1, bodyVersion: 1,
-            dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER }];
+        const workflowHeader = { kind: 'workflow-definition.v1', definitionId: artifactId,
+            revision: { headerVersion: 1, bodyVersion: 3 }, metadata: { title: '  Shared  ' },
+            savedBy: { kind: 'person', accountId: 'account-a' } };
+        expect(workflowDefinitionArtifactSharingAdapterV1.canShare({ artifactId, header: workflowHeader,
+            revision: workflowHeader.revision })).toBe(true);
+        const rows = [{ id: artifactId, header: encodePlainArtifactStoredContent(workflowHeader),
+            body: encodePlainArtifactStoredContent({ body: 'Private content' }), headerVersion: 1, bodyVersion: 3,
+            dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+            revisions: [{ bodyVersion: 1, body: encodePlainArtifactStoredContent({ body: 'Retained private content' }) }] }];
         const inputs = { ...emptyTransitionInventories, machines: [], todos: [], sessions: [],
             sessionSourceCredentials: tokenOnlyCredentials, sessionTargetCredentials: legacyCredentials };
         const result = await buildAccountEncryptionMigrationStorageDirectives({ ...inputs,
@@ -93,11 +151,22 @@ describe('buildAccountEncryptionMigrationStorageDirectives', () => {
         expect(item.recipientKeyEnvelopes?.map(row => row.recipientAccountId)).toEqual(['peer']);
         const ownerKey = await targetEncryption.decryptEncryptionKey(item.dataEncryptionKey);
         expect(ownerKey).not.toBeNull();
+        const [encryptedHeader] = await new AES256Encryption(ownerKey!).decrypt([new Uint8Array(Buffer.from(item.header, 'base64'))]);
+        const targetHeader = WorkflowDefinitionArtifactHeaderV1Schema.parse(encryptedHeader);
+        expect(encryptedHeader).toEqual({ ...workflowHeader, revision: { headerVersion: 2, bodyVersion: 4 } });
+        expect(workflowDefinitionArtifactSharingAdapterV1.canShare({ artifactId, header: targetHeader,
+            revision: { headerVersion: 2, bodyVersion: 4 } })).toBe(true);
+        expect(item.revisions).toHaveLength(1);
+        expect(item.revisions[0]).toMatchObject({ bodyVersion: 1, expectedBody: rows[0]!.revisions[0]!.body });
+        await expect(new ArtifactEncryption(ownerKey!).decryptBody(item.revisions[0]!.body))
+            .resolves.toEqual({ body: 'Retained private content' });
         expect(openEncryptedDataKeyEnvelopeV1({ envelope: new Uint8Array(Buffer.from(item.recipientKeyEnvelopes![0]!.encryptedDataKey, 'base64')),
             recipientSecretKeyOrSeed: contentSecret })).toEqual(ownerKey);
         const plain = await buildAccountEncryptionMigrationStorageDirectives({ ...inputs, fromMode: 'e2ee', toMode: 'plain',
             sourceEncryption: targetEncryption, targetEncryption: null, sessionSourceCredentials: legacyCredentials, sessionTargetCredentials: null,
-            artifacts: [{ ...rows[0]!, header: item.header, body: item.body, dataEncryptionKey: item.dataEncryptionKey }],
+            artifacts: [{ ...rows[0]!, header: item.header, body: item.body, dataEncryptionKey: item.dataEncryptionKey,
+                headerVersion: 2, bodyVersion: 4,
+                revisions: item.revisions.map(revision => ({ bodyVersion: revision.bodyVersion, body: revision.body })) }],
             readArtifactRecipients: async () => { throw new Error('Plain targets must not discover recipients'); },
         });
         expect(plain.artifacts).toMatchObject({ action: 'migrate', items: [{ dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER }] });
@@ -105,7 +174,70 @@ describe('buildAccountEncryptionMigrationStorageDirectives', () => {
         expect(plain.artifacts.items[0]).toMatchObject({
             expectedDataEncryptionKey: item.dataEncryptionKey,
             recipientKeyEnvelopes: [],
+            revisions: [{ bodyVersion: 1, expectedBody: item.revisions[0]!.body,
+                body: encodePlainArtifactStoredContent({ body: 'Retained private content' }) }],
         });
+        const plainStoredHeader = decodePlainArtifactStoredContent(plain.artifacts.items[0]!.header);
+        const plainHeader = WorkflowDefinitionArtifactHeaderV1Schema.parse(plainStoredHeader);
+        expect(plainStoredHeader).toEqual({ ...workflowHeader, revision: { headerVersion: 3, bodyVersion: 5 } });
+        expect(workflowDefinitionArtifactSharingAdapterV1.canShare({ artifactId, header: plainHeader,
+            revision: { headerVersion: 3, bodyVersion: 5 } })).toBe(true);
+    });
+
+    it('preserves unrecognized Artifact header metadata without repairing malformed workflow headers across Account modes', async () => {
+        const encryption = await Encryption.create(new Uint8Array(32).fill(7));
+        const artifactId = '11111111-1111-4111-8111-111111111111';
+        const inputs = { ...emptyTransitionInventories, machines: [], todos: [], sessions: [],
+            sessionSourceCredentials: tokenOnlyCredentials, sessionTargetCredentials: legacyCredentials };
+        const headers = [
+            { kind: 'future-document.v3', v: 2.9, title: null, sessions: 'future-format', customField: { private: true } },
+            { kind: 'workflow-definition.v1', definitionId: artifactId, revision: { headerVersion: 8, bodyVersion: 9 },
+                metadata: { title: 'Unusable workflow' }, extension: { preserve: true } },
+            // The current UI Action producer injects this presentation-only
+            // field. Raw storage conversion must not repair its strict shape.
+            { kind: 'workflow-definition.v1', definitionId: artifactId, revision: { headerVersion: 1, bodyVersion: 3 },
+                metadata: { title: 'UI-produced workflow' }, title: null },
+        ];
+        for (const header of headers) {
+            expect(workflowDefinitionArtifactSharingAdapterV1.canShare({ artifactId, header,
+                revision: { headerVersion: 1, bodyVersion: 3 } })).toBe(false);
+            const row = { id: artifactId, header: encodePlainArtifactStoredContent(header), headerVersion: 1,
+                body: encodePlainArtifactStoredContent({ body: 'Private content' }), bodyVersion: 3,
+                dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER, revisions: [] };
+            const encrypted = await buildAccountEncryptionMigrationStorageDirectives({ ...inputs,
+                fromMode: 'plain', toMode: 'e2ee', sourceEncryption: null, targetEncryption: encryption, artifacts: [row],
+                readArtifactRecipients: async () => ({ artifactId, ownerAccountId: 'account-a', access: 'owner',
+                    encryptionMode: 'plain', dataEncryptionKey: null, callerDataEncryptionKey: null, recipients: [] }),
+            });
+            if (encrypted.artifacts.action !== 'migrate') throw new Error('Missing encrypted Artifact directive');
+            const item = encrypted.artifacts.items[0]!;
+            const dataKey = await encryption.decryptEncryptionKey(item.dataEncryptionKey);
+            if (!dataKey) throw new Error('Missing replacement key');
+            const [storedHeader] = await new AES256Encryption(dataKey).decrypt([new Uint8Array(Buffer.from(item.header, 'base64'))]);
+            expect(storedHeader).toEqual(header);
+            const plain = await buildAccountEncryptionMigrationStorageDirectives({ ...inputs,
+                fromMode: 'e2ee', toMode: 'plain', sourceEncryption: encryption, targetEncryption: null,
+                sessionSourceCredentials: legacyCredentials, sessionTargetCredentials: null,
+                artifacts: [{ ...row, header: item.header, body: item.body, dataEncryptionKey: item.dataEncryptionKey,
+                    headerVersion: 2, bodyVersion: 4 }],
+            });
+            if (plain.artifacts.action !== 'migrate') throw new Error('Missing plain Artifact directive');
+            expect(decodePlainArtifactStoredContent(plain.artifacts.items[0]!.header)).toEqual(header);
+        }
+    });
+
+    it('rejects an Artifact key-marker disagreement with the persisted source Account mode before transforming retained history', async () => {
+        const encryption = await Encryption.create(new Uint8Array(32).fill(7));
+        const row = { id: '11111111-1111-4111-8111-111111111111',
+            header: encodePlainArtifactStoredContent({ title: 'Plain head' }), headerVersion: 1,
+            body: encodePlainArtifactStoredContent({ body: 'Head' }), bodyVersion: 3,
+            dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+            revisions: [{ bodyVersion: 1, body: encodePlainArtifactStoredContent({ body: 'Retained' }) }] };
+        await expect(buildAccountEncryptionMigrationStorageDirectives({ ...emptyTransitionInventories,
+            machines: [], todos: [], artifacts: [row], sessions: [], fromMode: 'e2ee', toMode: 'plain',
+            sourceEncryption: encryption, targetEncryption: null,
+            sessionSourceCredentials: legacyCredentials, sessionTargetCredentials: null,
+        })).rejects.toThrow('source Account mode');
     });
 
     it('rewrites complete plaintext Machine, Todo, Artifact, and Session inventories for e2ee', async () => {
@@ -155,6 +287,7 @@ describe('buildAccountEncryptionMigrationStorageDirectives', () => {
                     }),
                     bodyVersion: 6,
                     dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+                    revisions: [],
                 }],
                 sessions: [{
                     id: 'session-active',

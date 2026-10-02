@@ -37,6 +37,7 @@ export function buildWorkflowDefinitionCandidate(draft: WorkflowEditorDraft): un
     inputs: draft.inputs,
     defaults: draft.defaults,
     blocks: draft.blocks,
+    ...(draft.roles === undefined ? {} : { roles: draft.roles }),
     ...(draft.finalOutput === undefined ? {} : { finalOutput: draft.finalOutput }),
   };
 }
@@ -122,7 +123,9 @@ export function buildWorkflowEditorDraftFromDefinition(params: Readonly<{
     defaults: params.definition.defaults,
     blocks: params.definition.blocks,
   });
-  const withInputs: WorkflowEditorDraft = { ...base, inputs: params.definition.inputs };
+  const withInputs: WorkflowEditorDraft = { ...base, inputs: params.definition.inputs,
+    ...(params.definition.roles === undefined ? {} : { roles: params.definition.roles }),
+  };
   return params.definition.finalOutput === undefined
     ? withInputs
     : { ...withInputs, finalOutput: params.definition.finalOutput };

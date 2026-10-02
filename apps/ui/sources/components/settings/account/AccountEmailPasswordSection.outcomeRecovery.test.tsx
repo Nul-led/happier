@@ -77,7 +77,7 @@ function createClient(overrides: Partial<Record<string, unknown>> = {}) {
         changeE2eePassword: vi.fn(),
         removePlainPassword: vi.fn(),
         removeE2eePassword: vi.fn(),
-        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ v: 1 as const, terminalPresentUserPolicy })),
+        setTerminalPresentUserPolicy: vi.fn(async (terminalPresentUserPolicy: 'allowed' | 'disallowed') => ({ policy: terminalPresentUserPolicy })),
         requestEmailChange: vi.fn(),
         ...overrides,
     };

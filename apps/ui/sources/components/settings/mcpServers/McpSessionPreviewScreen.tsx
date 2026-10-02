@@ -98,7 +98,7 @@ export const McpSessionPreviewScreen = React.memo(function McpSessionPreviewScre
 
     const executionTarget = resolveExactExecutionTarget(selectedTarget);
     return (
-        <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+        <ItemList keyboardShouldPersistTaps="handled">
             <SettingsPageHeader
                 description={t('mcpSettings.previewPurpose')}
                 actions={(

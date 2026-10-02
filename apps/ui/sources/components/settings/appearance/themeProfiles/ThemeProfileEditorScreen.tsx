@@ -342,7 +342,7 @@ export const ThemeProfileEditorScreen = React.memo(function ThemeProfileEditorSc
 
     if (!draft) {
         return (
-            <ItemList testID="settings-theme-profile-editor" style={{ paddingTop: 0 }} presentation="page">
+            <ItemList testID="settings-theme-profile-editor" style={{ paddingTop: 0 }}>
                 <PageHeader
                     alwaysShowTitle
                     title={t('settingsAppearance.themeProfiles.missingProfile')}
@@ -360,7 +360,7 @@ export const ThemeProfileEditorScreen = React.memo(function ThemeProfileEditorSc
     ];
 
     return (
-        <ItemList testID="settings-theme-profile-editor" style={{ paddingTop: 0 }} presentation="page" keyboardShouldPersistTaps="handled">
+        <ItemList testID="settings-theme-profile-editor" style={{ paddingTop: 0 }} keyboardShouldPersistTaps="handled">
             <PageHeader
                 testID="settings-theme-profile-header"
                 alwaysShowTitle

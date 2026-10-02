@@ -456,7 +456,7 @@ export const McpServerEditorScreen = React.memo(function McpServerEditorScreen()
     if (serverId && !existingServer) {
         if (!settingsLoaded) return null;
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <PageHeader
                     testID="mcp.server.editor.header"
                     alwaysShowTitle
@@ -478,7 +478,7 @@ export const McpServerEditorScreen = React.memo(function McpServerEditorScreen()
     ] : undefined;
 
     return (
-        <ItemList keyboardShouldPersistTaps="handled" presentation="page">
+        <ItemList keyboardShouldPersistTaps="handled">
             <PageHeader
                 testID="mcp.server.editor.header"
                 alwaysShowTitle

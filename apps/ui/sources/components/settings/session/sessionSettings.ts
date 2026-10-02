@@ -111,6 +111,44 @@ export const SESSION_SETTINGS = defineSettingsPage({
             titleKey: 'settingsSession.rootGroups.mobileLayout.title',
             settings: {
                 mobileWorkspaceExperience: { titleKey: 'settingsSession.mobileWorkspaceExperience.title', storage: { scope: 'account', key: 'mobileWorkspaceExperienceV1', access: 'read_write' } },
+                swipeSideways: {
+                    titleKey: 'phoneNav.settings.swipeSidewaysTitle',
+                    storage: { scope: 'account', key: 'sessionCockpitSwipeNavigationEnabled', access: 'read_write' },
+                },
+                alwaysSwipe: {
+                    titleKey: 'phoneNav.settings.alwaysSwipeTitle',
+                    storage: { scope: 'account', key: 'sessionCockpitSwipeAlwaysSessionsEnabled', access: 'read_write' },
+                },
+                dragUp: {
+                    titleKey: 'phoneNav.settings.dragUpTitle',
+                    descriptionKey: 'phoneNav.settings.dragUpDescription',
+                    storage: { scope: 'account', key: 'sessionSwitcherDragUpEnabled', access: 'read_write' },
+                },
+                dragUpSource: {
+                    titleKey: 'phoneNav.settings.dragUpSourceTitle',
+                    keywordKeys: ['phoneNav.settings.sourceRecent', 'phoneNav.settings.sourceList'],
+                    storage: { scope: 'account', key: 'sessionSwitcherDragUpSource', access: 'read_write' },
+                },
+                swipeSource: {
+                    titleKey: 'phoneNav.settings.swipeSourceTitle',
+                    keywordKeys: ['phoneNav.settings.sourceList', 'phoneNav.settings.sourceRecent'],
+                    storage: { scope: 'account', key: 'sessionCockpitSwipeSource', access: 'read_write' },
+                },
+                flick: {
+                    titleKey: 'phoneNav.settings.flickTitle',
+                    descriptionKey: 'phoneNav.settings.flickDescription',
+                    storage: { scope: 'account', key: 'sessionSwitcherFlickEnabled', access: 'read_write' },
+                },
+                holdToDock: {
+                    titleKey: 'phoneNav.settings.holdToDockTitle',
+                    descriptionKey: 'phoneNav.settings.holdToDockDescription',
+                    storage: { scope: 'account', key: 'sessionSwitcherHoldToDockEnabled', access: 'read_write' },
+                },
+                pullAllTabs: {
+                    titleKey: 'phoneNav.settings.pullAllTabsTitle',
+                    descriptionKey: 'phoneNav.settings.pullAllTabsDescription',
+                    storage: { scope: 'account', key: 'sessionHeaderPullAllTabsEnabled', access: 'read_write' },
+                },
             },
         },
         openTabs: {

@@ -420,7 +420,7 @@ export function PetsSettingsScreen() {
 
     if (!companionEnabled) {
         return (
-            <ItemList style={{ paddingTop: 0 }} presentation="page">
+            <ItemList style={{ paddingTop: 0 }}>
                 <SettingsPageHeader description={t('settings.petsSubtitle')} />
                 <ItemGroup>
                     <Item
@@ -434,7 +434,7 @@ export function PetsSettingsScreen() {
     }
 
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             <SettingsPageHeader
                 description={t('settings.petsSubtitle')}
                 actions={(

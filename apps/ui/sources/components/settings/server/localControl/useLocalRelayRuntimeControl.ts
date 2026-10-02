@@ -14,8 +14,8 @@ import { removeServerProfileUiAction } from '@/components/serverProfiles/removeS
 import { disconnectThisComputerBeforeForgettingHome } from '@/components/serverProfiles/disconnectThisComputerFromHome';
 import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 import {
-    findPersonalHomeBootstrapCompletedProfile,
     listServerProfiles,
+    retirePersonalHomeBootstrapCompletion,
 } from '@/sync/domains/server/serverProfiles';
 
 type RelayRuntimeActionKind =
@@ -592,6 +592,7 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             return restore;
         }, [inspection?.restoreRecovery.status, refreshAfterMutation, runPersonalHomeTask]),
         erasePersonalHomeData: React.useCallback(async (promptContinuation?: SystemTaskPromptContinuation) => {
+            let erasedIdentity = inspectionRef.current?.homeServerIdentityId ?? null;
             // R15 c: the Home is going away. Once the person confirmed the erase — and before the task
             // destroys any data — this computer stops serving it through the same disconnect as
             // removing a Home; when that must not go ahead, the erase is answered "not confirmed".
@@ -603,6 +604,9 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
                     const data = (prompt.data ?? {}) as { canonicalServerUrl?: unknown; homeServerIdentityId?: unknown };
                     const serverUrl = typeof data.canonicalServerUrl === 'string' ? data.canonicalServerUrl.trim() : '';
                     if (!confirmed || !serverUrl) return answer;
+                    erasedIdentity = typeof data.homeServerIdentityId === 'string'
+                        ? data.homeServerIdentityId.trim() || null
+                        : erasedIdentity;
                     const mayErase = await disconnectThisComputerBeforeForgettingHome({
                         serverUrl,
                         serverIdentityId: typeof data.homeServerIdentityId === 'string' ? data.homeServerIdentityId : null,
@@ -633,26 +637,28 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
                 inspectionError: typeof data?.inspectionError === 'string' ? data.inspectionError : null,
                 error: typeof data?.error === 'string' ? data.error : null,
             };
-            setLastOperation({ operation: 'erase', erase });
-            // The Home's data is gone. Leaving this device's saved profile, credential and
-            // Personal Home completion receipt behind would keep the shell reporting the
-            // erased Home as ready, so the same completion path drops that binding through
-            // the canonical profile-removal owner. A guard refusal is not fatal: the erase
-            // already succeeded and the explicit "Remove Home from Happier" action remains.
-            const erasedIdentity = inspectionRef.current?.homeServerIdentityId ?? null;
-            const completedProfile = findPersonalHomeBootstrapCompletedProfile(listServerProfiles());
-            if (completedProfile && (!erasedIdentity || completedProfile.serverIdentityId === erasedIdentity)) {
+            // Partial deletion retains its saved binding. Once data is gone, completion is
+            // retired before guarded credential/profile cleanup, which may still refuse.
+            const erasedProfile = erasedIdentity
+                ? listServerProfiles().find((profile) => profile.serverIdentityId === erasedIdentity)
+                : null;
+            if (erase.outcome !== 'partial' && erasedProfile && erasedIdentity) {
                 try {
-                    await removeServerProfileUiAction({
-                        profileId: completedProfile.id,
-                        serverUrl: completedProfile.serverUrl,
+                    await retirePersonalHomeBootstrapCompletion(erasedIdentity);
+                    const removal = await removeServerProfileUiAction({
+                        profileId: erasedProfile.id,
+                        serverUrl: erasedProfile.serverUrl,
                         // Disconnected above, after the erase was confirmed and before any data went.
                         thisComputer: 'disconnected',
                     });
-                } catch {
-                    // Keep the erase result; the profile row stays removable by hand.
+                    if (removal.kind !== 'completed') throw new Error(t('errors.operationFailed'));
+                } catch (error) {
+                    erase.outcome = 'completed_with_cleanup_attention';
+                    const cleanupError = error instanceof Error ? error.message : t('errors.operationFailed');
+                    erase.error = [erase.error, cleanupError].filter(Boolean).join('\n');
                 }
             }
+            setLastOperation({ operation: 'erase', erase });
             refreshAfterMutation();
             return erase;
         }, [refreshAfterMutation, runPersonalHomeTask, runner]),

@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import type { FeatureId } from '@happier-dev/protocol';
+import type { AccountSettingKey, FeatureId } from '@happier-dev/protocol';
 
 import type { TranslationKeyNoParams } from '@/text';
 import { desktopHostKind, isDesktopHost } from '@/utils/platform/desktopHost';
@@ -18,7 +18,7 @@ export type SettingStorageBinding = Readonly<{
     /** The row's positive boolean answer is stored as an opt-out preference. */
     invertBoolean?: boolean;
 }> & (
-    | Readonly<{ scope: 'account'; key: ScalarSettingKeys<Pick<Settings, WritableSettingsKey>> }>
+    | Readonly<{ scope: 'account'; key: ScalarSettingKeys<Pick<Settings, AccountSettingKey & WritableSettingsKey>> }>
     | Readonly<{ scope: 'local'; key: ScalarSettingKeys<LocalSettings> }>
 );
 

@@ -58,7 +58,9 @@ import { providerCollectionTranslations } from './providerCollectionTranslations
 import { settingsSearchKeywordsTranslations } from './settingsSearchKeywordsTranslations';
 import { automationPageTranslations } from './automationPageTranslations';
 import { settingsSessionPagesTranslations } from './settingsSessionPagesTranslations';
-import { workspaceTabTranslations } from './workspaceTabTranslations';
+import { workspaceTabKeyboardTranslations, workspaceTabTranslations } from './workspaceTabTranslations';
+import { terminalWorkspaceKeyboardTranslations, terminalWorkspaceTranslations } from './terminalWorkspaceTranslations';
+import { phoneNavigationTranslations } from './phoneNavigationTranslations';
 import { workspaceBarTranslations } from './workspaceBarTranslations';
 import { settingsProfilesRemoteHostsPageTranslations } from './settingsProfilesRemoteHostsPageTranslations';
 import { profilesPageTranslations } from './profilesPageTranslations';
@@ -74,6 +76,7 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { detailPageTranslations } from './detailPageTranslations';
 import { rolesTranslations } from './rolesTranslations';
 import { boardsTranslations } from './boardsTranslations';
+import { artifactsBrowserTranslations } from './artifactsBrowserTranslations';
 import { workStatusTranslations } from './workStatusTranslations';
 import { shareSheetTranslations } from './shareSheetTranslations';
 import { surfaceStateTranslations } from './surfaceStateTranslations';
@@ -1020,6 +1023,8 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         setShortcutInvalidMessage: '輸入至少一個非修飾鍵，可以選擇使用 Mod、Ctrl、Shift 或 Alt。',
         resetCommandAccessibility: ({ command }: { command: string }) => `Reset ${command} shortcut`,
       commands: {
+          ...workspaceTabKeyboardTranslations,
+          ...terminalWorkspaceKeyboardTranslations,
           composerAbortConfirm: '確認中止',
           composerFocus: '聚焦輸入框',
           composerSendImmediate: '立即傳送',
@@ -5368,6 +5373,8 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
     },
 
   newSession: {
+    terminalHostUnavailableTitle: '終端宿主無法使用',
+    terminalHostUnavailableBody: ({ host }: { host: string }) => `請在此裝置上安裝或更新 ${host} 並重新啟動其伺服器，或選擇其他終端宿主。草稿已保留。`,
     folder: folderlessSessionTranslations.zhHant.composer,
     ...newSessionMcpTranslationExtension,
     ...acpCatalogTranslationExtension.newSession,
@@ -10529,6 +10536,8 @@ settingsSession: {
     },
 
     terminal: {
+        plaintextStorage: 'Home-managed (not end-to-end encrypted)',
+        plaintextStorageDescription: 'This Home can read Account data. The connection response is encrypted for this terminal.',
         // Used by terminal connection screens
         webBrowserRequired: '需要 Web 瀏覽器',
         webBrowserRequiredDescription: '出於安全原因，終端連線連結只能在 Web 瀏覽器中開啟。請使用 QR Code 掃描器或在電腦上開啟此連結。',
@@ -10563,12 +10572,10 @@ settingsSession: {
             selectAllAction: '選取全部終端機輸出',
             openLinkAction: '開啟所選連結',
         },
-        dockMenuA11y: '停靠終端',
         largePasteTitle: '要貼上大量終端機輸入嗎？',
         largePasteDescription: '這段貼上內容較大，可能會在終端機中執行指令。繼續前請先檢查。',
         largePasteConfirm: '貼到終端機',
         settings: {
-            locationTitle: '嵌入式終端位置',
             rendererTitle: '終端機渲染器',
             rendererAuto: '自動',
             rendererAutoDescription: '當所有原生安全檢查通過且螢幕閱讀器未開啟時優先使用原生渲染器；螢幕閱讀器開啟期間切換到可及性較佳的 xterm.js 網頁視圖。',
@@ -10583,11 +10590,6 @@ settingsSession: {
             ctrlC: 'Ctrl + C',
             ctrlD: 'Ctrl + D',
             enter: '回車',
-        },
-        location: {
-            sidebar: '側邊欄',
-            details: '詳細面板',
-            bottom: '底部面板',
         },
         errors: {
             missingMachineTarget: '此工作階段缺少機器目標。',
@@ -11034,6 +11036,11 @@ settingsSession: {
 	    },
 
     machine: {
+        tmux: {
+            overrideTitle: '覆蓋帳戶預設值',
+            overrideEnabledSubtitle: '此裝置的新工作階段使用自己的終端宿主。',
+            overrideDisabledSubtitle: '新工作階段繼承帳戶的終端宿主。',
+        },
         launchNewSessionInDirectory: '在目錄中啟動新工作階段',
         offlineUnableToSpawn: '裝置離線時無法啟動',
         unnamedMachine: "未命名的機器",
@@ -11349,11 +11356,10 @@ settingsSession: {
     },
 
     artifacts: {
+        browser: artifactsBrowserTranslations['zh-Hant'],
         title: '工件',
         countSingular: '1 個工件',
         countPlural: ({ count }: { count: number }) => `${count} 個工件`,
-        empty: '暫無工件',
-        emptyDescription: '建立您的第一個工件來儲存和組織內容',
         new: '新建工件',
         edit: '編輯工件',
         delete: '刪除',
@@ -11367,9 +11373,7 @@ settingsSession: {
         bodyPlaceholder: '在此輸入內容...',
         save: '儲存',
         saving: '儲存中...',
-        loading: '載入中...',
         error: '載入工件失敗',
-        titleLabel: '標題',
         bodyLabel: '內容',
         emptyFieldsError: '请输入標題或內容',
         createError: '建立工件失敗。請重試。',
@@ -11691,6 +11695,8 @@ settingsSession: {
   ...automationPageTranslations['zh-Hant'],
     ...settingsSessionPagesTranslations['zh-Hant'],
     ...workspaceTabTranslations['zh-Hant'],
+    ...terminalWorkspaceTranslations['zh-Hant'],
+    ...phoneNavigationTranslations['zh-Hant'],
     ...workspaceBarTranslations['zh-Hant'],
   ...settingsProfilesRemoteHostsPageTranslations['zh-Hant'],
   ...profilesPageTranslations['zh-Hant'],

@@ -10,6 +10,7 @@ import type { AgentCliRuntimeDescriptor } from '@happier-dev/cli-common/agents';
 import { execFileWithDeadline, isPidPresent, ExecFileTerminationError } from '@happier-dev/cli-common/process';
 import { create as createTar } from 'tar';
 import type { AgentInstallJobOutcome } from '@happier-dev/protocol';
+import { PluginAgentContributionV2Schema, PluginManifestV2Schema } from '@happier-dev/protocol';
 import { PLUGIN_MANIFEST as antigravityManifest } from '@happier-dev/plugins-antigravity/manifest';
 import cliTestConfig from '../../../vitest.config';
 import { killProcessTree } from '@/agent/runtime/process/killProcessTree';
@@ -322,7 +323,7 @@ test.skipIf(process.platform === 'win32')('update runs and verifies the existing
   }
 });
 
-test.skipIf(process.platform === 'win32')('job installs and checks the declared plugin dependency through its projected installable identity', async () => {
+test.skipIf(process.platform === 'win32').each(['local', 'qualified', 'cross-plugin'] as const)('job installs and checks the %s plugin dependency through its projected installable identity', async (referenceKind) => {
   const root = await mkdtemp(join(tmpdir(), 'agent-job-dependency-'));
   let owner: AgentInstallJobOwner | undefined;
   const binary = Buffer.from('#!/bin/sh\nprintf "fixture-agent 1.2.3\\n"\n');
@@ -349,7 +350,7 @@ test.skipIf(process.platform === 'win32')('job installs and checks the declared 
       acceptsJavaScriptFileOverride: false,
     };
     const dependency = {
-      provenance: 'external', source: { kind: 'path' }, pluginId: 'fixture.plugin', manifestPath: join(root, 'plugin.json'),
+      provenance: 'external', source: { kind: 'path' }, pluginId: referenceKind === 'cross-plugin' ? 'fixture.tools' : 'fixture.plugin', manifestPath: join(root, 'plugin.json'),
       definition: {
         id: 'companion-local', title: 'Fixture companion', executable: 'companion', sources: [{
           kind: 'pinnedArchive', installId: 'dep.fixture.companion', version: '2.0.0',
@@ -359,13 +360,13 @@ test.skipIf(process.platform === 'win32')('job installs and checks the declared 
         }],
       },
     } satisfies ResolvedInstallableContribution;
-    const declaration = antigravityManifest.contributes.agents?.find((agent) => agent.id === 'antigravity');
+    const declaration = PluginManifestV2Schema.parse(antigravityManifest).contributes.agents.find((agent) => agent.id === 'antigravity');
     if (!declaration || !('runtime' in declaration) || declaration.runtime.kind !== 'acp') throw new Error('Missing canonical ACP declaration fixture');
     const rich = { provenance: 'external' as const, definition: declaration };
     owner = createAgentInstallJobOwner({
       readRegistry: () => ({
         agents: [{ ...registryWith(spec).agents[0], richDefinition: {
-          ...rich, definition: { ...rich.definition, runtime: { ...rich.definition.runtime, transport: { kind: 'stdio', executable: { kind: 'managedDependency', id: 'companion-local' } } } },
+          ...rich, definition: PluginAgentContributionV2Schema.parse({ ...rich.definition, runtime: { ...rich.definition.runtime, transport: { kind: 'stdio', executable: { kind: 'managedDependency', id: referenceKind === 'local' ? 'companion-local' : { pluginId: dependency.pluginId, localId: 'companion-local' } } } } }),
         }, hostAccess: { required: [{ id: 'companion-process', capability: 'process', reason: 'Run companion', scope: { executables: [{ kind: 'managedDependency', id: 'companion-local' }] } }], optional: [] } }],
         managedDependencies: [dependency],
       }),
@@ -402,13 +403,13 @@ test('a declared unsupported dependency fails before the agent CLI acquires anyt
     manualInstallKind: 'none', manualInstallRecipes: null, acceptsJavaScriptFileOverride: false,
   };
   const releaseBoundary = vi.fn(async () => { throw new Error('No acquisition was authorized'); });
-  const declaration = antigravityManifest.contributes.agents?.find((agent) => agent.id === 'antigravity');
+  const declaration = PluginManifestV2Schema.parse(antigravityManifest).contributes.agents.find((agent) => agent.id === 'antigravity');
   if (!declaration || !('runtime' in declaration) || declaration.runtime.kind !== 'acp') throw new Error('Missing canonical ACP declaration fixture');
   owner = createAgentInstallJobOwner({
     readRegistry: () => ({
-      agents: [{ ...registryWith(spec).agents[0], richDefinition: { provenance: 'external', definition: {
+      agents: [{ ...registryWith(spec).agents[0], richDefinition: { provenance: 'external', definition: PluginAgentContributionV2Schema.parse({
         ...declaration, runtime: { ...declaration.runtime, transport: { kind: 'stdio', executable: { kind: 'managedDependency', id: 'companion' } } },
-      } } }],
+      }) } }],
       managedDependencies: [{
         provenance: 'external', source: { kind: 'path' }, pluginId: 'fixture.plugin', manifestPath: '/fixture/plugin.json',
         definition: { id: 'companion', title: 'Fixture companion', executable: 'companion', sources: [{ kind: 'pinnedArchive', installId: 'dep.fixture.companion', version: '2.0.0', assetsByPlatform: { 'darwin-arm64': { archiveUrl: 'https://example.invalid/never-download.tar.gz', sha256: '0'.repeat(64), executableSubpath: 'companion' } } }] },

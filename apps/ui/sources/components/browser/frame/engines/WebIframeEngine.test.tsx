@@ -13,6 +13,7 @@ import { createBrowserAutomationControlService } from '@/sync/domains/browser/au
 
 import { WebIframeEngine } from './WebIframeEngine';
 import { buildInjectedBrowserDiagnosticsScript } from '../../adapters/diagnostics';
+import { buildInjectedBrowserDiagnosticsRuntimeScript } from '@happier-dev/peer-mediation/browser/collector/build';
 
 type TestWindow = Window & typeof globalThis;
 
@@ -91,25 +92,27 @@ function diagnosticBatch(overrides: Record<string, unknown> = {}): Record<string
 }
 
 describe('WebIframeEngine diagnostics wiring', () => {
-    it('admits an isolated cooperative preview only after its exact-source and nonce handshake, then drives the real collector', async () => {
+    it.each(['pagehide', 'load'] as const)('admits an isolated cooperative preview only after its exact-source and nonce handshake, drives the real collector and retires on %s', async (retirement) => {
         const host = installTestWindow();
-        const button = new EventTarget();
+        const button = Object.assign(new EventTarget(), { getAttribute: () => null, innerText: 'Click' });
         const clicked = vi.fn(); button.addEventListener('click', clicked);
         const document = { title: 'Cooperative preview', readyState: 'complete', documentElement: { nodeType: 1 }, querySelectorAll: (selector: string) => selector === '#button' ? [button] : [] };
         const frame = Object.assign(new EventTarget(), {
             location: { origin: 'https://preview.example.test', href: 'https://preview.example.test/' },
             localStorage: { length: 0 }, sessionStorage: { length: 0 },
-            parent: { postMessage: (data: string) => queueMicrotask(() => dispatchMessage(host, { data, origin: 'https://preview.example.test', source: frame as unknown as WindowProxy })) },
+            parent: host,
             postMessage: (data: string) => queueMicrotask(() => dispatchMessage(frame, { data, origin: 'https://app.example.test', source: host })),
         });
+        host.postMessage = (data: string) => queueMicrotask(() => dispatchMessage(host, { data, origin: 'https://preview.example.test', source: frame as unknown as WindowProxy }));
         Object.defineProperty(frame, 'document', { get: () => { throw new DOMException('Cross origin', 'SecurityError'); } });
         const identity = { browserSessionId: 'browser_session_1', viewId: 'view_1', navigationGeneration: 6, collectorId: 'collector_1', nonce: 'nonce_1' };
         const service = createBrowserAutomationControlService({ nowMs: Date.now });
-        const screen = await renderScreen(<WebIframeEngine title="Cooperative" url="https://preview.example.test/" sandbox="allow-scripts allow-same-origin" testID="cooperative"
+        const screen = await renderScreen(<WebIframeEngine title="Cooperative" url="https://preview.example.test/?signed=a%20b" sandbox="allow-scripts allow-same-origin" testID="cooperative"
             diagnostics={{ ...identity, collectorVersion: '1.0.0', sourceOrigin: 'https://preview.example.test', webPostMessageTargetOrigin: 'https://app.example.test', onEvents: vi.fn() }}
             automation={{ ...identity, capabilityVersion: '1.0.0', sourceOrigin: 'https://preview.example.test', adapterKind: 'localPreview', supportedActions: ['click'], controlService: service }}
         />, { createNodeMock: (element) => element.type === 'iframe' ? { contentWindow: frame } : null });
         expect(new URL(screen.findByType('iframe').props.src).searchParams.has('__happierCollector')).toBe(true);
+        expect(screen.findByType('iframe').props.src).toContain('?signed=a%20b&');
         const ready = { v: 1, kind: 'browser.collector.ready', ...identity };
         await act(async () => {
             dispatchMessage(host, { data: JSON.stringify({ ...ready, nonce: 'wrong' }), origin: 'https://preview.example.test', source: frame as unknown as WindowProxy });
@@ -118,12 +121,44 @@ describe('WebIframeEngine diagnostics wiring', () => {
         });
         const action = { v: 1 as const, ...identity, automationRequestId: 'click_cooperative', actionKind: 'click' as const, requestedBy: 'agent' as const, requesterRef: { kind: 'session' as const, id: 'session_1' }, timeoutMs: 1000, payload: { locator: { kind: 'css', value: '#button' } } };
         expect((await service.executeAction(action)).status).not.toBe('succeeded');
-        new Function('window', 'document', 'console', 'performance', 'Event', buildInjectedBrowserDiagnosticsScript({ ...identity, version: '1.0.0', webPostMessageTargetOrigin: 'https://app.example.test' }))(frame, document, { log() {}, info() {}, warn() {}, error() {}, debug() {} }, { getEntriesByType: () => [] }, Event);
-        await act(async () => dispatchMessage(host, { data: JSON.stringify(ready), origin: 'https://preview.example.test', source: frame as unknown as WindowProxy }));
+        const config = JSON.parse(new URL(screen.findByType('iframe').props.src).searchParams.get('__happierCollector')!);
+        await act(async () => {
+            new Function('window', 'document', 'console', 'performance', 'Event', buildInjectedBrowserDiagnosticsRuntimeScript(JSON.stringify({ ...config, cooperativePreview: true })))(frame, document, { log() {}, info() {}, warn() {}, error() {}, debug() {} }, { getEntriesByType: () => [] }, Event);
+        });
         expect((await service.executeAction(action)).status).toBe('succeeded');
         expect(clicked).toHaveBeenCalledOnce();
+        await act(async () => screen.findByType('iframe').props.onLoad());
+        expect((await service.executeAction({ ...action, automationRequestId: 'after_first_load' })).status).toBe('succeeded');
+        await act(async () => {
+            if (retirement === 'pagehide') frame.dispatchEvent(new Event('pagehide'));
+            else screen.findByType('iframe').props.onLoad();
+        });
+        expect((await service.executeAction({ ...action, automationRequestId: 'after_navigation' })).status).not.toBe('succeeded');
+        await act(async () => dispatchMessage(host, { data: JSON.stringify(ready), origin: 'https://preview.example.test', source: frame as unknown as WindowProxy }));
+        expect((await service.executeAction({ ...action, automationRequestId: 'stale_ready' })).status).not.toBe('succeeded');
         await screen.unmount();
+        expect(Reflect.get(frame, '__happierBrowserRuntime')).toBeUndefined();
         expect((await service.executeAction({ ...action, automationRequestId: 'retired' })).status).not.toBe('succeeded');
+    });
+
+    it.each(['collector_blocked_by_csp', 'runtime_unavailable'] as const)('reports cooperative refusal %s through the authorized metadata-only probe, without admitting an owner', async (state) => {
+        installTestWindow();
+        const rejection = vi.fn();
+        const fetchBoundary = vi.fn(async (url: string) => ({ ok: true, url, json: async () => ({ state }) }));
+        vi.stubGlobal('fetch', fetchBoundary);
+        const identity = { browserSessionId: 'bs', viewId: 'v', navigationGeneration: 1, collectorId: 'c', nonce: 'n' };
+        const service = createBrowserAutomationControlService({ nowMs: Date.now });
+        const screen = await renderScreen(<WebIframeEngine title="Blocked" url="https://preview.example.test/" sandbox="allow-scripts allow-same-origin" testID="blocked"
+            diagnostics={{ ...identity, collectorVersion: '1.0.0', sourceOrigin: 'https://preview.example.test', webPostMessageTargetOrigin: 'https://app.example.test', onEvents: vi.fn() }}
+            automation={{ ...identity, capabilityVersion: '1.0.0', sourceOrigin: 'https://preview.example.test', adapterKind: 'localPreview', supportedActions: ['click'], controlService: service, onRegistrationRejected: rejection }}
+        />, { createNodeMock: (element) => element.type === 'iframe' ? { contentWindow: {} } : null });
+        await act(async () => screen.findByType('iframe').props.onLoad());
+        expect(rejection).toHaveBeenCalledWith(state);
+        const probe = new URL(fetchBoundary.mock.calls[0]![0]);
+        expect(probe.origin).toBe('https://preview.example.test');
+        expect(probe.searchParams.get('__happierCollectorState')).toBe('1');
+        expect((await service.executeAction({ v: 1, ...identity, automationRequestId: 'blocked', actionKind: 'click', requestedBy: 'agent', requesterRef: { kind: 'session', id: 's' }, timeoutMs: 1000, payload: { locator: { kind: 'css', value: '#button' } } })).status).not.toBe('succeeded');
+        await screen.unmount();
     });
 
     it('installs the collector in the loaded same-origin document before admitting page actions and retires it on unmount', async () => {
@@ -131,7 +166,7 @@ describe('WebIframeEngine diagnostics wiring', () => {
         const page = new EventTarget();
         const clicked = vi.fn();
         const diagnosticEvents = vi.fn();
-        const button = new EventTarget();
+        const button = Object.assign(new EventTarget(), { getAttribute: () => null, innerText: 'Click' });
         button.addEventListener('click', clicked);
         const scriptNodes: Array<{ textContent: string; remove: () => void }> = [];
         const documentBoundary = {

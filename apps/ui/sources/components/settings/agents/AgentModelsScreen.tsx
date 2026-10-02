@@ -254,7 +254,7 @@ export const AgentModelsScreen = React.memo(function AgentModelsScreen(props: Re
     // The page as it stands before the model list can show: its header (with the machine chip, the
     // control that recovers these states) above the one state row.
     const statePage = (row: React.ReactNode) => (
-        <ItemList presentation="page">
+        <ItemList>
             {header}
             <ItemGroup>{row}</ItemGroup>
         </ItemList>

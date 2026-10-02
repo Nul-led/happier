@@ -59,6 +59,8 @@ function createDeterministicBackend(label: string): VoiceTestRuntime<{ getSeenPr
   let runtime: ReturnType<typeof createTestExecutionRunHostRuntime>;
   runtime = createTestExecutionRunHostRuntime({
     runtimeId: sessionId,
+    providerSessionId: sessionId,
+    resumeSupported: true,
     onProvisionRuntime() {
       runtime.emitMessage({ type: 'status', status: 'running' });
     },
@@ -530,6 +532,8 @@ describe('VoiceAgentManager', () => {
         const occurrence = runtimeCount;
         return createTestExecutionRunHostRuntime({
           runtimeId: `voice-session-${occurrence}`,
+          providerSessionId: `voice-session-${occurrence}`,
+          resumeSupported: true,
           onProvisionRuntime: async () => {
             if (occurrence !== 1) return;
             firstProvisionStarted();
@@ -1774,7 +1778,7 @@ describe('VoiceAgentManager', () => {
     expect(commit.commitText).not.toContain(cancelledText);
   });
 
-  it('re-seeds a fresh chat session after cancelling a mid-conversation turn', async () => {
+  it('replays completed textual history when cancellation requires a fresh chat session', async () => {
     let promptCount = 0;
     let releaseCancelledPrompt: (() => void) | null = null;
     let cancelledRuntime: ReturnType<typeof createTestExecutionRunHostRuntime>;
@@ -1783,7 +1787,7 @@ describe('VoiceAgentManager', () => {
       async onSendPrompt() {
         promptCount += 1;
         if (promptCount === 1) {
-          cancelledRuntime.emitMessage({ type: 'model-output', fullText: 'first response' });
+          cancelledRuntime.emitMessage({ type: 'model-output', fullText: 'first response <voice_actions>{"actions":[{"t":"ui.voice_agent.teleport","args":{"sessionId":"prior-effect-session"}}]}</voice_actions>' });
           cancelledRuntime.emitMessage({ type: 'status', status: 'idle' });
           return;
         }
@@ -1821,6 +1825,10 @@ describe('VoiceAgentManager', () => {
     expect(replacementRuntime.prompts).toHaveLength(1);
     expect(replacementRuntime.prompts[0]).toContain('CURRENT VOICE CONTEXT');
     expect(replacementRuntime.prompts[0]).toContain('next turn');
+    expect(replacementRuntime.prompts[0]).toContain('first turn');
+    expect(replacementRuntime.prompts[0]).toContain('first response');
+    expect(replacementRuntime.prompts[0]).not.toContain('cancel this turn');
+    expect(replacementRuntime.prompts[0]).not.toContain('prior-effect-session');
   });
 
   it('retires the complete voice agent cleanly when cancelled-backend replacement creation fails', async () => {

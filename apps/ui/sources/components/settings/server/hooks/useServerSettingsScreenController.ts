@@ -81,7 +81,7 @@ export type ServerSettingsController = Readonly<{
     onSwitchGroup: (profile: ServerSelectionGroup) => Promise<void>;
     onRenameServer: (profile: ServerProfile) => Promise<void>;
     onRemoveServer: (profile: ServerProfile) => Promise<void>;
-    onRenameGroup: (profile: ServerSelectionGroup) => Promise<void>;
+    onRenameGroup: (profile: ServerSelectionGroup, name: string) => Promise<void>;
     onRemoveGroup: (profile: ServerSelectionGroup) => Promise<void>;
     onCreateServerGroup: (params: { name: string; serverIds: string[] }) => Promise<boolean>;
 

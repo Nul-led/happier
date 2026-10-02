@@ -1,8 +1,10 @@
 import * as React from 'react';
-import { View } from 'react-native';
+import { Pressable, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 import { createSessionSurfaceNoteDocumentV1, type SessionSurfaceItemV1 } from '@happier-dev/protocol/sessions/board';
 
+import { WidgetFrameAppearanceSection } from '@/components/settings/appearance/WidgetFrameAppearanceSection';
+import { ItemList } from '@/components/ui/lists/ItemList';
 import { SessionWidgetHost, type SessionWidgetDensity } from '@/components/sessions/board/SessionWidgetHost';
 import { SessionAgentPlanCard } from '@/components/sessions/companion/plan/SessionAgentPlanCard';
 import { projectSessionAgentPlan } from '@/components/sessions/companion/plan/sessionAgentPlan';
@@ -184,7 +186,24 @@ function StatesBoard(props: Readonly<{ phone: boolean }>) {
     );
 }
 
+/** WA: the arrival ring is one-shot, so the specimen can replay the arrival (a fresh mount). */
+function ArrivalSpecimen(props: Readonly<{ phone: boolean }>) {
+    const [mount, setMount] = React.useState(0);
+    return (
+        <View style={stylesheet.arrival}>
+            <Pressable testID="widgets-specimen-replay-arrival" onPress={() => setMount((value) => value + 1)}>
+                <Text style={stylesheet.caption}>Replay arrival</Text>
+            </Pressable>
+            <Pane phone={props.phone}>
+                <BoardGrid key={mount} frameStyle="card" phone={props.phone} fresh />
+            </Pane>
+        </View>
+    );
+}
+
 const stylesheet = StyleSheet.create((theme) => ({
+    arrival: { gap: 8 },
+    settingsPane: { width: 720, minHeight: 700, backgroundColor: theme.colors.surface.base },
     pane: {
         width: 600,
         paddingTop: 16,
@@ -220,7 +239,7 @@ const stylesheet = StyleSheet.create((theme) => ({
     plainColumn: { gap: 6 },
     states: { width: 1200, flexDirection: 'row', flexWrap: 'wrap', gap: 18 },
     stateCell: { width: 282 },
-    row: { flexDirection: 'row', gap: 24, alignItems: 'flex-start' },
+    row: { flexDirection: 'row', flexWrap: 'wrap', gap: 24, alignItems: 'flex-start', maxWidth: 1380 },
 }));
 
 export const FRAME_SPECIMEN_FRAMES: WidgetSpecimenFrames = {
@@ -242,10 +261,14 @@ export const FRAME_SPECIMEN_FRAMES: WidgetSpecimenFrames = {
             <BoardGrid frameStyle="plain" phone />
         </Pane>
     ),
-    WA: ({ phone }) => (
-        <Pane phone={phone}>
-            <BoardGrid frameStyle="card" phone={phone} fresh />
-        </Pane>
-    ),
+    WA: ({ phone }) => <ArrivalSpecimen phone={phone} />,
     WS: ({ phone }) => <StatesBoard phone={phone} />,
+    // Settings → Appearance → Widgets: the real section (reads and writes this device's settings).
+    WKs: ({ phone }) => (
+        <View style={phone ? stylesheet.phonePane : stylesheet.settingsPane}>
+            <ItemList>
+                <WidgetFrameAppearanceSection />
+            </ItemList>
+        </View>
+    ),
 };

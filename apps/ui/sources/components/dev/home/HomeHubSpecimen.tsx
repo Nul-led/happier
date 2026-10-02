@@ -60,6 +60,7 @@ const LAB_USAGE: readonly UsageSummaryEntry[] = [
 function usage(key: string, serviceLabel: string, legacyServiceId: string, profile: string, plan: string, left: readonly [number, number]): UsageSummaryEntry {
     return {
         key,
+        fetchedAt: NOW,
         serviceLabel,
         legacyServiceId,
         profileLabel: profile,
@@ -160,7 +161,7 @@ export function HomeHubSpecimen(props: Readonly<{ machines: boolean; firstRun?: 
     );
 
     return (
-        <ItemList presentation="page" testID="dev-home">
+        <ItemList testID="dev-home">
             <PageHeader
                 title={t('homeIndex.greetingAfternoon', { name: 'Leeroy' })}
                 alwaysShowTitle

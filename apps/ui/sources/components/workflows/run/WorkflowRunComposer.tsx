@@ -2,7 +2,7 @@ import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { HappierSelect } from '@happier-dev/plugin-ui/presentation';
-import type { JsonValue } from '@happier-dev/protocol';
+import type { JsonValue, RoleOverrideV1, WorkflowDefinitionV1, WorkflowMaterializedLeafV1 } from '@happier-dev/protocol';
 import type { WorkflowInputDefinition } from '@happier-dev/protocol/workflows/workflowV1';
 import { actionInputOptionValueKey, isSameActionInputOptionValue, readActionInputOptionValue } from '@happier-dev/protocol/actions/actionInputHintsRuntime';
 import { AgentInput } from '@/components/sessions/agentInput';
@@ -20,6 +20,10 @@ import { t } from '@/text';
 import { buildWorkflowRunStartInputs, projectWorkflowRunInputFields, type WorkflowRunInputFieldState } from '@/sync/domains/workflows/workflowAuthoring';
 import { formatWorkflowInputValue } from '@/sync/domains/workflows/workflowInputText';
 import { describeWorkflowInputRepair } from '@/components/workflows/presentation/workflowBlockedReasonText';
+import { WorkflowAcceptedRunRoles, WorkflowRunRoles, workflowUsedRoleIds } from './WorkflowRunRoles';
+import { useWorkflowRunRolePrefill } from './useWorkflowRunRolePrefill';
+import { workflowBlockReferenceLabel } from '@/sync/domains/workflows/workflowBlockLabel';
+import { walkWorkflowBlocks } from '@happier-dev/protocol/workflows/workflowDefinitionEditV1';
 
 const styles = StyleSheet.create((theme) => ({
     root: { gap: theme.margins.md, minWidth: 0 },
@@ -37,7 +41,12 @@ export type WorkflowRunComposerProps = Readonly<{
     onChangeValues: (next: Readonly<Record<string, JsonValue | undefined>>) => void;
     rawTextValues?: Readonly<Record<string, string>>;
     onChangeRawTextValues?: (next: Readonly<Record<string, string>>) => void;
-    onRun: (inputs: Readonly<Record<string, JsonValue>> | undefined) => void;
+    onRun: (inputs: Readonly<Record<string, JsonValue>> | undefined, roleOverrides?: readonly RoleOverrideV1[]) => void;
+    definition?: WorkflowDefinitionV1;
+    sourceArtifactId?: string | null;
+    /** Accepted repeat facts: their presence makes targets and Roles read-only. */
+    materializedLeaves?: readonly WorkflowMaterializedLeafV1[];
+    roleOverrides?: readonly RoleOverrideV1[];
     onCancel: () => void;
     pending?: boolean;
     startDisabled?: boolean;
@@ -45,6 +54,7 @@ export type WorkflowRunComposerProps = Readonly<{
     workflowName?: string;
     preview?: string;
     includesUnsavedEdits?: boolean;
+    notice?: string;
     machineId?: string | null;
     serverId?: string | null;
     /** Where and Roles come from their incumbent composer control owners. */
@@ -59,6 +69,10 @@ export type WorkflowRunComposerProps = Readonly<{
 /** One start presentation; FIN owns defaults, validation and the admitted input map. */
 export function WorkflowRunComposer(props: WorkflowRunComposerProps): React.ReactElement {
     const prefix = props.testIDPrefix ?? 'workflow-run-inputs';
+    const roleIds = React.useMemo(() => props.definition ? workflowUsedRoleIds(props.definition) : [], [props.definition]);
+    const acceptedRepeat = props.materializedLeaves !== undefined;
+    const roleDraft = useWorkflowRunRolePrefill(!acceptedRepeat && roleIds.length > 0 ? props.sourceArtifactId : null);
+    const roleOverrides = props.roleOverrides ?? roleDraft.overrides;
     const [localRawTextValues, setLocalRawTextValues] = React.useState<Readonly<Record<string, string>>>({});
     const rawTextValues = props.rawTextValues ?? localRawTextValues;
     const setRawTextValues = props.onChangeRawTextValues ?? setLocalRawTextValues;
@@ -69,8 +83,13 @@ export function WorkflowRunComposer(props: WorkflowRunComposerProps): React.Reac
     const remaining = fields.filter((field) => field !== main);
     const missing = fields.filter((field) => field.errorCode === 'missing_required_input').length;
     const blocked = fields.find((field) => field.blocking) ?? null;
-    const disabled = props.pending === true || props.startDisabled === true || blocked !== null;
-    const reason = blocked === null ? null : blocked.errorCode === 'missing_required_input'
+    // Mitigation until FIN admission carries frozen role/child context: flattened
+    // definitions cannot replay role authority, and child refs read today's graph.
+    const frozenRepeatUnavailable = props.materializedLeaves?.some((leaf) => leaf.sourceKey !== '$root' || leaf.role !== undefined) === true;
+    const disabled = props.pending === true || props.startDisabled === true || blocked !== null
+        || frozenRepeatUnavailable || (!acceptedRepeat && roleDraft.status !== 'ready');
+    const reason = blocked === null ? (frozenRepeatUnavailable ? t('workflows.start.frozenRepeatUnavailable') : !acceptedRepeat && roleDraft.status !== 'ready'
+        ? roleDraft.status === 'failed' ? t('workflows.start.rolesPrefillFailed') : t('common.loading') : null) : blocked.errorCode === 'missing_required_input'
         ? t('workflows.start.required') : t('workflows.issue.invalid_input');
     const changeText = React.useCallback((name: string, text: string) => {
         // Raw buffers survive intermediate numbers and malformed JSON. Only FIN parses them.
@@ -84,32 +103,69 @@ export function WorkflowRunComposer(props: WorkflowRunComposerProps): React.Reac
     }, [props.onChangeValues, props.values, rawTextValues, setRawTextValues]);
     const submit = React.useCallback(() => {
         if (disabled) return;
-        props.onRun(buildWorkflowRunStartInputs(fields));
-    }, [disabled, fields, props.onRun]);
+        const inputs = buildWorkflowRunStartInputs(fields);
+        if (props.definition) props.onRun(inputs, roleOverrides);
+        else props.onRun(inputs);
+    }, [disabled, fields, props.definition, props.onRun, roleOverrides]);
     const chips = React.useMemo<readonly AgentInputExtraActionChip[]>(() => [
         ...(props.workflowChip ? [props.workflowChip] : [createExecutionRunStartContentChip({
             key: 'workflow-start-definition', icon: 'git-branch', label: props.workflowName ?? t('workflows.start.workflow'),
             title: t('workflows.start.workflow'), testID: `${prefix}-workflow-chip`,
             renderContent: <View style={styles.fields}><Text>{props.preview ?? props.workflowName ?? t('workflows.start.preview')}</Text></View>,
         })]),
-        ...(remaining.length === 0 ? [] : [createExecutionRunStartContentChip({
+        ...(remaining.length === 0 && missing === 0 ? [] : [createExecutionRunStartContentChip({
             key: 'workflow-start-inputs', icon: 'sliders-horizontal',
             label: missing > 0 ? t('workflows.start.needed', { count: missing }) : t('workflows.start.inputs'),
             title: t('workflows.start.inputs'), testID: `${prefix}-inputs-chip`,
             revision: JSON.stringify([props.values, rawTextValues]),
-            renderContent: <WorkflowRunInputs fields={remaining} values={props.values} rawTextValues={rawTextValues}
+            renderContent: <View>
+                {main?.errorCode === 'missing_required_input' ? <View style={styles.fields}>
+                    <Text>{main.definition.name}</Text><Text style={styles.required}>{t('workflows.start.required')}</Text>
+                </View> : null}
+                <WorkflowRunInputs fields={remaining} values={props.values} rawTextValues={rawTextValues}
                 onChangeText={changeText} onChangeValue={changeValue} pending={props.pending === true}
-                machineId={props.machineId ?? null} serverId={props.serverId ?? null} prefix={prefix} />,
+                machineId={props.machineId ?? null} serverId={props.serverId ?? null} prefix={prefix} />
+            </View>,
         })]),
         ...(props.extraActionChips ?? []),
+        ...(!props.definition || (roleIds.length === 0 && roleOverrides.length === 0
+            && !props.materializedLeaves?.some((leaf) => leaf.role)) ? [] : [createExecutionRunStartContentChip({
+            key: 'workflow-start-roles', icon: 'users', title: t('workflows.start.rolesTitle'),
+            label: roleOverrides.length > 0 ? t('workflows.start.rolesChanged', { count: roleOverrides.length }) : t('workflows.start.rolesYour'),
+            testID: `${prefix}-roles-chip`, revision: JSON.stringify(roleOverrides),
+            renderContent: <View style={styles.fields}>{acceptedRepeat
+                ? <WorkflowAcceptedRunRoles leaves={props.materializedLeaves ?? []} />
+                : roleDraft.status !== 'ready' ? <View>
+                    <Text accessibilityRole={roleDraft.status === 'failed' ? 'alert' : undefined}>
+                        {roleDraft.status === 'failed' ? t('workflows.start.rolesPrefillFailed') : t('common.loading')}
+                    </Text>
+                    {roleDraft.status === 'failed' ? <RoundButton size="small" title={t('common.retry')} onPress={roleDraft.retry} /> : null}
+                </View> : <WorkflowRunRoles definition={props.definition} roleIds={roleIds}
+                    overrides={roleOverrides} onChange={roleDraft.onChange} pending={props.pending === true} prefix={prefix} />}</View>,
+        })]),
+        ...(props.materializedLeaves === undefined ? [] : [createExecutionRunStartContentChip({
+            key: 'workflow-start-targets', icon: 'layers', label: t('workflows.start.targetsTitle'), title: t('workflows.start.targetsTitle'),
+            testID: `${prefix}-targets-chip`, renderContent: <View style={styles.fields}>{props.materializedLeaves.map((leaf) => {
+                const block = leaf.sourceKey === '$root' && props.definition
+                    ? walkWorkflowBlocks(props.definition.blocks).find((candidate) => candidate.id === leaf.blockId) : null;
+                return <FieldItem key={JSON.stringify([leaf.sourceKey, leaf.blockId])}
+                    label={block ? workflowBlockReferenceLabel(block) : t('workflows.start.workflow')}>
+                    <Text>{leaf.executionTarget.kind === 'session' ? t('workflows.page.sections.aSession') : t('workflows.page.sections.aBackgroundRun')}</Text>
+                </FieldItem>;
+            })}</View>,
+        })]),
     ].map((chip) => ({
         ...chip,
         ...(chip.key === 'workflow-start-definition' ? { controlId: 'workflow' as const }
-            : chip.key === 'workflow-start-inputs' ? { controlId: 'workflowInputs' as const } : {}),
-    })), [changeText, changeValue, missing, prefix, props.extraActionChips, props.machineId, props.pending,
-        props.preview, props.serverId, props.values, props.workflowChip, props.workflowName, rawTextValues, remaining]);
+            : chip.key === 'workflow-start-inputs' ? { controlId: 'workflowInputs' as const }
+                : chip.key === 'workflow-start-roles' ? { controlId: 'workflowRoles' as const }
+                    : chip.key === 'workflow-start-targets' ? { controlId: 'workflowTargets' as const } : {}),
+    })), [changeText, changeValue, main, missing, prefix, props.extraActionChips, props.machineId, props.pending,
+        props.preview, props.serverId, props.values, props.workflowChip, props.workflowName, rawTextValues, remaining,
+        acceptedRepeat, props.definition, props.materializedLeaves, roleDraft.onChange, roleDraft.retry, roleDraft.status, roleIds, roleOverrides]);
     return (
         <View testID={prefix} style={styles.root}>
+            {props.notice ? <Text style={styles.secondary}>{props.notice}</Text> : null}
             {props.includesUnsavedEdits ? <Text testID={`${prefix}-unsaved`} style={styles.secondary}>{t('workflows.start.unsaved')}</Text> : null}
             <View testID={`${prefix}-${main === null ? 'preview' : 'main'}`}>
                 <PluginContextualResourceStoreProvider>
@@ -140,7 +196,8 @@ export function WorkflowRunComposer(props: WorkflowRunComposerProps): React.Reac
                 </PluginContextualResourceStoreProvider>
             </View>
             {main === null && props.retainedText ? <Text testID={`${prefix}-retained-text`} style={styles.secondary}>{props.retainedText}</Text> : null}
-            {reason === null ? null : <Text testID={`${prefix}-reason`} accessibilityRole="alert" style={styles.required}>{reason}</Text>}
+            {reason === null ? null : <Text testID={`${prefix}-reason`} accessibilityRole={roleDraft.status === 'loading' && blocked === null ? undefined : 'alert'}
+                style={roleDraft.status === 'loading' && blocked === null && !frozenRepeatUnavailable ? styles.secondary : styles.required}>{reason}</Text>}
             <RoundButton testID={`${prefix}-cancel`} size="small" display="inverted" title={t('common.cancel')} onPress={props.onCancel} />
         </View>
     );

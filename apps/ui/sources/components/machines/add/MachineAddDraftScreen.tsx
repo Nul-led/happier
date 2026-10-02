@@ -58,7 +58,7 @@ export const MachineAddDraftScreen = React.memo(function MachineAddDraftScreen()
     }, [navigate]);
 
     return (
-        <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+        <ItemList keyboardShouldPersistTaps="handled">
             <PageHeader
                 testID="settings.machines.draft.header"
                 alwaysShowTitle

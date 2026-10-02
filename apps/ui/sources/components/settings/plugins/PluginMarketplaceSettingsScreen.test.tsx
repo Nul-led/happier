@@ -15,7 +15,6 @@ import {
 } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
 import { readNewSessionDraftFromRepository } from '@/components/sessions/composer/newSessionDraftRepositoryAdapter';
 import { flattenTestStyle } from '@/dev/testkit';
-import { createPassThroughModule } from '@/dev/testkit/mocks/components';
 import {
     createMachineAdministrationTargetSelectionMock,
     installMachineAdministrationTargetSelectionBoundary,
@@ -1247,7 +1246,10 @@ vi.mock('@/agents/catalog/catalog', () => ({
     resolveAgentIdFromConnectedServiceId: () => null,
 }));
 
-vi.mock('@/components/ui/lists/ItemRowActions', () => createPassThroughModule(['ItemRowActions']));
+vi.mock('@/components/ui/lists/ItemRowActions', async () => {
+    const { createPassThroughModule } = await import('@/dev/testkit/mocks/components');
+    return createPassThroughModule(['ItemRowActions']);
+});
 
 vi.mock('@happier-dev/agents', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@happier-dev/agents')>();
@@ -2884,14 +2886,13 @@ describe('PluginSettingsHomeScreen', () => {
         );
     });
 
-    it('accepts an exact single-file development locator from the discoverable file-or-folder prompt', async () => {
+    it('accepts an exact single-file development locator only after saving the inline draft', async () => {
         const sourceFilePath = '/workspace/plugins/one-file-plugin.mjs';
         useMachineCapabilitiesCacheMock.mockReturnValue({
             state: createMachineCapabilitiesState([]),
             refresh: vi.fn(),
         });
         machineMarketplaceSourceRegistryGetMock.mockResolvedValue(null);
-        modalPromptMock.mockResolvedValueOnce(sourceFilePath);
         invokeWithAlertsMock.mockResolvedValueOnce({
             supported: true,
             response: {
@@ -2913,13 +2914,18 @@ describe('PluginSettingsHomeScreen', () => {
             await flushAsync();
         });
 
-        expect(modalPromptMock).toHaveBeenCalledWith(
-            'settingsPlugins.developmentSourceInstallTitle',
-            'settingsPlugins.developmentSourceInstallBody',
-            expect.objectContaining({
-                placeholder: 'settingsPlugins.developmentSourceInstallPlaceholder',
-            }),
-        );
+        const sourceField = screen.findByTestId('settings.plugins.development.sourceRootPath');
+        expect(sourceField).toBeTruthy();
+        await act(async () => {
+            sourceField?.props.onChangeText(sourceFilePath);
+        });
+        expect(invokeWithAlertsMock).not.toHaveBeenCalled();
+        expect(modalPromptMock).not.toHaveBeenCalled();
+        await act(async () => {
+            screen.pressByTestId('settings.plugins.development.sourceRootPath.save');
+            await flushAsync();
+            await flushAsync();
+        });
         expect(invokeWithAlertsMock).toHaveBeenCalledWith(expect.objectContaining({
             request: {
                 id: MARKETPLACE_CAPABILITY_ID,
@@ -2927,6 +2933,25 @@ describe('PluginSettingsHomeScreen', () => {
                 params: { sourceRootPath: sourceFilePath },
             },
         }));
+    });
+
+    it('cancels the inline development source draft without trusting or installing it', async () => {
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: createMachineCapabilitiesState([]), refresh: vi.fn(),
+        });
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValue(null);
+        const { PluginDevelopmentScreen } = await import('./development/PluginDevelopmentScreen');
+        const screen = await renderInAppPanes(React.createElement(PluginDevelopmentScreen));
+        await act(async () => { await flushAsync(); await flushAsync(); });
+        await act(async () => { screen.pressByTestId('settings.plugins.management.development.action.develop'); });
+        expect(screen.findByTestId('settings.plugins.development.sourceRootPath')).toBeTruthy();
+        await act(async () => {
+            screen.findByTestId('settings.plugins.development.sourceRootPath')?.props.onChangeText('/workspace/plugins/draft.mjs');
+        });
+        await act(async () => { screen.pressByTestId('settings.plugins.development.sourceRootPath.cancel'); });
+        expect(screen.findByTestId('settings.plugins.development.sourceRootPath')).toBeNull();
+        expect(invokeWithAlertsMock).not.toHaveBeenCalled();
+        expect(modalConfirmMock).not.toHaveBeenCalled();
     });
 
     it('names the exact project source in the single remembered trust decision', async () => {
@@ -2957,7 +2982,6 @@ describe('PluginSettingsHomeScreen', () => {
                 appliedGeneration: 'generation-1',
                 pendingSurfaces: [],
             });
-        modalPromptMock.mockResolvedValueOnce(sourceRootPath);
         modalConfirmMock.mockResolvedValueOnce(true);
 
         const { PluginDevelopmentScreen } = await import('./development/PluginDevelopmentScreen');
@@ -2971,6 +2995,12 @@ describe('PluginSettingsHomeScreen', () => {
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.development.action.develop');
             await flushAsync();
+        });
+        await act(async () => {
+            screen.changeTextByTestId('settings.plugins.development.sourceRootPath', sourceRootPath);
+        });
+        await act(async () => {
+            screen.pressByTestId('settings.plugins.development.sourceRootPath.save');
             await flushAsync();
             await flushAsync();
             await flushAsync();
@@ -3008,11 +3038,16 @@ describe('PluginSettingsHomeScreen', () => {
         // Declining project trust cancels the pending change.
         machineRpcWithServerScopeMock.mockClear();
         machineRpcWithServerScopeMock.mockResolvedValueOnce({ kind: 'cancelled' });
-        modalPromptMock.mockResolvedValueOnce(sourceRootPath);
         modalConfirmMock.mockResolvedValueOnce(false);
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.development.action.develop');
             await flushAsync();
+        });
+        await act(async () => {
+            screen.changeTextByTestId('settings.plugins.development.sourceRootPath', sourceRootPath);
+        });
+        await act(async () => {
+            screen.pressByTestId('settings.plugins.development.sourceRootPath.save');
             await flushAsync();
             await flushAsync();
         });

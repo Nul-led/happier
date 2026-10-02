@@ -84,7 +84,7 @@ export const ThemeProfilesSettingsScreen = React.memo(function ThemeProfilesSett
     ], [profileLimitReached]);
 
     return (
-        <ItemList testID="settings-theme-profiles-screen" style={{ paddingTop: 0 }} presentation="page">
+        <ItemList testID="settings-theme-profiles-screen" style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settingsAppearance.themeProfiles.pageDescription')} />
 
             {THEME_MODES.map((mode) => (

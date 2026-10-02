@@ -250,7 +250,7 @@ export const MemorySettingsView = React.memo(function MemorySettingsView() {
 
     if (!memorySearchEnabled) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <SettingsPageHeader description={t('memorySearchSettings.pagePurpose')} actions={machineChip} />
                 <ItemGroup
                     title={t('memorySearchSettings.disabled.title')}
@@ -278,7 +278,7 @@ export const MemorySettingsView = React.memo(function MemorySettingsView() {
                 : t('memorySearchSettings.enabled.updateRequired');
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader description={t('memorySearchSettings.pagePurpose')} actions={machineChip} />
             <SettingSection section={MEMORY_SETTINGS.sectionRefs.localIndex} answersFor={access === 'ready' ? undefined : MEMORY_SECTIONS_AFTER_READY}>
                 <ItemGroup

@@ -28,7 +28,7 @@ export const EmbedPermissionModesPicker = React.memo(function EmbedPermissionMod
         props.onChange({ ...props.draft, access: { ...props.draft.access, permissionModes: next && next.length > 0 ? [...next] : null } });
     };
     return (
-        <ItemList presentation="page" testID="settings-embed-permission-modes-picker">
+        <ItemList testID="settings-embed-permission-modes-picker">
             <SettingsPageHeader
                 title={t('settingsEmbeds.capabilities.permissionModes')}
                 description={t('settingsEmbeds.capabilities.permissionModesDescription')}

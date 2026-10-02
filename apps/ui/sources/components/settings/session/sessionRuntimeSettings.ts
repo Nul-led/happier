@@ -10,6 +10,9 @@ export const SESSION_RUNTIME_SETTINGS = defineSettingsPage({
             titleKey: 'settingsSessionPages.runtime.terminalSection',
             settings: {
                 host: { titleKey: 'settingsSessionPages.runtime.terminalHostTitle' },
+                sessionName: { titleKey: 'profiles.tmuxSession' },
+                isolated: { titleKey: 'profiles.tmux.isolatedServerTitle' },
+                tmpDir: { titleKey: 'profiles.tmuxTempDir' },
             },
         },
     },

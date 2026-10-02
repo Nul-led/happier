@@ -42,12 +42,12 @@ describe('LOCAL_SETTING_DEFINITIONS mobile surfaces', () => {
         expect(schema.safeParse({ 'session-1': 'browser-preview' }).success).toBe(false);
     });
 
-    it('bounds persisted cockpit pins to three qualified non-empty surface ids', () => {
-        const schema = LOCAL_SETTING_DEFINITIONS.sessionCockpitPinnedSurfaceIds.schema;
+    it('keeps the cockpit bar as qualified non-empty ids with no count cap, and null until changed', () => {
+        const schema = LOCAL_SETTING_DEFINITIONS.sessionCockpitBarSurfaceIds.schema;
 
-        expect(schema.safeParse(['plugin:acme.one:panel', 'browser', 'services']).success).toBe(true);
-        expect(schema.safeParse(['one', 'two', 'three', 'four']).success).toBe(false);
-        expect(schema.safeParse(['']).success).toBe(false);
+        expect(schema.safeParse(['plugin:acme.one:panel', 'browser', 'services', 'git', 'terminal']).success).toBe(true);
+        expect(schema.parse(null)).toBeNull();
+        expect(schema.parse([''])).toBeNull();
     });
 
     it('persists bounded compact destination order and visibility independently of route state', () => {

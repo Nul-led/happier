@@ -155,7 +155,7 @@ const LAUNCHPAD_ROWS = [
     { id: 'settings', section: 'recent', sourceKind: 'recent', title: 'Settings · Appearance', subtitle: 'localhost:5173/settings/appearance', detail: '', target: { kind: 'externalUrl', targetId: 'settings', url: 'http://localhost:5173/settings/appearance' }, disabledReason: null, lastSeenAt: 0 },
 ] as unknown as readonly BrowserLaunchpadRow[];
 
-const DAEMON_CONTROL = { sendCommand: NOOP };
+const DAEMON_CONTROL = { sendCommand: async () => ({ ok: false, reason: 'unavailable' } as const) };
 
 const BROWSER_ENABLED = {
     featureId: 'browser',

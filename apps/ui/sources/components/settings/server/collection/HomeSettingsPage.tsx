@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Platform, View } from 'react-native';
-import { usePathname, useRouter } from '@/components/appShell/workspace/destinationRoute';
+import { usePathname, useRouter, type Href } from '@/components/appShell/workspace/destinationRoute';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { HomeMark } from '@/components/homes/HomeMark';
@@ -55,7 +55,7 @@ export const HomeSettingsPage = React.memo(function HomeSettingsPage(props: Read
 const HomeSettingsPageMissing = React.memo(function HomeSettingsPageMissing() {
     const router = useRouter();
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <EmptyState
                 testID="settings.homes.home.missing"
                 iconName="house"
@@ -90,8 +90,8 @@ const HomeSettingsPageContent = React.memo(function HomeSettingsPageContent(prop
     });
     const attention = row.current ? resolveCurrentHomeAttention(row.summary) : null;
 
-    const navigate = React.useCallback((href: string, tag: string, replace = false) => {
-        const result = runGuardedNavigation(() => (replace ? router.replace(href as never) : router.push(href as never)));
+    const navigate = React.useCallback((href: Href, tag: string, replace = false) => {
+        const result = runGuardedNavigation(() => (replace ? router.replace(href) : router.push(href)));
         if (result !== true) fireAndForget(result, { tag });
     }, [router]);
     const signIn = React.useCallback(() => {
@@ -123,7 +123,7 @@ const HomeSettingsPageContent = React.memo(function HomeSettingsPageContent(prop
     ];
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <PageHeader
                 testID="settings.homes.home.header"
                 alwaysShowTitle

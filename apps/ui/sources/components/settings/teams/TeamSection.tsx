@@ -140,7 +140,7 @@ export const TeamSection = React.memo(function TeamSection(props: Readonly<{
 
     // A page with nothing to show but its condition: the header, then the condition.
     const conditionPage = (condition: React.ReactNode) => embedded ? condition : (
-        <ItemList presentation="page">
+        <ItemList>
             {plainHeader}
             {condition}
         </ItemList>
@@ -308,7 +308,7 @@ export const TeamSection = React.memo(function TeamSection(props: Readonly<{
     }
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             {props.childRendersHeader ? null : header}
 
             <React.Fragment key={scopeKey}>

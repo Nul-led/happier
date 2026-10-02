@@ -58,7 +58,9 @@ import { providerCollectionTranslations } from './providerCollectionTranslations
 import { settingsSearchKeywordsTranslations } from './settingsSearchKeywordsTranslations';
 import { automationPageTranslations } from './automationPageTranslations';
 import { settingsSessionPagesTranslations } from './settingsSessionPagesTranslations';
-import { workspaceTabTranslations } from './workspaceTabTranslations';
+import { workspaceTabKeyboardTranslations, workspaceTabTranslations } from './workspaceTabTranslations';
+import { terminalWorkspaceKeyboardTranslations, terminalWorkspaceTranslations } from './terminalWorkspaceTranslations';
+import { phoneNavigationTranslations } from './phoneNavigationTranslations';
 import { workspaceBarTranslations } from './workspaceBarTranslations';
 import { settingsProfilesRemoteHostsPageTranslations } from './settingsProfilesRemoteHostsPageTranslations';
 import { profilesPageTranslations } from './profilesPageTranslations';
@@ -74,6 +76,7 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { detailPageTranslations } from './detailPageTranslations';
 import { rolesTranslations } from './rolesTranslations';
 import { boardsTranslations } from './boardsTranslations';
+import { artifactsBrowserTranslations } from './artifactsBrowserTranslations';
 import { workStatusTranslations } from './workStatusTranslations';
 import { shareSheetTranslations } from './shareSheetTranslations';
 import { surfaceStateTranslations } from './surfaceStateTranslations';
@@ -890,6 +893,8 @@ export const ja = {
         setShortcutInvalidMessage: '少なくとも 1 つの非修飾キーを入力します。必要に応じて Mod、Ctrl、Shift、または Alt を入力します。',
         resetCommandAccessibility: ({ command }: { command: string }) => `Reset ${command} shortcut`,
         commands: {
+            ...workspaceTabKeyboardTranslations,
+            ...terminalWorkspaceKeyboardTranslations,
             composerAbortConfirm: '中断を確認',
             composerFocus: 'コンポーザーにフォーカス',
             composerSendImmediate: 'すぐに送信',
@@ -6327,6 +6332,8 @@ localTailscale: {
   },
 
   newSession: {
+    terminalHostUnavailableTitle: "ターミナルホストを利用できません",
+    terminalHostUnavailableBody: ({ host }: { host: string }) => `このマシンで ${host} をインストールまたは更新してサーバーを再起動するか、別のターミナルホストを選択してください。下書きは保持されます。`,
     folder: folderlessSessionTranslations.ja.composer,
     ...newSessionMcpTranslationExtension,
     ...acpCatalogTranslationExtension.newSession,
@@ -12845,7 +12852,9 @@ settingsSession: {
             },
   },
 
-  terminal: {
+    terminal: {
+        plaintextStorage: 'Home-managed (not end-to-end encrypted)',
+        plaintextStorageDescription: 'This Home can read Account data. The connection response is encrypted for this terminal.',
     // Used by terminal connection screens
     webBrowserRequired: "Webブラウザが必要です",
     webBrowserRequiredDescription:
@@ -12885,12 +12894,10 @@ settingsSession: {
       selectAllAction: 'ターミナル出力をすべて選択',
       openLinkAction: '選択したリンクを開く',
     },
-    dockMenuA11y: "ターミナルをドック",
     largePasteTitle: "大きなターミナル入力を貼り付けますか？",
     largePasteDescription: "この貼り付け内容は大きく、ターミナルでコマンドを実行する可能性があります。続行する前に確認してください。",
     largePasteConfirm: "ターミナルに貼り付け",
     settings: {
-      locationTitle: "埋め込みターミナルの場所",
       rendererTitle: "ターミナルレンダラー",
       rendererAuto: "自動",
       rendererAutoDescription: "すべてのネイティブ安全性チェックを満たし、スクリーンリーダーが有効でない場合はネイティブレンダラーを優先します。スクリーンリーダー使用中はアクセシビリティ対応の xterm.js Webビューに切り替わります。",
@@ -12905,11 +12912,6 @@ settingsSession: {
       ctrlC: "Ctrl + C",
       ctrlD: "Ctrl + D",
       enter: "改行",
-    },
-    location: {
-      sidebar: "サイドバー",
-      details: "詳細パネル",
-      bottom: "下部パネル",
     },
     errors: {
       missingMachineTarget: "このセッションにはマシンターゲットがありません。",
@@ -13510,11 +13512,9 @@ settingsSession: {
     unknownPath: "不明なパス",
     previousSessionsTitle: "以前のセッション（直近5件まで）",
     tmux: {
-      overrideTitle: "グローバル tmux 設定を上書き",
-      overrideEnabledSubtitle:
-        "このマシンの新しいセッションにカスタム tmux 設定が適用されます。",
-      overrideDisabledSubtitle:
-        "新しいセッションはグローバル tmux 設定を使用します。",
+      overrideTitle: "アカウントの既定値を上書き",
+      overrideEnabledSubtitle: "このマシンの新しいセッションには独自のターミナルホストを使います。",
+      overrideDisabledSubtitle: "新しいセッションはアカウントのターミナルホストを継承します。",
       notDetectedSubtitle: "このマシンで tmux が検出されません。",
       notDetectedMessage:
         "このマシンで tmux が検出されません。tmux をインストールして検出を更新してください。",
@@ -13776,13 +13776,12 @@ settingsSession: {
   },
 
     artifacts: {
+        browser: artifactsBrowserTranslations.ja,
     // Artifacts feature
     title: "アーティファクト",
     countSingular: "1件のアーティファクト",
     countPlural: ({ count }: { count: number }) =>
       `${count}件のアーティファクト`,
-    empty: "アーティファクトはまだありません",
-    emptyDescription: "最初のアーティファクトを作成して始めましょう",
     new: "新規アーティファクト",
     edit: "アーティファクトを編集",
     delete: "削除",
@@ -13797,7 +13796,6 @@ settingsSession: {
     deleteConfirmDescription: "この操作は取り消せません",
     noContent: "内容がありません",
     untitled: "無題",
-    titleLabel: "タイトル",
     titlePlaceholder: "アーティファクトのタイトルを入力",
     bodyLabel: "コンテンツ",
     bodyPlaceholder: "ここにコンテンツを書いてください...",
@@ -13805,7 +13803,6 @@ settingsSession: {
     createError: "アーティファクトの作成に失敗しました。再試行してください。",
     save: "保存",
     saving: "保存中...",
-    loading: "アーティファクトを読み込み中...",
     error: "アーティファクトの読み込みに失敗しました",
   },
 
@@ -14202,6 +14199,8 @@ settingsSession: {
    ...automationPageTranslations.ja,
     ...settingsSessionPagesTranslations.ja,
     ...workspaceTabTranslations.ja,
+    ...terminalWorkspaceTranslations.ja,
+    ...phoneNavigationTranslations.ja,
     ...workspaceBarTranslations.ja,
    ...settingsProfilesRemoteHostsPageTranslations.ja,
    ...profilesPageTranslations.ja,

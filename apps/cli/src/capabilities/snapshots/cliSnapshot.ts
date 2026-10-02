@@ -12,7 +12,7 @@ import {
     resolveAgentCliJavaScriptRuntimeOnDaemonPath as resolveJavaScriptRuntimeExecutableForCliSnapshot,
 } from '@/packagedRuntime/managedTools/agentCliResolution';
 import { resolveAgentCliRuntimeSpecForLookupId } from '@/packagedRuntime/managedTools/requireAgentCliCommand';
-import { AsyncTtlCache } from '@happier-dev/protocol';
+import { AsyncTtlCache, buildQualifiedPluginContributionKey } from '@happier-dev/protocol';
 import type { MachineAgentInventoryItem } from '@happier-dev/protocol';
 import { resolveAgentSetupInstall, resolveAgentSetupPlatform } from '@happier-dev/protocol/agents/setup';
 import { getRuntimeInstallableAdapter } from '@/packagedRuntime/installables/registry';
@@ -553,11 +553,11 @@ async function detectAgentSetupFacts(name: DetectCliName): Promise<Pick<MachineA
     const agent = registry.agentDefinitionsById.get(name);
     const dependencyId = agent ? resolveAgentRuntimeManagedDependencyId(agent) : null;
     const declarations = (registry.managedDependencies ?? []).filter((entry) => (
-        entry.pluginId === agent?.pluginId && entry.definition.id === dependencyId
+        entry.pluginId && buildQualifiedPluginContributionKey({ pluginId: entry.pluginId, localId: entry.definition.id }) === dependencyId
     ));
     const metadata = {
         cli: agent?.cliMetadata,
-        dependencies: declarations.flatMap((entry) => 'sources' in entry.definition ? [entry.definition] : []),
+        dependencies: declarations.flatMap((entry) => 'version' in entry.definition ? [] : [entry.definition]),
         platform: process.platform,
         arch: process.arch,
     };

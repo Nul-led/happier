@@ -33,7 +33,7 @@ export const ToolRenderingSettingsView = React.memo(function ToolRenderingSettin
     ], []);
 
     return (
-        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }} presentation="page">
+        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settingsSessionPages.toolRendering.pageDescription')} />
             <SettingAnchor setting={TOOL_RENDERING_SETTINGS.settings.collapsedOverrides}>
                 <ItemGroup

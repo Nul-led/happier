@@ -224,7 +224,7 @@ export const TranscriptSettingsView = React.memo(function TranscriptSettingsView
         && !transcriptMessageSendToSessionTemplate.includes('{{MESSAGES}}');
 
     return (
-        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }} presentation="page">
+        <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settingsSessionPages.transcript.pageDescription')} />
             <ItemGroup title={t('settingsSession.transcript.layoutTitle')} description={t('settingsSession.transcript.layoutFooter')}>
                 <SettingAnchor setting={TRANSCRIPT_SETTINGS.settings.layoutPicker}>

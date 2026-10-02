@@ -139,7 +139,7 @@ export const KeyboardShortcutsSettingsView = React.memo(function KeyboardShortcu
     ), [commandTitleById]);
 
     return (
-        <ItemList testID="settings-keyboard-shortcuts-screen" style={{ paddingTop: 0 }} presentation="page">
+        <ItemList testID="settings-keyboard-shortcuts-screen" style={{ paddingTop: 0 }}>
             <SettingsPageHeader description={t('settingsKeyboard.entrySubtitle')} />
             <ItemGroup
                 title={t('settingsKeyboard.generalGroupTitle')}

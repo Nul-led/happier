@@ -5,12 +5,9 @@ import { configuration } from '../../configuration';
 import { resolveExistingManagedJavaScriptRuntimeCommand } from '@/packagedRuntime/js/managedJavaScriptRuntime';
 import { readRuntimeInstallableLastCheckAtMs } from '@/packagedRuntime/installables/updateState';
 import { fetchGitHubLatestRelease } from '@happier-dev/release-runtime/github';
-import { resolveHappyHomeDirFromEnvironment } from '@happier-dev/cli-common/agents';
-
-import {
-  resolveCodexAcpReleaseAsset,
-  CODEX_ACP_GITHUB_REPO,
-} from '@happier-dev/plugins-codex/agent/installables/codexAcp';
+import { resolveHappyHomeDirFromEnvironment, selectManagedDependencyReleaseAsset } from '@happier-dev/cli-common/agents';
+import { readRuntimeInstallableDescriptor } from '@/packagedRuntime/installables/registry';
+import type { InstallableDependencyDescriptor } from '@happier-dev/protocol';
 
 type CodexAcpState = Readonly<{
   installedVersion: string | null;
@@ -91,15 +88,22 @@ async function readCodexAcpState(env?: NodeJS.ProcessEnv): Promise<CodexAcpState
   }
 }
 
-async function detectLatestVersionCheck(env?: NodeJS.ProcessEnv): Promise<LatestVersionCheck> {
+async function detectLatestVersionCheck(env?: NodeJS.ProcessEnv, descriptor?: InstallableDependencyDescriptor): Promise<LatestVersionCheck> {
   try {
+    const source = (descriptor ?? readRuntimeInstallableDescriptor('codex-acp'))?.source;
+    if (source?.kind !== 'github_release_binary' || !source.assetNamePrefix || !source.targetByPlatform) {
+      throw new Error('Codex ACP release declaration is unavailable');
+    }
     const release = await fetchGitHubLatestRelease({
-      githubRepo: CODEX_ACP_GITHUB_REPO,
+      githubRepo: source.repo,
       userAgent: 'happier-cli',
       githubToken: (env ?? process.env).GITHUB_TOKEN,
       ...(githubFetchImpl ? { fetchImpl: githubFetchImpl } : {}),
     });
-    const asset = resolveCodexAcpReleaseAsset(release);
+    const asset = selectManagedDependencyReleaseAsset(release, {
+      assetNamePrefix: source.assetNamePrefix,
+      targetByPlatform: source.targetByPlatform,
+    });
     return { ok: true, latestVersion: asset.version, label: asset.tag };
   } catch (error) {
     return {
@@ -124,6 +128,7 @@ export async function getCodexAcpDepStatus(opts?: {
   env?: NodeJS.ProcessEnv;
   includeLatestVersion?: boolean;
   onlyIfInstalled?: boolean;
+  descriptor?: InstallableDependencyDescriptor;
 }): Promise<CodexAcpDepData> {
   const installDir = codexAcpInstallDir(opts?.env);
   const state = await readCodexAcpState(opts?.env);
@@ -140,7 +145,7 @@ export async function getCodexAcpDepStatus(opts?: {
   const includeLatestVersion = opts?.includeLatestVersion === true;
   const onlyIfInstalled = opts?.onlyIfInstalled === true;
   const latestVersionCheck = includeLatestVersion && (!onlyIfInstalled || resolvedBinPath !== null)
-    ? await detectLatestVersionCheck(opts?.env)
+    ? await detectLatestVersionCheck(opts?.env, opts?.descriptor)
     : undefined;
   const lastBackgroundUpdateCheckAtMs = await readRuntimeInstallableLastCheckAtMs('codex-acp', opts?.env);
 

@@ -210,7 +210,7 @@ export const SettingsView = React.memo(function SettingsView() {
     );
 
     return (
-        <ItemList style={{ paddingTop: 0 }} presentation="page">
+        <ItemList style={{ paddingTop: 0 }}>
             {/* The rail carries search where it is shown; otherwise the page does (phones). */}
             {railVisible ? overview : <SettingsPageSearch>{overview}</SettingsPageSearch>}
         </ItemList>

@@ -1049,6 +1049,39 @@ const zhHant: typeof en = {
     },
 };
 
+const notify = {
+    en: { turn: 'Notify me when this turn finishes', attention: 'Notify me when this needs me', armed: 'You’ll be notified', cancel: 'Cancel notification', failed: 'Couldn’t update the notification. Try again.', turnFinished: 'This session’s turn finished.', needsYou: 'This session needs you.', settings: 'Notification settings' },
+    ca: { turn: 'Avisa’m quan acabi aquest torn', attention: 'Avisa’m quan em necessiti', armed: 'Rebràs un avís', cancel: 'Cancel·la l’avís', failed: 'No s’ha pogut actualitzar l’avís. Torna-ho a provar.', turnFinished: 'El torn d’aquesta sessió ha acabat.', needsYou: 'Aquesta sessió et necessita.', settings: 'Configuració de notificacions' },
+    de: { turn: 'Benachrichtige mich, wenn dieser Durchgang endet', attention: 'Benachrichtige mich, wenn ich gebraucht werde', armed: 'Du wirst benachrichtigt', cancel: 'Benachrichtigung abbrechen', failed: 'Benachrichtigung konnte nicht aktualisiert werden. Versuche es erneut.', turnFinished: 'Der Durchgang dieser Sitzung ist beendet.', needsYou: 'Diese Sitzung braucht dich.', settings: 'Benachrichtigungseinstellungen' },
+    es: { turn: 'Avísame cuando termine este turno', attention: 'Avísame cuando me necesite', armed: 'Recibirás una notificación', cancel: 'Cancelar notificación', failed: 'No se pudo actualizar la notificación. Inténtalo de nuevo.', turnFinished: 'El turno de esta sesión ha terminado.', needsYou: 'Esta sesión te necesita.', settings: 'Ajustes de notificaciones' },
+    fr: { turn: 'Me prévenir quand ce tour se termine', attention: 'Me prévenir quand mon intervention est nécessaire', armed: 'Vous serez prévenu', cancel: 'Annuler la notification', failed: 'Impossible de modifier la notification. Réessayez.', turnFinished: 'Le tour de cette session est terminé.', needsYou: 'Cette session a besoin de vous.', settings: 'Paramètres des notifications' },
+    it: { turn: 'Avvisami quando termina questo turno', attention: 'Avvisami quando serve il mio intervento', armed: 'Riceverai una notifica', cancel: 'Annulla notifica', failed: 'Impossibile aggiornare la notifica. Riprova.', turnFinished: 'Il turno di questa sessione è terminato.', needsYou: 'Questa sessione ha bisogno di te.', settings: 'Impostazioni notifiche' },
+    ja: { turn: 'このターンが終了したら通知', attention: '対応が必要になったら通知', armed: '通知が届きます', cancel: '通知をキャンセル', failed: '通知を更新できませんでした。もう一度お試しください。', turnFinished: 'このセッションのターンが終了しました。', needsYou: 'このセッションで対応が必要です。', settings: '通知設定' },
+    pl: { turn: 'Powiadom mnie, gdy ta tura się skończy', attention: 'Powiadom mnie, gdy będę potrzebny', armed: 'Otrzymasz powiadomienie', cancel: 'Anuluj powiadomienie', failed: 'Nie udało się zaktualizować powiadomienia. Spróbuj ponownie.', turnFinished: 'Tura tej sesji się zakończyła.', needsYou: 'Ta sesja potrzebuje Twojej uwagi.', settings: 'Ustawienia powiadomień' },
+    pt: { turn: 'Avise-me quando este turno terminar', attention: 'Avise-me quando precisar de mim', armed: 'Você será notificado', cancel: 'Cancelar notificação', failed: 'Não foi possível atualizar a notificação. Tente novamente.', turnFinished: 'O turno desta sessão terminou.', needsYou: 'Esta sessão precisa de você.', settings: 'Configurações de notificações' },
+    ru: { turn: 'Уведомить меня, когда этот ход завершится', attention: 'Уведомить меня, когда потребуется моё участие', armed: 'Вы получите уведомление', cancel: 'Отменить уведомление', failed: 'Не удалось обновить уведомление. Попробуйте ещё раз.', turnFinished: 'Ход этой сессии завершён.', needsYou: 'Эта сессия требует вашего участия.', settings: 'Настройки уведомлений' },
+    zhHans: { turn: '此轮结束时通知我', attention: '需要我处理时通知我', armed: '届时会通知你', cancel: '取消通知', failed: '无法更新通知，请重试。', turnFinished: '此会话的本轮已结束。', needsYou: '此会话需要你处理。', settings: '通知设置' },
+    zhHant: { turn: '此回合結束時通知我', attention: '需要我處理時通知我', armed: '屆時會通知你', cancel: '取消通知', failed: '無法更新通知，請重試。', turnFinished: '此工作階段的本回合已結束。', needsYou: '此工作階段需要你處理。', settings: '通知設定' },
+};
+
+const runNotify = {
+    en: { run: 'Notify me when this finishes', runFinished: 'This run finished.', runNeedsYou: 'This run needs you.', setup: 'Set up notifications' },
+    ca: { run: 'Avisa’m quan acabi', runFinished: 'Aquesta execució ha acabat.', runNeedsYou: 'Aquesta execució et necessita.', setup: 'Configura les notificacions' },
+    de: { run: 'Benachrichtige mich, wenn dies endet', runFinished: 'Dieser Lauf ist beendet.', runNeedsYou: 'Dieser Lauf braucht dich.', setup: 'Benachrichtigungen einrichten' },
+    es: { run: 'Avísame cuando termine', runFinished: 'Esta ejecución ha terminado.', runNeedsYou: 'Esta ejecución te necesita.', setup: 'Configurar notificaciones' },
+    fr: { run: 'Me prévenir quand ceci se termine', runFinished: 'Cette exécution est terminée.', runNeedsYou: 'Cette exécution a besoin de vous.', setup: 'Configurer les notifications' },
+    it: { run: 'Avvisami quando termina', runFinished: 'Questa esecuzione è terminata.', runNeedsYou: 'Questa esecuzione ha bisogno di te.', setup: 'Configura notifiche' },
+    ja: { run: '終了したら通知', runFinished: 'この実行が終了しました。', runNeedsYou: 'この実行で対応が必要です。', setup: '通知を設定' },
+    pl: { run: 'Powiadom mnie, gdy się zakończy', runFinished: 'To uruchomienie się zakończyło.', runNeedsYou: 'To uruchomienie wymaga Twojej uwagi.', setup: 'Skonfiguruj powiadomienia' },
+    pt: { run: 'Avise-me quando terminar', runFinished: 'Esta execução terminou.', runNeedsYou: 'Esta execução precisa de você.', setup: 'Configurar notificações' },
+    ru: { run: 'Уведомить меня, когда это завершится', runFinished: 'Это выполнение завершено.', runNeedsYou: 'Это выполнение требует вашего участия.', setup: 'Настроить уведомления' },
+    zhHans: { run: '结束时通知我', runFinished: '此运行已结束。', runNeedsYou: '此运行需要你处理。', setup: '设置通知' },
+    zhHant: { run: '結束時通知我', runFinished: '此執行已結束。', runNeedsYou: '此執行需要你處理。', setup: '設定通知' },
+};
+
 export const sessionWorkTranslations = {
-    en, ca, de, es, fr, it, ja, pl, pt, ru, zhHans, zhHant,
+    en: { ...en, notify: { ...notify.en, ...runNotify.en } }, ca: { ...ca, notify: { ...notify.ca, ...runNotify.ca } }, de: { ...de, notify: { ...notify.de, ...runNotify.de } },
+    es: { ...es, notify: { ...notify.es, ...runNotify.es } }, fr: { ...fr, notify: { ...notify.fr, ...runNotify.fr } }, it: { ...it, notify: { ...notify.it, ...runNotify.it } },
+    ja: { ...ja, notify: { ...notify.ja, ...runNotify.ja } }, pl: { ...pl, notify: { ...notify.pl, ...runNotify.pl } }, pt: { ...pt, notify: { ...notify.pt, ...runNotify.pt } },
+    ru: { ...ru, notify: { ...notify.ru, ...runNotify.ru } }, zhHans: { ...zhHans, notify: { ...notify.zhHans, ...runNotify.zhHans } }, zhHant: { ...zhHant, notify: { ...notify.zhHant, ...runNotify.zhHant } },
 };

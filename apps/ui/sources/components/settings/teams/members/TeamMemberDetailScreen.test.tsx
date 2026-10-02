@@ -21,13 +21,6 @@ import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelp
 
 const routerPush = vi.hoisted(() => vi.fn());
 
-// The approval artifact crosses the stored-content HTTP boundary. This suite is
-// about membership contracts, not that compatibility probe.
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
-    ...await importOriginal<typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')>(),
-    requireCurrentAccountStoredContentServerCompatibility: vi.fn(async () => undefined),
-}));
-
 installSettingsViewCommonModuleMocks({
     router: async () => ({
         useRouter: () => ({ push: routerPush, back: vi.fn() }),

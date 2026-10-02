@@ -91,7 +91,7 @@ export const HomesDeviceScreen = React.memo(function HomesDeviceScreen() {
     }, []);
 
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader description={t('addFlows.thisDeviceDescription')} />
 
             <HomeDeviceApprovalSection homes={controller.servers} />

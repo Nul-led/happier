@@ -3,6 +3,8 @@ import { workflowEditorPageTranslations } from './workflowEditorPageTranslations
 import { workflowsDestinationTranslations } from './workflowsDestinationTranslations';
 import { workflowTriggersTranslations } from './workflowTriggersTranslations';
 import { workflowStartTranslations } from './workflowStartTranslations';
+import { workflowRunListTranslations } from './workflowRunListTranslations';
+import { workflowPluginTranslations } from './workflowPluginTranslations';
 
 const workflowReferenceScopeTranslations = {
     scopeCurrent: 'This scope',
@@ -17,10 +19,12 @@ const en = {
     exportJson: 'Export JSON',
     openCollection: 'Open Workflows',
     destination: workflowsDestinationTranslations.en,
+    plugins: workflowPluginTranslations.en,
     page: workflowEditorPageTranslations.en,
     builtins: workflowBuiltinTranslations.en,
     triggers: workflowTriggersTranslations.en,
     start: workflowStartTranslations.en,
+    list: workflowRunListTranslations.en,
 
     tabs: {
         saved: 'Saved',
@@ -563,10 +567,12 @@ const de = translated({
     exportJson: 'JSON exportieren',
     openCollection: 'Workflows öffnen',
     destination: workflowsDestinationTranslations.de,
+    plugins: workflowPluginTranslations.de,
     page: workflowEditorPageTranslations.de,
     builtins: workflowBuiltinTranslations.de,
     triggers: workflowTriggersTranslations.de,
     start: workflowStartTranslations.de,
+    list: workflowRunListTranslations.de,
 
     tabs: {
         saved: 'Gespeichert',
@@ -1064,10 +1070,12 @@ const es = translated({
     exportJson: 'Exportar JSON',
     openCollection: 'Abrir los flujos de trabajo',
     destination: workflowsDestinationTranslations.es,
+    plugins: workflowPluginTranslations.es,
     page: workflowEditorPageTranslations.es,
     builtins: workflowBuiltinTranslations.es,
     triggers: workflowTriggersTranslations.es,
     start: workflowStartTranslations.es,
+    list: workflowRunListTranslations.es,
 
     tabs: {
         saved: 'Guardados',
@@ -1565,10 +1573,12 @@ const fr = translated({
     exportJson: 'Exporter en JSON',
     openCollection: 'Ouvrir les flux de travail',
     destination: workflowsDestinationTranslations.fr,
+    plugins: workflowPluginTranslations.fr,
     page: workflowEditorPageTranslations.fr,
     builtins: workflowBuiltinTranslations.fr,
     triggers: workflowTriggersTranslations.fr,
     start: workflowStartTranslations.fr,
+    list: workflowRunListTranslations.fr,
 
     tabs: {
         saved: 'Enregistrés',
@@ -2066,10 +2076,12 @@ const it = translated({
     exportJson: 'Esporta JSON',
     openCollection: 'Apri i flussi di lavoro',
     destination: workflowsDestinationTranslations.it,
+    plugins: workflowPluginTranslations.it,
     page: workflowEditorPageTranslations.it,
     builtins: workflowBuiltinTranslations.it,
     triggers: workflowTriggersTranslations.it,
     start: workflowStartTranslations.it,
+    list: workflowRunListTranslations.it,
 
     tabs: {
         saved: 'Salvati',
@@ -2567,10 +2579,12 @@ const pt = translated({
     exportJson: 'Exportar JSON',
     openCollection: 'Abrir os fluxos de trabalho',
     destination: workflowsDestinationTranslations.pt,
+    plugins: workflowPluginTranslations.pt,
     page: workflowEditorPageTranslations.pt,
     builtins: workflowBuiltinTranslations.pt,
     triggers: workflowTriggersTranslations.pt,
     start: workflowStartTranslations.pt,
+    list: workflowRunListTranslations.pt,
 
     tabs: {
         saved: 'Salvos',
@@ -3068,10 +3082,12 @@ const ca = translated({
     exportJson: 'Exporta JSON',
     openCollection: 'Obre els fluxos de treball',
     destination: workflowsDestinationTranslations.ca,
+    plugins: workflowPluginTranslations.ca,
     page: workflowEditorPageTranslations.ca,
     builtins: workflowBuiltinTranslations.ca,
     triggers: workflowTriggersTranslations.ca,
     start: workflowStartTranslations.ca,
+    list: workflowRunListTranslations.ca,
 
     tabs: {
         saved: 'Desats',
@@ -3569,10 +3585,12 @@ const pl = translated({
     exportJson: 'Eksportuj JSON',
     openCollection: 'Otwórz przepływy pracy',
     destination: workflowsDestinationTranslations.pl,
+    plugins: workflowPluginTranslations.pl,
     page: workflowEditorPageTranslations.pl,
     builtins: workflowBuiltinTranslations.pl,
     triggers: workflowTriggersTranslations.pl,
     start: workflowStartTranslations.pl,
+    list: workflowRunListTranslations.pl,
 
     tabs: {
         saved: 'Zapisane',
@@ -4071,10 +4089,12 @@ const ru = translated({
     exportJson: 'Экспортировать JSON',
     openCollection: 'Открыть рабочие процессы',
     destination: workflowsDestinationTranslations.ru,
+    plugins: workflowPluginTranslations.ru,
     page: workflowEditorPageTranslations.ru,
     builtins: workflowBuiltinTranslations.ru,
     triggers: workflowTriggersTranslations.ru,
     start: workflowStartTranslations.ru,
+    list: workflowRunListTranslations.ru,
 
     tabs: {
         saved: 'Сохранённые',
@@ -4573,10 +4593,12 @@ const ja = translated({
     exportJson: 'JSON をエクスポート',
     openCollection: 'ワークフローを開く',
     destination: workflowsDestinationTranslations.ja,
+    plugins: workflowPluginTranslations.ja,
     page: workflowEditorPageTranslations.ja,
     builtins: workflowBuiltinTranslations.ja,
     triggers: workflowTriggersTranslations.ja,
     start: workflowStartTranslations.ja,
+    list: workflowRunListTranslations.ja,
 
     tabs: {
         saved: '保存済み',
@@ -5071,10 +5093,12 @@ const zhHans = translated({
     exportJson: '导出 JSON',
     openCollection: '打开工作流',
     destination: workflowsDestinationTranslations.zhHans,
+    plugins: workflowPluginTranslations.zhHans,
     page: workflowEditorPageTranslations.zhHans,
     builtins: workflowBuiltinTranslations.zhHans,
     triggers: workflowTriggersTranslations.zhHans,
     start: workflowStartTranslations.zhHans,
+    list: workflowRunListTranslations.zhHans,
 
     tabs: {
         saved: '已保存',
@@ -5567,10 +5591,12 @@ const zhHant = translated({
     exportJson: '匯出 JSON',
     openCollection: '開啟工作流程',
     destination: workflowsDestinationTranslations.zhHant,
+    plugins: workflowPluginTranslations.zhHant,
     page: workflowEditorPageTranslations.zhHant,
     builtins: workflowBuiltinTranslations.zhHant,
     triggers: workflowTriggersTranslations.zhHant,
     start: workflowStartTranslations.zhHant,
+    list: workflowRunListTranslations.zhHant,
 
     tabs: {
         saved: '已儲存',

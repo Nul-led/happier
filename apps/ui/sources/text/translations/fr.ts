@@ -58,7 +58,9 @@ import { providerCollectionTranslations } from './providerCollectionTranslations
 import { settingsSearchKeywordsTranslations } from './settingsSearchKeywordsTranslations';
 import { automationPageTranslations } from './automationPageTranslations';
 import { settingsSessionPagesTranslations } from './settingsSessionPagesTranslations';
-import { workspaceTabTranslations } from './workspaceTabTranslations';
+import { workspaceTabKeyboardTranslations, workspaceTabTranslations } from './workspaceTabTranslations';
+import { terminalWorkspaceKeyboardTranslations, terminalWorkspaceTranslations } from './terminalWorkspaceTranslations';
+import { phoneNavigationTranslations } from './phoneNavigationTranslations';
 import { workspaceBarTranslations } from './workspaceBarTranslations';
 import { settingsProfilesRemoteHostsPageTranslations } from './settingsProfilesRemoteHostsPageTranslations';
 import { profilesPageTranslations } from './profilesPageTranslations';
@@ -74,6 +76,7 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { detailPageTranslations } from './detailPageTranslations';
 import { rolesTranslations } from './rolesTranslations';
 import { boardsTranslations } from './boardsTranslations';
+import { artifactsBrowserTranslations } from './artifactsBrowserTranslations';
 import { workStatusTranslations } from './workStatusTranslations';
 import { shareSheetTranslations } from './shareSheetTranslations';
 import { surfaceStateTranslations } from './surfaceStateTranslations';
@@ -907,6 +910,8 @@ export const fr = {
         setShortcutInvalidMessage: 'Saisis au moins une touche non modificatrice, éventuellement avec Mod, Ctrl, Shift ou Alt.',
         resetCommandAccessibility: ({ command }: { command: string }) => `Raccourci de ${command} — réinitialiser`,
         commands: {
+            ...workspaceTabKeyboardTranslations,
+            ...terminalWorkspaceKeyboardTranslations,
             composerAbortConfirm: 'Confirmer l’interruption',
             composerFocus: 'Placer le focus sur le composer',
             composerSendImmediate: 'Envoyer immédiatement',
@@ -6041,6 +6046,8 @@ export const fr = {
   },
 
   newSession: {
+      terminalHostUnavailableTitle: "Hôte de terminal indisponible",
+      terminalHostUnavailableBody: ({ host }: { host: string }) => `Installez ou mettez à jour ${host} et redémarrez son serveur sur cette machine, ou choisissez un autre hôte de terminal. Votre brouillon est conservé.`,
     folder: folderlessSessionTranslations.fr.composer,
     ...newSessionMcpTranslationExtension,
     ...acpCatalogTranslationExtension.newSession,
@@ -12593,7 +12600,9 @@ settingsSession: {
             },
   },
 
-  terminal: {
+    terminal: {
+        plaintextStorage: 'Home-managed (not end-to-end encrypted)',
+        plaintextStorageDescription: 'This Home can read Account data. The connection response is encrypted for this terminal.',
     // Used by terminal connection screens
     webBrowserRequired: "Navigateur web requis",
     webBrowserRequiredDescription:
@@ -12633,12 +12642,10 @@ settingsSession: {
       selectAllAction: 'Sélectionner toute la sortie du terminal',
       openLinkAction: 'Ouvrir le lien sélectionné',
     },
-    dockMenuA11y: "Ancrer le terminal",
     largePasteTitle: "Coller une saisie terminal volumineuse ?",
     largePasteDescription: "Ce collage est volumineux et peut exécuter des commandes dans le terminal. Relis-le avant de continuer.",
     largePasteConfirm: "Coller dans le terminal",
     settings: {
-      locationTitle: "Emplacement du terminal intégré",
       rendererTitle: "Moteur de rendu du terminal",
       rendererAuto: "Automatique",
       rendererAutoDescription: "Préfère le moteur de rendu natif lorsque tous les contrôles de sécurité natifs sont validés et qu'aucun lecteur d'écran n'est actif ; bascule vers la Vue Web xterm.js accessible lorsqu'un lecteur d'écran est actif.",
@@ -12653,11 +12660,6 @@ settingsSession: {
       ctrlC: "Ctrl+C",
       ctrlD: "Ctrl+D",
       enter: "Entrée",
-    },
-    location: {
-      sidebar: "Barre latérale",
-      details: "Panneau de détails",
-      bottom: "Panneau du bas",
     },
     errors: {
       missingMachineTarget: "Cette session n’a pas de machine cible.",
@@ -13260,11 +13262,9 @@ settingsSession: {
     unknownPath: "chemin inconnu",
     previousSessionsTitle: "Sessions précédentes (5 plus récentes au maximum)",
     tmux: {
-      overrideTitle: "Surcharger les réglages tmux globaux",
-      overrideEnabledSubtitle:
-        "Les réglages tmux personnalisés s’appliquent aux nouvelles sessions sur cette machine.",
-      overrideDisabledSubtitle:
-        "Les nouvelles sessions utilisent les réglages tmux globaux.",
+            overrideTitle: "Remplacer le choix du compte",
+            overrideEnabledSubtitle: "Cette machine utilise son propre hôte de terminal pour les nouvelles sessions.",
+            overrideDisabledSubtitle: "Les nouvelles sessions héritent de l’hôte de terminal du compte.",
       notDetectedSubtitle: "tmux n’est pas détecté sur cette machine.",
       notDetectedMessage:
         "tmux n’est pas détecté sur cette machine. Installe tmux et actualise la détection.",
@@ -13526,12 +13526,11 @@ settingsSession: {
     },
 
     artifacts: {
+        browser: artifactsBrowserTranslations.fr,
     // Artifacts feature
     title: "Artefacts",
     countSingular: "1 artefact",
     countPlural: ({ count }: { count: number }) => `${count} artefacts`,
-    empty: "Aucun artefact pour l’instant",
-    emptyDescription: "Crée ton premier artefact pour commencer",
     new: "Nouvel artefact",
     edit: "Modifier l’artefact",
     delete: "Supprimer",
@@ -13546,15 +13545,13 @@ settingsSession: {
     deleteConfirmDescription: "Cette action est irréversible",
     noContent: "Aucun contenu",
     untitled: "Sans titre",
-    titleLabel: "TITRE",
     titlePlaceholder: "Saisis un titre pour ton artefact",
-    bodyLabel: "CONTENU",
+    bodyLabel: "Contenu",
     bodyPlaceholder: "Écris ton contenu ici…",
     emptyFieldsError: "Saisis un titre ou du contenu",
     createError: "Échec de la création de l’artefact. Réessaie.",
     save: "Enregistrer",
     saving: "Enregistrement…",
-    loading: "Chargement des artefacts…",
     error: "Échec du chargement de l’artefact",
   },
 
@@ -14296,6 +14293,8 @@ settingsSession: {
    ...automationPageTranslations.fr,
     ...settingsSessionPagesTranslations.fr,
     ...workspaceTabTranslations.fr,
+    ...terminalWorkspaceTranslations.fr,
+    ...phoneNavigationTranslations.fr,
     ...workspaceBarTranslations.fr,
    ...settingsProfilesRemoteHostsPageTranslations.fr,
    ...profilesPageTranslations.fr,

@@ -4,11 +4,28 @@ import {
     buildTriggerDefinition,
     buildTriggerExecutionTarget,
     buildTriggerTarget,
+    createDefaultWhen,
     readTriggerThen,
     readTriggerWhen,
 } from './sessionTriggerForm';
 
 describe('session trigger form', () => {
+    it.each(['prComment', 'ciFailed'] as const)('keeps %s and its selected pull request through add and edit', (kind) => {
+        expect(createDefaultWhen(kind)).toEqual({ kind, pullRequest: null });
+        const when = { kind, pullRequest: { repository: 'happier-dev/happier', number: 42 } };
+        const trigger = buildTriggerDefinition({ when, enabled: true, sessionId: 'session-1' });
+        expect(trigger).toEqual({ kind, enabled: true, pullRequest: when.pullRequest });
+        const saved = { ...trigger, id: 'trigger-1' } as unknown as Parameters<typeof readTriggerWhen>[0];
+        expect(readTriggerWhen(saved)).toEqual(when);
+        expect(buildTriggerDefinition({ when: createDefaultWhen(kind), enabled: true, sessionId: 'session-1' })).toBeNull();
+        expect(buildTriggerDefinition({ when, enabled: true, sessionId: null })).toBeNull();
+    });
+    it('preselects exactly one link without copying its provider into the strict pull-request selection', () => {
+        const link = { provider: 'github' as const, repository: 'happier-dev/happier', number: 42 };
+        expect(createDefaultWhen('prComment', [link])).toEqual({ kind: 'prComment',
+            pullRequest: { repository: link.repository, number: link.number } });
+        expect(createDefaultWhen('ciFailed', [link, { ...link, number: 43 }])).toEqual({ kind: 'ciFailed', pullRequest: null });
+    });
     it('writes Notify me as one Notify me step: two Send to channels are both kept, none means your notification settings', () => {
         const two = buildTriggerTarget({ kind: 'notifyMe', message: 'The review converged', title: '', channels: ['discord', 'push'] });
         expect(two?.kind).toBe('inline');

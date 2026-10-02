@@ -4,6 +4,7 @@ import { useUnistyles } from 'react-native-unistyles';
 import { useRouter } from '@/components/appShell/workspace/destinationRoute';
 
 import { Item } from '@/components/ui/lists/Item';
+import { WorkspaceDestinationRow } from '@/components/appShell/workspace/WorkspaceDestinationRow';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import {
     CollectionListGroupLabel,
@@ -100,13 +101,12 @@ export const SettingsSearchResults = React.memo(function SettingsSearchResults(p
                     <View key={group.id} testID={`${props.testIDPrefix}.group.${group.id}`}>
                         <ItemGroup title={group.title}>
                             {group.rows.map((row) => (
-                                <Item
-                                    key={rowKey(row)}
+                                <WorkspaceDestinationRow key={rowKey(row)} href={row.route}><Item
                                     testID={rowTestID(row)}
                                     title={row.title}
                                     subtitle={row.subtitle}
                                     onPress={() => props.onOpen(row.route)}
-                                />
+                                /></WorkspaceDestinationRow>
                             ))}
                         </ItemGroup>
                     </View>
@@ -123,6 +123,7 @@ export const SettingsSearchResults = React.memo(function SettingsSearchResults(p
                     {group.rows.map((row) => (
                         <CollectionNavigationRow
                             key={rowKey(row)}
+                            href={row.route}
                             testID={rowTestID(row)}
                             title={row.title}
                             subtitle={row.subtitle}

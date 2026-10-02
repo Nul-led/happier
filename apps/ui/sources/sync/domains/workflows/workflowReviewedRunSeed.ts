@@ -9,6 +9,7 @@ import { getTempData, storeTempData } from '@/utils/sessions/tempDataStore';
 import { captureActiveServerAccountScopeLifetime, type ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 
 import { workflowDefinitionPromptTitle } from './workflowBlockLabel';
+import { setWorkflowStepExecutionTarget } from '@happier-dev/protocol/workflows/workflowDefinitionEditV1';
 
 /**
  * An unsaved authored copy reviewed from a Run, for saving or fresh recovery.
@@ -30,7 +31,7 @@ export type WorkflowReviewedRunSeed = Readonly<{
     description?: string;
     /** The accepted host placement, so the new Run starts where the old one ran. */
     project: WorkflowProjectTargetV1;
-    /** The definition the predecessor Run was admitted with, unchanged. */
+    /** The accepted definition with root Agent-step runtime choices pinned for a fresh admission. */
     definition: WorkflowDefinitionV1;
     /** The accepted Run-scoped runtime choice, preserved rather than defaulted. */
     executionTarget: WorkflowRunAcceptedContextV1['executionTarget'];
@@ -50,12 +51,18 @@ export function buildWorkflowReviewedRunSeed(params: Readonly<{
     acceptedContext: WorkflowRunAcceptedContextV1;
     reasonCode?: string;
 }>): WorkflowReviewedRunSeed {
+    let repeatDraft = { ...params.definition, name: '' };
+    for (const leaf of params.acceptedContext.materializedLeaves) {
+        if (leaf.sourceKey === '$root' && leaf.kind === 'step') {
+            repeatDraft = setWorkflowStepExecutionTarget(repeatDraft, leaf.blockId, leaf.executionTarget.kind);
+        }
+    }
     return {
         name: params.acceptedContext.metadata?.title ?? workflowDefinitionPromptTitle(params.definition) ?? '',
         ...(params.acceptedContext.metadata?.description === undefined
             ? {} : { description: params.acceptedContext.metadata.description }),
         project: params.acceptedContext.workspaceTarget.project,
-        definition: params.definition,
+        definition: { ...params.definition, blocks: repeatDraft.blocks },
         executionTarget: params.acceptedContext.executionTarget,
         inputs: params.acceptedContext.inputs,
         sourceRunId: params.run.id,

@@ -326,7 +326,7 @@ export const SkillBundleEditorScreen = React.memo((props: Readonly<{ artifactId:
   }, [savedArtifactId]);
 
   return (
-    <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+    <ItemList keyboardShouldPersistTaps="handled">
       <PromptEditorHeader
         testID="skillBundle.header"
         mark="sparkle"

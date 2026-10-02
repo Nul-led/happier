@@ -54,20 +54,6 @@ vi.mock('@legendapp/list/react-native', async (importOriginal) => {
     return mock.module;
 });
 
-// Approval artifacts cross the stored-content HTTP boundary. This screen suite
-// exercises Team/Group routing and mutation contracts, so keep that external
-// compatibility probe at its supported current version rather than requiring a
-// second Home capability fixture for every danger-action assertion.
-vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => {
-    const original = await importOriginal<
-        typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')
-    >();
-    return {
-        ...original,
-        requireCurrentAccountStoredContentServerCompatibility: vi.fn(async () => undefined),
-    };
-});
-
 installSettingsViewCommonModuleMocks({
     router: async () => ({
         useRouter: () => ({ push: groupRouterPush, back: vi.fn() }),

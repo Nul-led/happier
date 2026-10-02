@@ -103,6 +103,7 @@ function createRunScopedMcpSessionView(
         }
         : null;
     },
+    getActiveTurnAdmissionWitness: readWitness,
     getRuntimeLifetimeSignal: () => run.signal,
     getSessionActionConfirmationBinding: () => {
       const occurrence = run.readCurrentRunOccurrence(run.runId);

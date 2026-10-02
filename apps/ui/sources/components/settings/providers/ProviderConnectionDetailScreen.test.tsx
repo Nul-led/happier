@@ -9,15 +9,14 @@ import {
     createProviderConnectionViewFixture,
     createProviderConnectionsDescribeFixture,
     createProviderModelsFixture,
-    createMachineAdministrationTargetSelectionMock,
     createProviderSettingsHarness,
-    createDeferred,
-    flushHookEffects,
-    installMachineAdministrationTargetSelectionBoundary,
     installProviderSettingsRpcBoundary,
-    renderScreen,
-    standardCleanup,
-} from '@/dev/testkit';
+} from '@/dev/testkit/harness/providerSettingsHarness';
+import { createMachineAdministrationTargetSelectionMock, installMachineAdministrationTargetSelectionBoundary } from '@/dev/testkit/mocks/machineAdministrationTargetSelection';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { presentProviderCompatibilityReasons } from '@/providers/connection/compatibilityReasonPresentation';
 import { en } from '@/text/translations/en';
 import { installSettingsViewCommonModuleMocks } from '../settingsViewTestHelpers';
@@ -169,7 +168,8 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
         srv_b: 'srv_b',
     } as const)[String(value ?? '').trim() as 'server-a' | 'srv_test' | 'server-b' | 'srv_b'] ?? String(value ?? '').trim(),
 }));
-vi.mock('@/sync/store/hooks', () => ({
+vi.mock('@/sync/store/hooks', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/store/hooks')>(),
     useProfile: () => ({
         id: 'account-a',
         connectedAccountsV4: connectedAccountProfileState.accounts,
@@ -226,7 +226,6 @@ vi.mock('@/components/ui/lists/ItemGroup', () => ({ ItemGroup: (props: React.Pro
 vi.mock('@/components/ui/lists/ItemList', () => ({ ItemList: (props: React.PropsWithChildren<Record<string, unknown>>) => React.createElement('ItemList', props, props.children) }));
 vi.mock('@/components/ui/status/StatusPill', () => ({ StatusPill: (props: Record<string, unknown>) => React.createElement('StatusPill', props) }));
 vi.mock('@/components/ui/forms/Switch', () => ({ Switch: (props: Record<string, unknown>) => React.createElement('Switch', props) }));
-vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({ ActivitySpinner: () => null }));
 vi.mock('@/components/ui/icons/SafeIonicons', () => ({ SafeIonicons: () => null }));
 vi.mock('@/providers/connection/ProviderIcon', () => ({ ProviderIcon: (props: Record<string, unknown>) => React.createElement('ProviderIcon', props) }));
 // The detail page is one virtualized list (its sections as the header, the model rows as items);
@@ -315,6 +314,8 @@ function findProviderExternalLink(
 function findComposite(screen: { findAllByTestId: (testID: string) => Array<{ props: Record<string, any> }> }, testID: string, prop: string) {
     return screen.findAllByTestId(testID).find((node) => node.props[prop] !== undefined) ?? null;
 }
+
+const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
 
 describe('ProviderConnectionDetailScreen', () => {
     afterEach(standardCleanup);
@@ -2151,9 +2152,34 @@ describe('ProviderConnectionDetailScreen', () => {
         await act(async () => {
             await findMenuAction(screen, 'duplicateAsCustom')?.props.onPress?.();
         });
+        expect(run).not.toHaveBeenCalled();
+        await act(async () => { screen.changeTextByTestId('provider-connection-duplicate-name', 'Custom copy'); });
+        await screen.pressByTestIdAsync('provider-connection-duplicate-save');
         expect(run).toHaveBeenCalledWith(expect.objectContaining({
             action: 'duplicate', connectionId: 'pc_a', mode: 'asCustom', displayName: 'Custom copy',
         }), 'duplicate:asCustom');
+        expect(prompt).not.toHaveBeenCalled();
+    });
+
+    it('commits endpoint overrides from the inline field to the same revisioned writer', async () => {
+        const endpointId = 'endpoint_main';
+        state.connection = connection({ revision: 3, endpoints: [{
+            endpointTemplateId: endpointId, protocol: 'openai-chat', baseUrl: 'https://acme.test/v1',
+            defaultBaseUrl: 'https://acme.test/v1', accountOverrideBaseUrl: null,
+            machineOverrideBaseUrl: null, effectiveSource: 'template',
+        }] });
+        const { ProviderConnectionDetailScreen } = await import('./ProviderConnectionDetailScreen');
+        const screen = await renderScreen(<ProviderConnectionDetailScreen connectionId="pc_a" />);
+        const fieldId = `provider-connection-endpoint.${endpointId}.account`;
+        const field = () => screen.findAllByTestId(fieldId).find((node) => typeof node.props.onChangeText === 'function');
+        expect(field()).toBeDefined();
+        await act(async () => { field()?.props.onChangeText('https://edited.example/v1'); });
+        await act(async () => { field()?.props.onSubmitEditing(); });
+        expect(run).toHaveBeenCalledWith(expect.objectContaining({
+            action: 'setEndpointOverride', connectionId: 'pc_a', expectedRevision: 3,
+            endpointTemplateId: endpointId, scope: 'account', baseUrl: 'https://edited.example/v1',
+        }), `endpoint:account:${endpointId}`);
+        expect(prompt).not.toHaveBeenCalled();
     });
     it('renames the connection through its update write, with the owner validation inline', async () => {
         state.connection = connection({ displayName: 'Acme', revision: 3 });

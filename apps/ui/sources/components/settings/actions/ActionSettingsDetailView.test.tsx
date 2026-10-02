@@ -227,6 +227,27 @@ afterEach(() => {
 await import('./ActionSettingsDetailView');
 
 describe('ActionSettingsDetailView', () => {
+    it('lets the user waive host capture viewing only for the selected plugin', async () => {
+        daemonProjection.byMachineId = {
+            'machine-a': { phase: 'ready', inputs: { pluginProjectionById: {
+                'acme.viewer': { pluginId: 'acme.viewer', title: 'My viewer', actions: [] },
+                'acme.other': { pluginId: 'acme.other', title: 'Other viewer', actions: [] },
+            } } },
+        };
+        administrationTargetSelection.controller.select('machine-a');
+        const { ActionSettingsDetailContent } = await import('./ActionSettingsDetailView');
+        await renderScreen(<ActionSettingsDetailContent actionId="capture.view" />);
+        const control = capture.segmentedTabBars.find(bar => (
+            bar.testIDPrefix === 'settings-actions:host-capture:acme.viewer:mode'
+        ));
+        expect(control?.activeTabId).toBe('ask_first');
+        expect(control?.accessibilityLabel).toBe('My viewer');
+        (control?.onSelectTab as (value: string) => void)('allowed');
+        expect(capture.setRawSettings).toHaveBeenLastCalledWith(expect.objectContaining({
+            pluginHostCaptureApprovalWaived: ['acme.viewer'],
+        }));
+    });
+
     it('renders approval-capable targets as mode tabs and ordinary placements as switches', async () => {
         const { ActionSettingsDetailContent } = await import('./ActionSettingsDetailView');
 

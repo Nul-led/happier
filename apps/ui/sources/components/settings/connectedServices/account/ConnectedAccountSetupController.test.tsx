@@ -101,7 +101,7 @@ const configuredMode: PluginConnectedAccountAuthenticationModeV2 = {
     id: 'oauth', kind: 'oauthAuthorizationCode', pkce: 'required', outcomeReconciliation: 'providerCheck',
     configuration: {
         scope: 'account', changeBehavior: 'reconnect', fields: [
-            { id: 'endpoint', title: 'Endpoint', required: true, schema: { type: 'string', minLength: 1 } },
+            { id: 'endpoint', title: 'Endpoint', secret: false, required: true, schema: { type: 'string', minLength: 1 } },
             { id: 'secret', title: 'Secret', secret: true, schema: { type: 'string' } },
         ],
     },
@@ -383,8 +383,9 @@ describe('ConnectedAccountSetupController real ownership', () => {
 
     it.each(['device', 'oauth'] as const)('resumes daemon-persisted %s authentication after remount without creating another attempt', async (kind) => {
         installDescription({ ...described, descriptor: { ...described.descriptor,
-            authentication: { defaultModeId: kind, modes: [{ id: kind, kind: kind === 'device' ? 'oauthDeviceCode' : 'oauthAuthorizationCode',
-                ...(kind === 'oauth' ? { pkce: 'required' as const } : {}), outcomeReconciliation: 'none' }] },
+            authentication: { defaultModeId: kind, modes: [kind === 'device'
+                ? { id: kind, kind: 'oauthDeviceCode', outcomeReconciliation: 'none' }
+                : { id: kind, kind: 'oauthAuthorizationCode', pkce: 'required', outcomeReconciliation: 'none' }] },
         } });
         handleControl = (command) => command.operation === 'listPendingAttempts'
             ? { status: 'pendingAttempts', attempts: [{ attemptId: 'persisted-attempt', kind, modeId: kind,
@@ -433,8 +434,9 @@ describe('ConnectedAccountSetupController real ownership', () => {
 
     it.each(['oauth', 'device'] as const)('continues an uncertain pending %s attempt through its mode-owned operation', async (kind) => {
         installDescription({ ...described, descriptor: { ...described.descriptor,
-            authentication: { defaultModeId: kind, modes: [{ id: kind, kind: kind === 'device' ? 'oauthDeviceCode' : 'oauthAuthorizationCode',
-                ...(kind === 'oauth' ? { pkce: 'required' as const } : {}), outcomeReconciliation: 'providerCheck' }] },
+            authentication: { defaultModeId: kind, modes: [kind === 'device'
+                ? { id: kind, kind: 'oauthDeviceCode', outcomeReconciliation: 'providerCheck' }
+                : { id: kind, kind: 'oauthAuthorizationCode', pkce: 'required', outcomeReconciliation: 'providerCheck' }] },
         } });
         handleAuthentication = (command) => command.operation === 'reconcile'
             ? { status: 'pending', attemptId: 'attempt-1', retryAfterMs: 250 }
@@ -620,7 +622,8 @@ describe('ConnectedAccountSetupController real ownership', () => {
             operationTransport: { kind: 'legacy', peerClass, serviceId: legacyServiceId },
         }, legacyServiceId);
         storage.getState().applyProfile({ ...profileDefaults, id: 'account-a', connectedServicesV2: [{
-            serviceId: legacyServiceId, profiles: [{ profileId: 'account-1', status: 'connected', kind: credentialKind, providerEmail: 'legacy@example.test' }],
+            serviceId: legacyServiceId, groups: [], profiles: [{ profileId: 'account-1', status: 'connected', kind: credentialKind,
+                providerEmail: 'legacy@example.test', providerAccountId: null, expiresAt: null, lastUsedAt: null, health: null }],
         }] });
         const screen = await focusedScreen();
         await vi.waitFor(() => expect(screen.findHostByTestId('qualified-account-detail'), JSON.stringify(screen.tree.toJSON())).not.toBeNull());

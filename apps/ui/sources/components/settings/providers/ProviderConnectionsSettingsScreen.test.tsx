@@ -150,7 +150,6 @@ vi.mock('@/components/ui/lists/ItemGroup', () => ({ ItemGroup: (props: React.Pro
 vi.mock('@/components/ui/lists/ItemList', () => ({ ItemList: (props: React.PropsWithChildren<Record<string, unknown>>) => React.createElement('ItemList', props, props.children) }));
 vi.mock('@/components/ui/status/StatusPill', () => ({ StatusPill: (props: any) => React.createElement('StatusPill', props) }));
 vi.mock('@/components/ui/forms/Switch', () => ({ Switch: (props: any) => React.createElement('Switch', props) }));
-vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({ ActivitySpinner: (props: any) => React.createElement('ActivitySpinner', props) }));
 vi.mock('@/components/ui/icons/SafeIonicons', () => ({ SafeIonicons: (props: any) => React.createElement('SafeIonicons', props) }));
 vi.mock('@/components/ui/buttons/IconButton', () => ({ IconButton: (props: any) => React.createElement('IconButton', props) }));
 vi.mock('@/components/ui/feedback/ShimmerView', () => ({ ShimmerView: (props: any) => React.createElement('ShimmerView', props) }));
@@ -546,7 +545,16 @@ describe('ProviderConnectionsSettingsScreen', () => {
     it('pauses the collection when the Providers navigator loses focus', async () => {
         administrationTarget.controller.setMachines([{ machineId: 'machine-a' }, { machineId: 'machine-b' }]);
         const { ProviderSettingsLayout } = await import('./ProviderSettingsLayout');
-        const screen = await renderScreen(<ProviderSettingsLayout />);
+        // The navigation boundary is mocked with the canonical context factory;
+        // the real optional-focus adapter requires a mounted screen context.
+        const { NavigationContext } = await import('@react-navigation/native') as unknown as {
+            NavigationContext: React.Context<Readonly<Record<string, unknown>> | undefined>;
+        };
+        const screen = await renderScreen(
+            <NavigationContext.Provider value={{ isFocused: () => navigationState.focused }}>
+                <ProviderSettingsLayout />
+            </NavigationContext.Provider>,
+        );
         await React.act(async () => {
             screen.findByTestId('settings-providers-layout')?.props.onLayout({ nativeEvent: { layout: { width: 1200 } } });
             await flushHookEffects();
@@ -896,6 +904,29 @@ describe('ProviderConnectionsSettingsScreen', () => {
         expect(run).not.toHaveBeenCalled();
         expect(screen.findAllByType('Item').map((item) => item.props.title))
             .toContain('settingsProviders.errors.accessChangedTitle');
+    });
+
+    it('opens the shared authoring draft before creating a named discovered connection', async () => {
+        const query = state.query as { data: { discoveryCandidates: unknown[] } };
+        query.data.discoveryCandidates = [{
+            v: 1, machineId: 'machine-a', contributionKey: 'plugin/ollama',
+            providerName: 'Ollama', endpointTemplateId: 'native',
+            normalizedEndpointUrl: 'http://127.0.0.1:22434',
+            candidateId: 'discovery-candidate:v1:named',
+            evidence: { kind: 'attributed_listener' }, ownership: 'adopted',
+            connection: { status: 'requires_named_connection' },
+        }];
+        const { ProviderConnectionsSettingsScreen } = await import('./ProviderConnectionsSettingsScreen');
+        const screen = await renderScreen(<ProviderConnectionsSettingsScreen />);
+        await React.act(async () => {
+            await findConnectAction(screen, 'Ollama')?.props.onPress?.();
+        });
+
+        expect(run).not.toHaveBeenCalled();
+        expect(routerPush).toHaveBeenCalledWith(expect.stringContaining(
+            '/settings/providers/new?contributionKey=plugin%2Follama&candidateId=discovery-candidate%3Av1%3Anamed',
+        ));
+        expect(routerPush).toHaveBeenCalledWith(expect.stringContaining('displayName='));
     });
 
     it('preserves the daemon candidate identity when credential recovery opens authoring', async () => {

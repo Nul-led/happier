@@ -98,7 +98,7 @@ describe('keyboardShortcutsSettingsModel', () => {
         expect(model.commandRows.find((row) => row.commandId === 'shortcutsHelp.open')?.defaultLabel).toBe('?');
     });
 
-    it('shows active web-safe defaults instead of browser-reserved native defaults on web', () => {
+    it('keeps web-safe defaults and reports browser conflicts for the workspace tab chords', () => {
         const model = buildKeyboardShortcutSettingsModel({
             settings: {
                 ...baseSettings,
@@ -113,7 +113,12 @@ describe('keyboardShortcutsSettingsModel', () => {
         expect(model.commandRows.find((row) => row.commandId === 'session.mru.next')?.defaultLabel).toBe('Option+PageDown');
         expect(model.commandRows.find((row) => row.commandId === 'mode.cycle')?.defaultLabel).toBe('Option+Shift+M');
         expect(model.commandRows.find((row) => row.commandId === 'composer.abortConfirm')?.defaultLabel).toBe('Cmd+.');
-        expect(model.conflicts).toEqual([]);
+        expect(model.commandRows.find((row) => row.commandId === 'workspace.tab.new')?.defaultLabel).toBe('Cmd+T');
+        expect(model.commandRows.find((row) => row.commandId === 'workspace.tab.close')?.defaultLabel).toBe('Cmd+W');
+        expect(model.conflicts).toEqual([
+            { id: 'browser-reserved:workspace.tab.new', kind: 'browser-reserved', commandIds: ['workspace.tab.new'] },
+            { id: 'browser-reserved:workspace.tab.close', kind: 'browser-reserved', commandIds: ['workspace.tab.close'] },
+        ]);
     });
 
     it('uses the legacy command palette setting as the command palette shortcut enable state', () => {
@@ -214,6 +219,8 @@ describe('keyboardShortcutsSettingsModel', () => {
                 kind: 'browser-reserved',
                 commandIds: ['session.new'],
             },
+            { id: 'browser-reserved:workspace.tab.new', kind: 'browser-reserved', commandIds: ['workspace.tab.new'] },
+            { id: 'browser-reserved:workspace.tab.close', kind: 'browser-reserved', commandIds: ['workspace.tab.close'] },
         ]);
     });
 

@@ -138,7 +138,7 @@ export const ProfileDetailScreen = React.memo(function ProfileDetailScreen(props
 const ProfileNotFound = React.memo(function ProfileNotFound() {
     const router = useRouter();
     return (
-        <ItemList presentation="page">
+        <ItemList>
             <SurfaceStateCard
                 testID="settings.profiles.detail.notFound"
                 kind="unavailable"

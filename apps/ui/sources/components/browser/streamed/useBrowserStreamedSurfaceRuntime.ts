@@ -26,7 +26,7 @@ const NO_VIEWER_CAPS: MachineLiveStreamCapsV1 = {};
 type Discovery =
     | Readonly<{ status: 'idle' }>
     | Readonly<{ status: 'discovering' }>
-    | Readonly<{ status: 'ready'; view: BrowserDaemonViewV1 | null }>
+    | Readonly<{ status: 'ready'; view: BrowserDaemonViewV1 | null; machineId: string; serverId: string }>
     | Readonly<{ status: 'failed' }>;
 
 /**
@@ -60,12 +60,14 @@ export function useBrowserStreamedSurfaceRuntime(input: Readonly<{
     onBrowserEventRef.current = input.onBrowserEvent;
 
     React.useEffect(() => {
-        if (input.enabled === false || !browserSessionId || !machineId || !serverId) {
+        if (!browserSessionId || !machineId || !serverId) {
             setDiscovery({ status: 'idle' });
             return undefined;
         }
+        // Visibility suspends capture consumption, not the retained view/socket.
+        if (input.enabled === false) return undefined;
         const abort = new AbortController();
-        setDiscovery({ status: 'discovering' });
+        setDiscovery(previous => previous.status === 'ready' ? previous : { status: 'discovering' });
         void listBrowserDaemonViewsViaMachineRpc({ machineId, serverId, browserSessionId, signal: abort.signal })
             .then((result) => {
                 if (abort.signal.aborted) return;
@@ -88,14 +90,17 @@ export function useBrowserStreamedSurfaceRuntime(input: Readonly<{
                             && (!('viewId' in event) || event.viewId === candidate.viewId)) onBrowserEventRef.current?.(event);
                     }
                 }
-                setDiscovery({ status: 'ready', view: views.find(candidate => candidate.viewId === viewId
+                setDiscovery({ status: 'ready', machineId, serverId, view: views.find(candidate => candidate.viewId === viewId
                     && resolveBrowserDaemonStreamTarget(candidate) !== null) ?? null });
             });
         return () => abort.abort();
     }, [attempt, browserSessionId, input.enabled, input.refreshKey, machineId, serverId, viewId]);
 
-    const captureSource = discovery.status === 'ready' ? discovery.view?.captureSource ?? null : null;
-    const sourceId = discovery.status === 'ready' && captureSource ? discovery.view?.sourceId ?? null : null;
+    const discoveredView = discovery.status === 'ready' && discovery.machineId === machineId && discovery.serverId === serverId
+        && discovery.view?.browserSessionId === browserSessionId && discovery.view.viewId === viewId
+        ? discovery.view : null;
+    const captureSource = discoveredView?.captureSource ?? null;
+    const sourceId = captureSource ? discoveredView?.sourceId ?? null : null;
     const socket = useMachineLiveStreamRelaySocket({
         machineId,
         serverId,
@@ -114,7 +119,7 @@ export function useBrowserStreamedSurfaceRuntime(input: Readonly<{
         ? `browser-live:${socket.machineId}:${sourceId}:${viewerSocketId}`
         : '';
     const ingestion = useSimulatorRelayIngestion({
-        enabled: Boolean(streamId && transport),
+        enabled: input.enabled !== false && Boolean(streamId && transport),
         transport,
         serverId,
         sourceMachineId: socket?.machineId ?? '',

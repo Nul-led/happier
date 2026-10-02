@@ -798,12 +798,27 @@ describe('QualifiedPoolDetailView', () => {
         expect(itemlessHeader(screen).title).toBe('Codex');
     });
 
-    it('renames the pool through a prompt', async () => {
+    it('renames the pool inline only after saving the draft', async () => {
         const { screen, group } = await renderPoolDetail();
-        modalSpies.prompt.mockResolvedValue('  Renamed pool  ');
         await pressRow(screen, 'connected-services-pool-detail:rename');
+        expect(patch).not.toHaveBeenCalled();
+        const field = screen.findByTestId('connected-services-pool-detail:name-field');
+        expect(field).not.toBeNull();
+        await act(async () => { field!.props.onChangeText('  Renamed pool  '); });
+        await pressRow(screen, 'connected-services-pool-detail:name-save');
+        expect(modalSpies.prompt).not.toHaveBeenCalled();
         expect(patch).toHaveBeenCalledTimes(1);
         expect(patch.mock.calls[0]?.[0]).toMatchObject({ group, displayName: 'Renamed pool' });
+    });
+
+    it('does not offer one pool name draft to a different pool', async () => {
+        const { screen, group } = await renderPoolDetail();
+        await pressRow(screen, 'connected-services-pool-detail:rename');
+        await act(async () => { screen.findByTestId('connected-services-pool-detail:name-field')!.props.onChangeText('First pool draft'); });
+        await screen.update(<QualifiedPoolDetailView accounts={ACCOUNTS} serviceLabel="Codex" now={NOW}
+            group={{ ...group, ref: { ...group.ref, groupId: 'another-pool' } }} mutations={createMutations()} />);
+        expect(screen.findByTestId('connected-services-pool-detail:name-field') === null).toBe(true);
+        expect(patch).not.toHaveBeenCalled();
     });
 
     it('patches automatic fallback, strategy and the switch-early threshold', async () => {

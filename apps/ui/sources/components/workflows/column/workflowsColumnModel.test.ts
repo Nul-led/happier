@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { BUILTIN_WORKFLOW_CATALOG_V1 } from '@happier-dev/protocol';
 
 import type { WorkflowRunSummaryV1 } from '@happier-dev/protocol/workflows/workflowProgressV1';
 
@@ -13,6 +14,19 @@ import {
 } from './workflowsColumnModel';
 
 describe('splitLibraryDefinitions', () => {
+    it('keeps plugin catalog identities in From plugins instead of treating them as saved workflows', () => {
+        const plugin = {
+            workflow: 'plugin:example.recipe/check', pluginId: 'example.recipe', version: '1.2.3',
+            title: 'Check changes',
+            definition: BUILTIN_WORKFLOW_CATALOG_V1[0]!.definition,
+        };
+        const split = splitLibraryDefinitions([], [plugin]);
+        expect(split.library).toEqual([]);
+        expect(split.sharedWithYou).toEqual([]);
+        expect(split.fromPlugins).toEqual([plugin]);
+        expect(split.fromPlugins[0]).toBe(plugin);
+    });
+
     it('puts workflows others shared with you in their own section, never in Library', () => {
         const header = (definitionId: string, access?: 'owner' | 'view' | 'edit' | 'admin') => ({
             kind: 'workflow-definition.v1' as const,

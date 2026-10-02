@@ -37,7 +37,7 @@ describe('plugin roles through the canonical projection', () => {
     it('admits a roles-only plugin without a daemon entrypoint through the runtime occurrence owner', async () => {
         const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-roles-'));
         const contributes = createResolvedContributionRegistry(projectLoadedPluginContributes({
-            loadResult: { loadedPlugins: [loaded('com.acme.security')], diagnosticsByPluginId: {} }, provenance: 'built-in',
+            loadResult: { loadedPlugins: [loaded('com.acme.security')], diagnosticsByPluginId: {} }, provenance: 'first_party',
         }));
         const registry = await resolveExecutablePluginRuntimeRegistry({
             happyHomeDir, contributes, generation: 1,
@@ -62,7 +62,7 @@ describe('plugin roles through the canonical projection', () => {
         // These declarations have no cross-plugin references. The built-in
         // projection path exercises the same role normalizer without requiring
         // separately published bundled-package artifacts on a source-test host.
-        const inputs = projectLoadedPluginContributes({ loadResult: { loadedPlugins: pluginIds.map(loaded), diagnosticsByPluginId: {} }, provenance: 'built-in' });
+        const inputs = projectLoadedPluginContributes({ loadResult: { loadedPlugins: pluginIds.map(loaded), diagnosticsByPluginId: {} }, provenance: 'first_party' });
         const registry = createResolvedContributionRegistry({ ...inputs,
             occurrenceIdsByPluginId: Object.fromEntries(pluginIds.map((id) => [id, createPluginRuntimeOccurrenceId(id)])),
         });
@@ -96,7 +96,7 @@ describe('plugin roles through the canonical projection', () => {
         expect(resolveRoleSelectionV1({ roleId, pluginRoles: readPluginRoleSources(withdrawn), settingsOverrides: {
             [roleId]: { roleId, engine: { agentTargetKey: 'agent:claude' } },
         } })).toMatchObject({ ok: false, refusal: { code: 'role_target_unavailable' } });
-        const uninstalled = createResolvedContributionRegistry(projectLoadedPluginContributes({ loadResult: { loadedPlugins: [], diagnosticsByPluginId: {} }, provenance: 'built-in' }));
+        const uninstalled = createResolvedContributionRegistry(projectLoadedPluginContributes({ loadResult: { loadedPlugins: [], diagnosticsByPluginId: {} }, provenance: 'first_party' }));
         expect(readPluginRoleSources(uninstalled)).toEqual([]);
         const merged = createMergedContributionRegistry({ roles: registry.roles }, {});
         expect(merged.roles).toEqual(registry.roles);

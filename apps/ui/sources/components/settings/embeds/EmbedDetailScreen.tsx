@@ -179,7 +179,7 @@ export const EmbedEditScreen = React.memo(function EmbedEditScreen() {
     if (token) return <EmbedDetail key={token.tokenId} token={token} />;
     if ((state.phase === 'idle' || state.phase === 'loading') && state.tokens.length === 0) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <SettingsPageHeader />
                 <ItemGroup>
                     <ItemLoadStateRows testID="settings-embed-detail-loading" state={{ kind: 'loading' }} rows={4} lines={2}
@@ -354,7 +354,7 @@ const EmbedDetail = React.memo(function EmbedDetail(props: Readonly<{ token: Acc
     );
 
     const settings = (
-        <ItemList presentation="page" testID="settings-embed-detail">
+        <ItemList testID="settings-embed-detail">
             {header}
             {enforcedEdit ? <Text style={styles.reconnect} accessibilityLiveRegion="polite">{t('settingsEmbeds.detail.reconnect')}</Text> : null}
             {saveError ? <Text style={styles.error} accessibilityLiveRegion="assertive">{saveError}</Text> : null}
@@ -427,7 +427,7 @@ const EmbedDetail = React.memo(function EmbedDetail(props: Readonly<{ token: Acc
     );
 
     const picker = step === 'models' ? (
-        <ItemList presentation="page">
+        <ItemList>
             <SettingsPageHeader title={t('settingsEmbeds.models.allowed')} alwaysShowTitle cancelAction={{ title: t('common.done'), onPress: () => setStep('settings') }} />
             <ApiTokenGrantModelsPicker {...grantPart} />
         </ItemList>

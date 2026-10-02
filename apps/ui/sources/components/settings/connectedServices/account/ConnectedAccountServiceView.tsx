@@ -1014,7 +1014,7 @@ const ConnectedAccountServiceController = React.memo(
     }
     if (!exactRoute || !service) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <SettingsPageHeader title={t('settings.connectedServices')} alwaysShowTitle />
                 <ItemGroup>
                     <Item
@@ -1052,7 +1052,7 @@ const ConnectedAccountServiceController = React.memo(
             ? resolveConnectedServiceRegistryEntryDisplayName(registryEntry, t, controllerProps.localizePluginText)
             : t('connectedServices.fallbackName');
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 {serviceHeader(pendingTitle)}
                 <ItemGroup>
                     <Item
@@ -1572,7 +1572,6 @@ const ConnectedAccountServiceController = React.memo(
 
     return focusedScreenOwnsScroll ? routeBody : (
         <ItemList
-            presentation="page"
             keyboardAware={authenticationFlowActive}
             keyboardShouldPersistTaps={authenticationFlowActive ? 'handled' : undefined}
         >
@@ -1642,7 +1641,7 @@ export function ConnectedAccountServiceView() {
 
     if (targetSelection.selectedTarget && !targetSelection.selectedTargetServerMatchesActiveAccount) {
         return (
-            <ItemList presentation="page">
+            <ItemList>
                 <SettingsPageHeader
                     title={headerTitle}
                     alwaysShowTitle

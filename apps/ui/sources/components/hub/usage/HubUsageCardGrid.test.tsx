@@ -17,23 +17,49 @@ vi.mock('@/text', async () => (await import('@/dev/testkit/mocks/text')).createT
 afterEach(standardCleanup);
 
 describe('HubUsageCardGrid identity privacy', () => {
+    it('preserves usage for an unknown cached service without offering the built-in reset action', async () => {
+        const entry = {
+            key: 'novel/work', fetchedAt: 1_000, serviceLabel: 'Novel', legacyServiceId: 'novel-service',
+            accountId: 'work', profileLabel: 'Work', planLabel: null, meters: [],
+        } satisfies UsageSummaryEntry;
+        const screen = await renderScreen(<HubUsageCardGrid entries={[entry]} facts={{
+            inUseAccountKeys: new Set(),
+            recoveryCreditsByKey: { 'novel/work': { availableCount: 3, credits: [] } },
+            accountsNeedingSignIn: [],
+        }} />);
+
+        expect(screen.findByTestId('hub-usage.novel/work:resets')).toBeTruthy();
+        expect(screen.findHostByTestId('hub-usage.novel/work:resets:use')).toBeNull();
+        expect(entry.legacyServiceId).toBe('novel-service');
+    });
+
+    it('keeps each card reading time separate from the aggregate summary', async () => {
+        const entries = [
+            { key: 'claude/work', fetchedAt: 1_000, serviceLabel: 'Claude', profileLabel: 'Work', planLabel: null, meters: [] },
+            { key: 'claude/personal', fetchedAt: 5_000, serviceLabel: 'Claude', profileLabel: 'Personal', planLabel: null, meters: [] },
+        ] satisfies UsageSummaryEntry[];
+        const screen = await renderScreen(<HubUsageCardGrid entries={entries} />);
+        const { SurfaceAsOfLabel } = await import('@/components/ui/surfaces/SurfaceAsOfLabel');
+        expect(screen.findAllByType(SurfaceAsOfLabel).map((label) => label.props.at)).toEqual([1_000, 5_000]);
+    });
+
     it('updates mounted cards from the device setting, masking emails and ids while preserving account names and meters', async () => {
         const previousState = storage.getState();
         const entries = [
             {
-                key: 'claude/work', serviceLabel: 'Claude', legacyServiceId: 'claude-subscription',
+                key: 'claude/work', fetchedAt: null, serviceLabel: 'Claude', legacyServiceId: 'claude-subscription',
                 accountLabel: 'Work', accountEmail: 'leeroy@company.com', accountId: 'acct_work1234',
                 profileLabel: 'Work', planLabel: 'Max',
                 meters: [{ meterId: '5h', label: '5-hour', remainingPct: 42, resetsAt: null }],
             },
             {
-                key: 'chatgpt/email', serviceLabel: 'ChatGPT', legacyServiceId: 'openai-codex',
+                key: 'chatgpt/email', fetchedAt: null, serviceLabel: 'ChatGPT', legacyServiceId: 'openai-codex',
                 accountLabel: 'kevin@gmail.com', accountEmail: 'kevin@gmail.com', accountId: 'user_email12',
                 profileLabel: 'kevin@gmail.com', planLabel: 'Pro', meters: [],
             },
             {
-                key: 'chatgpt/id', serviceLabel: 'ChatGPT', legacyServiceId: 'openai-codex',
-                accountLabel: null, accountEmail: null, accountId: 'acct_9f2c8e71',
+                key: 'chatgpt/id', fetchedAt: null, serviceLabel: 'ChatGPT', legacyServiceId: 'openai-codex',
+                accountEmail: null, accountId: 'acct_9f2c8e71',
                 profileLabel: null, planLabel: null, meters: [],
             },
         ] satisfies UsageSummaryEntry[];
@@ -83,12 +109,12 @@ describe('HubUsageCardGrid identity privacy', () => {
         const now = Date.now();
         const entries = [
             {
-                key: 'chatgpt/personal', serviceLabel: 'ChatGPT', legacyServiceId: 'openai-codex',
+                key: 'chatgpt/personal', fetchedAt: now, serviceLabel: 'ChatGPT', legacyServiceId: 'openai-codex',
                 accountLabel: 'Personal', accountEmail: null, accountId: 'personal', profileLabel: 'Personal', planLabel: 'Pro',
                 meters: [{ meterId: '5h', label: '5-hour', remainingPct: 71, resetsAt: now + 3_600_000 }],
             },
             {
-                key: 'claude/work', serviceLabel: 'Claude', legacyServiceId: 'claude-subscription',
+                key: 'claude/work', fetchedAt: now, serviceLabel: 'Claude', legacyServiceId: 'claude-subscription',
                 accountLabel: 'Work', accountEmail: null, accountId: 'work', profileLabel: 'Work', planLabel: 'Max',
                 meters: [{ meterId: '5h', label: '5-hour', remainingPct: 42, resetsAt: now + 3_600_000 }],
             },
@@ -106,7 +132,6 @@ describe('HubUsageCardGrid identity privacy', () => {
                     inUseAccountKeys: new Set(['chatgpt/personal']),
                     recoveryCreditsByKey: { 'chatgpt/personal': { availableCount: 3, credits: [] } as never },
                     accountsNeedingSignIn: [signedOut],
-                    asOf: now,
                     onSignInAgain,
                 }}
             />,
@@ -115,6 +140,7 @@ describe('HubUsageCardGrid identity privacy', () => {
         expect(screen.findByTestId('hub-usage.chatgpt/personal:in-use')).toBeTruthy();
         expect(screen.findByTestId('hub-usage.claude/work:in-use')).toBeNull();
         expect(screen.findByTestId('hub-usage.chatgpt/personal:resets')).toBeTruthy();
+        expect(screen.findHostByTestId('hub-usage.chatgpt/personal:resets:use')).toBeTruthy();
         expect(screen.findHostByTestId('hub-usage.claude/work:resets')).toBeNull();
 
         screen.pressByTestId('hub-usage.chatgpt/team:sign-in-again');

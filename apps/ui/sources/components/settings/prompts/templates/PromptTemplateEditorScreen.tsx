@@ -268,7 +268,7 @@ export const PromptTemplateEditorScreen = React.memo((props: Readonly<{ invocati
   ], []);
 
   return (
-    <ItemList presentation="page" keyboardShouldPersistTaps="handled">
+    <ItemList keyboardShouldPersistTaps="handled">
       <PromptEditorHeader
         testID="promptTemplate.header"
         mark="lightning"

@@ -64,7 +64,7 @@ export const BugReportComposerView = React.memo(function BugReportComposerView()
     && !model.includeDiagnostics;
 
   return (
-    <ItemList presentation="page" keyboardAware testID="bug-report-composer" contentContainerStyle={{ paddingBottom: safeArea.bottom + 32 }}>
+    <ItemList keyboardAware testID="bug-report-composer" contentContainerStyle={{ paddingBottom: safeArea.bottom + 32 }}>
       <SettingsPageHeader description={t('bugReports.composer.pageDescription')} />
       <BugReportIssueDetailsSection
         title={model.title}
