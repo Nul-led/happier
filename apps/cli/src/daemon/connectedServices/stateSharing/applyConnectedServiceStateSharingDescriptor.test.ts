@@ -37,7 +37,7 @@ function createDescriptor(params: Readonly<{
 }
 
 describe('applyConnectedServiceStateSharingDescriptor', () => {
-  it.each(['native', 'profile'] as const)('reports a malformed %s TOML file without exposing config content or replacing the promoted home', async (invalidOwner) => {
+  it('reports malformed native TOML without exposing config content or replacing the promoted home', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-invalid-profile-config-'));
     const sourceRoot = join(root, 'native');
     const previousMaterializedRoot = join(root, 'promoted');
@@ -47,7 +47,7 @@ describe('applyConnectedServiceStateSharingDescriptor', () => {
       await writeFile(join(sourceRoot, 'config.toml'), 'model = "native"\n');
       await writeFile(join(previousMaterializedRoot, 'config.toml'), 'model = "profile"\n');
       await writeFile(join(previousMaterializedRoot, 'hooks.json'), '{"hooks":{"Stop":[]}}\n');
-      const invalidPath = join(invalidOwner === 'native' ? sourceRoot : previousMaterializedRoot, 'config.toml');
+      const invalidPath = join(sourceRoot, 'config.toml');
       await writeFile(invalidPath, 'fixture_secret = "synthetic-sensitive-config"\n[broken\n');
       const priorConfig = await readFile(join(previousMaterializedRoot, 'config.toml'), 'utf8');
       const error = await applyConnectedServiceStateSharingDescriptor({
@@ -71,6 +71,36 @@ describe('applyConnectedServiceStateSharingDescriptor', () => {
       expect(reported).not.toContain('synthetic-sensitive-config');
       await expect(readFile(join(previousMaterializedRoot, 'config.toml'), 'utf8')).resolves.toBe(priorConfig);
       await expect(readFile(join(previousMaterializedRoot, 'hooks.json'), 'utf8')).resolves.toBe('{"hooks":{"Stop":[]}}\n');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('rebuilds malformed profile TOML from native config with a safe diagnostic', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-profile-config-recovery-'));
+    const sourceRoot = join(root, 'native');
+    const previousMaterializedRoot = join(root, 'promoted');
+    const targetRoot = join(root, 'stage');
+    try {
+      await Promise.all([sourceRoot, previousMaterializedRoot].map(home => mkdir(home, { recursive: true })));
+      await writeFile(join(sourceRoot, 'config.toml'), 'model = "native"\n');
+      await writeFile(join(previousMaterializedRoot, 'config.toml'), 'fixture_secret = "synthetic-sensitive-config"\n[broken\n');
+      const result = await applyConnectedServiceStateSharingDescriptor({
+        descriptor: {
+          ...createDescriptor({ configEntries: [{ path: 'config.toml', mode: 'force_copied' }, { path: 'hooks.json', mode: 'force_copied' }] }),
+          transforms: [{ entry: 'config.toml', kind: 'rewrite_toml', spec: {
+            setStringValues: { cli_auth_credentials_store: 'file' },
+            preserveTableEntries: [{ tablePath: ['hooks', 'state'], keyPrefixEntry: 'hooks.json', keyPrefixSuffix: ':' }],
+          } }],
+        },
+        nativeSourceContext: { sourceRoot, sourceEnv: {} },
+        target: { targetMaterializedRoot: targetRoot, targetMaterializedEnv: {} },
+        previousMaterializedRoot,
+        configMode: 'copied', requestedStateMode: 'isolated', effectiveStateMode: 'isolated', cwd: root,
+      });
+      const config = await readFile(join(targetRoot, 'config.toml'), 'utf8');
+      expect(config).toContain('model = "native"');
+      expect(config).toContain('cli_auth_credentials_store = "file"');
+      expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'profile_config_invalid', severity: 'warning' }));
+      expect(inspect(result)).not.toContain('synthetic-sensitive-config');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -120,9 +150,12 @@ describe('applyConnectedServiceStateSharingDescriptor', () => {
       if (sourceConfig) expect(config).toContain('9223372036854775807');
       expect(config).toContain('sha256:reviewed');
       expect(config).toContain(hookId);
-      if (sourceConfig) expect(config).not.toContain(unrelatedId);
-      expect(config).toContain(`model = "${sourceConfig ? 'source' : 'profile'}"`);
-      if (!sourceConfig) expect(config).toContain('experimental = true');
+      expect(config).not.toContain(unrelatedId);
+      if (sourceConfig) expect(config).toContain('model = "source"');
+      else {
+        expect(config).not.toContain('model =');
+        expect(config).not.toContain('experimental');
+      }
       expect(config).toContain('cli_auth_credentials_store = "file"');
       expect(result.manifest.configEntries).toContain('config.toml');
       expect((await lstat(join(targetRoot, 'config.toml'))).mode & 0o777).toBe(0o600);
