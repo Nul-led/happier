@@ -4,6 +4,7 @@
     "index",
     "search",
     "projects-and-worktrees",
+    "artifacts",
     "session-organization",
     "session-read-state",
     "following-sessions",

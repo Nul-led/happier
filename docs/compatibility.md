@@ -130,6 +130,25 @@ binary is eligible for 0.3 updates. Remove the guard only when no supported
 eligible binary can lack the SDK; delivering native modules still requires a
 native app build.
 
+### Native voice word segmentation (development)
+
+Voice endpoint and client-owned interruption policy share one Unicode text
+normalizer and meaningful-word owner. Browser word boundaries use
+`Intl.Segmenter`; native boundaries come from the UI-local
+`HappierTextSegmentation` module using Apple's `NLTokenizer` and Android ICU
+`BreakIterator`. The bindings provide boundaries only: phrase matching, noise
+filtering and the measured short-word backchannel gate remain JavaScript-owned.
+Native dictionaries can differ around a word-count threshold; release QA checks
+CJK and Thai short acknowledgements and multi-word turns on both platforms.
+
+An eligible OTA update cannot add this module to an older installed binary.
+Resolve native capability lazily when its word-gated voice path starts and
+refuse missing capability through the existing visible
+`provider_setup_required` failure, rather than weakening word gating or
+failing app startup. Unrelated operations remain usable. This is current
+development source, not evidence that a particular older binary admits the OTA
+or that native release checks have passed.
+
 ### Native mode catalog projection (development)
 
 `sessionModesV2` adds an explicitly unknown accepted current mode independently
@@ -494,6 +513,16 @@ Current Automation transports use V3 directly; there is no V2 route, API-epoch p
 representability adapter or older-component update-required fallback. This does not
 remove the canonical Automation feature gate or Account authorization.
 
+The development V3 Run list also serves Account-wide attention at
+`GET /v3/automations/runs?attention=required`; the definition-scoped list accepts
+the same filter. It includes ordinary failed, dispatch-failed and uncertain Runs,
+plus blocked Channel reply handoffs, even when no Session was created. Accepted
+managed Workflow Runs remain under their existing attention predicate. The list
+returns paged structural summaries, without private execution content or per-Run
+history reads. Inbox consumes this membership through the shared Run-window owner
+and opens the exact Automation Run route. Existing lifecycle changes clear
+membership; this read adds no acknowledgement or permanent-dismissal contract.
+
 The compatibility obligation is data created on 0.2. Its stored manual schedule maps
 to zero automatic triggers; retained cron/interval schedules and enabled Machine
 assignments remain readable through the current server's stored-row projection.
@@ -585,6 +614,9 @@ payload to declared inputs exactly once and seals the immutable accepted
 workflow snapshot used by origin-neutral Runs. Actual 0.2 one-shot templates and
 their retained Run data remain readable by current workers. The current strict
 one-shot recipe is not an adapter for obsolete copied Workflow definitions.
+Retained 0.2 flat-template prompts stay literal, including brace text, when run
+or explicitly converted to a Workflow; native current one-shot input-token rules
+do not reinterpret or restrict those historical prompts.
 
 The current development trigger context replaces the earlier copied-definition
 payload in place. It seals workspace, execution target, constant inputs, optional

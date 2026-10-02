@@ -10,6 +10,8 @@ This page describes **0.3 development source**, not a shipped release or a compl
 
 The engine registry's [`runtimeCore.ts`](../apps/cli/src/agent/runtime/registry/engineRegistry/runtimeCore.ts) resolves the admitted Agent runtime and composes host services. Agent code receives the scoped public context, not raw host lifecycle controls. Agent-native configuration in `RuntimeDescriptorV1.agent` is interpreted by its Agent; generic host code must not infer its meaning from an Agent id.
 
+Session-owned child Runs retain their own transcript sidechain and interaction scope. They cannot publish the parent Session's work-state or active-input readiness; those projections belong to the main Session context. Finite and retained child contexts use the same Run-scoped work-state service, which reports Session projection as unavailable.
+
 ## Session path and owners
 
 | Responsibility | Canonical host owner |
@@ -23,7 +25,51 @@ The engine registry's [`runtimeCore.ts`](../apps/cli/src/agent/runtime/registry/
 
 The lifecycle owner consumes validated `AgentSessionRuntimeEvent` evidence, projects turn/transcript facts and supplies the prompt loop's thinking setter. The strict event union is owned by [`runtime/agentSessionV1.ts`](../packages/protocol/src/runtime/agentSessionV1.ts); [`plugins/events/hostV1.ts`](../packages/protocol/src/plugins/events/hostV1.ts) validates Host Event payloads through that same schema. Native callbacks do not become a second host state machine. Historical replay/follow and external-session discovery remain distinct from live input and transcript publication; they must not start another prompt loop or durable transcript writer.
 
+For cold native history catch-up, a Session factory may declare `transcriptIdentity`, its pure provider-owned identity codec. The bound `transcripts.reconcileSourceIdentities` operation uses the canonical paginated transcript reader and encryption/semantic decoder, filters conversation rows to the selected Agent, and supplies only the codec's declared correlation fields. It checks the current Session, plugin occurrence and native Session identity before and after the read. Unsupported, failed or malformed reads reject rather than becoming empty coverage. OpenCode hydrates its existing authored-ID tracker from exact committed identities, including witnessed 0.2 predecessor mappings and import IDs. Its current percent-encoded import IDs preserve opaque identity tuples; the predecessor codec compares complete constructed legacy or JSON-tuple IDs only after checking a separate exact native-session witness, never by splitting opaque IDs. Unprovable legacy coverage is reported through the existing informational Session-event and default log owners; only that historical snapshot is suppressed, so subsequent settled native turns can still sync. No new identity registry or transcript writer is introduced. These current-source contracts are distinct from full authenticated live validation of the composed 0.3 runtime.
+
+The host fits retained WorkerUpdates against the current optional context allowance before dispatch. A still-deliverable wake that cannot fit stays with the input consumer until context/source, metadata, admission or user input changes; parking neither commits a transcript event nor acknowledges provider acceptance. Source admission is rechecked before parking, so a withdrawn wake releases custody even if it still cannot fit. User input keeps priority, and the retained wake is reconsidered afterward without selecting its producer again.
+
+Native interaction lifetime is separate from causal turn identity. Ordinary requests default to turn lifetime and retire with the matching terminal turn (including ordinary requests without a turn witness); native Codex asynchronous questions explicitly use occurrence lifetime. Those questions keep their causal turn id after completion and retire when their Session/plugin occurrence retires. The permission coordinator owns this distinction; terminal callbacks do not cancel every request owned by the plugin.
+
 Agent-specific protocol leaves live in `packages/plugins/<agentId>/src/agent/**`. Shared ACP composition, process/terminal transport and host lifecycle stay generic in the CLI. Detection, installation and process launch follow [binary runtime](binary-runtime.md); model-source selection and materialization follow [Providers](providers.md).
+
+## Execution Run recovery and observation
+
+The execution host bridge retains private Run control state through the existing
+device-local execution registry, sealed separately from disposable visibility
+markers. Admission and checkpoints retain re-resolvable launch selections,
+exact input observations and native resume identity; they do not retain active
+turn authority or materialized credentials. Scoped reads and resume admission
+recover this state at the bridge owner. A live foreign host's record does not
+authorize another bridge to recreate its controller.
+
+Existing process supervision records proven host death or PID reuse as
+`execution_run_host_lost`, not transport disconnection or inconclusive process
+recognition. The interrupted input
+fails, the native handle determines recoverability, and the retained failure
+points to the partial transcript. The same fact feeds reads, waits and the
+existing acceptance-ACKed WorkerUpdate path. Neither an unpaired transcript
+call nor a historical `running` result proves current liveness. Resumable control
+state survives marker collection; ephemeral terminal state follows the existing
+terminal visibility lifetime once pending parent delivery is settled.
+
+A retained provider-session handle proves which native session to resume, not that its state still exists. A definitive native resume rejection is classified by the Agent plugin; Codex's `thread/resume` application rejection for missing rollout state carries `AGENT_RESUME_PROVIDER_STATE_MISSING` through startup sanitization. The host resume owner records `execution_run_provider_state_missing`, and the lifecycle owner projects that retained Run as unavailable. Transient or unclassified failures remain indeterminate. Recovery never substitutes a fresh native thread for the requested identity.
+
+CLI `execution.run.wait` observations reattach to the original Run through the existing connection supervisor after transport loss. Reattachment invokes the same daemon event-backed wait, without launching work, replaying input or polling `execution.run.get`. A disconnected occurrence cannot settle the observation with a late acknowledgement. Caller cancellation retires only that waiter. The service's original finite observation deadline spans connection, reconnect and snapshot output backpressure. Requests resubmit the remaining budget with the wire's existing one-second quantum, while the caller signal enforces the precise deadline. Expiration ends observation and returns `ok:false, code:'observation_timeout'` when no completed owner reply is available; it supplies no invented Run status and does not reconnect after expiration. Unbounded observations remain unbounded.
+
+Terminal and combined terminal matches, including an initially terminal public snapshot, cross the host's completion barrier and then re-read the settled result. A terminal projection alone can precede transcript publication and retained completion custody, whose failure can change the Run's final status. Expiration during that barrier returns an observation timeout rather than matched completion. Passive state snapshots remain immediate projections, and an attention-only observation does not treat terminal state as an attention match.
+
+The same observer accepts terminal, permission-attention, or combined conditions.
+Attention is a projection of outstanding requests for the live controller
+occurrence in the existing permission store, not a second permission ledger.
+Passive observation returns an initial snapshot and then parks on the bridge's
+existing state-change source with the last snapshot. Reconnect recovers current
+state rather than missed event history, and snapshot delivery backpressure
+survives reconnect. A deadline ends observation only; an unmatched attention
+condition preserves the actual terminal snapshot in its timeout result. The
+daemon re-arms long deadlines in Node-supported timer chunks without capping
+the requested duration. Generic `wait`/`watch` consumers must explicitly adopt
+these owner APIs; this source seam does not itself certify their integration.
 
 ## Rules for changes
 

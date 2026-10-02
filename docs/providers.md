@@ -73,6 +73,12 @@ When a caller names a model id but omits the connection, the Session itself comp
 
 ## Protocol and capability matchmaking
 
+The generic Anthropic-compatible catalog parser and Claude's static model catalog
+share the Protocol-owned model-name and effort-option projection at
+`packages/protocol/src/providers/catalog/anthropic.ts`. Custom compatible
+connections therefore retain catalog parsing independently of Claude plugin
+availability.
+
 Providers declare the protocols their endpoints speak. Agents declare accepted protocols and a provider-binding adapter in their plugin-owned runtime. The host computes compatibility; it does not contain provider-by-agent special cases.
 
 Protocol intersection is necessary but not sufficient. Compatibility also accounts for the minimum behaviors an Agent needs:
@@ -338,6 +344,7 @@ Migration descriptors are plugin-owned provider facts. New writes use provider c
 2. Declare stable identity, endpoint templates, wire protocols, capability facts, credential transports, and catalog sources. A wire protocol is the rendezvous key between this Provider's endpoint and an Agent's `acceptsProtocols`; both sides are contributed, so declaring a protocol Happier does not bundle is ordinary — the host matches the two declarations and never interprets the value.
 3. Keep an ordinary Provider descriptor-only. For a local descriptor-only Provider, add only bounded declarative detection facts and a provider-specific availability probe. A command-output catalog fallback names its own output format the same way an HTTP catalog probe does, and the declaring plugin implements it with the same registered parser.
 4. When the Provider owns a supervised local runtime, declare its single cold `managedRuntime` facet and register exactly one matching runtime with `api.providers.register(localId, runtime)`.
+   In 0.3 development source, a managed Connected Account purpose may declare `endpointTemplateIds` for its broker routes. Each endpoint must belong to that managed runtime and select exactly one purpose. The broker resolves the signed implementation, endpoint and protocol from the current Provider registry before selecting the declared account; missing declarations make the route unavailable.
 5. When the Provider's catalog endpoint answers in a wire format Happier does not bundle, name that format in the catalog probe's `parser` and register its implementation with `api.providers.registerCatalogParser(localId, format, parse)`. Happier bundles `openai-models`, `anthropic-models`, `ollama-tags`, and `lmstudio-native-models`; every other declared format is implemented by the declaring plugin, and a format with no reachable implementation fails the probe with `provider_contribution_unavailable` rather than being read by another Provider's parser. Set the probe's `reportsModelLoadState` when the format carries per-model load state, which is what makes model loading available — not whether the host bundles the format.
 6. Register every arm the contribution declares. Activation validates the complete declared-vs-registered composite: a Provider that declares a managed runtime and a contributed catalog format must register both, and registering a managed runtime or catalog format the contribution does not declare is refused. A partial registration fails activation instead of silently publishing the half that registered.
 7. Add explicit compatibility overrides only for verified pair-specific quirks.

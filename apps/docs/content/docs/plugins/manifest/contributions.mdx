@@ -22,6 +22,7 @@ description: Contribution families that a plugin can declare for projection and 
 | `scmHostingProviders` | Remote forge and hosting-service integration | `scmHostingProviders.<id>.runtime` |
 | `scmBackends` | Local repository and working-tree integration | `scmBackends.<id>.runtime` |
 | `settings` | Typed settings descriptors | `context.services.settings` in invoked handlers |
+| `workflows` | Reusable, read-only Workflow definitions shown under From plugins | `workflows.<id>`: `title`, optional `description`, and `definition` |
 | `openableContentViewers` | Declarative matching for host-opened content and its plugin-owned viewer | direct same-plugin `contributes.ui.views` destination |
 | MCP servers | Hosted or managed MCP server descriptors | `mcp.servers.<id>.runtime` when dynamic |
 | MCP discovery | Runtime MCP discovery | `mcp.discoverySources.<id>.discover` |
@@ -77,6 +78,22 @@ the ordinary target and contributor workflow.
 ## Descriptor-first families
 
 Settings, UI surfaces, managed dependencies, notification categories, agent runtime capabilities, and projected display metadata should be descriptor-first. The manifest describes them; executable code only handles the dynamic behavior the descriptor references.
+
+### Workflow definitions
+
+In 0.3 development source, `workflows` declares reusable definitions with the
+same input and step grammar as the Workflow library. In `definePlugin`, use a
+`workflows` record keyed by plugin-local id; each value carries a `title`, an
+optional `description`, and a `definition`. The host projects these values into
+the cold manifest's `contributes.workflows` array with the local `id` included.
+Check your SDK artifact's generated capability matrix before using this family.
+
+Happier projects these descriptors into **From plugins** in the Workflow library
+and start pickers. People can run a plugin workflow or duplicate it into their
+library to edit their own copy. Starting keeps the qualified plugin identity and
+version with the accepted definition, so updating the plugin does not change an
+already admitted Run. A Workflow contribution does not need an executable
+registration callback.
 
 ## Openable content viewers
 

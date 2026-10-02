@@ -29,6 +29,25 @@ unavailable result rather than silently dropping behavior.
 `dispose` is idempotent and releases only Agent-owned session resources. It
 does not delete host session state, queued input, or transcript state.
 
+## Selected-session terminal preparation
+
+In the current Developer Preview source, `prepareTerminalPresentation` replaces
+`prepareProviderCliAttach`. Migrate the factory and Session consumers together;
+the host does not fall back to a bare terminal surface when this operation is
+missing. Independent terminal surface authoring is unchanged.
+
+The opened Session owns native identity, hooks, and runtime selection. Return
+`provider_attach` with the exact native attach metadata for an optional client,
+`terminal_launch` with the exact Session's prepared launch plan, or
+`managed_terminal` with the handle returned by the existing Session terminal
+owner. A managed conversation terminal is not an optional detachable client.
+
+The factory's asynchronous `resolveTerminalPresentation` selects placement and
+captures the runtime descriptor before Session creation. The opener consumes
+that captured choice rather than reselecting from changed account settings.
+Resuming an existing Session retains its accepted choice; capture never bypasses
+current feature admission.
+
 The host automatically derives finite Execution Runs from this Session
 contract. The host-owned adapter maps Session events and cancellation into the
 Run lifecycle, so the plugin must not register a second execution-run path.

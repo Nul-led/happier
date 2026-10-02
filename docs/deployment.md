@@ -86,6 +86,18 @@ console plan §3.5):
 - `S3_PORT`: optional S3 port.
 - `S3_USE_SSL`: `true`/`false` (default `true`).
 
+**Development 0.3 private Artifact storage**
+- `S3_PRIVATE_BUCKET`: a separate provisioned S3 bucket for binary Artifact bytes,
+  using the existing S3 connection and credentials. It must differ from the public
+  `S3_BUCKET` and have no anonymous-access policy. The server does not change bucket
+  policies or fall back to the public bucket; missing or unsafe private storage
+  leaves private operations unavailable.
+- The local files backend defaults to the existing private-files directory,
+  separate from the public file root. Operators must keep custom private paths
+  outside the public root; enforcement of custom-root separation is still an
+  open binary-development validation gate. Neither backend issues a public URL
+  for these bytes.
+
 **Optional browser-hosted plugin Artifacts**
 - `HAPPIER_PLUGIN_UI_ARTIFACT_BROWSER_ORIGIN`: opt in to browser Artifact delivery with a dedicated HTTPS origin. Leave it unset to keep browser Artifact hosting unavailable; desktop/native Artifact delivery is independent.
 - The Artifact origin must differ from both the effective web-app origin and `HAPPIER_PUBLIC_SERVER_URL`. The server fails closed if either configured origin aliases it.
@@ -130,6 +142,12 @@ console plan §3.5):
     - `VOICE_LEASE_CLEANUP` (`true`/`false`, default `false`)
     - `VOICE_LEASE_RETENTION_DAYS` (default `30`, clamp 7–365)
     - `VOICE_LEASE_CLEANUP_INTERVAL_MS` (default `21600000` = 6h, min `10000`)
+  - In 0.3 development, reservation release reconciles provider-attested terminal
+    conversation usage through the same settlement owner as completion. Active,
+    unknown or unverifiable provider state does not free the reservation. Tokens
+    without a usable provider conversation identity remain reserved; expired
+    unsettled leases remain quota-counted through their UTC grant month and day
+    windows rather than disappearing during retention cleanup.
 - WorkOS SSO and Directory Sync (0.3 development; see
   [enterprise-identity.md](enterprise-identity.md)):
   - `WORKOS_API_KEY`, `WORKOS_CLIENT_ID` — the deployment owns the WorkOS platform

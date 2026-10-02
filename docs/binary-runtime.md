@@ -19,6 +19,13 @@ Do not introduce direct product-runtime calls to:
 
 These are allowed only behind centralized managed runtime/tooling abstractions.
 
+In 0.3 development, remote SSH machine setup installs the selected CLI through
+the canonical first-party payload installer after host trust and before relay
+installation, service inventory, or Home enrollment. SSH command execution and
+both payload strategies share the path-quoting owner in
+`packages/cli-common/src/ssh/shellQuote.ts`: only the leading `$HOME` expands;
+the remaining path and caller-supplied command arguments stay literal.
+
 Before adding or changing an agent runtime, managed dependency, install, or update flow, classify it as one of:
 
 - system-first agent CLI
@@ -54,6 +61,8 @@ Published hosts and bundled libraries currently include:
 - `packages/plugin-sdk`
 
 Their `prepack` scripts run `scripts/bundleWorkspaceDeps.mjs`, which delegates to `bundleWorkspacePackagesWithRuntimeDependencies(...)`. That canonical publisher stages each workspace together with its external runtime dependency tree and publishes the internal dependency closure in dependency-first order.
+
+Current source bundling preserves package-local `imports` declarations and their conditional order, alongside `exports`. The existing workspace copier and bootstrap sync include exact relative import targets outside `dist`; external package targets still use the package's declared dependency closure. Live bundle health checks compare the retained import map and target files, and Stack bundle freshness observes package-root targets so changing only an imported runtime helper requires a refresh.
 
 Publication has two explicit modes. Live source-dev refreshes keep each package directory mounted, publish complete files with `package.json` last, retain prior targets for in-flight module resolvers, and roll back already-published files if a later replacement fails. Artifact publication is selected by npm `prepack` or `--artifact` and prunes retained targets so obsolete generations cannot enter a tarball. Both modes use the package build owner's content record to admit current `dist` outputs, including source additions and deletions, build inputs, compiler identity, and declared output bytes. Health checks require every current source runtime file to match but deliberately allow extra retained targets in live trees.
 
@@ -106,6 +115,11 @@ with the recovery action `happier browser sandbox install`.
 Run that command on the machine that executes the browser. It reuses the managed
 Chromium installer if needed, then performs one sudo action to install and load
 an AppArmor `userns` profile attached to that installed executable's literal path.
+In 0.3 development, agents can request the machine-scoped `browser.sandbox.install`
+Action, subject to default human approval (waivable in Action settings). The daemon
+uses this same installer with noninteractive sudo: Action approval does not grant
+OS privileges. When sudo authorization is unavailable, the Action returns
+`os_authorization_required`; run the local command with OS authorization and retry.
 `--print` displays the profile for an already-installed browser without applying
 it. This follows [Ubuntu's per-program user-namespace profile](https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces).
 The command does not restart services or change a global sysctl. A different

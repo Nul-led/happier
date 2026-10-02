@@ -135,11 +135,14 @@ Bearer-token, OAuth/OIDC, GitHub, or mTLS authentication is sufficient to author
 plain account. It does not create encryption material and must not be used to derive
 any.
 
-The repository is currently in an expand/migrate phase. Current source contains the
-token-only credential shape, mode-aware domain readers, the stored-content caller
-declaration, and the compatibility-fenced Session layout-1 path. Feature configuration
-or schema/source presence alone is not proof that the complete token-only onboarding
-flow has passed its mixed-version, persistence, composed, and platform checks.
+Current development source contains the token-only credential shape, mode-aware
+domain readers, the stored-content caller declaration, and the Session layout-1
+path. Clients do not preflight stored-content server versions before Account-mode
+reads, authentication, Machine operations, hosted Sessions, Todos or Voice History.
+Account currentness, signed identity, storage policy and encryption material still
+decide whether the operation can proceed. Source presence alone is not proof that
+the complete token-only onboarding flow has passed its persistence, composed and
+platform checks. Components update together; readers retain 0.2-created data.
 
 The server's current advertised stored-content implementation is protocol `4`,
 while protocol `2` remains the minimum compatibility floor for incumbent
@@ -148,9 +151,6 @@ which covers both the optional Session-access response witness and Account Setti
 writers that preserve complete raw Profile rows, with
 `x-happier-account-stored-content-protocol: 4` on HTTP and
 `accountStoredContentCompatibility:{v:1,protocolVersion:4}` in Socket.IO auth.
-A current client remains usable with a V3 server; a server without the additive
-V4 capability omits the Session-access witness but can still accept the client's
-opaque Settings writes.
 The `/v1/features` discovery request remains header-free. Before discovery, current
 clients send their implicit cumulative V4 declaration on ordinary requests so a cold
 Settings restore is identified as profile-preserving; explicit operation declarations
@@ -778,10 +778,10 @@ controller dominance before acting.
 
 The active development V4 Account-mode transition includes retained current Run
 content, invocation content tokens and recipient envelopes in its Automation
-inventory. Inventory GET and migration POST use the same captured-Home
-stored-content compatibility admission. A missing inventory route returns an
-operation-scoped `update_required` refusal for `account.encryption.migrate`, not
-an empty census. The existing Account transaction owns the complete comparison,
+inventory. Inventory GET and migration POST use the captured Home directly,
+without a server-version admission preflight. An unsuccessful inventory read
+fails the operation instead of fabricating an empty census. The existing Account
+transaction owns the complete comparison,
 re-sealing, key replacement and exact replay; dormant V5 remains inactive.
 
 This is a development direct cut, not a released migration: the codec rejects
@@ -817,6 +817,62 @@ those visibility prerequisites hold.
 Lean Run cards receive the server's `attentionRequired` membership without
 opening invocation content. This public boolean adds no result, prompt or
 decision content and is refreshed independently of the parent control revision.
+
+The development `workflow.run.list` Action host also projects `where` from the
+accepted snapshot it already opens for private display metadata. The server
+does not decrypt or persist a second workspace projection. `where: null` means
+that exact snapshot could not be opened; omission means the operation did not
+read Where. The shared client Run store preserves an opened Where across
+control-only responses and clears it on an explicit unreadable list projection.
+
+The development worker writes completed top-level authored-block counts into the
+existing sealed root invocation progress. A loop or conditional contributes one
+block; an active loop separately reports completed current items against its
+frozen total. The server returns that exact root envelope beside the lean page,
+without opening it or adding public count fields to the invocation index. The
+authorized Action host opens it with the existing mode, recipient and binding
+checks; missing or unreadable root content produces `stepProgress: null`.
+`stepProgressCurrentness` carries the existing root record, attempt and content
+revision because a child fact does not advance the parent control revision.
+These are development projections, not a release-readiness claim. Admission
+freezes `startedBy: user | agent | trigger` in the accepted snapshot, and the
+same authorized list opener projects it. Host callers are users; Session agents
+and Workflow callers are agents. Immutable Automation causes classify manual
+starts as users and trigger or external-conversation occurrences as triggers.
+An autonomous plugin start is a trigger and retains its plugin principal and
+source custody. Nested plugin dispatch carries the original host-stamped caller
+privately while preserving the immediate plugin's authorization; authors cannot
+supply that provenance. Mounted present-user RPC admission supplies a host
+caller; scoped Session MCP dispatch supplies its host-bound client's Session
+caller, independently of the requested target. Generic daemon dispatch carries
+only that bounded starter fact over authenticated host-control transport; it
+does not claim Session authorization or change immediate plugin custody.
+An explicit admitting caller or Automation cause takes precedence over a
+transported starter descriptor.
+Durable approval capture freezes only the bounded plugin `startedBy` fact
+beside its existing caller identity and source custody;
+replay carries it through the same private context, not a recursive authorization
+chain. Missing or unreadable accepted content reports
+`startedBy: null`, and control-only responses omit it. Attribution never derives
+from the request surface, origin Session or work depth.
+
+#### Scoped pull-request triggers (0.3 development)
+
+PR-comment and CI-failure selectors use the existing Automation trigger-definition
+envelope, bound to Automation id, trigger id, revision and kind. Plain Accounts use
+the explicit plain arm without client keys; E2EE Accounts seal the private
+repository/PR selector. The Session↔PR link remains private Channel binding content,
+opened only by the authorized host, rather than a separate public link index.
+
+Conversation admission carries explicit typed host evidence beside private sender
+content: the binding and scoped Session/trigger identity, observation principal,
+and `repositoryWriteAccess: true | false | null`. The server checks the current
+trigger correspondence and admits only `true` with matching principal identity.
+It does not decrypt E2EE sender or selector content; the authorized Channels host
+attests that correspondence. Unknown or denied access and identity mismatches are
+typed, checkpoint-safe refusals. Ordinary non-scoped conversation admission retains
+its existing path. This is development source behavior, not released availability
+or loaded-runtime certification.
 
 #### Shared Board records (development)
 
@@ -1119,6 +1175,41 @@ resource admission path.
 - Stored as `Bytes` in the DB.
 - Emitted in `new-artifact` / `update-artifact` events as base64 strings.
 
+The in-progress 0.3 binary extension keeps the opened body inside this same
+envelope: it is either text/null or a strict `{ blobId, mime, sizeBytes, sha256 }`
+reference. MIME and the plaintext integrity hash stay inside the document's
+encryption boundary. The private storage owner holds the referenced bytes;
+E2EE payloads use the existing per-Artifact key and AES-GCM byte framing, while
+plain payloads use the existing server-managed at-rest policy. Neither path
+uses the public uploaded-file URL owner. Authenticated blob reads recheck the
+Artifact's current authority and Account mode, and key-holding clients check
+the opened bytes against the reference before preview or download.
+
+Binary revision, erase and Account-mode conversion validation is still in
+progress; these paragraphs do not certify a deployed binary-capable server or
+a completed conversion flow. Signed conversion must cover each distinct
+current/retained blob, not just change the reference envelope or discard bytes.
+
+Development ordinary Artifact body history uses `ArtifactRevision` rows keyed
+by Artifact id and body version. Successful updates retain the displaced stored
+body bytes in the same transaction; plain server-sealed history uses the same
+Artifact/body at-rest key path, and E2EE history uses the document data key.
+Revision reads and restores recheck current grants and the owner's persisted
+Account mode. Restore atomically advances the current header and body versions,
+using the key-holder's kind-owned header projection for the restored body,
+and preserves historical rows subject to the operator's retention count
+(default 10).
+
+The Account encryption transition carries every retained body through the
+same signed Artifact migration item, checking the complete revision set and
+source body bytes before replacing the head, key and history atomically.
+Older documents with no history supply an empty revision set. History is never
+silently discarded or interpreted under the target mode without conversion.
+The key-holding migration opens raw header metadata, not the Artifact viewer's
+display-normalized header. Crypto conversion preserves arbitrary metadata;
+strictly admitted Workflow headers advance their embedded revision with the
+physical head versions. Display defaults are not persisted by this migration.
+
 Development document sharing uses `artifactAccessService.ts` as the common
 HTTP, socket, write and audience authority. Direct Account, Team and Group grants
 resolve against current membership; owners and admin grantees change grants,
@@ -1162,6 +1253,10 @@ through `activePluginAccountPackageAssetRead.ts`. Release links and integrity
 descriptors remain server-visible metadata in both modes. Availability owns the
 qualified release link: disable-and-remove atomically removes the link and its
 Artifact, while disabling hosting alone prevents later publication.
+Current plain archive publication, immutable-slot rejoin and qualified reads do
+not require an older component's stored-content declaration. The same Account
+mode, access, hosting-consent and archive-integrity owners still admit them;
+removing a component-version guard does not bypass those checks.
 
 The release link keeps the contribution selection and generated `artifactId`
 separate from the Account storage carrier's `accountArtifactId`. Byte providers
@@ -1700,22 +1795,41 @@ tuple. Agents, plugins, and SDK callers never supply recipient-envelope fields
 themselves.
 
 Public-link creation follows the same custody boundary without reusing the
-recipient-envelope format. The public `session.public_link.create` Action accepts
-only publication settings. Both exact-Home physical hosts — the CLI/daemon
-Account-server Action dependency and the UI Session-access family leaf — generate
-the bearer, open the current Session DEK when the Session is E2EE, and materialize
-the existing route's private `token` and `encryptedDataKey` fields immediately
-before dispatch. Neither the UI nor any other client keeps a second public-share
-client: `session.public_link.get`, `.create`, and `.remove` reach the released
-owner route only through that one declared Action transport. Plain Sessions send no
-wrapped key. Protocol owns the deployed V0 SecretBox payload and framing: current
-UI and CLI writers emit the serialized-JSON form, while readers retain the released
-plain-JSON form for compatibility. Action results project only safe publication
-settings — expiry, use limits, use count, consent, plus the non-secret publication
-`id` and `updatedAt` a trusted host needs to prove an ambiguous create actually
-changed the publication. The bearer and wrapped DEK are never projected; the
-generating device reports its own bearer to the mounted host and remains the only
-place a usable link can be assembled.
+recipient-envelope format. The 0.3 development stored-content contract has one
+publication owner for Session and ordinary Artifact subjects. A trusted key-holding
+host generates two independent random values: an HTTP-visible lookup capability
+and a browser-only wrapping secret. The usable link is
+`<isolated origin>/s/<lookupId>#k=<secret>`; the fragment secret never enters the
+publication request, Action result, access log, or content request. The server
+stores only the lookup hash and, for E2EE content, the opaque DEK envelope wrapped
+using the fragment secret. Plain Sessions and plaintext Accounts require no client
+encryption key and send no wrapped key. Artifact mode comes from persisted
+`Account.encryptionMode`, while Session mode comes from the Session.
+Both public Session message adapters parse retained envelopes through the
+canonical Protocol codec and reject a content-kind/mode mismatch before disclosure,
+publication-use admission, or visit logging. A viewer's later decryption failure
+is not a server-side confidentiality guard.
+
+Protocol owns the V0 SecretBox framing and its current serialized-JSON payload.
+The `fragment_v1` derivation marker distinguishes new links from
+`legacy_token_v1` publications, whose wrapping key came from the released
+server-visible path token. Readers retain the released plain-JSON payload and
+legacy Session route; they never substitute a lookup id for a missing or corrupt
+fragment secret. This retains old link keys and routes without claiming their
+confidentiality has improved. Released 0.2 Sessions also use flat layout-0 metadata;
+the current recipient-privacy owner refuses that shape with
+`metadata_privacy_upgrade_required`. Retaining the token/envelope is therefore not
+proof that an unupgraded 0.2-created link can reopen. Its owner-upgrade journey
+remains an unresolved development compatibility requirement; public readers must
+not bypass the privacy projection to restore whole-metadata disclosure.
+
+Public Actions describe only the subject and publication settings. Their results
+project safe publication ids, timestamps, expiry, use limits, use count, and
+consent—not a bearer or wrapped DEK. Only the generating device can assemble a
+usable new link. The isolated, unauthenticated viewer sends no Account credentials,
+opens E2EE bytes in the browser, and renders text rather than executable content;
+it has no authenticated-app or host-bridge authority. This development contract
+is not a claim of released availability or completed live validation.
 
 Team credential resources and shared Saved Secrets in current 0.3 development source reuse these
 Account-mode boundaries; their product activation remains gated and unverified. Brokered Team

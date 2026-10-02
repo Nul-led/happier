@@ -3,7 +3,7 @@ title: Keyboard shortcuts
 description: Every rebindable shortcut and Search, with the defaults for web and native.
 ---
 
-Happier has 48 keyboard commands. Every one can be rebound, and the defaults
+Happier has 63 keyboard commands. Every one can be rebound, and the defaults
 differ between the web client and the native apps where the platform already
 claims a key.
 
@@ -44,7 +44,7 @@ files and commits in one grouped list.
 | Move the focused session down | `Alt+Shift+ArrowDown` |
 | Move to a folder | `Alt+Shift+F` |
 | Move out to the workspace root | `Alt+Shift+R` |
-| Select or deselect the focused row | `Space` (web) |
+| Select or deselect the focused row | `x` (web) |
 | Extend the selection up | `Shift+ArrowUp` (web) |
 | Extend the selection down | `Shift+ArrowDown` (web) |
 | Select every session | `Mod+A` (web) |
@@ -92,17 +92,45 @@ files and commits in one grouped list.
 | `browser.back` | `Alt+[` (web) · `Mod+[` (everywhere else) |
 | `browser.forward` | `Alt+]` (web) · `Mod+]` (everywhere else) |
 | `browser.reload` | `Alt+R` (web) · `Mod+R` (everywhere else) |
-| `splitCanvas.closeLeaf` | `Alt+Backspace` |
-| `splitCanvas.focusDown` | `Alt+ArrowDown` |
-| `splitCanvas.focusLeft` | `Alt+ArrowLeft` |
-| `splitCanvas.focusRight` | `Alt+ArrowRight` |
-| `splitCanvas.focusUp` | `Alt+ArrowUp` |
-| `splitCanvas.restoreMaximize` | `Escape` |
-| `splitCanvas.splitDown` | `Alt+Shift+ArrowDown` |
-| `splitCanvas.splitRight` | `Alt+Shift+Enter` |
-| `splitCanvas.toggleMaximize` | `Alt+M` |
+| `workspace.closePane` | `Alt+Backspace` |
+| `workspace.tab.new` | `Mod+T` |
+| `workspace.tab.close` | `Mod+W` |
+| `workspace.tab.select1` | `Mod+1` |
+| `workspace.tab.select2` | `Mod+2` |
+| `workspace.tab.select3` | `Mod+3` |
+| `workspace.tab.select4` | `Mod+4` |
+| `workspace.tab.select5` | `Mod+5` |
+| `workspace.tab.select6` | `Mod+6` |
+| `workspace.tab.select7` | `Mod+7` |
+| `workspace.tab.select8` | `Mod+8` |
+| `workspace.tab.select9` | `Mod+9` |
+| `terminal.jump` | `Alt+J` (web) · `Mod+J` (everywhere else) |
+| `terminal.toggle` | `Ctrl+`` |
+| `terminal.newShell` | `Ctrl+Shift+`` |
+| `terminal.split` | `Mod+\\` |
+| `workspace.focusDown` | `Ctrl+Alt+ArrowDown` (web) · `Mod+Alt+ArrowDown` (everywhere else) |
+| `workspace.focusLeft` | `Ctrl+Alt+ArrowLeft` (web) · `Mod+Alt+ArrowLeft` (everywhere else) |
+| `workspace.focusRight` | `Ctrl+Alt+ArrowRight` (web) · `Mod+Alt+ArrowRight` (everywhere else) |
+| `workspace.focusUp` | `Ctrl+Alt+ArrowUp` (web) · `Mod+Alt+ArrowUp` (everywhere else) |
+| `workspace.restoreMaximize` | `Escape` |
+| `workspace.splitDown` | `Alt+Shift+Backslash` (web) · `Mod+Shift+Backslash` (everywhere else) |
+| `workspace.splitRight` | `Alt+Backslash` (web) · `Mod+Backslash` (everywhere else) |
+| `workspace.toggleMaximize` | `Alt+M` |
 | `workflow.save` | `Alt+S` (web) · `Mod+S` (everywhere else) |
 | `workflow.run` | `Mod+Enter` |
+
+The development-only 0.3 workspace adds tab shortcuts for the focused pane.
+They work while editing: `Mod+T` opens an empty tab, `Mod+W` closes the active
+tab, `Mod+1` through `Mod+8` select a position, and `Mod+9` selects the last
+tab. They require the general shortcut registry to be enabled. A browser may
+claim these keys before Happier receives them; you can rebind them if needed.
+
+In multi-selectable lists, `x` toggles the focused row, Shift+Up/Down extends
+the range, and Escape clears. Shift-click selects a range; Select in a row's
+menu starts selection with that row. Ordinary clicks then toggle rows; Done
+exits. Long-press opens the row menu and hover alone never shows a checkbox.
+Command-click on macOS or Ctrl-click on Windows/Linux opens an openable row in
+a kept workspace tab, like Alt-click or middle-click, even during selection.
 
 Shortcuts respect focus. Most do nothing while you are typing in the composer,
 which is why sending has its own explicitly editable-safe binding rather than

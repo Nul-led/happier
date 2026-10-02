@@ -1,0 +1,81 @@
+---
+title: Artifacts
+description: Keep reusable documents from your sessions together, revisit earlier versions, and share them with other Accounts.
+---
+
+Keep the useful output of a session after the conversation moves on. Artifacts
+are saved in your Account, so a document can sit alongside the prompts, Boards,
+Workflows, Roles and launch profiles you reuse.
+
+## Availability
+
+This guide describes the **0.3 development version**, not a shipped release.
+The browser and history described here require a Home running the current 0.3
+Artifacts implementation and schema. Binary attachments, public sharing links
+and interactive HTML artifacts are outside this text-document guide.
+
+## Browse and open
+
+Open **Artifacts** in the app navigation. Search matches titles; **Kind** narrows
+the collection, and **Sort** orders it by recently updated, recently created or
+title. Choose **Grid** for previews or **List** for a compact view. Happier
+remembers that choice on the device.
+
+On a wide screen, a document opens beside the collection. On a phone, it opens
+as its own page. Prompts, Boards, Workflows, Roles and launch profiles open in
+their own surfaces, where their editing and use controls belong.
+
+## Save a document
+
+Choose **New document**, enter a title and content, then **Save**. Use **Edit**
+on the document to change it later. If you cancel with unsaved changes, Happier
+asks before discarding them.
+
+## Revisit an earlier version
+
+Open **History** on a document, choose an earlier version, and preview its
+content. **Restore version** saves that content as a new version; it does not
+overwrite the current version in place. The history sheet shows how many
+versions the Home retains.
+
+History is bounded, not a permanent archive. A Home's operator can configure
+retention with `HAPPIER_ARTIFACT_REVISION_RETENTION_COUNT`, so an older version
+may no longer be available. A failed history read offers **Retry** rather than
+treating the failure as an empty history.
+
+## Share access
+
+Choose **Share** to manage access through the existing Account and Team sharing
+surface. Documents and Boards use **Can read**; reusable kinds use **Can use**.
+**Can edit** allows changes to the shared original, while **Admin** includes
+managing its shares. Available operations still depend on your access to that
+artifact.
+
+A copied app link points at the artifact; it does not grant access by itself.
+The recipient must already have access. Granting Account or Team access does
+not make the artifact public. See [Sharing and Teams](/accounts/session-sharing) for
+the surrounding Account and Team model.
+
+## Storage and failed saves
+
+When the operator sets an Account storage budget, the browser shows usage and
+the limit. Retained versions count toward storage too. Without a configured
+Account limit, the meter is hidden; a missing usage read is not proof that
+storage is unlimited.
+
+A Home can also set a per-document budget. A save that exceeds either budget
+shows the size and limit and keeps your edits in the editor. For an Account
+budget, remove artifacts you no longer need before retrying; for a document
+budget, reduce the content. Do not leave the editor until the save succeeds or
+you have copied the unsaved content somewhere safe.
+
+Operators configure the Account budget with
+`HAPPIER_ARTIFACT_ACCOUNT_LIMIT_BYTES` and the document budget with
+`HAPPIER_ARTIFACT_DOCUMENT_LIMIT_BYTES`. See the
+[server environment reference](/self-hosting/env) for deployment configuration.
+
+## Related
+
+- [Sharing and Teams](/accounts/session-sharing)
+- [Encryption](/security/encryption)
+- [Search](/organize/search)

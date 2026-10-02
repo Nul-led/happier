@@ -190,6 +190,14 @@ fails, and do not create a second cache, lifecycle, or currentness owner. Add
 the host methods the surface actually needs to `requiredHostMethods` (for
 example, `readResource` and, for live updates, `watchResource`).
 
+In the current development SDK, a retained surface marked hidden by its host
+releases the Resource hooks' automatic read and watch subscriptions while
+keeping the admitted snapshot. Showing it again refreshes through the same
+Resource owner. A visible pane remains active even when another pane has focus;
+presentation activity is not keyboard authority. A standalone mount without
+host activity retains the existing live behavior. Raw imperative
+`watchResource` calls remain caller-owned until their unsubscribe function runs.
+
 For Account-backed rows, use `usePluginCollectionQuery` from
 `@happier-dev/plugin-ui/data` with a same-plugin, statically declared Data UI
 query. The Data owner validates the query, keeps cursor and Account currentness,
@@ -363,8 +371,64 @@ In a Happier window these use the app's own glass, type, buttons and motion. In
 a hosted-web realm they draw a plain solid capsule and changes land at once.
 Advanced authors find the shared owners in `/presentation`
 (`HappierPresenceCapsule`, `HappierAgentCursor`, `HappierStatusCapsule`, and
-`HappierStatusDot` with its `halo` ring). Live streams and Session images are not
-available to plugins yet. These components are Developer Preview.
+`HappierStatusDot` with its `halo` ring). These components are Developer Preview.
+
+### Capture previews and Session images
+
+This media interface is under development in 0.3. Use these examples only when
+your installed SDK and Plugin UI API inventories list the media exports below.
+
+The Developer Preview `HappierLiveStream` presents a read-only capture in a
+mounted Happier RN/RNW surface. Pass either your own manifest-declared source,
+or a host source that the user approves for this viewing:
+
+```tsx
+import { HappierLiveStream, Text } from '@happier-dev/plugin-ui';
+
+<HappierLiveStream
+  reference={{ kind: 'plugin', source: { pluginId: 'acme.board', localId: 'preview' } }}
+  testID="board-preview"
+  fallback={<Text value="Open this preview in Happier" />}
+/>
+```
+
+Declare `preview` in this plugin's `captureSources` contributions. The host
+owns transport, decoding and cleanup; the plugin never receives a stream
+address. A `{ kind: 'host', sourceId }` reference goes through the existing
+`capture.view` Action approval for each viewer occurrence. Approval is required
+by default; the user may waive it for a particular plugin in Action settings.
+Replacing a source closes its viewing and does not inherit that consent. Your
+plugin's own declared captures require no additional viewing consent. Viewing
+does not give control: input and takeover remain host-owned, approved Actions.
+Without an app renderer, including a caller-hosted HTML realm, the supplied
+`fallback` renders instead.
+
+Use `StoredImage` with a `StoredImageRefV1` from
+`@happier-dev/plugin-sdk/ui`: `{ sessionId, mediaId }`, taken from file-backed
+native Session-image artifacts returned by a successful Action in this mounted
+surface, including capture, attachment, snapshot or Session-event results. The host
+retains that exact media reference; ids copied from another surface or plugin
+do not grant a read. No image path or daemon root is an author prop.
+
+```tsx
+import { StoredImage } from '@happier-dev/plugin-ui';
+
+<StoredImage image={imageReference} accessibilityLabel="Captured page preview" />
+```
+
+Image reads require the plugin's declared `sessions` HostAccess **read** scope
+(and the selected scope when access is optional), not the broader linked-Session
+UI scope. The same scope owner applies on the daemon. Plain/E2EE mismatches or
+unavailable encryption material return an unavailable image, never a plaintext
+fallback. The app thumbnail and `StoredImage` share `HappierStoredImage` in
+`/presentation`. These are development-source interfaces; package publication
+and loaded-runtime verification remain separate.
+
+The daemon also verifies the exact Session artifact bucket, real file path,
+size, digest and image encoding. A result's producer does not grant broader read
+access. `sessions.media.publishGenerated` returns publication status rather
+than this native artifact reference; generated-media records are not a
+`StoredImageRefV1`.
 
 ## Work lists and maps
 

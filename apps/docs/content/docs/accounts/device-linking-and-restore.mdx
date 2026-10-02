@@ -149,6 +149,16 @@ code-free: update the device that created the old QR, then create and scan a new
 
 This gives the terminal access it needs without changing which devices are signed in to your account UI.
 
+In the unreleased 0.3 app, the approval screen shows the target Home and that Account's
+storage mode. **End-to-end encrypted** means Account data uses client-held keys;
+**Home-managed (not end-to-end encrypted)** means the Home can read Account data.
+The connection response is encrypted for the terminal in either mode. If the mode
+cannot be read, retry instead of approving an unknown mode.
+
+After a declined request or scan error, the unreleased 0.3 scanner pauses. Choose
+**Scan new QR** to resume, or **Enter URL manually** to paste a link. Leaving the
+same QR in view does not automatically reopen the request.
+
 ## QR safety and optional Home approval
 
 Direct Home QR linking uses possession of the deliberately displayed, short-lived QR as its

@@ -40,13 +40,21 @@ facts too. A fresh settled observation after human takeover clears the latter an
 new controller state; historical timeline entries do not reintroduce cleared uncertainty.
 
 In development source, daemon automation Actions targeting a mounted UI view use the existing authenticated
-machine reverse RPC, addressed by `browserSessionId` and `viewId`. The daemon control broker's
+machine reverse RPC, addressed by `browserSessionId` and `viewId` and bound to the invoking Happier
+Session. The mounted pane's Session context is the binding authority; slot-derived Browser Session
+ids need not equal Happier Session ids. Another Session on the same machine cannot use that pane.
+The daemon control broker's
 registered adapters decide physical ownership; UI-owned or disconnected UI targets never start
 Chromium provisioning. The UI handler delegates to the same mounted controller, preserving the
 host-stamped cancellation authority: absent or non-`present_user` authority returns `owner_mismatch`.
 Plugin Actions and Session execution-run Actions consume that same daemon composition; Session
 clients retain its provider accessor so startup publication and retirement are visible per dispatch.
 Room registration follows the mounted pane and its Account lifetime; a retired view fails closed.
+Invoking cancellation travels through the existing RPC cancellation transport to the UI control
+service's engine AbortSignal. Disconnect and handler retirement interrupt that same owner. An issued
+effect whose acknowledgement is lost returns `status: interrupted, completion: unknown`, not
+"unavailable" or an assertion that the effect did not happen. The UI retains admission until its
+engine boundary settles; transport interruption does not grant human control or replay the action.
 History/title-only updates retain the installed collector and mobile/desktop automation owner; a document
 generation change retires that identity. These are source contracts, not a composed-live certification.
 
@@ -99,6 +107,20 @@ parser shared by daemon automation and transcript labels; CSS/test ids are not r
 human-readable target names. These remain development-source contracts.
 
 ## Browser context and model images (development)
+
+Isolated, host-origin local previews cooperate with the web pane through the authorized server
+preview proxy. The pane supplies its collector identity; HTML navigation responses receive a
+same-origin external loader running the shared `packages/peer-mediation/src/browser/collector/`
+runtime. Readiness is admitted only from the exact iframe window and preview origin with the
+current Session/view/generation/collector/nonce identity, then uses the existing UI automation
+control service and reverse-dispatch path. Guest `pagehide` and a second document load retire that owner; it cannot
+reuse an old readiness message. Ordinary preview requests, opaque path-mode frames and arbitrary
+external sites do not gain collector access or a weaker sandbox.
+
+The proxy preserves header and meta CSP policies. A restrictive script policy returns
+`collector_blocked_by_csp`; when scripts cannot run, the parent obtains that decision through an
+authorized, exact-origin metadata-only probe rather than reading or cloning the guest document.
+These are current 0.3 development-source contracts, not loaded-runtime certification.
 
 An agent's Session-owned Chromium profile is its browser workspace. Ephemeral
 storage retention does not make it private browsing: its owning Session may

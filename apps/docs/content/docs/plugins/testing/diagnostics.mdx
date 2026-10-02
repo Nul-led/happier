@@ -91,6 +91,22 @@ For a review or mutation that returns a pending change ID, use
 daemon-lifetime operation. Do not create a second request merely to learn its
 state.
 
+## Follow plugin diagnostics (0.3 development)
+
+For a daemon running the current 0.3 development source, follow one plugin's
+structured records with `hdev plugins logs <pluginId> --machine <machineId> --follow`.
+Use `--occurrence <occurrenceId>` or `--correlation <correlationId>` to narrow
+the records. The command displays the selected relay and machine; it does not
+fall back to another daemon.
+
+Quiet follow waits for log changes. A transport reconnect reattaches to the
+same selected target and byte cursor. If the daemon's active log is replaced,
+the command explicitly reports that change and reads from the new log's
+beginning; the cursor is not a durable cross-restart delivery receipt. Add
+`--json` for structured pages, including `logId` and `cursorReset`. Cancellation
+stops only this observer, not plugin work. Authentication, target-currentness,
+or log-reader failures remain errors rather than a silent target change.
+
 ## React Native failure recovery
 
 Executable UI failures are contained by the client that evaluated or rendered

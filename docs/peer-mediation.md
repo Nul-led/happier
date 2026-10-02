@@ -384,6 +384,15 @@ protect in-flight resources; elapsed idle/duration, cumulative byte and lifetime
 quotas are not TCP tunnel policy. Explicit budgets owned by voice or public-preview application
 policy remain enforced at those application boundaries.
 
+Speech transcription grants bind the Account, target Machine, relay socket (for relay),
+application attempt and authority digest. They authorize the daemon speech application,
+not an arbitrary TCP destination, so TCP destination-port allowlists do not admit or reject
+speech. Direct speech follows its application/attempt lifecycle without TCP lifetime quotas.
+Server-relayed speech uses the optional duration and total-byte caps advertised by the
+canonical voice relay policy; configured server caps are signed even when omitted by the
+request. Neither path invents an idle or duration budget when the application owner has none.
+Generic TCP opens still require their signed destination and the operator's port allowlist.
+
 Preview HTTP and WebSocket adapters use native HTTP framing over the same PMS-backed Duplex.
 HTTPS targets layer native TLS over that Duplex with normal certificate and hostname verification;
 there is no insecure certificate fallback. Native HTTP decodes chunked responses before forwarding
@@ -456,6 +465,10 @@ front door for consent, create, copy and revoke. Signing, malformed URL and HTTP
 fail closed; a retained resource does not by itself establish public-link availability.
 
 Private access URLs require a per-resource HTTPS origin under the configured preview domain.
+Current 0.3 development registrations, including hosted plugin assets, declare `originMode: 'host'`;
+the strict resource schema rejects retired path mode and the `rewrite_path_mode` policy.
+The shared response-header owner keeps same-target redirects on that origin with relative
+locations and scopes application cookies to its paths, without API-route prefixes.
 The origin resolver refuses path mode on the API origin, and refuses a preview hostname equal to
 that origin; native direct access does not weaken this server-origin boundary.
 `hostOriginAvailable` is derived from the actual HTTPS/domain resolver; `pathModeAvailable` is false.
@@ -466,6 +479,14 @@ Hosted static-asset teardown uses the same daemon revoke route: it revokes the s
 before removing the local preview row, rather than leaving remote viewer access registered.
 An exact server 404/`preview_not_found` confirms cleanup is already complete, including when no
 viewer ever published the hosted preview. Other revocation failures retain the local row.
+
+Web panes opt in to the [cooperative collector bootstrap](./browser-automation-verb-matrix.md#browser-context-and-model-images-development)
+on isolated host-origin previews. The server adapter authorizes loader requests through the same
+preview access route, strips collector configuration before forwarding upstream, and transforms
+only opted-in HTML responses. It decodes supported upstream compression using the preview's
+existing response-body budget, preserves CSP, and leaves non-HTML transport bytes streaming.
+Same-preview redirects retain the navigation identity; external redirects never receive it.
+The loader and UI/native/desktop injection share one collector generator rather than copies.
 
 #### Native private-preview access (0.3 development)
 
@@ -584,8 +605,12 @@ enablement catalogue; current Account preferences and signing prerequisites are 
 | Defaults | Nothing. The mint route 404s and the preview capability reports `peer_mediation_grant_signing_unavailable`; a request that reaches the data path anyway gets a typed 503. Observability is off (fail-closed). |
 | + the four signing variables | The loopback-direct half (`directPeerEnabled` is already true), and the parent gate observability depends on. |
 | + `…PEER_MEDIATION_OBSERVABILITY__ENABLED` on top of those | PMS-9 observability, readable through the socket subscription and the daemon snapshot action. |
-| + `…TUNNEL_SERVER_ROUTED__ENABLED` and a non-empty `…TUNNEL_ALLOWED_PORTS` | ~16,000 LOC: voice tunnel, private preview, simulator relay, direct machine RPC. |
+| + `…TUNNEL_SERVER_ROUTED__ENABLED` and a non-empty `…TUNNEL_ALLOWED_PORTS` | Historical ~16,000 LOC inventory: voice tunnel, private preview, simulator relay, direct machine RPC. This is not the current speech enablement contract. |
 | Any configuration | ~5,500 LOC stays dark — see below. |
+
+In 0.3 development, binary speech relay instead consumes the canonical voice relay feature
+and application caps plus socket-bound grant signing. It does not require a non-empty TCP
+port allowlist; the same empty allowlist still denies generic TCP relay destinations.
 
 Of the three subsystems the audit recorded as permanently dark, **one has been fixed, one is being
 deleted, and one is still dark**:

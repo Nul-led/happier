@@ -908,6 +908,12 @@ For the full workflow, see [Features → Attach to a running session](/sessions/
 
 In development builds, `happier herdr` opens Herdr from the terminal. Both the installed executable and the running server must be a stable Herdr release, version `0.9.2` or newer. If you are already inside a Herdr pane, use Herdr's pane controls instead of starting a nested client.
 
+Development builds can recover an owned Claude terminal that survives its Happier controller without starting another Claude process. Recovery remains unavailable until Happier verifies the exact host and receives an authenticated observation of the requested Claude session. A restored foreground shell is borrowed, so stopping its Happier runner does not close that shell.
+
+After a Herdr server restart, development builds can open a recorded local pane as a restoration candidate once Happier confirms that its old controller has exited. The pane's saved Happier resume command still uses normal sign-in and session admission. A running or unverifiable controller is not bypassed, and opening the candidate does not by itself establish that the session is ready or transfer ownership of an independent native client.
+
+Cold attachment verifies the original saved Herdr namespace and never switches to another server with the same name. If a stopped server uses an unsupported custom persistence location, reopen its original server before retrying attachment; an already-running custom socket remains supported.
+
 ## Continue a session
 
 `happier resume` attaches to a running, attachable session or resumes a stopped, vendor-resumable session.

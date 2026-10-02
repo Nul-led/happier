@@ -72,7 +72,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `safe`; side effect: `external`.
 - Approval: `required` result; `blocking` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `voice`, `api`.
+- Also surfaced on: `ui`, `voice`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -1203,6 +1203,19 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 No field hints are published. Use the typed input accepted by `execute`.
 
+## `browser.sandbox.install`
+
+**Install managed browser sandbox permission** — Install an executable-scoped AppArmor userns profile for this machine’s managed Chromium. Approval is required by default; the human must separately authorize sudo on that machine.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
 ## `browser.stop`
 
 **Stop browser load** — Stop the in-progress page load in a browser view.
@@ -1307,6 +1320,19 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 No field hints are published. Use the typed input accepted by `execute`.
 
+## `capture.view`
+
+**View host capture** — Allow one mounted plugin viewer to view the exact current host capture source. Approval is required by default and may be waived for that plugin in Actions settings.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: none.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
 ## `computer.capture`
 
 **Capture computer target** — Capture the selected native target as a Session image reference with its exact image and native input geometry.
@@ -1378,8 +1404,8 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 - Safety: `safe`; side effect: `write`.
 - Approval: `required` result; `blocking` flow.
-- Caller authority: `present_user` — only a host-stamped present-user caller is admitted; plugin and API-token callers receive `present_user_required`.
-- Also surfaced on: `ui`.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `api`.
 
 ### Input guidance
 
@@ -2095,7 +2121,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 ## `execution.run.wait`
 
-**Wait for execution run** — Wait until an execution run reaches a terminal status. Pass timeoutSeconds to bound the wait; omit it for no Happier-side deadline. Timeout only ends this observation; it does not stop, retry, or start the run. Cancellation only ends this wait. A nonempty sessionId selects that exact authorized Session. Omitting sessionId inherits the current Action Session, or selects detached scope when none exists. sessionId:null selects detached scope even inside a current Session.
+**Wait for execution run** — Observe an execution run until terminal by default, or select permission attention, either condition, or a changed snapshot. Pass timeoutSeconds to bound the observation; omit it for no Happier-side deadline. Timeout only ends this observation; it does not stop, retry, or start the run. Cancellation only ends this wait. A nonempty sessionId selects that exact authorized Session. Omitting sessionId inherits the current Action Session, or selects detached scope when none exists. sessionId:null selects detached scope even inside a current Session.
 
 - Safety: `safe`; side effect: `read`.
 - Approval: `required` result; `blocking` flow.
@@ -2361,6 +2387,19 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `authenticationPolicy.anonymousSignup` (boolean): Anonymous sign-up
 - `authenticationPolicy.storagePolicy` (text): Storage policy
 - `confirmWidening` (boolean): Widening confirmed
+
+## `home.reachNudge.dismiss`
+
+**Dismiss Home reachability suggestion** — Permanently dismiss the selected Home’s reachability suggestion on this client device. Other devices are unchanged.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `homeServerId` (text, required): Saved Home ID
 
 ## `home.reachability.get`
 
@@ -8521,6 +8560,19 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `instructions` (textarea, required): Instructions — Initial instructions for the voice agent run.
 - `connectedServices` (json): Connected services (json) — Optional blanket connected-services selection for every target. An exact connectedServicesByBackendTargetKey entry overrides it.
 - `connectedServicesByBackendTargetKey` (json): Connected services per target (json) — Optional per-target override using the exact selected backend target key.
+
+## `wait`
+
+**Wait for work** — Observe an existing Home-qualified handle without polling or stopping its work. Prefer notifyParentOnCompletion or Follow for parent delivery. Reuse the same handle after an observation timeout.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
 
 ## `workflow.definition.create`
 

@@ -1,6 +1,6 @@
 ---
 title: Embedded terminal
-description: Use the connected machine terminal directly inside Happier, including the bottom panel, sidebar, details panel, and mobile behavior.
+description: Use connected machine terminals directly inside Happier — tabs and splits in the bottom panel, the agent's own terminal, local addresses, Jump, and the phone Terminal page.
 ---
 
 Happier can show a live terminal for the current session directly inside the app UI.
@@ -13,37 +13,64 @@ The same terminal foundation is also reused for **provider login flows** from pr
 
 - Opens a live shell backed by your connected Happier daemon.
 - Treats the terminal as part of the current session, not as a separate detached tool.
-- Reuses the same terminal session when you move it between panel locations.
+- Keeps each terminal running when you hide the panel or show it somewhere else.
 - Preserves the terminal across normal navigation and page refresh for that session.
 
-## Where the terminal can appear
+## Where the terminal appears
 
-Choose a preferred location in **Settings → Features → Embedded terminal location**:
+<Callout type="info">
+  This section describes the current development build (unreleased). Released builds use a
+  single terminal and a location setting (bottom panel, sidebar or details panel).
+</Callout>
 
-- **Bottom panel** — the recommended default on web/tablet; best for wide command output.
-- **Sidebar** — useful when you want the transcript and terminal visible side by side.
-- **Details panel** — useful when the terminal is a secondary detail view for the current session.
+On web, desktop and tablets the session's terminals live in the **bottom panel**, under the
+chat and the side panes. On phones they live on the session's **Terminal** page.
 
-On phones, Happier uses a more focused terminal presentation instead of trying to keep desktop-style docked panels on screen at the same time.
+To give one terminal a wide view beside the chat, use **Open in Details** from its tab menu.
 
 ## How to open it
 
 1. Open a session.
-2. Use the **Terminal** button in the session header.
-3. Happier opens the terminal in your selected dock location.
+2. Use **Terminal** in the session header or the desktop [session action rail](/apps/app#desktop-session-action-rail).
+3. The bottom panel opens with the session's terminals. Hiding it keeps them running.
 
-<Callout type="info">
-  In the current development build (unreleased), you can also open **Terminal**
-  from the desktop [session action rail](/apps/app#desktop-session-action-rail).
-  It uses the same dock preference as the header button.
-</Callout>
+## Tabs, splits and the list view
 
-Inside the terminal toolbar you can:
+The bottom panel has one strip:
 
-- move it to another dock location,
-- clear the visible transcript,
-- restart the terminal session,
-- close the current terminal surface.
+- **Tabs** — every terminal of the session is a tab. A tab is named after its own title (or the
+  script it runs) and shows a dot when something is going on: green while it serves a local
+  address or runs a script, amber when it needs you, grey once its process has exited.
+- **+** opens a shell in the session's folder. The **▾** next to it opens the agent's own
+  terminal, runs a package script **in a new terminal tab**, or opens a shell on another online
+  machine.
+- **Split** puts a second shell beside the focused one in the same tab. A split is refused when
+  either side would be too narrow to read.
+- **⋯** offers **Jump to a terminal**, **Show list** and **Hide the bottom pane**. **Show list**
+  (remembered per session) replaces the tabs with a column that says what each terminal is doing;
+  in a narrow window the panel keeps the tabs.
+- Right-click a tab (long-press on touch) for **Rename**, **Split right**, **Move to its own tab**,
+  **Open in Details**, **Copy selection**, **Paste**, **Clear**, **Restart** and **Close**. Closing
+  a shell stops what runs in it; closing the agent's terminal or another session's terminal only
+  removes the view.
+
+### The agent's own terminal
+
+Sessions that run in tmux, zellij or Herdr have the agent's own terminal. It is a tab beside your
+shells, marked with the agent. When the agent shows a dialog in its terminal, its tab turns amber
+(and so does the rail's Terminal while the panel is hidden), and the chat card offers to show it.
+
+### Local addresses
+
+When a terminal prints a local address, the strip shows it as a pill — for example
+`localhost:5173 · Open`. **Local services** lists the same address. Package scripts from Local
+services run in a new terminal tab.
+
+### Jump to a terminal
+
+**⌘J** (⌥J on the web) opens the command palette in its **Terminals** scope: this session's
+terminals first, then terminals other sessions left running on the same machine (read-only), then
+**New**. Typing filters them and offers matching package scripts.
 
 ## Bottom panel behavior
 
@@ -70,7 +97,7 @@ The embedded terminal is meant to feel like one session-owned terminal, even if 
 
 What to expect:
 
-- Switching between **bottom**, **sidebar**, and **details** keeps the same underlying terminal session.
+- Hiding the bottom panel, switching tabs or opening a terminal in Details keeps its process running; it replays when shown again.
 - Refreshing the page with the terminal open restores the open panel and reconnects to the same terminal for that session.
 - Returning to a session restores that session’s terminal state.
 - A different session does **not** automatically inherit another session’s terminal state.
@@ -84,16 +111,15 @@ That gives you:
 - live terminal input and output,
 - resize handling,
 - restart and clear actions,
-- detected URL copy/open actions,
-- mobile quick keys where supported.
+- a key rail above the keyboard (Esc, Tab, sticky Ctrl and ⌥, ⌃C, ⌃D and common symbols) and
+  floating arrow keys you can move or tuck away (development build).
 
 On phone layouts using the default **Cockpit** session layout, Terminal appears as a bottom session tab when all of these are true:
 
 - the Embedded terminal feature is enabled,
-- the selected terminal location supports a session tab,
 - the current session resolves to a reachable machine target.
 
-If the terminal tab is not available, Happier hides it instead of showing a broken empty tab. In that case, use the session header terminal action or change the embedded-terminal location setting.
+If the terminal tab is not available, Happier hides it instead of showing a broken empty tab. In that case, use the session header terminal action.
 
 In Cockpit, the terminal keeps the normal session header and safe-area spacing, and switching between Terminal, Files, Git, Tabs, and the agent chat does not add every tab switch to the back stack.
 
@@ -107,19 +133,19 @@ The embedded terminal depends on all of the following:
 - your **daemon is running and connected** for the machine you want to control,
 - the current session resolves to a reachable machine target.
 
-If the daemon is offline or the machine target is unavailable, Happier shows a terminal error state instead of a live shell.
+If the machine goes offline, the terminal keeps its last output and says so with **Check again**. If a terminal cannot start, it names the cause and offers **Try again**.
 
 ## Important things to know
 
 - Commands run on the connected machine for the current session.
 - The embedded terminal is best for session-adjacent work: quick shell commands, local scripts, logs, git inspection, and following links emitted by tools or dev servers.
 - The terminal surface can reconnect automatically after short-lived daemon/RPC hiccups.
-- Detected local URLs can appear as a banner so you can open or copy them quickly.
+- Detected local URLs appear as a pill in the strip so you can open them quickly.
 
 ## Common use cases
 
 - Run `git status`, `git diff`, or project scripts while reading the transcript.
-- Start a local dev server and open the detected URL from the terminal banner.
+- Start a local dev server and open its address from the strip.
 - Follow logs while keeping the main transcript visible.
 - Keep one session’s shell history open while moving between panel layouts.
 - Open a provider login flow from settings without leaving Happier.
@@ -153,11 +179,9 @@ For daemon setup and lifecycle commands, see [Daemon](/apps/daemon).
 
 ### The terminal opens, but I want it somewhere else
 
-Change the location in:
-
-- **Settings → Features → Embedded terminal location**
-
-or use the **Dock to …** control in the terminal toolbar.
+In the development build, use **Open in Details** from the terminal's tab menu for a wide view
+beside the chat. Released builds choose a location in **Settings → Features → Embedded terminal
+location**.
 
 ### The bottom terminal covers the session
 

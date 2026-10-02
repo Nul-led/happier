@@ -198,7 +198,20 @@ ${formatBindings(commands.get('commandPalette.open'))}
 
 ${grouped.join('\n\n')}
 ${extras}
-Shortcuts respect focus. Most do nothing while you are typing in the composer,
+${commands.has('workspace.tab.new') ? `The development-only 0.3 workspace adds tab shortcuts for the focused pane.
+They work while editing: \`Mod+T\` opens an empty tab, \`Mod+W\` closes the active
+tab, \`Mod+1\` through \`Mod+8\` select a position, and \`Mod+9\` selects the last
+tab. They require the general shortcut registry to be enabled. A browser may
+claim these keys before Happier receives them; you can rebind them if needed.
+
+In multi-selectable lists, \`x\` toggles the focused row, Shift+Up/Down extends
+the range, and Escape clears. Shift-click selects a range; Select in a row's
+menu starts selection with that row. Ordinary clicks then toggle rows; Done
+exits. Long-press opens the row menu and hover alone never shows a checkbox.
+Command-click on macOS or Ctrl-click on Windows/Linux opens an openable row in
+a kept workspace tab, like Alt-click or middle-click, even during selection.
+
+` : ''}Shortcuts respect focus. Most do nothing while you are typing in the composer,
 which is why sending has its own explicitly editable-safe binding rather than
 relying on you leaving the field first.
 

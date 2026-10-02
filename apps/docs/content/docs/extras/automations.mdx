@@ -175,10 +175,23 @@ offline does not move matching into a client-side watcher.
   fingerprint. Missing certification always runs the review. Deleting the
   Session retires its scoped Automations without removing retained Run history.
 
-  Session-start attachment and PR-comment/CI integration are not yet complete.
+  Session-start attachment is not yet complete.
   Keep going attachment is refused when the opened agent already owns native
   goal continuation; reopening cleanup still needs its runtime integration.
 </Callout>
+
+In current development source, the Session's Triggers section offers PR comments
+and CI failures. Choose a pull request from the Session repository; a single
+existing link is preselected. Attaching either kind records that Session↔PR link.
+Opening or reusing a pull request through Happier also records the link when the
+operation has an origin Session. Removing a trigger retains the link but stops
+that trigger's conversation ingress.
+
+PR comments admit only repository writers. CI observations require the selected
+GitHub integration principal's write access. Unknown permission or a mismatched
+identity admits no Run, for both plain and E2EE Accounts. Comment text is labelled
+as untrusted input. This PR/CI vertical has owner-level tests; current loaded-stack
+validation is still pending and it is not a shipped stable or preview feature.
 
 For plugin authors using 0.3 development builds, the separate
 `@happier/runtime/turn-start`, `@happier/runtime/turn-complete`,

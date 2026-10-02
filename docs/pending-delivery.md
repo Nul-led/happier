@@ -34,6 +34,32 @@ without exact committed proof, and unexpected resolution crashes. The
 diagnostic is present at the default session file log level and does not write
 to the Agent's interactive terminal.
 
+## Composer custody (development)
+
+`submitSessionUserMessage` checks confirmed Pending cancellation before reporting
+outbound handoff. Cancelled input keeps its Composer and review drafts. The
+public Sync submission entry point carries the caller's captured Account
+lifetime; retirement fences draft clearing and further effects, while an
+acknowledged or locally retained Pending input still reports
+`persistence: 'pending'` with its exact `localId`.
+
+Initial Queue submissions with raw Composer attachments use the same daemon
+prepare admission as Pending edits before creating local outbox custody. An
+unreachable prepare leaves the draft with its caller. Both writers use the same
+canonical prepared-record builder, including SessionMedia metadata and staged
+handles. Successful enqueue acknowledges that exact accepted fact to the daemon
+after the server ACK; failure before local custody or a confirmed cancellation
+uses the existing abandonment operation when cleanup is needed. Settlement and
+cleanup remain fenced by the captured Pending owner, including callers without an
+explicit Account lifetime. These are current-process admission effects, not a
+new durable attachment-settlement queue.
+
+Upload attachment drafts remain in their shared in-memory owner until explicit
+clearing; opening additional Session or new-session scopes does not evict unsent
+drafts. Prompt recall reads authored `displayText` through Session-core and
+preserves its whitespace. An absent display value retains the expanded-text
+fallback; an explicitly empty display value does not.
+
 ## Claude acceptance evidence (development)
 
 Claude Unified's input arbiter requires a unique matching input before native

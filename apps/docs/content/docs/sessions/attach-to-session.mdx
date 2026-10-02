@@ -75,6 +75,13 @@ Requirements:
 
 The host keeps the interactive process available so Happier can reconnect later. Herdr requires a stable release, version `0.9.2` or newer.
 
+In the 0.2 development line, supported Codex/OpenCode server-backed sessions can have
+an optional hosted native TUI. Closing that presenter leaves the session remotely usable
+and does not automatically reopen it; **Detach terminal** releases only that managed local
+client, while **Stop** ends the session. This optional-presenter lifecycle is not yet
+available in the evolved 0.3 development line. Closing a controller-hosted terminal is
+not equivalent to detaching an optional client.
+
 ### Windows interactive-host sessions
 
 On **Windows**, tmux is often not the right answer. Happier also supports Windows-specific remote session modes:

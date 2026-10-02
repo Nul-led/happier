@@ -165,6 +165,32 @@ Call `session_wait_idle`:
 }
 ```
 
+### Watch work (0.3 development)
+
+The 0.3 development MCP servers support passive resource subscriptions for
+targets whose owner exposes a change feed. Call `watch` with the same exact
+Home-qualified `{target, condition, timeout?}` input as `wait`. A supported
+request returns the target, condition, initial snapshot and `resourceUri`.
+The external MCP server can observe supported Session targets. The MCP server
+inside a Session currently returns `unsupported_condition` for passive requests:
+its daemon channel supports one-result Actions but not passive snapshot delivery.
+
+Read that URI for current state, subscribe with `resources/subscribe`, then
+re-read when `notifications/resources/updated` arrives. Send
+`resources/unsubscribe` when finished; disconnect also releases observation.
+An optional timeout ends observation and leaves the work running.
+
+Execution and Workflow passive feeds, plugin passive sources, and Session
+idle/ready conditions are not yet supported and return `unsupported_condition`.
+Subscription and resource-read refusals carry the same typed result in MCP error
+data. Other authorization or availability failures retain their typed refusal.
+
+A resource-updated notification is a change hint. It does **not** promise an
+agent-turn wakeup; your MCP host decides whether to show it to the agent.
+For parent report delivery, use Happier's Follow or completion-report features.
+These observers last for the MCP connection, with no process-restart or complete
+event-replay guarantee.
+
 ### Rename a session
 
 Rename the current/default session context:

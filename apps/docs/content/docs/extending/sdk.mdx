@@ -109,11 +109,12 @@ E2EE Sessions with a content credential. A bearer-only E2EE credential uses
 daemon-opened Action content, which crosses the Account server in plaintext; socket
 content stays E2EE. A content-opening failure never silently switches transports.
 Permission responses preserve the same decision vocabulary on both transports;
-the Action transport does not support `abort()`. Both open a viewer socket; on the Action
-transport, pushes wake daemon-opened reads without an idle polling timer. Reconnect
-repairs missed changes. In the current development implementation, `followTranscript()`
-also wakes on Home viewer pushes. Its daemon-local push integration remains unresolved;
-finite transcript Actions do not replace existing iterator support.
+the Action transport does not support `abort()`. The Action transport holds a
+`transcript.follow` request until the daemon receives a Home Session notification;
+it opens no SDK viewer socket and runs no idle polling timer. Revision hints travel
+with the Action response, and reconnect reloads authoritative history. The existing
+`followTranscript()` iterator uses the same waiting Action at Home and daemon-local
+endpoints. Cancelling it releases the wait and notification subscription.
 Pending requests disappear only when
 reconciled Agent state or shared Action-confirmation metadata clears them, not
 immediately after a response. The Action transport carries the recipient-safe shared metadata
@@ -366,9 +367,11 @@ try {
 }
 ```
 
-Raw SDK and HTTP clients call the finite `transcript.follow` and
-`transcript.unfollow` Actions with one retained lease id. V1 deliberately does
-not add a second SSE lifecycle.
+Raw SDK and HTTP clients use `transcript.follow` and `transcript.unfollow`
+with one retained lease id. `waitForChanges: true` holds an empty follow until a
+Home notification; omitted or false keeps the read finite. The public iterator
+checks canonical Session status and drains inactive Sessions with finite reads.
+V1 deliberately does not add a second SSE lifecycle.
 
 ## Connect with an explicit endpoint and token
 

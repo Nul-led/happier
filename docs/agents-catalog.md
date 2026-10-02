@@ -71,6 +71,12 @@ What belongs here:
 Example:
 - `packages/protocol/src/spawnSession.ts` defines `SpawnSessionErrorCode` + `SpawnSessionResult`.
 
+The retained CLI library's Claude `RawJSONLinesSchema` and `RawJSONLines` exports
+share `packages/protocol/src/agents/claude/rawJsonLines.ts` with native transcript
+ingress. Claude's settings policy and predecessor outbound message-metadata
+normalization live in the same Protocol domain; the plugin owns the settings
+contribution and its derived defaults.
+
 ### 3) CLI agent catalog: `apps/cli/src/agent/catalog/**`
 
 This is the CLI’s deterministic projection of Agent plugin contributions into catalog entries:
@@ -99,6 +105,15 @@ bound by generated activation and supplied to the catalog's existing hook owners
 there is no broad Agent-runtime contribution object or parallel catalog path.
 Bundled and installed Agents therefore enter through the same manifest and
 registration contracts.
+
+In 0.3 development source, a bundled Agent's `nativePermissionModes` definition
+projects the same native permission vocabulary used by its execution code.
+Claude's runtime and shared presentation both consume its plugin-owned mapping;
+the UI does not reconstruct native labels from the Agent's mode group. Explicit
+native tokens such as `acceptEdits` remain distinct from canonical permission
+intent aliases. This does not change persisted intent normalization or make
+`plan` a permission: the shared permission layer still falls back to Read-only
+for that legacy selection.
 
 A bundled Agent carries facts such as its vendor-resume level in the host's own
 `@happier-dev/agents` tables. An installed Agent has no host table, so it declares
@@ -138,6 +153,25 @@ events — an Agent that claims the slot and never emits one leaves `runtime.act
 pinned at `unknown` for the whole Session instead of settling at `idle`. Claude is
 currently the only bundled Agent that emits them.
 
+Session token accounting has its own positive declaration,
+`capabilities.sessions.usageReporting: true`. The bundled definition projects
+this fact through the same manifest as an installed Agent. Omission does not
+promise reporting, and usage-limit recovery is a separate capability. The UI
+reads the current declaration through `supportsAgentLifecycleCapability` with
+`capability: 'usageReporting'`; an opened runtime's published support refines
+that answer, so an unverified runtime mode cannot inherit another mode's promise.
+This is a 0.3 development source contract, not a claim of released availability.
+
+In the 0.3 development source, Claude usage observations retain the native
+record UUID, so transcript replay keeps the same ingest key. Available native
+timestamps also retain a replayed row's original coverage position. Observations without a
+native record, including freshly fetched Pi usage snapshots, receive a UUID
+instead of a counter that restarts on reopen. The server counts the latest final
+snapshot plus subsequent turn deltas; total contribution IDs name only counted
+rows. The CLI usage publisher returns a sent, skipped, or failed result and logs
+sanitized warnings for transport failures, including a disconnected legacy transport.
+It does not retain a retry outbox.
+
 Plugin authors bind executable Agent behavior through one
 `definePlugin({ agents: { <localId>: ... } })` entry. Current public fields on
 a custom Agent entry include `providerBinding`, `sessionRunnerFactory`,
@@ -150,13 +184,21 @@ owner for Agent-native `happy <agent>` argument projection: its optional
 builder receives parsed Agent arguments plus host-resolved settings,
 environment, and start origin, and returns bounded JSON Session options.
 
-In the current development source, terminal presentation is projected from the
-admitted runtime's terminal or provider-attach surfaces. A Session factory may
-provide the pure `supportsTerminalPresentation` selector to narrow those surfaces
-for its selected runtime mode. Daemon pane routing and Session mode binding consume
-that same projection; descriptors remain opaque to the host and provider-owned
-mode codecs interpret them. ACP-only runtimes without either surface stay headless
-even when the launch request omits a descriptor.
+In the current development source, the admitted Session factory's asynchronous
+`resolveTerminalPresentation` selects `runner`, `managed_terminal`,
+`provider_attach`, or `none` using the requested host and admitted settings and
+features. It captures its Agent-owned runtime descriptor before Session creation;
+the private runner bootstrap carries that launch intent separately from Agent
+authority. Fresh Session metadata and the selected opener consume the same
+descriptor. An existing Session's accepted descriptor wins over fresh process
+defaults, while current feature admission still fails closed.
+
+The opened Session's `prepareTerminalPresentation` then prepares its exact native
+identity and returns an optional-client attach target, a terminal launch plan, or
+the actual managed terminal handle. The host never substitutes a static terminal
+launch for a missing selected-session operation. ACP-only runtimes without a
+presentation surface remain headless. Bare terminal authoring remains a distinct
+service, not a second selected-session launcher.
 
 Session-control preflight uses one host-owned environment boundary. The capability RPC resolves
 the selected launch profile through the same profile and Saved Secret owners as Session launch,
@@ -530,6 +572,23 @@ that the CLI runs and reports a version. Progress includes step transitions and 
 bytes where the source supplies them; an unknown total stays `null`. Antigravity's CLI and
 managed ACP server are steps of the same job. Vendor-recipe execution requires explicit
 consent, enforced by the canonical install/update path.
+
+V2 managed dependencies can declare a `githubReleaseBinary` source through that
+same projection. Release asset targets and archive layout are data consumed by
+the existing installables owner; Codex ACP also declares its explicit launch
+policy, including environment override and configuration arguments. The portable
+`@happier-dev/plugin-sdk/managed-services` entry point remains declarative. Native
+command and release-selection helpers are confined to the daemon-realm
+`@happier-dev/plugin-sdk/managed-services/native` entry point, shared by the plugin
+and host instead of imported from a bundled plugin package.
+
+Codex's configured native-home policy lives in
+`packages/protocol/src/agents/codex/nativeHomePolicy.ts`. Its state-sharing
+declaration and standalone pet discovery consume the same policy. The SDK's
+`fs/nativeHome.ts` owns shared configured-path resolution and physical custody
+for connected-service profile/group enumeration. Custody stops at the home:
+intentional shared-state symlinks inside it remain supported. This does not add a
+second native-home catalog or require a daemon merely to discover local pets.
 
 The process singleton admits one active job per Agent; another start returns that job id.
 Machine RPCs use `daemon.agents.install.start/read/cancel/list`:

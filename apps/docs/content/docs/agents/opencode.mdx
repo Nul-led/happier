@@ -155,12 +155,16 @@ form requests from their owning APIs. Events published only while the connection
 replayed, so the resync repairs current state rather than reconstructing every missed frame.
 
 **Server credentials stay with the host.** For a server Happier starts, the host mints a Basic-auth
-password and injects it only into the managed OpenCode process. For a server you configure by URL,
+password and injects it into the managed OpenCode server and its runner-local native TUI. For a server you configure by URL,
 the host uses the password from the **OpenCode server password** setting. The URL itself must not
 contain credentials. Connected-account credential projection accepts only end-to-end encrypted
 credential material and is separate from the server password. For a server Happier starts, qualified
 connected-account OAuth reaches V2 through an isolated provider-scoped request-auth plugin; Happier
 does not project that private capability into a server you configured by URL.
+In current development source, a managed native attachment fails if its exact server access
+is unavailable; it does not substitute ambient credentials. Opening an independent native
+TUI through standalone attach for a Plain account remains unsupported pending a private local
+credential transport. Restoring the TUI inside its running terminal host reuses runner-local access.
 
 ### What V2 does not support yet
 
@@ -312,6 +316,7 @@ For the full user guide, see:
 ## Notes
 
 - Resume availability is session-specific in Happier: the session must have valid OpenCode resume metadata, and your current backend/settings must allow resume.
+- In current 0.3 development source, cold resume reconciles exact saved message identities before importing missing settled native turns, including histories created by 0.2. Import identities preserve opaque IDs without delimiter collisions; older import identities require a separate matching native-session identity. If older history lacks provable identities, Happier reports the gap instead of duplicating uncertain messages; new native turns continue to sync. Failed or malformed history reads remain unresolved until a later connection or idle update succeeds. This is development behavior, not a shipped-release or authenticated 0.3 live-validation claim.
 - Attach availability is also session-specific: the session must have the metadata/context Happier needs to reopen that OpenCode session locally.
 - Model, mode, and permission behavior can still vary by installed OpenCode runtime.
 - Tool events are normalized into Happier’s canonical tool timeline.

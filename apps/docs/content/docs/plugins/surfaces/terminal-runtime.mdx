@@ -22,6 +22,11 @@ The result contains the argument vector, optional launch environment, supported 
 
 Terminal metadata does not grant write access to a running session. Do not write Happier transcript rows or session state directly; return the public launch plan and let the host apply supported result metadata.
 
+For presentation of an already opened Session, the Developer Preview host uses
+the Session's [selected-session terminal preparation](/plugins/agent-runtimes/session-runtime#selected-session-terminal-preparation).
+The bare terminal surface is not a fallback that may launch a fresh conversation
+when an exact resume is required.
+
 ## Provider CLI attach
 
 When an Agent has a provider-native CLI attach mode, declare

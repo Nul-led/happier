@@ -757,10 +757,14 @@ An unopened row retains its identity and sequence with
 `content: {t: 'plain', v: null}` and a typed `openFailure` of
 `mode_mismatch` or `corrupt_or_unopenable`; it discloses no stored content.
 The controller renders the canonical unsupported-content row and advances past
-it. Both adapters open a session-scoped viewer socket. For the Action adapter,
-opaque change notifications wake the follower; idle observation makes no interval
-requests. The Session-filtered changes feed repairs reconnect gaps and revised rows;
-the snapshot and daemon-opened rows refresh on a notification. Inactivity keeps
+it. The socket adapter uses a session-scoped viewer socket and the Session-filtered
+changes feed to repair reconnect gaps and revised rows. The Action adapter uses
+`transcript.follow` with `waitForChanges: true`; its retained daemon lease observes
+existing Home Session notifications using the daemon's exact Home connection and
+credential. The response carries `changes` (append, revision with message id/seq,
+Session change, or reconnect/reset) so repairs use finite Actions on either endpoint.
+It opens no SDK viewer socket and makes no idle interval requests. A reconnect/reset
+reloads authoritative history. The snapshot and daemon-opened rows refresh on a notification. Inactivity keeps
 observation alive so external reactivation is visible.
 Permission responses use the existing
 permission Action's full protocol vocabulary; `action` has no abort Action.
@@ -769,12 +773,12 @@ retains E2EE content framing end to end.
 Controller cancellation/disposal is scoped to that controller, and root-client
 closure also closes its controllers.
 
-The public `followTranscript()` iterator uses the same viewer notifications to wake
-finite `transcript.follow` reads, without a polling-interval option. Its existing cursor,
-backpressure, final inactive drain and lease-release owner remain unchanged; reconnection
-wakes a cursor catch-up. The development implementation currently uses the Account Home
-viewer endpoint; preserving daemon-local iterator support remains an unresolved integration
-boundary, not an approved endpoint restriction.
+The public `followTranscript()` iterator uses that waiting Action at both Home and
+daemon-local endpoints, without a polling-interval option. Its existing cursor,
+backpressure, final inactive drain and lease-release owner remain authoritative.
+The final drain remains finite. Caller abort releases the held wait and Home
+notification subscription; the existing lease idle expiry pauses while a read is held.
+No separate request duration is imposed.
 
 Execution-run iterators instead use the existing `execution.run.stream.read` Action
 with `waitForEvents: true`. The canonical stream owner holds an empty cursor read
@@ -1333,6 +1337,42 @@ integrated package and loaded-Provider validation is still open.
 - `POST /v1/artifacts/:id` (versioned update)
 - `DELETE /v1/artifacts/:id`
 
+The in-progress 0.3 ordinary binary extension uses a strict body reference
+`{blobId,mime,sizeBytes,sha256}` within the normal plain/E2EE body envelope.
+Private bytes are not public uploaded-file URLs. Its transport contract is
+`POST /v1/artifacts/content/binary` for creation and
+`POST /v1/artifacts/:id/content/binary` for versioned updates, using the same
+Artifact write owner with `blob:{blobId,content}`. Uploaded content is explicitly
+`{t:'plain',v:<base64>}` or `{t:'encrypted',c:<base64>}`; same-document retained
+bytes may be reused with `blob:{blobId}`. A distinct mutation path prevents a
+text-only server from ignoring the upload field and accepting a dangling
+reference. The authenticated read is
+`GET /v1/artifacts/:id/blobs/:blobId`, returning `{blobId,content}` only for
+current/retained bytes admitted by the Artifact access and Account-mode owner.
+This transport is not yet a deployed or fully validated availability claim;
+implementation and lifecycle validation are tracked in ART-B1-BINARY.
+
+### Stored-content public links (0.3 development)
+
+Session and ordinary Artifact publications share one owner and the existing
+`sharing.public` feature decision. Plugin-owned storage is not public content.
+
+- `POST /v1/public-shares` takes `{subject:{kind:'session'|'artifact',id},lookupId,keyDerivation:'fragment_v1',encryptedDataKey?,expiresAt?,maxUses?,isConsentRequired?}`.
+- `GET /v1/public-shares?subjectKind=...&subjectId=...` lists the authorized subject's safe publication settings.
+- `DELETE /v1/public-shares/:shareId` revokes the publication.
+- `GET /v1/public-shares/:shareId/access-log` returns owner-authorized visit records.
+- `GET /v1/public-shares/:lookupId/content` reads admitted stored content without Account credentials on the publication's isolated origin. Consent and Session pagination use the existing publication-use/access-grant policy.
+- `GET /s/:lookupId` serves the isolated text viewer; its browser-only secret is carried in `#k=...`, not in an HTTP field.
+
+The lookup and wrapping secret are independent. E2EE content and its wrapped DEK
+remain opaque to the server; plaintext Accounts send no wrapped key. Publication
+responses and Action results cannot recover a link's secret. The released
+`/v1/sessions/:sessionId/public-share` and `/v1/public-share/:token` Session paths
+remain compatibility adapters for legacy links, not a second publication owner.
+See the [encryption custody contract](encryption.md#session-storage-modes).
+These routes describe current development source, not released availability or
+completed composed live validation.
+
 ### Access keys
 - `GET /v1/access-keys/:sessionId/:machineId`
 - `POST /v1/access-keys/:sessionId/:machineId`
@@ -1395,7 +1435,8 @@ not a sync writer, pending-write queue, or Account-mode authority.
 
 The one-way 0.2 import reads the authoritative settings envelope under the
 persisted Account mode, creates each destination only if absent, then removes
-that source key by exact Settings CAS. Conflicts re-read the winner; interruption
+that source key by exact Settings CAS without normalizing or changing unrelated
+raw Settings siblings. Its baseline read performs no writeback. Conflicts re-read the winner; interruption
 leaves a recoverable source and repeat import cannot replace an existing row or
 tombstone. Current consumers never dual-write the old settings keys.
 The CLI uses that same destination-first policy for the remembered profile before

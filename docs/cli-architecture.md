@@ -50,6 +50,22 @@ graph TB
 
 Executable Agents and model Providers are different domains. `happier agents ...` manages Agent runtimes; `happier providers ...` manages configured model-source connections. Provider contributions, connections, grants, settings, and structured model selections are protocol-owned. See [Providers](./providers.md) for the complete ownership and safety contract.
 
+### Shared planet presentation (0.3 development)
+
+`@happier-dev/brand/planet` owns the dependency-free planet model: palettes,
+light/terminator shading, atmosphere, choreography and the 2×4 Braille-cell
+projection. CLI setup and progress adapt its frames to terminal color; installer
+generation projects the same model into standalone Bash/PowerShell, without a
+JavaScript runtime requirement. Legacy Windows consoles retain readable text.
+The animated step spinner uses Braille in capable terminals; redirected,
+no-animation and dumb-terminal output stays linear.
+
+Voice and onboarding tokens, and the website hero scrim, consume that same
+owner's existing-artwork projections. Their current orb gradients and raster
+artwork remain unchanged; moving to a dot-rendered app or website is separate
+design work. The terminal breath and the existing artwork breath are distinct
+projection recipes, not competing model owners.
+
 ### Local-service Machine summary (0.3 development)
 
 The daemon pushes `daemonState.localServices` through the existing Machine-state
@@ -108,6 +124,42 @@ Agent reads and verdict writes may target their own Session or a currently reada
 This is the current development contract, not a released availability claim. Automatic E2EE materialization is not verified: the current mutation transport seals the event but does not seal raw finding body/snapshot request fields, which the server rejects only after receipt. The canonical encrypted create/read transport must be completed before this path is usable for E2EE Accounts. Package and loaded-runtime validation of the integrated review path is still pending.
 
 ### Execution result ownership (0.3 development)
+
+`workflow.run.wait` parks in the shared Account Run Action owner. The CLI uses
+the existing user-scoped Account socket; the UI uses its captured Home Account
+change feed. A change or reconnect wakes an exact durable snapshot read from
+the server's Workflow Run owner. The server does not hold a database polling
+loop. The optional caller deadline remains observational: it returns `timeout`
+without cancelling or mutating the Run, and paused, attention and terminal facts
+take precedence when the deadline's final read observes them.
+
+In 0.3 development source, `conditions` selects a nonempty unique set from
+`terminal`, `attention` and `paused`; omission retains first-of-any observation.
+The server applies the existing Run/invocation attention predicate. A match
+returns `matchedCondition`; a terminal Run with no selected match returns
+`not_matched_terminal`, retaining the terminal summary and available result.
+An attention-only wait therefore skips an ordinary pause and ends with a typed
+non-match if the Run settles without attention.
+
+The same admitted Action accepts the host-only `onWaitSnapshot` callback for
+passive observation. It delivers `{run: WorkflowRunSummaryV1}` from the exact
+summary/attention projection, awaits each callback to preserve output order,
+suppresses unchanged snapshots, and catches up current state after reconnect.
+Passive observation continues through matches and terminal state until its
+deadline or cancellation. Cancellation releases its observer without changing
+the Run. This is a current-state feed: coalesced invalidations do not promise
+replay of every intermediate state. This seam is available to INT's generic
+`watch`; the callback is never serialized as Action input or carried by a new
+transport.
+
+Blocking Artifact approvals use the shared `blockingApprovalCoordinator`.
+Each host supplies durable Artifact reads and its existing Account change feed,
+including reconnect catch-up. Local approval notifications remain supported by
+that same coordinator; there is no periodic reread loop. Built-in approved
+requests still wait for execution settlement, while target and Execution Run
+host Action approvals retain their existing decision semantics. Abort, captured
+Home retirement and settlement release the demand-scoped subscription. These
+are 0.3 development contracts; loaded-runtime validation remains pending.
 
 `packages/protocol/src/execution/runs/resultContract.ts` owns result normalization,
 prompt instructions and raw-text/typed-value validation. Task and Agent profiles,
@@ -170,6 +222,17 @@ child frame's project base. Authored workspace provenance distinguishes a leaf's
 explicit selection from an inherited frame default, avoiding duplicate worktree
 creation. These are development contracts; composed loaded-runtime validation
 remains pending.
+
+An explicit **Run workflow again** is a new Run, not custody recovery. In 0.3
+development it uses the existing inline `workflow.run.start` source with
+`replay.runId`. The Account Run owner opens that Run's authenticated accepted
+snapshot and passes it to the same materializer: roles, child definitions and
+references, workspace facts and per-step targets stay frozen. Only declared
+inputs and one optional `replay.agentOverride` engine group change. Current
+Agent-start policy and target availability still apply. Accepted source lineage,
+including a saved definition's revision and `savedBy`, is retained rather than
+read from the current Artifact. The reviewed inline definition is not authority
+to replace a replay's stored graph.
 
 Workflow conversation reply handoff reads a fresh owner-bound Run-key census
 through the authenticated storage client and uses Protocol's per-run key
@@ -242,6 +305,18 @@ another persistence owner. Content reuse requires matching row currentness,
 not merely an unchanged lifecycle. Integrated and loaded-runtime frontier
 validation remains pending.
 
+The same durable progress owner publishes the Run's lean authored-step aggregate
+on its sealed root progress record. The denominator is top-level authored blocks:
+a loop or If is one block, not its expanded children. Completed current attempts
+advance the numerator; an active loop has a separate completed-item projection.
+Its total uses persisted item/count facts or the accepted materialized round
+bound, never the admission cursor or an unresolved authored input reference.
+After interrupted native reattach, the recovery writer reuses this aggregate
+publisher with exact interrupted-Run revision and root-content CAS. The narrow
+`root_list_progress` fact resolution cannot change the root or Run lifecycle.
+No second aggregate store or public invocation-index count is introduced.
+Loaded-runtime count verification remains pending; this is development-only behavior.
+
 Decision contracts declare their own values. The shared Execution Run codec accepts
 a declared JSON string or a strict `{decision, reason?}` object; only a loop
 evaluator must declare `continue` plus a terminal value. Any declared value other
@@ -270,6 +345,24 @@ instructions and ReviewComment Actions under CAS, then checks persisted
 comments. Plan with a panel and Open a pull request remain origin-neutral;
 their synthesis review and disagreement Wait are genuine effect-gating holds.
 This is current-development source, not released or loaded-runtime certification.
+
+Session PR-comment and CI-failure triggers use the Channels binding writer to
+attach an authenticated GitHub pull-request endpoint to the scoped Automation.
+Native SCM credential selection, connection creation/reuse and principal resolution
+stay with that owner. The binding is also the Session↔PR link: the Protocol
+trigger read receives the Channels projection of distinct selections in binding
+creation order through `session.trigger.list`, including retained disabled links.
+A successful `scm.pullRequest.openOrReuse` with an origin Session writes through the
+same binding owner; an originless call writes no link. Replay rejoins the existing
+binding. Removing a trigger disables its ingress binding while retaining the link.
+
+Channels carries typed observation identity and repository-write evidence into
+the Automation conversation admission owner. Only explicit write access admits
+either scoped kind; unknown, denied or mismatched identity returns a checkpoint-safe
+typed refusal. The Run's conversation cause retains the scoped `triggerId`, so
+the existing trigger coalescing and claim policy apply. PR-comment content enters
+the Workflow input as labelled untrusted data, not instructions. These are 0.3
+development contracts; loaded-runtime validation remains a separate check.
 
 Origin context uses the authorized Session/transcript readers and the existing
 usage query owner. It does not use native goal usage. No usage records means
@@ -379,6 +472,17 @@ The Agent/MCP catalog derives the direct `workflow_run_start`,
 those same Action bindings. All other Workflow operations remain discoverable
 through generic Action discovery/execution, with the same policy and errors.
 
+In development, Session MCP Account Actions use the existing authenticated
+`/agent-runtime/session/services/v1` channel to their own daemon. Account
+credentials remain with the daemon's credentialed Action executor. The daemon
+admits a Session caller, never a host caller, and applies Agent policy and
+approval rules. Approval replay preserves that caller and its original admitted
+depth facts while rechecking current Session authority and Account policy.
+The host-owned turn witness supplies admission facts; missing depth refuses
+depth-dependent Actions rather than assuming zero. Missing daemon authority,
+including a daemonless restricted runner, returns typed `target_unavailable`.
+An uncertain dispatched outcome is not automatically retried.
+
 The development definition family delegates to Protocol's
 `createWorkflowDefinitionActions`; CLI Artifact transport is a host adapter,
 not a second definition owner. Same-id create rejoins only matching normalized
@@ -387,7 +491,7 @@ conflicts. Stored definitions are semantically validated before disclosure.
 Create/update/edit may stamp the optional private `savedBy` field from the
 host's Account and caller context; a matching create rejoin preserves the
 original provenance. These source contracts do not certify the still-in-progress
-UI Account adapter, all-daemons-offline controls, or Session-authority relay.
+UI Account adapter or all-daemons-offline controls.
 Run admission always freezes the observed authorship in `source.savedBy` for a
 saved source, using explicit null when its header has no author; accepted Runs
 do not repair that fact by rereading the mutable definition.
@@ -627,6 +731,10 @@ separate standby check still asks whether a pin is active before yielding its li
 `runningManagedServiceCount` counts running managed targets before relay-row dedupe, or is `null`
 when a managed target cannot be read. A default and a pin on the same relay can both be stopped;
 one visible row alone cannot prove that the app can see every affected machine/account's sessions.
+The same full inventory supplies `managedServiceInstalled`: `true` when a managed target is
+present, `false` only when complete inventory proves none, and `null` otherwise. Desktop Settings
+consumes this fact rather than inferring global absence from serving rows, which can hide a managed
+default behind a user-owned pin. Missing or malformed presence is unknown to the UI.
 The existing `daemon.service.start.v1` task accepts
 `onDemandOnly: true` for an unscoped app-open request. Its aggregate owner starts each stopped
 managed on-demand service through the shared lifecycle kind, skips other targets, and succeeds
@@ -671,6 +779,13 @@ reader use the update-check cache's one ring-filtered reader (`readCachedCliUpda
 `packages/cli-common/src/update`); `self check` is its only writer (`recordCliUpdateCheck`) and
 doctor repair never writes it or calls npm itself.
 
+In current development UI, an explicit failed update remains failed even when the answering CLI
+already reports the target version; equality settles only a reconnecting outcome. Retry still
+follows the existing remote-capability decision. CLI actions show the existing session-reconnect
+note by the item's machine identity, including this computer, on both the full Updates page and
+the grouped popover. A grouped note describes only the CLI included in that row's action, not
+unrelated updates on the machine.
+
 **Remote.** The daemon's `tool.systemTasks` capability lists `cli.update.v1` only when
 `canUpdateRemotely` (presence = capability; older daemons never list it). The kind starts
 `self update` detached from the daemon's own binary (output to `logs/cli-update-<ms>.log`) and answers
@@ -709,6 +824,16 @@ in that relay's lifecycle directory (`--server` alone replaces the URL/profile s
 lifecycle scope). The SSH enrollment approval (`auth approve --home-target-from-request-json`) already
 binds its credentials to the Home target the request names.
 
+In the current 0.3 development UI, the system-task runner retains setup prompt answering after
+navigation. Reopening adopts that run only for its initiating Home and account; an initially
+identity-free Home uses the canonical saved-profile URL resolution, with ambiguous matches refused.
+Settings shares launch, task, error and post-success inspection state through the local daemon
+owner. Its status readback keeps the setup spec's original URL and backend identity (including an
+originally absent identity), while publication checks the current Home's canonical profile
+equivalence and account. Before pairing is sealed or posted, the explicit Home credential's token
+subject must match the initiating account. A failed retained prompt continuation emits a default-on
+diagnostic without prompt contents or credentials and remains retryable by its owner.
+
 In the 0.3 development implementation, finite-output subprocess deadlines use
 `packages/cli-common/src/process/execFileWithDeadline.ts`, including Bash argv RPC
 and Herdr execution. An event-loop stall does not turn an already completed command
@@ -716,6 +841,12 @@ into a timeout; a deadline that actually interrupts the child remains a failure,
 even if its SIGTERM handler exits successfully. Caller-owned cancellation and tree
 termination hooks remain in effect. Bash argv stays literal and keeps its existing
 uncapped output behavior.
+
+The shared CLI process-tree owner gives Windows `taskkill` the containing
+teardown phase's budget and spends only the remainder on liveness checks. A
+hung tool is force-stopped at the same subprocess boundary. Cleanup that cannot
+prove containment retains `plugin_exec_termination_incomplete` rather than
+reporting success.
 
 Local service install/start/stop/restart commands delegate their execution deadline
 to the CLI's service lifecycle owner, rather than imposing the generic 60-second
@@ -957,6 +1088,33 @@ configuration, transcript ingestion, permissions, and recovery. The terminal hos
 provides the process and screen; `terminal/attachment` persists their association
 and owns attach, stop, and host disposition.
 
+Terminal-host setup failures retain `SPAWN_FAILED` with optional, Protocol-owned
+`terminal_host_unavailable` detail. The session spawn action consumes that detail into
+its existing non-retryable `incompatible_target` settlement and preserves the optional
+`terminalHostError` field. Missing supported Herdr/Zellij installations and an unsupported
+running Herdr server are host setup failures, not provider errors. Creation UI offers
+installation/update or host selection recovery and retains the draft; other startup
+failures keep their existing classification.
+
+Development daemon admission captures the selected runtime's terminal-presentation
+result before Session commit. Only `runner` presentation hosts the Happier controller;
+`managed_terminal` and `provider_attach` keep it headless and present the selected
+runtime's prepared native process. The private runtime request carries the admitted
+host context separately from metadata describing a terminal that actually exists.
+Herdr's exact socket is admitted before provider-specific authentication changes the
+child environment; an explicit socket never falls back to another ambient server.
+
+Optional server-backed presenters use the adapter's single private launch handoff.
+Local attachment becomes available only after the native OS spawn receipt, within the
+existing Session startup deadline. Failed preparation leaves the admitted controller
+remotely usable; an unknown handoff retains its exact custody rather than replaying
+creation. The existing daemon heartbeat retires positively dead optional owned
+attachments without ending their live controller or automatically reopening a client.
+Controller recovery distinguishes these optional clients from session-bearing hosts:
+the former can be disposed before continuation, while the latter retain their existing
+control and recovery fences. Borrowed shells are never destroyed by this owned-host
+supervision.
+
 The daemon's `spawn/routeSpawnModeAndWaitForWebhook.ts` keeps headless ACP runtimes
 headless and routes supported interactive runners into the selected host.
 `spawnAdapterHostedSessionAndWaitForWebhook.ts` reuses normal daemon registration
@@ -970,6 +1128,22 @@ public model-selection resolver; it is not a separate terminal-host selector.
 Codex App Server and OpenCode server prepare their native TUI attachment against
 the existing Agent session, rather than starting another conversation.
 
+Managed provider-attach declarations retain their target and credential-environment
+facts even when the host's access resolver is unavailable; attach fails closed
+instead of becoming an unmanaged ambient-credential launch. For an in-runner native
+TUI, the private host attach request reuses the same managed-services owner's exact
+current Session/plugin/contribution/instance projection. Its client environment stays
+runner-local, and currentness is checked again after executable/version resolution
+before spawning. Original runtime-occurrence callers retain their existing lookup;
+projection consumers use the underlying instance identity, not the projection token.
+Independent Plain-account standalone attach still lacks a private daemon-to-runner
+credential transport; this runner-local path does not disclose credentials over the relay.
+OpenCode native fork/resume retains a canonical explicitly configured external server
+origin through its existing runtime descriptor and external managed-service admission.
+An observed managed-server URL is not that authority: ordinary managed-local servers
+share the native data-root corpus, so the child may supervise a new endpoint without
+copying the parent's private credential.
+
 Herdr transport remains in `integrations/herdr`: direct argv launch, styled screen
 capture, input, process inspection, and terminal attachment. In development
 builds, both the installed executable and the exact running server require a stable
@@ -979,6 +1153,11 @@ control; recovered-host admission never creates or replaces that server. Claude'
 runtime lives in `packages/plugins/claude/src/agent/runtime/terminal/unified` and
 uses the host's terminal service, composer parsing, and prompt-submission
 verification. Successful terminal writes are not Agent acceptance acknowledgements.
+The Herdr client stages large text in sequential Unicode-safe requests within
+Herdr's 1 MiB serialized JSON-line limit, including escape expansion and envelope
+bytes. Submission still belongs to the existing verifier: it sends Enter only
+after staging completes, and a partial failed write retains the existing
+ambiguous-write result rather than replaying the prompt.
 Herdr uses a shared default server namespace rather than the generated Agent pane
 label. When creating a pane, a saved host supplies the default namespace on resume, while an explicit
 named server wins; the label remains independent of either placement choice.
@@ -1003,6 +1182,36 @@ remain in the existing disposition owner.
 If required descriptor removal fails, Stop reports incomplete retirement and retains
 the exact local evidence for retry without disposing a borrowed pane.
 
+The development Session-scoped terminal service can adopt an existing owned host
+without launching another Agent. Admission requires the current runner's Session
+lock, matching metadata and exact local attachment, and positive host liveness;
+unknown or replaced evidence remains fenced. Inherited foreground borrowing takes
+precedence, and a changed terminal preference does not replace a surviving owned
+host. Claude's retained-host path reuses the Session's existing authenticated hook
+endpoint and artifacts. The host receipt alone does not establish native identity:
+an authenticated primary hook or statusline observation must match the requested
+native session, followed by the existing transcript admission. This is distinct
+from a fresh resume launch and does not synthesize a SessionStart hook.
+
+Cold Herdr attachment verifies the recorded standard saved namespace through the
+native session inventory before starting that same server. It uses the existing
+terminal-host startup budget, not the shorter API action budget, and never
+substitutes an ambient same-name server. Foreground attachment supplies the exact
+socket and named-session environment without `--session`, which would override
+that socket under Herdr's released CLI contract. A restored public pane remains
+only a candidate until normal Happier resume admission reconnects the Session;
+opening it establishes neither authenticated identity nor owned custody.
+Unsupported custom cold-start roots require reopening the original server;
+already-running custom sockets remain attachable through exact-server admission.
+
+The UI's canonical local-control projection distinguishes retained AgentState from
+live controls. Inactive sessions, permanently absent terminal hosts, and preserved
+but unservable hosts expose no live local controls, even if historical AgentState
+still records an attached terminal or `controlledByUser`. The footer derives both
+its local-control capabilities and exclusive-control flag from that projection,
+using the session's canonical owner metadata view. Resuming a live runner restores
+the current shared or exclusive controls without changing the retained history.
+
 An accepted session identity prevents duplicate nonce launches but is not readiness
 proof. Recovered nonce admission consumes the existing accepted runner marker and
 process generation, completed startup custody, and current exact-session RPC
@@ -1018,11 +1227,17 @@ Actual plain launches need no host attachment but still require marker and RPC p
 Unproven recovery stays pending. Normal completed spawn/report correlation remains
 authoritative if it settles while recovered proof awaits filesystem or transport I/O.
 
-All child-owned same-pane launches use `terminal/host/launchSpec.ts` to pass the
+In the current development source, all child-owned same-pane launches use
+`terminal/host/launchSpec.ts` to pass the
 final native argv and environment in a private one-shot file to the managed
 terminal launcher. A private controller-lifetime IPC channel closes on controller
 exit or death; the surviving launcher invokes the same owned-process-tree cleanup
-used by normal shutdown. Borrowed shell panes remain intact. OS discovery or
+used by normal shutdown. Native attach readiness uses that channel's actual child-spawn
+receipt, not the launcher's spawn. Managed-service currentness is checked again after
+private handoff preparation, immediately before launch. Normal attach cancellation
+forwards SIGINT to the native child over the same channel; the existing three-second
+escalation requests owned-subtree cleanup, leaving independent services untouched.
+Borrowed shell panes remain intact. OS discovery or
 signalling failures can leave descendants running. The cleanup owner still attempts
 known-process termination and rejects with `plugin_exec_termination_incomplete`
 when completion cannot be verified through its census, direct-child fallback, or
@@ -1030,6 +1245,25 @@ owned process-group/Windows tree proof. The CLI owner records that outcome in it
 default file log; the surviving launcher reports a fixed, sanitized stderr diagnostic.
 Cleanup cannot run if the launcher is also killed or cannot execute. Independent recoverable hosts
 keep their adapter-owned topology and receive no lifetime channel.
+An incomplete termination keeps its exact process custody: concurrent callers share
+the current attempt, while a rejected attempt can be retried rather than permanently
+replaying its rejection. Successful termination remains idempotent.
+
+Terminal-host creation failures retain the existing `not_created`,
+`created_and_absent`, or `created_or_uncertain` evidence independently from
+cleanup completion. Only a definitely unsubmitted tmux creation with complete
+cleanup permits ordinary-process fallback. An unconfirmed hosted child retains
+its private launch and session-attach inputs through the outer daemon spawn
+owner; an exact, successfully disposed host permits cleanup. Private artifact
+owners remove only their known files and empty directories, treating only
+`ENOENT` as idempotent. Other failures emit sanitized default-on diagnostics.
+Already ready native launches and completed Claude query outcomes remain
+successful despite artifact cleanup failure; failed startup preserves its
+original cause alongside cleanup failures. These are current development-source
+contracts, not additional retry or recovery guarantees.
+An explicit retirement retry continues from proven physical disposition, without
+destroying the host twice, and finishes outstanding artifact cleanup and exact
+metadata/report retirement. A replacement attachment is not retired by that retry.
 
 Herdr lifecycle reporting projects Happier state. Managed Agent children suppress
 Herdr's native Agent hooks, and the resume action uses the current Happier
@@ -1041,7 +1275,14 @@ resolving credentials, only at initial startup; later explicit profile selection
 is not overwritten. The prefix accepts only the canonical runtime-context keys,
 does not copy credential files, and rejects URLs with embedded user information.
 Encoding is transport, not redaction. Generic `resume` delegates to normal attachment for
-running attachable sessions; stopped sessions retain strict Agent resume. When a
+running attachable sessions; stopped sessions retain strict Agent resume. A
+recorded local Herdr pane may be opened as a restoration candidate when its
+controller is positively absent. A restored command already inside that exact
+pane, socket and namespace continues through ordinary same-Session resume even
+when relay activity is stale; a present or unreadable controller retains normal
+attachment admission. The pane record is placement intent, not Session identity
+or owned-host custody. This does not transfer managed custody from a surviving
+headless controller to an independent foreground client. When a
 preserved host cannot be verified, Resume remains fenced. Reconnect to
 the original terminal host and retry Resume, or Stop the session if that action
 is available before resuming on a fresh host. There is no parallel Herdr session
