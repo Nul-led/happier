@@ -25,10 +25,14 @@ vi.mock('react-native', async () => {
         View: 'View',
         // RN 0.81 Android ProgressBarContainerView.apply() hides every animating=false widget;
         // hidesWhenStopped is iOS-only. Observe that OS output, rather than just incoming props.
-        ActivityIndicator: (props: ActivityIndicatorProps) => React.createElement('ActivityIndicator', {
-            ...props,
-            nativeVisibility: nativeBoundary.os === 'android' && props.animating === false ? 'invisible' : 'visible',
-        }),
+        ActivityIndicator: (props: ActivityIndicatorProps) => {
+            const [nativeInstance] = React.useState(() => Symbol('native-widget'));
+            return React.createElement('ActivityIndicator', {
+                ...props,
+                nativeInstance,
+                nativeVisibility: nativeBoundary.os === 'android' && props.animating === false ? 'invisible' : 'visible',
+            });
+        },
         AccessibilityInfo: {
             isReduceMotionEnabled: async () => false,
             addEventListener: (_event: string, listener: (enabled: boolean) => void) => {
@@ -216,42 +220,97 @@ describe('ActivitySpinner (native)', () => {
             { pause: 'ambient', size: 'small', expectedSize: 20 },
             { pause: 'reduced motion', size: 'large', expectedSize: 36 },
             { pause: 'explicit stop', size: 16, expectedSize: 16 },
-        ] as const)('keeps a visible still Android ring during $pause', async ({ pause, size, expectedSize }) => {
+        ] as const)('preserves the Android widget and visible mark through $pause and resume', async ({ pause, size, expectedSize }) => {
             nativeBoundary.os = 'android';
             localSettingValues.loadingIndicatorStyle = 'classicRing';
             const { ActivitySpinner } = await import('./ActivitySpinner');
             const { act } = await import('react-test-renderer');
-            const screen = await renderScreen(<ActivitySpinner
-                testID="spinner"
-                accessibilityLabel="Working"
-                size={size}
-                color="#2468ab"
-                style={{ marginLeft: 7 }}
-                animationEnabled={pause !== 'ambient'}
-                {...(pause === 'explicit stop' ? { animating: false, hidesWhenStopped: false } : {})}
-            />);
+            const props = {
+                testID: 'spinner',
+                accessibilityLabel: 'Working',
+                size,
+                color: '#2468ab',
+                style: { marginLeft: 7 },
+            };
+            const screen = await renderScreen(<ActivitySpinner {...props} />);
             mountedScreens.push(screen);
+            const originalWidget = screen.findAllByType('ActivityIndicator' as never)[0]!;
+            const nativeInstance = originalWidget.props.nativeInstance;
+            expect(originalWidget.props.nativeVisibility).toBe('visible');
             try {
-                if (pause === 'reduced motion') await act(async () => reducedMotionBoundary.listener?.(true));
+                if (pause === 'reduced motion') {
+                    await act(async () => reducedMotionBoundary.listener?.(true));
+                } else {
+                    await screen.update(<ActivitySpinner {...props}
+                        animationEnabled={pause !== 'ambient'}
+                        {...(pause === 'explicit stop' ? { animating: false, hidesWhenStopped: false } : {})}
+                    />);
+                }
                 const nativeWidgets = screen.findAllByType('ActivityIndicator' as never);
+                expect(nativeWidgets).toHaveLength(1);
+                expect(nativeWidgets[0]!.props).toMatchObject({ nativeInstance, nativeVisibility: 'invisible', animating: false, color: '#2468ab', size });
                 const rings = screen.findAllByType('View' as never).filter((node) => flattenStyle(node.props.style).borderWidth);
-                expect(nativeWidgets.some((node) => node.props.nativeVisibility === 'visible') || rings.length > 0).toBe(true);
-                expect(nativeWidgets).toHaveLength(0);
                 expect(rings).toHaveLength(1);
                 const ring = rings[0]!;
-                expect(flattenStyle(ring.props.style)).toMatchObject({ width: expectedSize, height: expectedSize, borderColor: '#2468ab', marginLeft: 7, opacity: 1 });
+                expect(flattenStyle(ring.props.style)).toMatchObject({ width: expectedSize, height: expectedSize, borderColor: '#2468ab', opacity: 1 });
                 expect(flattenStyle(ring.props.style)).not.toHaveProperty('animationName');
-                expect(ring.props).toMatchObject({ testID: 'spinner', accessibilityRole: 'progressbar', accessibilityLabel: 'Working' });
+                expect(ring.props.pointerEvents).toBe('none');
+                const host = screen.findHostByTestId('spinner')!;
+                expect(host.props).toMatchObject({ accessibilityRole: 'progressbar', accessibilityLabel: 'Working' });
+                expect(flattenStyle(host.props.style)).toMatchObject({ marginLeft: 7 });
+                expect(flattenStyle(host.props.style)).not.toHaveProperty('width');
+                expect(flattenStyle(host.props.style)).not.toHaveProperty('height');
+                expect(screen.findAll((node) => typeof node.type === 'string' && node.props.accessibilityRole === 'progressbar')).toHaveLength(1);
+                expect(nativeWidgets[0]!.props.accessible).toBe(false);
+                expect(ring.props.accessible).toBe(false);
+
+                if (pause === 'reduced motion') await act(async () => reducedMotionBoundary.listener?.(false));
+                await screen.update(<ActivitySpinner {...props} />);
+                const resumedWidget = screen.findAllByType('ActivityIndicator' as never)[0]!;
+                expect(resumedWidget.props).toMatchObject({ nativeInstance, nativeVisibility: 'visible' });
+                expect(flattenStyle(ring.props.style).opacity).toBe(0);
+
+                await screen.update(<ActivitySpinner {...props} animating={false} />);
+                expect(screen.findAllByType('ActivityIndicator' as never)[0]!.props).toMatchObject({ nativeInstance, nativeVisibility: 'invisible' });
+                expect(flattenStyle(ring.props.style).opacity).toBe(0);
+                await screen.update(<ActivitySpinner {...props} animating={false} hidesWhenStopped={true} />);
+                expect(screen.findAllByType('ActivityIndicator' as never)[0]!.props.nativeInstance).toBe(nativeInstance);
+                expect(flattenStyle(ring.props.style).opacity).toBe(0);
+                await screen.update(<ActivitySpinner {...props} animating={false} hidesWhenStopped={false} />);
+                expect(screen.findAllByType('ActivityIndicator' as never)[0]!.props.nativeInstance).toBe(nativeInstance);
+                expect(flattenStyle(ring.props.style).opacity).toBe(1);
             } finally {
                 if (pause === 'reduced motion') await act(async () => reducedMotionBoundary.listener?.(false));
             }
         });
 
-        it('retains the Android platform widget when turning or explicitly stopped and hidden', async () => {
+        it('keeps Android caller layout, native colour, and accessibility overrides on the host', async () => {
             nativeBoundary.os = 'android';
-            expect((await renderClassicSpinner({})).nativeVisibility).toBe('visible');
-            expect((await renderClassicSpinner({ animating: false })).nativeVisibility).toBe('invisible');
-            expect((await renderClassicSpinner({ animating: false, hidesWhenStopped: true })).nativeVisibility).toBe('invisible');
+            const { ActivitySpinner } = await import('./ActivitySpinner');
+            // RN's Android PlatformColor boundary supplies an opaque resource_paths payload.
+            const nativeColor = { resource_paths: ['?attr/colorAccent'] } as unknown as NonNullable<ActivityIndicatorProps['color']>;
+            const screen = await renderScreen(<ActivitySpinner
+                variant="classicRing"
+                testID="spinner"
+                size="large"
+                color={nativeColor}
+                style={{ width: 48, height: 48, opacity: 0.5 }}
+                accessibilityRole="image"
+                accessibilityLabel="Working"
+                accessible={false}
+                animationEnabled={false}
+            />);
+            mountedScreens.push(screen);
+            const host = screen.findHostByTestId('spinner')!;
+            expect(host.props).toMatchObject({ accessibilityRole: 'image', accessibilityLabel: 'Working', accessible: false });
+            expect(flattenStyle(host.props.style)).toMatchObject({ width: 48, height: 48, opacity: 0.5 });
+            const widget = screen.findAllByType('ActivityIndicator' as never)[0]!;
+            expect(widget.props.color).toBe(nativeColor);
+            expect(widget.props.size).toBe('large');
+            expect(widget.props.importantForAccessibility).toBe('no-hide-descendants');
+            const ring = screen.findAllByType('View' as never).find((node) => flattenStyle(node.props.style).borderWidth)!;
+            expect(flattenStyle(ring.props.style).borderColor).toBe(nativeColor);
+            expect(ring.props.importantForAccessibility).toBe('no-hide-descendants');
         });
 
         it('animates by default and never hands the platform component an unknown prop', async () => {

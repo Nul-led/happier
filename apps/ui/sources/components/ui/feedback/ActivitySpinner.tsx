@@ -44,7 +44,7 @@ export type ActivitySpinnerProps = Omit<ActivityIndicatorProps, 'size'> & {
      * Used wherever ambient motion must pause without the mark disappearing: a mounted offscreen
      * list row, an entry that has stopped reporting. Honoured on every platform and style — dot
      * styles hold the full H still (web drops the CSS animation, native stops its frame clock), and
-     * the classic ring stops turning while overriding `hidesWhenStopped` so it stays on screen. A
+     * the classic ring stops turning while keeping a still mark on screen. A
      * paused spinner still says "this is the running state"; a missing one says the work ended.
      */
     animationEnabled?: boolean;
@@ -149,23 +149,17 @@ function ClassicRingSpinner(props: ActivitySpinnerProps & { reduceMotion: boolea
     const { reduceMotion, hostVisible, variant: _variant, ...spinnerProps } = props;
     const resolvedColor = spinnerProps.color;
 
-    if (Platform.OS !== 'web') {
+    if (Platform.OS !== 'web' && Platform.OS !== 'android') {
         const { animationEnabled: nativeAnimationEnabled = true, ...nativeProps } = spinnerProps;
         const pauseForMotion = nativeProps.animating !== false && (!nativeAnimationEnabled || reduceMotion);
-        // Android hides its stopped widget regardless of hidesWhenStopped. Draw a still ring
-        // through the same renderer as web when the stopped mark needs to remain visible.
-        const needsStillAndroidRing = Platform.OS === 'android'
-            && (pauseForMotion || (nativeProps.animating === false && nativeProps.hidesWhenStopped === false));
-        if (!needsStillAndroidRing) {
-            return (
-                <NativeActivityIndicator
-                    {...nativeProps}
-                    color={resolvedColor}
-                    // Explicit stops retain the caller's hiding choice; motion pauses stay visible.
-                    {...(pauseForMotion ? { animating: false, hidesWhenStopped: false } : null)}
-                />
-            );
-        }
+        return (
+            <NativeActivityIndicator
+                {...nativeProps}
+                color={resolvedColor}
+                // Explicit stops retain the caller's hiding choice; motion pauses stay visible.
+                {...(pauseForMotion ? { animating: false, hidesWhenStopped: false } : null)}
+            />
+        );
     }
 
     const {
@@ -178,7 +172,7 @@ function ClassicRingSpinner(props: ActivitySpinnerProps & { reduceMotion: boolea
         ...viewProps
     } = spinnerProps;
 
-    if (!animating && hidesWhenStopped) {
+    if (Platform.OS === 'web' && !animating && hidesWhenStopped) {
         return null;
     }
 
@@ -204,6 +198,34 @@ function ClassicRingSpinner(props: ActivitySpinnerProps & { reduceMotion: boolea
         } : null),
         opacity: 1,
     };
+
+    if (Platform.OS === 'android') {
+        const nativeAnimating = animating && animationEnabled && !reduceMotion;
+        const showStillRing = !nativeAnimating && (animating || !hidesWhenStopped);
+        // Android hides its stopped widget regardless of hidesWhenStopped. Keep both layers
+        // mounted so motion pauses preserve the native instance and its intrinsic layout box.
+        return (
+            <View
+                {...viewProps}
+                accessibilityRole={spinnerProps.accessibilityRole ?? 'progressbar'}
+                style={[{ alignItems: 'center', justifyContent: 'center' }, style]}
+            >
+                <NativeActivityIndicator
+                    animating={nativeAnimating}
+                    color={resolvedColor}
+                    size={size}
+                    accessible={false}
+                    importantForAccessibility="no-hide-descendants"
+                />
+                <View
+                    pointerEvents="none"
+                    accessible={false}
+                    importantForAccessibility="no-hide-descendants"
+                    style={[spinnerStyle, { position: 'absolute', opacity: showStillRing ? 1 : 0 }]}
+                />
+            </View>
+        );
+    }
 
     return (
         <View
