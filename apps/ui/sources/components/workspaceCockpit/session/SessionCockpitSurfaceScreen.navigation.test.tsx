@@ -308,13 +308,17 @@ vi.mock('@/components/appShell/panes/hooks/useDetailsTabCount', () => ({
     useDetailsTabCount: () => 0,
 }));
 vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
-vi.mock('@/sync/store/hooks', () => ({
+vi.mock('@/sync/store/hooks', async () => {
+    const { createUseLocalSettingMock } = await import('@/dev/testkit/mocks/storage');
+    return {
+    useLocalSetting: createUseLocalSettingMock(),
     useActiveServerAccountScope: () => null,
     useOpenApprovalArtifactsForSession: (target: { serverId: string; sessionId: string } | null) => {
         approvalSessionTargets.push(target);
         return [];
     },
-}));
+    };
+});
 vi.mock('@/sync/sync', () => ({ sync: { prefetchForkedTranscriptContext: async () => undefined } }));
 vi.mock('@/hooks/session/useUserMessageHistory', () => ({
     useUserMessageHistoryRemoteEntries: () => ({
