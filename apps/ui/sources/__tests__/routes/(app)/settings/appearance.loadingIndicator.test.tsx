@@ -100,6 +100,10 @@ vi.mock('@/theme', async (importOriginal) => {
     };
 });
 
+// Load the real screen once, after the shared boundary factories have their configuration. Its
+// module graph belongs to test setup; the test's deadline measures rendering and selection.
+const { default: AppearanceSettingsScreen } = await import('@/app/(app)/settings/appearance');
+
 afterEach(() => {
     standardCleanup();
     resetSessionSettingsEntryState();
@@ -109,8 +113,7 @@ afterEach(() => {
 describe('Appearance settings loading indicator', () => {
     it('offers every loading indicator style with a live preview and saves the choice', async () => {
         const { LOADING_INDICATOR_STYLE_IDS } = await import('@/sync/domains/settings/registry/local/loadingIndicatorStyleSetting');
-        const mod = await import('@/app/(app)/settings/appearance');
-        const screen = await renderSettingsView(React.createElement(mod.default), {
+        const screen = await renderSettingsView(React.createElement(AppearanceSettingsScreen), {
             flushOptions: { cycles: 0 },
         });
 

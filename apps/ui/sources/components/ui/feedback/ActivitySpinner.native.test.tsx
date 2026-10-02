@@ -11,11 +11,22 @@ import type { LocalSettings } from '@/sync/domains/settings/localSettings';
  * worse than no flag: it makes the corridor *look* gated.
  */
 
+const reducedMotionBoundary = vi.hoisted(() => ({
+    listener: null as ((enabled: boolean) => void) | null,
+}));
+
 vi.mock('react-native', async () => {
     const { createReactNativeNativeMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeNativeMock({ platformOS: 'ios' }, {
         View: 'View',
         ActivityIndicator: 'ActivityIndicator',
+        AccessibilityInfo: {
+            isReduceMotionEnabled: async () => false,
+            addEventListener: (_event: string, listener: (enabled: boolean) => void) => {
+                reducedMotionBoundary.listener = listener;
+                return { remove: () => { reducedMotionBoundary.listener = null; } };
+            },
+        },
     });
 });
 
@@ -63,6 +74,7 @@ async function renderClassicSpinner(props: Record<string, unknown>) {
     localSettingValues.loadingIndicatorStyle = 'classicRing';
     const { ActivitySpinner } = await import('./ActivitySpinner');
     const screen = await renderScreen(<ActivitySpinner testID="spinner" size={16} {...props} />);
+    mountedScreens.push(screen);
     const nodes = screen.findAllByType('ActivityIndicator' as never);
     expect(nodes.length).toBe(1);
     return nodes[0]!.props as Record<string, unknown>;
@@ -206,6 +218,27 @@ describe('ActivitySpinner (native)', () => {
             expect(props.animating).toBe(false);
             expect(props.hidesWhenStopped).toBe(false);
             expect(props).not.toHaveProperty('animationEnabled');
+        });
+
+        it('preserves explicit stopped visibility under reduced motion and ambient pause', async () => {
+            const { act } = await import('react-test-renderer');
+            await renderClassicSpinner({});
+            try {
+                await act(async () => reducedMotionBoundary.listener?.(true));
+                const running = await renderClassicSpinner({});
+                expect(running.animating).toBe(false);
+                expect(running.hidesWhenStopped).toBe(false);
+
+                const hidden = await renderClassicSpinner({ animating: false, animationEnabled: false });
+                expect(hidden.animating).toBe(false);
+                expect(hidden.hidesWhenStopped).toBeUndefined();
+                const explicitlyHidden = await renderClassicSpinner({ animating: false, hidesWhenStopped: true });
+                expect(explicitlyHidden.hidesWhenStopped).toBe(true);
+                const visible = await renderClassicSpinner({ animating: false, hidesWhenStopped: false });
+                expect(visible.hidesWhenStopped).toBe(false);
+            } finally {
+                await act(async () => reducedMotionBoundary.listener?.(false));
+            }
         });
 
         it('leaves an explicitly stopped spinner alone, so hiding it stays the caller\'s decision', async () => {

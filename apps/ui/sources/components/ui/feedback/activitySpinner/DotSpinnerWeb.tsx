@@ -35,20 +35,18 @@ const useInsertionEffectSafe: typeof React.useEffect =
 
 /**
  * One `<style>` rule per style × ink × pose, shared by every copy on the page. The frame sheet is a
- * ≈20 KB SVG; putting it in each spinner's inline style would copy it into every DOM node.
+ * ≈20 KB SVG; putting it in each spinner's inline style would copy it into every DOM node. The
+ * document owns the cache, so removing a sheet lets the next mount rebuild it.
  */
-const injectedFrameSheets = new Set<string>();
-
-function injectFrameSheet(key: string, svg: string): void {
-    if (injectedFrameSheets.has(key) || typeof document === 'undefined') return;
-    injectedFrameSheets.add(key);
+function injectFrameSheet(key: string, buildSvg: () => string): void {
+    if (typeof document === 'undefined') return;
     const id = `happier-activity-spinner-${key}`;
     if (document.getElementById(id)) return;
     const style = document.createElement('style');
     style.id = id;
     style.textContent =
         `[${FRAME_SHEET_ATTRIBUTE}="${key}"]{display:block;height:100%;` +
-        `background:url("data:image/svg+xml,${encodeURIComponent(svg)}") 0 0/100% 100% no-repeat}`;
+        `background:url("data:image/svg+xml,${encodeURIComponent(buildSvg())}") 0 0/100% 100% no-repeat}`;
     document.head.appendChild(style);
 }
 
@@ -85,7 +83,7 @@ export function DotSpinnerWeb(props: Readonly<{
     const stripRef = React.useRef<HTMLSpanElement | null>(null);
 
     useInsertionEffectSafe(() => {
-        injectFrameSheet(key, animate ? buildDotSpinnerFilmstripSvg(frames, ink) : buildDotSpinnerStillSvg(frames, ink));
+        injectFrameSheet(key, () => animate ? buildDotSpinnerFilmstripSvg(frames, ink) : buildDotSpinnerStillSvg(frames, ink));
     }, [animate, frames, ink, key]);
 
     React.useLayoutEffect(() => {

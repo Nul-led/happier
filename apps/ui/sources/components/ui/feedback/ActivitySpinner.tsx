@@ -151,7 +151,7 @@ function ClassicRingSpinner(props: ActivitySpinnerProps & { reduceMotion: boolea
 
     if (Platform.OS !== 'web') {
         const { animationEnabled: nativeAnimationEnabled = true, ...nativeProps } = spinnerProps;
-        const turning = nativeAnimationEnabled && !reduceMotion;
+        const pauseForMotion = nativeProps.animating !== false && (!nativeAnimationEnabled || reduceMotion);
         return (
             <NativeActivityIndicator
                 {...nativeProps}
@@ -159,7 +159,7 @@ function ClassicRingSpinner(props: ActivitySpinnerProps & { reduceMotion: boolea
                 // Only when the caller asked for a pause (or reduced motion is on). A caller that set
                 // `animating={false}` itself keeps the default `hidesWhenStopped`, because hiding a
                 // stopped spinner is a legitimate thing to want and is not this flag's business.
-                {...(turning ? null : { animating: false, hidesWhenStopped: false })}
+                {...(pauseForMotion ? { animating: false, hidesWhenStopped: false } : null)}
             />
         );
     }
@@ -187,7 +187,7 @@ function ClassicRingSpinner(props: ActivitySpinnerProps & { reduceMotion: boolea
         borderWidth: resolveSpinnerBorderWidth(resolvedSize),
         borderColor: typeof resolvedColor === 'string' ? resolvedColor : 'currentColor',
         borderTopColor: 'transparent',
-        ...(animationEnabled && !reduceMotion && hostVisible ? {
+        ...(animating && animationEnabled && !reduceMotion && hostVisible ? {
             animationDuration: '850ms',
             animationIterationCount: 'infinite',
             animationName: SPINNER_ANIMATION_NAME,
@@ -196,7 +196,7 @@ function ClassicRingSpinner(props: ActivitySpinnerProps & { reduceMotion: boolea
                 : 'linear',
             willChange: 'transform',
         } : null),
-        opacity: animating ? 1 : 0,
+        opacity: 1,
     };
 
     return (

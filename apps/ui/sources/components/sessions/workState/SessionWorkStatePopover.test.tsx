@@ -1324,7 +1324,10 @@ describe('SessionWorkStatePopover', () => {
             await tree?.root.findByProps({ testID: 'session-goal-complete-button' }).props.onPress();
         });
 
-        expect(tree?.root.findByProps({ testID: 'session-goal-pending' })).toBeTruthy();
+        const pending = tree?.root.findByProps({ testID: 'session-goal-pending' });
+        expect(pending).toBeTruthy();
+        expect(pending!.findAllByType('span').map((node) => node.props['data-happier-activity-spinner']))
+            .toEqual([expect.stringMatching(/^wave-strip-/)]);
         expect(onRequestClose).not.toHaveBeenCalled();
 
         // The native work-state now reflects the change → confirmation closes the popover.

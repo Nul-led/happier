@@ -129,6 +129,32 @@ describe('ActivitySpinner (web)', () => {
         expect(injectedStyles).toHaveLength(2);
     });
 
+    it('builds the frame sheet only when absent, and recovers a removed sheet on the next mount', async () => {
+        const { DotSpinnerWeb } = await import('./activitySpinner/DotSpinnerWeb');
+        // Observe the real renderer through its ink input: building the SVG reads color for its
+        // dots, while a cached mount needs only the one read that identifies the ink.
+        let colorReads = 0;
+        const ink = { get color() { colorReads += 1; return 'red'; } };
+        const mount = (size: number) => renderScreen(
+            <DotSpinnerWeb styleId="wave" size={size} ink={ink} motion="animate" viewProps={{}} />,
+        );
+        await mount(12);
+        expect(colorReads).toBeGreaterThan(1);
+        const readsAfterBuild = colorReads;
+        const originalSheet = injectedStyles[0]!.textContent;
+
+        await mount(20);
+        expect(colorReads - readsAfterBuild).toBe(1);
+        expect(injectedStyles).toHaveLength(1);
+
+        injectedStyles = [];
+        const readsBeforeRecovery = colorReads;
+        await mount(16);
+        expect(colorReads - readsBeforeRecovery).toBeGreaterThan(1);
+        expect(injectedStyles).toHaveLength(1);
+        expect(injectedStyles[0]!.textContent).toBe(originalSheet);
+    });
+
     it('draws the style chosen in settings', async () => {
         localSettingValues.loadingIndicatorStyle = 'slowBreath';
         const { strip } = await renderSpinner({ size: 16 });
@@ -223,9 +249,21 @@ describe('ActivitySpinner (web)', () => {
         expect(flattenStyle(spinner.props.style).animationName).toBeUndefined();
     });
 
-    it('renders nothing when stopped and hidden, whatever the style', async () => {
+    it.each([false, true])('keeps an explicitly stopped classic ring visible without animating (reduced motion: %s)', async (reduceMotion) => {
+        reducedMotionMatches = reduceMotion;
+        localSettingValues.loadingIndicatorStyle = 'classicRing';
+        const { spinner, strip } = await renderSpinner({ animating: false, hidesWhenStopped: false });
+
+        expect(strip).toBeUndefined();
+        const style = flattenStyle(spinner.props.style);
+        expect(style.animationName).toBeUndefined();
+        expect(style.animationIterationCount).toBeUndefined();
+        expect(style.opacity).toBe(1);
+    });
+
+    it.each(['wave', 'classicRing'] as const)('renders nothing when stopped and hidden with %s', async (variant) => {
         const { ActivitySpinner } = await import('./ActivitySpinner');
-        const screen = await renderScreen(<ActivitySpinner testID="spinner" animating={false} />);
+        const screen = await renderScreen(<ActivitySpinner testID="spinner" variant={variant} animating={false} />);
 
         expect(screen.findAllByType('View' as never)).toHaveLength(0);
         expect(screen.findAllByType('span' as never)).toHaveLength(0);
