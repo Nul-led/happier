@@ -68,7 +68,10 @@ export function readAutomationTriggerDefinitionBinding(params: Readonly<{
                 }
                 : null
         )
-        : null;
+        : params.triggerKind === "prComment" || params.triggerKind === "ciFailed"
+            ? { v: 1, automationId: params.automationId, triggerId: params.triggerId,
+                triggerRevision: params.triggerRevision, triggerKind: params.triggerKind }
+            : null;
     if (candidate === null) return null;
     const parsed = AutomationTriggerDefinitionBindingV1Schema.safeParse(candidate);
     return parsed.success ? parsed.data : null;

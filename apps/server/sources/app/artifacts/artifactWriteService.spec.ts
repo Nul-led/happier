@@ -6,10 +6,24 @@ import {
 import * as privacyKit from "privacy-kit";
 
 import type { Tx } from "@/storage/inTx";
+import { createInTxHarness } from "@/app/api/testkit/txHarness";
 
 type ArtifactTxFixture = {
     account: {
         findUnique: ReturnType<typeof vi.fn>;
+        update: ReturnType<typeof vi.fn>;
+    };
+    accountChange: { upsert: ReturnType<typeof vi.fn> };
+    artifactRevision: {
+        create: ReturnType<typeof vi.fn>;
+        findMany: ReturnType<typeof vi.fn>;
+        deleteMany: ReturnType<typeof vi.fn>;
+    };
+    artifactBlob: {
+        findMany: ReturnType<typeof vi.fn>;
+        findUnique: ReturnType<typeof vi.fn>;
+        findFirst: ReturnType<typeof vi.fn>;
+        deleteMany: ReturnType<typeof vi.fn>;
     };
     artifact: {
         findUnique: ReturnType<typeof vi.fn>;
@@ -17,6 +31,7 @@ type ArtifactTxFixture = {
         create: ReturnType<typeof vi.fn>;
         updateMany: ReturnType<typeof vi.fn>;
         delete: ReturnType<typeof vi.fn>;
+        deleteMany: ReturnType<typeof vi.fn>;
     };
 };
 
@@ -27,26 +42,24 @@ function createArtifactTxFixture(): ArtifactTxFixture {
     return {
         account: {
             findUnique: vi.fn(),
+            update: vi.fn().mockResolvedValue({ seq: 1 }),
         },
+        accountChange: { upsert: vi.fn().mockResolvedValue({}) },
+        artifactRevision: { create: vi.fn().mockResolvedValue({}), findMany: vi.fn().mockResolvedValue([]), deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        artifactBlob: { findMany: vi.fn().mockResolvedValue([]), findUnique: vi.fn().mockResolvedValue(null),
+            findFirst: vi.fn().mockResolvedValue(null), deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
         artifact: {
             findUnique: vi.fn(),
             findFirst: vi.fn(),
             create: vi.fn(),
             updateMany: vi.fn(),
             delete: vi.fn(),
+            deleteMany: vi.fn(),
         },
     };
 }
 
-vi.mock("@/storage/inTx", () => ({
-    inTx: async <T>(fn: (tx: Tx) => Promise<T>) => await fn(currentTx),
-}));
-
-const markAccountChanged = vi.fn<(tx: Tx, params: { accountId: string; kind: "artifact"; entityId: string }) => Promise<number>>();
-vi.mock("@/app/changes/markAccountChanged", () => ({
-    markAccountChanged: (tx: Tx, params: { accountId: string; kind: "artifact"; entityId: string }) =>
-        markAccountChanged(tx, params),
-}));
+vi.mock("@/storage/inTx", () => createInTxHarness(() => currentTx));
 
 import {
     createArtifact,
@@ -58,7 +71,6 @@ import {
 describe("artifactWriteService", () => {
     beforeEach(() => {
         process.env.HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_ARTIFACTS_AT_REST = "none";
-        markAccountChanged.mockReset();
         txFixture = createArtifactTxFixture();
         txFixture.account.findUnique.mockResolvedValue({
             encryptionMode: "plain",
@@ -66,7 +78,21 @@ describe("artifactWriteService", () => {
             contentPublicKey: null,
             contentPublicKeySig: null,
         });
-        currentTx = txFixture as unknown as Tx;
+        // Persistent queries return the owner/grant joins required by the real
+        // access and audience owners; no internal domain service is mocked.
+        currentTx = {
+            ...txFixture,
+            __afterTxCallbacks: [],
+            artifact: { ...txFixture.artifact, findFirst: async (...args: unknown[]) => {
+                const row = await txFixture.artifact.findFirst(...args);
+                if (!row) return row;
+                const accountId = row.accountId ?? "u1";
+                return { ...row, accountId,
+                    account: row.account ?? await txFixture.account.findUnique({ where: { id: accountId } }),
+                    accountGrants: row.accountGrants ?? [], teamGrants: row.teamGrants ?? [], groupGrants: row.groupGrants ?? [],
+                };
+            } },
+        } as unknown as Tx;
     });
 
     const artifactBytes = (value: string): Uint8Array => privacyKit.decodeBase64(value);
@@ -119,7 +145,7 @@ describe("artifactWriteService", () => {
             expect(markQualifiedChange).toHaveBeenCalledWith(
                 "plugin-ui-archive",
             );
-            expect(markAccountChanged).not.toHaveBeenCalled();
+            expect(txFixture.accountChange.upsert).not.toHaveBeenCalled();
         });
 
         it("is idempotent for same account (no write, no cursor)", async () => {
@@ -154,7 +180,7 @@ describe("artifactWriteService", () => {
             if (res.didWrite !== false) throw new Error("expected didWrite false");
             expect(res.artifact.id).toBe("a1");
             expect(txFixture.artifact.create).not.toHaveBeenCalled();
-            expect(markAccountChanged).not.toHaveBeenCalled();
+            expect(txFixture.accountChange.upsert).not.toHaveBeenCalled();
         });
 
         it("does not expose a classified plugin UI archive through generic create idempotency", async () => {
@@ -182,7 +208,7 @@ describe("artifactWriteService", () => {
 
             expect(result).toEqual({ ok: false, error: "conflict" });
             expect(txFixture.artifact.create).not.toHaveBeenCalled();
-            expect(markAccountChanged).not.toHaveBeenCalled();
+            expect(txFixture.accountChange.upsert).not.toHaveBeenCalled();
         });
 
         it("does not expose a classified package-asset archive through generic create idempotency", async () => {
@@ -214,7 +240,7 @@ describe("artifactWriteService", () => {
 
             expect(result).toEqual({ ok: false, error: "conflict" });
             expect(txFixture.artifact.create).not.toHaveBeenCalled();
-            expect(markAccountChanged).not.toHaveBeenCalled();
+            expect(txFixture.accountChange.upsert).not.toHaveBeenCalled();
         });
 
         it("fails with conflict when artifact id exists on another account", async () => {
@@ -270,7 +296,7 @@ describe("artifactWriteService", () => {
                 createdAt: new Date(),
                 updatedAt: new Date(),
             });
-            markAccountChanged.mockResolvedValueOnce(1);
+            txFixture.account.update.mockResolvedValueOnce({ seq: 1 });
 
             const accepted = await createArtifact({
                 actorUserId: "u1",
@@ -305,7 +331,7 @@ describe("artifactWriteService", () => {
 
             expect(result).toEqual({ ok: false, error: "invalid-params" });
             expect(txFixture.artifact.create).not.toHaveBeenCalled();
-            expect(markAccountChanged).not.toHaveBeenCalled();
+            expect(txFixture.accountChange.upsert).not.toHaveBeenCalled();
         });
     });
 
@@ -339,7 +365,7 @@ describe("artifactWriteService", () => {
 
             expect(result).toEqual({ ok: false, error: "not-found" });
             expect(txFixture.artifact.updateMany).not.toHaveBeenCalled();
-            expect(markAccountChanged).not.toHaveBeenCalled();
+            expect(txFixture.accountChange.upsert).not.toHaveBeenCalled();
         });
 
         it("updates via CAS and returns cursor + updated field versions", async () => {
@@ -356,7 +382,7 @@ describe("artifactWriteService", () => {
                 dataEncryptionKey,
             });
             txFixture.artifact.updateMany.mockResolvedValue({ count: 1 });
-            markAccountChanged.mockResolvedValueOnce(123);
+            txFixture.account.update.mockResolvedValueOnce({ seq: 123 });
 
             const res = await updateArtifact({
                 actorUserId: "u1",
@@ -403,6 +429,7 @@ describe("artifactWriteService", () => {
             expect(res.ok).toBe(false);
             if (res.ok) throw new Error("expected mismatch");
             expect(res.error).toBe("version-mismatch");
+            if (res.error !== "version-mismatch") throw new Error("expected mismatch");
             expect(res.current?.headerVersion).toBe(10);
         });
 
@@ -452,36 +479,16 @@ describe("artifactWriteService", () => {
         });
 
         it("returns the current valid row after an update loses its CAS race", async () => {
+            const initial = {
+                id: "a1", seq: 5,
+                header: artifactBytes(encodePlainArtifactStoredContent({ title: "before" })), headerVersion: 10,
+                body: artifactBytes(encodePlainArtifactStoredContent({ body: "before" })), bodyVersion: 20,
+                dataEncryptionKey: artifactBytes(ARTIFACT_PLAIN_DATA_KEY_MARKER),
+            };
             txFixture.artifact.findFirst
-                .mockResolvedValueOnce({
-                    id: "a1",
-                    seq: 5,
-                    header: artifactBytes(
-                        encodePlainArtifactStoredContent({ title: "before" }),
-                    ),
-                    headerVersion: 10,
-                    body: artifactBytes(
-                        encodePlainArtifactStoredContent({ body: "before" }),
-                    ),
-                    bodyVersion: 20,
-                    dataEncryptionKey: artifactBytes(
-                        ARTIFACT_PLAIN_DATA_KEY_MARKER,
-                    ),
-                })
-                .mockResolvedValueOnce({
-                    id: "a1",
-                    header: artifactBytes(
-                        encodePlainArtifactStoredContent({ title: "plain" }),
-                    ),
-                    headerVersion: 11,
-                    body: artifactBytes(
-                        encodePlainArtifactStoredContent({ body: "plain" }),
-                    ),
-                    bodyVersion: 21,
-                    dataEncryptionKey: artifactBytes(
-                        ARTIFACT_PLAIN_DATA_KEY_MARKER,
-                    ),
-                });
+                .mockResolvedValueOnce(initial) // live owner/grant lookup
+                .mockResolvedValueOnce(initial) // pre-CAS content read
+                .mockResolvedValueOnce({ ...initial, headerVersion: 11, bodyVersion: 21 });
             txFixture.artifact.updateMany.mockResolvedValue({ count: 0 });
             const rejected = await updateArtifact({
                 actorUserId: "u1",
@@ -503,7 +510,7 @@ describe("artifactWriteService", () => {
                 },
             });
             expect(txFixture.artifact.updateMany).toHaveBeenCalledOnce();
-            expect(markAccountChanged).not.toHaveBeenCalled();
+            expect(txFixture.accountChange.upsert).not.toHaveBeenCalled();
         });
 
         it("rejects an omitted plain Artifact update value without mutation", async () => {
@@ -528,7 +535,7 @@ describe("artifactWriteService", () => {
 
             expect(result).toEqual({ ok: false, error: "invalid-params" });
             expect(txFixture.artifact.updateMany).not.toHaveBeenCalled();
-            expect(markAccountChanged).not.toHaveBeenCalled();
+            expect(txFixture.accountChange.upsert).not.toHaveBeenCalled();
         });
     });
 
@@ -556,7 +563,7 @@ describe("artifactWriteService", () => {
 
             expect(result).toEqual({ ok: false, error: "not-found" });
             expect(txFixture.artifact.delete).not.toHaveBeenCalled();
-            expect(markAccountChanged).not.toHaveBeenCalled();
+            expect(txFixture.accountChange.upsert).not.toHaveBeenCalled();
         });
 
         it("returns not-found when missing", async () => {
@@ -584,22 +591,30 @@ describe("artifactWriteService", () => {
 
             expect(result).toEqual({ ok: false, error: "internal" });
             expect(txFixture.artifact.delete).not.toHaveBeenCalled();
-            expect(markAccountChanged).not.toHaveBeenCalled();
+            expect(txFixture.accountChange.upsert).not.toHaveBeenCalled();
         });
 
         it("deletes and marks change", async () => {
-            txFixture.artifact.findFirst.mockResolvedValue({
-                id: "a1",
-                dataEncryptionKey: artifactBytes(ARTIFACT_PLAIN_DATA_KEY_MARKER),
+            let deleted = false;
+            let deletedAt: Date | null = null;
+            txFixture.artifact.findFirst.mockImplementation(async () => deleted ? null : {
+                id: "a1", dataEncryptionKey: artifactBytes(ARTIFACT_PLAIN_DATA_KEY_MARKER),
+                headerVersion: 1, bodyVersion: 1, blobs: [], deletedAt,
             });
-            markAccountChanged.mockResolvedValueOnce(77);
+            txFixture.artifact.updateMany.mockImplementation(async (input: { data: { deletedAt: Date } }) => {
+                deletedAt = input.data.deletedAt;
+                return { count: 1 };
+            });
+            txFixture.artifact.deleteMany.mockImplementation(async () => { deleted = true; return { count: 1 }; });
+            txFixture.account.update.mockResolvedValueOnce({ seq: 77 });
 
             const res = await deleteArtifact({
                 actorUserId: "u1",
                 artifactId: "a1",
             });
             expect(res).toEqual({ ok: true, cursor: 77 });
-            expect(txFixture.artifact.delete).toHaveBeenCalledWith({ where: { id: "a1" } });
+            expect(deleted).toBe(true);
+            expect(deletedAt).toBeInstanceOf(Date);
         });
 
     });

@@ -1,0 +1,36 @@
+import { z } from 'zod';
+import { AutomationOccurredAtV1Schema } from './automationOccurredAtV1.js';
+
+const Id = z.string().trim().min(1).max(191);
+/** Public routing facts; source lifecycle and access remain with the Run owner. */
+export const AutomationRunLifecycleSourceSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('execution_run'), machineId: Id, runId: Id, sessionId: Id.optional() }).strict(),
+  z.object({ kind: z.literal('workflow_run'), runId: Id }).strict(),
+]);
+export type AutomationRunLifecycleSource = z.infer<typeof AutomationRunLifecycleSourceSchema>;
+export const AutomationRunLifecycleConditionSchema = z.enum(['terminal', 'needs_attention']);
+export const AutomationRunLifecycleConfigurationSchema = z.object({
+  source: AutomationRunLifecycleSourceSchema,
+  condition: AutomationRunLifecycleConditionSchema,
+}).strict();
+export const AutomationRunLifecycleTriggerSchema = AutomationRunLifecycleConfigurationSchema.extend({
+  kind: z.literal('runLifecycle'),
+}).strict();
+export type AutomationRunLifecycleTrigger = z.infer<typeof AutomationRunLifecycleTriggerSchema>;
+export const AutomationRunLifecycleTriggerInputSchema = AutomationRunLifecycleTriggerSchema.extend({ enabled: z.boolean() }).strict();
+export const AutomationRunLifecycleOccurrenceEvidenceV1Schema = AutomationRunLifecycleConfigurationSchema.extend({
+  v: z.literal(1), kind: z.literal('runLifecycle'),
+  /** Execution terminal's finished timestamp, or FIN's current revision. */
+  sourceRevision: z.number().int().nonnegative().safe(),
+  occurredAt: AutomationOccurredAtV1Schema,
+}).strict();
+export type AutomationRunLifecycleOccurrenceEvidenceV1 = z.infer<typeof AutomationRunLifecycleOccurrenceEvidenceV1Schema>;
+export const AutomationExecutionRunLifecycleSourceSchema = AutomationRunLifecycleSourceSchema.options[0];
+export const AutomationExecutionRunLifecycleReportRequestSchema = z.object({
+  machineId: Id, occurrence: AutomationRunLifecycleOccurrenceEvidenceV1Schema,
+}).strict();
+export const AutomationExecutionRunLifecycleReportResponseSchema = z.object({ ok: z.literal(true), consumed: z.boolean() }).strict();
+/** Exact sources assigned to the incumbent Machine observer; not a Run-state projection. */
+export const AutomationExecutionRunLifecycleSourcesResponseSchema = z.object({
+  sources: z.array(AutomationExecutionRunLifecycleSourceSchema),
+}).strict();

@@ -108,7 +108,7 @@ vi.mock("@/storage/db", () => {
         ephemeralRunnerActivation: { findFirst: ephemeralRunnerActivationFindFirstMock },
         session: { findUnique: sessionFindUniqueMock, findFirst: sessionFindFirstMock },
         sessionShare: { findUnique: sessionShareFindUniqueMock },
-        accountApiToken: { findUnique: apiTokenFindUniqueMock, updateMany: vi.fn(async () => ({ count: 1 })) },
+        accountApiToken: { findUnique: apiTokenFindUniqueMock, findFirst: apiTokenFindUniqueMock, updateMany: vi.fn(async () => ({ count: 1 })) },
         simpleCache: { findUnique: vi.fn(async () => ({ value: `srv_${'a'.repeat(32)}` })) },
     };
     return { db: { ...databaseBoundary,
@@ -417,6 +417,7 @@ describe("registerSocketRpcHandlers", () => {
 
     it("forwards a model-only viewer Action through target revalidation without enabling Send", async () => {
         sessionFindUniqueMock.mockResolvedValue(createOwnedSessionAccessRow());
+        accessKeyFindUniqueMock.mockResolvedValue({ session: { accountId: 'user-1' }, machine: { revokedAt: null, replacedByMachineId: null } });
         const { socket, admission, principal } = createTokenViewer();
         principal.grant.actions.ids = ["session.transcript.get", "session.model.set"];
         const result = { status: "applied" };
@@ -1921,6 +1922,7 @@ describe("registerSocketRpcHandlers", () => {
         expect(targetEmitWithAck).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.REQUEST, {
             method: "agent.run",
             params: { value: 1 },
+            callerAuthority: "present_user",
             timeoutMs: 30000,
         });
         expect(callback).toHaveBeenCalledWith({
@@ -2126,6 +2128,7 @@ describe("registerSocketRpcHandlers", () => {
         expect(targetEmitWithAck).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.REQUEST, {
             method: "sess_1:session.permission.respond",
             params: { id: "request-1", approved: true },
+            callerAuthority: "present_user",
             timeoutMs: 30000,
             authorization: stampedAuthorization,
         });

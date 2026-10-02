@@ -1,14 +1,16 @@
 import { inTx } from "@/storage/inTx";
+import { resolveVoiceQuotaWindow } from "./voiceQuotaWindow";
 
 type PruneExpiredVoiceSessionLeasesParams = Readonly<{
     cutoff: Date;
+    now?: Date;
     accountId?: string;
     limit?: number;
     dryRun?: boolean;
 }>;
 
 /**
- * Prunes expired Voice leases without losing completed-conversation grant provenance.
+ * Prunes expired Voice leases without losing completed or reserved quota usage.
  *
  * Current application cleanup paths converge here and copy the exact lease-owned grant
  * before deletion. The schema migration's deletion trigger is a bounded rolling-deploy
@@ -18,10 +20,17 @@ type PruneExpiredVoiceSessionLeasesParams = Readonly<{
 export async function pruneExpiredVoiceSessionLeases(
     params: PruneExpiredVoiceSessionLeasesParams,
 ): Promise<number> {
+    const { periodKey, dayStart } = resolveVoiceQuotaWindow(params.now ?? new Date());
     return await inTx(async (tx) => {
         const where = {
             ...(params.accountId ? { accountId: params.accountId } : {}),
             expiresAt: { lt: params.cutoff },
+            OR: [
+                { conversation: { isNot: null } },
+                // Unsettled leases remain the conservative quota source until both mint
+                // windows exclude them. Expiry only releases concurrency, not usage.
+                { periodKey: { lt: periodKey }, createdAt: { lt: dayStart } },
+            ],
         };
         const leases = await tx.voiceSessionLease.findMany({
             where,

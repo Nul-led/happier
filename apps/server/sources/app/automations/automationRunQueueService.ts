@@ -11,6 +11,7 @@ import { computeNextDueAtForAutomation } from "./automationSchedulingService";
 import type { AutomationRunItem, AutomationScheduleKind } from "./automationTypes";
 import { AUTOMATION_RUN_TERMINAL_STATES, isTerminalAutomationRunState } from "./automationTypes";
 import { emitAutomationScheduleWake } from "./automationScheduleWake";
+import { catchUpAutomationRunLifecycleSourcesTx } from "./automationRunLifecycleAdmission";
 
 function isCanonicalScheduleKind(value: string | null): value is AutomationScheduleKind {
     return value === "cron" || value === "interval";
@@ -36,6 +37,7 @@ export async function ensureAutomationScheduleCursorsTx(params: Readonly<{
     automationId: string;
     now: Date;
 }>): Promise<void> {
+    await catchUpAutomationRunLifecycleSourcesTx(params.tx, params.automationId);
     const automation = await params.tx.automation.findUnique({
         where: { id: params.automationId },
         select: {

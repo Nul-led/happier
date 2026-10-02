@@ -206,6 +206,7 @@ function validIngressDerivation(overrides?: Readonly<{
         causeSessionLifecycleEvent: null,
         causeSourceSessionId: null,
         causeSourceTurnId: null,
+        causeRunLifecycleEvidenceJson: null,
         causeSessionLifecycleRequestId: null,
         causeSessionLifecycleRequestKind: null,
         causeSessionLifecyclePolicyKind: null,

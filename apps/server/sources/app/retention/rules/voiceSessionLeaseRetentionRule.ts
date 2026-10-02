@@ -15,6 +15,7 @@ export function createVoiceSessionLeaseRetentionRule(): RetentionRule {
             const limit = Math.max(1, Math.min(batchSize, maxDeletesPerRulePerRun));
             const deleted = await pruneExpiredVoiceSessionLeases({
                 cutoff,
+                now,
                 limit,
                 dryRun,
             });

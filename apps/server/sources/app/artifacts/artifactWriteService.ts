@@ -1089,7 +1089,7 @@ export async function deleteArtifact(params: {
                 },
             });
             if (!artifact) {
-                return { ok: false, error: "not-found" };
+                return { ok: false, error: "not-found" } as const;
             }
             const account = await tx.account.findUnique({
                 where: { id: actorUserId },
@@ -1110,7 +1110,7 @@ export async function deleteArtifact(params: {
                     dataEncryptionKey: artifact.dataEncryptionKey,
                 })
             ) {
-                return { ok: false, error: "internal" };
+                return { ok: false, error: "internal" } as const;
             }
 
             if (params.expectedRevision && (artifact.headerVersion !== params.expectedRevision.headerVersion

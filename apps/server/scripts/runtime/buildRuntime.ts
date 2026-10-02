@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { build } from 'esbuild';
+import { buildPublicShareViewerBundle } from '../buildPublicShareViewer.mjs';
 import {
   getServerRuntimeBundledInteropPackages,
   resolveServerRuntimeTransitiveExternalPackagePatterns,
@@ -51,6 +52,8 @@ export async function buildServerRuntime(params: BuildServerRuntimeParams): Prom
     await rm(outDir, { recursive: true, force: true });
   }
   await mkdir(outDir, { recursive: true });
+
+  await buildPublicShareViewerBundle({ projectDir });
 
   const external = await readRuntimeExternalPackages(projectDir);
   await build({

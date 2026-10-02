@@ -1,5 +1,6 @@
 import { HAPPIER_VOICE_BINDING_NONCE_DYNAMIC_VARIABLE } from "@happier-dev/protocol";
 import { z } from "zod";
+import { voiceProviderConversationIdSchema } from "@/app/api/routes/voice/voiceSessionLifecycleSchemas";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const LEASE_TIME_SKEW_MS = 5 * 60 * 1000;
@@ -8,6 +9,7 @@ const MAX_CONVERSATION_RESPONSE_BYTES = 4 * 1024 * 1024;
 
 const mintResponseSchema = z.object({
     token: z.string().trim().min(1).max(16_384),
+    conversation_id: voiceProviderConversationIdSchema.optional(),
 }).passthrough();
 
 export type HostedElevenLabsFetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -21,6 +23,7 @@ type HostedElevenLabsUpstreamDiagnosticCode =
     | "provider_http_error"
     | "response_too_large"
     | "invalid_mint_response"
+    | "conversation_not_terminal"
     | "invalid_conversation_response";
 
 type HostedElevenLabsNotFoundDiagnosticCode =
@@ -30,7 +33,7 @@ type HostedElevenLabsNotFoundDiagnosticCode =
     | "conversation_outside_lease_window";
 
 export type HostedElevenLabsMintResult =
-    | Readonly<{ ok: true; token: string }>
+    | Readonly<{ ok: true; token: string; providerConversationId?: string }>
     | Readonly<{
           ok: false;
           reason: "misconfigured" | "upstream_error";
@@ -342,7 +345,11 @@ export function createHostedElevenLabsService(
             if (!parsed.success) {
                 return { ok: false, reason: "upstream_error", diagnosticCode: "invalid_mint_response" };
             }
-            return { ok: true, token: parsed.data.token };
+            return {
+                ok: true,
+                token: parsed.data.token,
+                ...(parsed.data.conversation_id === undefined ? {} : { providerConversationId: parsed.data.conversation_id }),
+            };
         },
 
         async verifyConversation(input: Readonly<{
@@ -370,6 +377,12 @@ export function createHostedElevenLabsService(
             const conversationId = extractConversationId(payload);
             if (!timing || !conversationId) {
                 return { ok: false, reason: "upstream_error", diagnosticCode: "invalid_conversation_response" };
+            }
+            // ElevenLabs conversation details expose initiated/in-progress/processing before
+            // final usage. Only done/failed attest a terminal duration; absence is not completion.
+            const status = asRecord(payload)?.status;
+            if (status !== "done" && status !== "failed") {
+                return { ok: false, reason: "upstream_error", diagnosticCode: "conversation_not_terminal" };
             }
             if (conversationId !== input.providerConversationId) {
                 return { ok: false, reason: "not_found", diagnosticCode: "conversation_id_mismatch" };

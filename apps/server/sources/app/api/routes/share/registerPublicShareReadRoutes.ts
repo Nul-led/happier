@@ -38,7 +38,16 @@ import {
     enforceCurrentAccountStoredContentCompatibilityForHttpRequest,
     readAccountStoredContentCompatibilityForHttpRequest,
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
-import { SESSION_METADATA_LAYOUT_VERSION_V1 } from "@happier-dev/protocol";
+import { SESSION_METADATA_LAYOUT_VERSION_V1, SessionStoredMessageContentSchema, resolveStoredContentKindForSessionEncryptionMode } from "@happier-dev/protocol";
+
+/** Public readers preserve released envelopes, but never disclose a retained mode mismatch. */
+export function publicShareMessagesMatchSessionMode(messages: readonly Readonly<{ content: unknown }>[], mode: "plain" | "e2ee"): boolean {
+    const expected = resolveStoredContentKindForSessionEncryptionMode(mode);
+    return messages.every(message => {
+        const parsed = SessionStoredMessageContentSchema.safeParse(message.content);
+        return parsed.success && parsed.data.t === expected;
+    });
+}
 
 const PublicShareConsentSchema = z.union([
     z.literal(true),
@@ -74,7 +83,7 @@ type PublicShareUseRecord = Readonly<{
     isConsentRequired: boolean;
 }>;
 
-async function consumePublicShareUse(
+export async function consumePublicShareUse(
     tx: Tx,
     publicShare: PublicShareUseRecord,
     tokenHash: Uint8Array<ArrayBuffer>,
@@ -145,6 +154,7 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
                 select: {
                     id: true,
                     sessionId: true,
+                    keyDerivation: true,
                     expiresAt: true,
                     maxUses: true,
                     isConsentRequired: true,
@@ -152,7 +162,7 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
                 }
             });
 
-            if (!publicShare) {
+            if (!publicShare || !publicShare.sessionId || publicShare.keyDerivation !== "legacy_token_v1") {
                 return { error: 'Public share not found or expired' };
             }
 
@@ -390,6 +400,7 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
                 select: {
                     id: true,
                     sessionId: true,
+                    keyDerivation: true,
                     expiresAt: true,
                     maxUses: true,
                     isConsentRequired: true,
@@ -397,7 +408,7 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
                 }
             });
 
-            if (!publicShare) {
+            if (!publicShare || !publicShare.sessionId || publicShare.keyDerivation !== "legacy_token_v1") {
                 return { error: 'Public share not found or expired' };
             }
 
@@ -484,6 +495,7 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
             });
             const hasMore = fetchedMessages.length > limit;
             const messages = hasMore ? fetchedMessages.slice(0, limit) : fetchedMessages;
+            if (!publicShareMessagesMatchSessionMode(messages, sessionEncryptionMode)) return { error: 'Public share not found or expired' };
             return {
                 success: true,
                 sessionId: publicShare.sessionId,

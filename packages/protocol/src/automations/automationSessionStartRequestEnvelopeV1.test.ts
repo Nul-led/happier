@@ -18,7 +18,7 @@ import {
 const input = {
   creationKey: 'automation-run:run-1',
   executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-  directory: '/workspace/project',
+  directory: { kind: 'path' as const, path: '/workspace/project' },
   organizationPlacement: { folderId: null, tagIds: [] },
   agentTarget: {
     kind: 'agent' as const,

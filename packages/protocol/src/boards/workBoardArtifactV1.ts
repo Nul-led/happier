@@ -2,11 +2,12 @@ import {
     applyWorkBoardIntentV1, DEFAULT_WORK_BOARDS_V1, WorkBoardV1Schema,
     type WorkBoardIntentV1, type WorkBoardV1, type WorkBoardsV1,
 } from './workBoardV1.js';
+import type { ArtifactBodyV1 } from '../artifacts/artifactBinaryV1.js';
 
 export const WORK_BOARD_ARTIFACT_KIND_V1 = 'work-board.v1';
 export type WorkBoardArtifactRevisionV1 = Readonly<{ headerVersion: number; bodyVersion: number }>;
 export type WorkBoardArtifactV1 = Readonly<{
-    artifactId: string; header: Readonly<Record<string, unknown>>; body: string | null;
+    artifactId: string; header: Readonly<Record<string, unknown>>; body: ArtifactBodyV1 | null;
     revision: WorkBoardArtifactRevisionV1;
 }>;
 export type WorkBoardArtifactSummaryV1 = Readonly<{
@@ -25,7 +26,7 @@ export type WorkBoardArtifactTransportV1 = Readonly<{
         header: Readonly<Record<string, unknown>>; body: string; signal?: AbortSignal }>): Promise<
         Readonly<{ ok: true; revision: WorkBoardArtifactRevisionV1 }> | Readonly<{ ok: false; errorCode: string; error: string }>>;
     delete(artifactId: string, options?: Readonly<{ signal?: AbortSignal; expectedRevision?: WorkBoardArtifactRevisionV1 }>): Promise<
-        Readonly<{ ok: true }> | Readonly<{ ok: false; errorCode: string; error: string }>>;
+        Readonly<{ ok: true; revision?: never }> | Readonly<{ ok: false; errorCode: string; error: string }>>;
 }>;
 
 export class WorkBoardMutationErrorV1 extends Error {
@@ -47,14 +48,14 @@ export function readWorkBoardArtifactSummaryV1(artifactId: string, header: Reado
         source: { sections: header.readsNeedsYou ? ['needs_you'] : [] } };
 }
 
-function readBody(artifact: WorkBoardArtifactV1): unknown {
-    if (artifact.header.kind !== WORK_BOARD_ARTIFACT_KIND_V1 || artifact.header.v !== 1 || artifact.body === null) {
+function readBody(artifact: Pick<WorkBoardArtifactV1, 'artifactId' | 'header' | 'body'>): unknown {
+    if (artifact.header.kind !== WORK_BOARD_ARTIFACT_KIND_V1 || artifact.header.v !== 1 || typeof artifact.body !== 'string') {
         throw new WorkBoardMutationErrorV1('invalid_board_record');
     }
     try { return JSON.parse(artifact.body); } catch { throw new WorkBoardMutationErrorV1('invalid_board_record'); }
 }
 
-export function readWorkBoardArtifactV1(artifact: WorkBoardArtifactV1): WorkBoardV1 | null {
+export function readWorkBoardArtifactV1(artifact: Pick<WorkBoardArtifactV1, 'artifactId' | 'header' | 'body'>): WorkBoardV1 | null {
     const parsed = WorkBoardV1Schema.safeParse(readBody(artifact));
     return parsed.success && parsed.data.id === artifact.artifactId ? parsed.data : null;
 }
@@ -96,9 +97,9 @@ export function createWorkBoardArtifactPortV1(transport: WorkBoardArtifactTransp
     };
     const readBoard = async (id: string, signal?: AbortSignal) => {
         const artifact = await fetch(id, signal);
-        if (!artifact) return null;
+        if (!artifact) { options.onBoard?.(id, null); return null; }
         const board = readWorkBoardArtifactV1(artifact);
-        if (board) options.onBoard?.(id, board, artifact.revision);
+        options.onBoard?.(id, board, artifact.revision);
         return board;
     };
     return {
@@ -111,7 +112,10 @@ export function createWorkBoardArtifactPortV1(transport: WorkBoardArtifactTransp
                 if (!artifact) continue;
                 const board = readWorkBoardArtifactV1(artifact);
                 if (board) { boards.push(board); options.onBoard?.(board.id, board, artifact.revision); }
-                else unreadable.push(readBody(artifact));
+                else {
+                    unreadable.push(readBody(artifact));
+                    options.onBoard?.(artifact.artifactId, null, artifact.revision);
+                }
             }
             return { v: 1, boards, ...(unreadable.length ? { unreadable } : {}) };
         },
@@ -130,8 +134,9 @@ export function createWorkBoardArtifactPortV1(transport: WorkBoardArtifactTransp
                     await transport.create({ artifactId: id, header: buildWorkBoardArtifactHeaderV1(next), body: JSON.stringify(next), signal });
                     check(signal);
                     // Read back through the existing Artifact owner, including idempotent create acknowledgement.
-                    await readBoard(id, signal);
-                    return applied.boards;
+                    const acknowledged = await readBoard(id, signal);
+                    if (!acknowledged) throw new WorkBoardMutationErrorV1('invalid_board_record');
+                    return { v: 1, boards: [acknowledged] };
                 }
                 const result = next
                     ? await transport.update({ artifactId: id, expectedRevision: artifact.revision,
@@ -139,7 +144,7 @@ export function createWorkBoardArtifactPortV1(transport: WorkBoardArtifactTransp
                     : await transport.delete(id, { expectedRevision: artifact.revision, signal });
                 check(signal);
                 if (result.ok) {
-                    options.onBoard?.(id, next, 'revision' in result ? result.revision : undefined);
+                    options.onBoard?.(id, next, result.revision);
                     return applied.boards;
                 }
                 if (result.errorCode !== 'version_mismatch') {

@@ -6,6 +6,7 @@ import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import type { Tx } from "@/storage/inTx";
 import type { MachineReplacementSource } from "./validateMachineReplacement";
 import { readMachineAccessKeySessionIdsInTx } from "@/app/accessKeys/sessionMachineAccessKeyMutations";
+import { catchUpAutomationRunLifecycleSourcesForRestoredMachineTx } from "@/app/automations/automationRunLifecycleAdmission";
 
 export type ApplyMachineReplacementParams = Readonly<{
     tx: Tx;
@@ -127,6 +128,8 @@ export async function clearMachineReplacement(params: Readonly<{
             replacementActorUserId: null,
         },
     });
+
+    await catchUpAutomationRunLifecycleSourcesForRestoredMachineTx(params.tx, params.accountId, params.oldMachineId);
 
     const cursor = await markAccountChanged(params.tx, {
         accountId: params.accountId,

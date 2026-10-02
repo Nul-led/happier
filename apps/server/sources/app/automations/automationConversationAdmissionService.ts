@@ -8,6 +8,7 @@ import {
     createCanonicalJsonSigningInput,
     deriveAutomationOccurrenceKeyV1,
     isAutomationConversationResultDeliveryOwnedByCallerV1,
+    isAutomationConversationAdmitScopedCorrespondenceV1,
     isAutomationReplyHandoffIdForRunV1,
     isAutomationTriggerEvidenceCiphertextV1,
     openAutomationConversationReplyContextStoredEnvelopeV1,
@@ -16,6 +17,7 @@ import {
     type AutomationConversationAdmitInputV1,
     type AutomationConversationAdmitResultV1,
     type AutomationConversationOccurrenceEvidenceV1,
+    type AutomationConversationScopedTriggerEvidenceV1,
     type AutomationOccurrenceKeyV1,
 } from "@happier-dev/protocol";
 import type { Prisma } from "@prisma/client";
@@ -24,7 +26,7 @@ import { acquireAccountEncryptionTransitionFenceInTx } from "@/app/encryption/ac
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import { inTx, type Tx } from "@/storage/inTx";
 
-import { classifyAutomationConversationTargetEligibilityV1 } from "./automationConversationTargetVerificationService";
+import { classifyAutomationConversationTargetEligibilityV1, matchesScopedAutomationConversationTriggerTx } from "./automationConversationTargetVerificationService";
 import {
     assertCurrentAutomationEventCallerMaterializationTx,
     AutomationEventCurrentnessError,
@@ -151,6 +153,32 @@ function admitted(runId: string): AutomationConversationAdmitResultV1 {
     });
 }
 
+function refused(reason: Extract<AutomationConversationAdmitResultV1, { kind: 'refused' }>['reason']): AutomationConversationAdmitResultV1 {
+    return { kind: 'refused', reason, checkpointSafe: true };
+}
+
+type ScopedConversationEvidenceV1 = AutomationConversationScopedTriggerEvidenceV1
+    | NonNullable<AutomationConversationAdmitEncryptedHostEvidenceV1['scopedTrigger']>;
+
+async function scopedAdmissionRefusalTx(params: Readonly<{
+    tx: Tx; accountId: string; automationId: string;
+    evidence: ScopedConversationEvidenceV1 | undefined;
+    hasReplyHandoff: boolean;
+}>): Promise<AutomationConversationAdmitResultV1 | null> {
+    const automation = await params.tx.automation.findFirst({ where: { id: params.automationId,
+        accountId: params.accountId, deletedAt: null }, select: { scopeSessionId: true } });
+    if (!automation) return blocked('temporarilyUnavailable');
+    const evidence = params.evidence;
+    if (!evidence) return automation.scopeSessionId === null ? null : refused('repositoryWriteAccessUnknown');
+    if (evidence.actor.principalId !== evidence.observationActorPrincipalId
+        || params.hasReplyHandoff) return refused('scopedTriggerIdentityMismatch');
+    if (evidence.actor.repositoryWriteAccess === null) return refused('repositoryWriteAccessUnknown');
+    if (evidence.actor.repositoryWriteAccess !== true) return refused('repositoryWriteAccessDenied');
+    return await matchesScopedAutomationConversationTriggerTx({ tx: params.tx, accountId: params.accountId,
+        automationId: params.automationId, scopeSessionId: automation.scopeSessionId, scopedTrigger: evidence })
+        ? null : refused('scopedTriggerIdentityMismatch');
+}
+
 function rejoined(runId: string): AutomationConversationAdmitResultV1 {
     return AutomationConversationAdmitResultV1Schema.parse({
         kind: "rejoined",
@@ -187,6 +215,7 @@ function buildConversationEvidence(params: Readonly<{
         sender: params.input.sender,
         text: params.input.text,
         resultDelivery: params.input.resultDelivery,
+        hostEvidence: params.input.hostEvidence,
     });
 }
 
@@ -196,7 +225,7 @@ function hasMatchingConversationEvidence(params: Readonly<{
     evidence: AutomationConversationOccurrenceEvidenceV1;
 }>): boolean {
     if (
-        params.row.triggerId !== null
+        params.row.triggerId !== (params.evidence.hostEvidence?.triggerId ?? null)
         || params.row.causeKind !== "conversation"
         || params.row.causeOccurredAt?.getTime() !== params.evidence.occurredAt
         || params.row.occurrenceKey !== params.occurrenceKey
@@ -405,7 +434,7 @@ function encryptedOccurrenceMatchesAdmission(params: Readonly<{
     hostEvidence: AutomationConversationAdmitEncryptedHostEvidenceV1;
 }>): "match" | "mismatch" | "unavailable" {
     if (
-        params.row.triggerId !== null
+        params.row.triggerId !== (params.hostEvidence.scopedTrigger?.triggerId ?? null)
         || params.row.causeKind !== "conversation"
         || params.row.causeOccurredAt?.getTime() !== params.hostEvidence.occurredAt
         || params.row.occurrenceKey !== params.hostEvidence.occurrenceKey
@@ -457,6 +486,7 @@ type ConversationRunAdmissionPlanV1 = Readonly<{
     executionTriggerEvidence: unknown;
     occurrenceEvidenceEqualityTag: string | null;
     replyHandoff: ReplyHandoffAdmissionPlanV1 | null;
+    scopedTrigger?: ScopedConversationEvidenceV1;
 }>;
 
 async function createConversationRunTx(params: Readonly<{
@@ -477,6 +507,9 @@ async function createConversationRunTx(params: Readonly<{
     if (!automation) {
         return blocked("temporarilyUnavailable");
     }
+    const scopeRefusal = await scopedAdmissionRefusalTx({ tx, accountId: params.accountId, automationId: plan.automationId,
+        evidence: plan.scopedTrigger, hasReplyHandoff: plan.replyHandoff !== null });
+    if (scopeRefusal) return scopeRefusal;
 
     const eligibility = classifyAutomationConversationTargetEligibilityV1({
         targetType: automation.targetType,
@@ -494,12 +527,14 @@ async function createConversationRunTx(params: Readonly<{
             kind: "conversation",
             occurrenceKey: plan.occurrenceKey,
             occurredAt: plan.occurredAt,
+            ...(plan.scopedTrigger ? { triggerId: plan.scopedTrigger.triggerId } : {}),
         },
         triggerEvidenceEnvelope: plan.triggerEvidenceEnvelope,
         executionTriggerEvidenceEnvelope: createCanonicalJsonSigningInput(
             plan.executionTriggerEvidence,
         ),
         occurrenceEvidenceEqualityTag: plan.occurrenceEvidenceEqualityTag,
+        ...(plan.scopedTrigger ? { scopedConversationTrigger: plan.scopedTrigger } : {}),
         ...(plan.replyHandoff
             ? {
                 replyHandoff: {
@@ -583,6 +618,9 @@ export async function admitEncryptedAutomationConversationV1(params: Readonly<{
         }
         const replyHandoff = resolveEncryptedReplyHandoffAdmissionPlan(hostEvidence.replyHandoff);
         if (replyHandoff === "invalid") return blocked("temporarilyUnavailable");
+        const scopeRefusal = await scopedAdmissionRefusalTx({ tx, accountId: params.accountId, automationId: hostEvidence.automationId,
+            evidence: hostEvidence.scopedTrigger, hasReplyHandoff: replyHandoff !== null });
+        if (scopeRefusal) return scopeRefusal;
 
         const existing = await findConversationOccurrenceTx({
             tx,
@@ -621,6 +659,7 @@ export async function admitEncryptedAutomationConversationV1(params: Readonly<{
                 executionTriggerEvidence: hostEvidence.executionTriggerEvidenceEnvelope,
                 occurrenceEvidenceEqualityTag: hostEvidence.occurrenceEvidenceEqualityTag,
                 replyHandoff,
+                scopedTrigger: hostEvidence.scopedTrigger,
             },
         });
     }));
@@ -667,6 +706,12 @@ export async function admitAutomationConversationV1(params: Readonly<{
         if (accountFence.account.currentness.encryptionMode !== "plain") {
             return blocked("temporarilyUnavailable");
         }
+        if (!isAutomationConversationAdmitScopedCorrespondenceV1(input)) {
+            return refused('scopedTriggerIdentityMismatch');
+        }
+        const scopeRefusal = await scopedAdmissionRefusalTx({ tx, accountId: params.accountId, automationId: input.automationId,
+            evidence: input.hostEvidence, hasReplyHandoff: input.resultDelivery.kind !== 'none' });
+        if (scopeRefusal) return scopeRefusal;
 
         const evidence = buildConversationEvidence({
             input,
@@ -714,6 +759,7 @@ export async function admitAutomationConversationV1(params: Readonly<{
                 },
                 occurrenceEvidenceEqualityTag: null,
                 replyHandoff,
+                scopedTrigger: input.hostEvidence,
             },
         });
     }));

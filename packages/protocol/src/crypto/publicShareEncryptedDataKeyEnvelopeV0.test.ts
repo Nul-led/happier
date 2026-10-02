@@ -6,6 +6,8 @@ import {
   PUBLIC_SHARE_ENCRYPTED_DATA_KEY_CURRENT_V0_BYTES,
   PUBLIC_SHARE_ENCRYPTED_DATA_KEY_LEGACY_V0_BYTES,
   sealPublicShareEncryptedDataKeyEnvelopeV0,
+  sealPublicShareDataKeyV1,
+  openPublicShareDataKeyV1,
 } from './publicShareEncryptedDataKeyEnvelopeV0.js';
 
 describe('parsePublicShareEncryptedDataKeyEnvelopeV0', () => {
@@ -21,6 +23,23 @@ describe('parsePublicShareEncryptedDataKeyEnvelopeV0', () => {
 });
 
 describe('public-share encrypted data-key V0 format', () => {
+  it('wraps to a fragment secret that the independent HTTP lookup cannot open', () => {
+    const dataKey = new Uint8Array(32).fill(21);
+    const encryptedDataKey = sealPublicShareDataKeyV1({
+      dataKey, secret: 'fragment-secret-kept-only-by-client',
+      randomBytes: length => new Uint8Array(length).fill(8),
+    });
+    expect(openPublicShareDataKeyV1({ encryptedDataKey, secret: 'fragment-secret-kept-only-by-client' })).toEqual(dataKey);
+    expect(openPublicShareDataKeyV1({ encryptedDataKey, secret: 'server-lookup-id' })).toBeNull();
+    expect(openPublicShareDataKeyV1({ encryptedDataKey, secret: '' })).toBeNull();
+  });
+
+  it('keeps the provenance-pinned 0.2 legacy token vector readable by the shared derivation', () => {
+    const encryptedDataKey = 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHMJ6ZwXvlgV+Ew6Jtlspr/Sg/SEHyrn8lcqu7Euram/O2gprQ7e4Fe1w3nB1i3RVUrT1cj9PUi4jF5+isG5G/WnzMt54qn3pC0aKPXk8e2w==';
+    // Preview asset 358465308; source 86d1385864dd528b864a8ba72e4c3201f67aece3.
+    expect(openPublicShareDataKeyV1({ encryptedDataKey, secret: 'released-preview-public-share-vector' }))
+      .toEqual(Uint8Array.from({ length: 32 }, (_, index) => index + 1));
+  });
   it('owns the current writer framing and opens its authenticated payload', () => {
     const dataKey = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
     const wrappingKey = new Uint8Array(32).fill(7);

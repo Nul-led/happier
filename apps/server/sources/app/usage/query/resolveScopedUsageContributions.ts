@@ -123,16 +123,21 @@ function resolveGroup(rows: readonly ScopedUsageEventRow[]): ResolvedScopedUsage
                 || row.isCumulative
             )
         ));
+        const laterDeltas = ordered.filter((row) => (
+            compareChronologically(row, latest) > 0
+            && row.scope === "turn_delta"
+            && !row.isCumulative
+        )).map((row) => asContribution(row));
         return {
-            totalContributions: [asContribution(latest, latest.tokens, latest.cost, ordered.map((row) => row.id))],
-            bucketAttributions: buildSnapshotAttributions(snapshotRowsThroughFinal),
+            totalContributions: [asContribution(latest), ...laterDeltas],
+            bucketAttributions: [...buildSnapshotAttributions(snapshotRowsThroughFinal), ...laterDeltas],
         };
     }
 
     if (cumulativeRows.length > 0) {
         const latest = cumulativeRows[cumulativeRows.length - 1]!;
         return {
-            totalContributions: [asContribution(latest, latest.tokens, latest.cost, ordered.map((row) => row.id))],
+            totalContributions: [asContribution(latest)],
             bucketAttributions: buildSnapshotAttributions(cumulativeRows),
         };
     }

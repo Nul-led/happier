@@ -966,6 +966,7 @@ describe("registerAutomationV3Routes", () => {
             causeSessionLifecycleEvent: null,
             causeSourceSessionId: null,
             causeSourceTurnId: null,
+            causeRunLifecycleEvidenceJson: null,
             causeSessionLifecycleRequestId: null,
             causeSessionLifecycleRequestKind: null,
             causeSessionLifecyclePolicyKind: null,

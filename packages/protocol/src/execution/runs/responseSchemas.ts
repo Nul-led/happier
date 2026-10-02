@@ -166,6 +166,11 @@ export const ExecutionRunPublicStateSchema = z.object({
    * from status, intent, run class, or Agent id.
    */
   interaction: ExecutionRunInteractionV1Schema.optional(),
+  /** Current permission-store evidence for this exact live Run occurrence. */
+  attention: z.object({
+    kind: z.literal('permission_required'),
+    requestIds: z.array(z.string().min(1)).min(1),
+  }).strict().optional(),
   /** Canonical host lifecycle; clients must not infer recovery from status or resumeHandle. */
   lifecycle: ExecutionRunLifecycleV1Schema.optional(),
   availableActionIds: z.array(z.string().min(1)).optional(),
@@ -228,7 +233,25 @@ const ExecutionRunWaitObservationTimeoutSchema = z.object({
 
 export const ExecutionRunWaitResultSchema = z.union([
   ExecutionRunWaitCompletedResultSchema,
+  z.object({ ok: z.literal(true), status: z.literal('running'), disposition: z.literal('needs_attention'),
+    result: ExecutionRunGetResponseSchema }).strict().superRefine((value, ctx) => {
+      if (value.result.run.status !== 'running' || !value.result.run.attention) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['result', 'run'], message: 'attention requires current permission facts' });
+      }
+    }),
+  z.object({ ok: z.literal(true), status: ExecutionRunStatusSchema, disposition: z.literal('snapshot'),
+    result: ExecutionRunGetResponseSchema }).strict().superRefine((value, ctx) => {
+      if (value.result.run.status !== value.status) ctx.addIssue({ code: z.ZodIssueCode.custom,
+        path: ['result', 'run', 'status'], message: 'snapshot status must match the observed run status' });
+    }),
   ExecutionRunWaitObservationTimeoutSchema,
+  ExecutionRunWaitObservationTimeoutSchema.extend({
+    status: ExecutionRunTerminalStatusSchema,
+    result: ExecutionRunGetResponseSchema,
+  }).superRefine((value, ctx) => {
+    if (value.result.run.status !== value.status) ctx.addIssue({ code: z.ZodIssueCode.custom,
+      path: ['result', 'run', 'status'], message: 'timeout status must match the observed run status' });
+  }),
   z.object({ ok: z.literal(false), code: z.literal('cancelled') }).strict(),
   z.object({ ok: z.literal(false), code: ExecutionRunTransportErrorCodeSchema }).strict(),
 ]);

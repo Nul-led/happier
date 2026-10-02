@@ -2,11 +2,39 @@ import tweetnacl from 'tweetnacl';
 
 import { decodeBase64, encodeBase64 } from './base64.js';
 import { parseSerializedJsonValue, stringifySerializedJsonValue } from './serializedJsonValue.js';
+import { deriveKey } from './keyDerivation.js';
 
 export const PUBLIC_SHARE_DATA_ENCRYPTION_KEY_BYTES = 32;
 export const PUBLIC_SHARE_WRAPPING_KEY_BYTES = tweetnacl.secretbox.keyLength;
 export const PUBLIC_SHARE_KEY_DERIVATION_USAGE_V1 = 'Happy Public Share';
 export const PUBLIC_SHARE_KEY_DERIVATION_PATH_V1 = Object.freeze(['v1'] as const);
+
+/** Same deployed derivation; current callers supply the local URL-fragment secret. */
+export function derivePublicShareWrappingKeyV1(secret: string): Uint8Array {
+  if (!secret) throw new Error('Public-share secret is required');
+  return deriveKey(new TextEncoder().encode(secret), PUBLIC_SHARE_KEY_DERIVATION_USAGE_V1, PUBLIC_SHARE_KEY_DERIVATION_PATH_V1);
+}
+
+export function sealPublicShareDataKeyV1(params: Readonly<{
+  dataKey: Uint8Array;
+  secret: string;
+  randomBytes: (length: number) => Uint8Array;
+}>): string {
+  return encodeBase64(sealPublicShareEncryptedDataKeyEnvelopeV0({
+    dataKey: params.dataKey, wrappingKey: derivePublicShareWrappingKeyV1(params.secret), randomBytes: params.randomBytes,
+  }), 'base64');
+}
+
+/** A failed fragment never falls back to a server-visible lookup id. */
+export function openPublicShareDataKeyV1(params: Readonly<{ encryptedDataKey: string; secret: string }>): Uint8Array | null {
+  try {
+    return openPublicShareEncryptedDataKeyEnvelopeV0({
+      envelope: decodeBase64(params.encryptedDataKey, 'base64'), wrappingKey: derivePublicShareWrappingKeyV1(params.secret),
+    });
+  } catch {
+    return null;
+  }
+}
 const DATA_KEY_BASE64_LENGTH = Math.ceil(PUBLIC_SHARE_DATA_ENCRYPTION_KEY_BYTES / 3) * 4;
 const DATA_KEY_BASE64_PLACEHOLDER = 'A'.repeat(DATA_KEY_BASE64_LENGTH);
 const SECRETBOX_OVERHEAD_BYTES = tweetnacl.secretbox.nonceLength + tweetnacl.secretbox.overheadLength;

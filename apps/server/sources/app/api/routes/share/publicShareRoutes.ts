@@ -4,6 +4,8 @@ import { assertSessionCapabilityInTx } from "@/app/session/access/sessionAccess"
 import { ACCOUNT_DISPLAY_PROFILE_SELECT, toShareUserProfile } from "@/app/account/profile/accountDisplayProfile";
 import { registerPublicShareOwnerRoutes } from "./registerPublicShareOwnerRoutes";
 import { registerPublicShareReadRoutes } from "./registerPublicShareReadRoutes";
+import { registerStoredContentPublicShareRoutes } from "./registerStoredContentPublicShareRoutes";
+import { registerPublicShareViewerRoutes } from "./registerPublicShareViewerRoutes";
 import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
 import { inTx } from "@/storage/inTx";
 import { createServerFeatureGatedRouteApp } from "@/app/features/catalog/serverFeatureGate";
@@ -21,6 +23,8 @@ export function publicShareRoutes(app: Fastify): void {
     const routes = createServerFeatureGatedRouteApp(app, "sharing.public");
     registerPublicShareOwnerRoutes(routes);
     registerPublicShareReadRoutes(routes);
+    registerStoredContentPublicShareRoutes(routes);
+    registerPublicShareViewerRoutes(routes);
 
     /**
      * Get access logs for public share

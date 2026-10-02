@@ -1,4 +1,7 @@
 import { deleteLightPublicFile, ensureLightFilesDir, getLightPublicUrl, readLightPublicFile, writeLightPublicFile } from '@/flavors/light/files';
+import { createLocalPrivateFilesBackendFromEnv } from '@/storage/privateFiles/privateFilesLocal';
+import { normalizePrivateFileKey } from '@/storage/privateFiles/privateFileKeys';
+import type { PrivateFilesBackend } from '@/storage/privateFiles/privateFiles';
 
 export type ImageRef = {
     width: number;
@@ -16,6 +19,27 @@ export type PublicFilesBackend = {
 }
 
 let backend: PublicFilesBackend | null = null;
+let privateBackend: PrivateFilesBackend | null = null;
+
+export class PrivateStorageUnavailableError extends Error {
+    readonly code = 'private_storage_unavailable';
+    constructor() { super('Private file storage is unavailable'); }
+}
+
+/** Reject public grants, including wildcard actions. Never change operator-owned bucket policy. */
+function hasAnonymousGrant(policy: string): boolean {
+    const parsed: unknown = JSON.parse(policy);
+    if (!parsed || typeof parsed !== 'object' || !('Statement' in parsed)) return true;
+    const statements = Array.isArray(parsed.Statement) ? parsed.Statement : [parsed.Statement];
+    return statements.some((statement: unknown) => {
+        if (!statement || typeof statement !== 'object') return true;
+        if (!('Effect' in statement) || statement.Effect !== 'Allow') return false;
+        if (!('Principal' in statement)) return true;
+        const principal = statement.Principal;
+        return principal === '*' || Boolean(principal && typeof principal === 'object' && 'AWS' in principal
+            && (principal.AWS === '*' || (Array.isArray(principal.AWS) && principal.AWS.includes('*'))));
+    });
+}
 
 export async function initFilesS3FromEnv(env: NodeJS.ProcessEnv = process.env): Promise<void> {
     const s3Host = requiredEnv(env, 'S3_HOST');
@@ -31,6 +55,8 @@ export async function initFilesS3FromEnv(env: NodeJS.ProcessEnv = process.env): 
     const s3UseSSL = env.S3_USE_SSL ? env.S3_USE_SSL === 'true' : true;
 
     const s3bucket = requiredEnv(env, 'S3_BUCKET');
+    const privateBucket = env.S3_PRIVATE_BUCKET?.trim();
+    if (privateBucket === s3bucket) throw new Error('S3_PRIVATE_BUCKET must differ from the public bucket');
     const s3public = requiredEnv(env, 'S3_PUBLIC_URL');
     const s3Region = env.S3_REGION?.trim() ? env.S3_REGION.trim() : 'us-east-1';
 
@@ -59,9 +85,42 @@ export async function initFilesS3FromEnv(env: NodeJS.ProcessEnv = process.env): 
         },
         async deletePublicFile(path: string) { await s3client.removeObject(s3bucket, path); },
     };
+    privateBackend = null;
+    if (privateBucket) {
+        let available = false;
+        privateBackend = {
+            async init() {
+                available = false;
+                try {
+                    if (!await s3client.bucketExists(privateBucket)) return;
+                    const policy = await s3client.getBucketPolicy(privateBucket);
+                    available = !hasAnonymousGrant(policy);
+                } catch (error: unknown) {
+                    // MinIO/S3 reports the absence of any bucket policy explicitly.
+                    available = Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'NoSuchBucketPolicy');
+                }
+            },
+            async writePrivateFile(key, data) {
+                if (!available) throw new PrivateStorageUnavailableError();
+                await s3client.putObject(privateBucket, normalizePrivateFileKey(key), Buffer.from(data));
+            },
+            async readPrivateFile(key) {
+                if (!available) throw new PrivateStorageUnavailableError();
+                const stream = await s3client.getObject(privateBucket, normalizePrivateFileKey(key));
+                const chunks: Buffer[] = [];
+                for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+                return new Uint8Array(Buffer.concat(chunks));
+            },
+            async deletePrivateFile(key) {
+                if (!available) throw new PrivateStorageUnavailableError();
+                await s3client.removeObject(privateBucket, normalizePrivateFileKey(key));
+            },
+        };
+    }
 }
 
 export function initFilesLocalFromEnv(env: NodeJS.ProcessEnv = process.env): void {
+    privateBackend = createLocalPrivateFilesBackendFromEnv(env);
     backend = {
         async init() {
             await ensureLightFilesDir(env);
@@ -88,6 +147,7 @@ export async function loadFiles(): Promise<void> {
         throw new Error('Files backend not initialized');
     }
     await backend.init();
+    await privateBackend?.init();
 }
 
 export function getPublicUrl(path: string): string {
@@ -113,6 +173,21 @@ export async function readPublicFile(path: string): Promise<Uint8Array> {
 export async function deletePublicFile(path: string): Promise<void> {
     if (!backend) throw new Error('Files backend not initialized');
     await backend.deletePublicFile(path);
+}
+
+export async function writePrivateFile(key: string, data: Uint8Array): Promise<void> {
+    if (!privateBackend) throw new PrivateStorageUnavailableError();
+    await privateBackend.writePrivateFile(key, data);
+}
+
+export async function readPrivateFile(key: string): Promise<Uint8Array> {
+    if (!privateBackend) throw new PrivateStorageUnavailableError();
+    return await privateBackend.readPrivateFile(key);
+}
+
+export async function deletePrivateFile(key: string): Promise<void> {
+    if (!privateBackend?.deletePrivateFile) throw new PrivateStorageUnavailableError();
+    await privateBackend.deletePrivateFile(key);
 }
 
 function requiredEnv(env: NodeJS.ProcessEnv, key: string): string {

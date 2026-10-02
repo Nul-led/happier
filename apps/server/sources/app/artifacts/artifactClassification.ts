@@ -22,6 +22,16 @@ export const artifactOrdinaryWhere = Object.freeze({
     packageAssetRelease: { is: null },
 });
 
+/** Retiring rows keep physical-byte custody, but are unavailable to all live readers and writers. */
+export const artifactVisibleWhere = Object.freeze({ ...artifactOrdinaryWhere, deletedAt: null });
+
+/** SQL projection of the same classification for byte aggregates that cannot hydrate content. */
+export function artifactOrdinarySqlPredicate(mysql: boolean): string {
+    const quote = (name: string) => mysql ? `\`${name}\`` : `"${name}"`;
+    return `NOT EXISTS (SELECT 1 FROM ${quote("AccountPluginUiArtifact")} ui WHERE ui.${quote("artifactId")} = a.${quote("id")})
+        AND NOT EXISTS (SELECT 1 FROM ${quote("AccountPluginRelease")} pr WHERE pr.${quote("packageAssetArtifactId")} = a.${quote("id")})`;
+}
+
 export function artifactClassificationFromRelations(
     relations: ArtifactClassificationRelations,
     expectedAccountId?: string,

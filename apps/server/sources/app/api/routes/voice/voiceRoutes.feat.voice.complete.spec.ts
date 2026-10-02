@@ -80,6 +80,7 @@ describe("voiceRoutes (session complete)", () => {
     }) {
         return {
             conversation_id: "conv_123",
+            status: "done",
             agent_id: params.agentId ?? "agent_dev",
             metadata: {
                 start_time_unix_secs: params.startTimeUnixSecs ?? Math.floor(Date.now() / 1000),

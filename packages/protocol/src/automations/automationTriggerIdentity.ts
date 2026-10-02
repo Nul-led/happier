@@ -31,5 +31,8 @@ export const AutomationTriggerKindSchema = z.enum([
   'schedule',
   'pluginEvent',
   'sessionLifecycle',
+  'runLifecycle',
+  'prComment',
+  'ciFailed',
 ]);
 export type AutomationTriggerKind = z.infer<typeof AutomationTriggerKindSchema>;

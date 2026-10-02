@@ -16,6 +16,9 @@ import {
   boundedAutomationEventJsonValueV1,
 } from './automationEventJsonBoundsV1.js';
 import { AutomationOccurredAtV1Schema } from './automationOccurredAtV1.js';
+import { AutomationTriggerIdSchema, AutomationTriggerRevisionSchema } from './automationTriggerIdentity.js';
+import { AutomationPullRequestTriggerSchema } from './automationTriggerDefinition.js';
+import { SessionIdSchema } from '../sessions/idsV1.js';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
 
 export { AutomationIdV1Schema };
@@ -109,6 +112,22 @@ export function isAutomationConversationResultDeliveryOwnedByCallerV1(params: Re
     || params.resultDelivery.actionRef.pluginId === params.callerPluginId;
 }
 
+/** Host-side scoped correspondence, including the private PR selector. */
+export const AutomationConversationScopedTriggerRefV1Schema = z.object({
+  sessionId: asProtocolZod(SessionIdSchema),
+  triggerId: AutomationTriggerIdSchema,
+  triggerRevision: AutomationTriggerRevisionSchema,
+  triggerKind: z.enum(['prComment', 'ciFailed']),
+  pullRequest: AutomationPullRequestTriggerSchema.shape.pullRequest,
+}).strict();
+export const AutomationConversationScopedTriggerEvidenceV1Schema = AutomationConversationScopedTriggerRefV1Schema.extend({
+  bindingId: asProtocolZod(AutomationIdV1Schema),
+  observationActorPrincipalId: z.string().min(1),
+  actor: z.object({ principalId: z.string().min(1), repositoryWriteAccess: z.boolean().nullable() }).strict(),
+}).strict();
+export type AutomationConversationScopedTriggerEvidenceV1 = z.infer<typeof AutomationConversationScopedTriggerEvidenceV1Schema>;
+export type AutomationConversationScopedTriggerRefV1 = z.infer<typeof AutomationConversationScopedTriggerRefV1Schema>;
+
 export const AutomationConversationAdmitInputV1Schema = z.object({
   automationId: asProtocolZod(AutomationIdV1Schema),
   bindingId: asProtocolZod(AutomationIdV1Schema),
@@ -123,10 +142,30 @@ export const AutomationConversationAdmitInputV1Schema = z.object({
     }
   }),
   resultDelivery: AutomationConversationResultDeliveryV1Schema,
+  hostEvidence: AutomationConversationScopedTriggerEvidenceV1Schema.optional(),
 }).strict();
 export type AutomationConversationAdmitInputV1 = z.infer<typeof AutomationConversationAdmitInputV1Schema>;
 
+/** Binds scoped permission evidence to the same semantic sender and binding. */
+export function isAutomationConversationAdmitScopedCorrespondenceV1(
+  input: AutomationConversationAdmitInputV1,
+): boolean {
+  const evidence = input.hostEvidence;
+  if (evidence === undefined) return true;
+  const sender = input.sender;
+  return evidence.bindingId === input.bindingId
+    && typeof sender === 'object' && sender !== null && !Array.isArray(sender)
+    && 'principalId' in sender
+    && sender.principalId === evidence.actor.principalId
+    && sender.principalId === evidence.observationActorPrincipalId;
+}
+
 export const AutomationConversationAdmitResultV1Schema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('refused'),
+    reason: z.enum(['repositoryWriteAccessUnknown', 'repositoryWriteAccessDenied', 'scopedTriggerIdentityMismatch']),
+    checkpointSafe: z.literal(true),
+  }).strict(),
   z.object({ kind: z.literal('admitted'), runId: asProtocolZod(AutomationIdV1Schema), checkpointSafe: z.literal(true) }).strict(),
   z.object({ kind: z.literal('rejoined'), runId: asProtocolZod(AutomationIdV1Schema), checkpointSafe: z.literal(true) }).strict(),
   z.object({

@@ -300,9 +300,6 @@ describe('DirectRouteGrantV2', () => {
       applicationKind: 'speech_transcription' as const,
       applicationAttemptId: 'attempt-1',
       applicationAuthorityDigest: `sha256:${'ab'.repeat(32)}`,
-      maxIdleMs: 30_000,
-      maxDurationMs: 600_000,
-      maxTotalBytes: 8_388_608,
     };
     expect(DirectRouteGrantRequestV2Schema.parse({
       v: 2,

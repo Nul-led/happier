@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { LocalServicePreviewResourceV1Schema } from './v1.js';
 
 type PreviewModule = typeof import('./v1.js');
 
@@ -7,6 +8,20 @@ async function loadPreviewModule(): Promise<PreviewModule | null> {
 }
 
 describe('local service preview v1 protocol', () => {
+  it('rejects retired path-origin and path-redirect registrations at the wire boundary', () => {
+    const resource = {
+      previewId: 'preview_123', machineId: 'machine_123',
+      owner: { kind: 'plugin', id: 'plugin_1' },
+      target: { host: '127.0.0.1', port: 5173, scheme: 'http' },
+      initialPath: { pathname: '/', search: '' },
+      display: { title: 'Plugin Preview', addressLabel: 'localhost:5173' },
+      originMode: 'host',
+      policy: { redirectPolicy: 'preserve_host_origin', maxRequestBodyBytes: 1_048_576, maxResponseBodyBytes: 8_388_608 },
+    };
+    expect(LocalServicePreviewResourceV1Schema.safeParse(resource).success).toBe(true);
+    expect(LocalServicePreviewResourceV1Schema.safeParse({ ...resource, originMode: 'path' }).success).toBe(false);
+    expect(LocalServicePreviewResourceV1Schema.safeParse({ ...resource, policy: { ...resource.policy, redirectPolicy: 'rewrite_path_mode' } }).success).toBe(false);
+  });
   it('preserves query strings and maps previews to browser targets', async () => {
     const mod = await loadPreviewModule();
 
@@ -139,7 +154,7 @@ describe('local service preview v1 protocol', () => {
         target: { host: '127.0.0.1', port: 5173, scheme: 'http' },
         initialPath: { pathname: '/', search: '' },
         display: { title: 'Plugin Preview', addressLabel: 'localhost:5173' },
-        originMode: 'path',
+        originMode: 'host',
         browserTarget: {
           kind: 'localServicePreview',
           targetId: 'preview_123',
@@ -231,7 +246,7 @@ describe('local service preview v1 protocol', () => {
       target: { host: '127.0.0.1', port: 5173, scheme: 'http' } as const,
       initialPath: { pathname: '/', search: '' },
       display: { title: 'Plugin Preview', addressLabel: 'localhost:5173' },
-      originMode: 'path' as const,
+      originMode: 'host' as const,
       browserTarget: {
         kind: 'localServicePreview' as const,
         targetId: 'preview_123',

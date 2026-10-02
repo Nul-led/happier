@@ -1,17 +1,21 @@
 import Fastify from "fastify";
+import fastifyRateLimit from "@fastify/rate-limit";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
 
 import { db } from "@/storage/db";
+import { resolveApiRateLimitPluginOptions } from "@/app/api/utils/apiRateLimitPolicy";
 import { HAPPIER_VOICE_BINDING_NONCE_DYNAMIC_VARIABLE } from "@happier-dev/protocol";
 import { voiceRoutes } from "./voiceRoutes";
 import { createAppCloseTracker } from "../../testkit/appLifecycle";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { pruneExpiredVoiceSessionLeases } from "@/app/voice/pruneExpiredVoiceSessionLeases";
 
 const { trackApp, closeTrackedApps } = createAppCloseTracker();
 
 function createTestApp(): any {
     const app = Fastify();
+    app.register(fastifyRateLimit, resolveApiRateLimitPluginOptions(process.env));
     app.setValidatorCompiler(validatorCompiler);
     app.setSerializerCompiler(serializerCompiler);
     const typed = app.withTypeProvider<ZodTypeProvider>() as any;
@@ -70,6 +74,44 @@ describe("voiceRoutes (free-session quota is cleanup-independent, sqlite)", () =
         await db.account.deleteMany().catch(() => {});
     });
 
+    it("keeps unresolved grants quota-counted through the mint period after opportunistic and retention pruning", async () => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        const now = new Date("2026-10-15T12:00:00.000Z");
+        vi.setSystemTime(now);
+        const user = await db.account.create({ data: { publicKey: "pk-voice-unresolved-quota" }, select: { id: true } });
+        const current = await db.voiceSessionLease.create({ data: {
+            accountId: user.id, periodKey: "2026-10", grantedBy: "free", elevenLabsAgentId: "agent_dev",
+            createdAt: new Date("2026-10-01T12:00:00.000Z"), expiresAt: new Date("2026-10-01T12:01:00.000Z"),
+        } });
+        const previous = await db.voiceSessionLease.create({ data: {
+            accountId: user.id, periodKey: "2026-09", grantedBy: "free", elevenLabsAgentId: "agent_dev",
+            createdAt: new Date("2026-09-30T12:00:00.000Z"), expiresAt: new Date("2026-09-30T12:01:00.000Z"),
+        } });
+        vi.stubGlobal("fetch", vi.fn(async (url: unknown) => {
+            if (String(url).includes("api.revenuecat.com")) return new Response(JSON.stringify(notSubscribedPayload()));
+            throw new Error("quota must reject before provider mint");
+        }));
+        const app = createTestApp();
+        voiceRoutes(app);
+        await app.ready();
+        for (const quotas of [
+            { VOICE_FREE_SESSIONS_PER_MONTH: "1", VOICE_FREE_MINUTES_PER_MONTH: "0" },
+            { VOICE_FREE_SESSIONS_PER_MONTH: "0", VOICE_FREE_MINUTES_PER_MONTH: "1" },
+        ]) {
+            harness.resetEnv(quotas);
+            const mint = await app.inject({
+                method: "POST", url: "/v1/voice/token", headers: { "x-test-user-id": user.id }, payload: { sessionId: "s-quota" },
+            });
+            expect(mint.statusCode).toBe(403);
+            expect(mint.json()).toMatchObject({ allowed: false, reason: "quota_exceeded" });
+            expect(await db.voiceSessionLease.findUnique({ where: { id: current.id } })).not.toBeNull();
+            expect(await db.voiceSessionLease.findUnique({ where: { id: previous.id } })).toBeNull();
+        }
+        await expect(pruneExpiredVoiceSessionLeases({ cutoff: new Date("2026-10-14T12:00:00.000Z") })).resolves.toBe(0);
+        vi.setSystemTime(new Date("2026-11-01T00:00:00.000Z"));
+        await expect(pruneExpiredVoiceSessionLeases({ cutoff: new Date("2026-10-31T00:00:00.000Z") })).resolves.toBe(1);
+    });
+
     it("counts a completed free session toward the monthly quota even after its lease is pruned", async () => {
         const user = await db.account.create({ data: { publicKey: "pk-voice-freequota" }, select: { id: true } });
         const providerConversationId = "conv_freequota_1";
@@ -87,6 +129,7 @@ describe("voiceRoutes (free-session quota is cleanup-independent, sqlite)", () =
                 return new Response(
                     JSON.stringify({
                         conversation_id: providerConversationId,
+                        status: "done",
                         agent_id: "agent_dev",
                         metadata: { call_duration_secs: 10, start_time_unix_secs: Math.floor(Date.now() / 1000) },
                         conversation_initiation_client_data: {
@@ -176,6 +219,7 @@ describe("voiceRoutes (free-session quota is cleanup-independent, sqlite)", () =
                     JSON.stringify({
                         conversation_id: providerConversationId,
                         agent_id: "agent_dev",
+                        status: "done",
                         metadata: { call_duration_secs: 10, start_time_unix_secs: Math.floor(Date.now() / 1000) },
                         conversation_initiation_client_data: {
                             dynamic_variables: {

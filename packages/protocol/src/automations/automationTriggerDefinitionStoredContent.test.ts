@@ -37,6 +37,29 @@ const definition = {
 } as const;
 
 describe('Automation trigger-definition stored content', () => {
+  it.each(['prComment', 'ciFailed'] as const)('binds private %s selections in plain and E2EE Accounts', (triggerKind) => {
+    const prBinding = AutomationTriggerDefinitionBindingV1Schema.parse({
+      v: 1, automationId: binding.automationId, triggerId: binding.triggerId,
+      triggerRevision: 3, triggerKind,
+    });
+    const selection = { kind: triggerKind, pullRequest: { repository: 'owner/repo', number: 42 } };
+    for (const mode of ['plain', 'e2ee'] as const) {
+      const envelope = sealAutomationTriggerDefinitionStoredEnvelopeV1({
+        binding: prBinding, definition: selection, mode, material,
+        randomBytes: (length) => new Uint8Array(length).fill(8),
+      });
+      expect(openAutomationTriggerDefinitionStoredEnvelopeV1({
+        binding: prBinding, envelope, mode, material,
+      })).toEqual({ kind: 'available', definition: selection });
+      expect(openAutomationTriggerDefinitionStoredEnvelopeV1({
+        binding: { ...prBinding, triggerRevision: 4 }, envelope, mode, material,
+      })).toEqual({ kind: 'bindingMismatch' });
+      expect(openAutomationTriggerDefinitionStoredEnvelopeV1({
+        binding: { ...prBinding, triggerKind: triggerKind === 'prComment' ? 'ciFailed' : 'prComment' },
+        envelope, mode, material,
+      })).toEqual({ kind: 'bindingMismatch' });
+    }
+  });
   it('rejects the retired Conversation definition binding arm', () => {
     const conversationBinding = {
       v: 1,

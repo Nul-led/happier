@@ -225,10 +225,11 @@ describe("hosted ElevenLabs provider service", () => {
         );
     });
 
-    it("normalizes provider-attested conversation identity, nonce, time, and duration", async () => {
+    it.each(["done", "failed"])("normalizes terminal %s provider-attested identity, nonce, time, and duration", async (status) => {
         const fetchImpl = createFetchMock();
         fetchImpl.mockResolvedValueOnce(jsonResponse({
             conversation_id: "conversation/1",
+            status,
             metadata: {
                 agent_id: "agent_1",
                 start_time_unix_secs: "1700000000",
@@ -270,6 +271,7 @@ describe("hosted ElevenLabs provider service", () => {
         const startTime = 1_700_000_000;
         const basePayload = {
             conversation_id: "conversation_1",
+            status: "done",
             agent_id: "other_agent",
             metadata: { start_time_unix_secs: startTime, call_duration_secs: 12 },
             conversation_initiation_client_data: {

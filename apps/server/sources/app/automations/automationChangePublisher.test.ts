@@ -44,6 +44,7 @@ function createRun(state: AutomationRunItem["state"]): AutomationRunItem {
         causeSessionLifecycleEvent: null,
         causeSourceSessionId: null,
         causeSourceTurnId: null,
+        causeRunLifecycleEvidenceJson: null,
         causeSessionLifecycleRequestId: null,
         causeSessionLifecycleRequestKind: null,
         causeSessionLifecyclePolicyKind: null,

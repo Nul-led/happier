@@ -347,6 +347,16 @@ export const STORAGE_SERVER_CONFIG = defineServerConfigRegistry({
         description: 'S3 bucket for uploaded files. Required with the S3 files backend.',
         docs: 'self-hosting/env#storage-backends',
     },
+    S3_PRIVATE_BUCKET: {
+        type: 'string',
+        sensitivity: 'plain',
+        apply: 'restart',
+        editable: 'home',
+        section: 'server',
+        group: 'storage',
+        description: 'Private S3 bucket for Artifact bytes in development 0.3. Must have no anonymous-access policy; never falls back to the public uploaded-files bucket.',
+        docs: 'self-hosting/env#storage-backends',
+    },
     S3_PUBLIC_URL: {
         type: 'string',
         sensitivity: 'plain',

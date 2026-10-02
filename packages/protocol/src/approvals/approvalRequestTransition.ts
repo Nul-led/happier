@@ -1,6 +1,7 @@
 import { ActionIdSchema } from '../actions/actionIds.js';
 import { getActionSpec } from '../actions/actionSpecs.js';
 import { sameStrictJsonValue } from '../json/strictJsonValue.js';
+import { ComputerTargetSelectRequestV1Schema } from '../computer/v1.js';
 import type { ApprovalRequest } from './approvalRequestV1.js';
 
 /**
@@ -15,9 +16,9 @@ import type { ApprovalRequest } from './approvalRequestV1.js';
  *   open -> rejected | canceled
  *   approved -> failed            (definitive pre-execution failure)
  *
- * The admitted operands (`actionArgs`) stay immutable through open, approved and
- * executing, because deferred replay reads them. A settlement is the one
- * exception: it replaces them with this Action's own declared observation
+ * The admitted operands (`actionArgs`) stay immutable, except a present user's
+ * native target/access choice at open -> approved. That choice becomes the
+ * immutable replay input. Settlement replaces it with the Action's observation
  * projection (`settleApprovalRequestActionArgs`), never with caller-authored
  * arguments, so no durable history keeps write-only secrets after replay.
  */
@@ -98,7 +99,20 @@ export function decideApprovalRequestTransition(
   next: ApprovalRequest,
 ): ApprovalRequestTransitionDecision {
   const settling = !isSettled(existing.status) && isSettled(next.status);
-  const expectedActionArgs = settling ? settleApprovalRequestActionArgs(existing) : existing.actionArgs;
+  let expectedActionArgs = settling ? settleApprovalRequestActionArgs(existing) : existing.actionArgs;
+  if (existing.v === 2 && next.v === 2 && existing.status === 'open'
+    && next.status === 'approved' && existing.actionId === 'computer.target.select'
+    && next.decision?.kind === 'approve' && next.decision.authority === 'present_user') {
+    const original = ComputerTargetSelectRequestV1Schema.safeParse(existing.actionArgs);
+    const chosen = ComputerTargetSelectRequestV1Schema.safeParse(next.actionArgs);
+    if (original.success && chosen.success) {
+      expectedActionArgs = {
+        ...original.data,
+        ...(chosen.data.target !== undefined ? { target: chosen.data.target } : {}),
+        ...(chosen.data.access !== undefined ? { access: chosen.data.access } : {}),
+      };
+    }
+  }
   if (!durablyEqual(immutableSubject(existing, expectedActionArgs), immutableSubject(next, next.actionArgs))) {
     return SUBJECT_MISMATCH;
   }

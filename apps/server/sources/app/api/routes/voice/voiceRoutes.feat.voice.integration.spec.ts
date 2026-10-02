@@ -63,6 +63,7 @@ function providerConversationDetails(params: {
 }) {
     return {
         conversation_id: params.conversationId,
+        status: "done",
         agent_id: params.agentId ?? "agent_dev",
         metadata: {
             call_duration_secs: params.durationSeconds,
@@ -983,6 +984,79 @@ describe("voiceRoutes (integration, sqlite)", () => {
                 providerConversationId,
             }),
         });
+    });
+
+    it("retains a released reservation until provider-terminal usage is settled", async () => {
+        const user = await db.account.create({ data: { publicKey: "pk-voice-terminal-reservation" }, select: { id: true } });
+        const providerConversationId = "conv_terminal_reservation";
+        let bindingNonce = "";
+        let status: string | undefined = "in-progress";
+        vi.stubGlobal("fetch", vi.fn(async (url: unknown) => {
+            if (String(url).includes("/v1/convai/conversation/token")) {
+                return new Response(JSON.stringify({ token: "conv_token", conversation_id: providerConversationId }));
+            }
+            return new Response(JSON.stringify({
+                ...providerConversationDetails({ conversationId: providerConversationId, bindingNonce, durationSeconds: 5 }),
+                status,
+            }));
+        }));
+        const app = createTestApp();
+        voiceRoutes(app);
+        await app.ready();
+        const minted = await mintVoiceLeaseWithBindingNonce(app, user.id, "s-terminal");
+        bindingNonce = minted.bindingNonce;
+        const initialLease = await db.voiceSessionLease.findUniqueOrThrow({ where: { id: minted.leaseId } });
+
+        for (status of [undefined, "initiated", "in-progress", "processing", "unknown"]) {
+            const complete = await completeVoiceSession(app, user.id, minted.leaseId, providerConversationId);
+            expect(complete.statusCode).toBe(503);
+            const release = await app.inject({
+                method: "POST", url: "/v1/voice/session/release",
+                headers: { "x-test-user-id": user.id }, payload: { leaseId: minted.leaseId },
+            });
+            expect(release.statusCode).toBe(503);
+            expect(await db.voiceConversation.count({ where: { leaseId: minted.leaseId } })).toBe(0);
+            expect((await db.voiceSessionLease.findUniqueOrThrow({ where: { id: minted.leaseId } })).expiresAt)
+                .toEqual(initialLease.expiresAt);
+        }
+        const blockedMint = await app.inject({
+            method: "POST", url: "/v1/voice/token", headers: { "x-test-user-id": user.id }, payload: { sessionId: "s-blocked" },
+        });
+        expect(blockedMint.statusCode).toBe(429);
+        status = "done";
+        const release = await app.inject({
+            method: "POST", url: "/v1/voice/session/release",
+            headers: { "x-test-user-id": user.id }, payload: { leaseId: minted.leaseId },
+        });
+        expect(release.statusCode).toBe(200);
+        expect(await db.voiceConversation.findUnique({ where: { leaseId: minted.leaseId }, select: { durationSeconds: true } }))
+            .toEqual({ durationSeconds: 5 });
+        const completed = await completeVoiceSession(app, user.id, minted.leaseId, providerConversationId);
+        expect(completed.json()).toEqual({ ok: true, durationSeconds: 5 });
+        expect(await db.voiceConversation.count({ where: { leaseId: minted.leaseId } })).toBe(1);
+        expect(await mintVoiceLease(app, user.id, "s-next")).toEqual(expect.any(String));
+    });
+
+    it("does not release an issued token with no provider identity or expose another Account's lease", async () => {
+        const user = await db.account.create({ data: { publicKey: "pk-voice-unidentified-release" }, select: { id: true } });
+        const other = await db.account.create({ data: { publicKey: "pk-voice-other-release" }, select: { id: true } });
+        vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ token: "token_without_id" }))));
+        const app = createTestApp();
+        voiceRoutes(app);
+        await app.ready();
+        const minted = await mintVoiceLeaseWithBindingNonce(app, user.id, "s-unidentified");
+        const lease = await db.voiceSessionLease.findUniqueOrThrow({ where: { id: minted.leaseId } });
+        for (const { leaseId, userId } of [
+            { leaseId: minted.leaseId, userId: user.id },
+            { leaseId: "unknown-lease", userId: user.id },
+            { leaseId: minted.leaseId, userId: other.id },
+        ]) {
+            expect((await app.inject({
+                method: "POST", url: "/v1/voice/session/release",
+                headers: { "x-test-user-id": userId }, payload: { leaseId },
+            })).json()).toEqual({ ok: true });
+        }
+        expect((await db.voiceSessionLease.findUniqueOrThrow({ where: { id: minted.leaseId } })).expiresAt).toEqual(lease.expiresAt);
     });
 
     it("allows a new token immediately after completion when max concurrent sessions is 1", async () => {

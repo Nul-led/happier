@@ -9,6 +9,15 @@ import {
 import { getAccountScopedBlobKindByte } from '../crypto/accountScopedCipherEnvelope.js';
 import { encodeBase64 } from '../crypto/base64.js';
 
+export {
+  AUTOMATION_TEMPLATE_V02_PLAIN,
+  AUTOMATION_TEMPLATE_V02_RAW_ENCRYPTED,
+  AUTOMATION_TEMPLATE_V02_EXISTING_RAW_ENCRYPTED,
+  AUTOMATION_TEMPLATE_V02_ENCRYPTED,
+  AUTOMATION_TEMPLATE_V02_EXISTING_PLAIN,
+  AUTOMATION_TEMPLATE_V02_EXISTING_ENCRYPTED,
+} from '../automations/automationTemplateV02.testFixtures.js';
+
 const ACCOUNT_SCOPED_MAGIC_V1 = 0xa1;
 const CONNECTED_SERVICE_QUOTA_SNAPSHOT_KIND_BYTE = 4;
 const CONNECTED_SERVICE_QUOTA_SNAPSHOT_INFO = new TextEncoder().encode(

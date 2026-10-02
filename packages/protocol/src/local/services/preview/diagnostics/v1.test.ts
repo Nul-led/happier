@@ -14,7 +14,7 @@ describe('local service preview diagnostics protocol', () => {
       scope: 'privatePreview',
       previewId: 'preview_1',
       details: {
-        originMode: 'path',
+        originMode: 'host',
         unsupportedFeature: 'service_worker',
       },
     });
@@ -24,7 +24,7 @@ describe('local service preview diagnostics protocol', () => {
       code: 'path_mode_degraded',
       severity: 'warning',
       details: {
-        originMode: 'path',
+        originMode: 'host',
         unsupportedFeature: 'service_worker',
       },
     });

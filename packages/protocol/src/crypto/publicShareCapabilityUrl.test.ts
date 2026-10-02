@@ -3,6 +3,16 @@ import { describe, expect, it } from 'vitest';
 import { redactPublicShareCapabilityUrl } from './publicShareCapabilityUrl.js';
 
 describe('redactPublicShareCapabilityUrl', () => {
+  it('removes stored-content fragment secrets and templates HTTP lookup capabilities', () => {
+    expect(redactPublicShareCapabilityUrl('https://public.example/s/lookup#k=LOCAL_SECRET'))
+      .toBe('https://public.example/s/:lookup');
+    expect(redactPublicShareCapabilityUrl('https://public.example/s/lookup?ref=message#k=LOCAL_SECRET'))
+      .toBe('https://public.example/s/:lookup');
+    expect(redactPublicShareCapabilityUrl('https://public.example/s/lookup?ref=%0A#k=LOCAL_SECRET#malformed'))
+      .toBe('https://public.example/s/:lookup');
+    expect(redactPublicShareCapabilityUrl('/v1/public-shares/lookup/content?consent=true'))
+      .toBe('/v1/public-shares/:lookup/content?consent=true');
+  });
   it('templates Team invitation tokens while preserving the nonsecret Home target', () => {
     for (const token of ['SENTINEL_TEAM_INVITATION', 'malformed%2Ftoken']) {
       expect(redactPublicShareCapabilityUrl(`https://app.example.test/join/${token}?target=home-descriptor`)).toBe(

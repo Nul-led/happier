@@ -1,6 +1,7 @@
-import { monitorEventLoopDelay } from "node:perf_hooks";
+import { constants, monitorEventLoopDelay, PerformanceObserver } from "node:perf_hooks";
 
 import { Counter, Gauge } from "prom-client";
+import { onShutdown } from "@/utils/process/shutdown";
 
 import { getOrCreateMetric, register } from "./registry";
 
@@ -13,19 +14,23 @@ const RUNTIME_GC_KINDS: readonly RuntimeGcKind[] = [
     "weakcb",
 ];
 
-const eventLoopDelayMonitor = monitorEventLoopDelay({ resolution: 20 });
-eventLoopDelayMonitor.enable();
-
-export const runtimeEventLoopLagSecondsGauge = getOrCreateMetric("runtime_event_loop_lag_seconds", () => new Gauge({
-    name: "runtime_event_loop_lag_seconds",
-    help: "Observed event loop lag in seconds",
-    labelNames: ["stat"] as const,
-    registers: [register],
-    collect() {
-        this.set({ stat: "mean" }, eventLoopDelayMonitor.mean / 1_000_000_000);
-        this.set({ stat: "max" }, eventLoopDelayMonitor.max / 1_000_000_000);
-    },
-}));
+export const runtimeEventLoopLagSecondsGauge = getOrCreateMetric("runtime_event_loop_lag_seconds", () => {
+    const eventLoopDelayMonitor = monitorEventLoopDelay({ resolution: 20 });
+    eventLoopDelayMonitor.enable();
+    onShutdown("runtime-metrics", async () => {
+        eventLoopDelayMonitor.disable();
+    });
+    return new Gauge({
+        name: "runtime_event_loop_lag_seconds",
+        help: "Observed event loop lag in seconds",
+        labelNames: ["stat"] as const,
+        registers: [register],
+        collect() {
+            this.set({ stat: "mean" }, eventLoopDelayMonitor.mean / 1_000_000_000);
+            this.set({ stat: "max" }, eventLoopDelayMonitor.max / 1_000_000_000);
+        },
+    });
+});
 
 export const runtimeHeapUsedBytesGauge = getOrCreateMetric("runtime_heap_used_bytes", () => new Gauge({
     name: "runtime_heap_used_bytes",
@@ -62,6 +67,8 @@ export const runtimeExternalBytesGauge = getOrCreateMetric("runtime_external_byt
         this.set(process.memoryUsage().external);
     },
 }));
+
+const runtimeGcMetricsAlreadyRegistered = register.getSingleMetric("runtime_gc_events_total") !== undefined;
 
 export const runtimeGcEventsCounter = getOrCreateMetric("runtime_gc_events_total", () => new Counter({
     name: "runtime_gc_events_total",
@@ -102,3 +109,25 @@ export function recordRuntimeGcEvent(params: Readonly<{
 }
 
 initializeRuntimeGcMetrics();
+
+// Metric-module re-evaluation reuses the same registry and its existing observer.
+if (!runtimeGcMetricsAlreadyRegistered) {
+    const kinds = new Map<number, RuntimeGcKind>([
+        [constants.NODE_PERFORMANCE_GC_MAJOR, "major"],
+        [constants.NODE_PERFORMANCE_GC_MINOR, "minor"],
+        [constants.NODE_PERFORMANCE_GC_INCREMENTAL, "incremental"],
+        [constants.NODE_PERFORMANCE_GC_WEAKCB, "weakcb"],
+    ]);
+    const observer = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+            const detail: unknown = "detail" in entry ? entry.detail : undefined;
+            if (typeof detail !== "object" || detail === null || !("kind" in detail) || typeof detail.kind !== "number") continue;
+            const kind = kinds.get(detail.kind);
+            if (kind) recordRuntimeGcEvent({ kind, durationMs: entry.duration });
+        }
+    });
+    observer.observe({ entryTypes: ["gc"] });
+    onShutdown("runtime-metrics", async () => {
+        observer.disconnect();
+    });
+}

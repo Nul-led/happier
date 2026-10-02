@@ -1,10 +1,14 @@
 import {
     AutomationConversationTargetsListInputV1Schema,
     AutomationConversationTargetsListResultV1Schema,
-    AutomationConversationTargetVerifyInputV1Schema,
+    AutomationConversationActionHttpRequestSchemasV1,
     AutomationConversationTargetVerifyResultV1Schema,
     type AutomationConversationTargetsListResultV1,
     type AutomationConversationTargetVerifyResultV1,
+    type AutomationConversationScopedTriggerRefV1,
+    openAutomationTriggerDefinitionStoredEnvelopeV1,
+    AutomationPullRequestTriggerSchema,
+    createCanonicalJsonSigningInput,
 } from "@happier-dev/protocol";
 
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
@@ -67,6 +71,38 @@ export function classifyAutomationConversationTargetEligibilityV1(params: Readon
         : "eligible";
 }
 
+/** The trigger row and Account-mode envelope remain the correspondence authority. */
+export async function matchesScopedAutomationConversationTriggerTx(params: Readonly<{
+    tx: Tx; accountId: string; automationId: string; scopeSessionId: string | null;
+    scopedTrigger: AutomationConversationScopedTriggerRefV1 | Omit<AutomationConversationScopedTriggerRefV1, 'pullRequest'> | undefined;
+    requireEnabled?: boolean;
+    matchPullRequest?: boolean;
+}>): Promise<boolean> {
+    const ref = params.scopedTrigger;
+    if (!ref) return params.scopeSessionId === null;
+    if (params.scopeSessionId !== ref.sessionId) return false;
+    const row = await params.tx.automationTrigger.findFirst({ where: {
+        id: ref.triggerId, automationId: params.automationId, ...(params.requireEnabled === false ? {} : { enabled: true }), deletedAt: null,
+    } });
+    if (!row || row.kind !== ref.triggerKind || row.revision !== ref.triggerRevision || row.sourceSessionId !== ref.sessionId || !row.definitionEnvelope) return false;
+    const account = await params.tx.account.findUnique({ where: { id: params.accountId }, select: { encryptionMode: true } });
+    if (!account) return false;
+    let envelope: unknown;
+    try { envelope = JSON.parse(row.definitionEnvelope); } catch { return false; }
+    const mode = account.encryptionMode === 'plain' ? 'plain' : 'e2ee';
+    const opened = openAutomationTriggerDefinitionStoredEnvelopeV1({ mode, envelope,
+        binding: { v: 1, automationId: params.automationId, triggerId: ref.triggerId,
+            triggerRevision: row.revision, triggerKind: ref.triggerKind } });
+    // E2EE selection is attested by the current authenticated host, which alone
+    // can open the private definition. Public row correspondence is still checked here.
+    if (mode === 'e2ee') return opened.kind === 'materialUnavailable';
+    if (opened.kind !== 'available') return false;
+    const definition = AutomationPullRequestTriggerSchema.safeParse(opened.definition);
+    return definition.success && definition.data.kind === ref.triggerKind
+        && (params.matchPullRequest === false || ('pullRequest' in ref
+            && createCanonicalJsonSigningInput(definition.data.pullRequest) === createCanonicalJsonSigningInput(ref.pullRequest)));
+}
+
 /**
  * Side-effect-free target verification for conversation-binding persistence.
  * A conversation binding is an additional invocation source for an Automation
@@ -82,7 +118,7 @@ export async function verifyAutomationConversationTargetV1(params: Readonly<{
     caller: AutomationEventCallerV1;
     input: unknown;
 }>): Promise<AutomationConversationTargetVerifyResultV1> {
-    const input = AutomationConversationTargetVerifyInputV1Schema.parse(params.input);
+    const input = AutomationConversationActionHttpRequestSchemasV1['automation.conversation.target.verify'].shape.input.parse(params.input);
     const serverIdentityId = await getOrCreateServerIdentityId(process.env);
 
     return await inTx(async (tx) => {
@@ -102,6 +138,12 @@ export async function verifyAutomationConversationTargetV1(params: Readonly<{
                 kind: "notVerified",
                 reason: "notFound",
             });
+        }
+        if (!await matchesScopedAutomationConversationTriggerTx({ tx, accountId: params.accountId,
+            automationId: automation.id, scopeSessionId: automation.scopeSessionId, scopedTrigger: input.scopedTrigger,
+            // The host binds the private selection; this read verifies only public row correspondence.
+            requireEnabled: false, matchPullRequest: false })) {
+            return AutomationConversationTargetVerifyResultV1Schema.parse({ kind: 'notVerified', reason: 'scopedTriggerIdentityMismatch' });
         }
         const eligibility = classifyAutomationConversationTargetEligibilityV1({
             targetType: automation.targetType,

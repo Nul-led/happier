@@ -283,7 +283,7 @@ describe('AutomationRunExecutionRecipeV1', () => {
         kind: 'newSession',
         spawn: {
           executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-          directory: '/work/project',
+          directory: { kind: 'path', path: '/work/project' },
           agentTarget: {
             kind: 'agent',
             identity: { pluginId: 'happier.agent.ohmypi', localId: 'ohmypi' },
@@ -502,7 +502,7 @@ describe('Automation Run template composer references', () => {
         kind: 'newSession',
         spawn: {
           executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-          directory: '/work/project',
+          directory: { kind: 'path', path: '/work/project' },
           agentTarget: {
             kind: 'agent',
             identity: { pluginId: 'happier.agent.ohmypi', localId: 'ohmypi' },
@@ -560,7 +560,7 @@ describe('Automation Run template composer references', () => {
           kind: 'newSession',
           spawn: {
             executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-            directory: '/work/project',
+            directory: { kind: 'path', path: '/work/project' },
             agentTarget: {
               kind: 'agent',
               identity: { pluginId: 'happier.agent.ohmypi', localId: 'ohmypi' },
