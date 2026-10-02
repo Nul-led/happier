@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { access, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -48,6 +49,14 @@ type CreateStopSessionInput = Parameters<typeof import('./sessions/stopSession')
 type CallSessionRpc = typeof callSessionRpc;
 type ReadProcessRunState = typeof import('./processRunState').readProcessRunState;
 type ReadSessionRunnerLockStatus = typeof import('./sessionRunnerLock').readSessionRunnerLockStatus;
+
+function completeReportedSession(params: Parameters<typeof waitForSessionWebhook>[0], sessionId = 'sess_plain') {
+  const completion = actualSessionWebhookOwner.waitForSessionWebhook(params);
+  // Simulate receipt at the report transport boundary, retaining the real
+  // waiter's key ownership, timeout, promotion and callback failure behavior.
+  queueMicrotask(() => params.pidToAwaiter.get(params.pid)?.({ pid: params.pid, startedBy: 'daemon', happySessionId: sessionId }));
+  return completion;
+}
 
 function createRegisteredMachine(machineId: string) {
   return {
@@ -231,8 +240,8 @@ const disconnectedTerminalHostSupervisionMock = vi.hoisted(() => vi.fn(async () 
   reason: 'control_descriptor_missing',
 })));
 const claudeEndpointRecoveryBoundaryMocks = vi.hoisted(() => ({
-  readTerminalAttachmentInfo: vi.fn<() => Promise<TerminalAttachmentInfo | null>>(async () => null),
-  removeTerminalAttachmentInfo: vi.fn(async () => false),
+  readTerminalAttachmentInfo: vi.fn<typeof import('@/terminal/attachment/terminalAttachmentInfo').readTerminalAttachmentInfo>(async () => null),
+  removeTerminalAttachmentInfo: vi.fn<typeof import('@/terminal/attachment/terminalAttachmentInfo').removeTerminalAttachmentInfo>(async () => false),
   readClaudeEndpointDescriptor: vi.fn<() => Promise<AttachmentBoundClaudeEndpointState | null>>(async () => null),
   evaluateLiveness: vi.fn<TerminalHostAdapter['evaluateLiveness']>(async () => ({ paneAlive: true, observedAt: 1 })),
   dispose: vi.fn<TerminalHostAdapter['dispose']>(async () => {}),
@@ -242,6 +251,30 @@ const sessionRunnerActivityBoundaryMocks = vi.hoisted(() => ({
   readSessionRunnerLockStatus: vi.fn<ReadSessionRunnerLockStatus>(async () => ({ ok: false, reason: 'not_found' })),
 }));
 const ensureSessionMachineAccessKeyBindingMock = vi.hoisted(() => vi.fn(async () => {}));
+const herdrSpawnCapture = vi.hoisted(() => ({
+  createPane: vi.fn(async (_input: unknown) => ({ paneId: 'pane_1', terminalId: 'terminal_1', workspaceId: 'workspace_1', tabId: 'tab_1' })),
+  processInfo: vi.fn(async (_paneId: string) => ({ shellPid: 12345, foregroundProcesses: [] })),
+  findPane: vi.fn(async (_terminalId: string) => ({ paneId: 'pane_1', terminalId: 'terminal_1', workspaceId: 'workspace_1', tabId: 'tab_1' })),
+  closePane: vi.fn(async (_paneId: string) => undefined),
+}));
+const zellijSpawnCapture = vi.hoisted(() => ({
+  createOrAttachHost: vi.fn(async () => ({
+    kind: 'zellij' as const,
+    sessionName: 'happier-codex',
+    paneId: 'terminal_42',
+    socketDir: '/tmp/zellij-test',
+    attachMetadata: {
+      attachStrategy: 'terminal_host' as const,
+      topology: 'shared' as const,
+      locality: 'same_machine' as const,
+      maxClients: null,
+      requiresLocalAttachmentInfo: true,
+      liveProbe: 'required' as const,
+    },
+  })),
+  evaluateLiveness: vi.fn(async () => ({ paneAlive: true, panePid: 12346, observedAt: 1 })),
+  dispose: vi.fn(async () => undefined),
+}));
 const harness = vi.hoisted(() => {
   let resolveShutdown: ((value: { source: ShutdownSource; errorMessage?: string }) => void) | null = null;
   let requestShutdownRef: ((source: ShutdownSource, errorMessage?: string) => void) | null = null;
@@ -443,7 +476,21 @@ vi.mock('@/configuration', () => ({
     daemonReattachCatchUpConcurrency: 4,
     daemonStopSessionWaitForExitMs: 15_000,
     daemonStopSessionWaitForExitPollIntervalMs: 100,
+    claudeUnifiedTerminalHostActionTimeoutMs: 15_000,
   },
+}));
+
+vi.mock('@/integrations/herdr/runtimeBinary', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/integrations/herdr/runtimeBinary')>(),
+  resolveHerdrRuntimeBinary: vi.fn(async () => '/fake/herdr'),
+}));
+
+vi.mock('@/integrations/herdr/client', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/integrations/herdr/client')>(),
+  createHerdrClient: vi.fn(() => ({
+    ...herdrSpawnCapture,
+    socketPath: '/tmp/herdr-test.sock',
+  })),
 }));
 
 vi.mock('@/integrations/caffeinate', () => ({
@@ -528,8 +575,22 @@ const sessionRegistryCapture = vi.hoisted(() => ({
   clearSessionMarkerConnectedServiceRestartIntent: vi.fn(async (_pid: number) => {}),
   refreshSessionMarkerRespawn: vi.fn(async () => {}),
   removeSessionMarker: vi.fn(async (_pid: number) => {}),
-  writeSessionMarker: vi.fn(async (_marker: { respawn?: Record<string, unknown> }) => {}),
+  writeSessionMarker: vi.fn<typeof import('./sessionRegistry').writeSessionMarker>(async () => {}),
 }));
+const acceptedMarkerBoundary = vi.hoisted(() => ({
+  beforeCommit: null as ((target: unknown) => Promise<void>) | null,
+  afterCommit: null as ((target: unknown) => Promise<void>) | null,
+}));
+// Gate only the atomic filesystem commit; marker serialization and webhook owners stay real.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, rename: async (...args: Parameters<typeof actual.rename>) => {
+    await acceptedMarkerBoundary.beforeCommit?.(args[1]);
+    const result = await actual.rename(...args);
+    await acceptedMarkerBoundary.afterCommit?.(args[1]);
+    return result;
+  } };
+});
 const orphanedStartupSessionEndsCapture = vi.hoisted(() => ({
   publishOrphanedStartupSessionEnds: vi.fn((_params: {
     orphanedDeadDaemonSessions: ReadonlyArray<{ sessionId: string; pid: number }>;
@@ -768,6 +829,7 @@ vi.mock('@/terminal/attachment/terminalAttachmentInfo', async (importOriginal) =
     ...actual,
     readTerminalAttachmentInfo: claudeEndpointRecoveryBoundaryMocks.readTerminalAttachmentInfo,
     removeTerminalAttachmentInfo: claudeEndpointRecoveryBoundaryMocks.removeTerminalAttachmentInfo,
+    writeTerminalAttachmentInfo: vi.fn(async () => undefined),
   };
 });
 
@@ -783,11 +845,53 @@ vi.mock('@/integrations/terminalHost/defaultRegistry', () => ({
   createDefaultTerminalHostRegistry: vi.fn(async () => ({
     zellij: {
       kind: 'zellij' as const,
-      createOrAttachHost: vi.fn(),
+      createOrAttachHost: zellijSpawnCapture.createOrAttachHost,
       injectUserPrompt: vi.fn(),
       interruptTurn: vi.fn(),
-      evaluateLiveness: claudeEndpointRecoveryBoundaryMocks.evaluateLiveness,
-      dispose: claudeEndpointRecoveryBoundaryMocks.dispose,
+      evaluateLiveness: zellijSpawnCapture.evaluateLiveness,
+      dispose: zellijSpawnCapture.dispose,
+    },
+    herdr: {
+      kind: 'herdr' as const,
+      createOrAttachHost: vi.fn(async (opts: Readonly<{
+        sessionName: string;
+        workingDirectory: string;
+        spawnArgv: readonly string[];
+        spawnEnv: Readonly<Record<string, string>>;
+      }>) => {
+        const pane = await herdrSpawnCapture.createPane({
+          label: opts.sessionName,
+          cwd: opts.workingDirectory,
+          argv: opts.spawnArgv,
+          env: opts.spawnEnv,
+        });
+        return {
+          kind: 'herdr' as const,
+          sessionName: opts.sessionName,
+          socketPath: '/tmp/herdr-test.sock',
+          terminalId: pane.terminalId,
+          paneId: pane.paneId,
+          attachMetadata: {
+            attachStrategy: 'terminal_host' as const,
+            topology: 'shared' as const,
+            locality: 'same_machine' as const,
+            maxClients: null,
+            requiresLocalAttachmentInfo: true,
+            liveProbe: 'required' as const,
+          },
+        };
+      }),
+      injectUserPrompt: vi.fn(),
+      interruptTurn: vi.fn(),
+      evaluateLiveness: vi.fn(async (handle: { paneId?: string }) => ({
+        paneAlive: true,
+        panePid: (await herdrSpawnCapture.processInfo(handle.paneId ?? '')).shellPid,
+        observedAt: 1,
+      })),
+      dispose: vi.fn(async (handle: { terminalId?: string }) => {
+        const pane = await herdrSpawnCapture.findPane(handle.terminalId ?? '');
+        if (pane) await herdrSpawnCapture.closePane(pane.paneId);
+      }),
     },
   })),
 }));
@@ -833,9 +937,14 @@ vi.mock('./sessions/onChildExited', () => ({
   createOnChildExited: vi.fn(() => vi.fn()),
 }));
 
-vi.mock('./sessions/visibleConsoleSpawnWaiter', () => ({
-  waitForVisibleConsoleSessionWebhook: vi.fn(async () => ({ type: 'success', sessionId: 'sess_visible_console' })),
-}));
+vi.mock('./sessions/visibleConsoleSpawnWaiter', async () => {
+  const actual = await vi.importActual<typeof import('./spawn/waitForSessionWebhook')>('./spawn/waitForSessionWebhook');
+  return { waitForVisibleConsoleSessionWebhook: vi.fn((params: Parameters<typeof import('./sessions/visibleConsoleSpawnWaiter').waitForVisibleConsoleSessionWebhook>[0]) => {
+    const completion = actual.waitForSessionWebhook({ ...params, timeoutErrorMessage: 'Fixture session report timeout' });
+    queueMicrotask(() => params.pidToAwaiter.get(params.pid)?.({ pid: params.pid, startedBy: 'daemon', happySessionId: 'sess_visible_console' }));
+    return completion;
+  }) };
+});
 
 vi.mock('./sessions/stopSession', () => ({
   createStopSession: stopSessionMocks.createStopSession,
@@ -857,11 +966,11 @@ vi.mock('@/runtime/assets/resolveCliRuntimeAssetPath', () => ({
   resolveCliRuntimeAssetPath: vi.fn((...segments: string[]) => join(process.cwd(), ...segments)),
 }));
 
-vi.mock('@/integrations/tmux', () => ({
-  selectPreferredTmuxSessionName: vi.fn(),
-  TmuxUtilities: {},
-  isTmuxAvailable: vi.fn(async () => false),
-}));
+vi.mock('@/integrations/tmux', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/integrations/tmux')>();
+  return { ...actual, selectPreferredTmuxSessionName: vi.fn(actual.selectPreferredTmuxSessionName),
+    isTmuxAvailable: vi.fn(async () => false) };
+});
 
 vi.mock('./lifecycle/shutdown', () => ({
   createDaemonShutdownController: harness.createDaemonShutdownController,
@@ -885,9 +994,16 @@ vi.mock('./startup/ensureSessionDirectory', () => ({
   ensureSessionDirectory: vi.fn(async () => ({ ok: true, directoryCreated: false })),
 }));
 
-vi.mock('./spawn/waitForSessionWebhook', () => ({
-  waitForSessionWebhook: vi.fn(async () => ({ type: 'success', sessionId: 'sess_plain' })),
-}));
+vi.mock('./spawn/waitForSessionWebhook', async () => {
+  const actual = await vi.importActual<typeof import('./spawn/waitForSessionWebhook')>('./spawn/waitForSessionWebhook');
+  return { waitForSessionWebhook: vi.fn((params: Parameters<typeof actual.waitForSessionWebhook>[0]) => {
+    // A canonical report delivered at the transport boundary, not a seeded-ID
+    // success shortcut; timeout, cleanup and promotion use the real waiter owner.
+    const completion = actual.waitForSessionWebhook(params);
+    queueMicrotask(() => params.pidToAwaiter.get(params.pid)?.({ pid: params.pid, startedBy: 'daemon', happySessionId: 'sess_plain' }));
+    return completion;
+  }) };
+});
 
 vi.mock('./automation/automationWorker', () => ({
   startAutomationWorker: vi.fn(() => ({
@@ -936,6 +1052,15 @@ vi.mock('./connectedServices/quotas/resolveConnectedServicesQuotasDaemonEnabled'
   resolveConnectedServicesQuotasDaemonEnabled: vi.fn(async () => false),
 }));
 
+// Load the real startup corridor during collection, not inside a timed lifecycle case.
+const [actualReattachmentOwner, actualChildExitOwner, actualMetadataUpdateOwner, daemonStartupOwner, actualSessionWebhookOwner] = await Promise.all([
+  vi.importActual<typeof import('./sessions/reattachFromMarkers')>('./sessions/reattachFromMarkers'),
+  vi.importActual<typeof import('./sessions/onChildExited')>('./sessions/onChildExited'),
+  vi.importActual<typeof import('@/session/metadata/updateSessionMetadataWithRetry')>('@/session/metadata/updateSessionMetadataWithRetry'),
+  import('./startDaemon'),
+  vi.importActual<typeof import('./spawn/waitForSessionWebhook')>('./spawn/waitForSessionWebhook'),
+]);
+
 describe('startDaemon spawn resume wiring (integration)', () => {
   beforeEach(() => {
     if (ORIGINAL_PLATFORM_DESCRIPTOR) {
@@ -951,6 +1076,13 @@ describe('startDaemon spawn resume wiring (integration)', () => {
     harness.resetControlRefs();
     harness.apiMachine.recoverDaemonTerminalSessionMutationJournals.mockClear();
     spawnHappyCLI.mockClear();
+    herdrSpawnCapture.createPane.mockClear();
+    herdrSpawnCapture.processInfo.mockClear();
+    herdrSpawnCapture.findPane.mockClear();
+    herdrSpawnCapture.closePane.mockClear();
+    zellijSpawnCapture.createOrAttachHost.mockClear();
+    zellijSpawnCapture.evaluateLiveness.mockClear();
+    zellijSpawnCapture.dispose.mockClear();
     resolveHappyCliSubprocessRuntimeDecision.mockReset();
     resolveHappyCliSubprocessRuntimeDecision.mockReturnValue(null);
     spawnHappyCliCapture.children.length = 0;
@@ -1039,15 +1171,19 @@ describe('startDaemon spawn resume wiring (integration)', () => {
         };
       });
 
+      let resolveBound!: () => void;
+      const bound = new Promise<void>((resolve) => { resolveBound = resolve; });
+      ensureSessionMachineAccessKeyBindingMock.mockImplementationOnce(async () => { resolveBound(); });
       const { startDaemon } = await import('./startDaemon');
       run = startDaemon();
 
-      await vi.waitFor(() => expect(ensureSessionMachineAccessKeyBindingMock).toHaveBeenCalledWith({
+      await bound;
+      expect(ensureSessionMachineAccessKeyBindingMock).toHaveBeenCalledWith({
         serverUrl: expect.any(String),
         token: 'token-daemon',
         sessionId: 'session-reattached-control',
         machineId: 'machine-1',
-      }));
+      });
 
       harness.requestShutdown('happier-cli');
       await run;
@@ -1314,13 +1450,11 @@ describe('startDaemon spawn resume wiring (integration)', () => {
         | { type: 'error'; errorCode: 'CHILD_EXITED_BEFORE_WEBHOOK'; errorMessage: string }
       ) => void) | null;
     } = { resolve: null };
-    const webhookPromise = new Promise<
-      | { type: 'success'; sessionId: string }
-      | { type: 'error'; errorCode: 'CHILD_EXITED_BEFORE_WEBHOOK'; errorMessage: string }
-    >((resolve) => {
-      webhookControl.resolve = resolve;
+    waitForSessionWebhookMock.mockImplementationOnce((params) => {
+      const completion = actualSessionWebhookOwner.waitForSessionWebhook(params);
+      webhookControl.resolve = params.pidToSpawnResultResolver.get(params.pid) ?? null;
+      return completion;
     });
-    waitForSessionWebhookMock.mockImplementationOnce(async () => await webhookPromise);
     let run: Promise<void> | null = null;
     const featureDecisionModule = await import('@/features/featureDecisionService');
     const featureDecisionSpy = vi.spyOn(featureDecisionModule, 'resolveCliFeatureDecisionForServer')
@@ -1422,7 +1556,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
     } finally {
       webhookControl.resolve?.({ type: 'success', sessionId: 'sess_late_webhook' });
       waitForSessionWebhookMock.mockReset();
-      waitForSessionWebhookMock.mockImplementation(async () => ({ type: 'success', sessionId: 'sess_plain' }));
+      waitForSessionWebhookMock.mockImplementation(completeReportedSession);
       if (run) {
         harness.requestShutdown('happier-cli');
         await run;
@@ -1545,7 +1679,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
         happySessionId: sessionId,
       });
       waitForSessionWebhookMock.mockReset();
-      waitForSessionWebhookMock.mockImplementation(async () => ({ type: 'success', sessionId: 'sess_plain' }));
+      waitForSessionWebhookMock.mockImplementation(completeReportedSession);
       if (run) {
         harness.requestShutdown('happier-cli');
         await run;
@@ -2087,6 +2221,867 @@ describe('startDaemon spawn resume wiring (integration)', () => {
     }
   });
 
+  it.each([
+    'wake', 'wake_rpc_failed', 'resume_after_stop', 'respawn_with_nonce', 'early_webhook', 'marker_write_failed', 'early_webhook_marker_failed',
+    'binding_write_failed', 'windows_binding_write_failed', 'binding_exit_overlap', 'committed_binding_exit_overlap', 'heartbeat_binding_exit_overlap', 'tmux_binding_exit_overlap',
+    'early_regular_exit', 'early_regular_report_exit', 'exit_before_first_report', 'wrapper_promotion',
+    'ready_nonce_replay', 'unready_nonce_replay', 'unbound_nonce_replay', 'restored_plain_nonce_replay',
+    'wrong_binding_nonce_replay', 'sameid_wrong_mode_nonce_replay', 'late_binding_nonce_replay', 'late_geometry_nonce_replay',
+    'wrong_marker_session_nonce_replay', 'wrong_marker_pid_nonce_replay', 'wrong_marker_identity_nonce_replay',
+    'late_retiring_nonce_replay', 'late_owner_nonce_replay', 'missing_id_nonce_replay', 'legacy_windows_nonce_replay', 'wrong_windows_nonce_replay',
+    'console_nonce_replay', 'tmux_nonce_replay', 'zellij_nonce_replay', 'pty_console_missing_id_nonce_replay',
+  ] as const)('completes an accepted runner through real owners (%s)', async (contract) => {
+    const { configuration } = await import('@/configuration');
+    const originalHome = configuration.happyHomeDir;
+    const fixtureHome = await mkdtemp(join(tmpdir(), 'happier-hosted-completion-'));
+    const previousRefresh = process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
+    const previousNonceTtl = process.env.HAPPIER_DAEMON_SPAWN_ACCEPTED_NONCE_TTL_MS;
+    const previousExitPoll = process.env.HAPPIER_DAEMON_VISIBLE_CONSOLE_EXIT_POLL_MS;
+    const previousHeartbeatInterval = process.env.HAPPIER_DAEMON_HEARTBEAT_INTERVAL;
+    const isTmux = contract === 'tmux_binding_exit_overlap';
+    const isWindows = contract === 'windows_binding_write_failed';
+    const isHeartbeatExit = contract === 'heartbeat_binding_exit_overlap' || isTmux;
+    const isCommittedBindingExit = contract === 'committed_binding_exit_overlap';
+    const isBindingExit = contract === 'binding_exit_overlap' || isCommittedBindingExit || isHeartbeatExit;
+    const isRestoredPlain = contract === 'restored_plain_nonce_replay';
+    const isWrapperPromotion = contract === 'wrapper_promotion';
+    const isExitBeforeFirstReport = contract === 'exit_before_first_report';
+    const isEarlyRegularExit = contract === 'early_regular_exit' || contract === 'early_regular_report_exit' || isWrapperPromotion || isExitBeforeFirstReport;
+    const isNonceReplay = contract.endsWith('_nonce_replay');
+    const recoveredReady = contract === 'ready_nonce_replay' || isRestoredPlain || contract === 'missing_id_nonce_replay' || contract === 'legacy_windows_nonce_replay'
+      || contract === 'console_nonce_replay' || contract === 'tmux_nonce_replay' || contract === 'zellij_nonce_replay';
+    let replayClockOffset = 0;
+    const realNow = Date.now.bind(Date);
+    const replayClock = isNonceReplay ? vi.spyOn(Date, 'now').mockImplementation(() => realNow() + replayClockOffset) : undefined;
+    if (isNonceReplay) {
+      process.env.HAPPIER_DAEMON_SPAWN_ACCEPTED_NONCE_TTL_MS = '3000';
+    }
+    process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = 'false';
+    process.env.HAPPIER_DAEMON_SESSION_RESPAWN_ENABLED = isEarlyRegularExit || isBindingExit ? 'false' : 'true';
+    if (contract === 'binding_exit_overlap' || isCommittedBindingExit) process.env.HAPPIER_DAEMON_VISIBLE_CONSOLE_EXIT_POLL_MS = '10';
+    if (isHeartbeatExit) {
+      process.env.HAPPIER_DAEMON_HEARTBEAT_INTERVAL = '10';
+      process.env.HAPPIER_DAEMON_VISIBLE_CONSOLE_EXIT_POLL_MS = '60000';
+    }
+    process.env.HAPPIER_DAEMON_SESSION_RESPAWN_BASE_DELAY_MS = '50';
+    process.env.HAPPIER_DAEMON_SESSION_RESPAWN_JITTER_MS = '0';
+    Object.defineProperty(configuration, 'happyHomeDir', { value: fixtureHome });
+    vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    // OS presence is the boundary; the webhook wait, binding, presentation and restart policy stay real.
+    const originalKill = process.kill.bind(process);
+    let fixtureRunnerAlive = true;
+    let fixtureExitObserved = false;
+    vi.spyOn(process, 'kill').mockImplementation(((pid, signal) => {
+      if (isWrapperPromotion && pid === 23456 && signal === 0) return true;
+      if (pid === 12345 && signal === 0) {
+        if (!fixtureRunnerAlive) {
+          fixtureExitObserved = true;
+          throw Object.assign(new Error('Fixture runner exited'), { code: 'ESRCH' });
+        }
+        return true;
+      }
+      return originalKill(pid, signal);
+    }) as typeof process.kill);
+    const [catalog, actualCatalog, waiter, actualWaiter, visible, actualVisible, resolver, actualResolver,
+      webhook, actualWebhook, respawn, actualRespawn, attachments, actualAttachments, runtime] = await Promise.all([
+      import('@/backends/catalog'), vi.importActual<typeof import('@/backends/catalog')>('@/backends/catalog'),
+      import('./spawn/waitForSessionWebhook'), vi.importActual<typeof import('./spawn/waitForSessionWebhook')>('./spawn/waitForSessionWebhook'),
+      import('./sessions/visibleConsoleSpawnWaiter'), vi.importActual<typeof import('./sessions/visibleConsoleSpawnWaiter')>('./sessions/visibleConsoleSpawnWaiter'),
+      import('./sessions/resolveSpawnWebhookResult'), vi.importActual<typeof import('./sessions/resolveSpawnWebhookResult')>('./sessions/resolveSpawnWebhookResult'),
+      import('./sessions/onHappySessionWebhook'), vi.importActual<typeof import('./sessions/onHappySessionWebhook')>('./sessions/onHappySessionWebhook'),
+      import('./processSupervision/sessionRunnerRespawn'), vi.importActual<typeof import('./processSupervision/sessionRunnerRespawn')>('./processSupervision/sessionRunnerRespawn'),
+      import('@/terminal/attachment/terminalAttachmentInfo'), vi.importActual<typeof import('@/terminal/attachment/terminalAttachmentInfo')>('@/terminal/attachment/terminalAttachmentInfo'),
+      import('@/utils/spawnHappyCLI'),
+    ]);
+    const restoreDelegates: Array<() => void> = [];
+    const delegateToActual = <T extends (...args: never[]) => unknown>(
+      target: MockInstance<T>,
+      actual: Parameters<MockInstance<T>['mockImplementation']>[0],
+    ) => {
+      const previous = target.getMockImplementation();
+      target.mockImplementation(actual);
+      restoreDelegates.push(() => {
+        target.mockReset();
+        if (previous) target.mockImplementation(previous);
+      });
+    };
+    delegateToActual(vi.mocked(catalog.requireCatalogEntry), actualCatalog.requireCatalogEntry);
+    if (isWindows) {
+      Object.defineProperty(process, 'platform', { ...ORIGINAL_PLATFORM_DESCRIPTOR, value: 'win32' });
+      const modes = await import('./platform/windows/windowsSessionConsoleMode');
+      const actualModes = await vi.importActual<typeof import('./platform/windows/windowsSessionConsoleMode')>('./platform/windows/windowsSessionConsoleMode');
+      delegateToActual(vi.mocked(modes.resolveWindowsRemoteSessionConsoleMode), actualModes.resolveWindowsRemoteSessionConsoleMode);
+      const consoleTransport = await import('./platform/windows/spawnHappyCliVisibleConsole');
+      delegateToActual(vi.mocked(consoleTransport.startHappySessionInVisibleWindowsConsole), async () => ({ ok: true as const, pid: 12345 }));
+    }
+    if (isHeartbeatExit) {
+      const heartbeat = await import('./lifecycle/heartbeat');
+      const actualHeartbeat = await vi.importActual<typeof import('./lifecycle/heartbeat')>('./lifecycle/heartbeat');
+      delegateToActual(vi.mocked(heartbeat.startDaemonHeartbeatLoop), actualHeartbeat.startDaemonHeartbeatLoop);
+    }
+    delegateToActual(vi.mocked(catalog.getVendorResumeSupport), actualCatalog.getVendorResumeSupport);
+    if (isNonceReplay || isCommittedBindingExit) {
+      const actualProcessState = await vi.importActual<typeof import('./processRunState')>('./processRunState');
+      delegateToActual(sessionRunnerActivityBoundaryMocks.readProcessRunState, actualProcessState.readProcessRunState);
+    }
+    let webhookTimeouts: Parameters<typeof actualWaiter.waitForSessionWebhook>[0]['pidToSpawnWebhookTimeout'] | undefined;
+    let webhookResolvers: Parameters<typeof actualWaiter.waitForSessionWebhook>[0]['pidToSpawnResultResolver'] | undefined;
+    delegateToActual(vi.mocked(waiter.waitForSessionWebhook), (params) => {
+      webhookTimeouts = params.pidToSpawnWebhookTimeout;
+      webhookResolvers = params.pidToSpawnResultResolver;
+      return actualWaiter.waitForSessionWebhook(params);
+    });
+    const exitPolls: ReturnType<typeof setInterval>[] = [];
+    const originalSetInterval = globalThis.setInterval;
+    vi.spyOn(globalThis, 'setInterval').mockImplementation(((...args: Parameters<typeof setInterval>) => {
+      const timer = originalSetInterval(...args);
+      exitPolls.push(timer);
+      return timer;
+    }) as typeof setInterval);
+    const availabilityTimers: ReturnType<typeof setTimeout>[] = [];
+    if (isTmux) {
+      const originalSetTimeout = globalThis.setTimeout;
+      vi.spyOn(globalThis, 'setTimeout').mockImplementation(((...args: Parameters<typeof setTimeout>) => {
+        const timer = originalSetTimeout(...args);
+        if (args[1] === 60_000) availabilityTimers.push(timer);
+        return timer;
+      }) as typeof setTimeout);
+      const tmux = await import('@/integrations/tmux');
+      const actualTmux = await vi.importActual<typeof import('@/integrations/tmux')>('@/integrations/tmux');
+      delegateToActual(vi.mocked(tmux.isTmuxAvailable), actualTmux.isTmuxAvailable);
+      const childProcess = await import('node:child_process');
+      // Only the OS tmux client transport is replaced; parsing, argv construction,
+      // launch ownership and attachment binding remain the actual implementation.
+      delegateToActual(vi.mocked(childProcess.spawn), ((command: string, args: readonly string[]) => {
+        if (command !== 'tmux') throw new Error('Unexpected fixture process');
+        const child = new EventEmitter();
+        const stdout = new EventEmitter();
+        const stderr = new EventEmitter();
+        Object.assign(child, { stdout, stderr });
+        queueMicrotask(() => {
+          stdout.emit('data', args.includes('new-window') ? '12345\t@1\n' : 'happier-fixture\n');
+          child.emit('close', 0);
+        });
+        return child;
+      }) as unknown as typeof childProcess.spawn);
+    }
+    delegateToActual(vi.mocked(visible.waitForVisibleConsoleSessionWebhook), actualVisible.waitForVisibleConsoleSessionWebhook);
+    delegateToActual(vi.mocked(resolver.resolveSpawnWebhookResult), actualResolver.resolveSpawnWebhookResult);
+    delegateToActual(vi.mocked(attachments.writeTerminalAttachmentInfo), actualAttachments.writeTerminalAttachmentInfo);
+    delegateToActual(vi.mocked(runtime.buildHappyCliSubprocessLaunchSpec), (args) => ({
+      runtime: 'node' as const, filePath: '/test/admitted-happier', args: [...args],
+    }));
+    let manager: import('./processSupervision/sessionRunnerRespawn').SessionRunnerRespawnManager | undefined;
+    delegateToActual(vi.mocked(respawn.createSessionRunnerRespawnManager), (params) => {
+      manager = actualRespawn.createSessionRunnerRespawnManager(params);
+      return manager;
+    });
+    let report: ReturnType<typeof actualWebhook.createOnHappySessionWebhook> | undefined;
+    let reportedPublication: Promise<void> | undefined;
+    let releaseReportCensus!: () => void;
+    const reportCensusReleased = new Promise<void>((resolve) => { releaseReportCensus = resolve; });
+    let firstReportOwner: import('./types').TrackedSession | undefined;
+    let tracked: Map<number, import('./types').TrackedSession> | undefined;
+    let awaiters: Map<number, (session: import('./types').TrackedSession) => void> | undefined;
+    delegateToActual(vi.mocked(webhook.createOnHappySessionWebhook), (params) => {
+      tracked = params.pidToTrackedSession;
+      awaiters = params.pidToAwaiter;
+      report = actualWebhook.createOnHappySessionWebhook({
+        ...params,
+        ...(contract === 'pty_console_missing_id_nonce_replay' ? {
+          onTrackedSessionReported: (session: import('./types').TrackedSession) => {
+            reportedPublication = Promise.resolve(params.onTrackedSessionReported?.(session));
+            return reportedPublication;
+          },
+        } : {}),
+        ...(isWrapperPromotion ? { getParentPidFn: () => 12345 } : {}),
+        ...(isExitBeforeFirstReport ? { findHappyProcessByPidFn: async () => { await reportCensusReleased; return null; } } : {}),
+      });
+      return report;
+    });
+    let enteredMarker!: () => void;
+    let releaseMarker!: () => void;
+    const markerEntered = new Promise<void>((resolve) => { enteredMarker = resolve; });
+    const markerReleased = new Promise<void>((resolve) => { releaseMarker = resolve; });
+    let enteredBinding!: () => void;
+    let releaseBinding!: () => void;
+    const bindingEntered = new Promise<void>((resolve) => { enteredBinding = resolve; });
+    const bindingReleased = new Promise<void>((resolve) => { releaseBinding = resolve; });
+    const regularChildEvents = new EventEmitter();
+    let regularAttachFilePath: string | undefined;
+    if (isEarlyRegularExit) {
+      const exits = await import('./sessions/onChildExited');
+      delegateToActual(vi.mocked(exits.createOnChildExited), actualChildExitOwner.createOnChildExited);
+      const attachFiles = await import('./sessionAttachFile');
+      const actualAttachFiles = await vi.importActual<typeof import('./sessionAttachFile')>('./sessionAttachFile');
+      delegateToActual(vi.mocked(attachFiles.createSessionAttachFile), async (params) => {
+        const attachment = await actualAttachFiles.createSessionAttachFile(params);
+        regularAttachFilePath = attachment.filePath;
+        return attachment;
+      });
+      spawnHappyCLI.mockImplementationOnce(() => ({
+        pid: 12345, stdout: null, stderr: null, unref: vi.fn(),
+        on: vi.fn((event: string, listener: (...args: unknown[]) => void) => regularChildEvents.on(event, listener)),
+      }));
+    }
+    if (isBindingExit) {
+      const exits = await import('./sessions/onChildExited');
+      delegateToActual(vi.mocked(exits.createOnChildExited), actualChildExitOwner.createOnChildExited);
+    }
+    if (isNonceReplay || isCommittedBindingExit || contract === 'early_webhook' || contract === 'marker_write_failed' || contract === 'early_webhook_marker_failed' || isEarlyRegularExit) {
+      const actualMarkers = await vi.importActual<typeof import('./sessionRegistry')>('./sessionRegistry');
+      delegateToActual(sessionRegistryCapture.writeSessionMarker, actualMarkers.writeSessionMarker);
+      if (isEarlyRegularExit) {
+        delegateToActual(sessionRegistryCapture.removeSessionMarker, actualMarkers.removeSessionMarker);
+      }
+      if (!isNonceReplay && !isCommittedBindingExit) acceptedMarkerBoundary.beforeCommit = async (target) => {
+        if (String(target).startsWith(fixtureHome) && String(target).endsWith('pid-12345.json')) {
+          acceptedMarkerBoundary.beforeCommit = null;
+          if (contract === 'marker_write_failed') throw Object.assign(new Error('Fixture OS commit denied'), { code: 'EACCES' });
+          enteredMarker();
+          await markerReleased;
+          if (contract === 'early_webhook_marker_failed') throw Object.assign(new Error('Fixture OS commit denied'), { code: 'EACCES' });
+        }
+      };
+    }
+    if (contract === 'binding_write_failed' || isWindows) {
+      acceptedMarkerBoundary.beforeCommit = async (target) => {
+        if (String(target) === join(fixtureHome, 'terminal', 'sessions', 'sess_plain.json')) {
+          throw Object.assign(new Error('Fixture attachment commit denied'), { code: 'EACCES' });
+        }
+      };
+    }
+    if (isBindingExit) {
+      const holdBinding = async (target: unknown) => {
+        if (String(target) === join(fixtureHome, 'terminal', 'sessions', 'sess_plain.json')) {
+          enteredBinding();
+          await bindingReleased;
+        }
+      };
+      if (isCommittedBindingExit) acceptedMarkerBoundary.afterCommit = holdBinding;
+      else acceptedMarkerBoundary.beforeCommit = holdBinding;
+    }
+    const guardedRpc = vi.mocked(callSessionRpc);
+    let replayingNonce = false;
+    let replayTransitionApplied = false;
+    let replayOriginalTerminal: import('./types').TrackedSession['hostedTerminal'];
+    const { logger } = await import('@/ui/logger');
+    vi.mocked(logger.warn).mockClear();
+    guardedRpc.mockImplementation(async ({ method }) => {
+      if (replayingNonce && !replayTransitionApplied) {
+        replayTransitionApplied = true;
+        const acceptedRunner = tracked!.get(12345)!;
+        if (contract === 'late_binding_nonce_replay') {
+          const bound = await actualAttachments.readTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId: 'sess_plain' });
+          if (!bound || bound.version === 1) throw new Error('Missing fixture exact host');
+          await actualAttachments.writeTerminalAttachmentInfo({
+            happyHomeDir: fixtureHome, sessionId: 'sess_plain', attachmentId: 'replacement-attachment',
+            handle: { ...bound.handle, attachmentId: 'replacement-attachment' as typeof bound.attachmentId }, terminal: bound.terminal,
+          });
+        }
+        if (contract === 'late_geometry_nonce_replay') {
+          const bound = await actualAttachments.readTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId: 'sess_plain' });
+          if (!bound || bound.version === 1) throw new Error('Missing fixture exact host');
+          replayOriginalTerminal = acceptedRunner.hostedTerminal;
+          acceptedRunner.hostedTerminal = { ...bound.terminal, herdr: { ...bound.terminal.herdr!, terminalId: 'different-terminal' } };
+          await actualAttachments.writeTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId: 'sess_plain', attachmentId: bound.attachmentId,
+            handle: { ...bound.handle, terminalId: 'different-terminal' }, terminal: acceptedRunner.hostedTerminal });
+        }
+        if (contract === 'late_retiring_nonce_replay') {
+          acceptedRunner.reportMarkerCustody ??= { pending: Promise.resolve(), retiring: false };
+          acceptedRunner.reportMarkerCustody.retiring = true;
+        }
+        if (contract === 'late_owner_nonce_replay') {
+          tracked!.set(12345, { ...acceptedRunner, happySessionId: 'sess_changed' });
+        }
+      }
+      if (replayingNonce && contract === 'unready_nonce_replay') {
+        return { ok: false, errorCode: 'rpc_method_unavailable' };
+      }
+      if (method.endsWith('wakeCapability.v1.get')) {
+        return { ok: true, capability: 'pending_queue_wake_v1', protocolVersion: 1, method: 'session.pendingQueue.wake.v1' };
+      }
+      if (contract === 'wake_rpc_failed') throw new Error('fixture_rpc_transport_failure');
+      return { ok: true, result: 'wake_published' };
+    });
+    let run: Promise<void> | null = null;
+    try {
+      run = daemonStartupOwner.startDaemon();
+      const spawnSession = await waitForSpawnSessionRegistration();
+      if (contract === 'resume_after_stop') {
+        await harness.getStopSession()!('sess_plain');
+      }
+      guardedRpc.mockClear();
+      const accepting = spawnSession({
+        directory: '/tmp', backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+        existingSessionId: 'sess_plain', codexBackendMode: 'appServer',
+        terminal: isTmux ? { mode: 'tmux', tmux: { sessionName: 'happier-fixture' } } : isEarlyRegularExit || isRestoredPlain || isWindows ? { mode: 'plain' } : { mode: 'herdr', herdr: { sessionName: 'default' } },
+        ...(isWindows ? { windowsRemoteSessionLaunchMode: 'console' as const } : {}),
+        token: 'token-daemon', ...(contract !== 'resume_after_stop' ? { spawnNonce: `hosted-completion-${contract}` } : {}),
+      });
+      const metadata = {
+        path: '/tmp', host: 'test-host', homeDir: '/tmp/home', happyHomeDir: fixtureHome,
+        happyLibDir: '/tmp/lib', happyToolsDir: '/tmp/tools', hostPid: 12345,
+        startedBy: 'daemon' as const, flavor: 'codex', codexSessionId: 'vendor-plain-1',
+      };
+      if (contract === 'early_webhook' || contract === 'early_webhook_marker_failed') {
+        await markerEntered;
+        await report!('sess_plain', metadata);
+        expect(guardedRpc).not.toHaveBeenCalled();
+        expect(await harness.getResolveSpawnSessionByNonce()!(`hosted-completion-${contract}`))
+          .not.toMatchObject({ status: 'success' });
+        if (contract === 'early_webhook') {
+          acceptedMarkerBoundary.beforeCommit = async (target) => {
+            if (String(target) === join(fixtureHome, 'terminal', 'sessions', 'sess_plain.json')) {
+              enteredBinding();
+              await bindingReleased;
+            }
+          };
+        }
+        releaseMarker();
+      }
+      if (isEarlyRegularExit) {
+        await markerEntered;
+        if (isWrapperPromotion) await report!('PID-23456', { ...metadata, hostPid: 23456 });
+        else if (contract === 'early_regular_report_exit') await report!('sess_plain', metadata);
+        // ChildProcess exit delivery is the OS boundary; the real waiter and
+        // accepted-marker owner remain in the daemon startup corridor.
+        if (isExitBeforeFirstReport) firstReportOwner = tracked?.get(12345);
+        regularChildEvents.emit('exit', 1, null);
+        expect(awaiters?.has(12345)).toBe(false);
+        if (isExitBeforeFirstReport) await report!('sess_plain', metadata);
+        if (isWrapperPromotion) {
+          expect(tracked?.has(23456)).toBe(true);
+          expect(awaiters?.has(23456)).toBe(true);
+        }
+        releaseMarker();
+      }
+      const accepted = await accepting;
+      if (isWrapperPromotion) {
+        expect(accepted).toMatchObject({ type: 'success', sessionId: 'sess_plain' });
+        await report!('sess_plain', { ...metadata, hostPid: 23456 });
+        await vi.waitFor(async () => {
+          expect(await harness.getResolveSpawnSessionByNonce()!(`hosted-completion-${contract}`))
+            .toMatchObject({ status: 'success', sessionId: 'sess_plain' });
+        });
+        const actualMarkers = await vi.importActual<typeof import('./sessionRegistry')>('./sessionRegistry');
+        await vi.waitFor(async () => expect(await actualMarkers.readSessionMarkerForPid(12345)).toBeNull());
+        await vi.waitFor(async () => expect(await actualMarkers.readSessionMarkerForPid(23456)).toMatchObject({ happySessionId: 'sess_plain' }));
+        expect(tracked?.has(23456)).toBe(true);
+        expect(webhookTimeouts?.size).toBe(0);
+        expect(webhookResolvers?.size).toBe(0);
+        return;
+      }
+      if (isEarlyRegularExit) {
+        await vi.waitFor(async () => {
+          expect(await harness.getResolveSpawnSessionByNonce()!(`hosted-completion-${contract}`))
+            .toMatchObject({ status: 'error', errorCode: 'CHILD_EXITED_BEFORE_WEBHOOK' });
+        });
+        expect(awaiters?.has(12345)).toBe(false);
+        expect(webhookTimeouts?.has(12345)).toBe(false);
+        await vi.waitFor(() => expect(tracked?.has(12345)).toBe(false));
+        expect(regularAttachFilePath).toBeTruthy();
+        await expect(access(regularAttachFilePath!)).rejects.toMatchObject({ code: 'ENOENT' });
+        const actualMarkers = await vi.importActual<typeof import('./sessionRegistry')>('./sessionRegistry');
+        if (isExitBeforeFirstReport) {
+          releaseReportCensus();
+          await firstReportOwner?.reportMarkerCustody?.pending;
+        }
+        expect(await actualMarkers.readSessionMarkerForPid(12345)).toBeNull();
+        expect(guardedRpc).not.toHaveBeenCalled();
+        return;
+      }
+      if (contract === 'marker_write_failed' || contract === 'early_webhook_marker_failed') {
+        expect(accepted).toMatchObject({ type: 'error', errorCode: 'SPAWN_FAILED' });
+        expect(awaiters?.has(12345)).toBe(false);
+        expect(webhookTimeouts?.has(12345)).toBe(false);
+        expect(webhookResolvers?.has(12345)).toBe(false);
+        expect(guardedRpc).not.toHaveBeenCalled();
+        expect(await actualAttachments.readTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId: 'sess_plain' })).toBeNull();
+        return;
+      }
+      expect(accepted).toMatchObject({ type: 'success', sessionId: 'sess_plain' });
+      if (isWindows) {
+        await report!('sess_plain', metadata);
+        await vi.waitFor(async () => {
+          expect(await harness.getResolveSpawnSessionByNonce()!(`hosted-completion-${contract}`))
+            .toMatchObject({ status: 'error', errorCode: 'SPAWN_FAILED' });
+        });
+        expect(await actualAttachments.readTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId: 'sess_plain' })).toBeNull();
+        expect(tracked?.has(12345)).toBe(true);
+        expect(guardedRpc).not.toHaveBeenCalled();
+        return;
+      }
+      if (contract === 'early_webhook') {
+        await bindingEntered;
+        expect(await harness.getResolveSpawnSessionByNonce()!(`hosted-completion-${contract}`))
+          .toEqual({ status: 'pending' });
+        releaseBinding();
+      }
+      if (contract !== 'early_webhook') expect(guardedRpc).not.toHaveBeenCalled();
+      expect(herdrSpawnCapture.createPane).toHaveBeenCalledTimes(isRestoredPlain || isTmux ? 0 : 1);
+      expect(tracked?.get(12345)?.spawnOptions?.terminal?.mode).toBe(isTmux ? 'tmux' : isRestoredPlain ? 'plain' : 'herdr');
+      if (contract !== 'early_webhook') await report!('sess_plain', metadata);
+      if (isBindingExit) {
+        await bindingEntered;
+        if (isCommittedBindingExit) {
+          expect(tracked?.get(12345)?.startupCustody).toBeTruthy();
+          await tracked?.get(12345)?.reportMarkerCustody?.pending;
+          expect(await actualAttachments.readTerminalAttachmentState({ happyHomeDir: fixtureHome, sessionId: 'sess_plain' }))
+            .toMatchObject({ status: 'present' });
+          expect(await harness.getResolveSpawnSessionByNonce()!(`hosted-completion-${contract}`))
+            .toEqual({ status: 'pending' });
+        }
+        fixtureRunnerAlive = false;
+        await vi.waitFor(() => expect(fixtureExitObserved).toBe(true));
+        expect(await harness.getResolveSpawnSessionByNonce()!(`hosted-completion-${contract}`))
+          .toMatchObject({ status: 'pending' });
+        expect(tracked?.has(12345)).toBe(true);
+        releaseBinding();
+        await vi.waitFor(async () => {
+          expect(await harness.getResolveSpawnSessionByNonce()!(`hosted-completion-${contract}`))
+            .toMatchObject({ status: 'error', errorCode: 'CHILD_EXITED_BEFORE_WEBHOOK' });
+          expect(tracked?.has(12345)).toBe(false);
+        });
+        expect(guardedRpc).not.toHaveBeenCalled();
+        return;
+      }
+      if (contract === 'binding_write_failed') {
+        await vi.waitFor(() => expect(herdrSpawnCapture.closePane).toHaveBeenCalledTimes(1));
+        await vi.waitFor(async () => {
+          expect(await harness.getResolveSpawnSessionByNonce()!(`hosted-completion-${contract}`))
+            .toMatchObject({ status: 'error', errorCode: 'SPAWN_FAILED' });
+        });
+        expect(await actualAttachments.readTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId: 'sess_plain' })).toBeNull();
+        expect(herdrSpawnCapture.closePane).toHaveBeenCalledTimes(1);
+        expect(guardedRpc).not.toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalled();
+        return;
+      }
+      if (contract !== 'resume_after_stop') await vi.waitFor(async () => {
+        expect(await harness.getResolveSpawnSessionByNonce()!(`hosted-completion-${contract}`))
+          .toMatchObject({ status: 'success', sessionId: 'sess_plain' });
+      });
+      if (!isRestoredPlain) await vi.waitFor(async () => {
+        expect(await actualAttachments.readTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId: 'sess_plain' }))
+          .toMatchObject({ version: 2, handle: { kind: 'herdr', terminalId: 'terminal_1' } });
+      });
+      if (isNonceReplay) {
+        if (isRestoredPlain) {
+          const acceptedRunner = tracked!.get(12345)!;
+          const { buildTrackedSpawnOptions } = await import('./spawnHooks');
+          const { buildSessionRunnerRespawnDescriptorV1FromSpawnOptions, buildSpawnSessionOptionsFromRespawnDescriptorV1 } =
+            await import('./processSupervision/sessionRunnerRespawnDescriptor');
+          // The canonical accepted topology overrides the requested host; the
+          // descriptor round trip is the actual restart persistence boundary.
+          const descriptor = buildSessionRunnerRespawnDescriptorV1FromSpawnOptions(buildTrackedSpawnOptions({
+            options: { ...acceptedRunner.spawnOptions!, terminal: { mode: 'herdr' } },
+            terminalPresentation: { kind: 'none' },
+          }));
+          if (!descriptor) throw new Error('Fixture accepted descriptor missing');
+          const restored = buildSpawnSessionOptionsFromRespawnDescriptorV1(descriptor);
+          expect(restored.terminal).toEqual({ mode: 'plain' });
+          acceptedRunner.spawnOptions = restored;
+          delete acceptedRunner.childProcess;
+          delete acceptedRunner.hostedTerminal;
+          delete acceptedRunner.happySessionMetadataFromLocalWebhook;
+          expect(await actualAttachments.readTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId: 'sess_plain' })).toBeNull();
+        }
+        if (contract === 'unbound_nonce_replay') {
+          await unlink(join(fixtureHome, 'terminal', 'sessions', 'sess_plain.json'));
+        }
+        const acceptedRunner = tracked!.get(12345)!;
+        if (contract === 'wrong_binding_nonce_replay' || contract === 'sameid_wrong_mode_nonce_replay' || contract === 'missing_id_nonce_replay') {
+          const bound = await actualAttachments.readTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId: 'sess_plain' });
+          if (!bound || bound.version === 1) throw new Error('Missing fixture exact host');
+          if (contract === 'wrong_binding_nonce_replay') {
+            await actualAttachments.writeTerminalAttachmentInfo({
+              happyHomeDir: fixtureHome, sessionId: 'sess_plain', attachmentId: bound.attachmentId,
+              handle: { ...bound.handle, terminalId: 'different-terminal' },
+              terminal: { ...bound.terminal, herdr: { ...bound.terminal.herdr!, terminalId: 'different-terminal' } },
+            });
+          } else if (contract === 'sameid_wrong_mode_nonce_replay') {
+            await actualAttachments.writeTerminalAttachmentInfo({
+              happyHomeDir: fixtureHome, sessionId: 'sess_plain', attachmentId: bound.attachmentId,
+              handle: { ...bound.handle, kind: 'zellij', sessionName: 'different-host', paneId: 'different-pane', socketDir: '/fixture/zellij' },
+              terminal: { mode: 'zellij', zellij: { sessionName: 'different-host', paneId: 'different-pane', socketDirV1: '/fixture/zellij' } },
+            });
+          } else {
+            // Same exact host metadata remains sufficient when no attachment ID was published.
+            if (acceptedRunner.hostedTerminal?.controlServiceabilityV1) delete acceptedRunner.hostedTerminal.controlServiceabilityV1.attachmentId;
+            delete acceptedRunner.publishedTerminalControlServiceabilityAttachmentId;
+          }
+        }
+        if (contract === 'wrong_marker_session_nonce_replay') {
+          const markers = await vi.importActual<typeof import('./sessionRegistry')>('./sessionRegistry');
+          const marker = await markers.readSessionMarkerForPid(12345);
+          if (!marker) throw new Error('Missing fixture accepted marker');
+          await markers.writeSessionMarker({ ...marker, happySessionId: 'different-session' });
+        }
+        if (contract === 'wrong_marker_pid_nonce_replay') {
+          const markerPath = join(fixtureHome, 'tmp', 'daemon-sessions', 'pid-12345.json');
+          const rawMarker = JSON.parse(await readFile(markerPath, 'utf8'));
+          await writeFile(markerPath, JSON.stringify({ ...rawMarker, pid: 23456 }));
+        }
+        if (contract === 'wrong_marker_identity_nonce_replay') {
+          const markers = await vi.importActual<typeof import('./sessionRegistry')>('./sessionRegistry');
+          const marker = await markers.readSessionMarkerForPid(12345);
+          if (!marker) throw new Error('Missing fixture accepted marker');
+          acceptedRunner.processInstanceFingerprint = 'accepted-runner-instance';
+          await markers.writeSessionMarker({ ...marker, processInstanceFingerprint: 'different-runner-instance' });
+        }
+        if (contract === 'pty_console_missing_id_nonce_replay') {
+          const bound = await actualAttachments.readTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId: 'sess_plain' });
+          if (!bound || bound.version === 1) throw new Error('Missing fixture exact host');
+          acceptedRunner.hostedTerminal = { mode: 'windows_console', windows: { host: 'console', pid: 12345 } };
+          await actualAttachments.writeTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId: 'sess_plain', attachmentId: bound.attachmentId,
+            handle: { ...bound.handle, kind: 'windows_console', sessionName: 'pty-console', paneId: 'pty-console' },
+            terminal: { mode: 'windows_console', windows: { host: 'console' } } });
+          delete acceptedRunner.publishedTerminalControlServiceabilityAttachmentId;
+        }
+        if (contract === 'tmux_nonce_replay' || contract === 'zellij_nonce_replay') {
+          const bound = await actualAttachments.readTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId: 'sess_plain' });
+          if (!bound || bound.version === 1) throw new Error('Missing fixture exact host');
+          const mode = contract === 'tmux_nonce_replay' ? 'tmux' : 'zellij';
+          acceptedRunner.hostedTerminal = mode === 'tmux'
+            ? { mode, tmux: { target: 'exact-session:exact-pane', tmpDir: '/fixture/socket' } }
+            : { mode, zellij: { sessionName: 'exact-session', paneId: 'exact-pane', socketDirV1: '/fixture/socket' } };
+          await actualAttachments.writeTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId: 'sess_plain',
+            attachmentId: bound.attachmentId, handle: { ...bound.handle, kind: mode, sessionName: 'exact-session', paneId: 'exact-pane', socketDir: '/fixture/socket' },
+            terminal: acceptedRunner.hostedTerminal });
+        }
+        if (contract === 'legacy_windows_nonce_replay' || contract === 'wrong_windows_nonce_replay' || contract === 'console_nonce_replay') {
+          const windows = await vi.importActual<typeof import('./platform/windows/windowsHostedSessionRuntime')>('./platform/windows/windowsHostedSessionRuntime');
+          acceptedRunner.hostedTerminal = windows.buildWindowsHostedTerminalAttachment({ pid: 12345,
+            actualMode: contract === 'console_nonce_replay' ? 'windows_console' : 'windows_terminal', requestedMode: 'windows_terminal',
+            windowId: 'exact-window', title: 'exact-tab' });
+          await unlink(join(fixtureHome, 'terminal', 'sessions', 'sess_plain.json'));
+          await actualAttachments.writeTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId: 'sess_plain', terminal: contract === 'wrong_windows_nonce_replay'
+            ? { ...acceptedRunner.hostedTerminal, windows: { ...acceptedRunner.hostedTerminal.windows!, windowId: 'different-window' } }
+            : acceptedRunner.hostedTerminal });
+          delete acceptedRunner.publishedTerminalControlServiceabilityAttachmentId;
+        }
+        replayingNonce = true;
+        guardedRpc.mockClear();
+        replayClockOffset = 3001;
+        expect(await harness.getResolveSpawnSessionByNonce()!(`hosted-completion-${contract}`))
+          .toEqual(recoveredReady ? { status: 'success', sessionId: 'sess_plain' } : { status: 'pending' });
+        if (contract === 'late_geometry_nonce_replay') acceptedRunner.hostedTerminal = replayOriginalTerminal;
+        expect(await spawnSession({
+          directory: '/tmp', backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+          existingSessionId: 'sess_plain', codexBackendMode: 'appServer',
+          terminal: { mode: 'herdr', herdr: { sessionName: 'default' } },
+          token: 'token-daemon', spawnNonce: `hosted-completion-${contract}`,
+        })).toMatchObject({ type: 'success', sessionId: 'sess_plain', runnerAcceptance: 'same_request_runner' });
+        // The held observation must not settle. A subsequent lookup can prove
+        // the now-stable same physical host when no attachment ID was advertised.
+        expect(await harness.getResolveSpawnSessionByNonce()!(`hosted-completion-${contract}`))
+          .toEqual(recoveredReady || contract === 'late_binding_nonce_replay'
+            ? { status: 'success', sessionId: 'sess_plain' } : { status: 'pending' });
+        expect(herdrSpawnCapture.createPane).toHaveBeenCalledTimes(isRestoredPlain ? 0 : 1);
+        if (contract === 'pty_console_missing_id_nonce_replay') {
+          delegateToActual(vi.mocked(attachments.readTerminalAttachmentInfo), actualAttachments.readTerminalAttachmentInfo);
+          const updates = await import('@/session/metadata/updateSessionMetadataWithRetry');
+          delegateToActual(vi.mocked(updates.updateSessionMetadataWithRetry), actualMetadataUpdateOwner.updateSessionMetadataWithRetry);
+          let serverMetadata: Record<string, unknown> = { ...metadata, terminal: { mode: 'windows_console', windows: { host: 'console' } } };
+          let serverVersion = 1;
+          vi.mocked(fetchSessionByIdCompat).mockImplementation(async () => createSessionRecordFixture({ id: 'sess_plain',
+            encryptionMode: 'plain', metadata: JSON.stringify(serverMetadata), metadataVersion: serverVersion, dataEncryptionKey: null }));
+          const sockets = await import('@/api/session/sockets');
+          // Socket.io is the external server boundary; the publication CAS and
+          // serviceability projection remain the actual canonical implementation.
+          vi.spyOn(sockets, 'createSessionScopedSocket').mockImplementation(() => {
+            const events = new EventEmitter();
+            return { connected: true, on: events.on.bind(events), off: events.off.bind(events),
+              connect: () => events.emit('connect'), disconnect: () => {}, close: () => {},
+              emit: (_event: string, payload: { expectedVersion: number; metadata: string }, ack: (answer: unknown) => void) => {
+                expect(payload.expectedVersion).toBe(serverVersion);
+                serverMetadata = JSON.parse(payload.metadata) as Record<string, unknown>;
+                serverVersion += 1;
+                ack({ result: 'success', version: serverVersion, metadata: payload.metadata });
+              },
+            } as unknown as ReturnType<typeof sockets.createSessionScopedSocket>;
+          });
+          await report!('sess_plain', { ...metadata, terminal: { mode: 'windows_console', windows: { host: 'console' } } });
+          await reportedPublication;
+          await acceptedRunner.reportMarkerCustody?.pending;
+          expect(acceptedRunner.publishedTerminalControlServiceabilityAttachmentId).toBeTruthy();
+          expect(serverMetadata.terminal).toMatchObject({ controlServiceabilityV1: {
+            attachmentId: acceptedRunner.publishedTerminalControlServiceabilityAttachmentId, state: 'servable' } });
+          expect(await harness.getResolveSpawnSessionByNonce()!(`hosted-completion-${contract}`))
+            .toEqual({ status: 'success', sessionId: 'sess_plain' });
+        }
+        return;
+      }
+      if (contract === 'wake' || contract === 'wake_rpc_failed' || contract === 'early_webhook') {
+        await vi.waitFor(() => expect(guardedRpc.mock.calls.map(([params]) => params.method))
+          .toContain('sess_plain:session.pendingQueue.wake.v1'));
+        expect(guardedRpc.mock.calls.filter(([params]) => params.method.endsWith('session.pendingQueue.wake.v1')))
+          .toHaveLength(1);
+        if (contract === 'wake_rpc_failed') {
+          await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith(expect.any(String), {
+            event: 'pending_queue_wake', sessionId: 'sess_plain', trigger: 'attach',
+            outcome: 'unavailable', reason: 'rpc_failed',
+          }));
+          expect(await harness.getResolveSpawnSessionByNonce()!('hosted-completion-wake_rpc_failed'))
+            .toMatchObject({ status: 'success', sessionId: 'sess_plain' });
+        }
+      } else {
+        const crashed = tracked!.get(12345)!;
+        tracked!.delete(12345);
+        manager!.handleUnexpectedExit(crashed, { reason: 'process-exited', code: 1, signal: null });
+        await vi.waitFor(() => expect(herdrSpawnCapture.createPane).toHaveBeenCalledTimes(2));
+        await vi.waitFor(() => expect(awaiters!.has(12345)).toBe(true));
+        // Finish the replacement's real waiter rather than leaving a five-minute test timer behind.
+        await report!('sess_plain', {
+          path: '/tmp', host: 'test-host', homeDir: '/tmp/home', happyHomeDir: fixtureHome,
+          happyLibDir: '/tmp/lib', happyToolsDir: '/tmp/tools', hostPid: 12345,
+          startedBy: 'daemon', flavor: 'codex', codexSessionId: 'vendor-plain-1',
+        });
+        if (contract === 'respawn_with_nonce') {
+          // The original caller keeps its idempotent receipt; recovery is a different launch attempt.
+          expect(await harness.getResolveSpawnSessionByNonce()!('hosted-completion-respawn_with_nonce'))
+            .toMatchObject({ status: 'success', sessionId: 'sess_plain' });
+        }
+      }
+    } finally {
+      replayClock?.mockRestore();
+      releaseMarker();
+      releaseBinding();
+      releaseReportCensus();
+      acceptedMarkerBoundary.beforeCommit = null;
+      acceptedMarkerBoundary.afterCommit = null;
+      if (isEarlyRegularExit) {
+        for (const timeout of webhookTimeouts?.values() ?? []) clearTimeout(timeout);
+        webhookTimeouts?.clear();
+        awaiters?.clear();
+        for (const resolve of webhookResolvers?.values() ?? []) resolve({ type: 'error', errorCode: 'CHILD_EXITED_BEFORE_WEBHOOK', errorMessage: 'Fixture cleanup' });
+        webhookResolvers?.clear();
+      }
+      const unfinished = tracked?.get(12345);
+      if (contract === 'early_webhook' && unfinished) await awaiters?.get(12345)?.(unfinished);
+      // The replacement report can ACK before the existing common binding
+      // finalizer. Drain actual owned work before removing its filesystem fixture.
+      for (const timeout of webhookTimeouts?.values() ?? []) clearTimeout(timeout);
+      for (const resolve of webhookResolvers?.values() ?? []) resolve({ type: 'error', errorCode: 'CHILD_EXITED_BEFORE_WEBHOOK', errorMessage: 'Fixture cleanup' });
+      await Promise.all(Array.from(tracked?.values() ?? [], (session) => session.startupCustody?.finalization));
+      await Promise.all(Array.from(tracked?.values() ?? [], (session) => session.reportMarkerCustody?.pending));
+      await firstReportOwner?.reportMarkerCustody?.pending;
+      if (run) { harness.requestShutdown('happier-cli'); await run; }
+      for (const timer of exitPolls) clearInterval(timer);
+      for (const timer of availabilityTimers) clearTimeout(timer);
+      for (const restore of restoreDelegates) restore();
+      Object.defineProperty(configuration, 'happyHomeDir', { value: originalHome });
+      if (previousRefresh === undefined) delete process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
+      else process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = previousRefresh;
+      if (previousNonceTtl === undefined) delete process.env.HAPPIER_DAEMON_SPAWN_ACCEPTED_NONCE_TTL_MS;
+      else process.env.HAPPIER_DAEMON_SPAWN_ACCEPTED_NONCE_TTL_MS = previousNonceTtl;
+      if (previousExitPoll === undefined) delete process.env.HAPPIER_DAEMON_VISIBLE_CONSOLE_EXIT_POLL_MS;
+      else process.env.HAPPIER_DAEMON_VISIBLE_CONSOLE_EXIT_POLL_MS = previousExitPoll;
+      if (previousHeartbeatInterval === undefined) delete process.env.HAPPIER_DAEMON_HEARTBEAT_INTERVAL;
+      else process.env.HAPPIER_DAEMON_HEARTBEAT_INTERVAL = previousHeartbeatInterval;
+      delete process.env.HAPPIER_DAEMON_SESSION_RESPAWN_BASE_DELAY_MS;
+      delete process.env.HAPPIER_DAEMON_SESSION_RESPAWN_JITTER_MS;
+      await rm(fixtureHome, { recursive: true, force: true });
+    }
+  });
+
+  it('launches an app-created Codex App Server session as a local Happier runner in Herdr', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const previousRefresh = process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
+    process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = 'false';
+    let run: Promise<void> | null = null;
+    try {
+      const catalog = await import('@/backends/catalog');
+      const { codexDaemonSpawnHooks } = await import('@/backends/codex/daemon/spawnHooks');
+      const { buildHappyCliSubprocessLaunchSpec } = await import('@/utils/spawnHappyCLI');
+      vi.mocked(catalog.requireCatalogEntry).mockImplementation(() => ({
+        id: 'codex',
+        cliSubcommand: 'codex',
+        vendorResumeSupport: 'supported',
+        getDaemonSpawnHooks: async () => ({
+          ...codexDaemonSpawnHooks,
+          validateSpawn: async () => ({ ok: true as const }),
+        }),
+      }));
+      vi.mocked(buildHappyCliSubprocessLaunchSpec).mockImplementation((args) => ({
+        runtime: 'node',
+        filePath: '/test/admitted-happier',
+        args: [...args],
+      }));
+      const { startDaemon } = await import('./startDaemon');
+      run = startDaemon();
+      const spawnSession = await waitForSpawnSessionRegistration();
+      const result = await spawnSession({
+        directory: '/tmp',
+        backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+        codexBackendMode: 'appServer',
+        terminal: { mode: 'herdr', herdr: { sessionName: 'default' } },
+        token: 't',
+      });
+
+      if (result.type !== 'success') throw new Error(JSON.stringify(result));
+      expect(result).toMatchObject({ type: 'success' });
+      expect(herdrSpawnCapture.createPane).toHaveBeenCalledWith(expect.objectContaining({
+        argv: expect.arrayContaining([
+          'codex',
+          '--happy-starting-mode', 'local',
+          '--happy-terminal-mode', 'herdr',
+          '--happy-terminal-requested', 'herdr',
+          '--happy-herdr-session-name', 'default',
+        ]),
+        env: expect.objectContaining({ HAPPIER_CODEX_BACKEND_MODE: 'appServer' }),
+      }));
+      expect(spawnHappyCLI).not.toHaveBeenCalled();
+    } finally {
+      if (run) {
+        harness.requestShutdown('happier-cli');
+        await run;
+      }
+      const catalog = await import('@/backends/catalog');
+      vi.mocked(catalog.requireCatalogEntry).mockImplementation(() => ({
+        id: 'codex', cliSubcommand: 'codex', vendorResumeSupport: 'supported',
+      }));
+      const { buildHappyCliSubprocessLaunchSpec } = await import('@/utils/spawnHappyCLI');
+      vi.mocked(buildHappyCliSubprocessLaunchSpec).mockReset();
+      if (previousRefresh === undefined) delete process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
+      else process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = previousRefresh;
+      exitSpy.mockRestore();
+    }
+  });
+
+  it('launches an app-created Codex App Server session as a local Happier runner in Zellij', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const previousRefresh = process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
+    process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = 'false';
+    let run: Promise<void> | null = null;
+    try {
+      const catalog = await import('@/backends/catalog');
+      const { codexDaemonSpawnHooks } = await import('@/backends/codex/daemon/spawnHooks');
+      const { buildHappyCliSubprocessLaunchSpec } = await import('@/utils/spawnHappyCLI');
+      vi.mocked(catalog.requireCatalogEntry).mockImplementation(() => ({
+        id: 'codex',
+        cliSubcommand: 'codex',
+        vendorResumeSupport: 'supported',
+        getDaemonSpawnHooks: async () => ({
+          ...codexDaemonSpawnHooks,
+          validateSpawn: async () => ({ ok: true as const }),
+        }),
+      }));
+      vi.mocked(buildHappyCliSubprocessLaunchSpec).mockImplementation((args) => ({
+        runtime: 'node',
+        filePath: '/test/admitted-happier',
+        args: [...args],
+      }));
+      const { startDaemon } = await import('./startDaemon');
+      run = startDaemon();
+      const spawnSession = await waitForSpawnSessionRegistration();
+      const result = await spawnSession({
+        directory: '/tmp',
+        backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+        codexBackendMode: 'appServer',
+        terminal: { mode: 'zellij' },
+        token: 't',
+      });
+
+      if (result.type !== 'success') throw new Error(JSON.stringify(result));
+      expect(zellijSpawnCapture.createOrAttachHost).toHaveBeenCalledWith(expect.objectContaining({
+        spawnArgv: expect.arrayContaining(['codex', '--happy-starting-mode', 'local']),
+        spawnEnv: expect.objectContaining({ HAPPIER_CODEX_BACKEND_MODE: 'appServer' }),
+      }));
+      expect(spawnHappyCLI).not.toHaveBeenCalled();
+    } finally {
+      if (run) {
+        harness.requestShutdown('happier-cli');
+        await run;
+      }
+      const catalog = await import('@/backends/catalog');
+      vi.mocked(catalog.requireCatalogEntry).mockImplementation(() => ({
+        id: 'codex', cliSubcommand: 'codex', vendorResumeSupport: 'supported',
+      }));
+      const { buildHappyCliSubprocessLaunchSpec } = await import('@/utils/spawnHappyCLI');
+      vi.mocked(buildHappyCliSubprocessLaunchSpec).mockReset();
+      if (previousRefresh === undefined) delete process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
+      else process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = previousRefresh;
+      exitSpy.mockRestore();
+    }
+  });
+
+  it('launches app-created unified Claude in one daemon-owned Herdr pane', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const previousRefresh = process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
+    process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = 'false';
+    let run: Promise<void> | null = null;
+    try {
+      const catalog = await import('@/backends/catalog');
+      const { claudeDaemonSpawnHooks } = await import('@/backends/claude/daemon/spawnHooks');
+      const { buildHappyCliSubprocessLaunchSpec } = await import('@/utils/spawnHappyCLI');
+      vi.mocked(buildHappyCliSubprocessLaunchSpec).mockImplementation((args) => ({
+        runtime: 'node',
+        filePath: '/test/admitted-happier',
+        args: [...args],
+      }));
+      vi.mocked(catalog.requireCatalogEntry).mockImplementation(() => ({
+        id: 'claude',
+        cliSubcommand: 'claude',
+        vendorResumeSupport: 'supported',
+        getDaemonSpawnHooks: async () => ({
+          ...claudeDaemonSpawnHooks,
+          validateSpawn: async () => ({ ok: true as const }),
+        }),
+      }));
+      vi.mocked(catalog.resolveCatalogAgentId).mockReturnValue('claude');
+      vi.mocked(catalog.resolveAgentCliSubcommand).mockReturnValue('claude');
+      const { startDaemon } = await import('./startDaemon');
+      run = startDaemon();
+      const spawnSession = await waitForSpawnSessionRegistration();
+      setActiveAccountSettingsSnapshot({
+        source: 'network',
+        settingsVersion: 1,
+        loadedAtMs: Date.now(),
+        settingsSecretsReadKeys: [],
+        settings: accountSettingsParse({ claudeUnifiedTerminalEnabled: true }),
+      });
+      const result = await spawnSession({
+        directory: '/tmp',
+        backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+        terminal: { mode: 'herdr', herdr: { sessionName: 'default' } },
+        token: 't',
+      });
+
+      if (result.type !== 'success') throw new Error(JSON.stringify(result));
+      expect(result).toMatchObject({ type: 'success' });
+      expect(herdrSpawnCapture.createPane).toHaveBeenCalledWith(expect.objectContaining({
+        argv: expect.arrayContaining([
+          'claude',
+          '--happy-starting-mode', 'local',
+          '--happy-terminal-mode', 'herdr',
+          '--happy-terminal-requested', 'herdr',
+          '--happy-herdr-session-name', 'default',
+          '--happy-terminal-attachment-id',
+        ]),
+        env: expect.objectContaining({ HAPPIER_CLAUDE_UNIFIED_TERMINAL_PIN: '1' }),
+      }));
+      expect(spawnHappyCLI).not.toHaveBeenCalled();
+    } finally {
+      if (run) {
+        harness.requestShutdown('happier-cli');
+        await run;
+      }
+      const catalog = await import('@/backends/catalog');
+      vi.mocked(catalog.requireCatalogEntry).mockImplementation(() => ({
+        id: 'codex', cliSubcommand: 'codex', vendorResumeSupport: 'supported',
+      }));
+      vi.mocked(catalog.resolveCatalogAgentId).mockReturnValue('codex');
+      vi.mocked(catalog.resolveAgentCliSubcommand).mockReturnValue('codex');
+      const { buildHappyCliSubprocessLaunchSpec } = await import('@/utils/spawnHappyCLI');
+      vi.mocked(buildHappyCliSubprocessLaunchSpec).mockReset();
+      if (previousRefresh === undefined) delete process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
+      else process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = previousRefresh;
+      exitSpy.mockRestore();
+    }
+  });
+
   it('propagates canonicalized connected-service group bindings into the launched child env and tracked spawn options', async () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     const refreshEnvOriginal = process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
@@ -2499,10 +3494,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
         dataEncryptionKey: null,
       }),
     );
-    vi.mocked(waitForSessionWebhook).mockResolvedValueOnce({
-      type: 'success',
-      sessionId: 'sess_claude_repair',
-    });
+    vi.mocked(waitForSessionWebhook).mockImplementationOnce((params) => completeReportedSession(params, 'sess_claude_repair'));
 
     try {
       const { startDaemon } = await import('./startDaemon');
@@ -3066,6 +4058,200 @@ describe('startDaemon spawn resume wiring (integration)', () => {
     }
   });
 
+  it.each(['released', 'replaced', 'owned_dead', 'owned_alive', 'owned_replaced', 'owned_concurrent'] as const)('projects exact startup-reattached terminal custody after its descriptor is %s', async (descriptorCase) => {
+    const owned = descriptorCase.startsWith('owned_');
+    const { configuration } = await import('@/configuration');
+    const originalHome = configuration.happyHomeDir;
+    const fixtureHome = await mkdtemp(join(tmpdir(), 'happier-reattached-borrowed-'));
+    const refreshEnvOriginal = process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
+    process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = 'false';
+    Object.defineProperty(configuration, 'happyHomeDir', { value: fixtureHome });
+    const pid = 2_147_482_911;
+    const sessionId = 'sess-reattached-borrowed';
+    const attachmentId = 'attachment-reattached-borrowed';
+    const terminal = {
+      mode: 'herdr' as const,
+      herdr: { sessionName: 'default', socketPath: '/tmp/herdr.sock', terminalId: 'user-terminal' },
+      controlServiceabilityV1: { v: 1 as const, attachmentId, state: 'servable' as const, observedAt: 1 },
+    };
+    const metadata = {
+      path: '/tmp/project', host: 'test-host', homeDir: '/tmp/home', happyHomeDir: fixtureHome,
+      happyLibDir: '/tmp/lib', happyToolsDir: '/tmp/tools', terminal,
+    };
+    let serverMetadata: Record<string, unknown> = metadata;
+    let metadataVersion = 1;
+    const secondSessionId = `${sessionId}-second`;
+    const secondAttachmentId = `${attachmentId}-second`;
+    const secondTerminal = { ...terminal,
+      herdr: { ...terminal.herdr, terminalId: 'second-terminal' },
+      controlServiceabilityV1: { ...terminal.controlServiceabilityV1, attachmentId: secondAttachmentId } };
+    const secondServer = { metadata: { ...metadata, terminal: secondTerminal } as Record<string, unknown>, version: 1 };
+    const markers = await vi.importActual<typeof import('./sessionRegistry')>('./sessionRegistry');
+    const attachments = await vi.importActual<typeof import('@/terminal/attachment/terminalAttachmentInfo')>('@/terminal/attachment/terminalAttachmentInfo');
+    const { buildTerminalHostHandleFromAttachmentMetadata } = await import('@/agent/runtime/terminal/attachmentMetadata');
+    const reattach = await import('./sessions/reattachFromMarkers');
+    const exits = await import('./sessions/onChildExited');
+    const updates = await import('@/session/metadata/updateSessionMetadataWithRetry');
+    const doctor = await import('./doctor');
+    const sockets = await import('@/api/session/sockets');
+    const supervision = await import('./sessions/disconnectedTerminalHostSupervision');
+    const actualSupervision = await vi.importActual<typeof supervision>('./sessions/disconnectedTerminalHostSupervision');
+    const hosts = await import('@/integrations/terminalHost/defaultRegistry');
+    const terminalHostRegistry = await hosts.createDefaultTerminalHostRegistry();
+    const hostAdapter = terminalHostRegistry.herdr!;
+    vi.spyOn(hosts, 'createDefaultTerminalHostRegistry').mockResolvedValue(terminalHostRegistry);
+    // This adapter is the terminal-host OS boundary; liveness/retirement policy stays real.
+    let resolveProbeStarted!: () => void;
+    let releaseProbe!: () => void;
+    const probeStarted = new Promise<void>((resolve) => { resolveProbeStarted = resolve; });
+    const probeReleased = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    let secondExitStarted = false;
+    let resolveSecondExitRead!: () => void;
+    const secondExitRead = new Promise<void>((resolve) => { resolveSecondExitRead = resolve; });
+    vi.spyOn(hostAdapter, 'evaluateLiveness').mockImplementation(async (handle) => {
+      if (descriptorCase === 'owned_concurrent' && handle.terminalId === terminal.herdr.terminalId) {
+        resolveProbeStarted();
+        await probeReleased;
+      }
+      return { paneAlive: descriptorCase === 'owned_alive', observedAt: 2 };
+    });
+    vi.mocked(supervision.superviseDisconnectedTerminalHostCandidate).mockImplementation(actualSupervision.superviseDisconnectedTerminalHostCandidate);
+    let exitHandler: ReturnType<typeof exits.createOnChildExited> | undefined;
+    let resolveExitReady!: () => void;
+    const exitReady = new Promise<void>((resolve) => { resolveExitReady = resolve; });
+    let trackedSessions: Map<number, import('./types').TrackedSession> | undefined;
+    let run: Promise<void> | null = null;
+    vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const originalKill = process.kill.bind(process);
+    vi.spyOn(process, 'kill').mockImplementation(((targetPid, signal) => {
+      if ((targetPid === pid || targetPid === pid + 1) && signal === 0) return true;
+      return originalKill(targetPid, signal);
+    }) as typeof process.kill);
+    vi.spyOn(doctor, 'findAllHappyProcesses').mockResolvedValue([
+      { pid, command: 'happier claude', type: 'user-session' },
+      ...(descriptorCase === 'owned_concurrent' ? [{ pid: pid + 1, command: 'happier claude', type: 'user-session' }] : []),
+    ]);
+    vi.mocked(reattach.reattachTrackedSessionsFromMarkers).mockImplementation(actualReattachmentOwner.reattachTrackedSessionsFromMarkers);
+    vi.mocked(exits.createOnChildExited).mockImplementation((params) => {
+      trackedSessions = params.pidToTrackedSession;
+      exitHandler = actualChildExitOwner.createOnChildExited(params);
+      resolveExitReady();
+      return exitHandler;
+    });
+    sessionRegistryCapture.removeSessionMarker.mockImplementation(markers.removeSessionMarker);
+    claudeEndpointRecoveryBoundaryMocks.readTerminalAttachmentInfo.mockImplementation(async (params) => {
+      const attachment = await attachments.readTerminalAttachmentInfo({ ...params, happyHomeDir: fixtureHome });
+      if (secondExitStarted && params.sessionId === secondSessionId) resolveSecondExitRead();
+      return attachment;
+    });
+    claudeEndpointRecoveryBoundaryMocks.removeTerminalAttachmentInfo.mockImplementation(async (params) =>
+      await attachments.removeTerminalAttachmentInfo({ ...params, happyHomeDir: fixtureHome }));
+    vi.mocked(updates.updateSessionMetadataWithRetry).mockImplementation(actualMetadataUpdateOwner.updateSessionMetadataWithRetry);
+    vi.mocked(fetchSessionByIdCompat).mockImplementation(async (params) => createSessionRecordFixture({
+      id: params.sessionId, encryptionMode: 'plain',
+      metadata: JSON.stringify(params.sessionId === secondSessionId ? secondServer.metadata : serverMetadata),
+      metadataVersion: params.sessionId === secondSessionId ? secondServer.version : metadataVersion, dataEncryptionKey: null,
+    }));
+    // Socket.io is the server boundary; metadata decoding, update CAS, and retirement stay real.
+    vi.spyOn(sockets, 'createSessionScopedSocket').mockImplementation((params) => {
+      const events = new EventEmitter();
+      return {
+        connected: true,
+        on: events.on.bind(events), off: events.off.bind(events),
+        connect: () => events.emit('connect'), disconnect: () => {}, close: () => {},
+        emit: (_event: string, payload: { expectedVersion: number; metadata: string }, ack: (answer: unknown) => void) => {
+          if (params.sessionId === secondSessionId) {
+            expect(payload.expectedVersion).toBe(secondServer.version);
+            secondServer.metadata = JSON.parse(payload.metadata) as Record<string, unknown>;
+            secondServer.version += 1;
+          } else {
+            expect(payload.expectedVersion).toBe(metadataVersion);
+            serverMetadata = JSON.parse(payload.metadata) as Record<string, unknown>;
+            metadataVersion += 1;
+          }
+          ack({ result: 'success', version: params.sessionId === secondSessionId ? secondServer.version : metadataVersion, metadata: payload.metadata });
+        },
+      } as unknown as ReturnType<typeof sockets.createSessionScopedSocket>;
+    });
+    try {
+      await markers.writeSessionMarker({ pid, happySessionId: sessionId, startedBy: 'terminal',
+        processCommandHash: markers.hashProcessCommand('happier claude'), metadata });
+      await attachments.writeTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId, attachmentId,
+        lifecycle: owned ? 'owned' : 'borrowed', terminal, handle: buildTerminalHostHandleFromAttachmentMetadata(terminal)! });
+      if (descriptorCase === 'owned_concurrent') {
+        await markers.writeSessionMarker({ pid: pid + 1, happySessionId: secondSessionId, startedBy: 'terminal',
+          processCommandHash: markers.hashProcessCommand('happier claude'), metadata: secondServer.metadata });
+        await attachments.writeTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId: secondSessionId,
+          attachmentId: secondAttachmentId, lifecycle: 'owned', terminal: secondTerminal,
+          handle: buildTerminalHostHandleFromAttachmentMetadata(secondTerminal)! });
+      }
+      run = daemonStartupOwner.startDaemon();
+      await exitReady;
+      expect(trackedSessions?.get(pid)?.reattachedFromDiskMarker).toBe(true);
+      if (!owned) await attachments.removeTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId, expectedAttachmentId: attachmentId });
+      const replacementTerminal = { ...terminal,
+        controlServiceabilityV1: { ...terminal.controlServiceabilityV1, attachmentId: 'attachment-replacement', observedAt: 2 } };
+      if (descriptorCase === 'replaced' || descriptorCase === 'owned_replaced') {
+        await attachments.writeTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId, attachmentId: 'attachment-replacement',
+          lifecycle: descriptorCase === 'owned_replaced' ? 'owned' : 'borrowed', terminal: replacementTerminal,
+          handle: buildTerminalHostHandleFromAttachmentMetadata(replacementTerminal)! });
+        serverMetadata = { ...metadata, terminal: replacementTerminal };
+      }
+      const replacement = await attachments.readTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId });
+      const firstExit = exitHandler!(pid, { reason: 'process-exited', code: 0, signal: null });
+      if (descriptorCase === 'owned_concurrent') {
+        await probeStarted;
+        secondExitStarted = true;
+        const secondExit = exitHandler!(pid + 1, { reason: 'process-exited', code: 0, signal: null });
+        await secondExitRead;
+        // Let the descriptor-read continuation register its candidate while the first OS probe is held.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        releaseProbe();
+        await Promise.all([firstExit, secondExit]);
+        expect(secondServer.metadata).toMatchObject({ terminal: { controlServiceabilityV1: {
+          attachmentId: secondAttachmentId, retired: true, state: 'unknown', reason: 'attachment_retired',
+        } } });
+      }
+      await firstExit;
+      if (descriptorCase === 'released' || descriptorCase === 'owned_dead' || descriptorCase === 'owned_concurrent') {
+        expect(serverMetadata).toMatchObject({ terminal: { controlServiceabilityV1: {
+          attachmentId, retired: true, state: 'unknown', reason: 'attachment_retired',
+        } } });
+      } else if (descriptorCase === 'owned_alive') {
+        expect(serverMetadata).toMatchObject({ terminal: { controlServiceabilityV1: {
+          attachmentId, state: 'recoverable_unservable',
+        } } });
+      } else {
+        expect(serverMetadata).toEqual({ ...metadata, terminal: replacementTerminal });
+      }
+      if (!owned || descriptorCase === 'owned_dead' || descriptorCase === 'owned_concurrent') expect(await markers.listSessionMarkers()).toEqual([]);
+      expect(await attachments.readTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId }))
+        .toEqual(descriptorCase === 'owned_dead' || descriptorCase === 'owned_concurrent' ? null : replacement);
+      expect(trackedSessions?.has(pid)).toBe(false);
+      expect(herdrSpawnCapture.closePane).not.toHaveBeenCalled();
+      expect(claudeEndpointRecoveryBoundaryMocks.dispose).not.toHaveBeenCalled();
+    } finally {
+      releaseProbe();
+      if (run) { harness.requestShutdown('happier-cli'); await run; }
+      Object.defineProperty(configuration, 'happyHomeDir', { value: originalHome });
+      if (refreshEnvOriginal === undefined) delete process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
+      else process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = refreshEnvOriginal;
+      vi.mocked(reattach.reattachTrackedSessionsFromMarkers).mockReset();
+      vi.mocked(reattach.reattachTrackedSessionsFromMarkers).mockResolvedValue({ orphanedDeadDaemonSessions: [], connectedServiceRestartIntents: [] });
+      vi.mocked(exits.createOnChildExited).mockReset();
+      vi.mocked(exits.createOnChildExited).mockImplementation(() => vi.fn());
+      sessionRegistryCapture.removeSessionMarker.mockReset();
+      sessionRegistryCapture.removeSessionMarker.mockResolvedValue(undefined);
+      claudeEndpointRecoveryBoundaryMocks.readTerminalAttachmentInfo.mockReset();
+      claudeEndpointRecoveryBoundaryMocks.readTerminalAttachmentInfo.mockResolvedValue(null);
+      claudeEndpointRecoveryBoundaryMocks.removeTerminalAttachmentInfo.mockReset();
+      claudeEndpointRecoveryBoundaryMocks.removeTerminalAttachmentInfo.mockResolvedValue(false);
+      vi.mocked(supervision.superviseDisconnectedTerminalHostCandidate).mockReset();
+      vi.mocked(supervision.superviseDisconnectedTerminalHostCandidate).mockResolvedValue({ state: 'recoverable_unservable', reason: 'control_descriptor_missing' });
+      await rm(fixtureHome, { recursive: true, force: true });
+    }
+  });
+
   it('preserves an exact terminal-host exit marker and routes later Stop through disconnected-host retirement', async () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     const refreshEnvOriginal = process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
@@ -3230,6 +4416,93 @@ describe('startDaemon spawn resume wiring (integration)', () => {
         observedAt: 3,
       })).rejects.toThrow('terminal_attachment_unavailable_after_runner_exit');
 
+      const borrowedAttachmentId = 'attachment-terminal-borrowed';
+      const terminalBorrowed = {
+        ...terminalOwned,
+        pid: 7514,
+        happySessionId: 'sess-terminal-borrowed',
+        happySessionMetadataFromLocalWebhook: {
+          path: '/tmp/workspace-claude',
+          terminal: {
+            mode: 'herdr' as const,
+            herdr: {
+              sessionName: 'default',
+              socketPath: '/tmp/herdr.sock',
+              terminalId: 'terminal_borrowed',
+            },
+          },
+        },
+        publishedTerminalControlServiceabilityAttachmentId: borrowedAttachmentId,
+        publishedTerminalControlServiceabilityAttachmentLifecycle: 'borrowed' as const,
+      };
+      expect(shouldPreserveSessionMarkerOnExit({
+        pid: terminalBorrowed.pid,
+        trackedSession: terminalBorrowed,
+        exit,
+      })).toBe(false);
+      claudeEndpointRecoveryBoundaryMocks.readTerminalAttachmentInfo.mockResolvedValueOnce(null);
+      updateSessionMetadataWithRetryMock.mockClear();
+      await expect(onFinalTrackedSessionExitStaged({
+        pid: terminalBorrowed.pid,
+        trackedSession: terminalBorrowed,
+        exit,
+        observedAt: 4,
+      })).resolves.toBeUndefined();
+      expect(updateSessionMetadataWithRetryMock).toHaveBeenCalledOnce();
+
+      const replacementHome = await mkdtemp(join(tmpdir(), 'happier-borrowed-replacement-'));
+      const attachments = await vi.importActual<typeof import('@/terminal/attachment/terminalAttachmentInfo')>(
+        '@/terminal/attachment/terminalAttachmentInfo',
+      );
+      const { buildTerminalHostHandleFromAttachmentMetadata } = await import('@/agent/runtime/terminal/attachmentMetadata');
+      try {
+        const replacementTerminal = {
+          mode: 'herdr' as const,
+          herdr: {
+            sessionName: 'default',
+            socketPath: '/tmp/herdr.sock',
+            terminalId: 'terminal_replacement',
+            paneId: 'replacement-pane',
+          },
+        };
+        await attachments.writeTerminalAttachmentInfo({
+          happyHomeDir: replacementHome,
+          sessionId: terminalBorrowed.happySessionId,
+          attachmentId: 'attachment-terminal-borrowed-replacement',
+          lifecycle: 'borrowed',
+          handle: buildTerminalHostHandleFromAttachmentMetadata(replacementTerminal)!,
+          terminal: replacementTerminal,
+        });
+        const replacement = await attachments.readTerminalAttachmentInfo({
+          happyHomeDir: replacementHome,
+          sessionId: terminalBorrowed.happySessionId,
+        });
+        expect(replacement?.version).toBe(3);
+        // Redirect only the filesystem boundary to this isolated fixture; retain
+        // the real attachment parser, identity checks, and retirement operation.
+        claudeEndpointRecoveryBoundaryMocks.readTerminalAttachmentInfo.mockImplementation(async () =>
+          await attachments.readTerminalAttachmentInfo({
+            happyHomeDir: replacementHome,
+            sessionId: terminalBorrowed.happySessionId,
+          }));
+        claudeEndpointRecoveryBoundaryMocks.removeTerminalAttachmentInfo.mockImplementation(async (params) =>
+          await attachments.removeTerminalAttachmentInfo({ ...params, happyHomeDir: replacementHome }));
+        await onFinalTrackedSessionExitStaged({
+          pid: terminalBorrowed.pid,
+          trackedSession: terminalBorrowed,
+          exit,
+          observedAt: 5,
+        });
+        expect(await attachments.readTerminalAttachmentInfo({
+          happyHomeDir: replacementHome,
+          sessionId: terminalBorrowed.happySessionId,
+        })).toEqual(replacement);
+      } finally {
+        await rm(replacementHome, { recursive: true, force: true });
+        claudeEndpointRecoveryBoundaryMocks.removeTerminalAttachmentInfo.mockReset();
+        claudeEndpointRecoveryBoundaryMocks.removeTerminalAttachmentInfo.mockResolvedValue(false);
+      }
+
       expect(stopSessionMocks.stopSession).toHaveBeenCalledTimes(2);
       expect(stopSessionMocks.createStopSession).toHaveBeenCalledTimes(2);
       const reconstructedStopInput = stopSessionMocks.createStopSession.mock.calls[1]?.[0];
@@ -3348,10 +4621,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     const refreshEnvOriginal = process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
     process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = 'false';
-    vi.mocked(waitForSessionWebhook).mockResolvedValueOnce({
-      type: 'success',
-      sessionId: 'sess-pre-resolved-1',
-    });
+    vi.mocked(waitForSessionWebhook).mockImplementationOnce((params) => completeReportedSession(params, 'sess-pre-resolved-1'));
     vi.mocked(fetchSessionByIdCompat).mockRejectedValue(new Error('fetch should not be needed when the attach payload is pre-resolved'));
 
     let run: Promise<void> | null = null;
@@ -3525,6 +4795,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
         connectedServices: { v: 1, bindingsByServiceId: {} },
         connectedServicesUpdatedAt: 103,
         initialTranscriptAfterSeq: 41,
+        spawnNonce: 'adopt-ready-existing-runner',
         executionAuthorization: { provenance: 'user_request', requestId: 'message-42' },
       }, { onBeforeRunnerLaunchAccepted: vi.fn(async () => { throw new Error('must not claim adopted runner'); }) });
 
@@ -3533,6 +4804,8 @@ describe('startDaemon spawn resume wiring (integration)', () => {
         sessionId: 'sess_already_running',
         runnerAcceptance: 'preexisting_or_adopted',
       });
+      expect(await harness.getResolveSpawnSessionByNonce()!('adopt-ready-existing-runner'))
+        .toEqual({ status: 'success', sessionId: 'sess_already_running' });
       expect(fetchSessionByIdCompat).toHaveBeenCalledWith(expect.objectContaining({
         token: 'token-daemon',
         sessionId: 'sess_already_running',
@@ -3689,6 +4962,11 @@ describe('startDaemon spawn resume wiring (integration)', () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     const refreshEnvOriginal = process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
     process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = 'false';
+    const { configuration } = await import('@/configuration');
+    const originalHome = configuration.happyHomeDir;
+    const fixtureHome = await mkdtemp(join(tmpdir(), 'happier-endpoint-retirement-'));
+    Object.defineProperty(configuration, 'happyHomeDir', { value: fixtureHome });
+    const attachments = await vi.importActual<typeof import('@/terminal/attachment/terminalAttachmentInfo')>('@/terminal/attachment/terminalAttachmentInfo');
     const sessionId = 'sess_exact_unusable_recovery';
     const attachmentId = 'attachment-exact-unusable' as NonNullable<
       import('@/integrations/terminalHost/_types').TerminalHostHandle['attachmentId']
@@ -3730,7 +5008,6 @@ describe('startDaemon spawn resume wiring (integration)', () => {
       mcpUrl: 'http://127.0.0.1:45124',
       mcpPort: 45124,
     };
-    let attachmentPresent = true;
     let run: Promise<void> | null = null;
 
     try {
@@ -3741,19 +5018,23 @@ describe('startDaemon spawn resume wiring (integration)', () => {
         dataEncryptionKey: null,
       }));
       claudeEndpointRecoveryBoundaryMocks.readTerminalAttachmentInfo.mockReset();
-      claudeEndpointRecoveryBoundaryMocks.readTerminalAttachmentInfo.mockImplementation(async () => (
-        attachmentPresent ? attachmentInfo : null
-      ));
+      claudeEndpointRecoveryBoundaryMocks.readTerminalAttachmentInfo.mockImplementation(attachments.readTerminalAttachmentInfo);
       claudeEndpointRecoveryBoundaryMocks.removeTerminalAttachmentInfo.mockReset();
-      claudeEndpointRecoveryBoundaryMocks.removeTerminalAttachmentInfo.mockImplementation(async () => {
-        attachmentPresent = false;
-        return true;
-      });
+      claudeEndpointRecoveryBoundaryMocks.removeTerminalAttachmentInfo.mockImplementation(attachments.removeTerminalAttachmentInfo);
+      await attachments.writeTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId, attachmentId,
+        handle, terminal: attachmentInfo.terminal });
       claudeEndpointRecoveryBoundaryMocks.readClaudeEndpointDescriptor.mockReset();
       claudeEndpointRecoveryBoundaryMocks.readClaudeEndpointDescriptor.mockResolvedValue(endpointState);
       claudeEndpointRecoveryBoundaryMocks.evaluateLiveness.mockReset();
       claudeEndpointRecoveryBoundaryMocks.evaluateLiveness.mockResolvedValue({ paneAlive: true, observedAt: 1 });
       claudeEndpointRecoveryBoundaryMocks.dispose.mockClear();
+
+      const hosts = await import('@/integrations/terminalHost/defaultRegistry');
+      const adapters = await hosts.createDefaultTerminalHostRegistry();
+      // Configure the consumed OS adapter, not an unconsumed fixture-side liveness projection.
+      vi.spyOn(adapters.zellij!, 'evaluateLiveness').mockImplementation(claudeEndpointRecoveryBoundaryMocks.evaluateLiveness);
+      vi.spyOn(adapters.zellij!, 'dispose').mockImplementation(claudeEndpointRecoveryBoundaryMocks.dispose);
+      vi.spyOn(hosts, 'createDefaultTerminalHostRegistry').mockResolvedValue(adapters);
 
       const { startDaemon } = await import('./startDaemon');
       run = startDaemon();
@@ -3802,6 +5083,8 @@ describe('startDaemon spawn resume wiring (integration)', () => {
       claudeEndpointRecoveryBoundaryMocks.dispose.mockClear();
       if (refreshEnvOriginal === undefined) delete process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
       else process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = refreshEnvOriginal;
+      Object.defineProperty(configuration, 'happyHomeDir', { value: originalHome });
+      await rm(fixtureHome, { recursive: true, force: true });
       exitSpy.mockRestore();
     }
   });
@@ -3811,6 +5094,11 @@ describe('startDaemon spawn resume wiring (integration)', () => {
     const refreshEnvOriginal = process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
     const endpointStateEnvOriginal = process.env[HAPPIER_CLAUDE_ENDPOINT_STATE_ENV_KEY];
     process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = 'false';
+    const { configuration } = await import('@/configuration');
+    const originalHome = configuration.happyHomeDir;
+    const fixtureHome = await mkdtemp(join(tmpdir(), 'happier-dead-endpoint-retirement-'));
+    Object.defineProperty(configuration, 'happyHomeDir', { value: fixtureHome });
+    const attachments = await vi.importActual<typeof import('@/terminal/attachment/terminalAttachmentInfo')>('@/terminal/attachment/terminalAttachmentInfo');
     process.env[HAPPIER_CLAUDE_ENDPOINT_STATE_ENV_KEY] = JSON.stringify({ daemonStale: true });
     const sessionId = 'sess_positive_dead_stale_recovery';
     const attachmentId = 'attachment-positive-dead' as NonNullable<
@@ -3825,7 +5113,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
         metadata: JSON.stringify({ flavor: 'claude', claudeSessionId: 'vendor-positive-dead', path: '/tmp' }),
         dataEncryptionKey: null,
       }));
-      claudeEndpointRecoveryBoundaryMocks.readTerminalAttachmentInfo.mockResolvedValue({
+      const attachmentInfo: TerminalAttachmentInfo = {
         version: 2,
         attachmentId,
         sessionId,
@@ -3851,13 +5139,23 @@ describe('startDaemon spawn resume wiring (integration)', () => {
           },
         },
         updatedAt: 1,
-      });
+      };
+      await attachments.writeTerminalAttachmentInfo({ happyHomeDir: fixtureHome, sessionId, attachmentId,
+        handle: attachmentInfo.handle, terminal: attachmentInfo.terminal });
+      claudeEndpointRecoveryBoundaryMocks.readTerminalAttachmentInfo.mockImplementation(attachments.readTerminalAttachmentInfo);
       claudeEndpointRecoveryBoundaryMocks.evaluateLiveness.mockResolvedValue({
         paneAlive: false,
         paneDead: true,
         observedAt: 1,
       });
-      claudeEndpointRecoveryBoundaryMocks.removeTerminalAttachmentInfo.mockResolvedValue(true);
+      claudeEndpointRecoveryBoundaryMocks.removeTerminalAttachmentInfo.mockImplementation(attachments.removeTerminalAttachmentInfo);
+
+      const hosts = await import('@/integrations/terminalHost/defaultRegistry');
+      const adapters = await hosts.createDefaultTerminalHostRegistry();
+      // Exact death/disposal is observed through the host OS boundary used by recovery.
+      vi.spyOn(adapters.zellij!, 'evaluateLiveness').mockImplementation(claudeEndpointRecoveryBoundaryMocks.evaluateLiveness);
+      vi.spyOn(adapters.zellij!, 'dispose').mockImplementation(claudeEndpointRecoveryBoundaryMocks.dispose);
+      vi.spyOn(hosts, 'createDefaultTerminalHostRegistry').mockResolvedValue(adapters);
 
       const { startDaemon } = await import('./startDaemon');
       run = startDaemon();
@@ -3898,6 +5196,14 @@ describe('startDaemon spawn resume wiring (integration)', () => {
       else process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = refreshEnvOriginal;
       if (endpointStateEnvOriginal === undefined) delete process.env[HAPPIER_CLAUDE_ENDPOINT_STATE_ENV_KEY];
       else process.env[HAPPIER_CLAUDE_ENDPOINT_STATE_ENV_KEY] = endpointStateEnvOriginal;
+      claudeEndpointRecoveryBoundaryMocks.readTerminalAttachmentInfo.mockReset();
+      claudeEndpointRecoveryBoundaryMocks.readTerminalAttachmentInfo.mockResolvedValue(null);
+      claudeEndpointRecoveryBoundaryMocks.removeTerminalAttachmentInfo.mockReset();
+      claudeEndpointRecoveryBoundaryMocks.removeTerminalAttachmentInfo.mockResolvedValue(false);
+      claudeEndpointRecoveryBoundaryMocks.evaluateLiveness.mockReset();
+      claudeEndpointRecoveryBoundaryMocks.evaluateLiveness.mockResolvedValue({ paneAlive: true, observedAt: 1 });
+      Object.defineProperty(configuration, 'happyHomeDir', { value: originalHome });
+      await rm(fixtureHome, { recursive: true, force: true });
       exitSpy.mockRestore();
     }
   });
@@ -4095,7 +5401,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
       })).resolves.toEqual({
         type: 'error',
         errorCode: SPAWN_SESSION_ERROR_CODES.UNEXPECTED,
-        errorMessage: 'This session has a preserved terminal host that cannot be controlled safely. Stop the session, then Resume again to launch a fresh host.',
+        errorMessage: expect.any(String),
       });
       expect(spawnHappyCLI).not.toHaveBeenCalled();
 
@@ -4804,10 +6110,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
       mode: 'plain',
       ctx: pendingMaterializationRpcMocks.ctx,
     });
-    vi.mocked(waitForSessionWebhook).mockResolvedValueOnce({
-      type: 'success',
-      sessionId: 'sess_terminating_predecessor',
-    });
+    vi.mocked(waitForSessionWebhook).mockImplementationOnce((params) => completeReportedSession(params, 'sess_terminating_predecessor'));
 
     let run: Promise<void> | null = null;
     try {
@@ -4915,10 +6218,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
             dataEncryptionKey: null,
           })
     ));
-    vi.mocked(waitForSessionWebhook).mockResolvedValueOnce({
-      type: 'success',
-      sessionId: 'sess_claude_repair',
-    });
+    vi.mocked(waitForSessionWebhook).mockImplementationOnce((params) => completeReportedSession(params, 'sess_claude_repair'));
 
     let run: Promise<unknown> | null = null;
     let shutdownRequested = false;
@@ -5143,11 +6443,8 @@ describe('startDaemon spawn resume wiring (integration)', () => {
       const { startDaemon } = await import('./startDaemon');
 
       const run = startDaemon();
-      let spawnSession = harness.getSpawnSession();
-      for (let attempt = 0; attempt < 20 && !spawnSession; attempt += 1) {
-        await vi.advanceTimersByTimeAsync(0);
-        spawnSession = harness.getSpawnSession();
-      }
+      await vi.waitFor(() => expect(harness.getSpawnSession()).not.toBeNull());
+      const spawnSession = harness.getSpawnSession();
       if (!spawnSession) {
         throw new Error('Expected spawnSession to be registered');
       }
@@ -5302,10 +6599,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
     process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED = 'false';
 
     const waitForSessionWebhookMock = vi.mocked(waitForSessionWebhook);
-    waitForSessionWebhookMock.mockImplementationOnce(async () => ({
-      type: 'success',
-      sessionId: 'sess_plain',
-    }));
+    waitForSessionWebhookMock.mockImplementationOnce(completeReportedSession);
 
     try {
       const { startDaemon } = await import('./startDaemon');
@@ -5336,7 +6630,7 @@ describe('startDaemon spawn resume wiring (integration)', () => {
       await run;
     } finally {
       waitForSessionWebhookMock.mockReset();
-      waitForSessionWebhookMock.mockImplementation(async () => ({ type: 'success', sessionId: 'sess_plain' }));
+      waitForSessionWebhookMock.mockImplementation(completeReportedSession);
       if (refreshEnvOriginal === undefined) {
         delete process.env.HAPPIER_CONNECTED_SERVICES_REFRESH_ENABLED;
       } else {

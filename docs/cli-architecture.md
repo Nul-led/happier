@@ -211,6 +211,50 @@ refreshed by the existing detached `self check`). A `start` issued while the ser
 still runs another CLI version is promoted to `restart` on every platform (`systemctl start` on an
 active unit is a no-op).
 
+### One daemon per relay on one machine
+
+A Happier home can run one daemon per relay profile at the same time (`happier daemon status --all`
+lists them), so this computer can serve sessions from several relays at once. A daemon's lifecycle
+scope is its lifecycle directory — `servers/<HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID or active server id>/`,
+holding its `daemon.state.json` and `daemon.state.json.lock` — and only that scope is its to manage:
+
+- **Start-up orphan reap** (`reapCurrentLifecycleDaemonOrphansBeforeStart`, `src/daemon/multiDaemon.ts`)
+  stops only live daemons that published state in the starting daemon's own lifecycle directory and
+  are not its preserved owner. In practice that is a pre-canonical CLI whose ring-scoped
+  `daemon.<ring>.state.json` and lock sit beside the canonical ones, which the canonical lock cannot
+  exclude. A daemon without a control token is reported, never stopped. Other relays' daemons live in
+  other lifecycle directories and are never touched.
+- **Service install conflicts** (`src/daemon/service/daemonInstallConflict.ts`): a pinned target
+  competes with a service of the same instance id, and on its own ring with a service serving the
+  same relay (same profile id or same `createServerUrlComparableKey`) or whose relay is unknown. The
+  default-following service serves the persisted active profile, so a pinned service for another
+  relay coexists with it; one for that same relay still competes. Pinned services for different
+  relays coexist.
+- **A service per relay is pinned.** `daemon service install` without `--instance`/`--ring` installs
+  the single default-following service (an explicit `--server` only scopes that invocation); a relay
+  gets its own service with `--server <id> … --instance <id>`, or through desktop setup's `pinned`
+  placement (`HAPPIER_DAEMON_SERVICE_TARGET_MODE=pinned`). `daemon status --all`
+  (`listDaemonStatusesForAllKnownServers`) reports for each relay the service that serves it: its
+  pinned service, else — for the persisted selection only — the default-following one.
+- **Background-service repair** (`buildBackgroundServiceRepairPlan`, used by `service repair`,
+  `doctor repair`, the guided repair `self update` offers and the 0.2.3 migration) removes a pinned
+  service only when it serves the current relay (the legacy per-server unit, or a duplicate under
+  another profile id), through the same `daemonServiceRelaysMayMatch` rule. A pinned service for
+  another relay is never repaired away. Every service a repair removes is listed before consent and
+  before `--yes` applies (`renderPlannedServiceRemovals`). Before removing a definition, the repair
+  executor captures its autostart mode, desktop-management marker and bundle attribution through
+  the installer's `readDaemonServicePreservedInstallOptions`. The plan identifies the replaced
+  default (or the migrated current-relay pin when no default exists); its captured settings flow
+  into reinstall. Rollback restores each removed service with its own settings. In-place rewrites
+  use the same installer-owned preservation logic.
+- **Selecting a relay that has its own pinned service** (`server use` / `server set`, through
+  `runServerSelectionBackgroundServiceFollowUp`): that relay is already served, so the
+  default-following service is not restarted (it would only leave the previous relay) and says
+  so; it goes idle for that relay at its next restart. `--json` reports the same outcome as
+  `data.backgroundService` (`resolveServerSelectionBackgroundServiceOutcome`).
+- `daemon stop` stops the current scope only; `daemon stop --all` and `auth logout --all` deliberately
+  stop every relay's daemon.
+
 ### One CLI update transaction (plan R13 f)
 
 `runManagedCliUpdate` (`packages/cli-common/src/firstPartyRuntime/runManagedCliUpdate.ts`) is the
@@ -244,10 +288,15 @@ version being replaced:
    rewrite into this transaction's own `<home>/bin/.update-rollback/<id>/` (renaming works on a
    running Windows `.exe` where deleting it does not). If moving one fails, the ones already moved
    are put back first. Nothing removes another transaction's set-aside entries.
-5. **Restart and prove,** only when the service's own daemon was running before the update: through
-   the CLI service owner (`daemon service restart` run by the activated binary — its ownership wait
-   is the budget), then the owner must report the target version. `last-update.json` says
-   `pendingReconnect` meanwhile.
+5. **Restart and prove** every service daemon that ran before the update — this home's and ring's
+   default-following service and each pinned service (one daemon per relay) — through the CLI
+   service owner (`daemon service restart` run by the activated binary, addressed to that service —
+   its ownership wait is the budget); then each must report the target version. Every daemon is
+   attempted before a failure is reported by service label. Only the services the update owns —
+   the default-following one and pinned services the desktop manages (`managedBy: desktop`) —
+   decide success: their failure rolls back. A user-owned pinned service is restarted too, but a
+   failure there is named (stderr for the CLI, a `cli.update.restartServices` progress event for
+   the desktop) and the update is kept. `last-update.json` says `pendingReconnect` meanwhile.
 6. **Commit** (drop this transaction's set-aside launchers, prune to current + previous) **or
    recover:** restore everything captured, restart the previous binary and prove it, and only then
    report. Rollback happens only when activation or that local proof failed — never because the
@@ -269,15 +318,21 @@ state a failing new daemon wrote only for the supported predecessor transition b
 not supervise the service manager beyond the one restart it performs (systemd/launchd/Task
 Scheduler restart policy is theirs).
 
-The service decision is one predicate per caller boundary: the CLI plans it from the daemon owner
-observed before the update (`planServiceDaemonRestartAfterUpdate`: this channel's own service
-label, never a manual daemon or another channel's service); bootstrap reads `daemon status --json`
-through `createSelectedCliInvocation` (inherited relay selectors cleared, so the daemon it verifies
-is the one the service runs).
+Which daemons come back is one rule, `planServiceDaemonsRestartAfterCliUpdate`
+(`packages/cli-common/src/firstPartyRuntime/serviceDaemonsToRestartAfterCliUpdate.ts`): the
+default-following service and every pinned service of this home and ring whose own service ran its
+daemon before the update — never a manual daemon or another ring's service. Only the observation
+differs per caller: the CLI (`planServiceDaemonsRestartAfterUpdate`, used by `self update` and, on
+Windows, `self __install-payload`) reads the installed definitions and each service's lifecycle
+directory in-process; bootstrap reads `daemon status --json` through `createSelectedCliInvocation`
+(inherited relay selectors cleared) plus each pinned service's status from `daemon service list
+--json`.
 
 **Windows.** The two local paths differ. `happier self update` stops the payload's processes before
 activation (`quiesceInstalledCliWindowsPayloadOwners`: `service stop`, `daemon stop --all
---kill-sessions`, `taskkill /T` — **running sessions are ended**), as the installer does. The
+--kill-sessions`, `taskkill /T` — **running sessions are ended**, on every relay), as the installer
+does; each service daemon observed before that stop is restarted afterwards (above), a manual
+daemon is not. The
 desktop's `cli.update.v1` does not pass that step: it relies on the launcher move-aside and does
 not end sessions, but it is unverified on a real Windows host. Remote update is disabled on Windows
 (below).
@@ -426,13 +481,22 @@ on-demand.
 
 ### Desktop control of the background service
 
-Desktop settings carries two switches, and they are not the same switch. **Launch at login** starts
-the *app* and is Tauri's own autostart
-(`apps/ui/sources/components/settings/desktop/useDesktopAutostart.ts` →
-`desktop_set_autostart_enabled`). **Stay reachable in the background** is the *installed service*
-(`useDesktopBackgroundServiceAutostart.ts`), and it changes what this computer does when nobody is
-signed in at it. Its subtitle says so plainly, because turning it off trades away the capability
-Happier exists for: with it off, phone and browser cannot reach this computer once the app closes.
+Desktop settings carries **one** login-start switch (R16 b). **Stay reachable in the background** is the
+*installed service* (`useDesktopBackgroundServiceAutostart.ts`), and it changes what this computer does
+when nobody is signed in at it. Its subtitle says so plainly, because turning it off trades away the
+capability Happier exists for: with it off, phone and browser cannot reach this computer once the app
+quits. The desktop app's own login item is no longer a separate setting: it **follows** this one
+(`src-tauri/src/autostart.rs`, the only writer) — on `at-login` the app starts at login in menu-bar mode
+(`--menu-bar`: tray only, no window, no web UI), on `on-demand` it has no login item, and while the mode
+is unknown the login item is left as it is. A login item written by an earlier version (no arguments)
+is rewritten with `--menu-bar` the first time the setting is seen on. Debug builds never write it.
+
+An app update still opens the main window after a login start. The native updater writes
+`updater-relaunch.json` beside `tray-state.json` before calling the platform installer, because
+the Windows updater exits inside that call. The file records `{ "fromVersion": "<app version>" }`;
+startup consumes and deletes it before window registration, overriding `--menu-bar` only when
+the running version differs. Failed installs clear the file and retain the downloaded package
+for Retry; malformed or same-version intent never turns a normal login start into a window.
 
 Both directions go through the CLI that owns the service definition, sequenced by two hsetup kinds
 that extend the existing `daemon.service.*` family (`apps/bootstrap/src/systemTasks/kinds/daemonService.ts`):
@@ -441,6 +505,7 @@ that extend the existing `daemon.service.*` family (`apps/bootstrap/src/systemTa
 | --- | --- | --- |
 | `daemon.service.autostart.set.v1` | `happier daemon service install --autostart=<at-login\|on-demand> --json` | Re-reads `service.autostart`; a CLI that cannot report it fails as `daemon_service_autostart_unsupported`. |
 | `daemon.service.stop.v1` | `happier daemon service stop --json` | Re-reads status; a still-running daemon fails as `daemon_service_still_running`. |
+| `daemon.service.start.v1` / `daemon.service.stop.v1` with `relayUrl` | the same command, scoped to the one service serving that relay | The tray's per-relay rows (R16 c): only that service is touched; a pinned service the user set up fails as `service_user_owned`, a relay nothing here serves as `daemon_service_not_found`. |
 
 Neither kind restates a platform rule — the CLI owns every one of them (INV9) — and neither trusts
 a command's own success.
@@ -450,8 +515,26 @@ to the tray), so "the app closed" is the app *exiting*, which happens once and n
 `src-tauri/src/shutdown.rs` holds that exit exactly once and hands the decision to the webview,
 which is the only place that knows what is running here.
 `apps/ui/sources/setup/resolveDesktopCloseDaemonDecision.ts` decides: a service that starts at login
-(or whose mode is unknown) is left alone; active agent sessions **on this computer** turn the stop
-into a question; otherwise the service stops silently. The asymmetry is deliberate — leaving the
+keeps running **and so does the tray** — the webview answers `desktop_finish_shutdown({ outcome:
+'menuBar' })` and the app drops every window and the web UI (and, on macOS, its Dock icon) but keeps a
+tray-only process (menu-bar mode, `src-tauri/src/menu_bar.rs`); an unknown mode quits outright and
+touches nothing; otherwise active agent sessions **on this computer** turn the stop into a question,
+and without them every desktop-managed service stops silently. The app sees only the sessions of the
+daemon serving its own relay, so the stop is put as a question without claiming sessions whenever
+that is not every service it would end: the status producer's `runningManagedServiceCount` is
+unknown or counts a running managed service beyond that one (a relay's own "Connect … too" service).
+The setting quit follows — like Settings' toggle and the tray's check item — is the producer's
+`managedServiceAutostart` (the common mode of every managed service; unknown when they disagree),
+never the default-following service's own. The tray's second Quit, **Stop
+background services and quit**, carries `{ stopServices: true }` with the same one handoff and stops
+them whatever the setting says (still asking when sessions run or cannot be seen). "Leave it running" on
+that question keeps the tray when the services start at login. A stop that fails is never swallowed:
+the webview shows the window, says so with bootstrap's reason, and answers `menuBar`, so the process
+stays in the tray with the services visible and the quit can be retried. A quit before this app open
+has read the setting uses the native side's last known login-start setting, which the handoff
+carries as `startAtLogin` (kept in `tray-state.json` across launches; `null` only when no setting was
+ever observed): on keeps the tray and touches nothing; off owes the stop, which — nothing read yet,
+so no session visible — is asked about before anything stops. The asymmetry is deliberate — leaving the
 daemon running costs nothing the user did not already have, while stopping it can end in-flight
 agent work — so the service is only ever stopped by an answer that was actually reached. A force
 quit, an OS shutdown or a logout that kills the app part-way through leaves it running, and an
@@ -482,8 +565,61 @@ and their only way to reopen a window that close merely hid. The tray itself is 
 mark, with no title and no status colour: a template image on macOS, and on Windows and Linux the
 full-colour mark on a light tray or a white silhouette on a dark one (Windows reads the taskbar's
 system mode, Linux the settings portal's `color-scheme`, unknown meaning dark); clicking it on any
-platform opens its menu: a disabled status line (`label · detail` from `buildDesktopTrayState`),
-**Open Happier**, and **Quit Happier** (`src-tauri/src/tray.rs`).
+platform opens its menu, built by one native builder (`src-tauri/src/tray/model.rs`
+`build_menu_entries`) from one model whatever fed it:
+
+- the title and, while the web UI runs, its status line (`label · detail` from `buildDesktopTrayState`);
+- one row per background service on this computer (every relay, `listThisComputerRelayRows` — the same
+  rows, in the same words, as the connection popover and Settings › This computer: Connected /
+  Offline / Needs attention, a status dot — a text mark on Linux, whose AppIndicator menus draw no item
+  images — and long names shortened in the middle). A desktop-managed service's submenu offers Open in
+  Happier, Start or Restart, and Stop (confirmed natively: complete session visibility is not proven); a
+  service the user set up is shown read-only. Restart is the existing stop then the existing start;
+  a pushed app-relay row's optional `activeSessionCount` adds the localized `labels.sessions`
+  template (`Sessions: {count}`), including zero; absent/null makes no session-count claim;
+- Open Happier (⌘O), the Updates item when there is one, Settings… (⌘,), the **Start at login** check
+  item (the same login-start setting, through `daemon.service.autostart.set.v1`), then **Quit Happier**
+  (⌘Q) and **Stop background services and quit**.
+  Tray Quit, service mutations and the login toggle are disabled while a native service action runs.
+
+The web UI pushes its localized labels (U14), its rows, the setting and the status task's params
+(`desktop_set_tray_state`); the native side persists labels, params, the Updates item and relay names
+in `tray-state.json` under the app data dir, so menu-bar mode — including a login start that never ran a
+web UI this session — speaks the app's language (English where a label is missing) and can read
+`daemon.service.status.v1` through hsetup itself. It reads only while tray-only: on the pointer
+reaching or pressing the icon (macOS, Windows; throttled to one read per 15 s) and on a 60 s timer on
+Linux, which reports neither; an action's own re-read is never throttled. With the main webview
+present, the same pointer callback emits `desktop_tray_refresh_requested` with
+`{ "trigger": "tray-pointer" }` to that window, gated by the same native-owned 15 s interval and
+last-refresh timestamp as pointer-triggered native reads. Native owns that admission; the matching
+embedded UI must not duplicate it. The web UI answers through its existing inspection owner
+(`desktopSetupCoordinator.refreshOnTrayPointer`), where an already-running inspection provides
+the result. A row's
+**Open in Happier** picks that relay through `selectRelayDirectly`, registering it through the
+profile owner (`upsertServerProfile`) first when the app has not saved it. The rows themselves have one owner: bootstrap's
+`listThisComputerServiceRows` puts them in the `daemon.service.status.v1` result (`serviceRows`: relay,
+state against that relay's own account, desktop-managed or user-owned, allowed actions); the web UI
+re-judges only its own relay against the app's account, and the tray renders rows as received. A failed
+service-inventory list leaves readable rows visible with no actions, because an unknown pin may
+own that relay. CLI `daemon status --all` uses the shared serving selector and reports named
+unreadable-definition failures rather than treating read errors as absent installations. A failed
+read or action is said in the menu itself (a `⚠` row, retried on the next pointer event), never only
+in a log. A second launch (`tauri-plugin-single-instance`, first plugin) opens the running app's window
+through the same path as macOS reopen; the login item firing again (`--menu-bar`) is ignored. A
+service the desktop installs (default-following or pinned) names the app in its launchd plist
+(`AssociatedBundleIdentifiers`, from `HAPPIER_DAEMON_SERVICE_BUNDLE_ID`, which bootstrap passes on
+every desktop `service install`, the CLI reads only on install and keeps on every rewrite, and a
+terminal install never sets) so macOS Login Items shows Happier; it does not change `managedBy`.
+**Open Happier** rebuilds the main window
+from its `tauri.conf.json` entry (`"create": false`: the app creates it at start unless launched with
+`--menu-bar`) and restores the regular activation policy. Destroying the last window raises an
+implicit exit request, which menu-bar mode holds; only an explicit Quit ends the tray process, and it
+follows the one login-start setting (D11-1): **on**, it leaves every service running — they and the
+tray come back at the next login; **off**, it stops every desktop-managed service first, through the
+same confirmed path as **Stop background services and quit**, and a stop that fails keeps the tray
+alive with the failure shown so it can be retried; **unknown**, it leaves every service as it is. Once
+the setting is known the item says which it will do (*Quit Happier (keep background services
+running)* / *Quit Happier and stop background services*); unknown, it is the plain *Quit Happier*.
 
 The gestures marked **No** terminate the process without an `ExitRequested`, so the background service
 is left exactly where it was — the same safe direction as a crash, and the reason the handoff never
@@ -496,10 +632,14 @@ Moving an already-configured background service to a different relay originates 
 Relay/Home action** and nowhere else. The user's durable selection target cannot carry that
 meaning — it names their *default* relay, so any navigation-, notification-, deep-link-, voice- or
 focus-driven server change that lands back on it is indistinguishable from the user choosing it.
-So the direct action records a one-shot in-memory intent
-(`apps/ui/sources/setup/directRelaySelectionIntent.ts`) before it switches the connection, and the
-desktop setup lifecycle spends that intent exactly once. Nothing is persisted: an unconsumed
-intent is simply forgotten when the app run ends. Group selection records nothing — a group names
+So every direct choice goes through one operation, `selectRelayDirectly`
+(`apps/ui/sources/setup/directRelaySelectionIntent.ts`), which records a one-shot in-memory intent
+and then switches the connection. Its callers are the connection status control's relay pick, the onboarding `/setup`
+saved-relay pick and custom-relay add, and Settings › Server's profile pick, Add (including a notification-prefilled form the person submits)
+and confirmed Reset. The desktop setup lifecycle spends that intent exactly once — after the sign-in
+detour when the chosen relay is signed out. Nothing is persisted: an unconsumed intent is simply
+forgotten when the app run ends. Deep-link auto-add, notification routing, voice and session
+navigation keep the raw switch and record nothing, and so does group selection — a group names
 several relays and cannot name one daemon target.
 
 A relay change is not the only move: a daemon validated for a **different account** than the one
@@ -526,6 +666,112 @@ only when the current facts prove the service is the app's own **default-followi
 sitting where the app last put it; its question names both relay hosts. A `pinned` service, or one
 whose `targetMode` is UNKNOWN, is asked about — and the device-local "always move my
 default-following service" preference cannot reach past either, nor past any account move.
+
+**One daemon per relay ("Connect to {relay} too").** A computer may serve several relays, one
+background service per relay (`happier daemon service list --json` / `daemon status --all`).
+
+- **Inspection.** The ambient `daemon.service.status.v1` read reports, beside the default-following
+  service's facts, `pinnedServices: { complete, coexistence, services[], unreadable[] }`: each pinned service of
+  this Happier home and ring, with `managedBy`. Each service is read through the same
+  `daemon status --json` owner, scoped to that service by `HAPPIER_ACTIVE_SERVER_ID`,
+  `HAPPIER_SERVER_URL`, `HAPPIER_DAEMON_SERVICE_TARGET_MODE=pinned` and
+  `HAPPIER_DAEMON_SERVICE_INSTANCE_ID`.
+  - Readable services are reported even without `pinnedServiceCoexistence`. `coexistence` exposes
+    that capability only for offering/executing Connect too. `complete` is the single inventory
+    completeness signal; a failed list returns an incomplete report, never "none".
+  - One unreadable service is kept by name and marks the list incomplete; it is never erased and
+    never read as "none".
+  - The status owner also reports `runningManagedServiceCount` and `managedServiceAutostart`
+    across the installed default-following service and every desktop-managed pin, before relay-row
+    deduplication. The count includes each running target even when a pin hides the default's row;
+    a known empty managed inventory is zero. The mode is known only for a nonempty inventory whose
+    managed targets all declare the same mode, including stopped targets. Failed listing or an
+    unreadable managed target makes both aggregates null; mixed/unknown modes make only the mode
+    null. User-owned pins affect neither aggregate, even when unreadable. Per-service facts remain
+    unchanged. UI consumers must use these aggregates for the global setting and quit visibility,
+    treating missing fields as unknown; they must not reconstruct them from relay rows.
+  - The CLI discovery owner classifies enumeration failures as `service_inventory_unavailable`,
+    with a named diagnostic and the underlying OS error as its cause. Startup preflight, service
+    install and self-update restart planning consume this same failure; only a missing directory
+    (`ENOENT`) proves an empty inventory.
+- **One selector.** `packages/cli-common/src/service/serving.ts#resolveServingThisComputerService`
+  selects the eligible installed pin first, otherwise the available default-following service
+  on that relay. Bootstrap's status rows and relay-targeted actions, and CLI relay-selection
+  follow-up, consume it. Bootstrap supplies status/URL eligibility; CLI supplies its already
+  relay-scoped installed inventory and retains its distinct multi-service conflict checks.
+  `serviceRows[].serving` is the sole selected-target field.
+  Row actions share the executor's installed/authentication prerequisites: a selected pin whose
+  status reports no installation remains the serving pin but offers no action, and an
+  unauthenticated installed service offers no Start/Restart (Stop remains possible when online).
+  Rows deduplicate through the canonical comparable key using `comparableKeyOrNull`; a malformed
+  relay URL is omitted rather than failing valid rows. The UI's `resolveThisComputerService`
+  consumes that designation for readiness, the readiness proof, the move question, drift and
+  Updates, row-first and with no filter of its own (a listed pin whose status says it is not
+  installed is still that relay's service); a relay whose pin is listed as unreadable resolves to
+  unknown, and the UI's list of this computer's services (quiet start, relay removal) is the rows.
+  An unreadable or user-owned pinned winner never falls through to a default service.
+- **One relay-state projection.** `resolveThisComputerRelayState` puts each relay row in one of
+  three states: connected, set up but offline, or needs attention.
+- **The question (N1).** A move that would take this computer's service off a relay it serves is
+  always asked (Move / Connect … too / Keep), unless "Always move" was chosen. This holds for a
+  direct pick, for a sign-in after adding a relay, and for an explicit "Connect this computer here".
+  A move is silent only when nothing is taken off a served relay (a first setup, the same relay).
+  An incomplete pinned list is never moved on silently, even under "Always move" (N5).
+- **The offer.** **Connect to {relay} too** appears only when the capability is present, the list
+  is complete, and the default-following service is installed on another relay.
+- **Executor guards (N4/N5).** The executor reads its own CLI's list before the service preview.
+  - A run that changes relay or installs pinned and cannot list services fails with
+    `service_inventory_unavailable`; a same-relay default-following converge proceeds.
+  - A pinned run on a CLI without `pinnedServiceCoexistence` fails with `cli_capability_missing`.
+  - A default-following run whose target relay already has a listed pinned service here (readable
+    or not) fails with `relay_has_own_service` before `server set`.
+  - The status read reports any failed list as an incomplete, empty inventory, never `null`.
+- **The executor.** The answer runs `setup.thisComputer.v1` with `serviceTargetMode: pinned`, which
+  performs every step except `server set`.
+  - After consent, the relay gets one saved CLI profile, reused or added with
+    `server add … --no-use`, never selected. Every later command is pinned to that profile id, so
+    `--all` paths and a later `server use` of the URL see the same identity.
+  - The install stamps the definition `HAPPIER_DAEMON_SERVICE_MANAGED_BY=desktop`.
+  - The persisted selection and the default-following service are untouched.
+- **Only desktop-managed services are driven.** Only `managedBy: desktop` pinned services are
+  started, stopped or given a login-start mode by the app. A pinned service the user set up is shown
+  in "this computer" status but never driven: the move policy returns `leave_user_service` and
+  nothing is launched for it.
+- **One login-start setting governs every app-managed service.**
+  - A pinned service is installed with the default-following service's autostart mode.
+  - `daemon.service.autostart.set.v1` and `daemon.service.stop.v1` act on each managed service and
+    prove the result. One bootstrap helper enumerates targets before mutation, attempts and
+    re-reads each even after a failed command, then reports all unconfirmed named failures. A
+    re-read proving the requested state confirms success despite a command error. Unreadable managed
+    services are named with `pinned_services_unknown`; a missing default service does not block
+    a pinned service's login-start setting.
+  - `daemon.service.start.v1` starts each target independently and returns per-target outcomes. A
+    broken default service does not block the relay's own service.
+  - The task fails when the default-following service failed and this run started nothing; an
+    already-running service does not count as started (N3).
+  - Settings › Start shows every failed target's reason.
+  - The on-demand quit stops them all with no extra question; only the pre-existing sessions
+    question remains.
+  - The quiet start also runs for any stopped managed service. It never runs beside a setup run the
+    coordinator is launching or running (`isSetupActive`).
+- **Removing a relay in Settings.**
+  - If a desktop-managed service serves the relay, the confirmation says this computer disconnects,
+    and names running sessions when the app can see them.
+  - On desktop, `daemon.service.relay.disconnect.v1` always runs, deciding from this computer's
+    own inventory (N2); when nothing serves the relay it does nothing. It uninstalls the service
+    (`daemon service uninstall --instance <id>`, proven by listing again) before any credential or
+    profile is removed, and the removal stops if the uninstall fails.
+  - When the app could not see every service here, the confirmation says this computer *may*
+    disconnect.
+  - R10-1: the disconnect resolves only an already-installed CLI and never acquires one. With no
+    installed CLI, or one below the setup floor, there is nothing the app set up, so the relay is
+    removed. When a CLI at the floor cannot list its services, the removal asks one explicit
+    "Remove anyway" question, saying this computer's service for that relay may keep running. If
+    the app knows its own service serves the relay, it keeps the relay.
+  - A service the user set up is left in place and the confirmation says so.
+- **CLI update.** `cli.update.v1` restarts and proves every running service daemon of this home and
+  ring through the shared `planServiceDaemonsRestartAfterCliUpdate`. It names any relay service it
+  could not read.
 
 "Keep it as is" is remembered on this device for the daemon it was said about — its relay and
 validated account — through the same device-local settings owner as "always move". While the daemon
@@ -679,6 +925,202 @@ The CLI encrypts client content before it leaves the machine using `src/api/encr
 - Session metadata, agent state, messages, machine state, artifacts, and KV values are encrypted client-side.
 - On-wire encoding is base64; see `encryption.md`.
 
+## Terminal hosting (development)
+
+Terminal hosting selects where an existing interactive session runs; it does not
+create another Happier session registry. Happier continues to own session identity,
+provider configuration, transcript ingestion, permissions, and recovery. The host
+owns the terminal process and screen. `terminal/attachment` persists their association
+and dispatches attach, stop, and host disposition.
+
+The daemon resolves presentation through provider-owned launch hooks before choosing
+a terminal host. Runtimes with a real terminal surface can open in tmux, zellij, or
+Herdr; headless ACP runtimes do not acquire a synthetic TUI. Codex App Server and
+OpenCode server open their native TUI against the existing provider session rather
+than starting another provider conversation. Hosted and ordinary runners share
+daemon registration and webhook completion. The common owner binds the reported
+session before waking its existing pending queue and clears stale Stop state when
+an explicit resume is accepted. Automatic recovery is a new launch attempt, so it
+does not reuse the original caller's already accepted request nonce.
+The webhook waiter is armed before asynchronous accepted-marker persistence;
+host binding completes only after that persistence succeeds. An accepted runner
+can already have a known session ID without being ready: nonce readiness remains
+pending until the common finalization owner settles success or failure. Recovered
+requests with no active startup finalizer recheck the accepted runner marker,
+any required exact terminal attachment, and session RPC serviceability through
+their existing owners. Those checks revalidate current custody after asynchronous reads; a known
+session ID alone cannot admit a recovered launch. A pending lookup can reprove
+readiness immediately after publication without extending its original retention
+deadline. Completed success or failure remains authoritative.
+All exit sources use the canonical child-exit owner: it preserves live-runner
+promotion, reports an actual early exit to the existing waiter immediately, and
+waits for the existing startup finalization promise before retiring its artifacts.
+The report-marker producer also joins pending writes to the correlated tracked
+session. Actual exit closes and drains that work before marker retirement;
+wrapper promotion keeps the live runner's custody and transfers the existing
+waiter's PID key. These associations are transient tracking state, not a persisted
+lifecycle or another registry. They prevent delayed writes from recreating
+artifacts after exit cleanup. Nonce HTTP resolution consumes the same
+readiness owner; a seeded session ID alone is never readiness evidence.
+
+Machine CLI authentication probes describe ambient credentials, not a session's
+selected connected-service credentials. The shared UI local-control eligibility
+owner treats ambient logout as inconclusive when the session has a valid connected
+binding for its catalog provider. It does not infer that those credentials are
+valid; the existing switch RPC and provider remain responsible for authentication.
+Native-auth sessions retain the ambient logout restriction.
+
+The UI projects live local control through `sessionLocalControl.ts`: persisted
+agent state is not evidence of a current attachment after the runner becomes
+inactive or terminal serviceability reports retirement/unavailability. Footer
+state and control-switch eligibility consume that same projection, including
+the legacy `controlledByUser` shape. Preserved-host Stop and recovery continue
+to use the terminal-serviceability policy; they are not removed when live
+control is unavailable.
+
+OpenCode V2 applies session-scoped model, reasoning, and agent controls before
+opening its native TUI, including before the first prompt. Controller-local and
+standalone attachment use the same control synchronizer. Standalone attachment
+asks the running session to prepare through the encrypted session RPC; preparation
+checks the native session identity before and after synchronization. The controller
+does not need its own TTY for this operation. Failed preparation does not launch
+the native terminal. V1 keeps its existing attachment path; ACP does not register
+native-attachment preparation. The runner alone publishes managed `localControl`
+attachment and detach custody: an independent `happier attach` client neither
+claims `canDetach` nor clears a runner-owned terminal when it exits. Shared native
+clients and Happier remain simultaneously writable; this projection is not an
+inventory of every external native client.
+
+For a shared native session with a recorded terminal host, the public attach
+command asks the existing session switch owner to restore its managed TUI before
+opening or focusing that host. The switch is idempotent when already attached;
+a rejected, malformed, or failed response does not count as successful attachment.
+This orchestration is shared by all host dispatches, rather than implemented in
+Herdr or the native launcher. Exclusive sessions and independent native attach
+clients retain their separate existing paths.
+
+Managed OpenCode affinity records the selected ready client's existing launch fingerprint
+in the provider-owned runtime handle, without publishing its local URL or credential.
+Owned terminal attachment takes its URL and fingerprint together from the ready runtime,
+before background metadata publication. Standalone attachment and native forks carry
+recorded affinity through both target and credential resolution; a newer retained record
+at the same URL cannot substitute its credential. Missing, mismatched, or invalid recorded
+affinity fails rather than selecting the caller's ambient server. A native fork rejected
+before dispatch uses the existing failed-attempt outcome, not unsupported-strategy fallback.
+Explicit server URLs retain their separate authority. Predecessor sessions without
+recorded affinity retain their local-context fallback; this does not make every historical
+unbound managed session attachable from a different launch context.
+Native forks resolve the parent target through the same owner and retain its recognized
+affinity in the child descriptor. Child launches keep the existing connected-service
+inheritance; their actual runtime selection replaces the requested tuple. This does not
+pin an old server across credential/configuration changes or transfer a machine-local
+pool identity through cross-machine handoff.
+
+The shared input consumer carries the prompt loop's metadata callback through each
+idle wait, including when the runner supplies an existing consumer. This lets the
+existing override synchronizers apply idle model, mode, and reasoning changes
+without another prompt or a separate metadata watcher. An omitted callback preserves
+the consumer's construction callback; an explicit null disables it for that wait.
+Metadata notifications reconcile controls without granting Pending eligibility or
+starting another message-materialization pass.
+
+OpenCode's existing options publisher also refreshes model and mode inventories on
+same-directory catalog update events and connection catch-up. A successful empty
+inventory withdraws its choices; a failed discovery retains the last published
+choices. This accommodates V2's initially empty plugin inventory without polling
+or weakening validation against the server's current model inventory.
+
+Herdr-specific transport lives in `integrations/herdr`. The adapter uses direct argv
+launch, styled screen capture, input, process inspection, and terminal attachment.
+Runtime detection requires a stable Herdr release at or after `0.9.2`, and attach
+and startup also verify the running server's version before using it.
+In the development source, standalone Claude unified uses the default Herdr server,
+matching `happier herdr`; recovery of a retained attachment keeps its recorded server namespace. Daemon
+requests retain their explicitly selected namespace. Generated agent names label
+the panes rather than creating separate Herdr servers.
+Claude unified reuses the existing composer parser and prompt-submission verifier;
+successful terminal writes are not provider acceptance acknowledgements.
+
+The development parser distinguishes Claude's automatic usage-limit wait footer
+from the interactive usage-limit chooser. An empty composer still accepts a new
+prompt, as Claude permits during the wait. Clearing an owned leftover draft with
+Escape waits for the provider wait to end; it must not cancel automatic continuation.
+The Rewind message selector owns keyboard input even when its only focused row is
+`(current)`, so that row is never treated as a prompt draft. These keyboard semantics
+follow [Claude's interactive-mode contract](https://code.claude.com/docs/en/interactive-mode).
+
+`terminal/runtime/inheritedHerdrRuntime.ts` verifies a foreground wrapper's current
+Herdr endpoint and pane, then supplies the existing attachment identity. Shared
+startup persistence records user-owned shell panes as borrowed: stopping Happier
+must stop the runner without closing the user's pane. Daemon-created panes remain
+owned. The attachment's stable terminal identity is resolved to the current pane
+when needed, so pane movement needs no separate persistent index.
+
+In the development source, daemon startup reattachment uses the same terminal
+serviceability publication owner as live session reports. This retains the exact
+attachment identity and borrowed lifecycle before runner exit, even if the runner
+releases its local descriptor first; exit retirement cannot clear a replacement
+attachment's serviceability.
+Owned runner exit also invokes the existing disconnected-host supervisor: a
+positively dead pane retires its exact attachment, while an alive independent
+provider host remains recoverable rather than being closed on controller loss.
+Explicit Stop and normal exit share the same exact attachment-disposition owner.
+After proving runner exit, Stop supplies its captured attachment to that owner:
+if normal exit already removed the descriptor, the same owned-host disposal and
+metadata-retirement pipeline still completes. Borrowed attachments release control
+without closing the user's pane. The canonical descriptor reader distinguishes
+absence from unreadable evidence; a replacement or unreadable descriptor never
+counts as successful completion. No separate supervisor-deferral mechanism is
+needed for this overlap.
+After the old host is positively dead or its captured runner has exited, a newer
+remote serviceability projection does not block retirement of the old local
+evidence. That projection remains untouched. Remote-only recovery without captured
+local custody still refuses a changed target; transport failures remain retryable.
+
+On Linux, startup migration always considers explicitly tracked daemon-owned
+session processes. Sweeping untracked processes from the daemon's cgroup additionally
+requires a service-managed startup in an actual service cgroup; a manually started
+daemon must not transfer unrelated processes from a shared SSH or editor scope.
+
+For child-owned same-pane launches, the shared terminal runtime owns the native
+process. Claude unified, runner-managed Codex/OpenCode TUIs, and standalone native
+attach commands use this owner rather than spawning an unguarded child. Native
+startup is acknowledged only after the actual executable spawns. Native TUIs keep
+all three inherited terminal streams; Claude retains its existing stderr diagnostic
+capture. The terminal launcher holds a private controller-lifetime IPC channel: controller
+exit or death closes that channel, and the surviving launcher invokes the same
+owned-process-tree cleanup used by forced native Detach. Detach keeps its existing
+three-second graceful interrupt window before forced cleanup. This does not kill
+the borrowed shell pane or an independent provider server. Borrowed attachment
+release waits for positive owned-child termination; failed cleanup retains the
+exact descriptor and is observable rather than reported as success.
+OS process-discovery or signalling failures can leave descendants
+running: the shared cleanup owner attempts known-process termination, then rejects
+with an incomplete-cleanup code when those failures prevent verification. The CLI
+owner records that outcome in its default file log before rethrowing; the surviving
+launcher reports a fixed, sanitized stderr diagnostic. It cannot clean up if the
+launcher is also killed or cannot execute.
+Independent recoverable terminal hosts have no lifetime channel and retain their
+existing process topology.
+
+Herdr lifecycle reporting is a projection of Happier state. The existing session
+activity summary supplies pending permission and user-action requests; they take
+precedence over working/idle, including when an SDK runtime has no visible native
+approval dialog. Reporting uses the existing local-presence events, not another
+polling loop. Managed provider children suppress Herdr's native agent hooks, and the reported resume command uses
+the current Happier release-channel executable. The generic `--runtime-context`
+command prefix carries the existing resolved CLI context (home, relay profile and
+endpoints, and daemon lifecycle scope), because Herdr does not restore the original
+pane environment when restarting a saved command. Configuration applies this
+prefix before resolving credentials, only at initial startup; later explicit
+profile selection is not overwritten. The prefix accepts only the canonical
+runtime-context keys rather than a general subprocess environment, does not copy
+credential files, and rejects URLs with embedded user information. Encoding is
+transport, not redaction.
+Generic `resume` delegates to the
+normal attach operation for a running attachable session; stopped sessions retain
+strict provider resume. There is no parallel Herdr session synchronization service.
+
 ## Daemon architecture
 
 ```mermaid
@@ -726,11 +1168,20 @@ flowchart TD
 3. It starts a local **control server** for IPC.
 4. It keeps a map of tracked child sessions and updates daemon state on the server.
 
+In current development source, primary CLI runners own Session locks through a lexical scope in
+`sessionRunnerLock.ts`. Fresh startup claims the resolved Session id before
+constructing its realtime client or committing pending first input; existing
+startup claims before attaching. Daemon presence and resume preflight already
+read that same lock, so a runner waiting to publish its first webhook prevents
+another activation from allocating a terminal host. Startup failure and normal
+runner exit release the scope's locks; process-exit cleanup uses the same owner.
+
 In current development, `createOnChildExited` releases session-marker evidence only
 through the tracked exit lifecycle. An exit notification for an untracked PID does
 not authorize marker deletion. Failed terminal-exit staging retains tracking and
-marker evidence; visible-console startup awaits that cleanup and reports an
-incomplete retirement rather than allowing its rejection to escape.
+marker evidence. Visible-console startup reports the early exit immediately;
+the tracked exit owner completes retirement separately and logs cleanup failure
+without discarding the remaining custody evidence.
 
 Development startup recovery uses `daemonProcessScopeIdentity.ts` to keep runners
 within their owning Happier home and daemon lifecycle. Markerless recovery requires

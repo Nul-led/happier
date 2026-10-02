@@ -5,6 +5,7 @@ const fsSync = require('node:fs');
 const { spawn } = require('node:child_process');
 const os = require('node:os');
 const path = require('node:path');
+const { killProcessTree } = require('./process_tree.cjs');
 
 const terminalSignalNames = ['SIGINT', 'SIGQUIT'];
 const stderrTailMaxChars = 64 * 1024;
@@ -131,10 +132,12 @@ async function readLaunchSpecFile(specPath) {
         parsed.windowsVerbatimArguments,
         'windowsVerbatimArguments',
     );
+    const inheritStderr = readOptionalBoolean(parsed.inheritStderr, 'inheritStderr');
     return {
         command: parsed.command,
         args: readStringArray(parsed.args, 'args'),
         ...(windowsVerbatimArguments === undefined ? {} : { windowsVerbatimArguments }),
+        ...(inheritStderr === undefined ? {} : { inheritStderr }),
         cwd: parsed.cwd,
         env: buildChildEnv(readEnv(parsed.env), readOptionalStringArray(parsed.envPassthroughKeys, 'envPassthroughKeys')),
         cleanupPaths: readOptionalStringArray(parsed.cleanupPaths, 'cleanupPaths'),
@@ -252,15 +255,19 @@ function installTerminalSignalGuards() {
     };
 }
 
-function runLaunchSpec(spec) {
+function runLaunchSpec(spec, controllerSignal) {
     return new Promise((resolve, reject) => {
+        if (controllerSignal?.aborted) {
+            cleanupLaunchSpecPaths(spec.cleanupPaths).then(() => resolve(1), reject);
+            return;
+        }
         let child;
         try {
             child = spawn(spec.command, spec.args, {
                 cwd: spec.cwd,
                 env: spec.env,
                 shell: false,
-                stdio: ['inherit', 'inherit', 'pipe'],
+                stdio: ['inherit', 'inherit', spec.inheritStderr ? 'inherit' : 'pipe'],
                 windowsHide: true,
                 ...(spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
             });
@@ -274,11 +281,49 @@ function runLaunchSpec(spec) {
             process.stderr.write(chunk);
         });
         const removeSignalGuards = installTerminalSignalGuards();
+        const controllerChannel = controllerSignal && require.main === module && typeof process.send === 'function';
+        const reportSignalFailure = () => {
+            console.error('Native terminal signal could not be delivered (terminal_native_signal_failed)');
+            if (controllerChannel && process.connected) process.send({ type: 'terminal-native-signal-failed' }, () => {});
+        };
+        const onNativeSignal = (message) => {
+            if (!message || message.type !== 'terminal-native-signal') return;
+            if (message.signal !== 'SIGINT' && message.signal !== 'SIGKILL') return;
+            if (message.signal === 'SIGKILL') {
+                onControllerClosed();
+                return;
+            }
+            try {
+                child.kill(message.signal);
+            } catch {
+                reportSignalFailure();
+            }
+        };
+        if (controllerChannel) {
+            process.on('message', onNativeSignal);
+            child.once('spawn', () => {
+                if (process.connected) process.send({ type: 'terminal-native-spawned' }, (error) => {
+                    if (error) onControllerClosed();
+                });
+            });
+        }
+        let controllerCleanup = null;
+        const onControllerClosed = () => {
+            // Independent/recoverable hosts have no IPC channel. The launcher must survive
+            // controller death for this event-driven owned-tree cleanup to complete.
+            controllerCleanup ??= killProcessTree(child).catch(() => {
+                console.error('Owned terminal process cleanup could not be verified (terminal_controller_cleanup_incomplete)');
+            });
+        };
+        controllerSignal?.addEventListener('abort', onControllerClosed, { once: true });
         let settled = false;
         const settle = async (fn) => {
             if (settled) return;
             settled = true;
+            controllerSignal?.removeEventListener('abort', onControllerClosed);
+            if (controllerChannel) process.off('message', onNativeSignal);
             removeSignalGuards();
+            await controllerCleanup;
             await stderrDiagnostics?.close();
             await cleanupLaunchSpecPaths(spec.cleanupPaths ?? []);
             await fn();
@@ -330,7 +375,22 @@ function runLaunchSpec(spec) {
 }
 
 async function runLaunchSpecFile(specPath) {
-    return await runLaunchSpec(await readLaunchSpecFile(specPath));
+    // Install before reading the launch spec, so controller loss during startup cannot
+    // accidentally launch an unowned provider. No channel means the existing detached mode.
+    const lifetime = require.main === module && typeof process.send === 'function' ? new AbortController() : null;
+    const onControllerClosed = () => lifetime.abort();
+    if (lifetime) {
+        process.once('disconnect', onControllerClosed);
+        if (!process.connected) lifetime.abort();
+    }
+    try {
+        return await runLaunchSpec(await readLaunchSpecFile(specPath), lifetime?.signal);
+    } finally {
+        if (lifetime) {
+            process.off('disconnect', onControllerClosed);
+            if (process.connected) process.disconnect();
+        }
+    }
 }
 
 async function main(argv) {

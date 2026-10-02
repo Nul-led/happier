@@ -1790,6 +1790,13 @@ export {
 } from './sessionControl/sessionTerminalComposerClearV1.js';
 
 export {
+  SessionProviderCliAttachPrepareRequestV1Schema,
+  SessionProviderCliAttachPrepareResultV1Schema,
+  type SessionProviderCliAttachPrepareRequestV1,
+  type SessionProviderCliAttachPrepareResultV1,
+} from './sessionControl/sessionProviderCliAttachPrepareV1.js';
+
+export {
   SessionPendingInputInterruptAndRunRequestV1Schema,
   SessionPendingInputInterruptAndRunResultV1Schema,
   buildUnsupportedSessionPendingInputInterruptAndRunResult,
@@ -1911,6 +1918,8 @@ export {
   type SessionTerminalMetadata,
   type TerminalControlServiceabilityPolicy,
   createSessionTerminalMetadataSchema,
+  normalizeSessionMetadataForRead,
+  projectSessionMetadataForWire,
   resolveTerminalControlServiceabilityPolicy,
 } from './sessionMetadata/terminalMetadata.js';
 

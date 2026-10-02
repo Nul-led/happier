@@ -36,12 +36,16 @@ export type TerminalHostHandle = Readonly<{
   sessionName: string;
   paneId?: string;
   socketDir?: string;
+  socketPath?: string;
+  terminalId?: string;
   expectedCommandFragments?: readonly string[];
   attachMetadata: TerminalHostAttachMetadata;
 }>;
 
 export type TerminalHostCreateOrAttachOptions = Readonly<{
+  /** Host namespace, distinct from a pane's display label. */
   sessionName: string;
+  label?: string;
   workingDirectory: string;
   spawnArgv: readonly string[];
   spawnEnv: Readonly<Record<string, string>>;

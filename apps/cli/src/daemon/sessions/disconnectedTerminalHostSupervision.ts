@@ -11,10 +11,7 @@ import { logger } from '@/ui/logger';
 import { executeTerminalHostDisposition } from '@/terminal/attachment/terminalHostDisposition';
 import type { SessionRunnerServiceabilityProbe } from './isSessionRunnerActive';
 import type { TerminalAttachmentControlDescriptorStatus } from '@/backends/types';
-import {
-  requireExactTerminalControlServiceabilityRetirement,
-  type ExactTerminalControlServiceabilityRetirement,
-} from './retireTerminalControlServiceability';
+import type { ExactTerminalControlServiceabilityRetirement } from './retireTerminalControlServiceability';
 
 export type DisconnectedTerminalHostCandidate = Readonly<{
   sessionId: string;
@@ -65,6 +62,7 @@ export async function superviseDisconnectedTerminalHostCandidate(input: Readonly
   }>) => Promise<ExactTerminalControlServiceabilityRetirement | void>;
 }>): Promise<DisconnectedTerminalHostSupervisionResult> {
   const readAttachment = input.readTerminalAttachmentInfo ?? readDefaultTerminalAttachmentInfo;
+  const retireExactTerminalControlServiceability = input.retireExactTerminalControlServiceability;
   const current = await readAttachment({
     happyHomeDir: input.candidate.happyHomeDir,
     sessionId: input.candidate.sessionId,
@@ -107,27 +105,27 @@ export async function superviseDisconnectedTerminalHostCandidate(input: Readonly
     expectedAttachmentId: input.candidate.attachmentId,
     intent: { kind: 'retire_confirmed_dead_attachment', reason: 'positive_dead_recovery' },
     adapter,
-    readAttachmentInfo: readAttachment,
+    ...(input.readTerminalAttachmentInfo ? { readAttachmentInfo: input.readTerminalAttachmentInfo } : {}),
     removeAttachmentInfo: input.removeTerminalAttachmentInfo ?? removeDefaultTerminalAttachmentInfo,
-    beforeDescriptorRetirement: input.retireExactTerminalControlServiceability
-      ? async ({ attachmentInfo }) => {
-          try {
-            const retirement = await input.retireExactTerminalControlServiceability!({
-              happyHomeDir: input.candidate.happyHomeDir,
-              sessionId: input.candidate.sessionId,
-              attachmentInfo,
-            });
-            requireExactTerminalControlServiceabilityRetirement(retirement);
-          } catch (error) {
-            logger.debug('[DAEMON RUN] Confirmed-dead terminal host retained for serviceability retirement retry', {
-              sessionId: input.candidate.sessionId,
-              attachmentId: input.candidate.attachmentId,
-              error,
-            });
-            throw error;
-          }
-        }
-      : undefined,
+    beforeDescriptorRetirement: retireExactTerminalControlServiceability ? async ({ attachmentInfo }) => {
+      if (attachmentInfo.version !== 2) {
+        throw new Error('borrowed_terminal_attachment_is_not_recoverable');
+      }
+      try {
+        await retireExactTerminalControlServiceability({
+          happyHomeDir: input.candidate.happyHomeDir,
+          sessionId: input.candidate.sessionId,
+          attachmentInfo,
+        });
+      } catch (error) {
+        logger.debug('[DAEMON RUN] Confirmed-dead terminal host retained for serviceability retirement retry', {
+          sessionId: input.candidate.sessionId,
+          attachmentId: input.candidate.attachmentId,
+          error,
+        });
+        throw error;
+      }
+    } : undefined,
   });
   if (disposition.status !== 'retired') return { state: 'unknown', reason: 'retirement_failed' };
   try {
