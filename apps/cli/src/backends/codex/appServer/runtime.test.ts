@@ -157,6 +157,9 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
     interruptTerminalResult?: Readonly<Record<string, unknown>>;
     authContinuationContextFailures?: number;
     compactCompletionDelayMs?: number;
+    compactStartError?: boolean;
+    authContinuationStartError?: boolean;
+    loginStartNotifications?: ReadonlyArray<Readonly<Record<string, unknown>>>;
     rejectSteerAsNoActiveTurn?: boolean;
     rejectPermissionsProfile?: boolean;
     rejectGoalMethods?: boolean;
@@ -380,6 +383,7 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '        continue;',
         '    }',
         '    if (msg.method === "account/login/start") {',
+        `        for (const notification of ${JSON.stringify(params.loginStartNotifications ?? [])}) process.stdout.write(JSON.stringify(notification) + "\\n");`,
         `        if (${JSON.stringify(params.loginStartError ?? null)}) {`,
         `            process.stdout.write(JSON.stringify({ id: msg.id, error: ${JSON.stringify(params.loginStartError ?? null)} }) + "\\n");`,
         '            continue;',
@@ -509,6 +513,7 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '        continue;',
         '    }',
         '    if (msg.method === "thread/compact/start") {',
+        `        if (${JSON.stringify(params.compactStartError === true)}) { process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32603, message: "synthetic compaction setup failure" } }) + "\\n"); continue; }`,
         `        process.stdout.write(JSON.stringify({ id: msg.id, result: ${JSON.stringify(params.compactCompletionDelayMs ? { turn: { id: 'turn-manual-compact' } } : {})} }) + "\\n");`,
         '        setTimeout(() => {',
         '            process.stdout.write(JSON.stringify({ method: "item/started", params: { item: { id: "manual_compact_1", type: "contextCompaction" } } }) + "\\n");',
@@ -586,6 +591,11 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '        }',
         '        const matchingTurnStartCount = (await readFile(requestLogPath, "utf8").catch(() => "")).split("\\n").filter((line) => { try { const entry = JSON.parse(line); return entry.method === "turn/start" && Array.isArray(entry.params?.input) && String(entry.params.input[0]?.text ?? "") === text; } catch { return false; } }).length;',
         '        const turnId = matchingTurnStartCount > 1 ? `turn-${text}-${matchingTurnStartCount}` : `turn-${text}`;',
+        `        if (${JSON.stringify(params.authContinuationStartError === true)} && text === "Continue where you left off") {`,
+        '            process.stdout.write(JSON.stringify({ method: "turn/started", params: { threadId: msg.params?.threadId ?? null, turn: { id: turnId } } }) + "\\n");',
+        '            setTimeout(() => { process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32603, message: "synthetic continuation start failure" } }) + "\\n"); }, 80);',
+        '            continue;',
+        '        }',
         '        const completionDelayMs = text === "connected-service-invalidation-active-turn" && matchingTurnStartCount === 1 ? 120000 : text === "overlap-start" ? 180 : text === "steer-delay-over-one-second" ? 200 : text === "cancel-me" ? 50 : 15;',
         '        if (text === "usage-limit-before-turn-response") {',
         '            process.stdout.write(JSON.stringify({ method: "error", params: { threadId: msg.params?.threadId ?? null, turnId, willRetry: false, error: { message: "Usage limit reached", codexErrorInfo: "UsageLimitExceeded", additionalDetails: null } } }) + "\\n");',
@@ -1752,6 +1762,9 @@ describe('createCodexAppServerRuntime', () => {
             interruptTerminalResult?: Readonly<Record<string, unknown>>;
     authContinuationContextFailures?: number;
     compactCompletionDelayMs?: number;
+    compactStartError?: boolean;
+    authContinuationStartError?: boolean;
+    loginStartNotifications?: ReadonlyArray<Readonly<Record<string, unknown>>>;
             rejectSteerAsNoActiveTurn?: boolean;
             rejectPermissionsProfile?: boolean;
             rejectGoalMethods?: boolean;
@@ -1824,6 +1837,9 @@ describe('createCodexAppServerRuntime', () => {
             interruptTerminalResult: options.interruptTerminalResult,
             authContinuationContextFailures: options.authContinuationContextFailures,
             compactCompletionDelayMs: options.compactCompletionDelayMs,
+            compactStartError: options.compactStartError,
+            authContinuationStartError: options.authContinuationStartError,
+            loginStartNotifications: options.loginStartNotifications,
             rejectSteerAsNoActiveTurn: options.rejectSteerAsNoActiveTurn,
             rejectPermissionsProfile: options.rejectPermissionsProfile,
             rejectGoalMethods: options.rejectGoalMethods,
@@ -12444,11 +12460,14 @@ describe('createCodexAppServerRuntime', () => {
         expect(requestLog.map((entry) => entry.method)).not.toContain('account/login/start');
     });
 
-    it.each([['success', 'soft_threshold'], ['success', 'manual'], ['auth_failure', 'soft_threshold'], ['user_abort', 'soft_threshold'], ['stale', 'soft_threshold'], ['active_goal', 'soft_threshold'], ['goal_discovery_pending', 'soft_threshold'], ['natural_complete_auth_failure', 'soft_threshold'], ['deferred_terminal_failure', 'soft_threshold'], ['continuation_setup_failure', 'soft_threshold'], ['context_recovery', 'soft_threshold'], ['context_budget_exhausted', 'soft_threshold'], ['context_user_abort', 'soft_threshold']] as const)('interrupts and continues an owned prompt for a connected-service auth handoff: %s (%s)', async (outcome, reason) => {
+    it.each([['success', 'soft_threshold'], ['success', 'manual'], ['auth_failure', 'soft_threshold'], ['user_abort', 'soft_threshold'], ['stale', 'soft_threshold'], ['active_goal', 'soft_threshold'], ['goal_discovery_pending', 'soft_threshold'], ['natural_complete_auth_failure', 'soft_threshold'], ['deferred_terminal_failure', 'soft_threshold'], ['continuation_setup_failure', 'soft_threshold'], ['context_recovery', 'soft_threshold'], ['context_budget_exhausted', 'soft_threshold'], ['context_user_abort', 'soft_threshold'], ['bridge_owned_failure', 'soft_threshold'], ['adopted_successor', 'soft_threshold'], ['context_disabled', 'soft_threshold'], ['context_recovery_failed', 'soft_threshold']] as const)('interrupts and continues an owned prompt for a connected-service auth handoff: %s (%s)', async (outcome, reason) => {
         const { root, requestLogPath } = await createRuntimeFixture('happier-codex-app-server-runtime-live-auth-busy-', {
             omitTurnCompletedForPrompt: 'auth-switch-active-turn',
             goalGetResult: outcome === 'goal_discovery_pending' ? { goal: { status: 'active', objective: 'native goal already active' } } : { goal: null },
-            ...(['context_recovery', 'context_budget_exhausted', 'context_user_abort'].includes(outcome) ? { authContinuationContextFailures: outcome === 'context_budget_exhausted' ? 2 : 1 } : {}),
+            ...(['context_recovery', 'context_budget_exhausted', 'context_user_abort', 'context_disabled', 'context_recovery_failed'].includes(outcome) ? { authContinuationContextFailures: outcome === 'context_budget_exhausted' ? 2 : 1 } : {}),
+            ...(outcome === 'bridge_owned_failure' ? { authContinuationStartError: true } : {}),
+            ...(outcome === 'adopted_successor' ? { loginStartResponseDelayMs: 200, loginStartNotifications: [{ method: 'turn/started', params: { threadId: 'thread-started', turn: { id: 'turn-attached-successor' } } }] } : {}),
+            ...(outcome === 'context_recovery_failed' ? { compactStartError: true } : {}),
             ...(outcome === 'context_user_abort' ? { compactCompletionDelayMs: 1000 } : {}),
             ...(outcome === 'goal_discovery_pending' ? { goalGetResponseDelayMs: 500 } : {}),
             ...(outcome === 'natural_complete_auth_failure' ? { interruptTerminalResult: { status: 'completed' } } : {}),
@@ -12457,10 +12476,23 @@ describe('createCodexAppServerRuntime', () => {
             ...(outcome === 'user_abort' ? { loginStartResponseDelayMs: 200 } : {}),
         });
         const lifecycleMutations: Array<{ action: string }> = [];
-        const sessionTurnLifecycle = createSessionTurnLifecycle({ sessionId: 'handoff-session', enqueueSessionTurn: async mutation => { lifecycleMutations.push(mutation); } });
+        const sendCodexMessage = vi.fn();
+        let releaseBridge!: () => void;
+        const heldBridge = new Promise<void>(resolve => { releaseBridge = resolve; });
+        let bridgeHeld = false;
+        let providerAttachCount = 0;
+        const sessionTurnLifecycle = createSessionTurnLifecycle({ sessionId: 'handoff-session', enqueueSessionTurn: async mutation => {
+            lifecycleMutations.push(mutation);
+            if (mutation.action === 'attach_provider_turn_id') providerAttachCount += 1;
+            if (outcome === 'bridge_owned_failure' && providerAttachCount === 2 && mutation.action === 'attach_provider_turn_id') {
+                bridgeHeld = true;
+                await heldBridge;
+            }
+        } });
         let fenceGroupAfterApply: (() => void) | null = null;
         const runtime = createCodexAppServerRuntime({
             directory: root,
+            ...(outcome === 'context_disabled' ? { contextWindowRecovery: { mode: 'off' as const } } : {}),
             initialConnectedServiceRuntimeIdentity: { serviceId: 'openai-codex', activeAccountId: 'acct_original', accountLabel: null, profileId: 'original', credentialFingerprint: 'sha256:original', source: 'spawn_selection' },
             validateConnectedServiceGroupCurrentness: vi.fn(async () => ({ current: outcome !== 'stale' })),
             onThinkingChange: vi.fn(),
@@ -12468,7 +12500,7 @@ describe('createCodexAppServerRuntime', () => {
             session: {
                 sessionTurnLifecycle,
                 updateMetadata: vi.fn(),
-                sendCodexMessage: vi.fn(),
+                sendCodexMessage,
                 sendSessionEvent: vi.fn(),
             } as any,
         });
@@ -12570,6 +12602,32 @@ describe('createCodexAppServerRuntime', () => {
             await runtime.cancel();
             await promptPromise;
         }
+        if (outcome === 'adopted_successor') {
+            await expect(applyPromise).resolves.toMatchObject({ ok: true });
+            await expect(promptPromise).rejects.toThrow('already has a turn in flight');
+            expect(runtime.hasActiveProviderTurn()).toBe(true);
+            expect(lifecycleMutations.filter(mutation => mutation.action === 'fail')).toHaveLength(0);
+            await runtime.cancel();
+            return;
+        }
+        if (outcome === 'bridge_owned_failure') {
+            await expect(applyPromise).resolves.toMatchObject({ ok: true });
+            await waitForCondition(() => bridgeHeld, { timeoutMs: 1000, intervalMs: 10, label: 'native continuation attach owns bridge' });
+            let promptSettled = false;
+            void promptPromise.finally(() => { promptSettled = true; }).catch(() => undefined);
+            await new Promise(resolve => setTimeout(resolve, 150));
+            const settledWhileHeld = promptSettled;
+            const failuresWhileHeld = lifecycleMutations.filter(mutation => mutation.action === 'fail').length;
+            const messagesWhileHeld = sendCodexMessage.mock.calls.filter(([body]) => body.type === 'message' && body.message?.includes('synthetic continuation start failure')).length;
+            releaseBridge();
+            await expect(promptPromise).rejects.toThrow('synthetic continuation start failure');
+            expect(settledWhileHeld).toBe(false);
+            expect(failuresWhileHeld).toBe(0);
+            expect(messagesWhileHeld).toBe(0);
+            expect(lifecycleMutations.filter(mutation => mutation.action === 'fail')).toHaveLength(1);
+            expect(sessionTurnLifecycle.getActiveTurnId()).toBeNull();
+            return;
+        }
         if (outcome === 'context_user_abort') {
             await waitForCondition(async () => (await readRequestLog(requestLogPath)).some(entry => entry.method === 'thread/compact/start'), { timeoutMs: 2000, intervalMs: 10, label: 'owned context recovery compaction starts' });
             await runtime.cancel();
@@ -12577,7 +12635,7 @@ describe('createCodexAppServerRuntime', () => {
         if (outcome === 'natural_complete_auth_failure') {
             await expect(applyPromise).resolves.toMatchObject({ ok: false });
             await expect(promptPromise).resolves.toBeUndefined();
-        } else if (outcome === 'deferred_terminal_failure' || outcome === 'continuation_setup_failure' || outcome === 'context_budget_exhausted') {
+        } else if (outcome === 'deferred_terminal_failure' || outcome === 'continuation_setup_failure' || outcome === 'context_budget_exhausted' || outcome === 'context_disabled' || outcome === 'context_recovery_failed') {
             await expect(applyPromise).resolves.toMatchObject({ ok: true });
             await expect(promptPromise).rejects.toBeInstanceOf(Error);
         } else if (outcome === 'auth_failure') {
@@ -12591,7 +12649,7 @@ describe('createCodexAppServerRuntime', () => {
         const methods = afterBoundary.map(entry => entry.method);
         expect(methods.indexOf('turn/interrupt')).toBeLessThan(methods.indexOf('account/login/start'));
         const starts = afterBoundary.filter(entry => entry.method === 'turn/start');
-        expect(starts).toHaveLength(['context_recovery', 'context_budget_exhausted'].includes(outcome) ? 3 : outcome === 'success' || outcome === 'context_user_abort' ? 2 : 1);
+        expect(starts).toHaveLength(['context_recovery', 'context_budget_exhausted'].includes(outcome) ? 3 : outcome === 'success' || outcome === 'context_user_abort' || outcome === 'context_disabled' || outcome === 'context_recovery_failed' ? 2 : 1);
         if (['context_recovery', 'context_budget_exhausted'].includes(outcome)) {
             expect(afterBoundary.filter(entry => entry.method === 'thread/compact/start')).toHaveLength(1);
             expect(afterBoundary.filter(entry => entry.method === 'thread/resume')).toHaveLength(1);
@@ -12611,7 +12669,8 @@ describe('createCodexAppServerRuntime', () => {
         expect(lifecycleMutations.filter(mutation => mutation.action === 'begin')).toHaveLength(1);
         expect(lifecycleMutations.filter(mutation => mutation.action === 'complete')).toHaveLength(outcome === 'success' || outcome === 'context_recovery' || outcome === 'natural_complete_auth_failure' ? 1 : 0);
         expect(lifecycleMutations.filter(mutation => mutation.action === 'cancel')).toHaveLength(outcome === 'user_abort' || outcome === 'context_user_abort' ? 1 : 0);
-        expect(lifecycleMutations.filter(mutation => mutation.action === 'fail')).toHaveLength(['auth_failure', 'deferred_terminal_failure', 'continuation_setup_failure', 'context_budget_exhausted'].includes(outcome) ? 1 : 0);
+        expect(lifecycleMutations.filter(mutation => mutation.action === 'fail')).toHaveLength(['auth_failure', 'deferred_terminal_failure', 'continuation_setup_failure', 'context_budget_exhausted', 'context_disabled', 'context_recovery_failed'].includes(outcome) ? 1 : 0);
+        if (outcome === 'context_budget_exhausted' || outcome === 'context_disabled' || outcome === 'context_recovery_failed') expect(sendCodexMessage.mock.calls.filter(([body]) => body.type === 'message' && body.message?.includes('upstream provider rejected'))).toHaveLength(1);
     });
 
     it('retains cancellation custody after an admitted start rejection until physical native client exit', async () => {

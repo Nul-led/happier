@@ -3643,7 +3643,22 @@ export function createCodexAppServerRuntime(params: Readonly<{
         }
     };
 
-    const abortPendingTurnWithFailure = async (failure: Error): Promise<void> => {
+    const abortPendingTurnWithFailure = async (
+        failure: Error,
+        options?: Readonly<{ insideBridgeWork?: boolean; ownedTurn?: PendingTurn }>,
+    ): Promise<void> => {
+        if (options?.insideBridgeWork === false) {
+            await runBridgeWork({ operation: 'owned-prompt-failure' }, () => (
+                abortPendingTurnWithFailure(failure, { ...options, insideBridgeWork: true })
+            ));
+            return;
+        }
+        // Check ownership when serialized work executes, after earlier native activity
+        // has had the opportunity to adopt a successor. Retired attempts cannot fail it.
+        if (options?.ownedTurn) {
+            if (pendingTurn && pendingTurn.promise !== options.ownedTurn.promise) return;
+            if (!pendingTurn && params.session.sessionTurnLifecycle && !params.session.sessionTurnLifecycle.hasActiveTurn()) return;
+        }
         const providerTurnId = pendingTurn?.turnId ?? latestPendingTurnId;
         // Publish the provider-qualified issue before the boundary tracker performs its
         // generic terminal bookkeeping. Otherwise the generic fail wins the one terminal
@@ -5374,6 +5389,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
             let optionsForAttempt: CodexAppServerPromptOptions | undefined = options;
             let ownsAuthContinuation = false;
             let needsAuthContinuationFinalization = false;
+            let authContinuationOwner: PendingTurn | null = null;
             try {
                 while (true) {
                     const activeThreadId = threadId;
@@ -5397,6 +5413,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                         ownsAuthContinuation,
                     });
                     needsAuthContinuationFinalization = false;
+                    if (ownsAuthContinuation) authContinuationOwner = activeTurn;
                     try {
                         const collaborationMode = currentCollaborationMode
                             ? {
@@ -5500,7 +5517,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                             clearPendingProviderPrompt(pendingProviderPrompt);
                             if (handoff.state === 'failed') {
                                 const failure = new Error('Codex connected-service auth handoff failed');
-                                await abortPendingTurnWithFailure(failure);
+                                await abortPendingTurnWithFailure(failure, { insideBridgeWork: false, ownedTurn: activeTurn });
                                 throw failure;
                             }
                             if (handoff.state === 'cancelled' && handoff.interrupted) {
@@ -5509,6 +5526,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                             if (handoff.state === 'applied' && handoff.interrupted) {
                                 ownsAuthContinuation = true;
                                 needsAuthContinuationFinalization = true;
+                                authContinuationOwner = activeTurn;
                                 promptForAttempt = GENERIC_CONTINUATION_RESUME_PROMPT;
                                 optionsForAttempt = buildCodexAppServerRetryDeliveryIdentityOptions(pendingProviderPrompt);
                                 continue;
@@ -5532,7 +5550,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                         if (activeTurn.ownsAuthContinuation && !isCodexAppServerContextWindowExhaustedError(failure)) {
                             // This attempt continues already accepted work. Do not route its failure
                             // through ordinary prompt retry, which starts another logical turn.
-                            if (pendingTurn?.promise === activeTurn.promise) await abortPendingTurnWithFailure(failure);
+                            if (pendingTurn?.promise === activeTurn.promise) await abortPendingTurnWithFailure(failure, { insideBridgeWork: false, ownedTurn: activeTurn });
                             clearPendingProviderPrompt(pendingProviderPrompt);
                             throw failure;
                         }
@@ -5569,7 +5587,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                                         clearPendingProviderPrompt(pendingProviderPrompt);
                                         return;
                                     }
-                                    await surfaceOriginalContextWindowFailureAfterRecoveryError(originalFailure, recoveryError);
+                                    if (!activeTurn.ownsAuthContinuation) await surfaceOriginalContextWindowFailureAfterRecoveryError(originalFailure, recoveryError);
                                     throw originalFailure;
                                 }
                                 promptForAttempt = retryDecision.prompt;
@@ -5581,7 +5599,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                                 continue;
                             }
                             if (retryDecision.action === 'disabled') {
-                                await surfaceOriginalContextWindowFailure(
+                                if (!activeTurn.ownsAuthContinuation) await surfaceOriginalContextWindowFailure(
                                     originalFailure,
                                     '[codex-app-server] Codex context-window recovery disabled; surfacing original turn failure',
                                     { mode: contextWindowRecoveryConfig.mode },
@@ -5594,7 +5612,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                                     originalFailure,
                                     latestFailure: failure,
                                 });
-                                await surfaceOriginalContextWindowFailureAfterRecoveryError(secondFailureDecision.failure, failure);
+                                if (!activeTurn.ownsAuthContinuation) await surfaceOriginalContextWindowFailureAfterRecoveryError(secondFailureDecision.failure, failure);
                                 clearPendingProviderPrompt(pendingProviderPrompt);
                                 throw secondFailureDecision.failure;
                             }
@@ -5606,9 +5624,9 @@ export function createCodexAppServerRuntime(params: Readonly<{
                     }
                 }
             } catch (error) {
-                if (needsAuthContinuationFinalization && (!params.session.sessionTurnLifecycle || params.session.sessionTurnLifecycle.hasActiveTurn())) {
+                if (needsAuthContinuationFinalization && authContinuationOwner) {
                     const failure = error instanceof Error ? error : new Error(String(error));
-                    await abortPendingTurnWithFailure(failure);
+                    await abortPendingTurnWithFailure(failure, { insideBridgeWork: false, ownedTurn: authContinuationOwner });
                 }
                 throw error;
             }
