@@ -135,7 +135,7 @@ describe('applyObservedAcpModelOptions', () => {
     ];
     expect(applyObservedAcpModelOptions(models, 'model-a', [observedEffort])).toEqual([
       { id: 'default' },
-      { id: 'model-a', modelOptions: [observedEffort, thinking] },
+      { id: 'model-a', modelOptions: [observedEffort] },
       { id: 'model-b', modelOptions: [catalogEffort] },
     ]);
     expect(applyObservedAcpModelOptions(models, 'unknown-model', [observedEffort])).toEqual(models);
