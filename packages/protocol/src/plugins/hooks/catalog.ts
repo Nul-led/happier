@@ -95,6 +95,7 @@ export type PluginExecutionInterceptionCapability = z.infer<typeof PluginExecuti
 
 export const PluginExecutionCallerSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('host') }).strict(),
+  z.object({ kind: z.literal('session'), sessionId: z.string().trim().min(1) }).strict(),
   z.object({
     kind: z.literal('plugin'),
     pluginId: z.string().trim().min(1).max(256),

@@ -29,7 +29,7 @@ export async function openOpenCodeServerExecutionRun(
         ctx: runtimeContext,
         directory: request.cwd,
         executionRunId: request.runId,
-        endpoint: readOpenCodeServerEndpoint(runtimeContext, { env }),
+        endpoint: readOpenCodeServerEndpoint(runtimeContext, { env, configuration: request.configuration }),
         env,
         permissionMode: request.configuration?.permissionIntent.value ?? null,
         mcpServers: request.mcpServers,

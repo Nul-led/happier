@@ -33,9 +33,7 @@ const out = `// GENERATED — do not edit by hand.
 // Only the icons this app actually uses are imported. Phosphor ships 1,512 icons; importing the
 // whole catalogue would bundle ~12MB of path data, so the registry is the allowlist. Adding a new
 // icon is a one-line addition to the mapping, which keeps the icon set curated on purpose.
-import {
-${components.map(c => `    ${c},`).join('\n')}
-} from 'phosphor-react-native';
+${components.map(c => `import { ${c} } from 'phosphor-react-native/src/icons/${c.slice(0, -4)}';`).join('\n')}
 import type { Icon as PhosphorIcon } from 'phosphor-react-native';
 
 export const ICON_REGISTRY = {

@@ -1,11 +1,13 @@
 export type GithubObservationRequestV1 = Readonly<{
   credentialRef: string;
   repositoryId: string;
-  endpointKind: 'issueComments' | 'repositoryEvents';
+  endpointKind: 'issueComments' | 'repositoryEvents' | 'pullRequestChecks';
   daemonMaterializationRef: string;
   url: string;
   page: number;
   etag: string | null;
+  /** GraphQL page/PR variables participate in the same authenticated read key. */
+  body?: string;
 }>;
 
 function keyForRequest(input: GithubObservationRequestV1): string {
@@ -20,6 +22,7 @@ function keyForRequest(input: GithubObservationRequestV1): string {
     input.url,
     input.page,
     input.etag,
+    input.body ?? null,
   ]);
 }
 

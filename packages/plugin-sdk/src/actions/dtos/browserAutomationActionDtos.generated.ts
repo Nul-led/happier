@@ -403,6 +403,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.snapshot": {
         v: 1;
@@ -419,6 +424,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.semanticSnapshot": {
         v: 1;
@@ -435,6 +445,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.queryElements": {
         v: 1;
@@ -451,6 +466,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.waitFor": {
         v: 1;
@@ -467,6 +487,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.timeline.get": {
         v: 1;
@@ -500,6 +525,11 @@ export type BrowserAutomationActionResultById = {
     };
     readonly "browser.automation.cancelActive": {
         v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
+    } | {
+        v: 1;
         outcome: 'canceled';
         canceledCount: number;
         completion: 'stopped' | 'uncertain';
@@ -527,6 +557,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.reload": {
         v: 1;
@@ -543,6 +578,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.goBack": {
         v: 1;
@@ -559,6 +599,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.goForward": {
         v: 1;
@@ -575,6 +620,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.click": {
         v: 1;
@@ -591,6 +641,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.tap": {
         v: 1;
@@ -607,6 +662,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.type": {
         v: 1;
@@ -623,6 +683,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.press": {
         v: 1;
@@ -639,6 +704,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.scroll": {
         v: 1;
@@ -655,6 +725,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.hover": {
         v: 1;
@@ -671,6 +746,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.focus": {
         v: 1;
@@ -687,6 +767,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.select": {
         v: 1;
@@ -703,6 +788,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.setValue": {
         v: 1;
@@ -719,6 +809,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.upload": {
         v: 1;
@@ -735,6 +830,11 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
     readonly "browser.automation.drag": {
         v: 1;
@@ -751,5 +851,10 @@ export type BrowserAutomationActionResultById = {
         diagnostics: Record<string, unknown>;
         resultSummary: Record<string, unknown>;
         errorCode?: 'timed_out' | 'policy_denied' | 'automation_busy' | 'blocked_by_policy' | 'cross_origin_frame_unavailable' | 'human_interrupted' | 'navigation_mismatch' | 'not_implemented' | 'owner_conflict' | 'owner_disconnected' | 'owner_mismatch' | 'page_thread_blocked' | 'runtime_unavailable' | 'selector_not_found' | 'stale_navigation' | 'unsupported_action' | 'user_canceled' | 'view_closed' | undefined;
+    } | {
+        v: 1;
+        status: 'interrupted';
+        completion: 'unknown';
+        automationRequestId?: string | undefined;
     };
 };

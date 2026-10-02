@@ -16,6 +16,25 @@ const env = {
   HAPPIER_OPENCODE_SERVER_URL: baseUrl,
 };
 
+// OpenCode v1.2.20 GlobalRoutes /health returns { healthy: true, version };
+// its server has no V2 /api/info route. This is a wire fixture, not dialect admission.
+function v1ProbeResponse(path: string): Response | null {
+  if (path === '/api/info') return new Response('Not Found', { status: 404 });
+  if (path === '/global/health') return new Response(JSON.stringify({ healthy: true, version: '1.2.20' }), {
+    headers: { 'content-type': 'application/json' },
+  });
+  return null;
+}
+
+function stubV1ServerFetch(respond: (url: string) => Promise<Response>) {
+  const transport = vi.fn<typeof fetch>(async (input) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    return v1ProbeResponse(new URL(url).pathname) ?? await respond(url);
+  });
+  vi.stubGlobal('fetch', transport);
+  return transport;
+}
+
 function invocation(overrides: Partial<{
   signal: AbortSignal;
   deadlineAtMs: number;
@@ -56,6 +75,11 @@ describe('OpenCode public External Sessions contribution', () => {
     const managedEndpointRead = vi.fn<AgentExternalSessionsManagedEndpointRead>(
       async ({ pathAndQuery }) => {
         requested.push(pathAndQuery);
+        const probe = v1ProbeResponse(pathAndQuery);
+        if (probe) return {
+          ok: probe.ok, status: probe.status, statusText: probe.statusText,
+          headers: Object.fromEntries(probe.headers.entries()), body: probe.body,
+        };
         return {
           ok: true,
           status: 200,
@@ -115,7 +139,7 @@ describe('OpenCode public External Sessions contribution', () => {
     // The endpoint address stays with the managed service; it is never
     // promoted into the resolved source, and no client-owned transport exists
     // to bypass it.
-    expect(requested).toEqual(['/experimental/session?directory=%2Ftmp%2Fproject&limit=3']);
+    expect(requested).toEqual(['/api/info', '/global/health', '/experimental/session?directory=%2Ftmp%2Fproject&limit=3']);
     expect(directFetch).not.toHaveBeenCalled();
   });
 
@@ -179,7 +203,7 @@ describe('OpenCode public External Sessions contribution', () => {
   });
 
   it('serves one semantic item per page when a smaller item limit meets one tool pair', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+    stubV1ServerFetch(async (input) => {
       const url = new URL(input);
       const body = url.pathname === '/session/session-1'
         ? {
@@ -201,7 +225,7 @@ describe('OpenCode public External Sessions contribution', () => {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
-    }));
+    });
     const contribution = createOpenCodeExternalSessionsContribution({ env });
 
     // One native message holds both the call and its terminal result; a page
@@ -239,7 +263,7 @@ describe('OpenCode public External Sessions contribution', () => {
 
   it('uses bounded official list search and reports an honest incomplete top-N result', async () => {
     const requested: string[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+    const transport = stubV1ServerFetch(async (input) => {
       requested.push(input);
       return new Response(JSON.stringify([
         { id: 'session-3', title: 'Needle three', time: { updated: 3 } },
@@ -249,7 +273,7 @@ describe('OpenCode public External Sessions contribution', () => {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
-    }));
+    });
 
     const result = await createOpenCodeExternalSessionsContribution({ env }).listCandidates({
       source,
@@ -273,6 +297,9 @@ describe('OpenCode public External Sessions contribution', () => {
     expect(requested).toEqual([
       `${baseUrl}/experimental/session?directory=%2Ftmp%2Fproject&limit=3&search=Needle`,
     ]);
+    expect(transport.mock.calls.map(([input]) => String(input))).toEqual([
+      `${baseUrl}/api/info`, `${baseUrl}/global/health`, ...requested,
+    ]);
   });
 
   it('routes explicitly attached candidate discovery through the configured endpoint', async () => {
@@ -282,7 +309,7 @@ describe('OpenCode public External Sessions contribution', () => {
       status: 200,
       headers: { 'content-type': 'application/json' },
     }));
-    vi.stubGlobal('fetch', transportFetch);
+    const transport = stubV1ServerFetch(transportFetch);
 
     await expect(createOpenCodeExternalSessionsContribution({ env }).listCandidates({
       source,
@@ -296,7 +323,10 @@ describe('OpenCode public External Sessions contribution', () => {
         ],
       },
     });
-    expect(transportFetch).toHaveBeenCalledOnce();
+    expect(transport.mock.calls.map(([input]) => String(input))).toEqual([
+      `${baseUrl}/api/info`, `${baseUrl}/global/health`,
+      `${baseUrl}/experimental/session?directory=%2Ftmp%2Fproject&limit=3`,
+    ]);
   });
 
   it('uses the invocation-bound reader for managed candidate and transcript reads', async () => {
@@ -312,6 +342,11 @@ describe('OpenCode public External Sessions contribution', () => {
     };
     const managedEndpointRead = vi.fn<AgentExternalSessionsManagedEndpointRead>(
       async ({ pathAndQuery }) => {
+        const probe = v1ProbeResponse(pathAndQuery);
+        if (probe) return {
+          ok: probe.ok, status: probe.status, statusText: probe.statusText,
+          headers: Object.fromEntries(probe.headers.entries()), body: probe.body,
+        };
         const body = pathAndQuery === '/experimental/session?limit=3'
           ? JSON.stringify([
             { id: 'managed-session', title: 'Managed', time: { updated: 3, created: 1 } },
@@ -429,7 +464,7 @@ describe('OpenCode public External Sessions contribution', () => {
 
   it('performs complete id-and-title search instead of rejecting the public full-search mode', async () => {
     const requested: string[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+    stubV1ServerFetch(async (input) => {
       requested.push(input);
       return new Response(JSON.stringify([
         { id: 'other-session', title: 'A title without the query', time: { updated: 2 } },
@@ -438,7 +473,7 @@ describe('OpenCode public External Sessions contribution', () => {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
-    }));
+    });
 
     const result = await createOpenCodeExternalSessionsContribution({ env }).listCandidates({
       source,
@@ -475,7 +510,7 @@ describe('OpenCode public External Sessions contribution', () => {
       },
     ];
     const requested: string[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+    stubV1ServerFetch(async (input) => {
       const url = new URL(input);
       requested.push(url.toString());
       if (url.pathname === '/session') {
@@ -494,7 +529,7 @@ describe('OpenCode public External Sessions contribution', () => {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
-    }));
+    });
     const contribution = createOpenCodeExternalSessionsContribution({ env });
     const globalSource = {
       kind: 'opencodeServer' as const,
@@ -539,7 +574,7 @@ describe('OpenCode public External Sessions contribution', () => {
 
   it('preserves official backward cursors and bounded read-after continuity', async () => {
     const requested: string[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+    stubV1ServerFetch(async (input) => {
       requested.push(input);
       const url = new URL(input);
       if (url.pathname === '/session/session-1') {
@@ -587,7 +622,7 @@ describe('OpenCode public External Sessions contribution', () => {
             : {}),
         },
       });
-    }));
+    });
     const contribution = createOpenCodeExternalSessionsContribution({ env });
 
     const first = await contribution.pageTranscript({
@@ -831,7 +866,7 @@ describe('OpenCode public External Sessions contribution', () => {
   });
 
   it('canonicalizes persisted default links from the vendor-owned session directory', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+    stubV1ServerFetch(async (input) => {
       const url = new URL(input);
       expect(url.pathname).toBe('/session/session-persisted');
       expect(url.searchParams.has('directory')).toBe(false);
@@ -842,7 +877,7 @@ describe('OpenCode public External Sessions contribution', () => {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
-    }));
+    });
 
     await expect(createOpenCodeExternalSessionsContribution({ env }).resolveLinkedIdentity({
       source: {
@@ -866,12 +901,12 @@ describe('OpenCode public External Sessions contribution', () => {
   });
 
   it('fails closed when a default link has no vendor-verifiable directory', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+    stubV1ServerFetch(async () => new Response(JSON.stringify({
       id: 'session-unscoped',
     }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
-    })));
+    }));
 
     await expect(createOpenCodeExternalSessionsContribution({ env }).resolveLinkIdentity({
       source: {
@@ -953,7 +988,7 @@ describe('OpenCode public External Sessions contribution', () => {
         status: 503,
         statusText: 'Service Unavailable',
       }));
-    vi.stubGlobal('fetch', fetchMock);
+    stubV1ServerFetch(fetchMock);
     const contribution = createOpenCodeExternalSessionsContribution({ env });
     const request = {
       source,

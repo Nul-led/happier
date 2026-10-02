@@ -59,6 +59,7 @@ export {
   PluginTargetedContributionProtocolV1Schema,
   PluginTargetedContributionTargetV1Schema,
   PluginTargetedContributionV1Schema,
+  PluginWorkflowContributionV1Schema,
   type PluginContributesV2,
   type PluginContributionPointV1,
   type PluginContributionPointProtocolV1,
@@ -71,6 +72,7 @@ export {
   type PluginTargetedContributionProtocolV1,
   type PluginTargetedContributionTargetV1,
   type PluginTargetedContributionV1,
+  type PluginWorkflowContributionV1,
 } from '../contributions/v2.js';
 export {
   // Referenced by `PluginManifestV2Schema`'s public signature, so an author

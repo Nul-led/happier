@@ -103,6 +103,7 @@ export const CLIPROXYAPI_MANAGED_CONNECTED_ACCOUNTS = Object.freeze(
   CLIPROXYAPI_MANAGED_PURPOSE_FAMILIES.map((family) => Object.freeze({
     purpose: family.purpose,
     title: family.title,
+    endpointTemplateIds: [...family.endpointTemplateIds],
     ...family.connectedAccount,
   })),
 );

@@ -95,10 +95,10 @@ function formatToolDocumentation(
 
 export function buildVoiceToolDocumentationLines(
   specs: readonly VoicePromptActionSpec[],
-  params: Readonly<{ disabledActionIds?: readonly string[]; invocationLabel: string }>,
+  params: Readonly<{ disabledActionIds?: readonly string[]; invocationLabel: string; includeAllTools?: boolean }>,
 ): readonly string[] {
   const disabled = new Set((params.disabledActionIds ?? []).map((value) => normalizeText(value)).filter(Boolean));
-  const enabledSpecs = specs.filter((spec) => isVoicePromptHotPathSpec(spec) && !disabled.has(spec.id));
+  const enabledSpecs = specs.filter((spec) => (params.includeAllTools || isVoicePromptHotPathSpec(spec)) && !disabled.has(spec.id));
   const availability: VoiceGuidanceAvailability = {
     disabledActionIds: params.disabledActionIds,
     availableActionIds: specs.filter((spec) => !disabled.has(spec.id)).map((spec) => spec.id),

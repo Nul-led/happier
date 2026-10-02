@@ -7,6 +7,8 @@ vi.mock('@elevenlabs/client', () => ({
 }));
 
 import { createElevenLabsConversationHandle } from './conversationHandle.js';
+import { createElevenLabsSdkConnection } from './sdkConnection.js';
+import { VoiceRealtimeToolCallV1Schema, type VoiceRealtimeConnection } from '@happier-dev/plugin-sdk/voice/client';
 
 const createHandle = () => createElevenLabsConversationHandle({
   tools: [],
@@ -82,6 +84,119 @@ describe('createElevenLabsConversationHandle event surface', () => {
     expect(events).toEqual([{ type: 'disconnect', reason: 'handle_disposed' }]);
     handle.dispose();
     expect(events).toHaveLength(1);
+  });
+
+  it('preserves SDK tool-error context and suppresses errors from a retired start', async () => {
+    startSession.mockResolvedValue({ getId: () => 'errors', endSession: async () => {} });
+    const handle = createHandle();
+    const events: unknown[] = [];
+    handle.subscribe((event) => events.push(event));
+    await handle.startSession({});
+    const callbacks = startSession.mock.calls[0]![0];
+    callbacks.onError('tool failed', { clientToolName: 'readSession' });
+    expect(events).toEqual([{
+      type: 'error', error: 'tool failed', context: { clientToolName: 'readSession' },
+    }]);
+    await handle.endSession();
+    callbacks.onError('late terminal failure');
+    expect(events).toHaveLength(1);
+  });
+
+  it('returns real SDK tool errors without closing and accepts the following user turn', async () => {
+    const { TextConversation } = await vi.importActual<typeof import('@elevenlabs/client')>('@elevenlabs/client');
+    let incoming!: (event: unknown) => Promise<void>;
+    const sent: unknown[] = [];
+    const close = vi.fn();
+    const network = {
+      conversationId: 'real-sdk-tool-error',
+      onMessage(callback: typeof incoming) { incoming = callback; },
+      onDisconnect() {}, onModeChange() {}, onOutgoingMessage() {},
+      sendMessage(event: unknown) { sent.push(event); }, close,
+    };
+    // Replace only network startup. The installed SDK's constructor, public
+    // callback dispatch, tool-error handling and result encoding remain real.
+    startSession.mockImplementation(async (options) => Reflect.construct(TextConversation, [options, network]));
+    const tools = [{
+      name: 'unavailableRead', execute: async () => { throw new Error('voice_action_unavailable'); },
+    }];
+    const handle = createElevenLabsConversationHandle({ tools });
+    let driver!: Parameters<Parameters<typeof createElevenLabsSdkConnection>[0]['createSdkHandleConnection']>[0]['driver'];
+    const remoteClose = vi.fn();
+    createElevenLabsSdkConnection({
+      handle, startConfig: { textOnly: true }, duckGain: 0.18,
+      createSdkHandleConnection(input) { driver = input.driver; return {} as VoiceRealtimeConnection; },
+    });
+    await driver.open({
+      signal: new AbortController().signal,
+      onControl(event) {
+        const envelope = event as Readonly<{ type?: unknown; call?: unknown }>;
+        if (envelope.type !== 'elevenlabs.client_tool_call') return;
+        const call = VoiceRealtimeToolCallV1Schema.parse(envelope.call);
+        void driver.sendControl({ type: 'voice.tool_result', result: {
+          v: 1, responseId: call.responseId, callId: call.callId,
+          toolName: call.toolName, order: call.order, status: 'denied', errorCode: 'voice_action_unavailable',
+        } });
+      }, onTransport() {},
+      onRemoteClose(reason) { remoteClose(reason); void driver.close(); },
+    });
+    await incoming({ type: 'client_tool_call', client_tool_call: {
+      tool_call_id: 'provider-failed-read', tool_name: 'unavailableRead', parameters: {},
+    } });
+    expect(sent).toEqual([expect.objectContaining({
+      type: 'client_tool_result', tool_call_id: 'provider-failed-read', is_error: true,
+    })]);
+    expect(remoteClose).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    await driver.sendControl({ type: 'voice.user_text', text: 'continue after refusal' });
+    expect(sent[1]).toEqual({ type: 'user_message', text: 'continue after refusal' });
+    await driver.close();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('requires actual provider custody, settles matching deliveries individually and revokes late callbacks', async () => {
+    startSession.mockResolvedValue({ getId: () => 'custody', endSession: async () => {} });
+    const execute = vi.fn(async () => ({ unsafe: true }));
+    const tools = [{ name: 'effect', execute }];
+    const handle = createElevenLabsConversationHandle({ tools });
+    const events: unknown[] = [];
+    handle.subscribe((event) => events.push(event));
+    await handle.startSession({});
+    const options = startSession.mock.calls[0]![0];
+    const parameters = { message: 'first' };
+    options.onIncomingEvent?.({ type: 'client_tool_call', client_tool_call: {
+      tool_call_id: 'provider-call', tool_name: 'effect', parameters,
+    } });
+    const delivery = options.clientTools.effect(parameters);
+    const call = { v: 1, responseId: 'provider-call', callId: 'provider-call', toolName: 'effect', order: 0, arguments: parameters };
+    const resultIdentity = { v: 1 as const, responseId: call.responseId, callId: call.callId, toolName: call.toolName, order: call.order };
+    expect(events).toEqual([{ type: 'tool_call', call }]);
+    expect(execute).not.toHaveBeenCalled();
+    handle.settleToolResult({ ...resultIdentity, status: 'success', output: { allowed: true } });
+    await expect(delivery).resolves.toEqual({ allowed: true });
+    await expect(options.clientTools.effect({})).rejects.toThrow('voice_effect_call_custody_unavailable');
+    const pendingParameters = { message: 'pending' };
+    options.onIncomingEvent?.({ type: 'client_tool_call', client_tool_call: {
+      tool_call_id: 'pending-call', tool_name: 'effect', parameters: pendingParameters,
+    } });
+    const pending = options.clientTools.effect(pendingParameters);
+    const cancelled = expect(pending).rejects.toThrow('tool_cancelled');
+    await handle.endSession();
+    await cancelled;
+    await expect(options.clientTools.effect(parameters)).rejects.toThrow('tool_cancelled');
+    expect(events).toHaveLength(2);
+    await handle.startSession({});
+    const replacement = startSession.mock.calls[1]![0];
+    const replacementParameters = { message: 'replacement' };
+    replacement.onIncomingEvent?.({ type: 'client_tool_call', client_tool_call: {
+      tool_call_id: 'provider-call', tool_name: 'effect', parameters: replacementParameters,
+    } });
+    const replacementDelivery = replacement.clientTools.effect(replacementParameters);
+    await expect(options.clientTools.effect(replacementParameters)).rejects.toThrow('tool_cancelled');
+    handle.settleToolResult({ ...resultIdentity, status: 'success', output: { replacement: true } });
+    await expect(replacementDelivery).resolves.toEqual({ replacement: true });
+    expect(events).toHaveLength(3);
+    expect(execute).not.toHaveBeenCalled();
+    await handle.endSession();
   });
 
   it('retains a focus volume until a late SDK conversation becomes active', async () => {

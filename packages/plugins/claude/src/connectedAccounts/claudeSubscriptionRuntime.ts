@@ -167,7 +167,7 @@ async function exchangeTokens(
       ),
     };
   }
-  if (response.status >= 400 && response.status < 500) {
+  if (response.status >= 400 && response.status < 500 && response.status !== 429) {
     return {
       status: 'rejected',
       diagnostic: diagnostic(

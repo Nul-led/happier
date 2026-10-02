@@ -1,3 +1,4 @@
+import { VoiceRealtimeToolResultV1Schema } from '@happier-dev/plugin-sdk/voice/client';
 import type {
   VoiceOutputFocusState,
   VoiceRealtimeConnection,
@@ -18,6 +19,18 @@ function readRequiredString(value: VoiceRealtimeJsonValue | undefined, code: str
   const text = typeof value === 'string' ? value.trim() : '';
   if (!text) throw new Error(code);
   return text;
+}
+
+function isRecoverableClientToolError(context: unknown): boolean {
+  if (!context || typeof context !== 'object' || Array.isArray(context)) return false;
+  const record = context as Readonly<Record<string, unknown>>;
+  // SDK 1.18.0 reports execution/undefined-tool failures with exactly this
+  // context and sends an is_error result itself. Its outer result-transport
+  // failure includes toolCallId, and session/media errors have other contexts.
+  return Object.keys(record).length === 1
+    && typeof record.clientToolName === 'string'
+    && record.clientToolName.length > 0
+    && record.clientToolName.trim() === record.clientToolName;
 }
 
 export function createElevenLabsSdkConnection(input: Readonly<{
@@ -104,6 +117,7 @@ export function createElevenLabsSdkConnection(input: Readonly<{
               });
               return;
             case 'error':
+              if (isRecoverableClientToolError(event.context)) return;
               signalRemoteClose('sdk_error');
               return;
             case 'status':
@@ -113,6 +127,9 @@ export function createElevenLabsSdkConnection(input: Readonly<{
               onControl({ type: 'elevenlabs.mode', mode: event.data.mode });
               return;
             case 'debug':
+              return;
+            case 'tool_call':
+              onControl({ type: 'elevenlabs.client_tool_call', call: event.call });
               return;
           }
         };
@@ -164,6 +181,12 @@ export function createElevenLabsSdkConnection(input: Readonly<{
         if (!handle) throw new Error('elevenlabs_handle_not_active');
         const record = readRecord(event);
         switch (record.type) {
+          case 'voice.tool_result':
+            handle.settleToolResult(VoiceRealtimeToolResultV1Schema.parse(record.result));
+            return;
+          case 'voice.provider_managed_tools':
+            // The installed SDK resumes after its callback promise settles.
+            return;
           case 'voice.user_text':
             handle.sendUserMessage(readRequiredString(record.text, 'elevenlabs_user_text_required'));
             return;

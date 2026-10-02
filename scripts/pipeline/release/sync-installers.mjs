@@ -5,7 +5,7 @@
 import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createNumericPlanetFrame } from '../../../packages/cli-common/numericPlanetFrame.mjs';
+import { createPlanetFrame } from '../../../packages/brand/planet.mjs';
 
 import {
   INSTALLER_FILENAMES,
@@ -75,17 +75,21 @@ async function fileExists(path) {
   }
 }
 
-// Project the CLI's numeric globe at authoring time: shipped installers remain
+// Project the shared Braille globe at authoring time: shipped installers remain
 // standalone Bash/PowerShell, with no renderer or JavaScript runtime dependency.
 function projectInstallerPlanet(source, filename) {
-  const marker = /^([ \t]*)# BEGIN GENERATED NUMERIC PLANET\n[\s\S]*?^[ \t]*# END GENERATED NUMERIC PLANET/m;
-  if (!source.includes('# BEGIN GENERATED NUMERIC PLANET')) return source;
+  const marker = /^([ \t]*)# BEGIN GENERATED PLANET\n[\s\S]*?^[ \t]*# END GENERATED PLANET/m;
+  if (!source.includes('# BEGIN GENERATED PLANET')) return source;
   if (!marker.test(source)) throw new Error('Unterminated installer planet projection: ' + filename);
-  const frame = createNumericPlanetFrame({ columns: 28, seconds: 1.6 });
-  const plain = frame.map((row) => row.map((cell) => cell?.digit ?? ' ').join(''));
+  const frame = createPlanetFrame({ columns: 28, seconds: 1.6 });
+  const plain = frame.map((row) => row.map((cell) => cell?.ch ?? ' ').join(''));
   const colored = frame.map((row) => row.map((cell) => cell
-    ? '\\033[38;2;' + cell.rgb.join(';') + 'm' + cell.digit
+    ? '\\033[38;2;' + cell.rgb.join(';') + 'm' + cell.ch
     : ' ').join('') + '\\033[0m');
+  // Windows PowerShell 5.1 decodes BOM-less scripts using the legacy code page.
+  // Keep its source ASCII while constructing the same Unicode cells at runtime.
+  const powershellRow = (row) => row.replace(/[\u2800-\u28ff]/gu,
+    (ch) => '$([char]0x' + ch.charCodeAt(0).toString(16) + ')');
   const lines = filename.endsWith('.sh')
     ? [
         'HAPPIER_INSTALLER_ART_ROWS=(',
@@ -95,14 +99,14 @@ function projectInstallerPlanet(source, filename) {
       ]
     : [
         '$rows = @(',
-        ...plain.map((row, index) => "  '" + row + "'" + (index < plain.length - 1 ? ',' : '')), ')',
+        ...plain.map((row, index) => '  "' + powershellRow(row) + '"' + (index < plain.length - 1 ? ',' : '')), ')',
         '$rgbRows = @(',
-        ...colored.map((row, index) => '  "' + row.replaceAll('\\033', '$([char]27)') + '"' + (index < colored.length - 1 ? ',' : '')), ')',
+        ...colored.map((row, index) => '  "' + powershellRow(row).replaceAll('\\033', '$([char]27)') + '"' + (index < colored.length - 1 ? ',' : '')), ')',
       ];
   return source.replace(marker, (_match, indent) => [
-    '# BEGIN GENERATED NUMERIC PLANET',
+    '# BEGIN GENERATED PLANET',
     ...lines,
-    '# END GENERATED NUMERIC PLANET',
+    '# END GENERATED PLANET',
   ].map((line) => indent + line).join('\n'));
 }
 

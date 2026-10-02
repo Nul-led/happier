@@ -17,3 +17,7 @@ export { writeAtomicJsonFile } from '../fs.js';
 export { writeAtomicFile, writeAtomicTextFile, writeAtomicTextFileIfChanged } from '../fs.js';
 export type { FsAtomicWriteInput } from '../fs.js';
 export { writeSecureTempTextFileSync } from '../runtime/tempTextFile.js';
+export { resolveConfiguredNativeHomePath, resolveVerifiedNativeHomePath, listConnectedServiceNativeHomes } from './nativeHome.js';
+export type { ConnectedServiceNativeHome } from './nativeHome.js';
+export { openSqliteDatabaseSync } from './sqlite.js';
+export type { SqliteDatabaseSync, SqliteStatementSync } from './sqlite.js';

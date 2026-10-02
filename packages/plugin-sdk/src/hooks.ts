@@ -80,6 +80,7 @@ export type PluginHookDecisionResult = PluginHookDecisionResultV1;
 export type PluginExecutionInterceptionCapability = 'interceptable' | 'observable';
 export type PluginExecutionCaller =
     | Readonly<{ kind: 'host' }>
+    | Readonly<{ kind: 'session'; sessionId: string }>
     | Readonly<{ kind: 'plugin'; pluginId: string }>;
 export type PluginExecutionInterceptionResult =
     | Readonly<{ status: 'continue'; input: JsonValue }>

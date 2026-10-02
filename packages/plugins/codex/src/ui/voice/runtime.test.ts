@@ -150,6 +150,7 @@ describe('Codex Agent-session realtime Voice leaf', () => {
 
     const handle = createHandle();
     const setMuted = vi.fn();
+    const diagnostic = vi.fn();
     const start = vi.fn(async () => ({
       status: 'started' as const,
       transport: { kind: 'webrtc' as const, answerSdp: 'answer-sdp' },
@@ -174,7 +175,7 @@ describe('Codex Agent-session realtime Voice leaf', () => {
         createPcmConnection: () => { throw new Error('unexpected PCM connection'); },
       },
       tools: [SENTINEL_TOOL],
-      ui: {} as never,
+      ui: { diagnostic } as never,
       signal,
       credentials: credentialAccess('connection'),
       execution: {
@@ -194,23 +195,8 @@ describe('Codex Agent-session realtime Voice leaf', () => {
     });
     const sendJson = vi.fn(async () => {});
     await negotiated?.control.onOpen({ sendJson });
-    expect(sendJson).toHaveBeenCalledWith({
-      type: 'session.update',
-      session: {
-        type: 'realtime',
-        tools: [{
-          type: 'function',
-          name: 'readCurrentUiContext',
-          description: 'Read the privacy-qualified current UI context.',
-          parameters: {
-            type: 'object',
-            properties: {},
-            additionalProperties: false,
-          },
-        }],
-        tool_choice: 'auto',
-      },
-    });
+    // Codex app-server configures Frameless Bidi and owns its delegation tools.
+    expect(sendJson).not.toHaveBeenCalled();
     expect(runtime.encodeToolResults([{
       v: 1,
       responseId: 'response-1',
@@ -219,22 +205,11 @@ describe('Codex Agent-session realtime Voice leaf', () => {
       order: 0,
       status: 'success',
       output: { ok: true },
-    }])).toEqual([{
-      type: 'conversation.item.create',
-      item: {
-        type: 'function_call_output',
-        call_id: 'call-1',
-        output: '{"ok":true}',
-      },
-    }]);
-    expect(runtime.encodeToolContinuation('response-1')).toEqual({ type: 'response.create' });
+    }])).toEqual([]);
+    expect(runtime.encodeToolContinuation('response-1')).toBeNull();
     expect(runtime.encodeContextUpdate('Current UI: Triage issue')).toEqual([{
-      type: 'conversation.item.create',
-      item: {
-        type: 'message',
-        role: 'system',
-        content: [{ type: 'input_text', text: '[Context update]\nCurrent UI: Triage issue' }],
-      },
+      type: 'session.context.append',
+      content: [{ type: 'input_text', text: '[Context update]\nCurrent UI: Triage issue' }],
     }]);
     expect(setMuted).not.toHaveBeenCalled();
     await expect(negotiated?.signaling.exchangeOffer({
@@ -265,6 +240,23 @@ describe('Codex Agent-session realtime Voice leaf', () => {
       }),
     ]);
     expect(runtime.protocol.decodeControl(final)).toEqual([]);
+    expect(() => runtime.protocol.decodeControl({
+      type: 'error',
+      message: 'private provider context',
+    })).toThrowError(expect.objectContaining({
+      code: 'upstream_rejected',
+      message: 'codex_v3_upstream_error',
+    }));
+    expect(diagnostic).toHaveBeenCalledWith({
+      code: 'codex_v3_upstream_error',
+      severity: 'warning',
+    });
+    await runtime.protocol.releasePrepared?.({
+      controlSessionId: 'voice-global',
+      attemptId: 7,
+      reason: { code: 'error' },
+    });
+    expect(runtime.protocol.decodeControl({ type: 'error', message: 'late private context' })).toEqual([]);
   });
 
   it('settles a started zero-final attempt through releasePrepared exactly once', async () => {

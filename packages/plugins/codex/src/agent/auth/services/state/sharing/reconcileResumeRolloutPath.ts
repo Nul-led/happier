@@ -1,10 +1,11 @@
 import { stat } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 
 import {
   expandHomePath,
+  openSqliteDatabaseSync,
   resolveHomeDirFromEnvironment,
+  type SqliteDatabaseSync,
 } from '@happier-dev/plugin-sdk/fs';
 
 import {
@@ -16,36 +17,6 @@ import { resolveCodexRuntimeHomeEnvironment } from './files.js';
 
 const CODEX_STATE_DATABASE_FILE_NAME = 'state_5.sqlite';
 
-type SqliteStatement = Readonly<{
-  get(...params: readonly unknown[]): unknown;
-  run(...params: readonly unknown[]): unknown;
-}>;
-
-type SqliteDatabase = Readonly<{
-  close(): void;
-  exec(sql: string): void;
-  prepare(sql: string): SqliteStatement;
-}>;
-
-function openSqliteDatabase(path: string): SqliteDatabase {
-  const require = createRequire(import.meta.url);
-  const isBunRuntime = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
-  // Keep the runtime-selected specifier opaque to pkgroll so neither provider
-  // is hoisted into every packaged CLI entrypoint before this path is used.
-  const moduleName = [isBunRuntime ? 'bun' : 'node', 'sqlite'].join(':');
-  const loaded = require(moduleName) as unknown;
-  if (!loaded || typeof loaded !== 'object') {
-    throw new Error(`Failed to load SQLite module: ${moduleName}`);
-  }
-  const constructor = isBunRuntime
-    ? (loaded as Readonly<{ Database?: unknown }>).Database
-    : (loaded as Readonly<{ DatabaseSync?: unknown }>).DatabaseSync;
-  if (typeof constructor !== 'function') {
-    throw new Error(`Failed to resolve SQLite database constructor: ${moduleName}`);
-  }
-  return new (constructor as new (databasePath: string) => SqliteDatabase)(path);
-}
-
 async function isFile(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isFile();
@@ -54,7 +25,7 @@ async function isFile(path: string): Promise<boolean> {
   }
 }
 
-function readRolloutPath(database: SqliteDatabase, vendorResumeId: string): string | null {
+function readRolloutPath(database: SqliteDatabaseSync, vendorResumeId: string): string | null {
   const row = database
     .prepare('SELECT rollout_path FROM threads WHERE id = ?')
     .get(vendorResumeId);
@@ -106,9 +77,9 @@ export async function reconcileCodexResumeRolloutPath(params: Readonly<{
   const databasePath = join(sqliteHome, CODEX_STATE_DATABASE_FILE_NAME);
   if (!await isFile(databasePath)) return true;
 
-  let database: SqliteDatabase | null = null;
+  let database: SqliteDatabaseSync | null = null;
   try {
-    database = openSqliteDatabase(databasePath);
+    database = openSqliteDatabaseSync(databasePath);
     database.exec('PRAGMA busy_timeout = 5000');
     const table = database
       .prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'threads'")

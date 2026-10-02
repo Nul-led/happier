@@ -23,6 +23,17 @@ const MINIMAL_SESSIONS = {
 } as const;
 
 describe('projectAgentCapabilitiesV2FromDefinition', () => {
+  it('advertises usage reporting only from a positive definition-owned declaration', () => {
+    const project = (usageReporting?: string) => projectAgentCapabilitiesV2FromDefinition({
+      sessionCapabilities: { ...NO_CAPABILITIES.sessionCapabilities, usageReporting },
+    }, { sessions: MINIMAL_SESSIONS }).sessions;
+
+    expect(project('supported')).toHaveProperty('usageReporting', true);
+    expect(project()).not.toHaveProperty('usageReporting');
+    expect(project('unsupported')).not.toHaveProperty('usageReporting');
+    expect(project('experimental')).not.toHaveProperty('usageReporting');
+  });
+
   it('derives the fork route from either fork fact the definition distinguishes', () => {
     const conversationOnly = projectAgentCapabilitiesV2FromDefinition({
       sessionCapabilities: {

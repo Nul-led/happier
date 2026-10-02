@@ -28,6 +28,7 @@ const supportBindings = [
   ...['PluginActionContributionV2', 'PluginToolContributionV2'].map(name => ['plugins/actions/v2.ts', name]),
   ['plugins/contributions/v2.ts', 'PluginCommandContributionV2'],
   ...['WorkflowAuthoredResultReference', 'WorkflowValueReference', 'WorkflowCondition'].map(name => ['workflows/workflowReferenceV1.ts', name, `PluginAction${name}V1`]),
+  ['workflows/workflowV1.ts', 'WorkflowDefinitionV1', 'PluginActionWorkflowDefinitionV1'],
   ['sessions/metadata/runtimeDescriptorV1.ts', 'PortableRuntimeDescriptorV1', 'PluginActionWorkflowPortableRuntimeDescriptorV1'],
   ...['WorkflowSessionAuthoringSelection', 'WorkflowStepExecutionSelection', 'WorkflowStep', 'WorkflowFailurePolicy', 'WorkflowItemExecutionMode', 'WorkflowEvaluatorHistoryMode', 'WorkflowParallelBranch', 'WorkflowRepetition', 'WorkflowBlock', 'WorkflowIngressBlock'].map(name => ['workflows/workflowV1.ts', name, `PluginAction${name}V1`]),
   ['actions/actionSpecs.ts', 'PluginInvocableActionSpec', 'ActionSpec'],
@@ -302,6 +303,29 @@ function deriveProgram({ repoRoot, keys, bindings, extraNames = [] }) {
     const rootPath = resolve(protocol, 'actions/actionDtoDerivation.ts');
     overlays.set(rootPath, rootImports.join('\n') + '\n' + members.map((rows, i) => `export type PluginAction${i ? 'Result' : 'Input'}ById = { ${rows.join('\n')} };`).join('\n'));
     bindings = bindings.map(([, name, out, input]) => ['actions/actionDtoDerivation.ts', name, out, input]);
+  }
+  // The recursive definition validator erases its input to unknown at its Zod
+  // annotation. Public author DTOs carry the canonical portable definition,
+  // including nested trigger inputs, rather than exposing that validator detail.
+  // Refine only this known schema's virtual input; ingress/preprocessed schemas
+  // retain their real input types and runtime validation stays unchanged.
+  const workflowPath = resolve(protocol, 'workflows/workflowV1.ts');
+  const workflowText = inputs.get(workflowPath) ?? read(workflowPath);
+  if (workflowText !== undefined) {
+    inputs.set(workflowPath, workflowText);
+    const workflowSource = ts.createSourceFile(workflowPath, overlays.get(workflowPath) ?? workflowText, ts.ScriptTarget.ES2022, true);
+    const workflowInput = ts.transform(workflowSource, [context => {
+      const visit = node => {
+        if (ts.isTypeReferenceNode(node) && node.typeName.getText(workflowSource) === 'z.ZodType'
+          && node.typeArguments?.length === 1 && node.typeArguments[0].getText(workflowSource) === 'WorkflowDefinitionV1') {
+          return ts.factory.updateTypeReferenceNode(node, node.typeName, [node.typeArguments[0], node.typeArguments[0]]);
+        }
+        return ts.visitEachChild(node, visit, context);
+      };
+      return root => ts.visitNode(root, visit);
+    }]);
+    try { overlays.set(workflowPath, printer.printFile(workflowInput.transformed[0])); }
+    finally { workflowInput.dispose(); }
   }
   host.readFile = path => {
     // A virtual source must be fenced against the original bytes from which

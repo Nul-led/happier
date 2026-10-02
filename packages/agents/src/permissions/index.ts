@@ -1,6 +1,7 @@
 import { PERMISSION_INTENTS, PERMISSION_MODES, type PermissionIntent, type PermissionMode } from '../types.js';
 import type { AgentId } from '../types.js';
 import { getAgentSessionModeDescriptor, type AgentSessionModeDescriptor } from '../sessionModes.js';
+import { BUNDLED_AGENT_DEFINITIONS_BY_ID } from '../generated/bundledAgentDefinitions.js';
 import {
   parseAgentPermissionIntentV1Alias,
 } from '@happier-dev/protocol/runtime';
@@ -50,27 +51,18 @@ export function normalizePermissionModeForAgent(params: { agentId: AgentId; mode
     return normalizePermissionModeForGroup(params.mode, resolvePermissionModeGroupForAgent(params.agentId));
 }
 
-export type ProviderNativePermissionMode = PermissionMode | 'auto' | 'dontAsk';
+export type ProviderNativePermissionMode = string;
 
 export function resolveProviderNativePermissionModeForAgent(params: {
     agentId: AgentId;
     mode: PermissionMode;
 }): ProviderNativePermissionMode {
-    if (resolvePermissionModeGroupForAgent(params.agentId) !== 'claude') {
-        return normalizePermissionModeForAgent(params);
-    }
-
-    const normalized = normalizePermissionModeForGroup(params.mode, 'claude');
-    switch (normalized) {
-        case 'yolo':
-            return 'bypassPermissions';
-        case 'safe-yolo':
-            return 'auto';
-        case 'read-only':
-            return 'dontAsk';
-        default:
-            return normalized;
-    }
+    const normalized = normalizePermissionModeForAgent(params);
+    // `plan` remains a behavior selection, not permission strictness. Preserve
+    // explicit native permission tokens rather than round-tripping through intent aliases.
+    const mode = params.mode === 'plan' ? normalized : params.mode;
+    const mapping = BUNDLED_AGENT_DEFINITIONS_BY_ID[params.agentId]?.nativePermissionModes;
+    return mapping && Object.hasOwn(mapping, mode) ? mapping[mode]! : normalized;
 }
 
 /**

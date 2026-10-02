@@ -139,7 +139,7 @@ export const GOOGLE_CLOUD_TTS_VOICE_PROVIDER_DECLARATION = {
   catalogs: [{ kind: 'voices', settingFieldId: 'voiceName', allowCustom: true }],
   limits: {
     synthesize: {
-      maxInputCharacters: 1_666,
+      maxInputUtf8Bytes: 5_000,
       maxOutputBytes: 3_000_000,
     },
   },

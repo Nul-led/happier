@@ -374,7 +374,7 @@ export function resolveHappierListMultiSelectionRange(
  */
 export type HappierPointerPlatform = 'macos' | 'ios' | 'windows' | 'linux' | 'android' | 'web';
 
-export type HappierListMultiSelectionPointerAction = 'open' | 'toggle' | 'selectRange' | 'addRange';
+export type HappierListMultiSelectionPointerAction = 'open' | 'toggle' | 'selectRange';
 
 export type HappierListMultiSelectionPointerInput = Readonly<{
   isSelectionMode: boolean;
@@ -389,7 +389,8 @@ function isApplePlatform(platform: HappierPointerPlatform): boolean {
 }
 
 /**
- * What one modified activation means. Once selection mode is on, an unmodified
+ * Command-click belongs to destination navigation, even during selection.
+ * Shift extends from the anchor. Once selection mode is on, an unmodified
  * activation toggles rather than opens: the reader is choosing a set, and
  * opening a detail mid-selection would discard the set they were building.
  */
@@ -397,9 +398,9 @@ export function resolveHappierListMultiSelectionPointerAction(
   input: HappierListMultiSelectionPointerInput,
 ): HappierListMultiSelectionPointerAction {
   const commandModifier = isApplePlatform(input.platform) ? input.metaKey : input.ctrlKey;
-  if (input.shiftKey && commandModifier) return 'addRange';
+  if (commandModifier) return 'open';
   if (input.shiftKey) return 'selectRange';
-  if (commandModifier || input.isSelectionMode) return 'toggle';
+  if (input.isSelectionMode) return 'toggle';
   return 'open';
 }
 
@@ -451,7 +452,8 @@ export function resolveHappierListMultiSelectionKeyboardIntent(
   // Space is the platform's own "choose this row" key in a multi-selectable
   // listbox. It is claimed here only while the capability is mounted, so a
   // single-select List keeps handing Space to the row's own activation.
-  if (input.key === ' ' || input.key === 'Spacebar') return { kind: 'toggleFocused' };
+  if (!input.ctrlKey && !input.metaKey
+    && (input.key === ' ' || input.key === 'Spacebar' || input.key.toLowerCase() === 'x')) return { kind: 'toggleFocused' };
   if (!input.shiftKey) return null;
   const step = input.key === 'ArrowDown' || (input.key === 'ArrowRight' && !input.rtl) || (input.key === 'ArrowLeft' && input.rtl)
     ? 1

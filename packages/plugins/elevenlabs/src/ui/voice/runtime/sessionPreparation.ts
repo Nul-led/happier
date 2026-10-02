@@ -5,44 +5,29 @@ import {
   type VoiceRealtimeJsonValue,
   type VoiceHostedConversationService,
   type VoiceRuntimePlatform,
+  type VoiceRealtimeAttemptPolicy,
 } from '@happier-dev/plugin-sdk/voice/client';
 import type {
   VoiceCredentialAccess,
 } from '@happier-dev/plugin-sdk/voice';
 
 import { ElevenLabsVoiceProviderSettingsSchema } from '../../../protocol/voice/index.js';
-import { mintElevenLabsConversationAuthWithAccountOperations } from '../operations.js';
+import { ELEVENLABS_INITIAL_CONVERSATION_CONTEXT_VARIABLE } from '../autoprovision.js';
+import {
+  isElevenLabsAgentConfigurationCurrent,
+  mintElevenLabsConversationAuthWithAccountOperations,
+} from '../operations.js';
 import type {
   ElevenLabsPreparedSession,
   ElevenLabsSessionPreparation,
 } from './sessionTypes.js';
 import { resolveElevenLabsLanguageCode } from './resolveLanguageCode.js';
 
-type WelcomeConfig = Readonly<{
-  enabled?: boolean | null;
-  mode?: 'immediate' | 'on_first_turn' | null;
-}>;
-
-function buildWelcomeContext(config: WelcomeConfig | null | undefined): string {
-  if (config?.enabled !== true) return '';
-  return config.mode === 'on_first_turn'
-    ? 'On your first reply, start with one short friendly greeting (one sentence).\nThen continue with your response.'
-    : 'Start this session with one short friendly greeting.\nThen wait for the user to speak again.';
-}
-
-function appendWelcome(baseContext: string | undefined, config: WelcomeConfig | null | undefined): string | undefined {
-  const base = typeof baseContext === 'string' ? baseContext.trim() : '';
-  const welcome = buildWelcomeContext(config);
-  if (!base) return welcome || undefined;
-  return welcome ? `${base}\n\n${welcome}` : base;
-}
-
 export function createElevenLabsSessionPreparationService(deps: Readonly<{
   providerId: string;
   projectVoiceSettings: (settings: unknown, providerId: string) => Readonly<{
     providerId: string | null;
     assistantLanguage: string | null;
-    welcome: WelcomeConfig;
     providerConfig: unknown;
   }> | null;
   alert: (titleKey: string, bodyKey: string) => void;
@@ -60,6 +45,7 @@ export function createElevenLabsSessionPreparationService(deps: Readonly<{
     signal: AbortSignal;
     platform: VoiceRuntimePlatform;
     textOnly: boolean;
+    attemptPolicy?: VoiceRealtimeAttemptPolicy;
   }>): Promise<ElevenLabsSessionPreparation> => {
     const voiceSettings = deps.projectVoiceSettings(input.settings, deps.providerId);
     const parsedProviderSettings = ElevenLabsVoiceProviderSettingsSchema.safeParse(
@@ -73,7 +59,7 @@ export function createElevenLabsSessionPreparationService(deps: Readonly<{
       };
     }
     const billingMode = providerSettings?.billingMode === 'byo' ? 'byo' : 'happier';
-    const initialContext = appendWelcome(input.initialContext, voiceSettings?.welcome);
+    const initialContext = input.initialContext?.trim();
 
     if (billingMode === 'byo') {
       const agentId = providerSettings?.agentId.trim() ?? '';
@@ -90,6 +76,13 @@ export function createElevenLabsSessionPreparationService(deps: Readonly<{
           kind: 'declined',
           failure: { reason: 'voice_provider_credential_unavailable' },
         };
+      }
+      const configurationCurrent = await isElevenLabsAgentConfigurationCurrent({
+        accountOperations: input.credentials.mediated, agentId, signal: input.signal,
+      });
+      if (input.signal.aborted) return { kind: 'aborted' };
+      if (!configurationCurrent) {
+        return { kind: 'declined', failure: { reason: 'realtime_agent_update_required' } };
       }
       const auth = await mintElevenLabsConversationAuthWithAccountOperations({
         accountOperations: input.credentials.mediated,
@@ -108,6 +101,7 @@ export function createElevenLabsSessionPreparationService(deps: Readonly<{
             textOnly: input.textOnly,
           }),
           sessionState: { billingMode: 'byo', expiresAtMs: null, leaseId: null },
+          ...(input.attemptPolicy ? { attemptPolicy: input.attemptPolicy } : {}),
         },
       };
     }
@@ -146,6 +140,7 @@ export function createElevenLabsSessionPreparationService(deps: Readonly<{
             expiresAtMs: response.expiresAtMs,
             leaseId: response.leaseId,
           },
+          ...(input.attemptPolicy ? { attemptPolicy: input.attemptPolicy } : {}),
         },
       };
     }
@@ -179,7 +174,8 @@ export function createElevenLabsSessionPreparationService(deps: Readonly<{
       ? raw as Readonly<Record<string, VoiceRealtimeJsonValue>>
       : {};
     const voiceSettings = deps.projectVoiceSettings(input.settings, deps.providerId);
-    const language = resolveElevenLabsLanguageCode(voiceSettings?.assistantLanguage ?? null);
+    const policy = input.prepared.attemptPolicy;
+    const language = resolveElevenLabsLanguageCode(policy ? policy.assistantLanguage : voiceSettings?.assistantLanguage ?? null);
     const token = typeof config.token === 'string' ? config.token : '';
     const signedUrl = typeof config.signedUrl === 'string' ? config.signedUrl.trim() : '';
     const textOnly = config.textOnly === true;
@@ -201,7 +197,10 @@ export function createElevenLabsSessionPreparationService(deps: Readonly<{
       dynamicVariables,
       overrides: {
         conversation: { textOnly },
-        agent: language ? { language } : {},
+        agent: {
+          ...(language ? { language } : {}),
+          ...(policy ? { prompt: { prompt: [policy.instructions, ELEVENLABS_INITIAL_CONVERSATION_CONTEXT_VARIABLE].join('\n\n') } } : {}),
+        },
       },
       ...(useSignedWebsocket ? { signedUrl } : { conversationToken: token }),
     });

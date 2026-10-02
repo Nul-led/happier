@@ -146,7 +146,7 @@ async function exchangeTokens(
       ),
     };
   }
-  if (response.status >= 400 && response.status < 500) {
+  if (response.status >= 400 && response.status < 500 && response.status !== 429) {
     return {
       status: 'rejected',
       diagnostic: diagnostic(
@@ -165,8 +165,9 @@ async function exchangeTokens(
     };
   }
   const body = parseResponseBody(response.body);
-  const idToken = readString(body?.id_token) || params.fallbackIdToken || '';
-  const accessToken = readString(body?.access_token) || idToken;
+  const freshIdToken = readString(body?.id_token);
+  const idToken = freshIdToken || params.fallbackIdToken || '';
+  const accessToken = readString(body?.access_token) || freshIdToken;
   const refreshToken = readString(body?.refresh_token) || params.fallbackRefreshToken || '';
   let providerAccountId = params.fallbackProviderAccountId ?? '';
   try {

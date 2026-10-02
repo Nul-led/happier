@@ -6,6 +6,7 @@
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -29,6 +30,7 @@
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -267,7 +269,7 @@
         "kind": "speech",
         "limits": {
           "synthesize": {
-            "maxInputCharacters": 1666,
+            "maxInputUtf8Bytes": 5000,
             "maxOutputBytes": 3000000
           }
         },
@@ -374,7 +376,8 @@
         "title": "Google Cloud Text-to-Speech"
       }
     ],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "Google Gemini speech-to-text and Google Cloud text-to-speech.",
   "displayName": "Google Voice",

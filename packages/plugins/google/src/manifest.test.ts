@@ -26,7 +26,7 @@ describe('Google voice plugin manifest', () => {
           readiness: [{ kind: 'setting_nonempty', settingId: 'voiceName' }],
         }),
         catalogs: [{ kind: 'voices', settingFieldId: 'voiceName', allowCustom: true }],
-        limits: { synthesize: { maxInputCharacters: 1_666, maxOutputBytes: 3_000_000 } },
+        limits: { synthesize: { maxInputUtf8Bytes: 5_000, maxOutputBytes: 3_000_000 } },
       }),
     ]);
     expect(PLUGIN_MANIFEST.contributes.voiceProviders.map((contribution) => ({

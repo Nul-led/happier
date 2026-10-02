@@ -84,12 +84,19 @@ const OpenAiOutputTranscriptDoneEventSchema = z.object({
   item_id: OpenAiIdSchema,
   transcript: z.string(),
 });
+const OpenAiProviderErrorSchema = z.object({
+  code: z.string().nullable().optional(),
+});
+const OpenAiInputTranscriptionFailedEventSchema = z.object({
+  type: z.literal('conversation.item.input_audio_transcription.failed'),
+  event_id: OpenAiIdSchema,
+  item_id: OpenAiIdSchema,
+  error: OpenAiProviderErrorSchema,
+});
 const OpenAiErrorEventSchema = z.object({
   type: z.literal('error'),
   event_id: OpenAiIdSchema,
-  error: z.object({
-    code: z.string().nullable().optional(),
-  }),
+  error: OpenAiProviderErrorSchema,
 });
 
 const OpenAiResponseFunctionCallSchema = z.object({
@@ -106,6 +113,7 @@ const OpenAiResponseBaseSchema = z.object({
   // effect path fails closed. Output lifecycle is carried independently by
   // output-audio-buffer events.
   status: z.string().optional(),
+  status_details: z.object({ error: OpenAiProviderErrorSchema.optional() }).nullable().optional(),
   output: z.unknown().optional(),
 });
 const OpenAiResponseSchema = withVoiceSchemaField(
@@ -136,6 +144,7 @@ const OpenAiServerEventSchemaByType = Object.freeze({
   'output_audio_buffer.cleared': OpenAiOutputAudioBufferClearedEventSchema,
   'conversation.item.input_audio_transcription.delta': OpenAiInputTranscriptionDeltaEventSchema,
   'conversation.item.input_audio_transcription.completed': OpenAiInputTranscriptionCompletedEventSchema,
+  'conversation.item.input_audio_transcription.failed': OpenAiInputTranscriptionFailedEventSchema,
   'response.output_audio_transcript.delta': OpenAiOutputTranscriptDeltaEventSchema,
   'response.output_audio_transcript.done': OpenAiOutputTranscriptDoneEventSchema,
   'response.done': OpenAiResponseDoneEventSchema,
@@ -155,6 +164,7 @@ type OpenAiRecognizedServerEvent =
   | z.infer<typeof OpenAiOutputAudioBufferClearedEventSchema>
   | z.infer<typeof OpenAiInputTranscriptionDeltaEventSchema>
   | z.infer<typeof OpenAiInputTranscriptionCompletedEventSchema>
+  | z.infer<typeof OpenAiInputTranscriptionFailedEventSchema>
   | z.infer<typeof OpenAiOutputTranscriptDeltaEventSchema>
   | z.infer<typeof OpenAiOutputTranscriptDoneEventSchema>
   | ReturnType<typeof OpenAiResponseDoneEventSchema.parse>;
@@ -166,6 +176,25 @@ function decodeOpenAiServerEvent(value: VoiceRealtimeJsonValue): OpenAiRecognize
   const schema = OpenAiServerEventSchemaByType[candidate.type];
   const parsed = schema.safeParse(candidate);
   return parsed.success ? parsed.data : null;
+}
+
+function projectOpenAiProviderError(
+  providerCode: string | null | undefined,
+  fallback: 'provider_response_invalid' | 'voice_transcription_failed' = 'provider_response_invalid',
+): VoiceRealtimeCanonicalEvent {
+  // Codes, messages and parameters are provider-native data, not diagnostics
+  // authority. Only these known meanings cross the host seam; never raw text.
+  if (providerCode && /(?:client_secret|auth|token).*(?:expired|invalid)|(?:expired|invalid).*(?:client_secret|auth|token)/iu.test(providerCode)) {
+    return { type: 'auth_expired' };
+  }
+  if (providerCode === 'session_expired') {
+    return { type: 'provider_error', code: 'voice_session_expired', terminal: true };
+  }
+  return {
+    type: 'provider_error',
+    code: providerCode === 'rate_limit_exceeded' ? 'rate_limited' : fallback,
+    terminal: false,
+  };
 }
 
 const OpenAiFunctionToolBaseSchema = z.object({
@@ -233,6 +262,10 @@ const OpenAiInputAudioBufferClearEventSchema = z.object({
   type: z.literal('input_audio_buffer.clear'),
   event_id: OpenAiIdSchema.optional(),
 }).strict();
+const OpenAiInputAudioBufferCommitEventSchema = z.object({
+  type: z.literal('input_audio_buffer.commit'),
+  event_id: OpenAiIdSchema.optional(),
+}).strict();
 const OpenAiOutputAudioBufferClearEventSchema = z.object({
   type: z.literal('output_audio_buffer.clear'),
   event_id: OpenAiIdSchema.optional(),
@@ -247,6 +280,7 @@ const OpenAiClientEventBaseSchema = z.discriminatedUnion('type', [
   OpenAiConversationItemCreateEventSchema,
   OpenAiResponseCancelEventSchema,
   OpenAiInputAudioBufferClearEventSchema,
+  OpenAiInputAudioBufferCommitEventSchema,
   OpenAiOutputAudioBufferClearEventSchema,
   OpenAiResponseCreateEventBaseSchema,
 ]);
@@ -394,10 +428,13 @@ export function createOpenAiRealtimeProtocolAdapter(input: Readonly<{
       rememberEventId(providerEventId);
       const eventId = providerEventId;
       if (event.type === 'error') {
-        const code = text(event.error.code);
-        if (code && /(?:client_secret|auth|token).*(?:expired|invalid)|(?:expired|invalid).*(?:client_secret|auth|token)/iu.test(code)) {
-          result.push({ type: 'auth_expired' });
-        }
+        result.push(projectOpenAiProviderError(event.error.code));
+      } else if (event.type === 'conversation.item.input_audio_transcription.failed') {
+        result.push(projectOpenAiProviderError(event.error.code, 'voice_transcription_failed'));
+      } else if (event.type === 'response.done' && event.response.status === 'failed') {
+        result.push(projectOpenAiProviderError(event.response.status_details?.error?.code));
+      } else if (event.type === 'response.done' && event.response.status === 'incomplete') {
+        result.push({ type: 'provider_error', code: 'voice_response_incomplete', terminal: false });
       }
       if (event.type === 'input_audio_buffer.speech_started') {
         result.push({ type: 'input_speech_started' });
@@ -483,8 +520,12 @@ export function createOpenAiRealtimeProtocolAdapter(input: Readonly<{
     encodeTurnControl(action: VoiceTurnControlAction): VoiceRealtimeJsonValue | null {
       if (action === 'cancel_response') return encodeOpenAiRealtimeClientEvent({ type: 'response.cancel' });
       if (action === 'clear_input') return encodeOpenAiRealtimeClientEvent({ type: 'input_audio_buffer.clear' });
+      if (action === 'commit_input') return encodeOpenAiRealtimeClientEvent({ type: 'input_audio_buffer.commit' });
       return null;
     },
+    encodePostInputCommitControls: () => Object.freeze([
+      encodeOpenAiRealtimeClientEvent({ type: 'response.create' }),
+    ]),
   });
 }
 

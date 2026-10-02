@@ -34,6 +34,8 @@ function createOpenAiRealtimeProviderRuntime(
     auth: VoiceClientAuthArtifact;
     model: string;
     availableForConnection: boolean;
+    greetOnOpen: boolean;
+    inputCommitRequired: boolean;
   }>>();
   let nextPreparationId = 0;
   const credentialOperations = createOpenAiRealtimeCredentialOperations();
@@ -43,8 +45,10 @@ function createOpenAiRealtimeProviderRuntime(
       preparationId: number;
       auth: VoiceClientAuthArtifact;
       model: string;
+      inputCommitRequired: boolean;
     }>,
   ) => Object.freeze({
+    inputCommitRequired: preparation.inputCommitRequired,
     config: Object.freeze({
       preparationId: preparation.preparationId,
       model: preparation.model,
@@ -63,7 +67,7 @@ function createOpenAiRealtimeProviderRuntime(
       if (signal.aborted) return { kind: 'aborted' };
       return { kind: 'ready' };
     },
-    async prepare({ attemptId, reason, providerConfig, credentials, signal }) {
+    async prepare({ attemptId, reason, providerConfig, credentials, attemptPolicy, signal }) {
       if (signal.aborted) return { kind: 'aborted' };
       const admitted = preparedAuthByAttemptId.get(attemptId);
       if (reason !== 'initial') {
@@ -85,6 +89,7 @@ function createOpenAiRealtimeProviderRuntime(
           ...admitted,
           preparationId: ++nextPreparationId,
           availableForConnection: true,
+          greetOnOpen: false,
         });
         preparedAuthByAttemptId.set(attemptId, reconnectPreparation);
         return {
@@ -109,7 +114,7 @@ function createOpenAiRealtimeProviderRuntime(
         audience: JSON.stringify({
           model: settings.model.id,
           voice: settings.voice,
-          instructions: settings.instructions,
+          instructions: [attemptPolicy?.instructions, settings.instructions].filter(Boolean).join('\n\n'),
           turnDetection: settings.turnDetection,
           inputTranscriptionModel: settings.inputTranscriptionModel,
         }),
@@ -128,6 +133,8 @@ function createOpenAiRealtimeProviderRuntime(
           auth,
           model: settings.model.id,
           availableForConnection: true,
+          greetOnOpen: attemptPolicy?.welcome.enabled === true && attemptPolicy.welcome.mode === 'immediate',
+          inputCommitRequired: settings.turnDetection === 'manual',
         }),
       );
       return {
@@ -136,6 +143,7 @@ function createOpenAiRealtimeProviderRuntime(
           preparationId,
           auth,
           model: settings.model.id,
+          inputCommitRequired: settings.turnDetection === 'manual',
         }),
       };
     },
@@ -191,6 +199,9 @@ function createOpenAiRealtimeProviderRuntime(
           label: 'oai-events',
           async onOpen({ sendJson }) {
             await sendJson(sessionUpdate);
+            if (activePreparedAuth.greetOnOpen) {
+              await sendJson(encodeOpenAiRealtimeClientEvent({ type: 'response.create' }));
+            }
           },
         },
       });

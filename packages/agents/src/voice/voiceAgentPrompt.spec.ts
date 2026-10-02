@@ -19,6 +19,29 @@ import {
 } from './voiceAgentPrompt.js';
 
 describe('voiceAgentPrompt', () => {
+  it('composes attempt policy with only admitted tools, language, greeting and user prompt blocks', () => {
+    const prompt = buildVoiceClientToolAgentPrompt({
+      actionSpecs: listVoiceToolActionSpecs(),
+      availableToolNames: ['readCurrentUiContext'],
+      assistantLanguage: 'fr-FR',
+      welcome: { enabled: true, mode: 'on_first_turn' },
+      extraSystemAppendBlocks: ['Use the project terminology.'],
+    });
+    expect(prompt).toContain('readCurrentUiContext');
+    expect(prompt).not.toContain('sendSessionMessage');
+    expect(prompt).not.toContain('searchActionSpecs');
+    expect(prompt).toContain('fr-FR');
+    expect(prompt).toContain('On your first reply');
+    expect(prompt).toContain('Use the project terminology.');
+    expect(prompt).not.toContain('Do not add greeting filler');
+    const noTools = buildVoiceClientToolAgentPrompt({
+      availableToolNames: [], welcome: { enabled: false, mode: 'immediate' },
+    });
+    expect(noTools).not.toContain('readCurrentUiContext');
+    expect(noTools).not.toContain('sendSessionMessage');
+    expect(noTools).toContain('Do not add greeting filler');
+  });
+
   it('pins the global Voice Agent startup-instruction identity, block order, and rendered digest', () => {
     const plan = buildGlobalVoiceAgentStartupInstructionsPlanV1();
     const rendered = renderPromptPlanV1(plan).normalize('NFC').replace(/\r\n/g, '\n');

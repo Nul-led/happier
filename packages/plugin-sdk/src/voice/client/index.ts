@@ -23,6 +23,7 @@ export type { VoiceOutputFocusState } from '../client.js';
 export type { VoiceOutputInterruptionResolution } from '../client.js';
 export type { VoiceProviderConversationService } from '../client.js';
 export type { VoiceProviderExecutionAuthority } from '../client.js';
+export type { VoiceRealtimeAttemptPolicy } from '../client.js';
 export type { VoiceRealtimeCanonicalEvent } from '../client.js';
 export type { VoiceRealtimeConnection } from '../client.js';
 export type { VoiceRealtimeConnectionCloseReason } from '../client.js';

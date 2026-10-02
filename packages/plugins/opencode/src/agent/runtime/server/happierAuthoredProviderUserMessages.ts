@@ -133,6 +133,7 @@ export function createOpenCodeHappierAuthoredProviderUserMessageIds(params: Read
     createdAtMs: number;
   }>): Promise<boolean>;
   hydrate(): Promise<void>;
+  hydrateCommittedIdentities(messageIds: readonly string[]): void;
   clearMemory(): void;
 }> {
   const ids = new Set<string>();
@@ -230,6 +231,12 @@ export function createOpenCodeHappierAuthoredProviderUserMessageIds(params: Read
       pendingPromptAnchors = [
         ...readStoredPendingPromptAnchors(stored),
       ];
+    },
+    hydrateCommittedIdentities(messageIds) {
+      for (const messageId of messageIds) {
+        const admitted = readNonBlankOpaqueIdentifier(messageId);
+        if (admitted) ids.add(admitted);
+      }
     },
     clearMemory() {
       ids.clear();

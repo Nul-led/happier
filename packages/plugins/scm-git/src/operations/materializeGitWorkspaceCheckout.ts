@@ -32,12 +32,14 @@ type GitWorkspaceCheckoutCreationInput = Readonly<{
     displayName: string;
     baseRef: string | null;
     branchMode: 'new' | 'existing';
+    assertFilesystemPathAuthorized?: (targetPath: string) => void;
 }>;
 
 type GitPreparedReviewWorkspaceInput = Readonly<{
     repoRoot: string;
     sourceTip: ScmReviewWorkspaceSourceTip;
     signal?: AbortSignal;
+    assertFilesystemPathAuthorized?: (targetPath: string) => void;
 }>;
 
 type GitPreparedReviewWorkspaceResult = Readonly<{
@@ -382,8 +384,10 @@ async function materializeGitWorktreeIntoExistingDirectory(input: Readonly<{
     branchName: string;
     baseRef: string | null;
     branchMode: 'new' | 'existing';
+    assertFilesystemPathAuthorized?: (targetPath: string) => void;
 }>): Promise<string> {
     const temporaryTargetPath = `${input.targetPath}.happier-materialize-tmp`;
+    input.assertFilesystemPathAuthorized?.(temporaryTargetPath);
     await rm(temporaryTargetPath, { recursive: true, force: true });
 
     await addGitWorktree({
@@ -419,11 +423,11 @@ async function resolveGitMaterializedWorktreeTargetPath(input: Readonly<{
     return identity?.registeredWorktreePath ?? identity?.worktreePath ?? input.targetPath;
 }
 
-async function tryReuseExistingGitWorktree(input: Readonly<{
+async function inspectReusableGitWorktree(input: Readonly<{
     repoRoot: string;
     targetPath: string;
     branchName: string;
-}>): Promise<string | null> {
+}>) {
     if (!await pathExists(input.targetPath)) {
         return null;
     }
@@ -441,12 +445,46 @@ async function tryReuseExistingGitWorktree(input: Readonly<{
         return null;
     }
 
+    return targetIdentity;
+}
+
+async function tryReuseExistingGitWorktree(input: Readonly<{
+    repoRoot: string;
+    targetPath: string;
+    branchName: string;
+}>): Promise<string | null> {
+    const targetIdentity = await inspectReusableGitWorktree(input);
+    if (!targetIdentity) return null;
+
     await repairGitWorktreeAdminReference({
         identity: targetIdentity,
         targetPath: input.targetPath,
     });
 
     return await resolveGitMaterializedWorktreeTargetPath({ targetPath: input.targetPath });
+}
+
+export async function assertGitWorkspaceCheckoutMutationPathsAuthorized(input: Readonly<{
+    repoRoot: string;
+    targetPath: string;
+    branchName: string;
+    branchMode: 'new' | 'existing';
+    assertFilesystemPathAuthorized?: (targetPath: string) => void;
+}>): Promise<void> {
+    const assertAuthorized = input.assertFilesystemPathAuthorized;
+    if (!assertAuthorized) return;
+    assertAuthorized(input.targetPath);
+    if (await inspectReusableGitWorktree(input)) return;
+    if (input.branchMode === 'existing') {
+        const registration = await inspectGitWorktreeBranchRegistration(input);
+        if (registration.existingPath) {
+            assertAuthorized(registration.existingPath);
+            return;
+        }
+    }
+    if (!await isDirectoryEmpty(input.targetPath)) {
+        assertAuthorized(`${input.targetPath}.happier-materialize-tmp`);
+    }
 }
 
 async function inspectGitWorktreeBranchRegistration(input: Readonly<{
@@ -497,12 +535,14 @@ export async function materializeGitWorkspaceCheckoutAtPath(input: Readonly<{
     displayName: string;
     baseRef: string | null;
     branchMode: 'new' | 'existing';
+    assertFilesystemPathAuthorized?: (targetPath: string) => void;
 }>): Promise<Readonly<{
     targetPath: string;
     branchName: string;
     reused: boolean;
 }>> {
     const branchName = resolveWorktreeBranchName(input.displayName);
+    await assertGitWorkspaceCheckoutMutationPathsAuthorized({ ...input, branchName });
 
     const reusedTargetPath = await tryReuseExistingGitWorktree({
         repoRoot: input.repoRoot,
@@ -525,6 +565,7 @@ export async function materializeGitWorkspaceCheckoutAtPath(input: Readonly<{
         })
         : null;
     if (branchRegistration?.existingPath) {
+            input.assertFilesystemPathAuthorized?.(branchRegistration.existingPath);
             return {
                 targetPath: branchRegistration.existingPath,
                 branchName,
@@ -543,6 +584,7 @@ export async function materializeGitWorkspaceCheckoutAtPath(input: Readonly<{
                 branchName,
                 baseRef: normalizedBaseRef,
                 branchMode: input.branchMode,
+                assertFilesystemPathAuthorized: input.assertFilesystemPathAuthorized,
             }),
             branchName,
             reused: false,
@@ -579,6 +621,16 @@ export async function prepareGitReviewWorkspace(
     const branchName = resolveWorktreeBranchName(input.sourceTip.branch);
     const observedHeadSha = input.sourceTip.sourceHeadSha.toLowerCase();
 
+    // Review preparation fetches and creates the branch before materialization.
+    // Check the same mutation targets before those earlier Git side effects.
+    await assertGitWorkspaceCheckoutMutationPathsAuthorized({
+        repoRoot: input.repoRoot,
+        targetPath: buildWorktreeTargetPath(input.repoRoot, branchName),
+        branchName,
+        branchMode: 'existing',
+        assertFilesystemPathAuthorized: input.assertFilesystemPathAuthorized,
+    });
+
     await fetchVerifiedSourceTip(input);
     if (!await branchExists({
         repoRoot: input.repoRoot,
@@ -597,6 +649,7 @@ export async function prepareGitReviewWorkspace(
         displayName: branchName,
         baseRef: null,
         branchMode: 'existing',
+        assertFilesystemPathAuthorized: input.assertFilesystemPathAuthorized,
     });
     const identity = await inspectGitCheckoutIdentity({ cwd: materialized.targetPath });
     if (!identity || !isGitLinkedWorktreeIdentity(identity)) {
@@ -701,6 +754,7 @@ export async function createGitWorkspaceCheckoutAtDefaultPath(
                 displayName: candidateBranchName,
                 baseRef: normalizedBaseRef,
                 branchMode: input.branchMode,
+                assertFilesystemPathAuthorized: input.assertFilesystemPathAuthorized,
             });
             return {
                 targetPath: materialized.targetPath,

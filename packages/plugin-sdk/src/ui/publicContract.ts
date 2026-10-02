@@ -2,6 +2,10 @@ import type { PluginUiToneV1 as DtoPluginUiToneV1, PluginUiAttachmentToneV1 as D
 import type { QualifiedConnectedAccountRef } from '../connectedAccounts.js';
 import type { ProjectKeyV1, SessionServerStartSpawnDraftV1 } from '../services/sessions.js';
 import type { JsonValue } from '../identity.js';
+import type {
+    StoredImageRefV1 as ProtocolStoredImageRefV1,
+    PluginUiReadStoredImageResultV1 as ProtocolPluginUiReadStoredImageResultV1,
+} from '@happier-dev/protocol/plugins/ui/client';
 import type { PluginAvailabilityDescriptor } from '../manifest.js';
 import type {
     PluginDeclarativeNodeV2 as PluginManifestDeclarativeNodeV2,
@@ -78,6 +82,9 @@ export type {
 } from '../composer.js';
 export type ComposerControlStateContentTypeV1 = ProtocolComposerControlStateContentTypeV1;
 export type ComposerControlStateV1 = ProtocolComposerControlStateV1;
+/** Declaration-only image projections; Protocol owns the request and disclosure grammar. */
+export type StoredImageRefV1 = ProtocolStoredImageRefV1;
+export type PluginUiReadStoredImageResultV1 = ProtocolPluginUiReadStoredImageResultV1;
 
 /**
  * Declaration-only projections for public UI author contracts.
@@ -790,3 +797,7 @@ export type PublicToolchainCompatibilityV1 = {
         typescriptNative: PublicToolchainAuthoringDependencyV1;
     };
 };
+/** Opaque source selection; the mounted host supplies transport and caller authority. */
+export type PluginLiveStreamReferenceV1 =
+    | Readonly<{ kind: 'plugin'; source: Readonly<{ pluginId: string; localId: string }> }>
+    | Readonly<{ kind: 'host'; sourceId: string }>;

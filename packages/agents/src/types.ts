@@ -76,6 +76,7 @@ export type AgentSessionCapabilities = Readonly<{
     usageLimitRecovery?: Readonly<{
         checkNow: AgentSessionCapabilitySupportLevel;
     }>;
+    usageReporting?: AgentSessionCapabilitySupportLevel;
     compaction?: Readonly<{
         manual: AgentSessionCapabilitySupportLevel;
     }>;

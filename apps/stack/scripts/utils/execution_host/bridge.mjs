@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
-import { isAbsolute, posix } from 'node:path';
+import { dirname, isAbsolute, posix, resolve } from 'node:path';
 
 import { shouldDelegateToActiveExecutionHost } from './controller.mjs';
-import { resolveHostWorkspaceMapping, runDelegatedHstackCommand } from './delegation.mjs';
+import { mapHostCwdToGuest, resolveHostWorkspaceMapping, runDelegatedHstackCommand } from './delegation.mjs';
 import { runForegroundChild } from './foreground_child.mjs';
 import { startGhopsCredentialBroker } from './ghops_credential_broker.mjs';
 
@@ -19,6 +19,35 @@ function defaultBoundary() {
       };
     },
   };
+}
+
+export async function runNativeExecutionHostBridge({
+  profile, launcher, argv, cwd, env, platform = process.platform,
+  prepare, boundary = defaultBoundary(),
+}) {
+  if (!isAbsolute(launcher) || /[\0\r\n]/.test(launcher)) {
+    throw new Error('[execution-host] native launcher must be an absolute path');
+  }
+  // Delegate the launcher, not the payload's command vocabulary. The guest's
+  // native dispatcher retains placement, admission, flags and script ownership.
+  if (!shouldDelegateToActiveExecutionHost({ profile, argv: ['dev-targets'], platform, env })) {
+    return await runForegroundChild({
+      command: '/bin/sh', args: [launcher, ...argv],
+      options: { cwd, env: { ...env, HAPPIER_STACK_EXECUTION_HOST_REENTRY: '1' }, stdio: 'inherit', shell: false },
+      boundary,
+    });
+  }
+  const repoRoot = resolve(dirname(launcher), '../../..');
+  const guestRoot = profile.version === 2
+    ? resolveHostWorkspaceMapping(profile, repoRoot).workspace.guestDir
+    : mapHostCwdToGuest(profile, repoRoot);
+  return await runDelegatedHstackCommand({
+    profile, argv: [], cwd, env, prepare, boundary,
+    guestInvocation: {
+      command: '/bin/sh',
+      args: [posix.join(guestRoot, 'apps/stack/bin/hstack-exec'), ...argv],
+    },
+  });
 }
 
 export async function runExecutionHostBridge({

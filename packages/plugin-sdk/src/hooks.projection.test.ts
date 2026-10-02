@@ -105,6 +105,7 @@ type ExpectedPluginHookRuntimeFamily =
 
 type ExpectedPluginExecutionCaller =
     | Readonly<{ kind: 'host' }>
+    | Readonly<{ kind: 'session'; sessionId: string }>
     | Readonly<{ kind: 'plugin'; pluginId: string }>;
 
 type ExpectedActionExecuteOutcome =

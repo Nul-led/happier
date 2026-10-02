@@ -1,3 +1,5 @@
+export { ohMyPiConnectedServiceStateSharingDescriptor as AGENT_STATE_SHARING_DESCRIPTOR } from './connectedServices/stateSharing.js';
+
 const OH_MY_PI_AGENT_ID = 'ohMyPi';
 
 // IMPORTANT: this must stay JSON-serializable (data-only).

@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
+import * as interactions from './interactions/index.public.js';
 
 const PROTOCOL_INTERACTION_EXPORTS = [
     'InteractionTerminalStatusV1',
@@ -94,6 +95,20 @@ function typeText(source: ts.SourceFile, node: ts.TypeNode | undefined): string 
 }
 
 describe('transient interaction public projection', () => {
+    it('validates author questions through the public interaction domain without granting host custody fields', () => {
+        expect(interactions.InteractionTransientAuthorRequestV1Schema).toBeDefined();
+        const request = { kind: 'questions', title: 'Choose', questions: [
+            { id: 'one', prompt: 'Which?', type: 'singleChoice', required: true,
+                choices: [{ id: 'a', label: 'A' }] },
+        ] };
+        expect(interactions.InteractionTransientAuthorRequestV1Schema.safeParse(request).success).toBe(true);
+        expect(interactions.InteractionTransientAuthorRequestV1Schema.safeParse({
+            ...request, requestId: 'host-only',
+        }).success).toBe(false);
+        expect(interactions.InteractionTransientAuthorRequestV1Schema.safeParse({
+            ...request, questions: [...request.questions, ...request.questions],
+        }).success).toBe(false);
+    });
     it('directly re-exports the Protocol author input and terminal result vocabulary', async () => {
         const source = await parseInteractionsSource();
 

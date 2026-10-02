@@ -9,11 +9,8 @@ import type {
 
 import { CODEX_VOICE_PROVIDER_CONTRIBUTION_ID } from '../../constants.js';
 import {
-  createCodexV3ToolSessionUpdate,
   createCodexV3ControlDecoder,
   encodeCodexV3ContextUpdate,
-  encodeCodexV3ToolContinuation,
-  encodeCodexV3ToolResult,
   type CodexV3ControlDecoder,
 } from './control.js';
 
@@ -102,7 +99,7 @@ export function createCodexRealtimeVoiceProviderRuntime(): RealtimeVoiceProvider
     protocol,
     microphoneMode: 'host_webrtc',
     outputLevelMeter: 'unavailable',
-    async createConnection({ attemptId, media, signal, execution, ui, tools }) {
+    async createConnection({ attemptId, media, signal, execution, ui }) {
       if (execution.kind !== 'experimental_agent_session_realtime') {
         throw new Error('voice_agent_realtime_execution_authority_required');
       }
@@ -121,7 +118,6 @@ export function createCodexRealtimeVoiceProviderRuntime(): RealtimeVoiceProvider
       });
       activeAttemptsById.set(attemptId, Object.freeze({ attemptId, decoder }));
       currentAttemptId = attemptId;
-      const sessionUpdate = createCodexV3ToolSessionUpdate(tools);
       return media.createWebRtcConnection({
         signaling: {
           async exchangeOffer({ offerSdp, signal: offerSignal }) {
@@ -145,15 +141,16 @@ export function createCodexRealtimeVoiceProviderRuntime(): RealtimeVoiceProvider
         },
         control: {
           label: CONTROL_CHANNEL_LABEL,
-          async onOpen({ sendJson }) {
-            await sendJson(sessionUpdate);
-          },
+          // App-server configures the native session and owns delegation.
+          // A GA session/tools update here would overwrite a different wire.
+          onOpen() {},
         },
       });
     },
-    encodeToolResults: (results) => Object.freeze(results.map(encodeCodexV3ToolResult)),
-    encodeToolContinuation: () => encodeCodexV3ToolContinuation(),
-    encodeContextUpdate: (text) => Object.freeze([encodeCodexV3ContextUpdate(text)]),
+    // Native delegation never enters the host's GA client-function path.
+    encodeToolResults: () => EMPTY_CONTROLS,
+    encodeToolContinuation: () => null,
+    encodeContextUpdate: encodeCodexV3ContextUpdate,
     encodeTextTurn: () => EMPTY_CONTROLS,
   };
   return Object.freeze(runtime);

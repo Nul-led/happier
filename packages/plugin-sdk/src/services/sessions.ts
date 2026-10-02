@@ -63,6 +63,20 @@ import {
     isChangeTitleToolNameAlias as protocolIsChangeTitleToolNameAlias,
 } from '@happier-dev/protocol/tools/v2';
 import { ProjectKeyV1Schema as protocolProjectKeyV1Schema } from '@happier-dev/protocol/workspaces';
+import { readSessionModesMetadata as protocolReadSessionModesMetadata } from '@happier-dev/protocol/sessions';
+
+/** Accepted native mode facts; parsing and retained V1 normalization stay Protocol-owned. */
+export type SessionModeCatalog = Readonly<{
+    v: 2;
+    agentId: string;
+    updatedAt: number;
+    currentModeId: string | null;
+    availableModes: readonly Readonly<{ id: string; name: string; description?: string }>[];
+}>;
+
+export const readSessionModesMetadata: (
+    metadata: Readonly<Record<string, unknown>> | null | undefined,
+) => SessionModeCatalog | null = protocolReadSessionModesMetadata;
 
 /**
  * Portable structural view of a Protocol-owned validator. The runtime value

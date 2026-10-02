@@ -11,7 +11,7 @@ import type {
   ScmPullRequestReference,
   ScmWorkingSnapshot,
 } from '@happier-dev/plugin-sdk/scm';
-import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/plugin-sdk/scm';
+import { normalizeWorktreeDisplayName, SCM_OPERATION_ERROR_CODES } from '@happier-dev/plugin-sdk/scm';
 import {
     readCurrentHostingProviderRuntimeServices as readCurrentScmHostingProviderRuntimeServices,
     type HostingProviderRuntimeServices as ScmHostingProviderRuntimeServices,
@@ -24,7 +24,9 @@ import { runScmCommand } from '../runtime.js';
 import { mapGitErrorCode } from '../remote.js';
 import type { ResolvedScmHostingProviderRegistry } from '../hostingProviders/types.js';
 import { resolveDefaultPullRequestStatusProjectionRegistry } from './pullRequestStatusProjection.js';
-import { realizeGitWorkspaceCheckout } from '../workspaceIntegration.js';
+import { realizeGitWorkspaceCheckout, resolveGitRepoRoot } from '../workspaceIntegration.js';
+import { assertGitWorkspaceCheckoutMutationPathsAuthorized } from './materializeGitWorkspaceCheckout.js';
+import { buildWorktreeTargetPath } from './worktreeName.js';
 import type {
     ScmWorkspaceIntegrationWorkspaceCheckoutRealizationInput,
     ScmWorkspaceIntegrationWorkspaceCheckoutRealizationResult,
@@ -305,6 +307,17 @@ export function createGitPullRequestCheckoutOperations(
             });
             if ('error' in resolved) return resolved.error;
             const { snapshot, provider, metadata, branch } = resolved;
+            const branchName = normalizeWorktreeDisplayName(branch);
+            const repoRoot = resolveGitRepoRoot(context);
+            await assertGitWorkspaceCheckoutMutationPathsAuthorized({
+                repoRoot,
+                targetPath: request.mode === 'local'
+                    ? context.cwd
+                    : buildWorktreeTargetPath(repoRoot, branchName),
+                branchName,
+                branchMode: 'existing',
+                assertFilesystemPathAuthorized: context.assertFilesystemPathAuthorized,
+            });
             const branchPreparationError = await prepareProviderCheckoutBranch({
                 context,
                 snapshot,

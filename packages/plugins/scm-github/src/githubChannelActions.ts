@@ -21,7 +21,6 @@ import {
   type ConversationProviderConnectionInputV1,
   type ConversationProviderFailureV1,
   type ConversationProviderSetupResultV1,
-  type ConversationResolvedEndpointV1,
 } from '@happier-dev/channels-protocol/v1';
 import { isPluginError, PluginError, type PluginInvocationContext } from '@happier-dev/plugin-sdk';
 import type { ConnectedAccountRef } from '@happier-dev/plugin-sdk/connected-accounts';
@@ -55,8 +54,10 @@ import {
   readGithubPositiveDecimal,
   type GithubChannelProviderConfigV1,
   type GithubRepositorySourceConfigV1,
+  GITHUB_CONNECTED_ACCOUNT_PURPOSE,
 } from './observations/githubProviderContracts.js';
 import { parseGithubRepositorySetupInput } from './observations/githubRepositorySetupInput.js';
+import { parseGithubChannelEndpoint as parseEndpointId } from './observations/githubChannelEndpoint.js';
 
 const CHANNELS_CORE_PLUGIN_ID = 'happier.channels';
 const GITHUB_ISSUE_COMMENT_BODY_MAX_UTF8_BYTES = 65_536;
@@ -271,24 +272,6 @@ function decodeIssueNumber(query: string, repository: GithubRepositorySourceConf
   }
 }
 
-function parseEndpointId(
-  endpoint: ConversationResolvedEndpointV1,
-  repositoryId: string,
-): Readonly<{ issueId: string; issueNumber: number; kind: 'githubIssue' | 'githubPullRequest' }> {
-  if (endpoint.kind !== 'githubIssue' && endpoint.kind !== 'githubPullRequest') {
-    throw new PluginError({ code: 'github_channel_endpoint_invalid', message: 'GitHub delivery requires an issue or pull-request endpoint.' });
-  }
-  const match = /^github:repository:([1-9][0-9]*):issue:([1-9][0-9]*):number:([1-9][0-9]*)$/u.exec(endpoint.id);
-  if (!match || match[1] !== repositoryId) {
-    throw new PluginError({ code: 'github_channel_endpoint_invalid', message: 'GitHub delivery endpoint does not belong to this configured repository.' });
-  }
-  const issueNumber = Number(match[3]);
-  if (!Number.isSafeInteger(issueNumber) || issueNumber < 1) {
-    throw new PluginError({ code: 'github_channel_endpoint_invalid', message: 'GitHub delivery endpoint has an invalid issue number.' });
-  }
-  return Object.freeze({ issueId: match[2]!, issueNumber, kind: endpoint.kind });
-}
-
 function makeChannelConfig(
   repository: GithubRepositorySourceConfigV1,
   identity: Readonly<{ id: string; label: string }>,
@@ -335,6 +318,11 @@ export async function setupGithubChannels(
   context: PluginInvocationContext,
 ): Promise<ConversationProviderSetupResultV1> {
   assertChannelsCoreCaller(context);
+  if (isRecord(input) && Object.keys(input).length === 1 && typeof input.repository === 'string') {
+    const selected = await context.services.connectedAccounts.getBinding(GITHUB_CONNECTED_ACCOUNT_PURPOSE, { signal: context.signal });
+    if (selected === null) throw new PluginError({ code: 'github_channel_credential_unavailable', message: 'Choose a GitHub Connected Account before linking a pull request.' });
+    input = { ...input, credentialRef: selected.account };
+  }
   const setup = parseGithubRepositorySetupInput(input, context.plugin.id);
   const client = await createGithubApiClient(context, setup.credentialRef);
   const [repository, identity] = await Promise.all([
@@ -420,6 +408,7 @@ export async function resolveGithubChannelEndpoint(
       candidates: [{
         kind: issue.kind,
         audience: 'shared',
+        ...(issue.kind === 'githubPullRequest' ? { pullRequest: { repository: config.repository.nameWithOwner, number: issue.number } } : {}),
         id: githubIssueEndpointId(config.repository.repositoryId, issue),
         parentId: config.repository.repositoryId,
         parentLabel: config.repository.nameWithOwner,
@@ -493,6 +482,8 @@ export async function pollGithubChannelObservations(
       limit: request.limit,
       connectionId: request.connectionId,
       providerConnectionKey: request.providerConnectionKey,
+      ciEndpoints: request.bindings?.filter((binding) => binding.scopedTriggerKind === 'ciFailed').map((binding) => binding.endpoint),
+      signal: context.signal,
     }));
   } catch (error) {
     rethrowPreEffectLifecycleFailure(error, context.signal);

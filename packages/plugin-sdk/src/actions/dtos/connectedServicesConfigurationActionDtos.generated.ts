@@ -62,6 +62,16 @@ export type ConnectedServicesConfigurationActionInputById = {
         providerCreditId?: string | undefined;
         sourceSnapshotFetchedAtMs?: number | null | undefined;
     };
+    readonly "connectedServices.quota.refresh": {
+        account: {
+            service: {
+                pluginId: string;
+                localId: string;
+            };
+            accountId: string;
+        };
+        machineId: string;
+    };
     readonly "connectedServices.identityPrivacy.set": {
         hidden: boolean;
     };
@@ -190,6 +200,9 @@ export type ConnectedServicesConfigurationActionResultById = {
             status: 'consumed' | 'already_consumed' | 'not_available' | 'nothing_to_reset' | 'unknown_after_timeout';
             providerCreditId?: string | undefined;
         } | undefined;
+    };
+    readonly "connectedServices.quota.refresh": {
+        applied: true;
     };
     readonly "connectedServices.identityPrivacy.set": {
         applied: true;

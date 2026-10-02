@@ -246,6 +246,14 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
               presentation: { control: 'text', hidden: true },
             },
             {
+              id: 'maxInputCharacters',
+              title: 'Endpoint input limit (characters)',
+              description: 'OpenAI accepts 4,096 characters. For a custom endpoint, use its documented input limit.',
+              schema: { type: 'integer', minimum: 1, maximum: 200_000 },
+              default: 4_096,
+              presentation: { control: 'number', step: 1 },
+            },
+            {
               id: 'model',
               title: 'Model',
               schema: { type: 'string', minLength: 1, maxLength: 256 },
@@ -277,7 +285,8 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
         },
         limits: {
           synthesize: {
-            maxInputCharacters: 200000,
+            maxInputCharacters: 200_000,
+            maxInputCharactersSettingId: 'maxInputCharacters',
             maxOutputBytes: VOICE_SPEECH_OUTPUT_MAX_BYTES,
           },
         },

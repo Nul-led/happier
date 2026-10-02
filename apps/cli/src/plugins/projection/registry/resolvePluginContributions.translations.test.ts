@@ -5,6 +5,7 @@ import { normalizePluginManifestV2 } from '@/plugins/manifest/normalize';
 import { buildPluginProjectionV2 } from './projection/v2';
 import { createResolvedContributionRegistry } from './createResolvedContributionRegistry';
 import { projectLoadedPluginContributes } from './resolvePluginContributions';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 function loadedTranslationPlugin(locale: string, greeting = 'Hello'): LoadedPlugin {
   const pluginId = 'com.acme.translations';
@@ -57,7 +58,8 @@ describe('resolved plugin translation projection', () => {
   });
 
   it('projects a schema-v2 external plugin translation into the runtime UI bundle without an aggregate digest', () => {
-    const project = (greeting: string, legacyTitle = 'Legacy V1') => {
+    const occurrenceId = createPluginRuntimeOccurrenceId('com.acme.translations');
+    const project = (greeting: string) => {
       const resolved = projectLoadedPluginContributes({
         loadResult: {
           loadedPlugins: [loadedTranslationPlugin('en-US', greeting)],
@@ -67,14 +69,11 @@ describe('resolved plugin translation projection', () => {
       });
       const registry = createResolvedContributionRegistry({
         ...resolved,
-        uiTranslations: [{
-          provenance: 'external',
-          source: { kind: 'path' },
-          pluginId: 'com.acme.translations',
-          manifestPath: '/plugins/com.acme.translations/legacy.json',
-          definition: { locales: { en: { title: legacyTitle } } },
-        }],
+        occurrenceIdsByPluginId: { 'com.acme.translations': occurrenceId },
       });
+      expect(registry).not.toHaveProperty('uiTranslations');
+      expect(registry).not.toHaveProperty('hostedWeb');
+      expect(registry).not.toHaveProperty('hostedWebById');
       return {
         entries: buildPluginProjectionV2({ registry, generation: 1 })
           .familiesById.pluginUi?.entriesById ?? {},
@@ -83,7 +82,6 @@ describe('resolved plugin translation projection', () => {
 
     const hello = project('Hello from V2');
     const updated = project('Updated from V2');
-    const legacyOnlyUpdate = project('Hello from V2', 'Changed legacy V1');
 
     expect(hello.entries['translations:com.acme.translations']).toMatchObject({
       pluginId: 'com.acme.translations',
@@ -95,9 +93,6 @@ describe('resolved plugin translation projection', () => {
     });
     expect(hello.entries).not.toHaveProperty('digest:com.acme.translations');
     expect(updated.entries['translations:com.acme.translations']).not.toEqual(
-      hello.entries['translations:com.acme.translations'],
-    );
-    expect(legacyOnlyUpdate.entries['translations:com.acme.translations']).toEqual(
       hello.entries['translations:com.acme.translations'],
     );
   });

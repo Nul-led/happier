@@ -2,6 +2,7 @@ import type { PluginActionInputById, PluginInvocableActionId } from './actions/s
 import type {
     InteractionTransientApprovalAuthorRequestV1,
     InteractionTransientApprovalResultV1,
+    InteractionTransientAuthorRequestV1,
     InteractionTransientConfirmationAuthorRequestV1,
     InteractionTransientConfirmationResultV1,
     InteractionTransientQuestionsAuthorRequestV1,
@@ -9,6 +10,16 @@ import type {
 } from '@happier-dev/protocol';
 import type { JsonValue } from './identity.js';
 import type { Disposable, PluginCancellationOptions } from './lifecycle.js';
+import { InteractionTransientAuthorRequestV1Schema as protocolInteractionTransientAuthorRequestV1Schema } from '@happier-dev/protocol';
+
+/** Author input validation only; host-stamped custody remains outside this schema. */
+export const InteractionTransientAuthorRequestV1Schema: Readonly<{
+    parse(value: unknown): InteractionTransientAuthorRequestV1;
+    safeParse(value: unknown):
+        | Readonly<{ success: true; data: InteractionTransientAuthorRequestV1 }>
+        | Readonly<{ success: false; error: unknown }>;
+}> = protocolInteractionTransientAuthorRequestV1Schema;
+
 /** @realm daemon */
 export type { PluginInvocationSurface } from './invocation.js';
 
@@ -32,6 +43,12 @@ export type {
     InteractionTransientResultV1,
 } from '@happier-dev/protocol';
 
+export type SessionCompanionPresentationItem =
+    | { kind: 'builtin'; id: 'session_summary' | 'agent_plan' | 'changes' | 'local_services'; frameStyle?: 'card' | 'plain' }
+    | { kind: 'widget'; widgetId: string; frameStyle?: 'card' | 'plain' }
+    | { kind: 'pane'; paneId: string; frameStyle?: 'card' | 'plain' }
+    | { kind: 'plugin'; surface: { pluginId: string; localId: string }; frameStyle?: 'card' | 'plain' };
+
 /**
  * Reversible viewer-local presentation intent for the exact mounted Session.
  * Protocol owns validation and transport; this structural projection keeps the
@@ -46,27 +63,32 @@ export type CurrentSessionPresentationIntentV1 =
     | { kind: 'companion.hide' }
     | {
         kind: 'companion.item.add';
-        item: { kind: 'builtin'; id: 'session_summary' }
-            | { kind: 'widget'; widgetId: string };
+        item: SessionCompanionPresentationItem;
         index?: number;
     }
     | {
         kind: 'companion.item.remove';
-        item: { kind: 'builtin'; id: 'session_summary' }
-            | { kind: 'widget'; widgetId: string };
+        item: SessionCompanionPresentationItem;
     }
     | {
         kind: 'companion.item.move';
-        item: { kind: 'builtin'; id: 'session_summary' }
-            | { kind: 'widget'; widgetId: string };
+        item: SessionCompanionPresentationItem;
         toIndex: number;
+    }
+    | {
+        kind: 'companion.item.frameStyle.set';
+        item: SessionCompanionPresentationItem;
+        frameStyle: 'card' | 'plain' | null;
     }
     | { kind: 'companion.edge.set'; edge: 'leading' | 'trailing' }
     | { kind: 'companion.collapse.set'; collapsed: boolean }
     | { kind: 'companion.density.set'; density: 'compact' | 'comfortable' }
     | { kind: 'companion.open_full' };
 
-export type InteractionOptions = PluginCancellationOptions;
+export type InteractionOptions = PluginCancellationOptions & Readonly<{
+    /** Defaults to the active turn. Native asynchronous questions may live until their occurrence retires. */
+    lifetime?: 'turn' | 'occurrence';
+}>;
 export type InteractionSeverity = 'info' | 'warning' | 'error';
 
 export type UiWidget = Readonly<{

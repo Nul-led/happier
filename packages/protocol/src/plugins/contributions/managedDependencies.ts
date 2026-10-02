@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import {
+  GitHubReleaseBinaryInstallableSourceSchema,
   ManagedPypiWheelAssetInstallableSourceSchema,
   PinnedArchiveInstallableSourceSchema,
 } from '../../installables/sourceKind.js';
@@ -29,6 +30,10 @@ const PluginPinnedArchiveSourceV2Schema = PinnedArchiveInstallableSourceSchema
   .strict();
 
 const PluginManagedDependencySourceV2Schema = z.discriminatedUnion('kind', [
+  GitHubReleaseBinaryInstallableSourceSchema.omit({ kind: true }).extend({
+    kind: z.literal('githubReleaseBinary'),
+    installId: z.string().trim().regex(/^dep\.[A-Za-z0-9._-]+$/),
+  }).strict(),
   PluginManagedPypiWheelAssetSourceV2Schema,
   PluginPinnedArchiveSourceV2Schema,
   z.object({ kind: z.literal('system'), executableNames: z.array(z.string().trim().min(1)).min(1), versionArguments: z.array(z.string()).optional() }).strict(),
@@ -46,7 +51,7 @@ export const PluginManagedDependencyContributionV2Schema = z.object({
   health: PluginJsonValueV2Schema.optional(),
   metadata: z.record(z.string(), PluginJsonValueV2Schema).optional(),
 }).strict().superRefine((value, ctx) => {
-  if (value.sources.some((source) => source.kind === 'managedPypiWheelAsset' || source.kind === 'pinnedArchive') && !value.executable) {
+  if (value.sources.some((source) => source.kind === 'managedPypiWheelAsset' || source.kind === 'pinnedArchive' || source.kind === 'githubReleaseBinary') && !value.executable) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['executable'],

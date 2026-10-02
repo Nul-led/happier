@@ -37,6 +37,7 @@ export type {
 export { VoiceRealtimeJsonValueSchema } from '../client.js';
 export type { VoiceRealtimePreflight } from '../client.js';
 export type { VoiceRealtimePreparation } from '../client.js';
+export type { VoiceRealtimeAttemptPolicy } from '../client.js';
 export { VoiceRealtimeToolCallV1Schema } from '../client.js';
 export { VoiceRealtimeToolResultV1Schema } from '../client.js';
 export type { VoiceRuntimePlatform } from '../client.js';

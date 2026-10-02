@@ -592,6 +592,14 @@ async function pressRow(
     });
 }
 
+async function chooseRow(label: string): Promise<void> {
+    const mode = document.querySelector<HTMLElement>('[data-testid="happier-list-selection-mode"]');
+    if (!mode?.textContent?.includes('Done selecting')) {
+        await act(async () => { mode?.click(); });
+    }
+    await pressRow(label);
+}
+
 /**
  * The bulk bar's own action picker, read from the shared `Form.Select`'s
  * radiogroup rather than from every radio on the page: the saved-view and sort
@@ -639,18 +647,18 @@ describe('selecting several PRs & Issues rows', () => {
         expect(locations.slice(before)).toEqual([]);
     });
 
-    it('builds a keyed set with the command modifier without opening a detail', async () => {
+    it('builds a keyed set in explicit selection mode without opening a detail', async () => {
         const { locations } = await mountShell(createHarness());
         const before = locations.length;
 
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
         // Asserted before the second press so this states the contract rather
-        // than reporting its consequence: a modified press builds a set, and an
+        // than reporting its consequence: a selection-mode press builds a set, and an
         // opened detail replaces the list in the stacked composition, which
         // would leave the next row unreachable.
         expect(locations.slice(before)).toEqual([]);
 
-        await pressRow('Migrate the sessions list', { ctrlKey: true });
+        await chooseRow('Migrate the sessions list');
 
         expect(selectedLabels()).toEqual([
             expect.stringContaining('Replace the duplicated normalizer'),
@@ -666,7 +674,7 @@ describe('selecting several PRs & Issues rows', () => {
         const { locations } = await mountShell(createHarness());
         const before = locations.length;
 
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
         expect(locations.slice(before)).toEqual([]);
 
         await pressRow('Migrate the sessions list', { shiftKey: true });
@@ -693,7 +701,7 @@ describe('selecting several PRs & Issues rows', () => {
 
         expect(document.querySelector('[data-testid="triage-bulk-action-bar"]')).toBeNull();
 
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
 
         expect(document.querySelector('[data-testid="triage-bulk-action-bar"]')).not.toBeNull();
         // Ask deliberately opens an editable Composer without inventing a task
@@ -747,8 +755,8 @@ describe('selecting several PRs & Issues rows', () => {
         });
         await mountShell(harness);
 
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
-        await pressRow('Extract the selection reducer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
+        await chooseRow('Extract the selection reducer');
 
         expect(document.querySelector('[data-testid="triage-bulk-oneSessionForAllEntries"]')).not.toBeNull();
         expect(document.querySelector('[data-testid="triage-bulk-oneSessionPerEntry"]')).not.toBeNull();
@@ -763,7 +771,7 @@ describe('selecting several PRs & Issues rows', () => {
         // owner already knows about.
         await mountShell(createHarness({ kindId: 'issue' }));
 
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
 
         const offered = offeredBulkActionLabels();
         expect(offered).toEqual(['Ask', 'Fix']);
@@ -774,7 +782,7 @@ describe('selecting several PRs & Issues rows', () => {
         // simply stop offering the third action.
         await mountShell(createHarness());
 
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
 
         const offered = offeredBulkActionLabels();
         expect(offered).toEqual(['Ask', 'Fix', 'Review']);
@@ -783,7 +791,7 @@ describe('selecting several PRs & Issues rows', () => {
     it('does not run a bulk action deleted from the authoritative catalog before the press', async () => {
         const harness = createHarness();
         const { shell } = await mountShell(harness);
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
         expect(offeredBulkActionLabels()).toContain('Fix');
         await chooseBulkAction(shell, 'Fix');
 
@@ -824,7 +832,7 @@ describe('selecting several PRs & Issues rows', () => {
         });
         await mountShell(harness);
 
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
 
         expect(document.querySelector('[data-testid="triage-bulk-action-bar"]')).not.toBeNull();
         expect(document.querySelector('[data-testid="triage-bulk-oneSessionForAllEntries"]')).toBeNull();
@@ -835,7 +843,7 @@ describe('selecting several PRs & Issues rows', () => {
     it('shows one truthful Stop control for live work without hiding the selection or its progress owner', async () => {
         const harness = createHarness({ deferProjectsRead: true });
         const { shell } = await mountShell(harness);
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
         await chooseBulkAction(shell, 'Fix');
 
         await act(async () => {
@@ -881,7 +889,7 @@ describe('selecting several PRs & Issues rows', () => {
         });
         const { shell } = await mountShell(harness, { sourceContributions: 'absent' });
 
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
         await act(async () => {
             await shell.press(await shell.getByRole('button', { name: 'One session for all' }));
         });
@@ -896,8 +904,8 @@ describe('selecting several PRs & Issues rows', () => {
         const harness = createHarness();
         const { shell, locations } = await mountShell(harness);
 
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
-        await pressRow('Extract the selection reducer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
+        await chooseRow('Extract the selection reducer');
 
         await act(async () => {
             await shell.press(await shell.getByRole('button', { name: 'Attach to New Session' }));
@@ -943,8 +951,8 @@ describe('selecting several PRs & Issues rows', () => {
             }],
         });
         const { shell } = await mountShell(harness);
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
-        await pressRow('Extract the selection reducer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
+        await chooseRow('Extract the selection reducer');
         await act(async () => {
             await shell.press(await shell.getByRole('button', { name: 'Attach to New Session' }));
         });
@@ -979,8 +987,8 @@ describe('selecting several PRs & Issues rows', () => {
         });
         const { shell, locations } = await mountShell(harness);
 
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
-        await pressRow('Extract the selection reducer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
+        await chooseRow('Extract the selection reducer');
         await act(async () => {
             await shell.press(await shell.getByRole('button', { name: 'Attach to New Session' }));
         });
@@ -1016,7 +1024,7 @@ describe('selecting several PRs & Issues rows', () => {
         // settle before exercising the press.
         await settle();
 
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
         await act(async () => {
             await shell.press(await shell.getByRole('button', { name: 'Attach to New Session' }));
         });
@@ -1060,8 +1068,8 @@ describe('selecting several PRs & Issues rows', () => {
         });
         const { shell } = await mountShell(harness);
 
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
-        await pressRow('Extract the selection reducer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
+        await chooseRow('Extract the selection reducer');
         await act(async () => {
             await shell.press(await shell.getByRole('button', { name: 'One session for all' }));
         });
@@ -1109,8 +1117,8 @@ describe('selecting several PRs & Issues rows', () => {
         });
         const { shell, locations } = await mountShell(harness);
 
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
-        await pressRow('Extract the selection reducer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
+        await chooseRow('Extract the selection reducer');
 
         await expect(shell.getByRole('button', { name: 'One session for all' })).rejects.toThrow();
         await expect(shell.getByRole('button', { name: 'A session each' })).rejects.toThrow();
@@ -1155,8 +1163,8 @@ describe('selecting several PRs & Issues rows', () => {
         });
         const { shell } = await mountShell(harness);
 
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
-        await pressRow('Extract the selection reducer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
+        await chooseRow('Extract the selection reducer');
         await act(async () => {
             await shell.press(await shell.getByRole('button', { name: 'A session each' }));
         });
@@ -1201,8 +1209,8 @@ describe('selecting several PRs & Issues rows', () => {
         });
         const { shell } = await mountShell(harness);
 
-        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
-        await pressRow('Extract the selection reducer', { ctrlKey: true });
+        await chooseRow('Replace the duplicated normalizer');
+        await chooseRow('Extract the selection reducer');
         await act(async () => {
             await shell.press(await shell.getByRole('button', { name: 'A session each' }));
         });

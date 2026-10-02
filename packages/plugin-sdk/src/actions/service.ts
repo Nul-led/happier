@@ -91,6 +91,9 @@ export type {
 /** Canonical host Action identifier accepted by {@link getActionSpec}. */
 export type ActionId = ActionSpec['id'];
 
+/** Canonical definition result projected by the host Workflow Action. */
+export type PluginActionWorkflowDefinitionV1 = PluginActionResultById['workflow.definition.get']['definition'];
+
 /** Looks up one canonical host ActionSpec without changing its runtime identity. */
 export const getActionSpec: (
   id: ActionId,

@@ -11,6 +11,7 @@ export function createCodexAppServerRpcError(params: Readonly<{
     data?: unknown;
 }>): CodexAppServerRpcError {
     const error = new Error(params.message ?? `Codex app-server request failed: ${params.method}`) as CodexAppServerRpcError;
+    error.name = 'JsonRpcApplicationError';
     if (typeof params.code === 'number') {
         Object.defineProperty(error, 'code', { value: params.code, enumerable: true });
     }

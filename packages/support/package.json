@@ -25,12 +25,14 @@
   ],
   "bundledDependencies": [
     "@happier-dev/agents",
+    "@happier-dev/brand",
     "@happier-dev/cli-common",
     "@happier-dev/protocol",
     "@happier-dev/release-runtime"
   ],
   "dependencies": {
     "@happier-dev/agents": "0.0.0",
+    "@happier-dev/brand": "0.0.0",
     "@happier-dev/cli-common": "0.0.0",
     "@happier-dev/protocol": "0.0.0",
     "@happier-dev/release-runtime": "0.0.0"

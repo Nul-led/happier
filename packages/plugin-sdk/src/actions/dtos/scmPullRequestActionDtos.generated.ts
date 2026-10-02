@@ -6,8 +6,6 @@
 export type ScmPullRequestActionInputById = {
     readonly "scm.pullRequest.list": {
         [x: string]: unknown;
-        base: unknown;
-        head: unknown;
         cwd?: string | undefined;
         backendPreference?: {
             kind: 'prefer';
@@ -15,6 +13,8 @@ export type ScmPullRequestActionInputById = {
         } | undefined;
         outcomeVersion?: 1 | undefined;
         providerId?: string | undefined;
+        base?: unknown;
+        head?: unknown;
         state?: 'unknown' | 'open' | 'closed' | 'merged' | 'draft' | undefined;
     };
     readonly "scm.pullRequest.get": {
@@ -39,7 +39,6 @@ export type ScmPullRequestActionInputById = {
     readonly "scm.pullRequest.openOrReuse": {
         [x: string]: unknown;
         base: string;
-        head: unknown;
         cwd?: string | undefined;
         backendPreference?: {
             kind: 'prefer';
@@ -47,6 +46,7 @@ export type ScmPullRequestActionInputById = {
         } | undefined;
         outcomeVersion?: 1 | undefined;
         providerId?: string | undefined;
+        head?: unknown;
         headRepositoryNameWithOwner?: string | undefined;
         title?: string | undefined;
         body?: string | undefined;
@@ -126,9 +126,6 @@ export type ScmPullRequestActionInputById = {
     readonly "scm.pullRequest.runStacked": {
         [x: string]: unknown;
         action: 'commit' | 'push' | 'openOrReuse' | 'commitAndPush' | 'pushAndOpenOrReuse' | 'commitPushAndOpenOrReuse';
-        featureBranch: unknown;
-        base: unknown;
-        head: unknown;
         cwd?: string | undefined;
         backendPreference?: {
             kind: 'prefer';
@@ -136,7 +133,10 @@ export type ScmPullRequestActionInputById = {
         } | undefined;
         outcomeVersion?: 1 | undefined;
         commitMessage?: string | undefined;
+        featureBranch?: unknown;
         filePaths?: string[] | undefined;
+        base?: unknown;
+        head?: unknown;
         title?: string | undefined;
         body?: string | undefined;
         defaultBranchPushPolicy?: 'allow' | 'requires-feature-branch' | 'deny' | undefined;

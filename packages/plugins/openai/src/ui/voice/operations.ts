@@ -11,6 +11,7 @@ import {
 import { z } from 'zod';
 
 import { OpenAiRealtimeClientAuthProviderResponseSchema } from '../../protocol/voice/clientAuth.js';
+import { OPENAI_CLIENT_AUTH_EXPIRY_SAFETY_WINDOW_MS } from './connection.js';
 import {
   OPENAI_REALTIME_DEFAULT_INPUT_TRANSCRIPTION_MODEL,
   OpenAiRealtimeSettingsV1Schema,
@@ -21,7 +22,9 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 const AudienceSchema = z.object({
   model: z.string().trim().min(1).max(128),
   voice: z.string().trim().min(1).max(128),
-  instructions: z.string().trim().max(10_000).nullable().optional(),
+  // The host composes tool guidance and prompt-stack blocks with the user's
+  // saved instructions. The declared HTTP body budget owns this payload size.
+  instructions: z.string().trim().nullable().optional(),
   turnDetection: z.enum(['server_vad', 'semantic_vad', 'manual']).optional(),
   inputTranscriptionModel: z.string().trim().max(128).nullable().optional(),
 }).strict();
@@ -45,7 +48,9 @@ function parseExpiryMs(value: unknown, now: number): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
   const milliseconds = parseTimestampMs(value);
   if (milliseconds === null) return null;
-  return milliseconds > now + 1_000 && milliseconds <= now + 10 * 60_000 ? milliseconds : null;
+  // The provider's expiry is authoritative. Its created-at anchored TTL cannot
+  // be bounded against a device clock that may be behind the provider's clock.
+  return milliseconds > now + OPENAI_CLIENT_AUTH_EXPIRY_SAFETY_WINDOW_MS ? milliseconds : null;
 }
 
 function buildClientAuthRequest(audienceValue: string): Readonly<{
@@ -58,7 +63,6 @@ function buildClientAuthRequest(audienceValue: string): Readonly<{
   const settings = OpenAiRealtimeSettingsV1Schema.parse({
     model: { kind: 'pinned', id: audience.data.model },
     voice: audience.data.voice,
-    instructions: audience.data.instructions ?? null,
     turnDetection: audience.data.turnDetection ?? 'server_vad',
     inputTranscriptionModel: audience.data.inputTranscriptionModel ?? null,
   });
@@ -90,7 +94,7 @@ function buildClientAuthRequest(audienceValue: string): Readonly<{
     type: 'realtime',
     model: settings.model.id,
     audio,
-    ...(settings.instructions ? { instructions: settings.instructions } : {}),
+    ...(audience.data.instructions ? { instructions: audience.data.instructions } : {}),
   };
   return Object.freeze({
     body: JSON.stringify({ session }),

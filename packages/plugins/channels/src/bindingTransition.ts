@@ -51,6 +51,7 @@ export type ConversationBindingTransitionResultV1 =
       | 'connectionImmutable'
       | 'duplicateAllowedPrincipal'
       | 'policyPrincipalNotAllowed'
+      | 'pullRequestCorrespondenceMismatch'
       | 'authorityEpochExhausted';
   }>;
 
@@ -71,10 +72,10 @@ function sameTargetIdentity(
 ): boolean {
   if (left.kind !== right.kind) return false;
   if (left.kind === 'session' && right.kind === 'session') {
-    return left.sessionId === right.sessionId;
+    return left.sessionId === right.sessionId && pluginJsonValuesEqual(left.pullRequestLink ?? null, right.pullRequestLink ?? null);
   }
   if (left.kind === 'automation' && right.kind === 'automation') {
-    return left.automationId === right.automationId;
+    return left.automationId === right.automationId && pluginJsonValuesEqual(left.scopedTrigger ?? null, right.scopedTrigger ?? null);
   }
   return false;
 }
@@ -116,6 +117,7 @@ function sameTargetAuthority(
   if (left.kind !== right.kind) return false;
   if (left.kind === 'session' && right.kind === 'session') {
     return left.sessionId === right.sessionId
+      && pluginJsonValuesEqual(left.pullRequestLink ?? null, right.pullRequestLink ?? null)
       && left.policy.deliveryMode === right.policy.deliveryMode
       && left.policy.permissionCeiling === right.policy.permissionCeiling
       && sameSessionApprovals(left.policy.approvals, right.policy.approvals)
@@ -123,6 +125,7 @@ function sameTargetAuthority(
   }
   if (left.kind === 'automation' && right.kind === 'automation') {
     return left.automationId === right.automationId
+      && pluginJsonValuesEqual(left.scopedTrigger ?? null, right.scopedTrigger ?? null)
       && left.policy.resultDelivery === right.policy.resultDelivery;
   }
   return false;
@@ -219,6 +222,12 @@ export function transitionConversationBinding(input: Readonly<{
   requested: ConversationBindingRequestedStateV1;
 }>): ConversationBindingTransitionResultV1 {
   const { current, requested } = input;
+  const pullRequest = requested.target.kind === 'session' ? requested.target.pullRequestLink : requested.target.scopedTrigger?.pullRequest;
+  if (pullRequest !== undefined && (requested.endpoint.kind !== 'githubPullRequest'
+    || !pluginJsonValuesEqual(requested.endpoint.pullRequest ?? null, pullRequest)
+    || (requested.target.kind === 'automation' && requested.target.policy.resultDelivery !== 'none'))) {
+    return { kind: 'rejected', code: 'pullRequestCorrespondenceMismatch' };
+  }
   if (current.connectionId !== requested.connectionId) {
     return { kind: 'rejected', code: 'connectionImmutable' };
   }

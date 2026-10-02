@@ -52,6 +52,7 @@
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -150,6 +151,7 @@
         "path": "./resources/repository-security-audit-prompt.md"
       }
     ],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -177,7 +179,8 @@
     },
     "voiceModelPacks": [],
     "voiceProviders": [],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "Runs DeepSec as a review and security-review execution engine.",
   "displayName": "DeepSec review engine",

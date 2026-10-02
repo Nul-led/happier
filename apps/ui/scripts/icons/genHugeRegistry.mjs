@@ -24,7 +24,7 @@ const lines = [
     '// Only the icons the app actually uses are imported. The free package carries 5,437 of them, so',
     '// importing the barrel would pull the whole set into the bundle.',
     '',
-    ...identifiers.map((id) => `import { ${id} } from '@hugeicons/core-free-icons';`),
+    ...identifiers.map((id) => `import ${id} from '@hugeicons/core-free-icons/${id}';`),
     '',
     "import type { IconName } from './iconRegistry.generated';",
     '',

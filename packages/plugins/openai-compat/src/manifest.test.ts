@@ -93,6 +93,7 @@ describe('OpenAI-compatible batch speech manifest', () => {
       limits: {
         synthesize: {
           maxInputCharacters: 200_000,
+          maxInputCharactersSettingId: 'maxInputCharacters',
           maxOutputBytes: VOICE_SPEECH_OUTPUT_MAX_BYTES,
         },
       },
@@ -101,6 +102,7 @@ describe('OpenAI-compatible batch speech manifest', () => {
       'baseUrl',
       'insecureLocalOriginConsent',
       'insecureLocalConsentMachineId',
+      'maxInputCharacters',
       'model',
       'voiceName',
       'format',

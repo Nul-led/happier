@@ -69,13 +69,13 @@ export type LocalServicesPreviewActionResultById = {
                     tone?: 'success' | 'neutral' | 'info' | 'warning' | 'danger' | 'accent' | undefined;
                     diagnostics?: Record<string, unknown> | undefined;
                 };
-                originMode: 'host' | 'path';
+                originMode: 'host';
                 sessionId?: string | undefined;
                 policy?: {
                     allowedMethods: ('GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS')[];
                     cookiePolicy: 'drop' | 'isolate' | 'rewrite';
                     compressionPolicy: 'identity' | 'decode_reencode';
-                    redirectPolicy: 'preserve_host_origin' | 'rewrite_path_mode';
+                    redirectPolicy: 'preserve_host_origin';
                     maxRequestBodyBytes: number;
                     maxResponseBodyBytes: number;
                 } | undefined;
@@ -152,13 +152,13 @@ export type LocalServicesPreviewActionResultById = {
                     tone?: 'success' | 'neutral' | 'info' | 'warning' | 'danger' | 'accent' | undefined;
                     diagnostics?: Record<string, unknown> | undefined;
                 };
-                originMode: 'host' | 'path';
+                originMode: 'host';
                 sessionId?: string | undefined;
                 policy?: {
                     allowedMethods: ('GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS')[];
                     cookiePolicy: 'drop' | 'isolate' | 'rewrite';
                     compressionPolicy: 'identity' | 'decode_reencode';
-                    redirectPolicy: 'preserve_host_origin' | 'rewrite_path_mode';
+                    redirectPolicy: 'preserve_host_origin';
                     maxRequestBodyBytes: number;
                     maxResponseBodyBytes: number;
                 } | undefined;
@@ -213,13 +213,13 @@ export type LocalServicesPreviewActionResultById = {
                         tone?: 'success' | 'neutral' | 'info' | 'warning' | 'danger' | 'accent' | undefined;
                         diagnostics?: Record<string, unknown> | undefined;
                     };
-                    originMode: 'host' | 'path';
+                    originMode: 'host';
                     sessionId?: string | undefined;
                     policy?: {
                         allowedMethods: ('GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS')[];
                         cookiePolicy: 'drop' | 'isolate' | 'rewrite';
                         compressionPolicy: 'identity' | 'decode_reencode';
-                        redirectPolicy: 'preserve_host_origin' | 'rewrite_path_mode';
+                        redirectPolicy: 'preserve_host_origin';
                         maxRequestBodyBytes: number;
                         maxResponseBodyBytes: number;
                     } | undefined;
@@ -298,13 +298,13 @@ export type LocalServicesPreviewActionResultById = {
                 tone?: 'success' | 'neutral' | 'info' | 'warning' | 'danger' | 'accent' | undefined;
                 diagnostics?: Record<string, unknown> | undefined;
             };
-            originMode: 'host' | 'path';
+            originMode: 'host';
             sessionId?: string | undefined;
             policy?: {
                 allowedMethods: ('GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS')[];
                 cookiePolicy: 'drop' | 'isolate' | 'rewrite';
                 compressionPolicy: 'identity' | 'decode_reencode';
-                redirectPolicy: 'preserve_host_origin' | 'rewrite_path_mode';
+                redirectPolicy: 'preserve_host_origin';
                 maxRequestBodyBytes: number;
                 maxResponseBodyBytes: number;
             } | undefined;
@@ -359,13 +359,13 @@ export type LocalServicesPreviewActionResultById = {
                     tone?: 'success' | 'neutral' | 'info' | 'warning' | 'danger' | 'accent' | undefined;
                     diagnostics?: Record<string, unknown> | undefined;
                 };
-                originMode: 'host' | 'path';
+                originMode: 'host';
                 sessionId?: string | undefined;
                 policy?: {
                     allowedMethods: ('GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS')[];
                     cookiePolicy: 'drop' | 'isolate' | 'rewrite';
                     compressionPolicy: 'identity' | 'decode_reencode';
-                    redirectPolicy: 'preserve_host_origin' | 'rewrite_path_mode';
+                    redirectPolicy: 'preserve_host_origin';
                     maxRequestBodyBytes: number;
                     maxResponseBodyBytes: number;
                 } | undefined;
@@ -447,13 +447,13 @@ export type LocalServicesPreviewActionResultById = {
                     tone?: 'success' | 'neutral' | 'info' | 'warning' | 'danger' | 'accent' | undefined;
                     diagnostics?: Record<string, unknown> | undefined;
                 };
-                originMode: 'host' | 'path';
+                originMode: 'host';
                 sessionId?: string | undefined;
                 policy?: {
                     allowedMethods: ('GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS')[];
                     cookiePolicy: 'drop' | 'isolate' | 'rewrite';
                     compressionPolicy: 'identity' | 'decode_reencode';
-                    redirectPolicy: 'preserve_host_origin' | 'rewrite_path_mode';
+                    redirectPolicy: 'preserve_host_origin';
                     maxRequestBodyBytes: number;
                     maxResponseBodyBytes: number;
                 } | undefined;
@@ -508,13 +508,13 @@ export type LocalServicesPreviewActionResultById = {
                         tone?: 'success' | 'neutral' | 'info' | 'warning' | 'danger' | 'accent' | undefined;
                         diagnostics?: Record<string, unknown> | undefined;
                     };
-                    originMode: 'host' | 'path';
+                    originMode: 'host';
                     sessionId?: string | undefined;
                     policy?: {
                         allowedMethods: ('GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS')[];
                         cookiePolicy: 'drop' | 'isolate' | 'rewrite';
                         compressionPolicy: 'identity' | 'decode_reencode';
-                        redirectPolicy: 'preserve_host_origin' | 'rewrite_path_mode';
+                        redirectPolicy: 'preserve_host_origin';
                         maxRequestBodyBytes: number;
                         maxResponseBodyBytes: number;
                     } | undefined;

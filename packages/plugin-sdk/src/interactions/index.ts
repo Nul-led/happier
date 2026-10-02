@@ -14,6 +14,7 @@ export type { InteractionTransientApprovalAuthorRequestV1 } from '../interaction
 export type { InteractionTransientApprovalResultV1 } from '../interactions.js';
 export type { InteractionTransientAuthorQuestionV1 } from '../interactions.js';
 export type { InteractionTransientAuthorRequestV1 } from '../interactions.js';
+export { InteractionTransientAuthorRequestV1Schema } from '../interactions.js';
 export type { InteractionTransientChoiceSelectionV1 } from '../interactions.js';
 export type { InteractionTransientConfirmationAuthorRequestV1 } from '../interactions.js';
 export type { InteractionTransientConfirmationResultV1 } from '../interactions.js';
@@ -24,4 +25,5 @@ export type { InteractionTransientResultV1 } from '../interactions.js';
 export type { InteractionsService } from '../interactions.js';
 export type { PluginInvocationSurface } from '../interactions.js';
 export type { PresentationService } from '../interactions.js';
+export type { SessionCompanionPresentationItem } from '../interactions.js';
 export type { UiWidget } from '../interactions.js';

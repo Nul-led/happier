@@ -71,6 +71,31 @@ function createTestConnection(input: Readonly<{ driver: Readonly<{
 }
 
 describe('createElevenLabsSdkConnection', () => {
+  it.each([undefined, { clientToolName: 'readSession', toolCallId: 'provider-call' }])(
+    'keeps recoverable client-tool errors alive while terminal errors still close the session (%j)', async (terminalContext) => {
+    let publish!: (event: ElevenLabsConversationHandleEvent) => void;
+    const handle = {
+      startSession: vi.fn(async () => 'tool-errors'),
+      endSession: vi.fn(async () => {}),
+      sendUserMessage: vi.fn(), sendContextualUpdate: vi.fn(),
+      setMicMuted: vi.fn(), setOutputVolume: vi.fn(),
+      settleToolResult: vi.fn(),
+      getId: () => 'tool-errors', dispose: vi.fn(),
+      subscribe(listener: typeof publish) { publish = listener; return () => {}; },
+    };
+    const connection = createElevenLabsSdkConnection({
+      createSdkHandleConnection: createTestConnection, handle, startConfig: {}, duckGain: 0.18,
+    });
+    await connection.connect(new AbortController().signal);
+    publish({ type: 'error', error: 'tool failed', context: { clientToolName: 'readSession' } } as ElevenLabsConversationHandleEvent);
+    await connection.sendControl({ type: 'voice.user_text', text: 'continue' });
+    expect(connection.state()).toBe('open');
+    expect(handle.endSession).not.toHaveBeenCalled();
+    expect(handle.sendUserMessage).toHaveBeenCalledWith('continue');
+    publish({ type: 'error', error: 'terminal failure', context: terminalContext });
+    await vi.waitFor(() => expect(connection.state()).toBe('closed'));
+    expect(handle.endSession).toHaveBeenCalledTimes(1);
+  });
   it('owns the SDK lifecycle and projects callbacks through connection channels', async () => {
     let publish!: (event: ElevenLabsConversationHandleEvent) => void;
     const handle = {
@@ -80,6 +105,7 @@ describe('createElevenLabsSdkConnection', () => {
       sendContextualUpdate: vi.fn(),
       setMicMuted: vi.fn(),
       setOutputVolume: vi.fn(),
+      settleToolResult: vi.fn(),
       getId: vi.fn(() => 'conversation-1'),
       dispose: vi.fn(),
       subscribe: (listener: typeof publish) => {
@@ -157,6 +183,7 @@ describe('createElevenLabsSdkConnection', () => {
       sendContextualUpdate: vi.fn(),
       setMicMuted,
       setOutputVolume: vi.fn(),
+      settleToolResult: vi.fn(),
       getId: vi.fn(() => 'conversation-text-only'),
       dispose: vi.fn(),
       subscribe: vi.fn(() => () => {}),
@@ -184,6 +211,7 @@ describe('createElevenLabsSdkConnection', () => {
       sendContextualUpdate: vi.fn(),
       setMicMuted: vi.fn(),
       setOutputVolume,
+      settleToolResult: vi.fn(),
       getId: vi.fn(() => 'conversation-focus'),
       dispose: vi.fn(),
       subscribe: vi.fn(() => () => {}),
@@ -211,6 +239,7 @@ describe('createElevenLabsSdkConnection', () => {
       sendContextualUpdate: vi.fn(),
       setMicMuted: vi.fn(),
       setOutputVolume: vi.fn(),
+      settleToolResult: vi.fn(),
       getId: vi.fn(() => 'conversation-2'),
       dispose: vi.fn(),
       subscribe: (listener: typeof publish) => {
@@ -252,6 +281,7 @@ describe('createElevenLabsSdkConnection', () => {
       sendContextualUpdate: vi.fn(),
       setMicMuted: vi.fn(),
       setOutputVolume: vi.fn(),
+      settleToolResult: vi.fn(),
       getId: vi.fn(() => 'racing-session'),
       dispose: vi.fn(),
       subscribe: (listener: typeof publish) => {
@@ -280,6 +310,7 @@ describe('createElevenLabsSdkConnection', () => {
       sendContextualUpdate: vi.fn(),
       setMicMuted: vi.fn(),
       setOutputVolume: vi.fn(),
+      settleToolResult: vi.fn(),
       getId: vi.fn(() => null),
       dispose: vi.fn(),
       subscribe: vi.fn(() => () => undefined),
@@ -310,6 +341,7 @@ describe('createElevenLabsSdkConnection', () => {
       sendContextualUpdate: vi.fn(),
       setMicMuted: vi.fn(),
       setOutputVolume: vi.fn(),
+      settleToolResult: vi.fn(),
       getId: vi.fn(() => null),
       dispose: vi.fn(),
       subscribe: vi.fn(() => () => undefined),
@@ -343,6 +375,7 @@ describe('createElevenLabsSdkConnection', () => {
       sendContextualUpdate: vi.fn(),
       setMicMuted: vi.fn(),
       setOutputVolume: vi.fn(),
+      settleToolResult: vi.fn(),
       getId: vi.fn(() => null),
       dispose: vi.fn(),
       subscribe: vi.fn(() => () => undefined),
@@ -376,6 +409,7 @@ describe('createElevenLabsSdkConnection', () => {
       sendContextualUpdate: vi.fn(),
       setMicMuted: vi.fn(),
       setOutputVolume: vi.fn(),
+      settleToolResult: vi.fn(),
       getId: vi.fn(() => null),
       dispose: vi.fn(),
       subscribe: vi.fn(() => () => undefined),

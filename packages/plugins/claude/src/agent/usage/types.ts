@@ -18,6 +18,8 @@ export type ClaudeUsageObservation = {
     source: 'claude-assistant-usage' | 'claude-sdk-result';
     scope: 'turn_delta' | 'session_final';
     key: 'claude-session';
+    nativeRecordId?: string;
+    observedAtMs?: number;
     modelId: string | null;
     tokens: UsageObservationTokens;
     cost: UsageObservationCost | null;

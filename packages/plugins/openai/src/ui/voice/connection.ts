@@ -1,10 +1,12 @@
+import { classifyVoiceProviderHttpFailure } from '@happier-dev/plugin-sdk/voice';
+
 const MAX_PROVIDER_SDP_RESPONSE_BYTES = 64 * 1024;
 export const OPENAI_CLIENT_AUTH_EXPIRY_SAFETY_WINDOW_MS = 1_000;
 
-function providerError(): Error {
-  return Object.assign(new Error('provider_response_invalid'), {
-    code: 'provider_response_invalid',
-  });
+function providerError(
+  code: 'credential_unavailable' | 'provider_response_invalid' = 'provider_response_invalid',
+): Error {
+  return Object.assign(new Error(code), { code });
 }
 
 function authExpiredError(): Error {
@@ -82,7 +84,10 @@ export function createOpenAiWebRtcSignaling(input: Readonly<{
         redirect: 'error',
         signal: request.signal,
       });
-      if (!response.ok || response.redirected) throw providerError();
+      if (response.redirected) throw providerError();
+      if (!response.ok) {
+        throw providerError(classifyVoiceProviderHttpFailure(response.status) ?? 'provider_response_invalid');
+      }
       return Object.freeze({
         answerSdp: await readBoundedSdp(response),
       });

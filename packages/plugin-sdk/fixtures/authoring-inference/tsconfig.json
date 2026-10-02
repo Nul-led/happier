@@ -25,5 +25,5 @@
       "@happier-dev/plugin-sdk/voice/speech": ["../../src/voice/speech.ts"]
     }
   },
-  "include": ["accountCollections.ts", "actions.ts", "agentRuntimeSurfaces.ts", "index.ts", "managedProvider.ts", "promptAsset.ts", "publicServices.ts", "run.ts", "targetedContributions.ts", "testing.ts"]
+  "include": ["accountCollections.ts", "actions.ts", "agentRuntimeSurfaces.ts", "index.ts", "managedProvider.ts", "promptAsset.ts", "publicServices.ts", "run.ts", "targetedContributions.ts", "testing.ts", "workflowTriggers.ts"]
 }

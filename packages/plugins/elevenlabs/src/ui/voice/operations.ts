@@ -15,6 +15,16 @@ import {
   ElevenLabsProvisionResponseSchema,
 } from '../../protocol/voice/index.js';
 
+const ELEVENLABS_AGENT_CONFIG_TAG = 'happier_voice_config_v1';
+const ELEVENLABS_AGENT_CONFIG_TAG_PREFIX = 'happier_voice_config_v';
+const ELEVENLABS_AGENT_PLATFORM_SETTINGS = {
+  auth: { enable_auth: true },
+  overrides: { conversation_config_override: {
+    agent: { language: true, prompt: { prompt: true } },
+    conversation: { text_only: true },
+  } },
+} satisfies VoiceRealtimeJsonValue;
+
 function providerError(
   code:
     | 'invalid_parameters'
@@ -361,10 +371,10 @@ async function listElevenLabsProvisionAgents(
  * `tool_ids` are the only provider-owned proof that a tool is eligible for
  * semantic reuse by this request; a matching workspace name is never evidence.
  */
-async function readElevenLabsSelectedAgentToolIds(
+async function readElevenLabsSelectedAgent(
   call: ElevenLabsProvisionCall,
   agentId: string,
-): Promise<ReadonlySet<string>> {
+): Promise<Record<string, unknown>> {
   const agent = await callElevenLabsProvisionStage(
     call,
     'read_agent',
@@ -374,6 +384,10 @@ async function readElevenLabsSelectedAgentToolIds(
   if (stringValue(agent.agent_id, 256) !== agentId) {
     throw providerError('provider_response_invalid', 'read_agent');
   }
+  return agent;
+}
+
+function readElevenLabsSelectedAgentToolIds(agent: Readonly<Record<string, unknown>>): ReadonlySet<string> {
   const conversationConfig = agent.conversation_config;
   if (conversationConfig === undefined) return new Set();
   if (!conversationConfig || typeof conversationConfig !== 'object' || Array.isArray(conversationConfig)) {
@@ -425,11 +439,22 @@ async function runElevenLabsProvision(
       };
     }
     await assertProvisionVoiceOwnedByAccount(call, request.tts.voiceId);
-    const existingTools = request.kind === 'update'
+    const selectedAgent = request.kind === 'update'
+      ? await readElevenLabsSelectedAgent(call, request.agentId)
+      : null;
+    const existingTags = selectedAgent?.tags ?? [];
+    if (!Array.isArray(existingTags) || existingTags.some((tag) => typeof tag !== 'string')) {
+      throw providerError('provider_response_invalid', 'read_agent');
+    }
+    const tags = [
+      ...existingTags.filter((tag: string) => !tag.startsWith(ELEVENLABS_AGENT_CONFIG_TAG_PREFIX)),
+      ELEVENLABS_AGENT_CONFIG_TAG,
+    ];
+    const existingTools = selectedAgent
       ? await listElevenLabsProvisionTools(
         call,
         new Set(request.tools.map((tool) => tool.name)),
-        await readElevenLabsSelectedAgentToolIds(call, request.agentId),
+        readElevenLabsSelectedAgentToolIds(selectedAgent),
       )
       : [];
     const toolIds: string[] = [];
@@ -477,7 +502,10 @@ async function runElevenLabsProvision(
         call,
         'create_agent',
         'create-agent',
-        { body: { name: 'Happier Voice', conversation_config: conversationConfig } },
+        { body: {
+          name: 'Happier Voice', conversation_config: conversationConfig,
+          platform_settings: ELEVENLABS_AGENT_PLATFORM_SETTINGS, tags,
+        } },
       );
       const agentId = stringValue(created.agent_id, 256);
       if (!agentId) throw providerError('provider_response_invalid', 'create_agent');
@@ -490,7 +518,10 @@ async function runElevenLabsProvision(
       'update-agent',
       {
         agentId: request.agentId,
-        body: { conversation_config: conversationConfig },
+        body: {
+          conversation_config: conversationConfig,
+          platform_settings: ELEVENLABS_AGENT_PLATFORM_SETTINGS, tags,
+        },
       },
     );
     return { ok: true, updated: true };
@@ -530,6 +561,53 @@ async function runElevenLabsProvision(
   }
 }
 
+async function requestElevenLabsAccountOperationJson(input: Readonly<{
+  accountOperations: VoiceAccountOperationService;
+  operationId: ElevenLabsProvisionOperationId;
+  parameters: Readonly<Record<string, VoiceRealtimeJsonValue>>;
+  signal: AbortSignal;
+}>): Promise<Record<string, unknown>> {
+  const response = await input.accountOperations.request({
+    operationId: input.operationId, parameters: input.parameters, signal: input.signal,
+  });
+  assertProviderHttpSuccess(response.status);
+  try {
+    const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(response.body));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw providerError('provider_response_invalid');
+    }
+    return value as Record<string, unknown>;
+  } catch (error) {
+    if ((error as Readonly<{ code?: unknown }>).code === 'provider_response_invalid') throw error;
+    throw providerError('provider_response_invalid');
+  }
+}
+
+function objectValue(value: unknown): Readonly<Record<string, unknown>> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>> : {};
+}
+
+/** A remote version stamp never substitutes for the actual security permissions. */
+export async function isElevenLabsAgentConfigurationCurrent(input: Readonly<{
+  accountOperations: VoiceAccountOperationService;
+  agentId: string;
+  signal: AbortSignal;
+}>): Promise<boolean> {
+  const agent = await readElevenLabsSelectedAgent(
+    (operationId, parameters) => requestElevenLabsAccountOperationJson({ ...input, operationId, parameters }),
+    input.agentId,
+  );
+  const platform = objectValue(agent.platform_settings);
+  const overrides = objectValue(objectValue(platform.overrides).conversation_config_override);
+  const agentOverrides = objectValue(overrides.agent);
+  return Array.isArray(agent.tags) && agent.tags.includes(ELEVENLABS_AGENT_CONFIG_TAG)
+    && objectValue(platform.auth).enable_auth === true
+    && agentOverrides.language === true
+    && objectValue(agentOverrides.prompt).prompt === true
+    && objectValue(overrides.conversation).text_only === true;
+}
+
 export async function provisionElevenLabsWithAccountOperations(input: Readonly<{
   accountOperations: VoiceAccountOperationService;
   request: unknown;
@@ -537,24 +615,7 @@ export async function provisionElevenLabsWithAccountOperations(input: Readonly<{
 }>): Promise<Readonly<Record<string, unknown>>> {
   return await runElevenLabsProvision(
     input.request,
-    async (operationId, parameters) => {
-      const response = await input.accountOperations.request({
-        operationId,
-        parameters,
-        signal: input.signal,
-      });
-      assertProviderHttpSuccess(response.status);
-      try {
-        const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(response.body));
-        if (!value || typeof value !== 'object' || Array.isArray(value)) {
-          throw providerError('provider_response_invalid');
-        }
-        return value as Record<string, unknown>;
-      } catch (error) {
-        if ((error as Readonly<{ code?: unknown }>).code === 'provider_response_invalid') throw error;
-        throw providerError('provider_response_invalid');
-      }
-    },
+    (operationId, parameters) => requestElevenLabsAccountOperationJson({ ...input, operationId, parameters }),
     () => !input.signal.aborted,
   );
 }

@@ -33,7 +33,7 @@ describe('permissions', () => {
     expect(resolveProviderNativePermissionModeForAgent({ agentId: 'claude', mode: 'yolo' })).toBe('bypassPermissions');
     expect(resolveProviderNativePermissionModeForAgent({ agentId: 'claude', mode: 'safe-yolo' })).toBe('auto');
     expect(resolveProviderNativePermissionModeForAgent({ agentId: 'claude', mode: 'read-only' })).toBe('dontAsk');
-    expect(resolveProviderNativePermissionModeForAgent({ agentId: 'claude', mode: 'acceptEdits' })).toBe('auto');
+    expect(resolveProviderNativePermissionModeForAgent({ agentId: 'claude', mode: 'acceptEdits' })).toBe('acceptEdits');
     expect(resolveProviderNativePermissionModeForAgent({ agentId: 'claude', mode: 'bypassPermissions' })).toBe('bypassPermissions');
     expect(resolveProviderNativePermissionModeForAgent({ agentId: 'codex', mode: 'safe-yolo' })).toBe('safe-yolo');
   });

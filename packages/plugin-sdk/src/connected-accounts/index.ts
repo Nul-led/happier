@@ -70,6 +70,7 @@ export type { PluginConnectedAccountConfigurationV2 } from '../connectedAccounts
 export type { PluginConnectedAccountDescriptorContributionV2 } from '../connectedAccounts.js';
 export type { PluginConnectedAccountMaterializationKind } from '../connectedAccounts.js';
 export type { PluginConnectedAccountRegistrationApi } from '../services/connectedAccounts.js';
+export type { ProviderAccountSubscriptionV1 } from '../connectedAccounts.js';
 export type { ProviderAccountUsageQuotaScopeV1 } from '../connectedAccounts.js';
 export type { QualifiedConnectedAccountRef } from '../connectedAccounts.js';
 export { QualifiedConnectedAccountRefJsonSchema } from '../connectedAccounts.js';

@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@happier-dev/plugin-sdk/actions": ["../../src/actions/actionTypeMap.generated.ts"]
+    }
+  },
+  "include": ["workflowTriggers.ts"]
+}

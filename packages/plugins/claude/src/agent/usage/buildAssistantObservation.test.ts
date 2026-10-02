@@ -3,6 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { buildClaudeAssistantUsageObservation } from './buildAssistantObservation.js';
 
 describe('buildClaudeAssistantUsageObservation', () => {
+    it('carries the native record identity for replayable assistant usage', () => {
+        expect(buildClaudeAssistantUsageObservation({
+            nativeRecordId: 'assistant-record-1', observedAtMs: 100, usage: { input_tokens: 10 },
+        })).toMatchObject({ nativeRecordId: 'assistant-record-1', observedAtMs: 100 });
+    });
+
     const SONNET_5_STANDARD_PRICING_START_MS = Date.UTC(2026, 8, 1);
 
     it('builds Claude assistant usage as provider-owned estimated cost telemetry', () => {

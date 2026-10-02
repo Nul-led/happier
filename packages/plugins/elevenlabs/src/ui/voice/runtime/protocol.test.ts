@@ -61,6 +61,7 @@ describe('createElevenLabsProtocolAdapter', () => {
       kind: 'prepared',
       session: {
         config: { conversationToken: 'ephemeral-token', textOnly: false },
+        initialContextDelivery: 'prepared',
         safeMetadata: {
           billingMode: 'byo',
           expiresAtMs: null,

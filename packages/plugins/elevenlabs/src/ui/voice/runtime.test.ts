@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type {
   VoiceClientToolDefinition,
   VoiceRealtimeConnection,
+  VoiceRealtimeJsonValue,
 } from '@happier-dev/plugin-sdk/voice/client';
+import { VoiceRealtimeJsonValueSchema } from '@happier-dev/plugin-sdk/voice/client';
 
 import {
   activate,
@@ -64,6 +66,7 @@ function createSdkHandleConnection(input: Readonly<{ driver: Readonly<{
   let state: ReturnType<VoiceRealtimeConnection['state']> = 'idle';
   let providerSessionId: string | null = null;
   let closePromise: Promise<void> | null = null;
+  const controls: VoiceRealtimeJsonValue[] = [];
   const close = async (): Promise<void> => {
     if (!closePromise) {
       state = 'closed';
@@ -84,7 +87,10 @@ function createSdkHandleConnection(input: Readonly<{ driver: Readonly<{
         await Promise.race([
           input.driver.open({
             signal,
-            onControl(event) { observations?.onControl?.(event); },
+            onControl(event) {
+              controls.push(VoiceRealtimeJsonValueSchema.parse(event));
+              observations?.onControl?.(event);
+            },
             onTransport(event) {
               providerSessionId = event.sessionId;
               observations?.onTransport?.(event);
@@ -103,7 +109,9 @@ function createSdkHandleConnection(input: Readonly<{ driver: Readonly<{
       }
     },
     sendControl: async (event) => await input.driver.sendControl(event as never),
-    controlEvents: () => ({ async *[Symbol.asyncIterator]() {} }),
+    controlEvents: () => ({ async *[Symbol.asyncIterator]() {
+      while (controls.length > 0) yield controls.shift()!;
+    } }),
     transportEvents: () => ({ async *[Symbol.asyncIterator]() {} }),
     async close() { await close(); },
     state: () => state,
@@ -605,11 +613,23 @@ describe('ElevenLabs public Voice provider leaf', () => {
       credentials: {
         phase: 'prepare',
         raw: null,
-        mediated: { request: vi.fn(async () => ({
+        mediated: { request: vi.fn(async (request: Readonly<{ operationId: string }>) => ({
           status: 200,
-          finalUrl: 'https://api.elevenlabs.io/v1/convai/conversation/token?agent_id=agent-1',
+          finalUrl: request.operationId === 'agent'
+            ? 'https://api.elevenlabs.io/v1/convai/agents/agent-1'
+            : 'https://api.elevenlabs.io/v1/convai/conversation/token?agent_id=agent-1',
           headers: { 'content-type': 'application/json' },
-          body: new TextEncoder().encode(JSON.stringify({ token: 'short-lived-token' })),
+          body: new TextEncoder().encode(JSON.stringify(request.operationId === 'agent' ? {
+            agent_id: 'agent-1',
+            tags: ['happier_voice_config_v1'],
+            platform_settings: {
+              auth: { enable_auth: true },
+              overrides: { conversation_config_override: {
+                agent: { language: true, prompt: { prompt: true } },
+                conversation: { text_only: true },
+              } },
+            },
+          } : { token: 'short-lived-token' })),
         })) },
       },
       providerConversation: null,
@@ -654,8 +674,21 @@ describe('ElevenLabs public Voice provider leaf', () => {
     await connection.connect(new AbortController().signal);
     const startOptions = sdk.startSession.mock.calls[0]?.[0] as Readonly<{
       clientTools?: Readonly<Record<string, (parameters: unknown) => Promise<unknown>>>;
+      onIncomingEvent?: (event: unknown) => void;
     }>;
-    expect(await startOptions.clientTools?.readSession?.({})).toEqual({
+    const parameters = {};
+    startOptions.onIncomingEvent?.({ type: 'client_tool_call', client_tool_call: {
+      tool_call_id: 'provider-read', tool_name: 'readSession', parameters,
+    } });
+    const delivery = startOptions.clientTools?.readSession?.(parameters);
+    const control = await connection.controlEvents(signal)[Symbol.asyncIterator]().next();
+    const decoded = runtime.protocol.decodeControl(control.value);
+    expect(decoded).toMatchObject([{ type: 'tool_calls', responseId: 'provider-read' }]);
+    for (const event of runtime.encodeToolResults([{
+      v: 1, responseId: 'provider-read', callId: 'provider-read', toolName: 'readSession', order: 0,
+      status: 'success', output: { status: 'ok', path: '[redacted]' },
+    }])) await connection.sendControl(event);
+    expect(await delivery).toEqual({
       status: 'ok',
       path: '[redacted]',
     });

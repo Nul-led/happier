@@ -8,6 +8,8 @@ export function createClaudeUnifiedResumeTurnBarrier(params: Readonly<{
 }>): Readonly<{
   beginBeforeProviderRun(): void;
   observeProviderSessionStart(source: string | null): void;
+  /** A retained conversation was observed, not launched with --resume. */
+  observeRetainedProviderSession(): void;
   observeStartupBlocked(): boolean;
   observeStartupReady(): void;
   /** Consumes the first prompt belonging to the authoritative resume SessionStart. */
@@ -61,6 +63,13 @@ export function createClaudeUnifiedResumeTurnBarrier(params: Readonly<{
       // classification. The enclosing runtime rejects a fresh-start or identity mismatch.
       resumePromptPending = source === 'resume';
       scheduleIdleRelease();
+    },
+    observeRetainedProviderSession() {
+      if (state !== 'provisional') return;
+      clearTimer();
+      state = 'none';
+      resumePromptPending = false;
+      params.cancel('idle');
     },
     observeStartupBlocked() {
       if (state !== 'provisional' || sessionStarted) return false;

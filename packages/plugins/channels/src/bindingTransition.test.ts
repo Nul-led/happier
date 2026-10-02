@@ -32,6 +32,13 @@ function binding(overrides: Partial<ConversationBindingStateV1> = {}): Conversat
 }
 
 describe('Conversation binding transition', () => {
+  it('refuses changing a scoped trigger to a different authenticated PR endpoint', () => {
+    const current = binding({ endpoint: { kind: 'githubPullRequest', audience: 'shared', id: 'pr-5', pullRequest: { repository: 'acme/widgets', number: 5 } }, target: {
+      kind: 'automation', automationId: 'automation-1', policy: { resultDelivery: 'none' },
+      scopedTrigger: { sessionId: 'session-1', triggerId: 'trigger-1', triggerRevision: 0, triggerKind: 'prComment', principalPolicy: 'repositoryWriters', pullRequest: { repository: 'acme/widgets', number: 5 } },
+    } });
+    expect(transitionConversationBinding({ current, requested: { ...current, endpoint: { kind: 'githubPullRequest', audience: 'shared', id: 'pr-6', pullRequest: { repository: 'acme/widgets', number: 6 } } } })).toEqual({ kind: 'rejected', code: 'pullRequestCorrespondenceMismatch' });
+  });
   it('preserves an Automation final-result policy for the authoritative target verifier', () => {
     const current = binding({
       target: {

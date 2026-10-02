@@ -12,6 +12,7 @@ import {
     TRIAGE_SOURCES_CONTRIBUTION_PROTOCOL_VERSION_V1,
 } from '@happier-dev/triage-protocol/v1';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { PluginTargetedContributionSelectionV1, PluginUiTargetedContributionOperationV1 } from '@happier-dev/protocol';
 
 import {
     TRIAGE_START_ENTRY_SESSION_ACTION_LOCAL_ID_V1,
@@ -81,11 +82,12 @@ const PREPARED_OPERATION = Object.freeze({
     contributor: {
         pluginId: ENTRY_REF.source.pluginId,
         contributionId: ENTRY_REF.source.localId,
-        immutableGenerationId: 'example-forge-generation-1',
+        occurrenceId: 'example-forge-occurrence-1',
+        sourceCustody: { kind: 'development' as const, registeredRootId: 'example-forge-root' },
     },
     role: 'prepareReviewWorkspace',
     action: { pluginId: ENTRY_REF.source.pluginId, localId: 'prepare-review-workspace' },
-});
+} satisfies PluginUiTargetedContributionOperationV1);
 
 const PREPARED_REVIEW_START_REQUEST = Object.freeze({
     ...START_REQUEST,
@@ -269,7 +271,7 @@ async function mountProbe(input: Readonly<{
                                 kind: 'agent' as const,
                                 identity: { pluginId: 'happier.test.agent', localId: 'agent' },
                             },
-                            directory: '/workspaces/example',
+                            directory: { kind: 'path' as const, path: '/workspaces/example' },
                         },
                     };
                 }
@@ -280,10 +282,13 @@ async function mountProbe(input: Readonly<{
                     action: request.operation.action,
                     input: request.draft ?? {},
                     selection: {
-                        target: { pluginId: 'happier.triage', immutableGenerationId: 'entry-session-start-checkout-test' },
+                        target: { pluginId: 'happier.triage',
+                            sourceCustody: { kind: 'development' as const, registeredRootId: 'triage-root' } },
                         point: request.operation.point,
-                        contributor: request.operation.contributor,
-                    },
+                        contributor: { pluginId: request.operation.contributor.pluginId,
+                            contributionId: request.operation.contributor.contributionId,
+                            sourceCustody: request.operation.contributor.sourceCustody },
+                    } satisfies PluginTargetedContributionSelectionV1,
                     connectedAccount: scripted === 'refused'
                         ? { kind: 'none' as const }
                         : {

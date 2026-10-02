@@ -1,23 +1,19 @@
 /** Codex V3 realtime control codec and canonical event projection. */
 import type {
-  VoiceClientToolDefinition,
-  VoiceRealtimeCanonicalEvent } from '@happier-dev/plugin-sdk/voice/client';
-import type {
+  VoiceRealtimeCanonicalEvent,
   VoiceRealtimeJsonValue,
-  VoiceRealtimeToolResult,
 } from '@happier-dev/plugin-sdk/voice/client';
 import {
   VoiceRealtimeJsonValueSchema,
-  VoiceRealtimeToolCallV1Schema,
-  VoiceRealtimeToolResultV1Schema,
   VoiceTranscriptCanonicalEventV1Schema,
 } from '@happier-dev/plugin-sdk/voice/client';
 
 const PROVIDER_NAMESPACE = 'codex-v3';
 const MAX_UPSTREAM_TURN_ID_CODE_UNITS = 192;
 const MAX_TRANSCRIPT_CODE_UNITS = 64 * 1024;
-const MAX_PENDING_TOOL_RESPONSES = 128;
-const MAX_COMPLETED_TOOL_RESPONSES = 512;
+// Pinned openai/codex d91294c... methods_frameless_bidi.rs sends native
+// context appends in at most 500 UTF-8 bytes, preserving character boundaries.
+const CONTEXT_APPEND_MAX_BYTES = 500;
 
 type CodexV3TurnDone = Readonly<{
   upstreamTurnId: string;
@@ -29,7 +25,8 @@ export type CodexV3ControlDiagnosticCode =
   | 'codex_v3_conversational_transcript_unavailable'
   | 'codex_v3_malformed_control_event'
   | 'codex_v3_malformed_turn_done'
-  | 'codex_v3_unknown_control_event';
+  | 'codex_v3_unknown_control_event'
+  | 'codex_v3_upstream_error';
 
 export type CodexV3ControlDecoder = ((
   value: VoiceRealtimeJsonValue,
@@ -47,22 +44,6 @@ export type CodexV3ControlDecoder = ((
   finalize(): void;
 }>;
 
-/**
- * Terminality is a semantic fact, not a shape check. Codex's Agent-session data
- * channel carries the OpenAI Realtime control wire, whose response status is
- * optional: a `response.done` reporting a nonterminal status must not close the
- * response or consume its accumulated tool calls, while an omitted status must
- * still close it. This mirrors the same rule the OpenAI realtime provider codec
- * applies to its own transport; each plugin owns its provider-native codec, so
- * the fact is restated here rather than shared through a host seam.
- */
-const TERMINAL_RESPONSE_STATUSES: ReadonlySet<string> = new Set([
-  'completed',
-  'cancelled',
-  'failed',
-  'incomplete',
-]);
-
 const KNOWN_INERT_EVENT_TYPES = new Set([
   'session.started',
   'session.updated',
@@ -70,7 +51,6 @@ const KNOWN_INERT_EVENT_TYPES = new Set([
   'input_transcript.added',
   'output_transcript.added',
   'delegation.created',
-  'error',
 ]);
 
 function record(value: VoiceRealtimeJsonValue): Readonly<Record<string, VoiceRealtimeJsonValue>> | null {
@@ -79,76 +59,36 @@ function record(value: VoiceRealtimeJsonValue): Readonly<Record<string, VoiceRea
     : null;
 }
 
-function stableText(value: VoiceRealtimeJsonValue): string | null {
-  return typeof value === 'string' && value.length > 0 && value.trim() === value ? value : null;
-}
-
-function parseFunctionArguments(value: VoiceRealtimeJsonValue): VoiceRealtimeJsonValue {
-  if (typeof value !== 'string') return null;
-  try {
-    return VoiceRealtimeJsonValueSchema.parse(JSON.parse(value));
-  } catch {
-    return null;
-  }
-}
-
-function deleteOldest<T>(setOrMap: Set<T> | Map<T, unknown>): void {
-  const oldest = setOrMap.keys().next();
-  if (!oldest.done) setOrMap.delete(oldest.value);
-}
-
 /**
- * Codex's Agent-session data channel uses the OpenAI Realtime control wire.
- * The host owns tool eligibility and execution; this leaf only serializes the
- * already-authorized read-only tool catalog for that provider transport.
+ * Codex V3 Frameless Bidi context is additive session context, not a GA
+ * conversation item or replacement prompt. The native wire carries no role;
+ * omit its optional speech-routing channel as the native default writer does.
+ * Codex app-server owns delegation and coding-result handoff.
+ *
+ * Wire/chunking basis: openai/codex d91294c39edb93d204926b33f21310dc968edc34,
+ * codex-api/endpoint/realtime_websocket/{methods_common,
+ * methods_frameless_bidi,protocol}.rs.
  */
-export function createCodexV3ToolSessionUpdate(
-  tools: readonly VoiceClientToolDefinition[],
-): VoiceRealtimeJsonValue {
-  return VoiceRealtimeJsonValueSchema.parse({
-    type: 'session.update',
-    session: {
-      type: 'realtime',
-      tools: tools.map((tool) => ({
-        type: 'function',
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.parameters,
-      })),
-      tool_choice: 'auto',
-    },
-  });
-}
-
-export function encodeCodexV3ToolResult(result: VoiceRealtimeToolResult): VoiceRealtimeJsonValue {
-  const parsed = VoiceRealtimeToolResultV1Schema.parse(result);
-  return VoiceRealtimeJsonValueSchema.parse({
-    type: 'conversation.item.create',
-    item: {
-      type: 'function_call_output',
-      call_id: parsed.callId,
-      output: JSON.stringify(
-        parsed.status === 'success'
-          ? parsed.output
-          : { ok: false, errorCode: parsed.errorCode },
-      ),
-    },
-  });
-}
-
-export function encodeCodexV3ToolContinuation(): VoiceRealtimeJsonValue {
-  return VoiceRealtimeJsonValueSchema.parse({ type: 'response.create' });
-}
-
-export function encodeCodexV3ContextUpdate(text: string): VoiceRealtimeJsonValue {
-  return VoiceRealtimeJsonValueSchema.parse({
-    type: 'conversation.item.create',
-    item: {
-      type: 'message',
-      role: 'system',
-      content: [{ type: 'input_text', text: `[Context update]\n${text}` }],
-    },
-  });
+export function encodeCodexV3ContextUpdate(text: string): readonly VoiceRealtimeJsonValue[] {
+  const chunks: string[] = [];
+  const encoder = new TextEncoder();
+  let chunk = '';
+  let chunkBytes = 0;
+  for (const character of `[Context update]\n${text}`) {
+    const characterBytes = encoder.encode(character).byteLength;
+    if (chunkBytes + characterBytes > CONTEXT_APPEND_MAX_BYTES) {
+      chunks.push(chunk);
+      chunk = '';
+      chunkBytes = 0;
+    }
+    chunk += character;
+    chunkBytes += characterBytes;
+  }
+  if (chunk.length > 0) chunks.push(chunk);
+  return Object.freeze(chunks.map((text) => VoiceRealtimeJsonValueSchema.parse({
+    type: 'session.context.append',
+    content: [{ type: 'input_text', text }],
+  })));
 }
 
 function decodeTurnDone(value: VoiceRealtimeJsonValue): CodexV3TurnDone | null {
@@ -191,8 +131,6 @@ export function createCodexV3ControlDecoder(input: Readonly<{
     ? String(input.attemptId)
     : null;
   const finalizedTurns = new Set<string>();
-  const pendingToolCalls = new Map<string, Map<string, ReturnType<typeof VoiceRealtimeToolCallV1Schema.parse>>>();
-  const completedToolResponses = new Set<string>();
   const emittedDiagnosticCodes = new Set<CodexV3ControlDiagnosticCode>();
   let upstreamStarted = false;
   let terminal = false;
@@ -211,53 +149,13 @@ export function createCodexV3ControlDecoder(input: Readonly<{
       diagnoseOnce('codex_v3_malformed_control_event');
       return Object.freeze([]);
     }
-    if (event.type === 'response.function_call_arguments.done') {
-      const responseId = stableText(event.response_id);
-      const callId = stableText(event.call_id);
-      const toolName = stableText(event.name);
-      if (responseId && callId && toolName && !completedToolResponses.has(responseId)) {
-        const calls = pendingToolCalls.get(responseId) ?? new Map();
-        if (!calls.has(callId)) {
-          const order = typeof event.output_index === 'number'
-            && Number.isInteger(event.output_index)
-            && event.output_index >= 0
-            ? event.output_index
-            : calls.size;
-          const parsed = VoiceRealtimeToolCallV1Schema.safeParse({
-            v: 1,
-            responseId,
-            callId,
-            toolName,
-            order,
-            arguments: parseFunctionArguments(event.arguments),
-          });
-          if (parsed.success) calls.set(callId, parsed.data);
-        }
-        pendingToolCalls.set(responseId, calls);
-        while (pendingToolCalls.size > MAX_PENDING_TOOL_RESPONSES) deleteOldest(pendingToolCalls);
-      }
-      return Object.freeze([]);
-    }
-    if (event.type === 'response.done') {
-      const response = record(event.response);
-      const status = response?.status;
-      if (typeof status === 'string' && !TERMINAL_RESPONSE_STATUSES.has(status)) {
-        return Object.freeze([]);
-      }
-      const responseId = stableText(response?.id ?? null) ?? stableText(event.response_id);
-      if (!responseId || completedToolResponses.has(responseId)) return Object.freeze([]);
-      const calls = pendingToolCalls.get(responseId);
-      pendingToolCalls.delete(responseId);
-      completedToolResponses.add(responseId);
-      while (completedToolResponses.size > MAX_COMPLETED_TOOL_RESPONSES) deleteOldest(completedToolResponses);
-      if (status !== 'completed' || !calls?.size) return Object.freeze([]);
-      return Object.freeze([{
-        type: 'tool_calls',
-        responseId,
-        calls: Object.freeze([...calls.values()].sort(
-          (left, right) => left.order - right.order || left.callId.localeCompare(right.callId),
-        )),
-      }]);
+    if (event.type === 'error') {
+      // Native errors are free-form (top-level message or error payload).
+      // Do not infer an auth/quota taxonomy from that text or disclose it.
+      // The existing host control-event pump classifies this typed rejection
+      // and closes media plus the bound attachment through its lifecycle owner.
+      diagnoseOnce('codex_v3_upstream_error');
+      throw Object.assign(new Error('codex_v3_upstream_error'), { code: 'upstream_rejected' });
     }
     if (event.type !== 'turn.done') {
       if (!KNOWN_INERT_EVENT_TYPES.has(event.type)) {

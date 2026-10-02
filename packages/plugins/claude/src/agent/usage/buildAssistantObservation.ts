@@ -12,6 +12,7 @@ function asFiniteNonNegativeNumber(value: unknown): number | null {
 export function buildClaudeAssistantUsageObservation(params: Readonly<{
     modelId?: string | null;
     modelSource?: ClaudeUsageModelSource;
+    nativeRecordId?: string | null;
     observedAtMs?: number;
     usage: ClaudeTokenUsage;
 }>): ClaudeUsageObservation | null {
@@ -51,6 +52,8 @@ export function buildClaudeAssistantUsageObservation(params: Readonly<{
         source: 'claude-assistant-usage',
         scope: 'turn_delta',
         key: 'claude-session',
+        ...(params.nativeRecordId ? { nativeRecordId: params.nativeRecordId } : {}),
+        ...(params.observedAtMs === undefined ? {} : { observedAtMs: params.observedAtMs }),
         modelId: typeof params.modelId === 'string' && params.modelId.trim().length > 0 ? params.modelId.trim() : null,
         tokens,
         cost: costs

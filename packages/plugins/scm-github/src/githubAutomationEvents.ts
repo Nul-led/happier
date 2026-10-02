@@ -1,12 +1,16 @@
 import type { PluginJsonSchema } from '@happier-dev/plugin-sdk/protocol';
 
 import { GITHUB_PLUGIN_ID } from './observations/githubProviderContracts.js';
+import type { GithubChecksConditionSnapshotV1 } from './triage/checksCondition.js';
 
 export const GITHUB_AUTOMATION_EVENT_LOCAL_IDS = Object.freeze({
   issueOpened: 'automation/issue-opened-v1',
   pullRequestMerged: 'automation/pull-request-merged-v1',
   pullRequestOpened: 'automation/pull-request-opened-v1',
   push: 'automation/repository-pushed-v1',
+  checksCompleted: 'automation/pull-request-checks-completed-v1',
+  checksFailed: 'automation/pull-request-checks-failed-v1',
+  checksPassed: 'automation/pull-request-checks-passed-v1',
 } as const);
 
 export type GithubAutomationEventKindV1 = keyof typeof GITHUB_AUTOMATION_EVENT_LOCAL_IDS;
@@ -23,6 +27,7 @@ export type GithubAutomationEventRepositoryV1 = Readonly<{
 }>;
 
 export type GithubAutomationEventPayloadV1 =
+  | Readonly<{ repository: GithubAutomationEventRepositoryV1; checks: GithubChecksConditionSnapshotV1 }>
   | Readonly<{
       repository: GithubAutomationEventRepositoryV1;
       ref: string;
@@ -43,6 +48,7 @@ export type GithubAutomationEventPayloadV1 =
     }>;
 
 export type GithubAutomationEventFactsV1 =
+  | Readonly<{ kind: 'checksCompleted' | 'checksFailed' | 'checksPassed'; repository: GithubAutomationEventRepositoryV1; checks: GithubChecksConditionSnapshotV1 }>
   | Readonly<{
       kind: 'push';
       repository: GithubAutomationEventRepositoryV1;
@@ -121,7 +127,29 @@ function payloadSchema(
   };
 }
 
+export const GITHUB_CHECKS_SNAPSHOT_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    pullRequestNumber: { type: 'integer', minimum: 1 },
+    headSha: { type: 'string', pattern: '^[a-fA-F0-9]{40}$' },
+    currentHeadSha: { anyOf: [{ type: 'string', pattern: '^[a-fA-F0-9]{40}$' }, { type: 'null' }] },
+    selection: { type: 'string', enum: ['all', 'required'] },
+    state: { type: 'string', enum: ['passed', 'failed', 'pending', 'neutral', 'none', 'unknown', 'superseded'] },
+    complete: { type: 'boolean' }, passed: { type: 'boolean' },
+    failure: { type: 'object', additionalProperties: false, properties: {
+      class: { type: 'string', enum: ['authentication', 'permission', 'rateLimit', 'transient', 'unsupportedContract', 'unknown'] },
+      code: { type: 'string', minLength: 1 }, retryNotBeforeMs: { type: 'number' },
+    }, required: ['class', 'code'] },
+  }, required: ['pullRequestNumber', 'headSha', 'currentHeadSha', 'selection', 'state', 'complete', 'passed'],
+} satisfies PluginJsonSchema;
+
 export const GITHUB_AUTOMATION_EVENT_CATALOG = Object.freeze([
+  ...(['checksCompleted', 'checksFailed', 'checksPassed'] as const).map((kind) => Object.freeze({
+    kind, localId: GITHUB_AUTOMATION_EVENT_LOCAL_IDS[kind],
+    title: `GitHub pull request checks ${kind === 'checksCompleted' ? 'completed' : kind === 'checksFailed' ? 'failed' : 'passed'}`,
+    description: 'The selected pull request head checks changed to the requested condition.',
+    payloadSchema: payloadSchema({ checks: GITHUB_CHECKS_SNAPSHOT_SCHEMA }, ['checks']),
+  })),
   Object.freeze({
     kind: 'issueOpened' as const,
     localId: GITHUB_AUTOMATION_EVENT_LOCAL_IDS.issueOpened,
@@ -177,6 +205,10 @@ export function normalizeGithubAutomationEvent(input: GithubAutomationEventFacts
 }> {
   const eventRef = githubAutomationEventRef(input.kind);
   switch (input.kind) {
+    case 'checksCompleted':
+    case 'checksFailed':
+    case 'checksPassed':
+      return Object.freeze({ eventRef, payload: Object.freeze({ repository: input.repository, checks: input.checks }) });
     case 'push':
       return Object.freeze({
         eventRef,

@@ -66,6 +66,14 @@ export type MessagingActionInputById = {
     };
     readonly "session.worker.publish": {
         summary: string;
+        deliverables?: ({
+            kind: 'workspace_file';
+            sessionId: string;
+            path: string;
+        } | {
+            kind: 'artifact';
+            artifactId: string;
+        })[] | undefined;
     };
 };
 export type MessagingActionResultById = {

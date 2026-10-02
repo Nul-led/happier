@@ -3,8 +3,22 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { validateExtensionImportBoundaries } from './extensionImportBoundaries.ts';
+import { collectFileInventory } from './collectFileInventory.ts';
+
+test('Codex production sources consume only the public plugin boundary', () => {
+  const rootDir = fileURLToPath(new URL('../../../../', import.meta.url));
+  const inventory = collectFileInventory({
+    rootDir,
+    searchRoots: ['packages/plugins/codex'],
+    include: /\.[cm]?[jt]sx?$/,
+  });
+  assert.ok(inventory.length > 0);
+  const result = validateExtensionImportBoundaries({ rootDir, inventory });
+  assert.deepEqual(result.errors, []);
+});
 
 test('extension import boundary validator passes when no packages/plugins exist', () => {
   const rootDir = mkdtempSync(join(tmpdir(), 'happier-extension-import-boundary-'));

@@ -7,6 +7,7 @@ export type { ApprovalQueueSnapshot } from '../interactions.js';
 export type { ApprovalRequest } from '../interactions.js';
 export type { ApprovalRequestStatus } from '../interactions.js';
 export type { CurrentSessionPresentationIntentV1 } from '../interactions.js';
+export type { SessionCompanionPresentationItem } from '../interactions.js';
 export type { InteractionOptions } from '../interactions.js';
 export type { InteractionSeverity } from '../interactions.js';
 export type { InteractionTerminalStatusV1 } from '../interactions.js';
@@ -14,6 +15,7 @@ export type { InteractionTransientApprovalAuthorRequestV1 } from '../interaction
 export type { InteractionTransientApprovalResultV1 } from '../interactions.js';
 export type { InteractionTransientAuthorQuestionV1 } from '../interactions.js';
 export type { InteractionTransientAuthorRequestV1 } from '../interactions.js';
+export { InteractionTransientAuthorRequestV1Schema } from '../interactions.js';
 export type { InteractionTransientChoiceSelectionV1 } from '../interactions.js';
 export type { InteractionTransientConfirmationAuthorRequestV1 } from '../interactions.js';
 export type { InteractionTransientConfirmationResultV1 } from '../interactions.js';

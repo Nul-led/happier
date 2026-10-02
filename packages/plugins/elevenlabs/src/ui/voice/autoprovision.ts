@@ -14,7 +14,7 @@ import {
  * conversation start, so the template dialect belongs to this plugin rather than
  * to the host prompt owner.
  */
-const ELEVENLABS_INITIAL_CONVERSATION_CONTEXT_VARIABLE = '{{initialConversationContext}}';
+export const ELEVENLABS_INITIAL_CONVERSATION_CONTEXT_VARIABLE = '{{initialConversationContext}}';
 const ELEVENLABS_SESSION_ID_VARIABLE = '{{sessionId}}';
 
 export type ElevenLabsTtsConfigInput = Readonly<{

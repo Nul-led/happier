@@ -1,5 +1,5 @@
-import { rmSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { rmdirSync, unlinkSync } from 'node:fs';
+import { rmdir, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import { writeSecureTempTextFileSync } from '@happier-dev/plugin-sdk/fs';
@@ -44,9 +44,18 @@ export function assertClaudeMcpConfigArgsSafeForDirectSpawn(inputArgs: readonly 
  */
 export function materializeClaudeMcpConfigArgsForSpawn(
     inputArgs: readonly string[],
+    reportCleanupFailure: (message: string) => void = (message) => console.warn(message),
 ): MaterializedClaudeMcpConfigArgs {
     const args = [...inputArgs];
-    const createdDirectories: string[] = [];
+    const createdPaths: string[] = [];
+    const recordFailure = (errors: unknown[], error: unknown) => {
+        if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 'ENOENT') errors.push(error);
+    };
+    const throwCleanupFailure = (errors: unknown[]) => {
+        if (errors.length === 0) return;
+        reportCleanupFailure('[Claude] MCP private file cleanup incomplete (claude_mcp_cleanup_incomplete)');
+        throw new AggregateError(errors, 'Claude MCP private file cleanup incomplete');
+    };
 
     const materializeValue = (value: string): string => {
         if (!isInlineMcpConfig(value)) return value;
@@ -55,7 +64,7 @@ export function materializeClaudeMcpConfigArgsForSpawn(
             suffix: '.json',
             contents: value,
         });
-        createdDirectories.push(dirname(path));
+        createdPaths.push(path);
         return path;
     };
 
@@ -76,12 +85,13 @@ export function materializeClaudeMcpConfigArgsForSpawn(
             }
         }
     } catch (error) {
-        for (const directory of createdDirectories) {
-            try {
-                rmSync(directory, { recursive: true, force: true });
-            } catch {
-                // Best effort: preserve the materialization error that prevented launch.
-            }
+        const errors: unknown[] = [];
+        for (const path of createdPaths) {
+            try { unlinkSync(path); } catch (cleanupError) { recordFailure(errors, cleanupError); }
+            try { rmdirSync(dirname(path)); } catch (cleanupError) { recordFailure(errors, cleanupError); }
+        }
+        try { throwCleanupFailure(errors); } catch (cleanupError) {
+            throw new AggregateError([error, cleanupError], 'Claude MCP materialization failed with incomplete cleanup', { cause: error });
         }
         throw error;
     }
@@ -90,9 +100,14 @@ export function materializeClaudeMcpConfigArgsForSpawn(
     return {
         args,
         cleanup: () => {
-            cleanupPromise ??= Promise.allSettled(
-                createdDirectories.map((directory) => rm(directory, { recursive: true, force: true })),
-            ).then(() => undefined);
+            cleanupPromise ??= (async () => {
+                const errors: unknown[] = [];
+                await Promise.all(createdPaths.map(async (path) => {
+                    await unlink(path).catch((error) => recordFailure(errors, error));
+                    await rmdir(dirname(path)).catch((error) => recordFailure(errors, error));
+                }));
+                throwCleanupFailure(errors);
+            })();
             return cleanupPromise;
         },
     };

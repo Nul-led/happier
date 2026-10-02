@@ -122,6 +122,7 @@ async function prepare(
     reason?: 'initial' | 'reconnect' | 'auth_refresh';
     accountResponse?: unknown;
     platform?: 'web' | 'ios' | 'android';
+    attemptPolicy?: Parameters<RealtimeVoiceProviderRuntime['protocol']['prepare']>[0]['attemptPolicy'];
   }> = {},
 ) {
   const account = createAccountOperations(input.accountResponse);
@@ -139,6 +140,7 @@ async function prepare(
     }),
     providerConversation: input.providerConversation ?? null,
     hostedConversation: null,
+    attemptPolicy: input.attemptPolicy,
     signal: new AbortController().signal,
   });
   if (result.kind !== 'prepared') throw new Error(`unexpected_prepare_result:${result.kind}`);
@@ -152,6 +154,65 @@ afterEach(() => {
 
 describe('xAI Realtime public runtime contribution', () => {
   type VoiceConnectionDriver = Parameters<VoiceConnectionMediaHost['createPcmConnection']>[0]['driver'];
+
+  it.each([
+    ['initial', 'immediate', true],
+    ['reconnect', 'immediate', false],
+    ['auth_refresh', 'immediate', false],
+    ['initial', 'on_first_turn', false],
+  ] as const)('starts welcome only after the initial session update (%s, %s)', async (reason, mode, shouldGreet) => {
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    const runtime = createXaiRealtimeProviderRuntime();
+    const prepared = await prepare(runtime, { reason, attemptPolicy: {
+      instructions: 'Greet briefly, then wait.', assistantLanguage: null,
+      welcome: { enabled: true, mode },
+    } });
+    let driver: VoiceConnectionDriver | null = null;
+    await runtime.createConnection({
+      session: prepared.result.session, attemptId: 1, mic: { getStream: () => null },
+      interruption: { duckGain: 0.18, retainedOutputMaxMs: 1_500 }, levels: { onOutputLevel: vi.fn() },
+      media: {
+        createWebRtcConnection: vi.fn(), createSdkHandleConnection: vi.fn(),
+        createPcmConnection: (input) => {
+          driver = input.driver;
+          return { connection: createConnection(), enqueueOutput: () => true,
+            clearOutput: () => {}, waitForOutputDrain: async () => {} };
+        },
+      },
+      tools: [], ui: {} as never, signal: new AbortController().signal,
+      credentials: { phase: 'connection', mediated: null, raw: null }, execution: { kind: 'direct_media' },
+    });
+    await driver!.open({ signal: new AbortController().signal, onControl: vi.fn(), onTransport: vi.fn(), onRemoteClose: vi.fn() });
+    expect(FakeWebSocket.instances.at(-1)!.sent.map((value) => JSON.parse(value).type))
+      .toEqual(shouldGreet ? ['session.update', 'response.create'] : ['session.update']);
+  });
+
+  it('retains admitted custom instructions across reconnect while other provider settings remain current', async () => {
+    const runtime = createXaiRealtimeProviderRuntime();
+    const attemptPolicy = {
+      instructions: 'Use only the admitted tools.', assistantLanguage: null,
+      welcome: { enabled: false, mode: 'immediate' as const },
+    };
+    await prepare(runtime, {
+      attemptPolicy, providerConfig: { instructions: 'Use project terminology.', voice: { kind: 'catalog', id: 'eve' } },
+    });
+    const reconnect = await prepare(runtime, {
+      reason: 'reconnect', attemptPolicy,
+      providerConfig: { instructions: 'New instructions for the next attempt.', voice: { kind: 'catalog', id: 'ara' } },
+    });
+    expect(reconnect.result.session.config).toMatchObject({
+      instructions: 'Use only the admitted tools.\n\nUse project terminology.',
+      settings: { voice: { id: 'ara' } },
+    });
+    await runtime.protocol.releasePrepared?.({
+      controlSessionId: 'voice', attemptId: 1, reason: { code: 'user_stop' },
+    });
+    const next = await prepare(runtime, {
+      attemptPolicy, providerConfig: { instructions: 'New instructions for the next attempt.' },
+    });
+    expect(next.result.session.config.instructions)
+      .toBe('Use only the admitted tools.\n\nNew instructions for the next attempt.');
+  });
 
   it('keeps preflight credential-free and consumes current immutable settings for every prepare', async () => {
     const runtime = createXaiRealtimeProviderRuntime();
@@ -237,7 +298,13 @@ describe('xAI Realtime public runtime contribution', () => {
   it('uses public PCM media, current tools, and excludes auth from safe metadata', async () => {
     vi.stubGlobal('WebSocket', FakeWebSocket);
     const runtime = createXaiRealtimeProviderRuntime();
-    const prepared = await prepare(runtime);
+    const prepared = await prepare(runtime, {
+      providerConfig: { instructions: 'Use project terminology.' },
+      attemptPolicy: {
+        instructions: 'Only use admitted tools. Reply in fr-FR.',
+        assistantLanguage: 'fr-FR', welcome: { enabled: false, mode: 'immediate' },
+      },
+    });
     expect(JSON.stringify(prepared.result.session.safeMetadata)).not.toContain('short-lived');
     expect(prepared.result.session.safeMetadata).not.toHaveProperty('providerId');
 
@@ -285,7 +352,7 @@ describe('xAI Realtime public runtime contribution', () => {
     expect(connectionCredentialRequest).not.toHaveBeenCalled();
     expect(createPcmConnection).toHaveBeenCalledWith(expect.objectContaining({
       input: { sampleRate: 24_000, chunkMs: 100 },
-      output: { sampleRate: 24_000, maxBufferedMs: 5_000 },
+      output: { sampleRate: 24_000 },
       onInputChunk: expect.any(Function),
     }));
     await driver!.open({
@@ -298,8 +365,11 @@ describe('xAI Realtime public runtime contribution', () => {
       type: 'session.update',
       session: expect.objectContaining({
         tools: [{ type: 'function', ...SENTINEL_TOOL }],
+        instructions: expect.stringContaining('Only use admitted tools. Reply in fr-FR.'),
       }),
     }]);
+    expect(JSON.parse(FakeWebSocket.instances.at(-1)!.sent[0]!).session.instructions)
+      .toContain('Use project terminology.');
 
     // Provider semantic completion means the server stopped sending audio, not
     // that the host finished rendering the buffered tail. The measured playback

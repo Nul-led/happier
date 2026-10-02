@@ -82,6 +82,7 @@ function buildVoiceAgentBaseText(params?: Readonly<{
   memoryRecallGuidanceEnabled?: boolean;
   actionSpecs?: readonly VoicePromptActionSpec[];
   disabledActionIds?: readonly string[];
+  welcome?: Readonly<{ enabled: boolean; mode: 'immediate' | 'on_first_turn' }>;
 }>): string {
   const assistantName = params?.assistantName?.trim() || DEFAULT_VOICE_ASSISTANT_NAME;
   const verbosity: VoicePromptVerbosity = params?.verbosity ?? 'short';
@@ -133,7 +134,9 @@ function buildVoiceAgentBaseText(params?: Readonly<{
         ? [`- When you do not already know the right tool or valid input values, use ${discoveryTools.join(', then ')} before calling the final action.`]
       : []),
     '- Never read raw JSON, raw tool payloads, or raw ids aloud to the user. Summarize tool results in plain language.',
-    '- Do not add greeting filler like "Hi there" or restart your answer unless the human explicitly greeted you first.',
+    ...(params?.welcome?.enabled === true ? [] : [
+      '- Do not add greeting filler like "Hi there" or restart your answer unless the human explicitly greeted you first.',
+    ]),
     '- Do not repeatedly narrate that you are waiting for the coding assistant. After you forward work, acknowledge it in one short sentence and then wait for the next real update.',
     '- Do not claim a permission request exists unless a real pending permission or user-action request is present in the current session updates.',
     '- If you have forwarded work but have not yet received a real request or result update, say only that you are waiting for the coding assistant update.',
@@ -163,6 +166,7 @@ function buildVoiceBlocks(params: Readonly<{
     memoryRecallGuidanceEnabled?: boolean;
     actionSpecs?: readonly VoicePromptActionSpec[];
     disabledActionIds?: readonly string[];
+    welcome?: Readonly<{ enabled: boolean; mode: 'immediate' | 'on_first_turn' }>;
   }>;
   extraSystemAppendBlocks?: readonly string[];
   bodyBlocks: PromptBlockV1[];
@@ -218,10 +222,17 @@ export function buildVoiceClientToolAgentPrompt(params?: Readonly<{
   disabledActionIds?: readonly string[];
   extraSystemAppendBlocks?: readonly string[];
   actionSpecs?: readonly VoicePromptActionSpec[];
+  /** The exact attempt catalog; omission preserves the caller's supplied catalog. */
+  availableToolNames?: readonly string[];
+  assistantLanguage?: string | null;
+  welcome?: Readonly<{ enabled: boolean; mode: 'immediate' | 'on_first_turn' }>;
 }>): string {
   const ctx = params?.initialConversationContextPlaceholder?.trim() ?? '';
   const sessionId = params?.sessionIdPlaceholder?.trim() ?? '';
-  const actionSpecs = params?.actionSpecs ?? listVoiceSdkSafeToolActionSpecs();
+  const admittedNames = params?.availableToolNames === undefined ? null : new Set(params.availableToolNames);
+  const actionSpecs = (params?.actionSpecs ?? listVoiceSdkSafeToolActionSpecs())
+    .filter((spec) => admittedNames === null || admittedNames.has(spec.bindings?.voiceClientToolName ?? ''));
+  const language = params?.assistantLanguage?.trim() ?? '';
   const disabled = new Set(params?.disabledActionIds ?? []);
   const availableToolNames = new Set(actionSpecs
     .filter((spec) => !disabled.has(spec.id))
@@ -233,6 +244,7 @@ export function buildVoiceClientToolAgentPrompt(params?: Readonly<{
   const toolLines = buildVoiceToolDocumentationLines(actionSpecs, {
     disabledActionIds: params?.disabledActionIds,
     invocationLabel: 'Call with',
+    includeAllTools: !availableToolNames.has('searchActionSpecs'),
   });
 
   return renderPromptPlanV1(buildPromptPlanV1({
@@ -242,6 +254,16 @@ export function buildVoiceClientToolAgentPrompt(params?: Readonly<{
       base: { ...(params ?? {}), actionSpecs },
       extraSystemAppendBlocks: params?.extraSystemAppendBlocks,
       bodyBlocks: [
+        ...((language || params?.welcome?.enabled === true) ? [{
+          id: 'voice.client_tools.attempt_policy',
+          scope: 'session' as const,
+          text: [
+            ...(language ? [`Reply in ${language}.`] : []),
+            ...(params?.welcome?.enabled === true ? [params.welcome.mode === 'on_first_turn'
+              ? 'On your first reply, start with one short friendly greeting (one sentence). Then continue with your response.'
+              : 'If a response is requested before the user speaks, give one short friendly greeting and wait for the user. Do not repeat this startup greeting when answering a user turn.'] : []),
+          ].join('\n'),
+        }] : []),
         {
           id: 'voice.client_tools.tool_contract',
           scope: 'session',

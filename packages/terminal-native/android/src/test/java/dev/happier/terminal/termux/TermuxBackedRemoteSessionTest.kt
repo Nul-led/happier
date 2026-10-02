@@ -3,6 +3,7 @@ package dev.happier.terminal.termux
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.view.MotionEvent
+import android.view.KeyEvent
 import dev.happier.terminal.TermuxEventSink
 import dev.happier.terminal.TermuxRemoteSessionCallbacks
 import org.junit.Assert.assertEquals
@@ -16,6 +17,28 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [35])
 class TermuxBackedRemoteSessionTest {
+  @Test
+  fun clearErasesOutputWithoutResettingApplicationCursorKeysOrAlternateBuffer() {
+    val events = mutableListOf<Pair<String, Map<String, Any?>>>()
+    val session = TermuxBackedRemoteSession(
+      surfaceId = "surface",
+      callbacks = TermuxRemoteSessionCallbacks(
+        "surface",
+        TermuxEventSink { eventName, payload -> events += eventName to payload },
+      ),
+    )
+    val output = "main screen\u001b[?1049h\u001b[?1halternate screen".toByteArray()
+    assertTrue(session.writeBytes(output, 0).accepted)
+
+    session.clear()
+
+    assertEquals("", session.accessibilitySummary())
+    assertTrue(session.sendKeyEvent(KeyEvent.KEYCODE_DPAD_UP, KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_UP)))
+    assertEquals("\u001bOA", events.last { (eventName) -> eventName == "input" }.second["data"])
+    assertTrue(session.writeBytes("\u001b[?1049l".toByteArray(), output.size.toLong()).accepted)
+    assertTrue(session.accessibilitySummary().orEmpty().contains("main screen"))
+  }
+
   @Test
   fun blankTerminalExposesNoSyntheticAccessibilityText() {
     val session = TermuxBackedRemoteSession(

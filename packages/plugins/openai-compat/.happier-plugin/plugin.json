@@ -6,6 +6,7 @@
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -29,6 +30,7 @@
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -300,6 +302,7 @@
         "limits": {
           "synthesize": {
             "maxInputCharacters": 200000,
+            "maxInputCharactersSettingId": "maxInputCharacters",
             "maxOutputBytes": 16777216
           }
         },
@@ -353,6 +356,21 @@
                 "type": "string"
               },
               "title": "Confirmed insecure local machine"
+            },
+            {
+              "default": 4096,
+              "description": "OpenAI accepts 4,096 characters. For a custom endpoint, use its documented input limit.",
+              "id": "maxInputCharacters",
+              "presentation": {
+                "control": "number",
+                "step": 1
+              },
+              "schema": {
+                "maximum": 200000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "title": "Endpoint input limit (characters)"
             },
             {
               "default": "tts-1",
@@ -421,7 +439,8 @@
         "title": "OpenAI-compatible Text-to-Speech"
       }
     ],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "Batch speech-to-text and text-to-speech through a selected-machine OpenAI-compatible endpoint.",
   "displayName": "OpenAI-compatible Speech",

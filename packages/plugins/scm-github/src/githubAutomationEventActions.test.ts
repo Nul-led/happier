@@ -12,6 +12,7 @@ import {
 import {
   resetGithubRepositoryEventHistoryGap,
   setupGithubRepositoryEventSource,
+  setupGithubPullRequestChecksSource,
 } from './githubAutomationEventActions.js';
 import {
   GITHUB_CONNECTED_ACCOUNT_PURPOSE,
@@ -58,7 +59,7 @@ function automationContext(params: Readonly<{
 }
 
 describe('GitHub Automation Event source setup', () => {
-  it('resolves the user repository through the exact selected account without returning materialized credentials', async () => {
+  it.each(['repository', 'checks'] as const)('resolves the %s source through the exact selected account without returning materialized credentials', async (kind) => {
     const connectedAccounts = {
       materialize: vi.fn(async () => ({
         kind: 'httpHeaders' as const,
@@ -77,18 +78,22 @@ describe('GitHub Automation Event source setup', () => {
       }),
     };
 
-    const result = await setupGithubRepositoryEventSource({
+    const checks = { pullRequestNumber: 7, headSha: 'a'.repeat(40), selection: 'required' };
+    const setup = kind === 'checks' ? setupGithubPullRequestChecksSource : setupGithubRepositoryEventSource;
+    const result = await setup({
       credentialRef: GITHUB_ACCOUNT,
       repository: 'acme/widgets',
+      ...(kind === 'checks' ? { checks } : {}),
     }, automationContext({ connectedAccounts, http }));
 
     expect(PluginEventAutomationSetupResultV1Schema.parse(result)).toEqual({
       v: 1,
-      sourceInstanceId: 'github:repository:77',
+      sourceInstanceId: kind === 'checks' ? `github:repository:77:pull-request:7:head:${checks.headSha}:checks:required` : 'github:repository:77',
       sourceContractVersion: 1,
       sourceConfig: {
         v: 1,
         credentialRef: GITHUB_ACCOUNT,
+        ...(kind === 'checks' ? { checks } : {}),
         repository: {
           v: 1,
           repositoryId: '77',
@@ -97,7 +102,7 @@ describe('GitHub Automation Event source setup', () => {
           nameWithOwner: 'acme/widgets',
         },
       },
-      displayLabel: 'acme/widgets',
+      displayLabel: kind === 'checks' ? 'acme/widgets#7 · required checks' : 'acme/widgets',
     });
     expect(connectedAccounts.materialize).toHaveBeenCalledOnce();
     expect(connectedAccounts.materialize).toHaveBeenCalledWith(

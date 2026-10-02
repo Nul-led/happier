@@ -36,6 +36,7 @@ export type AgentDefinitionCapabilityFacts = Readonly<{
     usageLimitRecovery?: Readonly<{
       checkNow: string;
     }>;
+    usageReporting?: string;
   }>;
   localControl?: AgentLocalControlDeclaration | null;
   tools?: Readonly<{
@@ -69,11 +70,11 @@ export type AuthoredAgentCapabilitySurfaceV2 = Exclude<PluginAgentCapabilitySurf
  *
  * The definition-owned facts are absent from this type on purpose: the
  * compiler, not a review convention, is what stops a manifest from stating
- * `'fork'`, `conversationRollback`, tool delivery or the `'terminal'` surface
- * a second time.
+ * `'fork'`, `conversationRollback`, usage reporting/recovery, tool delivery or
+ * the `'terminal'` surface a second time.
  */
 export type AuthoredAgentSessionCapabilitiesV2 =
-  & Omit<PluginAgentSessionCapabilitiesV2, 'open' | 'conversationRollback' | 'usageLimitRecovery'>
+  & Omit<PluginAgentSessionCapabilitiesV2, 'open' | 'conversationRollback' | 'usageLimitRecovery' | 'usageReporting'>
   & Readonly<{ open: readonly AuthoredAgentSessionOpenRouteV2[] }>;
 
 export type AuthoredAgentCapabilitiesV2 =
@@ -184,6 +185,7 @@ export function projectAgentCapabilitiesV2FromDefinition(
         ...(declaresSessionFork(facts) ? (['fork'] as const) : []),
       ],
       ...(declaresConversationRollback(facts) ? { conversationRollback: true as const } : {}),
+      ...(facts.sessionCapabilities.usageReporting === 'supported' ? { usageReporting: true as const } : {}),
       ...(declaresUsageLimitRecoveryCheckNow(facts)
         ? {
           usageLimitRecovery: {

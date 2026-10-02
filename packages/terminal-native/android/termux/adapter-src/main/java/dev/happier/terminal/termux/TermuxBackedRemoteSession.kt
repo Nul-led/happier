@@ -366,7 +366,8 @@ class TermuxBackedRemoteSession(
 
   override fun clear() {
     requireTermuxMainThread()
-    emulator.reset()
+    val erase = "\u001b[2J\u001b[3J\u001b[H".toByteArray(Charsets.UTF_8)
+    emulator.append(erase, erase.size)
     topRow = 0
     accessibleLinkCandidates.clear()
     linkScanCarry = ""

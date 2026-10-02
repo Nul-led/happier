@@ -18,7 +18,6 @@ import {
 
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
 const GOOGLE_GEMINI_INLINE_REQUEST_MAX_BYTES = 20_000_000;
-const GOOGLE_CLOUD_TTS_MAX_INPUT_UTF8_BYTES = 5_000;
 const GOOGLE_GEMINI_STT_LIMITS = GOOGLE_GEMINI_STT_VOICE_PROVIDER_DECLARATION.limits.transcribe;
 const GOOGLE_CLOUD_TTS_LIMITS = GOOGLE_CLOUD_TTS_VOICE_PROVIDER_DECLARATION.limits.synthesize;
 if (!GOOGLE_GEMINI_STT_LIMITS || !GOOGLE_CLOUD_TTS_LIMITS) {
@@ -27,9 +26,8 @@ if (!GOOGLE_GEMINI_STT_LIMITS || !GOOGLE_CLOUD_TTS_LIMITS) {
 // The daemon upload protocol is the end-to-end admission ceiling.
 export const GOOGLE_GEMINI_STT_MAX_INPUT_BYTES =
   GOOGLE_GEMINI_STT_LIMITS.maxInputBytes;
-// Manifest character limits use JavaScript string units; 1,666 units encode to at most 4,998 UTF-8 bytes.
-export const GOOGLE_CLOUD_TTS_MAX_INPUT_CHARACTERS =
-  GOOGLE_CLOUD_TTS_LIMITS.maxInputCharacters;
+export const GOOGLE_CLOUD_TTS_MAX_INPUT_UTF8_BYTES =
+  GOOGLE_CLOUD_TTS_LIMITS.maxInputUtf8Bytes;
 export const GOOGLE_CLOUD_TTS_MAX_OUTPUT_BYTES =
   GOOGLE_CLOUD_TTS_LIMITS.maxOutputBytes;
 const GOOGLE_API_KEY_HEADER = 'x-goog-api-key';

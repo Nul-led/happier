@@ -23,13 +23,14 @@ import {
   resolveGithubRepositoryWithClient,
 } from './observations/githubRepositoryResolution.js';
 import { parseGithubRepositorySetupInput } from './observations/githubRepositorySetupInput.js';
+import { githubChecksSourceInstanceId, parseGithubChecksSource } from './observations/githubChecksSource.js';
 import {
   GITHUB_AUTOMATION_REPOSITORY_SOURCE_CONTRACT_VERSION,
   type GithubRepositorySourceConfigV1,
   type GithubAutomationRepositoryEventSourceConfigV1,
 } from './observations/githubProviderContracts.js';
 
-type CurrentHistoryGapResetSourceV1 = Readonly<{
+type CurrentGithubAutomationEventSourceV1 = Readonly<{
   definition: GithubAutomationEventSourceDefinitionV1;
   /** Rechecks the single host revision that authorized the provider I/O. */
   isCurrent: () => Promise<boolean>;
@@ -52,11 +53,11 @@ function parseGithubAutomationHistoryGapResetInput(
 
 function matchesHistoryGapResetSource(
   definition: GithubAutomationEventSourceDefinitionV1,
-  input: PluginEventAutomationHistoryGapResetActionInputV1,
+  input: Readonly<{ automationId: string; triggerId: string; sourceSelectorId: string; triggerRevision?: number }>,
 ): boolean {
   return definition.automationId === input.automationId
     && definition.triggerId === input.triggerId
-    && definition.triggerRevision === input.triggerRevision
+    && (input.triggerRevision === undefined || definition.triggerRevision === input.triggerRevision)
     && definition.sourceSelectorId === input.sourceSelectorId;
 }
 
@@ -66,10 +67,10 @@ function matchesHistoryGapResetSource(
  * persisted exact Connected Account reference. Any source-list currentness
  * loss is a typed no-effect result, never a local fallback or provider call.
  */
-async function readCurrentHistoryGapResetSource(input: Readonly<{
+export async function readCurrentGithubAutomationEventSource(input: Readonly<{
   context: PluginInvocationContext;
-  reset: PluginEventAutomationHistoryGapResetActionInputV1;
-}>): Promise<CurrentHistoryGapResetSourceV1 | null> {
+  selector: Readonly<{ automationId: string; triggerId: string; sourceSelectorId: string; triggerRevision?: number }>;
+}>): Promise<CurrentGithubAutomationEventSourceV1 | null> {
   const matches: GithubAutomationEventSourceDefinitionV1[] = [];
   const seenCursors = new Set<string>();
   let cursor: string | undefined;
@@ -98,7 +99,7 @@ async function readCurrentHistoryGapResetSource(input: Readonly<{
     }
     revision ??= result.revision;
     for (const definition of result.definitions) {
-      if (matchesHistoryGapResetSource(definition, input.reset)) matches.push(definition);
+      if (matchesHistoryGapResetSource(definition, input.selector)) matches.push(definition);
     }
     if (result.nextCursor === null) {
       if (matches.length !== 1 || revision === null) return null;
@@ -189,6 +190,23 @@ export async function setupGithubRepositoryEventSource(
   });
 }
 
+/** Resolve through the existing exact-account repository setup; no second client. */
+export async function setupGithubPullRequestChecksSource(input: unknown, context: PluginInvocationContext): Promise<PluginEventAutomationSetupResultV1> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throwHistoryGapResetInputInvalid();
+  const raw = input as Readonly<Record<string, unknown>>;
+  if (Object.keys(raw).length !== 3) throwHistoryGapResetInputInvalid();
+  const checks = parseGithubChecksSource(raw.checks);
+  const setup = await setupGithubRepositoryEventSource({ credentialRef: raw.credentialRef, repository: raw.repository }, context);
+  const config = setup.sourceConfig;
+  if (!config || typeof config !== 'object' || Array.isArray(config)) throwHistoryGapResetInputInvalid();
+  const repository = config.repository;
+  if (!repository || typeof repository !== 'object' || Array.isArray(repository) || typeof repository.repositoryId !== 'string') throwHistoryGapResetInputInvalid();
+  return PluginEventAutomationSetupResultV1Schema.parse({ ...setup,
+    sourceInstanceId: githubChecksSourceInstanceId(repository.repositoryId, checks),
+    sourceConfig: { ...config, checks }, displayLabel: `${setup.displayLabel}#${checks.pullRequestNumber} · ${checks.selection} checks`,
+  });
+}
+
 /**
  * Explicitly replaces a persisted checkpointed-pull history gap with a fresh
  * authenticated current-head baseline. It never resumes the retired cursor,
@@ -200,7 +218,7 @@ export async function resetGithubRepositoryEventHistoryGap(
 ): Promise<PluginEventAutomationHistoryGapResetActionResultV1> {
   const reset = parseGithubAutomationHistoryGapResetInput(input);
   context.signal.throwIfAborted();
-  const source = await readCurrentHistoryGapResetSource({ context, reset });
+  const source = await readCurrentGithubAutomationEventSource({ context, selector: reset });
   context.signal.throwIfAborted();
   if (source === null) {
     return PluginEventAutomationHistoryGapResetActionResultV1Schema.parse({ kind: 'stale' });

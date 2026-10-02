@@ -103,6 +103,39 @@ test('transactional fallback leaves the previous package untouched when vendorin
   }
 });
 
+test('bootstrap publication preserves conditional package imports without compiled cli-common', async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'workspace-imports-bootstrap-'));
+  const sourceRepoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  try {
+    const scriptsDir = resolve(repoRoot, 'scripts', 'workspaces');
+    const commonDir = resolve(repoRoot, 'packages', 'cli-common');
+    const sourceDir = resolve(repoRoot, 'packages', 'sdk');
+    const destinationDir = resolve(repoRoot, 'apps', 'cli', 'node_modules', '@happier-dev', 'sdk');
+    mkdirSync(scriptsDir, { recursive: true });
+    mkdirSync(commonDir, { recursive: true });
+    mkdirSync(resolve(repoRoot, 'node_modules'), { recursive: true });
+    for (const file of ['syncBundledWorkspacePackages.mjs', 'vendorBundledWorkspaceRuntimeDependenciesFallback.mjs']) {
+      cpSync(resolve(sourceRepoRoot, 'scripts', 'workspaces', file), resolve(scriptsDir, file));
+    }
+    cpSync(resolve(sourceRepoRoot, 'packages', 'cli-common', 'workspaceRuntimeDependencies.mjs'), resolve(commonDir, 'workspaceRuntimeDependencies.mjs'));
+    cpSync(resolve(sourceRepoRoot, 'node_modules', 'semver'), resolve(repoRoot, 'node_modules', 'semver'), { recursive: true });
+    mkdirSync(resolve(sourceDir, 'dist'), { recursive: true });
+    mkdirSync(resolve(sourceDir, 'runtime'), { recursive: true });
+    const imports = { '#http': { node: './runtime/node.js', default: './dist/fetch.js' }, '#fs': 'fs', '#disabled': null };
+    writeFileSync(resolve(sourceDir, 'package.json'), JSON.stringify({ name: '@happier-dev/sdk', version: '0.0.0', type: 'module', exports: { '.': './dist/connect.js' }, imports }));
+    writeFileSync(resolve(sourceDir, 'dist/connect.js'), 'export { transport } from "#http";\n');
+    writeFileSync(resolve(sourceDir, 'dist/fetch.js'), 'export const transport = "fetch";\n');
+    writeFileSync(resolve(sourceDir, 'runtime/node.js'), 'export const transport = "node";\n');
+    const bootstrap = await import(pathToFileURL(resolve(scriptsDir, 'syncBundledWorkspacePackages.mjs')).href);
+    bootstrap.syncBundledWorkspacePackages({ repoRoot, packages: ['sdk'], hostApps: ['cli'] });
+    assert.equal((await import(pathToFileURL(resolve(destinationDir, 'dist/connect.js')).href)).transport, 'node');
+    assert.deepEqual(JSON.parse(readFileSync(resolve(destinationDir, 'package.json'), 'utf8')).imports, imports);
+    assert.equal(readFileSync(resolve(destinationDir, 'dist/fetch.js'), 'utf8'), 'export const transport = "fetch";\n');
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
 test('sanitizeBundledWorkspacePackageJson keeps publish-time runtime fields only', () => {
   const sanitized = sanitizeBundledWorkspacePackageJson({
     name: '@happier-dev/protocol',

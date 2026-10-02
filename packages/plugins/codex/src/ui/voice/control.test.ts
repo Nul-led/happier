@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { VoiceTranscriptCanonicalEventV1Schema } from '@happier-dev/protocol';
 
-import { createCodexV3ControlDecoder } from './control.js';
+import { createCodexV3ControlDecoder, encodeCodexV3ContextUpdate } from './control.js';
 
 function asAttemptDecoder(
   decoder: ReturnType<typeof createCodexV3ControlDecoder>,
@@ -16,6 +16,20 @@ function asAttemptDecoder(
 }
 
 describe('Codex V3 oai-events decoder', () => {
+  it('preserves Unicode context through the pinned native 500-byte append chunks', () => {
+    // openai/codex d91294c... methods_frameless_bidi.rs chunks native append
+    // text to 500 UTF-8 bytes without splitting a character.
+    const text = `${'x'.repeat(480)}😀${'界'.repeat(180)}`;
+    const chunks = [`[Context update]\n${'x'.repeat(480)}`, `😀${'界'.repeat(165)}`, '界'.repeat(15)];
+    expect(encodeCodexV3ContextUpdate(text)).toEqual(chunks.map((chunk) => ({
+      type: 'session.context.append',
+      content: [{ type: 'input_text', text: chunk }],
+    })));
+    expect(chunks.join('')).toBe(`[Context update]\n${text}`);
+    expect(chunks.map((chunk) => new TextEncoder().encode(chunk).byteLength))
+      .toEqual([497, 499, 45]);
+  });
+
   it('maps a pinned authoritative final to one attempt-namespaced positive revision', () => {
     const decode = createCodexV3ControlDecoder({ attemptId: 12 });
 
@@ -119,160 +133,53 @@ describe('Codex V3 oai-events decoder', () => {
     })).toEqual([]);
   });
 
-  it('batches Realtime function calls at their response terminal edge exactly once', () => {
+  it('never admits GA function calls beside Codex native delegation', () => {
     const decode = createCodexV3ControlDecoder({ attemptId: 1 });
-
-    expect(decode({
-      type: 'response.function_call_arguments.done',
-      response_id: 'response-1',
-      call_id: 'call-2',
-      name: 'readCurrentUiContext',
-      arguments: '{}',
-      output_index: 1,
-    })).toEqual([]);
     expect(decode({
       type: 'response.function_call_arguments.done',
       response_id: 'response-1',
       call_id: 'call-1',
       name: 'readCurrentUiContext',
-      arguments: '{"includeCommands":true}',
-      output_index: 0,
+      arguments: '{}',
     })).toEqual([]);
-
     expect(decode({
       type: 'response.done',
       response: { id: 'response-1', status: 'completed' },
-    })).toContainEqual({
-      type: 'tool_calls',
-      responseId: 'response-1',
-      calls: [
-        {
-          v: 1,
-          responseId: 'response-1',
-          callId: 'call-1',
-          toolName: 'readCurrentUiContext',
-          order: 0,
-          arguments: { includeCommands: true },
-        },
-        {
-          v: 1,
-          responseId: 'response-1',
-          callId: 'call-2',
-          toolName: 'readCurrentUiContext',
-          order: 1,
-          arguments: {},
-        },
-      ],
+    })).toEqual([]);
+    expect(decode({
+      type: 'delegation.created',
+      item: {
+        id: 'delegation-1',
+        type: 'delegation',
+        target: 'client',
+        content: [{ type: 'input_text', text: 'inspect this session' }],
+      },
+    })).toEqual([]);
+  });
+
+  it.each([
+    { type: 'error', message: 'Bearer private-token' },
+    { type: 'error', error: { message: 'private context', code: 'private-token' } },
+    { type: 'error', error: 'private-token' },
+  ] as const)('surfaces a native error through a sanitized typed failure', (event) => {
+    const diagnostics: string[] = [];
+    const decode = createCodexV3ControlDecoder({
+      attemptId: 1,
+      diagnostic: (code) => diagnostics.push(code),
     });
-    expect(decode({
-      type: 'response.done',
-      response: { id: 'response-1', status: 'completed' },
-    })).not.toContainEqual(expect.objectContaining({ type: 'tool_calls' }));
-  });
 
-  it('closes a Realtime response only on its pinned terminal status', () => {
-    const decode = createCodexV3ControlDecoder({ attemptId: 1 });
-
-    expect(decode({
-      type: 'response.function_call_arguments.done',
-      response_id: 'response-2',
-      call_id: 'call-1',
-      name: 'readCurrentUiContext',
-      arguments: '{}',
-      output_index: 0,
-    })).toEqual([]);
-
-    expect(decode({
-      type: 'response.done',
-      response: { id: 'response-2', status: 'in_progress' },
-    })).toEqual([]);
-
-    expect(decode({
-      type: 'response.function_call_arguments.done',
-      response_id: 'response-2',
-      call_id: 'call-2',
-      name: 'readCurrentUiContext',
-      arguments: '{}',
-      output_index: 1,
-    })).toEqual([]);
-
-    expect(decode({
-      type: 'response.done',
-      response: { id: 'response-2', status: 'completed' },
-    })).toEqual([{
-      type: 'tool_calls',
-      responseId: 'response-2',
-      calls: [
-        {
-          v: 1,
-          responseId: 'response-2',
-          callId: 'call-1',
-          toolName: 'readCurrentUiContext',
-          order: 0,
-          arguments: {},
-        },
-        {
-          v: 1,
-          responseId: 'response-2',
-          callId: 'call-2',
-          toolName: 'readCurrentUiContext',
-          order: 1,
-          arguments: {},
-        },
-      ],
-    }]);
-
-    expect(decode({
-      type: 'response.done',
-      response: { id: 'response-2', status: 'completed' },
-    })).toEqual([]);
-  });
-
-  it.each(['cancelled', 'failed', 'incomplete'] as const)(
-    'discards queued Realtime function calls when the terminal response is %s',
-    (status) => {
-      const decode = createCodexV3ControlDecoder({ attemptId: 1 });
-      const responseId = `response-${status}`;
-
-      expect(decode({
-        type: 'response.function_call_arguments.done',
-        response_id: responseId,
-        call_id: 'call-1',
-        name: 'readCurrentUiContext',
-        arguments: '{}',
-        output_index: 0,
-      })).toEqual([]);
-      expect(decode({
-        type: 'response.done',
-        response: { id: responseId, status },
-      })).toEqual([]);
-      expect(decode({
-        type: 'response.done',
-        response: { id: responseId, status: 'completed' },
-      })).toEqual([]);
-    },
-  );
-
-  it('closes a Realtime response whose pinned status is omitted without publishing tools', () => {
-    const decode = createCodexV3ControlDecoder({ attemptId: 1 });
-
-    expect(decode({
-      type: 'response.function_call_arguments.done',
-      response_id: 'response-3',
-      call_id: 'call-1',
-      name: 'readCurrentUiContext',
-      arguments: '{}',
-      output_index: 0,
-    })).toEqual([]);
-
-    expect(decode({
-      type: 'response.done',
-      response: { id: 'response-3' },
-    })).toEqual([]);
-    expect(decode({
-      type: 'response.done',
-      response: { id: 'response-3' },
-    })).toEqual([]);
+    let failure: unknown;
+    try {
+      decode(event);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      code: 'upstream_rejected',
+      message: 'codex_v3_upstream_error',
+    });
+    expect(JSON.stringify(failure)).not.toContain('private');
+    expect(diagnostics).toEqual(['codex_v3_upstream_error']);
   });
 
   it('ignores unknown bounded event types and known malformed finals', () => {

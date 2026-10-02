@@ -62,15 +62,80 @@ function hostedConversation() {
   });
 }
 
+function agentResponse(agentId = 'agent-1') {
+  return {
+    status: 200, finalUrl: `https://api.elevenlabs.io/v1/convai/agents/${agentId}`,
+    headers: { 'content-type': 'application/json' },
+    body: new TextEncoder().encode(JSON.stringify({
+      agent_id: agentId, tags: ['happier_voice_config_v1'],
+      platform_settings: {
+        auth: { enable_auth: true },
+        overrides: { conversation_config_override: {
+          agent: { language: true, prompt: { prompt: true } },
+          conversation: { text_only: true },
+        } },
+      },
+    })),
+  };
+}
+
 describe('createElevenLabsSessionPreparationService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.requestAccountOperation.mockResolvedValue({
+    mocks.requestAccountOperation.mockImplementation(async (request: Readonly<{
+      operationId: string; parameters: Readonly<{ agentId: string }>;
+    }>) => request.operationId === 'agent' ? agentResponse(request.parameters.agentId) : ({
       status: 200,
       finalUrl: 'https://api.elevenlabs.io/v1/convai/conversation/token?agent_id=agent-1',
       headers: { 'content-type': 'application/json' },
       body: new TextEncoder().encode(JSON.stringify({ token: 'ephemeral-token' })),
+    }));
+  });
+
+  it.each([
+    { agent_id: 'agent-1', tags: [] },
+    { agent_id: 'agent-1', tags: ['happier_voice_config_v1'], platform_settings: { auth: { enable_auth: false } } },
+  ])('signals agent update before minting for obsolete or insecure remote config', async (agent) => {
+    mocks.requestAccountOperation.mockImplementation(async (request: Readonly<{ operationId: string }>) => ({
+      ...agentResponse(),
+      body: new TextEncoder().encode(JSON.stringify(
+        request.operationId === 'agent' ? agent : { token: 'ephemeral-token' },
+      )),
+    }));
+    await expect(createService().prepare({
+      controlSessionId: 'needs-update', requestedTargetSessionId: null,
+      settings: {}, credentials: credentials(), hostedConversation: null,
+      signal: new AbortController().signal, platform: 'web', textOnly: false,
+    })).resolves.toMatchObject({ kind: 'declined', failure: { reason: 'realtime_agent_update_required' } });
+    expect(mocks.requestAccountOperation.mock.calls.map(([request]) => request.operationId)).toEqual(['agent']);
+  });
+
+  it.each(['de-DE', null])('uses the prepared attempt policy for SDK prompt and language instead of later settings (%s)', async (assistantLanguage) => {
+    const service = createService();
+    const prepared = await service.prepare({
+      controlSessionId: 'voice-policy', requestedTargetSessionId: null,
+      initialContext: 'Current workspace context.', settings: {},
+      credentials: credentials(), hostedConversation: null,
+      attemptPolicy: {
+        instructions: 'Use the admitted Happier tools. Reply in de-DE.',
+        assistantLanguage, welcome: { enabled: false, mode: 'immediate' },
+      },
+      signal: new AbortController().signal, platform: 'web', textOnly: false,
     });
+    expect(prepared.kind).toBe('prepared');
+    if (prepared.kind !== 'prepared') return;
+    const startConfig = service.buildStartConfig({ prepared: prepared.session, settings: {} });
+    expect(startConfig)
+      .toMatchObject({
+        overrides: { agent: {
+          prompt: { prompt: expect.stringContaining('Use the admitted Happier tools. Reply in de-DE.') },
+        } },
+        dynamicVariables: { initialConversationContext: 'Current workspace context.' },
+      });
+    expect((startConfig as { overrides: { agent: { language?: string } } }).overrides.agent.language)
+      .toBe(assistantLanguage ? 'de' : undefined);
+    expect((startConfig as { overrides: { agent: { prompt: { prompt: string } } } }).overrides.agent.prompt.prompt)
+      .toContain('{{initialConversationContext}}');
   });
 
   it('fails closed when the bundled settings owner is absent', async () => {
@@ -159,7 +224,8 @@ describe('createElevenLabsSessionPreparationService', () => {
     }));
   });
 
-  it('uses signed websocket auth for text-only BYO and appends welcome context', async () => {
+  it('uses signed websocket auth for text-only BYO without composing a second welcome policy', async () => {
+    mocks.requestAccountOperation.mockResolvedValueOnce(agentResponse('agent-text'));
     mocks.requestAccountOperation.mockResolvedValueOnce({
       status: 200,
       finalUrl: 'https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=agent-text',
@@ -177,7 +243,7 @@ describe('createElevenLabsSessionPreparationService', () => {
     });
     if (prepared.kind !== 'prepared') throw new Error('expected prepared');
     expect(prepared.session.sessionConfig).toMatchObject({ signedUrl: 'wss://provider.test/session', textOnly: true });
-    expect(String((prepared.session.sessionConfig as Record<string, unknown>).initialContext)).toContain('friendly greeting');
+    expect((prepared.session.sessionConfig as Record<string, unknown>).initialContext).toBe('base');
     expect(service.buildStartConfig({ prepared: prepared.session, settings: projected })).toMatchObject({
       connectionType: 'websocket', signedUrl: 'wss://provider.test/session', textOnly: true,
     });
@@ -187,6 +253,7 @@ describe('createElevenLabsSessionPreparationService', () => {
   });
 
   it('uses a WebRTC conversation token for native text-only BYO sessions', async () => {
+    mocks.requestAccountOperation.mockResolvedValueOnce(agentResponse('agent-native'));
     mocks.requestAccountOperation.mockImplementationOnce(async (request: Readonly<{
       operationId: string;
     }>) => (
@@ -234,14 +301,25 @@ describe('createElevenLabsSessionPreparationService', () => {
       bindingNonce: 'nonce-hosted', expiresAtMs: 5_000,
     });
     const service = createService(vi.fn(() => settings({ billingMode: 'happier' })));
-    await expect(service.prepare({
+    const prepared = await service.prepare({
       controlSessionId: 'hosted', requestedTargetSessionId: 'target',
+      initialContext: 'Hosted workspace context.',
+      attemptPolicy: {
+        instructions: 'Use the admitted tools.', assistantLanguage: null,
+        welcome: { enabled: false, mode: 'immediate' },
+      },
       settings: {}, credentials: Object.freeze({ phase: 'prepare', mediated: null, raw: null }), hostedConversation: hostedConversation(),
       signal: new AbortController().signal, platform: 'web', textOnly: false,
-    })).resolves.toMatchObject({
+    });
+    expect(prepared).toMatchObject({
       kind: 'prepared', session: {
         sessionConfig: { token: 'hosted-token', leaseId: 'lease-hosted', bindingNonce: 'nonce-hosted' },
       },
+    });
+    if (prepared.kind !== 'prepared') throw new Error('expected prepared');
+    expect(service.buildStartConfig({ prepared: prepared.session, settings: {} })).toMatchObject({
+      overrides: { agent: { prompt: { prompt: expect.stringContaining('{{initialConversationContext}}') } } },
+      dynamicVariables: { initialConversationContext: 'Hosted workspace context.' },
     });
     expect(mocks.startHostedConversation).toHaveBeenCalledTimes(1);
   });

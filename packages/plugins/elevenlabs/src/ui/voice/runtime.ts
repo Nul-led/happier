@@ -80,7 +80,6 @@ RealtimeVoiceProviderRuntime & Readonly<{
       return Object.freeze({
         providerId: PROVIDER_ID,
         assistantLanguage: null,
-        welcome: Object.freeze({ enabled: false, mode: 'immediate' as const }),
         providerConfig: settings,
       });
     },
@@ -236,16 +235,7 @@ RealtimeVoiceProviderRuntime & Readonly<{
       if (execution.kind !== 'direct_media') {
         throw new Error('elevenlabs_direct_media_authority_required');
       }
-      const executableTools = tools.map((tool) => {
-        const executable = tool as typeof tool & Readonly<{
-          execute(parameters: VoiceRealtimeJsonValue): Promise<VoiceRealtimeJsonValue>;
-        }>;
-        if (typeof executable.execute !== 'function') {
-          throw new Error(`elevenlabs_voice_tool_executor_missing:${tool.name}`);
-        }
-        return executable;
-      });
-      const handle = createElevenLabsConversationHandle({ tools: executableTools });
+      const handle = createElevenLabsConversationHandle({ tools });
       activeHandle?.dispose();
       activeHandle = handle;
       const controlSessionId = readControlSessionId(session.config);
@@ -270,9 +260,9 @@ RealtimeVoiceProviderRuntime & Readonly<{
       inputMuted = muted;
       activeHandle?.setMicMuted(muted);
     },
-    // ElevenLabs executes host-owned attempt tools inside the SDK handle and
-    // therefore never emits host tool-call events into this barrier path.
-    encodeToolResults: () => Object.freeze([]),
+    encodeToolResults: (results) => Object.freeze(results.map((result) => ({
+      type: 'voice.tool_result', result,
+    }))),
     encodeToolContinuation: () => Object.freeze({ type: 'voice.provider_managed_tools' }),
     encodeContextUpdate: (text) => Object.freeze([{ type: 'voice.context_update', text }]),
     encodeTextTurn: (text) => Object.freeze([{ type: 'voice.user_text', text }]),

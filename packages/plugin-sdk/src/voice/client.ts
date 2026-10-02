@@ -75,6 +75,9 @@ export type VoiceClientToolAgentPromptOptions = Readonly<{
     sessionIdPlaceholder?: string;
     disabledActionIds?: readonly string[];
     extraSystemAppendBlocks?: readonly string[];
+    availableToolNames?: readonly string[];
+    assistantLanguage?: string | null;
+    welcome?: Readonly<{ enabled: boolean; mode: 'immediate' | 'on_first_turn' }>;
     actionSpecs?: readonly Pick<
         ActionSpec,
         'id' | 'title' | 'description' | 'bindings' | 'examples' | 'inputHints' | 'prompting'
@@ -224,7 +227,7 @@ export type VoiceConnectionMediaHost = Readonly<{
     createPcmConnection(input: Readonly<{
         driver: VoiceSdkHandleConnectionDriver;
         input: Readonly<{ sampleRate: number; chunkMs: number }>;
-        output: Readonly<{ sampleRate: number; maxBufferedMs: number }>;
+        output: Readonly<{ sampleRate: number }>;
         onInputChunk(base64Pcm16Le: string): void;
         onInputError?(code:
             | 'pcm_capture_backpressure'
@@ -289,6 +292,12 @@ export type VoiceRealtimePreparation =
             config: VoiceRealtimeJsonValue;
             safeMetadata: VoiceRealtimeJsonValue;
             /**
+             * The startup config already carries the request's initial context.
+             * The host skips its post-connect context update for this carrier;
+             * omission retains host delivery. Later context updates are unchanged.
+             */
+            initialContextDelivery?: 'prepared';
+            /**
              * Exact-call replay custody for this prepared provider carrier.
              *
              * `stable_ids` is valid only when this concrete session can accept
@@ -297,6 +306,8 @@ export type VoiceRealtimePreparation =
              * same meaning as `none`.
              */
             toolResultReplay?: 'none' | 'stable_ids';
+            /** This admitted carrier requires an explicit input commit rather than automatic VAD. */
+            inputCommitRequired?: boolean;
         }>;
     }>
     | Readonly<{ kind: 'declined'; code: string }>
@@ -306,6 +317,7 @@ export type VoiceTurnControlAction =
     | 'cancel_response'
     | 'truncate_playback'
     | 'clear_input'
+    | 'commit_input'
     | 'stop_session'
     | 'resume_session'
     | 'replay_session'
@@ -313,6 +325,16 @@ export type VoiceTurnControlAction =
 
 export type VoiceRealtimeCanonicalEvent =
     | Readonly<{ type: 'auth_expired' }>
+    | Readonly<{
+        type: 'provider_error';
+        code:
+            | 'rate_limited'
+            | 'provider_response_invalid'
+            | 'voice_session_expired'
+            | 'voice_transcription_failed'
+            | 'voice_response_incomplete';
+        terminal: boolean;
+    }>
     | Readonly<{ type: 'input_speech_started' }>
     | Readonly<{ type: 'input_speech_stopped' }>
     | Readonly<{ type: 'assistant_output_started'; itemId?: string }>
@@ -432,6 +454,8 @@ export type RealtimeVoiceProviderProtocol = Readonly<{
         platform: VoiceRuntimePlatform;
         providerConfig: VoiceRealtimeJsonValue;
         credentials: VoiceCredentialAccess<'prepare'>;
+        /** Host-composed standalone policy. Attached Agent sessions own their native prompt. */
+        attemptPolicy?: VoiceRealtimeAttemptPolicy;
         providerConversation: VoiceProviderConversationService | null;
         hostedConversation: VoiceHostedConversationService | null;
         signal: AbortSignal;
@@ -441,12 +465,21 @@ export type RealtimeVoiceProviderProtocol = Readonly<{
         action: VoiceTurnControlAction,
         payload?: VoiceRealtimeJsonValue,
     ): VoiceRealtimeJsonValue | null;
+    /** Native continuation after input commit; the host retains exact connection custody. */
+    encodePostInputCommitControls?(): readonly VoiceRealtimeJsonValue[];
     refreshAuth?(signal: AbortSignal): Promise<boolean>;
     releasePrepared?(input: Readonly<{
         controlSessionId: string;
         attemptId: number;
         reason: VoiceRealtimeConnectionCloseReason;
     }>): Promise<void> | void;
+}>;
+
+/** Immutable host policy for one standalone Voice attempt; never safe metadata. */
+export type VoiceRealtimeAttemptPolicy = Readonly<{
+    instructions: string;
+    assistantLanguage: string | null;
+    welcome: Readonly<{ enabled: boolean; mode: 'immediate' | 'on_first_turn' }>;
 }>;
 
 export type RealtimeVoiceProviderSettingsOperations = Readonly<{

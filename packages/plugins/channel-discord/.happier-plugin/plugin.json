@@ -1563,6 +1563,26 @@
                             "maxLength": 256,
                             "minLength": 1,
                             "type": "string"
+                          },
+                          "pullRequest": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "number": {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "repository": {
+                                "minLength": 1,
+                                "pattern": "^[^\\s/]+/[^\\s/]+$",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "repository",
+                              "number"
+                            ],
+                            "type": "object"
                           }
                         },
                         "required": [
@@ -1914,6 +1934,26 @@
                       "maxLength": 256,
                       "minLength": 1,
                       "type": "string"
+                    },
+                    "pullRequest": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "number": {
+                          "maximum": 9007199254740991,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "repository": {
+                          "minLength": 1,
+                          "pattern": "^[^\\s/]+/[^\\s/]+$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "repository",
+                        "number"
+                      ],
+                      "type": "object"
                     }
                   },
                   "required": [
@@ -2376,6 +2416,7 @@
     ],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -2577,6 +2618,7 @@
         "path": "assets/brand.png"
       }
     ],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -2821,7 +2863,8 @@
     },
     "voiceModelPacks": [],
     "voiceProviders": [],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "Connects Discord conversations to Happier Channels.",
   "displayName": "Discord Channels",

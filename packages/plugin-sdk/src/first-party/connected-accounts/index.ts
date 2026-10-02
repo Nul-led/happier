@@ -1,6 +1,8 @@
 export { CLAUDE_SUBSCRIPTION_MATERIALIZATION_CONTRACT_V1 } from '../../connectedAccounts.js';
 export { CLAUDE_SUBSCRIPTION_OAUTH_PROFILE } from '../../connectedAccounts.js';
 export { CLAUDE_SUBSCRIPTION_SETUP_TOKEN_ENVIRONMENT_REQUEST_V1 } from '../../connectedAccounts.js';
+export { CODEX_CONNECTED_SERVICE_HOME_DIRECTORY_NAME } from '../../connectedAccounts.js';
+export { CODEX_NATIVE_HOME } from '../../connectedAccounts.js';
 export type { ClaudeSubscriptionMaterializationContractV1 } from '../../connectedAccounts.js';
 export type { ClaudeSubscriptionSetupTokenEnvironmentRequestV1 } from '../../connectedAccounts.js';
 export { OPENAI_CODEX_OAUTH_PROFILE } from '../../connectedAccounts.js';

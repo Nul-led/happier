@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto';
 import {
   MAX_CONVERSATION_INGRESS_TEXT_UTF8_BYTES,
   MAX_CONVERSATION_RETRY_AFTER_MS,
   type ConversationNormalizedIngressV1,
   type ConversationObservationV1,
   type ConversationPollResultV1,
+  type ConversationResolvedEndpointV1,
 } from '@happier-dev/channels-protocol/v1';
 import { parseForgeLinkHeader } from '@happier-dev/triage-sources/runtime';
 import { readTriageResponseHeaderV1 } from '@happier-dev/triage-protocol/v1';
@@ -23,6 +25,9 @@ import type {
   GithubRepositorySourceConfigV1,
 } from './githubProviderContracts.js';
 import { GITHUB_API_ORIGIN, readGithubPositiveDecimal } from './githubProviderContracts.js';
+import { parseGithubChannelEndpoint } from './githubChannelEndpoint.js';
+import { readGithubPullRequestChecks } from '../triage/checks.js';
+import { readGithubCheckOutcomeV1 } from '../triage/checkOutcome.js';
 
 const MAX_GITHUB_ISSUE_COMMENT_PAGES_PER_POLL = 10;
 const MAX_GITHUB_ISSUE_COMMENT_SCOPE_LENGTH = 512;
@@ -343,6 +348,31 @@ function issueUrl(repository: GithubRepositorySourceConfigV1, issueNumber: numbe
   ).toString();
 }
 
+/** GitHub's legacy permission field maps maintain to write and triage to read. */
+async function readCommenterRepositoryWriteAccess(
+  client: GithubApiClientV1,
+  repository: GithubRepositorySourceConfigV1,
+  actor: Readonly<{ id: string | null; label?: string }>,
+): Promise<boolean | null> {
+  if (actor.id === null || actor.label === undefined) return null;
+  const url = new URL(
+    `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/collaborators/${encodeURIComponent(actor.label)}/permission`,
+    GITHUB_API_ORIGIN,
+  ).toString();
+  const response = await client.request({ url });
+  if (response.status !== 200) return null;
+  let value: unknown;
+  try { value = decodeJson(response); } catch { return null; }
+  if (!isRecord(value) || !isRecord(value.user)) return null;
+  // A renamed/reused login must never grant the original commenter's identity.
+  if (String(value.user.id) !== actor.id
+    || typeof value.user.login !== 'string'
+    || value.user.login.toLowerCase() !== actor.label.toLowerCase()) return null;
+  if (value.permission === 'write' || value.permission === 'admin') return true;
+  if (value.permission === 'read' || value.permission === 'none') return false;
+  return null;
+}
+
 export function githubIssueEndpointId(repositoryId: string, issue: GithubIssueRecordV1): string {
   return `github:repository:${repositoryId}:issue:${issue.id}:number:${issue.number}`;
 }
@@ -623,7 +653,7 @@ async function readIssueCommentWindow(input: Readonly<{
  * ordering and ETag semantics are not interchangeable with the 300-event
  * retention window.
  */
-export async function pollGithubIssueCommentsForChannels(input: Readonly<{
+type GithubChannelPollInput = Readonly<{
   client: GithubApiClientV1;
   config: GithubChannelProviderConfigV1;
   checkpoint: unknown;
@@ -631,7 +661,87 @@ export async function pollGithubIssueCommentsForChannels(input: Readonly<{
   connectionId: string;
   providerConnectionKey: string;
   nowMs?: number;
-}>): Promise<ConversationPollResultV1> {
+  ciEndpoints?: readonly ConversationResolvedEndpointV1[];
+  signal?: AbortSignal;
+}>;
+
+/** One Channel cursor commits comments and linked-PR check observations together. */
+export async function pollGithubIssueCommentsForChannels(input: GithubChannelPollInput): Promise<ConversationPollResultV1> {
+  const rawChecks = isRecord(input.checkpoint) ? input.checkpoint.pullRequestChecks : undefined;
+  if (rawChecks !== undefined && (!isRecord(rawChecks)
+    || Object.values(rawChecks).some((value) => !Array.isArray(value) || value.some((key) => typeof key !== 'string')))) {
+    throw new GithubIssueCommentCheckpointError();
+  }
+  const checks: Record<string, readonly string[]> = {};
+  if (isRecord(rawChecks)) {
+    for (const [key, value] of Object.entries(rawChecks)) {
+      if (Array.isArray(value)) checks[key] = value.filter((entry): entry is string => typeof entry === 'string');
+    }
+  }
+  const result = await pollGithubIssueComments(input);
+  if (result.kind !== 'batch' && result.kind !== 'checkpointOnly') return result;
+  const observations = result.kind === 'batch' ? [...result.observations] : [];
+  const signal = input.signal ?? new AbortController().signal;
+  let repositoryWriteAccess: boolean | null | undefined;
+  const endpoints = new Map((input.ciEndpoints ?? []).map((endpoint) => [endpoint.id, endpoint]));
+  for (const endpoint of endpoints.values()) {
+    signal.throwIfAborted();
+    if (observations.length >= input.limit) break;
+    const parsed = parseGithubChannelEndpoint(endpoint, input.config.repository.repositoryId);
+    if (parsed.kind !== 'githubPullRequest') throw new RangeError('GitHub CI polling requires a pull-request endpoint');
+    const repositoryRoute = `/repos/${encodeURIComponent(input.config.repository.owner)}/${encodeURIComponent(input.config.repository.name)}`;
+    const issueResponse = await input.client.request({ url: `${GITHUB_API_ORIGIN}${repositoryRoute}/issues/${parsed.issueNumber}` });
+    if (issueResponse.status !== 200) throw new GithubIssueCommentPollResponseError(issueResponse);
+    const issue = parseGithubIssue(decodeJson(issueResponse));
+    if (issue.id !== parsed.issueId || issue.number !== parsed.issueNumber || issue.kind !== 'githubPullRequest') {
+      throw new RangeError('GitHub CI endpoint identity no longer matches its pull request');
+    }
+    const prResponse = await input.client.request({ url: `${GITHUB_API_ORIGIN}${repositoryRoute}/pulls/${parsed.issueNumber}` });
+    if (prResponse.status !== 200) throw new GithubIssueCommentPollResponseError(prResponse);
+    const pr = decodeJson(prResponse);
+    const head = isRecord(pr) && isRecord(pr.head) ? pr.head : null;
+    if (!head || typeof head.sha !== 'string' || !head.sha) throw new RangeError('GitHub PR head is unavailable');
+    const surface = await readGithubPullRequestChecks({ route: input.config.repository, headSha: head.sha,
+      observation: { pullRequestNumber: parsed.issueNumber, selection: 'all' },
+    }, { client: input.client, now: () => input.nowMs ?? Date.now(), signal });
+    signal.throwIfAborted();
+    if (!surface.observation || ['unknown', 'superseded'].includes(surface.observation.state)) continue;
+    const prior = new Set(checks[endpoint.id] ?? []);
+    const observed: string[] = [];
+    for (const check of surface.observations) {
+      if (readGithubCheckOutcomeV1(check) !== 'failed') continue;
+      const evidenceKey = createHash('sha256').update(JSON.stringify([
+        head.sha, check.key, check.status, check.conclusion, check.completedAtMs,
+      ])).digest('base64url');
+      if (prior.has(evidenceKey) || result.kind === 'checkpointOnly') { observed.push(evidenceKey); continue; }
+      if (observations.length >= input.limit) continue;
+      if (repositoryWriteAccess === undefined) {
+        repositoryWriteAccess = await readCommenterRepositoryWriteAccess(input.client, input.config.repository, input.config.integrationPrincipal);
+      }
+      signal.throwIfAborted();
+      const occurrenceId = `github:repository:${input.config.repository.repositoryId}:pull-request:${parsed.issueId}:ci:${evidenceKey}`;
+      const occurredAt = check.completedAtMs ?? check.startedAtMs ?? check.checkSuiteCreatedAtMs;
+      if (occurredAt === undefined) continue;
+      const observation: ConversationObservationV1 = {
+        v: 1, occurrenceId, occurredAt, scopedTriggerKind: 'ciFailed', transport: { kind: 'poll' }, endpoint,
+        actor: { principalId: input.config.integrationPrincipal.id, label: input.config.integrationPrincipal.label,
+          kind: 'integration', isIntegrationSelf: true, repositoryWriteAccess },
+        message: { id: occurrenceId, revision: evidenceKey, text: `CI check ${check.name} failed on ${input.config.repository.nameWithOwner}#${parsed.issueNumber} (${head.sha}).`,
+          addressingEvidence: 'none', contentProvenance: 'original', providerTimestamp: occurredAt },
+      };
+      observations.push({ observation: { kind: 'fullText', observation }, eventCandidate: null });
+      observed.push(evidenceKey);
+    }
+    checks[endpoint.id] = observed;
+  }
+  const checkpointAfterBatch = { ...parseGithubIssueCommentCursor(result.checkpointAfterBatch),
+    ...(Object.keys(checks).length === 0 ? {} : { pullRequestChecks: checks }),
+  };
+  return result.kind === 'checkpointOnly' ? { ...result, checkpointAfterBatch }
+    : { ...result, observations, checkpointAfterBatch };
+}
+
+async function pollGithubIssueComments(input: GithubChannelPollInput): Promise<ConversationPollResultV1> {
   if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
     throw new RangeError('GitHub issue-comment polling requires the Channels batch limit');
   }
@@ -736,6 +846,9 @@ export async function pollGithubIssueCommentsForChannels(input: Readonly<{
   });
   const commentsById = new Map(windowComments.map((comment) => [comment.id, comment]));
   const issuesByNumber = new Map<number, GithubIssueRecordV1>();
+  // Invocation-local only: share a commenter's read without retaining grants
+  // across polls, so the next poll observes revocations with the same credential.
+  const writeAccessByActor = new Map<string, boolean | null>();
   const observations: ConversationNormalizedIngressV1[] = [];
 
   for (const entry of classification.classifications) {
@@ -805,8 +918,23 @@ export async function pollGithubIssueCommentsForChannels(input: Readonly<{
       }));
       continue;
     }
+    let repositoryWriteAccess: boolean | null | undefined;
+    if (issue.kind === 'githubPullRequest') {
+      const actorKey = `${comment.actor.id}:${comment.actor.label}`;
+      if (!writeAccessByActor.has(actorKey)) {
+        writeAccessByActor.set(actorKey, await readCommenterRepositoryWriteAccess(
+          input.client, input.config.repository, comment.actor,
+        ));
+      }
+      repositoryWriteAccess = writeAccessByActor.get(actorKey) ?? null;
+    }
     const observation: ConversationObservationV1 = Object.freeze({
       ...shell,
+      ...(issue.kind === 'githubPullRequest' ? { scopedTriggerKind: 'prComment' as const } : {}),
+      actor: {
+        ...shell.actor,
+        ...(repositoryWriteAccess === undefined ? {} : { repositoryWriteAccess }),
+      },
       message: {
         ...shell.message,
         text: comment.body,

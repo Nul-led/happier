@@ -3,6 +3,22 @@ import { describe, expect, it, vi } from 'vitest';
 import { createOpenAiWebRtcSignaling } from './connection.js';
 
 describe('OpenAI WebRTC signaling leaf', () => {
+  it.each([
+    [401, 'credential_unavailable'],
+    [403, 'credential_unavailable'],
+    [429, 'provider_response_invalid'],
+  ])('classifies SDP HTTP %s without exposing the response body', async (status, code) => {
+    const signaling = createOpenAiWebRtcSignaling({
+      ephemeralToken: 'ek_short',
+      expiresAtMs: Date.now() + 60_000,
+      fetch: vi.fn(async () => new Response('Bearer private-provider-detail', { status: Number(status) })),
+    });
+    await expect(signaling.exchangeOffer({
+      offerSdp: 'offer-sdp',
+      signal: new AbortController().signal,
+    })).rejects.toMatchObject({ code, message: code });
+  });
+
   it('exchanges the host-owned offer through public OpenAI Realtime auth', async () => {
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
       expect(url).toBe('https://api.openai.com/v1/realtime/calls');

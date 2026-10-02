@@ -154,6 +154,7 @@ describe('GitHub Automation Event checkpoint identity', () => {
         { field: GITHUB_AUTOMATION_EVENT_CHECKPOINT_FIELD.sourceSelectorId, direction: 'asc' },
       ],
     }]);
-    expect(ingestPluginManifestV2(PLUGIN_MANIFEST)).toMatchObject({ ok: true });
+    const admitted = ingestPluginManifestV2(PLUGIN_MANIFEST);
+    expect(admitted, JSON.stringify(admitted)).toMatchObject({ ok: true });
   });
 });

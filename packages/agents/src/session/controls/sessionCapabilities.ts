@@ -16,6 +16,7 @@ export type AgentSessionCapabilityKey =
   | 'sessionFork.conversation'
   | 'sessionFork.fromMessage'
   | 'sessionRollback.conversation'
+  | 'usageReporting'
   | 'usageLimitRecovery.checkNow';
 
 export const UNSUPPORTED_AGENT_SESSION_CAPABILITIES: AgentSessionCapabilities = Object.freeze({
@@ -37,19 +38,7 @@ export function getAgentSessionCapabilities(agentId: AgentId): AgentSessionCapab
 }
 
 export function getAgentSessionCapability(agentId: AgentId, capability: AgentSessionCapabilityKey): AgentSessionCapabilitySupportLevel {
-  const capabilities = getAgentSessionCapabilities(agentId);
-  switch (capability) {
-    case 'sessionListing':
-      return capabilities.sessionListing;
-    case 'sessionFork.conversation':
-      return capabilities.sessionFork.conversation;
-    case 'sessionFork.fromMessage':
-      return capabilities.sessionFork.fromMessage;
-    case 'sessionRollback.conversation':
-      return capabilities.sessionRollback.conversation;
-    case 'usageLimitRecovery.checkNow':
-      return capabilities.usageLimitRecovery?.checkNow ?? 'unsupported';
-  }
+  return readAgentSessionCapabilityFromSurface(getAgentSessionCapabilities(agentId), capability);
 }
 
 export function isAgentSessionCapabilitySupported(agentId: AgentId, capability: AgentSessionCapabilityKey): boolean {
@@ -164,6 +153,8 @@ export function readAgentSessionCapabilityFromSurface(capabilities: AgentSession
       return capabilities.sessionFork.fromMessage;
     case 'sessionRollback.conversation':
       return capabilities.sessionRollback.conversation;
+    case 'usageReporting':
+      return capabilities.usageReporting ?? 'unsupported';
     case 'usageLimitRecovery.checkNow':
       return capabilities.usageLimitRecovery?.checkNow ?? 'unsupported';
   }

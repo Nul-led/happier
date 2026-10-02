@@ -3,7 +3,7 @@
 import './utils/env/env.mjs';
 
 import { readExecutionHostProfile } from './utils/execution_host/config.mjs';
-import { runExecutionHostBridge } from './utils/execution_host/bridge.mjs';
+import { runExecutionHostBridge, runNativeExecutionHostBridge } from './utils/execution_host/bridge.mjs';
 
 function optionValue(argv, name) {
   const inline = argv.find((argument) => String(argument).startsWith(`${name}=`));
@@ -18,11 +18,14 @@ async function main() {
   if (separator < 0) throw new Error('[execution-host] bridge requires -- before the repo-local arguments');
   const workspaceId = optionValue(argv.slice(0, separator), '--workspace-id').trim();
   const localEntrypoint = optionValue(argv.slice(0, separator), '--local-entrypoint').trim();
-  if (!workspaceId) throw new Error('[execution-host] bridge requires --workspace-id=ID');
-  const outcome = await runExecutionHostBridge({
+  const launcher = optionValue(argv.slice(0, separator), '--native-launcher').trim();
+  if (!workspaceId && !launcher) throw new Error('[execution-host] bridge requires --workspace-id=ID');
+  const bridge = launcher ? runNativeExecutionHostBridge : runExecutionHostBridge;
+  const outcome = await bridge({
     profile: readExecutionHostProfile(process.env),
     workspaceId,
     localEntrypoint,
+    launcher,
     argv: argv.slice(separator + 1),
     cwd: process.cwd(),
     env: process.env,

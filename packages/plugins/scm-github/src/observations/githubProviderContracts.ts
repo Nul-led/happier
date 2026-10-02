@@ -28,6 +28,7 @@ export type GithubAutomationRepositoryEventSourceConfigV1 = Readonly<{
   v: 1;
   credentialRef: ConnectedAccountRef;
   repository: GithubRepositorySourceConfigV1;
+  checks?: Readonly<{ pullRequestNumber: number; headSha: string; selection: 'all' | 'required' }>;
 }>;
 
 export type GithubChannelProviderConfigV1 = Readonly<{

@@ -22,7 +22,6 @@ import {
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_AUDIO_INPUT_BYTES = 8 * 1024 * 1024;
 const MAX_TRANSCRIPT_CHARACTERS = 1_000_000;
-const MAX_SYNTHESIS_CHARACTERS = 200_000;
 
 type ProviderErrorCode =
   | 'invalid_parameters'
@@ -237,7 +236,6 @@ async function synthesize(
   const voiceName = request.voiceName.trim();
   if (
     request.input.length === 0
-    || request.input.length > MAX_SYNTHESIS_CHARACTERS
     || !model
     || model.length > 256
     || !voiceName

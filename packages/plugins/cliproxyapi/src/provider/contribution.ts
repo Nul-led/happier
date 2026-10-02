@@ -102,6 +102,7 @@ export const CLIPROXYAPI_PROVIDER_CONTRIBUTION = {
     connectedAccounts: CLIPROXYAPI_MANAGED_CONNECTED_ACCOUNTS.map(
       (declaration) => ({
         ...declaration,
+        endpointTemplateIds: [...declaration.endpointTemplateIds],
         service: { ...declaration.service },
         materializationKinds: [
           ...declaration.materializationKinds,

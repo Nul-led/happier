@@ -123,6 +123,7 @@ export function createCommittedContributedActionInvoker(input: Readonly<{
         context: {
           surface,
           invocationSurface: surface,
+          initiatingActionCaller: context.actionCaller ?? { kind: 'host' },
           ...(externalActionContext ? { externalActionContext } : {}),
           ...(typeof context.defaultSessionId === 'string' ? { defaultSessionId: context.defaultSessionId } : {}),
           signal: invocationSignal,

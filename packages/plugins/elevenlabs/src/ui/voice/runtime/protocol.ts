@@ -1,5 +1,6 @@
 import {
   VoiceRealtimeJsonValueSchema,
+  VoiceRealtimeToolCallV1Schema,
   type VoiceRealtimeJsonValue,
   RealtimeVoiceProviderProtocol,
   VoiceHostedConversationService,
@@ -66,6 +67,7 @@ export function createElevenLabsProtocolAdapter(input: Readonly<{
       providerConfig,
       credentials,
       hostedConversation,
+      attemptPolicy,
       signal,
     }) {
       const priorAttemptId = currentAttemptIdByControlSessionId.get(controlSessionId);
@@ -78,6 +80,7 @@ export function createElevenLabsProtocolAdapter(input: Readonly<{
         initialContext: readOptionalString(requestRecord.initialContext),
         requestedTargetSessionId: readOptionalString(requestRecord.requestedTargetSessionId) ?? null,
         settings: providerConfig,
+        ...(attemptPolicy ? { attemptPolicy } : {}),
         credentials,
         hostedConversation,
         signal,
@@ -123,6 +126,7 @@ export function createElevenLabsProtocolAdapter(input: Readonly<{
         kind: 'prepared',
         session: {
           config,
+          initialContextDelivery: 'prepared',
           safeMetadata: {
             billingMode: state.billingMode,
             expiresAtMs: state.expiresAtMs,
@@ -132,6 +136,10 @@ export function createElevenLabsProtocolAdapter(input: Readonly<{
     },
     decodeControl: (event) => {
       const record = readObject(event);
+      if (record.type === 'elevenlabs.client_tool_call') {
+        const call = VoiceRealtimeToolCallV1Schema.parse(record.call);
+        return [{ type: 'tool_calls', responseId: call.responseId, calls: [call] }];
+      }
       const transcript = input.eventMapper.map(event);
       const outputEvent = record.type === 'elevenlabs.mode'
         ? record.mode === 'speaking'

@@ -67,6 +67,54 @@ function materializationContext(
 }
 
 describe('OpenAI Codex Connected Account', () => {
+  it.each([
+    [429, 'outcomeUnknown'], [503, 'outcomeUnknown'], [200, 'outcomeUnknown'], [401, 'reconnectRequired'],
+  ] as const)('preserves stored credentials without staging when refresh returns %s (%s)', async (status, outcome) => {
+    const runtime = activateConnectedAccountRuntime();
+    const original = new Map([
+      ['accessToken', 'current-access'],
+      ['refreshToken', 'current-refresh'],
+      ['idToken', jwt({ 'https://api.openai.com/auth': { chatgpt_account_id: 'account-1' } })],
+      ['providerAccountId', 'account-1'],
+    ]);
+    const credentials = credentialStore(new Map(original));
+    const staged = credentialStore();
+    const context = {
+      ...materializationContext(credentials.store),
+      operation: { operationId: 'refresh-1', configurationRevision: 'configuration-1' },
+      stagedCredentials: staged.store,
+      services: { http: { async request() {
+        return { status, finalUrl: 'https://auth.openai.com/oauth/token', headers: {}, body: new TextEncoder().encode('{}') };
+      } } },
+    } as Parameters<typeof runtime.refresh>[0];
+
+    await expect(runtime.refresh(context)).resolves.toMatchObject({ status: outcome });
+    expect(staged.values.size).toBe(0);
+    expect(credentials.values).toEqual(original);
+    await expect(runtime.status(context)).resolves.toMatchObject({ status: 'connected' });
+  });
+
+  it.each(['access_token', 'id_token'])('accepts a freshly returned %s while retaining refresh and identity metadata', async (tokenField) => {
+    const runtime = activateConnectedAccountRuntime();
+    const credentials = credentialStore(new Map([
+      ['accessToken', 'old-access'], ['refreshToken', 'old-refresh'],
+      ['idToken', 'old-id'], ['providerAccountId', 'account-1'],
+    ]));
+    const staged = credentialStore();
+    await expect(runtime.refresh({
+      ...materializationContext(credentials.store),
+      operation: { operationId: 'refresh-1', configurationRevision: 'configuration-1' },
+      stagedCredentials: staged.store,
+      services: { http: { async request() {
+        return { status: 200, finalUrl: 'https://auth.openai.com/oauth/token', headers: {}, body: new TextEncoder().encode(JSON.stringify({ [tokenField]: 'fresh-token' })) };
+      } } },
+    } as Parameters<typeof runtime.refresh>[0])).resolves.toMatchObject({ status: 'connected' });
+    expect(staged.values.get('accessToken')).toBe('fresh-token');
+    expect(staged.values.get('refreshToken')).toBe('old-refresh');
+    expect(staged.values.get('providerAccountId')).toBe('account-1');
+    expect(staged.values.get('idToken')).toBe(tokenField === 'id_token' ? 'fresh-token' : 'old-id');
+  });
+
   it('registers exactly the authentication modes declared by the descriptor', () => {
     const descriptor = PLUGIN_MANIFEST.contributes.connectedAccountDescriptors.find(
       ({ id }) => id === 'openai-codex',

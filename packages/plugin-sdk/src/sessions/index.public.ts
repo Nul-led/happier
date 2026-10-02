@@ -45,6 +45,8 @@ export type { SessionPermissionDecisionResult } from '../services/sessions.js';
 export type { SessionPermissionFollowUpPromptDelivery } from '../services/sessions.js';
 export type { SessionPermissionFollowUpPromptIntent } from '../services/sessions.js';
 export type { SessionPermissionMode } from '../services/sessions.js';
+export type { SessionModeCatalog } from '../services/sessions.js';
+export { readSessionModesMetadata } from '../services/sessions.js';
 export type { SessionPermissionPersistAllowRule } from '../services/sessions.js';
 export type { SessionPermissionPersistAllowRuleScope } from '../services/sessions.js';
 export type { SessionPermissionsService } from '../services/sessions.js';

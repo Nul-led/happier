@@ -1,5 +1,6 @@
 import type {
   VoiceRealtimeJsonValue,
+  VoiceRealtimeAttemptPolicy,
 } from '@happier-dev/plugin-sdk/voice/client';
 
 export type ElevenLabsSessionState = Readonly<{
@@ -11,6 +12,7 @@ export type ElevenLabsSessionState = Readonly<{
 export type ElevenLabsPreparedSession = Readonly<{
   sessionConfig: VoiceRealtimeJsonValue;
   sessionState: ElevenLabsSessionState;
+  attemptPolicy?: VoiceRealtimeAttemptPolicy;
 }>;
 
 export type ElevenLabsSessionPreparation =

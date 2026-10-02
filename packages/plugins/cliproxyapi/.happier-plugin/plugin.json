@@ -6,6 +6,7 @@
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -135,6 +136,10 @@
           },
           "connectedAccounts": [
             {
+              "endpointTemplateIds": [
+                "cliproxyapi-openai-responses",
+                "cliproxyapi-openai-chat"
+              ],
               "materializationKinds": [
                 "httpHeaders"
               ],
@@ -150,6 +155,9 @@
               }
             },
             {
+              "endpointTemplateIds": [
+                "cliproxyapi-anthropic"
+              ],
               "materializationKinds": [
                 "httpHeaders"
               ],
@@ -202,6 +210,7 @@
     ],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -306,7 +315,8 @@
     },
     "voiceModelPacks": [],
     "voiceProviders": [],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "Use models served by an external or locally detected CLIProxyAPI gateway.",
   "displayName": "CLIProxyAPI",

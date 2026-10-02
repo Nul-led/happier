@@ -1,12 +1,7 @@
 import { parsePermissionIntentAlias } from '@happier-dev/plugin-sdk/agents/runtime';
+import { CLAUDE_NATIVE_PERMISSION_MODES, type ClaudeProviderPermissionMode } from '../permissionModes.js';
 
-export type ClaudeProviderPermissionMode =
-    | 'default'
-    | 'acceptEdits'
-    | 'bypassPermissions'
-    | 'plan'
-    | 'dontAsk'
-    | 'auto';
+export type { ClaudeProviderPermissionMode } from '../permissionModes.js';
 
 export type ClaudePermissionModeInput = Readonly<{
     permissionMode: string;
@@ -16,20 +11,8 @@ export type ClaudePermissionModeInput = Readonly<{
 type PermissionIntent = NonNullable<ReturnType<typeof parsePermissionIntentAlias>>;
 
 export function mapToClaudePermissionMode(mode: string | null | undefined): ClaudeProviderPermissionMode {
-    if (mode === 'yolo') return 'bypassPermissions';
-    if (mode === 'safe-yolo') return 'auto';
-    if (mode === 'read-only') return 'dontAsk';
-    if (
-        mode === 'default'
-        || mode === 'acceptEdits'
-        || mode === 'bypassPermissions'
-        || mode === 'plan'
-        || mode === 'dontAsk'
-        || mode === 'auto'
-    ) {
-        return mode;
-    }
-    return 'default';
+    const mapping: Readonly<Record<string, ClaudeProviderPermissionMode>> = CLAUDE_NATIVE_PERMISSION_MODES;
+    return typeof mode === 'string' && Object.hasOwn(mapping, mode) ? mapping[mode] : 'default';
 }
 
 /**

@@ -107,7 +107,7 @@ export async function reconcileGitWorkspacePostMaterialization(input: ScmWorkspa
     });
 }
 
-function resolveGitRepoRoot(context: ScmBackendContext): string {
+export function resolveGitRepoRoot(context: ScmBackendContext): string {
     if (!context.detection.isRepo || !context.detection.rootPath) {
         throw new Error('Git workspace checkout creation requires a repository root');
     }
@@ -128,6 +128,7 @@ export async function createGitWorkspaceCheckout(
         displayName: resolveScmWorkspaceIntegrationWorkspaceCheckoutCreationDisplayName(input.workspaceCheckoutCreation),
         baseRef: resolveScmWorkspaceIntegrationWorkspaceCheckoutCreationBaseRef(input.workspaceCheckoutCreation),
         branchMode: resolveScmWorkspaceIntegrationWorkspaceCheckoutCreationBranchMode(input.workspaceCheckoutCreation),
+        assertFilesystemPathAuthorized: input.context.assertFilesystemPathAuthorized,
     });
 
     return {
@@ -156,6 +157,7 @@ export async function materializeGitWorkspaceSourceCheckout(
         displayName: resolveScmWorkspaceIntegrationWorkspaceCheckoutMaterializationDisplayName(input.workspaceCheckoutMaterialization),
         baseRef: resolveScmWorkspaceIntegrationWorkspaceCheckoutMaterializationBaseRef(input.workspaceCheckoutMaterialization),
         branchMode: resolveScmWorkspaceIntegrationWorkspaceCheckoutMaterializationBranchMode(input.workspaceCheckoutMaterialization),
+        assertFilesystemPathAuthorized: input.context.assertFilesystemPathAuthorized,
     });
 
     return {
@@ -177,6 +179,7 @@ export async function prepareGitReviewWorkspaceAtSelectedRoot(input: Readonly<{
             repoRoot: resolveGitRepoRoot(input.context),
             sourceTip: input.request.sourceTip,
             signal: input.signal,
+            assertFilesystemPathAuthorized: input.context.assertFilesystemPathAuthorized,
         });
         return {
             success: true as const,
@@ -189,7 +192,9 @@ export async function prepareGitReviewWorkspaceAtSelectedRoot(input: Readonly<{
         return {
             success: false as const,
             error: error instanceof Error ? error.message : String(error),
-            errorCode: 'COMMAND_FAILED' as const,
+            errorCode: error instanceof Error && 'errorCode' in error && error.errorCode === 'INVALID_PATH'
+                ? 'INVALID_PATH' as const
+                : 'COMMAND_FAILED' as const,
         };
     }
 }
@@ -249,6 +254,7 @@ export async function realizeGitWorkspaceCheckout(
             displayName: resolveScmWorkspaceIntegrationWorkspaceCheckoutRealizationDisplayName(input.workspaceCheckoutRealization),
             baseRef: resolveScmWorkspaceIntegrationWorkspaceCheckoutRealizationBaseRef(input.workspaceCheckoutRealization),
             branchMode: resolveScmWorkspaceIntegrationWorkspaceCheckoutRealizationBranchMode(input.workspaceCheckoutRealization),
+            assertFilesystemPathAuthorized: input.context.assertFilesystemPathAuthorized,
         });
 
         return {

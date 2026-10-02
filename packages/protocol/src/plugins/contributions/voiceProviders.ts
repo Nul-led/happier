@@ -261,14 +261,15 @@ export const VoiceCredentialDeclarationSchema = z.object({
           message: 'Voice credential projections must reference a declared host-mediated operation.',
         });
       }
-      if (projectedOperations.has(projection.operation)) {
+      const projectionKey = `${projection.operation}:${projection.phase}`;
+      if (projectedOperations.has(projectionKey)) {
         context.addIssue({
           code: 'custom',
           path: ['sources', sourceIndex, 'operationProjections', projectionIndex, 'operation'],
-          message: 'A Voice credential source may project each host-mediated operation at most once.',
+          message: 'A Voice credential source may project each host-mediated operation at most once per phase.',
         });
       }
-      projectedOperations.add(projection.operation);
+      projectedOperations.add(projectionKey);
       if (source.kind === 'savedSecret' && projection.kind !== 'recipientCredential') {
         context.addIssue({ code: 'custom', path: ['sources', sourceIndex, 'operationProjections', projectionIndex], message: 'SavedSecret projections must use recipient credentials.' });
       }
@@ -711,6 +712,9 @@ export const VoiceSpeechProviderLimitsSchema = z.object({
   transcribe: z.object({ maxInputBytes: VoiceSpeechProviderLimitSchema.optional() }).strict().optional(),
   synthesize: z.object({
     maxInputCharacters: VoiceSpeechProviderLimitSchema.optional(),
+    maxInputUtf8Bytes: VoiceSpeechProviderLimitSchema.optional(),
+    /** A selected endpoint may declare a smaller character cap in its settings. */
+    maxInputCharactersSettingId: PluginSettingFieldIdV2Schema.optional(),
     maxOutputBytes: VoiceSpeechProviderLimitSchema.optional(),
   }).strict().optional(),
 }).strict();
@@ -863,6 +867,16 @@ export const VoiceProviderContributionSchema = z.discriminatedUnion('kind', [
       }
     });
     const fieldById = new Map(contribution.settings.fields.map((field) => [field.id, field] as const));
+    const inputLimitSettingId = contribution.limits?.synthesize?.maxInputCharactersSettingId;
+    if (inputLimitSettingId) {
+      const field = fieldById.get(inputLimitSettingId);
+      const ceiling = contribution.limits?.synthesize?.maxInputCharacters;
+      if (!field || field.schema.type !== 'integer' || typeof field.default !== 'number'
+        || field.schema.minimum === undefined || field.schema.minimum < 1
+        || field.schema.maximum === undefined || ceiling === undefined || field.schema.maximum > ceiling) {
+        context.addIssue({ code: 'custom', path: ['limits', 'synthesize', 'maxInputCharactersSettingId'], message: 'Speech input caps must bind a positive bounded integer setting within the declared ceiling.' });
+      }
+    }
     const endpointPolicyFieldIds = [
       'baseUrl',
       'insecureLocalOriginConsent',

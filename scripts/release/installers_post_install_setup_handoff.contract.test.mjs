@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { createPlanetFrame, planetRowsForColumns } from '../../packages/brand/planet.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
@@ -278,9 +279,13 @@ test('install.sh keeps static art but emits no animation controls when motion is
   });
   const output = String(res.stdout ?? '').replaceAll('\r\n', '\n');
   assert.equal(res.status, 0, `installer failed:\n${output}\n${String(res.stderr ?? '')}`);
-  const artLines = output.split('\n').filter((line) => /^\s*\d{4,}/.test(line));
+  const lines = output.split('\n');
+  const firstArtRow = lines.findIndex((line) => /[\u2801-\u28ff]/u.test(line));
+  const artLines = lines.slice(firstArtRow, firstArtRow + planetRowsForColumns(28));
+  assert.deepEqual(artLines.map((line) => line.slice(0, 28)),
+    createPlanetFrame({ columns: 28, seconds: 1.6 }).map((row) => row.map((cell) => cell?.ch ?? ' ').join('')));
   const titleRow = artLines.findIndex((line) => /Happier/.test(line));
-  assert.ok(artLines.length >= 9, 'expected a complete numeric globe');
+  assert.ok(artLines.length >= 9, 'expected a complete Braille globe');
   assert.equal(titleRow, Math.floor((artLines.length - 1) / 2) - 1, 'title is centered beside the globe');
   assert.ok(artLines.every((line) => line.length <= 80), 'header must fit without terminal wrapping');
   assert.doesNotMatch(output, /\r(?!\n)|\x1b/);

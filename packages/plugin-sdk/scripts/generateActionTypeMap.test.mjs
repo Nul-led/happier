@@ -193,16 +193,21 @@ test('the retained Action publisher checks and fences every prepared family outp
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const indexPath = resolve(directory, 'index.generated.ts');
   const familyPath = resolve(directory, 'dtos/family.generated.ts');
+  const retiredPath = resolve(directory, 'dtos/retired.generated.ts');
   const outputs = new Map([[indexPath, 'export type Index = string;\n'],
     [familyPath, 'export type Result = { count: number };\n']]);
   // The old single-file check sees a current real index, so the only RED is
   // its missing family check. No pre-GREEN test writes the actual SDK map.
-  const prepared = { output: readFileSync(GENERATED_PATH, 'utf8'), outputs, timing: () => {} };
+  const prepared = { output: readFileSync(GENERATED_PATH, 'utf8'), outputs, obsoleteOutputs: [retiredPath], timing: () => {} };
   const context = { assertOwned: () => {}, assertInputsCurrent: () => {} };
   await assert.rejects(() => publishPreparedActionTypeMap('--check', prepared, context), /stale|ENOENT/u);
   await publishPreparedActionTypeMap('--write', prepared, context);
   for (const [path, expected] of outputs) assert.equal(readFileSync(path, 'utf8'), expected);
   await publishPreparedActionTypeMap('--check', prepared, context);
+  writeFileSync(retiredPath, 'retired support copy\n');
+  await assert.rejects(() => publishPreparedActionTypeMap('--check', prepared, context), /obsolete/u);
+  await publishPreparedActionTypeMap('--write', prepared, context);
+  assert.ok(!existsSync(retiredPath));
   writeFileSync(familyPath, 'corrupt\n');
   await assert.rejects(() => publishPreparedActionTypeMap('--check', prepared, context), /stale/u);
   let ownershipChecks = 0;
@@ -494,46 +499,53 @@ test('Action checks finish without acquiring a busy workspace publication lock',
   }, { lockPath });
 });
 
-test('Action map inherited publication completes while an external contender waits for its parent', async (t) => {
-  const directory = mkdtempSync(resolve(tmpdir(), 'happier-action-type-map-derive-lock-'));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const lockPath = resolve(directory, 'cli-dist-build.lock');
-  const cancellation = new AbortController();
-  const operations = [];
-  try {
-    await withWorkspaceBundleLock(async ({ heldLockValue }) => {
-      let externalWaited;
-      const waitingForParent = new Promise((resolveWaited) => { externalWaited = resolveWaited; });
-      const external = runActionTypeMapWithWorkspaceLock({
-        mode: '--write', lockPath, env: {},
-        lockOptions: { signal: cancellation.signal, onWait: externalWaited },
-        prepare: () => ({ output: 'external' }),
-        publish: async () => 'external-completed',
-      });
-      operations.push(external.catch(() => {}));
-      await waitingForParent;
+for (const mode of ['--write', '--check']) {
+  test(`Action map inherited ${mode} completes while an external contender waits for its parent`, async (t) => {
+    const directory = mkdtempSync(resolve(tmpdir(), 'happier-action-type-map-derive-lock-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const lockPath = resolve(directory, 'cli-dist-build.lock');
+    const cancellation = new AbortController();
+    const operations = [];
+    let external;
+    try {
+      await withWorkspaceBundleLock(async ({ heldLockValue }) => {
+        let externalWaited;
+        const waitingForParent = new Promise((resolveWaited) => { externalWaited = resolveWaited; });
+        external = runActionTypeMapWithWorkspaceLock({
+          mode: '--write', lockPath, env: {},
+          lockOptions: { signal: cancellation.signal, onWait: externalWaited },
+          prepare: () => ({ output: 'external' }),
+          publish: async () => 'external-completed',
+        });
+        operations.push(external.catch(() => {}));
+        await waitingForParent;
 
-      let inheritedWaited;
-      const blockedByContender = new Promise((resolveWaited) => {
-        inheritedWaited = () => resolveWaited('blocked-by-parent-contender');
-      });
-      const inherited = runActionTypeMapWithWorkspaceLock({
-        mode: '--write', lockPath,
-        env: { HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD: heldLockValue },
-        lockOptions: { signal: cancellation.signal, onWait: inheritedWaited },
-        prepare: () => ({ output: 'inherited' }),
-        publish: async () => 'inherited-completed',
-      });
-      operations.push(inherited.catch(() => {}));
-      // Real filesystem lock notifications distinguish settlement from the
-      // parent -> child -> contender -> parent cycle, without a timing budget.
-      assert.equal(await Promise.race([inherited, blockedByContender]), 'inherited-completed');
-    }, { lockPath });
-  } finally {
-    cancellation.abort();
-    await Promise.all(operations);
-  }
-});
+        let inheritedWaited;
+        const blockedByContender = new Promise((resolveWaited) => {
+          inheritedWaited = () => resolveWaited('blocked-by-parent-contender');
+        });
+        const inherited = runActionTypeMapWithWorkspaceLock({
+          mode, lockPath,
+          env: { HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD: heldLockValue },
+          lockOptions: { signal: cancellation.signal, onWait: inheritedWaited },
+          prepare: () => ({ output: 'inherited' }),
+          publish: async (_mode, _prepared, { assertOwned }) => {
+            assertOwned();
+            return 'inherited-completed';
+          },
+        });
+        operations.push(inherited.catch(() => {}));
+        // Real filesystem lock notifications distinguish settlement from the
+        // parent -> child -> contender -> parent cycle, without a timing budget.
+        assert.equal(await Promise.race([inherited, blockedByContender]), 'inherited-completed');
+      }, { lockPath });
+      assert.equal(await external, 'external-completed');
+    } finally {
+      cancellation.abort();
+      await Promise.all(operations);
+    }
+  });
+}
 
 test('Action type map generation shares the canonical workspace publication lock', async (t) => {
   const directory = mkdtempSync(resolve(tmpdir(), 'happier-action-type-map-lock-'));
@@ -800,6 +812,17 @@ test('generated Action projection is declaration-neutral and retains its public 
   assert.doesNotMatch(source, /\bActionSurfaceBinding(?:Caller|Context|Transform)\b/u);
   assert.doesNotMatch(source, /\bActionCaller\b/u);
   assert.doesNotMatch(source, /\bsurfaceBindings\??:/u);
+});
+
+test('generated Action DTO signatures use the canonical SDK JSON declarations', () => {
+  const { outputs } = actionTypeMapGenerator.projectActionDtoDeclarations();
+  const family = outputs.get('packages/plugin-sdk/src/actions/dtos/automationEventsActionDtos.generated.ts');
+  assert.match(family, /import type \{ JsonValue, PluginJsonValueV2 \} from '\.\.\/\.\.\/identity\.js';/u);
+  for (const output of outputs.values()) {
+    assert.doesNotMatch(output, /export type (?:JsonValue|PluginJsonValueV2)\s*=/u);
+  }
+  assert.ok(!outputs.has('packages/plugin-sdk/src/actions/dtos/strictJsonValue.generated.ts'));
+  assert.ok(!outputs.has('packages/plugin-sdk/src/actions/dtos/jsonSchema.generated.ts'));
 });
 
 test('generated Plugin Action projection does not publish the host Action census', () => {

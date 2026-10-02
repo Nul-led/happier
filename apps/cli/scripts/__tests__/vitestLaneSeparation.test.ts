@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, globSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -132,6 +133,43 @@ describe('Vitest lane separation', () => {
         expect(
             existsSync(new URL('../buildOutputs.spawnHooks.test.ts', import.meta.url)),
         ).toBe(false);
+    });
+
+    it('collects physical workspace consumers only in the prepared integration lane', () => {
+        const cwd = fileURLToPath(new URL('../../', import.meta.url));
+        const collect = (config: typeof unitConfig) => new Set(globSync(
+            config.test?.include ?? [],
+            { cwd, exclude: config.test?.exclude ?? [] },
+        ));
+        const source = collect(unitConfig);
+        const integration = collect(integrationConfig);
+        for (const owner of [
+            'src/plugins/authoring/bundleDaemonRuntime',
+            'src/plugins/authoring/sourceModule',
+            'src/plugins/authoring/toolchain',
+            'src/plugins/scaffold/scaffold',
+            'src/plugins/packaging/pack',
+            'src/plugins/packaging/packedExternalVoiceProvider.contract',
+            'scripts/build-owned/generateBundledPluginEntries',
+        ]) {
+            expect(source.has(`${owner}.test.ts`), owner).toBe(true);
+            expect(source.has(`${owner}.integration.test.ts`), owner).toBe(false);
+            expect(integration.has(`${owner}.integration.test.ts`), owner).toBe(true);
+            expect(integration.has(`${owner}.test.ts`), owner).toBe(false);
+        }
+        expect(source.has('src/rpc/handlers/capabilities.test.ts')).toBe(false);
+        expect(integration.has('src/rpc/handlers/capabilities.integration.test.ts')).toBe(true);
+        for (const owner of [
+            'src/plugins/daemon/currentCatalog',
+            'src/api/machine/rpcHandlers.promptAssets',
+            'src/rpc/handlers/capabilities.probeModes.cwd',
+        ]) {
+            expect(source.has(`${owner}.test.ts`), owner).toBe(false);
+            expect(integration.has(`${owner}.runtimeCatalog.integration.test.ts`), owner).toBe(true);
+        }
+        // These existing fixtures replace the filesystem boundary, not catalog logic.
+        expect(source.has('src/plugins/daemon/currentCatalog.bundled.test.ts')).toBe(true);
+        expect(source.has('src/ui/auth.featureAdmission.test.ts')).toBe(true);
     });
 
     it('uses one export-driven source plugin in every CLI source-test lane', () => {

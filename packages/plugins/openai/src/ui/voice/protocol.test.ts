@@ -22,6 +22,46 @@ const TRANSCRIPTION_USAGE = Object.freeze({
 });
 
 describe('OpenAI Realtime protocol adapter', () => {
+  it.each([
+    ['session_expired', 'voice_session_expired', true],
+    ['rate_limit_exceeded', 'rate_limited', false],
+    ['invalid_request_error', 'provider_response_invalid', false],
+    ['private-secret-as-code', 'provider_response_invalid', false],
+  ])('projects sanitized provider error %s', (providerCode, code, terminal) => {
+    const adapter = createOpenAiRealtimeProtocolAdapter({ prepare: async () => ({ kind: 'declined', code: 'unused' }) });
+    const events = adapter.decodeControl({
+      type: 'error', event_id: 'provider-error',
+      error: { code: providerCode, message: 'Bearer private-secret', param: 'private-input' },
+    });
+    expect(events).toEqual([{ type: 'provider_error', code, terminal }]);
+    expect(JSON.stringify(events)).not.toMatch(/private-secret|private-input/);
+    expect(adapter.decodeControl({ type: 'error', event_id: 'provider-error', error: { code: providerCode } })).toEqual([]);
+  });
+
+  it('projects transcription failure without finalizing partial text or ending the session', () => {
+    const adapter = createOpenAiRealtimeProtocolAdapter({ prepare: async () => ({ kind: 'declined', code: 'unused' }) });
+    adapter.decodeControl({ type: 'conversation.item.input_audio_transcription.delta', event_id: 'partial', item_id: 'input', delta: 'unverified partial' });
+    expect(adapter.decodeControl({
+      type: 'conversation.item.input_audio_transcription.failed', event_id: 'failed', item_id: 'input', content_index: 0,
+      error: { code: 'server_error', message: 'Bearer private-secret' },
+    })).toEqual([{ type: 'provider_error', code: 'voice_transcription_failed', terminal: false }]);
+    expect(adapter.decodeControl({ type: 'input_audio_buffer.speech_started', event_id: 'next-input' })).toEqual([{ type: 'input_speech_started' }]);
+  });
+
+  it('projects a failed response without tool effects', () => {
+    const adapter = createOpenAiRealtimeProtocolAdapter({ prepare: async () => ({ kind: 'declined', code: 'unused' }) });
+    expect(adapter.decodeControl({
+      type: 'response.done', event_id: 'failed-response',
+      response: { id: 'response', status: 'failed', status_details: { type: 'failed', error: { code: 'rate_limit_exceeded' } }, output: [{ type: 'function_call', name: 'effect', call_id: 'call', arguments: '{}' }] },
+    })).toEqual([{ type: 'provider_error', code: 'rate_limited', terminal: false }]);
+  });
+
+  it('keeps cancelled responses inert and reports incomplete output without ending the session', () => {
+    const adapter = createOpenAiRealtimeProtocolAdapter({ prepare: async () => ({ kind: 'declined', code: 'unused' }) });
+    expect(adapter.decodeControl({ type: 'response.done', event_id: 'interrupted', response: { id: 'response', status: 'cancelled', status_details: { type: 'cancelled', reason: 'turn_detected' } } })).toEqual([]);
+    expect(adapter.decodeControl({ type: 'response.done', event_id: 'limited', response: { id: 'response', status: 'incomplete', status_details: { type: 'incomplete', reason: 'max_output_tokens' } } })).toEqual([{ type: 'provider_error', code: 'voice_response_incomplete', terminal: false }]);
+  });
+
   it('uses public Voice composition at raw OpenAI JSON seams', async () => {
     const source = await readFile(new URL('./protocol.ts', import.meta.url), 'utf8');
 

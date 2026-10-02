@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createNumericPlanetFrame } from '../../packages/cli-common/numericPlanetFrame.mjs';
+import { createPlanetFrame } from '../../packages/brand/planet.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const installerPath = join(resolve(here, '..', '..'), 'scripts', 'release', 'installers', 'install.ps1');
@@ -26,10 +26,12 @@ test('install.ps1 presents the compact branded header and truthful install stage
   const bashRowsBlock = bashSource.match(/HAPPIER_INSTALLER_ART_ROWS=\(([\s\S]*?)\n\)/)?.[1];
   assert.ok(powershellRowsBlock, 'expected PowerShell artwork rows');
   assert.ok(bashRowsBlock, 'expected Bash artwork rows');
-  const powershellRows = [...powershellRowsBlock.matchAll(/^\s*'([^']*)',?$/gm)].map((match) => match[1]);
+  const powershellRows = [...powershellRowsBlock.matchAll(/^\s*"([^"]*)",?$/gm)].map((match) =>
+    match[1].replace(/\$\(\[char\]0x([0-9a-f]+)\)/gi, (_escape, hex) => String.fromCharCode(parseInt(hex, 16))));
   const bashRows = [...bashRowsBlock.matchAll(/^\s*'([^']*)'$/gm)].map((match) => match[1]);
-  const expectedRows = createNumericPlanetFrame({ columns: 28, seconds: 1.6 })
-    .map((row) => row.map((cell) => cell?.digit ?? ' ').join(''));
+  const expectedRows = createPlanetFrame({ columns: 28, seconds: 1.6 })
+    .map((row) => row.map((cell) => cell?.ch ?? ' ').join(''));
+  assert.doesNotMatch(powershellRowsBlock, /[^\x00-\x7f]/, 'PowerShell 5.1 must not depend on UTF-8 script decoding');
   assert.deepEqual(powershellRows, expectedRows);
   assert.deepEqual(powershellRows, bashRows, 'expected PowerShell and Bash installers to share one visual identity');
   assert.match(header, /Happier/);
@@ -41,6 +43,10 @@ test('install.ps1 presents the compact branded header and truthful install stage
   assert.doesNotMatch(header, /Dark(?:Red|Blue|Magenta|Cyan|Yellow)/, 'expected readable colors on dark terminals');
 
   const richOutput = extractFunction(source, 'Test-InstallerRichHeaderAvailable');
+  assert.match(richOutput, /Test-InstallerBrailleArtAvailable/);
+  const brailleOutput = extractFunction(source, 'Test-InstallerBrailleArtAvailable');
+  assert.match(brailleOutput, /WT_SESSION/);
+  assert.match(brailleOutput, /TERM_PROGRAM/);
   assert.match(richOutput, /\[Console\]::IsOutputRedirected/);
   assert.match(richOutput, /\$env:TERM\s*-eq\s*"dumb"/i);
   assert.match(richOutput, /WindowWidth\s*-ge\s*76/);

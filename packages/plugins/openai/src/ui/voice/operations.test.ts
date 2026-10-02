@@ -4,6 +4,52 @@ import { OPENAI_REALTIME_DEFAULT_INPUT_TRANSCRIPTION_MODEL } from '../../protoco
 import { createOpenAiRealtimeCredentialOperations } from './operations.js';
 
 describe('OpenAI Realtime provider operations', () => {
+  it.each([600, 7_200])('admits a provider expiration of %s seconds when the device clock is behind', async (ttlSeconds) => {
+    const providerCreatedAtSeconds = 1_800_000_000;
+    const operations = createOpenAiRealtimeCredentialOperations({
+      now: () => (providerCreatedAtSeconds - 60) * 1_000 + 1_000,
+    });
+    await expect(operations.mintClientAuthWithAccountOperations({
+      accountOperations: {
+        request: async () => ({
+          status: 200,
+          finalUrl: 'https://api.openai.com/v1/realtime/client_secrets',
+          headers: {},
+          body: new TextEncoder().encode(JSON.stringify({
+            value: 'ek_ephemeral',
+            expires_at: providerCreatedAtSeconds + ttlSeconds,
+            session: { type: 'realtime', object: 'realtime.session', id: 'sess_skew', model: 'gpt-realtime-2.1' },
+          })),
+        }),
+      },
+      audience: JSON.stringify({ model: 'gpt-realtime-2.1', voice: 'marin' }),
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({ expiresAtMs: (providerCreatedAtSeconds + ttlSeconds) * 1_000 });
+  });
+
+  it.each([1_799_999_999, 1_800_000_001, 0, -1, null, '1800000300'])(
+    'rejects expired, admission-window, or invalid expiration %s',
+    async (expiresAt) => {
+      const operations = createOpenAiRealtimeCredentialOperations({ now: () => 1_800_000_000_000 });
+      await expect(operations.mintClientAuthWithAccountOperations({
+        accountOperations: {
+          request: async () => ({
+            status: 200,
+            finalUrl: 'https://api.openai.com/v1/realtime/client_secrets',
+            headers: {},
+            body: new TextEncoder().encode(JSON.stringify({
+              value: 'ek_ephemeral',
+              expires_at: expiresAt,
+              session: { type: 'realtime', object: 'realtime.session', id: 'sess_invalid_expiry', model: 'gpt-realtime-2.1' },
+            })),
+          }),
+        },
+        audience: JSON.stringify({ model: 'gpt-realtime-2.1', voice: 'marin' }),
+        signal: new AbortController().signal,
+      })).rejects.toMatchObject({ code: 'provider_response_invalid' });
+    },
+  );
+
   it('configures input audio transcription for every minted session', async () => {
     const request = vi.fn(async () => Object.freeze({
       status: 200,

@@ -70,6 +70,32 @@ function readContext(
 }
 
 describe('Claude Subscription Connected Account', () => {
+  it.each([
+    [429, 'outcomeUnknown'], [503, 'outcomeUnknown'], [401, 'reconnectRequired'],
+  ] as const)('preserves stored credentials without staging when refresh returns %s (%s)', async (status, outcome) => {
+    const runtime = activateConnectedAccountRuntime();
+    const original = new Map([['accessToken', 'current-access'], ['refreshToken', 'current-refresh']]);
+    const credentials = credentialStore(new Map(original));
+    const staged = credentialStore();
+    const account = { service: { pluginId: 'happier.agent.claude', localId: 'claude-subscription' }, accountId: 'account-1' };
+    const context = {
+      account,
+      configuration: { target: { kind: 'account', account, modeId: 'oauth' }, revision: 'configuration-1', values: {}, async getSecret() { return null; } },
+      signal: new AbortController().signal,
+      operation: { operationId: 'refresh-1', configurationRevision: 'configuration-1' },
+      credentials: credentials.store,
+      stagedCredentials: staged.store,
+      services: { http: { async request() {
+        return { status, finalUrl: 'https://platform.claude.com/v1/oauth/token', headers: {}, body: new Uint8Array() };
+      } } },
+    } as Parameters<typeof runtime.refresh>[0];
+
+    await expect(runtime.refresh(context)).resolves.toMatchObject({ status: outcome });
+    expect(staged.values.size).toBe(0);
+    expect(credentials.values).toEqual(original);
+    await expect(runtime.status(context)).resolves.toMatchObject({ status: 'connected' });
+  });
+
   it('registers exactly the two authentication modes declared by the descriptor', () => {
     const descriptor = PLUGIN_MANIFEST.contributes.connectedAccountDescriptors.find(
       ({ id }) => id === 'claude-subscription',

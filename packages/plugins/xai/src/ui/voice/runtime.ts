@@ -51,6 +51,7 @@ export function createXaiRealtimeProviderRuntime(options: Readonly<{
     attemptId: number;
     service: VoiceProviderConversationService;
   }>>();
+  const customInstructionsByAttemptId = new Map<number, string | null>();
   let nextPreparationId = 0;
   let activeMedia: Readonly<{
     attemptId: number;
@@ -67,10 +68,12 @@ export function createXaiRealtimeProviderRuntime(options: Readonly<{
     },
     async prepare({
       attemptId,
+      reason,
       platform,
       providerConfig,
       credentials,
       providerConversation,
+      attemptPolicy,
       signal,
     }) {
       const parsed = XaiRealtimeSettingsV1Schema.safeParse(providerConfig);
@@ -103,6 +106,12 @@ export function createXaiRealtimeProviderRuntime(options: Readonly<{
       if (isClientAuthExpired(auth)) {
         return { kind: 'declined', code: 'voice_auth_expired' };
       }
+      // Only prompt policy is attempt-scoped. Voice/model and other native
+      // configuration keep their existing prepare-time transition semantics.
+      const customInstructions = attemptPolicy && reason !== 'initial' && customInstructionsByAttemptId.has(attemptId)
+        ? customInstructionsByAttemptId.get(attemptId) ?? null
+        : settings.instructions;
+      if (attemptPolicy) customInstructionsByAttemptId.set(attemptId, customInstructions);
       const preparationId = ++nextPreparationId;
       if (resumableConversation) {
         providerConversationByPreparationId.set(preparationId, {
@@ -119,6 +128,8 @@ export function createXaiRealtimeProviderRuntime(options: Readonly<{
             conversationId,
             preparationId,
             settings,
+            instructions: [attemptPolicy?.instructions, customInstructions].filter(Boolean).join('\n\n'),
+            greetOnOpen: reason === 'initial' && attemptPolicy?.welcome.enabled === true && attemptPolicy.welcome.mode === 'immediate',
           },
           safeMetadata: {
             model: settings.model.id,
@@ -133,6 +144,7 @@ export function createXaiRealtimeProviderRuntime(options: Readonly<{
     },
     refreshAuth: async () => true,
     releasePrepared({ attemptId }) {
+      customInstructionsByAttemptId.delete(attemptId);
       if (activeMedia?.attemptId === attemptId) activeMedia = null;
       for (const [preparationId, prepared] of providerConversationByPreparationId) {
         if (prepared.attemptId === attemptId) {
@@ -198,7 +210,11 @@ export function createXaiRealtimeProviderRuntime(options: Readonly<{
         auth,
         model,
         conversationId,
-        sessionUpdate: createXaiSessionUpdate(settings.data, toXaiToolDefinitions(tools)),
+        greetOnOpen: config?.greetOnOpen === true,
+        sessionUpdate: createXaiSessionUpdate({
+          ...settings.data,
+          instructions: typeof config?.instructions === 'string' ? config.instructions : settings.data.instructions,
+        }, toXaiToolDefinitions(tools)),
         onConversationId: async (value) => {
           await providerConversation?.write(value);
         },
@@ -211,7 +227,7 @@ export function createXaiRealtimeProviderRuntime(options: Readonly<{
       attemptMedia = media.createPcmConnection({
         driver,
         input: { sampleRate: 24_000, chunkMs: 100 },
-        output: { sampleRate: 24_000, maxBufferedMs: 5_000 },
+        output: { sampleRate: 24_000 },
         onInputChunk: driver.sendAudioChunk,
       });
       activeMedia = Object.freeze({ attemptId, media: attemptMedia });
@@ -250,6 +266,7 @@ export function createXaiRealtimeProviderRuntime(options: Readonly<{
     dispose() {
       activeMedia = null;
       providerConversationByPreparationId.clear();
+      customInstructionsByAttemptId.clear();
     },
   });
 }

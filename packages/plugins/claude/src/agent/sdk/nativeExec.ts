@@ -43,8 +43,9 @@ function toClaudeSdkExecResult(result: PluginProcessResult): ClaudeSdkExecResult
   };
 }
 
-export function createClaudeNativeSdkQueryContext(exec: ExecService): ClaudeSdkQueryContext {
+export function createClaudeNativeSdkQueryContext(exec: ExecService, reportArtifactCleanupFailure?: (message: string) => void): ClaudeSdkQueryContext {
   return Object.freeze({
+    reportArtifactCleanupFailure,
     async spawnClient(spec, options): Promise<ClaudeSdkExecClientHandle> {
       if (spec.launch.kind !== 'agent-cli' || spec.launch.agentId !== 'claude') {
         throw new Error('Claude native SDK execution requires the declared claude agent CLI.');

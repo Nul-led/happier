@@ -312,6 +312,8 @@ export type SessionAccessActionResultById = {
         useCount: number;
         isConsentRequired: boolean;
         updatedAt: number;
+        keyDerivation?: 'fragment_v1' | 'legacy_token_v1' | undefined;
+        isolatedOrigin?: string | undefined;
     } | null;
     readonly "session.public_link.create": {
         id: string;
@@ -320,6 +322,8 @@ export type SessionAccessActionResultById = {
         useCount: number;
         isConsentRequired: boolean;
         updatedAt: number;
+        keyDerivation?: 'fragment_v1' | 'legacy_token_v1' | undefined;
+        isolatedOrigin?: string | undefined;
     };
     readonly "session.public_link.remove": {
         changed: boolean;

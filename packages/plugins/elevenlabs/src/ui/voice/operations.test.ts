@@ -235,6 +235,16 @@ describe('ElevenLabs public account operations', () => {
     expect(calls[3]?.parameters).toMatchObject({
       body: {
         name: 'Happier Voice',
+        tags: ['happier_voice_config_v1'],
+        platform_settings: {
+          auth: { enable_auth: true },
+          overrides: {
+            conversation_config_override: {
+              agent: { language: true, prompt: { prompt: true } },
+              conversation: { text_only: true },
+            },
+          },
+        },
         conversation_config: {
           tts: {
             voice_id: 'voice_1',
@@ -404,6 +414,7 @@ describe('ElevenLabs public account operations', () => {
         : input.operationId === 'agent'
           ? {
               agent_id: 'agent_existing',
+              tags: ['operator_tag', 'happier_voice_config_v0'],
               conversation_config: {
                 agent: { prompt: { tool_ids: ['tool_existing'] } },
               },
@@ -449,6 +460,18 @@ describe('ElevenLabs public account operations', () => {
     expect(updateAgentParameters.body?.conversation_config).not.toHaveProperty('turn');
     expect(updateAgentParameters.body?.conversation_config).toMatchObject({
       tts: { stability: 0.4, similarity_boost: 0.8, speed: 1.1 },
+    });
+    expect(updateAgentParameters.body).toMatchObject({
+      tags: ['operator_tag', 'happier_voice_config_v1'],
+      platform_settings: {
+        auth: { enable_auth: true },
+        overrides: {
+          conversation_config_override: {
+            agent: { language: true, prompt: { prompt: true } },
+            conversation: { text_only: true },
+          },
+        },
+      },
     });
     expect(JSON.stringify(updateAgentParameters)).not.toMatch(
       /"(?:style|useSpeakerBoost|use_speaker_boost|voice_settings)"/u,

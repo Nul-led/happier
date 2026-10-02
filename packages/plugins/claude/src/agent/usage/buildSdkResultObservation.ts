@@ -124,6 +124,8 @@ export function buildClaudeSdkResultUsageObservation(params: Readonly<{
         source: 'claude-sdk-result',
         scope: 'session_final',
         key: 'claude-session',
+        ...(typeof result.uuid === 'string' && result.uuid.length > 0 ? { nativeRecordId: result.uuid } : {}),
+        ...(params.observedAtMs === undefined ? {} : { observedAtMs: params.observedAtMs }),
         modelId: params.modelId,
         tokens,
         cost,

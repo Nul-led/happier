@@ -1790,6 +1790,7 @@ function assertAuthorSignatureTypeClosure({ program, inventory, sources }) {
   );
 
   const reachableAuthorTypes = new Set();
+  const directAuthorTypes = new Set();
   const authorRowsBySymbol = new Map();
   const addAuthorRowForSymbol = (symbol, row) => {
     if (!symbol) return;
@@ -1806,10 +1807,16 @@ function assertAuthorSignatureTypeClosure({ program, inventory, sources }) {
     addAuthorRowForSymbol(symbol, row);
     if (symbol.flags & ts.SymbolFlags.Type) {
       reachableAuthorTypes.add(symbol);
-      const directAliasTarget = directTypeAliasTargetSymbol(checker, symbol);
-      if (directAliasTarget) {
-        reachableAuthorTypes.add(directAliasTarget);
-        addAuthorRowForSymbol(directAliasTarget, row);
+      directAuthorTypes.add(symbol);
+      const directTarget = directTypeAliasTargetSymbol(checker, symbol);
+      if (directTarget) directAuthorTypes.add(directTarget);
+      const seenAliases = new Set([symbol]);
+      let aliasTarget = directTypeAliasTargetSymbol(checker, symbol);
+      while (aliasTarget && !seenAliases.has(aliasTarget)) {
+        seenAliases.add(aliasTarget);
+        reachableAuthorTypes.add(aliasTarget);
+        addAuthorRowForSymbol(aliasTarget, row);
+        aliasTarget = directTypeAliasTargetSymbol(checker, aliasTarget);
       }
     }
   }
@@ -1853,8 +1860,21 @@ function assertAuthorSignatureTypeClosure({ program, inventory, sources }) {
           collectComposableProjectionOutputTypes(checker, valueType, directReferencedTypes, seenTypes);
         }
       } else {
-        for (const symbolDeclaration of symbol.declarations ?? []) {
-          collectDeclarationSignatureTypeNodes(checker, symbolDeclaration, directReferencedTypes);
+        // An exported projection admits its underlying declaration, but cannot
+        // hide that declaration's own named member dependencies from closure.
+        const seenSignatures = new Set();
+        let signatureSymbol = symbol;
+        while (signatureSymbol && !seenSignatures.has(signatureSymbol)) {
+          seenSignatures.add(signatureSymbol);
+          if (signatureSymbol === symbol || !directAuthorTypes.has(signatureSymbol)) {
+            for (const symbolDeclaration of signatureSymbol.declarations ?? []) {
+              if (signatureSymbol !== symbol
+                && declarationPackageMetadata(symbolDeclaration.getSourceFile())?.root
+                  !== declarationPackageMetadata(sourceFile)?.root) continue;
+              collectDeclarationSignatureTypeNodes(checker, symbolDeclaration, directReferencedTypes);
+            }
+          }
+          signatureSymbol = directTypeAliasTargetSymbol(checker, signatureSymbol);
         }
       }
       const referencedTypes = new Map(directReferencedTypes);

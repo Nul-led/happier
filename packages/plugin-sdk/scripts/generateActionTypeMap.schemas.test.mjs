@@ -7,6 +7,13 @@ import { deriveActionDtoSchemas } from './deriveActionDtos.mjs';
 import { prepareActionTypeMap } from './generateActionTypeMap.mjs';
 import { resolveTypeScriptCliInvocation } from '../../../scripts/workspaces/resolveTypeScriptCliInvocation.mjs';
 
+test('external authors can type inline Workflow and Session triggers and cannot author invalid blocks', () => {
+  const invocation = resolveTypeScriptCliInvocation({ repoRoot: process.cwd(), workspaceDir: process.cwd() });
+  const compiled = spawnSync(invocation.command, [...invocation.argsPrefix, '--noEmit', '-p',
+    resolve('packages/plugin-sdk/fixtures/authoring-inference/tsconfig.workflowTriggers.json')], { encoding: 'utf8' });
+  assert.equal(compiled.status, 0, compiled.stdout + compiled.stderr);
+});
+
 test('explicit Action generation derives current LocalServices preview schemas instead of copying stale DTOs', async t => {
   const started = performance.now();
   const prepared = await prepareActionTypeMap();

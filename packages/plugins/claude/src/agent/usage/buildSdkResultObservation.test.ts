@@ -3,6 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { buildClaudeSdkResultUsageObservation } from './buildSdkResultObservation.js';
 
 describe('buildClaudeSdkResultUsageObservation', () => {
+    it('carries the native result UUID for replayable result usage', () => {
+        expect(buildClaudeSdkResultUsageObservation({
+            modelId: 'claude-sonnet-4-6',
+            result: { type: 'result', subtype: 'success', uuid: 'result-record-1', usage: { input_tokens: 10 } },
+        })).toMatchObject({ nativeRecordId: 'result-record-1' });
+    });
+
     it('includes the runtime context window from Claude modelUsage when present', () => {
         const observation = buildClaudeSdkResultUsageObservation({
             modelId: 'claude-sonnet-4-6',

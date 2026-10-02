@@ -1,13 +1,15 @@
-import type { Dirent } from 'node:fs';
-import { lstat, readdir, realpath, stat } from 'node:fs/promises';
+import { lstat, realpath, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 import {
   expandHomePath,
   isCanonicalAbsolutePathInsideRoot,
   resolveHomeDirFromEnvironment,
+  resolveConfiguredNativeHomePath,
+  resolveVerifiedNativeHomePath,
+  listConnectedServiceNativeHomes,
 } from '@happier-dev/plugin-sdk/fs';
-import { readTrimmedString as readEnvString } from '@happier-dev/plugin-sdk';
+import { CODEX_NATIVE_HOME, CODEX_CONNECTED_SERVICE_HOME_DIRECTORY_NAME } from '@happier-dev/plugin-sdk/first-party/connected-accounts';
 
 import {
   throwIfCodexExternalSessionInvocationStopped,
@@ -61,8 +63,7 @@ function expandHomeDirPath(value: string, env: Readonly<Record<string, string | 
 }
 
 export function resolveConfiguredCodexHomePath(env: Readonly<Record<string, string | undefined>>): string {
-  const override = readEnvString(env.CODEX_HOME);
-  return override ? expandHomeDirPath(override, env) : resolve(resolveHomeDirFromEnvironment(env), '.codex');
+  return resolveConfiguredNativeHomePath(CODEX_NATIVE_HOME, env);
 }
 
 /**
@@ -79,7 +80,7 @@ export function canonicalizeCodexHomePath(
 export function resolveDefaultCodexHomePath(codexHome?: string | null): string {
   return typeof codexHome === 'string' && codexHome.trim().length > 0
     ? normalizeHomePath(codexHome)
-    : normalizeHomePath(join(resolveHomeDirFromEnvironment(), '.codex'));
+    : normalizeHomePath(join(resolveHomeDirFromEnvironment(), CODEX_NATIVE_HOME.defaultRelativePath));
 }
 
 function buildConnectedServiceHomesRoot(activeServerDir: string): string {
@@ -87,11 +88,11 @@ function buildConnectedServiceHomesRoot(activeServerDir: string): string {
 }
 
 function buildConnectedServiceCodexHome(activeServerDir: string, connectedServiceId: string, connectedServiceProfileId: string): string {
-  return join(buildConnectedServiceHomesRoot(activeServerDir), connectedServiceId, connectedServiceProfileId, 'codex', 'codex-home');
+  return join(buildConnectedServiceHomesRoot(activeServerDir), connectedServiceId, connectedServiceProfileId, 'codex', CODEX_CONNECTED_SERVICE_HOME_DIRECTORY_NAME);
 }
 
 function buildConnectedServiceGroupCodexHome(activeServerDir: string, connectedServiceId: string, connectedServiceGroupId: string): string {
-  return join(buildConnectedServiceHomesRoot(activeServerDir), connectedServiceId, '__groups', connectedServiceGroupId, 'codex', 'codex-home');
+  return join(buildConnectedServiceHomesRoot(activeServerDir), connectedServiceId, '__groups', connectedServiceGroupId, 'codex', CODEX_CONNECTED_SERVICE_HOME_DIRECTORY_NAME);
 }
 
 /**
@@ -120,33 +121,10 @@ async function resolveVerifiedCodexHomePath(params: Readonly<{
   expectedPath: string;
   exactHomePath?: string | null;
 }> & CodexExternalSessionInvocationBounds): Promise<string | null> {
-  throwIfCodexExternalSessionInvocationStopped(params);
-  const targetPath = params.exactHomePath ?? params.expectedPath;
-  try {
-    const linkStats = await lstat(targetPath);
-    throwIfCodexExternalSessionInvocationStopped(params);
-    if (linkStats.isSymbolicLink()) {
-      return null;
-    }
-    const real = await realpath(targetPath);
-    throwIfCodexExternalSessionInvocationStopped(params);
-    const expectedReal = await realpath(params.expectedPath).catch(() => null);
-    throwIfCodexExternalSessionInvocationStopped(params);
-    if (!expectedReal || real !== expectedReal) {
-      return null;
-    }
-    const homesRootReal = await realpath(params.homesRoot).catch(() => null);
-    throwIfCodexExternalSessionInvocationStopped(params);
-    if (!homesRootReal || !isCanonicalAbsolutePathInsideRoot(homesRootReal, real)) {
-      return null;
-    }
-    const stats = await stat(real);
-    throwIfCodexExternalSessionInvocationStopped(params);
-    return stats.isDirectory() ? real : null;
-  } catch {
-    throwIfCodexExternalSessionInvocationStopped(params);
-    return null;
-  }
+  return resolveVerifiedNativeHomePath({
+    ...params,
+    throwIfStopped: () => throwIfCodexExternalSessionInvocationStopped(params),
+  });
 }
 
 /**
@@ -191,7 +169,7 @@ export function inferCodexExternalSessionsSourceFromHome(params: Readonly<{
     const relativeParts = isCanonicalAbsolutePathInsideRoot(homesRoot, codexHome)
       ? codexHome.slice(homesRoot.length + 1).split(/[/\\]+/)
       : null;
-    if (relativeParts && relativeParts.length === 4 && relativeParts[2] === 'codex' && relativeParts[3] === 'codex-home') {
+    if (relativeParts && relativeParts.length === 4 && relativeParts[2] === 'codex' && relativeParts[3] === CODEX_CONNECTED_SERVICE_HOME_DIRECTORY_NAME) {
       const [rawConnectedServiceId, rawConnectedServiceProfileId] = relativeParts;
       const connectedServiceId = normalizeConnectedServiceId(rawConnectedServiceId);
       const connectedServiceProfileId = normalizeConnectedServiceProfileId(rawConnectedServiceProfileId);
@@ -210,7 +188,7 @@ export function inferCodexExternalSessionsSourceFromHome(params: Readonly<{
       && relativeParts.length === 5
       && relativeParts[1] === '__groups'
       && relativeParts[3] === 'codex'
-      && relativeParts[4] === 'codex-home'
+      && relativeParts[4] === CODEX_CONNECTED_SERVICE_HOME_DIRECTORY_NAME
     ) {
       const [rawConnectedServiceId, , rawConnectedServiceGroupId] = relativeParts;
       const connectedServiceId = normalizeConnectedServiceId(rawConnectedServiceId);
@@ -354,68 +332,21 @@ export async function homeEntries(params: Readonly<{
     }];
   }
 
-  const entries: CodexExternalSessionHomeEntry[] = [];
-  const base = join(homesRoot, connectedServiceId);
-  let profiles: Dirent[];
-  try {
-    profiles = await readdir(base, { withFileTypes: true });
-  } catch {
-    throwIfCodexExternalSessionInvocationStopped(params);
-    return [];
-  }
-  throwIfCodexExternalSessionInvocationStopped(params);
-
-  for (const entry of profiles) {
-    throwIfCodexExternalSessionInvocationStopped(params);
-    if (entry.name === '__groups') continue;
-    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-    const profileId = normalizeConnectedServiceProfileId(entry.name);
-    if (!profileId) continue;
-    const codexHome = buildConnectedServiceCodexHome(activeServerDir, connectedServiceId, profileId);
-    const verifiedHome = await resolveVerifiedCodexHomePath({ ...params, homesRoot, expectedPath: codexHome });
-    if (verifiedHome) {
-      entries.push({
-        codexHome: verifiedHome,
-        source: {
-          kind: 'codexHome',
-          home: 'connectedService',
-          connectedServiceId,
-          connectedServiceProfileId: profileId,
-          homePath: verifiedHome,
-        },
-      });
-    }
-  }
-
-  const groupsBase = join(base, '__groups');
-  let groups: Dirent[];
-  try {
-    groups = await readdir(groupsBase, { withFileTypes: true });
-  } catch {
-    throwIfCodexExternalSessionInvocationStopped(params);
-    return entries;
-  }
-  throwIfCodexExternalSessionInvocationStopped(params);
-  for (const entry of groups) {
-    throwIfCodexExternalSessionInvocationStopped(params);
-    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-    const groupId = normalizeConnectedServiceGroupId(entry.name);
-    if (!groupId) continue;
-    const codexHome = buildConnectedServiceGroupCodexHome(activeServerDir, connectedServiceId, groupId);
-    const verifiedHome = await resolveVerifiedCodexHomePath({ ...params, homesRoot, expectedPath: codexHome });
-    if (verifiedHome) {
-      entries.push({
-        codexHome: verifiedHome,
-        source: {
-          kind: 'codexHome',
-          home: 'connectedService',
-          connectedServiceId,
-          connectedServiceGroupId: groupId,
-          homePath: verifiedHome,
-        },
-      });
-    }
-  }
-
-  return entries;
+  const entries = await listConnectedServiceNativeHomes({
+    activeServerDir,
+    serviceId: connectedServiceId,
+    agentId: 'codex',
+    homeDirectoryName: CODEX_CONNECTED_SERVICE_HOME_DIRECTORY_NAME,
+    throwIfStopped: () => throwIfCodexExternalSessionInvocationStopped(params),
+  });
+  return entries.map((entry) => ({
+    codexHome: entry.homePath,
+    source: {
+      kind: 'codexHome',
+      home: 'connectedService',
+      connectedServiceId,
+      ...(entry.profileId ? { connectedServiceProfileId: entry.profileId } : { connectedServiceGroupId: entry.groupId }),
+      homePath: entry.homePath,
+    },
+  }));
 }

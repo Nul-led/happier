@@ -13,6 +13,14 @@ const request = {
 };
 
 describe('GitHub provider request coalescing', () => {
+  it('does not give another PR the first GraphQL query answer', async () => {
+    const coalescer = new GithubObservationRequestCoalescer();
+    const graphql = { ...request, endpointKind: 'pullRequestChecks' as const, url: 'https://api.github.com/graphql', etag: null };
+    const first = coalescer.run({ ...graphql, body: '{"variables":{"number":7}}' }, async () => ({ state: 'passed' }));
+    const second = coalescer.run({ ...graphql, body: '{"variables":{"number":8}}' }, async () => ({ state: 'failed' }));
+    expect(await first).toEqual({ state: 'passed' });
+    expect(await second).toEqual({ state: 'failed' });
+  });
   it('shares only the same-daemon identical authenticated request for the whole cycle, including after it settles', async () => {
     const coalescer = new GithubObservationRequestCoalescer();
     let release: ((value: unknown) => void) | undefined;

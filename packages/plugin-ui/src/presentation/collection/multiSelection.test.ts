@@ -306,14 +306,14 @@ describe('resolveHappierListMultiSelectionPointerAction', () => {
     })).toBe('open');
   });
 
-  it('toggles rows for platform command-click and adds ranges with shift', () => {
+  it('leaves platform command-click to navigation even with a live selection', () => {
     expect(resolveHappierListMultiSelectionPointerAction({
-      isSelectionMode: false,
+      isSelectionMode: true,
       platform: 'macos',
       shiftKey: false,
       ctrlKey: false,
       metaKey: true,
-    })).toBe('toggle');
+    })).toBe('open');
 
     expect(resolveHappierListMultiSelectionPointerAction({
       isSelectionMode: false,
@@ -321,12 +321,12 @@ describe('resolveHappierListMultiSelectionPointerAction', () => {
       shiftKey: true,
       ctrlKey: true,
       metaKey: false,
-    })).toBe('addRange');
+    })).toBe('open');
   });
 
   it('reads the command modifier from the platform rather than the key name', () => {
     // Control-click on macOS is the context-menu gesture, never a selection
-    // toggle; the same physical key IS the toggle on Windows.
+    // toggle; on Windows it asks the navigation owner for a new tab.
     expect(resolveHappierListMultiSelectionPointerAction({
       isSelectionMode: false,
       platform: 'macos',
@@ -341,7 +341,7 @@ describe('resolveHappierListMultiSelectionPointerAction', () => {
       shiftKey: false,
       ctrlKey: true,
       metaKey: false,
-    })).toBe('toggle');
+    })).toBe('open');
   });
 
   it('selects ranges with shift and toggles plain row presses once already in selection mode', () => {
@@ -388,6 +388,13 @@ describe('resolveHappierListMultiSelectionKeyboardIntent', () => {
   it('claims Space as the multi-selectable listbox choose key', () => {
     expect(intent({ key: ' ' })).toEqual({ kind: 'toggleFocused' });
     expect(intent({ key: 'Spacebar' })).toEqual({ kind: 'toggleFocused' });
+  });
+
+  it('toggles with x without claiming modified shortcuts', () => {
+    expect(intent({ key: 'x' })).toEqual({ kind: 'toggleFocused' });
+    expect(intent({ key: 'X', shiftKey: true })).toEqual({ kind: 'toggleFocused' });
+    expect(intent({ key: 'x', metaKey: true })).toBeNull();
+    expect(intent({ key: 'x', ctrlKey: true })).toBeNull();
   });
 
   it('extends a range over the DISABLED row rather than stopping at it', () => {
@@ -444,7 +451,7 @@ describe('resolveHappierPointerPlatform', () => {
       shiftKey: false,
       ctrlKey: false,
       metaKey: true,
-    })).toBe('toggle');
+    })).toBe('open');
   });
 
   it('keeps a non-Apple browser on the Control modifier rule', () => {
@@ -457,7 +464,7 @@ describe('resolveHappierPointerPlatform', () => {
       shiftKey: false,
       ctrlKey: true,
       metaKey: false,
-    })).toBe('toggle');
+    })).toBe('open');
   });
 
   it('passes a mounted native platform through and falls back for an unknown one', () => {

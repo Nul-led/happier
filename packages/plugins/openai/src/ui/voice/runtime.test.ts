@@ -28,7 +28,7 @@ function createAccountOperations(
   expiresAtMs = Date.now() + 60_000,
 ) {
   return Object.freeze({
-    request: vi.fn(async () => Object.freeze({
+    request: vi.fn(async (_input: Parameters<VoiceAccountOperationService['request']>[0]) => Object.freeze({
       status: 200,
       finalUrl: 'https://api.openai.com/v1/realtime/client_secrets',
       headers: Object.freeze({ 'content-type': 'application/json' }),
@@ -64,6 +64,29 @@ afterEach(() => {
 });
 
 describe('OpenAI Realtime runtime contribution', () => {
+  it('mints the standalone session with the attempt prompt and provider custom instructions', async () => {
+    const { leaf } = registerPublicLeaf();
+    const account = createAccountOperations();
+    const instructions = 'Use only readCurrentUiContext. Reply in fr-FR.\n'.repeat(300);
+    await leaf.protocol.prepare({
+      controlSessionId: 'voice', attemptId: 1, reason: 'initial', request: null,
+      platform: 'web', providerConfig: { ...VALID_CONFIG, instructions: 'Use concise project terminology.' },
+      credentials: createCredentialAccess('prepare', account),
+      attemptPolicy: {
+        instructions,
+        assistantLanguage: 'fr-FR', welcome: { enabled: false, mode: 'immediate' },
+      },
+      signal: new AbortController().signal,
+    });
+    expect(account.request.mock.calls[0]![0].parameters).toMatchObject({ body: { session: {
+      instructions: expect.stringContaining('readCurrentUiContext'),
+    } } });
+    const parameters = account.request.mock.calls[0]![0].parameters as { body: { session: { instructions: string } } };
+    expect(parameters.body.session.instructions).toContain('Reply in fr-FR');
+    expect(parameters.body.session.instructions).toContain('Use concise project terminology.');
+    expect(parameters.body.session.instructions).toContain(instructions);
+  });
+
   it.each(['web', 'ios', 'android'] as const)(
     'admits the same public runtime on %s',
     async (platform) => {
@@ -251,6 +274,10 @@ describe('OpenAI Realtime runtime contribution', () => {
       platform: 'web',
       providerConfig: VALID_CONFIG,
       credentials: createCredentialAccess('prepare', createAccountOperations(token, expiresAtMs)),
+      attemptPolicy: {
+        instructions: 'Greet briefly, then wait.', assistantLanguage: null,
+        welcome: { enabled: true, mode: 'immediate' },
+      },
     });
     type NegotiatedWebRtcInput = Parameters<
       Parameters<RealtimeVoiceProviderRuntime['createConnection']>[0]['media']['createWebRtcConnection']
@@ -360,6 +387,12 @@ describe('OpenAI Realtime runtime contribution', () => {
         signal: new AbortController().signal,
       });
     }
+    const initialControls: unknown[] = [];
+    const reconnectControls: unknown[] = [];
+    await negotiatedInputs[0]!.control.onOpen({ sendJson: async (event) => { initialControls.push(event); } });
+    await negotiatedInputs[1]!.control.onOpen({ sendJson: async (event) => { reconnectControls.push(event); } });
+    expect(initialControls).toEqual([expect.objectContaining({ type: 'session.update' }), { type: 'response.create' }]);
+    expect(reconnectControls).toEqual([expect.objectContaining({ type: 'session.update' })]);
     expect(offerAuthorizations).toEqual([
       'Bearer short-lived-active',
       'Bearer short-lived-active',

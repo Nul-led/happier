@@ -5,6 +5,8 @@ import {
   PLUGIN_HOOK_IDS_V1,
   validatePluginHookPayloadV1,
   validatePluginHookResultV1,
+  ActionExecuteBeforeHookPayloadSchema,
+  ActionExecuteAfterHookPayloadSchema,
 } from '../../index.js';
 
 const EXPECTED_PLUGIN_HOOK_IDS_V1 = [
@@ -28,6 +30,17 @@ const EXPECTED_PLUGIN_HOOK_IDS_V1 = [
 ] as const;
 
 describe('plugin hook catalog v1', () => {
+  it('retains Session caller identity separately from the target in execution hooks', () => {
+    const payload = { actionId: 'session.title.set', input: { sessionId: 'led-session', title: 'Updated' },
+      invocation: { surface: 'agent', sessionId: 'led-session', caller: { kind: 'session', sessionId: 'caller-session' } },
+      timestampMs: 1 };
+    expect(ActionExecuteBeforeHookPayloadSchema.parse(payload).invocation.caller)
+      .toEqual({ kind: 'session', sessionId: 'caller-session' });
+    expect(ActionExecuteAfterHookPayloadSchema.parse({ ...payload, outcome: { status: 'succeeded' } }).invocation.caller)
+      .toEqual({ kind: 'session', sessionId: 'caller-session' });
+    expect(ActionExecuteBeforeHookPayloadSchema.safeParse({ ...payload, invocation: { ...payload.invocation,
+      caller: { ...payload.invocation.caller, capability: 'private' } } }).success).toBe(false);
+  });
   it('exposes only hook ids with a reachable product emitter', () => {
     expect(EXPECTED_PLUGIN_HOOK_IDS_V1).toHaveLength(17);
     expect(PLUGIN_HOOK_IDS_V1).toEqual([...EXPECTED_PLUGIN_HOOK_IDS_V1]);
