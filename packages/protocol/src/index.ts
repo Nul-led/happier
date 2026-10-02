@@ -535,6 +535,7 @@ export {
 
 export {
   collectExpoPushTokensMarkedUnregistered,
+  getExpoErrorCode,
 } from './push/expoPushDelivery.js';
 
 export {

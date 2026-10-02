@@ -1114,6 +1114,14 @@ jobs:
       desktop_mode: ${{ needs.deploy_plan.outputs.deploy_ui_desktop_mode }}
       candidate_cli_version: ${{ needs.publish_cli_binaries.result == 'success' && needs.publish_cli_binaries.outputs.version || '' }}
       release_notes_id: ${{ inputs.release_notes_id }}
+      resume_desktop_artifacts: ${{ needs.resolve_resume.outputs.desktop_artifacts }}
+      resume_desktop_finalized_artifacts: ${{ needs.resolve_resume.outputs.desktop_finalized_artifacts }}
+      resume_desktop_run_number: ${{ needs.resolve_resume.outputs.desktop_run_number }}
+      resume_source_sha: ${{ needs.resolve_resume.outputs.source_sha }}
+      ui_ota_complete: ${{ needs.resolve_resume.outputs.ui_ota_complete == 'true' && needs.resolve_resume.outputs.deploy_ui_expo_action == inputs.ui_expo_action }}
+      ui_native_ios_complete: ${{ needs.resolve_resume.outputs.ui_native_ios_complete == 'true' && needs.resolve_resume.outputs.deploy_ui_expo_action == inputs.ui_expo_action }}
+      ui_native_android_complete: ${{ needs.resolve_resume.outputs.ui_native_android_complete == 'true' && needs.resolve_resume.outputs.deploy_ui_expo_action == inputs.ui_expo_action }}
+      ui_apk_complete: ${{ needs.resolve_resume.outputs.ui_apk_complete == 'true' && needs.resolve_resume.outputs.deploy_ui_expo_action == inputs.ui_expo_action }}
 
   deploy_server:
     if: always() && needs.resolve_resume.result == 'success' && needs.resolve_resume.outputs.deploy_server_complete != 'true' && needs.plan.result == 'success' && needs.prepare_release_candidate.result == 'success' && needs.verify_release_candidates.result == 'success' && needs.promote_server_runtime.result == 'success' && inputs.dry_run != true && needs.deploy_plan.outputs.deploy_server_requested == 'true' && ((inputs.environment == 'production' && needs.promote_main.result == 'success') || (inputs.environment == 'preview' && needs.promote_preview.result == 'success'))
@@ -1214,9 +1222,11 @@ jobs:
       candidate_ui_web_version: ${{ needs.publish_ui_web.outputs.version }}
       verify_stack_release: ${{ needs.publish_hstack_binaries.result == 'success' }}
       validation_profile: ${{ needs.plan.outputs.validation_profile }}
-      risk_cli_upgrade: ${{ needs.plan.outputs.risk_cli_upgrade == 'true' }}
-      risk_session_continuity: ${{ needs.plan.outputs.risk_session_continuity == 'true' }}
-      risk_relay_upgrade: ${{ needs.plan.outputs.risk_relay_upgrade == 'true' }}
+      # An earlier attempt may already have advanced the target branch, erasing its risk diff.
+      # Recheck applicable upgrade suites on resume; the registry still checks candidate inputs.
+      risk_cli_upgrade: ${{ needs.plan.outputs.risk_cli_upgrade == 'true' || inputs.resume_run_id != '' }}
+      risk_session_continuity: ${{ needs.plan.outputs.risk_session_continuity == 'true' || inputs.resume_run_id != '' }}
+      risk_relay_upgrade: ${{ needs.plan.outputs.risk_relay_upgrade == 'true' || inputs.resume_run_id != '' }}
       include_validation_suites: ${{ inputs.include_validation_suites }}
       waive_validation_suites: ${{ inputs.waive_validation_suites }}
 

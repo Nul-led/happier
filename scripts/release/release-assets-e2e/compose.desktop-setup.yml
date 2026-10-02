@@ -51,7 +51,6 @@ services:
       - ${DESKTOP_SETUP_AUTHORIZED_KEYS:?Missing DESKTOP_SETUP_AUTHORIZED_KEYS}:/ssh/authorized_keys:ro
       - ${DESKTOP_SETUP_DESKTOP_DIR:?Missing DESKTOP_SETUP_DESKTOP_DIR}:/opt/happier-desktop:ro
       - ${DESKTOP_SETUP_FEED_DIR:?Missing DESKTOP_SETUP_FEED_DIR}/tls/ca.crt:/opt/happier-feed/ca.crt:ro
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
     tmpfs:
       - /run
       - /run/lock

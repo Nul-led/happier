@@ -89,10 +89,31 @@ test('build-tauri gates the production desktop publish on desktop-setup against 
 
   const job = workflow.jobs.desktop_setup;
   assert.ok(job, 'build-tauri must own one desktop-setup gate job');
-  assert.deepEqual(job.needs, ['resolve_source', 'finalize']);
   assert.match(job.if, /!cancelled\(\)/);
   assert.ok(job.if.includes("needs.resolve_source.result == 'success'"));
   assert.ok(job.if.includes("needs.finalize.result == 'success'"), 'it consumes the finalized (signed) Linux bundle');
+  const admitsSetup = (finalizeNeeded, reuseNeeded, finalizeResult, reuseResult) => {
+    const expression = job.if.replace(/^\$\{\{\s*|\s*\}\}$/g, '');
+    return Function('needs', 'cancelled', `return Boolean(${expression});`)({
+      resolve_source: { result: 'success', outputs: { finalize_needed: finalizeNeeded, reuse_needed: reuseNeeded } },
+      finalize: { result: finalizeResult },
+      reuse_finalized: { result: reuseResult },
+    }, () => false);
+  };
+  assert.equal(admitsSetup('true', 'false', 'success', 'skipped'), true, 'new signed artifacts need no restore job');
+  assert.equal(admitsSetup('false', 'true', 'skipped', 'success'), true, 'a fully restored signed candidate still runs the setup gate');
+  assert.equal(admitsSetup('true', 'true', 'success', 'success'), true, 'mixed candidates require both artifact producers');
+  for (const [finalizeNeeded, reuseNeeded, finalizeResult, reuseResult] of [
+    ['true', 'false', 'failure', 'skipped'],
+    ['false', 'true', 'skipped', 'failure'],
+    ['true', 'true', 'success', 'failure'],
+    ['true', 'true', 'failure', 'success'],
+    ['true', 'false', 'skipped', 'skipped'],
+    ['false', 'true', 'skipped', 'skipped'],
+  ]) {
+    assert.equal(admitsSetup(finalizeNeeded, reuseNeeded, finalizeResult, reuseResult), false, 'missing or failed planned artifacts cannot pass setup admission');
+  }
+  assert.deepEqual(job.needs, ['resolve_source', 'finalize', 'reuse_finalized']);
   // Linux desktop bundles ship for x86_64 only; hosted ubuntu runners are x86_64 with Docker.
   assert.equal(job['runs-on'], 'ubuntu-latest');
   assert.deepEqual(job.permissions, { contents: 'read' });
@@ -100,8 +121,12 @@ test('build-tauri gates the production desktop publish on desktop-setup against 
   assert.doesNotMatch(JSON.stringify(job), /secrets\./, 'the gate needs no secrets');
 
   const steps = job.steps;
-  const checkout = steps.find((step) => String(step.uses ?? '').startsWith('actions/checkout@'));
-  assert.equal(checkout.with.ref, '${{ needs.resolve_source.outputs.source_sha }}', 'the harness matches the hsetup protocol it drives');
+  const checkouts = steps.filter((step) => String(step.uses ?? '').startsWith('actions/checkout@'));
+  assert.equal(checkouts.length, 1, 'candidate runtimes come from artifacts, not another source checkout');
+  const checkout = checkouts[0];
+  assert.equal(checkout.with.ref, '${{ job.workflow_sha }}', 'control-only recovery must load the corrected harness, not preserved candidate source');
+  assert.equal(checkout.with.repository, '${{ job.workflow_repository }}');
+  assert.equal(checkout.with.path, undefined, 'trusted validation control owns the workspace root');
   assert.equal(checkout.with['persist-credentials'], false);
 
   // The registry is the one selection owner: the job asks it, and every later step follows it.
@@ -118,8 +143,11 @@ test('build-tauri gates the production desktop publish on desktop-setup against 
   assert.match(String(skipNotice.env?.SKIP_REASON ?? ''), /steps\.plan\.outputs\.skip_reason/);
 
   const download = steps.find((step) => String(step.uses ?? '').startsWith('actions/download-artifact@'));
-  assert.equal(download.with.name, 'tauri-updates-linux-x86_64', 'the same-run bundle finalize uploaded');
+  assert.equal(download.with.name, 'tauri-updates-${{ inputs.environment }}-linux-x86_64', 'the same-run, same-channel bundle finalize uploaded');
   assert.equal(download.with['run-id'], undefined);
+  assert.equal(download.with.path, 'dist/desktop-setup-candidate', 'artifact data stays outside trusted workflow control');
+  const finalizerUpload = workflow.jobs.finalize.steps.find((step) => String(step.uses ?? '').startsWith('actions/upload-artifact@'));
+  assert.equal(finalizerUpload.with.name, 'tauri-updates-${{ inputs.environment }}-${{ matrix.platform_key }}');
   const runStep = steps.find((step) => /--suite desktop-setup/.test(String(step.run ?? '')) && /release-validate/.test(String(step.run ?? '')));
   assert.ok(steps.indexOf(plan) < steps.indexOf(download) && steps.indexOf(download) < steps.indexOf(runStep));
   for (const step of steps.slice(steps.indexOf(plan) + 1)) {
@@ -129,6 +157,8 @@ test('build-tauri gates the production desktop publish on desktop-setup against 
   assert.equal(runStep['timeout-minutes'], '${{ fromJSON(steps.plan.outputs.timeout_minutes) }}', 'the hard stop derives from the registry budget');
   assert.ok(job['timeout-minutes'] > 20, 'the job leaves room for setup around the derived suite timeout');
   const run = String(runStep.run);
+  assert.match(run, /find dist\/desktop-setup-candidate -maxdepth 1 -type f -name '\*\.deb'/);
+  assert.match(run, /if \[ "\$\{#debs\[@\]\}" -ne 1 \]/, 'the gate refuses an ambiguous finalized desktop artifact');
   assert.match(run, /--platform linux/);
   // The registry picks the CLI: the candidate's immutable tag, else the published channel CLI.
   assert.match(run, /--source "\$\{CLI_SOURCE\}"/);

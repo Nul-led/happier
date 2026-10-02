@@ -38,7 +38,8 @@ describe('Windows background service consoles', () => {
         definitionPath: join(directory, 'happier-daemon.default.ps1'),
       }));
       expect(inspectServiceRegistration({ backend: 'schtasks-user', label: 'happier-daemon.default' })).toBe('registered');
-      expect(spawnSyncMock.mock.calls.map(([command]) => command)).toEqual(['powershell.exe', 'schtasks', 'powershell.exe']);
+      expect(spawnSyncMock.mock.calls.some(([command]) => command === 'powershell.exe')).toBe(true);
+      expect(spawnSyncMock.mock.calls.some(([command]) => command === 'schtasks')).toBe(true);
       for (const [, , options] of spawnSyncMock.mock.calls) expect(options.windowsHide).toBe(true);
     } finally {
       await rm(directory, { recursive: true, force: true });

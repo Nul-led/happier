@@ -517,6 +517,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
+          permission-workflows: write
 
       - name: Resolve exact server deploy ref before promotion
         id: deploy_before
