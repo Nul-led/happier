@@ -364,6 +364,8 @@ Published hosts currently include:
 
 Their `prepack` scripts run `scripts/bundleWorkspaceDeps.mjs` to copy bundled workspaces into the host package and vendor each bundled workspace's external runtime dependency tree under that workspace's bundled `node_modules`.
 
+Current source bundling preserves package-local `imports` declarations and their conditional order, alongside `exports`. The existing workspace copier and bootstrap sync include exact relative import targets outside `dist`; external package targets still use the package's declared dependency closure. Stack bundle freshness also observes those package-root targets, so changing only an imported runtime helper requires a refresh.
+
 ## Dependency ownership
 
 Add dependencies to the package that imports them:

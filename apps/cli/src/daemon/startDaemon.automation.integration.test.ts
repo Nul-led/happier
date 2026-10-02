@@ -599,7 +599,8 @@ vi.mock('./lifecycle/heartbeat', () => ({
   startDaemonHeartbeatLoop: vi.fn(() => setInterval(() => {}, 60_000)),
 }));
 
-vi.mock('@/projectPath', () => ({
+vi.mock('@/projectPath', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/projectPath')>(),
   projectPath: vi.fn(() => '/tmp/project'),
 }));
 
@@ -1119,9 +1120,11 @@ describe('startDaemon automation wiring (integration)', () => {
 
       vi.mocked(resolveCatalogAgentId).mockReturnValue('claude');
       vi.mocked(shouldResolveConnectedServiceAuthForSpawn).mockReturnValue(true);
-      vi.mocked(waitForSessionWebhook).mockResolvedValueOnce({
-        type: 'success',
-        sessionId: 'sess-claude-reachable',
+      const actualWaiter = await vi.importActual<typeof import('./spawn/waitForSessionWebhook')>('./spawn/waitForSessionWebhook');
+      vi.mocked(waitForSessionWebhook).mockImplementationOnce((params) => {
+        const completion = actualWaiter.waitForSessionWebhook(params);
+        queueMicrotask(() => params.pidToAwaiter.get(params.pid)?.({ pid: params.pid, startedBy: 'daemon', happySessionId: 'sess-claude-reachable' }));
+        return completion;
       });
       vi.mocked(resolveConnectedServiceAuthForSpawn).mockResolvedValueOnce({
         env: { CLAUDE_CONFIG_DIR: '/tmp/materialized/claude/claude-config' },
@@ -3891,6 +3894,15 @@ describe('startDaemon automation wiring (integration)', () => {
     try {
       const { startDaemon } = await import('./startDaemon');
       const { buildHappySessionControlArgs } = await import('./sessionSpawnArgs');
+      const { waitForSessionWebhook } = await import('./spawn/waitForSessionWebhook');
+      const actualWaiter = await vi.importActual<typeof import('./spawn/waitForSessionWebhook')>('./spawn/waitForSessionWebhook');
+      vi.mocked(waitForSessionWebhook).mockImplementationOnce((params) => {
+        const completion = actualWaiter.waitForSessionWebhook(params);
+        queueMicrotask(() => params.pidToAwaiter.get(params.pid)?.({
+          pid: params.pid, startedBy: 'daemon', happySessionId: 'sess-settings-version-hint',
+        }));
+        return completion;
+      });
 
       const run = startDaemon();
       await waitForCondition(

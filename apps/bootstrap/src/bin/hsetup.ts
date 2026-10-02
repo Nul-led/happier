@@ -15,6 +15,7 @@ import { ensureSetupCapableLocalHappierCli } from '../systemTasks/happierCli.js'
 import {
   configureRelay,
   installService,
+  registerRelayProfile,
   requestAuthPairing,
   controlDaemonService,
   waitForAuthPairing,
@@ -191,6 +192,7 @@ export function createDefaultInteractiveKinds(): InteractiveSystemTaskKindMap {
       removePathExposure: removeManagedCliPathExposureDefault,
       ensureCli: ensureSetupCapableLocalHappierCli,
       configureRelay,
+      registerRelayProfile,
       requestAuthPairing,
       waitForAuthPairing,
       installService,

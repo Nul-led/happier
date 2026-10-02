@@ -10,6 +10,7 @@ import {
   createDaemonServiceAutostartSetHandler,
   createDaemonServiceStartHandler,
   createDaemonServiceStatusHandler,
+  createDaemonServiceRelayDisconnectHandler,
   createDaemonServiceStopHandler,
 } from './kinds/daemonService.js';
 import { checkRelayRuntimeHealthDefault, controlRelayRuntimeDefault, installOrUpdateRelayRuntimeDefault, readRelayRuntimeStatusDefault } from './relayRuntimeTasks.js';
@@ -78,6 +79,10 @@ export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): S
     {
       kind: 'daemon.service.stop.v1',
       handler: createDaemonServiceStopHandler(),
+    },
+    {
+      kind: 'daemon.service.relay.disconnect.v1',
+      handler: createDaemonServiceRelayDisconnectHandler(),
     },
     {
       kind: 'daemon.service.autostart.set.v1',

@@ -15,6 +15,7 @@ import {
 } from '@happier-dev/cli-common/update';
 import { resolveManagedCliToolNameForRing } from '@happier-dev/cli-common/firstPartyRuntime';
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
+import { parseRuntimeContextPrefixArgs } from '@/utils/env/runtimeContextArgv';
 
 const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_CHECK_LOCK_TTL_MS = 2 * 60 * 1000;
@@ -49,6 +50,7 @@ const LONG_FLAGS_WITH_VALUE = new Set([
 ]);
 
 function getCmdFromArgv(argv: string[]): string {
+  argv = parseRuntimeContextPrefixArgs(argv).args;
   // Heuristic: treat leading "--flag value" pairs as global options so we can
   // reliably identify the command for update-notice suppression (e.g. `self`).
   let skipNext = false;

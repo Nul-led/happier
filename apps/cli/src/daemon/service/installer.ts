@@ -9,19 +9,22 @@ import {
   type DaemonServiceCommandFailureMode,
 } from './apply';
 import {
+  daemonServiceMatchesInstallTarget,
   resolveDaemonServiceInstallConflictPlan,
   type DaemonServiceInstallConflictPlan,
   type DaemonServiceInstallStrategy,
   type DaemonServiceInstallTarget,
+  type DaemonServiceRelay,
 } from './daemonInstallConflict';
 import { assertDaemonServiceModeSupported } from './assertDaemonServiceModeSupported';
 import {
   discoverInstalledDaemonServiceEntries,
   readInstalledDaemonServiceAutostartMode,
-  type InstalledDaemonServiceEntry,
+  readInstalledDaemonServiceBundleId,
+  readInstalledDaemonServiceManagedBy,
 } from './discoverInstalledDaemonServiceEntries';
 import { planDaemonServiceInstall, planDaemonServiceUninstall } from './plan';
-import type { DaemonServiceAutostartMode, DaemonServiceMode, DaemonServiceTargetMode } from './plan';
+import type { DaemonServiceAutostartMode, DaemonServiceManagedBy, DaemonServiceMode, DaemonServiceTargetMode } from './plan';
 import {
   isManagedCliDaemonServiceLauncher,
   resolveDaemonServiceInstallRuntimeTarget,
@@ -35,6 +38,7 @@ import {
 import { doesInstalledDaemonServiceDefinitionMatchExpected } from './doesInstalledDaemonServiceDefinitionMatchExpected';
 import { describeDaemonServiceRuntimeReplacement } from './readDaemonServiceDefinitionLauncher';
 import { resolveHappierHomeDirComparableKey } from '@/daemon/ownership/happierHomeDirComparableKey';
+import { getActiveServerProfile } from '@/server/serverProfiles';
 
 type SupportedPlatform = 'darwin' | 'linux' | 'win32';
 
@@ -127,6 +131,22 @@ export type DaemonServiceInstallPreview = Readonly<{
   exactTargetRuntimeReplacement: Readonly<{ current: string; replacement: string }> | null;
 }>;
 
+/** Definition-owned settings to retain across a rewrite or a repair's remove/reinstall. */
+export function readDaemonServicePreservedInstallOptions(params: Readonly<{
+  platform: SupportedPlatform;
+  path: string;
+}>): Readonly<{
+  autostart?: DaemonServiceAutostartMode;
+  managedBy?: DaemonServiceManagedBy;
+  bundleId?: string;
+}> {
+  return {
+    autostart: readInstalledDaemonServiceAutostartMode(params) ?? undefined,
+    managedBy: readInstalledDaemonServiceManagedBy(params) ?? undefined,
+    bundleId: readInstalledDaemonServiceBundleId(params) ?? undefined,
+  };
+}
+
 export async function previewDaemonServiceInstall(options: Readonly<{
   platform?: SupportedPlatform;
   uid?: number;
@@ -142,6 +162,13 @@ export async function previewDaemonServiceInstall(options: Readonly<{
    * trigger the user turned off.
    */
   autostart?: DaemonServiceAutostartMode;
+  /**
+   * Omit to keep whatever marker the installed service carries: only an explicit request marks a
+   * service as the desktop's, and no rewrite ever drops the mark.
+   */
+  managedBy?: DaemonServiceManagedBy;
+  /** Omitted keeps the bundle id the installed definition records (`DAEMON_SERVICE_BUNDLE_ID_ENV_KEY`). */
+  bundleId?: string;
   darwinInstallMode?: 'rebootstrap' | 'kickstart';
   restartRunningDaemon?: boolean;
   instanceId?: string;
@@ -207,17 +234,27 @@ export async function previewDaemonServiceInstall(options: Readonly<{
     ring: channel,
     instanceId: targetMode === 'default-following' ? null : instanceId,
     happierHomeDir,
+    ...(targetMode === 'pinned'
+      ? {
+          activeServerId,
+          serverUrl: publicServerUrl,
+          defaultFollowingServer: await resolveDefaultFollowingServerForHome(happierHomeDir),
+        }
+      : {}),
   };
   const conflictPlan = resolveDaemonServiceInstallConflictPlan({
     target,
     strategy,
     services: discoveredServices,
   });
-  const installedTargetService = discoveredServices.find((service) => matchesInstallTarget(service, target)) ?? null;
-  const installedAutostart = installedTargetService
-    ? readInstalledDaemonServiceAutostartMode({ platform, path: installedTargetService.path })
-    : null;
+  const installedTargetService = discoveredServices.find((service) => daemonServiceMatchesInstallTarget(service, target)) ?? null;
+  const preservedOptions = installedTargetService
+    ? readDaemonServicePreservedInstallOptions({ platform, path: installedTargetService.path })
+    : {};
+  const installedAutostart = preservedOptions.autostart ?? null;
   const autostart: DaemonServiceAutostartMode = options.autostart ?? installedAutostart ?? 'at-login';
+  const managedBy = options.managedBy ?? preservedOptions.managedBy ?? null;
+  const bundleId = options.bundleId ?? preservedOptions.bundleId ?? null;
   const buildPlan = (
     planAutostart: DaemonServiceAutostartMode,
     autostartTriggerChangeOnly = false,
@@ -229,6 +266,8 @@ export async function previewDaemonServiceInstall(options: Readonly<{
     channel,
     targetMode,
     autostart: planAutostart,
+    managedBy,
+    bundleId,
     autostartTriggerChangeOnly,
     darwinInstallMode,
     instanceId,
@@ -264,7 +303,7 @@ export async function previewDaemonServiceInstall(options: Readonly<{
   const exactTargetMatchesExpectedDefinition = conflictPlan.exactTargetExists && (
     !expectedInstalledFile
     || discoveredServices
-      .filter((service) => matchesInstallTarget(service, target))
+      .filter((service) => daemonServiceMatchesInstallTarget(service, target))
       .some((service) => service.path === expectedInstalledFile.path && doesInstalledDaemonServiceDefinitionMatchExpected({
         installedPath: service.path,
         expectedContents: expectedInstalledFile.content,
@@ -321,26 +360,21 @@ function previewPlanFileForTarget(params: Readonly<{
     : null;
 }
 
-function matchesInstallTarget(
-  service: InstalledDaemonServiceEntry,
-  target: DaemonServiceInstallTarget,
-): boolean {
-  if (service.platform !== target.platform) {
-    return false;
+/**
+ * The relay this home's default-following service serves: the persisted active profile (the
+ * service's definition names none). Only this CLI's own home can be read; any other is unknown.
+ */
+async function resolveDefaultFollowingServerForHome(happierHomeDir: string): Promise<DaemonServiceRelay | null> {
+  const homeKey = resolveHappierHomeDirComparableKey(happierHomeDir);
+  if (homeKey === null || homeKey !== resolveHappierHomeDirComparableKey(configuration.happyHomeDir)) {
+    return null;
   }
-  if ((service.mode ?? 'user') !== target.mode) {
-    return false;
+  try {
+    const profile = await getActiveServerProfile();
+    return { serverId: profile.id, serverUrl: profile.serverUrl };
+  } catch {
+    return null;
   }
-  if (service.targetMode !== target.targetMode) {
-    return false;
-  }
-  if (resolveHappierHomeDirComparableKey(service.happierHomeDir) !== resolveHappierHomeDirComparableKey(target.happierHomeDir)) {
-    return false;
-  }
-  if (target.targetMode === 'default-following') {
-    return service.releaseChannel === target.ring;
-  }
-  return service.releaseChannel === target.ring && service.serverId === target.instanceId;
 }
 
 export async function installDaemonService(options: Readonly<{
@@ -358,6 +392,10 @@ export async function installDaemonService(options: Readonly<{
    * trigger the user turned off.
    */
   autostart?: DaemonServiceAutostartMode;
+  /** See `previewDaemonServiceInstall`: omitted keeps the installed marker. */
+  managedBy?: DaemonServiceManagedBy;
+  /** Omitted keeps the bundle id the installed definition records (`DAEMON_SERVICE_BUNDLE_ID_ENV_KEY`). */
+  bundleId?: string;
   darwinInstallMode?: 'rebootstrap' | 'kickstart';
   restartRunningDaemon?: boolean;
   instanceId?: string;

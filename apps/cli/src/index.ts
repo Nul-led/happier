@@ -7,7 +7,7 @@
  */
 
 import { dispatchCli } from '@/cli/dispatch';
-import { normalizeCliArgv, parseCliArgs } from '@/cli/parseArgs';
+import { readCliProcessArgs, parseCliArgs } from '@/cli/parseArgs';
 import { initToolTraceIfEnabled } from '@/agent/tools/trace/toolTrace';
 import axios from 'axios';
 import { configuration } from '@/configuration';
@@ -34,7 +34,7 @@ async function main() {
   initToolTraceIfEnabled();
   installAxiosProxySupport({ axios, env: process.env });
   const cliRootDir = dirname(dirname(fileURLToPath(import.meta.url)));
-  const normalizedArgv = normalizeCliArgv(process.argv.slice(2));
+  const normalizedArgv = readCliProcessArgs();
   const updatePackageName = resolveNpmPackageNameOverride({
     envValue: process.env.HAPPIER_CLI_UPDATE_PACKAGE_NAME,
     fallback: packageJson.name,

@@ -35,6 +35,7 @@ vi.mock('@/cli/dispatch', () => ({
 
 vi.mock('@/cli/parseArgs', () => ({
   normalizeCliArgv: normalizeCliArgvMock,
+  readCliProcessArgs: () => normalizeCliArgvMock(process.argv.slice(2)),
   parseCliArgs: parseCliArgsMock,
 }));
 

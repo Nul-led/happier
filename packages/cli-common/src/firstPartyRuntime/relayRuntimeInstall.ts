@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
-import { spawnSync } from 'node:child_process';
+import { spawnBackgroundSync } from '../process/index.js';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, win32 as win32Path } from 'node:path';
 
@@ -902,7 +902,7 @@ export async function installOrUpdateRelayRuntimeLocal(params: Readonly<{
                     env,
                 });
             } else {
-                const completion = spawnSync(migrationPlan.command, [...migrationPlan.args], {
+                const completion = spawnBackgroundSync(migrationPlan.command, migrationPlan.args, {
                     cwd: defaults.installRoot,
                     env: { ...process.env, ...env },
                     stdio: 'inherit',

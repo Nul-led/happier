@@ -18,6 +18,9 @@ const DAEMON_ONLY_ENV_KEYS = [
   'HAPPIER_DAEMON_RUNTIME_ID',
   'HAPPIER_DAEMON_STARTUP_SOURCE',
   'HAPPIER_DAEMON_TAKEOVER',
+  // The desktop management marker a service definition hands its daemon.
+  'HAPPIER_DAEMON_SERVICE_MANAGED_BY',
+  'HAPPIER_DAEMON_SERVICE_BUNDLE_ID',
 ] as const;
 
 export const DAEMON_DECIDED_CHILD_ENV_KEYS = [

@@ -26,6 +26,7 @@ const RESOLVED_CLI = {
 };
 
 import { writeHappierCliChoice } from '@happier-dev/cli-common/firstPartyRuntime';
+import { SystemTaskExecutionError as SystemTaskExecutionErrorForTest } from '@happier-dev/cli-common/systemTasks';
 
 import { createDaemonServiceStartHandler, createDaemonServiceStatusHandler } from './daemonService.js';
 
@@ -107,7 +108,6 @@ describe('daemonService system task handlers', () => {
       channel: 'preview',
     });
 
-    expect(runLocalHappierJsonCommandMock).toHaveBeenCalledTimes(1);
     expect(runLocalHappierJsonCommandMock.mock.calls[0]?.[0]).toMatchObject({
       args: ['daemon', 'status', '--json'],
       releaseRing: 'preview',
@@ -153,6 +153,13 @@ describe('daemonService system task handlers', () => {
       },
       // R12: nobody was asked and no other CLI exists here.
       cli: { update: null, choice: { mode: null, otherCli: null } },
+      // The service list answered nothing readable on a CLI at the setup floor: an unknown
+      // inventory, never "no service here" (R10-2).
+      pinnedServices: { complete: false, coexistence: false, services: [], unreadable: [] },
+      runningManagedServiceCount: null,
+      managedServiceAutostart: null,
+      // R16: the one list of this computer's services (machine id mismatch: it needs attention).
+      serviceRows: [{ relayUrl: 'https://relay.example.test', state: 'needs_attention', appManaged: true, serving: 'default-following', actions: [] }],
     });
   });
 
@@ -383,6 +390,156 @@ describe('daemonService system task handlers', () => {
         message: expect.stringContaining('"service.autostart"'),
       });
     }
+  });
+
+  /**
+   * One daemon per relay: a relay this computer also serves has its own pinned service. The status
+   * read reports each of this home's pinned services (same ring) through the same `daemon status`
+   * owner, scoped to that service, so the app can tell which relays this computer answers on.
+   */
+  it('reports each pinned service of this Happier home and ring with its own daemon status', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'hsetup-status-pinned-'));
+    vi.stubEnv('HAPPIER_HOME_DIR', home);
+    vi.stubEnv('PATH', '');
+    // A stack launch pins a service target of its own; it must never leak into these reads.
+    vi.stubEnv('HAPPIER_DAEMON_SERVICE_TARGET_MODE', 'pinned');
+    vi.stubEnv('HAPPIER_DAEMON_SERVICE_INSTANCE_ID', 'stack-instance');
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+      runLocalHappierJsonCommandMock.mockReset();
+      rmSync(home, { recursive: true, force: true });
+    });
+    const pinnedEntry = {
+      serverId: 'relay-b',
+      activeServerId: 'relay-b',
+      relayUrl: 'https://relay-b.example.test',
+      targetMode: 'pinned',
+      releaseChannel: 'stable',
+      happierHomeDir: home,
+    };
+    runLocalHappierJsonCommandMock.mockImplementation(async (params: { args: readonly string[]; processEnv?: NodeJS.ProcessEnv }) => {
+      if (params.args.join(' ') === 'daemon service list --json') {
+        return {
+          capabilities: { pinnedServiceCoexistence: true },
+          entries: [
+            pinnedEntry,
+            // Not this computer's to report: the default-following service, another home, another ring.
+            { ...pinnedEntry, serverId: 'default', activeServerId: undefined, targetMode: 'default-following' },
+            { ...pinnedEntry, serverId: 'relay-c', happierHomeDir: join(home, 'other-home') },
+            { ...pinnedEntry, serverId: 'relay-d', releaseChannel: 'preview' },
+          ],
+        };
+      }
+      if (params.processEnv?.HAPPIER_DAEMON_SERVICE_TARGET_MODE === 'pinned') {
+        return {
+          ...AMBIENT_STATUS_JSON,
+          server: {
+            ...AMBIENT_STATUS_JSON.server,
+            activeServerId: params.processEnv.HAPPIER_ACTIVE_SERVER_ID,
+            serverUrl: params.processEnv.HAPPIER_SERVER_URL,
+            publicServerUrl: params.processEnv.HAPPIER_SERVER_URL,
+            comparableKey: 'relay-b.example.test',
+          },
+          service: { installed: true, running: true, targetMode: 'pinned' },
+          auth: { ...AMBIENT_STATUS_JSON.auth, machineId: 'machine-relay-b', validatedAccountId: 'acct_relay_b' },
+        };
+      }
+      return AMBIENT_STATUS_JSON;
+    });
+
+    const { result } = await collectResult(createDaemonServiceStatusHandler(), { target: { kind: 'local' } });
+
+    const pinnedStatusCalls = runLocalHappierJsonCommandMock.mock.calls
+      .map(([params]) => params as { args: readonly string[]; processEnv?: NodeJS.ProcessEnv })
+      .filter((params) => params.args.join(' ') === 'daemon status --json' && params.processEnv?.HAPPIER_DAEMON_SERVICE_TARGET_MODE === 'pinned');
+    expect(pinnedStatusCalls).toHaveLength(1);
+    expect(pinnedStatusCalls[0]?.processEnv).toMatchObject({
+      HAPPIER_ACTIVE_SERVER_ID: 'relay-b',
+      HAPPIER_SERVER_URL: 'https://relay-b.example.test',
+      HAPPIER_DAEMON_SERVICE_INSTANCE_ID: 'relay-b',
+    });
+    expect(result).toMatchObject({
+      // The default-following service's facts stay where they always were.
+      server: { serverUrl: 'https://relay.example.test' },
+      service: { targetMode: 'default-following' },
+      pinnedServices: {
+        complete: true,
+        unreadable: [],
+        services: [{
+          server: { serverUrl: 'https://relay-b.example.test', comparableKey: 'relay-b.example.test' },
+          service: { installed: true, targetMode: 'pinned' },
+          auth: { machineId: 'machine-relay-b', validatedAccountId: 'acct_relay_b' },
+        }],
+      },
+    });
+    expect((result as { pinnedServices: { services: unknown[] } }).pinnedServices.services).toHaveLength(1);
+  });
+
+  /**
+   * "Connect to this relay too" needs a CLI whose daemons coexist per relay (start-up reaping and
+   * install conflicts scoped to one relay), which is the setup floor. Below it — or with a version
+   * nobody can read — the pinned list is unknown, so the app offers nothing that depends on it.
+   */
+  it('separates a complete inventory from the absent coexistence capability', async () => {
+    onTestFinished(() => {
+      runLocalHappierJsonCommandMock.mockReset();
+    });
+    runLocalHappierJsonCommandMock.mockImplementation(async (params: { args: readonly string[] }) => (
+      params.args.join(' ') === 'daemon service list --json' ? { entries: [] } : AMBIENT_STATUS_JSON
+    ));
+
+    const { result } = await collectResult(createDaemonServiceStatusHandler(), { target: { kind: 'local' } });
+
+    expect(result).toMatchObject({ pinnedServices: { complete: true, coexistence: false, services: [], unreadable: [] } });
+  });
+
+  it('keeps every readable pinned service and names the unreadable one instead of erasing the list (M6)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'hsetup-status-pinned-partial-'));
+    vi.stubEnv('HAPPIER_HOME_DIR', home);
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+      runLocalHappierJsonCommandMock.mockReset();
+      rmSync(home, { recursive: true, force: true });
+    });
+    const entry = (id: string) => ({ serverId: id, activeServerId: id, relayUrl: `https://${id}.example.test`, targetMode: 'pinned', releaseChannel: 'stable', happierHomeDir: home });
+    runLocalHappierJsonCommandMock.mockImplementation(async (params: { args: readonly string[]; processEnv?: NodeJS.ProcessEnv }) => {
+      if (params.args.join(' ') === 'daemon service list --json') {
+        return { capabilities: { pinnedServiceCoexistence: true }, entries: [entry('relay-b'), entry('relay-c')] };
+      }
+      const instance = params.processEnv?.HAPPIER_DAEMON_SERVICE_INSTANCE_ID;
+      if (instance === 'relay-c') throw new SystemTaskExecutionErrorForTest('invalid_cli_response', 'unreadable');
+      if (instance === 'relay-b') return { ...AMBIENT_STATUS_JSON, server: { ...AMBIENT_STATUS_JSON.server, serverUrl: 'https://relay-b.example.test' } };
+      return AMBIENT_STATUS_JSON;
+    });
+
+    const { result } = await collectResult(createDaemonServiceStatusHandler(), { target: { kind: 'local' } });
+
+    expect(result).toMatchObject({
+      pinnedServices: {
+        complete: false,
+        services: [{ server: { serverUrl: 'https://relay-b.example.test' } }],
+        unreadable: [{ relayUrl: 'https://relay-c.example.test', code: 'invalid_cli_response' }],
+      },
+    });
+  });
+
+  it('reports pinned services as unknown when the CLI cannot list its services', async () => {
+    onTestFinished(() => {
+      runLocalHappierJsonCommandMock.mockReset();
+    });
+    runLocalHappierJsonCommandMock.mockImplementation(async (params: { args: readonly string[] }) => {
+      if (params.args.join(' ') === 'daemon service list --json') {
+        throw new Error('unknown command');
+      }
+      return AMBIENT_STATUS_JSON;
+    });
+
+    const { result } = await collectResult(createDaemonServiceStatusHandler(), { target: { kind: 'local' } });
+
+    // `null` is "not known", never "none": the app then offers nothing that depends on it.
+    // R10-2 — a CLI at the setup floor always lists; one that could not is an unknown inventory,
+    // never "no service here" (and never `null`, which would read as "not applicable").
+    expect(result).toMatchObject({ server: { serverUrl: 'https://relay.example.test' }, pinnedServices: { complete: false, services: [], unreadable: [] } });
   });
 
   it('rejects invalid daemon service params for the status task', async () => {

@@ -63,7 +63,6 @@ export async function runCommandCapture(params: Readonly<{
     timeoutMs,
     signal: params.signal,
     resolveCommandOnPath: false,
-    windowsHide: false,
   });
   if (result.kind === 'timed-out') throw new CommandTimeoutError(params.command, timeoutMs);
   if (result.kind === 'aborted') throw result.error;

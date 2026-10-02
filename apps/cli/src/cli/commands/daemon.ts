@@ -13,10 +13,7 @@ import {
 } from '@/daemon/controlClient';
 import type { DaemonSessionRunnerRestartMode, RestartAllDaemonSessionRunnersResult } from '@/daemon/controlClient';
 import { startDaemon } from '@/daemon/startDaemon';
-import {
-  resolveDaemonServiceInstallationSnapshotFromEnv,
-  runDaemonServiceCliCommand,
-} from '@/daemon/service/cli';
+import { runDaemonServiceCliCommand } from '@/daemon/service/cli';
 import { getLatestDaemonLog } from '@/ui/logger';
 import { runDoctorCommand } from '@/ui/doctor';
 import { listDaemonStatusesForAllKnownServers, stopAllDaemonsBestEffort } from '@/daemon/multiDaemon';
@@ -729,23 +726,9 @@ export async function handleDaemonCliCommand(context: CommandContext): Promise<v
             comparableKey: activeComparableKey,
           },
           entries: statuses.map((entry) => {
-            let servicePlatform = typeof entry.service.platform === 'string' ? entry.service.platform : null;
-            let serviceInstalledPath = typeof entry.service.installedPath === 'string' ? entry.service.installedPath : null;
-            if (!servicePlatform || !serviceInstalledPath) {
-              try {
-                const snapshot = resolveDaemonServiceInstallationSnapshotFromEnv({
-                  processEnv: {
-                    ...process.env,
-                    HAPPIER_DAEMON_SERVICE_INSTANCE_ID: entry.serverId,
-                    HAPPIER_DAEMON_SERVICE_SERVER_URL: entry.serverUrl,
-                  },
-                });
-                if (!servicePlatform) servicePlatform = snapshot.platform;
-                if (!serviceInstalledPath) serviceInstalledPath = snapshot.installedPath;
-              } catch {
-                // ignore
-              }
-            }
+            // `listDaemonStatusesForAllKnownServers` owns which service serves each relay.
+            const servicePlatform = typeof entry.service.platform === 'string' ? entry.service.platform : null;
+            const serviceInstalledPath = typeof entry.service.installedPath === 'string' ? entry.service.installedPath : null;
 
             return {
             serverId: entry.serverId,
