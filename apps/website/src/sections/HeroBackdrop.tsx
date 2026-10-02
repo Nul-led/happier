@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { PLANET_PALETTES } from '@happier-dev/brand/planet';
 import { useTheme, type ThemeName } from '../islands/themeStore';
 import { IMAGES } from '../data/generatedImages';
 
@@ -62,10 +63,7 @@ export function HeroBackdrop() {
             <div
                 className="absolute inset-y-0 left-0 w-full lg:w-[58%]"
                 style={{
-                    background:
-                        theme === 'dark'
-                            ? 'linear-gradient(to right, #050507 0%, rgba(5,5,7,0.92) 35%, rgba(5,5,7,0.45) 70%, rgba(5,5,7,0) 100%)'
-                            : 'none',
+                    background: PLANET_PALETTES[theme].websiteScrim,
                 }}
             />
             <div
