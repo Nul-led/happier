@@ -254,7 +254,7 @@ import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUnistyles } from 'react-native-unistyles';
 import { sessionSwitch } from '@/sync/ops';
-import { shouldRenderChatTimelineForSession, shouldRequestRemoteControl, shouldRequestRemoteControlAfterPendingEnqueue } from '@/sync/domains/session/control/localControlSwitch';
+import { shouldRenderChatTimelineForSession, shouldOfferLocalControlRelease, shouldRequestRemoteControlAfterPendingEnqueue } from '@/sync/domains/session/control/localControlSwitch';
 import { supportsEffectiveLocalControlForSession } from '@/sync/domains/session/control/effectiveRuntimeControlSurface';
 import { readControlSwitchUiTimeoutMsFromEnv } from '@/sync/domains/session/control/controlSwitchUiTimeout';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
@@ -4981,7 +4981,7 @@ function SessionViewLoaded({
         serverId: capabilityServerId,
     });
     const cliAuthStatus = cliAvailability.authStatus[agentId] ?? null;
-    const canRequestRemoteControl = shouldRequestRemoteControl(session, cliAuthStatus?.state ?? null);
+    const canReleaseLocalControl = shouldOfferLocalControlRelease(session, cliAuthStatus?.state ?? null);
     const [controlSwitchTo, setControlSwitchTo] = React.useState<'remote' | null>(null);
     const controlSwitchAttemptIdRef = React.useRef(0);
     React.useEffect(() => {
@@ -5149,7 +5149,7 @@ function SessionViewLoaded({
             bottomNotice={bottomNotice}
             controlledByUserOverride={isLocallyAttached}
             controlSwitchTo={controlSwitchTo}
-            onRequestSwitchToRemote={isHiddenSystemSessionSession || !canRequestRemoteControl ? undefined : handleRequestSwitchToRemote}
+            onRequestSwitchToRemote={isHiddenSystemSessionSession || !canReleaseLocalControl ? undefined : handleRequestSwitchToRemote}
             directControlFooter={directControlFooter}
             approvalRequests={openApprovalRequests}
             jumpToSeq={jumpToSeq}

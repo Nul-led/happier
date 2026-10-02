@@ -82,10 +82,10 @@ describe('UpdatesPopoverButton', () => {
         storage.setState({ profileScope: null });
     });
     it('is absent at zero, and a closed pill renders no detail content', async () => {
-        const screen = await renderScreen(<UpdatesPopoverButton summary={NONE} variant="pill" testID="pill" />);
+        const screen = await renderScreen(<UpdatesPopoverButton summary={NONE} variant="icon" testID="pill" />);
         expect(screen.findAllHostsByTestId('pill')).toHaveLength(0);
 
-        await screen.update(<UpdatesPopoverButton summary={TWO} variant="pill" testID="pill" />);
+        await screen.update(<UpdatesPopoverButton summary={TWO} variant="icon" testID="pill" />);
         expect(screen.findByTestId('pill')?.props.accessibilityLabel).toBe('updates.a11y.pillAvailable');
         expect(screen.findByTestId('pill')?.props.accessibilityState).toMatchObject({ expanded: false });
         expect(screen.findAllByTestId('updates.content.popover')).toHaveLength(0);
@@ -93,7 +93,7 @@ describe('UpdatesPopoverButton', () => {
 
     it('opens the real content in the popover density, and removes it again on close', async () => {
         routerMock.spies.push.mockClear();
-        const screen = await renderScreen(<UpdatesPopoverButton summary={TWO} variant="pill" testID="pill" />);
+        const screen = await renderScreen(<UpdatesPopoverButton summary={TWO} variant="icon" testID="pill" />);
 
         await act(async () => {
             await screen.findByTestId('pill')?.props.onPress({});
@@ -123,7 +123,7 @@ describe('UpdatesPopoverButton', () => {
             metadata: { host: 'studio', platform: 'darwin', happyCliVersion: '0.2.12', happyHomeDir: '/h/.happier', homeDir: '/h' },
         } as Machine];
         try {
-            const screen = await renderScreen(<UpdatesPopoverButton summary={TWO} variant="pill" testID="pill" />);
+            const screen = await renderScreen(<UpdatesPopoverButton summary={TWO} variant="icon" testID="pill" />);
             await act(async () => {
                 await screen.findByTestId('pill')?.props.onPress({});
             });
@@ -136,7 +136,7 @@ describe('UpdatesPopoverButton', () => {
 
     it('the sidebar entry is a compact mark with a count; its sentence is the accessible name and the tooltip', async () => {
         const FAILED: UpdatesSummary = { actionableCount: 0, failedCount: 3, runningCount: 0, phase: 'failed', status: 'failed', visible: true };
-        const screen = await renderScreen(<UpdatesPopoverButton summary={FAILED} variant="pill" testID="pill" />);
+        const screen = await renderScreen(<UpdatesPopoverButton summary={FAILED} variant="icon" testID="pill" />);
         const pill = screen.findByTestId('pill');
         expect(pill?.props.accessibilityLabel).toBe('updates.a11y.pillFailed');
         expect(screen.findAllByTestId('pill').find((node) => node.props.webTooltip)?.props.webTooltip).toBe('updates.pill.failed');
@@ -159,7 +159,7 @@ describe('UpdatesPopoverButton', () => {
             },
         } as Machine];
         try {
-            const screen = await renderScreen(<UpdatesPopoverButton summary={TWO} variant="pill" testID="pill" />);
+            const screen = await renderScreen(<UpdatesPopoverButton summary={TWO} variant="icon" testID="pill" />);
             await act(async () => {
                 await screen.findByTestId('pill')?.props.onPress({});
             });

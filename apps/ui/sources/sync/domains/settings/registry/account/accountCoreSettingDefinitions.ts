@@ -100,6 +100,13 @@ export const ACCOUNT_CORE_SETTING_DEFINITIONS = defineSettingDefinitions({
         storageScope: 'account',
         analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'boolean', privacy: 'safe', identityScope: 'person' },
     },
+    sessionTerminalHost: {
+        schema: z.enum(['legacy', 'none', 'tmux', 'zellij', 'herdr']),
+        default: 'legacy',
+        description: 'Terminal host for new sessions; legacy uses the existing tmux preference',
+        storageScope: 'account',
+        analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
+    },
     sessionWindowsRemoteSessionLaunchMode: {
         schema: z.enum(['hidden', 'windows_terminal', 'console']),
         default: 'hidden',

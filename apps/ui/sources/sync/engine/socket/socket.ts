@@ -8,8 +8,6 @@ import type { Machine } from '@/sync/domains/state/storageTypes';
 import { buildPendingChangedSessionPatch } from './pendingChangedSessionPatch';
 import { isSessionVisible } from '@/sync/domains/session/activeViewingSession';
 import { computeNextSessionSeqFromUpdate } from '@/sync/domains/session/sequence/realtimeSessionSeq';
-import { resolveLastViewedSessionSeq } from '@/sync/domains/session/readCursor/resolveLastViewedSessionSeq';
-import { resolveSessionReadableSeq } from '@/sync/domains/session/readCursor/resolveSessionReadableSeq';
 import { resolveSessionLiveConsumption } from '@/sync/runtime/sessionLiveConsumption';
 import type { MachineActivityUpdate } from '@/sync/reducer/machineActivityAccumulator';
 import { storage } from '@/sync/domains/state/storage';
@@ -69,10 +67,10 @@ import {
     applySessionListRenderablePatch,
     areSessionRuntimeIssuesEqual,
     buildSessionListRenderableMetadata,
+    deriveSessionListRenderableHasUnreadMessagesFromPatch,
     didSessionListRenderableEmbeddedListRowFieldsChange,
     type SessionListRenderableSession,
 } from '@/sync/domains/session/listing/sessionListRenderable';
-import { computeHasUnreadActivity } from '@/sync/domains/messages/unread';
 import {
     storedSessionMessageAttentionImpact,
     storedSessionMessageAttentionImpactOrNull,
@@ -275,7 +273,10 @@ async function hydrateCacheOnlySessionMetadataProjection(
         metadata: buildSessionListRenderableMetadata(metadata),
         metadataVersion: metadataPayload.version,
     };
-    patch.hasUnreadMessages = computeCacheOnlySessionRenderableHasUnreadMessages(current, patch);
+    patch.hasUnreadMessages = deriveSessionListRenderableHasUnreadMessagesFromPatch({
+        renderable: current,
+        patch,
+    });
     applyCacheOnlySessionUpdateProjectionPatch({
         sessionId,
         renderable: current,
@@ -463,45 +464,15 @@ function buildCacheOnlySessionProjectionPatch(params: Readonly<{
         patch.meaningfulActivityAt = updateBody.meaningfulActivityAt;
     }
     Object.assign(patch, buildSessionRuntimeActivityProjectionPatch(renderable, updateBody));
-    patch.hasUnreadMessages = computeCacheOnlySessionRenderableHasUnreadMessages(renderable, patch);
-    return patch;
-}
-
-function computeCacheOnlySessionRenderableHasUnreadMessages(
-    renderable: SessionListRenderableSession,
-    patch: Readonly<Partial<Omit<SessionListRenderableSession, 'id'>>>,
-    readableSeqOverride?: Readonly<{ seq: number | null; affectsUnread: boolean }> | null,
-): boolean {
-    const nextMetadata = patch.metadata === undefined ? renderable.metadata : patch.metadata;
-    const nextLastViewedSessionSeq = patch.lastViewedSessionSeq === undefined
-        ? renderable.lastViewedSessionSeq
-        : patch.lastViewedSessionSeq;
-    const shouldUsePatchedSessionSeq = readableSeqOverride?.affectsUnread !== false;
-    const projectedReadableSeq = resolveSessionReadableSeq({
-        messages: null,
-        sessionSeq: shouldUsePatchedSessionSeq ? patch.seq ?? renderable.seq : renderable.seq,
-        latestReadyEventSeq: patch.latestReadyEventSeq === undefined
-            ? renderable.latestReadyEventSeq
-            : patch.latestReadyEventSeq,
-        latestTurnStatus: patch.latestTurnStatus === undefined
-            ? renderable.latestTurnStatus
-            : patch.latestTurnStatus,
-        includeTerminalSessionSeq: true,
-    }) ?? 0;
-    const explicitReadableSeq = readableSeqOverride?.affectsUnread === true ? readableSeqOverride.seq : null;
-    const readableSeq = explicitReadableSeq === null || explicitReadableSeq === undefined
-        ? projectedReadableSeq
-        : Math.max(projectedReadableSeq, Math.max(0, Math.trunc(explicitReadableSeq)));
-
-    return computeHasUnreadActivity({
-        sessionSeq: readableSeq,
-        pendingActivityAt: 0,
-        lastViewedSessionSeq: resolveLastViewedSessionSeq({
-            lastViewedSessionSeq: nextLastViewedSessionSeq,
-            metadata: nextMetadata,
-        }),
-        lastViewedPendingActivityAt: nextMetadata?.readStateV1?.pendingActivityAt,
+    patch.hasUnreadMessages = deriveSessionListRenderableHasUnreadMessagesFromPatch({
+        renderable,
+        patch,
+        recomputeUnread:
+            typeof updateBody.lastViewedSessionSeq === 'number'
+            || typeof updateBody.latestReadyEventSeq === 'number'
+            || isTerminalTurnStatus(updateBody.latestTurnStatus),
     });
+    return patch;
 }
 
 async function resolveCacheOnlySessionRenderableMetadata(params: Readonly<{
@@ -675,11 +646,12 @@ function buildCacheOnlyDurableMessageProjectionPatch(params: Readonly<{
             ? renderable.meaningfulActivityAt
             : Math.max(currentMeaningfulActivityAt ?? meaningfulActivityCandidate, meaningfulActivityCandidate),
     };
-    patch.hasUnreadMessages = computeCacheOnlySessionRenderableHasUnreadMessages(
+    patch.hasUnreadMessages = deriveSessionListRenderableHasUnreadMessagesFromPatch({
         renderable,
         patch,
-        { seq: messageSeq, affectsUnread: attentionImpact.affectsUnread },
-    );
+        explicitReadableSeq: attentionImpact.affectsUnread ? messageSeq : null,
+        recomputeUnread: attentionImpact.affectsUnread && messageSeq !== null,
+    });
     return patch;
 }
 
