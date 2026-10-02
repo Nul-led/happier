@@ -1,8 +1,21 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Filesystem reads are the disclosure boundary; the real handler and logger remain composed.
+const filesystem = vi.hoisted(() => ({ statSync: vi.fn<(...args: unknown[]) => unknown>() }));
+vi.mock('node:fs', async (importOriginal) => {
+  const original = await importOriginal<typeof import('node:fs')>();
+  filesystem.statSync.mockImplementation((...args) => Reflect.apply(original.statSync, original, args));
+  return { ...original, statSync: filesystem.statSync };
+});
 
 import { DaemonPluginInvocationLogReadRequestV1Schema } from '@happier-dev/protocol';
 
 import { createDaemonPluginInvocationLogReadHandler } from './daemonPluginInvocationLogs';
+import { logger } from '@/ui/logger';
+
+function expectNoLogRead(): void {
+  expect(filesystem.statSync.mock.calls.filter(([path]) => path === logger.getLogPath())).toHaveLength(0);
+}
 
 const request = DaemonPluginInvocationLogReadRequestV1Schema.parse({
   version: 1,
@@ -18,14 +31,15 @@ const request = DaemonPluginInvocationLogReadRequestV1Schema.parse({
 });
 
 describe('daemon plugin invocation log RPC handler', () => {
+  beforeEach(() => {
+    filesystem.statSync.mockClear();
+  });
   it('rejects a stale or cross-machine target before the canonical logger can read', async () => {
-    const readLogs = vi.fn();
     const handler = createDaemonPluginInvocationLogReadHandler({
       resolveCurrentTarget: async () => ({
         serverIdentityId: 'srv_plugin_logs',
         machineId: 'machine-current',
       }),
-      readLogs,
     });
 
     await expect(handler(request)).resolves.toEqual({
@@ -33,7 +47,7 @@ describe('daemon plugin invocation log RPC handler', () => {
       kind: 'unavailable',
       code: 'plugin_log_target_mismatch',
     });
-    expect(readLogs).not.toHaveBeenCalled();
+    expectNoLogRead();
   });
 
   it('honors cancellation before resolving target currentness or reading logs', async () => {
@@ -44,21 +58,18 @@ describe('daemon plugin invocation log RPC handler', () => {
       serverIdentityId: 'srv_plugin_logs',
       machineId: 'machine-logs',
     }));
-    const readLogs = vi.fn();
     const handler = createDaemonPluginInvocationLogReadHandler({
       resolveCurrentTarget,
-      readLogs,
     });
 
     await expect(handler(request, { signal: controller.signal })).rejects.toBe(cancelled);
     expect(resolveCurrentTarget).not.toHaveBeenCalled();
-    expect(readLogs).not.toHaveBeenCalled();
+    expectNoLogRead();
   });
 
   it('rechecks cancellation after target currentness resolves before reading the logger', async () => {
     const controller = new AbortController();
     const cancelled = new Error('cancelled-after-currentness');
-    const readLogs = vi.fn();
     const handler = createDaemonPluginInvocationLogReadHandler({
       resolveCurrentTarget: async () => {
         controller.abort(cancelled);
@@ -67,10 +78,9 @@ describe('daemon plugin invocation log RPC handler', () => {
           machineId: 'machine-logs',
         };
       },
-      readLogs,
     });
 
     await expect(handler(request, { signal: controller.signal })).rejects.toBe(cancelled);
-    expect(readLogs).not.toHaveBeenCalled();
+    expectNoLogRead();
   });
 });

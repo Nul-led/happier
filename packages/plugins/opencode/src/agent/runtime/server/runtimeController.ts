@@ -214,6 +214,7 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
   });
   let passiveTranscriptProjectionInFlight = false;
   let passiveTranscriptProjectionRerunRequested = false;
+  let historicalIdentityReconciliationPending = false;
   let promptModel: OpenCodePromptModel | null = null;
   let promptAgent: string | null = null;
   let modelCatalog: OpenCodeModelCatalogSnapshot = { observedAt: 0, models: null };
@@ -814,28 +815,68 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       do {
         passiveTranscriptProjectionRerunRequested = false;
         if (state.turnInFlight || !state.providerSessionId) return;
+        const projectionSessionId = state.providerSessionId;
+        const scopeCurrent = (): boolean => !state.disposed && !state.turnInFlight && state.providerSessionId === projectionSessionId;
         let messages: readonly unknown[];
         try {
-          messages = await client.sessionMessages({ sessionId: state.providerSessionId });
+          messages = await client.sessionMessages({ sessionId: projectionSessionId });
         } catch (error) {
+          params.ctx.logger.warn('opencode_passive_transcript_projection_failed', { phase: 'history_read' });
           params.ctx.logger.debug('[OpenCodeServer] passive transcript projection: history read failed (non-fatal)', { error });
           return;
         }
+        if (!scopeCurrent()) return;
+        if (historicalIdentityReconciliationPending) {
+          try {
+            const transcripts = params.ctx.sessions.current.transcripts;
+            if (!transcripts) throw new Error('Bound transcript identity reconciliation is unavailable');
+            const facts = messages.flatMap((message) => {
+              const projection = classifyOpenCodeMessageForProjection(message);
+              if (!projection.messageId || (projection.kind !== 'user_transcript' && projection.kind !== 'assistant_transcript')) return [];
+              if (projection.kind === 'assistant_transcript' && classifyOpenCodeAssistantCompletion(message).kind !== 'terminal_success') return [];
+              return [{ sourceMessageId: projection.messageId, role: projection.kind === 'user_transcript' ? 'user' as const : 'assistant' as const,
+                localId: buildOpenCodeRuntimeTranscriptLocalId(projectionSessionId, projection.messageId) }];
+            });
+            const reconciliation = await transcripts.reconcileSourceIdentities({ providerSessionId: projectionSessionId, facts });
+            if (!scopeCurrent()) return;
+            happierAuthoredProviderUserMessageIds.hydrateCommittedIdentities(reconciliation.hostAuthoredUserMessageIds);
+            const committed = new Set(reconciliation.committedSourceMessageIds);
+            for (const fact of facts) {
+              if (!committed.has(fact.sourceMessageId) && reconciliation.coverage.complete) continue;
+              const key = buildOpenCodeProviderSessionMessageKey(projectionSessionId, fact.sourceMessageId);
+              if (fact.role === 'user') observedExternalUserMessageIds.add(key);
+              else state.emittedAssistantMessageIds.add(key);
+            }
+            if (!reconciliation.coverage.complete) {
+              params.ctx.logger.warn('opencode_history_reconciliation_incomplete', { phase: 'committed_identity_baseline',
+                unmappedUsers: reconciliation.coverage.unmappedUsers, unmappedAgents: reconciliation.coverage.unmappedAgents });
+              await transcripts.publishSessionEvent({ type: 'message', message: 'Some earlier OpenCode messages could not be reconciled safely because their saved message identities are incomplete. New messages will continue to sync.' });
+              if (!scopeCurrent()) return;
+            }
+            historicalIdentityReconciliationPending = false;
+          } catch (error) {
+            if (!scopeCurrent()) return;
+            params.ctx.logger.warn('opencode_history_reconciliation_incomplete', { phase: 'baseline_read' });
+            params.ctx.logger.debug('[OpenCodeServer] committed transcript identities unavailable (non-fatal)', { error });
+            return;
+          }
+        }
         let latestUserMessageOrigin: 'external' | 'happier_authored' | null = null;
         for (const message of messages) {
-          if (state.turnInFlight) return;
+          if (!scopeCurrent()) return;
           const projection = classifyOpenCodeMessageForProjection(message);
           const messageId = projection.messageId;
           if (!messageId) continue;
           const text = readProjectedTranscriptText(message);
           if (!text) continue;
           if (projection.kind === 'user_transcript') {
-            const providerMessageKey = buildOpenCodeProviderSessionMessageKey(state.providerSessionId, messageId);
+            const providerMessageKey = buildOpenCodeProviderSessionMessageKey(projectionSessionId, messageId);
             const isHappierAuthored = await happierAuthoredProviderUserMessageIds.markIfHappierAuthoredProviderUserMessage({
               messageId,
               text,
               createdAtMs: projection.createdAtMs,
             });
+            if (!scopeCurrent()) return;
             if (isHappierAuthored) {
               latestUserMessageOrigin = 'happier_authored';
               continue;
@@ -848,17 +889,17 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
               ...projectOpenCodeRuntimeScope(params.scope),
               emittedAtMs: Date.now(),
               text,
-              localId: buildOpenCodeRuntimeTranscriptLocalId(state.providerSessionId, messageId),
+              localId: buildOpenCodeRuntimeTranscriptLocalId(projectionSessionId, messageId),
               meta: {
                 source: 'opencode-server-external',
-                providerSessionId: state.providerSessionId,
+                providerSessionId: projectionSessionId,
               },
             });
             continue;
           }
           if (projection.kind !== 'assistant_transcript') continue;
           if (classifyOpenCodeAssistantCompletion(message).kind !== 'terminal_success') continue;
-          const providerMessageKey = buildOpenCodeProviderSessionMessageKey(state.providerSessionId, messageId);
+          const providerMessageKey = buildOpenCodeProviderSessionMessageKey(projectionSessionId, messageId);
           if (latestUserMessageOrigin === 'happier_authored') {
             state.emittedAssistantMessageIds.add(providerMessageKey);
             continue;
@@ -870,19 +911,20 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
             ...projectOpenCodeRuntimeScope(params.scope),
             emittedAtMs: Date.now(),
             agentId: 'opencode',
-            localId: buildOpenCodeRuntimeTranscriptLocalId(state.providerSessionId, messageId),
+            localId: buildOpenCodeRuntimeTranscriptLocalId(projectionSessionId, messageId),
             body: {
               type: 'message',
               message: text,
             },
             meta: {
               source: 'opencode-server-external',
-              providerSessionId: state.providerSessionId,
+              providerSessionId: projectionSessionId,
             },
           });
         }
       } while (passiveTranscriptProjectionRerunRequested);
     } catch (error) {
+      params.ctx.logger.warn('opencode_passive_transcript_projection_failed', { phase: 'history_commit' });
       params.ctx.logger.debug('[OpenCodeServer] passive transcript projection failed (non-fatal)', { error });
     } finally {
       passiveTranscriptProjectionInFlight = false;
@@ -1874,6 +1916,8 @@ export function createOpenCodeServerRuntimeController(params: Readonly<{
       });
       foregroundToolTracker.reset();
       state.emittedAssistantMessageIds.clear();
+      observedExternalUserMessageIds.clear();
+      historicalIdentityReconciliationPending = request.kind === 'resume';
       observedAutomaticCompactionMessageIds.clear();
       await happierAuthoredProviderUserMessageIds.hydrate();
       handledPermissionRequestKeys.clear();

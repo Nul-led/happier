@@ -172,11 +172,11 @@ describe('transcriptSource helpers', () => {
     });
 
     expect(result).toEqual({ tailCursor: 'cursor-3', stopped: 'inactive' });
-    expect(follow).toHaveBeenNthCalledWith(1, { cursor: 'tail', leaseId: 'lease-1' });
-    expect(follow).toHaveBeenNthCalledWith(2, { cursor: 'cursor-1', leaseId: 'lease-1' });
-    expect(follow).toHaveBeenNthCalledWith(3, { cursor: 'cursor-2', leaseId: 'lease-1' });
-    expect(follow).toHaveBeenNthCalledWith(4, { cursor: 'cursor-2', leaseId: 'lease-1' });
-    expect(follow).toHaveBeenNthCalledWith(5, { cursor: 'cursor-3', leaseId: 'lease-1' });
+    expect(follow).toHaveBeenNthCalledWith(1, { cursor: 'tail', leaseId: 'lease-1', finalDrain: false });
+    expect(follow).toHaveBeenNthCalledWith(2, { cursor: 'cursor-1', leaseId: 'lease-1', finalDrain: false });
+    expect(follow).toHaveBeenNthCalledWith(3, { cursor: 'cursor-2', leaseId: 'lease-1', finalDrain: false });
+    expect(follow).toHaveBeenNthCalledWith(4, { cursor: 'cursor-2', leaseId: 'lease-1', finalDrain: true });
+    expect(follow).toHaveBeenNthCalledWith(5, { cursor: 'cursor-3', leaseId: 'lease-1', finalDrain: true });
     expect(isSessionActive).toHaveBeenCalledTimes(1);
     expect(waitForNextPoll).not.toHaveBeenCalled();
     expect(onItems).toHaveBeenNthCalledWith(1, { items: ['first'], nextCursor: 'cursor-1' });
@@ -206,10 +206,10 @@ describe('transcriptSource helpers', () => {
     });
 
     expect(result).toEqual({ tailCursor: 'cursor-2', stopped: 'inactive' });
-    expect(follow).toHaveBeenNthCalledWith(1, { cursor: 'tail', leaseId: 'lease-1' });
-    expect(follow).toHaveBeenNthCalledWith(2, { cursor: 'cursor-0', leaseId: 'lease-1' });
-    expect(follow).toHaveBeenNthCalledWith(3, { cursor: 'cursor-1', leaseId: 'lease-1' });
-    expect(follow).toHaveBeenNthCalledWith(4, { cursor: 'cursor-2', leaseId: 'lease-1' });
+    expect(follow).toHaveBeenNthCalledWith(1, { cursor: 'tail', leaseId: 'lease-1', finalDrain: false });
+    expect(follow).toHaveBeenNthCalledWith(2, { cursor: 'cursor-0', leaseId: 'lease-1', finalDrain: true });
+    expect(follow).toHaveBeenNthCalledWith(3, { cursor: 'cursor-1', leaseId: 'lease-1', finalDrain: true });
+    expect(follow).toHaveBeenNthCalledWith(4, { cursor: 'cursor-2', leaseId: 'lease-1', finalDrain: true });
     expect(onItems).toHaveBeenNthCalledWith(1, { items: ['final-first'], nextCursor: 'cursor-1' });
     expect(onItems).toHaveBeenNthCalledWith(2, { items: ['final-second'], nextCursor: 'cursor-2' });
     expect(release).toHaveBeenCalledTimes(1);

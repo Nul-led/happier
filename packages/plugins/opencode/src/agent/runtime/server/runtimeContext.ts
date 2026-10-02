@@ -60,6 +60,7 @@ export type OpenCodeRuntimeContext = Readonly<{
   ui: Pick<AgentRuntimeContext['services']['interactions'], 'askQuestions'>;
   sessions: Readonly<{
     current: Readonly<{
+      transcripts?: Pick<AgentSessionRuntimeContext['session']['services']['transcripts'], 'reconcileSourceIdentities' | 'publishSessionEvent'>;
       subagents?: Pick<
         AgentSessionRuntimeContext['session']['services']['subagents'],
         'observe'
@@ -172,6 +173,7 @@ export function createOpenCodeRuntimeContext(
   context: AgentRuntimeContext,
   workStateService?: AgentSessionRuntimeContext['workState'],
   subagentsService?: AgentSessionRuntimeContext['session']['services']['subagents'],
+  transcriptsService?: AgentSessionRuntimeContext['session']['services']['transcripts'],
 ): OpenCodeRuntimeContext {
   const environment = request.launchEnvironment?.values ?? {};
   const workState = workStateService?.publisher('opencode-todos') ?? null;
@@ -208,6 +210,7 @@ export function createOpenCodeRuntimeContext(
     },
     sessions: {
       current: {
+        ...(transcriptsService ? { transcripts: transcriptsService } : {}),
         ...(subagentsService ? { subagents: subagentsService } : {}),
         permissions: {
           requestDecision: (approvalRequest, options) => requestOpenCodeApprovalWithSignal({

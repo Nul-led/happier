@@ -734,13 +734,17 @@ export function createPluginReloadController(params?: Readonly<{
             }
 
             const previousRegistry = activeRegistry;
+            const developmentBaseDurableRevision = highestObservedDurableRevision;
             let published = false;
             const publish = () => {
                 if (published) {
                     throw new Error('Plugin runtime registry publication callback was invoked more than once');
                 }
                 if (shutdownStarted) throw createShutdownError();
-                if (adoption.isDevelopmentCandidateCurrent?.() === false) {
+                if (adoption.isDevelopmentCandidateCurrent && (
+                    adoption.isDevelopmentCandidateCurrent() === false
+                    || highestObservedDurableRevision !== developmentBaseDurableRevision
+                )) {
                     throw new Error('Prepared plugin development candidate was superseded before publication');
                 }
                 if (

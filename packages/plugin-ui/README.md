@@ -131,6 +131,57 @@ identity when the container changes width. These components share Happier
 core's column implementation; collection selection and data-grid semantics
 remain with the caller.
 
+### Capture previews and Session images
+
+This media interface is under development in 0.3. Use these examples only when
+your installed SDK and Plugin UI API inventories list the media exports below.
+
+In a mounted Happier RN/RNW surface, `HappierLiveStream` presents a read-only
+capture reference through the host's existing stream transport and decoder:
+
+```tsx
+<HappierLiveStream
+  reference={{ kind: 'plugin', source: { pluginId: 'acme.board', localId: 'preview' } }}
+  testID="board-preview"
+  fallback={<Text value="Capture previews need a Happier window" />}
+/>
+```
+
+The source must be declared by this plugin's `captureSources` contribution.
+A `{ kind: 'host', sourceId }` reference asks to view a host capture instead.
+Each viewer occurrence goes through the existing `capture.view` Action approval;
+approval is required by default, and the user can waive it for a particular
+plugin in Action settings. Replacing a source closes the old viewing rather
+than inheriting its consent. A plugin's own declared capture needs no additional
+viewing approval. The component supplies no input or takeover authority: those
+stay with host-approved Actions. Where no host renderer is supplied, `fallback`
+renders; caller-hosted HTML does not acquire the app's stream renderer.
+
+`StoredImage` takes a `StoredImageRefV1` from `@happier-dev/plugin-sdk/ui`:
+`{ sessionId, mediaId }`. Derive these identities from a file-backed native
+Session-image artifact returned by a successful Action in this mounted surface,
+including capture, attachment, snapshot or Session-event results. The host retains the
+exact media reference; supplying ids does not authorize another image or a
+filesystem path. The read additionally requires the plugin's declared
+`sessions` HostAccess **read** scope, including the selected scope for optional
+access. It does not inherit the Account-wide linked-Session UI scope. Account
+mode and the media's encoding must agree; unavailable encryption material and
+mode mismatches stay unavailable rather than falling back to plaintext.
+
+The daemon verifies the exact Session artifact bucket, real file path, size,
+digest and image encoding before disclosing bytes. A result's producer does not
+replace Sessions READ authority. `sessions.media.publishGenerated` currently
+returns publication status, not this native artifact reference; generated-media
+records are not interchangeable with `StoredImageRefV1`.
+
+```tsx
+<StoredImage image={imageReference} accessibilityLabel="Captured page preview" />
+```
+
+Both the app thumbnail and `StoredImage` use the shared `HappierStoredImage`
+presentation owner. These are Developer Preview source interfaces, not a claim
+of package publication or loaded-runtime certification.
+
 ### Settings and detail pages
 
 A plugin page that configures something uses Happier's configuration-page

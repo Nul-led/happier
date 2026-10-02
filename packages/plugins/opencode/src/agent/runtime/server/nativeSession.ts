@@ -32,13 +32,17 @@ export async function openOpenCodeServerSession(
     context,
     workState,
     sessionServices?.subagents,
+    sessionServices?.transcripts,
   );
   const env = request.launchEnvironment?.values ?? {};
   const assembly = await createOpenCodeServerRuntimeAssembly({
     ctx: runtimeContext,
     directory: request.cwd,
     happierSessionId: request.sessionId,
-    endpoint: readOpenCodeServerEndpoint(runtimeContext, { env }),
+    endpoint: readOpenCodeServerEndpoint(runtimeContext, {
+      env, kind: request.kind, runtimeDescriptorV1: request.runtimeDescriptorV1,
+      configuration: request.configuration,
+    }),
     env,
     permissionMode: request.configuration?.permissionIntent.value ?? null,
     mcpServers: request.mcpServers,

@@ -17987,7 +17987,9 @@
         ],
         "surfaces": [
           "cli",
-          "ui"
+          "ui",
+          "agent",
+          "mcp"
         ],
         "title": "Update conversation binding"
       },
@@ -18086,7 +18088,9 @@
         ],
         "surfaces": [
           "cli",
-          "ui"
+          "ui",
+          "agent",
+          "mcp"
         ],
         "title": "Set conversation binding enabled state"
       },
@@ -25292,6 +25296,7 @@
         "source": "dynamic"
       }
     ],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -25541,7 +25546,7 @@
             "plugins.channels.surface.bindingCreateAutomationDelivery": "Automation result delivery",
             "plugins.channels.surface.bindingCreateAutomationDisabled": "Disabled — messages will not run it until it is enabled",
             "plugins.channels.surface.bindingCreateAutomationEffect": "What an allowed sender starts",
-            "plugins.channels.surface.bindingCreateAutomationEffectExecutionRun": "A message from the allowed sender starts this Automation, which runs its configured execution run on its assigned machine.",
+            "plugins.channels.surface.bindingCreateAutomationEffectExecutionRun": "A message from the allowed sender starts this Automation, which runs its configured background run on its assigned machine.",
             "plugins.channels.surface.bindingCreateAutomationEffectExistingSession": "A message from the allowed sender starts this Automation, which sends work into the existing Session it targets.",
             "plugins.channels.surface.bindingCreateAutomationEffectNewSession": "A message from the allowed sender starts this Automation, which creates a new Session on its assigned machine.",
             "plugins.channels.surface.bindingCreateAutomationEffectWorkflow": "A message from the allowed sender starts this Automation, which runs its configured workflow.",

@@ -9,6 +9,7 @@ import type { ScmBackendContext } from '../types.js';
 import { readGitBranchOperationState } from './branchOperationState.js';
 import { gitBranchCheckout, gitBranchCreate } from './branchOperations.js';
 import { gitCommitBackout, gitCommitCreate } from './commitOperations.js';
+import * as commitOperations from './commitOperations.js';
 import { gitStashCreate, gitStashDrop, gitStashPop } from './stashOperations.js';
 import * as integration from './branchIntegrationOperations.js';
 import { getGitSnapshot } from '../repository.js';
@@ -36,6 +37,121 @@ function conflict(cwd: string, kind: 'merge' | 'rebase' | 'revert' | 'cherry-pic
 }
 
 describe('Git correctness and recovery', () => {
+    it('undoes only the observed unpushed HEAD and preserves staged and unstaged work', async () => {
+        const { cwd, context, cleanup } = workspace();
+        try {
+            const parent = git(cwd, 'rev-parse', 'HEAD');
+            writeFileSync(join(cwd, 'a.txt'), 'committed\n'); git(cwd, 'commit', '-qam', 'undo me');
+            const expectedHeadOid = git(cwd, 'rev-parse', 'HEAD');
+            writeFileSync(join(cwd, 'staged.txt'), 'staged\n'); git(cwd, 'add', 'staged.txt');
+            writeFileSync(join(cwd, 'a.txt'), 'unstaged\n');
+            const index = git(cwd, 'write-tree');
+            const result = await runWithRealGitScmRuntime(() => commitOperations.gitCommitUndoLast({ context, request: { expectedHeadOid } }));
+            expect(result).toMatchObject({ success: true, undoneCommitSha: expectedHeadOid, headOid: parent, outcome: { kind: 'succeeded', effect: { kind: 'branch', name: 'HEAD', headOid: parent } } });
+            expect(git(cwd, 'rev-parse', 'HEAD')).toBe(parent);
+            expect(git(cwd, 'write-tree')).toBe(index);
+            expect(readFileSync(join(cwd, 'a.txt'), 'utf8')).toBe('unstaged\n');
+            expect(git(cwd, 'diff', '--cached', '--name-only').split('\n')).toEqual(['a.txt', 'staged.txt']);
+        } finally { cleanup(); }
+    });
+
+    it.each(['published', 'merge', 'root', 'changed'] as const)('refuses undo of a %s HEAD without modifying refs or index', async (kind) => {
+        const { cwd, context, cleanup } = workspace();
+        try {
+            let expectedHeadOid = git(cwd, 'rev-parse', 'HEAD');
+            if (kind !== 'root') {
+                writeFileSync(join(cwd, 'a.txt'), 'next\n'); git(cwd, 'commit', '-qam', 'next');
+                expectedHeadOid = git(cwd, 'rev-parse', 'HEAD');
+            }
+            if (kind === 'published') git(cwd, 'update-ref', 'refs/remotes/origin/main', expectedHeadOid);
+            if (kind === 'merge') {
+                git(cwd, 'checkout', '-qb', 'topic', 'HEAD~1');
+                writeFileSync(join(cwd, 'topic.txt'), 'topic\n'); git(cwd, 'add', 'topic.txt'); git(cwd, 'commit', '-qm', 'topic');
+                git(cwd, 'checkout', '-q', 'main'); git(cwd, 'merge', '--no-edit', 'topic');
+                expectedHeadOid = git(cwd, 'rev-parse', 'HEAD');
+            }
+            if (kind === 'changed') { writeFileSync(join(cwd, 'a.txt'), 'newer\n'); git(cwd, 'commit', '-qam', 'newer'); }
+            const head = git(cwd, 'rev-parse', 'HEAD');
+            const index = git(cwd, 'write-tree');
+            const result = await runWithRealGitScmRuntime(() => commitOperations.gitCommitUndoLast({ context, request: { expectedHeadOid } }));
+            const errorCode = { published: 'COMMIT_UNDO_PUBLISHED', merge: 'COMMIT_UNDO_MERGE', root: 'COMMIT_UNDO_NO_PARENT', changed: 'COMMIT_UNDO_HEAD_CHANGED' }[kind];
+            expect(result).toMatchObject({ success: false, errorCode, outcome: { kind: 'needs_input', errorCode } });
+            expect(git(cwd, 'rev-parse', 'HEAD')).toBe(head);
+            expect(git(cwd, 'write-tree')).toBe(index);
+        } finally { cleanup(); }
+    });
+
+    it('atomically refuses undo if a newer commit lands after admission', async () => {
+        const { cwd, context, cleanup } = workspace();
+        try {
+            writeFileSync(join(cwd, 'a.txt'), 'observed\n'); git(cwd, 'commit', '-qam', 'observed');
+            const expectedHeadOid = git(cwd, 'rev-parse', 'HEAD');
+            const real = createRealGitScmBackendRuntimeServices();
+            let newer = '';
+            const result = await runWithRealGitScmRuntime(() => runWithGitScmCommandRunner(async (input) => {
+                if (input.args[0] === 'update-ref') {
+                    writeFileSync(join(cwd, 'a.txt'), 'newer\n'); git(cwd, 'commit', '-qam', 'newer');
+                    newer = git(cwd, 'rev-parse', 'HEAD');
+                }
+                return real.runCommand(input);
+            }, () => commitOperations.gitCommitUndoLast({ context, request: { expectedHeadOid } })));
+            expect(result).toMatchObject({ success: false, errorCode: 'COMMIT_UNDO_HEAD_CHANGED' });
+            expect(git(cwd, 'rev-parse', 'HEAD')).toBe(newer);
+            expect(git(cwd, 'diff', '--cached', '--name-only')).toBe('');
+        } finally { cleanup(); }
+    });
+
+    it('preserves index edits made after undo admission', async () => {
+        const { cwd, context, cleanup } = workspace();
+        try {
+            const parent = git(cwd, 'rev-parse', 'HEAD');
+            writeFileSync(join(cwd, 'a.txt'), 'observed\n'); git(cwd, 'commit', '-qam', 'observed');
+            const expectedHeadOid = git(cwd, 'rev-parse', 'HEAD');
+            const real = createRealGitScmBackendRuntimeServices();
+            let index = '';
+            const result = await runWithRealGitScmRuntime(() => runWithGitScmCommandRunner(async (input) => {
+                if (input.args[0] === 'update-ref') {
+                    writeFileSync(join(cwd, 'staged-late.txt'), 'later staged work\n'); git(cwd, 'add', 'staged-late.txt');
+                    index = git(cwd, 'write-tree');
+                }
+                return real.runCommand(input);
+            }, () => commitOperations.gitCommitUndoLast({ context, request: { expectedHeadOid } })));
+            expect(result.success).toBe(true);
+            expect(git(cwd, 'rev-parse', 'HEAD')).toBe(parent);
+            expect(git(cwd, 'write-tree')).toBe(index);
+            expect(readFileSync(join(cwd, 'staged-late.txt'), 'utf8')).toBe('later staged work\n');
+        } finally { cleanup(); }
+    });
+
+    it('reconciles an undo whose process result is lost after its ref effect', async () => {
+        const { cwd, context, cleanup } = workspace();
+        try {
+            const parent = git(cwd, 'rev-parse', 'HEAD');
+            writeFileSync(join(cwd, 'a.txt'), 'observed\n'); git(cwd, 'commit', '-qam', 'observed');
+            const expectedHeadOid = git(cwd, 'rev-parse', 'HEAD');
+            const real = createRealGitScmBackendRuntimeServices();
+            const result = await runWithRealGitScmRuntime(() => runWithGitScmCommandRunner(async (input) => {
+                const output = await real.runCommand(input);
+                return input.args[0] === 'update-ref' ? { ...output, success: false, timedOut: true, exitCode: -1 } : output;
+            }, () => commitOperations.gitCommitUndoLast({ context, request: { expectedHeadOid } })));
+            expect(result).toMatchObject({ success: false, outcome: { kind: 'outcome_unknown', reconciliation: { kind: 'repository_status' }, nextActions: [{ kind: 'refresh' }] } });
+            expect(git(cwd, 'rev-parse', 'HEAD')).toBe(parent);
+            expect(git(cwd, 'diff', '--cached', '--name-only')).toBe('a.txt');
+        } finally { cleanup(); }
+    });
+
+    it('publishes observed HEAD and upstream OIDs through the canonical snapshot', async () => {
+        const { cwd, context, cleanup } = workspace();
+        try {
+            const upstreamOid = git(cwd, 'rev-parse', 'HEAD');
+            git(cwd, 'remote', 'add', 'origin', cwd);
+            git(cwd, 'update-ref', 'refs/remotes/origin/main', upstreamOid);
+            git(cwd, 'config', 'branch.main.remote', 'origin'); git(cwd, 'config', 'branch.main.merge', 'refs/heads/main');
+            writeFileSync(join(cwd, 'a.txt'), 'local\n'); git(cwd, 'commit', '-qam', 'local');
+            const result = await runWithRealGitScmRuntime(() => getGitSnapshot({ context, request: {} }));
+            expect(result.snapshot?.branch).toMatchObject({ headOid: git(cwd, 'rev-parse', 'HEAD'), upstreamOid });
+        } finally { cleanup(); }
+    });
     it('negotiates expanded operation state without breaking legacy snapshot readers', async () => {
         const { cwd, context, cleanup } = workspace();
         try {

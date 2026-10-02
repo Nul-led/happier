@@ -35,6 +35,7 @@ export const GIT_SCM_BACKEND_CAPABILITIES = {
     },
     commit: {
         create: supportedCapability(),
+        undoLast: supportedCapability(),
         amend: supportedCapability(),
         signOff: supportedCapability(),
         pathSelection: supportedCapability(),

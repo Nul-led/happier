@@ -269,6 +269,7 @@ export function readWorkspacePackageInputFingerprint({
   dependencyDirs = [],
   includeShippedFiles = false,
   excludeGeneratedPluginManifest = false,
+  excludeGeneratedPluginArtifacts = false,
   resolveTypeScriptCliInvocationImpl = resolveTypeScriptCliInvocation,
 }) {
   const hash = createHash('sha256');
@@ -276,6 +277,7 @@ export function readWorkspacePackageInputFingerprint({
   const inputPaths = readWorkspaceBuildInputs(packageDir, {
     includeShippedFiles,
     excludeGeneratedPluginManifest,
+    excludeGeneratedPluginArtifacts,
   })
     .map((path) => join(packageDir, path));
   const packageJson = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'));

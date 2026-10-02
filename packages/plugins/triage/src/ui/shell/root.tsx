@@ -87,6 +87,7 @@ import {
   useTriageListAnatomyV1,
   useTriageListRowActions,
 } from '../list/rows.js';
+import { TRIAGE_ENTRY_DETAIL_DESTINATION_V1 } from '../../composer/openEntryDetails.js';
 import {
   indexTriagePinsByEntry,
   projectTriageWindowRow,
@@ -1338,7 +1339,16 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
     [activateRow, pinHandlers],
   );
   /** The signal column exists only while some row has a primary status fact to show in it. */
-  const anatomy = useTriageListAnatomyV1({ withSignal: items.some((item) => item.signal !== null) });
+  const itemAnatomy = useTriageListAnatomyV1({ withSignal: items.some((item) => item.signal !== null) });
+  const routeLens = React.useMemo(() => readTriageRouteLensV1(surface), [
+    surface.order, surface.smartPolicy, surface.filters, surface.search.query, surface.selectedViewId, surface.selection,
+  ]);
+  const anatomy = React.useMemo(() => ({ ...itemAnatomy,
+    destination: (item: TriageListItemV1) => {
+      const location = preflightTriageRouteLensV1({ ...routeLens, selection: item.row.entryRef });
+      return location.kind === 'refused' ? null : { destination: TRIAGE_ENTRY_DETAIL_DESTINATION_V1, subPath: location.subPath };
+    },
+  }), [itemAnatomy, routeLens]);
 
   useTriageWindowLensBinding(window.setLens, readTriageWindowLensV1(surface));
   useTriageRouteBinding({

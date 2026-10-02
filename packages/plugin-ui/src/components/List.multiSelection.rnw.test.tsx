@@ -49,6 +49,17 @@ import { createHostApiStub, createSurfaceContext } from '../surfaceFixture.testS
 import { List } from './List.js';
 import { useListMultiSelectionController, type ListMultiSelectionStore } from './ListMultiSelection.js';
 import { PluginUiProvider } from './PluginUiProvider.js';
+import { PluginUiPresentationHostProviderInternal, type PluginUiPresentationHost } from '../presentationHost/context.js';
+
+// The native overlay host is the boundary; Menu content and selection logic stay real.
+const presentationHost: PluginUiPresentationHost = {
+  renderMarkdown: () => null,
+  renderCodeBlock: () => null,
+  renderIcon: () => null,
+  renderPopover: (input) => input.open
+    ? input.content({ requestClose: input.onRequestClose, maxHeight: 240 })
+    : null,
+};
 
 type Entry = Readonly<{ id: string; label: string; selectable: boolean }>;
 
@@ -72,7 +83,7 @@ function mount(node: React.ReactNode): Mounted {
   const hostApi = createHostApiStub(context);
   const wrap = (child: React.ReactNode) => (
     <PluginUiProvider hostApi={hostApi} context={context}>
-      {child}
+      <PluginUiPresentationHostProviderInternal host={presentationHost}>{child}</PluginUiPresentationHostProviderInternal>
     </PluginUiProvider>
   );
   const mounted = mountThroughReactNativeWeb(wrap(node));
@@ -95,6 +106,7 @@ type HarnessProps = Readonly<{
   query?: string;
   retainedSelectionKeys?: readonly string[];
   onItemPress?: (key: string) => void;
+  onSecondaryAction?: (id: string) => void;
 }>;
 
 function Harness(props: HarnessProps): React.ReactElement {
@@ -109,7 +121,9 @@ function Harness(props: HarnessProps): React.ReactElement {
       items={props.items ?? entries}
       keyForItem={(item: Entry) => item.id}
       renderItem={(item: Entry) => (
-        <List.Item title={item.label} onPress={() => props.onItemPress?.(item.id)} />
+        <List.Item title={item.label} onPress={() => props.onItemPress?.(item.id)}
+          secondaryActions={props.onSecondaryAction ? [{ id: 'pin', label: 'Pin' }] : undefined}
+          onSecondaryAction={props.onSecondaryAction} />
       )}
       search={props.query === undefined ? undefined : {
         label: 'Search',
@@ -163,6 +177,11 @@ async function pressRow(
   });
 }
 
+async function chooseRow(container: HTMLElement, label: string): Promise<void> {
+  const control = container.querySelector('[data-testid="happier-list-selection-mode"]');
+  await pressRow(container, label, { shiftKey: !control?.textContent?.includes('Done selecting') });
+}
+
 async function pressKey(
   container: HTMLElement,
   label: string,
@@ -199,16 +218,52 @@ describe('List multi-selection capability', () => {
     mounted.unmount();
   });
 
-  it('toggles with the platform command modifier without opening a detail', async () => {
+  it('leaves command-click to navigation, even with a live selection', async () => {
     const opened: string[] = [];
     const mounted = mount(<Harness onSelectedKeyChange={(key) => opened.push(key)} />);
 
     await pressRow(mounted.container, 'Bravo', { ctrlKey: true });
     await pressRow(mounted.container, 'Delta', { ctrlKey: true });
 
-    expect(selectedLabels(mounted.container)).toEqual(['Bravo', 'Delta']);
-    // The two cursors stayed independent: building a set never opened a detail.
+    expect(opened).toEqual(['b', 'd']);
+    await pressKey(mounted.container, 'Delta', 'x');
+    await pressRow(mounted.container, 'Echo', { ctrlKey: true });
+    expect(selectedLabels(mounted.container)).toEqual(['Delta']);
+    expect(opened).toEqual(['b', 'd', 'e']);
+    mounted.unmount();
+  });
+
+  it('enters selection through the row menu and preserves its existing actions', async () => {
+    const opened: string[] = [];
+    const secondaryActions: string[] = [];
+    const mounted = mount(<Harness withActionBar onItemPress={(key) => opened.push(key)}
+      onSecondaryAction={(id) => secondaryActions.push(id)} />);
+    const row = optionNamed(mounted.container, 'Bravo');
+    await act(async () => {
+      row?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    });
+    const menuItems = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+    expect(menuItems.some((item) => item.textContent?.includes('Pin'))).toBe(true);
+    const select = menuItems.find((item) => item.textContent?.includes('Select'));
+    expect(select).toBeDefined();
+    expect(select?.textContent).toContain('Select');
+    await act(async () => { select?.click(); });
+    expect(selectedLabels(mounted.container)).toEqual(['Bravo']);
     expect(opened).toEqual([]);
+    expect(secondaryActions).toEqual([]);
+    await pressRow(mounted.container, 'Delta');
+    expect(selectedLabels(mounted.container)).toEqual(['Bravo', 'Delta']);
+    expect(mounted.container.querySelector('[data-testid="bulk-bar"]')).not.toBeNull();
+    const done = mounted.container.querySelector<HTMLElement>('[data-testid="happier-list-selection-mode"]');
+    await act(async () => { done?.click(); });
+    expect(selectedLabels(mounted.container)).toEqual([]);
+    await act(async () => {
+      optionNamed(mounted.container, 'Bravo')?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    });
+    const pin = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+      .find((item) => item.textContent?.includes('Pin'));
+    await act(async () => { pin?.click(); });
+    expect(secondaryActions).toEqual(['pin']);
     mounted.unmount();
   });
 
@@ -260,7 +315,7 @@ describe('List multi-selection capability', () => {
     expect(opened).toEqual(['a']);
     expect(itemActions).toEqual(['a']);
 
-    await pressRow(mounted.container, 'Bravo', { ctrlKey: true });
+    await chooseRow(mounted.container, 'Bravo');
     await pressRow(mounted.container, 'Delta');
 
     expect(opened).toEqual(['a']);
@@ -274,7 +329,7 @@ describe('List multi-selection capability', () => {
   it('extends a shift range over the collection and skips unselectable rows', async () => {
     const mounted = mount(<Harness />);
 
-    await pressRow(mounted.container, 'Bravo', { ctrlKey: true });
+    await chooseRow(mounted.container, 'Bravo');
     await pressRow(mounted.container, 'Echo', { shiftKey: true });
 
     // Charlie is not selectable, so the span reaches over it rather than
@@ -283,10 +338,10 @@ describe('List multi-selection capability', () => {
     mounted.unmount();
   });
 
-  it('toggles the focused row with Space and extends with Shift+Arrow', async () => {
+  it('toggles the focused row with x and extends with Shift+Arrow', async () => {
     const mounted = mount(<Harness />);
 
-    await pressKey(mounted.container, 'Alpha', ' ');
+    await pressKey(mounted.container, 'Alpha', 'x');
     expect(selectedLabels(mounted.container)).toEqual(['Alpha']);
 
     await pressKey(mounted.container, 'Alpha', 'ArrowDown', { shiftKey: true });
@@ -296,6 +351,8 @@ describe('List multi-selection capability', () => {
     // Delta — a fact only the collection owner can see.
     await pressKey(mounted.container, 'Bravo', 'ArrowDown', { shiftKey: true });
     expect(selectedLabels(mounted.container)).toEqual(['Alpha', 'Bravo', 'Delta']);
+    await pressKey(mounted.container, 'Delta', 'ArrowUp', { shiftKey: true });
+    expect(selectedLabels(mounted.container)).toEqual(['Alpha', 'Bravo']);
     mounted.unmount();
   });
 
@@ -314,8 +371,8 @@ describe('List multi-selection capability', () => {
     let store: ListMultiSelectionStore | null = null;
     const mounted = mount(<Harness query="" onStore={(next) => { store = next; }} />);
 
-    await pressRow(mounted.container, 'Bravo', { ctrlKey: true });
-    await pressRow(mounted.container, 'Echo', { ctrlKey: true });
+    await chooseRow(mounted.container, 'Bravo');
+    await chooseRow(mounted.container, 'Echo');
 
     await mounted.rerender(<Harness query="Alpha" onStore={(next) => { store = next; }} />);
 
@@ -337,8 +394,8 @@ describe('List multi-selection capability', () => {
     let store: ListMultiSelectionStore | null = null;
     const mounted = mount(<Harness onStore={(next) => { store = next; }} />);
 
-    await pressRow(mounted.container, 'Bravo', { ctrlKey: true });
-    await pressRow(mounted.container, 'Echo', { ctrlKey: true });
+    await chooseRow(mounted.container, 'Bravo');
+    await chooseRow(mounted.container, 'Echo');
     expect(store?.getSnapshot().count).toBe(2);
 
     await mounted.rerender(
@@ -367,7 +424,7 @@ describe('List multi-selection capability', () => {
       <Harness retainedSelectionKeys={['c']} onStore={(next) => { store = next; }} />,
     );
 
-    await pressRow(mounted.container, 'Charlie', { ctrlKey: true });
+    await chooseRow(mounted.container, 'Charlie');
 
     expect(store?.getSnapshot().count).toBe(0);
     mounted.unmount();
@@ -377,7 +434,7 @@ describe('List multi-selection capability', () => {
     let store: ListMultiSelectionStore | null = null;
     const mounted = mount(<Harness onStore={(next) => { store = next; }} />);
 
-    await pressRow(mounted.container, 'Bravo', { ctrlKey: true });
+    await chooseRow(mounted.container, 'Bravo');
     expect(store?.getSnapshot().count).toBe(1);
 
     await mounted.rerender(<Harness scopeKey="scope-b" onStore={(next) => { store = next; }} />);
@@ -398,8 +455,8 @@ describe('List multi-selection capability', () => {
 
     expect(mounted.container.textContent).not.toContain('Attach all');
 
-    await pressRow(mounted.container, 'Bravo', { ctrlKey: true });
-    await pressRow(mounted.container, 'Delta', { ctrlKey: true });
+    await chooseRow(mounted.container, 'Bravo');
+    await chooseRow(mounted.container, 'Delta');
     expect(mounted.container.textContent).toContain('2 selected');
 
     const attach = Array.from(mounted.container.querySelectorAll<HTMLElement>('[role="button"]'))
@@ -432,7 +489,7 @@ describe('List multi-selection capability', () => {
       />,
     );
 
-    await pressRow(mounted.container, 'Bravo', { ctrlKey: true });
+    await chooseRow(mounted.container, 'Bravo');
 
     const buttons = Array.from(mounted.container.querySelectorAll<HTMLElement>('[role="button"]'));
     expect(buttons.filter((button) => button.textContent?.includes('Stop'))).toHaveLength(1);
@@ -449,8 +506,8 @@ describe('List multi-selection capability', () => {
   it('keeps one tab stop while a multi-selection is live', async () => {
     const mounted = mount(<Harness />);
 
-    await pressRow(mounted.container, 'Bravo', { ctrlKey: true });
-    await pressRow(mounted.container, 'Delta', { ctrlKey: true });
+    await chooseRow(mounted.container, 'Bravo');
+    await chooseRow(mounted.container, 'Delta');
 
     const tabStops = optionsIn(mounted.container).filter((option) => option.getAttribute('tabindex') === '0');
     expect(tabStops).toHaveLength(1);

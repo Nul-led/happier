@@ -22,7 +22,7 @@ import type {
   PluginPromptAssetContributionV1,
   PluginExecutionRunProfileContributionV2,
   PluginRoleDeclarationV1,
-  PluginHostedWebContributionV1,
+  PluginWorkflowContributionV1,
   PluginSessionHeaderActionDescriptorV1,
   PluginTranscriptActivityContributionV1,
   PluginSessionInfoSectionContributionV1,
@@ -43,7 +43,6 @@ import type {
   PluginCommandContributionV2,
   ProviderContributionV1,
   PluginAgentCliMetadata,
-  PluginUiTranslationsContributionV1,
   PluginUiRendererV2,
   PluginUiSettingsGroupV1,
   PluginUiSettingsPageV1,
@@ -118,6 +117,7 @@ export type ResolvedComposerReferenceContribution = ResolvedTargetUiContribution
     PluginComposerReferenceProviderContributionV1
 >;
 export type ResolvedRoleContribution = ResolvedTargetUiContribution<PluginRoleDeclarationV1>;
+export type ResolvedWorkflowContribution = ResolvedTargetUiContribution<PluginWorkflowContributionV1>;
 export type ResolvedSearchProviderContribution = ResolvedTargetUiContribution<
     PluginSearchProviderContributionV1
 >;
@@ -527,17 +527,6 @@ export type ResolvedPromptAssetContribution = Readonly<{
     definition: PluginPromptAssetContributionV1;
 }>;
 
-export type ResolvedUiTranslationsContribution = Readonly<{
-    provenance: ResolvedContributionProvenance;
-    source: ResolvedContributionSource;
-    pluginId?: string;
-    manifestPath?: string;
-    daemonEntryPath?: string | null;
-    devDaemonEntryPath?: string | null;
-    sourceSpec?: PluginSourceSpecV1;
-    definition: PluginUiTranslationsContributionV1;
-}>;
-
 export type ResolvedStructuredMessageContribution = Readonly<{
     provenance: ResolvedContributionProvenance;
     source: ResolvedContributionSource;
@@ -561,18 +550,6 @@ export type ResolvedSessionHeaderActionContribution = Readonly<{
 }>;
 export type ResolvedTranscriptActivityContribution = ResolvedTargetUiContribution<PluginTranscriptActivityContributionV1>;
 export type ResolvedSessionInfoSectionContribution = ResolvedTargetUiContribution<PluginSessionInfoSectionContributionV1>;
-
-export type ResolvedHostedWebContribution = Readonly<{
-    provenance: ResolvedContributionProvenance;
-    source: ResolvedContributionSource;
-    pluginId?: string;
-    pluginRootPath?: string;
-    manifestPath?: string;
-    daemonEntryPath?: string | null;
-    devDaemonEntryPath?: string | null;
-    sourceSpec?: PluginSourceSpecV1;
-    definition: PluginHostedWebContributionV1;
-}>;
 
 export type ResolvedBrowserTargetContribution = Readonly<{
     provenance: ResolvedContributionProvenance;
@@ -849,12 +826,10 @@ export type ResolvedContributionInputs = Readonly<{
     commands?: readonly ResolvedCommandContribution[];
     resources?: readonly ResolvedResourceContribution[];
     promptAssets?: readonly ResolvedPromptAssetContribution[];
-    uiTranslations?: readonly ResolvedUiTranslationsContribution[];
     structuredMessages?: readonly ResolvedStructuredMessageContribution[];
     sessionHeaderActions?: readonly ResolvedSessionHeaderActionContribution[];
     transcriptActivities?: readonly ResolvedTranscriptActivityContribution[];
     sessionInfoSections?: readonly ResolvedSessionInfoSectionContribution[];
-    hostedWeb?: readonly ResolvedHostedWebContribution[];
     browserTargets?: readonly ResolvedBrowserTargetContribution[];
     browserActions?: readonly ResolvedBrowserActionContribution[];
     settings?: readonly ResolvedSettingsContribution[];
@@ -863,6 +838,7 @@ export type ResolvedContributionInputs = Readonly<{
     events?: readonly ResolvedEventContribution[];
     executionRunProfiles?: readonly ResolvedExecutionRunProfileContribution[];
     roles?: readonly ResolvedRoleContribution[];
+    workflows?: readonly ResolvedWorkflowContribution[];
     mcpServers?: readonly ResolvedMcpServerContribution[];
     mcpDiscoverySources?: readonly ResolvedMcpDiscoverySourceContribution[];
     managedDependencies?: readonly ResolvedInstallableContribution[];
@@ -906,12 +882,10 @@ export type ResolvedContributionRegistry = Readonly<{
     commands?: readonly ResolvedCommandContribution[];
     resources: readonly ResolvedResourceContribution[];
     promptAssets?: readonly ResolvedPromptAssetContribution[];
-    uiTranslations?: readonly ResolvedUiTranslationsContribution[];
     structuredMessages?: readonly ResolvedStructuredMessageContribution[];
     sessionHeaderActions?: readonly ResolvedSessionHeaderActionContribution[];
     transcriptActivities?: readonly ResolvedTranscriptActivityContribution[];
     sessionInfoSections?: readonly ResolvedSessionInfoSectionContribution[];
-    hostedWeb?: readonly ResolvedHostedWebContribution[];
     browserTargets?: readonly ResolvedBrowserTargetContribution[];
     browserActions?: readonly ResolvedBrowserActionContribution[];
     settings?: readonly ResolvedSettingsContribution[];
@@ -922,6 +896,7 @@ export type ResolvedContributionRegistry = Readonly<{
     automationEligibleEvents?: readonly ResolvedAutomationEligibleEvent[];
     executionRunProfiles?: readonly ResolvedExecutionRunProfileContribution[];
     roles?: readonly ResolvedRoleContribution[];
+    workflows?: readonly ResolvedWorkflowContribution[];
     mcpServers?: readonly ResolvedMcpServerContribution[];
     mcpDiscoverySources?: readonly ResolvedMcpDiscoverySourceContribution[];
     managedDependencies?: readonly ResolvedInstallableContribution[];
@@ -957,7 +932,6 @@ export type ResolvedContributionRegistry = Readonly<{
     sessionHeaderActionsById?: ReadonlyMap<string, ResolvedSessionHeaderActionContribution>;
     transcriptActivitiesById?: ReadonlyMap<string, ResolvedTranscriptActivityContribution>;
     sessionInfoSectionsById?: ReadonlyMap<string, ResolvedSessionInfoSectionContribution>;
-    hostedWebById?: ReadonlyMap<string, ResolvedHostedWebContribution>;
     browserTargetsById?: ReadonlyMap<string, ResolvedBrowserTargetContribution>;
     browserActionsById?: ReadonlyMap<string, ResolvedBrowserActionContribution>;
     settingsById?: ReadonlyMap<string, ResolvedSettingsContribution>;

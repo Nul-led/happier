@@ -12,6 +12,7 @@ import {
 describe('sessionCapabilities', () => {
   it('exposes shared session capability support levels in the agent manifest', () => {
     expect(AGENTS_CORE.claude.sessionCapabilities).toEqual({
+      usageReporting: 'supported',
       sessionListing: 'supported',
       sessionFork: {
         conversation: 'unsupported',
@@ -26,6 +27,7 @@ describe('sessionCapabilities', () => {
     });
 
     expect(AGENTS_CORE.codex.sessionCapabilities).toEqual({
+      usageReporting: 'supported',
       sessionListing: 'supported',
       sessionFork: {
         conversation: 'supported',
@@ -54,6 +56,7 @@ describe('sessionCapabilities', () => {
     });
 
     expect(AGENTS_CORE.pi.sessionCapabilities).toEqual({
+      usageReporting: 'supported',
       sessionListing: 'unsupported',
       sessionFork: {
         conversation: 'unsupported',
@@ -69,6 +72,10 @@ describe('sessionCapabilities', () => {
   });
 
   it('resolves dot-path session capabilities through a shared helper', () => {
+    expect(getAgentSessionCapability('claude', 'usageReporting')).toBe('supported');
+    expect(getAgentSessionCapability('codex', 'usageReporting')).toBe('supported');
+    expect(getAgentSessionCapability('pi', 'usageReporting')).toBe('supported');
+    expect(getAgentSessionCapability('gemini', 'usageReporting')).toBe('unsupported');
     expect(getAgentSessionCapability('codex', 'sessionListing')).toBe('supported');
     expect(getAgentSessionCapability('codex', 'sessionFork.conversation')).toBe('supported');
     expect(getAgentSessionCapability('codex', 'sessionFork.fromMessage')).toBe('unsupported');

@@ -665,6 +665,7 @@ export function HappierListItem({
       tabIndex={behavior.tabIndex}
       onKeyDown={roving?.onKeyDown}
       onContextMenu={onContextMenu}
+      onLongPress={Platform.OS === 'web' ? undefined : onContextMenu}
       onPress={(event) => onPress?.(event)}
       style={(state) => navigationRow ? ({
         minWidth: 0,

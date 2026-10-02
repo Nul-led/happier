@@ -33,6 +33,34 @@ async function executable(path, contents) {
   await chmod(path, 0o755);
 }
 
+test('native launcher hands Mac workspace execution to the configured execution-host bridge', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-native-host-bridge-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const binDir = join(root, 'bin');
+  const stackHome = join(root, 'stack-home');
+  await mkdir(binDir, { recursive: true });
+  await mkdir(stackHome, { recursive: true });
+  await writeFile(join(stackHome, 'execution-host.json'), '{}');
+  await executable(join(binDir, 'uname'), '#!/bin/sh\nprintf "Darwin\\n"\n');
+  await executable(join(binDir, 'node'), '#!/bin/sh\nprintf "%s\\n" "$@"\nexit 7\n');
+  await executable(join(binDir, 'probe-command'), '#!/bin/sh\nprintf "unexpected-local\\n"\n');
+  const invocation = { cwd: repoRoot, encoding: 'utf8', env: {
+    ...executionNeutralEnv, HOME: root, HAPPIER_STACK_HOME_DIR: stackHome,
+    HAPPIER_STACK_STORAGE_DIR: join(root, 'stacks'),
+    HAPPIER_STACK_EXECUTION_HOST_REENTRY: '', CI: '', HAPPIER_STACK_SANDBOX_DIR: '',
+    PATH: `${binDir}:/usr/bin:/bin`,
+  } };
+  const result = spawnSync('/bin/sh', [launcher, '--', 'probe-command', 'literal argument'], invocation);
+  assert.equal(result.status, 7, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    `${repoRoot}/apps/stack/bin/../scripts/execution_host_bridge.mjs`,
+    `--native-launcher=${launcher}`, '--', '--', 'probe-command', 'literal argument',
+  ]);
+  const local = spawnSync('/bin/sh', [launcher, '--local', '--', 'probe-command'], invocation);
+  assert.equal(local.status, 0, local.stderr);
+  assert.equal(local.stdout, 'unexpected-local\n');
+});
+
 async function memoryRoutingFixture(t, { availableKiB = 5242880, roomyLoad = 4, roomyAvailableKiB = 25480397, fallback = 'error' } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'happier-memory-routing-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -676,7 +704,8 @@ test('automatic dispatch protects control work while keeping a selected local pa
   assert.equal(result.stdout, 'payload:ok\n');
   const scopes = await readFile(scopeLog, 'utf8');
   assert.match(scopes, /--slice=happier-critical\.slice .*hstack-exec.*probe-command ok/);
-  assert.match(scopes, /--slice=happier-jobs\.slice --nice=10 -- probe-command ok/);
+  // Routed tests may already inherit a lower background scheduling priority.
+  assert.match(scopes, /--slice=happier-jobs\.slice --nice=1[0-9] -- probe-command ok/);
 });
 
 test('Yarn workspace validation receives the remote workload governor', async (t) => {
@@ -4827,11 +4856,11 @@ test('native launcher admits heavyweight local and remote jobs, reclaims stale o
     assert.match(nodeVitestOutput.stderr, remoteAdmissionEvidence);
     assert.match(
       await readFile(scopeMarker, 'utf8'),
-      /--user --scope --quiet --slice=happier-jobs\.slice --nice=10 -- bash -c .*remote_dependency_bootstrap\.mjs.*tsc.*remote-third/s,
+      /--user --scope --quiet --slice=happier-jobs\.slice --nice=1[0-9] -- bash -c .*remote_dependency_bootstrap\.mjs.*tsc.*remote-third/s,
     );
     assert.match(
       await readFile(scopeMarker, 'utf8'),
-      /--user --scope --quiet --slice=happier-jobs\.slice --nice=10 -- bash -c .*remote_validation_preparation\.mjs.*'node' 'node_modules\/vitest\/vitest\.mjs' 'remote-node-vitest/s,
+      /--user --scope --quiet --slice=happier-jobs\.slice --nice=1[0-9] -- bash -c .*remote_validation_preparation\.mjs.*'node' 'node_modules\/vitest\/vitest\.mjs' 'remote-node-vitest/s,
     );
     assert.deepEqual(await readdir(join(admissionRoot, 'waiters')), []);
 

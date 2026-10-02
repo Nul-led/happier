@@ -1428,7 +1428,6 @@ async function createPiConversationRuntimeOperations(
     publishParsedRuntimeEvent(event);
   };
   let operations: RuntimeOperationsWithRecordHandler | null = null;
-  let usageObservationSequence = 0;
   let usageObservationChain = Promise.resolve();
   const blockingExtensionUiRequests = new Map<string, Readonly<{
     controller: AbortController;
@@ -1561,7 +1560,7 @@ async function createPiConversationRuntimeOperations(
           stats: response.data,
           sessionId: happierSessionId,
           turnId,
-          observationId: `pi-usage-${++usageObservationSequence}`,
+          observationId: `pi-usage-${randomUUID()}`,
           observedAtMs,
         });
         if (event) {

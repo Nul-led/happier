@@ -23,6 +23,15 @@ import type {
   PluginUiIconTokenV1,
   PluginUiViewV2Input,
 } from './ui/publicContract.js';
+import type { WorkflowsActionResultById } from './actions/dtos/workflowsActionDtos.generated.js';
+
+/** Canonical workflow grammar projected by the Protocol-owned Action DTO producer. */
+export type PluginWorkflowContributionV1 = Readonly<{
+  id: string;
+  title: string;
+  description?: string;
+  definition: WorkflowsActionResultById['workflow.definition.get']['definition'];
+}>;
 
 /** Observed ACP capability fingerprint used by a system-tool readiness declaration. */
 export type PluginSystemToolAcpFingerprintV1 = Readonly<{
@@ -513,6 +522,7 @@ export interface PluginManifest {
       | 'openableContentViewers'
       | 'accountCollections'
       | 'webhooks'
+      | 'captureSources'
       | 'pluginContributionPoints'
       | 'targetedPluginContributions']?: readonly Readonly<{
       id: string;
@@ -555,6 +565,8 @@ export interface PluginManifest {
       resultSchema?: PluginJsonSchema | null;
       surfaces: readonly string[];
     }>)[];
+    /** Read-only definitions available through the host's workflow library. */
+    workflows?: readonly PluginWorkflowContributionV1[];
     /** Read-only role sources, overridable through the host's Roles settings. */
     roles?: readonly Readonly<{
       id: string;
@@ -693,6 +705,7 @@ export type PluginContributes = Readonly<{
   events: NonNullable<NonNullable<PluginManifest['contributes']>['events']>;
   executionRunProfiles: NonNullable<NonNullable<PluginManifest['contributes']>['executionRunProfiles']>;
   roles: NonNullable<NonNullable<PluginManifest['contributes']>['roles']>;
+  workflows: NonNullable<NonNullable<PluginManifest['contributes']>['workflows']>;
   notifications: NonNullable<NonNullable<PluginManifest['contributes']>['notifications']>;
   notificationChannels: NonNullable<NonNullable<PluginManifest['contributes']>['notificationChannels']>;
   scmHostingProviders: NonNullable<NonNullable<PluginManifest['contributes']>['scmHostingProviders']>;

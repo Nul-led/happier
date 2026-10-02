@@ -362,17 +362,20 @@ export async function createOpenCodeServerRuntimeAssembly(
             },
             tools: { delivery: 'native_mcp', support: 'supported' },
           },
-          prepareProviderCliAttach: async () => {
+          prepareTerminalPresentation: async () => {
             const providerSessionId = operations.readSessionIdentity().sessionId;
             if (!providerSessionId) {
               throw new Error('OpenCode provider session identity is unavailable for local CLI attach');
             }
             return {
-              path: params.directory,
-              runtimeDescriptorV1: buildOpenCodeAgentRuntimeDescriptorV1({
-                backendMode: 'server',
-                providerSessionId,
-              }),
+              kind: 'provider_attach' as const,
+              metadata: {
+                path: params.directory,
+                runtimeDescriptorV1: buildOpenCodeAgentRuntimeDescriptorV1({
+                  backendMode: 'server',
+                  providerSessionId,
+                }),
+              },
             };
           },
           ...(params.models ? { models: params.models } : {}),

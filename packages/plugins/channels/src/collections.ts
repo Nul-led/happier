@@ -30,6 +30,7 @@ import {
   ConversationProviderConnectionStopInputV1JsonSchema,
   ConversationResolvedEndpointV1JsonSchema,
   ConversationBindingTargetV1JsonSchema,
+  ConversationScopedPullRequestTriggerV1Schema,
   ConversationAuthenticatedObservationShellV1JsonSchema,
   ConversationIngressAutomationEventCandidateV1JsonSchema,
   ConversationNormalizedIngressV1JsonSchema,
@@ -843,6 +844,7 @@ const FROZEN_AUTOMATION_INGRESS_TARGET_SCHEMA: PluginJsonSchema = {
     kind: { type: 'string', const: 'automation' },
     automationId: boundedString(MAX_PLUGIN_ID_LENGTH),
     occurrenceKey: boundedString(MAX_CONVERSATION_SESSION_IDEMPOTENCY_KEY_UTF8_BYTES),
+    scopedTrigger: ConversationScopedPullRequestTriggerV1Schema.jsonSchema,
     // The generic Automation Action owns the actual reply-context bounds and
     // validation. This row freezes its exact JSON input before the first call;
     // it is not a Channels-created envelope or a second reply-context store.

@@ -11,6 +11,13 @@
  *   adapters     → presentation + plugin-sdk/ui
  */
 export type { HappierLayoutChangeEvent, HappierTextSelection } from './portableTypes.js';
+export { HappierStoredImage, type HappierStoredImageProps, type HappierStoredImageHost } from './content/StoredImage.js';
+export { resolveHappierStoredImageDimensions, resolveHappierStoredImageLayout, type HappierStoredImageDimensions } from './content/storedImageLayout.js';
+export { HappierLiveStreamInputLayer } from './media/LiveStreamInputLayer.js';
+export { HappierLiveStream, type HappierLiveStreamProps } from './media/LiveStream.js';
+export { HappierLiveStreamPlayer } from './media/LiveStreamPlayer.js';
+export type { HappierLiveStreamPlayerHost, HappierLiveStreamPlayerDisplayState, HappierLiveStreamAvccInput, HappierLiveStreamPlayerRendererEvent, HappierLiveStreamPlayerDiagnostic, HappierLiveStreamPlayerRenderEvent } from './media/liveStreamPlayerTypes.js';
+export type { HappierLiveStreamInputGesture, HappierLiveStreamGestureGeometry, HappierLiveStreamPoint, HappierLiveStreamInputControlKind, HappierLiveStreamOrientation, HappierLiveStreamRect } from './media/inputGesture.js';
 export { HAPPIER_ICON_BUTTON_SIZE, resolveHappierIconButtonChrome } from './interaction/iconButtonChrome.js';
 export {
   HappierListDetailLayout,
@@ -250,6 +257,7 @@ export {
   type HappierPresenceCapsuleCopy,
   type HappierPresenceCapsulePlacement,
   type HappierPresenceCapsuleProps,
+  type HappierPresenceTakeControlResult,
 } from './copresence/PresenceCapsule.js';
 export {
   HappierActionPanel,

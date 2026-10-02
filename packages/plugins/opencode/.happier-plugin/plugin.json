@@ -30,6 +30,14 @@
               "create",
               "resume",
               "fork"
+            ],
+            "workStateSources": [
+              {
+                "id": "opencode-todos",
+                "itemKinds": [
+                  "todo"
+                ]
+              }
             ]
           },
           "surfaces": [
@@ -289,6 +297,7 @@
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -320,6 +329,7 @@
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -601,7 +611,8 @@
     },
     "voiceModelPacks": [],
     "voiceProviders": [],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "displayName": "OpenCode",
   "engines": {

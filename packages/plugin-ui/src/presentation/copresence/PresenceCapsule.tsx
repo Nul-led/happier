@@ -48,6 +48,11 @@ export type HappierPresenceCapsuleCopy = Readonly<{
 
 export type HappierPresenceCapsulePlacement = 'dock' | 'inline' | 'strip';
 
+/** A takeover command's answer, not a controller fact. Only `presence` confirms human control. */
+export type HappierPresenceTakeControlResult = Readonly<{ status: 'accepted' | 'failed' | 'unknown' }>;
+
+type TakeControlRequest = Readonly<{ controlEpoch: number; status: 'pending' | 'failed' | 'unknown' }>;
+
 export type HappierPresenceCapsuleProps = Readonly<{
   presence: HappierPresence;
   copy: HappierPresenceCapsuleCopy;
@@ -55,9 +60,11 @@ export type HappierPresenceCapsuleProps = Readonly<{
   renderAgentMark?: (size: number) => ReactNode;
   /**
    * Absent when this surface has no route to take control. Wire it to the owner's takeover Action; the
-   * capsule only says "stopping" until the owner's control epoch moves.
+   * capsule only says "stopping" until the owner's control epoch moves. Return a typed command result
+   * for asynchronous routes so failed or unknown delivery offers retry. Synchronous owners may return
+   * void and report their answer through `presence` as before; accepted never asserts human control.
    */
-  onTakeControl?: () => void;
+  onTakeControl?: () => void | HappierPresenceTakeControlResult | Promise<HappierPresenceTakeControlResult>;
   /** Absent when the owner offers no hand back from this surface. */
   onHandBack?: () => void;
   /** A fresh look at the surface, which is what confirms an unconfirmed stop. */
@@ -190,7 +197,8 @@ type Shown = Readonly<{ presence: HappierPresence; copy: HappierPresenceCapsuleC
  */
 export function HappierPresenceCapsule(props: HappierPresenceCapsuleProps): ReactElement | null {
   const { host, colors } = props;
-  const [requestedAtEpoch, setRequestedAtEpoch] = useState<number | null>(null);
+  const [request, setRequest] = useState<TakeControlRequest | null>(null);
+  const requestRef = useRef<TakeControlRequest | null>(null);
   const docked = props.placement === undefined || props.placement === 'dock';
   const visible = props.presence.kind !== 'idle';
   // A docked capsule leaves as part of its motion: it keeps saying the last state it said while it
@@ -201,17 +209,34 @@ export function HappierPresenceCapsule(props: HappierPresenceCapsuleProps): Reac
   useEffect(() => {
     // The takeover landed (or the agent stopped on its own): the pending press is answered.
     const current = props.presence;
-    if (requestedAtEpoch !== null && (current.kind !== 'agent' || current.controlEpoch !== requestedAtEpoch)) {
-      setRequestedAtEpoch(null);
+    if (request !== null && (current.controlEpoch !== request.controlEpoch
+      || (current.kind !== 'agent' && current.kind !== 'stopping'))) {
+      requestRef.current = null;
+      setRequest(null);
     }
-  }, [props.presence, requestedAtEpoch]);
+  }, [props.presence, request]);
+  useEffect(() => () => { requestRef.current = null; }, []);
 
   const onTakeControl = props.onTakeControl;
   const presenceForPress = props.presence;
   const takeControl = useCallback(() => {
     if (presenceForPress.kind !== 'agent' || !onTakeControl) return;
-    setRequestedAtEpoch(presenceForPress.controlEpoch);
-    onTakeControl();
+    const pending: TakeControlRequest = { controlEpoch: presenceForPress.controlEpoch, status: 'pending' };
+    requestRef.current = pending;
+    setRequest(pending);
+    const settle = (result: HappierPresenceTakeControlResult) => {
+      // A newer press or an authoritative answer wins over a delayed command result.
+      if (requestRef.current !== pending || result.status === 'accepted') return;
+      const answered: TakeControlRequest = { controlEpoch: pending.controlEpoch, status: result.status };
+      requestRef.current = answered;
+      setRequest(answered);
+    };
+    try {
+      const result = onTakeControl();
+      if (result !== undefined) void Promise.resolve(result).then(settle, () => settle({ status: 'unknown' }));
+    } catch {
+      settle({ status: 'unknown' });
+    }
   }, [onTakeControl, presenceForPress]);
 
   const renderCapsule = (leaving: boolean): ReactNode => {
@@ -220,31 +245,34 @@ export function HappierPresenceCapsule(props: HappierPresenceCapsuleProps): Reac
     // Stopping is the owner's fact (an interrupted action still settling) or, for the instant between
     // the press and the owner's first answer, the press itself.
     const stopping = presence.kind === 'stopping' || (presence.kind === 'agent'
-      && requestedAtEpoch !== null
-      && requestedAtEpoch === presence.controlEpoch);
+      && request?.status === 'pending'
+      && request.controlEpoch === presence.controlEpoch);
+    const recovery = presence.kind === 'agent' && request !== null
+      && request.controlEpoch === presence.controlEpoch && request.status !== 'pending';
     const human = presence.kind === 'human';
     const unconfirmed = presence.kind === 'unconfirmed';
     const strip = props.placement === 'strip';
     const compact = props.compact === true;
     const title = human
       ? copy.humanTitle
-      : unconfirmed
+      : unconfirmed || recovery
         ? copy.stopUnconfirmed
         : stopping
           ? copy.stopping
           : copy.agentTitle;
-    const mayHaveLanded = unconfirmed || (presence.kind === 'human' && presence.interruptedCompletion === 'unknown');
+    const mayHaveLanded = unconfirmed || (recovery && request.status === 'unknown')
+      || (presence.kind === 'human' && presence.interruptedCompletion === 'unknown');
     const detail = human
       ? mayHaveLanded
         ? copy.lastActionMayHaveLanded
         : copy.humanDetail ?? (props.onHandBack ? copy.pausedUntilHandBack : null)
-      : unconfirmed
+      : unconfirmed || (recovery && mayHaveLanded)
         ? copy.lastActionMayHaveLanded
         : stopping
           ? copy.stoppingDetail
           : presence.kind === 'agent' ? copy.agentDetail : null;
     const detailColor = mayHaveLanded ? colors.warning : colors.secondaryText;
-    const stateKey = human ? 'human' : unconfirmed ? 'unconfirmed' : stopping ? 'stopping' : 'agent';
+    const stateKey = human ? 'human' : unconfirmed ? 'unconfirmed' : recovery ? 'recovery' : stopping ? 'stopping' : 'agent';
 
     const row = (
       <View
@@ -258,7 +286,7 @@ export function HappierPresenceCapsule(props: HappierPresenceCapsuleProps): Reac
         <View style={strip ? styles.markStrip : styles.mark}>
           {human
             ? host.renderGlyph('hand', colors.text, MARK_GLYPH_SIZE)
-            : unconfirmed
+            : unconfirmed || recovery
               ? host.renderGlyph('warning', colors.warning, MARK_GLYPH_SIZE)
               : props.renderAgentMark
                 ? props.renderAgentMark(MARK_GLYPH_SIZE)

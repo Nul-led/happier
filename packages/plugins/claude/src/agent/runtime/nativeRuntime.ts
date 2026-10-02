@@ -18,6 +18,7 @@ import type {
 import { createExecutionRunHostBackendFromConversationRuntime } from '@happier-dev/plugin-sdk/agents/runtime';
 import { claudeHandoffSurface } from '../surfaces/sessions/handoff/providerOps.js';
 import { isDeepStrictEqual } from 'node:util';
+import { randomUUID } from 'node:crypto';
 import { AgentRuntimeJsonValueSchema } from '@happier-dev/plugin-sdk/agents/runtime';
 import { PluginError, type PluginDiagnosticData } from '@happier-dev/plugin-sdk';
 import type { AgentModelDescriptor } from '@happier-dev/plugin-sdk/agents';
@@ -51,7 +52,7 @@ import {
   parseClaudeTerminalRawSpawnOptionOverrides,
   partitionClaudeTerminalUserArgs,
 } from './terminal/argv.js';
-import { isClaudeUnifiedTerminalSelected } from './terminal/unified/selection.js';
+import { isClaudeUnifiedTerminalSelected, readClaudeTerminalRuntimeSelection } from './terminal/unified/selection.js';
 import { openClaudeNativeUnifiedTerminalSession } from './terminal/unified/nativeSession.js';
 import type {
   ClaudeUnifiedPromptDeliveryIdentity,
@@ -134,6 +135,7 @@ type ClaudeNativePromptCustodyOperations =
   }>;
 
 export type ClaudeNativeSessionOperations = ClaudeRuntimeTurnOperations & Readonly<{
+  prepareTerminalPresentation?: AgentSessionRuntime['prepareTerminalPresentation'];
   supportsEffort?: boolean;
   observeSourceTranscript?: AgentSessionRuntime['observeSourceTranscript'];
   subscribeEffectiveModel?: ClaudeEffectiveModelEvidenceSubscription;
@@ -210,6 +212,7 @@ export function createClaudeNativeSessionOpener(openers: Readonly<{
 }>): ClaudeNativeSessionFactory {
   return async (input) => {
     const selected = await isClaudeUnifiedTerminalSelected({
+      runtimeDescriptorV1: input.request.runtimeDescriptorV1,
       context: {
         features: input.context.session.services.features,
         settings: input.context.services.settings.forScope({ kind: 'account' }),
@@ -422,7 +425,6 @@ export function createClaudeNativeSessionRuntimeFromOperations(
   let sequence = 0;
   let disposed = false;
   let appliedConfiguration = request.configuration;
-  let usageObservationSequence = 0;
   let currentProviderBinding = request.providerBinding;
   let bufferedEvents: AgentSessionPreAdmissionBuffer<NativeSessionEventInput> | null = null;
   let bufferedEventFailure: Exclude<AgentSessionPreAdmissionBufferResult, { status: 'accepted' }> | null = null;
@@ -600,14 +602,14 @@ export function createClaudeNativeSessionRuntimeFromOperations(
       if (disposed) return;
       emit({
         kind: 'usage-observed',
-        observationId: `claude-usage-${++usageObservationSequence}`,
+        observationId: `claude-usage-${observation.nativeRecordId ?? randomUUID()}`,
         source: observation.source,
         scope: observation.scope,
         ...(observation.modelId ? { modelId: observation.modelId } : {}),
         tokens: observation.tokens,
         ...(observation.cost ? { cost: observation.cost } : {}),
         ...(observation.contextSnapshot ? { context: observation.contextSnapshot } : {}),
-      });
+      }, observation.observedAtMs);
     },
   ) ?? (() => undefined);
   const activeInputBinding = context.session.services.activeInput.bind({
@@ -687,6 +689,13 @@ export function createClaudeNativeSessionRuntimeFromOperations(
 
   return {
     nativeGoalControlsSupported: typeof operations.setGoal === 'function' && typeof operations.clearGoal === 'function',
+    ...(unifiedPromptAcceptanceOperations ? { runtimeCapabilities: { localControl: { supported: false } } } : {}),
+    ...(operations.prepareTerminalPresentation ? {
+      async prepareTerminalPresentation(presentationRequest: Parameters<NonNullable<AgentSessionRuntime['prepareTerminalPresentation']>>[0]) {
+        if (disposed) throw new Error('Claude runtime is disposed.');
+        return await operations.prepareTerminalPresentation!(presentationRequest);
+      },
+    } : {}),
     ...(runtimeDescriptorV1 ? { runtimeDescriptorV1 } : {}),
     ...(unifiedPromptAcceptanceOperations?.observeSourceTranscript ? {
       observeSourceTranscript: async (input: Parameters<NonNullable<AgentSessionRuntime['observeSourceTranscript']>>[0]) => {
@@ -1169,6 +1178,28 @@ export function createClaudeNativeRuntime(
     toolExecution: { capability: 'interceptable' },
     sessions: {
       goals: goals.control,
+      async resolveTerminalPresentation(selection, context) {
+        const unified = await isClaudeUnifiedTerminalSelected({
+          runtimeDescriptorV1: selection.runtimeDescriptorV1,
+          context: { features: context.features, settings: context.settings.forScope({ kind: 'account' }) },
+        });
+        const host = selection.requestedHost ?? readClaudeTerminalRuntimeSelection(selection.runtimeDescriptorV1)?.host;
+        const source = selection.runtimeDescriptorV1;
+        return {
+          kind: unified && (host === 'tmux' || host === 'zellij') ? 'managed_terminal' : 'runner',
+          startingMode: unified ? 'terminal' : 'remote',
+          runtimeDescriptorV1: {
+            ...(source?.agentId === 'claude' ? source : {}),
+            v: 1,
+            agentId: 'claude',
+            agent: {
+              ...(source?.agentId === 'claude' ? source.agent : {}),
+              backendMode: unified ? 'unifiedTerminal' : 'agentSdk',
+              ...(host && host !== 'plain' ? { terminalHostKind: host } : {}),
+            },
+          },
+        };
+      },
       async open(request, context) {
         return await openSession(request, context);
       },

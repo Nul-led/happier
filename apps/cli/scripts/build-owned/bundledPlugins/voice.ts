@@ -27,8 +27,6 @@ function renderBundledVoiceManifestProjectionConstant(
 export function renderBundledVoiceEntriesTs(
   sources: readonly BundledFirstPartyVoiceProjectionSource[],
 ): string {
-  const exportName = 'VOICE_PROVIDER_PRESENTATIONS';
-  const subpath = 'ui/voice';
   const lines: string[] = [];
   lines.push('/**');
   lines.push(' * GENERATED FILE CONTRACT (VOICE-FIRST-PARTY-PROJECTION)');
@@ -43,13 +41,8 @@ export function renderBundledVoiceEntriesTs(
   lines.push("import { projectBundledVoiceManifestContributions } from './bundledVoiceManifestProjection';");
   lines.push("import type { BundledVoiceManifestContribution } from './bundledVoiceManifestProjection';");
   lines.push("import type { VoiceProviderPresentation } from './voiceProviderPresentation';");
+  lines.push("import { createBundledVoiceProviderPresentations } from './bundledVoiceManifestProjection';");
   lines.push('');
-  for (const source of sources) {
-    const prefix = toBundledVoiceImportPrefix(source.pluginPackageId);
-    lines.push(
-      `import { ${exportName} as ${prefix}_${exportName} } from '${source.packageName}/${subpath}';`,
-    );
-  }
   if (sources.length > 0) {
     lines.push('');
     for (const source of sources) {
@@ -63,11 +56,9 @@ export function renderBundledVoiceEntriesTs(
   }
   lines.push(']) satisfies readonly BundledVoiceManifestContribution[];');
   lines.push('');
-  lines.push('export const BUNDLED_FIRST_PARTY_VOICE_PRESENTATIONS = Object.freeze([');
-  for (const source of sources) {
-    lines.push(`  ...${toBundledVoiceImportPrefix(source.pluginPackageId)}_${exportName},`);
-  }
-  lines.push(']) satisfies readonly VoiceProviderPresentation[];');
+  lines.push('export const BUNDLED_FIRST_PARTY_VOICE_PRESENTATIONS = createBundledVoiceProviderPresentations(');
+  lines.push(`${renderJsonLiteral(sources.flatMap((source) => source.presentations) as JsonValue)} as const,`);
+  lines.push(') satisfies readonly VoiceProviderPresentation[];');
   lines.push('');
   return lines.join('\n');
 }
@@ -75,11 +66,13 @@ export function renderBundledVoiceEntriesTs(
 export function renderBundledVoiceRuntimeEntriesTs(
   sources: readonly BundledFirstPartyVoiceProjectionSource[],
   platform: BundledVoiceRuntimePlatform,
+  excludedPackageNames: ReadonlySet<string> = new Set(),
 ): string {
   const applicableSources = sources.filter(
     (candidate): candidate is BundledFirstPartyVoiceProjectionSource & Readonly<{
       conversationClient: Readonly<{ artifactId: string; exportName: string }>;
-    }> => candidate.hasConversationProvider
+    }> => !excludedPackageNames.has(candidate.packageName)
+      && candidate.hasConversationProvider
       && candidate.conversationClient !== null
       && candidate.conversationPlatforms.includes(platform),
   );

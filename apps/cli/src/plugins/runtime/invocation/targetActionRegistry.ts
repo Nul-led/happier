@@ -141,6 +141,8 @@ export type InvokeTargetActionParams = Readonly<{
     invocationSurface?: PluginInvocationSurface;
     /** Host-stamped provenance for a plugin-to-plugin edge. */
     caller?: PluginInvocationCaller;
+    initiatingActionCaller?: import('@happier-dev/protocol/actions').ActionCaller;
+    startedBy?: import('@happier-dev/protocol').WorkflowRunStartedByV1;
     /** Host-private external API authority; never projected into plugin context. */
     externalActionContext?: PluginExternalActionContext;
     /**
@@ -505,6 +507,8 @@ export function createTargetActionInvocationRegistry(params: Readonly<{
                     correlationId,
                     surface: invocation.surface,
                     ...(invocation.caller ? { caller: invocation.caller } : {}),
+                    ...(invocation.initiatingActionCaller ? { initiatingActionCaller: invocation.initiatingActionCaller } : {}),
+                    ...(invocation.startedBy ? { startedBy: invocation.startedBy } : {}),
                     ...(invocation.externalActionContext
                         ? { externalActionContext: invocation.externalActionContext }
                         : {}),

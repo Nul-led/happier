@@ -8,9 +8,9 @@ import type {
   PluginCommandContributionV2,
   PluginExecutionRunProfileContributionV2,
   PluginRoleDeclarationV1,
+  PluginWorkflowContributionV1,
   PluginEventContributionV1,
   PluginHookContributionV2,
-  PluginHostedWebContributionV1,
   PluginMcpDiscoverySourceContributionV1,
   PluginMcpServerContributionV1,
   PluginNotificationCategoryContributionV2,
@@ -30,7 +30,6 @@ import type {
   PluginConnectedAccountDescriptorContributionV2,
   PluginSourceSpecV1,
   PluginToolContributionV2,
-  PluginUiTranslationsContributionV1,
   PluginUiRendererV2,
   PluginUiTranslationBundleV2,
   PluginUiViewV2,
@@ -152,12 +151,10 @@ export type PluginContributionRegistry = Readonly<{
   hooks: readonly PluginOwnedContribution<PluginHookContributionV2>[];
   resources: readonly PluginOwnedContribution<ResolvedResourceDefinition>[];
   promptAssets: readonly PluginOwnedContribution<PluginPromptAssetContributionV1>[];
-  uiTranslations: readonly PluginOwnedContribution<PluginUiTranslationsContributionV1>[];
   sessionHeaderActions: readonly PluginOwnedContribution<PluginSessionHeaderActionDescriptorV1>[];
   searchProviders: readonly PluginOwnedContribution<PluginSearchProviderContributionV1>[];
   transcriptActivities: readonly PluginOwnedContribution<PluginTranscriptActivityContributionV1>[];
   sessionInfoSections: readonly PluginOwnedContribution<PluginSessionInfoSectionContributionV1>[];
-  hostedWeb: readonly PluginOwnedContribution<PluginHostedWebContributionV1>[];
   browserTargets: readonly PluginOwnedContribution<PluginBrowserTargetContributionV1>[];
   browserActions: readonly PluginOwnedContribution<PluginBrowserActionContributionV1>[];
   settings: readonly PluginOwnedContribution<PluginSettingsContributionV2>[];
@@ -166,6 +163,7 @@ export type PluginContributionRegistry = Readonly<{
   events: readonly PluginOwnedContribution<ResolvedEventDefinition>[];
   executionRunProfiles: readonly PluginOwnedContribution<PluginExecutionRunProfileContributionV2>[];
   roles: readonly PluginOwnedContribution<PluginRoleDeclarationV1>[];
+  workflows: readonly PluginOwnedContribution<PluginWorkflowContributionV1>[];
   mcpServers: readonly PluginOwnedContribution<PluginMcpServerContributionV1>[];
   mcpDiscoverySources: readonly PluginOwnedContribution<PluginMcpDiscoverySourceContributionV1>[];
   scmHostingProviders: readonly PluginOwnedContribution<ScmHostingProviderContribution>[];
@@ -183,14 +181,6 @@ export type PluginContributionRegistry = Readonly<{
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function readContributionArray<T>(contributes: unknown, key: string): readonly T[] {
-  if (!isRecord(contributes)) {
-    return [];
-  }
-  const value = contributes[key];
-  return Array.isArray(value) ? value as readonly T[] : [];
 }
 
 function displayText(value: string | Readonly<{ fallback: string }>): string {
@@ -403,12 +393,10 @@ export function buildPluginContributionRegistry(params: Readonly<{
   const hooks: PluginOwnedContribution<PluginHookContributionV2>[] = [];
   const resources: PluginOwnedContribution<ResolvedResourceDefinition>[] = [];
   const promptAssets: PluginOwnedContribution<PluginPromptAssetContributionV1>[] = [];
-  const uiTranslations: PluginOwnedContribution<PluginUiTranslationsContributionV1>[] = [];
   const sessionHeaderActions: PluginOwnedContribution<PluginSessionHeaderActionDescriptorV1>[] = [];
   const searchProviders: PluginOwnedContribution<PluginSearchProviderContributionV1>[] = [];
   const transcriptActivities: PluginOwnedContribution<PluginTranscriptActivityContributionV1>[] = [];
   const sessionInfoSections: PluginOwnedContribution<PluginSessionInfoSectionContributionV1>[] = [];
-  const hostedWeb: PluginOwnedContribution<PluginHostedWebContributionV1>[] = [];
   const browserTargets: PluginOwnedContribution<PluginBrowserTargetContributionV1>[] = [];
   const browserActions: PluginOwnedContribution<PluginBrowserActionContributionV1>[] = [];
   const settings: PluginOwnedContribution<PluginSettingsContributionV2>[] = [];
@@ -417,6 +405,7 @@ export function buildPluginContributionRegistry(params: Readonly<{
   const events: PluginOwnedContribution<ResolvedEventDefinition>[] = [];
   const executionRunProfiles: PluginOwnedContribution<PluginExecutionRunProfileContributionV2>[] = [];
   const roles: PluginOwnedContribution<PluginRoleDeclarationV1>[] = [];
+  const workflows: PluginOwnedContribution<PluginWorkflowContributionV1>[] = [];
   const mcpServers: PluginOwnedContribution<PluginMcpServerContributionV1>[] = [];
   const mcpDiscoverySources: PluginOwnedContribution<PluginMcpDiscoverySourceContributionV1>[] = [];
   const scmHostingProviders: PluginOwnedContribution<ScmHostingProviderContribution>[] = [];
@@ -777,18 +766,6 @@ export function buildPluginContributionRegistry(params: Readonly<{
       });
     }
 
-    for (const definition of readContributionArray<PluginUiTranslationsContributionV1>(plugin.manifest.contributes, 'uiTranslations')) {
-      uiTranslations.push({
-        pluginId: plugin.pluginId,
-        pluginRootPath: plugin.pluginRootPath,
-        manifestPath: plugin.manifestPath,
-        daemonEntryPath: plugin.daemonEntryPath,
-        devDaemonEntryPath: plugin.devDaemonEntryPath,
-        sourceSpec: plugin.sourceSpec,
-        definition,
-      });
-    }
-
     for (const definition of readSemanticDefinitions<PluginSessionHeaderActionDescriptorV1>('sessionHeaderActions')) {
       sessionHeaderActions.push({
         pluginId: plugin.pluginId,
@@ -832,18 +809,6 @@ export function buildPluginContributionRegistry(params: Readonly<{
         pluginId: plugin.pluginId,
         pluginVersion: plugin.manifest.version,
         identity: createPluginContributionIdentity({ pluginId: plugin.pluginId, localId: definition.id }),
-        pluginRootPath: plugin.pluginRootPath,
-        manifestPath: plugin.manifestPath,
-        daemonEntryPath: plugin.daemonEntryPath,
-        devDaemonEntryPath: plugin.devDaemonEntryPath,
-        sourceSpec: plugin.sourceSpec,
-        definition,
-      });
-    }
-
-    for (const definition of readContributionArray<PluginHostedWebContributionV1>(plugin.manifest.contributes, 'hostedWeb')) {
-      hostedWeb.push({
-        pluginId: plugin.pluginId,
         pluginRootPath: plugin.pluginRootPath,
         manifestPath: plugin.manifestPath,
         daemonEntryPath: plugin.daemonEntryPath,
@@ -1068,6 +1033,20 @@ export function buildPluginContributionRegistry(params: Readonly<{
       });
     }
 
+    for (const definition of readSemanticDefinitions<PluginWorkflowContributionV1>('workflows')) {
+      workflows.push({
+        pluginId: plugin.pluginId,
+        pluginVersion: plugin.manifest.version,
+        identity: createPluginContributionIdentity({ pluginId: plugin.pluginId, localId: definition.id }),
+        pluginRootPath: plugin.pluginRootPath,
+        manifestPath: plugin.manifestPath,
+        daemonEntryPath: plugin.daemonEntryPath,
+        devDaemonEntryPath: plugin.devDaemonEntryPath,
+        sourceSpec: plugin.sourceSpec,
+        definition,
+      });
+    }
+
     for (const definition of readSemanticDefinitions<VoiceModelPackContributionV1>('voiceModelPacks')) {
       voiceModelPacks.push({
         pluginId: plugin.pluginId,
@@ -1122,12 +1101,10 @@ export function buildPluginContributionRegistry(params: Readonly<{
     hooks: Object.freeze(hooks),
     resources: Object.freeze(resources),
     promptAssets: Object.freeze(promptAssets),
-    uiTranslations: Object.freeze(uiTranslations),
     sessionHeaderActions: Object.freeze(sessionHeaderActions),
     searchProviders: Object.freeze(searchProviders),
     transcriptActivities: Object.freeze(transcriptActivities),
     sessionInfoSections: Object.freeze(sessionInfoSections),
-    hostedWeb: Object.freeze(hostedWeb),
     browserTargets: Object.freeze(browserTargets),
     browserActions: Object.freeze(browserActions),
     settings: Object.freeze(settings),
@@ -1136,6 +1113,7 @@ export function buildPluginContributionRegistry(params: Readonly<{
     events: Object.freeze(events),
     executionRunProfiles: Object.freeze(executionRunProfiles),
     roles: Object.freeze(roles),
+    workflows: Object.freeze(workflows),
     mcpServers: Object.freeze(mcpServers),
     mcpDiscoverySources: Object.freeze(mcpDiscoverySources),
     scmHostingProviders: Object.freeze(scmHostingProviders),

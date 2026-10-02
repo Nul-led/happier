@@ -10,6 +10,7 @@ import type { RuntimeInstallableAdapter } from '@/packagedRuntime/installables/r
 import type { InstallableDependencyDescriptor } from '@happier-dev/protocol/installables';
 import { getManagedPypiWheelAssetRuntimeInstallableAdapter } from '@/packagedRuntime/installables/sourceAdapters/pypiWheelAsset';
 import { getPinnedArchiveRuntimeInstallableAdapter } from '@/packagedRuntime/installables/sourceAdapters/pinnedArchive';
+import { getGitHubReleaseBinaryRuntimeInstallableAdapter } from '@/packagedRuntime/installables/sourceAdapters/githubReleaseBinary';
 import type {
     ManagedDependencySourceModelDependency,
     ManagedDependencySourceModelEntry,
@@ -76,6 +77,21 @@ export async function createProductionManagedDependencySourceAdapter(input: Read
     platform?: NodeJS.Platform;
     architecture?: string;
 }>): Promise<RuntimeInstallableAdapter> {
+    if (input.source.kind === 'githubReleaseBinary' && input.source.declaration.kind === 'githubReleaseBinary') {
+        const { kind: _kind, installId, ...source } = input.source.declaration;
+        const descriptor = input.sourceInstallable;
+        if (!descriptor
+            || descriptor.key !== installId.slice('dep.'.length)
+            || descriptor.id !== descriptor.key
+            || descriptor.capabilityId !== installId
+            || descriptor.binary.commands.length !== 1
+            || descriptor.binary.commands[0] !== input.dependency.definition.executable
+            || !isDeepStrictEqual(descriptor.source, { ...source, kind: 'github_release_binary' })) {
+            return fail('plugin_managed_dependency_source_invalid', 'GitHub release source acquisition is unavailable');
+        }
+        return await getGitHubReleaseBinaryRuntimeInstallableAdapter(descriptor)
+            ?? fail('plugin_managed_dependency_source_invalid', 'GitHub release descriptor could not be adapted');
+    }
     if (input.source.kind === 'pinnedArchive' && input.source.declaration.kind === 'pinnedArchive') {
         const source = input.source.declaration;
         const platform = input.platform ?? process.platform;

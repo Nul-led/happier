@@ -169,6 +169,7 @@ describe('Git remote policy at the real repository boundary', { timeout: 30_000 
             await incoming(writer);
             const stale = await runWithRealGitScmRuntime(() => gitRemotePush({ context, request: { remote: 'origin', branch: 'main', pushMode: 'force_with_lease', expectedRemoteOid: rewritten } }));
             expect(stale).toMatchObject({ success: false, errorCode: 'REMOTE_NON_FAST_FORWARD', outcome: { kind: 'needs_input' } });
+            expect(stale.outcome?.nextActions).toEqual([{ kind: 'refresh' }, { kind: 'choose_reconcile' }]);
             expect(await git(writer, 'rev-parse', 'HEAD')).toBe(await git(cwd, 'rev-parse', 'origin/main'));
         });
     });

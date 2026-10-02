@@ -69,6 +69,20 @@ function bundledAgentWithConnectedAccounts(
 }
 
 describe('target package contribution projection', () => {
+  it('admits current UI declarations without retaining retired root contribution routes', () => {
+    for (const root of ['hostedWeb', 'uiTranslations']) {
+      expect(() => loaded('com.acme.ui', { [root]: [] })).toThrow();
+    }
+    const registry = buildPluginContributionRegistry({
+      loadedPlugins: [loaded('com.acme.ui', {
+        ui: { translations: [{ locale: 'en', messages: { greeting: 'Hello' } }] },
+      })],
+    });
+    expect(registry.uiTranslationsV2[0]?.definition.messages).toEqual({ greeting: 'Hello' });
+    expect(registry).not.toHaveProperty('uiTranslations');
+    expect(registry).not.toHaveProperty('hostedWeb');
+  });
+
   it('projects every declared catalog family through the authoritative semantic inventory', () => {
     const registry = buildPluginContributionRegistry({
       loadedPlugins: [loaded('com.acme.locale', {

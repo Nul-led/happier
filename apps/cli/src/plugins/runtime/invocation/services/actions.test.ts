@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
     ApiTokenGrantV1Schema,
+    AutomationRunCauseSchema,
+    StrictJsonValueSchema,
     createActionExecutor,
     normalizeActionsSettingsV1,
     type ActionExecutorContext,
@@ -22,6 +24,17 @@ import {
 import { createPluginActionCallerMaterializationFixture } from './actionCaller.testkit';
 import { createProductionPluginInvocationServiceOwners } from './production';
 import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
+import { createCommittedContributedActionInvoker } from '../actions/createCommittedContributedActionDeps';
+import { createTargetActionInvocationRegistry } from '../targetActionRegistry';
+import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
+import type { ResolvedActionContribution } from '@/plugins/projection/registry/types';
+import { createWorkflowAccountRunActionOwner, type WorkflowAccountRunActionDeps } from '@happier-dev/protocol/actions';
+import {
+    WorkflowRunSummaryV1Schema,
+    WorkflowRunStartRequestV1Schema,
+    openWorkflowAcceptedSnapshotStoredEnvelopeV1,
+    parseWorkflowStoredContentEnvelopeV1,
+} from '@happier-dev/protocol';
 
 type TestActionExecutorOverrides = Partial<Pick<
     ActionExecutorDeps,
@@ -92,6 +105,126 @@ function readPluginCallerId(context: ActionExecutorContext | undefined): string 
 }
 
 describe('plugin invocation ActionsService', () => {
+    it.each([
+        { name: 'autonomous background', initiatingActionCaller: undefined, startedBy: 'trigger' },
+        { name: 'host', initiatingActionCaller: { kind: 'host' }, startedBy: 'user' },
+        { name: 'Session agent', initiatingActionCaller: { kind: 'session', sessionId: 'session-origin' }, startedBy: 'agent' },
+        { name: 'nested host', initiatingActionCaller: { kind: 'plugin', pluginId: 'acme.outer', initiatingCaller: { kind: 'host' } }, startedBy: 'user' },
+        { name: 'nested Session agent', initiatingActionCaller: { kind: 'plugin', pluginId: 'acme.outer', initiatingCaller: { kind: 'session', sessionId: 'session-origin', starterDepth: 1, turnDepth: 2 } }, startedBy: 'agent' },
+        { name: 'manual automation', initiatingActionCaller: { kind: 'automationRun', runId: 'automation-run', automationId: 'automation-1', cause: { kind: 'manual', invokedAt: 1 } }, startedBy: 'user' },
+        { name: 'scheduled automation overrides host', initiatingActionCaller: { kind: 'host' },
+            transportStartedBy: 'user',
+            automationCaller: { kind: 'automationRun', runId: 'automation-run', automationId: 'automation-1',
+                cause: AutomationRunCauseSchema.parse({ kind: 'trigger', triggerId: 'trigger-1', triggerRevision: 1, triggerKind: 'schedule',
+                    occurrenceKey: 'A'.repeat(43), occurredAt: 1, evidence: { scheduledFor: 1 } }) }, startedBy: 'trigger' },
+        { name: 'Workflow', initiatingActionCaller: { kind: 'workflowRun', runId: 'workflow-origin', authorization: { principal: { kind: 'host' }, admittedPermissionCeiling: 'default' } }, startedBy: 'agent' },
+        { name: 'committed host', initiatingActionCaller: { kind: 'host' }, startedBy: 'user', viaCommitted: true },
+        { name: 'committed Session agent', initiatingActionCaller: { kind: 'session', sessionId: 'session-origin' }, startedBy: 'agent', viaCommitted: true },
+        { name: 'committed Workflow', initiatingActionCaller: { kind: 'workflowRun', runId: 'workflow-origin', authorization: { principal: { kind: 'host' }, admittedPermissionCeiling: 'default' } }, startedBy: 'agent', viaCommitted: true },
+    ] as const)('freezes $name starter through the real host Actions service without changing plugin authority', async (scenario) => {
+        const runId = '99999999-9999-4999-8999-999999999999';
+        let acceptedEnvelope: string | undefined;
+        const run = WorkflowRunSummaryV1Schema.parse({ id: runId, sourceArtifactId: null,
+            ownerAccountId: 'account-1', visibleTeamId: null, origin: { kind: 'direct' }, state: 'queued', revision: 0,
+            machineId: 'machine-1', workflowCustodyState: 'pending', originDeliveryAckRevision: null,
+            availability: { pause: true, resumeBoundary: false, restoreWorkspace: false, cancel: true, inspectExecution: false, disabledReasons: [] },
+            createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' });
+        const deps: WorkflowAccountRunActionDeps = {
+            resolveAccountId: async () => 'account-1',
+            storage: { execute: async operation => {
+                if (operation.operation === 'get') throw Object.assign(new Error('run_not_found'), { code: 'run_not_found' });
+                if (operation.operation !== 'admit') throw new Error('unexpected_storage_operation');
+                acceptedEnvelope = String(operation.acceptedEnvelope);
+                return { kind: 'created', run };
+            } },
+            definitions: { get: async () => { throw new Error('inline_definition_only'); } },
+            resolveEncryption: async () => ({ kind: 'available', witness: { mode: 'plain', version: 1, contentKeyFingerprint: null } }),
+            normalizeAbsolutePath: directory => directory.startsWith('/') ? directory : null,
+            randomBytes: () => { throw new Error('plain_account_does_not_need_keys'); },
+            prepareWorkspace: async () => ({ ok: true, workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } } }),
+            resolveMaterializationContext: async () => ({ effects: { resolveTargetAvailability: async () => true } }),
+        };
+        const owner = createWorkflowAccountRunActionOwner(deps);
+        const seed = Object.assign({
+            plugin: { id: 'acme.background', version: '1.0.0' },
+            contribution: { id: 'job', qualifiedId: 'acme.background/backgroundServices/job' },
+            occurrenceId: 'background-1', sourceCustody: { kind: 'development' as const, registeredRootId: 'background-root' },
+            surface: 'background' as const, signal: new AbortController().signal, isOccurrenceCurrent: () => true,
+        }, scenario.initiatingActionCaller === undefined ? {} : { initiatingActionCaller: scenario.initiatingActionCaller },
+        'transportStartedBy' in scenario ? { startedBy: scenario.transportStartedBy } : {},
+        'automationCaller' in scenario ? { caller: scenario.automationCaller } : {});
+        const actionExecutor = {
+            // The daemon's Account host supplies target and permission authority; storage above is the external boundary.
+            execute: async (actionId, input, context) => {
+                if (actionId !== 'workflow.run.start') throw new Error('unexpected_host_action');
+                const result = await owner.execute({ actionId, input: WorkflowRunStartRequestV1Schema.parse(input),
+                    context: { ...context, callerPermissionMode: 'default',
+                        externalActionTarget: { kind: 'machine', machineId: 'machine-1', project: { machineId: 'machine-1', directory: '/repo' } } } });
+                return { ok: true, result };
+            },
+        } satisfies import('./actions').PluginActionsHostExecutor;
+        let runtime: ResolvedExecutablePluginRuntimeRegistry | undefined;
+        // Loading/acquiring the process registry is the system boundary; the committed dispatcher remains real.
+        const invoke = createCommittedContributedActionInvoker({ acquireRuntimeRegistryLease: async () => {
+            if (!runtime) throw new Error('runtime_registry_not_loaded');
+            return { registry: runtime, source: 'ephemeral', durableRevision: -1, release: async () => {} };
+        } });
+        const invokeContributedAction: InvokeContributedAction = async request => {
+            const result = await invoke({ action: request.action, input: request.input,
+                context: { surface: request.surface, actionCaller: request.initiatingActionCaller,
+                    defaultSessionId: request.sessionId }, signal: request.signal });
+            return result.ok
+                ? { status: 'executed', value: StrictJsonValueSchema.parse(result.result) }
+                : { status: 'failed', code: result.errorCode, message: result.error };
+        };
+        const service = createPluginInvocationActionsService({ seed, actionExecutor, invokeContributedAction });
+        const startInput = { runId, source: { kind: 'inline' as const, definition: {
+            version: 1 as const, blocks: [{ kind: 'wait', id: 'wait', document: { text: 'Review', references: [], attachments: [] } }],
+        } } };
+        if (!('viaCommitted' in scenario)) {
+            await service.execute('workflow.run.start', startInput);
+            const opened = openWorkflowAcceptedSnapshotStoredEnvelopeV1({ mode: 'plain',
+            binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
+            envelope: parseWorkflowStoredContentEnvelopeV1(acceptedEnvelope) });
+            expect(opened).toMatchObject({ kind: 'available', content: {
+            startedBy: scenario.startedBy,
+            authorization: { principal: { kind: 'plugin', pluginId: 'acme.background', contributionLocalId: 'job',
+                sourceCustody: { kind: 'development', registeredRootId: 'background-root' } } },
+            } });
+            return;
+        }
+        const services = createProductionPluginInvocationServiceOwners({ actionExecutor, invokeContributedAction });
+        const targetOccurrenceId = createPluginRuntimeOccurrenceId('acme.background');
+        const targetActionInvocations = createTargetActionInvocationRegistry({
+            actions: [{ pluginId: 'acme.background', pluginVersion: '1.0.0', occurrenceId: targetOccurrenceId,
+                sourceCustody: { kind: 'development', registeredRootId: 'background-root' }, localId: 'start',
+                definition: { id: 'start', dangerLevel: 'safe', scopes: ['global'], surfaces: ['cli'], inputSchema: { type: 'object' }, resultSchema: {} },
+                handler: async (_input, context) => {
+                    expect(Object.prototype.hasOwnProperty.call(context, 'initiatingActionCaller')).toBe(false);
+                    await context.services.actions.execute('workflow.run.start', startInput);
+                    return null;
+                },
+            }],
+            resolveAuthorizationFacts: target => ({ generation: { targetGeneration: target.occurrenceId,
+                desiredGeneration: target.occurrenceId, appliedGeneration: target.occurrenceId },
+                resourceSelections: [], scopedGrants: [], operatingSystemAuthorization: [] }),
+            createServices: services.createServices, resolveHostBinding: services.resolveHostBinding,
+            readCurrentPluginOccurrenceId: pluginId => pluginId === 'acme.background' ? targetOccurrenceId : null,
+        });
+        // The process registry lookup/lease is the system boundary; target admission and service construction remain real.
+        const contribution = { pluginId: 'acme.background', definition: { id: 'start', surfaces: { cli: true } } } as unknown as ResolvedActionContribution;
+        runtime = { contributes: { actionsById: new Map([['acme.background/start', contribution]]) }, targetActionInvocations } as unknown as ResolvedExecutablePluginRuntimeRegistry;
+        const admittedContext = { surface: 'cli' as const, actionCaller: scenario.initiatingActionCaller };
+        const admitted = await invoke({ action: { pluginId: 'acme.background', localId: 'start' }, input: {}, context: admittedContext });
+        expect(admitted, JSON.stringify(admitted)).toMatchObject({ ok: true });
+        const nested = openWorkflowAcceptedSnapshotStoredEnvelopeV1({ mode: 'plain',
+            binding: { v: 1, purpose: 'accepted_snapshot', accountId: 'account-1', runId },
+            envelope: parseWorkflowStoredContentEnvelopeV1(acceptedEnvelope) });
+        expect(nested).toMatchObject({ kind: 'available', content: { startedBy: scenario.startedBy,
+            authorization: { principal: { kind: 'plugin', pluginId: 'acme.background', contributionLocalId: 'start' } } } });
+        targetActionInvocations.dispose();
+        await services.dispose();
+    });
     it('preserves host-private external PAT authority for a nested host Action', async () => {
         const execute = vi.fn().mockResolvedValue({
             ok: true,
@@ -1495,6 +1628,11 @@ describe('plugin invocation ActionsService', () => {
             input: { title: 'Ready' },
             surface: 'plugin',
             originSurface: 'agent',
+            initiatingActionCaller: {
+                kind: 'plugin', pluginId: 'acme.caller', contributionLocalId: 'caller',
+                occurrenceId: 'caller-occurrence-1', sourceCustody: { kind: 'development', registeredRootId: 'caller-root' },
+                materialization: callerMaterialization.materialization,
+            },
             caller: {
                 kind: 'plugin',
                 pluginId: 'acme.caller',
@@ -1848,6 +1986,11 @@ describe('plugin invocation ActionsService', () => {
             input: { title: 'Ready' },
             surface: 'plugin',
             originSurface: 'background',
+            initiatingActionCaller: {
+                kind: 'plugin', pluginId: 'acme.background', contributionLocalId: 'gateway-supervisor',
+                occurrenceId: 'background-occurrence-1', sourceCustody: { kind: 'development', registeredRootId: 'background-root' },
+                materialization: callerMaterialization.materialization,
+            },
             caller: {
                 kind: 'plugin',
                 pluginId: 'acme.background',

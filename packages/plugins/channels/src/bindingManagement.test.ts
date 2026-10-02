@@ -351,6 +351,44 @@ function context(
 }
 
 describe('Channels target-persisting binding management', () => {
+  it.each<JsonValue>([
+    { kind: 'list', sessionId: 'session-outside-scope' },
+    { kind: 'removeTrigger', sessionId: 'session-outside-scope', triggerId: 'trigger-1' },
+    { kind: 'attach', sessionId: 'session-outside-scope', pullRequest: { repository: 'acme/widgets', number: 7 } },
+  ])('refuses direct PR $kind when the canonical Session reader denies the caller', async (request) => {
+    const collection = createCollection([connectionRow()]);
+    const denied = new Error('Canonical Session authorization denied');
+    const invocation = context(collection, vi.fn(async () => { throw denied; }));
+    await expect(management.manageSessionPullRequestBindingForInvocation(request, invocation)).rejects.toBe(denied);
+    expect([...collection.rows.values()].filter((row) => row.value['record-kind'] === 'binding')).toHaveLength(0);
+  });
+  it('projects retained PR links from bindings and removes only trigger admission authority', async () => {
+    const manage = Reflect.get(management, 'manageSessionPullRequestBindingForInvocation');
+    const scopedTrigger = { sessionId: 'session-1', triggerId: 'trigger-1', triggerRevision: 0, triggerKind: 'prComment', principalPolicy: 'repositoryWriters', pullRequest: { repository: 'acme/widgets', number: 7 } } as const;
+    const collection = createCollection([connectionRow(), bindingRow({ ...automationTarget, policy: { resultDelivery: 'none' }, scopedTrigger }, 5, { enabled: true, endpoint: { kind: 'githubPullRequest', audience: 'shared', id: 'pr-7', pullRequest: scopedTrigger.pullRequest } })]);
+    const invocation = context(collection, vi.fn(async () => ({ ok: true, projection: 'externalShareableV1', sessionId: 'session-1', items: [], scannedThroughSeq: 0, hasMore: false })));
+    await expect(manage({ kind: 'list', sessionId: 'session-1' }, invocation)).resolves.toEqual({ kind: 'links', sessionId: 'session-1', pullRequestLinks: [{ provider: 'github', repository: 'acme/widgets', number: 7 }] });
+    await expect(manage({ kind: 'removeTrigger', sessionId: 'session-1', triggerId: 'trigger-1' }, invocation)).resolves.toEqual({ kind: 'removed' });
+    expect(collection.rows.get('binding-1')?.value.payload).toMatchObject({ enabled: false, target: { scopedTrigger } });
+    await expect(manage({ kind: 'list', sessionId: 'session-1' }, invocation)).resolves.toMatchObject({ pullRequestLinks: [{ repository: 'acme/widgets', number: 7 }] });
+  });
+  it('retains scoped PR trigger correspondence and rejoins a lost binding-create response', async () => {
+    const collection = createCollection([connectionRow()]);
+    const scopedTrigger = {
+      sessionId: 'session-1', triggerId: 'trigger-1', triggerRevision: 0, triggerKind: 'prComment',
+      principalPolicy: 'repositoryWriters', pullRequest: { repository: 'acme/widgets', number: 7 },
+    } as const;
+    const input = { ...bindingCreateInput({ ...automationTarget, policy: { resultDelivery: 'none' }, scopedTrigger }), endpointSelection: { query: '#7', selected: { kind: 'githubPullRequest', audience: 'shared', id: 'pr-7' } } };
+    const invocation = context(collection, vi.fn(async () => ({ kind: 'verified' })), async (action) => ({
+      result: { kind: 'resolved', candidates: action === endpointResolveAction ? [{ kind: 'githubPullRequest', audience: 'shared', id: 'pr-7', pullRequest: scopedTrigger.pullRequest }] : [bindingResolutionPrincipal] },
+      executionOrigin: { serverIdentityId: 'server-1', materializationRef: materialization },
+    }));
+    const first = await management.createConversationBindingForInvocation(input, invocation);
+    expect(first).toMatchObject({ kind: 'created', binding: { target: { scopedTrigger } } });
+    const second = await management.createConversationBindingForInvocation(input, invocation);
+    expect(second).toMatchObject({ kind: 'created', binding: { id: first.kind === 'created' ? first.binding.id : '' } });
+    expect([...collection.rows.values()].filter((row) => row.value['record-kind'] === 'binding')).toHaveLength(1);
+  });
   it('reads only one exact retained binding, distinguishes absence, and fails corrupt rows closed', async () => {
     const read = Reflect.get(management, 'readConversationBindingForInvocation');
     expect(read).toEqual(expect.any(Function));

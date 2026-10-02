@@ -14,6 +14,7 @@ import {
   type AgentSessionHostServices,
   type AgentSessionAuthRefreshRequest,
   type AgentSessionRuntimeContext,
+  type AgentSessionRuntime,
   type AgentSessionTerminalComposerClearOutcome,
   type AgentSessionProviderBinding,
 } from '@happier-dev/plugin-sdk/agents/runtime';
@@ -477,6 +478,7 @@ type ClaudeUnifiedPromptDeliveryBlockerClear = Readonly<{
 }>;
 
 export type ClaudeUnifiedTerminalNativeRuntime = ClaudeRuntimeTurnOperations & Readonly<{
+  prepareTerminalPresentation: NonNullable<AgentSessionRuntime['prepareTerminalPresentation']>;
   promptCustody: 'unified_terminal';
   observeSourceTranscript(input: Readonly<{ providerSessionId: string; sourceId: string; row: JsonValue }>): Promise<void>;
   retirePendingInputs(localIds: readonly string[], turnId: string): void;
@@ -868,6 +870,7 @@ export function createClaudeUnifiedTerminalTurnOperations(
         ?? (observation.historicalReplay ? undefined : Date.now());
       if (row.type === 'assistant' && row.message?.usage) {
         publishUsageObservation(buildClaudeAssistantUsageObservation({
+          nativeRecordId: row.uuid,
           modelId: readAssistantModelId(row) ?? verifiedModelId ?? launchModelId,
           modelSource,
           ...(observedAtMs === undefined ? {} : { observedAtMs }),
@@ -978,6 +981,7 @@ export function createClaudeUnifiedTerminalTurnOperations(
     ? params.launchIntent.providerSessionId
     : null;
   let explicitResumeIdentityEstablished = requestedResumeProviderSessionId === null;
+  let retainedHostAdopted = false;
   let explicitResumeIdentityFailure: ClaudeUnifiedResumeIdentityMismatchError | null = null;
   // Statusline-verified effective truth (the `lastVerified` analogue, lane Y intent): the model
   // and effort the live TUI is ACTUALLY running. Feeds the convergence baseline ONLY — never
@@ -1122,6 +1126,21 @@ export function createClaudeUnifiedTerminalTurnOperations(
         reason: 'claude-unified-known-resume-transcript',
       });
     }
+  }
+
+  async function observeRetainedProviderIdentity(providerSessionId: string | null): Promise<boolean> {
+    if (!retainedHostAdopted || !requestedResumeProviderSessionId || explicitResumeIdentityEstablished) return false;
+    if (!providerSessionId) return false;
+    if (providerSessionId !== requestedResumeProviderSessionId) {
+      failExplicitResumeIdentityMismatch({ observedProviderSessionId: providerSessionId, source: 'retained_host_observation' });
+      return false;
+    }
+    // Only a current authenticated primary hook/statusline proves the surviving
+    // Agent's ID. The host receipt proves its PTY and runner custody, not identity.
+    explicitResumeIdentityEstablished = true;
+    await bindKnownProviderSessionTranscript();
+    nativeResumeTurnBarrier?.observeRetainedProviderSession();
+    return true;
   }
 
   function readProviderInputReadinessBlocker(): 'resume_identity_unverified' | 'transcript_admission_pending' | null {
@@ -1789,12 +1808,23 @@ export function createClaudeUnifiedTerminalTurnOperations(
     // registry must be loaded before any readiness/draft classification runs (ported S-1).
     await ownInjectedTextLog.hydrated;
 
+    const resolvedHookPluginDir = await ensureSessionHookPluginDir();
+    if (requestedResumeProviderSessionId) {
+      const adoptExistingHost = params.ctx.agentRuntime.terminalHost.adoptExistingHost;
+      if (!adoptExistingHost) {
+        throw new Error('Claude retained-host recovery is unavailable on this host');
+      }
+      const retained = await adoptExistingHost();
+      if (retained) {
+        retainedHostAdopted = true;
+        state.handle = retained;
+        return retained;
+      }
+    }
     const resolution = await params.ctx.agentRuntime.terminalHost.resolve({ preference: params.hostPreference });
     if (resolution.status !== 'resolved') {
       throw new Error(`Claude unified terminal host unavailable: ${resolution.reason}`);
     }
-
-    const resolvedHookPluginDir = await ensureSessionHookPluginDir();
     // Ultracode and the statusline forwarder ride ONE --settings overlay (Claude Code keeps
     // only the FIRST --settings). The overlay value is secret-free: the forwarder reads the
     // hook secret from its 0600 secret file, never from the command line.
@@ -1875,6 +1905,12 @@ export function createClaudeUnifiedTerminalTurnOperations(
             ?? readNonEmptyString(payload.hookEventName)
             ?? readNonEmptyString(payload.eventName);
           let establishedExplicitResumeIdentityNow = false;
+          if (hookEventName) {
+            establishedExplicitResumeIdentityNow = await observeRetainedProviderIdentity(
+              readPrimarySessionHookProviderSessionId(providerSessionId, payload),
+            );
+            if (explicitResumeIdentityFailure) return;
+          }
           if (hookEventName === 'SessionStart') {
             pendingTaskNotificationReaction = null;
             const source = readNonEmptyString(payload.source);
@@ -1954,7 +1990,7 @@ export function createClaudeUnifiedTerminalTurnOperations(
             pendingTaskNotificationReaction = null;
           }
           if (
-            (hookEventName === 'SessionStart' && establishedExplicitResumeIdentityNow)
+            establishedExplicitResumeIdentityNow
             || bindResult.status === 'bound'
             || bindResult.status === 'unchanged'
           ) {
@@ -1972,6 +2008,8 @@ export function createClaudeUnifiedTerminalTurnOperations(
           if (!parsed) return;
           const statuslineProviderSessionId = readClaudeProviderIdentityValue(parsed.session_id);
           const statuslineProviderTranscriptPath = readNonEmptyString(parsed.transcript_path);
+          const establishedRetainedIdentityNow = await observeRetainedProviderIdentity(statuslineProviderSessionId);
+          if (explicitResumeIdentityFailure) return;
           if (
             !state.providerSessionId
             && statuslineProviderSessionId
@@ -2008,6 +2046,11 @@ export function createClaudeUnifiedTerminalTurnOperations(
             }
           }
           await statuslineApplier.apply(parsed);
+          if (establishedRetainedIdentityNow && state.handle) {
+            await observeCurrentReadiness();
+            await arbiter.drain();
+            ensureReadinessWake();
+          }
         },
         onPermissionHook: createClaudePermissionHookHandler(params.ctx),
         defaultPermissionHookResponse: buildDefaultPermissionHookResponse,
@@ -3453,7 +3496,21 @@ export function createClaudeUnifiedTerminalTurnOperations(
     }
   }
 
+  async function prepareManagedTerminal(): Promise<TerminalHostHandle> {
+    // The foreground barrier precedes the existing host owner's pending-input
+    // pump. Both startup and presentation preparation use this same lifecycle.
+    nativeResumeTurnBarrier?.beginBeforeProviderRun();
+    const handle = await ensureHost();
+    await bindKnownProviderSessionTranscript();
+    await observeCurrentReadiness();
+    nativeResumeTurnBarrier?.observeStartupReady();
+    return handle;
+  }
+
   const nativeRuntime: ClaudeUnifiedTerminalNativeRuntime = {
+    async prepareTerminalPresentation() {
+      return { kind: 'managed_terminal', handle: await prepareManagedTerminal() };
+    },
     promptCustody: 'unified_terminal',
     retirePendingInputs(localIds, turnId) {
       const retired = arbiter.retirePendingInputs(localIds);
@@ -3487,13 +3544,7 @@ export function createClaudeUnifiedTerminalTurnOperations(
       lastTurnProgressPublishedAtMs = null;
     },
     async startProviderSession() {
-      // Publish the foreground barrier before host startup can create a pending-input pump. The
-      // provider's SessionStart/UserPromptSubmit hooks are necessarily later than this boundary.
-      nativeResumeTurnBarrier?.beginBeforeProviderRun();
-      const handle = await ensureHost();
-      await bindKnownProviderSessionTranscript();
-      await observeCurrentReadiness();
-      nativeResumeTurnBarrier?.observeStartupReady();
+      const handle = await prepareManagedTerminal();
       return {
         sessionId: handle.sessionName,
         hostKind: handle.kind,

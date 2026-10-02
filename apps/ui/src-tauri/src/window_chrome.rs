@@ -49,6 +49,7 @@ pub struct DesktopWindowChromePolicyPayload {
 #[serde(rename_all = "camelCase")]
 pub struct DesktopWindowStatePayload {
     pub is_maximized: bool,
+    pub is_fullscreen: bool,
 }
 
 #[cfg(desktop)]
@@ -173,21 +174,29 @@ fn build_desktop_window_chrome_policy_payload(
 }
 
 #[cfg(desktop)]
-fn build_desktop_window_state_payload(is_maximized: bool) -> DesktopWindowStatePayload {
-    DesktopWindowStatePayload { is_maximized }
+fn build_desktop_window_state_payload(
+    is_maximized: bool,
+    is_fullscreen: bool,
+) -> DesktopWindowStatePayload {
+    DesktopWindowStatePayload {
+        is_maximized,
+        is_fullscreen,
+    }
 }
 
 #[cfg(desktop)]
 fn resolve_desktop_window_state_payload_for_policy(
     policy: DesktopWindowChromeRuntimePolicy,
     is_maximized: bool,
+    is_fullscreen: bool,
 ) -> DesktopWindowStatePayload {
     if !desktop_window_chrome_policy_supports_controls(policy) {
-        return build_desktop_window_state_payload(false);
+        return build_desktop_window_state_payload(false, false);
     }
 
     build_desktop_window_state_payload(
         desktop_window_chrome_policy_tracks_maximized_state(policy) && is_maximized,
+        is_fullscreen,
     )
 }
 
@@ -199,11 +208,11 @@ fn resolve_desktop_window_state_payload_for_window<R: Runtime>(
         window.label(),
         resolve_current_desktop_window_platform(),
     );
-    if !desktop_window_chrome_policy_tracks_maximized_state(policy) {
-        return resolve_desktop_window_state_payload_for_policy(policy, false);
-    }
-
-    resolve_desktop_window_state_payload_for_policy(policy, window.is_maximized().unwrap_or(false))
+    resolve_desktop_window_state_payload_for_policy(
+        policy,
+        window.is_maximized().unwrap_or(false),
+        window.is_fullscreen().unwrap_or(false),
+    )
 }
 
 #[cfg(desktop)]
@@ -235,7 +244,7 @@ fn emit_desktop_window_state<R: Runtime>(window: &WebviewWindow<R>) {
         window.label(),
         resolve_current_desktop_window_platform(),
     );
-    if !desktop_window_chrome_policy_tracks_maximized_state(policy) {
+    if !desktop_window_chrome_policy_supports_controls(policy) {
         return;
     }
 
@@ -244,6 +253,7 @@ fn emit_desktop_window_state<R: Runtime>(window: &WebviewWindow<R>) {
         resolve_desktop_window_state_payload_for_policy(
             policy,
             window.is_maximized().unwrap_or(false),
+            window.is_fullscreen().unwrap_or(false),
         ),
     );
 }
@@ -373,6 +383,10 @@ pub async fn desktop_toggle_window_maximize(window: Window) -> Result<bool, Stri
     if !desktop_window_chrome_policy_supports_controls(policy) {
         return Ok(false);
     }
+    // Fullscreen is owned by the OS/menu, not by titlebar zoom gestures.
+    if window.is_fullscreen().map_err(|error| error.to_string())? {
+        return Ok(false);
+    }
 
     if window.is_maximized().unwrap_or(false) {
         window.unmaximize().map_err(|error| error.to_string())?;
@@ -426,6 +440,9 @@ pub async fn desktop_start_window_dragging(window: Window) -> Result<bool, Strin
     if !desktop_window_chrome_policy_supports_controls(policy) {
         return Ok(false);
     }
+    if window.is_fullscreen().map_err(|error| error.to_string())? {
+        return Ok(false);
+    }
 
     window.start_dragging().map_err(|error| error.to_string())?;
     Ok(true)
@@ -453,7 +470,7 @@ fn configure_main_window(app: &tauri::AppHandle, window: &WebviewWindow) {
         log::warn!("failed to apply main-window chrome policy: {error}");
     }
 
-    if desktop_window_chrome_policy_tracks_maximized_state(policy) {
+    if desktop_window_chrome_policy_supports_controls(policy) {
         emit_desktop_window_state(window);
 
         let window_for_events = window.clone();
@@ -609,10 +626,11 @@ mod tests {
     #[test]
     fn state_payload_serializes_to_the_frontend_contract() {
         assert_eq!(
-            serde_json::to_value(build_desktop_window_state_payload(true))
+            serde_json::to_value(build_desktop_window_state_payload(true, false))
                 .expect("payload should serialize"),
             serde_json::json!({
                 "isMaximized": true,
+                "isFullscreen": false,
             })
         );
     }
@@ -635,9 +653,10 @@ mod tests {
                 DesktopWindowPlatform::MacOs,
             ),
             true,
+            true,
         );
 
-        assert_eq!(payload, build_desktop_window_state_payload(false));
+        assert_eq!(payload, build_desktop_window_state_payload(false, true));
     }
 
     #[test]
@@ -648,9 +667,10 @@ mod tests {
                 DesktopWindowPlatform::Windows,
             ),
             true,
+            false,
         );
 
-        assert_eq!(payload, build_desktop_window_state_payload(true));
+        assert_eq!(payload, build_desktop_window_state_payload(true, false));
     }
 
     #[test]

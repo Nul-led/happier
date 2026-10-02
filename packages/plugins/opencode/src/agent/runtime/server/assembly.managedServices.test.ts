@@ -182,8 +182,9 @@ describe('OpenCode server managed-service assembly', () => {
       if (failure !== 'agent') {
         expect(nativeModel).toEqual({ id: 'gpt-5.6-luna', providerID: 'openai', variant: 'low' });
         expect(requests).toContainEqual({ path: '/api/session/oc-session-zero-turn/model', body: { model: nativeModel } });
-        await expect(assembly.runtime.prepareProviderCliAttach?.()).resolves.toMatchObject({
-          runtimeDescriptorV1: { agent: { providerSessionId: 'oc-session-zero-turn' } },
+        await expect(assembly.runtime.prepareTerminalPresentation?.()).resolves.toMatchObject({
+          kind: 'provider_attach',
+          metadata: { runtimeDescriptorV1: { agent: { providerSessionId: 'oc-session-zero-turn' } } },
         });
       }
       expect(requests.some(({ path }) => path.endsWith('/prompt') || path === '/api/session')).toBe(false);

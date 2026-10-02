@@ -8,6 +8,7 @@ import {
 } from '@happier-dev/plugin-sdk';
 import type { ActionsService } from '@happier-dev/plugin-sdk/actions';
 import type { PluginTargetedContributionSelectionV1 } from '@happier-dev/plugin-sdk/contributions';
+import { ConversationEndpointResolveInputV1Schema } from '@happier-dev/channels-protocol/v1';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -20,6 +21,7 @@ import { convergeConversationConnectionWebhookEndpointTarget } from './connectio
 import {
   abandonConversationConnectionForInvocation,
   createConversationConnectionForInvocation,
+  manageSessionPullRequestBindingForInvocation,
   deleteConversationConnectionForInvocation,
   prepareConversationConnectionForInvocation,
   retestConversationConnectionForInvocation,
@@ -356,6 +358,58 @@ const connectionCreateInput = {
   selectedTransport: 'socket',
   maximumObservationAgeMs: 60_000,
 } as const;
+
+describe('native SCM session PR binding owner', () => {
+  it('attaches without an existing connection and rejoins both link and scoped binding after response loss', async () => {
+    const collection = createMutableConnectionStateCollection();
+    seedConnectionIdentityKey(collection);
+    const contributor = { ...providerSelection.contributor, pluginId: 'happier.scm.forge.github', contributionId: 'github-channels' };
+    const roles = ['setup', 'connectionTest', 'observationsPoll', 'endpointResolve', 'principalResolve'] as const;
+    const operations = Object.fromEntries(roles.map((role) => [role, admittedProviderOperation({ contributor, role })]));
+    const credentialRef = { service: { pluginId: contributor.pluginId, localId: 'github' }, accountId: 'native-account' };
+    const origin = { serverIdentityId: 'srv-example', materializationRef: { pluginId: contributor.pluginId, machineId: 'machine-example', materializationId: 'materialization-example' } };
+    const setup = { v: 1, credentialRef, providerConnectionKey: 'github:repository:77', providerConfigVersion: 1, providerConfig: { repository: 'acme/widgets' }, integrationPrincipal: { id: '99', label: 'native-user' }, supportedTransports: ['checkpointedPull'], recommendedTransport: 'checkpointedPull', overlapSafety: 'safe', replayContinuity: 'checkpointed', outboundTextLimit: { maximum: 65_536, unit: 'unicodeCodePoints' }, sharedEndpointInputModes: ['allAllowedMessages'] };
+    const actions = {
+      execute: async (actionId: string, input: JsonValue) => {
+        if (actionId === 'automation.conversation.target.verify') return { kind: 'verified' };
+        if (actionId === 'session.transcript.get') return { ok: true, projection: 'externalShareableV1', sessionId: 'session-1', items: [], scannedThroughSeq: 0, hasMore: false };
+        throw new Error(`Unexpected action ${actionId}: ${JSON.stringify(input)}`);
+      },
+      executeAdmittedTargetedOperationWithExecutionOrigin: async (action: unknown, input: unknown) => {
+        const number = action === operations.endpointResolve && ConversationEndpointResolveInputV1Schema.parse(input).query.endsWith('/13') ? 13 : 12;
+        const result = action === operations.setup ? setup
+          : action === operations.connectionTest ? { kind: 'ready', integrationPrincipal: setup.integrationPrincipal, providerConnectionKey: setup.providerConnectionKey }
+          : action === operations.endpointResolve ? { kind: 'resolved', candidates: [{ kind: 'githubPullRequest', audience: 'shared', id: `github:repository:77:issue:300:number:${number}`, parentId: '77', pullRequest: { repository: 'acme/widgets', number } }] }
+          : action === operations.principalResolve ? { kind: 'resolved', candidates: [{ id: '99', label: 'native-user', kind: 'human' }] }
+          : undefined;
+        if (result === undefined) throw new Error('Unexpected provider effect');
+        return { result, executionOrigin: origin };
+      },
+    };
+    const context = invocationContext({ stateCollection: collection, actions: actions as unknown as ActionsService, targetedContributions: targetedContributionsFixture({ contributorPluginId: contributor.pluginId, contributorId: contributor.contributionId, contributorImmutableGenerationId: 'provider-generation-a', operations }) });
+    const link = { kind: 'attach', sessionId: 'session-1', pullRequest: { repository: 'acme/widgets', number: 12 } };
+    await expect(manageSessionPullRequestBindingForInvocation({ ...link, pullRequest: { ...link.pullRequest, number: 14 } }, context))
+      .rejects.toMatchObject({ code: 'channels_pr_link_endpoint_identity_mismatch' });
+    const first = await manageSessionPullRequestBindingForInvocation(link, context);
+    await expect(manageSessionPullRequestBindingForInvocation(link, context)).resolves.toEqual(first);
+    const scoped = { ...link, target: { automationId: 'automation-1', triggerId: 'trigger-1', triggerRevision: 0, triggerKind: 'ciFailed' } };
+    collection.loseNextUpdatedBatchResponse();
+    await expect(manageSessionPullRequestBindingForInvocation(scoped, context)).rejects.toThrow('simulated response loss after Account write commit');
+    const second = await manageSessionPullRequestBindingForInvocation(scoped, context);
+    await expect(manageSessionPullRequestBindingForInvocation(scoped, context)).resolves.toEqual(second);
+    await expect(manageSessionPullRequestBindingForInvocation({ ...scoped, target: { ...scoped.target, triggerRevision: 1 } }, context)).resolves.toEqual(second);
+    const active = [...collection.rows.values()].filter((row) => row.value['record-kind'] === 'binding' && typeof row.value.payload === 'object' && row.value.payload !== null && !Array.isArray(row.value.payload) && Reflect.get(row.value.payload, 'enabled') === true);
+    expect(active).toHaveLength(1);
+    expect(active[0]?.value.payload).toMatchObject({ target: { scopedTrigger: { triggerRevision: 1 } } });
+    expect([...collection.rows.values()].filter((row) => row.value['record-kind'] === 'binding')).toHaveLength(2);
+    await expect(manageSessionPullRequestBindingForInvocation({ kind: 'list', sessionId: 'session-1' }, context)).resolves.toEqual({ kind: 'links', sessionId: 'session-1', pullRequestLinks: [{ provider: 'github', repository: 'acme/widgets', number: 12 }] });
+    await manageSessionPullRequestBindingForInvocation({ ...scoped, pullRequest: { repository: 'acme/widgets', number: 13 }, target: { ...scoped.target, triggerRevision: 2 } }, context);
+    const observers = [...collection.rows.values()].filter((row) => row.value['record-kind'] === 'binding' && typeof row.value.payload === 'object' && row.value.payload !== null && !Array.isArray(row.value.payload) && Reflect.get(row.value.payload, 'enabled') === true);
+    expect(observers).toHaveLength(1);
+    expect(observers[0]?.value.payload).toMatchObject({ target: { scopedTrigger: { pullRequest: { number: 13 } } } });
+    await expect(manageSessionPullRequestBindingForInvocation({ kind: 'list', sessionId: 'session-1' }, context)).resolves.toMatchObject({ pullRequestLinks: [{ number: 12 }, { number: 13 }] });
+  });
+});
 
 const DURABLE_PUSH_WEBHOOK_ENDPOINT_ID = 'wh_ep_AAECAwQFBgcICQoLDA0ODw';
 

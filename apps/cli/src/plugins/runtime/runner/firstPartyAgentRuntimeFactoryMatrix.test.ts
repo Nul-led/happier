@@ -62,6 +62,7 @@ import {
     createNativeAgentSessionHostServices,
     type NativeAgentSessionHostServiceOwners,
 } from '@/agent/runtime/registry/engineRegistry/nativeAgentSession';
+import { createNativeAgentSessionPublications } from '@/agent/runtime/registry/engineRegistry/nativeAgentSessionPublications';
 
 import { createAgentSessionRunnerFactoryBinding } from './agentSessionRunnerFactoryBinding';
 import { loadRetainedAgentRuntimeLeaf } from './loadRetainedAgentRuntimeLeaf';
@@ -339,6 +340,15 @@ function createAcpBoundaryContext(
         }),
         dispose: async () => undefined,
     }) satisfies NativeAgentSessionHostServiceOwners;
+    const publications = createNativeAgentSessionPublications({
+        agentId,
+        // The matrix supplies the external Session write boundary; publication
+        // binding and current-scope behavior remain owned by the real host.
+        session: { updateAgentState: vi.fn() },
+        signal,
+        isCurrent: () => true,
+        supportsInFlightSteer: false,
+    });
     const sessionServices = createNativeAgentSessionHostServices({
         owners,
         agentId,
@@ -351,15 +361,7 @@ function createAcpBoundaryContext(
             updateMetadata: vi.fn(),
             enqueueAgentMessageCommitted: vi.fn(),
         },
-        publications: {
-            models: Object.freeze({
-                bind: () => Object.freeze({ dispose: () => undefined }),
-            }),
-            activeInput: Object.freeze({
-                bind: () => Object.freeze({ dispose: () => undefined }),
-                publishStatus: () => undefined,
-            }),
-        },
+        publications: publications.services,
         readToolExecutionCapability: () => null,
         toolsDelivery: 'unsupported',
     });

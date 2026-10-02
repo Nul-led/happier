@@ -51,6 +51,43 @@ it('issues prefixed RPC with session-write authority and decodes the ack', async
   }));
   expect(await callSocketRpc({ socket, target: { kind: 'session', id: 's' }, method: 'abort', params: { reason: 'test' }, content: { mode: 'plain' } })).toEqual({ stopped: true });
 });
+it('preserves explicit Session Action authorization rather than projecting it to a human write', async () => {
+  const socket = await setup();
+  const authorization = { kind: 'session.action' as const, sessionId: 's', origin: {
+    v: 1 as const, caller: { kind: 'session' as const, sessionId: 'lead', starterDepth: 2, turnDepth: 4 },
+    callerPermissionMode: 'read-only' as const, sourceTurnId: 'turn-original', requestId: 'action-original', workspaceWrites: 'deny' as const,
+  } };
+  const received = new Promise<unknown>((resolve) => server.sockets.sockets.forEach((remote) => remote.once('rpc-call', (payload, ack) => {
+    resolve(payload.authorization);
+    ack({ ok: true, result: { updated: true } });
+  })));
+  await callSocketRpc({ socket, target: { kind: 'session', id: 's' }, method: 'session.notes.set',
+    params: { sessionId: 's', notes: 'private' }, content: { mode: 'plain' },
+    authorization,
+  });
+  expect(await received).toEqual(authorization);
+});
+it('fails a mismatched Session Action origin before issue and never retries a rejected Home arm', async () => {
+  const socket = await setup();
+  const authorization = { kind: 'session.action' as const, sessionId: 'other', origin: {
+    v: 1 as const, caller: { kind: 'session' as const, sessionId: 'lead', starterDepth: 2, turnDepth: 4 },
+    callerPermissionMode: null, sourceTurnId: 'turn-original', requestId: 'action-original',
+  } };
+  const requests: unknown[] = [];
+  server.sockets.sockets.forEach((remote) => remote.on('rpc-call', (payload, ack) => {
+    requests.push(payload.authorization);
+    ack({ ok: false, error: 'Forbidden', errorCode: 'RPC_FORBIDDEN' });
+  }));
+  const call = (origin: typeof authorization) => callSocketRpc({ socket, target: { kind: 'session' as const, id: 's' },
+    method: 'session.notes.set', params: { sessionId: 's', notes: 'private' }, content: { mode: 'plain' }, authorization: origin,
+  });
+  const mismatch = await call(authorization).catch((error: unknown) => error);
+  expect(readRpcRequestDisposition(mismatch)).toBe('notSent');
+  expect(requests).toEqual([]);
+  const rejected = await call({ ...authorization, sessionId: 's' }).catch((error: unknown) => error);
+  expect(rejected).toMatchObject({ rpcErrorCode: 'RPC_FORBIDDEN' });
+  expect(requests).toEqual([{ ...authorization, sessionId: 's' }]);
+});
 it('cancels an issued call and marks the unresolved outcome', async () => {
   const socket = await setup();
   const controller = new AbortController();

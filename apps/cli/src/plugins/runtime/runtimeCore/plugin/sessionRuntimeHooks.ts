@@ -42,6 +42,8 @@ export type PluginRuntimeHookOperations = RuntimeTurnOperations & Readonly<{
     modes?: AgentSessionModesSource;
     supportsInFlightSteer?: () => boolean;
     isTurnInFlight?: () => boolean;
+    /** Declared new-turn delivery and canonical live/idle admission state. */
+    canStartNewTurn?: () => boolean;
     canSteerPrompt?: () => boolean;
     canInterruptForPendingInput?: () => boolean;
     notifyPromptQueuedDuringTurn?: () => void;

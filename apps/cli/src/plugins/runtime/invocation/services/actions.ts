@@ -29,6 +29,7 @@ import {
     type ActionExecuteResult,
     type ActionExecutorContext,
     type ActionPluginCaller,
+    type ActionCaller,
     type ActionId,
 } from '@happier-dev/protocol/actions';
 import {
@@ -74,6 +75,9 @@ export type PluginActionsServiceSeed = Readonly<{
     surface: PluginInvocationSurface;
     /** Host-stamped provenance from the invocation that created this service. */
     caller?: PluginInvocationCaller;
+    /** Host-private original admission provenance, separate from immediate plugin authority. */
+    initiatingActionCaller?: ActionCaller;
+    startedBy?: ActionPluginCaller['startedBy'];
     /** Host-private external PAT authority; never projected into plugin input. */
     externalActionContext?: PluginExternalActionContext;
     /** Host-private lookup of this invocation's current plugin materialization. */
@@ -133,6 +137,7 @@ export type InvokeContributedAction = (params: Readonly<{
     originSurface?: PluginInvocationOriginSurface;
     /** Host-stamped immediate caller; plugin input never supplies this value. */
     caller: Extract<PluginInvocationCaller, Readonly<{ kind: 'plugin' }>>;
+    initiatingActionCaller?: ActionCaller;
     /** Host-private request from ActionsService.executeWithExecutionOrigin only. */
     captureExecutionOrigin?: true;
     /** Equality-only precondition from ActionsService.executeWithExecutionOrigin only. */
@@ -536,6 +541,17 @@ function resolveContributedActionCaller(
     });
 }
 
+function resolveInvocationActionCaller(
+    seed: PluginActionsServiceSeed,
+    agentWitness = seed.surface === 'agent' ? seed.readActiveTurnAdmissionWitness?.() ?? null : null,
+) {
+    return resolvePluginActionCaller({ ...seed,
+        ...(seed.initiatingActionCaller === undefined && agentWitness?.agentStartCaller
+            ? { initiatingActionCaller: agentWitness.agentStartCaller }
+            : {}),
+    });
+}
+
 function executorFailure(
     actionId: ActionId,
     result: Extract<ActionExecuteResult, { ok: false }>,
@@ -605,7 +621,7 @@ export function createPluginInvocationActionsService(params: Readonly<{
         const signal = composeActionSignal(params.seed.signal, options?.signal);
         throwIfInactive(params.seed, signal, undefined, true);
         const parsedExpectedExecutionOrigin = readExpectedExecutionOrigin(expectedExecutionOrigin);
-        const actionCaller = resolvePluginActionCaller(params.seed);
+        const actionCaller = resolveInvocationActionCaller(params.seed);
         if (!actionCaller) {
             throw createPluginActionHandlerNotStartedError({
                 code: 'plugin_action_caller_unavailable',
@@ -625,6 +641,7 @@ export function createPluginInvocationActionsService(params: Readonly<{
             surface: 'plugin',
             ...(caller.originSurface ? { originSurface: caller.originSurface } : {}),
             caller,
+            initiatingActionCaller: actionCaller,
             ...(captureExecutionOrigin ? { captureExecutionOrigin: true as const } : {}),
             ...(parsedExpectedExecutionOrigin === undefined
                 ? {}
@@ -704,7 +721,10 @@ export function createPluginInvocationActionsService(params: Readonly<{
             signal,
             beforeStartDetails,
         );
-        const actionCaller = resolvePluginActionCaller(params.seed);
+        const agentWitness = params.seed.surface === 'agent'
+            ? params.seed.readActiveTurnAdmissionWitness?.() ?? null
+            : null;
+        const actionCaller = resolveInvocationActionCaller(params.seed, agentWitness);
         if (!actionCaller) {
             throw new PluginError({
                 code: 'plugin_action_caller_unavailable',
@@ -751,9 +771,6 @@ export function createPluginInvocationActionsService(params: Readonly<{
         const actionRequestId = params.seed.externalActionContext?.actionRequestId ?? (params.seed.correlationId
             ? `${params.seed.correlationId}:${actionId}:${actionInvocationSequence}`
             : undefined);
-        const agentWitness = params.seed.surface === 'agent'
-            ? params.seed.readActiveTurnAdmissionWitness?.() ?? null
-            : null;
         const result = await actionExecutor.execute(actionId, parsedPluginInput.data, {
             ...(params.seed.externalActionContext ?? {}),
             ...(params.seed.sessionListAccess ? { sessionListAccess: params.seed.sessionListAccess } : {}),

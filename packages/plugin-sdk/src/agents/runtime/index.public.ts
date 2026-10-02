@@ -92,6 +92,9 @@ export type { AgentProviderBindingSourceKey } from '../../agentRuntime/projectio
 export type { AgentProviderCredentialTransport } from '../../agentRuntime/projections.js';
 export type { AgentRuntime } from '../../agentRuntime/projections.js';
 export type { AgentRuntimeContext } from '../../agentRuntime/projections.js';
+export type { AgentTranscriptIdentityCodec } from '../../agentRuntime/projections.js';
+export type { AgentTranscriptSourceIdentityRequest } from '../../agentRuntime/projections.js';
+export type { AgentTranscriptSourceIdentityResult } from '../../agentRuntime/projections.js';
 export type { AgentRuntimeFactory } from '../../agentRuntime/projections.js';
 export type { AgentRuntimeFactoryContext } from '../../agentRuntime/projections.js';
 export type { AgentRuntimeForkSurface } from '../../agentRuntime/projections.js';

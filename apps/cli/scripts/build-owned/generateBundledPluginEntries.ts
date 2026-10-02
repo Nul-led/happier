@@ -68,9 +68,12 @@ import { readAgentNativeHomeEnvironmentKeys } from '../../src/plugins/authoring/
 import { parseBundledPluginPublicationFailures } from '../../../../packages/cli-common/bundledPluginPublicationPolicy.mjs';
 import {
   resolveWorkspaceBundleLockPath,
+  withWorkspaceBundleLock,
   type WorkspaceBundleLockContext,
 } from '../../../../packages/cli-common/workspaceBundleLock.mjs';
-import { withPreparedGeneratorPublication } from './bundledPlugins/publication.ts';
+import { withGeneratorSingleFlight, withPreparedGeneratorPublication } from './bundledPlugins/publication.ts';
+import { parseWorkspaceLockLeaseValue } from '../../../../packages/cli-common/workspaceLockLease.mjs';
+import { readWorkspacePackageInputFingerprint } from '../../../../scripts/workspaces/ensureWorkspacePackagesBuilt.mjs';
 import {
   pluginPackageNameToPackageId,
   readBundledPluginPackageNames,
@@ -95,6 +98,7 @@ import {
 } from './bundledPlugins/typescriptModuleInspection.ts';
 import {
   parseGeneratorCliArgs,
+  normalizeCanonicalGeneratorPublication,
   resolvePluginAuthorRuntimeLoadScope,
   resolveGeneratorAuthoringPreparationPolicy,
   resolveSelectedBundledPluginPackageNames,
@@ -108,12 +112,14 @@ import {
   inspectSourceDevSharedDepsForSourceDev,
   prepareBundledWorkspaceDependenciesForCli,
   resolveCliBundledWorkspacePackageNames,
+  resolveBundledWorkspacePackageDir,
   syncSharedDepsForSourceDev,
 } from '../buildSharedDeps.mjs';
 import { createWorkspaceChildBuildEnv } from '../../../../scripts/workspaces/workspaceChildBuildEnv.mjs';
 import {
   assertHostCanExcludeBundledPlugin,
   createBundledPluginPublicationFailure,
+  resolveBundledPluginPublicationFailures,
   writeBundledPluginPublicationFailures,
   type BundledPluginPublicationFailure,
 } from '../../../../scripts/workspaces/bundledPluginPublicationFailure.mjs';
@@ -252,7 +258,7 @@ type GeneratorWorkspaceDependencies = Readonly<{
     | 'getAllBackendDefinitionContracts'
     | 'getAgentCatalogDefinition'
     | 'getAgentCliRuntimeSpec'
-  >>;
+  >> & Pick<AgentIdsWorkspaceModule, 'BUNDLED_AGENT_CONTRIBUTION_IDENTITIES'>;
   cliCommonWorkspaces: Readonly<Pick<
     CliCommonWorkspacesModule,
     | 'bundleWorkspacePackage'
@@ -299,6 +305,27 @@ const GENERATOR_STAGE_PREP_STAMP_PATH = resolve(
 );
 const PRIVATE_RUNTIME_CONSUMED_AGENT_FACTS_PHASE_ENV =
   'HAPPIER_PRIVATE_BUNDLED_RUNTIME_CONSUMED_AGENT_FACTS_PHASE';
+let activeGeneratorPreparationLease: WorkspaceBundleLockContext | undefined;
+
+async function withParentGeneratorPreparationLease(
+  heldLockValue: string,
+  operation: () => Promise<void>,
+): Promise<void> {
+  const parsedLease = parseWorkspaceLockLeaseValue(heldLockValue);
+  if (!parsedLease) throw new Error('Private bundled phase requires an authenticated preparation lease');
+  await withWorkspaceBundleLock(async (lease) => {
+    if (!lease.inherited) throw new Error('Private bundled phase requires its parent preparation lease');
+    const previousLease = activeGeneratorPreparationLease;
+    activeGeneratorPreparationLease = lease;
+    try {
+      lease.assertOwned();
+      await operation();
+      lease.assertOwned();
+    } finally {
+      activeGeneratorPreparationLease = previousLease;
+    }
+  }, { lockPath: parsedLease.path, heldLockValue, errorLabel: 'bundled plugin private preparation lease' });
+}
 const CANONICAL_WORKSPACE_PACKAGE_DIRS = Object.freeze({
   '@happier-dev/agents': 'packages/agents',
   '@happier-dev/cli-common': 'packages/cli-common',
@@ -397,6 +424,7 @@ async function loadGeneratorWorkspaceDependencies(): Promise<GeneratorWorkspaceD
   return Object.freeze({
     agents: Object.freeze({
       AGENT_IDS: agentIds.AGENT_IDS,
+      BUNDLED_AGENT_CONTRIBUTION_IDENTITIES: agentIds.BUNDLED_AGENT_CONTRIBUTION_IDENTITIES,
       CANONICAL_AGENTS_CORE: agentsManifest.CANONICAL_AGENTS_CORE,
       getAllAgentDefinitionContracts: agentsDefinitions.getAllAgentDefinitionContracts,
       getAllBackendCatalogDefinitions: agentsDefinitions.getAllBackendCatalogDefinitions,
@@ -1878,7 +1906,6 @@ async function loadPluginAgentUiDescriptor(
 async function loadPluginAgentPredecessorMessageMetaWriter(
   repoRoot: string,
   pluginPackageId: string,
-  packageName: string,
   agentId: string,
 ): Promise<AgentPredecessorMessageMetaWriterImportSource | undefined> {
   // This is not an extension convention. Claude is the sole observed
@@ -1893,13 +1920,16 @@ async function loadPluginAgentPredecessorMessageMetaWriter(
   );
   if (!existsSync(predecessorMessageMetaPath)) return undefined;
 
-  const exportName = `${toAgentConstPrefix(agentId)}_PREDECESSOR_MESSAGE_META_WRITER`;
-  const source = readFileSync(predecessorMessageMetaPath, 'utf8');
-  const exportPattern = new RegExp(`\\bexport\\s+const\\s+${exportName}\\b`);
-  if (!exportPattern.test(source)) return undefined;
+  const mod = await importTypescriptModule(predecessorMessageMetaPath) as Record<string, unknown>;
+  const defaults = mod.CLAUDE_PREDECESSOR_MESSAGE_META_DEFAULTS;
+  if (!isRecord(defaults) || Array.isArray(defaults)) {
+    throw new Error(`Missing Claude predecessor message metadata defaults in ${predecessorMessageMetaPath}`);
+  }
+  assertJsonSerializable(defaults, ['claude', 'predecessorMessageMetaDefaults']);
   return {
-    importName: exportName,
-    importPath: `${packageName}/ui/predecessor-message-meta`,
+    importName: 'buildClaudePredecessorMessageMeta',
+    importPath: '@happier-dev/protocol/agents/claude/predecessor-message-meta',
+    defaults: defaults as JsonObject,
   };
 }
 
@@ -1938,7 +1968,6 @@ function assertPluginPromptAssetAdapterDescriptor(value: unknown, path: string):
 async function loadPluginPromptAssetContributions(
   repoRoot: string,
   pluginPackageId: string,
-  packageName: string,
 ): Promise<PromptAssetContributionSource | undefined> {
   const contributionPath = resolve(repoRoot, 'packages/plugins', pluginPackageId, 'src/agent/promptAssets/index.ts');
   if (!existsSync(contributionPath)) return undefined;
@@ -1952,12 +1981,12 @@ async function loadPluginPromptAssetContributions(
   }
   for (const [index, contribution] of rawContributions.entries()) {
     assertPluginPromptAssetAdapterDescriptor(contribution, `${pluginPackageId}[${index}]`);
+    assertJsonSerializable(contribution, [pluginPackageId, 'promptAssets', String(index)]);
   }
 
   return {
-    importName: `${toAgentConstPrefix(pluginPackageId)}_PROMPT_ASSET_DESCRIPTORS`,
-    importPath: `${packageName}/agent/promptAssets`,
     pluginPackageId,
+    descriptors: rawContributions as readonly JsonObject[],
   };
 }
 
@@ -2848,14 +2877,12 @@ async function readSourceProjectionFacts(params: Readonly<{
     ? await loadPluginAgentPredecessorMessageMetaWriter(
       params.repoRoot,
       params.pluginPackageId,
-      params.packageName,
       agentUiDescriptor.agentId,
     )
     : undefined;
   const promptAssetContributions = await loadPluginPromptAssetContributions(
     params.repoRoot,
     params.pluginPackageId,
-    params.packageName,
   );
   const builtInLegacyConnectedAccountCompatibility =
     await loadBuiltInLegacyConnectedAccountCompatibility(
@@ -3087,11 +3114,21 @@ async function runRuntimeConsumedAgentFactsPrivateChild(
   argv: readonly string[],
   inheritedLockValue: string | undefined,
 ): Promise<void> {
+  await runGeneratorPrivateChild(argv, inheritedLockValue,
+    activeGeneratorPreparationLease ? `facts:${activeGeneratorPreparationLease.heldLockValue}` : '1');
+}
+
+async function runGeneratorPrivateChild(
+  argv: readonly string[],
+  inheritedLockValue: string | undefined,
+  phase: string,
+  inheritedFailures?: readonly BundledPluginPackageFailure[],
+): Promise<void> {
   const childEnvironment = createWorkspaceChildBuildEnv({
     env: process.env,
     heldLockValue: inheritedLockValue,
   });
-  childEnvironment[PRIVATE_RUNTIME_CONSUMED_AGENT_FACTS_PHASE_ENV] = '1';
+  childEnvironment[PRIVATE_RUNTIME_CONSUMED_AGENT_FACTS_PHASE_ENV] = phase;
   await new Promise<void>((resolvePromise, reject) => {
     const child = spawn(
       process.execPath,
@@ -3099,9 +3136,10 @@ async function runRuntimeConsumedAgentFactsPrivateChild(
       {
         cwd: process.cwd(),
         env: childEnvironment,
-        stdio: 'inherit',
+        stdio: inheritedFailures === undefined ? 'inherit' : ['pipe', 'inherit', 'inherit'],
       },
     );
+    if (inheritedFailures !== undefined) child.stdin?.end(JSON.stringify(inheritedFailures));
     child.once('error', reject);
     child.once('exit', (code, signal) => {
       if (code === 0) {
@@ -3109,7 +3147,7 @@ async function runRuntimeConsumedAgentFactsPrivateChild(
         return;
       }
       reject(new Error(
-        `Bundled runtime-consumed Agent facts phase failed (${signal ?? `exit ${String(code)}`})`,
+        `Bundled generator private phase failed (${signal ?? `exit ${String(code)}`})`,
       ));
     });
   });
@@ -3635,11 +3673,17 @@ function assertBundledVoicePackageExport(
   }
 }
 
-function collectBundledFirstPartyVoiceProjectionSources(
+export async function collectBundledFirstPartyVoiceProjectionSources(
   repoRoot: string,
   pluginPackages: readonly BundledPluginPackage[],
-): readonly BundledFirstPartyVoiceProjectionSource[] {
+  readPresentationFacts = true,
+  excludedPackageNames: ReadonlySet<string> = new Set(),
+): Promise<Readonly<{
+  sources: readonly BundledFirstPartyVoiceProjectionSource[];
+  failures: readonly BundledPluginPackageFailure[];
+}>> {
   const sources: BundledFirstPartyVoiceProjectionSource[] = [];
+  const failures: BundledPluginPackageFailure[] = [];
   const seenPluginIds = new Map<string, string>();
 
   for (const pluginPackage of pluginPackages) {
@@ -3729,6 +3773,30 @@ function collectBundledFirstPartyVoiceProjectionSources(
         conversationClient.artifactId,
       );
     }
+    const presentationPath = resolve(repoRoot, 'packages/plugins', pluginPackageId, 'src/ui/voice/entries.ts');
+    let presentations: readonly JsonObject[] = [];
+    if (readPresentationFacts && !excludedPackageNames.has(pluginPackage.packageName)) {
+      try {
+        const presentationModule = await importTypescriptModule(presentationPath) as Record<string, unknown>;
+        const facts = presentationModule.VOICE_PROVIDER_PRESENTATIONS;
+        if (!Array.isArray(facts) || facts.some((presentation) => (
+          !isJsonObject(presentation)
+          || typeof presentation.providerId !== 'string'
+          || typeof presentation.settingsSectionId !== 'string'
+        ))) {
+          throw new Error(`Invalid bundled Voice presentation facts: ${presentationPath}`);
+        }
+        presentations = facts as JsonObject[];
+      } catch (error) {
+        failures.push(createBundledPluginPublicationFailure({
+          repoRoot,
+          packageName: pluginPackage.packageName,
+          pluginId: pluginPackage.pluginId,
+          code: 'plugin_ui_artifact_invalid',
+          error,
+        }));
+      }
+    }
     sources.push({
       manifest: pluginPackage.manifest,
       packageName: pluginPackage.packageName,
@@ -3740,10 +3808,37 @@ function collectBundledFirstPartyVoiceProjectionSources(
         (platform) => conversationPlatforms.has(platform),
       ),
       conversationClient,
+      presentations,
     });
   }
 
-  return sources.sort((a, b) => a.packageName.localeCompare(b.packageName));
+  return Object.freeze({
+    sources: Object.freeze(sources.sort((a, b) => a.packageName.localeCompare(b.packageName))),
+    failures: Object.freeze(failures),
+  });
+}
+
+function renderBundledVoiceRuntimeProjectionOutputs(
+  rootDir: string,
+  sources: readonly BundledFirstPartyVoiceProjectionSource[],
+  failures: readonly BundledPluginPackageFailure[],
+  mode: Mode,
+): readonly Readonly<{ outPath: string; out: string }>[] {
+  const excludedPackageNames = new Set(failures.map((failure) => failure.packageName));
+  const outputs = BUNDLED_VOICE_RUNTIME_PLATFORMS.map((platform) => ({
+    platform,
+    outPath: resolve(rootDir, 'apps/ui/sources/voice/registry',
+      `generatedBundledVoiceRuntimeEntries${platform === 'web' ? '' : `.${platform}`}.ts`),
+    out: renderBundledVoiceRuntimeEntriesTs(sources, platform, excludedPackageNames),
+  }));
+  const common = outputs[0]!.out;
+  return outputs.flatMap(({ platform, ...output }) => {
+    if (platform !== 'web' && output.out === common) {
+      removeRetiredGeneratedOutput(output.outPath, mode);
+      return [];
+    }
+    return [output];
+  });
 }
 
 function syncBundledVoiceUiPackageDependencies(params: Readonly<{
@@ -3810,10 +3905,27 @@ export async function publishBundledPluginSemanticProjection(
     'apps/cli/src/plugins/projection/registry/sources/generatedBundledPluginManifests.ts',
   );
   const cliManifestOut = renderCliBundledPluginManifestEntriesTs({ pluginPackages });
+  // Serialized declaration facts suffice for executable roots; never inspect
+  // failed authored leaves or retain an old activation import in scoped publication.
+  const runtimeFailures = resolveBundledPluginPublicationFailures(options.rootDir, failures,
+    options.aggregateOnly
+      ? failures.map((failure) => failure.packageName)
+      : options.workspaceNames.length > 0
+        ? resolveSelectedBundledPluginPackageNames(bundledPluginPackageNames, options.workspaceNames)
+        : undefined,
+  );
+  const voiceProjection = options.targetOwnedOnly ? { sources: [] } : await collectBundledFirstPartyVoiceProjectionSources(
+    options.rootDir,
+    pluginPackages.filter((entry) => !runtimeFailures.some((failure) => failure.packageName === entry.packageName)),
+    false,
+  );
+  const voiceRuntimeOutputs = options.targetOwnedOnly ? [] : renderBundledVoiceRuntimeProjectionOutputs(
+    options.rootDir, voiceProjection.sources, runtimeFailures, options.mode,
+  );
 
   if (options.mode === 'check') {
     assertGeneratedOutputMatches(cliManifestOutPath, cliManifestOut);
-    for (const output of additionalOutputs) {
+    for (const output of [...additionalOutputs, ...voiceRuntimeOutputs]) {
       assertGeneratedOutputMatches(output.outPath, output.out);
     }
     return failures;
@@ -3824,6 +3936,7 @@ export async function publishBundledPluginSemanticProjection(
       ? [{ outPath: cliManifestOutPath, out: cliManifestOut }]
       : []),
     ...additionalOutputs,
+    ...voiceRuntimeOutputs,
   ], publicationLease);
   if (options.aggregateOnly) {
     // Serialized manifests cannot settle an unrelated authored-source failure.
@@ -3834,22 +3947,29 @@ export async function publishBundledPluginSemanticProjection(
   return failures;
 }
 
-function collectBundledAgentContributionIdentities(
+export function collectBundledAgentContributionIdentities(
   pluginPackages: readonly BundledPluginPackage[],
+  dependencies: GeneratedCompilerInputDependencies,
 ): Readonly<Record<string, Readonly<{ pluginId: string; localId: string }>>> {
-  return Object.freeze(Object.fromEntries(pluginPackages.flatMap((pluginPackage) => {
-    if (!pluginPackage.agentId) return [];
-    const manifestAgent = readManifestContributionArray(pluginPackage.manifest, 'agents')[0];
-    const localId = readRequiredContributionId(
-      manifestAgent,
-      'agents',
-      pluginPackage.pluginPackageId,
-    );
-    return [[pluginPackage.agentId, Object.freeze({
-      pluginId: pluginPackage.pluginId,
-      localId,
-    })] as const];
-  })));
+  // The id union retains the upstream source catalog even when an optional
+  // plugin cannot be prepared. Retain its declared identity from that same
+  // catalog; successfully read authored facts replace it below.
+  return Object.freeze(Object.fromEntries([
+    ...Object.entries(dependencies.agents.BUNDLED_AGENT_CONTRIBUTION_IDENTITIES),
+    ...pluginPackages.flatMap((pluginPackage) => {
+      if (!pluginPackage.agentId) return [];
+      const manifestAgent = readManifestContributionArray(pluginPackage.manifest, 'agents')[0];
+      const localId = readRequiredContributionId(
+        manifestAgent,
+        'agents',
+        pluginPackage.pluginPackageId,
+      );
+      return [[pluginPackage.agentId, Object.freeze({
+        pluginId: pluginPackage.pluginId,
+        localId,
+      })] as const];
+    }),
+  ]));
 }
 
 function collectGeneratedAgentIds(
@@ -4564,7 +4684,7 @@ async function generateBundledPluginEntries(
     dependencies,
     new Set(inheritedFailures.map((failure) => failure.packageName)),
   );
-  const failures = mergeBundledPluginFailures(inheritedFailures, discoveredPluginPackages.failures);
+  let failures = mergeBundledPluginFailures(inheritedFailures, discoveredPluginPackages.failures);
   assertNoBundledPluginPublicationFailures(failures, options.mode);
   const pluginPackages = discoveredPluginPackages.pluginPackages;
   const builtInLegacyConnectedAccountCompatibility =
@@ -4587,10 +4707,15 @@ async function generateBundledPluginEntries(
       todayUtc,
     });
   }
-  const bundledVoiceProjectionSources = collectBundledFirstPartyVoiceProjectionSources(
+  const bundledVoiceProjection = await collectBundledFirstPartyVoiceProjectionSources(
     options.rootDir,
     pluginPackages,
+    true,
+    new Set(failures.map((failure) => failure.packageName)),
   );
+  failures = mergeBundledPluginFailures(failures, bundledVoiceProjection.failures);
+  assertNoBundledPluginPublicationFailures(failures, options.mode);
+  const bundledVoiceProjectionSources = bundledVoiceProjection.sources;
   const packageNames = pluginPackages.map((entry) => entry.packageName);
   const bundledAgentDefinitionProjection = collectBundledAgentDefinitionProjection(pluginPackages);
   const bundledAgentDefinitionIds = bundledAgentDefinitionProjection.agentIds;
@@ -4611,20 +4736,6 @@ async function generateBundledPluginEntries(
     options.rootDir,
     'apps/ui/sources/voice/registry/generatedBundledVoiceEntries.ts',
   );
-  const uiVoiceRuntimeEntriesOutPaths = Object.freeze({
-    web: resolve(
-      options.rootDir,
-      'apps/ui/sources/voice/registry/generatedBundledVoiceRuntimeEntries.ts',
-    ),
-    ios: resolve(
-      options.rootDir,
-      'apps/ui/sources/voice/registry/generatedBundledVoiceRuntimeEntries.ios.ts',
-    ),
-    android: resolve(
-      options.rootDir,
-      'apps/ui/sources/voice/registry/generatedBundledVoiceRuntimeEntries.android.ts',
-    ),
-  } satisfies Readonly<Record<BundledVoiceRuntimePlatform, string>>);
   const uiBehaviorOverridesOutPath = resolve(
     options.rootDir,
     'apps/ui/sources/agents/registry/generatedBundledPluginEntries.uiBehaviorOverrides.ts',
@@ -4709,7 +4820,7 @@ async function generateBundledPluginEntries(
     });
   const agentIdsOut = renderAgentIdsTs({
     agentIds: generatedAgentIds,
-    contributionIdentities: collectBundledAgentContributionIdentities(pluginPackages),
+    contributionIdentities: collectBundledAgentContributionIdentities(pluginPackages, dependencies),
   });
   const runtimeDescriptorReadersOut = renderAgentRuntimeDescriptorReadersTs(
     collectReleasedFlatSessionMetadataRuntimeDescriptorReaderContributions(pluginPackages),
@@ -4719,7 +4830,7 @@ async function generateBundledPluginEntries(
   );
   const protocolBundledAgentIdentitiesV1Out = renderProtocolBundledAgentIdentitiesV1Ts({
     agentIds: generatedAgentIds,
-    contributionIdentities: collectBundledAgentContributionIdentities(pluginPackages),
+    contributionIdentities: collectBundledAgentContributionIdentities(pluginPackages, dependencies),
   });
   const protocolBuiltInLegacyConnectedAccountCompatibilityOut =
     renderProtocolBuiltInLegacyConnectedAccountCompatibilityTs(
@@ -4735,22 +4846,9 @@ async function generateBundledPluginEntries(
   const visibleMessageResolversOut = renderBundledVisibleMessageResolversTs(visibleMessageResolverSources);
   const promptAssetPluginDescriptorsOut = renderCliPromptAssetPluginDescriptorsTs(promptAssetContributionSources);
   const uiVoiceEntriesOut = renderBundledVoiceEntriesTs(bundledVoiceProjectionSources);
-  const uiVoiceRuntimeEntriesOut = Object.freeze(Object.fromEntries(
-    BUNDLED_VOICE_RUNTIME_PLATFORMS.map((platform) => [
-      platform,
-      renderBundledVoiceRuntimeEntriesTs(bundledVoiceProjectionSources, platform),
-    ]),
-  ) as Record<BundledVoiceRuntimePlatform, string>);
-  // Metro/package export conditions select each plugin's platform implementation.
-  // A host sibling is needed only when the manifest declares different membership.
-  const distinctVoiceRuntimePlatforms = BUNDLED_VOICE_RUNTIME_PLATFORMS.filter((platform) => (
-    platform === 'web' || uiVoiceRuntimeEntriesOut[platform] !== uiVoiceRuntimeEntriesOut.web
-  ));
-  for (const platform of BUNDLED_VOICE_RUNTIME_PLATFORMS) {
-    if (!distinctVoiceRuntimePlatforms.includes(platform)) {
-      removeRetiredGeneratedOutput(uiVoiceRuntimeEntriesOutPaths[platform], options.mode);
-    }
-  }
+  const voiceRuntimeOutputs = renderBundledVoiceRuntimeProjectionOutputs(
+    options.rootDir, bundledVoiceProjectionSources, failures, options.mode,
+  );
   syncCliBundledPluginMembership({
     rootDir: options.rootDir,
     mode: options.mode,
@@ -4794,11 +4892,8 @@ async function generateBundledPluginEntries(
     assertGeneratedOutputMatches(visibleMessageResolversOutPath, visibleMessageResolversOut);
     assertGeneratedOutputMatches(promptAssetPluginDescriptorsOutPath, promptAssetPluginDescriptorsOut);
     assertGeneratedOutputMatches(uiVoiceEntriesOutPath, uiVoiceEntriesOut);
-    for (const platform of distinctVoiceRuntimePlatforms) {
-      assertGeneratedOutputMatches(
-        uiVoiceRuntimeEntriesOutPaths[platform],
-        uiVoiceRuntimeEntriesOut[platform],
-      );
+    for (const output of voiceRuntimeOutputs) {
+      assertGeneratedOutputMatches(output.outPath, output.out);
     }
     return failures;
   }
@@ -4830,10 +4925,7 @@ async function generateBundledPluginEntries(
     { outPath: visibleMessageResolversOutPath, out: visibleMessageResolversOut },
     { outPath: promptAssetPluginDescriptorsOutPath, out: promptAssetPluginDescriptorsOut },
     { outPath: uiVoiceEntriesOutPath, out: uiVoiceEntriesOut },
-    ...distinctVoiceRuntimePlatforms.map((platform) => ({
-      outPath: uiVoiceRuntimeEntriesOutPaths[platform],
-      out: uiVoiceRuntimeEntriesOut[platform],
-    })),
+    ...voiceRuntimeOutputs,
   ], publicationLease);
   return failures;
 }
@@ -4845,6 +4937,7 @@ async function withGeneratorPublicationLock<T>(
 ): Promise<T> {
   return await withPreparedGeneratorPublication({
     prepare,
+    preparationLease: activeGeneratorPreparationLease,
     publish: operation,
     lockOptions: {
       // The generator's runtime dependencies are loaded from the canonical
@@ -4859,8 +4952,81 @@ async function withGeneratorPublicationLock<T>(
 }
 
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
-  const timing = createBundledPluginTimingReporter();
   const options = parseGeneratorCliArgs(argv);
+  const canonicalWrite = options.mode === 'write'
+    && resolve(options.rootDir) === CANONICAL_GENERATOR_REPO_ROOT
+    && !options.compilerInputsOnly && !options.agentDefinitionsOnly
+    && !options.aggregateOnly && !options.targetOwnedOnly;
+  if (!canonicalWrite) return await runGenerator(argv, options);
+
+  const inheritedFailures = readInheritedBundledPluginFailures(options.inheritedFailuresStdin, options.rootDir);
+  const bundledNames = readBundledPluginPackageNames(options.rootDir).map((name) => name.replace('@happier-dev/', ''));
+  // The all-plugin spelling and an unscoped request have the same publication
+  // owner. Normalize both execution and admission, including the private facts
+  // phase, so source readiness and snapshot reconciliation cannot duplicate it.
+  const { options: selectedOptions, argv: selectedArgv } = normalizeCanonicalGeneratorPublication(argv, options, bundledNames);
+  const request = JSON.stringify({
+    workspaceNames: [...selectedOptions.workspaceNames].sort(),
+    inheritedFailures,
+    publicationMode: process.env.HAPPIER_WORKSPACE_BUNDLE_PUBLICATION_MODE ?? 'live',
+  });
+  const workspaceNames = [...new Set([
+    'plugin-sdk',
+    ...resolveCliBundledWorkspacePackageNames({ repoRoot: options.rootDir }),
+    ...bundledNames,
+  ])].sort();
+  const readFingerprint = () => JSON.stringify([
+    request,
+    ...[
+      resolve(options.rootDir, 'apps/cli'),
+      ...workspaceNames.map((workspaceName) => resolveBundledWorkspacePackageDir({ repoRoot: options.rootDir, workspaceName })),
+    ].map((packageDir) => readWorkspacePackageInputFingerprint({
+      packageDir,
+      // CLI release files include executable distribution globs; the publisher
+      // consumes its source/scripts, not those downstream packaged outputs.
+      includeShippedFiles: packageDir !== resolve(options.rootDir, 'apps/cli'),
+      excludeGeneratedPluginArtifacts: true,
+    })),
+  ]);
+  const inheritedLockValue = process.env.HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD;
+  await withGeneratorSingleFlight({
+    readFingerprint,
+    readCurrentness: () => JSON.stringify([
+      readFingerprint(),
+      computeSourceDevSharedDepsSignature({ repoRoot: options.rootDir, workspaceNames }),
+      ...workspaceNames.map((workspaceName) => readWorkspacePackageInputFingerprint({
+        packageDir: resolveBundledWorkspacePackageDir({ repoRoot: options.rootDir, workspaceName }),
+        includeShippedFiles: true,
+      })),
+    ]),
+    stampPath: GENERATOR_STAGE_PREP_STAMP_PATH,
+    // Each preparation uses a fresh ESM process, also for the trailing pass.
+    // The coordinator and waiters never retain a previous heavy authoring graph.
+    run: (lease) => runGeneratorPrivateChild(
+      selectedArgv,
+      inheritedLockValue,
+      `publication:${lease.heldLockValue}`,
+      selectedOptions.inheritedFailuresStdin ? inheritedFailures : undefined,
+    ),
+    lockOptions: {
+      // An authenticated outer publisher must not wait for a preparation owner
+      // that is itself waiting for that publisher. Ordinary callers acquire only
+      // the separate preparation lease; all short global transactions stay below.
+      lockPath: inheritedLockValue
+        ? resolveWorkspaceBundleLockPath(CANONICAL_GENERATOR_REPO_ROOT)
+        : resolve(CANONICAL_GENERATOR_REPO_ROOT, '.project/tmp/bundled-plugin-preparation.lock'),
+      heldLockValue: inheritedLockValue,
+      errorLabel: 'bundled plugin preparation single-flight',
+    },
+  });
+}
+
+async function runGenerator(
+  argv: readonly string[],
+  options: GeneratorOptions,
+  inheritedFailures?: readonly BundledPluginPackageFailure[],
+): Promise<void> {
+  const timing = createBundledPluginTimingReporter();
   const inheritedLockValue = process.env.HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD;
   if (options.agentDefinitionsOnly) {
     await withGeneratorPublicationLock(
@@ -4891,7 +5057,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     targetsCanonicalRoot: resolve(options.rootDir) === CANONICAL_GENERATOR_REPO_ROOT,
     targetOwnedOnly: options.targetOwnedOnly,
   });
-  let pluginFailures = readInheritedBundledPluginFailures(options.inheritedFailuresStdin, options.rootDir);
+  let pluginFailures = inheritedFailures ?? readInheritedBundledPluginFailures(options.inheritedFailuresStdin, options.rootDir);
   const publishesFullRuntime = options.mode === 'write'
     && options.scope === 'all'
     && options.workspaceNames.length === 0
@@ -5006,7 +5172,18 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  if (process.env[PRIVATE_RUNTIME_CONSUMED_AGENT_FACTS_PHASE_ENV] === '1') {
+  const privatePhase = process.env[PRIVATE_RUNTIME_CONSUMED_AGENT_FACTS_PHASE_ENV];
+  if (privatePhase?.startsWith('publication:')) {
+    delete process.env[PRIVATE_RUNTIME_CONSUMED_AGENT_FACTS_PHASE_ENV];
+    const privateOptions = parseGeneratorCliArgs(process.argv.slice(2));
+    if (privateOptions.mode !== 'write' || resolve(privateOptions.rootDir) !== CANONICAL_GENERATOR_REPO_ROOT
+      || privateOptions.aggregateOnly || privateOptions.targetOwnedOnly
+      || privateOptions.compilerInputsOnly || privateOptions.agentDefinitionsOnly) {
+      throw new Error('Private bundled publication requires a canonical source write');
+    }
+    await withParentGeneratorPreparationLease(privatePhase.slice('publication:'.length),
+      () => runGenerator(process.argv.slice(2), privateOptions));
+  } else if (privatePhase === '1' || privatePhase?.startsWith('facts:')) {
     const heldLockValue = process.env.HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD;
     const privateOptions = parseGeneratorCliArgs(process.argv.slice(2));
     if (
@@ -5023,7 +5200,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
     // must enter their normal compiler-input modes rather than recursively
     // re-entering the private phase.
     delete process.env[PRIVATE_RUNTIME_CONSUMED_AGENT_FACTS_PHASE_ENV];
-    await withGeneratorPublicationLock(
+    const publishFacts = async () => await withGeneratorPublicationLock(
       async (context) => await runRuntimeConsumedAgentFactsPrivatePhase(
         privateOptions.rootDir,
         context,
@@ -5035,6 +5212,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
         { prepareGeneratedCompilerInputs: false },
       ),
     );
+    if (privatePhase.startsWith('facts:')) {
+      await withParentGeneratorPreparationLease(privatePhase.slice('facts:'.length), publishFacts);
+    } else {
+      await publishFacts();
+    }
   } else {
     await main();
   }

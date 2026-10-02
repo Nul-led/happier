@@ -165,8 +165,8 @@ function bindReplaceableNativeAgentSessionOperations(params: Readonly<{
         currentOperations.interruptPendingInputAndRun !== undefined;
     const hasPrepareRunTeamCredentialProviderBinding =
         currentOperations.prepareRunTeamCredentialProviderBinding !== undefined;
-    const hasPrepareProviderCliAttach =
-        currentOperations.prepareProviderCliAttach !== undefined;
+    const hasPrepareTerminalPresentation =
+        currentOperations.prepareTerminalPresentation !== undefined;
     let runtimeClosed = false;
     let runtimeBindingEpoch = 0;
     let stableRuntimeOperations: PluginRuntimeHookOperations | null = null;
@@ -507,14 +507,14 @@ function bindReplaceableNativeAgentSessionOperations(params: Readonly<{
         async cancelTurn() {
             await currentOperations.cancelTurn();
         },
-        ...(hasPrepareProviderCliAttach
+        ...(hasPrepareTerminalPresentation
             ? {
-                async prepareProviderCliAttach() {
-                    const prepare = currentOperations.prepareProviderCliAttach;
+                async prepareTerminalPresentation(request: Parameters<NonNullable<PluginRuntimeHookOperations['prepareTerminalPresentation']>>[0]) {
+                    const prepare = currentOperations.prepareTerminalPresentation;
                     if (!prepare) {
                         throw new Error('Provider CLI attach is unavailable for the active runtime');
                     }
-                    return await prepare();
+                    return await prepare(request);
                 },
             }
             : {}),

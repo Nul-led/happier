@@ -333,7 +333,7 @@ describe('plugin SDK public installable examples', () => {
     // Retired V1 surface-placement declarations must not survive as an empty
     // compatibility field: V2 views are the only UI destination owner.
     expect(registry).not.toHaveProperty('surfacePlacements');
-    expect(registry.hostedWeb).toEqual([]);
+    expect(registry).not.toHaveProperty('hostedWeb');
   });
 
   /**

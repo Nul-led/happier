@@ -15,10 +15,15 @@ export function readWorkspaceBuildInputs(packageDir, {
   stat = lstatSync,
   includeShippedFiles = false,
   excludeGeneratedPluginManifest = false,
+  excludeGeneratedPluginArtifacts = false,
 } = {}) {
   const inputs = new Set();
   const visit = (path, { ignoreTests = true } = {}) => {
     const relativePath = relative(packageDir, path).split(sep).join('/');
+    if (excludeGeneratedPluginArtifacts && relativePath.startsWith('.happier-plugin/')
+      && relativePath !== '.happier-plugin/ui'
+      && relativePath !== '.happier-plugin/ui/hosted-web'
+      && !relativePath.startsWith('.happier-plugin/ui/hosted-web/')) return;
     if (excludeGeneratedPluginManifest && relativePath === '.happier-plugin/plugin.json') return;
     const name = path.split(sep).at(-1) ?? '';
     if (

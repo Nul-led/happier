@@ -55,6 +55,7 @@ export type PluginSessionBindingInput = Readonly<{
     primaryTeamId?: string | null;
     teamCredentialBindings?: SessionTeamCredentialBindingIntentListV1;
     bootstrap: Readonly<{
+        runtimeDescriptorV1?: AgentSessionOpenRequest['runtimeDescriptorV1'];
         workingDirectory?: string;
         target?: BackendTargetRefV2Input;
         source?: 'daemon' | 'terminal';
@@ -104,6 +105,7 @@ export type HostPrivateLateSessionEnvironmentResolver = (
 >;
 
 export type PluginHostSessionRuntimeOptions = Readonly<{
+    runtimeDescriptorV1?: AgentSessionOpenRequest['runtimeDescriptorV1'];
     credentials: StoredCredentials;
     agentSessionStartupInstructionsV1?: AgentSessionStartupInstructionsV1;
     sessionCreationTag?: SessionCreationTagV1;
@@ -501,6 +503,7 @@ export function buildPluginHostSessionRuntimeOptions(
         ...(typeof input.bootstrap.workingDirectory === 'string' ? { directory: input.bootstrap.workingDirectory } : {}),
         ...(input.bootstrap.target ? { backendTarget: input.bootstrap.target } : {}),
         ...(input.bootstrap.source ? { startedBy: input.bootstrap.source } : {}),
+        ...(input.bootstrap.runtimeDescriptorV1 ? { runtimeDescriptorV1: input.bootstrap.runtimeDescriptorV1 } : {}),
         ...(input.runtimePreferences.terminal !== undefined ? { terminalRuntime: input.runtimePreferences.terminal } : {}),
         ...(input.runtimePreferences.startingMode ? { startingMode: input.runtimePreferences.startingMode } : {}),
         ...(input.runtimePreferences.permission?.mode ? { permissionMode: input.runtimePreferences.permission.mode } : {}),

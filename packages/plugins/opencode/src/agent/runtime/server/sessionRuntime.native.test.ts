@@ -71,7 +71,7 @@ function createRuntime(options: Readonly<{
     reader: () => Promise<unknown>,
   ) => Readonly<{ dispose(): void }>;
   inputFiles?: NonNullable<Parameters<typeof createOpenCodeSessionRuntime>[0]['inputFiles']>;
-  prepareProviderCliAttach?: NonNullable<Parameters<typeof createOpenCodeSessionRuntime>[0]['prepareProviderCliAttach']>;
+  prepareTerminalPresentation?: NonNullable<Parameters<typeof createOpenCodeSessionRuntime>[0]['prepareTerminalPresentation']>;
 }> = {}) {
   const fixture = createOperationsFixture();
   const disposeOperations = vi.fn(async () => undefined);
@@ -86,8 +86,8 @@ function createRuntime(options: Readonly<{
     disposeOperations,
     ...(options.models ? { models: options.models } : {}),
     ...(options.inputFiles ? { inputFiles: options.inputFiles } : {}),
-    ...(options.prepareProviderCliAttach
-      ? { prepareProviderCliAttach: options.prepareProviderCliAttach }
+    ...(options.prepareTerminalPresentation
+      ? { prepareTerminalPresentation: options.prepareTerminalPresentation }
       : {}),
     ...(options.bindActiveSkillsReader
       ? { bindActiveSkillsReader: options.bindActiveSkillsReader }
@@ -98,21 +98,27 @@ function createRuntime(options: Readonly<{
 
 describe('createOpenCodeSessionRuntime', () => {
   it('exposes the server assembly provider CLI attach preparation without creating another owner', async () => {
-    const prepareProviderCliAttach = vi.fn(async () => ({
-      path: '/repo',
-      runtimeDescriptorV1: {
-        v: 1 as const,
-        agentId: 'opencode',
-        agent: { backendMode: 'server', providerSessionId: 'provider-session-child' },
+    const prepareTerminalPresentation = vi.fn(async () => ({
+      kind: 'provider_attach' as const,
+      metadata: {
+        path: '/repo',
+        runtimeDescriptorV1: {
+          v: 1 as const,
+          agentId: 'opencode',
+          agent: { backendMode: 'server', providerSessionId: 'provider-session-child' },
+        },
       },
     }));
-    const { runtime } = createRuntime({ prepareProviderCliAttach });
+    const { runtime } = createRuntime({ prepareTerminalPresentation });
 
-    await expect(runtime.prepareProviderCliAttach?.()).resolves.toEqual({
-      path: '/repo',
-      runtimeDescriptorV1: expect.objectContaining({ agentId: 'opencode' }),
+    await expect(runtime.prepareTerminalPresentation?.()).resolves.toEqual({
+      kind: 'provider_attach',
+      metadata: {
+        path: '/repo',
+        runtimeDescriptorV1: expect.objectContaining({ agentId: 'opencode' }),
+      },
     });
-    expect(prepareProviderCliAttach).toHaveBeenCalledOnce();
+    expect(prepareTerminalPresentation).toHaveBeenCalledOnce();
   });
 
   it('wakes an event-driven completion wait immediately on terminal provider events', async () => {

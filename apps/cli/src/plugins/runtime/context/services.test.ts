@@ -675,6 +675,7 @@ describe('A.11 plugin context services', () => {
                 resolveExit = resolve;
             }),
             terminate: vi.fn(async () => undefined),
+            signal: vi.fn(async () => undefined),
         };
         const launchCurrentHostProcess = vi.fn(async () => process);
         const onHostCreated = vi.fn(async (handle: TerminalHostHandle) => ({
@@ -752,6 +753,7 @@ describe('A.11 plugin context services', () => {
         const process = {
             whenExited: new Promise<never>(() => undefined),
             terminate: vi.fn(async () => undefined),
+            signal: vi.fn(async () => undefined),
         };
         const disposeHost = vi.fn(async () => undefined);
         const service = createPluginTerminalHostService({

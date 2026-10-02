@@ -2,6 +2,9 @@
 mod autostart;
 
 #[cfg(desktop)]
+mod background_command;
+
+#[cfg(desktop)]
 mod dock_icon;
 
 #[cfg(desktop)]

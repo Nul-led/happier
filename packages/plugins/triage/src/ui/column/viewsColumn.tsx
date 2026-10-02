@@ -42,6 +42,11 @@ function lensForView(view: CorpusSavedViewV1 | null): TriageRouteLensV1 {
   };
 }
 
+function destinationForView(view: CorpusSavedViewV1 | null) {
+  const location = preflightTriageRouteLensV1(lensForView(view));
+  return location.kind === 'refused' ? undefined : { destination: TRIAGE_ENTRY_DETAIL_DESTINATION_V1, subPath: location.subPath };
+}
+
 function TriageViewsColumn(context: RenderContext): React.ReactElement {
   const hostApi = usePluginHostApi();
   const savedViews = useTriageSavedViews();
@@ -73,6 +78,7 @@ function TriageViewsColumn(context: RenderContext): React.ReactElement {
           titleKey="plugins.triage.column.all"
           title="All entries"
           selected={selected === ALL_ENTRIES_ID}
+          destination={destinationForView(null)}
           onPress={() => open(null)}
         />
         {views.map((view) => (
@@ -81,6 +87,7 @@ function TriageViewsColumn(context: RenderContext): React.ReactElement {
             testID={`triage-views-column.view.${view.viewId}`}
             title={view.label}
             selected={selected === view.viewId}
+            destination={destinationForView(view)}
             onPress={() => open(view)}
           />
         ))}

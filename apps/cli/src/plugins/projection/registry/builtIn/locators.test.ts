@@ -7,6 +7,8 @@ import { describe, expect, it } from 'vitest';
 import { definePlugin } from '@happier-dev/plugin-sdk';
 import { defineContributionProtocol } from '@happier-dev/plugin-sdk/contributions';
 import { defineProtocolObject } from '@happier-dev/plugin-sdk/protocol';
+import { createBundledPluginPublicationFailure } from '../../../../../../../scripts/workspaces/bundledPluginPublicationFailure.mjs';
+import { projectBundledPluginCatalogEntries } from '@/plugins/projection/catalog/installed';
 
 import { BUNDLED_FIRST_PARTY_PLUGIN_LOCATORS } from '../sources/generatedBundledPluginManifests';
 import {
@@ -53,6 +55,28 @@ function locator(overrides: Partial<BundledPluginLocator> = {}): BundledPluginLo
 }
 
 describe('bundled plugin locators', () => {
+    it.each([
+        ['cliproxyapi', 'happier.provider.cliproxyapi'],
+    ])('projects an isolated %s publication failure as load_error while keeping a healthy sibling', (packageId, pluginId) => {
+        const failure = createBundledPluginPublicationFailure({
+            repoRoot: '', packageName: `@happier-dev/plugins-${packageId}`, pluginId,
+            error: new Error('plugin publication failed'),
+        });
+        const result = loadBundledPluginLocatorResult([locator()], [failure]);
+        expect(projectBundledPluginCatalogEntries(result)).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                pluginId,
+                enabled: false,
+                manifest: null,
+                compatibility: expect.objectContaining({ status: 'load_error' }),
+                diagnostics: [failure.diagnostic],
+            }),
+            expect.objectContaining({
+                pluginId: 'happier.provider.fixture', enabled: true,
+                compatibility: expect.objectContaining({ status: 'compatible' }),
+            }),
+        ]));
+    });
     it('reads ignored publication failures and keeps required host imports fatal during ingest', () => {
         const root = mkdtempSync(join(tmpdir(), 'happier-bundled-failures-'));
         const execPathDescriptor = Object.getOwnPropertyDescriptor(process, 'execPath')!;

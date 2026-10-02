@@ -11,6 +11,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PluginAgentContributionV2Schema } from '@happier-dev/protocol';
+import { readAgentSurfaceRuntimeDescriptorV1FromSessionMetadata } from '@happier-dev/agents';
 
 import { createAgentSessionRunnerFactoryBinding } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
 import {
@@ -27,6 +29,15 @@ import {
   verifyAgentRuntimeSessionBridgeToken,
 } from './sessionBridgeAuthorization';
 import { hashProcessCommand } from '@/daemon/sessionRegistry';
+import { createRunnerAgentSessionRuntimeBootstrap } from '@/agent/runtime/session/process/runnerAgentSessionRuntimeSource';
+import { captureSessionLaunchControlMetadata, createSessionMetadata } from '@/agent/runtime/createSessionMetadata';
+import { buildPluginHostSessionRuntimeOptions, buildPluginSessionBindingInput } from '@/plugins/runtime/runtimeCore/plugin/sessionLaunch';
+import { mergeSessionMetadataForStartup } from '@/agent/runtime/mergeSessionMetadataForStartup';
+import { AgentRuntimeRunnerBootstrapV1Schema } from '@/agent/runtime/session/process/agentRuntimeRunnerProtocol';
+import type { AgentSessionRuntimeContext } from '@happier-dev/plugin-sdk/agents/runtime';
+import { createClaudeAgentRuntime } from '../../../../../packages/plugins/claude/src/agent/runtime/nativeRuntime';
+import { PLUGIN_MANIFEST } from '../../../../../packages/plugins/claude/src/manifest';
+import { createEventsFixture, createPluginContextFixture, createSdkExecFixture, createSessionHooksFixture, createTerminalHostFixture } from '../../../../../packages/plugins/claude/src/agent/runtime/engine.testkit';
 
 const processIdentityMock = vi.hoisted(() => vi.fn());
 vi.mock('@/daemon/processIdentity', () => ({
@@ -65,6 +76,69 @@ afterEach(async () => {
 });
 
 describe('Agent runtime session bridge authorization', () => {
+  it('carries the selected runtime through bootstrap and Session creation into the real opener', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-selected-runtime-bootstrap-'));
+    roots.push(happyHomeDir);
+    const terminal = createTerminalHostFixture();
+    const hooks = createSessionHooksFixture();
+    const settingsValues = { claudeUnifiedTerminalEnabled: false };
+    const boundary = createPluginContextFixture(terminal.service, createEventsFixture().service, { sessionHooks: hooks.service, settingsValues });
+    const context = {
+      signal: new AbortController().signal,
+      services: { logger: boundary.logger, settings: boundary.settings, storage: boundary.storage, exec: createSdkExecFixture().service },
+      ui: { confirm: async () => ({ status: 'approved' as const }), askQuestions: async () => ({ status: 'cancelled' as const }) },
+      session: { services: {
+        activeInput: { bind: () => ({ dispose() {} }) }, models: { bind: () => ({ dispose() {} }) },
+        features: boundary.features, terminalHost: terminal.service, sessionHooks: hooks.service,
+        transcripts: boundary.agentRuntime.transcripts, accountUsage: boundary.agentRuntime.accountUsage,
+        workflowActivity: boundary.sessions.current.workflowActivity,
+      } },
+      workState: { publisher: () => ({ publish: async () => undefined }) },
+    } as unknown as AgentSessionRuntimeContext; // Canonical host-port fixtures supply the selected Session boundary.
+    const runtime = await createClaudeAgentRuntime({ plugin: { id: 'happier.agent.claude', version: '0.0.0' }, agent: { id: 'claude' }, signal: context.signal });
+    if (!runtime.sessions?.resolveTerminalPresentation) throw new Error('Selected presentation is unavailable');
+    const selected = await runtime.sessions.resolveTerminalPresentation({ cwd: happyHomeDir, requestedHost: 'herdr' }, { settings: context.services.settings, features: context.session.services.features });
+    const bootstrap = AgentRuntimeRunnerBootstrapV1Schema.parse({
+      v: 1,
+      descriptor: {
+        v: 1 as const, pluginId: 'happier.agent.claude', pluginVersion: '0.0.0', agentId: 'claude', backendId: 'claude', occurrenceId: 'selected-runtime',
+        sourceCustody: { kind: 'bundled_first_party' as const, packagedRuntime: { kind: 'pinned_runner_snapshot' as const, snapshotId: 'selected-runtime' } },
+        agentDeclaration: { provenance: 'first_party' as const, source: { kind: 'bundled' as const }, definition: PluginAgentContributionV2Schema.parse(PLUGIN_MANIFEST.contributes.agents?.[0]) },
+      },
+      launch: { runtimeDescriptorV1: selected.runtimeDescriptorV1 },
+    });
+    const issued = await createRunnerAgentSessionBootstrapAuthorization({
+      happyHomeDir, publicReleaseRing: 'stable', descriptor: bootstrap.descriptor, launch: bootstrap.launch,
+    });
+    const source = await createRunnerAgentSessionRuntimeBootstrap({ happyHomeDir, publicReleaseRing: 'stable', authorityFilePath: issued.authorization.authorityFilePath, bootstrapFilePath: issued.authorization.bootstrapFilePath });
+    expect(source).not.toBeNull();
+    const binding = buildPluginSessionBindingInput({ credentials: { token: 'fixture-token', encryption: null }, directory: happyHomeDir });
+    const hostOptions = buildPluginHostSessionRuntimeOptions({
+      ...binding, bootstrap: { ...binding.bootstrap, runtimeDescriptorV1: source?.startupRuntimeDescriptorV1 },
+    });
+    const options = {
+      flavor: 'claude', machineId: 'selected-machine', directory: happyHomeDir,
+      runtimeDescriptorV1: hostOptions.runtimeDescriptorV1,
+      launchControlMetadata: captureSessionLaunchControlMetadata({ processEnvironment: {} }),
+    };
+    const { metadata } = createSessionMetadata(options);
+    settingsValues.claudeUnifiedTerminalEnabled = true;
+    const session = await runtime.sessions.open({ kind: 'resume', sessionId: 'selected-session', cwd: happyHomeDir, providerSessionId: 'selected-native-conversation', runtimeDescriptorV1: readAgentSurfaceRuntimeDescriptorV1FromSessionMetadata(metadata) ?? undefined }, context);
+    try {
+      const result = await session.prepareTerminalPresentation?.({ modelSelection: null });
+      expect(result).toMatchObject({ kind: 'terminal_launch', plan: { argv: expect.arrayContaining(['--resume', 'selected-native-conversation', '--plugin-dir', '/tmp/happier-claude-hook-plugin']) } });
+    } finally {
+      await session.dispose('session_closed');
+      await issued.cleanupBootstrapFile();
+    }
+    const acceptedSelection = await runtime.sessions.resolveTerminalPresentation({ cwd: happyHomeDir, requestedHost: 'tmux' }, { settings: context.services.settings, features: context.session.services.features });
+    const acceptedMetadata = { ...metadata, runtimeDescriptorV1: acceptedSelection.runtimeDescriptorV1 };
+    const resumedMetadata = mergeSessionMetadataForStartup({ current: acceptedMetadata, next: metadata, mode: 'attach', attachMetadataIdentityPolicy: 'replace_with_runtime_identity', nowMs: 1 });
+    const resumed = await runtime.sessions.open({ kind: 'resume', sessionId: 'accepted-session', cwd: happyHomeDir, providerSessionId: 'accepted-native-conversation', runtimeDescriptorV1: readAgentSurfaceRuntimeDescriptorV1FromSessionMetadata(resumedMetadata) ?? undefined }, context);
+    try {
+      expect(await resumed.prepareTerminalPresentation?.()).toMatchObject({ kind: 'managed_terminal' });
+    } finally { await resumed.dispose('session_closed'); }
+  });
   it('rejects bundled source custody that names a different snapshot than its runner', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-bundled-runner-custody-'));
     roots.push(happyHomeDir);

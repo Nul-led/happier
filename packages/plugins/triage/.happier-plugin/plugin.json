@@ -3165,6 +3165,15 @@
                       },
                       {
                         "const": "pause"
+                      },
+                      {
+                        "const": "failure"
+                      },
+                      {
+                        "const": "unavailable"
+                      },
+                      {
+                        "const": "denied"
                       }
                     ]
                   },
@@ -13356,6 +13365,7 @@
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [
       {
@@ -19981,6 +19991,7 @@
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [
@@ -25726,7 +25737,8 @@
     },
     "voiceModelPacks": [],
     "voiceProviders": [],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "Aggregates pull requests, issues and error groups from configured sources into one reviewable surface.",
   "displayName": "PRs & Issues",

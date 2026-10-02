@@ -17,8 +17,8 @@ import type {
     ResolvedContributionProvenance,
     ResolvedExecutionRunProfileContribution,
     ResolvedRoleContribution,
+    ResolvedWorkflowContribution,
     ResolvedEventContribution,
-    ResolvedHostedWebContribution,
     ResolvedInstallableContribution,
     ResolvedMcpDiscoverySourceContribution,
     ResolvedMcpServerContribution,
@@ -38,7 +38,6 @@ import type {
     ResolvedSessionInfoSectionContribution,
     ResolvedSystemToolContribution,
     ResolvedToolContribution,
-    ResolvedUiTranslationsContribution,
     ResolvedUiRendererV2Contribution,
     ResolvedUiSettingsGroupV2Contribution,
     ResolvedUiSettingsPageV2Contribution,
@@ -100,13 +99,6 @@ type PluginResolvedPromptAssetContribution = ResolvedPromptAssetContribution & R
     provenance: ResolvedContributionProvenance;
 }>;
 
-type PluginResolvedUiTranslationsContribution = ResolvedUiTranslationsContribution & Readonly<{
-    provenance: ResolvedContributionProvenance;
-    pluginId: string;
-    manifestPath: string;
-    daemonEntryPath: string | null;
-}>;
-
 type PluginResolvedSessionHeaderActionContribution = ResolvedSessionHeaderActionContribution & Readonly<{
     provenance: ResolvedContributionProvenance;
     pluginId: string;
@@ -121,13 +113,6 @@ type PluginResolvedTranscriptActivityContribution = ResolvedTranscriptActivityCo
     daemonEntryPath: string | null;
 }>;
 type PluginResolvedSessionInfoSectionContribution = ResolvedSessionInfoSectionContribution & Readonly<{
-    provenance: ResolvedContributionProvenance;
-    pluginId: string;
-    manifestPath: string;
-    daemonEntryPath: string | null;
-}>;
-
-type PluginResolvedHostedWebContribution = ResolvedHostedWebContribution & Readonly<{
     provenance: ResolvedContributionProvenance;
     pluginId: string;
     manifestPath: string;
@@ -299,11 +284,9 @@ export function projectLoadedPluginContributes(
     const commandCandidates: PluginResolvedCommandContribution[] = [];
     const resourceCandidates: PluginResolvedResourceContribution[] = [];
     const promptAssetCandidates: PluginResolvedPromptAssetContribution[] = [];
-    const uiTranslationCandidates: PluginResolvedUiTranslationsContribution[] = [];
     const sessionHeaderActionCandidates: PluginResolvedSessionHeaderActionContribution[] = [];
     const transcriptActivityCandidates: PluginResolvedTranscriptActivityContribution[] = [];
     const sessionInfoSectionCandidates: PluginResolvedSessionInfoSectionContribution[] = [];
-    const hostedWebCandidates: PluginResolvedHostedWebContribution[] = [];
     const browserTargetCandidates: PluginResolvedBrowserTargetContribution[] = [];
     const browserActionCandidates: PluginResolvedBrowserActionContribution[] = [];
     const settingsCandidates: PluginResolvedSettingsContribution[] = [];
@@ -321,6 +304,7 @@ export function projectLoadedPluginContributes(
     const requestInterceptorCandidates: PluginResolvedRequestInterceptorContribution[] = [];
     const voiceModelPackCandidates: ResolvedVoiceModelPackContribution[] = [];
     const roleCandidates: ResolvedRoleContribution[] = [];
+    const workflowCandidates: ResolvedWorkflowContribution[] = [];
     const voiceProviderCandidates: ResolvedVoiceProviderContribution[] = [];
     const accountCollectionCandidates: ResolvedAccountCollectionContribution[] = [];
     const pluginContributionPointCandidates: ResolvedPluginContributionPointDeclaration[] = [];
@@ -613,19 +597,6 @@ export function projectLoadedPluginContributes(
         });
     }
 
-    for (const contribution of pluginRegistry.uiTranslations) {
-        uiTranslationCandidates.push({
-            provenance: params.provenance,
-            source: { kind: contribution.sourceSpec.kind },
-            pluginId: contribution.pluginId,
-            manifestPath: contribution.manifestPath,
-            daemonEntryPath: contribution.daemonEntryPath,
-            devDaemonEntryPath: contribution.devDaemonEntryPath,
-            sourceSpec: contribution.sourceSpec,
-            definition: contribution.definition,
-        });
-    }
-
     for (const contribution of pluginRegistry.sessionHeaderActions) {
         sessionHeaderActionCandidates.push({
             provenance: params.provenance,
@@ -660,19 +631,6 @@ export function projectLoadedPluginContributes(
             identity: contribution.identity!,
             manifestPath: contribution.manifestPath,
             daemonEntryPath: contribution.daemonEntryPath,
-            definition: contribution.definition,
-        });
-    }
-
-    for (const contribution of pluginRegistry.hostedWeb) {
-        hostedWebCandidates.push({
-            provenance: params.provenance,
-            source: { kind: contribution.sourceSpec.kind },
-            pluginId: contribution.pluginId,
-            manifestPath: contribution.manifestPath,
-            daemonEntryPath: contribution.daemonEntryPath,
-            devDaemonEntryPath: contribution.devDaemonEntryPath,
-            sourceSpec: contribution.sourceSpec,
             definition: contribution.definition,
         });
     }
@@ -901,6 +859,18 @@ export function projectLoadedPluginContributes(
         });
     }
 
+    for (const contribution of pluginRegistry.workflows) {
+        workflowCandidates.push({
+            provenance: params.provenance,
+            source: { kind: contribution.sourceSpec.kind },
+            pluginId: contribution.pluginId,
+            pluginVersion: contribution.pluginVersion,
+            identity: contribution.identity!,
+            manifestPath: contribution.manifestPath,
+            definition: contribution.definition,
+        });
+    }
+
     for (const contribution of pluginRegistry.voiceModelPacks) {
         voiceModelPackCandidates.push({
             provenance: params.provenance,
@@ -979,11 +949,9 @@ export function projectLoadedPluginContributes(
         commands: Object.freeze(commandCandidates),
         resources: Object.freeze(resourceCandidates),
         promptAssets: Object.freeze(promptAssetCandidates),
-        uiTranslations: Object.freeze(uiTranslationCandidates),
         sessionHeaderActions: Object.freeze(sessionHeaderActionCandidates),
         transcriptActivities: Object.freeze(transcriptActivityCandidates),
         sessionInfoSections: Object.freeze(sessionInfoSectionCandidates),
-        hostedWeb: Object.freeze(hostedWebCandidates),
         browserTargets: Object.freeze(browserTargetCandidates),
         browserActions: Object.freeze(browserActionCandidates),
         settings: Object.freeze(settingsCandidates),
@@ -1001,6 +969,7 @@ export function projectLoadedPluginContributes(
         requestInterceptors: Object.freeze(requestInterceptorCandidates),
         voiceModelPacks: Object.freeze(voiceModelPackCandidates),
         roles: Object.freeze(roleCandidates),
+        workflows: Object.freeze(workflowCandidates),
         voiceProviders: Object.freeze(voiceProviderCandidates),
         accountCollections: Object.freeze(accountCollectionCandidates),
         pluginContributionPoints: Object.freeze(pluginContributionPointCandidates),

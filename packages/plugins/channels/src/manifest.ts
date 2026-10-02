@@ -27,6 +27,9 @@ import {
   ConversationProviderConnectionsListInputV1Schema,
   ConversationProviderConnectionsListResultV1Schema,
   ConversationProviderObservationIngestInputV1Schema,
+  SESSION_PULL_REQUEST_BINDING_ACTION_ID_V1,
+  SessionPullRequestBindingInputV1Schema,
+  SessionPullRequestBindingResultV1Schema,
 } from '@happier-dev/channels-protocol/v1';
 
 import { deliverConversationAutomationResultForInvocation } from './automationResultDelivery.js';
@@ -49,6 +52,7 @@ import {
   acceptConversationSessionProjectionBaselineForInvocation,
   createConversationBindingForInvocation,
   createConversationConnectionForInvocation,
+  manageSessionPullRequestBindingForInvocation,
   createConversationPairingManagementHandlers,
   createConversationPairingManagerForActivation,
   deleteConversationBindingForInvocation,
@@ -547,6 +551,16 @@ function createChannelsPlugin() {
         },
         hostAccess: ['account-storage'],
         run: createConversationConnectionForInvocation,
+      },
+      [SESSION_PULL_REQUEST_BINDING_ACTION_ID_V1]: {
+        title: 'Manage session pull request binding',
+        description: 'Attaches native SCM PR links and scoped triggers through conversation bindings.',
+        inputSchema: SessionPullRequestBindingInputV1Schema,
+        resultSchema: SessionPullRequestBindingResultV1Schema,
+        surfaces: ['cli', 'ui', 'plugin', 'agent', 'mcp'],
+        dangerLevel: 'writesLocal',
+        hostAccess: ['account-storage'],
+        run: manageSessionPullRequestBindingForInvocation,
       },
       [CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer]: {
         ...CONVERSATION_MANAGEMENT_ACTION_DECLARATIONS_V1.connectionTransfer,

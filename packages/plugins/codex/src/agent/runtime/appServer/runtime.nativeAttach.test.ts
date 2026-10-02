@@ -18,7 +18,8 @@ async function withFixture(run: (fixture: {
   requests: Array<{ method: string; params: Record<string, unknown> }>;
   resume(): Promise<unknown>;
   failRead(): void;
-  openConfiguredSession(): Promise<AgentSessionRuntime>;
+  failResume(message: string): void;
+  openConfiguredSession(providerSessionId?: string): Promise<AgentSessionRuntime>;
 }) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 'happier-codex-native-attach-'));
   const socketPath = process.platform === 'win32'
@@ -30,6 +31,7 @@ async function withFixture(run: (fixture: {
   let named = false;
   let materialized = false;
   let rejectRead = false;
+  let resumeFailure: string | null = null;
   const bindServer = (webSockets: WebSocketServer) => webSockets.on('connection', (socket) => socket.on('message', (payload) => {
     const message = JSON.parse(payload.toString()) as {
       id?: number; method: string; params?: Record<string, unknown>;
@@ -50,7 +52,8 @@ async function withFixture(run: (fixture: {
         result = { thread: { id: params.threadId, turns: [] } };
       }
     } else if (message.method === 'thread/resume') {
-      if (params.threadId === 'fresh-thread' && !materialized) error = { code: -32000, message: 'no rollout found' };
+      if (resumeFailure) error = { code: -32000, message: resumeFailure };
+      else if (params.threadId === 'fresh-thread' && !materialized) error = { code: -32000, message: 'no rollout found' };
       else result = { thread: { id: params.threadId, turns: [] }, sandbox: { type: 'readOnly' }, reasoningEffort: 'low' };
     } else if (message.method === 'experimentalFeature/list') {
       result = { data: [{ name: 'realtime_conversation', enabled: true }], nextCursor: null };
@@ -81,7 +84,7 @@ async function withFixture(run: (fixture: {
   let nativeSession: AgentSessionRuntime | null = null;
   await runtime.updateConfig?.({ configOption: { id: 'reasoning_effort', value: 'low' } });
   try {
-    await run({ runtime, requests, failRead: () => { rejectRead = true; }, async openConfiguredSession() {
+    await run({ runtime, requests, failRead: () => { rejectRead = true; }, failResume: (message) => { resumeFailure = message; }, async openConfiguredSession(providerSessionId) {
       // Exec and host SDK services are genuine external boundaries; native/runtime/client logic stays real.
       const nativeExec = {
         ...exec,
@@ -122,7 +125,8 @@ async function withFixture(run: (fixture: {
         ui: { title: { set: async () => undefined } },
       } as unknown as AgentSessionRuntimeContext;
       nativeSession = await openCodexNativeAppServerSession({
-        kind: 'create', sessionId: 'actual-happier-session', cwd: root,
+        ...(providerSessionId ? { kind: 'resume' as const, providerSessionId } : { kind: 'create' as const }),
+        sessionId: 'actual-happier-session', cwd: root,
         launchEnvironment: { values: { CODEX_HOME: root }, unset: [] },
         configuration: {
           mode: { value: null, updatedAtMs: 0 }, model: { value: 'fixture-model', updatedAtMs: 1 },
@@ -147,10 +151,36 @@ async function withFixture(run: (fixture: {
 }
 
 describe('native Codex attachment preparation', () => {
+  it.each([
+    ['no rollout found for thread id missing-thread', 'AGENT_RESUME_PROVIDER_STATE_MISSING'],
+    ['provider temporarily unavailable', undefined],
+  ])('classifies resume rejection %s without starting a replacement thread', async (message, code) => {
+    await withFixture(async ({ runtime, requests, failResume }) => {
+      failResume(message);
+      const error = await startCodexAppServerRuntime(runtime, {
+        resumeId: 'missing-thread', preserveRequestedThreadId: true,
+      }).catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error & { code?: unknown }).code).toBe(code ?? -32000);
+      expect(requests.filter((request) => request.method === 'thread/resume').map((request) => request.params.threadId))
+        .toEqual(['missing-thread']);
+      expect(requests.some((request) => request.method === 'thread/start')).toBe(false);
+    });
+  });
+  it.skipIf(process.platform === 'win32')('preserves the typed missing-state reason through native session startup sanitization', async () => {
+    await withFixture(async ({ openConfiguredSession, requests, failResume }) => {
+      failResume('no rollout found for thread id missing-thread');
+      const error = await openConfiguredSession('missing-thread').catch((failure: unknown) => failure);
+      expect(error).toMatchObject({ code: 'AGENT_RESUME_PROVIDER_STATE_MISSING' });
+      expect(requests.filter((request) => request.method === 'thread/resume').map((request) => request.params.threadId))
+        .toEqual(['missing-thread']);
+      expect(requests.some((request) => request.method === 'thread/start')).toBe(false);
+    });
+  });
   it.skipIf(process.platform === 'win32')('applies initial canonical effort before startup instructions initialize the native attachment thread', async () => {
     await withFixture(async ({ openConfiguredSession, requests }) => {
       const session = await openConfiguredSession();
-      await session.prepareProviderCliAttach?.();
+      await session.prepareTerminalPresentation?.();
       expect(requests.find((r) => r.method === 'thread/start')?.params).toMatchObject({
         model: 'fixture-model', permissions: ':read-only',
         config: { model_reasoning_effort: 'low' },

@@ -151,6 +151,7 @@ function createRuntimeRegistry(
         pluginDiagnosticsByPluginId: {},
         activatedPluginIds: new Set(),
         activateContributionsOnDemand: async () => [],
+        resolveCaptureSource: async () => null,
         addRuntimeDisposable: (_pluginId, disposable) => disposable,
         createAgentInvocationServices: async () => createUnavailablePluginServices(),
         readPluginOccurrenceId: (pluginId) => occurrenceIdsByPluginId[pluginId] ?? null,
@@ -1979,7 +1980,7 @@ describe('daemon contribution registry projection rpc handler', () => {
         const legacyExecution = executePluginActionIfAvailableMock.mock.calls[0]?.[0];
         expect(legacyExecution).toEqual(expect.objectContaining({
             requestCurrentIntent: expect.any(Function),
-            context: { surface: 'ui', invocationSurface: 'ui' },
+            context: { surface: 'ui', invocationSurface: 'ui', initiatingActionCaller: { kind: 'host' } },
         }));
         expect(legacyExecution?.context).not.toHaveProperty('caller');
 
@@ -2028,7 +2029,7 @@ describe('daemon contribution registry projection rpc handler', () => {
         const composerExecution = executePluginActionIfAvailableMock.mock.calls[1]?.[0];
         expect(composerExecution).toEqual(expect.objectContaining({
             requestCurrentIntent: expect.any(Function),
-            context: { surface: 'ui', invocationSurface: 'ui', defaultSessionId: 'session-1' },
+            context: { surface: 'ui', invocationSurface: 'ui', initiatingActionCaller: { kind: 'host' }, defaultSessionId: 'session-1' },
         }));
         expect(composerExecution?.context).not.toHaveProperty('caller');
 
@@ -2136,7 +2137,7 @@ describe('daemon contribution registry projection rpc handler', () => {
         const multiComposerExecution = executePluginActionIfAvailableMock.mock.calls[0]?.[0];
         expect(multiComposerExecution).toEqual(expect.objectContaining({
             requestCurrentIntent: expect.any(Function),
-            context: { surface: 'ui', invocationSurface: 'ui', defaultSessionId: 'session-1' },
+            context: { surface: 'ui', invocationSurface: 'ui', initiatingActionCaller: { kind: 'host' }, defaultSessionId: 'session-1' },
         }));
         expect(multiComposerExecution?.context).not.toHaveProperty('caller');
     });
@@ -2230,6 +2231,7 @@ describe('daemon contribution registry projection rpc handler', () => {
                 context: {
                     surface: executionSurface,
                     invocationSurface: executionSurface,
+                    initiatingActionCaller: { kind: 'host' },
                     defaultSessionId: 'session-1',
                     signal: operation.signal,
                 },
@@ -2274,6 +2276,7 @@ describe('daemon contribution registry projection rpc handler', () => {
             context: {
                 surface: 'ui',
                 invocationSurface: 'ui',
+                initiatingActionCaller: { kind: 'host' },
             },
         });
     });
@@ -2388,6 +2391,7 @@ describe('daemon contribution registry projection rpc handler', () => {
             context: {
                 surface: 'ui',
                 invocationSurface: 'ui',
+                initiatingActionCaller: { kind: 'host' },
                 caller: {
                     kind: 'plugin',
                     pluginId: 'acme.mounted',
@@ -3280,6 +3284,7 @@ describe('daemon contribution registry projection rpc handler', () => {
             context: {
                 surface: 'ui',
                 invocationSurface: 'ui',
+                initiatingActionCaller: { kind: 'host' },
                 defaultSessionId: 'session-1',
                 messageAction: snapshot,
                 signal: operation.signal,

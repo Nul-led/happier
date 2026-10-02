@@ -146,6 +146,8 @@ const ROOT_TYPE_EXPORTS = [
     'ScmCloneProtocol',
     'ScmCommitBackoutRequest',
     'ScmCommitBackoutResponse',
+    'ScmCommitUndoLastRequest',
+    'ScmCommitUndoLastResponse',
     'ScmCommitCreateRequest',
     'ScmCommitCreateResponse',
     'ScmConflictAcceptSideRequest',
@@ -420,6 +422,8 @@ type RootProjectionTypes = [
     scmProjection.ScmCloneProtocol,
     scmProjection.ScmCommitBackoutRequest,
     scmProjection.ScmCommitBackoutResponse,
+    scmProjection.ScmCommitUndoLastRequest,
+    scmProjection.ScmCommitUndoLastResponse,
     scmProjection.ScmCommitCreateRequest,
     scmProjection.ScmCommitCreateResponse,
     scmProjection.ScmDefaultBranchPushPolicy,
@@ -615,6 +619,10 @@ describe('SCM package-local projections', () => {
             .toEqualTypeOf<protocolScm.ScmWorktreeCreateResponse>();
         expectTypeOf<scmProjection.ScmCommitCreateRequest>()
             .toEqualTypeOf<protocolScm.ScmCommitCreateRequest>();
+        expectTypeOf<scmProjection.ScmCommitUndoLastRequest>()
+            .toEqualTypeOf<protocolScm.ScmCommitUndoLastRequest>();
+        expectTypeOf<scmProjection.ScmCommitUndoLastResponse>()
+            .toEqualTypeOf<protocolScm.ScmCommitUndoLastResponse>();
         expectTypeOf<typeof scmProjection.SCM_OPERATION_ERROR_CODES>()
             .toEqualTypeOf<typeof protocolScm.SCM_OPERATION_ERROR_CODES>();
         expectTypeOf<scmProjection.ScmWorkingSnapshot>()

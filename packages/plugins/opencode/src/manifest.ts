@@ -194,6 +194,7 @@ export const OPENCODE_PLUGIN = definePlugin({
             configuration: true,
             compaction: { events: true },
             catalog: { active: ['skills'] },
+            workStateSources: [{ id: 'opencode-todos', itemKinds: ['todo'] }],
           },
         }),
         providerRequirements: {

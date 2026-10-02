@@ -20,6 +20,8 @@ import type {
   ScmChangeDiscardResponse,
   ScmCommitBackoutRequest,
   ScmCommitBackoutResponse,
+  ScmCommitUndoLastRequest,
+  ScmCommitUndoLastResponse,
   ScmCommitCreateRequest,
   ScmCommitCreateResponse,
   ScmConflictAcceptSideRequest,
@@ -220,6 +222,7 @@ export interface ScmBackend {
     context: ScmBackendContext;
     request: ScmCommitCreateRequest;
   }): Promise<ScmCommitCreateResponse>;
+  commitUndoLast?(input: { context: ScmBackendContext; request: ScmCommitUndoLastRequest }): Promise<ScmCommitUndoLastResponse>;
   commitBackout(input: {
     context: ScmBackendContext;
     request: ScmCommitBackoutRequest;

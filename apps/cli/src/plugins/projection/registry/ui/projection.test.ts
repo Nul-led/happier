@@ -740,7 +740,7 @@ describe('plugin UI projection family', () => {
         expect(entry).not.toHaveProperty('display.badge.developerFallback');
     });
 
-    it('gives the deterministic V2 locale owner precedence over the legacy translation adapter', () => {
+    it('resolves duplicate V2 locales deterministically across contribution order', () => {
         const v2Translations = [
             {
                 pluginId: 'acme.preview',
@@ -759,13 +759,6 @@ describe('plugin UI projection family', () => {
             const registry = {
                 ...createEmptyResolvedContributionRegistry('acme.preview'),
                 uiTranslationsV2: translations,
-                uiTranslations: [{
-                    pluginId: 'acme.preview',
-                    manifestPath: '/plugins/acme/legacy.plugin.json',
-                    definition: {
-                        locales: { en: { title: 'Legacy V1' } },
-                    },
-                }],
             } as unknown as ResolvedContributionRegistry;
             return buildPluginProjectionV2({ registry, generation: 1 })
                 .familiesById.pluginUi?.entriesById['translations:acme.preview'];
@@ -779,7 +772,6 @@ describe('plugin UI projection family', () => {
             bundles: { en: { title: 'Zulu V2' } },
             diagnostics: ['duplicate_translation_locale'],
         });
-        expect(JSON.stringify(forward)).not.toContain('Legacy V1');
     });
 
     it('ships only the locales a client can read when the describe request names one', () => {

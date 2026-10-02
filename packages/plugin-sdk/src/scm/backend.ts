@@ -15,6 +15,8 @@ import type {
     ScmChangeDiscardResponse,
     ScmCommitBackoutRequest,
     ScmCommitBackoutResponse,
+    ScmCommitUndoLastRequest,
+    ScmCommitUndoLastResponse,
     ScmCommitCreateRequest,
     ScmCommitCreateResponse,
     ScmConflictAcceptSideRequest,
@@ -124,6 +126,7 @@ export type ScmBackendDescribeRequest = {
         kind: 'prefer';
         backendId: string;
     };
+    outcomeVersion?: 1;
 };
 
 export type ScmBackendDescribeResponse = {
@@ -180,6 +183,7 @@ export type ScmBackendCapabilities = {
     };
     commit: {
         create?: ScmBackendCapabilityLeaf;
+        undoLast?: ScmBackendCapabilityLeaf;
         amend?: ScmBackendCapabilityLeaf;
         signOff?: ScmBackendCapabilityLeaf;
         pathSelection?: ScmBackendCapabilityLeaf;
@@ -287,6 +291,8 @@ export type ScmBackendContribution = {
 export type BackendRuntimeContext = Readonly<{
     cwd: string;
     projectKey: string;
+    /** Host policy check for backend-derived filesystem mutation targets; throws on refusal. */
+    assertFilesystemPathAuthorized?: (targetPath: string) => void;
     detection: Readonly<{
         isRepo: boolean;
         rootPath: string | null;
@@ -553,6 +559,7 @@ export type BackendRuntimeHandlers = Readonly<{
     commit?: Readonly<{
         create?: (input: BackendRuntimeHandlerInput<ScmCommitCreateRequest>) => Promise<ScmCommitCreateResponse> | ScmCommitCreateResponse;
         backout?: (input: BackendRuntimeHandlerInput<ScmCommitBackoutRequest>) => Promise<ScmCommitBackoutResponse> | ScmCommitBackoutResponse;
+        undoLast?: (input: BackendRuntimeHandlerInput<ScmCommitUndoLastRequest>) => Promise<ScmCommitUndoLastResponse> | ScmCommitUndoLastResponse;
     }>;
     remote?: Readonly<{
         add?: (input: BackendRuntimeHandlerInput<ScmRemoteAddRequest>) => Promise<ScmRemoteManagementResponse> | ScmRemoteManagementResponse;

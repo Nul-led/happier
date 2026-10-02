@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { cloneElement, useCallback, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { I18nManager, ScrollView, View } from 'react-native';
+import { useOptionalPluginUiPresentationHost } from '../presentationHost/context.js';
 
 import {
   resolveHappierUiPalette,
@@ -22,7 +23,7 @@ import { HappierText } from '../presentation/text/Text.js';
 import { resolveHappierTypeRoleStyle } from '../presentation/text/typeRole.js';
 import { scaleTextStyleMetrics } from '../presentation/text/textStyleScale.js';
 import type { CollectionAnatomy, CollectionGroupAction } from './Collection.js';
-import { List } from './List.js';
+import { List, type ItemProps } from './List.js';
 import { ListCollectionControlContext, type ListCollectionControl } from './listCollectionControl.js';
 import { usePluginTranslation } from './PluginUiProvider.js';
 
@@ -49,6 +50,8 @@ const CARD = Object.freeze({
   markSize: 32,
   gap: 10,
   footerHeight: 28,
+  /** The preview band's height: about seven preview lines, enough to recognise the item at a glance. */
+  previewHeight: 128,
   boardColumnMinWidth: 260,
   boardCardInsetX: 10,
   boardCardInsetY: 4,
@@ -186,13 +189,14 @@ function BoardColumn<Item>(props: Readonly<{
   testID?: string;
 }>): ReactElement {
   const { section, model, anatomy, selectedKey } = props;
+  const host = useOptionalPluginUiPresentationHost();
   const rtl = useRtl();
   const keyOf = model.keyOf;
   const open = model.actions.open;
   const selected = selectedKey !== null && section.items.some((item) => keyOf(item) === selectedKey) ? selectedKey : null;
   const renderItem = useCallback((item: Item) => {
     const key = keyOf(item);
-    return (
+    const row: ReactElement<ItemProps> = (
       <List.Item
         density="compact"
         showDivider={false}
@@ -204,7 +208,13 @@ function BoardColumn<Item>(props: Readonly<{
         <BoardCard item={item} anatomy={anatomy} selected={key === selected} />
       </List.Item>
     );
-  }, [anatomy, keyOf, selected]);
+    const destination = anatomy.destination?.(item);
+    const destinationRow = destination && host?.renderDestinationRow ? host.renderDestinationRow({
+      ...destination, children: row,
+      renderWithSecondaryActions: additional => cloneElement(row, additional),
+    }) : row;
+    return anatomy.wrapItem ? anatomy.wrapItem(item, destinationRow) : destinationRow;
+  }, [anatomy, host, keyOf, selected]);
   const onCrossColumn = props.onCrossColumn;
   const control = useMemo<ListCollectionControl>(() => ({
     onRowKey: (key, itemKey) => {
@@ -382,10 +392,12 @@ type GridGeometry = Readonly<{
   descriptionHeight: number;
   /** False when no card in the grid has a status or an action: the grid keeps no empty footer. */
   footer: boolean;
+  /** Zero when the anatomy draws no preview band. */
+  previewHeight: number;
 }>;
 
 /** Which of a card's optional slots this grid keeps: those at least one of its cards fills (every card keeps them). */
-type GridSlots = Readonly<{ description: boolean; footer: boolean }>;
+type GridSlots = Readonly<{ description: boolean; footer: boolean; preview: boolean }>;
 
 function present(value: ReactNode): boolean {
   return value !== null && value !== undefined && value !== false;
@@ -399,6 +411,7 @@ function useGridSlots<Item>(model: HappierCollectionModel<Item>, anatomy: Collec
       return {
         description: anatomy.description !== undefined,
         footer: anatomy.reason !== undefined || anatomy.action !== undefined,
+        preview: anatomy.preview !== undefined,
       };
     }
     let description = false;
@@ -408,7 +421,7 @@ function useGridSlots<Item>(model: HappierCollectionModel<Item>, anatomy: Collec
       if (!footer && (present(anatomy.reason?.(item)) || present(anatomy.action?.(item)))) footer = true;
       if (description && footer) break;
     }
-    return { description, footer };
+    return { description, footer, preview: anatomy.preview !== undefined };
   }, [anatomy, model.sections]);
 }
 
@@ -421,10 +434,11 @@ function useGridGeometry(width: number | null, minCardWidth: number, slots: Grid
     const descriptionHeight = slots.description ? 2 * text.caption : 0;
     // Exact per text size, never measured per card: every card is the same height, so rows are equal and footers align.
     const head = Math.max(CARD.markSize, text.title + text.caption);
-    const cardHeight = 2 + 2 * CARD.padding + head
+    const previewHeight = slots.preview ? CARD.previewHeight : 0;
+    const cardHeight = 2 + 2 * CARD.padding + head + previewHeight
       + (slots.description ? CARD.gap + descriptionHeight : 0)
       + (slots.footer ? CARD.gap + CARD.footerHeight : 0);
-    return { columns, cardWidth, cardHeight, descriptionHeight, footer: slots.footer };
+    return { columns, cardWidth, cardHeight, descriptionHeight, footer: slots.footer, previewHeight };
   }, [minCardWidth, slots, text, textScale, width]);
 }
 
@@ -440,6 +454,7 @@ function GridCard<Item>(props: Readonly<{
   onKey: (key: string, from: string) => boolean;
   register: (key: string, target: HappierFocusable | null) => void;
 }>): ReactElement {
+  const host = useOptionalPluginUiPresentationHost();
   const { item, itemKey, anatomy, geometry } = props;
   const { theme, palette } = useCardColors();
   const testID = anatomy.testID?.(item);
@@ -451,7 +466,7 @@ function GridCard<Item>(props: Readonly<{
   const register = props.register;
   const onKey = props.onKey;
   const onFocus = props.onFocus;
-  return (
+  const card = (
     <View
       style={[gridCardStyle, { width: geometry.cardWidth, height: geometry.cardHeight, backgroundColor: palette.sheet, borderColor: palette.sheetBorder }]}
       {...(testID === undefined ? {} : { testID: `${testID}:card` })}
@@ -470,12 +485,29 @@ function GridCard<Item>(props: Readonly<{
         style={(state) => ({
           flex: 1,
           padding: CARD.padding,
+          ...(geometry.previewHeight === 0 ? {} : { paddingTop: geometry.previewHeight + CARD.padding }),
           borderRadius: RADIUS - 1,
           borderWidth: 1,
           borderColor: state.focused ? theme.colors.focus : 'transparent',
           gap: CARD.gap,
         })}
       >
+        {geometry.previewHeight === 0 ? null : (
+          // The item itself, edge to edge under the card's top corners, a hairline above the title.
+          <View
+            pointerEvents="none"
+            style={[gridPreviewStyle, {
+              height: geometry.previewHeight,
+              borderTopLeftRadius: RADIUS - 2,
+              borderTopRightRadius: RADIUS - 2,
+              backgroundColor: palette.fieldBackground,
+              borderBottomColor: palette.sheetBorder,
+            }]}
+            {...(testID === undefined ? {} : { testID: `${testID}:preview` })}
+          >
+            {anatomy.preview?.(item)}
+          </View>
+        )}
         <View style={[lineStyle, { alignItems: 'flex-start' }]}>
           <View style={[markStyle, { width: CARD.markSize, height: CARD.markSize }]}>{anatomy.glyph(item)}</View>
           <View style={shrinkStyle}>
@@ -511,6 +543,9 @@ function GridCard<Item>(props: Readonly<{
       {props.selected ? <SelectedRing color={palette.selection} {...(testID === undefined ? {} : { testID: `${testID}:selected` })} /> : null}
     </View>
   );
+  const destination = anatomy.destination?.(item);
+  const destinationCard = destination && host?.renderDestinationRow ? host.renderDestinationRow({ ...destination, children: card }) : card;
+  return <>{anatomy.wrapItem ? anatomy.wrapItem(item, destinationCard) : destinationCard}</>;
 }
 
 function CollectionGrid<Item>(props: CollectionCardsProps<Item>): ReactElement {
@@ -736,6 +771,14 @@ const shelfStyle: HappierPortableStyle = { gap: GUTTER };
 const shelfHeaderStyle: HappierPortableStyle = { flexDirection: 'row', alignItems: 'flex-end', gap: 12, paddingHorizontal: HAPPIER_PAGE_METRICS.headingOpticalInsetPx };
 const gridRowStyle: HappierPortableStyle = { flexDirection: 'row', gap: GUTTER };
 const gridCardStyle: HappierPortableStyle = { borderWidth: 1, borderRadius: RADIUS };
+const gridPreviewStyle: HappierPortableStyle = {
+  position: 'absolute',
+  left: 0,
+  right: 0,
+  top: 0,
+  overflow: 'hidden',
+  borderBottomWidth: 1,
+};
 const gridActionStyle: HappierPortableStyle = {
   position: 'absolute',
   right: CARD.padding + 1,

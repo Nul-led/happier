@@ -1,13 +1,9 @@
 import { followTranscriptSourceWithFiniteActions } from '@happier-dev/agents/runtime/facets/transcriptSource';
-import { createHappierSocket } from '@happier-dev/sync-client';
-import { createManagedConnectionSupervisor, DEFAULT_MANAGED_CONNECTION_POLICY } from '@happier-dev/connection-supervisor';
-import { buildAccountStoredContentCompatibilitySocketAuthV1, CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION } from '@happier-dev/protocol';
 
 import type { PublicActionInputById, PublicActionResultById } from './actions/generated.js';
 import { waitForClientCleanupGrace } from './cleanupGrace.js';
 import { HappierTransportError } from './errors.js';
 import type { ActionExecute, ActionExecutionOptions } from './types.js';
-import { createSessionChangeWakeup } from './live/sessionChangeWakeup.js';
 
 /** A raw row emitted by the canonical finite `transcript.follow` Action. */
 export type HappierTranscriptItem = PublicActionResultById['transcript.follow']['items'][number];
@@ -186,7 +182,6 @@ export function createTranscriptIterable(params: Readonly<{
   closeSignal: AbortSignal;
   registerCloseCleanup?: (cleanup: () => Promise<void>) => () => void;
   options?: FollowTranscriptOptions;
-  notifications: Readonly<{ endpoint: string; token: string }>;
 }>): AsyncIterable<HappierTranscriptItem> {
   const iteratorController = new AbortController();
   const signal = params.options?.signal === undefined
@@ -198,7 +193,6 @@ export function createTranscriptIterable(params: Readonly<{
   let failure: unknown;
   let runner: Promise<void> | undefined;
   let resolveConsumerDemand: (() => void) | undefined;
-  let needsRead = true;
 
   const notifyConsumerDemand = () => {
     const resolve = resolveConsumerDemand;
@@ -238,42 +232,29 @@ export function createTranscriptIterable(params: Readonly<{
       settle();
       return runner;
     }
-    const wakeup = createSessionChangeWakeup(null, params.sessionId, signal);
-    const supervisor = createManagedConnectionSupervisor({ ...DEFAULT_MANAGED_CONNECTION_POLICY,
-      createTransport: () => {
-        const viewer = createHappierSocket({ ...params.notifications,
-          clientType: 'session-scoped', sessionId: params.sessionId, clientPurpose: 'sdk-transcript',
-          authExtras: buildAccountStoredContentCompatibilitySocketAuthV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION) });
-        wakeup.observeSocket(viewer.socket);
-        return viewer.transport;
-      },
-      probeReadiness: async () => ({ status: 'ready' }),
-      onConnected: () => { needsRead = true; wakeup.wake(); },
-      onAuthFailed: () => iteratorController.abort(new HappierTransportError('Session observation authentication failed.', { code: 'auth_failed' })),
-    });
-    const stopObservation = () => { void supervisor.stop().catch(() => undefined); };
-    signal.addEventListener('abort', stopObservation, { once: true });
     const leaseId = globalThis.crypto.randomUUID();
     const unregisterCloseCleanup = params.registerCloseCleanup?.(async () => {
       iteratorController.abort();
       await runner;
     });
-    runner = supervisor.start().then(async () => {
-      await wakeup.wait(); // Consume the initial connection before the first drain.
-      return followTranscriptSourceWithFiniteActions<HappierTranscriptItem>({
+    const readSessionActive = async () => sessionIsActive(await params.execute(
+      'session.status.get', { sessionId: params.sessionId }, { signal },
+    ));
+    runner = followTranscriptSourceWithFiniteActions<HappierTranscriptItem>({
       initialCursor: params.options?.cursor ?? 'tail',
       leaseId,
-      follow: async ({ cursor, leaseId: activeLeaseId }) => {
-        if (!needsRead) return { items: [], nextCursor: cursor, truncated: false };
+      follow: async ({ cursor, leaseId: activeLeaseId, finalDrain }) => {
         const page = await params.execute('transcript.follow', {
         sessionId: params.sessionId,
         cursor,
         leaseId: activeLeaseId,
+        // An already-inactive Session need not emit another notification.
+        // Keep terminal draining finite under the canonical lifecycle fact.
+        waitForChanges: !finalDrain && await readSessionActive(),
         ...(params.options?.maxBytes === undefined ? {} : { maxBytes: params.options.maxBytes }),
         ...(params.options?.maxItems === undefined ? {} : { maxItems: params.options.maxItems }),
         ...(params.options?.idleTtlMs === undefined ? {} : { idleTtlMs: params.options.idleTtlMs }),
         }, { signal });
-        needsRead = page.truncated;
         return page;
       },
       release: async ({ leaseId: activeLeaseId }) => {
@@ -282,31 +263,21 @@ export function createTranscriptIterable(params: Readonly<{
           leaseId: activeLeaseId,
         });
       },
-      isSessionActive: async () => {
-        const active = sessionIsActive(await params.execute(
-        'session.status.get',
-        { sessionId: params.sessionId },
-        { signal },
-        ));
-        if (!active) needsRead = true; // Preserve the incumbent final drain.
-        return active;
-      },
-      waitForNextPoll: async () => { await wakeup.wait(); needsRead = true; },
+      isSessionActive: readSessionActive,
+      waitForNextPoll: async () => {}, // The Action itself waits on its canonical producer.
       shouldContinue: () => !signal.aborted,
       onItems: async ({ items }) => {
         for (const item of items) emit(item);
         await waitForConsumerDemand();
       },
-      });
-    }).then(
+      }).then(
       () => settle(),
       (error) => {
-        failure = error;
+        failure = signal.aborted ? undefined : error;
         settle();
       },
     ).finally(async () => {
-      wakeup.dispose(); signal.removeEventListener('abort', stopObservation);
-      await supervisor.stop(); unregisterCloseCleanup?.();
+      unregisterCloseCleanup?.();
     });
     return runner;
   };

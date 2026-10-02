@@ -30,6 +30,8 @@ export type AgentDefinition = Readonly<{
   core: AgentCore;
   sessionModeDescriptor: AgentSessionModeDescriptor;
   sessionModesKind: AgentSessionModesKind;
+  /** Agent-owned native permission labels, projected from the same mapping used at launch. */
+  nativePermissionModes?: Readonly<Record<string, string>>;
   /**
    * Optional static model facts for catalog and preflight fallback use.
    *

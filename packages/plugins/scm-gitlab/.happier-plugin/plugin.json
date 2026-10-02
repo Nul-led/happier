@@ -25014,6 +25014,7 @@
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -25131,6 +25132,7 @@
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [
       {
@@ -29278,7 +29280,8 @@
     },
     "voiceModelPacks": [],
     "voiceProviders": [],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "Detects GitLab remotes and provides GitLab repository operations.",
   "displayName": "GitLab SCM hosting provider",

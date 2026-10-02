@@ -11,6 +11,7 @@ use protocol::{
     rewrite_result_task_id, OutputPayload, SystemTaskResult,
 };
 use serde::Serialize;
+use crate::background_command::background_command;
 use state::{SharedChild, SystemTaskSnapshot};
 use std::io::{BufReader, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
@@ -515,7 +516,7 @@ fn resolve_home_dir() -> Option<PathBuf> {
 }
 
 fn open_system_task_log_path(path: &Path) -> Result<(), String> {
-    let status = Command::new(resolve_open_log_path_program())
+    let status = background_command(resolve_open_log_path_program())
         .arg(path)
         .status()
         .map_err(|error| format!("Failed to open log path: {error}"))?;
@@ -539,15 +540,15 @@ fn resolve_open_log_path_program() -> &'static str {
 
 fn reveal_system_task_output_path(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    let status = Command::new("open").arg("-R").arg(path).status();
+    let status = background_command("open").arg("-R").arg(path).status();
 
     #[cfg(target_os = "windows")]
-    let status = Command::new("explorer")
+    let status = background_command("explorer")
         .arg(format!("/select,{}", path.display()))
         .status();
 
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    let status = Command::new("xdg-open")
+    let status = background_command("xdg-open")
         .arg(if path.is_dir() {
             path
         } else {
@@ -610,7 +611,7 @@ fn spawn_hsetup_child(hsetup_path: &Path, spec_json: &str) -> Result<Child, Stri
 }
 
 fn create_hsetup_run_command(hsetup_path: &Path) -> Command {
-    let mut command = Command::new(hsetup_path);
+    let mut command = background_command(hsetup_path);
     if let Some(bundle_id) = DESKTOP_BUNDLE_ID.get() {
         command.env(DESKTOP_BUNDLE_ID_ENV, bundle_id);
     }

@@ -292,6 +292,7 @@ export type AgentUiBehaviorDescriptorSource = Readonly<{
 export type AgentPredecessorMessageMetaWriterImportSource = Readonly<{
   importName: string;
   importPath: string;
+  defaults: JsonObject;
 }>;
 
 export type AgentSessionBehaviorSource = Readonly<{
@@ -305,9 +306,8 @@ export type SessionSubagentVisibleMessageResolverSource = Readonly<{
 }>;
 
 export type PromptAssetContributionSource = Readonly<{
-  importName: string;
-  importPath: string;
   pluginPackageId: string;
+  descriptors: readonly JsonObject[];
 }>;
 
 export type BundledFirstPartyVoiceProjectionSource = Readonly<{
@@ -322,6 +322,7 @@ export type BundledFirstPartyVoiceProjectionSource = Readonly<{
     artifactId: string;
     exportName: string;
   }> | null;
+  presentations: readonly JsonObject[];
 }>;
 
 export type BundledFirstPartyVoicePackageId = 'codex' | 'elevenlabs' | 'google' | 'openai' | 'openai-compat' | 'xai';

@@ -251,6 +251,41 @@ evaluates the same resolved author module once and serializes its canonical
 projection to `.happier-plugin/plugin.json`. Installed and marketplace
 discovery read that generated JSON and never execute plugin code.
 
+### Capture sources and media viewing
+
+The 0.3 media interface is under development; use it only when the installed
+API inventory and capability matrix include the capture/media exports.
+`definePlugin` accepts manifest-backed producers under `captureSources`:
+
+```ts
+captureSources: {
+  preview: {
+    declaration: {
+      displayName: 'Preview',
+      streamFamily: 'acme.preview',
+      supportedCodecs: ['image.mjpeg'],
+    },
+    runtime: previewCapture,
+  },
+}
+```
+
+`previewCapture` implements `PluginCaptureSourceRuntime`: `start` receives an
+assigned stream id, cancellation signal, frame offer and receipt callbacks,
+then returns a `stop` operation. The host owns viewer routing and transport;
+the producer does not register a second viewer or input controller.
+An admitted surface renders its own source with `HappierLiveStream` from
+Plugin UI. A host-source reference instead requires a `capture.view` Action
+approval for each viewing, unless the user waived approval for this plugin in
+Action settings. Replacement retires the exact old viewing.
+
+`StoredImageRefV1` identifies file-backed native Session-image artifacts
+retained from a successful Action in the same mounted surface. The bound `readStoredImage` operation
+requires the plugin's declared/selected Sessions READ scope and matching Account
+encryption mode; ids are not filesystem authority. See the
+[Plugin UI media interface](../plugin-ui/README.md#capture-previews-and-session-images)
+for rendering and unavailable-host behavior.
+
 ## 3. Test, pack, and exercise the real host boundary
 
 ```ts
@@ -299,6 +334,13 @@ results carry `requestId` and the matching `kind`:
   `declined`, or a terminal status—it is not a boolean;
 - `approvals.request/get/list/watch` accesses the host-stamped canonical
   approval queue.
+
+For native Agent Sessions in the development SDK, interaction options default
+to `lifetime: 'turn'`. Native asynchronous questions may explicitly use
+`{ lifetime: 'occurrence' }`
+to remain answerable after the turn ends, until their runtime occurrence retires.
+This changes cleanup lifetime, not the request's host-stamped causal turn or
+permission authority. An explicit abort signal still ends the request.
 
 The exact terminal statuses are `userCancelled`, `requesterAborted`, `timedOut`,
 `sessionEnded`, `generationRetired`, `hostRestarted`, and `unavailable`. They are
@@ -537,6 +579,15 @@ The host owns authentication classification across ACP Agents;
 message, while `suppress` and `statusErrors` cover other bounded stderr cases.
 For Session-capable Agents the host derives finite Runs from the registered
 Session factory. Plugin authors do not register or own a second Run lifecycle.
+
+In the development SDK, the optional Session terminal service operation
+`adoptExistingHost()` admits an exact surviving owned host without spawning.
+Call it only from an admitted Session recovery path: `null` means no owned
+candidate, while unreadable, replaced or unproven host evidence rejects. The
+host retains lock, attachment and lifecycle authority; the Agent still establishes
+its native session identity from authenticated native evidence. An inherited
+foreground shell remains borrowed. Hosts without this optional operation cannot
+perform that adoption; see [protocol evolution](../../docs/compatibility.md#sdk-protocol-evolution).
 
 ## Task guides
 

@@ -1,4 +1,5 @@
 import {
+  cloneElement,
   createContext,
   useCallback,
   useContext,
@@ -49,10 +50,11 @@ import { HappierPressable } from '../presentation/interaction/Pressable.js';
 import type { HappierLayoutChangeEvent, HappierPortableStyle } from '../presentation/portableTypes.js';
 import { HappierText } from '../presentation/text/Text.js';
 import { CollectionCards, CollectionGroupActionButton, readCollectionLineHeight } from './CollectionCards.js';
-import { List, type ListMultiSelectionCapabilityProps, type ListSectionData } from './List.js';
+import { List, type ItemProps, type ListMultiSelectionCapabilityProps, type ListSectionData } from './List.js';
 import { ListCollectionControlContext, type ListCollectionControl } from './listCollectionControl.js';
 import { DetailsPane, useDetailsPaneAvailable, useDetailsPaneHostInstalled } from './DetailsPane.js';
 import { usePluginTranslation } from './PluginUiProvider.js';
+import type { NavigationListDestination } from './NavigationList.js';
 
 /**
  * The Collection (COLLECTION.md §3–§4, §7, §10.1): one item anatomy drawn as a `table` at rest and as a `list` beside
@@ -81,6 +83,10 @@ export type CollectionField<Item> = Readonly<{
 
 /** The one item anatomy every presentation draws from. Renderers are pure. */
 export type CollectionAnatomy<Item> = Readonly<{
+  /** Shareable qualified page/location for this item, without transferring selection or navigation ownership. */
+  destination?: (item: Item) => NavigationListDestination | null;
+  /** A core destination owner may decorate the shared row/card without replacing its anatomy or activation. */
+  wrapItem?: (item: Item, content: ReactNode) => ReactNode;
   glyph: (item: Item) => ReactNode;
   title: (item: Item) => string;
   /** Where the item lives ("payments-api #2481"). */
@@ -94,6 +100,12 @@ export type CollectionAnatomy<Item> = Readonly<{
   fields?: readonly CollectionField<Item>[];
   /** The table-only peek body. */
   peek?: (item: Item) => ReactNode;
+  /**
+   * The item itself at static props (a document's first lines, a board's columns), drawn as a grid card's preview
+   * band above its title. Grid only; every card in the grid reserves the band, so rows stay equal. Pure: no
+   * subscriptions or requests.
+   */
+  preview?: (item: Item) => ReactNode;
   /** What the item is for, in a sentence; a grid card reserves exactly two lines for it. */
   description?: (item: Item) => string | null;
   /**
@@ -482,6 +494,7 @@ function useMotionDriver() {
 }
 
 function CollectionRow<Item>(props: Readonly<{ item: Item; itemKey: string }>): ReactElement {
+  const host = useOptionalPluginUiPresentationHost();
   const stage = useStage<Item>();
   const translate = usePluginTranslation();
   const { AnimatedView } = useMotionDriver();
@@ -532,7 +545,7 @@ function CollectionRow<Item>(props: Readonly<{ item: Item; itemKey: string }>): 
       )}
     </View>
   );
-  const rowItem = actions.secondaryActions !== undefined && actions.onSecondaryAction !== undefined ? (
+  const rowItem: ReactElement<ItemProps> = actions.secondaryActions !== undefined && actions.onSecondaryAction !== undefined ? (
     <List.Item
       density="compact"
       showDivider={false}
@@ -562,13 +575,22 @@ function CollectionRow<Item>(props: Readonly<{ item: Item; itemKey: string }>): 
       {rowContents}
     </List.Item>
   );
+  const destination = anatomy.destination?.(item);
+  const destinationRow = destination && host?.renderDestinationRow ? host.renderDestinationRow({
+    ...destination, children: rowItem,
+    renderWithSecondaryActions: additional => cloneElement(rowItem, {
+      secondaryActions: [...(actions.secondaryActions ?? []), ...additional.secondaryActions],
+      onSecondaryAction: id => additional.secondaryActions.some(action => action.id === id)
+        ? additional.onSecondaryAction(id) : actions.onSecondaryAction?.(id),
+    }),
+  }) : rowItem;
   return (
     <AnimatedView
       value={progress}
       tracks={travel === null ? NO_TRACKS : happierCollectionTravelTrack(offset)}
       {...(anatomy.testID === undefined ? {} : { testID: `${anatomy.testID(item)}:cell` })}
     >
-      {rowItem}
+      {anatomy.wrapItem ? anatomy.wrapItem(item, destinationRow) : destinationRow}
     </AnimatedView>
   );
 }

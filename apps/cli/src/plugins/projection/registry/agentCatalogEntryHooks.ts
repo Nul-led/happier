@@ -494,7 +494,6 @@ export function projectAgentProviderCliAttachCatalogEntry(params: Readonly<{
                         ? { cliVersionArgs: providerCliAttach.cliVersionArgs }
                         : {}),
                     ...(providerCliAttach.managedServiceAccess
-                        && resolveManagedServiceSessionClientAccess
                         ? {
                             managedServiceTargetBaseUrl:
                                 providerCliAttach.managedServiceAccess
@@ -510,7 +509,7 @@ export function projectAgentProviderCliAttachCatalogEntry(params: Readonly<{
                                             .credentialEnvironmentAliases,
                                 }
                                 : {}),
-                            resolveManagedServiceAccess: async (
+                            ...(resolveManagedServiceSessionClientAccess ? { resolveManagedServiceAccess: async (
                                 input: Readonly<{
                                     sessionId: string;
                                     targetBaseUrl: string;
@@ -529,7 +528,7 @@ export function projectAgentProviderCliAttachCatalogEntry(params: Readonly<{
                                         providerCliAttach.managedServiceAccess!
                                             .credentialEnvironmentKey,
                                 })
-                            ),
+                            ) } : {}),
                         }
                         : {}),
                     ...(resolveManagedServiceSessionBaseUrl

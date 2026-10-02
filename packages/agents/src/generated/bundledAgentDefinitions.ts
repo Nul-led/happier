@@ -9,7 +9,7 @@ import type { AgentDefinition } from '../definitions/agentDefinition.js';
 
 type BundledAgentDefinition = AgentDefinition;
 
-export const BUNDLED_AGENT_NATIVE_HOME_ENVIRONMENT_KEYS: readonly string[] | null = Object.freeze([
+export const BUNDLED_AGENT_NATIVE_HOME_ENVIRONMENT_KEYS: readonly string[] = Object.freeze([
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
   "PI_CODING_AGENT_DIR"
@@ -385,7 +385,8 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       },
       "usageLimitRecovery": {
         "checkNow": "unsupported"
-      }
+      },
+      "usageReporting": "supported"
     },
     "sessionStorage": {
       "direct": true,
@@ -930,6 +931,17 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
     "supportsFreeform": true,
     "supportsSelection": true
   },
+  "nativePermissionModes": {
+    "acceptEdits": "acceptEdits",
+    "auto": "auto",
+    "bypassPermissions": "bypassPermissions",
+    "default": "default",
+    "dontAsk": "dontAsk",
+    "plan": "plan",
+    "read-only": "dontAsk",
+    "safe-yolo": "auto",
+    "yolo": "bypassPermissions"
+  },
   "releasedOutputTranscriptRecordReader": {
     "nonTranscriptRecordTypes": [
       "file-history-snapshot",
@@ -1126,7 +1138,8 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
               },
               "usageLimitRecovery": {
                 "checkNow": "unsupported"
-              }
+              },
+              "usageReporting": "unsupported"
             }
           }
         },
@@ -1152,7 +1165,8 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
               },
               "usageLimitRecovery": {
                 "checkNow": "unsupported"
-              }
+              },
+              "usageReporting": "unsupported"
             }
           }
         }
@@ -1170,7 +1184,8 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       },
       "usageLimitRecovery": {
         "checkNow": "supported"
-      }
+      },
+      "usageReporting": "supported"
     },
     "sessionStorage": {
       "direct": true,
@@ -2868,7 +2883,8 @@ const _BUNDLED_AGENT_DEFINITIONS_BY_ID = ({
       },
       "usageLimitRecovery": {
         "checkNow": "unsupported"
-      }
+      },
+      "usageReporting": "supported"
     },
     "sessionStorage": {
       "direct": false,

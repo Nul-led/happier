@@ -47,7 +47,7 @@ export type TranscriptSourceFiniteActionFollowState = Readonly<{
 export async function followTranscriptSourceWithFiniteActions<TItem>(params: Readonly<{
   initialCursor: string;
   leaseId: string;
-  follow: (params: Readonly<{ cursor: string; leaseId: string }>) => Promise<TranscriptSourceReadAfter<TItem>>;
+  follow: (params: Readonly<{ cursor: string; leaseId: string; finalDrain: boolean }>) => Promise<TranscriptSourceReadAfter<TItem>>;
   release: (params: Readonly<{ leaseId: string }>) => Promise<void>;
   isSessionActive: () => Promise<boolean>;
   waitForNextPoll: () => Promise<void>;
@@ -62,7 +62,7 @@ export async function followTranscriptSourceWithFiniteActions<TItem>(params: Rea
 
   try {
     while (params.shouldContinue?.() ?? true) {
-      const page = await params.follow({ cursor, leaseId: params.leaseId });
+      const page = await params.follow({ cursor, leaseId: params.leaseId, finalDrain });
       const nextCursor = page.nextCursor ?? cursor;
       if (!(params.shouldContinue?.() ?? true)) {
         return { tailCursor: nextCursor, stopped: 'aborted' };

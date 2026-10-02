@@ -388,10 +388,18 @@ const typescriptPackageBuildCacheBlockList =
 // Metro file-map entry for a symlink from being read as a symlink after a synced install replaces it
 // with a regular wrapper script.
 const packageManagerBinBlockList = /[\\/]node_modules[\\/]\.bin(?:[\\/]|$)/;
-// Avoid scanning duplicate workspace-local `node_modules/**` trees (typically symlink-heavy) when Metro falls back
-// to the native `find` crawler (no Watchman). We still keep the monorepo root `node_modules` and `apps/ui/node_modules`.
-const workspaceNodeModulesBlockList =
-  /[\\/]apps[\\/](?!ui[\\/])[^\\/]+[\\/]node_modules[\\/]|[\\/]packages[\\/][^\\/]+[\\/]node_modules[\\/]/;
+// Resolve workspace dependencies through the retained app/root trees, rather than crawling their
+// duplicate private copies. Use the discovered roots so nested plugin packages follow the same rule.
+const workspaceNodeModulesBlockList = new RegExp([
+  String.raw`[\\/]apps[\\/](?!ui[\\/])[^\\/]+[\\/]node_modules(?:[\\/]|$)`,
+  ...[...internalWorkspacePackages.values()].map((packageRoot) => {
+    const pattern = path.relative(monorepoRoot, packageRoot).replace(/\\/g, "/")
+      .split("/")
+      .map((segment) => segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("[\\\\/]");
+    return `[\\\\/]${pattern}[\\\\/]node_modules(?:[\\\\/]|$)`;
+  }),
+].join("|"));
 // Also skip nested dependency-private `node_modules/**` trees under watched app/root `node_modules/**`.
 // Metro resolves dependencies through the top-level search paths; crawling nested package-local copies adds a lot of
 // redundant work and frequently hits transient ENOENTs in hoisted/symlinked dependency layouts. React Native's own

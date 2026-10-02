@@ -46,6 +46,9 @@ import type {
   AgentToolExecutionLifecycle,
   AgentToolExecutionService,
   AgentTranscriptFileFollowService,
+  AgentTranscriptIdentityCodec,
+  AgentTranscriptSourceIdentityRequest,
+  AgentTranscriptSourceIdentityResult,
 } from './agent-runtime.js';
 import type {
   AgentSessionStartupInstructionsV1,
@@ -673,9 +676,20 @@ type _SessionHookServiceMustExposeOnlyTheExistingLifecycleOwner = AssertTrue<
 type _SessionTranscriptServiceMustExposeOnlyDurableHostOwnedOperations = AssertTrue<
   Equal<
     keyof AgentSessionHostServices['transcripts'],
-    'fileFollow' | 'followSource' | 'markSourceFactConsumed' | 'publishSessionEvent'
+    'fileFollow' | 'followSource' | 'markSourceFactConsumed' | 'publishSessionEvent' | 'reconcileSourceIdentities'
   >
 >;
+
+type _TranscriptIdentityAuthorOperationUsesThePublicScopedContract = AssertTrue<Equal<
+  AgentSessionHostServices['transcripts']['reconcileSourceIdentities'],
+  (request: AgentTranscriptSourceIdentityRequest) => Promise<AgentTranscriptSourceIdentityResult>
+>>;
+type _TranscriptIdentityFactoryUsesTheSamePublicCodec = AssertTrue<Equal<
+  AgentSessionRuntimeFactory['transcriptIdentity'], AgentTranscriptIdentityCodec | undefined
+>>;
+type _TranscriptIdentityRequestDoesNotExposeHostSessionOrRawContent = AssertTrue<Equal<
+  keyof AgentTranscriptSourceIdentityRequest, 'providerSessionId' | 'facts'
+>>;
 
 type _SessionEventPublicationMustAwaitDurableCustody = AssertTrue<
   Equal<

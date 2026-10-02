@@ -26,6 +26,7 @@ import type {
     ProtocolSchemaOutput,
 } from './protocol/protocolFacade.js';
 import type { TargetedContributionPointRef } from './services/targetedContributions.js';
+import type { PluginUiIconTokenV1 } from './ui/publicContract.js';
 
 export type PluginTargetedContributionSourceCustodyV1 =
     | Readonly<{
@@ -215,34 +216,7 @@ export type ContributionSurfaceLocalizedString = string | Readonly<{
 }>;
 
 /** Public icon vocabulary accepted by the symbolic fallback state. */
-export type ContributionSurfaceIcon =
-    | 'action'
-    | 'browser'
-    | 'copy'
-    | 'file'
-    | 'globe'
-    | 'info'
-    | 'preview'
-    | 'refresh'
-    | 'settings'
-    | 'terminal'
-    | 'warning'
-    | 'add'
-    | 'back'
-    | 'check'
-    | 'close'
-    | 'error'
-    | 'external'
-    | 'forward'
-    | 'more'
-    | 'search'
-    | 'change-open'
-    | 'change-complete'
-    | 'issue'
-    | 'bug'
-    | 'pin'
-    | 'conversations'
-    | 'pause';
+export type ContributionSurfaceIcon = PluginUiIconTokenV1;
 
 /**
  * The one state-node form a symbolic contribution surface can carry as a

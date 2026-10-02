@@ -251,6 +251,7 @@ export const ELEVENLABS_PLUGIN = definePlugin({
             operationProjections: [
               { kind: 'recipientCredential', operation: 'signed-url', phase: 'prepare', format: 'raw' },
               { kind: 'recipientCredential', operation: 'conversation-token', phase: 'prepare', format: 'raw' },
+              { kind: 'recipientCredential', operation: 'agent', phase: 'prepare', format: 'raw' },
               { kind: 'recipientCredential', operation: 'voices', phase: 'settings', format: 'raw' },
               { kind: 'recipientCredential', operation: 'agents', phase: 'settings', format: 'raw' },
               { kind: 'recipientCredential', operation: 'agent', phase: 'settings', format: 'raw' },

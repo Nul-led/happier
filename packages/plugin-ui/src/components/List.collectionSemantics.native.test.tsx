@@ -79,6 +79,8 @@ vi.mock('react-native', () => ({
 import { createHostApiStub, createSurfaceContext } from '../surfaceFixture.testSupport.js';
 import { List } from './List.js';
 import { PluginUiProvider } from './PluginUiProvider.js';
+import { createListMultiSelectionStore, type ListMultiSelectionStore } from './ListMultiSelection.js';
+import { ContextMenu } from './Overlay.js';
 
 type Entry = Readonly<{ id: string; label: string }>;
 
@@ -97,7 +99,7 @@ afterEach(() => {
   renderer = null;
 });
 
-function renderSelectableList(): ReactTestRenderer {
+function renderSelectableList(store?: ListMultiSelectionStore): ReactTestRenderer {
   const context = createSurfaceContext();
   act(() => {
     renderer = create(
@@ -107,7 +109,8 @@ function renderSelectableList(): ReactTestRenderer {
           testID="repositories"
           items={entries}
           keyForItem={(item) => item.id}
-          selection={{ selectedKey: null, onSelectedKeyChange: () => undefined }}
+          selection={{ selectedKey: null, onSelectedKeyChange: () => undefined,
+            ...(store ? { multiple: { store } } : {}) }}
           renderItem={(item) => (
             <List.Item testID={`row-${item.id}`} title={item.label} />
           )}
@@ -211,6 +214,18 @@ describe('plugin-ui selectable List collection semantics on native', () => {
     const charlie = frame('Pressable', 'row-c');
     expect(charlie['aria-posinset']).toBe(1);
     expect(charlie['aria-setsize']).toBe(1);
+  });
+
+  it('opens the native row menu on long-press without selecting until Select is chosen', () => {
+    const store = createListMultiSelectionStore({ scopeKey: 'native-menu', visibleOrderedKeys: [] });
+    renderSelectableList(store);
+    const row = renderer!.root.find((node) => node.type === 'Pressable' && node.props.testID === 'row-b');
+    act(() => { row.props.onLongPress?.({}); });
+    const menu = renderer!.root.findAllByType(ContextMenu).find((node) => node.props.open);
+    expect(menu).toBeDefined();
+    expect(store.getSnapshot().count).toBe(0);
+    act(() => { menu?.props.onSelect('selection.select'); });
+    expect(Array.from(store.getSnapshot().selectedKeys)).toEqual(['b']);
   });
 
   it('projects grid rows as selected row/cell structure with native positions', () => {

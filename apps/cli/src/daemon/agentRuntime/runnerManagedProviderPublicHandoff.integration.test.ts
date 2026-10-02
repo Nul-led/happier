@@ -1213,6 +1213,8 @@ describe('representative public Provider-to-SVC09 handoff', () => {
                     invocationContext,
                     trackedSession: tracked,
                     signal: init?.signal ?? undefined,
+                    // This transport fixture admits retained non-Action provider operations.
+                    isCurrent: async () => true,
                 };
                 if (
                     request.operation.kind
@@ -2144,6 +2146,8 @@ describe('representative public Provider-to-SVC09 handoff', () => {
                     retainedAgent: authority.document.retainedAgent,
                     invocationContext,
                     trackedSession: tracked,
+                    // The retained provider-policy probe does not dispatch an Action.
+                    isCurrent: async () => true,
                 },
             );
         };

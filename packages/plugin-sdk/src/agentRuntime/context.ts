@@ -152,7 +152,34 @@ export type AgentTranscriptSessionEventPublicationResult = Readonly<{
   status: 'custodied';
 }>;
 
+/** Exact source identities only; no transcript text or general metadata authority. */
+export type AgentTranscriptSourceIdentityRequest = Readonly<{
+  providerSessionId: string;
+  facts: readonly Readonly<{ sourceMessageId: string; role: 'user' | 'assistant'; localId: string }>[];
+}>;
+
+export type AgentTranscriptSourceIdentityResult = Readonly<{
+  committedSourceMessageIds: readonly string[];
+  hostAuthoredUserMessageIds: readonly string[];
+  coverage: Readonly<{ complete: boolean; unmappedUsers: number; unmappedAgents: number }>;
+}>;
+
+/** Provider-owned predecessor correlation, invoked by the bound host transcript reader. */
+export interface AgentTranscriptIdentityCodec {
+  readonly metadataFields: readonly string[];
+  readonly messageMetadataFields: readonly string[];
+  reconcile(input: AgentTranscriptSourceIdentityRequest & Readonly<{
+    metadata: Readonly<Record<string, unknown>>;
+    baseline: Readonly<{
+      complete: boolean;
+      rows: readonly Readonly<{ localId: string | null; role: 'user' | 'agent'; meta: Readonly<Record<string, unknown>> }>[];
+    }>;
+  }>): AgentTranscriptSourceIdentityResult;
+}
+
 export interface AgentTranscriptSessionEventPublisher {
+  /** Reads committed semantic identities for this exact native Session; unsupported rejects. */
+  reconcileSourceIdentities(request: AgentTranscriptSourceIdentityRequest): Promise<AgentTranscriptSourceIdentityResult>;
   /** Bind the Agent's exact native Session to the host's ordered durable source importer. */
   followSource?(
     request: Readonly<{ providerSessionId: string; replay: 'historical' | 'fresh' }>,
@@ -351,6 +378,13 @@ export type AgentTerminalHostDisposeIntent =
 export type AgentTerminalHostService = Readonly<{
   resolve(request: AgentTerminalHostResolveRequest): Promise<AgentTerminalHostResolveResult>;
   createOrAttachHost(request: AgentTerminalHostCreateOrAttachRequest): Promise<TerminalHostHandle>;
+  /**
+   * Admit the Session's exact, live, owned host without launching another Agent.
+   * The host verifies current runner custody and persisted binding; unknown or
+   * replaced evidence rejects. Null means there is no owned recovery candidate.
+   * Inherited foreground terminals remain borrowed through createOrAttachHost.
+   */
+  adoptExistingHost?(): Promise<TerminalHostHandle | null>;
   injectUserPrompt(handle: TerminalHostHandle, input: TerminalPromptInput): Promise<TerminalInputInjectionResult>;
   interruptTurn(handle: TerminalHostHandle): Promise<void>;
   evaluateLiveness(handle: TerminalHostHandle): Promise<TerminalHostLivenessV1>;

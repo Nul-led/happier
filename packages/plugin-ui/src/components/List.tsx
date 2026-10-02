@@ -74,6 +74,7 @@ import { Button } from './Button.js';
 import {
   ListMultiSelectionProvider,
   ListSelectionActionBar,
+  useOptionalListMultiSelectionStore,
   useListMultiSelectionStoreSnapshot,
   type ListMultiSelectionKey,
   type ListMultiSelectionStore,
@@ -568,6 +569,8 @@ type ListItemSelectionDisposition = 'open' | 'handled';
 export type ListAccessibilityPattern = 'listbox' | 'grid';
 
 type ListItemSelectionContextValue = Readonly<{
+  itemKey: string;
+  multiSelectable: boolean;
   selected: boolean;
   activatable: boolean;
   /** The activation event carries the modifier keys one press means something by. */
@@ -598,6 +601,7 @@ type VirtualizedListRowProps<Item> = Readonly<{
   collectionSize: number;
   renderItem: (item: Item, index: number, sectionKey: string | null) => ReactNode;
   selectionEnabled: boolean;
+  multiSelectable: boolean;
   activatable: boolean;
   selected: boolean;
   /**
@@ -622,6 +626,8 @@ class VirtualizedListRow<Item> extends PureComponent<VirtualizedListRowProps<Ite
     const props = this.props;
     const selection: ListItemSelectionContextValue | null = props.selectionEnabled
       ? {
+          itemKey: props.itemKey,
+          multiSelectable: props.multiSelectable,
           selected: props.selected,
           activatable: props.activatable,
           select: (event) => props.onSelect(props.itemKey, event),
@@ -953,8 +959,7 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
         // into one.
         requestFocusRef.current(key);
         if (action === 'toggle') store.toggle(key);
-        else if (action === 'selectRange') store.selectRange(key);
-        else store.addRange(key);
+        else store.selectRange(key);
         return 'handled';
       }
     }
@@ -1273,7 +1278,7 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
             if (snapshot.selectedKeys.size === 0 && currentKey !== null) {
               multiStoreForKey.replaceWith(currentKey);
             }
-            multiStoreForKey.addRange(nextRow.key);
+            multiStoreForKey.selectRange(nextRow.key);
             requestFocusRef.current(nextRow.key);
             requestRowFocus(nextRow.key, intent.toIndex);
           }
@@ -1421,6 +1426,7 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
         collectionSize={input.collectionSize}
         renderItem={renderItem}
         selectionEnabled={selectionEnabled}
+        multiSelectable={multiStore !== null && multiRovingEntries[input.rowIndex]?.disabled === false}
         activatable={activatableRows[input.rowIndex] !== false}
         // With the capability mounted, `aria-selected` is the multi-selection —
         // the standard meaning in a multi-selectable listbox. The single key
@@ -1435,7 +1441,7 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
         accessibilityPattern={accessibilityPattern}
       />
     );
-  }, [accessibilityPattern, activatableRows, keyForItem, multiStore, onRovingKey, registerTarget, renderItem, selectItem, selectionEnabled]);
+  }, [accessibilityPattern, activatableRows, keyForItem, multiRovingEntries, multiStore, onRovingKey, registerTarget, renderItem, selectItem, selectionEnabled]);
 
   const flatSetSize = visibleItems?.length ?? 0;
   const renderFlatRow = useCallback(({ item, index }: Readonly<{ item: Item; index: number }>) => (
@@ -1831,14 +1837,29 @@ function ListItem(props: ListItemProps): ReactElement {
 function ListItemRow(props: ListItemProps): ReactElement {
   const translate = usePluginTranslation();
   const selection = useContext(ListItemSelectionContext);
+  const multiStore = useOptionalListMultiSelectionStore();
   const [secondaryActionsOpen, setSecondaryActionsOpen] = useState(false);
   const rowFocusRef = useRef<HappierFocusable | null>(null);
   const defaultSecondaryActionAccessibilityLabel = translate(LIST_MORE_ACTIONS_TRANSLATION_KEY, 'More actions');
   const { accessibilityLabelKey, accessibilityHintKey, ...authorProps } = props;
+  const canSelectRow = selection?.activatable === true && selection.multiSelectable;
+  const selectActionId = 'selection.select';
   const resolvedProps = {
     ...authorProps,
     accessibilityLabel: resolveAuthorText(translate, props.accessibilityLabel, accessibilityLabelKey),
     accessibilityHint: resolveAuthorText(translate, props.accessibilityHint, accessibilityHintKey),
+    ...(canSelectRow ? {
+      secondaryActions: props.secondaryActions?.some((action) => action.id === selectActionId)
+        ? props.secondaryActions
+        : [...(props.secondaryActions ?? []), {
+            id: selectActionId,
+            label: translate('happier.plugin-ui.list.selectItems', 'Select'),
+          }],
+      onSecondaryAction: (id: string) => {
+        if (id === selectActionId) multiStore?.replaceWith(selection.itemKey);
+        else props.onSecondaryAction?.(id);
+      },
+    } : {}),
   } as ListItemProps;
   const hasSecondaryActions = resolvedProps.secondaryActions !== undefined
     && resolvedProps.secondaryActions.length > 0

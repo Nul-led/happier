@@ -730,6 +730,25 @@ case "$invoked_cwd" in
     exit 1 ;;
 esac
 
+# A Mac recovery mirror is not an execution authority. Hand it to the same
+# active-host owner as repo-local commands before consulting stale host configs.
+execution_host_home=${HAPPIER_STACK_HOME_DIR:-${HOME-}/.happier-stack}
+case "$execution_host_home" in
+  '~') execution_host_home=${HOME-} ;;
+  '~/'*) execution_host_home="${HOME-}/${execution_host_home#'~/'}" ;;
+esac
+if [ -z "${CI-}" ] && [ -z "${HAPPIER_STACK_SANDBOX_DIR-}" ] \
+  && [ "${HAPPIER_STACK_EXECUTION_HOST_REENTRY-}" != 1 ] \
+  && [ -f "$execution_host_home/execution-host.json" ] \
+  && [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+  if [ -n "$explicit_target" ]; then
+    if [ "$explicit_tty" = 1 ]; then set -- --tty "$@"; fi
+    set -- "--target=$explicit_target" "$@"
+  fi
+  exec node "$script_dir/../scripts/execution_host_bridge.mjs" \
+    "--native-launcher=$launcher_path" -- "$@"
+fi
+
 storage_root=${HAPPIER_STACK_STORAGE_DIR-}
 if [ -z "$storage_root" ]; then
   if [ -z "${HOME-}" ]; then run_local_without_target_config "$@"; fi

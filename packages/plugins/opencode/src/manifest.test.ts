@@ -61,14 +61,13 @@ describe('OpenCode plugin manifest', () => {
     const agent = PLUGIN_MANIFEST.contributes.agents.find((entry) => entry.id === 'opencode');
 
     expect(agent?.capabilities.sessions).toMatchObject({
-      open: ['create', 'resume'],
+      open: ['create', 'resume', 'fork'],
       delivery: ['newTurn', 'steer', 'followUp'],
       cancel: true,
       configuration: true,
       compaction: { events: true },
       catalog: { active: ['skills'] },
     });
-    expect(agent?.capabilities.sessions?.open).not.toContain('fork');
     expect(agent?.capabilities.sessions?.compaction).not.toHaveProperty('manual');
     expect(agent?.capabilities.sessions).not.toHaveProperty('usageLimitRecovery');
   });

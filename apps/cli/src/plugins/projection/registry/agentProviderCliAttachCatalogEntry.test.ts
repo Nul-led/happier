@@ -8,8 +8,58 @@ import { describe, expect, it, vi } from 'vitest';
 import { writeExecutableShimSync } from '@/testkit/fs/executableShim';
 
 import { projectAgentProviderCliAttachCatalogEntry } from './agentCatalogEntryHooks';
+import { buildOpenCodeAgentRuntimeDescriptorV1 } from '../../../../../../packages/plugins/opencode/src/agent/identity/runtimeDescriptor';
+import {
+    createOpenCodeAttachArgs,
+    resolveOpenCodeAttachReachability,
+    resolveOpenCodeAttachTarget,
+} from '../../../../../../packages/plugins/opencode/src/agent/surfaces/sessions/attach/descriptor';
 
 describe('Agent provider CLI attach catalog projection', () => {
+    it.each([true, false])('preserves declared managed access without a host resolver (declared=%s)', async (declared) => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-provider-attach-missing-access-'));
+        const log = join(root, 'child.log');
+        const executable = writeExecutableShimSync({
+            dir: root, fileName: process.platform === 'win32' ? 'attach.cmd' : 'attach',
+            contents: process.platform === 'win32'
+                ? `@echo off\necho attached>>"${log}"`
+                : `#!/bin/sh\nprintf attached > '${log}'`,
+        });
+        const http = vi.fn<typeof fetch>(async () => new Response('{}', { status: 200 }));
+        vi.stubGlobal('fetch', http);
+        const hooks = projectAgentProviderCliAttachCatalogEntry({
+            agentId: 'opencode', pluginId: 'happier.agent.opencode', localAgentId: 'opencode',
+            systemTools: [{ id: 'fixture-attach', title: 'Attach fixture', executableNames: [executable] }],
+            providerCliAttach: {
+                commandToolIds: ['fixture-attach'], resolveCommandToolId: () => 'fixture-attach',
+                resolveTarget: resolveOpenCodeAttachTarget, createArgs: createOpenCodeAttachArgs,
+                resolveReachability: resolveOpenCodeAttachReachability,
+                ...(declared ? { managedServiceAccess: {
+                    credentialEnvironmentKey: 'OPENCODE_SERVER_PASSWORD',
+                    resolveTargetBaseUrl: (target: { baseUrl?: string }) => target.baseUrl ?? null,
+                } } : {}),
+            },
+        });
+        const metadata = { path: '/repo', runtimeDescriptorV1: buildOpenCodeAgentRuntimeDescriptorV1({
+            backendMode: 'server', providerSessionId: 'ses-exact-parent',
+            serverBaseUrl: 'http://127.0.0.1:4096', serverBaseUrlExplicit: true,
+        }) };
+        try {
+            const attach = (await hooks.resolveHostAgentRuntimeSurfaces?.())?.attach;
+            const availability = await attach?.evaluateAvailability?.({
+                operation: 'attach', sessionId: 'session-one', metadata, depth: 'live', hasLocalAttachmentInfo: true,
+            });
+            expect(availability?.available).toBe(!declared);
+            const result = await attach?.attach({ sessionId: 'session-one', metadata });
+            expect(result?.ok).toBe(!declared);
+            expect(existsSync(log)).toBe(!declared);
+            expect(http.mock.calls.length).toBe(declared ? 0 : 1);
+        } finally {
+            vi.unstubAllGlobals();
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
     it('uses the settings-selected declared tool for both version probing and attach spawn', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-provider-attach-tool-selection-'));
         const stableLog = join(root, 'stable.log');

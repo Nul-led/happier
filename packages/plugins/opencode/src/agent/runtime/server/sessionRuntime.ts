@@ -207,7 +207,7 @@ export function createOpenCodeSessionRuntime(params: Readonly<{
   inputFiles?: NonNullable<AgentSessionRuntimeContext['session']['services']['inputFiles']>;
   bindActiveSkillsReader?: OpenCodeActiveSkillsReaderRegistrar;
   runtimeCapabilities: AgentAuthoredSessionRuntimeCapabilities;
-  prepareProviderCliAttach?: NonNullable<AgentSessionRuntime['prepareProviderCliAttach']>;
+  prepareTerminalPresentation?: NonNullable<AgentSessionRuntime['prepareTerminalPresentation']>;
 }>): OpenCodeNativeSessionRuntime {
   const launchPermissionIntent = params.request.configuration?.permissionIntent.value ?? null;
   const listeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
@@ -629,8 +629,8 @@ export function createOpenCodeSessionRuntime(params: Readonly<{
   ) ?? null;
   return {
     runtimeCapabilities: params.runtimeCapabilities,
-    ...(params.prepareProviderCliAttach
-      ? { prepareProviderCliAttach: params.prepareProviderCliAttach }
+    ...(params.prepareTerminalPresentation
+      ? { prepareTerminalPresentation: params.prepareTerminalPresentation }
       : {}),
     send,
     async cancel(request) {

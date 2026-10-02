@@ -62,6 +62,7 @@ export type ClaudeSdkJsonStreamClientSpec = Readonly<{
 }>;
 
 export type ClaudeSdkQueryContext = Readonly<{
+    reportArtifactCleanupFailure?: (message: string) => void;
     spawnClient(
         spec: ClaudeSdkJsonStreamClientSpec,
         options?: { signal?: AbortSignal },
@@ -466,7 +467,7 @@ export class ClaudeSdkQuery implements AsyncIterableIterator<SDKMessage> {
         try {
             await handle?.dispose({ code: 'CLAUDE_SDK_QUERY_DISPOSED' });
         } finally {
-            await this.cleanupSpawnArtifacts?.();
+            await this.cleanupSpawnArtifacts?.().catch(() => undefined);
         }
         this.settlePromptTransport({
             kind: this.promptTransportAttempted
@@ -487,6 +488,7 @@ export class ClaudeSdkQuery implements AsyncIterableIterator<SDKMessage> {
             : options.env;
         const materializedMcpConfig = materializeClaudeMcpConfigArgsForSpawn(
             buildClaudeArgs(this.config.prompt, options),
+            this.ctx.reportArtifactCleanupFailure,
         );
         let startup: ReturnType<typeof materializeClaudeStartupInstructions> | undefined;
         try {
@@ -494,7 +496,9 @@ export class ClaudeSdkQuery implements AsyncIterableIterator<SDKMessage> {
                 startup = materializeClaudeStartupInstructions(options.appendSystemPrompt);
             }
         } catch (error) {
-            await materializedMcpConfig.cleanup();
+            try { await materializedMcpConfig.cleanup(); } catch (cleanupError) {
+                throw new AggregateError([error, cleanupError], 'Claude startup preparation failed with incomplete cleanup', { cause: error });
+            }
             throw error;
         }
         const cleanup = async () => {
@@ -518,7 +522,9 @@ export class ClaudeSdkQuery implements AsyncIterableIterator<SDKMessage> {
                 protocol: { kind: 'json-stream' },
             }, { signal: options.abort });
         } catch (error) {
-            await cleanup();
+            try { await cleanup(); } catch (cleanupError) {
+                throw new AggregateError([error, cleanupError], 'Claude startup failed with incomplete cleanup', { cause: error });
+            }
             throw error;
         }
         this.handle = handle;
@@ -528,7 +534,7 @@ export class ClaudeSdkQuery implements AsyncIterableIterator<SDKMessage> {
         void this.pumpPrompt(handle.client, this.config.prompt, options.abort);
         handle.process.exit.then(
             async (result) => {
-                await cleanup();
+                await cleanup().catch(() => undefined);
                 this.exitResult = result;
                 this.rejectPendingControlResponses(
                     new Error('Claude SDK process exited before control response.'),
@@ -553,7 +559,7 @@ export class ClaudeSdkQuery implements AsyncIterableIterator<SDKMessage> {
                 this.messages.finish();
             },
             async (error) => {
-                await cleanup();
+                await cleanup().catch(() => undefined);
                 this.messages.fail(error instanceof Error ? error : new Error(String(error)));
             },
         );

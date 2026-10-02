@@ -101,6 +101,7 @@ const HOST_BINDING_OWNER_EVIDENCE = Object.freeze({
   'apps/cli/src/plugins/projection/registry/accountCollections.ts': 'export const accountCollectionsProjectionFamily',
   'apps/cli/src/plugins/projection/registry/voiceDeclarations.ts': 'export const voiceModelPackProjectionFamily',
   'apps/cli/src/plugins/projection/registry/roles.ts': 'export const rolesProjectionFamily',
+  'apps/cli/src/plugins/projection/registry/workflows.ts': 'export const workflowsProjectionFamily',
   'apps/cli/src/plugins/projection/registry/targetedContributions.ts': 'export function resolveAdmittedTargetedContributions',
   'apps/cli/src/cli/pluginCommandContributions.ts': 'export async function handlePluginCommandCliCommand',
   'apps/cli/src/plugins/runtime/toolCatalog.ts': 'export function projectExecutablePluginToolCatalog',
@@ -478,6 +479,28 @@ test('derives daemon database and webhook availability from their real realm own
     metadata.manifestFamilies.webhooks.lifecycleOwner,
     'apps/server/sources/app/plugins/webhooks/claimStore.ts',
   );
+});
+
+test('derives declarative workflow availability from its projection and occurrence lifecycle owners', () => {
+  const metadata = deriveCapabilityMatrixMetadata({
+    contributionCatalog: [{ manifestKey: 'workflows', disposition: 'retained' }],
+    hostAccessCatalog: [],
+    apiInventory: { entrypoints: [], symbols: [] },
+    services: [],
+    declarations: CAPABILITY_MATRIX_DECLARATIONS_V1,
+  });
+
+  const { producer, specialistOwner, lifecycleOwner, predecessorRemoval,
+    availabilityDisposition, provingConsumer } = metadata.manifestFamilies.workflows;
+  assert.deepEqual({ producer, specialistOwner, lifecycleOwner, predecessorRemoval,
+    availabilityDisposition, provingConsumer }, {
+    producer: 'packages/protocol/src/plugins/contributions/catalog.ts#workflows',
+    specialistOwner: 'apps/cli/src/plugins/projection/registry/workflows.ts',
+    lifecycleOwner: 'apps/cli/src/plugins/runtime/lifecycle/manager.ts',
+    predecessorRemoval: 'catalog-disposition:retained',
+    availabilityDisposition: 'available',
+    provingConsumer: null,
+  });
 });
 
 test('names the real realm binder for every catalogued manifest family', () => {
@@ -890,6 +913,12 @@ test('joins the current canonical catalogs without a missing, stale, or disposit
   });
 
   assert.equal(matrix.manifestFamilies.length, PLUGIN_CONTRIBUTION_CATALOG_V2.length);
+  const capture = matrix.manifestFamilies.find((row) => row.manifestFamily === 'captureSources');
+  assert.equal(capture.availabilityDisposition, 'available');
+  assert.equal(capture.specialistOwner, CAPABILITY_HOST_BINDING_OWNERS_V1.contributionRuntimeRegistration);
+  assert.equal(capture.lifecycleOwner, CAPABILITY_HOST_BINDING_OWNERS_V1.contributionActivationLifecycle);
+  assert.equal(capture.loadedPlatformProof, 'not-recorded');
+  assert.equal(capture.provingConsumer, null);
   assert.equal(matrix.services.length, services.length);
   assert.equal(matrix.hostAccess.length, PLUGIN_HOST_ACCESS_CAPABILITY_CATALOG_V2.length);
   assert.equal(matrix.subpaths.length, apiInventory.entrypoints.filter((entry) => entry.visibility === 'author').length);

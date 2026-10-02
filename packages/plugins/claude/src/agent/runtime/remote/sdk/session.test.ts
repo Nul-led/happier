@@ -594,11 +594,13 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
       expect(observations).toEqual([
         expect.objectContaining({
           source: 'claude-assistant-usage',
+          nativeRecordId: 'assistant-provider-usage',
           modelId: 'deepseek-ai/DeepSeek-V3.1',
           cost: null,
         }),
         expect.objectContaining({
           source: 'claude-sdk-result',
+          nativeRecordId: 'result-provider-usage',
           modelId: 'deepseek-ai/DeepSeek-V3.1',
           cost: null,
         }),

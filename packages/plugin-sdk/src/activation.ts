@@ -54,6 +54,7 @@ import type {
 } from './sessions/externalSessionTakeover.js';
 import type { PluginUiIconTokenV1 } from './ui.js';
 import type { VoiceProvidersRegistrationApi } from './voice/projections.js';
+import type { PluginCaptureSourceRuntime } from './captureSources.js';
 
 /** SDK author projection of one exact attachment callback instance. */
 export type ComposerAttachmentPrepareRequestV1<
@@ -399,6 +400,7 @@ export interface PluginApi {
     readonly composerAttachments: ComposerAttachmentsRegistrationApi;
     readonly resources: ResourcesRegistrationApi;
     readonly backgroundServices: BackgroundServicesRegistrationApi;
+    readonly captureSources: { register(id: string, runtime: PluginCaptureSourceRuntime): void };
 }
 
 /**

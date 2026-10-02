@@ -105,6 +105,11 @@ materialization: {
             action: { pluginId: 'acme.caller', localId: 'target' },
             input: { title: 'Ready' },
             surface: 'plugin',
+            initiatingActionCaller: {
+                kind: 'plugin', pluginId: 'acme.caller', contributionLocalId: 'caller', occurrenceId: 'generation-1',
+                sourceCustody: { kind: 'development', registeredRootId: 'acme-caller-root' },
+                materialization: { pluginId: 'acme.caller', machineId: 'machine-1', materializationId: 'materialization-1' },
+            },
             caller: {
                 kind: 'plugin',
                 pluginId: 'acme.caller',

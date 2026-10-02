@@ -5,7 +5,6 @@ import {
   readRequiredContributionId,
   renderCompactJsonLiteral,
   renderJsonLiteral,
-  renderTsStringLiteral,
 } from './literals.ts';
 import type {
   BundledFirstPartyAgentRegistrationIdentity,
@@ -159,17 +158,9 @@ export function renderCliPromptAssetPluginDescriptorsTs(
   lines.push(' */');
   lines.push('');
   lines.push('import type { PluginPromptAssetAdapterDescriptor } from \'../pluginPromptAssetAdapterDescriptor\';');
-  for (const source of sources) {
-    lines.push(
-      `import { ${PLUGIN_PROMPT_ASSET_EXPORT_NAME} as ${source.importName} } from ${renderTsStringLiteral(source.importPath)};`,
-    );
-  }
   lines.push('');
-  lines.push('export const BUNDLED_FIRST_PARTY_PLUGIN_PROMPT_ASSET_DESCRIPTORS: readonly PluginPromptAssetAdapterDescriptor[] = Object.freeze([');
-  for (const source of sources) {
-    lines.push(`  ...${source.importName},`);
-  }
-  lines.push(']);');
+  lines.push('export const BUNDLED_FIRST_PARTY_PLUGIN_PROMPT_ASSET_DESCRIPTORS: readonly PluginPromptAssetAdapterDescriptor[] = Object.freeze(');
+  lines.push(`${renderJsonLiteral(sources.flatMap((source) => source.descriptors))});`);
   lines.push('');
   return lines.join('\n');
 }

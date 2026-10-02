@@ -239,12 +239,14 @@ test('remote command classification admits generated workspace preparation only 
 test('source-test classification follows the configured resolver contract rather than test filenames', () => {
   for (const args of [
     ['corepack', 'yarn', '-s', 'vitest', 'run', 'arbitrary.test.ts'],
+    ['corepack', 'yarn', '-s', 'vitest', 'run', 'src/plugins/authoring/bundleDaemonRuntime.test.ts'],
     ['vitest', 'run', '--config=vitest.config.ts', 'artifact-named.test.ts'],
   ]) {
     assert.equal(resolveRemoteValidationKind(args, { cwd: 'apps/cli' }), 'source-test');
   }
   for (const args of [
     ['vitest', 'run', '--config', 'vitest.integration.config.ts'],
+    ['corepack', 'yarn', '-s', 'vitest', 'run', '--config=vitest.integration.config.ts', 'src/plugins/authoring/bundleDaemonRuntime.integration.test.ts'],
     ['vitest', 'run', '--config=unknown.config.ts'],
     ['vitest', 'run', '--root=../ui'],
     ['vitest', 'run', '--workspace', 'custom.workspace.ts'],

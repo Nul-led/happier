@@ -26,7 +26,6 @@ import {
 import { followTranscriptSourceWithFiniteActions } from '@happier-dev/agents/runtime/facets/transcriptSource';
 
 import { HappierActionError, HappierClientClosedError, HappierTransportError } from '../errors.js';
-import { createSessionChangeWakeup } from './sessionChangeWakeup.js';
 import type { ActionExecute } from '../types.js';
 import type { HappierSessionController, HappierSessionLiveOptions, HappierSessionSnapshot } from './types.js';
 
@@ -211,9 +210,9 @@ export async function createSessionController(params: LiveParams): Promise<Happi
     assertCurrent(captured);
     return opened;
   };
-  const openedFollow = async (cursor: string, leaseId: string, captured: AbortSignal) => {
+  const openedFollow = async (cursor: string, leaseId: string, captured: AbortSignal, waitForChanges = false) => {
     const value = await params.execute('transcript.follow', { sessionId: params.sessionId, cursor, leaseId,
-      projection: 'openedMessagesV1', agentStateVersion, sharedMetadataVersion: metadataVersion }, { signal: captured });
+      projection: 'openedMessagesV1', agentStateVersion, sharedMetadataVersion: metadataVersion, waitForChanges }, { signal: captured });
     assertCurrent(captured);
     const parsedResult = TranscriptOpenedFollowOutputV1Schema.safeParse(value);
     if (!parsedResult.success) throw new HappierTransportError('The daemon did not return opened Session rows.', { code: 'opened_messages_projection_unavailable' });
@@ -310,7 +309,7 @@ export async function createSessionController(params: LiveParams): Promise<Happi
     assertCurrent();
     // Capture invalidations before reading state so an activity/access change
     // during bootstrap is included in subsequent change-feed reconciliation.
-    changesCursor = CurrentCursorResponseSchema.parse(await params.read('/v2/cursor', signal)).cursor;
+    if (params.options?.transport !== 'action') changesCursor = CurrentCursorResponseSchema.parse(await params.read('/v2/cursor', signal)).cursor;
     assertCurrent();
     const initial = readSnapshot(await params.read(sessionPath, signal), params.sessionId);
     assertCurrent();
@@ -389,51 +388,51 @@ export async function createSessionController(params: LiveParams): Promise<Happi
           destroy: async () => { child.abort(); await viewer.transport.destroy(); },
         };
       }
-      const viewer = createHappierSocket({ endpoint: params.endpoint, token: params.token,
-        clientType: 'session-scoped', sessionId: params.sessionId, clientPurpose: 'sdk-live',
-        authExtras: buildAccountStoredContentCompatibilitySocketAuthV1(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION) });
-      const changesWakeup = createSessionChangeWakeup(viewer.socket, params.sessionId, captured);
       let runner: Promise<void> | undefined;
-      let needsRead = true;
+      const connectedListeners = new Set<() => void>();
+      let connected = false;
       return {
-        ...viewer.transport,
+        isConnected: () => connected && !captured.aborted,
+        onConnected: (listener) => { connectedListeners.add(listener); return () => { connectedListeners.delete(listener); }; },
+        onDisconnected: () => () => {},
+        onError: () => () => {},
         connect: async () => {
-          // Subscribe and connect before draining: a change during bootstrap
-          // remains pending until the finite cursor owner reaches its tail.
-          await viewer.transport.connect();
-          const changes = await beforeConnect();
-          await repairOpenedMessages(changes.targets, captured);
-          changesCursor = changes.cursor;
+          if (!firstConnect) {
+            reset();
+            await updateSnapshot(readSnapshot(await params.read(sessionPath, captured), params.sessionId), captured);
+          }
+          firstConnect = false;
           assertCurrent(captured);
           const leaseId = crypto.randomUUID();
           runner = followTranscriptSourceWithFiniteActions<SessionMessageV1>({ initialCursor: String(lastSeq), leaseId,
             stopWhenInactive: false,
             follow: async ({ cursor }) => {
-              if (!needsRead) return { items: [], nextCursor: cursor, truncated: false };
-              const page = await openedFollow(cursor, leaseId, captured);
+              const page = await openedFollow(cursor, leaseId, captured, true);
+              if (page.changes?.some((change) => change.kind === 'reset')) {
+                reset();
+                throw new HappierTransportError('The Session observation reconnected; reload authoritative history.', { code: 'session_cursor_reset' });
+              }
+              const targets = page.changes?.flatMap((change) => change.kind === 'revision' ? [{ messageId: change.messageId, seq: change.seq }] : []) ?? [];
+              await repairOpenedMessages(targets, captured);
+              if (page.changes?.some((change) => change.kind === 'session')) {
+                await updateSnapshot(readSnapshot(await params.read(sessionPath, captured), params.sessionId), captured);
+              }
               applyRows(await openRows(page.items, captured), false);
-              needsRead = page.truncated;
               return page;
             }, release: async () => params.release(leaseId),
             isSessionActive: async () => {
               return facts.active;
-            }, waitForNextPoll: async () => {
-              await changesWakeup.wait();
-              const changes = await readChanges(captured);
-              await updateSnapshot(readSnapshot(await params.read(sessionPath, captured), params.sessionId), captured);
-              await repairOpenedMessages(changes.targets, captured);
-              changesCursor = changes.cursor;
-              if (changes.reset) throw new HappierTransportError('The Session history cursor was reset.', { code: 'session_cursor_reset' });
-              needsRead = true;
-            },
+            }, waitForNextPoll: async () => {},
             shouldContinue: () => !captured.aborted,
           }).then(() => undefined).catch((error: unknown) => {
             if (captured.aborted) return;
             supervisor?.reportProbeResult?.(probeFailure(error), scope);
           });
+          connected = true;
+          for (const listener of connectedListeners) listener();
         },
-        disconnect: async (options) => { child.abort(); await viewer.transport.disconnect(options); },
-        destroy: async () => { child.abort(); changesWakeup.dispose(); await viewer.transport.destroy(); await runner; },
+        disconnect: async () => { connected = false; child.abort(); },
+        destroy: async () => { connected = false; child.abort(); await runner; },
       };
     };
     supervisor = createManagedConnectionSupervisor({ ...DEFAULT_MANAGED_CONNECTION_POLICY, createTransport,

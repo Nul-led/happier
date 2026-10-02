@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { isPluginError, PluginError, type JsonValue, type PluginInvocationContext } from '@happier-dev/plugin-sdk';
 import { isPluginActionApprovalRequestCreated } from '@happier-dev/plugin-sdk/actions';
 import type { PluginActionInputById, PluginActionResultById } from '@happier-dev/plugin-sdk/actions';
@@ -41,6 +42,7 @@ import {
 import {
   classifyGithubResponseFailure,
   isGithubInaccessibleResourceFailure,
+  type GithubResponseFailureV1,
 } from './githubResponseFailure.js';
 import {
   GITHUB_API_ORIGIN,
@@ -70,6 +72,8 @@ import {
 import { GithubObservationRequestCoalescer } from './githubRequestCoalescer.js';
 import { requireGithubAccountStorage } from '../requiredAccountStorage.js';
 import { classifyGithubAutomationAdmissionTelemetry } from './githubAutomationAdmissionAccounting.js';
+import { githubChecksEventMatches, githubChecksSourceInstanceId, isGithubChecksEvent, parseGithubChecksSource } from './githubChecksSource.js';
+import { readGithubPullRequestChecks } from '../triage/checks.js';
 
 const REPOSITORY_EVENTS_ENDPOINT_KIND = 'repositoryEvents' as const;
 const REPOSITORY_EVENTS_PAGE_SIZE = 100;
@@ -116,6 +120,7 @@ type GithubAutomationObservedSourceV1 = Readonly<{
   definition: GithubCheckpointedPullSourceDefinitionV1;
   credentialRef: ConnectedAccountRef;
   repository: GithubRepositorySourceConfigV1;
+  checks?: NonNullable<GithubAutomationRepositoryEventSourceConfigV1['checks']>;
   daemonMaterializationRef: string;
 }>;
 
@@ -385,6 +390,7 @@ function parseGithubAutomationRepositoryEventSourceConfig(
       v: 1,
       credentialRef: value.credentialRef,
       repository: parseGithubRepositorySourceConfig(value.repository),
+      ...(value.checks === undefined ? {} : { checks: parseGithubChecksSource(value.checks) }),
     });
   } catch {
     throw new GithubRepositoryEventsSourceContractError('GitHub Automation repository source configuration is incompatible');
@@ -399,13 +405,21 @@ function parseObservedSource(
     throw new GithubRepositoryEventsSourceContractError('GitHub Automation source contract version is incompatible');
   }
   const sourceConfig = parseGithubAutomationRepositoryEventSourceConfig(definition.sourceConfig);
-  if (definition.sourceInstanceId !== `github:repository:${sourceConfig.repository.repositoryId}`) {
+  const checksEvent = isGithubChecksEvent(definition.eventRef.localId);
+  if (checksEvent !== (sourceConfig.checks !== undefined)) {
+    throw new GithubRepositoryEventsSourceContractError('GitHub checks configuration must match its Event');
+  }
+  const expectedInstance = sourceConfig.checks
+    ? githubChecksSourceInstanceId(sourceConfig.repository.repositoryId, sourceConfig.checks)
+    : `github:repository:${sourceConfig.repository.repositoryId}`;
+  if (definition.sourceInstanceId !== expectedInstance) {
     throw new GithubRepositoryEventsSourceContractError('GitHub Automation source instance does not match its repository');
   }
   return Object.freeze({
     definition,
     credentialRef: sourceConfig.credentialRef,
     repository: sourceConfig.repository,
+    ...(sourceConfig.checks ? { checks: sourceConfig.checks } : {}),
     daemonMaterializationRef: materializationRequestKey(
       definition.observationTransport.watcherMaterializationRef,
     ),
@@ -832,6 +846,9 @@ export async function replaceGithubAutomationEventHistoryGapWithBaseline(input: 
   if (source === null) {
     return Object.freeze({ kind: 'stale' });
   }
+  // Checks sources recover current state, not repository occurrence history.
+  // The required credential-bound recovery Action therefore has no gap to reset.
+  if (source.checks) return Object.freeze({ kind: 'noHistoryGap' });
   const collection = requireGithubAccountStorage(input.context).collection(
     GITHUB_AUTOMATION_EVENT_CHECKPOINT_COLLECTION,
   );
@@ -1252,7 +1269,10 @@ function githubResponseSourceStatus(
   response: GithubApiResponseV1,
   now: number,
 ): SourceFailureStatusV1 | null {
-  const failure = classifyGithubResponseFailure(response, now);
+  return githubFailureSourceStatus(classifyGithubResponseFailure(response, now), now);
+}
+
+function githubFailureSourceStatus(failure: GithubResponseFailureV1, now: number): SourceFailureStatusV1 | null {
   if (failure.class === 'rateLimit') {
     return Object.freeze({
       state: 'backingOff',
@@ -1399,6 +1419,84 @@ async function runObservedSource(input: Readonly<{
   try {
     const row = await collection.get(rowId, { signal: input.context.signal });
     input.context.signal.throwIfAborted();
+    if (input.source.checks) {
+      const source = input.source;
+      const checks = input.source.checks;
+      if (row && (row.rowId !== rowId || !isGithubAutomationEventCheckpointRowV1(row.value)
+        || row.value.payload.sourceInstanceId !== source.definition.sourceInstanceId
+        || row.value.payload.sourceContractVersion !== source.definition.sourceContractVersion)) {
+        throw new GithubRepositoryEventsSourceContractError('GitHub checks checkpoint identity is incompatible');
+      }
+      const client = await createGithubApiClient(input.context, source.credentialRef);
+      let page = 0;
+      const coalescedClient = { ...client, request: async (request: Parameters<typeof client.request>[0]) => {
+        page += 1;
+        return await input.coalescer.run({
+          credentialRef: credentialRequestKey(source.credentialRef), repositoryId: source.repository.repositoryId,
+          endpointKind: 'pullRequestChecks', daemonMaterializationRef: source.daemonMaterializationRef,
+          url: request.url, page, etag: null,
+          body: request.body ? new TextDecoder().decode(request.body) : undefined,
+        }, () => client.request(request)) as GithubApiResponseV1;
+      } };
+      const surface = await readGithubPullRequestChecks({ route: source.repository, headSha: checks.headSha,
+        observation: { pullRequestNumber: checks.pullRequestNumber, selection: checks.selection },
+      }, { client: coalescedClient, now: input.now, signal: input.context.signal });
+      const snapshot = surface.observation;
+      if (!snapshot) throw new GithubRepositoryEventsSourceContractError('GitHub checks observation is unavailable');
+      const observedAtMs = readObserverNow(input.now);
+      const evidenceKey = createHash('sha256').update(JSON.stringify([snapshot, surface.observations])).digest('base64url');
+      const previous = row ? isRecord(row.value.payload) && isRecord(row.value.payload.cursor) ? row.value.payload.cursor : null : null;
+      if (row && (!previous || previous.kind !== 'pullRequestChecks' || previous.v !== 1)) {
+        throw new GithubRepositoryEventsSourceContractError('GitHub checks checkpoint cursor is incompatible');
+      }
+      let lastOccurrence = row && isGithubAutomationEventCheckpointRowV1(row.value) ? row.value.payload.lastContiguousOccurrenceId : null;
+      const changed = previous?.evidenceKey !== evidenceKey;
+      if (row && changed && githubChecksEventMatches(source.definition.eventRef.localId, snapshot)) {
+        const occurrenceId = `${source.definition.sourceInstanceId}:${evidenceKey}`;
+        const admitted = await input.context.services.actions.execute('automation.event.admit', {
+          eventRef: source.definition.eventRef, occurrenceId, occurredAt: observedAtMs, observationReceivedAt: observedAtMs,
+          payload: { repository: { repositoryId: source.repository.repositoryId, nameWithOwner: source.repository.nameWithOwner }, checks: snapshot },
+          definitions: [{ automationId: source.definition.automationId, triggerId: source.definition.triggerId,
+            triggerRevision: source.definition.triggerRevision, sourceSelectorId: source.definition.sourceSelectorId }],
+        }, { signal: input.context.signal });
+        input.context.signal.throwIfAborted();
+        if (isPluginActionApprovalRequestCreated(admitted) || admitted.results.length !== 1) {
+          throw new GithubRepositoryEventsAdmissionError('GitHub checks admission did not settle one definition');
+        }
+        const outcome = admitted.results[0]!;
+        if (!outcome.checkpointSafe) {
+          const projected = projectPluginEventAdmissionSourceStatusV1({ definition: source.definition,
+            result: outcome, observationReceivedAt: observedAtMs, observedDelta: 1 });
+          await reportSourceStatus({ context: input.context, source, state: projected.state,
+            code: projected.code, nextRetryAt: projected.nextRetryAt });
+          return sourceCycleResult(input.sourceKey, projected.nextRetryAt ?? addDelay(observedAtMs, input.retryDelayMs));
+        }
+        lastOccurrence = occurrenceId;
+      }
+      const checkpoint = createGithubAutomationEventCheckpointRowV1({
+        checkpointRowId: rowId, automationId: source.definition.automationId, triggerId: source.definition.triggerId,
+        eventRef: source.definition.eventRef, sourceSelectorId: source.definition.sourceSelectorId,
+        sourceInstanceId: source.definition.sourceInstanceId, sourceContractVersion: source.definition.sourceContractVersion,
+        cursor: { v: 1, kind: 'pullRequestChecks', snapshot, evidenceKey, observedAtMs }, lastContiguousOccurrenceId: lastOccurrence,
+        baseline: row && isGithubAutomationEventCheckpointRowV1(row.value) ? row.value.payload.baseline : { kind: 'currentHead', establishedAt: observedAtMs },
+        lastEvaluatedTriggerRevision: source.definition.triggerRevision,
+        continuity: { v: 1, endpointKind: 'pullRequestChecks', repositoryId: source.repository.repositoryId },
+      });
+      await collection.put(checkpoint, { expectedRevision: row?.revision ?? 'absent', signal: input.context.signal });
+      input.context.signal.throwIfAborted();
+      const failure = surface.checkRunsFailure ?? surface.commitStatusFailure;
+      const status = failure ? githubFailureSourceStatus(failure, observedAtMs)
+        ?? Object.freeze({ state: 'backingOff' as const, code: 'admissionUnavailable' as const, nextRetryAt: null }) : null;
+      await reportSourceStatus({ context: input.context, source,
+        state: snapshot.state === 'superseded' ? 'attention' : status?.state ?? (row ? 'observing' : 'baselined'),
+        code: snapshot.state === 'superseded' ? 'sourceContractIncompatible' : status?.code ?? 'none',
+        nextRetryAt: status?.nextRetryAt ?? null,
+        lastObservedAt: observedAtMs, lastDispositionAt: observedAtMs,
+      });
+      return sourceCycleResult(input.sourceKey, status ? nextEligibleAfterStatus({ status, statusAt: observedAtMs,
+        retryDelayMs: input.retryDelayMs, reconciliationIntervalMs: input.reconciliationIntervalMs,
+      }) : addDelay(observedAtMs, input.defaultPollIntervalMs));
+    }
     if (row !== null) existing = loadCheckpoint({ row, source: input.source });
 
     if (existing?.historyGap === true) {

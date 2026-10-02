@@ -1187,6 +1187,23 @@ describe('createPiRuntimeOperations', () => {
     await runtime.dispose();
   });
 
+  it('gives each fetched usage snapshot a distinct identity after reopening the same Session', async () => {
+    const ids: string[] = [];
+    for (let reopen = 0; reopen < 2; reopen += 1) {
+      const capture: Capture = { specs: [], written: [], sessionStats: { contextUsage: { tokens: 100, contextWindow: 200_000 } } };
+      const runtime = await createRuntime(capture);
+      runtime.watch((event) => { if (event.kind === 'usage-observed') ids.push(event.observationId); });
+      const prompt = sendPrompt(runtime, 'hello');
+      await waitForWrittenCount(capture, 1);
+      await ackLastCommand(capture);
+      await prompt;
+      await emit(capture, { type: 'agent_end', willRetry: false });
+      await vi.waitFor(() => expect(ids).toHaveLength(reopen + 1));
+      await runtime.dispose();
+    }
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+
   it('publishes typed provider acceptance from the exact Pi prompt RPC response before turn evidence', async () => {
     const capture: Capture = { specs: [], written: [] };
     const runtime = await createRuntime(capture);

@@ -54,6 +54,7 @@ import {
     type RunnerManagedServicesExactHandleRequestPortV1,
 } from '@/agent/runtime/session/process/runnerManagedServicesCustody';
 import type { PluginStorePaths } from '@/plugins/store/paths';
+import type { HostProviderCliAttachRequest } from '@/session/attach/providerCliAttach';
 import { resolveAgentContributionQualifiedId } from '@/plugins/projection/registry/agentRoutingIdentity';
 import {
     readCurrentPluginHardRevocationRevision,
@@ -320,6 +321,23 @@ export function createRunnerManagedServiceEndpointProjectionBinding(
             === JSON.stringify(projection)
             ? access
             : null;
+    };
+    const resolveExactEndpointAccess = (identity: Readonly<{
+        pluginId: string;
+        contributionId: string;
+        sessionId: string;
+        sourceCustody: PluginSourceCustodyV1;
+    }>): ProjectionEndpointAccess | null => {
+        const matches = [...endpointAccessByProjectionToken.values()].filter((access) => {
+            const projection = access.projection;
+            return projection.custodyOwner === 'sessionRunner'
+                && projection.pluginId === identity.pluginId
+                && projection.contributionId === identity.contributionId
+                && projection.sessionId === identity.sessionId
+                && pluginSourceCustodyV1Equal(projection.sourceCustody, identity.sourceCustody)
+                && accessMatches(projection) === access;
+        });
+        return matches.length === 1 ? matches[0]! : null;
     };
 
     const unavailableEndpointRead = (): never => fail(
@@ -781,24 +799,8 @@ export function createRunnerManagedServiceEndpointProjectionBinding(
             signal: AbortSignal;
         }>): AgentExternalSessionsManagedEndpointRead | null {
             if (bindInput.signal.aborted) return null;
-            const matches = [...endpointAccessByProjectionToken.values()]
-                .filter((access) => {
-                    const projection = access.projection;
-                    return projection.custodyOwner === 'sessionRunner'
-                        && projection.pluginId
-                            === bindInput.identity.pluginId
-                        && projection.contributionId
-                            === bindInput.identity.contributionId
-                        && projection.sessionId
-                            === bindInput.identity.sessionId
-                        && pluginSourceCustodyV1Equal(
-                            projection.sourceCustody,
-                            bindInput.identity.sourceCustody,
-                        )
-                        && accessMatches(projection) === access;
-                });
-            if (matches.length !== 1) return null;
-            const access = matches[0]!;
+            const access = resolveExactEndpointAccess(bindInput.identity);
+            if (!access) return null;
             const projection = access.projection;
             const requestManagedService =
                 options.resolveProjectedManagedServiceRequest?.(
@@ -828,6 +830,53 @@ export function createRunnerManagedServiceEndpointProjectionBinding(
                     return unavailableEndpointRead();
                 }
                 return response;
+            });
+        },
+        async resolveLocalClientAccess(readInput: Readonly<{
+            identity: Readonly<{
+                pluginId: string;
+                contributionId: string;
+                sessionId: string;
+                sourceCustody: PluginSourceCustodyV1;
+            }>;
+            targetBaseUrl: string;
+            environmentKey: string;
+            signal?: AbortSignal;
+        }>) {
+            if (readInput.signal?.aborted) return null;
+            const access = resolveExactEndpointAccess(readInput.identity);
+            if (!access || !options.materializeProjectedManagedServiceClientEnvironment) return null;
+            const projection = access.projection;
+            if (new URL(projection.endpoint.baseUrl).toString() !== new URL(readInput.targetBaseUrl).toString()) return null;
+            const signal = readInput.signal
+                ? AbortSignal.any([readInput.signal, access.lifetime.signal])
+                : access.lifetime.signal;
+            const request = options.resolveProjectedManagedServiceRequest?.(projection);
+            if (!request) return null;
+            const childEnvironment = await options.materializeProjectedManagedServiceClientEnvironment(
+                projection, readInput.environmentKey, signal,
+            );
+            const isCurrent = () => !signal.aborted
+                && accessMatches(projection) === access
+                && options.resolveProjectedManagedServiceRequest?.(projection) != null;
+            if (!childEnvironment || !isCurrent()) return null;
+            return Object.freeze({
+                baseUrl: projection.endpoint.baseUrl,
+                childEnvironment,
+                isCurrent,
+                async request(input: Readonly<{ pathAndQuery: string; signal: AbortSignal }>) {
+                    if (!isCurrent()) return unavailableEndpointRead();
+                    const response = await request({
+                        method: 'GET', pathAndQuery: input.pathAndQuery,
+                        signal: AbortSignal.any([signal, input.signal]),
+                    });
+                    if (!isCurrent()) {
+                        await response.body?.cancel().catch(() => undefined);
+                        return unavailableEndpointRead();
+                    }
+                    await response.body?.cancel().catch(() => undefined);
+                    return Object.freeze({ ok: response.ok });
+                },
             });
         },
         endpointReadPort,
@@ -924,6 +973,7 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
         port: RunnerManagedServicesExactHandleRequestPortV1,
     ): void;
     endpointReadPort: RunnerManagedServiceEndpointReadPort;
+    resolveProviderCliAttachManagedServiceAccess: NonNullable<HostProviderCliAttachRequest['resolveManagedServiceAccess']>;
     clearEndpointAuth(): void;
 }>> {
     const attested = await verifyRunnerAgentBindingAgainstGeneration({
@@ -1064,7 +1114,7 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
                 return managedServicesOwner
                     .bindSessionManagedServiceRequest({
                         sessionId: projection.sessionId,
-                        occurrenceId: projection.projectionToken,
+                        instanceId: projection.instanceId,
                         pluginId: projection.pluginId,
                         contributionQualifiedId:
                             projection.contributionId,
@@ -1095,7 +1145,7 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
                 return await managedServicesOwner
                     .materializeSessionManagedServiceClientEnvironment({
                         sessionId: projection.sessionId,
-                        occurrenceId: projection.projectionToken,
+                        instanceId: projection.instanceId,
                         pluginId: projection.pluginId,
                         contributionQualifiedId:
                             projection.contributionId,
@@ -1791,6 +1841,21 @@ export async function createRunnerManagedServiceInvocationOwner(input: Readonly<
         },
         endpointReadPort:
             endpointProjectionBinding.endpointReadPort,
+        async resolveProviderCliAttachManagedServiceAccess(readInput) {
+            if (readInput.sessionId !== input.authority.sessionId) return null;
+            return await endpointProjectionBinding.resolveLocalClientAccess({
+                ...readInput,
+                identity: {
+                    pluginId: input.retainedAgent.pluginId,
+                    contributionId: resolveAgentContributionQualifiedId({
+                        pluginId: input.retainedAgent.pluginId,
+                        localId: input.retainedAgent.localAgentId,
+                    }),
+                    sessionId: input.authority.sessionId,
+                    sourceCustody: input.retainedAgent.sourceCustody,
+                },
+            });
+        },
         clearEndpointAuth() {
             agentChildLaunchEnvironmentTransformer = null;
             exactHandleRequestPort = null;

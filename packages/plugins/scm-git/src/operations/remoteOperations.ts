@@ -97,6 +97,12 @@ export async function finalizeGitRemoteMutation(input: { context: ScmBackendCont
         const response = failure(errorCode, error);
         if (input.kind === 'pull' && errorCode === SCM_OPERATION_ERROR_CODES.CONFLICTING_WORKTREE) return { ...response, stdout: command.stdout, stderr: command.stderr, outcome: { ...common, kind: 'needs_input', errorCode, nextActions: [{ kind: 'choose_dirty_policy' }] } };
         const outcome = normalizeScmOperationOutcome(response);
+        if (input.kind === 'push' && errorCode === SCM_OPERATION_ERROR_CODES.REMOTE_NON_FAST_FORWARD) {
+            return { ...response, stdout: command.stdout, stderr: command.stderr, outcome: {
+                ...outcome, ...common, repositoryState: repositoryState!, nextActions: [{ kind: 'refresh' }, { kind: 'choose_reconcile' }],
+                ...(remoteRefreshFailed ? { message: `${error}\nRemote refresh failed; refresh before reconciling.` } : {}),
+            } };
+        }
         return { ...response, stdout: command.stdout, stderr: command.stderr, outcome: { ...outcome, ...common, repositoryState: repositoryState!, ...(remoteRefreshFailed ? { message: `${error}\nRemote refresh failed; refresh before reconciling.` } : {}) } };
     }
     if (!repositoryState) {

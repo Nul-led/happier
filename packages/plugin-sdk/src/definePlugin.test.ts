@@ -113,6 +113,29 @@ import { createPluginRegistrationScope } from './host/registration/index.js';
 import type { VoiceProvidersRegistrationApi } from './voice/projections.js';
 import type { SpeechProviderRuntime, VoiceSpeechSynthesizeRequest } from './voice/speech.js';
 
+describe('declarative plugin workflows', () => {
+    it('projects manifest-declared workflow ids and refuses an undeclared runtime registration', async () => {
+        const definition = { version: 1 as const, inputs: [], defaults: {}, blocks: [{ kind: 'wait' as const, id: 'review',
+            document: { text: 'Review the result.', references: [], attachments: [] }, result: { kind: 'text' as const },
+        }] };
+        const plugin = definePlugin({ id: 'com.acme.workflows', version: '1.0.0', displayName: 'Workflows',
+            workflows: { review: { title: 'Review the result', definition } },
+        });
+        const manifest = PluginManifestV2Schema.parse(plugin.manifest);
+        expect(manifest.contributes).toMatchObject({ workflows: [{ id: 'review', title: 'Review the result', definition }] });
+        expect(derivePluginDaemonContributionRegistrationRights(manifest)).toEqual([]);
+        const scope = createPluginRegistrationScope({ pluginId: manifest.id, target: { realm: 'daemon' },
+            rights: derivePluginDaemonContributionRegistrationRights(manifest),
+        });
+        await plugin.activate(scope.api);
+        expect(() => scope.api.actions.register('review', async () => ({})))
+            .toThrow(/undeclared contribution 'actions\/review'/u);
+        const parsed = parsePluginManifest(plugin.manifest);
+        expect(parsed.ok).toBe(true);
+        if (parsed.ok) expect(parsed.manifest.contributes).toMatchObject({ workflows: manifest.contributes.workflows });
+    });
+});
+
 describe('declarative plugin roles', () => {
     it('projects author roles into the admitted manifest without runtime registration rights', () => {
         const role = {
@@ -4443,5 +4466,27 @@ void 0; /* @sdk-negative-type-case-end */
 
         expect(() => defineContributionPoint([v1, v1])).toThrow(/Duplicate contribution protocol identity/u);
         expect(() => defineContributionPoint([v1, v2, v3, v4, v5])).toThrow(/at most four protocol epochs/u);
+    });
+});
+describe('manifest capture source activation', () => {
+    it('registers the declared source through public activation and offers frames through the retained runtime', async () => {
+        const plugin = definePlugin({ id: 'example.capture', version: '0.1.0', captureSources: {
+            picture: { declaration: { displayName: 'Picture', streamFamily: 'screen', supportedCodecs: ['image.mjpeg'] },
+                runtime: { async start(input) {
+                    input.offerFrame({ v: 1, streamId: input.streamId, sequence: 1, timestampMs: 1,
+                        payloadKind: 'image_keyframe', payloadEncoding: 'binary_base64', payloadBase64: 'AQID', payloadSizeBytes: 3 });
+                    return { stop() {} };
+                } },
+            },
+        } });
+        const testkit = await createPluginTestkit({ manifest: plugin.manifest, module: plugin });
+        const runtime = testkit.registration('captureSources', 'picture');
+        if (!runtime) throw new Error('declared capture source not activated');
+        const frames: unknown[] = [];
+        const capture = await runtime.start({ streamId: 'viewing-1', signal: new AbortController().signal,
+            offerFrame: frame => { frames.push(frame); return { ok: true }; }, emitReceipt() {} });
+        expect(frames).toMatchObject([{ streamId: 'viewing-1', sequence: 1 }]);
+        await capture.stop();
+        await testkit.dispose();
     });
 });

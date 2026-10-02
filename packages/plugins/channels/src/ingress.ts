@@ -26,7 +26,7 @@ import {
 } from '@happier-dev/plugin-sdk/actions';
 import {
   AutomationConversationResultDeliveryV1Schema,
-  type AutomationConversationAdmitInputV1,
+  AutomationConversationAdmitInputV1Schema,
   type AutomationConversationAdmitResultV1,
   type AutomationConversationResultDeliveryV1,
 } from '@happier-dev/plugin-sdk/automations';
@@ -44,6 +44,8 @@ import {
   type ConversationBindingTargetV1,
   ConversationNormalizedIngressV1Schema,
   ConversationPollInputV1Schema,
+  ConversationScopedPullRequestTriggerV1Schema,
+  type ConversationScopedPullRequestTriggerV1,
   ConversationPollResultV1Schema,
   MAX_CONVERSATION_OBSERVATION_AGE_MS,
   type ConversationResolvedEndpointV1,
@@ -279,6 +281,7 @@ type FrozenAutomationTarget = Readonly<{
   automationId: string;
   occurrenceKey: string;
   resultDelivery: AutomationConversationResultDeliveryV1;
+  scopedTrigger?: ConversationScopedPullRequestTriggerV1;
 }>;
 
 /**
@@ -785,16 +788,20 @@ function readFrozenIngressTarget(value: JsonValue | undefined): FrozenIngressTar
   const automationId = own(value, 'automationId');
   const occurrenceKey = own(value, 'occurrenceKey');
   const resultDelivery = AutomationConversationResultDeliveryV1Schema.safeParse(own(value, 'resultDelivery'));
+  const rawScopedTrigger = own(value, 'scopedTrigger');
+  const scopedTrigger = rawScopedTrigger === undefined ? undefined : ConversationScopedPullRequestTriggerV1Schema.safeParse(rawScopedTrigger);
   if (
     typeof automationId !== 'string'
     || typeof occurrenceKey !== 'string'
     || !resultDelivery.success
+    || (scopedTrigger !== undefined && !scopedTrigger.success)
   ) return undefined;
   return {
     kind,
     automationId,
     occurrenceKey,
     resultDelivery: resultDelivery.data,
+    ...(scopedTrigger?.success ? { scopedTrigger: scopedTrigger.data } : {}),
   };
 }
 
@@ -1264,6 +1271,7 @@ function ingressShell(input: ConversationNormalizedIngressV1): ConversationAuthe
     };
   return {
     v: observation.v,
+    ...(observation.scopedTriggerKind === undefined ? {} : { scopedTriggerKind: observation.scopedTriggerKind }),
     occurrenceId: observation.occurrenceId,
     occurredAt: observation.occurredAt,
     transport: observation.transport,
@@ -1409,6 +1417,23 @@ function ingressAdmissionDecision(input: Readonly<{
   const { binding, ingress } = input;
   const shell = ingressShell(ingress);
   const fullText = fullTextObservation(ingress);
+  const scopedTrigger = binding.payload.target.kind === 'automation' ? binding.payload.target.scopedTrigger : undefined;
+  if (scopedTrigger !== undefined) {
+    // Scoped SCM observations are data, not conversation commands. The
+    // Automation admission owner decides repository permission from the
+    // provider's measured evidence, including unknown and denied actors.
+    const reason = shell.scopedTriggerKind !== scopedTrigger.triggerKind
+      ? 'endpointMismatch' as const
+      : shell.actor.principalId === null ? 'actorUnattributable' as const
+      : ingress.kind === 'routableNonAdmission' ? ingress.reason : undefined;
+    return {
+      debounceMs: 0,
+      terminalOutcome: reason === undefined ? undefined : {
+        disposition: 'rejected', nonAdmission: { reason, senderFeedbackEligible: false },
+      },
+      newSession: null, approval: null, userActionAnswer: null,
+    };
+  }
   const actorAllowed = shell.actor.principalId !== null
     && binding.payload.allowedPrincipalIds.includes(shell.actor.principalId);
   const newSessionPolicy = binding.payload.target.kind === 'session'
@@ -1883,6 +1908,7 @@ function frozenTargetForBinding(input: Readonly<{
     kind: 'automation',
     automationId: binding.payload.target.automationId,
     occurrenceKey: ingressShell(input.ingress).occurrenceId,
+    ...(binding.payload.target.scopedTrigger === undefined ? {} : { scopedTrigger: binding.payload.target.scopedTrigger }),
     resultDelivery: binding.payload.target.policy.resultDelivery === 'none'
       ? { kind: 'none' }
       : {
@@ -4475,7 +4501,10 @@ async function dispatchIngressObligation(input: Readonly<{
   }
 
   const target = obligation.value.payload.target;
-  const admissionInput: AutomationConversationAdmitInputV1 = {
+  if (target.scopedTrigger !== undefined && fullText.actor.principalId === null) {
+    throw pluginError('channels_scoped_trigger_actor_unattributable', 'A scoped trigger admission requires an attributed provider actor.');
+  }
+  const admissionInput = AutomationConversationAdmitInputV1Schema.parse({
     automationId: target.automationId,
     bindingId: input.bindingId,
     occurrenceId: target.occurrenceKey,
@@ -4489,7 +4518,19 @@ async function dispatchIngressObligation(input: Readonly<{
     },
     text: fullText.message.text,
     resultDelivery: target.resultDelivery,
-  };
+    ...(target.scopedTrigger === undefined ? {} : {
+      hostEvidence: {
+        bindingId: input.bindingId,
+        sessionId: target.scopedTrigger.sessionId,
+        triggerId: target.scopedTrigger.triggerId,
+        triggerRevision: target.scopedTrigger.triggerRevision,
+        triggerKind: target.scopedTrigger.triggerKind,
+        pullRequest: target.scopedTrigger.pullRequest,
+        observationActorPrincipalId: fullText.actor.principalId!,
+        actor: { principalId: fullText.actor.principalId!, repositoryWriteAccess: fullText.actor.repositoryWriteAccess ?? null },
+      },
+    }),
+  });
   const admitted = await input.context.services.actions.execute(
     'automation.conversation.admit',
     admissionInput,
@@ -4523,7 +4564,7 @@ async function dispatchIngressObligation(input: Readonly<{
     context: input.context,
     authority,
     obligation,
-    disposition: 'admitted',
+    disposition: admission.kind === 'refused' ? 'rejected' : 'admitted',
   });
   return 'checkpointSafe';
 }
@@ -7137,6 +7178,7 @@ function createCurrentCheckpointedPollInput(input: Readonly<{
   connection: Readonly<{ row: StateRow; value: ChannelConnectionRecord }>;
   checkpoint: Readonly<{ row: StateRow; value: CheckpointRecord }> | undefined;
   waitMs: number;
+  bindings?: ReturnType<typeof ConversationPollInputV1Schema.parse>['bindings'];
 }>): ReturnType<typeof ConversationPollInputV1Schema.parse> {
   try {
     return ConversationPollInputV1Schema.parse({
@@ -7149,6 +7191,7 @@ function createCurrentCheckpointedPollInput(input: Readonly<{
       checkpoint: input.checkpoint?.value.payload.opaqueToken ?? null,
       limit: MAX_CHECKPOINTED_POLL_COVERAGE_OBSERVATIONS,
       waitMs: input.waitMs,
+      ...(input.bindings === undefined ? {} : { bindings: input.bindings }),
     });
   } catch (cause) {
     throw new PluginError({
@@ -7344,9 +7387,13 @@ export async function runConversationCheckpointedPollForInvocation(input: Readon
         true,
       );
     }
+    const scopedBindings = (await readBindingsForConnection({ context, connectionId: input.connectionId })).flatMap(({ value: binding }) => {
+      if (!binding.payload.enabled || binding.payload.deletionState !== 'none' || binding.payload.target.kind !== 'automation' || binding.payload.target.scopedTrigger === undefined) return [];
+      return [{ endpoint: binding.payload.endpoint, scopedTriggerKind: binding.payload.target.scopedTrigger.triggerKind }];
+    });
     execution = await context.services.actions.executeAdmittedTargetedOperationWithExecutionOrigin(
       poll,
-      createCurrentCheckpointedPollInput({ connection, checkpoint, waitMs }),
+      createCurrentCheckpointedPollInput({ connection, checkpoint, waitMs, bindings: scopedBindings }),
       {
         signal: context.signal,
         expectedExecutionOrigin: connection.value.payload.transportOrigin,

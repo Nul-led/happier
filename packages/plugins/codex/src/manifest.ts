@@ -4,6 +4,7 @@ import { OPENAI_CODEX_OAUTH_PROFILE } from './connectedAccounts/openAiCodexProfi
 import type { HookHandler } from '@happier-dev/plugin-sdk/hooks';
 
 import { AGENT_DEFINITION, AGENT_STATE_SHARING_DESCRIPTOR } from './agent/definition.js';
+import { CODEX_ACP_MANAGED_DEPENDENCY } from './agent/installables/definition.js';
 import {
   codexCliSessionCommandConfig,
   resolveCodexCliSessionExtraOptions,
@@ -445,9 +446,10 @@ export const CODEX_PLUGIN = definePlugin({
   },
   managedDependencies: {
     'codex-acp': {
-      title: 'Codex ACP adapter',
-      sources: [{ kind: 'vendorRecipe', recipeId: 'codex-acp' }],
-      executable: 'codex-acp',
+      title: CODEX_ACP_MANAGED_DEPENDENCY.title,
+      description: CODEX_ACP_MANAGED_DEPENDENCY.description,
+      sources: CODEX_ACP_MANAGED_DEPENDENCY.sources,
+      executable: CODEX_ACP_MANAGED_DEPENDENCY.executable,
     },
   },
   hooks: {

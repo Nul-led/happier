@@ -72,15 +72,27 @@ describe('author package boundary', () => {
       const isTypeOnlyEnvironmentContract = /environment/u.test(filePath);
       const isCanonicalIconContract = /presentation[\\/]content[\\/]Icon\.ts$/u.test(filePath);
       const isCanonicalRenderableImageContract = /presentation[\\/]content[\\/]renderableImage\.ts$/u.test(filePath);
+      const isCanonicalLiveStreamReference = /presentation[\\/]media[\\/]liveStreamReference\.ts$/u.test(filePath);
       return importedSpecifiers(source)
         .filter((specifier) => !allowedPresentationSpecifier(specifier))
         .filter((specifier) => !(isTypeOnlyEnvironmentContract && specifier === '@happier-dev/plugin-sdk/ui'))
         .filter((specifier) => !(isCanonicalIconContract && specifier === '@happier-dev/plugin-sdk/ui'))
         .filter((specifier) => !(isCanonicalRenderableImageContract && specifier === '@happier-dev/plugin-sdk/ui'))
+        .filter((specifier) => !(isCanonicalLiveStreamReference && specifier === '@happier-dev/plugin-sdk/ui'))
         .map((specifier) => `${relative(sourceRoot, filePath)} → ${specifier}`);
     });
 
     expect(offenders).toEqual([]);
+
+    // A reference may name the SDK contract, but must never bring its client transport into
+    // shared presentation. This leaf is a type-only re-export rather than another ref schema.
+    const liveStreamReference = readFileSync(join(presentationRoot, 'media/liveStreamReference.ts'), 'utf8');
+    const liveStreamSdkStatements = [...liveStreamReference.matchAll(/(?:import|export)(\s+type)?\s[^'"]*?from\s*['"](@happier-dev\/plugin-sdk\/ui)['"]/gu)];
+    expect(liveStreamSdkStatements.length).toBeGreaterThan(0);
+    expect(liveStreamSdkStatements.length).toBe(importedSpecifiers(liveStreamReference).length);
+    for (const [, typeOnly] of liveStreamSdkStatements) {
+      expect(typeOnly ? 'type-only' : 'runtime SDK dependency').toBe('type-only');
+    }
 
     // The environment seam may name the SDK's theme contract, but only as a
     // type: importing a value would drag host transport into core's dependency

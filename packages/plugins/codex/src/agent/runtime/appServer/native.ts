@@ -325,6 +325,9 @@ function createSanitizedNativeRuntimeError(message: string, error: unknown): Err
   ) {
     Object.assign(sanitized, { happierNativeResumeIdentityMismatch: true });
   }
+  if (error instanceof Error && 'code' in error && error.code === 'AGENT_RESUME_PROVIDER_STATE_MISSING') {
+    Object.assign(sanitized, { code: 'AGENT_RESUME_PROVIDER_STATE_MISSING' as const });
+  }
   return sanitized;
 }
 
@@ -949,15 +952,18 @@ export async function openCodexNativeAppServerSession(
     ...sessionRuntime,
     ...(sharedAppServer
       ? {
-          async prepareProviderCliAttach() {
+          async prepareTerminalPresentation() {
             const liveProviderSessionId = await runtime.prepareProviderCliAttach();
             return {
-              path: request.cwd,
-              runtimeDescriptorV1: buildCodexAgentRuntimeDescriptorV1({
-                backendMode: 'appServer',
-                providerSessionId: liveProviderSessionId,
-                appServerEndpoint: sharedAppServer.endpoint,
-              }),
+              kind: 'provider_attach' as const,
+              metadata: {
+                path: request.cwd,
+                runtimeDescriptorV1: buildCodexAgentRuntimeDescriptorV1({
+                  backendMode: 'appServer',
+                  providerSessionId: liveProviderSessionId,
+                  appServerEndpoint: sharedAppServer.endpoint,
+                }),
+              },
             };
           },
         }

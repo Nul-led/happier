@@ -408,6 +408,7 @@ describe('createClaudeUnifiedTerminalTurnOperations', () => {
     let sequence = 0;
     return {
       service: {
+        followSource: vi.fn(async () => ({ dispose: vi.fn(async () => undefined) })),
         append: vi.fn(async () => undefined),
         defineSource: vi.fn(async (definition: Readonly<{ id: string }>) => ({
           id: definition.id,
@@ -498,10 +499,12 @@ describe('createClaudeUnifiedTerminalTurnOperations', () => {
       expect(observations).toEqual([
         expect.objectContaining({
           source: 'claude-assistant-usage',
+          nativeRecordId: 'assistant-provider-usage',
           cost: null,
         }),
         expect.objectContaining({
           source: 'claude-sdk-result',
+          nativeRecordId: 'result-provider-usage',
           cost: null,
         }),
       ]);

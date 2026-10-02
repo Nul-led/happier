@@ -67,6 +67,7 @@ export function attachOpenCodeProviderEventSubscriptionIfNeeded(params: Readonly
           return work;
         }
         void work;
+        return undefined;
       },
       onUnavailable: notifySubscriptionUnavailable,
     }).then(

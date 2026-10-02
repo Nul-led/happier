@@ -158,6 +158,7 @@ export async function gitWorktreeCreate(input: {
             displayName,
             baseRef: resolvedBaseRef,
             branchMode,
+            assertFilesystemPathAuthorized: input.context.assertFilesystemPathAuthorized,
         });
         return {
             success: true,
@@ -171,7 +172,9 @@ export async function gitWorktreeCreate(input: {
         return {
             success: false,
             error: message || 'Failed to create worktree',
-            errorCode: mapGitErrorCode(message),
+            errorCode: error instanceof Error && 'errorCode' in error && error.errorCode === SCM_OPERATION_ERROR_CODES.INVALID_PATH
+                ? SCM_OPERATION_ERROR_CODES.INVALID_PATH
+                : mapGitErrorCode(message),
         };
     }
 }

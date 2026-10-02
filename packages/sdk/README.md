@@ -167,9 +167,8 @@ the retry-safe `localId` and `timeoutSeconds`. It does not start a second wait.
 
 ### Development-only live Sessions
 
-Live controllers require an Account-server endpoint. Daemon-local finite Actions
-remain supported; preserving its existing `followTranscript()` contract during
-the push conversion is unresolved in development source (see below). Bind an
+Live controllers require an Account-server endpoint. Daemon-local endpoints also
+support the `followTranscript()` iterator through waiting Actions. Bind an
 existing Session through a server client, open its controller, and subscribe to snapshots:
 
 ```ts
@@ -206,18 +205,21 @@ the daemon's opened `transcript.follow` projection. On that Action transport,
 daemon-opened content crosses the Account server in plaintext. The socket
 transport keeps E2EE content sealed end to end. A content-opening failure never
 silently switches transports. You can request `transport: 'socket'` or `'action'`
-explicitly, and `history.afterSeq` sets the initial history boundary. Both open a viewer
-socket: the Action adapter treats pushed ciphertext as an invalidation, never as content.
-There are no idle interval reads; reconnect uses the changes feed and message repair.
+explicitly, and `history.afterSeq` sets the initial history boundary. The Action
+adapter uses `transcript.follow` with `waitForChanges: true`: the daemon observes
+Home Session notifications and returns rows and revision hints. It opens no SDK
+viewer socket and makes no idle interval reads. Socket reconnect uses the changes
+feed; Action observation reconnect reloads authoritative history.
 
 `respondToPermission()`, `answerUserAction()`, `abort()`, `loadOlder()` and `send()`
 accept per-call cancellation. The Action adapter has no abort Action; rich permission
 responses use the same native decision vocabulary through the existing permission
 Action. Answering agent questions uses Send authority, not Approve. The existing `followTranscript()` iterator remains
-the compact semantic Action stream, not a rendering model. It also wakes on viewer pushes
-and has no polling-interval option. The current development push conversion uses an Account
-Home viewer endpoint. Preserving daemon-local iterator support is an unresolved integration
-boundary; finite Actions do not replace that existing iterator contract.
+the compact semantic Action stream, not a rendering model. It uses the same waiting
+Action at Home and daemon-local endpoints, with no polling-interval option. Caller
+cancellation releases the daemon's wait and notification subscription.
+The iterator checks canonical Session status before waiting and drains inactive
+Sessions with finite reads; live controllers keep observing reactivation.
 
 Closing one controller leaves other controllers running. Closing the root client
 also closes its controllers, including ones created through machine-bound views.

@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createServer, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import type { AgentSessionRuntimeEvent } from '@happier-dev/plugin-sdk/agents/runtime';
 import type {
   ManagedServiceHandle,
   ManagedServiceRequest,
@@ -13,6 +16,9 @@ import {
 } from './openCodeServerClient.js';
 import type { OpenCodeServerDialect } from './dialect.js';
 import { createOpenCodeServerTransport } from './transport.js';
+import { createOpenCodeServerRuntime } from './runtime.js';
+import { createOpenCodeSessionRuntime } from './sessionRuntime.js';
+import { createContextFixture } from './assembly.managedServices.testkit.js';
 
 const HEALTHY_MANAGED_SERVICE_SNAPSHOT = Object.freeze({
   id: 'opencode-server',
@@ -24,6 +30,161 @@ const HEALTHY_MANAGED_SERVICE_SNAPSHOT = Object.freeze({
   diagnostics: Object.freeze([]),
   diagnosticsTruncated: false,
 }) satisfies ManagedServiceSnapshot;
+
+describe('native V2 terminal transcript through the server runtime', () => {
+  it('projects settled native turns once and diagnoses failed history reads without stopping the listener', async () => {
+    const directory = '/repo';
+    const nativeSessionId = 'ses_native_transcript';
+    let eventResponse: ServerResponse | null = null;
+    let messages: unknown[] = [];
+    let historyUnavailable = false;
+    let holdNextHistory = false;
+    let releaseHistory: (() => void) | null = null;
+    let uiBusy = false;
+    let messageReads = 0;
+    let promptCount = 0;
+    let connections = 0;
+    const server = createServer((request, response) => {
+      const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+      if (url.pathname === '/api/event') {
+        eventResponse = response;
+        connections += 1;
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.write(`data: ${JSON.stringify({ type: 'server.connected', data: {} })}\n\n`);
+        return;
+      }
+      response.writeHead(historyUnavailable && url.pathname.endsWith('/message') ? 503 : 200, { 'content-type': 'application/json' });
+      if (url.pathname === '/api/session' && request.method === 'POST') {
+        response.end(JSON.stringify({ data: { id: nativeSessionId, location: { directory } } }));
+      } else if (url.pathname === `/api/session/${nativeSessionId}/message`) {
+        messageReads += 1;
+        if (holdNextHistory) {
+          holdNextHistory = false;
+          const snapshot = [...messages];
+          releaseHistory = () => response.end(JSON.stringify({ data: snapshot, cursor: {} }));
+          return;
+        }
+        response.end(JSON.stringify(historyUnavailable
+          ? { error: 'private upstream response must not reach the diagnostic' }
+          : { data: messages, cursor: {} }));
+      } else if (url.pathname.endsWith('/prompt')) {
+        promptCount += 1;
+        uiBusy = true;
+        const created = Date.now();
+        messages.push(
+          { id: 'msg_ui_user', type: 'user', sessionID: nativeSessionId, text: 'Happier prompt', time: { created } },
+          { id: 'msg_ui_assistant', type: 'assistant', sessionID: nativeSessionId, parentID: 'msg_ui_user',
+            content: [{ id: 'part_ui', type: 'text', text: 'Happier answer' }],
+            time: { created: created + 1, completed: created + 2 }, finish: 'stop' },
+        );
+        response.end(JSON.stringify({ data: { id: 'msg_ui_user' } }));
+      } else if (url.pathname === '/api/session/active') {
+        response.end(JSON.stringify({ data: uiBusy ? { [nativeSessionId]: { type: 'running' } } : {} }));
+      } else {
+        response.end(JSON.stringify({ data: [] }));
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    // Managed handle's HTTP transport is the external boundary; all wire adapters, controller,
+    // completion classification, dedupe and public Session event mapping below are production code.
+    const client = createClient({
+      directory, dialect: 'v2',
+      request: async (request) => {
+        const response = await fetch(`${baseUrl}${request.pathAndQuery}`, {
+          method: request.method, headers: request.headers,
+          ...(request.body ? { body: Buffer.from(request.body) } : {}), signal: request.signal,
+        });
+        return { ok: response.ok, status: response.status, statusText: response.statusText,
+          headers: Object.fromEntries(response.headers), body: response.body };
+      },
+    });
+    const ctx = createContextFixture({ managedServerBaseUrl: baseUrl });
+    const operations = createOpenCodeServerRuntime({
+      ctx, directory, happierSessionId: 'happy_native_transcript', client, dialect: 'v2',
+      mcpRegistration: Promise.resolve({ requiredHappier: { status: 'ready' }, registeredServers: [] }),
+      mcpProjection: { registrations: [], requiredHappierServerName: null, requiredHappierConfigurationPresent: false },
+    });
+    const runtime = createOpenCodeSessionRuntime({
+      operations, request: { kind: 'create', sessionId: 'happy_native_transcript', cwd: directory },
+      disposeOperations: async () => { await operations.resetOrDisposeRuntime(); },
+      runtimeCapabilities: { sessionCapabilities: {}, tools: { delivery: 'native_mcp', support: 'supported' } },
+    });
+    const events: AgentSessionRuntimeEvent[] = [];
+    runtime.watch((event) => events.push(event));
+    const transcript = () => events.filter((event) => event.kind === 'transcript-message-committed');
+    const emit = (type: string, sessionID = nativeSessionId): void => {
+      eventResponse?.write(`data: ${JSON.stringify({ type, location: { directory }, data: { sessionID } })}\n\n`);
+    };
+    const disconnectEvents = (): void => { eventResponse?.end(); };
+    try {
+      await operations.openSession({ kind: 'create' });
+      await expect.poll(() => connections).toBe(1);
+      // Exclude initial connection catch-up as the cause of the following native-turn projection.
+      await expect.poll(() => messageReads).toBe(1);
+      messages = [
+        { id: 'msg_native_user', type: 'user', sessionID: nativeSessionId,
+          text: 'native prompt', time: { created: 1790952429917 } },
+        { id: 'msg_native_assistant', type: 'assistant', sessionID: nativeSessionId,
+          parentID: 'msg_native_user', content: [{ id: 'part_native', type: 'text', text: 'native answer', state: { phase: 'final_answer' } }],
+          time: { created: 1790952429940, streamed: 1790952431559, completed: 1790952431560 }, finish: 'stop' },
+      ];
+      const initialReads = messageReads;
+      emit('session.execution.succeeded', 'ses_other');
+      emit('session.execution.started');
+      emit('session.execution.succeeded');
+      await expect.poll(transcript).toEqual([
+        expect.objectContaining({ messageId: `opencode:${nativeSessionId}:msg_native_user`, role: 'user', text: 'native prompt' }),
+        expect.objectContaining({ messageId: `opencode:${nativeSessionId}:msg_native_assistant`, role: 'assistant', text: 'native answer' }),
+      ]);
+      expect(messageReads).toBe(initialReads + 1);
+      emit('session.execution.succeeded');
+      await expect.poll(() => messageReads).toBe(initialReads + 2);
+      disconnectEvents();
+      await expect.poll(() => connections).toBe(2);
+      await expect.poll(() => messageReads).toBe(initialReads + 3);
+      expect(transcript()).toHaveLength(2);
+
+      historyUnavailable = true;
+      emit('session.execution.succeeded');
+      await expect.poll(() => vi.mocked(ctx.logger.warn).mock.calls).toContainEqual([
+        'opencode_passive_transcript_projection_failed', { phase: 'history_read' },
+      ]);
+      expect(JSON.stringify(vi.mocked(ctx.logger.warn).mock.calls)).not.toContain('private upstream response');
+      historyUnavailable = false;
+      messages.push({ id: 'msg_native_user_2', type: 'user', sessionID: nativeSessionId,
+        text: 'next native prompt', time: { created: 1790952431600 } });
+      emit('session.execution.succeeded');
+      await expect.poll(transcript).toHaveLength(3);
+      expect(promptCount).toBe(0);
+
+      messages.push({ id: 'msg_native_late', type: 'user', sessionID: nativeSessionId,
+        text: 'native history returned during the app turn', time: { created: 1790952431700 } });
+      holdNextHistory = true;
+      emit('session.execution.succeeded');
+      await expect.poll(() => releaseHistory !== null).toBe(true);
+      await expect(runtime.send({
+        inputIds: ['ui_input'], input: { text: 'Happier prompt' },
+        delivery: { kind: 'newTurn', turnId: 'ui_turn' },
+      })).resolves.toMatchObject({ status: 'admitted' });
+      const releaseHeldHistory = (): void => { releaseHistory?.(); };
+      releaseHeldHistory();
+      uiBusy = false;
+      emit('session.execution.succeeded');
+      await runtime.waitForTurnCompletion();
+      expect(transcript()).toHaveLength(4);
+      expect(transcript()).toContainEqual(expect.objectContaining({ role: 'assistant', text: 'Happier answer' }));
+      emit('session.execution.succeeded');
+      await expect.poll(transcript).toHaveLength(5);
+      expect(transcript().filter((event) => event.messageId === `opencode:${nativeSessionId}:msg_ui_assistant`)).toHaveLength(1);
+      expect(promptCount).toBe(1);
+    } finally {
+      await runtime.dispose();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
 
 function healthyManagedService(
   request: ManagedServiceHandle['request'],
@@ -1236,6 +1397,15 @@ describe('createOpenCodeServerClient (OpenCode V2 beta dialect)', () => {
         ],
       },
     ]);
+  });
+
+  it.each(['v1', 'v2'] as const)('rejects malformed %s history instead of treating it as an empty native conversation', async (dialect) => {
+    let malformed = true;
+    const client = createClient({ dialect, request: async () => createJsonResponse(dialect === 'v2'
+      ? { data: malformed ? {} : [], cursor: {} } : malformed ? {} : []) });
+    await expect(client.sessionMessages({ sessionId: 'native' })).rejects.toThrow('OpenCode session message page is invalid');
+    malformed = false;
+    await expect(client.sessionMessages({ sessionId: 'native' })).resolves.toEqual([]);
   });
 
   it('reads and answers V2 permission requests through their location and session routes', async () => {

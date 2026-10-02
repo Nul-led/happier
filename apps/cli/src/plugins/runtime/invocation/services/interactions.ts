@@ -202,11 +202,13 @@ export function createPluginInteractionsService(params: InvocationInteractionPar
             );
         }
     };
-    const operationOptions = (signal?: AbortSignal): HostSessionInteractionOptions => {
+    const operationOptions = (options?: InteractionOptions): HostSessionInteractionOptions => {
+        const signal = options?.signal;
         const activeTurnPermissionContext = readActiveTurnPermissionContext(params);
-        const permissionContext = params.permissionOwner || activeTurnPermissionContext !== undefined
+        const permissionContext = params.permissionOwner || activeTurnPermissionContext !== undefined || options?.lifetime !== undefined
             ? Object.freeze({
                 ...(params.permissionOwner ? { owner: params.permissionOwner } : {}),
+                ...(options?.lifetime ? { lifetime: options.lifetime } : {}),
                 ...(activeTurnPermissionContext !== undefined
                     ? {
                         turnId: activeTurnPermissionContext.turnId,
@@ -235,7 +237,7 @@ export function createPluginInteractionsService(params: InvocationInteractionPar
             }
             try {
                 assertCurrent();
-                const result = await currentSession.interactions.request(request, operationOptions(interactionOptions?.signal));
+                const result = await currentSession.interactions.request(request, operationOptions(interactionOptions));
                 return result;
             } catch (error) {
                 if (isWorkflowInteractionCapacityError(error)) throw error;
@@ -258,7 +260,7 @@ export function createPluginInteractionsService(params: InvocationInteractionPar
             }
             try {
                 assertCurrent();
-                const result = await currentSession.interactions.request(request, operationOptions(questionOptions?.signal));
+                const result = await currentSession.interactions.request(request, operationOptions(questionOptions));
                 return result;
             } catch (error) {
                 if (isWorkflowInteractionCapacityError(error)) throw error;
@@ -279,7 +281,7 @@ export function createPluginInteractionsService(params: InvocationInteractionPar
             if (!currentSession.interactions) return confirmationUnavailable(fallbackRequestId);
             try {
                 assertCurrent();
-                const result = await currentSession.interactions.request(request, operationOptions(confirmOptions?.signal));
+                const result = await currentSession.interactions.request(request, operationOptions(confirmOptions));
                 return result;
             } catch (error) {
                 if (isWorkflowInteractionCapacityError(error)) throw error;

@@ -1,14 +1,21 @@
 import {
+    AutomationRunCauseSchema,
     PluginMachineMaterializationRefV1Schema,
 } from '@happier-dev/protocol';
 import {
     PluginSourceCustodyV1Schema,
 } from '@happier-dev/protocol';
 import type { PluginMachineMaterializationRefV1 } from '@happier-dev/protocol';
-import type { ActionPluginCaller } from '@happier-dev/protocol/actions';
+import type { ActionCaller, ActionPluginCaller } from '@happier-dev/protocol/actions';
+import type { PluginInvocationCaller } from '@happier-dev/plugin-sdk';
 
 type PluginActionCallerSeed = Readonly<{
     plugin: Readonly<{ id: string }>;
+    /** Host-private original Action provenance, never plugin input or authorization. */
+    initiatingActionCaller?: ActionCaller;
+    /** Bounded host-control provenance; immediate authorization identity stays unchanged. */
+    startedBy?: ActionPluginCaller['startedBy'];
+    caller?: PluginInvocationCaller;
     /** Immediate host-stamped contribution. It is never accepted from plugin input. */
     contribution?: Readonly<{ id: string }>;
     /** Exact process-local occurrence, supplied by the runtime owner only. */
@@ -119,6 +126,18 @@ export function resolvePluginActionCaller(
         ? undefined
         : PluginSourceCustodyV1Schema.safeParse(seed.sourceCustody);
     if (sourceCustody !== undefined && !sourceCustody.success) return null;
+    let initiatingCaller: ActionCaller | undefined = seed.initiatingActionCaller;
+    if (seed.caller?.kind === 'automationRun') {
+        // SDK declarations are brand-free; canonical parsing owns the host representation.
+        const cause = AutomationRunCauseSchema.safeParse(seed.caller.cause);
+        if (!cause.success) return null;
+        initiatingCaller = {
+            kind: 'automationRun',
+            runId: seed.caller.runId,
+            automationId: seed.caller.automationId,
+            cause: cause.data,
+        };
+    }
     return Object.freeze({
         kind: 'plugin' as const,
         pluginId: seed.plugin.id,
@@ -126,5 +145,8 @@ export function resolvePluginActionCaller(
         ...(occurrenceId === undefined ? {} : { occurrenceId }),
         ...(sourceCustody === undefined ? {} : { sourceCustody: sourceCustody.data }),
         ...(materialization?.success === true ? { materialization: materialization.data } : {}),
+        ...(initiatingCaller ? { initiatingCaller } : {}),
+        // An explicit admitting caller, including Automation cause, takes precedence over a transported display fact.
+        ...(!initiatingCaller && seed.startedBy ? { startedBy: seed.startedBy } : {}),
     });
 }

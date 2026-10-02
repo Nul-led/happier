@@ -9,18 +9,22 @@ import {
     PluginManagedDependencyContributionV2Schema,
     type PluginManagedDependencyContributionV2,
 } from '@happier-dev/protocol';
+import { buildQualifiedPluginContributionKey, qualifyPluginContributionReferenceV1 } from '@happier-dev/protocol/plugins/contribution-identity';
 
 import type { ResolvedAgentContribution, ResolvedInstallableContribution } from './types';
 
 /** Process grants permit alternate modes; only the selected transport requires its executable for setup. */
 export function resolveAgentRuntimeManagedDependencyId(
-    agent: Pick<ResolvedAgentContribution, 'richDefinition'>,
+    agent: Pick<ResolvedAgentContribution, 'pluginId' | 'richDefinition'>,
 ): string | null {
     const definition = agent.richDefinition?.definition;
     const runtime = definition && 'runtime' in definition ? definition.runtime : undefined;
-    return runtime?.kind === 'acp' && runtime.transport.kind === 'stdio'
-        && runtime.transport.executable.kind === 'managedDependency'
-        ? runtime.transport.executable.id
+    if (runtime?.kind !== 'acp' || runtime.transport.kind !== 'stdio'
+        || runtime.transport.executable.kind !== 'managedDependency') return null;
+    const reference = runtime.transport.executable.id;
+    if (typeof reference !== 'string') return buildQualifiedPluginContributionKey(reference);
+    return agent.pluginId
+        ? buildQualifiedPluginContributionKey(qualifyPluginContributionReferenceV1(reference, agent.pluginId))
         : null;
 }
 
@@ -55,6 +59,30 @@ type ManagedDependencyProjectionInput<TSource> = Readonly<{
 
 type ManagedPypiWheelAssetProjectionInput = ManagedDependencyProjectionInput<ManagedPypiWheelAssetSourceV2>;
 type PinnedArchiveProjectionInput = ManagedDependencyProjectionInput<PinnedArchiveSourceV2>;
+
+type GitHubReleaseBinarySourceV2 = Extract<
+    PluginManagedDependencyContributionV2['sources'][number],
+    { kind: 'githubReleaseBinary' }
+>;
+
+export function projectGitHubReleaseBinaryInstallableDescriptor(
+    input: ManagedDependencyProjectionInput<GitHubReleaseBinarySourceV2>,
+): InstallableDependencyDescriptor | null {
+    const gate = resolveManagedDependencyProjectionGate(input);
+    if (!gate) return null;
+    const { kind: _kind, installId, ...source } = input.source;
+    const key = installId.slice('dep.'.length);
+    const parsed = InstallableDependencyDescriptorSchema.safeParse({
+        id: key, key, kind: 'dep', version: '1', capabilityId: installId,
+        display: { name: gate.title }, description: gate.description,
+        source: { ...source, kind: 'github_release_binary' },
+        binary: { commands: [gate.executable], systemFirst: true, managedFallback: true },
+        defaultPolicy: { autoInstallWhenNeeded: true, autoUpdateMode: 'auto' },
+        consent: { install: 'not_required', update: 'not_required' },
+        stability: { experimental: true, supported: true },
+    });
+    return parsed.success ? parsed.data : null;
+}
 
 /**
  * Host and declaration facts every managed executable source must satisfy
@@ -249,7 +277,7 @@ export function selectExecutableManagedDependencies(
         const parsed = PluginManagedDependencyContributionV2Schema.safeParse(contribution.definition);
         if (!parsed.success) continue;
         for (const source of parsed.data.sources) {
-            if (source.kind !== 'managedPypiWheelAsset' && source.kind !== 'pinnedArchive') continue;
+            if (source.kind !== 'managedPypiWheelAsset' && source.kind !== 'pinnedArchive' && source.kind !== 'githubReleaseBinary') continue;
             const common = {
                 definition: parsed.data,
                 ...(contribution.pluginId ? { pluginId: contribution.pluginId } : {}),
@@ -258,7 +286,9 @@ export function selectExecutableManagedDependencies(
             };
             const descriptor = source.kind === 'managedPypiWheelAsset'
                 ? projectManagedPypiWheelAssetInstallableDescriptor({ ...common, source })
-                : projectPinnedArchiveInstallableDescriptor({ ...common, source });
+                : source.kind === 'pinnedArchive'
+                    ? projectPinnedArchiveInstallableDescriptor({ ...common, source })
+                    : projectGitHubReleaseBinaryInstallableDescriptor({ ...common, source });
             if (!descriptor) continue;
             executable.push(Object.freeze({
                 ...contribution,

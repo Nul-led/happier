@@ -69,6 +69,27 @@ function textWeight(row: HTMLElement, text: string): string {
 }
 
 describe('NavigationList (public plugin column anatomy)', () => {
+  it('presents an explicit qualified row destination through the host without replacing ordinary activation', () => {
+    const context = createSurfaceContext();
+    const onOpen = vi.fn();
+    // The app presentation bridge is the boundary: it owns route generation and browser gestures.
+    const presentationHost = {
+      renderMarkdown: () => null, renderPopover: () => null, renderIcon: () => null,
+      renderDestinationRow: (input: Readonly<{ destination: Readonly<{ pluginId: string; localId: string }>; subPath?: string; children: ReactNode }>) => (
+        <View testID={`destination:${input.destination.pluginId}:${input.destination.localId}:${input.subPath ?? ''}`}>{input.children}</View>
+      ),
+    } as unknown as PluginUiPresentationHost;
+    const view = mountThroughReactNativeWeb(
+      <PluginUiProviderInternal hostApi={createHostApiStub(context)} context={context} presentationHost={presentationHost}>
+        <NavigationList.Row title="Needs review" testID="destination-row" onPress={onOpen}
+          destination={{ destination: { pluginId: 'triage', localId: 'triage' }, subPath: 'e,source,pulls,42' }} />
+      </PluginUiProviderInternal>,
+    );
+    expect(view.container.querySelector('[data-testid="destination:triage:triage:e,source,pulls,42"]')).not.toBeNull();
+    act(() => byTestId(view.container, 'destination-row').click());
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
   it('focuses its only search input when the surrounding field is tapped', () => {
     const view = mount(<NavigationList search={{ value: '', onValueChange: () => undefined, label: 'Search channels', testID: 'search' }} />);
     const input = byTestId(view.container, 'search');

@@ -468,7 +468,7 @@ describe('Voice author source contract', () => {
     expectTypeOf<ConnectionInput['signal']>().toEqualTypeOf<AbortSignal>();
     expectTypeOf<ConnectionInput['session']>().toEqualTypeOf<PreparedSession>();
     expectTypeOf<keyof PreparedSession>()
-      .toEqualTypeOf<'config' | 'safeMetadata' | 'toolResultReplay'>();
+      .toEqualTypeOf<'config' | 'safeMetadata' | 'toolResultReplay' | 'initialContextDelivery' | 'inputCommitRequired'>();
     expectTypeOf<PreparedSession['toolResultReplay']>()
       .toEqualTypeOf<'none' | 'stable_ids' | undefined>();
     expectTypeOf<ConnectionInput['ui']>().toEqualTypeOf<PluginUiHostApi>();

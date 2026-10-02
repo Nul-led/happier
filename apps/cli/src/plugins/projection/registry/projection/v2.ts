@@ -49,6 +49,7 @@ import { providerProjectionFamily } from '../providers';
 import { connectedAccountProjectionFamily } from '../connectedAccounts';
 import { voiceModelPackProjectionFamily, voiceProviderProjectionFamily } from '../voiceDeclarations';
 import { rolesProjectionFamily } from '../roles';
+import { workflowsProjectionFamily } from '../workflows';
 import {
     composerAttachmentsProjectionFamily,
     composerControlsProjectionFamily,
@@ -929,6 +930,7 @@ export function buildPluginProjectionV2(params: Readonly<{
         pluginBrowserProjectionFamily,
         voiceModelPackProjectionFamily,
         rolesProjectionFamily,
+        workflowsProjectionFamily,
         voiceProviderProjectionFamily,
         accountCollectionsProjectionFamily,
         composerAttachmentsProjectionFamily,

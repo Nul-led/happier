@@ -3,6 +3,7 @@ import {
     type AgentSessionHostServices,
     type AgentSessionHookServerHandle,
     type AgentSessionProviderBinding,
+    type AgentSessionRuntime,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import { HappierStructuredInputV1Schema } from '@happier-dev/plugin-sdk/sessions';
 import type { AgentSessionInputFilesService } from '@happier-dev/plugin-sdk/agents/runtime';
@@ -104,6 +105,9 @@ import {
 import { createClaudePermissionHookHandler } from '../../shared/permissionHookHandler.js';
 import { buildClaudeHookSettingsOverlay } from '../../../hooks/settings.js';
 import { resolveClaudeLaunchSettingsOverlayArgs } from '../../launchSettings.js';
+import { buildClaudeEffortCliArgs } from '../../reasoningEffort.js';
+import { buildClaudePermissionModeArgs, mapToClaudePermissionMode } from '../../permissionMode.js';
+import { materializeClaudeStartupInstructions } from '../../startupInstructions.js';
 import { createClaudeAgentSdkResumeIdentityOwner } from './resumeIdentity.js';
 import type { ClaudeUnifiedTerminalContext } from '../../terminal/unified/turnOperations.js';
 import {
@@ -1463,6 +1467,7 @@ export function createClaudeAgentSdkTurnOperations(
                 if (isSdkAssistantMessage(message)) {
                     const usage = readSdkAssistantUsage(message);
                     publishUsageObservation(buildClaudeAssistantUsageObservation({
+                        nativeRecordId: readString(message.uuid),
                         modelId: currentModelId,
                         ...(currentProviderModel ? { modelSource: 'provider' } : {}),
                         observedAtMs: Date.now(),
@@ -1662,12 +1667,57 @@ export function createClaudeAgentSdkTurnOperations(
     }
 
     let onPromptDeliveryOutcome: ClaudeProviderPromptDeliveryOutcomeCallback | null = null;
+    let terminalStartupInstructions: ReturnType<typeof materializeClaudeStartupInstructions> | undefined;
+    const readCurrentResumeProviderSessionId = () => params.enableSessionResumability === true
+        ? resumableProviderSessionId ?? pendingResumeProviderSessionId
+        : providerSessionId ?? pendingResumeProviderSessionId;
     const operations: ClaudeRuntimeTurnOperations & Readonly<{
+        prepareTerminalPresentation: NonNullable<AgentSessionRuntime['prepareTerminalPresentation']>;
         subscribeCanonicalAgentSessionEvents: typeof runtimeActivityPublisher.subscribe;
         subscribeEffectiveModel: ClaudeEffectiveModelEvidenceSubscription;
         subscribeUsageObservation: ClaudeUsageObservationSubscription;
         setOnPromptDeliveryOutcome(handler: ClaudeProviderPromptDeliveryOutcomeCallback | null): void;
     }> = {
+        async prepareTerminalPresentation() {
+            if (runtimeDisposed) throw new Error('Claude Agent SDK runtime is disposed.');
+            await resumeIdentityOwner?.settleCurrentCandidate();
+            const resumeFailure = resumeIdentityOwner?.readExplicitResumeFailure();
+            if (resumeFailure) throw resumeFailure;
+            const hookPluginDir = await ensureSessionHookPluginDir();
+            if (runtimeDisposed) throw new Error('Claude Agent SDK runtime is disposed.');
+            const resumeId = readCurrentResumeProviderSessionId();
+            terminalStartupInstructions ??= params.startupInstructions
+                ? materializeClaudeStartupInstructions(params.startupInstructions) : undefined;
+            return {
+                kind: 'terminal_launch',
+                plan: {
+                    argv: resolveClaudeLaunchSettingsOverlayArgs({
+                        args: [
+                            ...(resumeId ? ['--resume', resumeId] : []),
+                            ...(terminalStartupInstructions?.args ?? []),
+                            ...(params.supportsSystemPromptSnapshotOff === true ? ['--system-prompt-snapshot', 'off'] : []),
+                            ...(hookPluginDir ? ['--plugin-dir', hookPluginDir] : []),
+                            ...(currentModelId ? ['--model', currentModelId] : []),
+                            ...buildClaudeEffortCliArgs({ modelId: currentModelId, effort: currentEffort,
+                                ...(currentProviderModel ? { providerModel: currentProviderModel } : {}) }),
+                            ...buildClaudePermissionModeArgs(currentPermissionMode),
+                            ...buildClaudeMcpConfigArgs(params.mcpServers),
+                        ],
+                        interactionKind: 'interactive_terminal',
+                        permissionMode: mapToClaudePermissionMode(currentPermissionMode),
+                        launchSettings: currentUltracode && isClaudeUltracodeSupportedModelId(currentModelId, currentProviderModel)
+                            ? { ultracode: true } : {},
+                        workspaceWrites: currentWorkspaceWrites,
+                    }),
+                    environment: { values: params.launchEnv, unset: [] },
+                    process: { stdio: 'inherit', windowsHide: true },
+                    presentation: {
+                        onLaunch: { target: 'local', reason: 'claude_sdk_terminal_start' },
+                        onExit: { target: 'remote', reason: 'claude_sdk_terminal_exit' },
+                    },
+                },
+            };
+        },
         subscribeCanonicalAgentSessionEvents: runtimeActivityPublisher.subscribe,
         subscribeEffectiveModel(listener) {
             effectiveModelListeners.add(listener);
@@ -1733,9 +1783,7 @@ export function createClaudeAgentSdkTurnOperations(
                     throw new Error('Claude Agent SDK runtime is disposed.');
                 }
                 resumeIdentityOwner?.recordSubmittedPrompt(prompt);
-                const resumeProviderSessionId = params.enableSessionResumability === true
-                    ? resumableProviderSessionId ?? pendingResumeProviderSessionId
-                    : providerSessionId ?? pendingResumeProviderSessionId;
+                const resumeProviderSessionId = readCurrentResumeProviderSessionId();
                 const publishTransportOutcome = (
                     outcome: ClaudeRuntimePromptSubmissionOutcome,
                 ): void => {
@@ -2107,6 +2155,12 @@ export function createClaudeAgentSdkTurnOperations(
                 if (tail) await retireGoalStatusTail(tail);
                 await Promise.all(Array.from(retiringGoalStatusTails));
                 const hookPluginDir = sessionHookPluginDir;
+                await terminalStartupInstructions?.cleanup().catch(() => {
+                    params.ctx.logger.warn('[ClaudeAgentSdk] Terminal startup instruction cleanup failed', {
+                        error: 'terminal_startup_instruction_cleanup_failed',
+                    });
+                });
+                terminalStartupInstructions = undefined;
                 sessionHookPluginDir = null;
                 if (hookPluginDir) {
                     await sessionContext?.agentRuntime.sessionHooks.disposePluginDir(hookPluginDir).catch(() => undefined);

@@ -9,9 +9,10 @@ import chalk from 'chalk'
 import { isPidPresent } from '@happier-dev/cli-common/process'
 import { redactBugReportSensitiveText } from '@happier-dev/protocol/bugs/reports'
 import { configuration } from '../configuration'
-import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync, watch, type FSWatcher } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { inspect } from 'node:util'
 import {
   isPluginInvocationLogRecord,
@@ -135,6 +136,7 @@ export type PluginInvocationLogQuery = Readonly<{
   occurrenceId?: string
   correlationId?: string
   cursor?: number
+  logId?: string
   limit?: number
 }>
 
@@ -143,6 +145,8 @@ export type PluginInvocationLogReadResult = Readonly<{
   records: readonly PluginInvocationLogRecord[]
   cursor: number
   hasMore: boolean
+  logId: string
+  cursorReset: boolean
 }> | Readonly<{
   kind: 'unavailable'
 }>
@@ -339,6 +343,9 @@ export class Logger {
   private readonly pluginInvocationFileAppender: BufferedFileAppender
   private readonly redactFileOutput: boolean
   private readonly pruneLogs: boolean
+  private readonly pluginLogOccurrenceId = randomUUID()
+  private readonly pluginLogWaiters = new Set<(unavailable?: boolean) => void>()
+  private pluginLogWatcher: FSWatcher | null = null
 
   public readonly logFilePath: string
 
@@ -526,6 +533,7 @@ export class Logger {
       this.pluginInvocationFileAppender.append(this.redactFileOutput
         ? redactBugReportSensitiveText(line)
         : line)
+      for (const changed of [...this.pluginLogWaiters]) changed()
     } catch {
       // Structured plugin diagnostics must never interfere with plugin work.
     }
@@ -535,8 +543,8 @@ export class Logger {
    * Reads the active daemon's structured plugin records from the canonical log
    * file. The byte cursor advances across complete newline-delimited records.
    * If a line exceeds the bounded read window, the cursor advances through its
-   * fragments and discards that line until its delimiter, so a caller can poll
-   * this projection without a second store, file watcher, or retry spin.
+   * fragments and discards that line until its delimiter. Follow waits below
+   * use the same reader and cursor, not a second diagnostic store.
    */
   readPluginInvocationLogRecords(query: PluginInvocationLogQuery): PluginInvocationLogReadResult {
     const limit = normalizePluginInvocationLogReadLimit(query.limit)
@@ -546,13 +554,17 @@ export class Logger {
       const stats = statSync(this.logFilePath)
       if (!stats.isFile()) return { kind: 'unavailable' }
       const fileSize = Math.max(0, Math.trunc(stats.size))
-      const startOffset = requestedCursor > fileSize ? 0 : requestedCursor
+      const logId = `${this.pluginLogOccurrenceId}:${stats.dev}:${stats.ino}`
+      const cursorReset = requestedCursor > fileSize || (query.logId !== undefined && query.logId !== logId)
+      const startOffset = cursorReset ? 0 : requestedCursor
       if (startOffset === fileSize) {
         return {
           kind: 'available',
           records: Object.freeze([]),
           cursor: startOffset,
           hasMore: false,
+          logId,
+          cursorReset,
         }
       }
 
@@ -601,6 +613,8 @@ export class Logger {
           records: Object.freeze(records),
           cursor,
           hasMore: cursor < fileSize,
+          logId,
+          cursorReset,
         }
       } finally {
         closeSync(descriptor)
@@ -608,6 +622,66 @@ export class Logger {
     } catch {
       return { kind: 'unavailable' }
     }
+  }
+
+  /** Park a diagnostic observer on canonical append/file invalidations. */
+  waitForPluginInvocationLogRecords(query: PluginInvocationLogQuery, signal?: AbortSignal): Promise<PluginInvocationLogReadResult> {
+    signal?.throwIfAborted()
+    return new Promise((resolve, reject) => {
+      let currentQuery = query
+      let finished = false
+      const detach = () => {
+        finished = true
+        this.pluginLogWaiters.delete(changed)
+        signal?.removeEventListener('abort', abort)
+        if (this.pluginLogWaiters.size === 0) {
+          this.pluginLogWatcher?.close()
+          this.pluginLogWatcher = null
+        }
+      }
+      const abort = () => {
+        if (finished) return
+        detach()
+        reject(signal?.reason ?? new DOMException('Log observation cancelled', 'AbortError'))
+      }
+      const changed = (unavailable = false) => {
+        if (finished) return
+        const result: PluginInvocationLogReadResult = unavailable
+          ? { kind: 'unavailable' }
+          : this.readPluginInvocationLogRecords(currentQuery)
+        if (result.kind === 'unavailable' || result.cursorReset || result.records.length > 0
+          || (result.hasMore && result.cursor !== (currentQuery.cursor ?? 0))) {
+          detach()
+          resolve(result)
+          return
+        }
+        if (result.kind === 'available') currentQuery = { ...currentQuery, cursor: result.cursor, logId: result.logId }
+      }
+      // Subscribe before the baseline read: an append cannot fall into a gap.
+      this.pluginLogWaiters.add(changed)
+      signal?.addEventListener('abort', abort, { once: true })
+      if (signal?.aborted) { abort(); return }
+      if (!this.pluginLogWatcher) {
+        try {
+          this.pluginLogWatcher = watch(dirname(this.logFilePath), { persistent: false }, (_event, filename) => {
+            if (filename !== null && filename.toString() !== basename(this.logFilePath)) return
+            for (const notify of [...this.pluginLogWaiters]) notify()
+          })
+          this.pluginLogWatcher.on('error', () => {
+            // A failed OS observation is unavailable, never a silent polling fallback.
+            const waiters = [...this.pluginLogWaiters]
+            this.pluginLogWatcher?.close()
+            this.pluginLogWatcher = null
+            for (const notify of waiters) notify(true)
+          })
+        } catch {
+          detach()
+          resolve({ kind: 'unavailable' })
+          return
+        }
+      }
+      changed()
+    })
   }
   
   private logToConsole(level: 'debug' | 'error' | 'info' | 'warn', prefix: string, message: string, ...args: unknown[]): void {

@@ -14,6 +14,10 @@ import {
     CLAUDE_OAUTH_TOKEN_URL,
 } from '@happier-dev/protocol/providers/claude/oauth-profile';
 import {
+    CODEX_NATIVE_HOME as canonicalCodexNativeHome,
+    CODEX_CONNECTED_SERVICE_HOME_DIRECTORY_NAME as canonicalCodexConnectedServiceHomeDirectoryName,
+} from '@happier-dev/protocol/agents/codex/native-home-policy';
+import {
     CLAUDE_SUBSCRIPTION_MATERIALIZATION_CONTRACT_V1 as canonicalClaudeSubscriptionMaterializationContractV1,
     CLAUDE_SUBSCRIPTION_SETUP_TOKEN_ENVIRONMENT_REQUEST_V1 as canonicalClaudeSubscriptionSetupTokenEnvironmentRequestV1,
 } from '@happier-dev/protocol/connect/claude-subscription-materialization';
@@ -50,6 +54,7 @@ import type {
     ConnectedServiceCredentialRecordV1,
 } from '@happier-dev/protocol/connect/connected-service-schemas';
 import type { ProviderAccountSubscriptionV1 } from '@happier-dev/protocol';
+export type { ProviderAccountSubscriptionV1 } from '@happier-dev/protocol';
 export type {
     PluginConnectedAccountAuthenticationModeV2,
     PluginConnectedAccountAuthenticationV2,
@@ -84,6 +89,14 @@ import type {
 } from './services/connectedAccounts.js';
 import type { JsonValue, PluginContributionRef } from './identity.js';
 import type { Disposable } from './lifecycle.js';
+
+/** Nonsecret native-home facts shared by the bundled Codex declaration and materialization. */
+export const CODEX_NATIVE_HOME: Readonly<{
+    environmentKey: 'CODEX_HOME';
+    defaultRelativePath: '.codex';
+}> = canonicalCodexNativeHome;
+export const CODEX_CONNECTED_SERVICE_HOME_DIRECTORY_NAME: 'codex-home' =
+    canonicalCodexConnectedServiceHomeDirectoryName;
 
 /** Public, nonsecret OAuth metadata shared by Claude Subscription authors. */
 export const CLAUDE_SUBSCRIPTION_OAUTH_PROFILE: Readonly<{
@@ -542,6 +555,8 @@ export interface ConnectedAccountRuntime {
         subscription?: ProviderAccountSubscriptionV1;
         limits: readonly Readonly<{
             id: string;
+            /** Provider allowance family, distinct from the window identified by id. */
+            providerLimitId?: string;
             used?: number;
             remaining?: number;
             resetsAtMs?: number;

@@ -8,6 +8,8 @@ import { z } from 'zod';
 import { resolveReleaseRingScopedBasename } from '@/cli/runtime/publicReleaseChannel';
 import {
   AgentRuntimeDaemonSessionDescriptorV1Schema,
+  AgentRuntimeRunnerBootstrapV1Schema,
+  type AgentRuntimeRunnerBootstrapLaunchV1,
   HAPPIER_AGENT_RUNTIME_RUNNER_BOOTSTRAP_FILE_ENV_KEY,
   type AgentRuntimeDaemonSessionDescriptorV1,
 } from '@/agent/runtime/session/process/agentRuntimeRunnerProtocol';
@@ -586,6 +588,7 @@ export async function createRunnerAgentSessionBootstrapAuthorization(
     happyHomeDir: string;
     publicReleaseRing: PublicReleaseRing;
     descriptor: AgentRuntimeDaemonSessionDescriptorV1;
+    launch?: AgentRuntimeRunnerBootstrapLaunchV1;
   }>,
 ): Promise<Readonly<{
   authorization: RunnerAgentSessionBootstrapAuthorization;
@@ -619,7 +622,7 @@ export async function createRunnerAgentSessionBootstrapAuthorization(
     });
   await writePrivateBearerFile({
     path: bootstrapFilePath,
-    contents: `${JSON.stringify({ v: 1, descriptor })}\n`,
+    contents: `${JSON.stringify(AgentRuntimeRunnerBootstrapV1Schema.parse({ v: 1, descriptor, ...(params.launch ? { launch: params.launch } : {}) }))}\n`,
   });
   return Object.freeze({
     authorization: Object.freeze({
@@ -645,6 +648,7 @@ export async function createForegroundAgentRuntimeBootstrapAuthorization(params:
   publicReleaseRing: PublicReleaseRing;
   capability: string;
   descriptor: AgentRuntimeDaemonSessionDescriptorV1;
+  launch?: AgentRuntimeRunnerBootstrapLaunchV1;
 }>): Promise<Readonly<{
   authorization: ForegroundAgentRuntimeBootstrapAuthorization;
   childEnv: Readonly<Record<
@@ -690,7 +694,7 @@ export async function createForegroundAgentRuntimeBootstrapAuthorization(params:
   });
   await writePrivateBearerFile({
     path: bootstrapFilePath,
-    contents: `${JSON.stringify({ v: 1, descriptor })}\n`,
+    contents: `${JSON.stringify(AgentRuntimeRunnerBootstrapV1Schema.parse({ v: 1, descriptor, ...(params.launch ? { launch: params.launch } : {}) }))}\n`,
   });
   return Object.freeze({
     authorization: Object.freeze({

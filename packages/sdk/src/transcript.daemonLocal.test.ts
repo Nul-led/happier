@@ -8,6 +8,9 @@ describe('public transcript following at a daemon-local Action endpoint', () => 
     // A daemon-local HTTP listener serves Actions, not the Home viewer socket.
     // This is the actual network boundary; SDK follower/transport logic stays real.
     let followReads = 0;
+    let cancelledWaits = 0;
+    let append: (() => void) | undefined;
+    const inputs: Record<string, unknown>[] = [];
     const server = createServer(async (request, response) => {
       const path = new URL(request.url ?? '/', 'http://fixture').pathname;
       response.setHeader('content-type', 'application/json');
@@ -15,12 +18,22 @@ describe('public transcript following at a daemon-local Action endpoint', () => 
         response.writeHead(404).end('{}');
         return;
       }
-      for await (const _chunk of request) { /* Drain the finite Action input. */ }
+      let body = '';
+      for await (const chunk of request) body += String(chunk);
       const actionId = decodeURIComponent(path.slice('/v1/actions/'.length));
-      if (actionId === 'transcript.follow') followReads++;
+      if (actionId === 'transcript.follow') {
+        followReads++;
+        inputs.push((JSON.parse(body) as { input: Record<string, unknown> }).input);
+        if (followReads > 1) {
+          response.once('close', () => { if (!response.writableEnded) cancelledWaits++; });
+          append = () => response.end(JSON.stringify({ v: 1, actionId, execution: { ok: true,
+            result: { items: [{ id: '2', seq: 2, text: 'appended without a socket' }], nextCursor: '2', truncated: false } } }));
+          return;
+        }
+      }
       const result = actionId === 'transcript.follow'
         ? { items: [{ id: '1', seq: 1, text: 'daemon transcript' }], nextCursor: '1', truncated: false }
-        : { ok: true, released: true };
+        : actionId === 'session.status.get' ? { session: { active: true } } : { ok: true, released: true };
       response.end(JSON.stringify({ v: 1, actionId, execution: { ok: true, result } }));
     });
     server.on('upgrade', (_request, socket) => socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'));
@@ -37,6 +50,18 @@ describe('public transcript following at a daemon-local Action endpoint', () => 
     try {
       await expect.poll(() => followReads).toBe(1);
       await expect(next).resolves.toMatchObject({ done: false, value: { id: '1', text: 'daemon transcript' } });
+      const pushed = iterator.next();
+      await expect.poll(() => followReads).toBe(2);
+      expect(inputs[1]).toMatchObject({ cursor: '1', waitForChanges: true });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(followReads).toBe(2);
+      append?.();
+      await expect(pushed).resolves.toMatchObject({ done: false, value: { id: '2' } });
+      const cancelled = iterator.next();
+      await expect.poll(() => followReads).toBe(3);
+      await iterator.return?.();
+      await expect(cancelled).resolves.toMatchObject({ done: true });
+      await expect.poll(() => cancelledWaits).toBe(1);
     } finally {
       await client.close();
       server.closeAllConnections();

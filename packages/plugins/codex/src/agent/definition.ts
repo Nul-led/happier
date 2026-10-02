@@ -1,9 +1,10 @@
 import { codexStateSharingDescriptor } from './auth/services/state/sharing/descriptor.js';
+import { CODEX_NATIVE_HOME } from '@happier-dev/plugin-sdk/first-party/connected-accounts';
 
 const { providerId: _providerId, ...stateSharing } = codexStateSharingDescriptor;
 export const AGENT_STATE_SHARING_DESCRIPTOR = {
   ...stateSharing,
-  nativeHome: { environmentKey: 'CODEX_HOME', defaultRelativePath: '.codex' },
+  nativeHome: CODEX_NATIVE_HOME,
 } as const;
 
 // IMPORTANT: this must stay JSON-serializable (data-only).
@@ -79,6 +80,7 @@ export const AGENT_DEFINITION = Object.freeze({
       sessionFork: { conversation: 'supported', fromMessage: 'unsupported' },
       sessionRollback: { conversation: 'supported' },
       usageLimitRecovery: { checkNow: 'supported' },
+      usageReporting: 'supported',
     },
     runtimeKinds: {
       defaultKind: 'appServer',
@@ -91,6 +93,7 @@ export const AGENT_DEFINITION = Object.freeze({
               sessionFork: { conversation: 'unsupported' },
               sessionRollback: { conversation: 'unsupported' },
               usageLimitRecovery: { checkNow: 'unsupported' },
+              usageReporting: 'unsupported',
             },
             handoff: { vendorStateTransfer: 'unsupported' },
             localControl: null,
@@ -103,6 +106,7 @@ export const AGENT_DEFINITION = Object.freeze({
               sessionFork: { conversation: 'unsupported' },
               sessionRollback: { conversation: 'unsupported' },
               usageLimitRecovery: { checkNow: 'unsupported' },
+              usageReporting: 'unsupported',
             },
             localControl: null,
           },

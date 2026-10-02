@@ -21,4 +21,5 @@ export declare function createBundledPluginPublicationFailure(input: Readonly<{
 export declare function assertHostCanExcludeBundledPlugin(repoRoot: string, packageName: string, originalError?: unknown): void;
 export declare function resolveBundledPluginPublicationFailuresPath(repoRoot: string): string;
 export declare function readBundledPluginPublicationFailures(repoRoot: string): BundledPluginPublicationFailure[];
+export declare function resolveBundledPluginPublicationFailures(repoRoot: string, failures: readonly BundledPluginPublicationFailure[], evaluatedPackageNames?: readonly string[]): BundledPluginPublicationFailure[];
 export declare function writeBundledPluginPublicationFailures(repoRoot: string, failures: readonly BundledPluginPublicationFailure[], evaluatedPackageNames?: readonly string[]): void;

@@ -3,6 +3,7 @@ import type { AgentModelConfig } from '@happier-dev/plugin-sdk/agents';
 import { CLAUDE_AGENT_MODEL_CONFIG } from './models.js';
 import { INTERNAL_CLAUDE_EVENT_TYPES } from './transcripts/internalEventTypes.js';
 import { claudeAuthStateSharingDescriptor } from './auth/services/stateSharing.js';
+import { CLAUDE_NATIVE_PERMISSION_MODES } from './permissionModes.js';
 
 const { providerId: _providerId, ...stateSharing } = claudeAuthStateSharingDescriptor;
 export const AGENT_STATE_SHARING_DESCRIPTOR = {
@@ -53,6 +54,7 @@ export const AGENT_DEFINITION = defineAgentWithPublicModelConfig({
       sessionFork: { conversation: 'unsupported', fromMessage: 'unsupported' },
       sessionRollback: { conversation: 'unsupported' },
       usageLimitRecovery: { checkNow: 'unsupported' },
+      usageReporting: 'supported',
     },
     handoff: { vendorStateTransfer: 'supported' },
     localControl: {
@@ -72,6 +74,7 @@ export const AGENT_DEFINITION = defineAgentWithPublicModelConfig({
     runtimeSwitch: 'provider-native',
   },
   sessionModesKind: 'staticAgentModes',
+  nativePermissionModes: CLAUDE_NATIVE_PERMISSION_MODES,
   releasedOutputTranscriptRecordReader: {
     nonTranscriptRecordTypes: [...INTERNAL_CLAUDE_EVENT_TYPES],
   },

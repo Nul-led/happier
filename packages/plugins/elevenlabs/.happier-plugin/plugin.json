@@ -6,6 +6,7 @@
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -29,6 +30,7 @@
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -802,6 +804,12 @@
                 {
                   "format": "raw",
                   "kind": "recipientCredential",
+                  "operation": "agent",
+                  "phase": "prepare"
+                },
+                {
+                  "format": "raw",
+                  "kind": "recipientCredential",
                   "operation": "voices",
                   "phase": "settings"
                 },
@@ -1169,7 +1177,8 @@
         "title": "ElevenLabs Voice"
       }
     ],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "displayName": "ElevenLabs Voice",
   "engines": {

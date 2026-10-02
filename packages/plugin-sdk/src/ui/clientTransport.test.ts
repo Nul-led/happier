@@ -59,6 +59,35 @@ const preparedSelection = {
 describe('plugin UI domain client transport adapter', () => {
     afterEach(() => vi.useRealTimers());
 
+    it('reads an exact stored-image reference and refuses path-bearing input or malformed disclosure', async () => {
+        let receive: ((message: unknown) => void) | undefined;
+        let reads = 0;
+        const image = { bytesBase64: 'cG5n', mimeType: 'image/png', width: 100, height: 60 };
+        const api = await createPluginUiHostApiClientFromTransport({
+            authorPlugin: { id: 'com.acme.fixture', version: '1.0.0' }, identity,
+            createRequestId: () => `stored-image-${reads}`,
+            // Only the external host transport is replaced; request admission and decoding remain real.
+            transport: {
+                subscribe(listener) { receive = listener; return { dispose() {} }; },
+                send(message) {
+                    if (message.kind === 'negotiate') receive?.({ wireVersion: 1, kind: 'negotiated', identity,
+                        apiVersion: '1.0.0', methods: ['readStoredImage'], surface });
+                    else if (message.kind === 'request' && message.method === 'readStoredImage') {
+                        reads += 1;
+                        receive?.({ wireVersion: 1, kind: 'result', identity, requestId: message.requestId,
+                            method: message.method, result: reads === 1 ? image : { ...image, mimeType: 'image/jpeg' } });
+                    }
+                },
+            },
+        });
+        const ref = { sessionId: 'session-1', mediaId: 'media-1' };
+        await expect(api.readStoredImage({ ...ref, path: '/private/image.png' } as never))
+            .rejects.toMatchObject({ code: 'invalid_payload' });
+        expect(reads).toBe(0);
+        await expect(api.readStoredImage(ref)).resolves.toEqual(image);
+        await expect(api.readStoredImage(ref)).rejects.toMatchObject({ code: 'invalid_payload' });
+    });
+
     it('forwards openNewSession as one strict flat request', async () => {
         const sent: PluginUiHostApiWireEnvelopeV1[] = [];
         let receive: ((message: unknown) => void) | undefined;

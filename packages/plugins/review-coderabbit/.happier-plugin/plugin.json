@@ -52,6 +52,7 @@
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -119,6 +120,7 @@
         "path": "./resources/review-prompt.md"
       }
     ],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -146,7 +148,8 @@
     },
     "voiceModelPacks": [],
     "voiceProviders": [],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "Runs CodeRabbit as a review-only execution engine.",
   "displayName": "CodeRabbit review engine",

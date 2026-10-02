@@ -1,4 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { DaemonPluginStoredImageReadRequest } from '@happier-dev/protocol';
+import { projectPluginSessionAccessIdentity } from '@happier-dev/protocol';
+import type { PluginUiReadStoredImageResultV1 } from '@happier-dev/protocol/plugins/ui';
+import { fetchAccountEncryptionCurrentness } from '@/api/client/connectedServiceCredentialApi';
+import { fetchSessionById } from '@/session/transport/http/sessionsHttp';
+import { tryDecryptSessionPresentationMetadataView } from '@/session/transport/encryption/sessionEncryptionContext';
+import { sessionMediaToStructuredImageInput, verifySessionStructuredImageInput } from '@/session/attachments/resolveTrustedSessionAttachmentLocalImagePaths';
 import { realpath } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -710,6 +717,13 @@ export type ResolvedExecutablePluginRuntimeRegistry = Readonly<{
     resolveServerFeaturesSnapshot?(): CliServerFeaturesSnapshot | undefined;
     activatedPluginIds: Awaited<ReturnType<typeof activatePluginRuntimeRegistry>>['activatedPluginIds'];
     activateContributionsOnDemand: Awaited<ReturnType<typeof activatePluginRuntimeRegistry>>['activateContributionsOnDemand'];
+    resolveCaptureSource(reference: PluginContributionIdentityV1): Promise<Readonly<{
+        declaration: import('@happier-dev/protocol').PluginCaptureSourceContributionV1;
+        runtime: import('@happier-dev/plugin-sdk').PluginCaptureSourceRuntime;
+        occurrenceId: string;
+        retirementSignal: AbortSignal;
+        isCurrent(): boolean;
+    }> | null>;
     /**
      * Activates one declared Agent through the canonical target owner and
      * returns its generation-fenced internal catalog projection. This avoids
@@ -998,6 +1012,7 @@ export type ResolvedExecutablePluginRuntimeRegistry = Readonly<{
         digest: string;
         bytes: Uint8Array;
     }>>;
+    readUiStoredImage?(params: DaemonPluginStoredImageReadRequest & Readonly<{ signal?: AbortSignal }>): Promise<PluginUiReadStoredImageResultV1>;
     /**
      * EU-4b: establish, poll and retire one live resource subscription for a
      * mounted plugin UI surface. Caller-scoped exactly like `readUiResource`,
@@ -1182,16 +1197,19 @@ function mergeActivatedContributes(
     }>) => Promise<AgentCliSessionCommandPluginSettingsV1 | null>,
 ): ResolvedContributionRegistry {
     const activationTargets = base.activationTargets ?? Object.freeze([]);
-    // Role text is declarative, but disabling/removing its plugin fences the
-    // same occurrence as executable consumers. Keep this projection live while
-    // a predecessor registry is retained during successor publication.
-    const withCurrentRoles = (registry: ResolvedContributionRegistry): ResolvedContributionRegistry => {
+    // Declarative role and workflow sources share the executable occurrence
+    // fence while a predecessor registry is retained during publication.
+    const withCurrentDeclarativeSources = (registry: ResolvedContributionRegistry): ResolvedContributionRegistry => {
         const roles = registry.roles ?? [];
-        if (roles.length === 0) return registry;
+        const workflows = registry.workflows ?? [];
+        if (roles.length === 0 && workflows.length === 0) return registry;
         return Object.freeze({
             ...registry,
             get roles() {
                 return Object.freeze(roles.filter((role) => isPluginRuntimeCurrent(role.pluginId)));
+            },
+            get workflows() {
+                return Object.freeze(workflows.filter((workflow) => isPluginRuntimeCurrent(workflow.pluginId)));
             },
         });
     };
@@ -1443,12 +1461,12 @@ function mergeActivatedContributes(
         && providerRuntimeRegistrations.length === 0
         && !registeredAgentRuntimeCatalogHooksProjected
     ) {
-        return withCurrentRoles(base.activationTargets === activationTargets
+        return withCurrentDeclarativeSources(base.activationTargets === activationTargets
             ? base
             : Object.freeze({ ...base, activationTargets }));
     }
 
-    return withCurrentRoles(createResolvedContributionRegistry({
+    return withCurrentDeclarativeSources(createResolvedContributionRegistry({
         ...base,
         activationTargets,
         actions: Object.freeze([
@@ -1807,6 +1825,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
             ...activationTargets.map((target) => target.pluginId),
             ...contributes.agents.flatMap((agent) => agent.pluginId ? [agent.pluginId] : []),
             ...(contributes.roles ?? []).map((role) => role.pluginId),
+            ...(contributes.workflows ?? []).map((workflow) => workflow.pluginId),
         ])
         : new Set([
             ...params.pluginIds,
@@ -1820,7 +1839,8 @@ export async function resolveExecutablePluginRuntimeRegistry(
         // A plugin this candidate no longer declares (removal) has no occurrence.
         if (!target
             && !contributes.agents.some((agent) => agent.pluginId === pluginId)
-            && !(contributes.roles ?? []).some((role) => role.pluginId === pluginId)) continue;
+            && !(contributes.roles ?? []).some((role) => role.pluginId === pluginId)
+            && !(contributes.workflows ?? []).some((workflow) => workflow.pluginId === pluginId)) continue;
         const activationSource = target
             ? resolveCommittedActivationSource(target, { recordActivatedManifestAuthority: false })
             : null;
@@ -3795,6 +3815,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 surface: request.surface,
                 ...(request.originSurface ? { originSurface: request.originSurface } : {}),
                 caller: request.caller,
+                ...(request.initiatingActionCaller ? { initiatingActionCaller: request.initiatingActionCaller } : {}),
                 ...(request.sessionId ? { defaultSessionId: request.sessionId } : {}),
                 signal: request.signal,
             },
@@ -6472,6 +6493,21 @@ export async function resolveExecutablePluginRuntimeRegistry(
         },
         activateContributionsOnDemand,
         acquireAgentCatalogEntry,
+        async resolveCaptureSource(reference) {
+            const target = authoritativeContributes.activationTargets.find(candidate => candidate.pluginId === reference.pluginId);
+            const declaration = target?.manifest.contributes.captureSources?.find(candidate => candidate.id === reference.localId);
+            if (!declaration) return null;
+            await activateContributionsOnDemand([{ pluginId: reference.pluginId, family: 'captureSources', localId: reference.localId }]);
+            const entry = activatedRegistry.targetRegistrations.find(candidate => candidate.pluginId === reference.pluginId
+                && candidate.registration.family === 'captureSources' && candidate.registration.localId === reference.localId);
+            if (!entry || entry.registration.family !== 'captureSources' || !isCurrentPluginOccurrence(reference.pluginId, entry.occurrenceId)) return null;
+            const lifecycle = resolveRuntimeConsumerLifecycle(reference.pluginId);
+            return Object.freeze({ declaration, runtime: entry.registration.value, occurrenceId: entry.occurrenceId,
+                retirementSignal: lifecycle.retirementSignal,
+                isCurrent: () => lifecycle.isCurrent() && isCurrentPluginOccurrence(reference.pluginId, entry.occurrenceId)
+                    && activatedRegistry.targetRegistrations.includes(entry),
+            });
+        },
         acquireManagedProviderRuntime,
         acquireProviderCatalogParsers,
         runManagedProviderExplicitStart,
@@ -7645,6 +7681,56 @@ export async function resolveExecutablePluginRuntimeRegistry(
             });
             assertResourceBindingCurrent();
             return await service.read(resourceParams.resourceId, { signal });
+        },
+        async readUiStoredImage(imageParams) {
+            const current = () => !imageParams.signal?.aborted && consumerAssembly.isOccurrenceCurrent()
+                && isCurrentPluginOccurrence(imageParams.callerPluginId, imageParams.expectedCallerOccurrenceId);
+            const assertCurrent = () => {
+                if (!current()) throw new PluginError({ code: 'plugin_generation_stale', message: 'Plugin image reader retired' });
+            };
+            assertCurrent();
+            const target = resolveExactActivationTarget(imageParams.callerPluginId);
+            if (!target) throw new PluginError({ code: 'plugin_session_scope_unavailable', message: 'Plugin Session read scope is unavailable' });
+            const policy = invocationServiceOwners.resolveInvocationHostPolicy({
+                pluginId: target.pluginId, occurrenceId: imageParams.expectedCallerOccurrenceId,
+                qualifiedId: `${target.pluginId}/ui/stored-image`,
+            }, {
+                hostAccessRequests: [
+                    ...target.manifest.hostAccess.required.map((request) => ({ request, required: true })),
+                    ...target.manifest.hostAccess.optional.map((request) => ({ request, required: false })),
+                ],
+                surface: 'ui', sessionId: imageParams.media.file.sessionId,
+                ...(imageParams.signal ? { signal: imageParams.signal } : {}),
+            });
+            if (policy.serviceBinding.availability.sessions !== 'available') {
+                throw new PluginError({ code: 'plugin_session_scope_unavailable', message: 'Plugin Session read scope is unavailable' });
+            }
+            const credentials = await readSessionCredentials();
+            if (!credentials) throw new PluginError({ code: 'plugin_sessions_not_authenticated', message: 'Session image read requires an Account' });
+            const [raw, account] = await Promise.all([
+                fetchSessionById({ token: credentials.token, sessionId: imageParams.media.file.sessionId }),
+                fetchAccountEncryptionCurrentness(credentials),
+            ]);
+            assertCurrent();
+            if (!raw || (raw.encryptionMode !== 'plain' && raw.encryptionMode !== 'e2ee') || raw.encryptionMode !== account.mode) {
+                throw new PluginError({ code: 'plugin_session_media_encryption_mismatch', message: 'Session image encryption mode is unavailable or inconsistent' });
+            }
+            const metadata = tryDecryptSessionPresentationMetadataView({ credentials, rawSession: raw, accountEncryptionMode: account.mode });
+            if (!metadata || typeof metadata.path !== 'string') {
+                throw new PluginError({ code: 'plugin_session_media_unavailable', message: 'Session image metadata is unavailable' });
+            }
+            const verification = await verifySessionStructuredImageInput({
+                cwd: metadata.path, sessionId: raw.id, image: sessionMediaToStructuredImageInput(imageParams.media),
+                maxBytes: configuration.filesUploadMaxFileBytes,
+                pluginAccess: {
+                    scopes: policy.serviceBinding.sessionScopes ?? [],
+                    session: projectPluginSessionAccessIdentity(raw, metadata),
+                    accountEncryptionMode: account.mode, sessionEncryptionMode: raw.encryptionMode,
+                },
+            });
+            assertCurrent();
+            if (verification.status !== 'verified') throw new PluginError({ code: 'plugin_session_media_unavailable', message: 'Session image is outside the declared read scope or unavailable' });
+            return { bytesBase64: verification.bytes.toString('base64'), mimeType: 'image/png', width: imageParams.media.width, height: imageParams.media.height };
         },
         async openUiResourceWatch(watchParams) {
             const watches = requireCurrentUiResourceWatches(

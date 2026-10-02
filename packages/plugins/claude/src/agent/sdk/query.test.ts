@@ -1,4 +1,5 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -196,7 +197,7 @@ describe('Claude plugin SDK query', () => {
         expect(args.filter((arg) => arg === '--settings')).toHaveLength(1);
     });
 
-    it('materializes inline MCP JSON before spawn and removes the private file after exit', async () => {
+    it.each([false, true])('materializes inline MCP JSON and preserves the native exit despite incomplete exact cleanup (incomplete=%s)', async (incomplete) => {
         const { ctx, spawnClient, stream } = createContextFixture();
         const inlineConfig = JSON.stringify({
             mcpServers: {
@@ -226,10 +227,23 @@ describe('Claude plugin SDK query', () => {
             expect((await stat(configPath)).mode & 0o777).toBe(0o600);
         }
 
-        const completion = sdkQuery.next();
-        await stream.exitWith({ exitCode: 0, signal: null });
-        await expect(completion).resolves.toEqual({ done: true, value: undefined });
-        await expect(stat(configPath)).rejects.toMatchObject({ code: 'ENOENT' });
+        const unexpected = join(dirname(configPath), 'unexpected');
+        const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        try {
+            if (incomplete) await writeFile(unexpected, 'retained');
+            const completion = sdkQuery.next();
+            await stream.exitWith({ exitCode: 0, signal: null });
+            await expect(completion).resolves.toEqual({ done: true, value: undefined });
+            await expect(stat(configPath)).rejects.toMatchObject({ code: 'ENOENT' });
+            if (incomplete) {
+                await expect(readFile(unexpected, 'utf8')).resolves.toBe('retained');
+                expect(warning).toHaveBeenCalledWith(expect.stringContaining('claude_mcp_cleanup_incomplete'));
+            }
+        } finally {
+            warning.mockRestore();
+            await unlink(unexpected).catch(() => undefined);
+            await rmdir(dirname(configPath)).catch(() => undefined);
+        }
     });
 
     it('removes a materialized MCP config when the query is disposed before process exit', async () => {
@@ -447,7 +461,7 @@ describe('Claude plugin SDK query', () => {
         await expect(responsePromise).resolves.toEqual(response);
     });
 
-    it('propagates spawn failures and removes materialized MCP config', async () => {
+    it.each([false, true])('preserves spawn failure cause and observable exact MCP cleanup (incomplete=%s)', async (incomplete) => {
         const failure = new Error('spawn failed');
         let configPath: string | undefined;
         const ctx = {
@@ -456,6 +470,7 @@ describe('Claude plugin SDK query', () => {
                     spawnClient: vi.fn(async (spec) => {
                         const args = spec.launch.args ?? [];
                         configPath = args[args.indexOf('--mcp-config') + 1];
+                        if (incomplete && configPath) await writeFile(join(dirname(configPath), 'unexpected'), 'retained');
                         throw failure;
                     }),
                 },
@@ -474,9 +489,22 @@ describe('Claude plugin SDK query', () => {
             },
         });
 
-        await expect(sdkQuery.next()).rejects.toThrow('spawn failed');
-        expect(configPath).toBeTruthy();
-        await expect(stat(configPath!)).rejects.toMatchObject({ code: 'ENOENT' });
+        const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        try {
+            if (incomplete) {
+                await expect(sdkQuery.next()).rejects.toMatchObject({ cause: failure, errors: [failure, expect.any(Error)] });
+                expect(warning).toHaveBeenCalledWith(expect.stringContaining('claude_mcp_cleanup_incomplete'));
+                await expect(readFile(join(dirname(configPath!), 'unexpected'), 'utf8')).resolves.toBe('retained');
+            } else await expect(sdkQuery.next()).rejects.toBe(failure);
+            expect(configPath).toBeTruthy();
+            await expect(stat(configPath!)).rejects.toMatchObject({ code: 'ENOENT' });
+        } finally {
+            warning.mockRestore();
+            if (configPath) {
+                await unlink(join(dirname(configPath), 'unexpected')).catch(() => undefined);
+                await rmdir(dirname(configPath)).catch(() => undefined);
+            }
+        }
     });
 
     it('propagates failed Claude process exits with stderr to the SDK message iterator', async () => {

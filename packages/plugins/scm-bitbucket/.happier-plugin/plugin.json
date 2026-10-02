@@ -26376,6 +26376,7 @@
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -26443,6 +26444,7 @@
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [
       {
@@ -29419,7 +29421,8 @@
     },
     "voiceModelPacks": [],
     "voiceProviders": [],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "Detects Bitbucket Cloud remotes, provides repository operations, and brings its pull requests into PRs & Issues.",
   "displayName": "Bitbucket SCM hosting provider",

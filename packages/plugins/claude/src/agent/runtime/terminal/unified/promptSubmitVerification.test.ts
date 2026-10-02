@@ -225,4 +225,19 @@ Explain whether the message arrived, and report any remaining issue.`;
       ].join('\n'),
     })).toBe(false);
   });
+
+  it('verifies chunked native paste markers without accepting a mixed user draft or historical paste', () => {
+    const policy = createClaudePromptSubmitVerificationPolicy();
+    const promptText = 'large escaped prompt '.repeat(100_000);
+    // Claude Code 2.1.287 renders separate Herdr IPC pastes as adjacent blocks.
+    const markers = '[Pasted text #1][Pasted text #2][Pasted text #3 +7 lines]';
+    expect(policy.verifyBeforeSubmitStaging({ promptText, screenText: `❯ ${markers}` })).toBe(true);
+    expect(policy.verifyAfterSubmit({ promptText, screenText: `❯ ${markers}` })).toBe(true);
+    for (const composer of [`user draft ${markers}`, `${markers} user draft`, '[Pasted text #1][not a paste marker]']) {
+      expect(policy.verifyBeforeSubmitStaging({ promptText, screenText: `❯ ${composer}` })).toBe(false);
+    }
+    expect(policy.verifyAfterSubmit({
+      promptText, screenText: `❯ ${markers}\n\n│ > │`,
+    })).toBe(false);
+  });
 });

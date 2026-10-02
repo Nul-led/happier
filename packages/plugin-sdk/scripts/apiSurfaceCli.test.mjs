@@ -4038,6 +4038,42 @@ test('CLI permits one Preview callable to reach another Preview author contract'
   }
 });
 
+test('CLI closes a published type through its existing declaration alias chain', async () => {
+  const root = await createPackageFixture();
+  try {
+    await publishFixtureSymbols(root, [
+      { specifier: './actions', exportName: 'PublicOptions', kind: 'type',
+        sourceModule: 'src/actions/service.ts', sourceExport: 'PublicOptions', realm: 'any' },
+      { specifier: './actions', exportName: 'createActionsService', kind: 'value',
+        sourceModule: 'src/actions/service.ts', sourceExport: 'createActionsService', realm: 'any' },
+    ]);
+    await writeFile(join(root, 'src/actions/service.ts'), [
+      'export interface ActionsService {}',
+      'interface CanonicalOptions { readonly enabled: boolean }',
+      'type ProjectedOptions = CanonicalOptions;',
+      'export type PublicOptions = ProjectedOptions;',
+      'export declare function createActionsService(input: CanonicalOptions): ActionsService;',
+      '',
+    ].join('\n'), 'utf8');
+    const result = runJsonCli(root);
+    assert.equal(result.status, 0, result.stderr);
+    await writeFile(join(root, 'src/actions/service.ts'), [
+      'export interface ActionsService {}',
+      'interface HiddenMember { readonly secret: string }',
+      'interface CanonicalOptions { readonly hidden: HiddenMember }',
+      'type ProjectedOptions = CanonicalOptions;',
+      'export type PublicOptions = ProjectedOptions;',
+      'export declare function createActionsService(input: CanonicalOptions): ActionsService;',
+      '',
+    ].join('\n'), 'utf8');
+    const hidden = runJsonCli(root);
+    assert.equal(hidden.status, 1, 'publishing an alias chain must not hide unlisted member types');
+    assert.match(hidden.stderr, /public signature references author type HiddenMember, which is absent from the author inventory/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('CLI rejects workspace dependency types that are absent from the author inventory', async () => {
   const root = await createPackageFixture();
   try {

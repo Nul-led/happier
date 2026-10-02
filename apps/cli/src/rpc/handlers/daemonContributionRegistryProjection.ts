@@ -1,5 +1,9 @@
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
+import { DaemonPluginUiCaptureSourceReadRequestSchema, DaemonPluginUiCaptureSourceReadResponseSchema } from '@happier-dev/protocol';
+import type { MachineLiveStreamCaptureRegistry } from '@/daemon/peer/mediation/stream/captureRegistry';
+import { registerPluginCaptureSource } from '@/daemon/peer/mediation/stream/pluginCaptureSource';
+import { DaemonPluginStoredImageReadRequestSchema, DaemonPluginStoredImageReadResponseSchema } from '@happier-dev/protocol';
 
 import type { RpcHandlerContext, RpcHandlerRegistrar } from '@/api/rpc/types';
 import { configuration } from '@/configuration';
@@ -162,6 +166,7 @@ import {
 } from './daemonPluginCollectionCandidatePreparation';
 
 export type DaemonContributionRegistryProjectionRegistrationOptions = Readonly<{
+    resolveCaptureRegistry?: () => MachineLiveStreamCaptureRegistry | null;
     resolveRegistry?: () => Promise<ResolvedContributionRegistry>;
     resolveRuntimeRegistry?: () => Promise<ResolvedExecutablePluginRuntimeRegistry>;
     resolveInstalledPackages?: () => Promise<readonly PluginCatalogEntry[]>;
@@ -2353,6 +2358,26 @@ export function registerDaemonContributionRegistryProjectionHandler(
             },
         );
     });
+    rpc.registerHandler(RPC_METHODS.DAEMON_PLUGIN_STORED_IMAGE_READ, async (raw: unknown, context) => {
+        const request = DaemonPluginStoredImageReadRequestSchema.safeParse(raw);
+        if (!request.success) return { ok: false, code: 'plugin_session_media_request_invalid' };
+        const lease = await acquireProjectionRuntimeRegistryLease(opts);
+        try {
+            if (!isExpectedPluginOccurrenceCurrent(lease.registry, request.data.callerPluginId, request.data.expectedCallerOccurrenceId)) {
+                return { ok: false, code: 'plugin_generation_stale' };
+            }
+            if (!lease.registry.readUiStoredImage) return { ok: false, code: 'plugin_session_media_unavailable' };
+            const image = await lease.registry.readUiStoredImage({ ...request.data, ...(context?.signal ? { signal: context.signal } : {}) });
+            if (!isExpectedPluginOccurrenceCurrent(lease.registry, request.data.callerPluginId, request.data.expectedCallerOccurrenceId)) {
+                return { ok: false, code: 'plugin_generation_stale' };
+            }
+            return DaemonPluginStoredImageReadResponseSchema.parse({ ok: true, image });
+        } catch (error) {
+            return { ok: false, code: isPluginError(error) ? error.code : 'plugin_session_media_unavailable' };
+        } finally {
+            await lease.release();
+        }
+    });
     rpc.registerHandler(RPC_METHODS.DAEMON_PLUGIN_UI_RESOURCE_READ, async (raw: unknown, context) => {
         const request = DaemonPluginUiResourceReadRequestSchema.safeParse(raw);
         if (!request.success) {
@@ -2433,6 +2458,38 @@ export function registerDaemonContributionRegistryProjectionHandler(
         } finally {
             await lease.release();
         }
+    });
+    rpc.registerHandler(RPC_METHODS.DAEMON_PLUGIN_UI_CAPTURE_SOURCE_READ, async (raw: unknown, context) => {
+        const parsed = DaemonPluginUiCaptureSourceReadRequestSchema.safeParse(raw);
+        if (!parsed.success) return { ok: false, code: 'invalid_payload' };
+        const request = parsed.data;
+        const lease = await acquireProjectionRuntimeRegistryLease(opts);
+        try {
+            const origin = await opts.resolvePluginProjectionExecutionOriginContext?.();
+            if (!origin || origin.machineId !== request.machineId) return { ok: false, code: 'capture_source_denied' };
+            if (!isExpectedPluginOccurrenceCurrent(lease.registry, request.callerPluginId, request.expectedCallerOccurrenceId)) {
+                return { ok: false, code: 'plugin_occurrence_stale' };
+            }
+            const registry = opts.resolveCaptureRegistry?.();
+            if (!registry) return { ok: false, code: 'capture_source_unavailable' };
+            if (request.reference.kind === 'plugin') {
+                if (request.reference.source.pluginId !== request.callerPluginId) return { ok: false, code: 'capture_source_denied' };
+                await registerPluginCaptureSource({ runtimeRegistry: lease.registry, captureRegistry: registry, reference: request.reference.source });
+            }
+            context?.signal?.throwIfAborted();
+            if (!isExpectedPluginOccurrenceCurrent(lease.registry, request.callerPluginId, request.expectedCallerOccurrenceId)) {
+                return { ok: false, code: 'plugin_occurrence_stale' };
+            }
+            const described = registry.describeViewing({ pluginId: request.callerPluginId, reference: request.reference });
+            if (!described.ok) return { ok: false, code: described.reasonCode };
+            return DaemonPluginUiCaptureSourceReadResponseSchema.parse({ ok: true, source: {
+                sourceId: described.source.sourceId, sourceOccurrenceId: described.source.sourceOccurrenceId,
+                streamFamily: described.source.streamFamily, supportedCodecs: described.source.capabilities.supportedCodecs,
+                requiresApproval: !described.source.plugin,
+            } });
+        } catch {
+            return { ok: false, code: 'capture_source_unavailable' };
+        } finally { await lease.release(); }
     });
     rpc.registerHandler(RPC_METHODS.DAEMON_PLUGIN_COMPOSER_REFERENCE_SEARCH, async (raw: unknown, context) => {
         const request = DaemonPluginComposerReferenceSearchRequestSchema.safeParse(raw);
@@ -2801,6 +2858,8 @@ export function registerDaemonContributionRegistryProjectionHandler(
                     // adapter supplies only the actual UI execution origin.
                     surface: invocationSurface,
                     invocationSurface,
+                    // This ingress already admitted the present user's mounted or host-presented intent.
+                    initiatingActionCaller: { kind: 'host' },
                     ...(mountedCaller.status === 'available'
                         ? {
                             caller: mountedCaller.caller,

@@ -122,6 +122,10 @@ export type ScmOperationErrorCode =
     | 'COMMIT_IDENTITY_REQUIRED'
     | 'COMMIT_EMPTY'
     | 'COMMIT_AMEND_PUBLISHED'
+    | 'COMMIT_UNDO_PUBLISHED'
+    | 'COMMIT_UNDO_MERGE'
+    | 'COMMIT_UNDO_NO_PARENT'
+    | 'COMMIT_UNDO_HEAD_CHANGED'
     | 'INDEX_LOCKED'
     | 'INDEX_RECONCILIATION_FAILED'
     | 'REMOTE_NETWORK_FAILED'
@@ -159,6 +163,7 @@ export type ScmCapabilities = {
     writeExclude: boolean;
     writeDiscard?: boolean;
     writeCommit: boolean;
+    writeCommitUndoLast?: boolean;
     writeCommitAmend?: boolean;
     writeCommitSignOff?: boolean;
     writeCommitPathSelection: boolean;
@@ -285,7 +290,10 @@ export type ScmOperationNextAction =
     | { kind: 'refresh' | 'retry' | 'resolve_conflicts' | 'continue' | 'skip' | 'abort' | 'reconcile_index' | 'choose_dirty_policy' | 'choose_reconcile' | 'configure_upstream' | 'authenticate' }
     | { kind: 'open_url'; url: string };
 
-export type ScmOperationOutcome = {
+/** Preserve each schema arm as an object rather than an intersection carrier. */
+type ScmShape<T> = T extends object ? { [K in keyof T]: T[K] } : T;
+
+export type ScmOperationOutcome = ScmShape<{
     v: 1;
     nextActions: ScmOperationNextAction[];
     message?: string;
@@ -298,7 +306,7 @@ export type ScmOperationOutcome = {
     | { kind: 'failed'; errorCode: ScmOperationErrorCode; repositoryState?: ScmOperationRepositoryState }
     | { kind: 'cancelled'; errorCode?: ScmOperationErrorCode; repositoryState: ScmOperationRepositoryState }
     | { kind: 'outcome_unknown'; errorCode: ScmOperationErrorCode; reconciliation: ScmOperationReconciliation; repositoryState?: ScmOperationRepositoryState }
-);
+)>;
 
 export type ScmPullRequestState = 'open' | 'closed' | 'merged' | 'draft' | 'unknown';
 export type ScmPullRequestChecksState = 'pending' | 'success' | 'failure' | 'unknown';
@@ -380,7 +388,9 @@ export type ScmWorkingSnapshot = {
     capabilities: ScmCapabilities;
     branch: {
         head: string | null;
+        headOid?: string;
         upstream: string | null;
+        upstreamOid?: string;
         ahead: number;
         behind: number;
         detached: boolean;
@@ -538,7 +548,7 @@ export type ScmChangeDiscardResponse = {
     error?: string;
     errorCode?: ScmOperationErrorCode;
 };
-export type ScmCommitCreateRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
+export type ScmCommitCreateRequest = ScmShape<Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     message: string;
     mode?: 'commit' | 'amend';
     signOff?: boolean;
@@ -551,7 +561,7 @@ export type ScmCommitCreateRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'bac
             exclude?: ScmSelectedMutationPath[];
         };
     patches?: { path: ScmSelectedMutationPath; patch: string }[];
-};
+}>;
 
 export type ScmCommitCreateResponse = {
     success: boolean;
@@ -586,6 +596,15 @@ export type ScmLogListResponse = {
 };
 
 export type ScmCommitBackoutRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & { commit: string };
+export type ScmCommitUndoLastRequest = ScmShape<Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & { expectedHeadOid: string }>;
+export type ScmCommitUndoLastResponse = {
+    success: boolean;
+    outcome?: ScmOperationOutcome;
+    undoneCommitSha?: string;
+    headOid?: string;
+    error?: string;
+    errorCode?: ScmOperationErrorCode;
+};
 export type ScmCommitBackoutResponse = {
     success: boolean;
     outcome?: ScmOperationOutcome;
@@ -657,13 +676,13 @@ export type ScmBranchOperationControlRequest = Pick<ScmStatusSnapshotRequest, 'c
     operation: ScmRepositoryOperationKind;
 };
 
-export type ScmConflictAcceptSideRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
+export type ScmConflictAcceptSideRequest = ScmShape<Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     path: ScmSelectedMutationPath;
     side: 'ours' | 'theirs';
-};
-export type ScmConflictMarkResolvedRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
+}>;
+export type ScmConflictMarkResolvedRequest = ScmShape<Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference' | 'outcomeVersion'> & {
     paths: ScmSelectedMutationPath[];
-};
+}>;
 export type ScmConflictAcceptSideResponse = ScmBranchIntegrationResponse;
 export type ScmConflictMarkResolvedResponse = ScmBranchIntegrationResponse;
 
@@ -845,6 +864,7 @@ export type ScmHostingRepositoryDescribePublishTargetsRequest = {
     [key: string]: unknown;
     cwd?: string;
     backendPreference?: ScmStatusSnapshotRequest['backendPreference'];
+    outcomeVersion?: 1;
     providerId?: string;
     providerKind?: ScmHostingProviderKind;
 };
@@ -861,6 +881,7 @@ export type ScmHostingRepositoryDescribePublishTargetsResponse =
     | ({
         [key: string]: unknown;
         success: false;
+        outcome?: ScmOperationOutcome;
         error: string;
         errorCode?: ScmOperationErrorCode;
         remediation?: {
@@ -885,6 +906,7 @@ export type ScmHostingRepositoryPublishRequest = {
     [key: string]: unknown;
     cwd?: string;
     backendPreference?: ScmStatusSnapshotRequest['backendPreference'];
+    outcomeVersion?: 1;
     providerId?: string;
     providerKind: ScmHostingProviderKind;
     owner: string;
@@ -1310,6 +1332,10 @@ export const SCM_OPERATION_ERROR_CODES: Readonly<{
     COMMIT_IDENTITY_REQUIRED: 'COMMIT_IDENTITY_REQUIRED';
     COMMIT_EMPTY: 'COMMIT_EMPTY';
     COMMIT_AMEND_PUBLISHED: 'COMMIT_AMEND_PUBLISHED';
+    COMMIT_UNDO_PUBLISHED: 'COMMIT_UNDO_PUBLISHED';
+    COMMIT_UNDO_MERGE: 'COMMIT_UNDO_MERGE';
+    COMMIT_UNDO_NO_PARENT: 'COMMIT_UNDO_NO_PARENT';
+    COMMIT_UNDO_HEAD_CHANGED: 'COMMIT_UNDO_HEAD_CHANGED';
     INDEX_LOCKED: 'INDEX_LOCKED';
     INDEX_RECONCILIATION_FAILED: 'INDEX_RECONCILIATION_FAILED';
     REMOTE_NETWORK_FAILED: 'REMOTE_NETWORK_FAILED';

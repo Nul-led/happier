@@ -1104,7 +1104,8 @@ export function createOpenCodeServerClient(input: Readonly<{
         path: `/session/${encodeURIComponent(input.sessionId)}/message`,
         query: directoryQuery(input.directory),
       });
-      return Array.isArray(response) ? response : [];
+      if (!Array.isArray(response)) throw new Error('OpenCode session message page is invalid');
+      return response;
     },
     async sessionTodo(input) {
       if (isV2) {

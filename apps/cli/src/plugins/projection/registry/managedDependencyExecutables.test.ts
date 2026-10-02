@@ -36,6 +36,43 @@ function readBundledAntigravityAcpServerContribution(): ResolvedInstallableContr
 }
 
 describe('selectExecutableManagedDependencies', () => {
+    it('projects declared GitHub release and launch facts through the executable dependency registry', () => {
+        const declared = {
+            provenance: 'first_party',
+            source: { kind: 'bundled' },
+            pluginId: 'happier.agent.codex',
+            manifestPath: 'bundled:happier.agent.codex',
+            definition: {
+                id: 'codex-acp', title: 'Codex ACP', executable: 'codex-acp',
+                sources: [{
+                    kind: 'githubReleaseBinary', installId: 'dep.codex-acp',
+                    repo: 'zed-industries/codex-acp', archiveLayout: 'single_executable',
+                    assetNamePrefix: 'codex-acp',
+                    targetByPlatform: { 'linux-x64-gnu': 'x86_64-unknown-linux-gnu' },
+                    launch: {
+                        kind: 'codexAcp',
+                        overrideEnvironmentKey: 'HAPPIER_CODEX_ACP_BIN',
+                        configOverridesEnvironmentKey: 'HAPPIER_CODEX_ACP_CONFIG_OVERRIDES',
+                        configOverrideArgument: '-c',
+                    },
+                }],
+            },
+        } satisfies ResolvedInstallableContribution;
+        const registry = resolveExecutableManagedDependenciesRegistry(
+            [declared], { platform: 'linux', architecture: 'x64' },
+        );
+        expect(registry.descriptors).toMatchObject([{
+            owner: { pluginId: 'happier.agent.codex' },
+            descriptor: {
+                key: 'codex-acp', capabilityId: 'dep.codex-acp',
+                source: {
+                    kind: 'github_release_binary', archiveLayout: 'single_executable',
+                    targetByPlatform: { 'linux-x64-gnu': 'x86_64-unknown-linux-gnu' },
+                    launch: { overrideEnvironmentKey: 'HAPPIER_CODEX_ACP_BIN' },
+                },
+            },
+        }]);
+    });
     it('projects a retained structural generation without a copied manifest digest', () => {
         const retained = {
             provenance: 'external',

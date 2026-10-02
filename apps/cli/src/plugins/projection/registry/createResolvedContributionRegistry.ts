@@ -31,7 +31,6 @@ import type {
     ResolvedOpenableContentViewerContribution,
     ResolvedProviderContribution,
     ResolvedPromptAssetContribution,
-    ResolvedHostedWebContribution,
     ResolvedRequestInterceptorContribution,
     ResolvedSettingsContribution,
     ResolvedScmBackendContribution,
@@ -51,7 +50,6 @@ import type {
     ResolvedUiSettingsGroupV2Contribution,
     ResolvedUiSettingsPageV2Contribution,
     ResolvedUiTranslationBundleV2Contribution,
-    ResolvedUiTranslationsContribution,
     ResolvedActivationTarget,
     ResolvedVoiceModelPackContribution,
     ResolvedVoiceProviderContribution,
@@ -205,12 +203,10 @@ export function createResolvedContributionRegistry(inputs: ResolvedContributionI
     const commands = Object.freeze([...(inputs.commands ?? [])].sort(compareCommandContributes));
     const resources = Object.freeze([...(inputs.resources ?? [])].sort(compareResourceContributes));
     const promptAssets = Object.freeze([...(inputs.promptAssets ?? [])].sort(comparePromptAssetContributes));
-    const uiTranslations = Object.freeze([...(inputs.uiTranslations ?? [])].sort(compareUiTranslationsContributes));
     const structuredMessages = Object.freeze([...(inputs.structuredMessages ?? [])].sort(compareStructuredMessageContributes));
     const sessionHeaderActions = Object.freeze([...(inputs.sessionHeaderActions ?? [])].sort(compareSessionHeaderActionContributes));
     const transcriptActivities = Object.freeze([...(inputs.transcriptActivities ?? [])].sort(compareTranscriptActivityContributes));
     const sessionInfoSections = Object.freeze([...(inputs.sessionInfoSections ?? [])].sort(compareTranscriptActivityContributes));
-    const hostedWeb = Object.freeze([...(inputs.hostedWeb ?? [])].sort(compareHostedWebContributes));
     const browserTargets = Object.freeze([...(inputs.browserTargets ?? [])].sort(compareBrowserTargetContributes));
     const browserActions = Object.freeze([...(inputs.browserActions ?? [])].sort(compareBrowserActionContributes));
     const settings = Object.freeze([...(inputs.settings ?? [])].sort(compareSettingsContributes));
@@ -243,6 +239,8 @@ export function createResolvedContributionRegistry(inputs: ResolvedContributionI
     const requestInterceptors = Object.freeze([...(inputs.requestInterceptors ?? [])].sort(compareRequestInterceptorContributes));
     const voiceModelPacks = Object.freeze([...(inputs.voiceModelPacks ?? [])].sort(compareVoiceModelPackContributes));
     const roles = Object.freeze([...(inputs.roles ?? [])].sort((left, right) =>
+        buildQualifiedPluginContributionKey(left.identity).localeCompare(buildQualifiedPluginContributionKey(right.identity))));
+    const workflows = Object.freeze([...(inputs.workflows ?? [])].sort((left, right) =>
         buildQualifiedPluginContributionKey(left.identity).localeCompare(buildQualifiedPluginContributionKey(right.identity))));
     const voiceProviders = Object.freeze([...(inputs.voiceProviders ?? [])].sort((left, right) => (
         buildQualifiedPluginContributionKey(left.identity).localeCompare(buildQualifiedPluginContributionKey(right.identity))
@@ -286,7 +284,6 @@ export function createResolvedContributionRegistry(inputs: ResolvedContributionI
     const sessionHeaderActionsById = new Map<string, ResolvedSessionHeaderActionContribution>();
     const transcriptActivitiesById = new Map<string, ResolvedTranscriptActivityContribution>();
     const sessionInfoSectionsById = new Map<string, (typeof sessionInfoSections)[number]>();
-    const hostedWebById = new Map<string, ResolvedHostedWebContribution>();
     const browserTargetsById = new Map<string, ResolvedBrowserTargetContribution>();
     const browserActionsById = new Map<string, ResolvedBrowserActionContribution>();
     const settingsById = new Map<string, ResolvedSettingsContribution>();
@@ -384,14 +381,6 @@ export function createResolvedContributionRegistry(inputs: ResolvedContributionI
             throw new Error(`Duplicate Session-info section contribution '${id}'`);
         }
         sessionInfoSectionsById.set(id, section);
-    }
-
-    for (const contribution of hostedWeb) {
-        const id = resolvePluginUiContributionRegistryId(contribution);
-        if (hostedWebById.has(id)) {
-            throw new Error(`Duplicate hosted web contribution '${id}'`);
-        }
-        hostedWebById.set(id, contribution);
     }
 
     for (const target of browserTargets) {
@@ -507,12 +496,10 @@ export function createResolvedContributionRegistry(inputs: ResolvedContributionI
         commands,
         resources,
         promptAssets,
-        uiTranslations,
         structuredMessages,
         sessionHeaderActions,
         transcriptActivities,
         sessionInfoSections,
-        hostedWeb,
         browserTargets,
         browserActions,
         settings,
@@ -531,6 +518,7 @@ export function createResolvedContributionRegistry(inputs: ResolvedContributionI
         requestInterceptors,
         voiceModelPacks,
         roles,
+        workflows,
         voiceProviders,
         accountCollections,
         pluginContributionPoints,
@@ -551,7 +539,6 @@ export function createResolvedContributionRegistry(inputs: ResolvedContributionI
         sessionHeaderActionsById: Object.freeze(sessionHeaderActionsById),
         transcriptActivitiesById: Object.freeze(transcriptActivitiesById),
         sessionInfoSectionsById: Object.freeze(sessionInfoSectionsById),
-        hostedWebById: Object.freeze(hostedWebById),
         browserTargetsById: Object.freeze(browserTargetsById),
         browserActionsById: Object.freeze(browserActionsById),
         settingsById: Object.freeze(settingsById),
@@ -1020,12 +1007,10 @@ export function createMergedContributionRegistry(
             ...(builtIn.composerRegions ?? []),
             ...(plugin.composerRegions ?? []),
         ]),
-        uiTranslations: Object.freeze([...(builtIn.uiTranslations ?? []), ...(plugin.uiTranslations ?? [])]),
         structuredMessages: Object.freeze([...(builtIn.structuredMessages ?? [])]),
         sessionHeaderActions: Object.freeze([...(builtIn.sessionHeaderActions ?? []), ...(plugin.sessionHeaderActions ?? [])]),
         transcriptActivities: Object.freeze([...(builtIn.transcriptActivities ?? []), ...(plugin.transcriptActivities ?? [])]),
         sessionInfoSections: Object.freeze([...(builtIn.sessionInfoSections ?? []), ...(plugin.sessionInfoSections ?? [])]),
-        hostedWeb: Object.freeze([...(builtIn.hostedWeb ?? []), ...(plugin.hostedWeb ?? [])]),
         browserTargets: Object.freeze([...(builtIn.browserTargets ?? []), ...(plugin.browserTargets ?? [])]),
         browserActions: Object.freeze([...(builtIn.browserActions ?? []), ...(plugin.browserActions ?? [])]),
         settings: Object.freeze([...(builtIn.settings ?? []), ...(plugin.settings ?? [])]),
@@ -1046,6 +1031,7 @@ export function createMergedContributionRegistry(
         connectedAccountDescriptors: Object.freeze([...(builtIn.connectedAccountDescriptors ?? []), ...(plugin.connectedAccountDescriptors ?? [])]),
         voiceModelPacks: Object.freeze([...(builtIn.voiceModelPacks ?? []), ...(plugin.voiceModelPacks ?? [])]),
         roles: Object.freeze([...(builtIn.roles ?? []), ...(plugin.roles ?? [])]),
+        workflows: Object.freeze([...(builtIn.workflows ?? []), ...(plugin.workflows ?? [])]),
         voiceProviders: Object.freeze([...(builtIn.voiceProviders ?? []), ...(plugin.voiceProviders ?? [])]),
         accountCollections: Object.freeze([...(builtIn.accountCollections ?? []), ...(plugin.accountCollections ?? [])]),
         pluginContributionPoints: Object.freeze([
@@ -1185,18 +1171,6 @@ function comparePluginUiContributionById(
     return (left.manifestPath ?? '').localeCompare(right.manifestPath ?? '');
 }
 
-function compareUiTranslationsContributes(
-    left: ResolvedUiTranslationsContribution,
-    right: ResolvedUiTranslationsContribution,
-): number {
-    const leftPluginId = left.pluginId ?? '';
-    const rightPluginId = right.pluginId ?? '';
-    if (leftPluginId !== rightPluginId) {
-        return leftPluginId.localeCompare(rightPluginId);
-    }
-    return (left.manifestPath ?? '').localeCompare(right.manifestPath ?? '');
-}
-
 function compareUiTranslationsV2Contributes(
     left: ResolvedUiTranslationBundleV2Contribution,
     right: ResolvedUiTranslationBundleV2Contribution,
@@ -1229,13 +1203,6 @@ function compareSessionHeaderActionContributes(
 function compareTranscriptActivityContributes(
     left: ResolvedTranscriptActivityContribution,
     right: ResolvedTranscriptActivityContribution,
-): number {
-    return comparePluginUiContributionById(left, right);
-}
-
-function compareHostedWebContributes(
-    left: ResolvedHostedWebContribution,
-    right: ResolvedHostedWebContribution,
 ): number {
     return comparePluginUiContributionById(left, right);
 }

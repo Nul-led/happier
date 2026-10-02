@@ -187,6 +187,7 @@ function legacyUnsupportedCode(descriptor: InstallableDependencyDescriptor): str
  * exclusion and retention pinning cannot drift from the projection.
  */
 function projectedInstallId(source: ManagedDependencySourceModelEntry): string | null {
+    if (source.declaration.kind === 'githubReleaseBinary') return source.declaration.installId.slice('dep.'.length);
     return source.declaration.kind === 'managedPypiWheelAsset' || source.declaration.kind === 'pinnedArchive'
         ? source.declaration.installId
         : null;
@@ -285,7 +286,12 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
                         ? { trustedPublisher: source.declaration.trustedPublisher }
                         : {}),
                 })
-                : null;
+                : source.declaration.kind === 'githubReleaseBinary'
+                    ? (() => {
+                        const { kind: _kind, installId: _installId, ...declaration } = source.declaration;
+                        return { ...declaration, kind: 'github_release_binary' as const };
+                    })()
+                    : null;
         if (
             !winner
             || !descriptor
@@ -295,7 +301,7 @@ export function createStablePluginManagedDependenciesHost(params: Readonly<{
             || winner.owner.manifestPath !== owner.dependency.manifestPath
             || descriptor.id !== installId
             || descriptor.key !== installId
-            || descriptor.capabilityId !== installId
+            || descriptor.capabilityId !== (source.declaration.kind === 'githubReleaseBinary' ? source.declaration.installId : installId)
             || descriptor.binary.commands.length !== 1
             || descriptor.binary.commands[0] !== owner.dependency.definition.executable
             || !isDeepStrictEqual(descriptor.source, expectedSource)

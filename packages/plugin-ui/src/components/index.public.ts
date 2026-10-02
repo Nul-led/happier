@@ -21,6 +21,7 @@ export * from './Foundation.js';
 export * from './Form.js';
 export { Icon, type IconName, type IconProps } from './Icon.js';
 export * from './Image.js';
+export * from './StoredImage.js';
 export * from './Layout.js';
 export * from './List.js';
 export * from './NavigationList.js';

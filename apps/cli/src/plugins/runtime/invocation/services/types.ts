@@ -33,6 +33,8 @@ export type AgentInvocationTurnAdmissionWitness = Readonly<{
     causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     /** Live host Session mode, sampled with the active-turn witness. */
     callerPermissionMode?: SessionPermissionMode | null;
+    /** Prepared host Session/turn facts; absent when this path has no Session caller. */
+    agentStartCaller?: import('@happier-dev/protocol').AgentStartSessionCallerV1;
 }>;
 
 /**
@@ -65,6 +67,10 @@ export type PluginInvocationServicesSeed = Readonly<{
     surface: PluginInvocationSurface;
     /** Host-stamped provenance for a nested target invocation. */
     caller?: PluginInvocationCaller;
+    /** Private initiating Action provenance; not projected into the SDK context. */
+    initiatingActionCaller?: import('@happier-dev/protocol/actions').ActionCaller;
+    /** Descriptive fact from authenticated host-control transport, never SDK input. */
+    startedBy?: import('@happier-dev/protocol').WorkflowRunStartedByV1;
     /** Host-private external PAT authority; never projected into plugin input/context. */
     externalActionContext?: PluginExternalActionContext;
     /**

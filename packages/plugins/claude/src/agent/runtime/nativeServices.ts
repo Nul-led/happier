@@ -124,7 +124,7 @@ export function createClaudeNativeAgentSdkContext(
   return {
     logger: createClaudeRuntimeLogger(context),
     agentRuntime: {
-      exec: createClaudeNativeSdkQueryContext(context.services.exec),
+      exec: createClaudeNativeSdkQueryContext(context.services.exec, (message) => context.services.logger.warn(message)),
       sessionHooks: {
         async startServer(request) {
           const { providerId: _providerId, sessionId: _sessionId, lifecycle: _lifecycle, ...nativeRequest } = request;
@@ -229,7 +229,7 @@ export function createClaudeNativeExecutionRunAgentSdkContext(
   return {
     logger: createClaudeRuntimeLogger(context),
     agentRuntime: {
-      exec: createClaudeNativeSdkQueryContext(context.services.exec),
+      exec: createClaudeNativeSdkQueryContext(context.services.exec, (message) => context.services.logger.warn(message)),
       fileFollow: services.fileFollow,
       toolExecution: services.toolExecution,
       ...(services.nativeHome ? { nativeHome: services.nativeHome } : {}),

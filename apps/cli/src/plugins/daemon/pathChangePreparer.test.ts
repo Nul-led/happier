@@ -2386,6 +2386,42 @@ describe('createDaemonPathPluginChangePreparer', () => {
     })).resolves.toEqual(expect.objectContaining({ kind: 'committed', pluginId: 'acme.descriptor' }));
   });
 
+  it.each(['manifest', 'code'] as const)('rejects saved-disabled development sources before evaluating their code (%s)', async (sourceKind) => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-disabled-development-'));
+    roots.push(happyHomeDir);
+    const pluginRoot = await createDescriptorPlugin({ development: true });
+    const sourceRootPath = sourceKind === 'code' ? join(pluginRoot, 'src', 'index.ts') : pluginRoot;
+    const runtimeLifecycle: PluginRegistryRuntimeLifecycle = {
+      prepare: async () => ({ abort: async () => undefined, adopt: async () => undefined }),
+    };
+    const service = createDaemonPluginChangeService({
+      prepare: createDaemonPathPluginChangePreparer({
+        happyHomeDir,
+        runtimeLifecycle,
+        isRegisteredDevelopmentRoot: () => true,
+        runManagedPluginPnpm: successfulManagedPnpmBoundary,
+      }),
+    });
+    let initial: PluginChangeRequestResult | PluginChangeDecisionResult = await service.requestPluginChange({
+      kind: 'development', sourceRootPath,
+    });
+    if (initial.kind === 'reviewRequired') {
+      initial = await service.decidePluginChange({ pendingChangeId: initial.pendingChangeId, decision: 'installAndTrust' });
+    }
+    expect(initial).toMatchObject({ kind: 'committed', pluginId: 'acme.descriptor' });
+    await createPluginRegistryStateStore({ happyHomeDir, runtimeLifecycle })
+      .setEnabled('acme.descriptor', false);
+    await writeFile(join(pluginRoot, 'src', 'index.ts'), "throw new Error('disabled source was evaluated');", 'utf8');
+
+    for (const pluginId of [undefined, 'acme.descriptor']) {
+      await expect(service.requestPluginChange({
+        kind: 'development', sourceRootPath, ...(pluginId ? { pluginId } : {}),
+      })).resolves.toMatchObject({ kind: 'failed', code: 'plugin_disabled' });
+    }
+    expect((await createPluginRegistryStateStore({ happyHomeDir }).read())
+      .plugins['acme.descriptor']?.state.enabled).toBe(false);
+  });
+
   it('reuses source trust for trusted development replacements that narrow or widen required access', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-'));
     roots.push(happyHomeDir);

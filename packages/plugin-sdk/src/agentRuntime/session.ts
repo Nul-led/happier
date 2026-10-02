@@ -2,7 +2,9 @@ import type {
   AgentSessionCapabilitySupportLevel,
   AttachSessionMetadataV1,
   RuntimeCapabilities,
+  TerminalHostHandle,
 } from '@happier-dev/agents';
+import type { AgentTerminalLaunchPlan, AgentTerminalLaunchRequest } from './surfaces.js';
 
 import type { JsonValue } from '../identity.js';
 import type { Disposable } from '../lifecycle.js';
@@ -783,11 +785,20 @@ export interface AgentSessionRuntime extends Disposable {
   readonly conversationRollback?: AgentSessionConversationRollbackControl;
   readonly runtimeAuth?: AgentSessionRuntimeAuthControl;
   /**
-   * Resolves the live, launch-scoped metadata needed to attach the Provider's
-   * own CLI to this exact runtime. The host owns process launch and never
-   * persists this projection merely because a local TUI was opened.
+   * Prepares presentation of this opened Session, preserving its selected
+   * runtime and native identity. A managed terminal is already owned by this
+   * runtime; the host must not launch it again or enter an exclusive switch
+   * loop. Provider attach metadata is transient, not an identity publication.
+   * Developer Preview source-cut: hosts must fail operation-scoped unsupported
+   * when absent, rather than launching a bare terminal for a selected Session.
    */
-  prepareProviderCliAttach?(): Promise<AttachSessionMetadataV1>;
+  prepareTerminalPresentation?(
+    request?: Readonly<Pick<AgentTerminalLaunchRequest, 'configuration' | 'modelSelection'>>,
+  ): Promise<
+    | Readonly<{ kind: 'provider_attach'; metadata: AttachSessionMetadataV1 }>
+    | Readonly<{ kind: 'terminal_launch'; plan: AgentTerminalLaunchPlan }>
+    | Readonly<{ kind: 'managed_terminal'; handle: TerminalHostHandle }>
+  >;
   /** Receives current native source evidence after all preceding transcript output has durable custody. */
   observeSourceTranscript?(input: Readonly<{
     providerSessionId: string;

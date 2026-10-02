@@ -18,6 +18,7 @@ import {
   resolveOpenCodeSystemToolId,
 } from '../systemTool.js';
 import { openOpenCodeServerSession } from './server/nativeSession.js';
+import { openCodeTranscriptIdentityCodec } from './server/transcript/committedIdentities.js';
 import { openOpenCodeServerExecutionRun } from './server/nativeExecutionRun.js';
 import {
   createOpenCodeNativeSessionControls,
@@ -43,15 +44,13 @@ const OPEN_CODE_ACP_RUNTIME_DEFINITION = {
 } satisfies AgentAcpRuntimeDefinition;
 
 function readOpenCodeNativeMode(
-  request: Parameters<NonNullable<AgentSessionRuntimeFactory['supportsTerminalPresentation']>>[0],
+  request: Parameters<NonNullable<AgentSessionRuntimeFactory['resolveTerminalPresentation']>>[0],
 ): 'server' | 'acp' {
   const modeOption = request.configuration?.options.opencodeBackendMode?.value;
   return resolveOpenCodeBackendMode({
     runtimeDescriptorV1: request.runtimeDescriptorV1,
+    configuredBackendMode: modeOption,
     env: request.launchEnvironment?.values,
-    accountSettings: typeof modeOption === 'string'
-      ? { opencodeBackendMode: modeOption }
-      : null,
   });
 }
 
@@ -194,8 +193,21 @@ export const createOpenCodeAgentRuntime: AgentRuntimeFactory = () => {
   return {
     toolExecution: { capability: 'observable' },
     sessions: {
+      transcriptIdentity: openCodeTranscriptIdentityCodec,
       ...controlsOwner.sessions,
-      supportsTerminalPresentation: (selection) => readOpenCodeNativeMode(selection) === 'server',
+      async resolveTerminalPresentation(selection) {
+        const backendMode = readOpenCodeNativeMode(selection);
+        const source = selection.runtimeDescriptorV1;
+        return {
+          kind: backendMode === 'server' ? 'provider_attach' : 'none',
+          ...(backendMode === 'server' ? { startingMode: 'terminal' as const } : {}),
+          runtimeDescriptorV1: {
+            ...(source?.agentId === 'opencode' ? source : {}), v: 1, agentId: 'opencode',
+            agent: { ...(source?.agentId === 'opencode' ? source.agent : {}), backendMode },
+          },
+          environmentOverlay: { HAPPIER_OPENCODE_BACKEND_MODE: backendMode },
+        };
+      },
       open: (request, context) => openOpenCodeSession(
         request,
         context,

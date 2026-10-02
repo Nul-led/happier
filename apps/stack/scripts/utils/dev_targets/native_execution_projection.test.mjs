@@ -67,6 +67,8 @@ test('native command decision artifact is current and executes the canonical cla
     { args: ['corepack', 'yarn', '--cwd', 'apps/ui', '-s', 'vitest:local', 'run'] },
     { args: ['corepack', 'yarn', '--cwd', './apps/ui/', '-s', 'vitest:local', 'run'] },
     { args: ['vitest', 'run', '--config=./vitest.config.ts'], cwd: 'apps/cli' },
+    { args: ['corepack', 'yarn', '--cwd', 'apps/cli', '-s', 'vitest', 'run', 'src/plugins/authoring/bundleDaemonRuntime.test.ts'] },
+    { args: ['corepack', 'yarn', '--cwd', 'apps/cli', '-s', 'vitest', 'run', '--config=vitest.integration.config.ts', 'src/plugins/authoring/bundleDaemonRuntime.integration.test.ts'] },
     { args: ['vitest', 'run', '--config=vitest.artifact-cache.config.ts'], cwd: 'apps/ui' },
     { args: ['vitest', 'run', '--config=unknown.config.ts'], cwd: 'apps/cli' },
     { args: ['vitest', 'run', '--project=artifact'], cwd: 'apps/cli' },

@@ -1,4 +1,4 @@
-import { readSessionModesMetadata } from '@happier-dev/protocol';
+import { readSessionModesMetadata } from '@happier-dev/plugin-sdk/sessions';
 
 export type CodexAcpSessionMode = Readonly<{
   id: string;

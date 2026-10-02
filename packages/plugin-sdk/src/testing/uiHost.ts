@@ -2,6 +2,7 @@
 import { z } from 'zod';
 
 import {
+    PluginUiWatchLiveStreamRequestV1Schema,
     PLUGIN_UI_HOST_API_VERSION_V1,
     isPluginUiHostApiVersionCompatibleV1,
     PLUGIN_UI_HOST_API_WIRE_VERSION_V1,
@@ -47,6 +48,8 @@ import {
     PluginUiWatchComposerRequestV1Schema,
     PluginUiReadSessionRequestV1Schema,
     PluginUiReadSessionResultV1Schema,
+    PluginUiReadStoredImageRequestV1Schema,
+    PluginUiReadStoredImageResultV1Schema,
     PluginUiRespondToSessionPermissionRequestV1Schema,
     PluginUiRespondToSessionPermissionResultV1Schema,
     PluginUiWatchSessionRequestV1Schema,
@@ -655,11 +658,16 @@ export type PluginUiTestkitHostHandlers = Readonly<{
     ) => void | Promise<void>;
     /** Presence advertises `readSession`; `null` is a Session the fixture Account cannot reach. */
     readSession?: (input: PluginUiTestkitSessionInput) => SessionStateV1 | null | Promise<SessionStateV1 | null>;
+    /** Presence advertises `readStoredImage`; the handler returns the host's stored-image read result. */
+    readStoredImage?: (
+        input: Readonly<{ image: import('../ui/hostApi.js').StoredImageRefV1; signal: AbortSignal }>,
+    ) => import('../ui/hostApi.js').PluginUiReadStoredImageResultV1 | Promise<import('../ui/hostApi.js').PluginUiReadStoredImageResultV1>;
     /**
      * Establish one Session watch. Invalidations are emitted through the
      * fixture's `invalidateSession`, never through this handler.
      */
     watchSession?: (input: PluginUiTestkitSessionInput) => void | Promise<void>;
+    watchLiveStream?: (input: Readonly<{ reference: import('../ui/hostApi.js').PluginLiveStreamReferenceV1; signal: AbortSignal }>) => void | Promise<void>;
     respondToSessionPermission?: (
         input: PluginUiTestkitRespondToSessionPermissionInput,
     ) => SessionPermissionResponseV1 | Promise<SessionPermissionResponseV1>;
@@ -714,7 +722,9 @@ const hostMethodPolicies = {
     inspectComposerContent: 'inspectComposerContent',
     releaseComposerContent: 'releaseComposerContent',
     readSession: 'readSession',
+    readStoredImage: 'readStoredImage',
     watchSession: 'watchSession',
+    watchLiveStream: 'watchLiveStream',
     respondToSessionPermission: 'respondToSessionPermission',
 } as const satisfies Readonly<Record<(typeof PLUGIN_UI_HOST_METHODS_V1)[number], PluginUiTestkitHostMethodPolicy>>;
 
@@ -1536,6 +1546,13 @@ async function createPluginUiTestkitInternal<TSurface>(
                 const state = await handlers.readSession({ sessionId: payload.data.sessionId, signal });
                 return PluginUiReadSessionResultV1Schema.parse(state) as JsonValue;
             }
+            case 'readStoredImage': {
+                if (!handlers.readStoredImage) throw fixtureError('unsupported_method', 'readStoredImage is not installed.');
+                const payload = PluginUiReadStoredImageRequestV1Schema.safeParse(message.payload);
+                if (!payload.success) throw fixtureError('invalid_payload', 'readStoredImage payload is invalid.');
+                const result = await handlers.readStoredImage({ image: payload.data.image, signal });
+                return PluginUiReadStoredImageResultV1Schema.parse(result) as JsonValue;
+            }
             case 'respondToSessionPermission': {
                 if (!handlers.respondToSessionPermission) {
                     throw fixtureError('unsupported_method', 'respondToSessionPermission is not installed.');
@@ -1634,6 +1651,7 @@ async function createPluginUiTestkitInternal<TSurface>(
             case 'watchComposer':
             case 'acquireComposerInputLock':
             case 'watchSession':
+            case 'watchLiveStream':
                 throw fixtureError('unsupported_method', `${message.method} must be established as a subscription.`);
             default:
                 return unreachableSurfaceHostMethod(message.method);
@@ -1713,6 +1731,15 @@ async function createPluginUiTestkitInternal<TSurface>(
                     await handlers.watchSession({ sessionId: payload.data.sessionId, signal: controller.signal });
                     if (controller.signal.aborted) return;
                     sessionSubscriptions.set(message.subscriptionId, payload.data.sessionId);
+                    break;
+                }
+                case 'watchLiveStream': {
+                    if (!handlers.watchLiveStream) throw fixtureError('unsupported_method', 'watchLiveStream is not installed.');
+                    const payload = PluginUiWatchLiveStreamRequestV1Schema.safeParse(message.payload);
+                    if (!payload.success) throw fixtureError('invalid_payload', 'watchLiveStream payload is invalid.');
+                    await handlers.watchLiveStream({ reference: payload.data.reference, signal: controller.signal });
+                    if (controller.signal.aborted) return;
+                    establishment = { subscriptionId: message.subscriptionId, kind: 'ready' };
                     break;
                 }
                 case 'acquireComposerInputLock': {

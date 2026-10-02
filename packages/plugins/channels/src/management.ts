@@ -31,6 +31,10 @@ import {
   ConversationPrincipalResolveResultV1Schema,
   MAX_CONVERSATION_BINDINGS_PER_ACCOUNT,
   MAX_CONVERSATION_CONNECTIONS_PER_ACCOUNT,
+  MAX_CONVERSATION_OBSERVATION_AGE_MS,
+  SessionPullRequestBindingInputV1Schema,
+  resolveSessionPullRequestLinksV1,
+  type SessionPullRequestBindingResultV1,
   areConversationEndpointIdentitiesEqual,
   conversationBindingPolicyForOmittedFieldsV1,
   hasCanonicalConversationResolutionCandidateOrderV1,
@@ -182,6 +186,7 @@ import {
   readCurrentProviderContributionForPersistedSelection,
   readCurrentProviderContributionWitnessForPersistedSelection,
   readSelectedCurrentProviderContribution,
+  readSessionPullRequestProviderSelection,
   type CurrentProviderContributionWitness,
 } from './providerContributions.js';
 
@@ -1271,10 +1276,12 @@ function sameConversationBindingTarget(
   if (left.kind !== right.kind) return false;
   if (left.kind === 'automation' && right.kind === 'automation') {
     return left.automationId === right.automationId
+      && pluginJsonValuesEqual(left.scopedTrigger ?? null, right.scopedTrigger ?? null)
       && left.policy.resultDelivery === right.policy.resultDelivery;
   }
   if (left.kind !== 'session' || right.kind !== 'session') return false;
   if (left.sessionId !== right.sessionId
+    || !pluginJsonValuesEqual(left.pullRequestLink ?? null, right.pullRequestLink ?? null)
     || left.policy.deliveryMode !== right.policy.deliveryMode
     || left.policy.permissionCeiling !== right.policy.permissionCeiling
     || left.policy.approvals.kind !== right.policy.approvals.kind
@@ -1405,6 +1412,13 @@ async function verifyAutomationBindingTarget(
     'automation.conversation.target.verify',
     {
       automationId: target.automationId,
+      ...(target.scopedTrigger === undefined ? {} : { scopedTrigger: {
+        sessionId: target.scopedTrigger.sessionId,
+        triggerId: target.scopedTrigger.triggerId,
+        triggerRevision: target.scopedTrigger.triggerRevision,
+        triggerKind: target.scopedTrigger.triggerKind,
+        pullRequest: target.scopedTrigger.pullRequest,
+      } }),
       ...(target.policy.resultDelivery === 'finalResult'
         ? { resultDelivery: 'finalResult' as const }
         : {}),
@@ -1444,6 +1458,7 @@ async function resolveBindingTargetForPersistence(
     kind: 'automation',
     automationId: target.automationId,
     policy: target.policy,
+    ...(target.scopedTrigger === undefined ? {} : { scopedTrigger: target.scopedTrigger }),
   };
 }
 
@@ -1641,6 +1656,7 @@ async function writeConversationPairingBinding(
       kind: 'automation',
       automationId: input.target.automationId,
       policy: input.target.policy,
+      ...(input.target.scopedTrigger === undefined ? {} : { scopedTrigger: input.target.scopedTrigger }),
     });
     return samePairingBinding(rejoined, expected.binding)
       ? { kind: 'rejoined', binding: rejoined }
@@ -4324,11 +4340,53 @@ export async function createConversationBindingForInvocation(
   });
   if (audience.kind !== 'ready') return audience;
   const { endpoint, allowedPrincipalIds } = audience;
-
   const collection = requireChannelsAccountStorage(context).collection(CHANNEL_STATE_COLLECTION);
   // The binding identity is minted before verification so the Automation owner
   // can answer for this exact binding rather than for the target alone.
-  const newBindingId = createBindingId();
+  const scopedIdentity = createInput.target.kind === 'automation'
+    ? createInput.target.scopedTrigger
+    : createInput.target.pullRequestLink === undefined ? undefined : { sessionId: createInput.target.sessionId, pullRequest: createInput.target.pullRequestLink };
+  const scopedBindingIdentity = scopedIdentity === undefined ? undefined : JSON.stringify([
+    createInput.connectionId, endpoint.kind, endpoint.audience, endpoint.id, endpoint.parentId ?? null,
+    scopedIdentity.sessionId, scopedIdentity.pullRequest.repository, scopedIdentity.pullRequest.number,
+    'triggerId' in scopedIdentity ? scopedIdentity.triggerId : null,
+  ]);
+  const newBindingId = scopedBindingIdentity === undefined ? createBindingId() : `binding-pr-${encodeUnpaddedBase64Url(new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(scopedBindingIdentity)),
+  ))}`;
+  if (scopedIdentity !== undefined) {
+    const retained = await collection.get(newBindingId, { signal: context.signal });
+    if (retained !== null) {
+      const current = readConversationBindingUpdateRow({ row: retained, bindingId: newBindingId });
+      const oldScope = current.binding.target.kind === 'automation' ? current.binding.target.scopedTrigger : undefined;
+      const newScope = createInput.target.kind === 'automation' ? createInput.target.scopedTrigger : undefined;
+      const scopeRevisionAdvances = current.binding.target.kind === 'automation' && createInput.target.kind === 'automation'
+        && current.binding.target.automationId === createInput.target.automationId && oldScope !== undefined && newScope !== undefined
+        && oldScope.sessionId === newScope.sessionId && oldScope.triggerId === newScope.triggerId
+        && pluginJsonValuesEqual(oldScope.pullRequest, newScope.pullRequest) && newScope.triggerRevision > oldScope.triggerRevision;
+      const sameTarget = sameConversationBindingTarget(current.binding.target, createInput.target);
+      if ((sameTarget || scopeRevisionAdvances) && current.binding.deletionState === 'none') {
+        if (scopeRevisionAdvances || (createInput.enabled !== undefined && createInput.enabled !== current.binding.enabled)) {
+          const updated = await updateConversationBindingForInvocation({
+            bindingId: newBindingId, expectedRevision: retained.revision,
+            expectedConnectionRevision: createInput.expectedConnectionRevision,
+            endpointSelection: createInput.endpointSelection, principalSelection: createInput.principalSelection,
+            target: createInput.target, enabled: createInput.enabled ?? current.binding.enabled,
+          }, context);
+          if (!('bindingId' in updated)) return updated;
+          const saved = await collection.get(newBindingId, { signal: context.signal });
+          if (saved === null) throw pluginError('channels_binding_create_conflict', 'The updated PR binding became unavailable.', true);
+          return { kind: 'created', binding: readConversationBindingUpdateRow({ row: saved, bindingId: newBindingId }).binding };
+        }
+        const target = await resolveBindingTargetForPersistence(createInput.target, context);
+        if (target.kind === 'notVerified') return target;
+        const currentness = await rereadBindingResolutionAfterProviderEffect({ collection, connectionId: createInput.connectionId, expectedConnectionRevision: createInput.expectedConnectionRevision, context, providerBefore: audience.witness });
+        if (currentness.kind !== 'current') return currentness;
+        return { kind: 'created', binding: current.binding };
+      }
+      throw pluginError('channels_binding_create_conflict', 'The PR binding identity already has different target authority.', true);
+    }
+  }
   const defaults = conversationBindingPolicyForOmittedFieldsV1(endpoint.audience);
   const inputMode = createInput.inputMode ?? defaults.inputMode;
   assertConversationBindingInputModeIsDeliverable({
@@ -4409,6 +4467,13 @@ export async function createConversationBindingForInvocation(
   ], { signal: context.signal });
   assertNotAborted(context.signal);
   if (result.status === 'conflict') {
+    if (scopedIdentity !== undefined) {
+      const retained = await collection.get(newBindingId, { signal: context.signal });
+      if (retained !== null) {
+        const current = readConversationBindingUpdateRow({ row: retained, bindingId: newBindingId });
+        if (sameConversationBindingTarget(current.binding.target, candidate.binding.target) && current.binding.deletionState === 'none') return { kind: 'created', binding: current.binding };
+      }
+    }
     throw pluginError(
       'channels_binding_create_conflict',
       'Binding creation lost its current connection or unique binding-row compare-and-swap.',
@@ -4416,6 +4481,92 @@ export async function createConversationBindingForInvocation(
     );
   }
   return { kind: 'created', binding: candidate.binding };
+}
+
+async function readSessionPullRequestBindings(sessionId: string, context: PluginInvocationContext): Promise<Array<{ row: StateRow; binding: ConversationBindingV1 }>> {
+  const collection = requireChannelsAccountStorage(context).collection(CHANNEL_STATE_COLLECTION);
+  const bindings: Array<{ row: StateRow; binding: ConversationBindingV1 }> = [];
+  let cursor: string | undefined;
+  do {
+    const page = await collection.query({ index: CHANNEL_STATE_INDEX_ID.byKind, prefix: [CHANNEL_STATE_RECORD_KIND.binding], order: 'asc', limit: PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1, ...(cursor === undefined ? {} : { cursor }) }, { signal: context.signal });
+    for (const candidate of page.rows) {
+      const row = asChannelStateRow(candidate);
+      if (row === undefined) throw pluginError('channels_pr_link_corrupt', 'The binding collection returned an invalid row.');
+      const { binding } = readConversationBindingUpdateRow({ row, bindingId: row.rowId });
+      const scopeSessionId = binding.target.kind === 'session' ? binding.target.sessionId : binding.target.scopedTrigger?.sessionId;
+      if (scopeSessionId === sessionId && binding.deletionState === 'none') bindings.push({ row, binding });
+    }
+    cursor = page.nextCursor;
+  } while (cursor !== undefined);
+  return bindings;
+}
+
+async function disableSessionPullRequestTriggerBindings(input: Readonly<{ sessionId: string; triggerId: string; triggerRevision?: number; exceptBindingId?: string }>, context: PluginInvocationContext): Promise<void> {
+  for (const { row, binding } of await readSessionPullRequestBindings(input.sessionId, context)) {
+    if (binding.id === input.exceptBindingId || binding.target.kind !== 'automation' || binding.target.scopedTrigger?.triggerId !== input.triggerId || !binding.enabled) continue;
+    if (input.triggerRevision !== undefined && binding.target.scopedTrigger.triggerRevision > input.triggerRevision) continue;
+    await setConversationBindingEnabledForInvocation({ bindingId: binding.id, expectedRevision: row.revision, enabled: false }, context);
+  }
+}
+
+/** Session/PR links are projections of the incumbent binding rows, never a second store. */
+export async function manageSessionPullRequestBindingForInvocation(input: JsonValue, context: PluginInvocationContext): Promise<SessionPullRequestBindingResultV1> {
+  const request = SessionPullRequestBindingInputV1Schema.parse(input);
+  // The canonical Action reader retains the invoking caller's Session scope;
+  // Account collection access by itself does not authorize this Session.
+  const session = await context.services.actions.execute('session.transcript.get', {
+    sessionId: request.sessionId, projection: 'externalShareableV1', limit: 1,
+  }, { signal: context.signal });
+  if (isPluginActionApprovalRequestCreated(session) || session.sessionId !== request.sessionId || session.projection !== 'externalShareableV1') {
+    throw pluginError('channels_pr_link_session_not_verified', 'The calling principal could not read the requested Session.');
+  }
+  const collection = requireChannelsAccountStorage(context).collection(CHANNEL_STATE_COLLECTION);
+  if (request.kind !== 'attach') {
+    if (request.kind === 'removeTrigger') {
+      await disableSessionPullRequestTriggerBindings(request, context);
+      return { kind: 'removed' };
+    }
+    const bindings = await readSessionPullRequestBindings(request.sessionId, context);
+    const projection = resolveSessionPullRequestLinksV1(bindings.map(({ binding }) => binding))
+      .find(({ sessionId }) => sessionId === request.sessionId);
+    return { kind: 'links', ...(projection ?? { sessionId: request.sessionId, pullRequestLinks: [] }) };
+  }
+  const providerSelection = await readSessionPullRequestProviderSelection({ targetedContributions: context.services.targetedContributions, signal: context.signal });
+  const provider = await readCurrentSelectedProvider({ context, selection: providerSelection });
+  // The provider resolves its native selected SCM credential. The incumbent
+  // connection writer then re-proves that exact credential and source before
+  // creating or rejoining the repository connection.
+  const nativeSetup = await context.services.actions.executeAdmittedTargetedOperationWithExecutionOrigin(provider.setup, { repository: request.pullRequest.repository }, { signal: context.signal });
+  const setup = ConversationProviderSetupOutcomeV1Schema.parse(nativeSetup.result);
+  if ('kind' in setup) throw pluginError('channels_pr_link_provider_not_ready', 'The selected native SCM account is not ready to attach this PR.', true);
+  const connectionResult = await createConversationConnectionForInvocation({ providerSelection, providerSetupInput: { repository: request.pullRequest.repository, credentialRef: setup.credentialRef }, credentialRef: setup.credentialRef, selectedTransport: 'checkpointedPull', maximumObservationAgeMs: MAX_CONVERSATION_OBSERVATION_AGE_MS }, context);
+  if (connectionResult.kind !== 'created' && connectionResult.kind !== 'rejoined') throw pluginError('channels_pr_link_connection_not_ready', 'The PR conversation connection is not ready.', true);
+  const connectionId = connectionResult.connectionId;
+  const row = await collection.get(connectionId, { signal: context.signal });
+  if (row === null) throw pluginError('channels_pr_link_connection_missing', 'The PR conversation connection is unavailable.', true);
+  const query = `https://github.com/${request.pullRequest.repository}/pull/${request.pullRequest.number}`;
+  const endpoints = await resolveConversationBindingForInvocation({ kind: 'endpoint', connectionId, expectedConnectionRevision: row.revision, query, kinds: ['githubPullRequest'] }, context);
+  if (endpoints.kind !== 'endpointCandidates' || endpoints.candidates.length !== 1 || endpoints.candidates[0]?.kind !== 'githubPullRequest') throw pluginError('channels_pr_link_endpoint_unavailable', 'The exact PR endpoint is unavailable.', true);
+  const endpoint = endpoints.candidates[0];
+  if (endpoint.pullRequest === undefined) throw pluginError('channels_pr_link_endpoint_identity_missing', 'The provider did not authenticate the PR identity.');
+  if (!pluginJsonValuesEqual(endpoint.pullRequest, request.pullRequest)) throw pluginError('channels_pr_link_endpoint_identity_mismatch', 'The authenticated PR endpoint does not match the requested PR.');
+  const endpointSelection = { query, kinds: ['githubPullRequest'], selected: { kind: endpoint.kind, audience: endpoint.audience, id: endpoint.id, ...(endpoint.parentId === undefined ? {} : { parentId: endpoint.parentId }) } };
+  const principalQuery = setup.integrationPrincipal.label ?? setup.integrationPrincipal.id;
+  const principals = await resolveConversationBindingForInvocation({ kind: 'principal', connectionId, expectedConnectionRevision: row.revision, endpointSelection, query: principalQuery }, context);
+  if (principals.kind !== 'principalCandidates') throw pluginError('channels_pr_link_principal_unavailable', 'The native SCM principal is unavailable.', true);
+  const principal = principals.candidates.find((candidate) => candidate.id === setup.integrationPrincipal.id);
+  if (principal === undefined) throw pluginError('channels_pr_link_principal_unavailable', 'The provider did not authenticate the selected SCM principal.', true);
+  const target: ConversationBindingTargetV1 = request.target === undefined ? {
+    kind: 'session', sessionId: request.sessionId, pullRequestLink: endpoint.pullRequest,
+    policy: { deliveryMode: 'repliesOnly', permissionCeiling: 'read-only', approvals: { kind: 'off' }, newSession: { kind: 'off' } },
+  } : {
+    kind: 'automation', automationId: request.target.automationId, policy: { resultDelivery: 'none' },
+    scopedTrigger: { sessionId: request.sessionId, triggerId: request.target.triggerId, triggerRevision: request.target.triggerRevision, triggerKind: request.target.triggerKind, principalPolicy: 'repositoryWriters', pullRequest: endpoint.pullRequest },
+  };
+  const binding = await createConversationBindingForInvocation({ connectionId, expectedConnectionRevision: row.revision, endpointSelection, principalSelection: { query: principalQuery, selected: [{ id: principal.id, kind: principal.kind }] }, target, allowBotSenders: principal.kind === 'bot', inputMode: 'allAllowedMessages', inboundDebounceMs: 0, enabled: request.target !== undefined }, context);
+  if (binding.kind !== 'created') throw pluginError('channels_pr_link_binding_not_ready', 'The PR binding could not be attached.', true);
+  if (request.target !== undefined) await disableSessionPullRequestTriggerBindings({ sessionId: request.sessionId, triggerId: request.target.triggerId, triggerRevision: request.target.triggerRevision, exceptBindingId: binding.binding.id }, context);
+  return { kind: 'attached', bindingId: binding.binding.id };
 }
 
 /** All existing-binding writes share one transition, verifier, and atomic persistence owner. */

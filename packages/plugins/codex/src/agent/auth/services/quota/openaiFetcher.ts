@@ -40,6 +40,7 @@ export function parseOpenAiCodexConnectedAccountQuotaLimits(
 >['limits'] {
   return mapOpenAiCodexConnectedAccountUsageMeters(value).map((meter) => ({
     id: meter.meterId,
+    ...(meter.providerLimitId ? { providerLimitId: meter.providerLimitId } : {}),
     ...(meter.utilizationPct === null ? {} : {
       used: meter.utilizationPct,
       remaining: meter.remainingPct ?? Math.max(0, 100 - meter.utilizationPct),

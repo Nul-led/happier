@@ -41,7 +41,7 @@ describe('createOpenAiCodexQuotaFetcher', () => {
       expect(parseOpenAiCodexConnectedAccountQuotaLimits({
         rate_limit: { primary_window: { reset_at: resetAt } },
       })).toEqual([
-        { id: 'session', resetsAtMs: expected },
+        { id: 'session', providerLimitId: 'session', resetsAtMs: expected },
         { id: 'weekly' },
       ]);
     }
@@ -62,8 +62,8 @@ describe('createOpenAiCodexQuotaFetcher', () => {
         },
       },
     })).toEqual(expect.arrayContaining([
-      { id: 'session', used: 12, remaining: 88, resetsAtMs: 1_700_000_000_000 },
-      { id: 'codex_spark:primary', used: 81, remaining: 19, resetsAtMs: 1_700_000_100_000 },
+      { id: 'session', providerLimitId: 'session', used: 12, remaining: 88, resetsAtMs: 1_700_000_000_000 },
+      { id: 'codex_spark:primary', providerLimitId: 'codex_spark', used: 81, remaining: 19, resetsAtMs: 1_700_000_100_000 },
     ]));
   });
 

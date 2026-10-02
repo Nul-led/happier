@@ -4,7 +4,7 @@ import { NpmRegistryProfileIdV1Schema } from '@happier-dev/protocol/rpc';
 import {
   ExpectedMarketplaceListingV1Schema,
 } from '@happier-dev/protocol/marketplace/internal';
-import { PluginUpdatePolicyV1Schema } from '@happier-dev/protocol';
+import { PluginUpdatePolicyV1Schema, WorkflowRunStartedByV1Schema } from '@happier-dev/protocol';
 
 import type { PluginActionExecutionAttempt } from '@/plugins/runtime/invocation/actions/executeContributedAction';
 import type { CurrentDaemonPluginCatalogSnapshot } from './currentCatalog';
@@ -126,6 +126,7 @@ const PluginActionExecuteRequestSchema = z.object({
   input: z.unknown(),
   surface: z.enum(['cli', 'mcp', 'agent']),
   defaultSessionId: NonEmptyStringSchema.optional(),
+  startedBy: WorkflowRunStartedByV1Schema.optional(),
   expectedContributorOccurrenceId: PluginRuntimeOccurrenceIdSchema.optional(),
 }).strict();
 
@@ -164,6 +165,7 @@ export async function executeAppliedDaemonPluginActionWithController(
       ...(requestCurrentIntent ? { requestCurrentIntent } : {}),
       context: {
         surface: request.surface,
+        ...(request.startedBy ? { startedBy: request.startedBy } : {}),
         ...(request.defaultSessionId ? { defaultSessionId: request.defaultSessionId } : {}),
       },
     });

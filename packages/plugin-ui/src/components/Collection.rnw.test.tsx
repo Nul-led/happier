@@ -62,7 +62,7 @@ import type {
 import { resolveHappierCollectionTrackStyle } from '../presentation/collection/collectionMotion.js';
 import { useHappierCollection } from '../presentation/collection/useCollection.js';
 import type { HappierLayoutChangeEvent } from '../presentation/portableTypes.js';
-import { Collection, type CollectionAnatomy } from './Collection.js';
+import { Collection, type CollectionAnatomy, type CollectionProps } from './Collection.js';
 import { Button } from './Button.js';
 import { PluginUiProviderInternal } from './PluginUiProvider.js';
 
@@ -212,6 +212,7 @@ type HarnessOptions = Readonly<{
   scroll?: 'collection' | 'page';
   groupAction?: (groupKey: string) => Readonly<{ label: string; onPress: () => void }> | null;
   detailHeader?: (key: string) => Readonly<{ title: string; subtitle?: string; actions?: React.ReactNode }>;
+  useRowActions?: CollectionProps<Entry>['useRowActions'];
 }>;
 
 type HarnessProps = HarnessOptions & Readonly<{ openKey: string | null; onOpenChange: (key: string | null) => void }>;
@@ -232,6 +233,7 @@ function Harness(props: HarnessProps): ReactElement {
       accessibilityLabel="PRs & Issues"
       presentation={props.presentation ?? 'table'}
       detail={props.detail ?? 'auto'}
+      {...(props.useRowActions === undefined ? {} : { useRowActions: props.useRowActions })}
       {...(props.scroll === undefined ? {} : { scroll: props.scroll })}
       {...(props.groupAction === undefined ? {} : { groupAction: props.groupAction })}
       minListWidth={240}
@@ -251,6 +253,8 @@ function Harness(props: HarnessProps): ReactElement {
 }
 
 function mount(options: Readonly<{
+  renderDestinationRow?: PluginUiPresentationHost['renderDestinationRow'];
+  renderPopover?: PluginUiPresentationHost['renderPopover'];
   motion?: HappierCollectionMotionDriver;
   reducedMotion?: boolean;
   openKey?: string | null;
@@ -259,7 +263,10 @@ function mount(options: Readonly<{
   const context = createSurfaceContext({ reducedMotion: options.reducedMotion ?? false });
   const hostApi = createHostApiStub(context);
   const openChanges: Array<string | null> = [];
-  const host = presentationHost(options.motion, options.pane?.binding);
+  const host = { ...presentationHost(options.motion, options.pane?.binding),
+    ...(options.renderDestinationRow === undefined ? {} : { renderDestinationRow: options.renderDestinationRow }),
+    ...(options.renderPopover === undefined ? {} : { renderPopover: options.renderPopover }),
+  };
   const Slot = options.pane?.Slot ?? (() => null);
   let harness: HarnessOptions = options;
   let openKey: string | null = options.openKey ?? null;
@@ -309,6 +316,47 @@ function headerTitles(container: HTMLElement): readonly string[] {
 }
 
 describe('Collection table', () => {
+  it('merges host destination actions into the existing row context menu without losing its actions', () => {
+    const selected: string[] = [];
+    const view = mount({ detail: 'none',
+      anatomy: { ...anatomy, destination: () => ({ destination: { pluginId: 'triage', localId: 'triage' } }) },
+      useRowActions: () => ({ secondaryActions: [{ id: 'pin', label: 'Pin' }], onSecondaryAction: id => selected.push(id) }),
+      renderDestinationRow: input => input.renderWithSecondaryActions?.({
+        secondaryActions: [{ id: 'workspace:newTab', label: 'Open in new tab' }],
+        onSecondaryAction: id => selected.push(id),
+      }) ?? input.children,
+      renderPopover: input => input.content({ maxHeight: 600, requestClose: () => input.onRequestClose() }),
+    });
+    view.measure(1440);
+    act(() => { view.query('row:a')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
+    const menu = view.container.querySelector('[role="menu"]');
+    expect(menu?.textContent).toContain('Pin');
+    expect(menu?.textContent).toContain('Open in new tab');
+    const open = [...menu!.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent?.includes('Open in new tab'))!;
+    act(() => { open.click(); });
+    expect(selected).toEqual(['workspace:newTab']);
+    act(() => { view.query('row:a')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
+    const pin = [...view.container.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent?.trim() === 'Pin')!;
+    act(() => { pin.click(); });
+    expect(selected).toEqual(['workspace:newTab', 'pin']);
+    expect(view.openChanges).toEqual([]);
+    view.unmount();
+  });
+  it.each(['table', 'list', 'board', 'grid'] as const)('keeps qualified destinations and ordinary activation in %s anatomy', (presentation) => {
+    const view = mount({ presentation, detail: 'none',
+      anatomy: { ...anatomy,
+        destination: (entry) => ({ destination: { pluginId: 'triage', localId: 'triage' }, subPath: entry.id }),
+        wrapItem: (entry, children) => <View testID={`core-row:${entry.id}`}>{children}</View>,
+      },
+      renderDestinationRow: (input) => <View testID={`destination-row:${input.subPath}`}>{input.children}</View>,
+    });
+    view.measure(1440);
+    expect(view.query('core-row:a')?.contains(view.query('destination-row:a'))).toBe(true);
+    expect(view.query('destination-row:a')?.contains(view.query('row:a'))).toBe(true);
+    act(() => view.query('row:a')!.click());
+    expect(view.openChanges).toEqual(['a']);
+    view.unmount();
+  });
   it('draws columns by measured width, dropping the lowest priority first and never the title', () => {
     const view = mount();
     view.measure(1440);
@@ -784,6 +832,25 @@ describe('grid', () => {
     full.unmount();
     bare.unmount();
     one.unmount();
+  });
+
+  it('draws the item itself in a preview band above every card, at one height, and never in a list', () => {
+    const cardHeight = (view: ReturnType<typeof mount>) => Number.parseFloat(view.query('row:a:card')!.style.height);
+    const previewed: CollectionAnatomy<Entry> = { ...anatomy, preview: (entry) => <Text>{`Preview of ${entry.id}`}</Text> };
+    const plain = mount({ presentation: 'grid', grouped: false, anatomy });
+    plain.measure(1440);
+    const grid = mount({ presentation: 'grid', grouped: false, anatomy: previewed });
+    grid.measure(1440);
+    expect(grid.query('row:b:preview')?.textContent).toBe('Preview of b');
+    // The band is reserved on every card, so rows stay equal and footers align.
+    expect(cardHeight(grid)).toBeGreaterThan(cardHeight(plain));
+    expect(Number.parseFloat(grid.query('row:c:card')!.style.height)).toBe(cardHeight(grid));
+    const list = mount({ presentation: 'list', grouped: false, anatomy: previewed });
+    list.measure(1440);
+    expect(list.query('row:b:preview')).toBeNull();
+    plain.unmount();
+    grid.unmount();
+    list.unmount();
   });
 
   it('scrolls the page header and footer with the cards, in one scroll container, as a page-sized collection', () => {

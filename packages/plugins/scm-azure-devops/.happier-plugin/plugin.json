@@ -33314,6 +33314,7 @@
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -33411,6 +33412,7 @@
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [
       {
@@ -36888,7 +36890,8 @@
     },
     "voiceModelPacks": [],
     "voiceProviders": [],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "Detects Azure DevOps remotes, provides Azure Repos operations, and brings its pull requests into PRs & Issues.",
   "displayName": "Azure DevOps SCM hosting provider",

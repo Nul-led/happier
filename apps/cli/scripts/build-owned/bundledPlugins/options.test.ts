@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   parseGeneratorCliArgs,
+  normalizeCanonicalGeneratorPublication,
   resolveGeneratorAuthoringPreparationPolicy,
   resolvePluginAuthorRuntimeLoadScope,
   resolveSelectedBundledPluginPackageNames,
@@ -9,6 +10,21 @@ import {
 } from './options.ts';
 
 describe('bundled Plugin publisher options', () => {
+  it('gives direct and shared-dependency all-plugin writes one canonical publication', () => {
+    const argv = ['--mode', 'write', '--workspace', '@happier-dev/plugins-codex', '--workspace', 'plugins-claude'];
+    const normalized = normalizeCanonicalGeneratorPublication(argv, parseGeneratorCliArgs(argv), ['plugins-claude', 'plugins-codex']);
+    expect(normalized.options).toEqual(parseGeneratorCliArgs(['--mode', 'write']));
+    expect(parseGeneratorCliArgs(normalized.argv)).toEqual(normalized.options);
+    for (const args of [
+      ['--workspace', 'plugins-codex'],
+      ['--mode', 'check', '--workspace', 'plugins-codex', '--workspace', 'plugins-claude'],
+      ['--target-owned-only', '--workspace', 'plugins-codex', '--workspace', 'plugins-claude'],
+    ]) {
+      const options = parseGeneratorCliArgs(args);
+      expect(normalizeCanonicalGeneratorPublication(args, options, ['plugins-claude', 'plugins-codex']))
+        .toEqual({ argv: args, options });
+    }
+  });
   it('publishes source Agent facts without preparing executable runtimes', () => {
     const options = parseGeneratorCliArgs(['--agent-definitions']);
     expect(options).toMatchObject({ agentDefinitionsOnly: true, mode: 'write' });

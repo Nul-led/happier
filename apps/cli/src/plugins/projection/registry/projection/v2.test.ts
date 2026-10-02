@@ -24,6 +24,7 @@ import { resolveBuiltInContributions } from '../resolveBuiltInContributions';
 import { createResolvedContributionRegistry } from '../createResolvedContributionRegistry';
 import { projectLoadedPluginContributes } from '../resolvePluginContributions';
 import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
+import { projectManifestAgentContribution } from '../projectManifestAgentContribution';
 
 function createEmptyResolvedContributionRegistry(): ResolvedContributionRegistry {
     return {
@@ -59,6 +60,26 @@ function admitPluginRuntime(
 }
 
 describe('buildPluginProjectionV2', () => {
+    it('projects installed Agent usage reporting without inferring it for undeclared Agents', () => {
+        const project = (usageReporting: true | undefined) => {
+            const contributes = PluginContributesV2Schema.parse({ agents: [{
+                id: 'reporter', title: 'Reporter', runtime: { kind: 'custom' }, primary: 'sessions',
+                capabilities: { sessions: {
+                    open: ['create'], delivery: ['newTurn'], cancel: true,
+                    ...(usageReporting ? { usageReporting } : {}),
+                } },
+            }] });
+            const agent = projectManifestAgentContribution({
+                definition: contributes.agents[0]!, pluginId: 'acme.reporting',
+                provenance: 'external', source: { kind: 'path' },
+            });
+            const registry = { ...createEmptyResolvedContributionRegistry(), agents: [agent] };
+            return buildPluginProjectionV2({ registry, generation: 1 }).agentsById[agent.id]?.capabilities?.sessions;
+        };
+        expect(project(true)).toHaveProperty('usageReporting', true);
+        expect(project(undefined)).not.toHaveProperty('usageReporting');
+    });
+
     it('projects an attributed targeted-admission rejection through the canonical diagnostics record', () => {
         const contributorPluginId = 'examples.contributor';
         const targetPluginId = 'examples.absent-target';
@@ -1286,6 +1307,10 @@ describe('buildPluginProjectionV2', () => {
                 startupInstructions: { versions: [1] },
             },
         });
+        for (const agentId of ['claude', 'codex', 'pi']) {
+            expect(projection.agentsById[agentId]?.capabilities?.sessions?.usageReporting).toBe(true);
+        }
+        expect(projection.agentsById.gemini?.capabilities?.sessions).not.toHaveProperty('usageReporting');
         expect(projection.agentsById.ohMyPi?.identity).toEqual({
             pluginId: 'happier.agent.ohmypi',
             localId: 'ohmypi',

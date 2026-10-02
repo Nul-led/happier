@@ -71,9 +71,11 @@ export function readOpenCodeV2MessagePage(response: unknown): Readonly<{
   messages: readonly unknown[];
   nextCursor: string | null;
 }> {
+  const messages = readOpenCodeV2Data(response);
+  if (!Array.isArray(messages)) throw new Error('OpenCode session message page is invalid');
   const cursor = readNonBlankOpaqueIdentifier(asRecord(asRecord(response)?.cursor)?.next);
   return {
-    messages: readOpenCodeV2DataArray(response),
+    messages,
     nextCursor: cursor,
   };
 }

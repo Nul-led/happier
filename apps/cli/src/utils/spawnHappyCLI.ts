@@ -1293,5 +1293,5 @@ export function spawnHappyCLI(
       ...(launchSpec.env ?? {}),
     }),
   };
-  return spawn(launchSpec.filePath, launchSpec.args, spawnOptions);
+  return spawn(launchSpec.filePath, launchSpec.args, { ...spawnOptions, windowsHide: spawnOptions.windowsHide !== false });
 }

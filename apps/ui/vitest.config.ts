@@ -58,6 +58,10 @@ const workspacePackages: readonly WorkspacePackageSpec[] = [
         packageSourceRoot: resolve('../../packages/protocol/src'),
     },
     {
+        packageName: '@happier-dev/channels-protocol',
+        packageSourceRoot: resolve('../../packages/channels-protocol/src'),
+    },
+    {
         packageName: '@happier-dev/agents',
         packageSourceRoot: resolve('../../packages/agents/src'),
     },
@@ -130,6 +134,8 @@ const expoNodeModuleStubsPlugin = {
 };
 
 export default defineConfig({
+    // Published TSX icon leaves omit React imports and use the same automatic runtime as Expo.
+    esbuild: { jsx: 'automatic' },
     define: {
         __DEV__: true,
     },
@@ -174,7 +180,7 @@ export default defineConfig({
                 // at all — which forced surfaces to mock the whole list owner
                 // instead of only the third-party recycler underneath it.
                 // Inlining lets Vite apply the node-safe React Native alias.
-                inline: [/@react-navigation\/native/, /@react-navigation\/elements/, /@legendapp\/list/],
+                inline: [/@react-navigation\/native/, /@react-navigation\/elements/, /@react-navigation\/bottom-tabs/, /@legendapp\/list/],
             },
         },
         env: {

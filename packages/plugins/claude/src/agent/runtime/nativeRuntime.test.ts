@@ -14,6 +14,7 @@ import {
   createClaudeAgentRuntime,
   createClaudeNativeSessionOpener,
   createClaudeNativeRuntime,
+  createClaudeNativeSessionRuntimeFromOperations,
   resolveClaudeInstalledEffortSupport,
   type ClaudeNativeSessionOperations,
   type ClaudeNativeSessionFactory,
@@ -22,6 +23,8 @@ import * as claudeNativeRuntimeModule from './nativeRuntime.js';
 import type { ClaudeUsageObservation } from '../usage/types.js';
 import type { ClaudeProviderEvent } from './providerEvents.js';
 import { claudeHandoffSurface } from '../surfaces/sessions/handoff/providerOps.js';
+import type { ExecService } from '@happier-dev/plugin-sdk/exec';
+import { createEventsFixture, createPluginContextFixture, createSdkExecFixture, createSessionHooksFixture, createTerminalHostFixture } from './engine.testkit.js';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -136,6 +139,7 @@ function createTestClaudeNativeRuntime(
 }
 
 const context = {
+  services: { exec: createSdkExecFixture().service },
   session: {
     services: {
       activeInput: {
@@ -147,6 +151,89 @@ const context = {
 } as unknown as AgentSessionRuntimeContext;
 
 describe('createClaudeNativeRuntime', () => {
+  it.each([
+    { unifiedTerminalEnabled: false, requestedHost: 'herdr' as const, placement: 'runner' },
+    { unifiedTerminalEnabled: true, requestedHost: 'herdr' as const, placement: 'runner' },
+    { unifiedTerminalEnabled: true, requestedHost: 'tmux' as const, placement: 'managed_terminal' },
+  ])('captures selected Claude presentation before opening the same Session ($placement, unified=$unifiedTerminalEnabled, $requestedHost)', async ({ unifiedTerminalEnabled, requestedHost, placement }) => {
+    const terminal = createTerminalHostFixture();
+    const hooks = createSessionHooksFixture();
+    const settingsValues = { claudeUnifiedTerminalEnabled: unifiedTerminalEnabled };
+    const boundary = createPluginContextFixture(terminal.service, createEventsFixture().service, {
+      sessionHooks: hooks.service,
+      settingsValues,
+    });
+    const exec = {
+      systemTools: { resolve: async () => ({ executable: { kind: 'systemTool' as const, id: 'claude-cli' }, executablePath: '/managed/presentation-claude' }) },
+      run: async () => ({
+        termination: { observed: { kind: 'exit' as const, exitCode: 0 }, requestedBy: { kind: 'none' as const } },
+        stdout: new TextEncoder().encode('--effort <level>'), stderr: new Uint8Array(), stdoutTruncated: false, stderrTruncated: false,
+      }),
+      spawn: async () => { throw new Error('This preparation case must not spawn a native process'); },
+      clients: { spawn: async () => { throw new Error('This preparation case must not submit an SDK query'); } },
+      agentCli: { checkReadiness: async () => { throw new Error('Unexpected CLI readiness query'); } },
+    } satisfies ExecService;
+    // Reuse the canonical plugin host-port fixtures; no internal Claude opener,
+    // runtime policy, terminal preparation or identity owner is replaced.
+    const selectedContext = {
+      services: { logger: boundary.logger, settings: boundary.settings, storage: boundary.storage, exec },
+      signal: new AbortController().signal,
+      ui: { confirm: async () => ({ status: 'approved' as const }), askQuestions: async () => ({ status: 'cancelled' as const }) },
+      session: { services: {
+        ...context.session.services,
+        features: boundary.features, terminalHost: terminal.service, sessionHooks: hooks.service,
+        transcripts: boundary.agentRuntime.transcripts, accountUsage: boundary.agentRuntime.accountUsage,
+        workflowActivity: boundary.sessions.current.workflowActivity,
+      } },
+      workState: { publisher: () => ({ publish: async () => undefined }) },
+    } as unknown as AgentSessionRuntimeContext;
+    const runtime = await createClaudeAgentRuntime({
+      plugin: { id: 'happier.agent.claude', version: '0.0.0' }, agent: { id: 'claude' }, signal: selectedContext.signal,
+    });
+    if (!runtime.sessions) throw new Error('The real Claude factory has no Session owner');
+    expect(runtime.sessions.resolveTerminalPresentation).toEqual(expect.any(Function));
+    if (!runtime.sessions.resolveTerminalPresentation) throw new Error('Selected runtime placement is unavailable');
+    const selected = await runtime.sessions.resolveTerminalPresentation({
+      cwd: '/tmp/claude-project', requestedHost,
+      launchEnvironment: { values: { CLAUDE_CONFIG_DIR: '/isolated/selected-claude' }, unset: ['ANTHROPIC_API_KEY'] },
+    }, { settings: selectedContext.services.settings, features: selectedContext.session.services.features });
+    expect(selected.kind).toBe(placement);
+    expect(selected.startingMode).toBe(unifiedTerminalEnabled ? 'terminal' : 'remote');
+    if (unifiedTerminalEnabled) {
+      const disabledBoundary = createPluginContextFixture(terminal.service, createEventsFixture().service, { enabledFeatures: [] });
+      const disabledOpen = Promise.resolve(runtime.sessions.open({
+        kind: 'resume', sessionId: 'selected-session-disabled', cwd: '/tmp/claude-project', providerSessionId: 'provider-claude',
+        runtimeDescriptorV1: selected.runtimeDescriptorV1,
+      }, {
+        ...selectedContext,
+        session: { ...selectedContext.session, services: { ...selectedContext.session.services, features: disabledBoundary.features } },
+      }));
+      // Dispose a wrongly admitted fixture runtime too; no provider turn is submitted.
+      void disabledOpen.then((opened) => opened.dispose('session_closed'), () => undefined);
+      await expect(disabledOpen).rejects.toMatchObject({ code: 'claude_unified_terminal_unavailable' });
+    }
+    // The opener must consume admitted selection, not today's mutable account setting.
+    settingsValues.claudeUnifiedTerminalEnabled = !unifiedTerminalEnabled;
+    const session = await runtime.sessions.open({
+      kind: 'resume', sessionId: 'selected-session', cwd: '/tmp/claude-project', providerSessionId: 'provider-claude',
+      runtimeDescriptorV1: selected.runtimeDescriptorV1,
+    }, selectedContext);
+    try {
+      if (unifiedTerminalEnabled) {
+        // Unified's native terminal is the conversation, not an optional
+        // client or the SDK's exclusive local/remote switch surface.
+        expect(session.runtimeCapabilities?.localControl).toMatchObject({ supported: false });
+      }
+      const prepare = session.prepareTerminalPresentation;
+      expect(prepare).toEqual(expect.any(Function));
+      if (typeof prepare !== 'function') throw new Error('Selected Session terminal preparation is unavailable');
+      const result: unknown = await prepare.call(session, { modelSelection: null });
+      expect(result).toMatchObject(unifiedTerminalEnabled
+        ? { kind: 'managed_terminal', handle: terminal.handle }
+        : { kind: 'terminal_launch', plan: { argv: expect.arrayContaining(['--resume', 'provider-claude', '--plugin-dir', '/tmp/happier-claude-hook-plugin']) } });
+    } finally { await session.dispose('session_closed'); }
+  });
+
   it('opens detached execution through the Claude conversation facet without fabricating a Session', async () => {
     const openSession = vi.fn<ClaudeNativeSessionFactory>();
     const openExecutionRunConversation = vi.fn(async () => {
@@ -522,6 +609,7 @@ describe('createClaudeNativeRuntime', () => {
     });
     const sessionContext = {
       services: {
+        ...context.services,
         settings: { forScope: settingsForScope },
       },
       session: {
@@ -570,6 +658,7 @@ describe('createClaudeNativeRuntime', () => {
       }) => ({ dispose() {} }));
       const sessionContext = {
         services: {
+          ...context.services,
           settings: { forScope: vi.fn(() => ({ get: vi.fn(async () => false) })) },
         },
         session: {
@@ -651,7 +740,7 @@ describe('createClaudeNativeRuntime', () => {
     let unifiedTerminalEnabled = false;
     const settingsGet = vi.fn(async () => unifiedTerminalEnabled);
     const sessionContext = {
-      services: { settings: { forScope: vi.fn(() => ({ get: settingsGet })) } },
+      services: { ...context.services, settings: { forScope: vi.fn(() => ({ get: settingsGet })) } },
       session: {
         services: {
           features: { isEnabled: vi.fn(() => true) },
@@ -703,7 +792,7 @@ describe('createClaudeNativeRuntime', () => {
       return setting;
     });
     const sessionContext = {
-      services: { settings: { forScope: vi.fn(() => ({ get: settingsGet })) } },
+      services: { ...context.services, settings: { forScope: vi.fn(() => ({ get: settingsGet })) } },
       session: {
         services: {
           features: { isEnabled: vi.fn(() => featureEnabled) },
@@ -743,7 +832,7 @@ describe('createClaudeNativeRuntime', () => {
       throw new Error('terminal host unavailable');
     });
     const sessionContext = {
-      services: { settings: { forScope: vi.fn(() => ({ get: vi.fn(async () => true) })) } },
+      services: { ...context.services, settings: { forScope: vi.fn(() => ({ get: vi.fn(async () => true) })) } },
       session: {
         services: {
           features: { isEnabled: vi.fn(() => true) },
@@ -967,6 +1056,7 @@ describe('createClaudeNativeRuntime', () => {
     const disposeBinding = vi.fn();
     const bind = vi.fn(() => ({ dispose: disposeBinding }));
     const sessionContext = {
+      ...context,
       session: {
         services: {
           activeInput: { bind, publishStatus: vi.fn() },
@@ -1046,6 +1136,7 @@ describe('createClaudeNativeRuntime', () => {
       return { dispose: disposeModels };
     });
     const sessionContext = {
+      ...context,
       session: {
         services: {
           activeInput: { bind: () => ({ dispose() {} }), publishStatus: vi.fn() },
@@ -1126,6 +1217,7 @@ describe('createClaudeNativeRuntime', () => {
         };
       }) => ({ dispose() {} }));
       const sessionContext = {
+        ...context,
         session: {
           services: {
             activeInput: { bind: () => ({ dispose() {} }), publishStatus: vi.fn() },
@@ -1178,6 +1270,7 @@ describe('createClaudeNativeRuntime', () => {
 
       const source = bindModels.mock.calls[0]?.[0];
       expect(source?.read()).toEqual({
+        observedAt: 0,
         currentModelId: 'deepseek-ai/DeepSeek-V3.1',
         models: [{
           id: 'deepseek-ai/DeepSeek-V3.1',
@@ -1271,6 +1364,7 @@ describe('createClaudeNativeRuntime', () => {
       }>;
     } | null = null;
     const sessionContext = {
+      ...context,
       session: {
         services: {
           activeInput: { bind: () => ({ dispose() {} }), publishStatus: vi.fn() },
@@ -1343,6 +1437,7 @@ describe('createClaudeNativeRuntime', () => {
     })).resolves.toMatchObject({ status: 'unsupported' });
     expect(updateProviderConfiguration).not.toHaveBeenCalled();
     expect(modelSource?.read()).toEqual({
+      observedAt: 0,
       currentModelId: currentBinding.model.id,
       models: [currentBinding.model],
     });
@@ -1360,6 +1455,7 @@ describe('createClaudeNativeRuntime', () => {
       }>;
     } | null = null;
     const sessionContext = {
+      ...context,
       session: {
         services: {
           activeInput: { bind: () => ({ dispose() {} }), publishStatus: vi.fn() },
@@ -1421,6 +1517,7 @@ describe('createClaudeNativeRuntime', () => {
     })).resolves.toMatchObject({ status: 'unsupported' });
     expect(updateProviderConfiguration).not.toHaveBeenCalled();
     expect(modelSource?.read()).toEqual({
+      observedAt: 0,
       currentModelId: currentBinding.model.id,
       models: [currentBinding.model],
     });
@@ -1441,6 +1538,7 @@ describe('createClaudeNativeRuntime', () => {
       }>;
     } | null = null;
     const sessionContext = {
+      ...context,
       session: {
         services: {
           activeInput: { bind: () => ({ dispose() {} }), publishStatus: vi.fn() },
@@ -1526,6 +1624,7 @@ describe('createClaudeNativeRuntime', () => {
       configOption: { id: 'reasoning_effort', value: 'high' },
     }));
     expect(modelSource?.read()).toEqual({
+      observedAt: 0,
       currentModelId: nextBinding.model.id,
       models: [nextBinding.model],
     });
@@ -1536,6 +1635,7 @@ describe('createClaudeNativeRuntime', () => {
     })).resolves.toMatchObject({ status: 'rejected' });
     expect(updateProviderConfiguration).toHaveBeenCalledTimes(1);
     expect(modelSource?.read()).toEqual({
+      observedAt: 0,
       currentModelId: nextBinding.model.id,
       models: [nextBinding.model],
     });
@@ -1546,6 +1646,7 @@ describe('createClaudeNativeRuntime', () => {
       providerBinding: deferredBinding,
     })).resolves.toMatchObject({ status: 'rejected' });
     expect(modelSource?.read()).toEqual({
+      observedAt: 0,
       currentModelId: nextBinding.model.id,
       models: [nextBinding.model],
     });
@@ -1556,6 +1657,7 @@ describe('createClaudeNativeRuntime', () => {
       providerBinding: rejectedBinding,
     })).resolves.toMatchObject({ status: 'rejected' });
     expect(modelSource?.read()).toEqual({
+      observedAt: 0,
       currentModelId: nextBinding.model.id,
       models: [nextBinding.model],
     });
@@ -1596,7 +1698,7 @@ describe('createClaudeNativeRuntime', () => {
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: 'usage-observed',
-        observationId: 'claude-usage-1',
+        observationId: expect.any(String),
         source: 'claude-sdk-result',
         scope: 'session_final',
         modelId: 'deepseek-ai/DeepSeek-V3.1',
@@ -1612,6 +1714,46 @@ describe('createClaudeNativeRuntime', () => {
     ]));
 
     await session.dispose();
+  });
+
+  it('preserves native usage identity on replay and creates distinct new observations after reopen', async () => {
+    const observation = {
+      provider: 'claude', source: 'claude-assistant-usage', scope: 'turn_delta',
+      key: 'claude-session', modelId: null,
+      tokens: { input: 10, output: 5, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 15 },
+      cost: null, contextUsedTokens: null, contextWindowTokens: null,
+    } satisfies ClaudeUsageObservation;
+    const ids: string[] = [];
+    const observedTimes: number[] = [];
+    for (const kind of ['create', 'resume'] as const) {
+      const native = createNativeOperations('session-usage-reopen');
+      const request = kind === 'resume'
+        ? { kind, sessionId: 'session-usage-reopen', cwd: '/repo', providerSessionId: 'claude-provider-session' }
+        : { kind, sessionId: 'session-usage-reopen', cwd: '/repo' };
+      const session = createClaudeNativeSessionRuntimeFromOperations(native.runtime, request, context);
+      session.watch((event) => {
+        if (event.kind === 'usage-observed') {
+          ids.push(event.observationId);
+          observedTimes.push(event.emittedAtMs);
+        }
+      });
+      native.publishUsage({ ...observation, nativeRecordId: 'native-assistant-1', observedAtMs: 100 });
+      native.publishUsage({ ...observation, nativeRecordId: kind === 'create' ? 'native-assistant-2' : 'native-assistant-3' });
+      native.publishUsage({ ...observation, nativeRecordId: 'native-assistant-1', observedAtMs: 100 });
+      native.publishUsage(observation);
+      await session.dispose();
+    }
+    expect(ids[0]).toBe(ids[2]);
+    expect(ids[0]).toBe(ids[4]);
+    expect(ids[0]).toBe(ids[6]);
+    expect(ids[0]).not.toBe(ids[1]);
+    expect(ids[1]).not.toBe(ids[5]);
+    expect(ids[3]).not.toBe(ids[7]);
+    expect(new Set(ids).size).toBe(5);
+    expect(observedTimes[0]).toBe(100);
+    expect(observedTimes[2]).toBe(100);
+    expect(observedTimes[4]).toBe(100);
+    expect(observedTimes[6]).toBe(100);
   });
 
   it('routes declared active goal mutations to the live Claude operation and retires the binding on dispose', async () => {
@@ -1765,6 +1907,8 @@ describe('createClaudeNativeRuntime', () => {
         'claude-sonnet-4-6',
         '--permission-mode',
         'acceptEdits',
+        '--settings',
+        JSON.stringify({ permissions: { allow: ['mcp__happier__change_title', 'mcp__happier__session_title_set'] } }),
       ],
       process: { stdio: 'inherit', windowsHide: true },
       presentation: {
@@ -1796,7 +1940,7 @@ describe('createClaudeNativeRuntime', () => {
       '--permission-mode',
       'bypassPermissions',
       '--settings',
-      JSON.stringify({ skipDangerousModePermissionPrompt: true }),
+      JSON.stringify({ skipDangerousModePermissionPrompt: true, permissions: { allow: ['mcp__happier__change_title', 'mcp__happier__session_title_set'] } }),
     ]);
   });
 
@@ -1816,7 +1960,10 @@ describe('createClaudeNativeRuntime', () => {
         options: {},
       },
       modelSelection: null,
-    }))).resolves.toMatchObject({ argv: [] });
+    }))).resolves.toMatchObject({ argv: [
+      '--settings',
+      JSON.stringify({ permissions: { allow: ['mcp__happier__change_title', 'mcp__happier__session_title_set'] } }),
+    ] });
   });
 
   it('publishes input rejection when Claude proves spawn failed before prompt transport', async () => {

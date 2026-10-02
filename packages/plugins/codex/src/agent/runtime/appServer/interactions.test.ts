@@ -108,7 +108,7 @@ function createUi(overrides?: Partial<PluginInteractions>): PluginInteractions {
 describe('Codex app-server canonical interaction bridge', () => {
   it('maps async multi-question agent messages through shared interactions and sends one Codex reply', async () => {
     const fixture = createFixture();
-    const askQuestions = vi.fn(async () => ({
+    const askQuestions = vi.fn<PluginInteractions['askQuestions']>(async () => ({
       requestId: 'async-questions-1',
       kind: 'questions' as const,
       status: 'answered' as const,
@@ -141,7 +141,8 @@ describe('Codex app-server canonical interaction bridge', () => {
     });
 
     await vi.waitFor(() => expect(sendUserMessage).toHaveBeenCalledTimes(1));
-    expect(askQuestions).toHaveBeenCalledWith({
+    expect(askQuestions.mock.calls[0]?.[1]).toEqual({ signal: undefined, lifetime: 'occurrence' });
+    expect(askQuestions.mock.calls[0]?.[0]).toEqual({
       kind: 'questions',
       title: 'Codex has questions',
       questions: [
@@ -163,7 +164,7 @@ describe('Codex app-server canonical interaction bridge', () => {
           required: true,
         },
       ],
-    }, expect.anything());
+    });
     expect(sendUserMessage).toHaveBeenCalledWith({
       idempotencyKey: expect.stringMatching(/^codex-async-question:/),
       toolCallId: 'message-1',
@@ -451,6 +452,7 @@ describe('Codex app-server canonical interaction bridge', () => {
         note: { answers: ['Deploy after tests'] },
       },
     });
+    expect(askQuestions.mock.calls[0]?.[1]).toEqual({ signal: expect.any(AbortSignal) });
     await expect(fixture.invoke('item/tool/requestUserInput', {
       threadId: 'thread-1',
       turnId: 'turn-1',

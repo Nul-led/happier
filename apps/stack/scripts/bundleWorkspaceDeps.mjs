@@ -36,14 +36,14 @@ function findRepoRoot(startDir) {
   return resolve(startDir, '..', '..', '..');
 }
 
-function collectPackageJsonRelativeFileTargets(value, result = new Set()) {
+function collectPackageJsonRelativeFileTargets(value, result = new Set(), relativeOnly = false) {
   if (typeof value === 'string') {
     const trimmed = value.trim();
     if (trimmed.startsWith('./') && !trimmed.includes('*')) {
       result.add(trimmed.slice(2));
-    } else if (trimmed.startsWith('dist/') && !trimmed.includes('*')) {
+    } else if (!relativeOnly && trimmed.startsWith('dist/') && !trimmed.includes('*')) {
       result.add(trimmed);
-    } else if (!trimmed.includes('*') && !trimmed.startsWith('#') && !trimmed.startsWith('node:') && !trimmed.startsWith('file:')) {
+    } else if (!relativeOnly && !trimmed.includes('*') && !trimmed.startsWith('#') && !trimmed.startsWith('node:') && !trimmed.startsWith('file:')) {
       result.add(trimmed);
     }
     return result;
@@ -51,12 +51,12 @@ function collectPackageJsonRelativeFileTargets(value, result = new Set()) {
   if (!value || typeof value !== 'object') return result;
   if (Array.isArray(value)) {
     for (const item of value) {
-      collectPackageJsonRelativeFileTargets(item, result);
+      collectPackageJsonRelativeFileTargets(item, result, relativeOnly);
     }
     return result;
   }
   for (const item of Object.values(value)) {
-    collectPackageJsonRelativeFileTargets(item, result);
+    collectPackageJsonRelativeFileTargets(item, result, relativeOnly);
   }
   return result;
 }
@@ -67,6 +67,7 @@ function collectExpectedPackageFiles(pkgJson, packageDir, options = {}) {
   collectPackageJsonRelativeFileTargets(pkgJson?.module, result);
   collectPackageJsonRelativeFileTargets(pkgJson?.types, result);
   collectPackageJsonRelativeFileTargets(pkgJson?.exports, result);
+  collectPackageJsonRelativeFileTargets(pkgJson?.imports, result, true);
   const requireExisting = options.requireExisting !== false;
   const relativePaths = [...result].sort();
   if (!requireExisting) {

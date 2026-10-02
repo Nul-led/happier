@@ -44,6 +44,7 @@ import {
   isClaudeUltracodeSupportedModelId,
   resolveClaudeEffortForModel,
 } from '../../reasoningEffort.js';
+import { readClaudeTerminalRuntimeSelection } from './selection.js';
 
 const CLAUDE_UNIFIED_TERMINAL_HOST_SETTING_KEY = 'claudeUnifiedTerminalHost';
 const CLAUDE_UNIFIED_TERMINAL_RESUME_CHOICE_SETTING_KEY = 'claudeUnifiedTerminalResumeChoice';
@@ -258,7 +259,8 @@ export async function openClaudeNativeUnifiedTerminalSession(
     activeInput: input.context.session.services.activeInput,
     directory: input.request.cwd,
     happierSessionId: input.request.sessionId,
-    hostPreference: readHostPreference(hostSetting),
+    hostPreference: readClaudeTerminalRuntimeSelection(input.request.runtimeDescriptorV1)?.host
+      ?? readHostPreference(hostSetting),
     launchEnv,
     supportsEffort: input.supportsEffort === true,
     supportsSystemPromptSnapshotOff: input.supportsSystemPromptSnapshotOff === true,

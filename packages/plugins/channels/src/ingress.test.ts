@@ -764,7 +764,7 @@ function setBindingNewSessionEnabled(rows: Map<string, StoredStateRow>): void {
             principalIds: ['telegram:user:42'],
             recipe: {
               executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-              directory: '/workspace/channels',
+              directory: { kind: 'path', path: '/workspace/channels' },
               agentTarget: {
                 kind: 'agent',
                 identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -3223,6 +3223,30 @@ describe('Conversation provider observation ingress', () => {
     });
   });
 
+  it.each([
+    { triggerKind: 'prComment' as const, repositoryWriteAccess: true, isIntegrationSelf: false, admitted: true },
+    { triggerKind: 'ciFailed' as const, repositoryWriteAccess: true, isIntegrationSelf: true, admitted: true },
+    { triggerKind: 'prComment' as const, repositoryWriteAccess: undefined, isIntegrationSelf: false, admitted: false },
+  ])('routes scoped $triggerKind writers with measured permission evidence (known=$repositoryWriteAccess)', async ({ triggerKind, repositoryWriteAccess, isIntegrationSelf, admitted }) => {
+    const harness = createIngressHarness({ execute: async (): Promise<JsonValue> => admitted
+      ? { kind: 'admitted', runId: 'run-scoped', checkpointSafe: true }
+      : { kind: 'refused', reason: 'repositoryWriteAccessUnknown', checkpointSafe: true } });
+    setAutomationBindingWithoutFinalResult(harness.rows);
+    const row = harness.rows.get('binding-1')!;
+    const payload = row.value.payload as Record<string, JsonValue>;
+    const target = payload.target as Record<string, JsonValue>;
+    target.scopedTrigger = { sessionId: 'session-1', triggerId: 'trigger-1', triggerRevision: 0, triggerKind, principalPolicy: 'repositoryWriters', pullRequest: { repository: 'acme/widgets', number: 5 } };
+    const input = observation({ messageRevision: 'edit:scoped' });
+    const fullText = fullTextIngress(input);
+    const scoped = { connectionId: input.connectionId, entry: { ...input.entry, observation: { kind: 'fullText' as const, observation: { ...fullText, scopedTriggerKind: triggerKind, actor: { ...fullText.actor, principalId: 'github:user:99', ...(repositoryWriteAccess === undefined ? {} : { repositoryWriteAccess }), isIntegrationSelf } } } } };
+    await ingestConversationProviderObservationForInvocation(scoped, harness.context);
+    expect(harness.execute).toHaveBeenCalledWith('automation.conversation.admit', expect.objectContaining({
+      hostEvidence: { bindingId: 'binding-1', sessionId: 'session-1', triggerId: 'trigger-1', triggerRevision: 0, triggerKind, pullRequest: { repository: 'acme/widgets', number: 5 }, observationActorPrincipalId: 'github:user:99', actor: { principalId: 'github:user:99', repositoryWriteAccess: repositoryWriteAccess ?? null } },
+    }), expect.anything());
+    const obligation = [...harness.rows.values()].find((entry) => entry.value['record-kind'] === 'ingress-obligation');
+    expect(obligation?.value.payload).toMatchObject({ lifecycle: { phase: 'terminal' }, disposition: admitted ? 'admitted' : 'rejected' });
+  });
+
   it('admits a final-result binding through the canonical Automation action', async () => {
     const execute = vi.fn(async (actionId, actionInput) => {
       expect(actionId).toBe('automation.conversation.admit');
@@ -3533,7 +3557,7 @@ describe('Conversation provider observation ingress', () => {
           expect(actionInput).toEqual({
             creationKey: 'channel-new:binding-1:telegram:update:9001',
             executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-            directory: '/workspace/channels',
+            directory: { kind: 'path', path: '/workspace/channels' },
             agentTarget: {
               kind: 'agent',
               identity: { pluginId: 'happier.agent.codex', localId: 'codex' },

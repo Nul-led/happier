@@ -66,6 +66,7 @@ import {
 } from './client.js';
 import {
   isCodexAppServerDefinitiveMethodNotFoundError,
+  isCodexAppServerApplicationRejectionForMethod,
   isCodexAppServerInvalidParamsError,
   isCodexAppServerNoActiveTurnToInterruptError,
 } from './compatibility.js';
@@ -2353,6 +2354,12 @@ export function createCodexAppServerRuntime(
           excludeTurns: options?.importHistory !== true,
         }, 'thread', resumeRequestOptions);
       } catch (error) {
+        if (isCodexAppServerApplicationRejectionForMethod(error, 'thread/resume')
+          && error instanceof Error && /\bno rollout found\b/i.test(error.message)) {
+          throw Object.assign(new Error('Provider session state is missing; the original thread cannot be resumed.'), {
+            code: 'AGENT_RESUME_PROVIDER_STATE_MISSING' as const,
+          });
+        }
         if (options?.importHistory === true || !isCodexAppServerOversizedJsonFrameError(error)) {
           throw error;
         }

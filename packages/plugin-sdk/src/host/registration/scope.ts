@@ -70,6 +70,7 @@ import type {
     ConnectedAccountRequestAuthUse,
 } from '../../connectedAccounts.js';
 import type { BackgroundServiceRunner } from '../../backgroundServices.js';
+import type { PluginCaptureSourceRuntime } from '../../captureSources.js';
 import type { JsonValue } from '../../identity.js';
 import type { PromptAssetAdapter } from '../../resources.js';
 import type { PluginDynamicResourceRuntime } from '../../services/resources.js';
@@ -221,6 +222,7 @@ const REGISTRATION_FAMILY = Object.freeze({
     interceptors: 'requestInterceptors',
     voiceProviders: 'voiceProviders',
     backgroundServices: 'backgroundServices',
+    captureSources: 'captureSources',
     promptAssets: 'promptAssets',
     dynamicResources: 'resources',
     composerReferences: 'composerReferences',
@@ -2051,6 +2053,9 @@ export function createPluginRegistrationScope(
         backgroundServices: Object.freeze({
             register: (id: string, runner: BackgroundServiceRunner) =>
                 register(REGISTRATION_FAMILY.backgroundServices, id, runner),
+        }),
+        captureSources: Object.freeze({
+            register: (id: string, runtime: PluginCaptureSourceRuntime) => register(REGISTRATION_FAMILY.captureSources, id, runtime),
         }),
     });
     const clientApi: PluginClientApi = Object.freeze({

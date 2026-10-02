@@ -3,6 +3,9 @@ import type {
   ScmCommitBackoutResponse,
   ScmCommitCreateRequest,
   ScmCommitCreateResponse,
+  ScmCommitUndoLastRequest,
+  ScmCommitUndoLastResponse,
+  ScmOperationErrorCode,
 } from '@happier-dev/plugin-sdk/scm';
 import {
   SCM_COMMIT_MESSAGE_MAX_LENGTH,
@@ -25,6 +28,53 @@ import {
 import { normalizePaths } from './normalizePaths.js';
 import { hasAnyIncludedOrPendingChanges, readGitSnapshotForChecks } from './snapshotChecks.js';
 import { readGitOperationRepositoryState } from './branchOperationState.js';
+
+/** Soft-reset semantics with Git's compare-and-swap ref guard; the index and worktree are untouched. */
+export async function gitCommitUndoLast(input: {
+    context: ScmBackendContext;
+    request: ScmCommitUndoLastRequest;
+}): Promise<ScmCommitUndoLastResponse> {
+    const { context, request } = input;
+    const refuse = (errorCode: ScmOperationErrorCode, error: string, needsInput = false): ScmCommitUndoLastResponse => ({
+        success: false, errorCode, error,
+        outcome: { v: 1, kind: needsInput ? 'needs_input' : 'failed', errorCode, message: error, nextActions: [{ kind: 'refresh' }] },
+    });
+    if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(request.expectedHeadOid)) {
+        return refuse(SCM_OPERATION_ERROR_CODES.INVALID_REQUEST, 'Undo requires the observed HEAD object ID');
+    }
+    const run = (args: string[], stdin?: string) => runScmCommand({ bin: 'git', cwd: context.cwd, args, ...(stdin ? { stdin } : {}) });
+    const head = await run(['rev-parse', '--verify', 'HEAD']);
+    if (!head.success) return refuse(getScmCommandIndeterminateErrorCode(head) ?? mapGitErrorCode(head.stderr), head.stderr || 'Could not inspect HEAD');
+    if (head.stdout.trim() !== request.expectedHeadOid) return refuse(SCM_OPERATION_ERROR_CODES.COMMIT_UNDO_HEAD_CHANGED, 'HEAD changed since this commit was observed', true);
+    let repositoryState;
+    try { repositoryState = await readGitOperationRepositoryState(context); }
+    catch { return refuse(SCM_OPERATION_ERROR_CODES.REPOSITORY_REFRESH_FAILED, 'Could not inspect repository operation state'); }
+    if (repositoryState.operation) return refuse(SCM_OPERATION_ERROR_CODES.BRANCH_OPERATION_IN_PROGRESS, 'Complete or abort the current Git operation before undoing a commit', true);
+    if (repositoryState.hasConflicts) return refuse(SCM_OPERATION_ERROR_CODES.CONFLICTING_WORKTREE, 'Resolve index conflicts before undoing a commit', true);
+    const ancestry = await run(['rev-list', '--parents', '-n', '1', request.expectedHeadOid]);
+    if (!ancestry.success) return refuse(getScmCommandIndeterminateErrorCode(ancestry) ?? mapGitErrorCode(ancestry.stderr), ancestry.stderr || 'Could not inspect commit parents');
+    const [, ...parents] = ancestry.stdout.trim().split(/\s+/);
+    if (parents.length === 0) return refuse(SCM_OPERATION_ERROR_CODES.COMMIT_UNDO_NO_PARENT, 'The first commit cannot be undone', true);
+    if (parents.length !== 1) return refuse(SCM_OPERATION_ERROR_CODES.COMMIT_UNDO_MERGE, 'Merge commits cannot be undone with this operation', true);
+    const published = await run(['for-each-ref', '--contains', request.expectedHeadOid, '--format=%(refname)', 'refs/remotes']);
+    if (!published.success) return refuse(getScmCommandIndeterminateErrorCode(published) ?? mapGitErrorCode(published.stderr), published.stderr || 'Could not inspect remote history');
+    if (published.stdout.trim()) return refuse(SCM_OPERATION_ERROR_CODES.COMMIT_UNDO_PUBLISHED, 'The commit is already present in observed remote history', true);
+    const parent = parents[0]!;
+    const mutation = await run(['update-ref', '-m', 'reset: undo last commit', '--stdin'],
+        `start\nupdate HEAD ${parent} ${request.expectedHeadOid}\nupdate ORIG_HEAD ${request.expectedHeadOid}\nprepare\ncommit\n`);
+    const indeterminate = getScmCommandIndeterminateErrorCode(mutation);
+    if (indeterminate) return {
+        success: false, errorCode: indeterminate,
+        outcome: { v: 1, kind: 'outcome_unknown', errorCode: indeterminate, reconciliation: { kind: 'repository_status', cwd: context.cwd }, nextActions: [{ kind: 'refresh' }] },
+    };
+    if (!mutation.success) {
+        const current = await run(['rev-parse', '--verify', 'HEAD']);
+        if (current.success && current.stdout.trim() !== request.expectedHeadOid) return refuse(SCM_OPERATION_ERROR_CODES.COMMIT_UNDO_HEAD_CHANGED, 'HEAD changed before undo could be applied', true);
+        return refuse(mapGitErrorCode(mutation.stderr), mutation.stderr || 'Could not undo the commit');
+    }
+    return { success: true, undoneCommitSha: request.expectedHeadOid, headOid: parent,
+        outcome: { v: 1, kind: 'succeeded', effect: { kind: 'branch', name: 'HEAD', headOid: parent }, repositoryState: { ...repositoryState, headOid: parent }, nextActions: [{ kind: 'refresh' }] } };
+}
 
 function parseZTerminatedTokens(input: string): string[] {
     // Git uses `\0` as a separator for `-z` outputs; a trailing separator is common.

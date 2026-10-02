@@ -46,6 +46,7 @@
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -82,6 +83,7 @@
         "path": "assets/inventory.png"
       }
     ],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -703,7 +705,8 @@
     },
     "voiceModelPacks": [],
     "voiceProviders": [],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "First-party Plugin SDK inspector for installed plugin state and reload diagnostics.",
   "displayName": "Plugin Inspector",

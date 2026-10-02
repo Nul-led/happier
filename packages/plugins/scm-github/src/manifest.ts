@@ -46,8 +46,11 @@ import {
 import {
   resetGithubRepositoryEventHistoryGap,
   setupGithubRepositoryEventSource,
+  setupGithubPullRequestChecksSource,
 } from './githubAutomationEventActions.js';
 import { GITHUB_AUTOMATION_EVENT_CATALOG } from './githubAutomationEvents.js';
+import { GITHUB_CHECKS_SETUP_ACTION_ID, GITHUB_CHECKS_WAIT_ACTION_ID, GITHUB_CHECKS_SOURCE_SCHEMA, isGithubChecksEvent } from './observations/githubChecksSource.js';
+import { waitGithubChecksSource, GITHUB_CHECKS_WAIT_INPUT_SCHEMA, GITHUB_CHECKS_WAIT_RESULT_SCHEMA } from './observations/githubChecksWait.js';
 import {
   GITHUB_AUTOMATION_EVENT_CHECKPOINT_COLLECTION,
   GITHUB_AUTOMATION_EVENT_CHECKPOINT_COLLECTION_ID,
@@ -341,6 +344,12 @@ const GITHUB_AUTOMATION_REPOSITORY_SETUP_RESULT_SCHEMA =
     GITHUB_AUTOMATION_REPOSITORY_SOURCE_CONTRACT_VERSION,
     GITHUB_AUTOMATION_REPOSITORY_SOURCE_CONFIG_SCHEMA,
   );
+
+const GITHUB_CHECKS_SOURCE_CONFIG_SCHEMA = {
+  ...GITHUB_AUTOMATION_REPOSITORY_SOURCE_CONFIG_SCHEMA,
+  properties: { ...GITHUB_AUTOMATION_REPOSITORY_SOURCE_CONFIG_SCHEMA.properties, checks: GITHUB_CHECKS_SOURCE_SCHEMA },
+  required: [...GITHUB_AUTOMATION_REPOSITORY_SOURCE_CONFIG_SCHEMA.required, 'checks'],
+} satisfies PluginJsonSchema;
 
 const GITHUB_AUTOMATION_REPOSITORY_SOURCE_ATTEMPT_INPUT_SCHEMA = {
   type: 'object',
@@ -1173,7 +1182,7 @@ function createGithubPlugin() {
           credentialRef: QualifiedConnectedAccountRefJsonSchema,
           repository: GITHUB_REPOSITORY_INPUT_SCHEMA,
         },
-        required: ['credentialRef', 'repository'],
+        required: ['repository'],
       },
       title: 'Set up GitHub Channels',
       description: 'Verifies the selected GitHub repository for Channels setup.',
@@ -1187,6 +1196,26 @@ function createGithubPlugin() {
       }],
       dangerLevel: providers.operations.setup.declaration.dangerLevel,
       run: setupGithubChannels,
+    },
+    [GITHUB_CHECKS_WAIT_ACTION_ID]: {
+      title: 'Wait for GitHub pull request checks',
+      description: 'Observes an admitted GitHub checks source checkpoint. Cancellation and timeout stop observation only.',
+      surfaces: ['plugin', 'cli', 'mcp', 'agent'], inputSchema: GITHUB_CHECKS_WAIT_INPUT_SCHEMA, resultSchema: GITHUB_CHECKS_WAIT_RESULT_SCHEMA,
+      hostAccess: ['automation-event-checkpoint-storage'], run: waitGithubChecksSource,
+    },
+    [GITHUB_CHECKS_SETUP_ACTION_ID]: {
+      title: 'Set up GitHub pull request checks',
+      description: 'Binds checks observation to the chosen pull request head and all or required checks.',
+      surfaces: ['plugin'],
+      inputSchema: {
+        type: 'object', additionalProperties: false,
+        properties: { credentialRef: QualifiedConnectedAccountRefJsonSchema, repository: GITHUB_REPOSITORY_INPUT_SCHEMA, checks: GITHUB_CHECKS_SOURCE_SCHEMA },
+        required: ['credentialRef', 'repository', 'checks'],
+      },
+      resultSchema: createPluginEventAutomationSetupResultV1JsonSchema(GITHUB_AUTOMATION_REPOSITORY_SOURCE_CONTRACT_VERSION, GITHUB_CHECKS_SOURCE_CONFIG_SCHEMA),
+      hostAccess: ['github-api', GITHUB_CONNECTED_ACCOUNT_PURPOSE],
+      connectedAccountPurposeBindings: [{ path: 'credentialRef', purpose: GITHUB_CONNECTED_ACCOUNT_PURPOSE }],
+      run: setupGithubPullRequestChecksSource,
     },
     [GITHUB_AUTOMATION_REPOSITORY_SETUP_ACTION_ID]: {
       title: 'Set up GitHub repository Event source',
@@ -1322,15 +1351,15 @@ function createGithubPlugin() {
           eligible: true,
           source: {
             sourceContractVersion: GITHUB_AUTOMATION_REPOSITORY_SOURCE_CONTRACT_VERSION,
-            supportedObservationTransports: ['checkpointedPull', 'durablePush'],
-            webhookContributionRef: {
+            supportedObservationTransports: isGithubChecksEvent(event.localId) ? ['checkpointedPull'] : ['checkpointedPull', 'durablePush'],
+            ...(isGithubChecksEvent(event.localId) ? {} : { webhookContributionRef: {
               pluginId: GITHUB_PLUGIN_ID,
               localId: GITHUB_WEBHOOK_CONTRIBUTION_ID,
-            },
-            sourceConfigSchema: GITHUB_AUTOMATION_REPOSITORY_SOURCE_CONFIG_SCHEMA,
+            } }),
+            sourceConfigSchema: isGithubChecksEvent(event.localId) ? GITHUB_CHECKS_SOURCE_CONFIG_SCHEMA : GITHUB_AUTOMATION_REPOSITORY_SOURCE_CONFIG_SCHEMA,
             setupActionRef: {
               pluginId: GITHUB_PLUGIN_ID,
-              localId: GITHUB_AUTOMATION_REPOSITORY_SETUP_ACTION_ID,
+              localId: isGithubChecksEvent(event.localId) ? GITHUB_CHECKS_SETUP_ACTION_ID : GITHUB_AUTOMATION_REPOSITORY_SETUP_ACTION_ID,
             },
             historyGapResetActionRef: {
               pluginId: GITHUB_PLUGIN_ID,

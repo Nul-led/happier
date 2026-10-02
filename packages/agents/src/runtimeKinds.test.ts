@@ -22,6 +22,7 @@ describe('runtimeKinds', () => {
         sessionFork: { conversation: 'supported', fromMessage: 'unsupported' },
         sessionRollback: { conversation: 'supported' },
         usageLimitRecovery: { checkNow: 'supported' },
+        usageReporting: 'supported',
       },
       handoff: { vendorStateTransfer: 'experimental', requiresExplicitSessionId: true },
       localControl: { supported: true },
@@ -33,6 +34,7 @@ describe('runtimeKinds', () => {
         sessionFork: { conversation: 'unsupported', fromMessage: 'unsupported' },
         sessionRollback: { conversation: 'unsupported' },
         usageLimitRecovery: { checkNow: 'unsupported' },
+        usageReporting: 'unsupported',
       },
       handoff: { vendorStateTransfer: 'unsupported', requiresExplicitSessionId: true },
       localControl: null,
@@ -65,5 +67,11 @@ describe('runtimeKinds', () => {
         inFlightSteerSupported: true,
       },
     });
+  });
+
+  it('does not promise usage reporting for unverified Codex runtime modes or generic ACP Agents', () => {
+    expect(resolveAgentRuntimeControlSurface('codex', 'mcp')?.sessionCapabilities.usageReporting).toBe('unsupported');
+    expect(resolveAgentRuntimeControlSurface('codex', 'acp')?.sessionCapabilities.usageReporting).toBe('unsupported');
+    expect(resolveAgentRuntimeControlSurface('gemini', null)?.sessionCapabilities.usageReporting).toBeUndefined();
   });
 });

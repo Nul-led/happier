@@ -73,6 +73,10 @@ export const normalizePluginUiSubPathV1: (value: string) => string | null =
     canonicalNormalizePluginUiSubPathV1;
 
 import type { PluginCancellationOptions, Disposable } from '../lifecycle.js';
+import type { StoredImageRefV1, PluginUiReadStoredImageResultV1 } from './publicContract.js';
+import type { PluginLiveStreamReferenceV1 } from './publicContract.js';
+export type { PluginLiveStreamReferenceV1 } from './publicContract.js';
+export type { StoredImageRefV1, PluginUiReadStoredImageResultV1 } from './publicContract.js';
 import type { PluginDiagnosticData } from '../diagnostics.js';
 import type { JsonValue, PluginReference } from '../identity.js';
 import type { InteractionSeverity } from '../interactions.js';
@@ -450,6 +454,8 @@ export type OpenConnectedAccountsRequest =
     }>;
 
 export interface PluginUiHostApi {
+    /** Reads a native Session-image artifact from this mount's successfully delivered Action results under Sessions READ scope. */
+    readStoredImage(image: StoredImageRefV1, options?: PluginCancellationOptions): Promise<PluginUiReadStoredImageResultV1>;
     version(): Readonly<{
         apiVersion: string;
         wireVersion: number;
@@ -693,6 +699,12 @@ export interface PluginUiHostApi {
      */
     watchSession(
         sessionId: string,
+        listener: (event: ResourceSubscriptionEvent) => void,
+        options?: PluginCancellationOptions,
+    ): Promise<Disposable>;
+    /** View one source for this mounted occurrence. Host sources require Action approval. */
+    watchLiveStream(
+        reference: PluginLiveStreamReferenceV1,
         listener: (event: ResourceSubscriptionEvent) => void,
         options?: PluginCancellationOptions,
     ): Promise<Disposable>;

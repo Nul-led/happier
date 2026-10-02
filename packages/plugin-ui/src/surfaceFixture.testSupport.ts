@@ -65,7 +65,9 @@ export function createHostApiStub(
     inspectComposerContent: async () => unsupportedHostMethod(),
     releaseComposerContent: async () => unsupportedHostMethod(),
     readSession: async () => unsupportedHostMethod(),
+    readStoredImage: async () => unsupportedHostMethod(),
     watchSession: async () => unsupportedHostMethod(),
+    watchLiveStream: async () => unsupportedHostMethod(),
     respondToSessionPermission: async () => unsupportedHostMethod(),
     ...overrides,
   } satisfies PluginUiHostApi;

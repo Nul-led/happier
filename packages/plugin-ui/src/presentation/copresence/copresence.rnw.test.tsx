@@ -75,6 +75,92 @@ async function click(element: HTMLElement | null): Promise<void> {
 }
 
 describe('HappierPresenceCapsule', () => {
+  it('does not mistake command acceptance for authoritative human control', async () => {
+    const { host } = createHost();
+    const mounted = mountThroughReactNativeWeb(
+      <HappierPresenceCapsule presence={{ kind: 'agent', controlEpoch: 4 }} copy={COPY} colors={COLORS}
+        host={host} onTakeControl={async () => ({ status: 'accepted' })} testID="p" />,
+    );
+    try {
+      await click(byTestId(mounted.container, 'p-take-control'));
+      expect(byTestId(mounted.container, 'p-stopping')).toBeTruthy();
+      expect(byTestId(mounted.container, 'p-take-control')).toBeNull();
+      expect(mounted.container.textContent).not.toContain(COPY.humanTitle);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  it.each(['failed', 'unknown'] as const)('offers Take control again after a %s result without inventing human control', async (status) => {
+    const { host } = createHost();
+    let answer!: (result: { status: 'failed' | 'unknown' }) => void;
+    const onTakeControl = vi.fn(() => new Promise<{ status: 'failed' | 'unknown' }>((resolve) => { answer = resolve; }));
+    const render = (presence: HappierPresence) => (
+      <HappierPresenceCapsule presence={presence} copy={COPY} colors={COLORS} host={host}
+        onTakeControl={onTakeControl} onHandBack={() => undefined} testID="p" />
+    );
+    const mounted = mountThroughReactNativeWeb(render({ kind: 'agent', controlEpoch: 4 }));
+    try {
+      await click(byTestId(mounted.container, 'p-take-control'));
+      expect(byTestId(mounted.container, 'spinner')).toBeTruthy();
+      await act(async () => { answer({ status }); });
+      expect(byTestId(mounted.container, 'spinner')).toBeNull();
+      expect(mounted.container.textContent).toContain(COPY.stopUnconfirmed);
+      expect(mounted.container.textContent).not.toContain(COPY.humanTitle);
+      expect(byTestId(mounted.container, 'p-hand-back')).toBeNull();
+      await click(byTestId(mounted.container, 'p-take-control'));
+      expect(onTakeControl).toHaveBeenCalledTimes(2);
+
+      // A delayed transport answer cannot overrule a later authoritative controller event.
+      await mounted.render(render({ kind: 'human', controlEpoch: 5, interruptedCompletion: null }));
+      await act(async () => { answer({ status }); });
+      expect(byTestId(mounted.container, 'p-human')).toBeTruthy();
+      expect(byTestId(mounted.container, 'spinner')).toBeNull();
+      expect(byTestId(mounted.container, 'p-hand-back')).toBeTruthy();
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  it('recovers from a rejected takeover without a timer or an unhandled rejection', async () => {
+    const { host } = createHost();
+    const mounted = mountThroughReactNativeWeb(
+      <HappierPresenceCapsule presence={{ kind: 'agent', controlEpoch: 4 }} copy={COPY} colors={COLORS}
+        host={host} onTakeControl={() => Promise.reject(new Error('connection lost'))} testID="p" />,
+    );
+    try {
+      await click(byTestId(mounted.container, 'p-take-control'));
+      expect(byTestId(mounted.container, 'spinner')).toBeNull();
+      expect(byTestId(mounted.container, 'p-take-control')).toBeTruthy();
+      expect(mounted.container.textContent).not.toContain(COPY.humanTitle);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  it('ignores an old failure after a new controller epoch and a second takeover', async () => {
+    const { host } = createHost();
+    const answers: ((result: { status: 'failed' }) => void)[] = [];
+    const onTakeControl = () => new Promise<{ status: 'failed' }>((resolve) => { answers.push(resolve); });
+    const render = (controlEpoch: number) => (
+      <HappierPresenceCapsule presence={{ kind: 'agent', controlEpoch }} copy={COPY} colors={COLORS}
+        host={host} onTakeControl={onTakeControl} testID="p" />
+    );
+    const mounted = mountThroughReactNativeWeb(render(4));
+    try {
+      await click(byTestId(mounted.container, 'p-take-control'));
+      await mounted.render(render(5));
+      await click(byTestId(mounted.container, 'p-take-control'));
+      await act(async () => { answers[0]!({ status: 'failed' }); });
+      expect(byTestId(mounted.container, 'p-stopping')).toBeTruthy();
+      expect(byTestId(mounted.container, 'p-take-control')).toBeNull();
+      await act(async () => { answers[1]!({ status: 'failed' }); });
+      expect(byTestId(mounted.container, 'p-take-control')).toBeTruthy();
+    } finally {
+      mounted.unmount();
+    }
+  });
+
   it('says stopping after Take control until the owner moves the control epoch, then offers Hand back', async () => {
     const { host } = createHost();
     const onTakeControl = vi.fn();

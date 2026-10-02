@@ -128,6 +128,20 @@ export async function readSelectedCurrentProviderContribution(input: Readonly<{
   throw unavailableSelectedProviderContribution(result.reason);
 }
 
+/** The PR-link feature selects the single admitted GitHub Channels contributor. */
+export async function readSessionPullRequestProviderSelection(context: ProviderContributionReadContext): Promise<PluginTargetedContributionSelectionV1> {
+  const point = await readChannelsProviderPointRef();
+  const snapshot = await readCurrentProviderSnapshot(context);
+  const matches = snapshot.contributions.filter((entry) => hasCurrentPointProtocol(entry, point)
+    && entry.contributor.pluginId === 'happier.scm.forge.github');
+  if (matches.length !== 1) throw unavailableProviderContribution('persistedProviderMissing', 'The GitHub Channel provider is unavailable.');
+  return {
+    target: { pluginId: 'happier.channels', sourceCustody: snapshot.sourceCustody },
+    point: { pointId: 'providers', protocol: point.protocol },
+    contributor: { pluginId: matches[0]!.contributor.pluginId, contributionId: matches[0]!.contributor.contributionId, sourceCustody: matches[0]!.contributor.sourceCustody },
+  };
+}
+
 /**
  * Resolves the exact contribution retained by a durable connection against the
  * current target-owned admission snapshot. Durable state never retains an

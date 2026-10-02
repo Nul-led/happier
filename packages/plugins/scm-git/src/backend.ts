@@ -37,7 +37,7 @@ import {
 } from './operations/branchIntegrationOperations.js';
 import { gitChangeExclude, gitChangeInclude } from './operations/changeApply.js';
 import { gitChangeDiscard } from './operations/changeDiscard.js';
-import { gitCommitBackout, gitCommitCreate } from './operations/commitOperations.js';
+import { gitCommitBackout, gitCommitCreate, gitCommitUndoLast } from './operations/commitOperations.js';
 import { gitRemotePublish } from './operations/publishOperations.js';
 import { gitDiffCommit, gitDiffFile, gitLogList } from './operations/readOperations.js';
 import { gitRemoteAdd, gitRemoteRemove, gitRemoteSetUrl } from './operations/remoteManagementOperations.js';
@@ -113,6 +113,7 @@ export function createGitBackend(): ScmBackend {
         changeDiscard: gitChangeDiscard,
         commitCreate: gitCommitCreate,
         commitBackout: gitCommitBackout,
+        commitUndoLast: gitCommitUndoLast,
         logList: gitLogList,
         branchList: gitBranchList,
         branchCreate: gitBranchCreate,
@@ -212,6 +213,7 @@ export function createGitScmBackendRuntimeRegistration(): ScmBackendRuntimeRegis
             commit: {
                 create: backend.commitCreate,
                 backout: backend.commitBackout,
+                undoLast: backend.commitUndoLast,
             },
             remote: {
                 add: backend.remoteAdd,

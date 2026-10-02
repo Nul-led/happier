@@ -145,7 +145,11 @@ export async function getGitSnapshot(input: {
     const hostingProviderRegistry = await resolveDefaultPullRequestStatusProjectionRegistry();
 
     const statusRaw = statusResult.stdout ?? '';
-    const untrackedPaths = parseGitStatusPorcelainV2Z(statusRaw).notAdded;
+    const parsedStatus = parseGitStatusPorcelainV2Z(statusRaw);
+    const upstreamOidResult = parsedStatus.branch.upstream ? await runScmCommand({
+        bin: 'git', cwd: context.cwd, args: ['rev-parse', '--verify', '@{upstream}^{commit}'],
+    }) : null;
+    const untrackedPaths = parsedStatus.notAdded;
     const untrackedStatsByPath = repoRoot && untrackedPaths.length > 0 ? await readUntrackedFileStats(repoRoot, untrackedPaths) : {};
 
     const snapshot = buildGitSnapshot({
@@ -155,6 +159,7 @@ export async function getGitSnapshot(input: {
         currentWorktreePath: context.cwd,
         mainWorktreePath: resolveMainWorktreePathFromCheckoutIdentity(checkoutIdentity),
         statusOutput: statusResult.stdout ?? '',
+        ...(upstreamOidResult?.success ? { upstreamOid: upstreamOidResult.stdout.trim() } : {}),
         includedNumStatOutput: includedResult.success ? (includedResult.stdout ?? '') : '',
         pendingNumStatOutput: pendingResult.success ? (pendingResult.stdout ?? '') : '',
         includedNumStatSuccess: includedResult.success,

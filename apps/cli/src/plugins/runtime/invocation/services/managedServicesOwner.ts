@@ -2359,6 +2359,8 @@ type ManagedServiceSemanticEntry = {
     waiterCount: number;
     terminal: boolean;
     processHandle: ManagedServiceProcessHandle | null;
+    // Observation only: successful wrapping transfers all process cleanup custody to the public handle.
+    readProcessSnapshot: (() => ManagedServiceProcessSnapshot) | null;
     establishmentCleanup: (() => Promise<void>) | null;
     credentialCleanup: CredentialBindingCleanupOwner | null;
     retirement: Promise<void> | null;
@@ -2578,6 +2580,16 @@ function waitForManagedServiceEstablishment(
     });
 }
 
+type SessionManagedServiceIdentity = Readonly<{
+    sessionId: string;
+    pluginId: string;
+    contributionQualifiedId: string;
+    serviceId: string;
+}> & (
+    | Readonly<{ occurrenceId: string; instanceId?: never }>
+    | Readonly<{ instanceId: string; occurrenceId?: never }>
+);
+
 export function createManagedServicesOwner(input: Readonly<{
     processSupervisorHost: ManagedServiceProcessSupervisorHost;
     fetch?: typeof globalThis.fetch;
@@ -2614,21 +2626,10 @@ export function createManagedServicesOwner(input: Readonly<{
         exec: ExecService,
         context?: Partial<ManagedServicesInvocationBindingContext>,
     ): ManagedServices;
-    bindSessionManagedServiceRequest(input: Readonly<{
-        sessionId: string;
-        occurrenceId: string;
-        pluginId: string;
-        contributionQualifiedId: string;
-        serviceId: string;
-    }>): ((
+    bindSessionManagedServiceRequest(input: SessionManagedServiceIdentity): ((
         request: ManagedServiceRequest,
     ) => Promise<ManagedServiceResponse>) | null;
-    materializeSessionManagedServiceClientEnvironment(input: Readonly<{
-        sessionId: string;
-        occurrenceId: string;
-        pluginId: string;
-        contributionQualifiedId: string;
-        serviceId: string;
+    materializeSessionManagedServiceClientEnvironment(input: SessionManagedServiceIdentity & Readonly<{
         environmentKey: string;
         signal?: AbortSignal;
     }>): Promise<Readonly<Record<string, string>> | null>;
@@ -2677,6 +2678,40 @@ export function createManagedServicesOwner(input: Readonly<{
         ManagedServicesSemanticEntry
     >();
     let permanentRetirementStarted = false;
+    const resolveSessionManagedServiceEntry = (
+        identity: SessionManagedServiceIdentity,
+    ): ManagedServiceSemanticEntry | null => {
+        if (permanentRetirementStarted) return null;
+        const matchesIdentity = (entry: ManagedServicesSemanticEntry): entry is ManagedServiceSemanticEntry => (
+            isManagedServiceSemanticEntry(entry)
+            && !entry.terminal
+            && entry.lifecycle.kind === 'session'
+            && entry.scope.sessionId === identity.sessionId
+            && entry.scope.pluginId === identity.pluginId
+            && entry.scope.contributionQualifiedId === identity.contributionQualifiedId
+        );
+        if (identity.occurrenceId !== undefined) {
+            const entry = semanticEntries.get(managedServiceSemanticEntryKey({
+                lifecycleIdentity: `session:${identity.sessionId}`,
+                ...identity,
+                occurrenceId: identity.occurrenceId,
+            }));
+            return entry && matchesIdentity(entry) ? entry : null;
+        }
+        const matches = [...semanticEntries.entries()].filter((candidate): candidate is [string, ManagedServiceSemanticEntry] => {
+            const [key, entry] = candidate;
+            if (!matchesIdentity(entry)) return false;
+            const snapshot = entry.readProcessSnapshot?.();
+            return key === managedServiceSemanticEntryKey({
+                lifecycleIdentity: entry.lifecycle.identity,
+                pluginId: identity.pluginId,
+                contributionQualifiedId: identity.contributionQualifiedId,
+                serviceId: identity.serviceId,
+                occurrenceId: entry.occurrenceId,
+            }) && snapshot?.instanceId === identity.instanceId;
+        });
+        return matches.length === 1 ? matches[0]![1] : null;
+    };
     const assertAcceptingSupervision = (): void => {
         if (permanentRetirementStarted) {
             return fail(
@@ -3114,6 +3149,7 @@ export function createManagedServicesOwner(input: Readonly<{
                     waiterCount: 0,
                     terminal: false,
                     processHandle: null,
+                    readProcessSnapshot: null,
                     establishmentCleanup: null,
                     credentialCleanup,
                     retirement: null,
@@ -3268,6 +3304,7 @@ export function createManagedServicesOwner(input: Readonly<{
                             },
                         );
                         entry.processHandle = handle;
+                        entry.readProcessSnapshot = () => handle.snapshot();
                         entry.establishmentCleanup = null;
                         if (
                             entry.establishmentAbort.signal.aborted
@@ -3893,40 +3930,17 @@ export function createManagedServicesOwner(input: Readonly<{
             return candidates.length;
         },
         bindSessionManagedServiceRequest(requestInput) {
-            if (permanentRetirementStarted) return null;
-            const entryKey = managedServiceSemanticEntryKey({
-                lifecycleIdentity: `session:${requestInput.sessionId}`,
-                pluginId: requestInput.pluginId,
-                contributionQualifiedId:
-                    requestInput.contributionQualifiedId,
-                serviceId: requestInput.serviceId,
-                occurrenceId: requestInput.occurrenceId,
-            });
-            const entry = semanticEntries.get(entryKey);
-            if (
-                !entry
-                || !isManagedServiceSemanticEntry(entry)
-                || entry.terminal
-                || entry.lifecycle.kind !== 'session'
-                || entry.scope.sessionId !== requestInput.sessionId
-            ) return null;
+            const entry = resolveSessionManagedServiceEntry(requestInput);
+            if (!entry) return null;
             return async (request) => {
-                if (
-                    permanentRetirementStarted
-                    || semanticEntries.get(entryKey) !== entry
-                    || entry.terminal
-                ) {
+                if (resolveSessionManagedServiceEntry(requestInput) !== entry) {
                     return fail(
                         'plugin_managed_service_unavailable',
                         'Managed-service handle is unavailable',
                     );
                 }
                 const handle = await entry.establishment;
-                if (
-                    permanentRetirementStarted
-                    || semanticEntries.get(entryKey) !== entry
-                    || entry.terminal
-                ) {
+                if (resolveSessionManagedServiceEntry(requestInput) !== entry) {
                     return fail(
                         'plugin_managed_service_unavailable',
                         'Managed-service handle is unavailable',
@@ -3936,36 +3950,18 @@ export function createManagedServicesOwner(input: Readonly<{
             };
         },
         async materializeSessionManagedServiceClientEnvironment(requestInput) {
-            if (permanentRetirementStarted) return null;
-            const entryKey = managedServiceSemanticEntryKey({
-                lifecycleIdentity: `session:${requestInput.sessionId}`,
-                pluginId: requestInput.pluginId,
-                contributionQualifiedId:
-                    requestInput.contributionQualifiedId,
-                serviceId: requestInput.serviceId,
-                occurrenceId: requestInput.occurrenceId,
-            });
-            const entry = semanticEntries.get(entryKey);
-            if (
-                !entry
-                || !isManagedServiceSemanticEntry(entry)
-                || entry.terminal
-                || entry.lifecycle.kind !== 'session'
-                || entry.scope.sessionId !== requestInput.sessionId
-            ) return null;
+            const entry = resolveSessionManagedServiceEntry(requestInput);
+            if (!entry) return null;
             const service = await entry.establishment;
-            if (
-                permanentRetirementStarted
-                || semanticEntries.get(entryKey) !== entry
-                || entry.terminal
-            ) return null;
+            if (resolveSessionManagedServiceEntry(requestInput) !== entry) return null;
             const materialize = clientEnvironmentByService.get(service);
-            return materialize
+            const environment = materialize
                 ? await materialize(
                     requestInput.environmentKey,
                     requestInput.signal,
                 )
                 : null;
+            return resolveSessionManagedServiceEntry(requestInput) === entry ? environment : null;
         },
         async projectManagedProviderEndpointAccess({
             service,

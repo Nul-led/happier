@@ -39,6 +39,8 @@ export const CAPABILITY_HOST_BINDING_OWNERS_V1 = Object.freeze({
   voiceDeclarationFamilyProjection: 'apps/cli/src/plugins/projection/registry/voiceDeclarations.ts',
   /** Projects declared roles into the existing role source catalog. */
   roleFamilyProjection: 'apps/cli/src/plugins/projection/registry/roles.ts',
+  /** Projects declared workflows into the existing workflow library. */
+  workflowFamilyProjection: 'apps/cli/src/plugins/projection/registry/workflows.ts',
   /** Admits contribution points and the contributions targeting them. */
   targetedContributionAdmission: 'apps/cli/src/plugins/projection/registry/targetedContributions.ts',
   /** Binds declared plugin commands onto the CLI command surface. */
@@ -123,6 +125,7 @@ export const MANIFEST_FAMILY_REALM_OWNERS_V1 = Object.freeze({
   hooks: DAEMON_REGISTRATION_OWNERS,
   requestInterceptors: DAEMON_REGISTRATION_OWNERS,
   backgroundServices: DAEMON_REGISTRATION_OWNERS,
+  captureSources: DAEMON_REGISTRATION_OWNERS,
   composerReferences: DAEMON_REGISTRATION_OWNERS,
   composerAttachments: DAEMON_REGISTRATION_OWNERS,
   'mcp.servers': DAEMON_REGISTRATION_OWNERS,
@@ -165,6 +168,7 @@ export const MANIFEST_FAMILY_REALM_OWNERS_V1 = Object.freeze({
   'settings.fields': declarativeFamilyOwners(CAPABILITY_HOST_BINDING_OWNERS_V1.pluginSettingsHost),
   executionRunProfiles: declarativeFamilyOwners(CAPABILITY_HOST_BINDING_OWNERS_V1.executionRunProfileHost),
   roles: declarativeFamilyOwners(CAPABILITY_HOST_BINDING_OWNERS_V1.roleFamilyProjection),
+  workflows: declarativeFamilyOwners(CAPABILITY_HOST_BINDING_OWNERS_V1.workflowFamilyProjection),
   notifications: declarativeFamilyOwners(CAPABILITY_HOST_BINDING_OWNERS_V1.pluginNotificationsHost),
   systemTools: declarativeFamilyOwners(CAPABILITY_HOST_BINDING_OWNERS_V1.systemToolProjection),
   pluginContributionPoints: declarativeFamilyOwners(

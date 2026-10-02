@@ -6,7 +6,7 @@ import type {
   WorkStatePublisher,
 } from '../services/sessions.js';
 import type { JsonValue } from '../identity.js';
-import type { AgentRuntimeContext, AgentSessionRuntimeContext } from './context.js';
+import type { AgentRuntimeContext, AgentSessionHostServices, AgentSessionRuntimeContext, AgentTranscriptIdentityCodec, TerminalHostKind } from './context.js';
 import type {
   AgentSessionConnectedAccountSelection,
   AgentSessionConfigurationSnapshot,
@@ -209,11 +209,25 @@ export interface AgentSessionContinuationControl {
 }
 
 export interface AgentSessionRuntimeFactory {
-  /** Pure selected-runtime capability; may narrow the runtime's terminal/attach surfaces. */
-  readonly supportsTerminalPresentation?: (selection: Readonly<
+  readonly transcriptIdentity?: AgentTranscriptIdentityCodec;
+  /** Developer Preview: selected runtime owns placement and captures its launch intent. */
+  readonly resolveTerminalPresentation?: (selection: Readonly<
     Pick<AgentSessionOpenRequest, 'runtimeDescriptorV1' | 'launchEnvironment'>
-    & { configuration?: Pick<AgentSessionConfigurationSnapshot, 'options'> }
-  >) => boolean;
+    & {
+      cwd?: string;
+      requestedHost?: TerminalHostKind | 'plain';
+      configuration?: Pick<AgentSessionConfigurationSnapshot, 'options'>;
+    }
+  >, context: Readonly<{
+    settings: AgentRuntimeContext['services']['settings'];
+    features: AgentSessionHostServices['features'];
+  }>) => Promise<Readonly<{
+    kind: 'runner' | 'managed_terminal' | 'provider_attach' | 'none';
+    startingMode?: 'terminal' | 'remote';
+    runtimeDescriptorV1?: AgentSessionOpenRequest['runtimeDescriptorV1'];
+    /** Applied over the already prepared environment; never replaces credentials or unset keys. */
+    environmentOverlay?: Readonly<Record<string, string>>;
+  }>>;
   readonly goals?: AgentSessionGoalControl;
   readonly catalog?: AgentSessionCatalogControl;
   readonly usageLimitRecovery?: AgentSessionUsageLimitRecoveryControl;

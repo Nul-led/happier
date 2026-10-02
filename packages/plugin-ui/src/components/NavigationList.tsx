@@ -1,4 +1,6 @@
 import type { ReactElement, ReactNode } from 'react';
+import type { PluginUiHostApi } from '@happier-dev/plugin-sdk/ui';
+import { useOptionalPluginUiPresentationHost } from '../presentationHost/context.js';
 import { ScrollView, StyleSheet, View, type ViewStyle } from 'react-native';
 
 import { useOptionalHappierUiTypography } from '../environment/context.js';
@@ -79,6 +81,8 @@ export type NavigationListGroupProps = Readonly<{
 }>;
 
 export type NavigationListRowProps = Readonly<{
+  /** The same qualified page/location ordinary activation opens; the host supplies workspace gestures. */
+  destination?: NavigationListDestination;
   title?: string;
   titleKey?: string;
   /** A glyph from the icon vocabulary, drawn in the rows' leading column in the quiet glyph colour. */
@@ -95,6 +99,11 @@ export type NavigationListRowProps = Readonly<{
   disabled?: boolean;
   accessibilityLabel?: string;
   testID?: string;
+}>;
+
+export type NavigationListDestination = Readonly<{
+  destination: Parameters<PluginUiHostApi['openSurface']>[0];
+  subPath?: string;
 }>;
 
 const TEXT_COLOR_ROLE: Readonly<Record<HappierCollectionListTextRole, 'text' | 'secondaryText' | 'mutedText'>> = {
@@ -260,13 +269,14 @@ function NavigationListGroup(props: NavigationListGroupProps): ReactElement {
 }
 
 function NavigationListRow(props: NavigationListRowProps): ReactElement {
+  const host = useOptionalPluginUiPresentationHost();
   const translate = usePluginTranslation();
   const title = resolveAuthorText(translate, props.title, props.titleKey) ?? '';
   const status = props.status === undefined ? undefined : STATUS_ICON[props.status.kind];
   const accessibilityLabel = props.status === undefined
     ? props.accessibilityLabel
     : `${props.accessibilityLabel ?? title}, ${props.status.label}`;
-  return (
+  const row = (
     <HappierListItem
       title={title}
       titleNumberOfLines={1}
@@ -282,6 +292,8 @@ function NavigationListRow(props: NavigationListRowProps): ReactElement {
       {...(props.testID === undefined ? {} : { testID: props.testID })}
     />
   );
+  return <>{props.destination && !props.disabled && host?.renderDestinationRow
+    ? host.renderDestinationRow({ ...props.destination, children: row }) : row}</>;
 }
 
 /**

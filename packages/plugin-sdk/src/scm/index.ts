@@ -25,6 +25,7 @@ export type { ScmChangeDiscardResponse } from './projections.js';
 export type { ScmCloneProtocol } from './projections.js';
 export { ScmCloneProtocolSchema } from './projections.js';
 export type { ScmCommitBackoutRequest } from './projections.js';
+export type { ScmCommitUndoLastRequest, ScmCommitUndoLastResponse } from './projections.js';
 export type { ScmCommitBackoutResponse } from './projections.js';
 export type { ScmCommitCreateRequest } from './projections.js';
 export type { ScmCommitCreateResponse } from './projections.js';

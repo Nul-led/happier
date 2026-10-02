@@ -260,36 +260,8 @@ pub fn register(app: &mut App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// The tray's own theme as its platform reports it. macOS needs none: AppKit tints the template.
-#[cfg(any(test, all(desktop, not(target_os = "macos"))))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TrayThemeSignal {
-    /// `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\SystemUsesLightTheme`:
-    /// the taskbar follows the Windows (system) mode, which can differ from the app mode
-    /// (`AppsUseLightTheme`). `None` when the value is absent or unreadable.
-    #[cfg(any(test, target_os = "windows"))]
-    WindowsSystemUsesLightTheme(Option<u32>),
-    /// The freedesktop settings portal's `org.freedesktop.appearance` `color-scheme`: 0 no
-    /// preference, 1 prefer dark, 2 prefer light; unknown values mean 0. `None` without a portal.
-    #[cfg(any(test, target_os = "linux"))]
-    FreedesktopColorScheme(Option<u32>),
-}
-
-/// Whether the tray is known to be light, so the full-colour mark reads on it. Anything unknown
-/// counts as dark and gets the white silhouette: Windows without the value predates the light
-/// taskbar, and most Linux panels are dark — GNOME's stays dark in every style, and its settings
-/// only ever report "no preference" or "prefer dark".
-#[cfg(any(test, all(desktop, not(target_os = "macos"))))]
-fn tray_is_light(signal: TrayThemeSignal) -> bool {
-    match signal {
-        #[cfg(any(test, target_os = "windows"))]
-        TrayThemeSignal::WindowsSystemUsesLightTheme(value) => {
-            value.is_some_and(|value| value != 0)
-        }
-        #[cfg(any(test, target_os = "linux"))]
-        TrayThemeSignal::FreedesktopColorScheme(value) => value == Some(2),
-    }
-}
+#[cfg(all(desktop, not(target_os = "macos")))]
+use model::{tray_is_light, TrayThemeSignal};
 
 #[cfg(all(desktop, not(target_os = "macos")))]
 fn tray_icon_for(signal: TrayThemeSignal) -> Image<'static> {
@@ -320,9 +292,19 @@ fn windows_tray_theme() -> TrayThemeSignal {
     TrayThemeSignal::WindowsSystemUsesLightTheme(value)
 }
 
-/// Re-reads the taskbar mode on `ThemeChanged`, which tao raises from `WM_SETTINGCHANGE` when the
-/// app mode flips. That is the only theme-change signal this process receives, so a Custom-mode
-/// switch of the Windows mode alone shows up at the next app-mode switch or launch.
+/// With no main webview, existing pointer demand replaces the absent window theme observer.
+#[cfg(target_os = "windows")]
+pub(crate) fn refresh_tray_theme_on_pointer(app: &AppHandle, main_webview_exists: bool) {
+    if let Some(signal) = model::sample_tray_theme_on_pointer(
+        MenuPlatform::current(),
+        main_webview_exists,
+        windows_tray_theme,
+    ) {
+        set_tray_icon_for(app, signal);
+    }
+}
+
+/// Re-reads taskbar mode on main-window ThemeChanged. Tray-only pointer demand samples it too.
 #[cfg(target_os = "windows")]
 pub(crate) fn follow_tray_theme_from_window(app: &AppHandle, window: &tauri::WebviewWindow) {
     let handle = app.clone();
@@ -665,19 +647,6 @@ fn build_native_item(
 #[cfg(all(test, desktop))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn tray_icon_follows_the_tray_theme_and_unknown_means_a_dark_tray() {
-        use TrayThemeSignal::*;
-        assert!(tray_is_light(WindowsSystemUsesLightTheme(Some(1))));
-        assert!(!tray_is_light(WindowsSystemUsesLightTheme(Some(0))));
-        assert!(!tray_is_light(WindowsSystemUsesLightTheme(None)));
-        assert!(tray_is_light(FreedesktopColorScheme(Some(2))));
-        assert!(!tray_is_light(FreedesktopColorScheme(Some(1))));
-        assert!(!tray_is_light(FreedesktopColorScheme(Some(0))));
-        assert!(!tray_is_light(FreedesktopColorScheme(Some(7))));
-        assert!(!tray_is_light(FreedesktopColorScheme(None)));
-    }
 
     #[test]
     fn every_desktop_build_ships_the_tray_so_quit_is_reachable() {

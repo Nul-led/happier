@@ -59,6 +59,8 @@ async function fixture(encryptionMode: 'plain' | 'e2ee' = 'plain', contentCreden
   const followReads: { cursor: number; leaseId: string | null; ids: string[]; nextCursor: string; at: number }[] = [];
   const sessions: Socket[] = [];
   const requests: string[] = [];
+  const actionRevisions = new Map<string, number>();
+  const waitingActions = new Set<() => void>();
   const accountSeed = new Uint8Array(32).fill(9);
   const dataKey = new Uint8Array(32).fill(17);
   const context = { serverIdentityId: 'srv_live', accountId: 'account-1', tokenId: TOKEN_ID,
@@ -132,6 +134,20 @@ async function fixture(encryptionMode: 'plain' | 'e2ee' = 'plain', contentCreden
       let result: unknown = { ok: true };
       if (actionId === 'transcript.follow') {
         const after = Number(body.input.cursor ?? 0);
+        const leaseId = String(body.input.leaseId);
+        if (body.input.waitForChanges === true && !rows.some((entry) => entry.seq > after)
+          && stateVersion <= Number(body.input.agentStateVersion ?? stateVersion)
+          && (!sharedMetadata || sharedMetadataVersion <= Number(body.input.sharedMetadataVersion ?? sharedMetadataVersion))
+          && revision <= (actionRevisions.get(leaseId) ?? revision)) {
+          await new Promise<void>((resolve) => {
+            const wake = () => { waitingActions.delete(wake); response.off('close', wake); resolve(); };
+            waitingActions.add(wake);
+            response.once('close', wake);
+          });
+          if (response.destroyed) return;
+        }
+        const previousRevision = actionRevisions.get(leaseId) ?? revision;
+        actionRevisions.set(leaseId, revision);
         const items = rows.filter((entry) => entry.seq > after).map((entry) => openedFailure && entry.seq === 1
           ? { ...entry, content: { t: 'plain', v: null }, openFailure: 'corrupt_or_unopenable' } : entry);
         followReads.push({ cursor: after, leaseId: typeof body.input.leaseId === 'string' ? body.input.leaseId : null,
@@ -141,7 +157,10 @@ async function fixture(encryptionMode: 'plain' | 'e2ee' = 'plain', contentCreden
           nextCursor: String(items.at(-1)?.seq ?? after), truncated: false,
           agentState: stateVersion > Number(body.input.agentStateVersion ?? -1) ? { version: stateVersion, value: sharedMetadata ? null : state } : null,
           sharedMetadata: sharedMetadata && sharedMetadataVersion > Number(body.input.sharedMetadataVersion ?? -1)
-            ? { version: sharedMetadataVersion, value: sharedMetadata } : null };
+            ? { version: sharedMetadataVersion, value: sharedMetadata } : null,
+          changes: revision > previousRevision ? changeHint.updatedMessageId
+            ? [{ kind: 'revision', messageId: changeHint.updatedMessageId, seq: changeHint.updatedMessageSeq }]
+            : [{ kind: 'session' }] : [] };
       } else if (actionId === 'transcript.unfollow') {
         result = { ok: true, released: true };
       } else if (actionId === 'session.status.get') {
@@ -172,7 +191,10 @@ async function fixture(encryptionMode: 'plain' | 'e2ee' = 'plain', contentCreden
   if (!address || typeof address === 'string') throw new Error('TCP endpoint missing');
   const client = connect({ endpoint: `http://127.0.0.1:${address.port}`, token: contentCredential ? credential : TOKEN });
   cleanup.push(async () => { await client.close(); await new Promise<void>((resolve) => io.close(() => resolve())); });
-  const update = (body: unknown) => io.emit('update', { id: 'update', seq: 1, createdAt: 1, body });
+  const update = (body: unknown) => {
+    for (const wake of waitingActions) wake();
+    io.emit('update', { id: 'update', seq: 1, createdAt: 1, body });
+  };
   return { client, sessions, rpc, actions, requests, followReads, update,
     setSharedMetadata(value: SessionSharedMetadataV1) {
       sharedMetadata = SessionSharedMetadataV1Schema.parse(value); sharedMetadataVersion++; revision++; changeHint = {};
@@ -188,7 +210,7 @@ async function fixture(encryptionMode: 'plain' | 'e2ee' = 'plain', contentCreden
           content: contentCredential ? { t: 'encrypted', c: encodeBase64(await sealSessionDataKeyBundleV0(payload, dataKey), 'base64') }
             : { t: 'plain', v: payload } } });
     },
-    setOffline(value: boolean) { offline = value; },
+    setOffline(value: boolean) { offline = value; if (value) for (const wake of waitingActions) wake(); },
     setActive(value: boolean) { active = value; revision++; changeHint = {}; update({ t: 'update-session', id: 'session-1', active }); },
     setOpenedFailure() { openedFailure = true; },
     deactivateAtCursorRead() { deactivateAtInitialCursor = true; },
@@ -199,7 +221,7 @@ async function fixture(encryptionMode: 'plain' | 'e2ee' = 'plain', contentCreden
     holdHistory() { holdHistory = true; },
     releaseHistory() { holdHistory = false; for (const send of heldHistory.splice(0)) send(); },
     append(text: string) { const entry = row(rows.length + 1, text); rows.push(entry); revision++; void wireRow(entry).then((message) => update({ t: 'new-message', sid: 'session-1', message })); },
-    revise(text: string) { rows[0] = row(1, text, 100); revision++; changeHint = { updatedMessageId: 'row-1', updatedMessageSeq: 1 }; },
+    revise(text: string) { rows[0] = row(1, text, 100); revision++; changeHint = { updatedMessageId: 'row-1', updatedMessageSeq: 1 }; update({ t: 'message-updated', sid: 'session-1', message: rows[0] }); },
     reviseAfterUnrelatedAccountPage(text: string) { rows[0] = row(1, text, 100); unrelatedChangePage = true; revision = 201; changeHint = { updatedMessageId: 'row-1', updatedMessageSeq: 1 }; },
     removeFirst() { rows = rows.slice(1); cursorGone = true; },
     rejectPermission() { rejectRpc = true; },
@@ -239,7 +261,7 @@ describe('SDK live Session over real HTTP and Socket.IO', () => {
     await expect.poll(() => durableIds(controller)).toEqual(['row-1', 'row-2']);
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(server.followReads).toHaveLength(followCount + 1);
-    expect(server.sessions).toHaveLength(1);
+    expect(server.sessions).toHaveLength(0);
   });
   it('keeps following pushed changes past a failed-content witness and renders later rows', async () => {
     const server = await fixture('e2ee'); server.setOpenedFailure(); server.append('valid after failure');
@@ -278,7 +300,19 @@ describe('SDK live Session over real HTTP and Socket.IO', () => {
     server.append('public push');
     expect((await next).value?.id).toBe('row-2');
     expect(server.followReads).toHaveLength(follows + 1);
+    expect(server.sessions).toHaveLength(0);
     await iterator.return?.();
+  });
+
+  it('drains a public follower when the Session was already inactive before subscription', async () => {
+    const server = await fixture('e2ee');
+    server.setActive(false);
+    const iterator = server.client.sessions.get('session-1').followTranscript({ cursor: '0' })[Symbol.asyncIterator]();
+    expect((await iterator.next()).value?.id).toBe('row-1');
+    const done = iterator.next();
+    await expect.poll(() => server.inactiveEmptyReads()).toBeGreaterThanOrEqual(2);
+    await expect(done).resolves.toMatchObject({ done: true });
+    expect(server.sessions).toHaveLength(0);
   });
 
   it('takes the initial change cursor before the snapshot so bootstrap cannot miss inactivity', async () => {
@@ -338,7 +372,7 @@ describe('SDK live Session over real HTTP and Socket.IO', () => {
     expect(controller.getSnapshot().metadata).toMatchObject({ actionConfirmationsV1: { completedRequests: {
       'action:1': { status: 'approved' },
     } } });
-    expect(server.sessions).toHaveLength(1);
+    expect(server.sessions).toHaveLength(0);
   });
 
   it('declares current stored-content compatibility on snapshot HTTP and viewer socket boundaries', async () => {
@@ -455,17 +489,16 @@ describe('SDK live Session over real HTTP and Socket.IO', () => {
     expect(beforeDelta.messagesById[segmentId]).toMatchObject({ text: 'Hello' });
   });
 
-  it('selects bearer-only E2EE Action reads once and repairs revisions after a real HTTP and socket outage', async () => {
+  it('selects bearer-only E2EE Action reads once and repairs revisions after a real HTTP outage', async () => {
     const server = await fixture('e2ee');
     const controller = await server.client.sessions.get('session-1').live();
     expect(controller.transport).toBe('action');
     await expect.poll(() => durableIds(controller)).toEqual(['row-1']);
-    expect(server.sessions).toHaveLength(1);
+    expect(server.sessions).toHaveLength(0);
     expect(controller.getSnapshot().pendingRequests.map((request) => request.id)).toContain('permission');
     await controller.respondToPermission({ id: 'permission', approved: true });
     expect(controller.getSnapshot().pendingRequests.map((request) => request.id)).toContain('permission');
     server.setOffline(true);
-    server.sessions[0]!.conn.close();
     await expect.poll(() => controller.getSnapshot().connection).not.toBe('online');
     server.revise('repaired over Action reads'); server.append('new Action row'); server.setOffline(false);
     await expect.poll(() => Object.values(controller.getSnapshot().transcript.messagesById).some((message) => 'text' in message && message.text === 'repaired over Action reads'), { timeout: 10_000 }).toBe(true);
@@ -483,6 +516,17 @@ describe('SDK live Session over real HTTP and Socket.IO', () => {
     expect(controller.getSnapshot().actions.abort).toBe(false);
     await controller.close();
   }, 20_000);
+
+  it('repairs a pushed same-sequence revision through Actions without a viewer or changes feed', async () => {
+    const server = await fixture('e2ee');
+    const controller = await server.client.sessions.get('session-1').live({ transport: 'action' });
+    await expect.poll(() => durableIds(controller)).toEqual(['row-1']);
+    server.revise('revised through the waiting Action');
+    await expect.poll(() => durableRows(controller).some((message) => 'text' in message
+      && message.text === 'revised through the waiting Action')).toBe(true);
+    expect(server.sessions).toHaveLength(0);
+    expect(server.requests.some((path) => path.startsWith('/v2/changes') || path.startsWith('/v2/cursor'))).toBe(false);
+  });
 
   it('keeps push observation alive across inactivity and external reactivation without idle reads', async () => {
     const server = await fixture('e2ee');

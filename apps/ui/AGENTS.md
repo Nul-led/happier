@@ -73,7 +73,7 @@ Details: [Agent catalog](../../docs/agents-catalog.md), [Providers](../../docs/p
 
 Doctrine: `../../DESIGN.md` → "Configuration surfaces". Shared ownership: [Collection presentation](../../docs/collection-presentation.md) and [surface states](../../docs/surface-states.md). Binding implementation:
 
-- **Page:** a full configuration/detail page is an `ItemList presentation="page"` that starts with a
+- **Page:** a full configuration/detail page is an `ItemList` (page presentation by default) that starts with a
   `PageHeader` (settings routes: `SettingsPageHeader`, titled from `settingsRouteRegistry`).
   `ItemGroup` and `Item` below it take the page anatomy automatically; menus and popovers reset to
   the grouped look in `FloatingOverlay`. Do not hand-build section headers, row dividers, sheets or

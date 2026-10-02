@@ -22,14 +22,18 @@ export function readBundledPluginPublicationFailures(repoRoot) {
   return parseBundledPluginPublicationFailures(raw);
 }
 
-export function writeBundledPluginPublicationFailures(repoRoot, failures, evaluatedPackageNames) {
-  const path = resolveBundledPluginPublicationFailuresPath(repoRoot);
+export function resolveBundledPluginPublicationFailures(repoRoot, failures, evaluatedPackageNames) {
   const evaluated = evaluatedPackageNames === undefined ? null : new Set(evaluatedPackageNames);
   const byPackage = new Map((evaluated === null ? [] : readBundledPluginPublicationFailures(repoRoot)
     .filter((failure) => !evaluated.has(failure.packageName)))
     .map((failure) => [failure.packageName, failure]));
   for (const failure of failures) byPackage.set(failure.packageName, failure);
-  const sorted = [...byPackage.values()].sort((a, b) => a.packageName.localeCompare(b.packageName));
+  return [...byPackage.values()].sort((a, b) => a.packageName.localeCompare(b.packageName));
+}
+
+export function writeBundledPluginPublicationFailures(repoRoot, failures, evaluatedPackageNames) {
+  const path = resolveBundledPluginPublicationFailuresPath(repoRoot);
+  const sorted = resolveBundledPluginPublicationFailures(repoRoot, failures, evaluatedPackageNames);
   const output = `${JSON.stringify(sorted)}\n`;
   try {
     if (readFileSync(path, 'utf8') === output) return;

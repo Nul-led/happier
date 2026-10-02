@@ -155,6 +155,9 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
     const developmentSourceRootPath = request.kind === 'development'
       ? request.sourceRootPath
       : null;
+    const developmentCatalog = developmentSourceRootPath
+      ? await createPluginRegistryStateStore({ happyHomeDir: params.happyHomeDir }).read()
+      : null;
     if (developmentSourceRootPath) {
       const sourceResolution = await resolvePluginAuthoringSource(developmentSourceRootPath);
       developmentAuthoringSource = sourceResolution;
@@ -168,10 +171,7 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
         registeredDevelopmentRoot = params.isRegisteredDevelopmentRoot?.(
           distribution.canonicalPath,
         ) === true;
-        const currentCatalog = await createPluginRegistryStateStore({
-          happyHomeDir: params.happyHomeDir,
-        }).read();
-        const trustedMatches = Object.entries(currentCatalog.plugins).filter(
+        const trustedMatches = Object.entries(developmentCatalog!.plugins).filter(
           ([pluginId, record]) => (
             record.source.kind === 'path'
             && record.source.devWatch === true
@@ -235,6 +235,15 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
     }
     if (developmentSourceRootPath && developmentAuthoringSource?.ok) {
       const authoringSource = developmentAuthoringSource;
+      const savedPluginId = (request.kind === 'development' ? request.pluginId : undefined)
+        ?? trustedDevelopmentPluginId
+        ?? (authoringSource.kind === 'manifest' ? authoringSource.source.manifest.id : undefined);
+      if (savedPluginId && developmentCatalog?.plugins[savedPluginId]?.state.enabled === false) {
+        throw new DaemonPluginChangePreparationError(
+          'plugin_disabled',
+          `Plugin '${savedPluginId}' is disabled`,
+        );
+      }
       const expectedPluginId = request.kind === 'development'
         ? request.pluginId
         : trustedDevelopmentPluginId ?? undefined;

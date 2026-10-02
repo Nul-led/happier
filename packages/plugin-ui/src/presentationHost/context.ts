@@ -1,6 +1,8 @@
 import { createContext, createElement, useContext, type ReactElement, type ReactNode, type RefObject } from 'react';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
 import type { PluginUiTargetedContributionSurfaceV1 } from '@happier-dev/plugin-sdk/ui';
+import type { NavigationListDestination } from '../components/NavigationList.js';
+import type { ItemProps } from '../components/List.js';
 import type { HappierUiPalette, HappierUiTypography } from '../environment/types.js';
 import type { HappierFocusable } from '../presentation/portableTypes.js';
 import type { HappierDiffViewerRequest } from '../presentation/content/DiffViewer.js';
@@ -10,6 +12,8 @@ import type { HappierDisclosureMotionDriver } from '../presentation/collection/D
 import type { HappierStateSize } from '../presentation/state/InfoState.js';
 import type { HappierCapsuleHost } from '../presentation/status/capsuleHost.js';
 import type { HappierAgentCursorMotionDriver } from '../presentation/copresence/AgentCursor.js';
+import type { HappierLiveStreamProps } from '../presentation/media/LiveStream.js';
+import type { HappierStoredImageHost } from '../presentation/content/StoredImage.js';
 
 export type PluginUiPopoverPresentation = 'popover' | 'menu' | 'dropdown' | 'context';
 
@@ -133,6 +137,17 @@ export type PluginUiPaneHeaderHost = Readonly<{
  * navigation roots, or modal/portal infrastructure.
  */
 export type PluginUiPresentationHost = Readonly<{
+  /** Incumbent platform image decoder; Session-media acquisition remains in the mounted host API. */
+  storedImageHost?: HappierStoredImageHost;
+  /** Qualified row destinations use the incumbent workspace owner; absent hosts keep ordinary activation. */
+  renderDestinationRow?(input: NavigationListDestination & Readonly<{
+    children: ReactNode;
+    /** Collection rows retain their List.Item menu owner and merge the host's destination actions there. */
+    renderWithSecondaryActions?(actions: Readonly<{
+      secondaryActions: NonNullable<ItemProps['secondaryActions']>;
+      onSecondaryAction: NonNullable<ItemProps['onSecondaryAction']>;
+    }>): ReactNode;
+  }>): ReactNode;
   /**
    * The host's motion drivers for the Collection's table ⇄ split transition and its peek disclosure
    * (COLLECTION.md §8). Durations and easings are the host's motion tokens; the animation library stays
@@ -163,6 +178,8 @@ export type PluginUiPresentationHost = Readonly<{
    * capsule whose changes land at once.
    */
   capsuleHost?: HappierCapsuleHost;
+  /** Each mounted read-only viewer is admitted and disposed by the app's capture owner. */
+  renderLiveStream?(input: HappierLiveStreamProps): ReactNode;
   /** The host's motion for the agent cursor (`AgentCursor`). Absent, the hand lands at once. */
   agentCursorMotion?: HappierAgentCursorMotionDriver;
   /**

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PluginError, type PluginInvocationContext } from '@happier-dev/plugin-sdk';
+import { PluginError, type JsonValue, type PluginInvocationContext } from '@happier-dev/plugin-sdk';
 import type { BackgroundServiceContext } from '@happier-dev/plugin-sdk/background-services';
 import type {
   PluginActionInputById,
@@ -419,6 +419,54 @@ function observerBackgroundContext(input: Readonly<{
 }
 
 describe('GitHub Automation Event checkpointed-pull observer', () => {
+  it.each(['completed', 'failed', 'passed'] as const)('observes PR checks %s through the admitted source checkpoint', async (kind) => {
+    const sha = 'a'.repeat(40);
+    const base = definition({ automationId: 'checks-a', sourceSelectorId: sourceSelectorA,
+      eventLocalId: `automation/pull-request-checks-${kind}-v1` as GithubAutomationEventLocalIdV1 });
+    const source: SourceDefinition = { ...base,
+      sourceInstanceId: `github:repository:77:pull-request:7:head:${sha}:checks:all`,
+      sourceConfig: { ...base.sourceConfig as Readonly<Record<string, JsonValue>>, checks: {
+        pullRequestNumber: 7, headSha: sha, selection: 'all',
+      } },
+    };
+    const checkpoints = createCheckpointCollection([]);
+    let conclusion: string | null = null;
+    const admissions: AutomationEventAdmitInput[] = [];
+    const http = { request: vi.fn(async (_request: { url: string }) => ({ status: 200, headers: {},
+      body: new TextEncoder().encode(JSON.stringify({ data: { repository: { pullRequest: {
+        headRefOid: sha, commits: { nodes: [{ commit: { oid: sha, statusCheckRollup: { contexts: {
+          nodes: [{ __typename: 'CheckRun', id: 'check-1', name: 'build', status: conclusion === null ? 'IN_PROGRESS' : 'COMPLETED',
+            conclusion, isRequired: true, detailsUrl: null, startedAt: null, completedAt: null }],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        } } } }] },
+      } } } })),
+    })) };
+    const actions = { execute: vi.fn(async (actionId: string, input: unknown) => {
+      if (actionId === 'automation.event.sources.list') return { kind: 'page', revision: '7', definitions: [source], nextCursor: null };
+      if (actionId === 'automation.event.source.status.report') return {};
+      if (actionId === 'automation.event.admit') {
+        admissions.push(input as AutomationEventAdmitInput);
+        return { results: [{ ...source, checkpointSafe: true, kind: 'admitted' }] };
+      }
+      throw new Error(`unexpected Action ${actionId}`);
+    }) };
+    let now = 2000;
+    const observer = createGithubAutomationEventCheckpointedPullObserver({ now: () => now });
+    const context = sourceAttemptContext(observer, observerBackgroundContext({ actions, collection: checkpoints.collection, http }));
+    await observer.runCycle(context);
+    expect(checkpoints.rowCount()).toBe(1);
+    expect(admissions).toHaveLength(0);
+    conclusion = kind === 'failed' ? 'FAILURE' : 'SUCCESS';
+    now += 60000;
+    await observer.runCycle(context);
+    expect(admissions).toHaveLength(1);
+    expect(admissions[0]).toMatchObject({ eventRef: source.eventRef,
+      payload: { checks: { headSha: sha, complete: true, passed: kind !== 'failed' } } });
+    now += 60000;
+    await observer.runCycle(context);
+    expect(admissions).toHaveLength(1);
+    expect(http.request.mock.calls.every(([request]) => (request as { url: string }).url.endsWith('/graphql'))).toBe(true);
+  });
   it('maps all four repository timeline variants to the same semantic Event refs used by webhooks', () => {
     const repository = {
       v: 1 as const,

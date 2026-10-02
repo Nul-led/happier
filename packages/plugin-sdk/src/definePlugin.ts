@@ -48,6 +48,7 @@ import type {
 } from './agentRuntime/index.js';
 import type { AgentContribution } from './agents.js';
 import type { BackgroundServiceDefinition } from './backgroundServices.js';
+import type { PluginCaptureSourceRuntime, PluginCaptureSourceDeclaration } from './captureSources.js';
 import type { EventContribution } from './events.js';
 import type { HookContribution } from './hooks.js';
 import type {
@@ -134,6 +135,10 @@ type DistributiveOmit<T, TKey extends PropertyKey> = T extends unknown
     : never;
 
 type PluginManifestContributes = NonNullable<PluginManifest['contributes']>;
+export type PluginCaptureSourceDefinition = Readonly<{
+    declaration: PluginCaptureSourceDeclaration;
+    runtime: PluginCaptureSourceRuntime;
+}>;
 type ContributionRow<TFamily extends keyof PluginManifestContributes> =
     NonNullable<PluginManifestContributes[TFamily]> extends readonly (infer TRow)[] ? TRow : never;
 
@@ -761,6 +766,7 @@ type PluginStructuredContributionDefinitions<
     agents?: DefinePluginInput<Readonly<Record<string, never>>, TAgents>['agents'];
     promptAssets?: TPromptAssets;
     backgroundServices?: readonly BackgroundServiceDefinition[];
+    captureSources?: Readonly<Record<PluginContributionLocalId, PluginCaptureSourceDefinition>>;
     hooks?: Readonly<Record<PluginContributionLocalId, PluginHookDefinition>>;
     events?: Readonly<Record<PluginContributionLocalId, PluginEventDefinition>>;
     mcp?: PluginMcpDefinition;
@@ -868,7 +874,11 @@ export type DefinePluginInput<
         >>;
         roles?: Readonly<Record<
             PluginContributionLocalId,
-            Omit<ContributionRow<'roles'>, 'id'>
+            Omit<NonNullable<NonNullable<PluginManifest['contributes']>['roles']>[number], 'id'>
+        >>;
+        workflows?: Readonly<Record<
+            PluginContributionLocalId,
+            Omit<NonNullable<NonNullable<PluginManifest['contributes']>['workflows']>[number], 'id'>
         >>;
         notifications?: Readonly<Record<
             PluginContributionLocalId,
@@ -1009,6 +1019,7 @@ export type DefinePluginInput<
         }>;
         promptAssets?: TPromptAssets;
         backgroundServices?: readonly BackgroundServiceDefinition[];
+        captureSources?: Readonly<Record<PluginContributionLocalId, PluginCaptureSourceDefinition>>;
         hooks?: Readonly<Record<PluginContributionLocalId, Readonly<{
             declaration: Omit<HookContribution, 'id'>;
             handler: HookHandler;
@@ -1992,6 +2003,20 @@ const BACKGROUND_SERVICES_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
     },
 });
 
+const CAPTURE_SOURCES_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
+    authorKey: 'captureSources',
+    runtimeReceiverPaths: [['*', 'runtime']],
+    project(input) {
+        const definitions = input.captureSources as Readonly<Record<PluginContributionLocalId, PluginCaptureSourceDefinition>> | undefined;
+        return { captureSources: Object.entries(definitions ?? {}).map(([id, definition]) => ({ ...definition.declaration,
+            supportedCodecs: [...definition.declaration.supportedCodecs], id })) };
+    },
+    activate(input, api) {
+        const definitions = input.captureSources as Readonly<Record<PluginContributionLocalId, PluginCaptureSourceDefinition>> | undefined;
+        for (const [id, definition] of Object.entries(definitions ?? {})) api.captureSources.register(id, definition.runtime);
+    },
+});
+
 const HOOKS_ADAPTER: DefinePluginFamilyAdapter = Object.freeze({
     authorKey: 'hooks',
     project(input) {
@@ -2387,6 +2412,7 @@ const BROWSER_ACTIONS_ADAPTER = descriptorFamilyAdapter('browserActions');
 const SETTINGS_ADAPTER = descriptorFamilyAdapter('settings');
 const EXECUTION_RUN_PROFILES_ADAPTER = descriptorFamilyAdapter('executionRunProfiles');
 const ROLES_ADAPTER = descriptorFamilyAdapter('roles');
+const WORKFLOWS_ADAPTER = descriptorFamilyAdapter('workflows');
 const NOTIFICATIONS_ADAPTER = descriptorFamilyAdapter('notifications');
 const MANAGED_DEPENDENCIES_ADAPTER = descriptorFamilyAdapter('managedDependencies');
 const SYSTEM_TOOLS_ADAPTER = descriptorFamilyAdapter('systemTools');
@@ -2544,6 +2570,7 @@ export const DEFINE_PLUGIN_FAMILY_POLICY_V2 = Object.freeze({
     agents: { classification: 'adapter', authorKey: 'agents', inputShape: 'structured', adapter: AGENTS_ADAPTER },
     promptAssets: { classification: 'adapter', authorKey: 'promptAssets', inputShape: 'structured', adapter: PROMPT_ASSETS_ADAPTER },
     backgroundServices: { classification: 'adapter', authorKey: 'backgroundServices', inputShape: 'structured', adapter: BACKGROUND_SERVICES_ADAPTER },
+    captureSources: { classification: 'adapter', authorKey: 'captureSources', inputShape: 'structured', adapter: CAPTURE_SOURCES_ADAPTER },
     hooks: { classification: 'adapter', authorKey: 'hooks', inputShape: 'structured', adapter: HOOKS_ADAPTER },
     events: { classification: 'adapter', authorKey: 'events', inputShape: 'structured', adapter: EVENTS_ADAPTER },
     'mcp.servers': { classification: 'adapter', authorKey: 'mcp', inputShape: 'structured', adapter: MCP_ADAPTER },
@@ -2577,6 +2604,7 @@ export const DEFINE_PLUGIN_FAMILY_POLICY_V2 = Object.freeze({
     settings: { classification: 'descriptor-only', authorKey: 'settings', inputShape: 'descriptor', adapter: SETTINGS_ADAPTER },
     executionRunProfiles: { classification: 'descriptor-only', authorKey: 'executionRunProfiles', inputShape: 'descriptor', adapter: EXECUTION_RUN_PROFILES_ADAPTER },
     roles: { classification: 'descriptor-only', authorKey: 'roles', inputShape: 'descriptor', adapter: ROLES_ADAPTER },
+    workflows: { classification: 'descriptor-only', authorKey: 'workflows', inputShape: 'descriptor', adapter: WORKFLOWS_ADAPTER },
     notifications: { classification: 'descriptor-only', authorKey: 'notifications', inputShape: 'descriptor', adapter: NOTIFICATIONS_ADAPTER },
     managedDependencies: { classification: 'descriptor-only', authorKey: 'managedDependencies', inputShape: 'descriptor', adapter: MANAGED_DEPENDENCIES_ADAPTER },
     systemTools: { classification: 'descriptor-only', authorKey: 'systemTools', inputShape: 'descriptor', adapter: SYSTEM_TOOLS_ADAPTER },

@@ -12,6 +12,7 @@ import { buildGithubApiUrl, type GithubRepositoryRouteV1 } from './locator.js';
 import type { GithubChecksRowStateV1 } from './mapping/facts.js';
 import { readValidatedGithubFollowUpPage } from './scan/link.js';
 import { readGithubCheckOutcomeV1 } from './checkOutcome.js';
+import { readGithubChecksConditionSurface, type GithubChecksConditionSnapshotV1 } from './checksCondition.js';
 import {
   GITHUB_MAX_PAGE_SIZE_V1,
   GITHUB_SEARCH_RESULT_CEILING_V1,
@@ -58,6 +59,8 @@ export type GithubCheckObservationV1 = Readonly<{
   detailsUrl: string | null;
   startedAtMs: number | null;
   completedAtMs: number | null;
+  /** Immutable provider time when GraphQL omits the Check Run's own timestamps. */
+  checkSuiteCreatedAtMs?: number;
   /** GitHub Check Run output, when the provider published diagnostic evidence. */
   logExcerpt?: string | null;
 }>;
@@ -65,6 +68,7 @@ export type GithubCheckObservationV1 = Readonly<{
 export type GithubChecksStateV1 = 'none' | 'unknown' | 'knownIncomplete' | 'resolved';
 
 export type GithubChecksSurfaceV1 = Readonly<{
+  observation?: GithubChecksConditionSnapshotV1;
   state: GithubChecksStateV1;
   observations: readonly GithubCheckObservationV1[];
   /** `null`, never `0`, wherever a per-job breakdown is unavailable. */
@@ -271,9 +275,12 @@ async function readPaginatedCollection(
 }
 
 export async function readGithubPullRequestChecks(
-  input: Readonly<{ route: GithubRepositoryRouteV1; headSha: string }>,
+  input: Readonly<{ route: GithubRepositoryRouteV1; headSha: string;
+    observation?: Readonly<{ pullRequestNumber: number; selection: 'all' | 'required' }>;
+  }>,
   dependencies: GithubChecksDependenciesV1,
 ): Promise<GithubChecksSurfaceV1> {
+  if (input.observation) return readGithubChecksConditionSurface({ ...input, observation: input.observation }, dependencies);
   const maxPages = Math.ceil(GITHUB_SEARCH_RESULT_CEILING_V1 / GITHUB_MAX_PAGE_SIZE_V1);
   const checkRunsUrl = `${buildGithubApiUrl([
     'repos',

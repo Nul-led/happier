@@ -119,6 +119,96 @@ function coreContext(
 }
 
 describe('GitHub Channel Actions', () => {
+  it('polls selected CI bindings through the authenticated Channel operation', async () => {
+    const credentialRequests: GithubHttpRequestInput[] = [];
+    const connectedAccounts = { materialize: vi.fn(async () => ({ kind: 'httpHeaders' as const,
+      headers: { Authorization: 'Bearer exact-account-token' } })) };
+    const endpoint = { ...githubChannelDeliveryInput('unused').endpoint, kind: 'githubPullRequest' as const };
+    const http = { request: async (request: GithubHttpRequestInput) => {
+      credentialRequests.push(request);
+      const path = new URL(request.url).pathname;
+      if (path.endsWith('/issues/comments')) return jsonResponse([]);
+      if (path.endsWith('/issues/1')) return jsonResponse({ id: 5, number: 1, pull_request: {} });
+      if (path.endsWith('/pulls/1')) return jsonResponse({ head: { sha: 'abc123' } });
+      if (path.endsWith('/permission')) return jsonResponse({ permission: 'write', user: { id: 99, login: 'happier-bot' } });
+      if (path === '/graphql') return jsonResponse({ data: { repository: { pullRequest: {
+        headRefOid: 'abc123', commits: { nodes: [{ commit: { oid: 'abc123', statusCheckRollup: {
+          contexts: { nodes: [{ __typename: 'CheckRun', id: 'check-1', name: 'Tests', status: 'COMPLETED',
+            conclusion: 'FAILURE', detailsUrl: null, startedAt: null, completedAt: '2026-08-10T12:00:01Z',
+            isRequired: false }], pageInfo: { hasNextPage: false } },
+        } } }] },
+      } } } });
+      throw new Error(`Unexpected request ${request.url}`);
+    } };
+    const result = await pollGithubChannelObservations({ ...githubChannelConnectionInput(), limit: 10, waitMs: 0,
+      checkpoint: { v: 1, updatedAtIso: '2026-08-10T12:00:00Z', commentIdAtUpdatedAt: '0', etag: null },
+      bindings: [{ endpoint, scopedTriggerKind: 'ciFailed' }],
+    }, coreContext({ connectedAccounts, http }));
+    expect(result.kind).toBe('batch');
+    if (result.kind !== 'batch') throw new Error('Expected authenticated CI observation');
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0]).toMatchObject({ observation: { kind: 'fullText', observation: {
+      endpoint, scopedTriggerKind: 'ciFailed', actor: { principalId: '99', repositoryWriteAccess: true },
+    } } });
+    expect(credentialRequests.every((request) => request.headers?.Authorization === 'Bearer exact-account-token')).toBe(true);
+  });
+
+  it('sets up a native SCM PR link with the selected credential when no Channel connection exists', async () => {
+    const connectedAccounts = {
+      getBinding: vi.fn(async () => ({ purpose: 'github-connected-account', service: GITHUB_ACCOUNT.service, account: GITHUB_ACCOUNT, target: { kind: 'account' as const, displayName: 'GitHub' } })),
+      materialize: vi.fn(async () => ({ kind: 'httpHeaders' as const, headers: { Authorization: 'Bearer selected-native-token' } })),
+    };
+    const http = { request: vi.fn(async (request: GithubHttpRequestInput) => request.url.endsWith('/user')
+      ? jsonResponse({ id: 99, login: 'happier-bot' })
+      : jsonResponse({ id: 77, name: 'widgets', full_name: 'acme/widgets', owner: { login: 'acme' } })) };
+    await expect(setupGithubChannels({ repository: 'acme/widgets' }, coreContext({ connectedAccounts, http })))
+      .resolves.toMatchObject({ credentialRef: GITHUB_ACCOUNT, providerConnectionKey: 'github:repository:77' });
+    expect(connectedAccounts.materialize).toHaveBeenCalledWith('github-connected-account', expect.any(Object), expect.objectContaining({ expectedAccount: GITHUB_ACCOUNT }));
+  });
+  it.each([
+    ['write', 200, 'write', 123, true],
+    ['admin', 200, 'admin', 123, true],
+    ['reader', 200, 'read', 123, false],
+    ['no access', 200, 'none', 123, false],
+    ['unavailable', 403, 'write', 123, null],
+    ['unknown role', 200, 'unexpected', 123, null],
+    ['reused login', 200, 'write', 456, null],
+  ] as const)('carries authenticated PR commenter write access: %s', async (_label, status, permission, userId, expected) => {
+    const connectedAccounts = {
+      materialize: vi.fn(async () => ({ kind: 'httpHeaders' as const,
+        headers: { Authorization: 'Bearer exact-account-token' } })),
+    };
+    const permissionRequests: GithubHttpRequestInput[] = [];
+    const http = { request: vi.fn(async (request: GithubHttpRequestInput) => {
+      const path = new URL(request.url).pathname;
+      if (path === '/repos/acme/widgets/issues/comments') return jsonResponse([1, 2].map((id) => ({
+        id, body: `Comment ${id}`, created_at: '2026-08-10T12:00:01Z', updated_at: '2026-08-10T12:00:01Z',
+        issue_url: 'https://api.github.com/repos/acme/widgets/issues/1',
+        user: { id: 123, login: 'octocat', type: 'User' },
+      })));
+      if (path === '/repos/acme/widgets/issues/1') return jsonResponse({ id: 5, number: 1, pull_request: {} });
+      if (path === '/repos/acme/widgets/collaborators/octocat/permission') {
+        permissionRequests.push(request);
+        return jsonResponse({ permission, user: { id: userId, login: 'octocat' } }, status);
+      }
+      throw new Error(`Unexpected GitHub request ${request.url}`);
+    }) };
+    const result = await pollGithubChannelObservations({
+      ...githubChannelConnectionInput(), limit: 10, waitMs: 0,
+      checkpoint: { v: 1, updatedAtIso: '2026-08-10T12:00:00Z', commentIdAtUpdatedAt: '0', etag: null },
+    }, coreContext({ connectedAccounts, http }));
+    expect(result.kind).toBe('batch');
+    if (result.kind !== 'batch') throw new Error('Expected authenticated observations');
+    expect(result.observations.map(({ observation }) => observation.kind === 'fullText'
+      ? observation.observation.actor : null)).toEqual([
+      expect.objectContaining({ principalId: '123', repositoryWriteAccess: expected }),
+      expect.objectContaining({ principalId: '123', repositoryWriteAccess: expected }),
+    ]);
+    // Two comments from the same identity share a single read within this poll.
+    expect(permissionRequests).toHaveLength(1);
+    expect(permissionRequests[0]?.headers).toMatchObject({ Authorization: 'Bearer exact-account-token' });
+  });
+
   it('returns typed selected-transport unavailability before materializing a GitHub account', async () => {
     const connectedAccounts = {
       materialize: vi.fn(async () => ({
@@ -883,6 +973,7 @@ describe('GitHub Channel Actions', () => {
         kind: 'resolved',
         candidates: [{
           kind: 'githubPullRequest',
+          pullRequest: { repository: 'acme/widgets', number: 12 },
           audience: 'shared',
           id: 'github:repository:77:issue:300:number:12',
           parentId: '77',

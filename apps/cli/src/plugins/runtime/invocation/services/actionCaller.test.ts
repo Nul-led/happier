@@ -7,6 +7,19 @@ import {
 import { createPluginActionCallerMaterializationFixture } from './actionCaller.testkit';
 
 describe('resolvePluginActionCaller', () => {
+    it('rejects a malformed SDK Automation cause without falling back to a direct starter', () => {
+        expect(resolvePluginActionCaller({
+            plugin: { id: 'acme.plugin' },
+            contribution: { id: 'action' },
+            occurrenceId: 'occurrence-1',
+            sourceCustody: { kind: 'development', registeredRootId: 'root-a' },
+            initiatingActionCaller: { kind: 'host' },
+            startedBy: 'user',
+            caller: { kind: 'automationRun', runId: 'run-1', automationId: 'automation-1',
+                cause: { kind: 'manual', invokedAt: Number.NaN } },
+        })).toBeNull();
+    });
+
     it('preserves host-stamped process occurrence and durable source custody', () => {
         const materialization = createPluginActionCallerMaterializationFixture('acme.plugin');
 

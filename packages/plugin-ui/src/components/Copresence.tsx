@@ -14,6 +14,7 @@ import {
   HappierPresenceCapsule,
   type HappierPresence,
   type HappierPresenceCapsulePlacement,
+  type HappierPresenceCapsuleProps,
 } from '../presentation/copresence/PresenceCapsule.js';
 import { HappierSpinner } from '../presentation/feedback/Spinner.js';
 import type { HappierCapsuleColors, HappierCapsuleHost, HappierSurfaceGlyph } from '../presentation/status/capsuleHost.js';
@@ -140,9 +141,10 @@ export type PresenceCapsuleProps = Readonly<{
   takeControlLabel?: string;
   /**
    * Run your surface's takeover Action. The capsule says "Stopping…" until `presence.controlEpoch`
-   * moves; it never decides who has control itself.
+   * moves; it never decides who has control itself. Asynchronous routes return the typed command
+   * result so failed or unknown delivery leaves the pending state and offers Take control again.
    */
-  onTakeControl?: () => void;
+  onTakeControl?: HappierPresenceCapsuleProps['onTakeControl'];
   /** Run your surface's hand-back Action. */
   onHandBack?: () => void;
   /** Take a fresh look that confirms an unconfirmed stop. */

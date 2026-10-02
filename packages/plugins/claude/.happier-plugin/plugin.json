@@ -35,7 +35,8 @@
           "session"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent"
         ],
         "title": "Create agent team"
       },
@@ -79,7 +80,8 @@
           "session"
         ],
         "surfaces": [
-          "ui"
+          "ui",
+          "agent"
         ],
         "title": "Launch teammate"
       }
@@ -131,6 +133,7 @@
                 1
               ]
             },
+            "usageReporting": true,
             "workStateSources": [
               {
                 "id": "goals",
@@ -406,6 +409,7 @@
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -1081,6 +1085,7 @@
     ],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -2238,7 +2243,8 @@
     },
     "voiceModelPacks": [],
     "voiceProviders": [],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "Claude Code coding agent.",
   "displayName": "Claude",

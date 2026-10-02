@@ -209,6 +209,12 @@ export function createMutableApiSessionClientFixture<TMetadata extends Record<st
         getMetadataSnapshot() {
             return metadata;
         },
+        getAgentStateSnapshot() {
+            return agentState;
+        },
+        async close() {
+            events.emit('local-closed');
+        },
         on(event: string, listener: (...args: unknown[]) => void) {
             return events.on(event, listener);
         },

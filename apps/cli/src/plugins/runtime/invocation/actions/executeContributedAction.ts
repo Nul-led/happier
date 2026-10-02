@@ -360,6 +360,10 @@ export async function executeContributedAction(params: Readonly<{
     originSurface?: PluginInvocationOriginSurface;
     /** Host-stamped caller provenance for plugin-to-plugin dispatch. */
     caller?: PluginInvocationCaller;
+    /** Private original Action admission; never a target authorization surface or SDK input. */
+    initiatingActionCaller?: import('@happier-dev/protocol/actions').ActionCaller;
+    /** Bounded descriptive fact from the authenticated host-control transport. */
+    startedBy?: import('@happier-dev/protocol').WorkflowRunStartedByV1;
     /** Host-private external API authority; never plugin-authored input. */
     externalActionContext?: PluginExternalActionContext;
     /**
@@ -687,6 +691,8 @@ export async function executeContributedAction(params: Readonly<{
       surface: actionSurface,
       invocationSurface,
       ...(caller ? { caller } : {}),
+      ...(params.context.initiatingActionCaller ? { initiatingActionCaller: params.context.initiatingActionCaller } : {}),
+      ...(params.context.startedBy ? { startedBy: params.context.startedBy } : {}),
       ...(params.context.externalActionContext
         ? { externalActionContext: params.context.externalActionContext }
         : {}),

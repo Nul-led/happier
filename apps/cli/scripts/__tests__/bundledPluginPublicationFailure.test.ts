@@ -5,8 +5,31 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { it as test } from 'vitest';
 
-import { assertHostCanExcludeBundledPlugin, readBundledPluginPublicationFailures, writeBundledPluginPublicationFailures } from '../../../../scripts/workspaces/bundledPluginPublicationFailure.mjs';
+import { assertHostCanExcludeBundledPlugin, createBundledPluginPublicationFailure, readBundledPluginPublicationFailures, writeBundledPluginPublicationFailures } from '../../../../scripts/workspaces/bundledPluginPublicationFailure.mjs';
 import { BUNDLED_PLUGIN_PUBLICATION_DIAGNOSTIC_CODES, REQUIRED_BUNDLED_PLUGIN_PACKAGES, parseBundledPluginPublicationFailures } from '../../../../packages/cli-common/bundledPluginPublicationPolicy.mjs';
+
+test.each([
+  ['cliproxyapi', 'happier.provider.cliproxyapi'],
+])('isolates %s publication failures after migrating its host imports', (packageId, pluginId) => {
+  const packageName = `@happier-dev/plugins-${packageId}`;
+  const failure = createBundledPluginPublicationFailure({
+    repoRoot: '', packageName, pluginId,
+    error: new Error('plugin publication failed'),
+  });
+  assert.deepEqual(failure, {
+    packageName, pluginId,
+    diagnostic: { code: 'plugin_package_build_failed', message: 'plugin publication failed' },
+  });
+});
+
+test.each(['claude', 'codex', 'elevenlabs', 'openai', 'xai'])(
+  'keeps %s publication fatal while consumed generated imports remain', (packageId) => {
+    assert.throws(() => createBundledPluginPublicationFailure({
+      repoRoot: '', packageName: `@happier-dev/plugins-${packageId}`, pluginId: `happier.${packageId}`,
+      error: new Error('plugin publication failed'),
+    }), /required by host code/);
+  },
+);
 
 test('one publication diagnostic code set validates persisted failures', () => {
   assert.deepEqual(BUNDLED_PLUGIN_PUBLICATION_DIAGNOSTIC_CODES, [
@@ -72,13 +95,11 @@ test('required-plugin policy equals host value imports including executable Voic
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, directory);
       if (entry.isDirectory()) {
-        if (!['testkit', '__tests__', '__mocks__', 'generated'].includes(entry.name)) visitDirectory(path);
+        if (!['testkit', '__tests__', '__mocks__'].includes(entry.name)) visitDirectory(path);
         continue;
       }
-      const executableProjection = /^generatedBundledVoiceRuntimeEntries(?:\.ios|\.android)?\.ts$/.test(entry.name);
-      if (!/\.[cm]?[jt]sx?$/.test(entry.name) || (!executableProjection && /(?:\.test\.|\.spec\.|generated|Generated)/.test(entry.name))) continue;
+      if (!/\.[cm]?[jt]sx?$/.test(entry.name) || /(?:\.test\.|\.spec\.|\.d\.[cm]?ts$)/.test(entry.name)) continue;
       const source = readFileSync(path, 'utf8');
-      if (!executableProjection && /GENERATED FILE/.test(source.slice(0, 500))) continue;
       if (!source.includes('@happier-dev/plugins-')) continue;
       const ast = ts.createSourceFile(path.pathname, source, ts.ScriptTarget.Latest, true);
       for (const statement of ast.statements) {

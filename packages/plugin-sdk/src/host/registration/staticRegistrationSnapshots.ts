@@ -21,6 +21,7 @@ import type { PromptAssetAdapter } from '../../resources.js';
 import type { PluginDynamicResourceRuntime } from '../../services/resources.js';
 import type { PluginConnectedAccountRuntime } from '../../services/index.js';
 import type { VoiceProvidersRegistrationApi } from '../../voice/projections.js';
+import type { PluginCaptureSourceRuntime } from '../../captureSources.js';
 
 export { captureStaticRegistrationMethod };
 
@@ -838,6 +839,10 @@ export function snapshotStaticRegistrationValue<
 ): PluginRegistrationValueByFamily[TFamily] {
     const policyFamily: PluginRegistrationFamily = family;
     switch (policyFamily) {
+        case 'captureSources': {
+            const receiver = requireObject(value, 'Capture source runtime');
+            return Object.freeze({ start: captureStaticRegistrationMethod(receiver, 'start', 'Capture source runtime.start', true) }) as PluginCaptureSourceRuntime as PluginRegistrationValueByFamily[TFamily];
+        }
         case 'actions':
         case 'hooks':
         case 'events':

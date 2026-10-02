@@ -25,6 +25,7 @@ import type {
 
 import * as root from '../index.js';
 import * as sessions from './index.js';
+import * as publicSessions from './index.public.js';
 import type {
     AgentPermissionIntentV1 as PublicAgentPermissionIntentV1,
     SessionId as PublicSessionId,
@@ -36,6 +37,20 @@ import type {
 import type { ProtocolComposableSchema } from '../protocol/protocolFacade.js';
 
 describe('Session input canonical SDK projections', () => {
+    it('reads native mode facts and fails closed on malformed current metadata through /sessions', () => {
+        expect(publicSessions.readSessionModesMetadata).toBeTypeOf('function');
+        const current = {
+            v: 2, agentId: 'codex', updatedAt: 2, currentModeId: null,
+            availableModes: [{ id: 'workspace-write', name: 'Workspace write' }],
+        };
+        expect(publicSessions.readSessionModesMetadata({ sessionModesV2: current }))
+            .toMatchObject({ currentModeId: null, availableModes: current.availableModes });
+        expect(publicSessions.readSessionModesMetadata({
+            sessionModesV2: { ...current, availableModes: 'malformed' },
+            sessionModesV1: { v: 1, agentId: 'codex', updatedAt: 1,
+                currentModeId: 'default', availableModes: [{ id: 'default', name: 'Default' }] },
+        })).toBeNull();
+    });
     it('re-exports the canonical Session input values by identity only through /sessions', () => {
         expect(sessions.SessionIdSchema).toBe(canonicalSessionIdSchema);
         expect(sessions.SessionIndexedIdentifierMaxLengthV1)

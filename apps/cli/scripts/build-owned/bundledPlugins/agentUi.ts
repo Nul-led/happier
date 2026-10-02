@@ -559,7 +559,9 @@ export function renderBundledUiBehaviorOverridesTs(sources: readonly AgentUiBeha
   lines.push('> = Object.freeze({');
   for (const source of sources) {
     if (!source.predecessorMessageMetaWriter) continue;
-    lines.push(`    ${source.agentId}: ${source.predecessorMessageMetaWriter.importName},`);
+    lines.push(`    ${source.agentId}: {`);
+    lines.push(`        buildPredecessorMessageMeta: (settings) => ${source.predecessorMessageMetaWriter.importName}(settings, ${renderJsonLiteral(source.predecessorMessageMetaWriter.defaults)}),`);
+    lines.push('    },');
   }
   lines.push('});');
   lines.push('');

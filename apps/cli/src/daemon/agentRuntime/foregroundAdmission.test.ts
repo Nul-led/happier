@@ -147,6 +147,34 @@ function claimRequest(
 }
 
 describe('foreground Agent runtime admission', () => {
+  it('reports only the current claimed foreground Session for approval replay', async () => {
+    const retirement = new AbortController();
+    let generationCurrent = true;
+    const prepared = createPrepared(async () => undefined, retirement);
+    const owner = createForegroundAgentRuntimeAdmissionOwner({
+      prepare: async () => ({
+        ok: true,
+        prepared: { ...prepared, isCurrent: () => generationCurrent },
+      }),
+      isProcessAlive: () => true,
+    });
+    try {
+      await owner.admit(admissionRequest);
+      expect(owner.isSessionCurrent('session-1')).toBe(false);
+      await owner.claimEnvironment(claimRequest());
+      expect(owner.isSessionCurrent('session-1')).toBe(true);
+      expect(owner.isSessionCurrent('foreign-session')).toBe(false);
+      generationCurrent = false;
+      expect(owner.isSessionCurrent('session-1')).toBe(false);
+      generationCurrent = true;
+      expect(owner.isSessionCurrent('session-1')).toBe(true);
+      await owner.releaseSession('session-1');
+      expect(owner.isSessionCurrent('session-1')).toBe(false);
+    } finally {
+      await owner.dispose();
+    }
+  });
+
   it('claims runner-attested bundled custody after a daemon-current bootstrap', async () => {
     const retirement = new AbortController();
     const bootstrapCustody = {

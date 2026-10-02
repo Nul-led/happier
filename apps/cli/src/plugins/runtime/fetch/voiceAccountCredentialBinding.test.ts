@@ -365,6 +365,17 @@ function definitionWithConnectedAccountSource() {
                             },
                             requiredHeaderNames: ['authorization'],
                             allowedHeaderNames: ['authorization'],
+                        }, {
+                            kind: 'materializedHttpHeaders',
+                            operation: 'list-voices',
+                            phase: 'prepare',
+                            request: {
+                                kind: 'httpHeaders',
+                                origin: 'https://voice.example.test',
+                                headerNames: ['authorization'],
+                            },
+                            requiredHeaderNames: ['authorization'],
+                            allowedHeaderNames: ['authorization'],
                         }],
                     },
                 ],

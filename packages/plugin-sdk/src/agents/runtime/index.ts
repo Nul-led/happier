@@ -309,8 +309,11 @@ export type { AgentTranscriptFileFollowHandle } from '../../agentRuntime/project
 export type { AgentTranscriptFileFollowInput } from '../../agentRuntime/projections.js';
 export type { AgentTranscriptFileFollowLine } from '../../agentRuntime/projections.js';
 export type { AgentTranscriptFileFollowService } from '../../agentRuntime/projections.js';
+export type { AgentTranscriptIdentityCodec } from '../../agentRuntime/projections.js';
 export type { AgentTranscriptSessionEventPublicationResult } from '../../agentRuntime/projections.js';
 export type { AgentTranscriptSessionEventPublisher } from '../../agentRuntime/projections.js';
+export type { AgentTranscriptSourceIdentityRequest } from '../../agentRuntime/projections.js';
+export type { AgentTranscriptSourceIdentityResult } from '../../agentRuntime/projections.js';
 export type { AttachAvailabilityRequest } from '../../agentRuntime/projections.js';
 export type { AttachFailureCode } from '../../agentRuntime/projections.js';
 export type { AttachRequest } from '../../agentRuntime/projections.js';

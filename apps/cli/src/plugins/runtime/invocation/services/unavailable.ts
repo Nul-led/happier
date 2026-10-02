@@ -679,6 +679,8 @@ export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
                     correlationId: seed.correlationId,
                     surface: seed.surface,
                     ...(seed.caller ? { caller: seed.caller } : {}),
+                    ...(seed.initiatingActionCaller ? { initiatingActionCaller: seed.initiatingActionCaller } : {}),
+                    ...(seed.startedBy ? { startedBy: seed.startedBy } : {}),
                     ...(seed.externalActionContext
                         ? { externalActionContext: seed.externalActionContext }
                         : {}),

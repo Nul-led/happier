@@ -16,6 +16,7 @@ import type {
   PluginRegistryRuntimeCandidate,
   PluginRegistryRuntimeLifecycle,
 } from '@/plugins/store/registry/currentState';
+import { createPluginRegistryStateStore } from '@/plugins/store/registry/currentState';
 import type { PluginRegistryCommitRecord } from '@/plugins/store/registry/commitRecord';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import {
@@ -40,6 +41,7 @@ import type {
 } from '@/session/external/agentExternalSessionsInvocation';
 import type {
   ManagedServiceSessionBaseUrlResolver,
+  ManagedServiceSessionClientAccessResolver,
 } from '@/plugins/runtime/invocation/services/managedServiceEndpointProjection';
 import type {
   ExternalSessionPluginAdmissionOwner,
@@ -235,6 +237,7 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
   runtimeActionExecute?: RuntimeActionExecute;
   managedEndpointRead?: AgentExternalSessionsManagedEndpointReadHost;
   resolveManagedServiceSessionBaseUrl?: ManagedServiceSessionBaseUrlResolver;
+  resolveManagedServiceSessionClientAccess?: ManagedServiceSessionClientAccessResolver;
   externalSessionPluginAdmissionOwner?: ExternalSessionPluginAdmissionOwner;
   resolveExternalSessionCurrentMachineId?: () => string | null;
   externalSessionHostOperationOwner?: ExternalSessionHostOperationOwner;
@@ -263,6 +266,13 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
   const committedPreparedActivationCustodyByPluginId =
     new Map<string, PreparedActivationCustody>();
 
+  async function assertDevelopmentPluginEnabled(pluginId: string): Promise<void> {
+    const catalog = await createPluginRegistryStateStore({ happyHomeDir: params.happyHomeDir }).read();
+    if (catalog.plugins[pluginId]?.state.enabled === false) {
+      throw new Error(`Plugin '${pluginId}' is disabled`);
+    }
+  }
+
   async function prepareCandidate(
     candidate: PluginRegistryRuntimeCandidate | null,
     preparedActivationRegistryLeases: readonly PluginRuntimeActivationRegistryLease[] = Object.freeze([]),
@@ -275,6 +285,9 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
   }>> {
       if (!candidate && !developmentCandidate && !developmentRemoval) {
         throw new Error('Plugin runtime candidate is required');
+      }
+      if (developmentCandidate) {
+        await assertDevelopmentPluginEnabled(developmentCandidate.pluginId);
       }
       let valid = true;
       let disposed = false;
@@ -417,6 +430,9 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
             : {}),
           ...(params.resolveManagedServiceSessionBaseUrl
             ? { resolveManagedServiceSessionBaseUrl: params.resolveManagedServiceSessionBaseUrl }
+            : {}),
+          ...(params.resolveManagedServiceSessionClientAccess
+            ? { resolveManagedServiceSessionClientAccess: params.resolveManagedServiceSessionClientAccess }
             : {}),
           ...(params.externalSessionPluginAdmissionOwner
             ? {
@@ -611,6 +627,14 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
           abort: disposeOnce,
           async adopt() {
             if (adopted) return;
+            if (candidateToAdopt) {
+              try {
+                await assertDevelopmentPluginEnabled(candidateToAdopt.pluginId);
+              } catch (error) {
+                await disposeOnce();
+                throw error;
+              }
+            }
             const adoption = await params.reloadController.adoptPreparedRuntimeRegistry({
               registry,
               changedPluginIds: changedPluginIdList,

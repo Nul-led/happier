@@ -1,5 +1,3 @@
-import type { HappierPortableStyle } from '../portableTypes.js';
-
 /**
  * The shared status language of agent work (INT I3): where a piece of work stands, as one of five
  * buckets, the tone it is drawn in, and the owner's own state word.
@@ -82,15 +80,30 @@ function stateColors(colors: HappierWorkStatusColors, tone: HappierWorkStatusTon
   return null;
 }
 
+type WorkStatusSurfaceStyle = Readonly<{
+  borderWidth: 1;
+  borderColor: string;
+  backgroundColor: string;
+  boxShadow?: string;
+}>;
+
 /**
  * The ring and tint of a card or node in this tone (unified-work lab `.wm-node.need`, `.uws-card.need`):
  * the state hue at about half strength as a full ring, a 3px halo at about a tenth, over the state's
  * own tint. There is never a coloured left edge. `null` keeps healthy work neutral.
  */
 export function resolveHappierWorkStatusSurfaceStyle(
+  tone: Exclude<HappierWorkStatusTone, 'neutral'>,
+  colors: HappierWorkStatusColors,
+): WorkStatusSurfaceStyle;
+export function resolveHappierWorkStatusSurfaceStyle(
   tone: HappierWorkStatusTone,
   colors: HappierWorkStatusColors,
-): HappierPortableStyle | null {
+): WorkStatusSurfaceStyle | null;
+export function resolveHappierWorkStatusSurfaceStyle(
+  tone: HappierWorkStatusTone,
+  colors: HappierWorkStatusColors,
+): WorkStatusSurfaceStyle | null {
   const state = stateColors(colors, tone);
   if (state === null) return null;
   const halo = softenHappierWorkColor(state.border, 0.12);
@@ -106,6 +119,14 @@ export function resolveHappierWorkStatusSurfaceStyle(
  * The state word's ink in this tone; `null` keeps the surface's quiet text colour. A word in a
  * non-neutral tone is also drawn strong (semi-bold), so the tone never rests on colour alone.
  */
+export function resolveHappierWorkStatusWordColor(
+  tone: Exclude<HappierWorkStatusTone, 'neutral'>,
+  colors: HappierWorkStatusColors,
+): string;
+export function resolveHappierWorkStatusWordColor(
+  tone: HappierWorkStatusTone,
+  colors: HappierWorkStatusColors,
+): string | null;
 export function resolveHappierWorkStatusWordColor(
   tone: HappierWorkStatusTone,
   colors: HappierWorkStatusColors,

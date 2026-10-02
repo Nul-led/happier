@@ -21,8 +21,8 @@ use crate::menu::ids::ServiceMenuAction;
 use crate::system_tasks::{run_system_task_for_native, NativeTaskOutcome};
 use crate::tray::model::{fill_relay, read_service_status, AutostartMode, ServiceList};
 use policy::{
-    build_native_task_spec, launched_in_menu_bar_mode as launched_with_args,
-    should_start_status_read, status_timer_needed, StatusReadTrigger, LINUX_STATUS_TIMER_INTERVAL,
+    build_native_task_spec, launched_in_menu_bar_mode as launched_with_args, status_timer_needed,
+    StatusReadState, StatusReadTrigger, LINUX_STATUS_TIMER_INTERVAL,
 };
 
 /// Tells a running web UI that a tray action changed this computer's services, so it re-reads.
@@ -60,7 +60,7 @@ impl Default for MenuBarState {
 
 #[derive(Default)]
 struct MenuBarInner {
-    read_in_flight: bool,
+    status_read: StatusReadState,
     last_read_started: Option<Instant>,
     /// The last native status read failed: the next pointer event retries without the throttle.
     last_read_failed: bool,
@@ -156,6 +156,9 @@ pub fn leave(app: &AppHandle) {
     if !state.active.swap(false, Ordering::SeqCst) {
         return;
     }
+    if let Ok(mut inner) = state.inner.lock() {
+        inner.status_read.leave();
+    };
     #[cfg(target_os = "macos")]
     {
         if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
@@ -180,6 +183,8 @@ pub fn on_second_launch(app: &AppHandle, args: Vec<String>) {
 
 pub fn on_tray_pointer(app: &AppHandle) {
     let main = app.get_webview_window(crate::window_chrome::MAIN_WINDOW_LABEL);
+    #[cfg(target_os = "windows")]
+    crate::tray::refresh_tray_theme_on_pointer(app, main.is_some());
     let target = {
         let Some(state) = app.try_state::<MenuBarState>() else {
             return;
@@ -491,20 +496,28 @@ fn read_status(app: &AppHandle, trigger: StatusReadTrigger) {
             return;
         };
         let since_last = inner.last_read_started.map(|started| started.elapsed());
-        if !should_start_status_read(
+        let last_read_failed = inner.last_read_failed;
+        if !inner.status_read.request(
             trigger,
             state.active.load(Ordering::SeqCst),
-            inner.read_in_flight,
             since_last,
-            inner.last_read_failed,
+            last_read_failed,
         ) {
             return;
         }
-        inner.read_in_flight = true;
         inner.last_read_started = Some(Instant::now());
     }
     let app = app.clone();
-    std::thread::spawn(move || {
+    std::thread::spawn(move || loop {
+        // Reopening can happen after a follow-up was reserved but before this iteration runs.
+        if !is_active(&app) {
+            if let Some(state) = app.try_state::<MenuBarState>() {
+                if let Ok(mut inner) = state.inner.lock() {
+                    inner.status_read.finish(false);
+                }
+            }
+            return;
+        }
         let outcome = run_service_task(&app, "daemon.service.status.v1", &[]);
         let failed = match &outcome {
             NativeTaskOutcome::Succeeded(Some(data)) => {
@@ -512,47 +525,57 @@ fn read_status(app: &AppHandle, trigger: StatusReadTrigger) {
             }
             _ => true,
         };
-        if let Some(state) = app.try_state::<MenuBarState>() {
-            if let Ok(mut inner) = state.inner.lock() {
-                inner.read_in_flight = false;
-                inner.last_read_failed = failed;
+        // A read that finished after the window came back is stale beside the web UI's rows.
+        if is_active(&app) {
+            match outcome {
+                NativeTaskOutcome::Succeeded(Some(data)) => {
+                    let projected = read_service_status(&data);
+                    crate::tray::persist_service_autostart(&app, projected.autostart);
+                    crate::tray::update_model(&app, |model| {
+                        model.services = projected.services;
+                        model.running_managed_service_count =
+                            projected.running_managed_service_count;
+                        model.record_status_notice(None);
+                        model.start_at_login = projected
+                            .autostart
+                            .map(|mode| mode == AutostartMode::AtLogin);
+                    });
+                    crate::autostart::follow_login_start_setting(&app, projected.autostart);
+                }
+                NativeTaskOutcome::Succeeded(None) | NativeTaskOutcome::Failed { .. } => {
+                    // Said in the menu ("Couldn't read background services" and the reason), and
+                    // retried the next time the menu is about to open.
+                    let reason = match &outcome {
+                        NativeTaskOutcome::Failed { code, message } => {
+                            log::warn!("menu-bar status read failed ({code}): {message}");
+                            failure_message(&outcome)
+                        }
+                        _ => None,
+                    };
+                    crate::tray::update_model(&app, |model| {
+                        model.services = ServiceList::Failed;
+                        model.running_managed_service_count = None;
+                        model.record_status_notice(reason);
+                    });
+                }
             }
         }
-        // A read that finished after the window came back is stale beside the web UI's rows.
-        if !is_active(&app) {
+        let Some(state) = app.try_state::<MenuBarState>() else {
+            return;
+        };
+        let Ok(mut inner) = state.inner.lock() else {
+            return;
+        };
+        inner.last_read_failed = failed;
+        // Keep the read reserved through publication, then drain the one action obligation on
+        // this worker. Pointer/timer demand cannot overtake it or add another status thread.
+        if !inner
+            .status_read
+            .finish(state.active.load(Ordering::SeqCst))
+        {
             return;
         }
-        match outcome {
-            NativeTaskOutcome::Succeeded(Some(data)) => {
-                let projected = read_service_status(&data);
-                crate::tray::persist_service_autostart(&app, projected.autostart);
-                crate::tray::update_model(&app, |model| {
-                    model.services = projected.services;
-                    model.running_managed_service_count = projected.running_managed_service_count;
-                    model.record_status_notice(None);
-                    model.start_at_login = projected
-                        .autostart
-                        .map(|mode| mode == AutostartMode::AtLogin);
-                });
-                crate::autostart::follow_login_start_setting(&app, projected.autostart);
-            }
-            NativeTaskOutcome::Succeeded(None) | NativeTaskOutcome::Failed { .. } => {
-                // Said in the menu ("Couldn't read background services" and the reason), and
-                // retried the next time the menu is about to open.
-                let reason = match &outcome {
-                    NativeTaskOutcome::Failed { code, message } => {
-                        log::warn!("menu-bar status read failed ({code}): {message}");
-                        failure_message(&outcome)
-                    }
-                    _ => None,
-                };
-                crate::tray::update_model(&app, |model| {
-                    model.services = ServiceList::Failed;
-                    model.running_managed_service_count = None;
-                    model.record_status_notice(reason);
-                });
-            }
-        }
+        inner.last_read_started = Some(Instant::now());
     });
 }
 

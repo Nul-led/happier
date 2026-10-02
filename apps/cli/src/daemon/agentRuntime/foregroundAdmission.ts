@@ -157,6 +157,21 @@ export function createForegroundAgentRuntimeAdmissionOwner(dependencies: Readonl
   let disposed = false;
   let livenessTimer: ReturnType<typeof setInterval> | null = null;
 
+  const readCurrentDaemonServiceAdmission = (sessionId: string) => {
+    const attemptId = attemptIdBySessionId.get(sessionId);
+    const admission = attemptId ? byAttemptId.get(attemptId) : undefined;
+    const authority = admission?.daemonServiceAuthority;
+    if (
+      !admission
+      || admission.released
+      || admission.runtimeSessionId !== sessionId
+      || admission.retirementSignal.aborted
+      || !admission.isCurrent()
+      || !authority
+    ) return null;
+    return { admission, authority };
+  };
+
   const releaseSessionReservation = (
     sessionId: string,
     attemptId: string,
@@ -584,21 +599,11 @@ export function createForegroundAgentRuntimeAdmissionOwner(dependencies: Readonl
       request: AgentRuntimeDaemonServiceRequestV1;
       providedCapability: string;
     }>): ForegroundDaemonServiceSubject | null {
-      const attemptId =
-        attemptIdBySessionId.get(input.request.context.sessionId);
-      const admission = attemptId
-        ? byAttemptId.get(attemptId)
-        : undefined;
-      const authority = admission?.daemonServiceAuthority;
+      const current = readCurrentDaemonServiceAdmission(input.request.context.sessionId);
+      if (!current) return null;
+      const { admission, authority } = current;
       if (
-        !admission
-        || admission.released
-        || admission.runtimeSessionId
-          !== input.request.context.sessionId
-        || admission.retirementSignal.aborted
-        || !admission.isCurrent()
-        || !authority
-        || !verifyAgentRuntimeSessionBridgeToken({
+        !verifyAgentRuntimeSessionBridgeToken({
           providedToken: input.providedCapability,
           expectedTokenHash: authority.capabilityDigest,
         })
@@ -633,6 +638,10 @@ export function createForegroundAgentRuntimeAdmissionOwner(dependencies: Readonl
           return true;
         },
       });
+    },
+    /** Approval replay rechecks the native Session owner, independently of its original turn. */
+    isSessionCurrent(sessionId: string): boolean {
+      return readCurrentDaemonServiceAdmission(sessionId) !== null;
     },
     async release(attemptId: string, sessionId: string): Promise<void> {
       const pending = pendingByAttemptId.get(attemptId);

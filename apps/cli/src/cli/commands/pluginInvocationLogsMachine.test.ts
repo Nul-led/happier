@@ -30,7 +30,7 @@ vi.mock('@/persistence', () => ({
 }));
 
 vi.mock('@/session/transport/rpc/machineRpc', () => ({
-  callMachineRpc: boundaries.callMachineRpc,
+  callExactMachineRpc: boundaries.callMachineRpc,
 }));
 
 import {
@@ -41,6 +41,7 @@ import {
 const target = {
   serverIdentityId: 'srv_plugin_logs',
   serverLabel: 'https://public.example.test',
+  serverUrl: 'https://api.example.test',
   machineId: 'machine-2',
   machineLabel: 'build-host',
 } as const;
@@ -75,6 +76,7 @@ describe('plugin invocation log exact-machine transport', () => {
     });
     expect(boundaries.resolveCurrentAccountMachineTarget).toHaveBeenCalledWith({
       token: 'token-1',
+      serverHttpBaseUrl: 'https://api.example.test',
       requestedMachineId: 'machine-2',
     });
   });
@@ -130,6 +132,8 @@ describe('plugin invocation log exact-machine transport', () => {
       records: [],
       cursor: 0,
       hasMore: false,
+      logId: 'active-log',
+      cursorReset: false,
     }));
 
     await expect(readPluginInvocationLogsOnMachine({

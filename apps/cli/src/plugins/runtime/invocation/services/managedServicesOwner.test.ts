@@ -28,6 +28,11 @@ import type {
 } from './managedServicesAdapter';
 import { createManagedServicesOwner } from './managedServicesOwner';
 import { createRunnerManagedServiceEndpointProjectionBinding } from './createRunnerManagedServiceInvocationOwner';
+import { createProviderCliAttachSurface } from '@/session/attach/providerCliAttach';
+import {
+    resolveOpenCodeAttachTarget,
+    createOpenCodeAttachArgs,
+} from '../../../../../../../packages/plugins/opencode/src/agent/surfaces/sessions/attach/descriptor';
 import {
     createManagedServiceEndpointProjectionV1,
 } from './managedServiceEndpointProjection';
@@ -130,7 +135,7 @@ function lifecycleSpec(input: Readonly<{
     port?: number;
     args?: readonly string[];
     environment?: Readonly<Record<string, string>>;
-}>): ManagedServiceSpec {
+}>): Extract<ManagedServiceSpec, { mode: Readonly<{ kind: 'spawn' }> }> {
     return Object.freeze({
         id: input.id,
         mode: Object.freeze({
@@ -180,6 +185,7 @@ function lifecycleScope(input: Readonly<{
 function createLifecycleHarness(
     processes: PluginProcessHandle[] = [],
     custodyOwner: 'daemon' | 'sessionRunner' = 'sessionRunner',
+    boundaryOptions: Pick<Parameters<typeof createManagedServicesOwner>[0], 'fetch' | 'registerRawForRedaction'> = {},
 ) {
     let nextInstance = 0;
     const processSupervisorHost = createManagedServiceProcessSupervisorHost({
@@ -210,6 +216,7 @@ function createLifecycleHarness(
             : {}),
     });
     const owner = createManagedServicesOwner({
+        ...boundaryOptions,
         processSupervisorHost,
         dependencies: Object.freeze({}) as never,
         resolveScope: (scope) => scope,
@@ -331,6 +338,118 @@ function createManagedProviderBinding(
 }
 
 describe('managed-services SVC09 owner', () => {
+    it.each([false, true])('resolves projected Session access by exact native instance without replacing runtime occurrence (retireBeforeSpawn=%s)', async (retireBeforeSpawn) => {
+        const hostFetch = vi.fn<typeof fetch>(async () => new Response('{}', { status: 200 }));
+        const harness = createLifecycleHarness([createLifecycleProcess(42)], 'sessionRunner', {
+            fetch: hostFetch, registerRawForRedaction: () => {},
+        });
+        const scope = lifecycleScope({ occurrenceId: 'original-runtime-occurrence', sessionId: 'session-one' });
+        const handle = await harness.owner.bindScope(scope, harness.exec).supervise({
+            ...lifecycleSpec({ id: 'opencode-server', port: 4312 }),
+            clientAccess: { kind: 'hostBasic', username: 'opencode', injectPasswordEnvironmentKey: 'OPENCODE_SERVER_PASSWORD' },
+        });
+        const identity = { sessionId: 'session-one', pluginId: scope.pluginId,
+            contributionQualifiedId: scope.contributionQualifiedId, serviceId: 'opencode-server' };
+        // The genuine process-supervisor identity issuer in createLifecycleHarness owns this value.
+        const instanceId = 'owner-lifecycle-1';
+        try {
+            const original = await harness.owner.materializeSessionManagedServiceClientEnvironment({
+                ...identity, occurrenceId: scope.occurrenceId, environmentKey: 'OPENCODE_SERVER_PASSWORD',
+            });
+            expect(original?.OPENCODE_SERVER_PASSWORD).toEqual(expect.any(String));
+            const projected = await harness.owner.materializeSessionManagedServiceClientEnvironment({
+                ...identity, instanceId, environmentKey: 'OPENCODE_SERVER_PASSWORD',
+            });
+            expect(projected === null).toBe(false);
+            expect(projected?.OPENCODE_SERVER_PASSWORD === original?.OPENCODE_SERVER_PASSWORD).toBe(true);
+            expect(await harness.owner.materializeSessionManagedServiceClientEnvironment({
+                ...identity, instanceId: 'wrong-native-instance', environmentKey: 'OPENCODE_SERVER_PASSWORD',
+            })).toBeNull();
+            expect(await harness.owner.materializeSessionManagedServiceClientEnvironment({
+                ...identity, sessionId: 'different-session', instanceId, environmentKey: 'OPENCODE_SERVER_PASSWORD',
+            })).toBeNull();
+            const request = harness.owner.bindSessionManagedServiceRequest({ ...identity, instanceId });
+            expect(request).not.toBeNull();
+            expect((await request!({ method: 'GET', pathAndQuery: '/global/health' })).ok).toBe(true);
+            expect(hostFetch).toHaveBeenCalledTimes(1);
+            const sourceCustody = { kind: 'managed' as const, immutableGenerationId: 'retained-generation', installSource: 'localPath' as const };
+            const binding = createRunnerManagedServiceEndpointProjectionBinding({
+                // This is the daemon publication transport boundary; identity is still issued by the real projector.
+                publishEndpointProjection: async (input) => createManagedServiceEndpointProjectionV1(input).projectionToken,
+                releaseEndpointProjection: async () => true,
+            }, {
+                resolveProjectedManagedServiceRequest: (projection) => harness.owner.bindSessionManagedServiceRequest({
+                    ...identity, instanceId: projection.instanceId,
+                }),
+                materializeProjectedManagedServiceClientEnvironment: (projection, environmentKey, signal) =>
+                    harness.owner.materializeSessionManagedServiceClientEnvironment({
+                        ...identity, instanceId: projection.instanceId, environmentKey, signal,
+                    }),
+            });
+            const projectionInput = {
+                sessionId: identity.sessionId, pluginId: identity.pluginId, contributionId: identity.contributionQualifiedId,
+                serverId: identity.serviceId, instanceId, sourceCustody, custodyOwner: 'sessionRunner' as const,
+                mode: 'managedSpawn' as const,
+                endpoint: { baseUrl: 'http://127.0.0.1:4312', host: '127.0.0.1' as const, port: 4312 },
+                process: { pid: 42, startIdentity: 'owner-lifecycle-process-start' }, createdAtMs: 1,
+            };
+            const projectionToken = await binding.publishEndpointProjection(projectionInput);
+            const localRequest = {
+                identity: { pluginId: identity.pluginId, contributionId: identity.contributionQualifiedId,
+                    sessionId: identity.sessionId, sourceCustody },
+                targetBaseUrl: 'http://127.0.0.1:4312', environmentKey: 'OPENCODE_SERVER_PASSWORD',
+                signal: new AbortController().signal,
+            };
+            const localAccess = await binding.resolveLocalClientAccess(localRequest);
+            expect(localAccess === null).toBe(false);
+            expect(localAccess?.childEnvironment.OPENCODE_SERVER_PASSWORD === original?.OPENCODE_SERVER_PASSWORD).toBe(true);
+            expect(localAccess?.isCurrent()).toBe(true);
+            let attached = false;
+            const surface = createProviderCliAttachSurface({
+                agentId: 'opencode', resolveTarget: resolveOpenCodeAttachTarget,
+                createArgs: createOpenCodeAttachArgs,
+                managedServiceTargetBaseUrl: (target) => target.baseUrl,
+                managedServiceCredentialEnvironmentKey: 'OPENCODE_SERVER_PASSWORD',
+                managedServiceCredentialEnvironmentAliases: ['OPENCODE_PASSWORD'],
+                env: { OPENCODE_SERVER_PASSWORD: 'ambient-wrong', OPENCODE_PASSWORD: 'ambient-wrong' },
+                // A harmless native child checks private environment inheritance, without printing the credential.
+                resolveLaunchSpec: async () => {
+                    if (retireBeforeSpawn) await handle.dispose();
+                    return {
+                        source: 'managed' as const, resolvedPath: process.execPath, command: process.execPath,
+                        args: ['-e', 'process.exit(process.env.OPENCODE_SERVER_PASSWORD && process.env.OPENCODE_SERVER_PASSWORD !== "ambient-wrong" && process.env.OPENCODE_PASSWORD === process.env.OPENCODE_SERVER_PASSWORD ? 0 : 42)', '--'],
+                    };
+                },
+            });
+            const attachRequest = {
+                sessionId: identity.sessionId,
+                metadata: { path: '/repo', runtimeDescriptorV1: { v: 1 as const, agentId: 'opencode',
+                    agent: { backendMode: 'server', providerSessionId: 'native-one', serverBaseUrl: localRequest.targetBaseUrl, serverBaseUrlExplicit: true } } },
+                onAttached: async () => { attached = true; },
+                resolveManagedServiceAccess: async (input: Readonly<{ sessionId: string; targetBaseUrl: string; environmentKey: string; signal?: AbortSignal }>) =>
+                    binding.resolveLocalClientAccess({ ...input, identity: localRequest.identity }),
+            };
+            const attachedResult = await surface.attachManaged(attachRequest);
+            expect(attachedResult).toMatchObject(retireBeforeSpawn
+                ? { ok: false, code: 'attach_failed' }
+                : { ok: true, value: { exitCode: 0 } });
+            expect(attached).toBe(!retireBeforeSpawn);
+            await handle.dispose();
+            // Local process retirement is authoritative even before daemon projection withdrawal settles.
+            expect(localAccess?.isCurrent()).toBe(false);
+            expect(await binding.resolveLocalClientAccess(localRequest)).toBeNull();
+            await binding.releaseEndpointProjection({ instanceId, projectionToken, sessionId: identity.sessionId, pluginId: identity.pluginId });
+            expect(await binding.resolveLocalClientAccess(localRequest)).toBeNull();
+            expect(await harness.owner.materializeSessionManagedServiceClientEnvironment({
+                ...identity, instanceId, environmentKey: 'OPENCODE_SERVER_PASSWORD',
+            })).toBeNull();
+            await expect(request!({ method: 'GET', pathAndQuery: '/global/health' })).rejects.toMatchObject({ code: 'plugin_managed_service_unavailable' });
+            expect(hostFetch).toHaveBeenCalledTimes(1);
+        } finally {
+            await harness.owner.dispose();
+        }
+    });
+
     it('canonicalizes omitted public timeout, health-policy, and durable-log defaults before supervision', async () => {
         const harness = createHarness();
         const services = harness.owner.bindScope(harness.scope, exec);

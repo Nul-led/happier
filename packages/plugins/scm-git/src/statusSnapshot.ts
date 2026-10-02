@@ -82,6 +82,7 @@ export function buildGitSnapshot(input: {
     currentWorktreePath?: string | null;
     mainWorktreePath?: string | null;
     statusOutput: string;
+    upstreamOid?: string;
     includedNumStatOutput: string;
     pendingNumStatOutput: string;
     includedNumStatSuccess?: boolean;
@@ -210,7 +211,9 @@ export function buildGitSnapshot(input: {
         capabilities: createGitCapabilities(),
         branch: {
             head: detached ? null : headRaw,
+            ...(parsedStatus.branch.oid && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(parsedStatus.branch.oid) ? { headOid: parsedStatus.branch.oid } : {}),
             upstream: parsedStatus.branch.upstream ?? null,
+            ...(input.upstreamOid ? { upstreamOid: input.upstreamOid } : {}),
             ahead: parsedStatus.branch.ahead ?? 0,
             behind: parsedStatus.branch.behind ?? 0,
             detached,

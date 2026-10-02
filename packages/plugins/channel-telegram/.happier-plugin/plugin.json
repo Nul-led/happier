@@ -1125,6 +1125,26 @@
                             "maxLength": 256,
                             "minLength": 1,
                             "type": "string"
+                          },
+                          "pullRequest": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "number": {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "repository": {
+                                "minLength": 1,
+                                "pattern": "^[^\\s/]+/[^\\s/]+$",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "repository",
+                              "number"
+                            ],
+                            "type": "object"
                           }
                         },
                         "required": [
@@ -1230,6 +1250,245 @@
           "$schema": "http://json-schema.org/draft-07/schema#",
           "additionalProperties": false,
           "properties": {
+            "bindings": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "endpoint": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "audience": {
+                            "const": "direct"
+                          },
+                          "id": {
+                            "minLength": 1,
+                            "type": "string",
+                            "x-happier-max-utf8-bytes": 512
+                          },
+                          "kind": {
+                            "const": "direct"
+                          },
+                          "label": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "parentId": {
+                            "minLength": 1,
+                            "type": "string",
+                            "x-happier-max-utf8-bytes": 512
+                          },
+                          "parentLabel": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "audience",
+                          "id"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "audience": {
+                            "const": "shared"
+                          },
+                          "id": {
+                            "minLength": 1,
+                            "type": "string",
+                            "x-happier-max-utf8-bytes": 512
+                          },
+                          "kind": {
+                            "const": "shared"
+                          },
+                          "label": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "parentId": {
+                            "minLength": 1,
+                            "type": "string",
+                            "x-happier-max-utf8-bytes": 512
+                          },
+                          "parentLabel": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "audience",
+                          "id"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "audience": {
+                            "anyOf": [
+                              {
+                                "const": "direct"
+                              },
+                              {
+                                "const": "shared"
+                              }
+                            ]
+                          },
+                          "id": {
+                            "minLength": 1,
+                            "type": "string",
+                            "x-happier-max-utf8-bytes": 512
+                          },
+                          "kind": {
+                            "const": "thread"
+                          },
+                          "label": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "parentId": {
+                            "minLength": 1,
+                            "type": "string",
+                            "x-happier-max-utf8-bytes": 512
+                          },
+                          "parentLabel": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "audience",
+                          "id"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "audience": {
+                            "const": "shared"
+                          },
+                          "id": {
+                            "minLength": 1,
+                            "type": "string",
+                            "x-happier-max-utf8-bytes": 512
+                          },
+                          "kind": {
+                            "const": "githubIssue"
+                          },
+                          "label": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "parentId": {
+                            "minLength": 1,
+                            "type": "string",
+                            "x-happier-max-utf8-bytes": 512
+                          },
+                          "parentLabel": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "audience",
+                          "id"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "audience": {
+                            "const": "shared"
+                          },
+                          "id": {
+                            "minLength": 1,
+                            "type": "string",
+                            "x-happier-max-utf8-bytes": 512
+                          },
+                          "kind": {
+                            "const": "githubPullRequest"
+                          },
+                          "label": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "parentId": {
+                            "minLength": 1,
+                            "type": "string",
+                            "x-happier-max-utf8-bytes": 512
+                          },
+                          "parentLabel": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "pullRequest": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "number": {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "repository": {
+                                "minLength": 1,
+                                "pattern": "^[^\\s/]+/[^\\s/]+$",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "repository",
+                              "number"
+                            ],
+                            "type": "object"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "audience",
+                          "id"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "scopedTriggerKind": {
+                    "anyOf": [
+                      {
+                        "const": "prComment"
+                      },
+                      {
+                        "const": "ciFailed"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "endpoint",
+                  "scopedTriggerKind"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
             "checkpoint": {
               "anyOf": [
                 {
@@ -1453,6 +1712,23 @@
                                             "type": "null"
                                           }
                                         ]
+                                      },
+                                      "repositoryWriteAccess": {
+                                        "anyOf": [
+                                          {
+                                            "anyOf": [
+                                              {
+                                                "const": true
+                                              },
+                                              {
+                                                "const": false
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
                                       }
                                     },
                                     "required": [
@@ -1647,6 +1923,26 @@
                                             "maxLength": 256,
                                             "minLength": 1,
                                             "type": "string"
+                                          },
+                                          "pullRequest": {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "number": {
+                                                "maximum": 9007199254740991,
+                                                "minimum": 1,
+                                                "type": "integer"
+                                              },
+                                              "repository": {
+                                                "minLength": 1,
+                                                "pattern": "^[^\\s/]+/[^\\s/]+$",
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "repository",
+                                              "number"
+                                            ],
+                                            "type": "object"
                                           }
                                         },
                                         "required": [
@@ -1790,6 +2086,16 @@
                                     "minLength": 1,
                                     "type": "string",
                                     "x-happier-max-utf8-bytes": 128
+                                  },
+                                  "scopedTriggerKind": {
+                                    "anyOf": [
+                                      {
+                                        "const": "prComment"
+                                      },
+                                      {
+                                        "const": "ciFailed"
+                                      }
+                                    ]
                                   },
                                   "transport": {
                                     "additionalProperties": false,
@@ -1904,434 +2210,18 @@
                                             "type": "null"
                                           }
                                         ]
-                                      }
-                                    },
-                                    "required": [
-                                      "principalId",
-                                      "kind",
-                                      "isIntegrationSelf"
-                                    ],
-                                    "type": "object"
-                                  },
-                                  "endpoint": {
-                                    "anyOf": [
-                                      {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "audience": {
-                                            "const": "direct"
-                                          },
-                                          "id": {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 512
-                                          },
-                                          "kind": {
-                                            "const": "direct"
-                                          },
-                                          "label": {
-                                            "maxLength": 256,
-                                            "minLength": 1,
-                                            "type": "string"
-                                          },
-                                          "parentId": {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 512
-                                          },
-                                          "parentLabel": {
-                                            "maxLength": 256,
-                                            "minLength": 1,
-                                            "type": "string"
-                                          }
-                                        },
-                                        "required": [
-                                          "kind",
-                                          "audience",
-                                          "id"
-                                        ],
-                                        "type": "object"
                                       },
-                                      {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "audience": {
-                                            "const": "shared"
-                                          },
-                                          "id": {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 512
-                                          },
-                                          "kind": {
-                                            "const": "shared"
-                                          },
-                                          "label": {
-                                            "maxLength": 256,
-                                            "minLength": 1,
-                                            "type": "string"
-                                          },
-                                          "parentId": {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 512
-                                          },
-                                          "parentLabel": {
-                                            "maxLength": 256,
-                                            "minLength": 1,
-                                            "type": "string"
-                                          }
-                                        },
-                                        "required": [
-                                          "kind",
-                                          "audience",
-                                          "id"
-                                        ],
-                                        "type": "object"
-                                      },
-                                      {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "audience": {
-                                            "anyOf": [
-                                              {
-                                                "const": "direct"
-                                              },
-                                              {
-                                                "const": "shared"
-                                              }
-                                            ]
-                                          },
-                                          "id": {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 512
-                                          },
-                                          "kind": {
-                                            "const": "thread"
-                                          },
-                                          "label": {
-                                            "maxLength": 256,
-                                            "minLength": 1,
-                                            "type": "string"
-                                          },
-                                          "parentId": {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 512
-                                          },
-                                          "parentLabel": {
-                                            "maxLength": 256,
-                                            "minLength": 1,
-                                            "type": "string"
-                                          }
-                                        },
-                                        "required": [
-                                          "kind",
-                                          "audience",
-                                          "id"
-                                        ],
-                                        "type": "object"
-                                      },
-                                      {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "audience": {
-                                            "const": "shared"
-                                          },
-                                          "id": {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 512
-                                          },
-                                          "kind": {
-                                            "const": "githubIssue"
-                                          },
-                                          "label": {
-                                            "maxLength": 256,
-                                            "minLength": 1,
-                                            "type": "string"
-                                          },
-                                          "parentId": {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 512
-                                          },
-                                          "parentLabel": {
-                                            "maxLength": 256,
-                                            "minLength": 1,
-                                            "type": "string"
-                                          }
-                                        },
-                                        "required": [
-                                          "kind",
-                                          "audience",
-                                          "id"
-                                        ],
-                                        "type": "object"
-                                      },
-                                      {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "audience": {
-                                            "const": "shared"
-                                          },
-                                          "id": {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 512
-                                          },
-                                          "kind": {
-                                            "const": "githubPullRequest"
-                                          },
-                                          "label": {
-                                            "maxLength": 256,
-                                            "minLength": 1,
-                                            "type": "string"
-                                          },
-                                          "parentId": {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 512
-                                          },
-                                          "parentLabel": {
-                                            "maxLength": 256,
-                                            "minLength": 1,
-                                            "type": "string"
-                                          }
-                                        },
-                                        "required": [
-                                          "kind",
-                                          "audience",
-                                          "id"
-                                        ],
-                                        "type": "object"
-                                      }
-                                    ]
-                                  },
-                                  "message": {
-                                    "anyOf": [
-                                      {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "addressingEvidence": {
-                                            "const": "replyToIntegration"
-                                          },
-                                          "contentProvenance": {
-                                            "anyOf": [
-                                              {
-                                                "const": "original"
-                                              },
-                                              {
-                                                "const": "forwarded"
-                                              },
-                                              {
-                                                "const": "viaBot"
-                                              }
-                                            ]
-                                          },
-                                          "id": {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 512
-                                          },
-                                          "providerTimestamp": {
-                                            "maximum": 9007199254740991,
-                                            "minimum": 0,
-                                            "type": "integer"
-                                          },
-                                          "replyToMessageId": {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 512
-                                          },
-                                          "revision": {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 512
-                                          }
-                                        },
-                                        "required": [
-                                          "id",
-                                          "contentProvenance",
-                                          "providerTimestamp",
-                                          "replyToMessageId",
-                                          "addressingEvidence"
-                                        ],
-                                        "type": "object"
-                                      },
-                                      {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "addressingEvidence": {
-                                            "anyOf": [
-                                              {
-                                                "const": "none"
-                                              },
-                                              {
-                                                "const": "directIntegrationMention"
-                                              },
-                                              {
-                                                "const": "integrationRoleMention"
-                                              }
-                                            ]
-                                          },
-                                          "contentProvenance": {
-                                            "anyOf": [
-                                              {
-                                                "const": "original"
-                                              },
-                                              {
-                                                "const": "forwarded"
-                                              },
-                                              {
-                                                "const": "viaBot"
-                                              }
-                                            ]
-                                          },
-                                          "id": {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 512
-                                          },
-                                          "providerTimestamp": {
-                                            "maximum": 9007199254740991,
-                                            "minimum": 0,
-                                            "type": "integer"
-                                          },
-                                          "replyToMessageId": {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 512
-                                          },
-                                          "revision": {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 512
-                                          }
-                                        },
-                                        "required": [
-                                          "id",
-                                          "contentProvenance",
-                                          "providerTimestamp",
-                                          "addressingEvidence"
-                                        ],
-                                        "type": "object"
-                                      }
-                                    ]
-                                  },
-                                  "occurredAt": {
-                                    "maximum": 9007199254740991,
-                                    "minimum": 0,
-                                    "type": "integer"
-                                  },
-                                  "occurrenceId": {
-                                    "minLength": 1,
-                                    "type": "string",
-                                    "x-happier-max-utf8-bytes": 128
-                                  },
-                                  "transport": {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "kind": {
+                                      "repositoryWriteAccess": {
                                         "anyOf": [
                                           {
-                                            "const": "poll"
-                                          },
-                                          {
-                                            "const": "socket"
-                                          },
-                                          {
-                                            "const": "webhook"
-                                          }
-                                        ]
-                                      },
-                                      "providerDeliveryId": {
-                                        "minLength": 1,
-                                        "type": "string",
-                                        "x-happier-max-utf8-bytes": 512
-                                      }
-                                    },
-                                    "required": [
-                                      "kind"
-                                    ],
-                                    "type": "object"
-                                  },
-                                  "v": {
-                                    "const": 1
-                                  }
-                                },
-                                "required": [
-                                  "v",
-                                  "occurrenceId",
-                                  "occurredAt",
-                                  "transport",
-                                  "endpoint",
-                                  "actor",
-                                  "message"
-                                ],
-                                "type": "object"
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "shell",
-                              "reason"
-                            ],
-                            "type": "object"
-                          },
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "kind": {
-                                "const": "routableNonAdmission"
-                              },
-                              "reason": {
-                                "const": "unsupportedEdit"
-                              },
-                              "shell": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "actor": {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "isIntegrationSelf": {
-                                        "anyOf": [
-                                          {
-                                            "const": true
-                                          },
-                                          {
-                                            "const": false
-                                          }
-                                        ]
-                                      },
-                                      "kind": {
-                                        "anyOf": [
-                                          {
-                                            "const": "human"
-                                          },
-                                          {
-                                            "const": "integration"
-                                          },
-                                          {
-                                            "const": "bot"
-                                          },
-                                          {
-                                            "const": "unknown"
-                                          }
-                                        ]
-                                      },
-                                      "label": {
-                                        "maxLength": 256,
-                                        "minLength": 1,
-                                        "type": "string"
-                                      },
-                                      "principalId": {
-                                        "anyOf": [
-                                          {
-                                            "minLength": 1,
-                                            "type": "string",
-                                            "x-happier-max-utf8-bytes": 256
+                                            "anyOf": [
+                                              {
+                                                "const": true
+                                              },
+                                              {
+                                                "const": false
+                                              }
+                                            ]
                                           },
                                           {
                                             "type": "null"
@@ -2531,6 +2421,506 @@
                                             "maxLength": 256,
                                             "minLength": 1,
                                             "type": "string"
+                                          },
+                                          "pullRequest": {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "number": {
+                                                "maximum": 9007199254740991,
+                                                "minimum": 1,
+                                                "type": "integer"
+                                              },
+                                              "repository": {
+                                                "minLength": 1,
+                                                "pattern": "^[^\\s/]+/[^\\s/]+$",
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "repository",
+                                              "number"
+                                            ],
+                                            "type": "object"
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "audience",
+                                          "id"
+                                        ],
+                                        "type": "object"
+                                      }
+                                    ]
+                                  },
+                                  "message": {
+                                    "anyOf": [
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "addressingEvidence": {
+                                            "const": "replyToIntegration"
+                                          },
+                                          "contentProvenance": {
+                                            "anyOf": [
+                                              {
+                                                "const": "original"
+                                              },
+                                              {
+                                                "const": "forwarded"
+                                              },
+                                              {
+                                                "const": "viaBot"
+                                              }
+                                            ]
+                                          },
+                                          "id": {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 512
+                                          },
+                                          "providerTimestamp": {
+                                            "maximum": 9007199254740991,
+                                            "minimum": 0,
+                                            "type": "integer"
+                                          },
+                                          "replyToMessageId": {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 512
+                                          },
+                                          "revision": {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 512
+                                          }
+                                        },
+                                        "required": [
+                                          "id",
+                                          "contentProvenance",
+                                          "providerTimestamp",
+                                          "replyToMessageId",
+                                          "addressingEvidence"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "addressingEvidence": {
+                                            "anyOf": [
+                                              {
+                                                "const": "none"
+                                              },
+                                              {
+                                                "const": "directIntegrationMention"
+                                              },
+                                              {
+                                                "const": "integrationRoleMention"
+                                              }
+                                            ]
+                                          },
+                                          "contentProvenance": {
+                                            "anyOf": [
+                                              {
+                                                "const": "original"
+                                              },
+                                              {
+                                                "const": "forwarded"
+                                              },
+                                              {
+                                                "const": "viaBot"
+                                              }
+                                            ]
+                                          },
+                                          "id": {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 512
+                                          },
+                                          "providerTimestamp": {
+                                            "maximum": 9007199254740991,
+                                            "minimum": 0,
+                                            "type": "integer"
+                                          },
+                                          "replyToMessageId": {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 512
+                                          },
+                                          "revision": {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 512
+                                          }
+                                        },
+                                        "required": [
+                                          "id",
+                                          "contentProvenance",
+                                          "providerTimestamp",
+                                          "addressingEvidence"
+                                        ],
+                                        "type": "object"
+                                      }
+                                    ]
+                                  },
+                                  "occurredAt": {
+                                    "maximum": 9007199254740991,
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "occurrenceId": {
+                                    "minLength": 1,
+                                    "type": "string",
+                                    "x-happier-max-utf8-bytes": 128
+                                  },
+                                  "scopedTriggerKind": {
+                                    "anyOf": [
+                                      {
+                                        "const": "prComment"
+                                      },
+                                      {
+                                        "const": "ciFailed"
+                                      }
+                                    ]
+                                  },
+                                  "transport": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "kind": {
+                                        "anyOf": [
+                                          {
+                                            "const": "poll"
+                                          },
+                                          {
+                                            "const": "socket"
+                                          },
+                                          {
+                                            "const": "webhook"
+                                          }
+                                        ]
+                                      },
+                                      "providerDeliveryId": {
+                                        "minLength": 1,
+                                        "type": "string",
+                                        "x-happier-max-utf8-bytes": 512
+                                      }
+                                    },
+                                    "required": [
+                                      "kind"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "v": {
+                                    "const": 1
+                                  }
+                                },
+                                "required": [
+                                  "v",
+                                  "occurrenceId",
+                                  "occurredAt",
+                                  "transport",
+                                  "endpoint",
+                                  "actor",
+                                  "message"
+                                ],
+                                "type": "object"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "shell",
+                              "reason"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "routableNonAdmission"
+                              },
+                              "reason": {
+                                "const": "unsupportedEdit"
+                              },
+                              "shell": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "actor": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "isIntegrationSelf": {
+                                        "anyOf": [
+                                          {
+                                            "const": true
+                                          },
+                                          {
+                                            "const": false
+                                          }
+                                        ]
+                                      },
+                                      "kind": {
+                                        "anyOf": [
+                                          {
+                                            "const": "human"
+                                          },
+                                          {
+                                            "const": "integration"
+                                          },
+                                          {
+                                            "const": "bot"
+                                          },
+                                          {
+                                            "const": "unknown"
+                                          }
+                                        ]
+                                      },
+                                      "label": {
+                                        "maxLength": 256,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "principalId": {
+                                        "anyOf": [
+                                          {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 256
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "repositoryWriteAccess": {
+                                        "anyOf": [
+                                          {
+                                            "anyOf": [
+                                              {
+                                                "const": true
+                                              },
+                                              {
+                                                "const": false
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "principalId",
+                                      "kind",
+                                      "isIntegrationSelf"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "endpoint": {
+                                    "anyOf": [
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "audience": {
+                                            "const": "direct"
+                                          },
+                                          "id": {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 512
+                                          },
+                                          "kind": {
+                                            "const": "direct"
+                                          },
+                                          "label": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "parentId": {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 512
+                                          },
+                                          "parentLabel": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "audience",
+                                          "id"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "audience": {
+                                            "const": "shared"
+                                          },
+                                          "id": {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 512
+                                          },
+                                          "kind": {
+                                            "const": "shared"
+                                          },
+                                          "label": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "parentId": {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 512
+                                          },
+                                          "parentLabel": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "audience",
+                                          "id"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "audience": {
+                                            "anyOf": [
+                                              {
+                                                "const": "direct"
+                                              },
+                                              {
+                                                "const": "shared"
+                                              }
+                                            ]
+                                          },
+                                          "id": {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 512
+                                          },
+                                          "kind": {
+                                            "const": "thread"
+                                          },
+                                          "label": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "parentId": {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 512
+                                          },
+                                          "parentLabel": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "audience",
+                                          "id"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "audience": {
+                                            "const": "shared"
+                                          },
+                                          "id": {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 512
+                                          },
+                                          "kind": {
+                                            "const": "githubIssue"
+                                          },
+                                          "label": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "parentId": {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 512
+                                          },
+                                          "parentLabel": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "audience",
+                                          "id"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "audience": {
+                                            "const": "shared"
+                                          },
+                                          "id": {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 512
+                                          },
+                                          "kind": {
+                                            "const": "githubPullRequest"
+                                          },
+                                          "label": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "parentId": {
+                                            "minLength": 1,
+                                            "type": "string",
+                                            "x-happier-max-utf8-bytes": 512
+                                          },
+                                          "parentLabel": {
+                                            "maxLength": 256,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "pullRequest": {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "number": {
+                                                "maximum": 9007199254740991,
+                                                "minimum": 1,
+                                                "type": "integer"
+                                              },
+                                              "repository": {
+                                                "minLength": 1,
+                                                "pattern": "^[^\\s/]+/[^\\s/]+$",
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "repository",
+                                              "number"
+                                            ],
+                                            "type": "object"
                                           }
                                         },
                                         "required": [
@@ -2664,6 +3054,16 @@
                                     "minLength": 1,
                                     "type": "string",
                                     "x-happier-max-utf8-bytes": 128
+                                  },
+                                  "scopedTriggerKind": {
+                                    "anyOf": [
+                                      {
+                                        "const": "prComment"
+                                      },
+                                      {
+                                        "const": "ciFailed"
+                                      }
+                                    ]
                                   },
                                   "transport": {
                                     "additionalProperties": false,
@@ -3125,6 +3525,26 @@
                       "maxLength": 256,
                       "minLength": 1,
                       "type": "string"
+                    },
+                    "pullRequest": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "number": {
+                          "maximum": 9007199254740991,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "repository": {
+                          "minLength": 1,
+                          "pattern": "^[^\\s/]+/[^\\s/]+$",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "repository",
+                        "number"
+                      ],
+                      "type": "object"
                     }
                   },
                   "required": [
@@ -3687,6 +4107,7 @@
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -3838,6 +4259,7 @@
         "path": "assets/brand.png"
       }
     ],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -4131,7 +4553,8 @@
     },
     "voiceModelPacks": [],
     "voiceProviders": [],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "description": "Connects Telegram bot conversations to Happier Channels.",
   "displayName": "Telegram Channels",

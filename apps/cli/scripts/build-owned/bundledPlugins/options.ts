@@ -215,3 +215,19 @@ export function resolveSelectedBundledPluginPackageNames(
     return packageName;
   }));
 }
+
+/** An all-plugin canonical write is the unscoped publication, including native facts. */
+export function normalizeCanonicalGeneratorPublication(
+  argv: readonly string[],
+  options: GeneratorOptions,
+  bundledWorkspaceNames: readonly string[],
+): Readonly<{ argv: readonly string[]; options: GeneratorOptions }> {
+  const selectsAll = options.workspaceNames.length > 0
+    && options.workspaceNames.length === bundledWorkspaceNames.length
+    && bundledWorkspaceNames.every((name) => options.workspaceNames.includes(name));
+  if (!selectsAll || options.mode !== 'write' || options.targetOwnedOnly) return { argv, options };
+  return {
+    options: { ...options, workspaceNames: [] },
+    argv: argv.filter((arg, index) => arg !== '--workspace' && argv[index - 1] !== '--workspace'),
+  };
+}

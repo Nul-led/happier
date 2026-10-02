@@ -47,7 +47,7 @@ function readStringArray(value: unknown): readonly string[] | undefined {
 }
 
 function readCodexBackendMode(
-  request: Parameters<NonNullable<AgentSessionRuntimeFactory['supportsTerminalPresentation']>>[0],
+  request: Parameters<NonNullable<AgentSessionRuntimeFactory['resolveTerminalPresentation']>>[0],
 ): 'appServer' | 'acp' {
   const environment = request.launchEnvironment?.values ?? {};
   const resolved = resolveCanonicalCodexBackendModeFromCompatInput({
@@ -166,7 +166,19 @@ export const createCodexAgentRuntime: AgentRuntimeFactory = () => {
   return {
     sessions: {
       ...controls,
-      supportsTerminalPresentation: (selection) => readCodexBackendMode(selection) === 'appServer',
+      async resolveTerminalPresentation(selection) {
+        const backendMode = readCodexBackendMode(selection);
+        const source = selection.runtimeDescriptorV1;
+        return {
+          kind: backendMode === 'appServer' ? 'provider_attach' : 'none',
+          ...(backendMode === 'appServer' ? { startingMode: 'terminal' as const } : {}),
+          runtimeDescriptorV1: {
+            ...(source?.agentId === 'codex' ? source : {}), v: 1, agentId: 'codex',
+            agent: { ...(source?.agentId === 'codex' ? source.agent : {}), backendMode },
+          },
+          environmentOverlay: { HAPPIER_CODEX_BACKEND_MODE: backendMode },
+        };
+      },
       open: async (request, context) => await openCodexSession(request, context, goalProjection),
       executionRunContextV1: {
         open: async (request, context) => await openCodexExecutionRun(request, context),

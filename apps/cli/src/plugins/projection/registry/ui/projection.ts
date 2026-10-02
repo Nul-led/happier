@@ -276,21 +276,6 @@ function projectTranslations(
         });
     }
 
-    for (const contribution of registry.uiTranslations ?? []) {
-        const pluginId = readPluginId(contribution);
-        if (!pluginId || v2ByPluginId.has(pluginId)) {
-            continue;
-        }
-        const id = `translations:${pluginId}`;
-        addEntry(entriesById, {
-            id,
-            pluginId,
-            contributionKind: 'translations',
-            defaultLocale: contribution.definition.defaultLocale,
-            locales: Object.keys(contribution.definition.locales).sort(),
-            bundles: narrowProjectedTranslationBundles(contribution.definition.locales, requestedLocale),
-        });
-    }
 }
 
 function projectSessionHeaderActions(

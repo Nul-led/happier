@@ -31,7 +31,13 @@ import type { ClaudeProviderEvent } from './providerEvents.js';
 
 const DEFAULT_TEST_FILE_FOLLOW_POLL_INTERVAL_MS = 25;
 type AgentTerminalHostService = NonNullable<AgentSessionHostServices['terminalHost']>;
-type ClaudeTestPluginContext = ClaudeAgentSdkContext & ClaudeUnifiedTerminalContext;
+type ClaudeTestPluginContext = ClaudeAgentSdkContext & ClaudeUnifiedTerminalContext & Readonly<{
+  settings: Readonly<{
+    forScope(scope: Readonly<{ kind: string }>): Readonly<{
+      get(key: string): Promise<unknown>;
+    }>;
+  }>;
+}>;
 type ClaudeTestEventListener = (event: Readonly<{
   id: string;
   payload: unknown;
@@ -94,6 +100,7 @@ export function createTerminalHostFixture(): Readonly<{
       reason: 'zellij_forced',
     } as const)),
     createOrAttachHost: vi.fn(async () => handle),
+    adoptExistingHost: vi.fn(async () => null),
     injectUserPrompt: vi.fn(async (_handle, input): Promise<TerminalInputInjectionResult> => ({
       status: 'injected',
       injectedAt: 123,

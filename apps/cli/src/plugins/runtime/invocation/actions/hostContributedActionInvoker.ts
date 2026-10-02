@@ -73,6 +73,7 @@ export function createHostContributedActionInvoker(params: Readonly<{
             action,
             ...(parsedInput === undefined ? { input: undefined } : { input: parsedInput.data }),
             surface: 'plugin',
+            initiatingActionCaller: caller,
             caller: {
                 kind: 'plugin',
                 pluginId: caller.pluginId,

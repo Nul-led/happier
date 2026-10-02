@@ -7,13 +7,14 @@ import {
   AgentRuntimeJsonValueSchema,
   type AgentSessionRuntimeContext,
 } from '@happier-dev/plugin-sdk/agents/runtime';
-import type {
-  InteractionTransientAuthorQuestionV1,
-  InteractionTransientApprovalResultV1,
-  InteractionTransientQuestionAnswerV1,
-  InteractionTransientQuestionsAuthorRequestV1,
+import {
+  InteractionTransientAuthorRequestV1Schema,
+  type InteractionOptions,
+  type InteractionTransientAuthorQuestionV1,
+  type InteractionTransientApprovalResultV1,
+  type InteractionTransientQuestionAnswerV1,
+  type InteractionTransientQuestionsAuthorRequestV1,
 } from '@happier-dev/plugin-sdk/interactions';
-import { InteractionTransientAuthorRequestV1Schema } from '@happier-dev/protocol';
 
 import type { DisposableCodexAppServerClient } from './client.js';
 import {
@@ -263,8 +264,9 @@ async function askQuestionsRequest(
   ui: InteractionUi,
   request: InteractionTransientQuestionsAuthorRequestV1,
   signal?: AbortSignal,
+  lifetime?: InteractionOptions['lifetime'],
 ): Promise<Readonly<Record<string, InteractionTransientQuestionAnswerV1>> | null> {
-  const result = await ui.askQuestions(request, { signal });
+  const result = await ui.askQuestions(request, { signal, ...(lifetime ? { lifetime } : {}) });
   return result.status === 'answered' ? result.answers : null;
 }
 
@@ -348,7 +350,7 @@ export function registerCodexAppServerInteractionHandlers(params: Readonly<{
     if (handledAsyncQuestionItemIds.has(item.itemId)) return true;
     handledAsyncQuestionItemIds.add(item.itemId);
     void (async () => {
-      const answers = await askQuestionsRequest(ui, request);
+      const answers = await askQuestionsRequest(ui, request, undefined, 'occurrence');
       if (!answers) return;
       const answersByKey: Record<string, readonly string[]> = Object.create(null);
       for (const [key, answer] of Object.entries(answers)) {

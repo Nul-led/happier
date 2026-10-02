@@ -71,7 +71,7 @@ describe('bundled Inspector canonical UI graph', () => {
         expect(inspectorArtifacts[0]).not.toHaveProperty('platform');
         expect(inspectorArtifacts[0]).not.toHaveProperty('repack');
 
-        expect(contributions.uiTranslations?.some((entry) => entry.pluginId === INSPECTOR_PLUGIN_ID)).toBe(false);
+        expect(contributions).not.toHaveProperty('uiTranslations');
 
         const resolverSource = readFileSync(
             new URL('./resolveBuiltInContributions.ts', import.meta.url),

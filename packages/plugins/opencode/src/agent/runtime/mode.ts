@@ -5,6 +5,7 @@ export type OpenCodeBackendMode = 'server' | 'acp';
 export const OPEN_CODE_BACKEND_MODE_ENV_KEY = 'HAPPIER_OPENCODE_BACKEND_MODE';
 
 export type OpenCodeBackendModeInput = Readonly<{
+  configuredBackendMode?: unknown;
   env?: Readonly<Record<string, string | undefined>> | null;
   accountSettings?: Readonly<Record<string, unknown>> | null;
   runtimeDescriptorV1?: unknown;
@@ -17,6 +18,9 @@ function normalizeOpenCodeBackendMode(value: unknown): OpenCodeBackendMode {
 export function resolveOpenCodeBackendMode(input: OpenCodeBackendModeInput): OpenCodeBackendMode {
   const descriptor = readCanonicalOpenCodeAgentRuntimeDescriptorV1(input.runtimeDescriptorV1);
   if (descriptor) return descriptor.backendMode;
+  if (input.configuredBackendMode === 'server' || input.configuredBackendMode === 'acp') {
+    return input.configuredBackendMode;
+  }
   const rawEnvMode =
     typeof input.env?.[OPEN_CODE_BACKEND_MODE_ENV_KEY] === 'string'
       ? input.env[OPEN_CODE_BACKEND_MODE_ENV_KEY]?.trim().toLowerCase()

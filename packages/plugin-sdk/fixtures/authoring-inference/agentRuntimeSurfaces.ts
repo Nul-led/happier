@@ -10,6 +10,13 @@ export function bindNativeModes(context: AgentSessionRuntimeContext, source: Age
   return context.session.services.modes.bind(source);
 }
 
+// Recovery is an optional admitted host operation, never a launch preference flag.
+export async function adoptRetainedTerminal(context: AgentSessionRuntimeContext) {
+  const host = context.session.services.terminalHost;
+  if (!host?.adoptExistingHost) throw new Error('Retained terminal adoption is unavailable');
+  return await host.adoptExistingHost();
+}
+
 type AttachResult = Awaited<ReturnType<AttachSurface['attach']>>;
 type CheckpointRestore = NonNullable<CheckpointSurface['restore']>;
 type CheckpointRestoreResult = Awaited<ReturnType<CheckpointRestore>>;

@@ -1,35 +1,35 @@
 import type { PluginSettingsContribution } from '@happier-dev/plugin-sdk/settings';
 
-export const CLAUDE_SETTING_SOURCES_V2 = ['user', 'project', 'local'] as const;
-export type ClaudeSettingSourceV2 = (typeof CLAUDE_SETTING_SOURCES_V2)[number];
-
-export const CLAUDE_REMOTE_DEBUG_CATEGORIES = ['api', 'mcp', 'hooks', 'file', '1p'] as const;
-export type ClaudeRemoteDebugCategory = (typeof CLAUDE_REMOTE_DEBUG_CATEGORIES)[number];
-
-export const CLAUDE_UNIFIED_TERMINAL_HOSTS = ['auto', 'tmux', 'zellij', 'herdr'] as const;
-export type ClaudeUnifiedTerminalHost = (typeof CLAUDE_UNIFIED_TERMINAL_HOSTS)[number];
-
-export const CLAUDE_UNIFIED_TERMINAL_RESUME_CHOICES = [
-  'ask_every_time',
-  'resume_from_summary',
-  'resume_full_session',
-] as const;
-export type ClaudeUnifiedTerminalResumeChoice =
-  (typeof CLAUDE_UNIFIED_TERMINAL_RESUME_CHOICES)[number];
-export const DEFAULT_CLAUDE_UNIFIED_TERMINAL_RESUME_CHOICE:
-  ClaudeUnifiedTerminalResumeChoice = 'ask_every_time';
-
-export const CLAUDE_UNIFIED_TERMINAL_WORKSPACE_TRUST_POLICIES = [
-  'ask_every_time',
-  'always_trust_happier_workspaces',
-  'always_reject_happier_workspaces',
-] as const;
-export type ClaudeUnifiedTerminalWorkspaceTrustPolicy =
-  (typeof CLAUDE_UNIFIED_TERMINAL_WORKSPACE_TRUST_POLICIES)[number];
-export const DEFAULT_CLAUDE_UNIFIED_TERMINAL_WORKSPACE_TRUST_POLICY:
-  ClaudeUnifiedTerminalWorkspaceTrustPolicy = 'ask_every_time';
-
-export const MAX_CLAUDE_REMOTE_ADVANCED_OPTIONS_JSON_CHARS = 16_384;
+import {
+  CLAUDE_SETTING_SOURCES_V2,
+  CLAUDE_REMOTE_DEBUG_CATEGORIES,
+  CLAUDE_UNIFIED_TERMINAL_HOSTS,
+  CLAUDE_UNIFIED_TERMINAL_RESUME_CHOICES,
+  CLAUDE_UNIFIED_TERMINAL_WORKSPACE_TRUST_POLICIES,
+  DEFAULT_CLAUDE_UNIFIED_TERMINAL_RESUME_CHOICE,
+  DEFAULT_CLAUDE_UNIFIED_TERMINAL_WORKSPACE_TRUST_POLICY,
+  MAX_CLAUDE_REMOTE_ADVANCED_OPTIONS_JSON_CHARS,
+  type ClaudeSettingSourceV2,
+  type ClaudeRemoteDebugCategory,
+  type ClaudeUnifiedTerminalHost,
+  type ClaudeUnifiedTerminalResumeChoice,
+  type ClaudeUnifiedTerminalWorkspaceTrustPolicy,
+} from '@happier-dev/protocol/agents/claude/settings-policy';
+export {
+  CLAUDE_SETTING_SOURCES_V2,
+  CLAUDE_REMOTE_DEBUG_CATEGORIES,
+  CLAUDE_UNIFIED_TERMINAL_HOSTS,
+  CLAUDE_UNIFIED_TERMINAL_RESUME_CHOICES,
+  CLAUDE_UNIFIED_TERMINAL_WORKSPACE_TRUST_POLICIES,
+  DEFAULT_CLAUDE_UNIFIED_TERMINAL_RESUME_CHOICE,
+  DEFAULT_CLAUDE_UNIFIED_TERMINAL_WORKSPACE_TRUST_POLICY,
+  MAX_CLAUDE_REMOTE_ADVANCED_OPTIONS_JSON_CHARS,
+  type ClaudeSettingSourceV2,
+  type ClaudeRemoteDebugCategory,
+  type ClaudeUnifiedTerminalHost,
+  type ClaudeUnifiedTerminalResumeChoice,
+  type ClaudeUnifiedTerminalWorkspaceTrustPolicy,
+} from '@happier-dev/protocol/agents/claude/settings-policy';
 
 const BOOLEAN_ANALYTICS = {
   trackCurrentState: true,

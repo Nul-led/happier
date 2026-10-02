@@ -1,5 +1,5 @@
 import { resolveSocketRpcSessionAuthorization, SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS, type SocketRpcAuthorizationContext } from '@happier-dev/protocol/rpc';
-import { SOCKET_RPC_EVENTS, SessionTransferRoutingV1Schema, type SessionTransferRoutingV1, type SocketRpcRequestPayload } from '@happier-dev/protocol/socketRpc';
+import { SOCKET_RPC_EVENTS, SessionTransferRoutingV1Schema, SocketRpcSessionActionAuthorizationContextSchema, isSessionActionRpcMethodV1, type SessionTransferRoutingV1, type SocketRpcRequestPayload } from '@happier-dev/protocol/socketRpc';
 import { socketRpcCodec, type SocketRpcContent } from './socketRpcCodec.js';
 import { markRpcRequestDisposition, readRpcRequestDisposition } from './rpcDisposition.js';
 import { createSocketRpcAbortError, createSocketRpcRequestId, issueSocketRpcCallWithCancellation, raceSocketIoAckTimeout } from './socketRpcCancellation.js';
@@ -57,6 +57,12 @@ export async function callSocketRpc<R>(params: Readonly<{
   let acknowledged = false;
   try {
     if (params.signal?.aborted) throw createSocketRpcAbortError();
+    const sessionActionAuthorization = params.authorization?.kind === SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_ACTION
+      ? SocketRpcSessionActionAuthorizationContextSchema.parse(params.authorization) : undefined;
+    if (sessionActionAuthorization && (params.target.kind !== 'session'
+      || sessionActionAuthorization.sessionId !== params.target.id || !isSessionActionRpcMethodV1(params.method))) {
+      throw new Error('Session Action authorization does not match the RPC target');
+    }
     const transferRouting = params.transferRouting === undefined ? undefined : SessionTransferRoutingV1Schema.parse(params.transferRouting);
     if (transferRouting && (params.target.kind !== 'session'
       || transferRouting.sessionId !== params.target.id || transferRouting.method !== params.method)) {
@@ -66,11 +72,11 @@ export async function callSocketRpc<R>(params: Readonly<{
     if (params.signal?.aborted) throw createSocketRpcAbortError();
     const requestId = params.requestId ?? (params.signal || params.createExternalActionExecution ? createSocketRpcRequestId() : undefined);
     const method = `${params.target.id}:${params.method}`;
-    const authorization = params.target.kind === 'session'
+    const authorization = sessionActionAuthorization ?? (params.target.kind === 'session'
       ? resolveSocketRpcSessionAuthorization(params.method)
         ? { kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE, sessionId: params.target.id } as const
         : undefined
-      : params.authorization;
+      : params.authorization);
     const externalActionExecution = params.createExternalActionExecution && requestId ? params.createExternalActionExecution({ method, requestId, params: encoded }) : undefined;
     const payload: SocketRpcRequestPayload = {
       method, params: encoded,

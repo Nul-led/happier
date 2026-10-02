@@ -906,7 +906,6 @@ function createClient(
         await executeRequest('transcript.unfollow', input, { target }, true);
       },
       sessionId: id,
-      notifications: { endpoint: endpoint.origin, token: credential.bearer },
       closeSignal: lifecycle.controller.signal,
       registerCloseCleanup: lifecycle.registerCloseCleanup,
       options,

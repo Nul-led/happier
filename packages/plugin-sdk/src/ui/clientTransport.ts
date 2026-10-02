@@ -27,10 +27,14 @@ import {
     PluginUiSetComposerDecorationsRequestV1Schema,
     PluginUiWatchComposerRequestV1Schema,
     PluginUiReadSessionRequestV1Schema,
+    PluginUiReadStoredImageRequestV1Schema,
+    PluginUiReadStoredImageResultV1Schema,
     PluginUiReadSessionResultV1Schema,
     PluginUiRespondToSessionPermissionRequestV1Schema,
     PluginUiRespondToSessionPermissionResultV1Schema,
     PluginUiWatchSessionRequestV1Schema,
+    PluginLiveStreamReferenceV1Schema,
+    PluginUiLiveStreamViewingV1Schema,
     PluginUiExecuteActionRequestV1Schema,
     PluginUiHostApiSurfaceContextV1Schema,
     PluginUiHostApiRenderContextSnapshotV1Schema,
@@ -209,7 +213,7 @@ type EstablishedSubscription = Readonly<{
 }>;
 type SubscriptionHostMethod = Extract<
     CanonicalHostMethod,
-    'watchContext' | 'watchResource' | 'watchComposer' | 'acquireComposerInputLock' | 'watchSession'
+    'watchContext' | 'watchResource' | 'watchComposer' | 'acquireComposerInputLock' | 'watchSession' | 'watchLiveStream'
 >;
 
 /**
@@ -1029,6 +1033,13 @@ export async function createPluginUiHostApiClientFromTransport(
             }
             return readSessionReadResult(await request('readSession', payload.data, requestOptions?.signal));
         },
+        readStoredImage: async (image, requestOptions) => {
+            const payload = PluginUiReadStoredImageRequestV1Schema.safeParse({ image });
+            if (!payload.success) throw new PluginUiHostApiClientError('invalid_payload', 'Stored image reference is invalid.');
+            const result = PluginUiReadStoredImageResultV1Schema.safeParse(await request('readStoredImage', payload.data, requestOptions?.signal));
+            if (!result.success) throw new PluginUiHostApiClientError('invalid_payload', 'Stored image response is invalid.');
+            return result.data;
+        },
         watchSession: async (sessionId, listener, requestOptions) => {
             const payload = PluginUiWatchSessionRequestV1Schema.safeParse({ sessionId });
             if (!payload.success) {
@@ -1040,6 +1051,18 @@ export async function createPluginUiHostApiClientFromTransport(
                 (value, subscriptionId) => listener(readResourceSubscriptionEvent(value, subscriptionId)),
                 requestOptions?.signal,
             );
+            return Object.freeze({ dispose: subscription.dispose });
+        },
+        watchLiveStream: async (reference, listener, requestOptions) => {
+            const parsed = PluginLiveStreamReferenceV1Schema.safeParse(reference);
+            if (!parsed.success) throw new PluginUiHostApiClientError('invalid_payload', 'Live stream reference is invalid.');
+            const subscription = await subscribe('watchLiveStream', { reference: parsed.data },
+                (value, subscriptionId) => listener(readResourceSubscriptionEvent(value, subscriptionId)), requestOptions?.signal);
+            const admitted = PluginUiLiveStreamViewingV1Schema.safeParse(subscription.establishment);
+            if (!admitted.success || admitted.data.subscriptionId !== subscription.subscriptionId) {
+                subscription.dispose();
+                throw new PluginUiHostApiClientError('invalid_payload', 'Live stream admission is invalid.');
+            }
             return Object.freeze({ dispose: subscription.dispose });
         },
         respondToSessionPermission: async (responseRequest, requestOptions) => {

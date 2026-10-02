@@ -328,14 +328,12 @@ function sanitizeFailure(error: unknown, authority: VoiceAccountOperationAuthori
     if (!authority.isCurrent()) return retired();
     if (authority.isCancelled()) return cancelled();
     if (!authority.isCredentialCurrent()) return credentialUnavailable();
-    if (
-        error instanceof Error
-        && (error as Error & { code?: unknown }).code === 'credential_unavailable'
-    ) {
-        return new PluginError({
-            code: 'plugin_voice_credential_unavailable',
-            message: 'The required Voice account credential is unavailable',
-        });
+    const code = error instanceof Error ? (error as Error & { code?: unknown }).code : null;
+    if (code === 'credential_unavailable'
+        || code === 'plugin_voice_credential_unavailable'
+        || code === 'plugin_host_access_resource_not_selected'
+        || code === 'plugin_connected_account_binding_out_of_scope') {
+        return credentialUnavailable();
     }
     return new PluginError({
         code: 'plugin_fetch_voice_account_operation_failed',

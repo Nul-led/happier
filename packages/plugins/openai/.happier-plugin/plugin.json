@@ -6,6 +6,7 @@
     "backgroundServices": [],
     "browserActions": [],
     "browserTargets": [],
+    "captureSources": [],
     "commands": [],
     "composerAttachments": [],
     "composerControls": [],
@@ -58,6 +59,7 @@
     "providers": [],
     "requestInterceptors": [],
     "resources": [],
+    "roles": [],
     "scmBackends": [],
     "scmHostingProviders": [],
     "searchProviders": [],
@@ -386,7 +388,8 @@
         "title": "OpenAI Realtime Voice"
       }
     ],
-    "webhooks": []
+    "webhooks": [],
+    "workflows": []
   },
   "displayName": "OpenAI Realtime Voice",
   "engines": {

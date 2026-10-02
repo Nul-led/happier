@@ -2,6 +2,9 @@ export { buildAgentAccountUsageRecordId } from './agentRuntime/index.js';
 export { createFiniteExecutionRunHostRuntime } from './agentRuntime/index.js';
 export { createExecutionRunHostBackendFromConversationRuntime } from './agentRuntime/index.js';
 export type {
+  AgentTranscriptIdentityCodec,
+  AgentTranscriptSourceIdentityRequest,
+  AgentTranscriptSourceIdentityResult,
   AgentExecutionRunConversationAdapterOptionsV1,
   AgentExecutionRunConversationEventV1,
   AgentExecutionRunConversationRuntimeV1,

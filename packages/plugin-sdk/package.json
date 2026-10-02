@@ -112,6 +112,10 @@
       "types": "./dist/managed-services/index.d.ts",
       "default": "./dist/managed-services/index.js"
     },
+    "./managed-services/native": {
+      "types": "./dist/managed-services/native/index.d.ts",
+      "default": "./dist/managed-services/native/index.js"
+    },
     "./manifest": {
       "types": "./dist/manifest/index.d.ts",
       "default": "./dist/manifest/index.js"
@@ -439,12 +443,14 @@
   },
   "bundledDependencies": [
     "@happier-dev/agents",
+    "@happier-dev/brand",
     "@happier-dev/cli-common",
     "@happier-dev/protocol",
     "@happier-dev/release-runtime"
   ],
   "dependencies": {
     "@happier-dev/agents": "0.0.0",
+    "@happier-dev/brand": "0.0.0",
     "@happier-dev/cli-common": "0.0.0",
     "@happier-dev/protocol": "0.0.0",
     "@happier-dev/release-runtime": "0.0.0",
