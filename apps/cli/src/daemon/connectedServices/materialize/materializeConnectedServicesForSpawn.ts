@@ -204,6 +204,7 @@ async function materializeQualifiedConnectedAccountLaunchForSpawn(params: Readon
   agentId: CatalogAgentId;
   materializationKey: string;
   rootDir: string;
+  previousMaterializedRoot?: string | null;
   sessionDirectory?: string | null;
   processEnv?: NodeJS.ProcessEnv;
   accountSettings?: AccountSettings | Readonly<Record<string, unknown>> | null;
@@ -357,6 +358,7 @@ async function materializeQualifiedConnectedAccountLaunchForSpawn(params: Readon
           targetMaterializedRoot: params.rootDir,
           targetMaterializedEnv: env,
         },
+        previousMaterializedRoot: params.previousMaterializedRoot ?? null,
         configMode: policy.configMode,
         requestedStateMode: policy.stateMode,
         effectiveStateMode: policy.stateMode,
@@ -542,6 +544,7 @@ async function materializeConnectedServicesForSpawnUnlocked(params: Readonly<{
     ? async () => await materializeQualifiedConnectedAccountLaunchForSpawn({
         ...params,
         rootDir: attemptRoot,
+        previousMaterializedRoot: rootDir,
         snapshot: qualifiedPurposeBindingSnapshot,
         recordsByServiceId: params.recordsByServiceId,
         ...(exactPurposeBindingSubjectId
@@ -557,6 +560,7 @@ async function materializeConnectedServicesForSpawnUnlocked(params: Readonly<{
       ? async () => await materializeQualifiedConnectedAccountLaunchForSpawn({
           ...params,
           rootDir: attemptRoot,
+          previousMaterializedRoot: rootDir,
           snapshot: qualifiedPurposeBindingSnapshot,
           recordsByServiceId: params.recordsByServiceId,
           requestAuthRequired: false,

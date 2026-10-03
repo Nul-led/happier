@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { lstat, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -188,6 +188,49 @@ describe('materializeConnectedServicesForSpawn', () => {
     await result!.cleanupOnExit!();
     expect(existsSync(materializedRoot)).toBe(false);
     await expect(result!.cleanupOnExit!()).resolves.toBeUndefined();
+  });
+
+  it('retains Codex profile hook preferences across atomic rematerialization without linking hook definitions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-codex-hooks-rematerialize-'));
+    try {
+      const sourceCodexHome = join(root, 'native');
+      await mkdir(sourceCodexHome, { recursive: true });
+      const hooks = '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo fixture"}]}]}}\n';
+      await writeFile(join(sourceCodexHome, 'hooks.json'), hooks);
+      await writeFile(join(sourceCodexHome, 'config.toml'), 'model_context_window = 9223372036854775807\n');
+      const record = buildConnectedServiceCredentialRecord({
+        now: 10, serviceId: 'openai-codex', profileId: 'work', kind: 'oauth', expiresAt: null,
+        oauth: { accessToken: 'fixture-access', refreshToken: 'fixture-refresh', idToken: 'fixture-id',
+          scope: null, tokenType: null, providerAccountId: 'fixture-account', providerEmail: null },
+      });
+      const params: MaterializeParams = {
+        agentId: 'codex', materializationKey: 'hook-profile', activeServerDir: join(root, 'server'), baseDir: join(root, 'profiles'),
+        connectedAccountMaterializationAuthority: LEGACY_UNFENCED_ONE_SHOT_MATERIALIZATION_AUTHORITY,
+        recordsByServiceId: new Map([['openai-codex', record]]),
+        accountSettings: { connectedServicesProviderStateSharingSettingsV1: {
+          v: 1, defaults: { configMode: 'linked', stateMode: 'isolated' }, byAgentId: {}, acknowledgedRisksByAgentId: {},
+        } },
+        processEnv: { CODEX_HOME: sourceCodexHome, HOME: root },
+      };
+      const first = await materializeConnectedServicesForSpawn(params);
+      expect(first).not.toBeNull();
+      const home = first!.env.CODEX_HOME!;
+      const hookId = `${join(home, 'hooks.json')}:stop:0:0`;
+      expect((await lstat(join(home, 'hooks.json'))).isSymbolicLink()).toBe(false);
+      await writeFile(join(home, 'config.toml'),
+        (await readFile(join(home, 'config.toml'), 'utf8')) + `\n[hooks.state.'${hookId}']\nenabled = false\ntrusted_hash = 'sha256:reviewed'\n`);
+      await writeFile(join(sourceCodexHome, 'hooks.json'), '{"hooks":{"Stop":[]}}\n');
+      await expect(readFile(join(home, 'hooks.json'), 'utf8')).resolves.toBe(hooks);
+      const second = await materializeConnectedServicesForSpawn(params);
+      expect(second!.env.CODEX_HOME).toBe(home);
+      const retained = await readFile(join(home, 'config.toml'), 'utf8');
+      expect(retained).toContain(hookId);
+      expect(retained).toContain('enabled = false');
+      expect(retained).toContain('sha256:reviewed');
+      expect(retained).toContain('9223372036854775807');
+      expect(retained).not.toContain('.stage-');
+      await expect(readFile(join(home, 'hooks.json'), 'utf8')).resolves.toBe('{"hooks":{"Stop":[]}}\n');
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it('removes managed Codex home shares when settings are isolated', async () => {

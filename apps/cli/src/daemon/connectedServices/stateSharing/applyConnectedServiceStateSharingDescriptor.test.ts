@@ -1,6 +1,7 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { inspect } from 'node:util';
 
 import type { ConnectedServiceStateSharingDescriptor } from '@/agent/catalog/types';
 import { describe, expect, it } from 'vitest';
@@ -36,6 +37,132 @@ function createDescriptor(params: Readonly<{
 }
 
 describe('applyConnectedServiceStateSharingDescriptor', () => {
+  it('reports malformed native TOML without exposing config content or replacing the promoted home', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-invalid-profile-config-'));
+    const sourceRoot = join(root, 'native');
+    const previousMaterializedRoot = join(root, 'promoted');
+    const targetRoot = join(root, 'stage');
+    try {
+      await Promise.all([sourceRoot, previousMaterializedRoot].map((home) => mkdir(home, { recursive: true })));
+      await writeFile(join(sourceRoot, 'config.toml'), 'model = "native"\n');
+      await writeFile(join(previousMaterializedRoot, 'config.toml'), 'model = "profile"\n');
+      await writeFile(join(previousMaterializedRoot, 'hooks.json'), '{"hooks":{"Stop":[]}}\n');
+      const invalidPath = join(sourceRoot, 'config.toml');
+      await writeFile(invalidPath, 'fixture_secret = "synthetic-sensitive-config"\n[broken\n');
+      const priorConfig = await readFile(join(previousMaterializedRoot, 'config.toml'), 'utf8');
+      const error = await applyConnectedServiceStateSharingDescriptor({
+        descriptor: {
+          ...createDescriptor({ configEntries: [{ path: 'config.toml', mode: 'force_copied' }, { path: 'hooks.json', mode: 'force_copied' }] }),
+          transforms: [{ entry: 'config.toml', kind: 'rewrite_toml', spec: {
+            setStringValues: { cli_auth_credentials_store: 'file' },
+            preserveTableEntries: [{ tablePath: ['hooks', 'state'], keyPrefixEntry: 'hooks.json', keyPrefixSuffix: ':' }],
+          } }],
+        },
+        nativeSourceContext: { sourceRoot, sourceEnv: {} },
+        target: { targetMaterializedRoot: targetRoot, targetMaterializedEnv: {} },
+        previousMaterializedRoot,
+        configMode: 'linked', requestedStateMode: 'isolated', effectiveStateMode: 'isolated', cwd: root,
+      }).then(() => null, (failure: unknown) => failure);
+      expect(error).toBeInstanceOf(Error);
+      const reported = inspect(error, { depth: 5 });
+      expect(reported).toContain(invalidPath);
+      expect(reported).toMatch(/line \d+, column \d+/);
+      expect(reported).toContain('TomlError');
+      expect(reported).not.toContain('synthetic-sensitive-config');
+      await expect(readFile(join(previousMaterializedRoot, 'config.toml'), 'utf8')).resolves.toBe(priorConfig);
+      await expect(readFile(join(previousMaterializedRoot, 'hooks.json'), 'utf8')).resolves.toBe('{"hooks":{"Stop":[]}}\n');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([true, false])('rebuilds malformed profile TOML with a safe diagnostic (native config: %s)', async (hasNativeConfig) => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-profile-config-recovery-'));
+    const sourceRoot = join(root, 'native');
+    const previousMaterializedRoot = join(root, 'promoted');
+    const targetRoot = join(root, 'stage');
+    try {
+      await Promise.all([sourceRoot, previousMaterializedRoot].map(home => mkdir(home, { recursive: true })));
+      if (hasNativeConfig) await writeFile(join(sourceRoot, 'config.toml'), 'model = "native"\n');
+      await writeFile(join(previousMaterializedRoot, 'config.toml'), 'fixture_secret = "synthetic-sensitive-config"\n[broken\n');
+      const result = await applyConnectedServiceStateSharingDescriptor({
+        descriptor: {
+          ...createDescriptor({ configEntries: [{ path: 'config.toml', mode: 'force_copied' }, { path: 'hooks.json', mode: 'force_copied' }] }),
+          transforms: [{ entry: 'config.toml', kind: 'rewrite_toml', spec: {
+            setStringValues: { cli_auth_credentials_store: 'file' },
+            preserveTableEntries: [{ tablePath: ['hooks', 'state'], keyPrefixEntry: 'hooks.json', keyPrefixSuffix: ':' }],
+          } }],
+        },
+        nativeSourceContext: { sourceRoot, sourceEnv: {} },
+        target: { targetMaterializedRoot: targetRoot, targetMaterializedEnv: {} },
+        previousMaterializedRoot,
+        configMode: 'copied', requestedStateMode: 'isolated', effectiveStateMode: 'isolated', cwd: root,
+      });
+      const config = await readFile(join(targetRoot, 'config.toml'), 'utf8');
+      if (hasNativeConfig) expect(config).toContain('model = "native"');
+      else expect(config).not.toContain('model =');
+      expect(config).toContain('cli_auth_credentials_store = "file"');
+      expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'profile_config_invalid', severity: 'warning' }));
+      expect(inspect(result)).not.toContain('synthetic-sensitive-config');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    { configMode: 'linked', sourceConfig: true },
+    { configMode: 'copied', sourceConfig: true },
+    { configMode: 'linked', sourceConfig: false },
+  ] as const)('keeps copied hooks and profile preferences in staged $configMode config (source config: $sourceConfig)', async ({ configMode, sourceConfig }) => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-codex-profile-hooks-'));
+    const sourceRoot = join(root, 'native');
+    const previousMaterializedRoot = join(root, 'promoted');
+    const targetRoot = join(root, 'stage');
+    try {
+      await Promise.all([sourceRoot, previousMaterializedRoot, targetRoot].map((home) => mkdir(home, { recursive: true })));
+      const sourceHooks = join(sourceRoot, 'hooks.json');
+      const targetHooks = join(targetRoot, 'hooks.json');
+      await writeFile(sourceHooks, '{"hooks":{"Stop":[]}}\n');
+      await symlink(sourceHooks, targetHooks, 'file');
+      const hookId = `${join(previousMaterializedRoot, 'hooks.json')}:stop:0:0`;
+      const unrelatedId = `${join(sourceRoot, 'hooks.json')}:stop:0:0`;
+      if (sourceConfig) await writeFile(join(sourceRoot, 'config.toml'), 'model = "source"\nmodel_context_window = 9223372036854775807\n');
+      await writeFile(join(previousMaterializedRoot, 'config.toml'),
+        `model = 'profile'\n[features]\nexperimental = true\n[hooks.state.'${hookId}'] # native preferences\nenabled = false\ntrusted_hash = 'sha256:reviewed'\n` +
+        `[hooks.state.'${hookId.replace(':stop:0:0', ':session_start:0:0')}']\nenabled = false\n` +
+        `[hooks.state.'${unrelatedId}']\ntrusted_hash = 'sha256:foreign'\n`);
+      const input = {
+        descriptor: {
+          ...createDescriptor({ configEntries: [
+            { path: 'config.toml', mode: 'force_copied' }, { path: 'hooks.json', mode: 'force_copied' },
+          ] }),
+          transforms: [{ entry: 'config.toml', kind: 'rewrite_toml' as const, spec: {
+            setStringValues: { cli_auth_credentials_store: 'file' },
+            preserveTableEntries: [{ tablePath: ['hooks', 'state'], keyPrefixEntry: 'hooks.json', keyPrefixSuffix: ':' }],
+          } }],
+        },
+        nativeSourceContext: { sourceRoot, sourceEnv: {} },
+        target: { targetMaterializedRoot: targetRoot, targetMaterializedEnv: {} },
+        previousMaterializedRoot,
+        configMode, requestedStateMode: 'isolated' as const, effectiveStateMode: 'isolated' as const, cwd: root,
+      };
+      const result = await applyConnectedServiceStateSharingDescriptor(input);
+      expect((await lstat(targetHooks)).isSymbolicLink()).toBe(false);
+      await writeFile(sourceHooks, '{"hooks":{"SessionStart":[]}}\n');
+      await expect(readFile(targetHooks, 'utf8')).resolves.toBe('{"hooks":{"Stop":[]}}\n');
+      const config = await readFile(join(targetRoot, 'config.toml'), 'utf8');
+      expect(config.match(/enabled = false/g)).toHaveLength(2);
+      if (sourceConfig) expect(config).toContain('9223372036854775807');
+      expect(config).toContain('sha256:reviewed');
+      expect(config).toContain(hookId);
+      expect(config).not.toContain(unrelatedId);
+      if (sourceConfig) expect(config).toContain('model = "source"');
+      else {
+        expect(config).not.toContain('model =');
+        expect(config).not.toContain('experimental');
+      }
+      expect(config).toContain('cli_auth_credentials_store = "file"');
+      expect(result.manifest.configEntries).toContain('config.toml');
+      expect((await lstat(join(targetRoot, 'config.toml'))).mode & 0o777).toBe(0o600);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('resolves native Agent homes from the declared environment key or its home-relative default', () => {
     expect(resolveConnectedServiceNativeHomeRoot({
       nativeHome: {
