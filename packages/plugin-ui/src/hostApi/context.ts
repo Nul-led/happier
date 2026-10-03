@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { PluginUiHostApi } from '@happier-dev/plugin-sdk/ui';
+import { HappierUiAnimationActivityProviderInternal } from '../environment/context.js';
 
 import {
   createPluginUiHostApiResourceClient,
@@ -56,6 +57,8 @@ export type PluginHostApiProviderInternalProps = PluginHostApiProviderProps & Re
   /** Host-validated Composer mount identity; never author-supplied. */
   composerRef?: ComposerRefV1 | null;
   surfaceActivity?: Readonly<{ active: boolean }>;
+  /** Host visibility narrows presentation only, never Resource activity. */
+  presentationActive?: boolean;
   /** Host-owned Account+plugin+generation scope; absent on unsupported renderers. */
   ephemeralSharedScope?: PluginUiEphemeralSharedScope | null;
 }>;
@@ -84,6 +87,9 @@ export function PluginHostApiProvider(props: PluginHostApiProviderProps) {
       ...(privateProps.surfaceActivity === undefined
         ? {}
         : { surfaceActivity: privateProps.surfaceActivity }),
+      ...(privateProps.presentationActive === undefined
+        ? {}
+        : { presentationActive: privateProps.presentationActive }),
       ...(privateProps.ephemeralSharedScope === undefined
         ? {}
         : { ephemeralSharedScope: privateProps.ephemeralSharedScope }),
@@ -100,6 +106,7 @@ export function PluginHostApiProviderInternal({
   mountedPluginId,
   composerRef = null,
   surfaceActivity,
+  presentationActive = true,
   ephemeralSharedScope = null,
   children,
 }: PluginHostApiProviderInternalProps) {
@@ -124,9 +131,13 @@ export function PluginHostApiProviderInternal({
       surfaceActive: surfaceActivity?.active,
       ephemeralSharedScope,
     }),
-    [hostApi, resourceStore, composerRef, surfaceActivity, surfaceActivity?.active, ephemeralSharedScope],
+    [hostApi, resourceStore, composerRef, surfaceActivity?.active, ephemeralSharedScope],
   );
-  return createElement(PluginHostApiContext.Provider, { value }, children);
+  return createElement(PluginHostApiContext.Provider, { value },
+    createElement(HappierUiAnimationActivityProviderInternal, {
+      active: value.surfaceActive && presentationActive,
+    }, children),
+  );
 }
 
 export function usePluginHostApi(): PluginUiHostApi {

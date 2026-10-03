@@ -1139,6 +1139,7 @@ Declaration: `dist/presentation/index.d.ts`
 - value `HAPPIER_FIELD_TEXT_METRICS` from `dist/presentation/index.d.ts`
 - value `HAPPIER_FRESHNESS_LINE_METRICS` from `dist/presentation/index.d.ts`
 - value `HAPPIER_ICON_BUTTON_SIZE` from `dist/presentation/index.d.ts`
+- value `DEFAULT_HAPPIER_SPINNER_STYLE_ID` from `dist/presentation/index.d.ts`
 - value `HAPPIER_ICON_NAMES` from `dist/presentation/index.d.ts`
 - value `HAPPIER_INSTANT_AGENT_CURSOR_MOTION` from `dist/presentation/index.d.ts`
 - value `HAPPIER_INSTANT_DISCLOSURE_MOTION` from `dist/presentation/index.d.ts`
@@ -1155,6 +1156,7 @@ Declaration: `dist/presentation/index.d.ts`
 - value `HAPPIER_STATE_LINE_METRICS` from `dist/presentation/index.d.ts`
 - value `HAPPIER_STATE_SIZE_METRICS` from `dist/presentation/index.d.ts`
 - value `HAPPIER_SWITCH_METRICS` from `dist/presentation/index.d.ts`
+- value `HAPPIER_SPINNER_STYLE_IDS` from `dist/presentation/index.d.ts`
 - value `HAPPIER_TONE_COLOR_TOKEN` from `dist/presentation/index.d.ts`
 - value `HAPPIER_WIDGET_FRAME_METRICS` from `dist/presentation/index.d.ts`
 - value `HAPPIER_WIDGET_FRAME_STYLES` from `dist/presentation/index.d.ts`
@@ -1234,6 +1236,9 @@ Declaration: `dist/presentation/index.d.ts`
 - type `HappierDisclosureMotionDriver` from `dist/presentation/index.d.ts`
 - type `HappierDisclosureProps` from `dist/presentation/index.d.ts`
 - value `HappierDivider` from `dist/presentation/index.d.ts`
+- value `HappierDotSpinner` from `dist/presentation/index.d.ts`
+- type `HappierDotSpinnerModel` from `dist/presentation/index.d.ts`
+- type `HappierDotSpinnerMotion` from `dist/presentation/index.d.ts`
 - value `HappierField` from `dist/presentation/index.d.ts`
 - value `HappierFieldBoxChevron` from `dist/presentation/index.d.ts`
 - type `HappierFieldBoxColors` from `dist/presentation/index.d.ts`
@@ -1404,7 +1409,12 @@ Declaration: `dist/presentation/index.d.ts`
 - value `HappierSkeletonRows` from `dist/presentation/index.d.ts`
 - type `HappierSkeletonRowsProps` from `dist/presentation/index.d.ts`
 - value `HappierSpinner` from `dist/presentation/index.d.ts`
+- type `HappierSpinnerDotBoxStyle` from `dist/presentation/index.d.ts`
+- value `HappierSpinnerHost` from `dist/presentation/index.d.ts`
+- type `HappierSpinnerPresentation` from `dist/presentation/index.d.ts`
+- type `HappierSpinnerPresentationInput` from `dist/presentation/index.d.ts`
 - type `HappierSpinnerProps` from `dist/presentation/index.d.ts`
+- type `HappierSpinnerStyleId` from `dist/presentation/index.d.ts`
 - value `HappierStack` from `dist/presentation/index.d.ts`
 - type `HappierStackProps` from `dist/presentation/index.d.ts`
 - value `HappierStateDetails` from `dist/presentation/index.d.ts`
@@ -1514,10 +1524,12 @@ Declaration: `dist/presentation/index.d.ts`
 - value `isHappierFocusVisible` from `dist/presentation/index.d.ts`
 - value `isHappierIconName` from `dist/presentation/index.d.ts`
 - value `isHappierPageRowNarrow` from `dist/presentation/index.d.ts`
+- value `isHappierSpinnerStyleId` from `dist/presentation/index.d.ts`
 - value `isHappierTabSelected` from `dist/presentation/index.d.ts`
 - value `isHappierWidgetFrameSourceShown` from `dist/presentation/index.d.ts`
 - value `matchesHappierMenuQuery` from `dist/presentation/index.d.ts`
 - value `normalizeHappierCodeLanguage` from `dist/presentation/index.d.ts`
+- value `normalizeHappierSpinnerStyleId` from `dist/presentation/index.d.ts`
 - value `parseHappierListMultiSelectionRowSnapshot` from `dist/presentation/index.d.ts`
 - value `patchHappierActionInputPath` from `dist/presentation/index.d.ts`
 - value `planHappierCollectionTransitionOffsets` from `dist/presentation/index.d.ts`
@@ -1580,6 +1592,7 @@ Declaration: `dist/presentation/index.d.ts`
 - value `resolveHappierWorkStatusWordColor` from `dist/presentation/index.d.ts`
 - value `resolveHappierWorkTextStep` from `dist/presentation/index.d.ts`
 - value `resolveHappierWorkTheme` from `dist/presentation/index.d.ts`
+- value `resolveHappierSpinnerPresentation` from `dist/presentation/index.d.ts`
 - value `scaleTextStyleMetrics` from `dist/presentation/index.d.ts`
 - value `toHappierListMultiSelectionSnapshot` from `dist/presentation/index.d.ts`
 - value `useHappierCodeBlockBehavior` from `dist/presentation/index.d.ts`
@@ -1594,6 +1607,7 @@ Declaration: `dist/presentation/index.d.ts`
 - value `useHappierMenuInteraction` from `dist/presentation/index.d.ts`
 - value `useHappierPageChrome` from `dist/presentation/index.d.ts`
 - value `useHappierPageSection` from `dist/presentation/index.d.ts`
+- value `useHappierSpinnerKeyframes` from `dist/presentation/index.d.ts`
 - value `useHappierTabPanelActivity` from `dist/presentation/index.d.ts`
 - value `useHappierTextPresentation` from `dist/presentation/index.d.ts`
 - value `withHappierPageSectionDividers` from `dist/presentation/index.d.ts`

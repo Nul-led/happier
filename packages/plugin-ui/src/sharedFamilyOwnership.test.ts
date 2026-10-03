@@ -271,7 +271,7 @@ const GRADUATED_FAMILIES: readonly GraduatedFamily[] = [
     sharedSymbol: 'HappierSpinner',
     pluginOwner: { module: 'components/Spinner.tsx', symbol: 'Spinner' },
     coreConsumers: ['components/ui/feedback/ActivitySpinner.tsx'],
-    corePresentationMechanism: { module: 'presentation/feedback/Spinner.tsx', symbol: 'resolveHappierWebSpinnerPresentation' },
+    corePresentationMechanism: { module: 'presentation/feedback/Spinner.tsx', symbol: 'resolveHappierSpinnerPresentation' },
     devMountSymbols: ['Spinner as PluginSpinner'],
     declarative: { kind: 'not-applicable', reason: 'V2 has status, not a standalone spinner node.' },
   },

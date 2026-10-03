@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { act, create } from 'react-test-renderer';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
     PluginUiCollectionQueryInput,
     PluginUiCollectionQueryPager,
@@ -13,6 +13,30 @@ import {
     projectHappierUiEnvironment,
 } from '@happier-dev/plugin-ui/environment';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+
+const hostPresentation = vi.hoisted(() => ({
+    appState: 'active',
+    listeners: new Set<(state: string) => void>(),
+}));
+vi.mock('react-native', async () => {
+    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+    return createReactNativeWebMock({
+        Platform: { OS: 'web' },
+        AppState: {
+            get currentState() { return hostPresentation.appState; },
+            addEventListener: (_event: string, listener: (state: string) => void) => {
+                hostPresentation.listeners.add(listener);
+                return { remove: () => hostPresentation.listeners.delete(listener) };
+            },
+        },
+    });
+});
+afterEach(() => {
+    act(() => {
+        hostPresentation.appState = 'active';
+        for (const listener of hostPresentation.listeners) listener(hostPresentation.appState);
+    });
+});
 
 const {
     createActivePluginCollectionUiQueryPager,
@@ -633,6 +657,7 @@ describe('DeclarativeCollectionList', () => {
         const dispatchAction = vi.fn(async () => await pendingAction);
         const screen = await renderScreen(
             <DeclarativePluginSurface
+                environment={collectionPresentationEnvironment}
                 pluginId="acme.tasks"
                 model={{
                     visible: true,
@@ -694,6 +719,20 @@ describe('DeclarativeCollectionList', () => {
             revision: 1,
         });
         expect(row(targetRowId).props).toMatchObject({ disabled: true, busy: true });
+        const spinnerStrip = () => screen.find((candidate) => candidate.type === 'span'
+            && typeof candidate.props['data-happier-activity-spinner'] === 'string');
+        expect(spinnerStrip().props.style.animationName).toBe('happierActivitySpinnerFilmstrip');
+        await act(async () => {
+            hostPresentation.appState = 'background';
+            for (const listener of hostPresentation.listeners) listener(hostPresentation.appState);
+        });
+        expect(spinnerStrip().props.style.animationName).toBeUndefined();
+        expect(row(targetRowId).props).toMatchObject({ disabled: true, busy: true });
+        await act(async () => {
+            hostPresentation.appState = 'active';
+            for (const listener of hostPresentation.listeners) listener(hostPresentation.appState);
+        });
+        expect(spinnerStrip().props.style.animationName).toBe('happierActivitySpinnerFilmstrip');
         expect(rows.filter(({ context }) => (
             row(context.rowId).props.onPress !== initialOnPressByRowId.get(context.rowId)
         )).map(({ context }) => context.rowId)).toEqual([targetRowId]);

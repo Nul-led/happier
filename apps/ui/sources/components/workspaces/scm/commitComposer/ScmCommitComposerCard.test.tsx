@@ -2,6 +2,10 @@ import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
 
+// Loaded at the assertion, not at the top: an eager import would evaluate the spinner's module
+// graph before this file's mocks and per-test setup have run.
+const loadActivitySpinner = async () => (await import('@/components/ui/feedback/ActivitySpinner')).ActivitySpinner;
+
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 vi.mock('@expo/vector-icons', () => ({
@@ -127,7 +131,7 @@ describe('ScmCommitComposerCard', () => {
             />
         )).tree;
 
-        expect(screen.findAllByType('ActivityIndicator' as never)).toHaveLength(1);
+        expect(screen.findAllByType(await loadActivitySpinner())).toHaveLength(1);
         expect(screen.findAllByProps({ children: 'Refreshing repository status...' })).toHaveLength(0);
     });
 

@@ -6,6 +6,7 @@ import {
     UiSurfaceCapabilityRequestV1Schema,
     UiSurfaceExecutableApprovalKeyV1Schema,
 } from '@happier-dev/protocol/plugins/ui';
+import { DEFAULT_HAPPIER_SPINNER_STYLE_ID, HAPPIER_SPINNER_STYLE_IDS } from '@happier-dev/plugin-ui/presentation';
 import { z } from 'zod';
 import { ACTIVITY_SURFACE_LOCAL_SETTING_DEFINITIONS } from './localSettingDefinitions.activitySurfaces';
 import { LAYOUT_LOCAL_SETTING_DEFINITIONS } from './localSettingDefinitions.layout';
@@ -131,6 +132,16 @@ export const LOCAL_SETTING_DEFINITIONS = defineSettingDefinitions({
         schema: z.enum(['light', 'dark', 'adaptive']),
         default: 'adaptive',
         description: 'Theme preference: light, dark, or adaptive (follows system)',
+        storageScope: 'local',
+        analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'device_user' },
+    },
+    loadingIndicatorStyle: {
+        // `.catch` matters: `localSettingsParse` resets EVERY local setting when one field fails to
+        // parse, so a style id written by a newer build (or removed later) must degrade to the
+        // default rather than wipe the user's other preferences.
+        schema: z.enum(HAPPIER_SPINNER_STYLE_IDS).catch(DEFAULT_HAPPIER_SPINNER_STYLE_ID),
+        default: DEFAULT_HAPPIER_SPINNER_STYLE_ID,
+        description: 'Which loading indicator spinners draw: one of the dot H styles, or the classic ring',
         storageScope: 'local',
         analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'device_user' },
     },

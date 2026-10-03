@@ -24,7 +24,6 @@ import {
     type HappierUiAccessibility,
     type HappierUiEnvironment,
 } from '@happier-dev/plugin-ui/environment';
-
 import {
     ActionIdSchema,
     buildQualifiedPluginContributionKey,
@@ -58,6 +57,7 @@ import {
 } from '@/components/plugins/shared/declarativeNodes';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
+import { useHostActivelyViewed } from '@/utils/runtime/useHostActivelyViewed';
 import {
     type ScopedPluginSettingsDaemonTarget,
     type ScopedPluginSettingsField,
@@ -111,6 +111,11 @@ import {
     type AdmittedDeclarativeSetting,
 } from './declarativeStaticModel';
 import { motionTokens } from '@/components/ui/motion/motionTokens';
+
+/** Private presentation projection; the public environment ABI stays author-safe. */
+const HappierUiEnvironmentProviderWithPresentationActivity: React.ComponentType<
+    React.ComponentProps<typeof HappierUiEnvironmentProvider> & Readonly<{ presentationActive: boolean }>
+> = HappierUiEnvironmentProvider;
 
 /**
  * The declarative node vocabulary itself is rendered by the single owner in
@@ -631,6 +636,7 @@ export function DeclarativePluginSurface(props: Readonly<{
     contrast?: HappierUiAccessibility['contrast'];
 }>) {
     const { theme } = useUnistyles();
+    const hostActivelyViewed = useHostActivelyViewed();
     const activeServer = useActiveServerSnapshot();
     const projectedPresentationTheme = React.useMemo(() => projectPluginUiTheme(theme), [theme]);
     const presentationTheme = React.useMemo(
@@ -1487,6 +1493,11 @@ export function DeclarativePluginSurface(props: Readonly<{
         </HappierUiTypographyProvider>
     );
     return props.environment
-        ? <HappierUiEnvironmentProvider environment={props.environment}>{typedSurface}</HappierUiEnvironmentProvider>
+        ? <HappierUiEnvironmentProviderWithPresentationActivity
+            environment={props.environment}
+            presentationActive={hostActivelyViewed && props.interactionEnabled && props.focusEligible !== false}
+        >
+            {typedSurface}
+        </HappierUiEnvironmentProviderWithPresentationActivity>
         : typedSurface;
 }

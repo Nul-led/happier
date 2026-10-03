@@ -34,9 +34,9 @@ const shared = vi.hoisted(() => ({
 
 type MutableSettingHook = (key: string) => [unknown, (next: unknown) => void];
 
-const createMutableSettingHook = (settingsState: Record<string, unknown>): MutableSettingHook => {
+const createMutableSettingHook = (settingsState: Record<string, unknown>, defaults: Record<string, unknown>): MutableSettingHook => {
     return (key: string) => [
-        Object.prototype.hasOwnProperty.call(settingsState, key) ? settingsState[key] : null,
+        Object.prototype.hasOwnProperty.call(settingsState, key) ? settingsState[key] : defaults[key] ?? null,
         (next: unknown) => {
             settingsState[key] = next;
         },
@@ -76,7 +76,9 @@ installSessionSettingsEntryModuleMocks({
     },
     storageModule: async (importOriginal) => {
         const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
-        const mutableSetting = createMutableSettingHook(shared.settingsState);
+        const { settingsDefaults } = await import('@/sync/domains/settings/settings');
+        const { localSettingsDefaults } = await import('@/sync/domains/settings/localSettings');
+        const mutableSetting = createMutableSettingHook(shared.settingsState, { ...settingsDefaults, ...localSettingsDefaults });
         return createStorageModuleMock({
             importOriginal,
             overrides: {
@@ -87,6 +89,7 @@ installSessionSettingsEntryModuleMocks({
     },
     useDeviceType: 'desktop',
 });
+
 
 vi.mock('expo-localization', () => ({ getLocales: () => [{ languageTag: 'en-US' }] }));
 vi.mock('expo-status-bar', () => ({ setStatusBarStyle: shared.setStatusBarStyle }));
@@ -114,6 +117,10 @@ vi.mock('@/theme', async (importOriginal) => {
         },
     };
 });
+
+// Load the real screen once, after the shared boundary factories have their configuration. Its
+// module graph belongs to test setup; the tests' deadlines measure rendering and interaction.
+const { default: AppearanceSettingsScreen } = await import('@/app/(app)/settings/appearance');
 
 afterEach(() => {
     standardCleanup();
@@ -150,6 +157,38 @@ describe('Appearance settings item density', () => {
         expect(shared.settingsState.uiItemDensity).toBe('cozy');
     });
 
+    it('shows every loading indicator preview and stores the selected style on this device', async () => {
+        const mod = await import('@/app/(app)/settings/appearance');
+        const screen = await renderSettingsView(React.createElement(mod.default));
+        const row = screen.findRowByTitle('settingsAppearance.loadingIndicatorStyle');
+        expect(row).not.toBeNull();
+        // The existing settings harness keeps Item shallow; its rightElement is the real tile control.
+        const picker = row!.props.rightElement;
+        expect(picker.props.value).toBe('wave');
+        expect(picker.props.options.map((option: { id: string }) => option.id)).toEqual([
+            'wave', 'handwritten', 'buildAndRelease', 'relay', 'twinStems', 'slowBreath',
+            'starfield', 'sweep', 'radar', 'ripple', 'aurora', 'classicRing',
+        ]);
+        expect(picker.props.options.find((option: { id: string }) => option.id === 'radar')?.preview.props.styleId).toBe('radar');
+        await act(async () => { picker.props.onChange('notAStyle'); });
+        expect(shared.settingsState.loadingIndicatorStyle).toBeUndefined();
+        await act(async () => { picker.props.onChange('radar'); });
+        expect(shared.settingsState.loadingIndicatorStyle).toBe('radar');
+        delete shared.settingsState.loadingIndicatorStyle;
+    });
+
+    it('keeps the loading indicator previews out of the accessibility tree, since the option title already names the style', async () => {
+        const { LoadingIndicatorStylePreview } = await import('@/components/settings/appearance/LoadingIndicatorStylePreview');
+        const screen = await renderSettingsView(React.createElement(LoadingIndicatorStylePreview, { styleId: 'radar' }));
+
+        const root = screen.findAllByType('View' as any)[0];
+        expect(root?.props).toEqual(expect.objectContaining({
+            'aria-hidden': true,
+            accessibilityElementsHidden: true,
+            importantForAccessibility: 'no-hide-descendants',
+        }));
+    });
+
     it('shows every content width as a visible choice and updates the local setting', async () => {
         const mod = await import('@/app/(app)/settings/appearance');
         const screen = await renderSettingsView(React.createElement(mod.default));
@@ -166,8 +205,7 @@ describe('Appearance settings item density', () => {
     });
 
     it('renders the settings navigation sidebar toggle and updates the local setting', async () => {
-        const mod = await import('@/app/(app)/settings/appearance');
-        const screen = await renderSettingsView(React.createElement(mod.default));
+        const screen = await renderSettingsView(React.createElement(AppearanceSettingsScreen));
 
         const row = screen.findRow('settings-appearance-settings-nav-sidebar-enabled') as any;
         expect(row).toBeTruthy();
@@ -182,8 +220,7 @@ describe('Appearance settings item density', () => {
     });
 
     it('does not surface the mobile workspace experience setting from appearance settings', async () => {
-        const mod = await import('@/app/(app)/settings/appearance');
-        const screen = await renderSettingsView(React.createElement(mod.default));
+        const screen = await renderSettingsView(React.createElement(AppearanceSettingsScreen));
 
         const dropdowns = screen.findAllByType('DropdownMenu' as any);
         const workspaceModeDropdown = dropdowns.find((node: any) => node.props?.itemTrigger?.title === 'settingsAppearance.mobileWorkspaceExperience');

@@ -14,7 +14,10 @@ import {
 } from 'react';
 import { I18nManager, View, type ViewStyle } from 'react-native';
 
-import { useOptionalHappierUiLocalization } from '../../environment/context.js';
+import {
+  HappierUiAnimationActivityProviderInternal,
+  useOptionalHappierUiLocalization,
+} from '../../environment/context.js';
 import { resolveHappierRovingTabStop } from '../collection/semantics.js';
 import {
   useHappierNativeMinimumInteractiveTargetSize,
@@ -157,6 +160,7 @@ function HappierTabPanel(props: Readonly<{
 
   return (
     <HappierTabPanelActivityContext.Provider value={activity}>
+      <HappierUiAnimationActivityProviderInternal active={props.active}>
       <View
         role={props.labelledBy === undefined ? undefined : 'tabpanel'}
         nativeID={props.nativeID}
@@ -173,6 +177,7 @@ function HappierTabPanel(props: Readonly<{
       >
         {props.children}
       </View>
+      </HappierUiAnimationActivityProviderInternal>
     </HappierTabPanelActivityContext.Provider>
   );
 }

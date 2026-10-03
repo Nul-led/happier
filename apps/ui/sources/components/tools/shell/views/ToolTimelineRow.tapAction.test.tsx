@@ -148,18 +148,15 @@ function findHeaderTitleFontSize(screen: Awaited<ReturnType<typeof renderToolTim
     return merged.fontSize;
 }
 
-function findSpinner(screen: Awaited<ReturnType<typeof renderToolTimelineRow>>) {
-    return screen.findAll((node) => {
-        const nodeType = node.type as unknown;
-        return nodeType === 'ActivityIndicator' || node.props?.accessibilityRole === 'progressbar';
-    })[0];
+// The row owns which spinner it shows and the colour it passes; how the spinner draws that colour
+// depends on the user's loading indicator style.
+async function findSpinner(screen: Awaited<ReturnType<typeof renderToolTimelineRow>>) {
+    const { ActivitySpinner } = await import('@/components/ui/feedback/ActivitySpinner');
+    return screen.findAllByType(ActivitySpinner)[0];
 }
 
-function readSpinnerColor(spinner: ReturnType<typeof findSpinner>) {
-    const style = spinner?.props?.style;
-    const styleArray = Array.isArray(style) ? style : [style];
-    const mergedStyle = Object.assign({}, ...styleArray.filter(Boolean));
-    return spinner?.props?.color ?? mergedStyle.borderColor;
+function readSpinnerColor(spinner: Awaited<ReturnType<typeof findSpinner>>) {
+    return spinner?.props?.color;
 }
 
 describe('ToolTimelineRow (tap action)', () => {
@@ -535,7 +532,7 @@ describe('ToolTimelineRow (tap action)', () => {
             messageId: 'm1',
         });
 
-        expect(findSpinner(screen)).toBeTruthy();
+        expect(await findSpinner(screen)).toBeTruthy();
     });
 
     it('uses the neutral loading color in the header for running Task tools', async () => {
@@ -550,7 +547,7 @@ describe('ToolTimelineRow (tap action)', () => {
             messageId: 'm1',
         });
 
-        const spinner = findSpinner(screen);
+        const spinner = await findSpinner(screen);
         expect(readSpinnerColor(spinner)).toBe('#555555');
     });
 });

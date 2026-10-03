@@ -68,6 +68,12 @@ export const APPEARANCE_SETTINGS = defineSettingsPage({
                 tabBarBadges: { titleKey: 'settingsAppearance.tabBarBadges.title' },
             },
         },
+        loadingIndicator: {
+            titleKey: 'settingsAppearance.loadingIndicator',
+            settings: {
+                loadingIndicatorStyle: { titleKey: 'settingsAppearance.loadingIndicatorStyle', descriptionKey: 'settingsAppearance.loadingIndicatorDescription', storage: { scope: 'local', key: 'loadingIndicatorStyle', access: 'read_write' } },
+            },
+        },
         privacy: {
             titleKey: 'connectedServicesCollection.privacyTitle',
             settings: {

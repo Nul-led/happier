@@ -35,6 +35,15 @@ describe('localSettingsParse', () => {
         });
     });
 
+    it('defaults the loading indicator to the wave, and degrades an unknown style id without resetting other local settings', () => {
+        expect(localSettingsParse(null).loadingIndicatorStyle).toBe('wave');
+        expect(localSettingsParse({ loadingIndicatorStyle: 'radar' }).loadingIndicatorStyle).toBe('radar');
+
+        const parsed = localSettingsParse({ loadingIndicatorStyle: 'styleFromANewerBuild', uiItemDensity: 'compact' });
+        expect(parsed.loadingIndicatorStyle).toBe('wave');
+        expect(parsed.uiItemDensity).toBe('compact');
+    });
+
     it('defaults the mobile brand hero dismissal timestamp to null', () => {
         expect(localSettingsParse(null).brandHeroSeenAt).toBeNull();
     });

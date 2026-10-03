@@ -20,6 +20,8 @@ import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import { installApprovalCommonModuleMocks } from './approvalsTestHelpers';
 
+const loadActivitySpinner = async () => (await import('@/components/ui/feedback/ActivitySpinner')).ActivitySpinner;
+
 /**
  * Everything the approval page shows as text. Row components are pass-through test hosts, so their
  * title, subtitle and detail props are the text the real `Item`/`ItemGroup` would render.
@@ -1547,7 +1549,7 @@ describe('ApprovalDetailScreen', () => {
         const text = readRenderedText(screen);
         expect(fetchArtifactWithBodySpy).toHaveBeenCalledWith('artifact-1');
         expect(text).toContain('approvals.loadError');
-        expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
+        expect(screen.findAllByType(await loadActivitySpinner())).toHaveLength(0);
         expect(screen.findByTestId('approvals.retry')).not.toBeNull();
 
         fetchArtifactWithBodySpy.mockClear();
@@ -1579,7 +1581,7 @@ describe('ApprovalDetailScreen', () => {
 
         expect(fetchArtifactWithBodySpy).not.toHaveBeenCalled();
         expect(readRenderedText(screen)).toContain('settingsAccount.secretKeyMissing');
-        expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
+        expect(screen.findAllByType(await loadActivitySpinner())).toHaveLength(0);
     });
 
     it('creates the action executor with the session-to-server resolver and routes approval decisions with a server hint', async () => {

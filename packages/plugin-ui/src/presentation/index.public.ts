@@ -200,14 +200,30 @@ export {
   type TextStyleEntryTransform,
 } from './text/textStyleScale.js';
 export {
+  HappierDotSpinner,
   HappierSpinner,
+  HappierSpinnerHost,
   iconMatchedSpinnerSize,
+  resolveHappierSpinnerPresentation,
+  type HappierDotSpinnerModel,
+  type HappierDotSpinnerMotion,
+  type HappierSpinnerDotBoxStyle,
+  type HappierSpinnerPresentation,
+  type HappierSpinnerPresentationInput,
   resolveHappierWebSpinnerPresentation,
   type HappierWebSpinnerPresentation,
   type HappierWebSpinnerPresentationInput,
   type HappierWebSpinnerStyle,
   type HappierSpinnerProps,
 } from './feedback/Spinner.js';
+export { useHappierSpinnerKeyframes } from './feedback/spinnerKeyframes.js';
+export {
+  DEFAULT_HAPPIER_SPINNER_STYLE_ID,
+  HAPPIER_SPINNER_STYLE_IDS,
+  isHappierSpinnerStyleId,
+  normalizeHappierSpinnerStyleId,
+  type HappierSpinnerStyleId,
+} from './feedback/spinnerStyles.js';
 export {
   HAPPIER_PRESS_FEEDBACK_V1,
   happierPressTransitionStyle,

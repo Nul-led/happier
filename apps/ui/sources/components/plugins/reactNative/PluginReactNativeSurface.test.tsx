@@ -4,6 +4,7 @@ import {
     type PluginUiSurfaceContextV1,
 } from '@happier-dev/protocol/plugins/ui';
 import type { RenderContext } from '@happier-dev/plugin-sdk/ui';
+import { HappierSpinner } from '@happier-dev/plugin-ui/presentation';
 import { act } from 'react-test-renderer';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 
@@ -425,10 +426,11 @@ describe('PluginReactNativeSurface', () => {
         });
         function SurfaceEntryProvider(props: Readonly<{
             resourceStoreGeneration?: string;
+            presentationActive?: boolean;
         }>) {
             return React.createElement('PluginNativeSurface', {
                 testID: `plugin-native-private-generation:${props.resourceStoreGeneration ?? 'none'}`,
-            });
+            }, <HappierSpinner color="red" animationEnabled={props.presentationActive} />);
         }
         Object.defineProperty(
             SurfaceEntryProvider,
@@ -442,6 +444,7 @@ describe('PluginReactNativeSurface', () => {
             renderContext: ReturnType<typeof renderContext>;
             generation: string;
             interactionEnabled: boolean;
+            presentationActive: boolean;
         }>) => (
             <PluginReactNativeSurface
                 surfaceId="surface_1"
@@ -451,6 +454,7 @@ describe('PluginReactNativeSurface', () => {
                 interactionEnabled={input.interactionEnabled}
                 privateHostBindings={Object.freeze({
                     resourceStoreGeneration: input.generation,
+                    presentationActive: input.presentationActive,
                 })}
             />
         );
@@ -460,6 +464,7 @@ describe('PluginReactNativeSurface', () => {
                 renderContext: renderContext('interactive-view'),
                 generation: 'generation-a',
                 interactionEnabled: true,
+                presentationActive: true,
             }));
             expect(screen.findByTestId('plugin-native-private-generation:generation-a')).toBeTruthy();
 
@@ -467,6 +472,7 @@ describe('PluginReactNativeSurface', () => {
                 renderContext: renderContext('offline-successor-view'),
                 generation: 'generation-b',
                 interactionEnabled: false,
+                presentationActive: true,
             }));
 
             // The visual tree deliberately retains the last interactive public
@@ -474,6 +480,29 @@ describe('PluginReactNativeSurface', () => {
             // a successor generation may not be paired with that old context.
             expect(screen.findByTestId('plugin-native-private-generation:generation-a')).toBeTruthy();
             expect(screen.findByTestId('plugin-native-private-generation:generation-b')).toBeNull();
+            expect(module.renderSurface).toHaveBeenCalledTimes(1);
+            const spinnerStrip = () => screen.find((node) => node.type === 'span'
+                && typeof node.props['data-happier-activity-spinner'] === 'string');
+            expect(spinnerStrip().props.style.animationName).toBe('happierActivitySpinnerFilmstrip');
+
+            await screen.update(element({
+                renderContext: renderContext('offline-successor-view'),
+                generation: 'generation-b',
+                interactionEnabled: false,
+                presentationActive: false,
+            }));
+            expect(spinnerStrip().props.style.animationName).toBeUndefined();
+            expect(screen.findByTestId('plugin-native-private-generation:generation-a')).toBeTruthy();
+            expect(screen.findByTestId('plugin-native-private-generation:generation-b')).toBeNull();
+
+            await screen.update(element({
+                renderContext: renderContext('offline-successor-view'),
+                generation: 'generation-b',
+                interactionEnabled: false,
+                presentationActive: true,
+            }));
+            expect(spinnerStrip().props.style.animationName).toBe('happierActivitySpinnerFilmstrip');
+            expect(screen.findByTestId('plugin-native-private-generation:generation-a')).toBeTruthy();
             expect(module.renderSurface).toHaveBeenCalledTimes(1);
         } finally {
             adapter.dispose();

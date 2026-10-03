@@ -28,6 +28,7 @@ const HappierUiPlatformContext = createContext<HappierUiPlatformFacts | null>(nu
 const HappierUiInsetsContext = createContext<HappierUiInsets | null>(null);
 const HappierUiTypographyContext = createContext<HappierUiTypography | null>(null);
 const HappierUiPaletteContext = createContext<HappierUiPalette | null>(null);
+const HappierUiAnimationActivityContext = createContext(true);
 
 /** @internal The surface bridge re-provides this across the host's details pane (`components/surfaceBridge.tsx`). */
 export const HAPPIER_UI_ENVIRONMENT_CONTEXTS_INTERNAL: readonly Context<unknown>[] = [
@@ -38,11 +39,39 @@ export const HAPPIER_UI_ENVIRONMENT_CONTEXTS_INTERNAL: readonly Context<unknown>
   HappierUiInsetsContext,
   HappierUiTypographyContext,
   HappierUiPaletteContext,
+  HappierUiAnimationActivityContext,
 ] as readonly Context<unknown>[];
+
+/**
+ * Private presentation projection, independent of Resource and author work
+ * lifetimes. A retained surface or panel may narrow its parent's activity but
+ * cannot reactivate motion while its enclosing presentation is inactive.
+ */
+export function HappierUiAnimationActivityProviderInternal({
+  active,
+  children,
+}: Readonly<{ active: boolean; children?: ReactNode }>) {
+  const parentActive = useContext(HappierUiAnimationActivityContext);
+  return (
+    <HappierUiAnimationActivityContext.Provider value={parentActive && active}>
+      {children}
+    </HappierUiAnimationActivityContext.Provider>
+  );
+}
+
+/** Environment-free core adapters inject their own activity explicitly. */
+export function useHappierUiAnimationActivityInternal(): boolean {
+  return useContext(HappierUiAnimationActivityContext);
+}
 
 export type HappierUiEnvironmentProviderProps = Readonly<{
   environment: HappierUiEnvironment;
   children?: ReactNode;
+}>;
+
+/** Host-private presentation projection; not part of the author environment ABI. */
+type HappierUiEnvironmentProviderInternalProps = HappierUiEnvironmentProviderProps & Readonly<{
+  presentationActive?: boolean;
 }>;
 
 /**
@@ -112,10 +141,9 @@ export function HappierUiPlatformProvider({
  * object — which the plugin host does on every context push — only changes the
  * identity of the capabilities that actually changed.
  */
-export function HappierUiEnvironmentProvider({
-  environment,
-  children,
-}: HappierUiEnvironmentProviderProps) {
+export function HappierUiEnvironmentProvider(props: HappierUiEnvironmentProviderProps) {
+  const { environment, children } = props;
+  const { presentationActive = true } = props as HappierUiEnvironmentProviderInternalProps;
   const { theme, localization, accessibility, platform, insets } = environment;
 
   const themeValue = useMemo(
@@ -142,17 +170,19 @@ export function HappierUiEnvironmentProvider({
   );
 
   return (
-    <HappierUiThemeContext.Provider value={themeValue}>
-      <HappierUiLocalizationContext.Provider value={localizationValue}>
-        <HappierUiAccessibilityContext.Provider value={accessibilityValue}>
-          <HappierUiPlatformProvider platform={platform}>
-            <HappierUiInsetsContext.Provider value={insetsValue}>
-              {children}
-            </HappierUiInsetsContext.Provider>
-          </HappierUiPlatformProvider>
-        </HappierUiAccessibilityContext.Provider>
-      </HappierUiLocalizationContext.Provider>
-    </HappierUiThemeContext.Provider>
+    <HappierUiAnimationActivityProviderInternal active={presentationActive}>
+      <HappierUiThemeContext.Provider value={themeValue}>
+        <HappierUiLocalizationContext.Provider value={localizationValue}>
+          <HappierUiAccessibilityContext.Provider value={accessibilityValue}>
+            <HappierUiPlatformProvider platform={platform}>
+              <HappierUiInsetsContext.Provider value={insetsValue}>
+                {children}
+              </HappierUiInsetsContext.Provider>
+            </HappierUiPlatformProvider>
+          </HappierUiAccessibilityContext.Provider>
+        </HappierUiLocalizationContext.Provider>
+      </HappierUiThemeContext.Provider>
+    </HappierUiAnimationActivityProviderInternal>
   );
 }
 

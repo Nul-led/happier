@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
 
+// Loaded at the assertion, not at the top: an eager import would evaluate the spinner's module
+// graph before this file's mocks and per-test setup have run.
+const loadActivitySpinner = async () => (await import('@/components/ui/feedback/ActivitySpinner')).ActivitySpinner;
+
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const platformState = vi.hoisted(() => ({
@@ -97,7 +101,7 @@ describe('FilesystemBrowserList', () => {
         );
 
         expect(screen.findByTestId('row-src/index.ts')).toBeTruthy();
-        expect(screen.findAllByType('ActivityIndicator' as any)).toHaveLength(0);
+        expect(screen.findAllByType(await loadActivitySpinner())).toHaveLength(0);
     });
 
     it('uses LegendList on native file browsers', async () => {

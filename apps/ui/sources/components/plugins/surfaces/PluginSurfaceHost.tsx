@@ -79,6 +79,7 @@ import {
 } from '@/components/appShell/currentUiContext/CurrentUiContextProvider';
 import type { CurrentUiContextMountPublication } from '@/components/appShell/currentUiContext/CurrentUiContextProvider';
 import type { CurrentUiContextMountedEnrichment } from '@/components/appShell/currentUiContext/currentUiContextModel';
+import { useHostActivelyViewed } from '@/utils/runtime/useHostActivelyViewed';
 import type { SurfaceStateAction } from '@/components/ui/surfaces/SurfaceStateCard';
 import {
     isUiSurfaceRendererKind,
@@ -1358,6 +1359,7 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
     targetedSurfaceUnavailableReason?: 'unsupported_nested_targeted_surface';
 }>): React.ReactElement {
     const canonicalIdentity = props.canonicalRenderIdentity;
+    const hostActivelyViewed = useHostActivelyViewed();
     // One context owner (§3.2): the environment facts, the exact target and the
     // plugin's translation bundle all come from `pluginSurfaceContext.ts`, the
     // same module the hosted-web mount consumes.
@@ -1622,6 +1624,7 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
         mountLifetime: props.mountLifetime,
     });
     const canonicalPrivateHostBindings = React.useMemo(() => Object.freeze({
+        presentationActive: hostActivelyViewed && isFocusEligible(),
         accountLifetime: canonicalPrivateResourceMountScope.accountLifetime,
         resourceStoreGeneration: canonicalPrivateResourceMountScope.occurrenceId,
         ...(canonicalPrivatePresentationHost === undefined
@@ -1635,6 +1638,10 @@ function PluginReactNativeSurfaceHost(props: Readonly<{
             : { composerRef: props.composerRef }),
         ephemeralSharedScope: canonicalEphemeralSharedScope,
     }), [
+        hostActivelyViewed,
+        isFocusEligible,
+        props.focusEligible,
+        props.interactionEnabled,
         canonicalPrivateDataClient,
         canonicalPrivatePresentationHost,
         canonicalPrivateResourceMountScope,

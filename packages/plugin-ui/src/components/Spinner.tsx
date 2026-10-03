@@ -2,8 +2,6 @@ import type { ReactElement } from 'react';
 
 import { HappierSpinner } from '../presentation/feedback/Spinner.js';
 import { HAPPIER_TONE_COLOR_TOKEN } from '../presentation/semantics.js';
-import { usePluginSurfaceActivity } from '../hostApi/context.js';
-import { useOptionalHappierTabPanelActivityInternal } from '../presentation/navigation/Tabs.js';
 import { usePluginTheme } from './PluginUiProvider.js';
 import type { TextTone } from './Text.js';
 
@@ -31,8 +29,6 @@ export type SpinnerProps = Readonly<{
  */
 export function Spinner({ size, tone, accessibilityLabel, testID }: SpinnerProps): ReactElement {
   const theme = usePluginTheme();
-  const surfaceActivity = usePluginSurfaceActivity();
-  const tabPanelActivity = useOptionalHappierTabPanelActivityInternal();
 
   return (
     <HappierSpinner
@@ -40,7 +36,6 @@ export function Spinner({ size, tone, accessibilityLabel, testID }: SpinnerProps
       color={theme.colors[HAPPIER_TONE_COLOR_TOKEN[tone ?? 'secondary']]}
       accessibilityLabel={accessibilityLabel}
       testID={testID}
-      animationEnabled={surfaceActivity.active && (tabPanelActivity?.active ?? true)}
     />
   );
 }
