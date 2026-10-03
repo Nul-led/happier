@@ -621,7 +621,7 @@ export async function runRelayHostSubcommand(
 
   if (op === 'status') {
     const engine = ssh
-      ? (async () => {
+      ? (() => {
           const runner = buildSshRunner(ssh, options.signal);
           const resolveRemoteReleaseTarget = createMemoizedResolveRemoteReleaseTarget(runner);
           return createRelayHostEngine({
@@ -716,7 +716,7 @@ export async function runRelayHostSubcommand(
     };
     const steps = createStepPrinter({ enabled: !json });
     const result = ssh
-      ? (() => {
+      ? (async () => {
           const runner = buildSshRunner(ssh, options.signal);
           const resolveRemoteReleaseTarget = createMemoizedResolveRemoteReleaseTarget(runner);
           const override = resolveTestFirstPartyPayloadOverride();
