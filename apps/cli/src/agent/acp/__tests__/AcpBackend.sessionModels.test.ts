@@ -199,7 +199,13 @@ describe('AcpBackend session models', () => {
         agentName: 'test', cwd: dir, command: process.execPath, args: [script],
         modelConfigOptionId: definition.modelConfigOptionId,
         projectSetModelResponse: (input) => {
-          const result = definition.models?.projectSetModelResponse?.({ ...input, response: AgentRuntimeJsonValueV1Schema.parse(input.response) });
+          const result = definition.models?.projectSetModelResponse?.({
+            ...input,
+            response: AgentRuntimeJsonValueV1Schema.parse(input.response),
+            requestMeta: input.requestMeta === null ? null : Object.fromEntries(
+              Object.entries(input.requestMeta).map(([key, value]) => [key, AgentRuntimeJsonValueV1Schema.parse(value)]),
+            ),
+          });
           if (!result) return null;
           const { modelOptions, ...model } = result;
           return { ...model, ...(modelOptions ? { modelOptions: modelOptions.map((option) => ({ ...option, ...(option.options ? { options: [...option.options] } : {}) })) } : {}) };
