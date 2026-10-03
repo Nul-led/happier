@@ -89,6 +89,21 @@ states remain valid and supply no count. New daemons reconstruct their projectio
 from the current inventory and republish through the existing Machine lifecycle,
 without a persisted format migration or a parallel count writer.
 
+### Encrypted socket RPC binding (v0.3 development)
+
+E2EE socket RPC uses the shared codec's V2 plaintext envelopes: requests bind
+the complete target-prefixed method, caller-generated 128-bit call id and request
+direction; responses bind that call id and response direction. Unbound encrypted
+payloads are never accepted alongside V2. Current readers reject unbound,
+malformed or mismatched envelopes with `RPC_UPDATE_REQUIRED`, including unbound
+responses from an older daemon. A v0.3 responder refuses a 0.2 request before
+handler dispatch; a 0.3 caller cannot trust a 0.2 response. All components must
+upgrade together under the one-way 0.3 boundary. This is an intentional wire
+epoch change, independent of package versions, and introduces no persisted state,
+new key or negotiation. It does not prevent request replay. Plain-mode accounts
+and reserved server-origin methods keep their existing contracts. See
+[encryption.md](encryption.md#encrypted-socket-rpc-routing-v03-development).
+
 ### Saved agent-start policy (development)
 
 `sessionAgentSpawnPolicyV1` retains the strict 0.2 V1 field set, including

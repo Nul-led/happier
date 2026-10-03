@@ -1,56 +1,37 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import { encryptLegacyBase64 } from '../../src/testkit/messageCrypto';
+import { decryptLegacyBase64, encryptLegacyBase64 } from '../../src/testkit/messageCrypto';
+import { socketRpcCodec } from '@happier-dev/sync-client';
 import { requestSessionSwitchRpc } from '../../src/testkit/sessionSwitchRpc';
 
 describe('requestSessionSwitchRpc', () => {
-  it('accepts serialized-json boolean results from encrypted RPC responses', async () => {
+  it.each([true, false])('preserves the serialized-json boolean result %s through bound encrypted RPC', async (value) => {
     const secret = new Uint8Array(32).fill(7);
-    const rpcCall = vi.fn().mockResolvedValue({
-      ok: true,
-      result: encryptLegacyBase64(
-        { __happierSerializedJsonValueV1: true, type: 'json', value: true },
-        secret,
-      ),
-    });
+    const content = { mode: 'e2ee' as const, cipher: {
+      encryptRaw: async (data: unknown) => encryptLegacyBase64(data, secret),
+      decryptRaw: async (data: string) => decryptLegacyBase64(data, secret),
+    } };
+    const ui = {
+      emit: () => {},
+      emitWithAck: async <T>(_event: string, data: unknown): Promise<T> => {
+        // The fake network accepts the canonical caller's request payload.
+        const payload = data as { method: string; params: unknown };
+        const request = await socketRpcCodec.decodeRequestParams(content, payload.params, payload.method);
+        expect(payload.method).toBe('sess-1:switch');
+        expect(request.params).toEqual({ to: 'remote' });
+        return { ok: true, result: await socketRpcCodec.encodeResponse(content,
+          { __happierSerializedJsonValueV1: true, type: 'json', value }, request.callId) } as T;
+      },
+    };
 
     const switched = await requestSessionSwitchRpc({
-      ui: { rpcCall } as never,
+      ui,
       sessionId: 'sess-1',
       to: 'remote',
       secret,
       timeoutMs: 50,
     });
 
-    expect(switched).toBe(true);
-    expect(rpcCall).toHaveBeenCalledWith(
-      'sess-1:switch',
-      expect.any(String),
-    );
-  });
-
-  it('returns false when the encrypted switch RPC resolves to false', async () => {
-    const secret = new Uint8Array(32).fill(7);
-    const rpcCall = vi.fn().mockResolvedValue({
-      ok: true,
-      result: encryptLegacyBase64(
-        { __happierSerializedJsonValueV1: true, type: 'json', value: false },
-        secret,
-      ),
-    });
-
-    const switched = await requestSessionSwitchRpc({
-      ui: { rpcCall } as never,
-      sessionId: 'sess-1',
-      to: 'local',
-      secret,
-      timeoutMs: 50,
-    });
-
-    expect(switched).toBe(false);
-    expect(rpcCall).toHaveBeenCalledWith(
-      'sess-1:switch',
-      expect.any(String),
-    );
+    expect(switched).toBe(value);
   });
 });

@@ -82,6 +82,7 @@ import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import { callExactMachineRpc, callMachineRpc, readMachineRpcRequestDisposition } from './machineRpc';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import { io } from 'socket.io-client';
+import { socketRpcCodec, type SocketRpcContent } from '@happier-dev/sync-client';
 
 /** Account content material exactly as the CLI persists it: a box seed plus its own public key. */
 function accountDataKeyCredentials(seedByte: number) {
@@ -115,12 +116,23 @@ function publishedMachineDataEncryptionKey(params: Readonly<{
   }));
 }
 
-function openedWith(key: Uint8Array, encoded: unknown): unknown {
+function rpcContent(key: Uint8Array, variant: 'dataKey' | 'legacy' = 'dataKey'): SocketRpcContent {
+  return { mode: 'e2ee', cipher: {
+    encryptRaw: async value => encodeBase64(encrypt(key, variant, value)),
+    decryptRaw: async value => decrypt(key, variant, decodeBase64(value)),
+  } };
+}
+async function openedWith(key: Uint8Array, encoded: unknown, method: string, variant: 'dataKey' | 'legacy' = 'dataKey'): Promise<unknown> {
   try {
-    return decrypt(key, 'dataKey', decodeBase64(String(encoded), 'base64'));
+    return (await socketRpcCodec.decodeRequestParams(rpcContent(key, variant), encoded, method)).params;
   } catch {
     return null;
   }
+}
+async function responseForRequest(key: Uint8Array, request: { method: string; params: unknown }, result: unknown, variant: 'dataKey' | 'legacy' = 'dataKey') {
+  const content = rpcContent(key, variant);
+  const decoded = await socketRpcCodec.decodeRequestParams(content, request.params, request.method);
+  return socketRpcCodec.encodeResponse(content, result, decoded.callId);
 }
 
 describe('callMachineRpc', () => {
@@ -274,17 +286,17 @@ describe('callMachineRpc', () => {
         },
       },
     });
-    socket.emit.mockImplementation((_event, payload, callback) => {
+    socket.emit.mockImplementation(async (_event, payload, callback) => {
       expect(payload.method).toBe('machine-session:spawn-happy-session');
       expect(payload.authorization).toEqual({
         kind: 'session.write',
         sessionId: 'session-1',
       });
       expect(payload.requestId).toEqual(expect.any(String));
-      expect(decrypt(machineKey, 'dataKey', decodeBase64(payload.params, 'base64'))).toEqual({ sessionId: 'session-1' });
+      expect(await openedWith(machineKey, payload.params, payload.method)).toEqual({ sessionId: 'session-1' });
       callback({
         ok: true,
-        result: encodeBase64(encrypt(machineKey, 'dataKey', { type: 'success', sessionId: 'session-1' })),
+        result: await responseForRequest(machineKey, payload, { type: 'success', sessionId: 'session-1' }),
       });
     });
 
@@ -347,7 +359,7 @@ describe('callMachineRpc', () => {
       done: false,
     });
 
-    socket.emit.mockImplementation((_event, payload, callback) => {
+    socket.emit.mockImplementation(async (_event, payload, callback) => {
       const socketPayload = JSON.parse(JSON.stringify(payload)) as Record<string, unknown>;
       expect(socketPayload.method).toBe(`machine-session:${RPC_METHODS.DAEMON_TERMINAL_STREAM_READ_BYTES}`);
       expect(typeof socketPayload.params).toBe('string');
@@ -355,12 +367,12 @@ describe('callMachineRpc', () => {
         throw new Error('expected encrypted machine RPC params');
       }
       expect(TerminalStreamReadRequestSchema.parse(
-        decrypt(machineKey, 'dataKey', decodeBase64(socketPayload.params, 'base64')),
+        await openedWith(machineKey, socketPayload.params, String(socketPayload.method)),
       )).toEqual(request);
 
       callback(JSON.parse(JSON.stringify({
         ok: true,
-        result: encodeBase64(encrypt(machineKey, 'dataKey', response)),
+        result: await responseForRequest(machineKey, payload, response),
       })));
     });
 
@@ -415,9 +427,9 @@ describe('callMachineRpc', () => {
         return { ok: true };
       });
       socket.emit.mockImplementation(async (_event, payload, callback) => {
-        expect(openedWith(scopedMachineKey, payload.params)).toEqual({ sourceKey: 'source-dek' });
+        expect(await openedWith(scopedMachineKey, payload.params, payload.method)).toEqual({ sourceKey: 'source-dek' });
         // The Account-wide machine key must not open what the scoped key sealed.
-        expect(openedWith(machineKey, payload.params)).toBeNull();
+        expect(await openedWith(machineKey, payload.params, payload.method)).toBeNull();
         callback({
           ok: true,
           result: await receiver.handleRequest(payload),
@@ -568,10 +580,10 @@ describe('callMachineRpc', () => {
         runnerContentKeyBinding: binding,
       };
       axiosGet.mockResolvedValue({ data: { machine } });
-      socket.emit.mockImplementation((_event, _payload, callback) =>
+      socket.emit.mockImplementation(async (_event, payload, callback) =>
         callback({
           ok: true,
-          result: encodeBase64(encrypt(scopedMachineKey, 'dataKey', { installed: true })),
+          result: await responseForRequest(scopedMachineKey, payload, { installed: true }),
         }));
 
       await expect(callExactMachineRpc({
@@ -747,11 +759,11 @@ describe('callMachineRpc', () => {
       axiosGet.mockResolvedValue({
         data: { machine: { id: 'machine-historical' } },
       });
-      socket.emit.mockImplementation((_event, payload, callback) => {
-        expect(openedWith(machineKey, payload.params)).toEqual({ ping: true });
+      socket.emit.mockImplementation(async (_event, payload, callback) => {
+        expect(await openedWith(machineKey, payload.params, payload.method)).toEqual({ ping: true });
         callback({
           ok: true,
-          result: encodeBase64(encrypt(machineKey, 'dataKey', { status: 'running' })),
+          result: await responseForRequest(machineKey, payload, { status: 'running' }),
         });
       });
 
@@ -773,12 +785,12 @@ describe('callMachineRpc', () => {
       axiosGet.mockResolvedValue({
         data: { machine: { id: 'machine-legacy' } },
       });
-      socket.emit.mockImplementation((_event, payload, callback) => {
-        expect(decrypt(secret, 'legacy', decodeBase64(String(payload.params), 'base64')))
+      socket.emit.mockImplementation(async (_event, payload, callback) => {
+        expect(await openedWith(secret, payload.params, payload.method, 'legacy'))
           .toEqual({ ping: true });
         callback({
           ok: true,
-          result: encodeBase64(encrypt(secret, 'legacy', { status: 'running' })),
+          result: await responseForRequest(secret, payload, { status: 'running' }, 'legacy'),
         });
       });
 

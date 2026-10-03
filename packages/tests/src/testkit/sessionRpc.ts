@@ -1,9 +1,7 @@
-import type { SocketCollector } from './socketClient';
-import { decryptLegacyBase64, encryptLegacyBase64 } from './messageCrypto';
+import { RPC_ERROR_CODES } from '@happier-dev/protocol/rpc';
+import { createLegacyRpcClient, type RpcSocket } from './syntheticAgent/rpcClient';
 import { waitFor } from './timing';
 import { unwrapSerializedJsonValue } from './unwrapSerializedJsonValue';
-
-type RpcAck = { ok: boolean; result?: string; error?: string; errorCode?: string; errorMessage?: string };
 type SafeParseResult<T> = { success: true; data: T } | { success: false };
 type ParseSchema<T> = { safeParse: (input: unknown) => SafeParseResult<T> };
 
@@ -12,7 +10,7 @@ class LegacyEncryptedSessionRpcApplicationError extends Error {
 }
 
 export async function callLegacyEncryptedSessionRpc<TReq, TRes>(params: {
-  ui: SocketCollector;
+  ui: RpcSocket;
   sessionId: string;
   method: string;
   req: TReq;
@@ -28,7 +26,7 @@ export async function callLegacyEncryptedSessionRpc<TReq, TRes>(params: {
     return !!value && typeof value === 'object' && (value as { ok?: unknown }).ok === false;
   };
 
-  const encryptedParams = encryptLegacyBase64(params.req, params.secret);
+  const client = createLegacyRpcClient(params.ui, params.secret, 'session');
 
   try {
     await waitFor(
@@ -36,10 +34,15 @@ export async function callLegacyEncryptedSessionRpc<TReq, TRes>(params: {
         const method = params.method.startsWith(`${params.sessionId}:`)
           ? params.method
           : `${params.sessionId}:${params.method}`;
-        const res = await params.ui.rpcCall<RpcAck>(method, encryptedParams);
+        const res = await client.call(method, params.req);
         lastAck = res;
-        if (!res || res.ok !== true || typeof res.result !== 'string') return false;
-        const decrypted = unwrapSerializedJsonValue(decryptLegacyBase64(res.result, params.secret));
+        if (res.ok !== true) {
+          if (res.errorCode === RPC_ERROR_CODES.UPDATE_REQUIRED) {
+            throw new LegacyEncryptedSessionRpcApplicationError(`RPC returned application error (${res.errorCode}): ${res.error}`);
+          }
+          return false;
+        }
+        const decrypted = unwrapSerializedJsonValue(res.result);
         lastDecrypted = decrypted;
         if (isRpcErrorEnvelope(decrypted)) {
           const errorCode = typeof decrypted.errorCode === 'string' ? ` (${decrypted.errorCode})` : '';

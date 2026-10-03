@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ManagedConnectionState } from '@happier-dev/connection-supervisor';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
+import { socketRpcCodec } from '@happier-dev/sync-client';
+import { MachineEncryption } from '@/sync/encryption/machineEncryption';
+import { SecretBoxEncryption } from '@/sync/encryption/encryptor';
+import { EncryptionCache } from '@/sync/encryption/encryptionCache';
 
 const storageMock = vi.hoisted(() => ({
     getState: vi.fn(),
@@ -270,16 +274,16 @@ describe('apiSocket.sessionRPC plaintext sessions', () => {
             },
         });
         const calls: string[] = [];
-        const encryptRaw = vi.fn<(value: unknown) => Promise<unknown>>(async () => {
+        const cipher = new MachineEncryption('s1', new SecretBoxEncryption(new Uint8Array(32).fill(17)), new EncryptionCache());
+        const encryptRaw = async (value: unknown) => {
             calls.push('encrypt');
-            return 'encrypted-params';
-        });
-        const decryptRaw = vi.fn<(value: unknown) => Promise<unknown>>(
-            async () => ({ ok: true }),
-        );
-        const emitWithAck = vi.fn<SocketRpcEmitWithAck>(async () => {
+            return cipher.encryptRaw(value);
+        };
+        const decryptRaw = (value: unknown) => cipher.decryptRaw(String(value));
+        const emitWithAck = vi.fn<SocketRpcEmitWithAck>(async (_event, payload) => {
             calls.push('emit');
-            return { ok: true, result: 'encrypted-result' };
+            const request = await socketRpcCodec.decodeRequestParams({ mode: 'e2ee', cipher }, payload.params, payload.method);
+            return { ok: true, result: await socketRpcCodec.encodeResponse({ mode: 'e2ee', cipher }, { ok: true }, request.callId) };
         });
         const timeout = vi.fn<SocketRpcTimeout>(() => {
             calls.push('timeout-emitter');

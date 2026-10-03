@@ -7,6 +7,7 @@ import { decryptLegacyBase64, encryptLegacyBase64 } from '../../messageCrypto';
 import { sleep } from '../../timing';
 import { enqueuePendingQueueV2 } from '../../pendingQueueV2';
 import { createUserScopedSocketCollector } from '../../socketClient';
+import { createLegacyRpcClient } from '../../syntheticAgent/rpcClient';
 import { enrichCapabilityProbeError } from '../harness/capabilityProbeFailure';
 import { invokeRpcAcrossMachineIds, resolveMachineIdsFromSettings } from './runtimeHelpers';
 
@@ -100,15 +101,14 @@ export async function callSessionScopedRpc(params: {
   }
 
   try {
-    const encrypted = encryptLegacyBase64(params.payload, params.secret);
     const timeoutMs = typeof params.timeoutMs === 'number' ? params.timeoutMs : 30_000;
-    const response = await ui.rpcCall<{ ok?: unknown; result?: unknown }>(`${params.sessionId}:${params.method}`, encrypted, timeoutMs);
+    const response = await createLegacyRpcClient(ui, params.secret, 'session').call(
+      `${params.sessionId}:${params.method}`, params.payload, timeoutMs,
+    );
     if (!response || typeof response !== 'object' || response.ok !== true) {
       throw new Error(`session rpc ${params.method} returned non-ok response`);
     }
-    const resultRaw = response.result;
-    if (typeof resultRaw !== 'string' || resultRaw.length === 0) return null;
-    return decryptLegacyBase64(resultRaw, params.secret);
+    return response.result;
   } finally {
     ui.close();
   }

@@ -6,10 +6,10 @@ import {
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import { callLegacyEncryptedSessionRpc } from '../sessionRpc';
-import type { SocketCollector } from '../socketClient';
+import type { RpcSocket } from '../syntheticAgent/rpcClient';
 
 export type DispatchRuntimeActionE2EContext = Readonly<{
-  ui: SocketCollector;
+  ui: RpcSocket;
   sessionId: string;
   runId: string;
   secret: Uint8Array;

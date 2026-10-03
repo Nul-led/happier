@@ -11,6 +11,22 @@ import { MACHINE_PLAIN_DATA_KEY_MARKER } from '@happier-dev/protocol';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import * as deviceLocalStorage from '@/auth/storage/deviceLocalStorage';
 import { resetRunnerCreatorMachineContentKeyTrustProjectionForTests } from '@/sync/domains/ephemeralRunner/runnerCreatorMachineContentKeyTrust';
+import { socketRpcCodec } from '@happier-dev/sync-client';
+import { MachineEncryption } from '@/sync/encryption/machineEncryption';
+import { SecretBoxEncryption } from '@/sync/encryption/encryptor';
+import { EncryptionCache } from '@/sync/encryption/encryptionCache';
+
+function createMachineEncryption() {
+    const cipher = new MachineEncryption('machine-1', new SecretBoxEncryption(new Uint8Array(32).fill(17)), new EncryptionCache());
+    vi.spyOn(cipher, 'encryptRaw');
+    vi.spyOn(cipher, 'decryptRaw');
+    return cipher;
+}
+const responder = { mode: 'e2ee' as const, cipher: createMachineEncryption() };
+async function boundResponse(payload: { method: string; params: unknown }, value: unknown) {
+    const request = await socketRpcCodec.decodeRequestParams(responder, payload.params, payload.method);
+    return socketRpcCodec.encodeResponse(responder, value, request.callId);
+}
 
 type MachineRpcSpy = (machineId: string, method: string, params: unknown, options?: {
     timeoutMs?: number;
@@ -487,17 +503,14 @@ describe('machineRpcWithServerScope', () => {
                 return { source: 'late-active' };
             });
             getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: SECRET_A });
-            const machineEncryption = {
-                encryptRaw: vi.fn(async () => 'encrypted-payload'),
-                decryptRaw: vi.fn(async () => ({ source: 'scoped' })),
-            };
+            const machineEncryption = createMachineEncryption();
             createEncryptionSpy.mockResolvedValue({
                 decryptEncryptionKey: vi.fn(async () => null),
                 initializeMachines: vi.fn(async () => {}),
                 getMachineEncryption: vi.fn(() => machineEncryption),
             });
             mockScopedMachineFetch({ id: 'machine-1', dataEncryptionKey: null });
-            const scopedEmit = vi.fn(async () => ({ ok: true, result: 'encrypted-result' }));
+            const scopedEmit = vi.fn(async (_event: string, payload: { method: string; params: unknown }) => ({ ok: true, result: await boundResponse(payload, { source: 'scoped' }) }));
             createEphemeralSocketSpy.mockResolvedValue({
                 timeout: vi.fn(() => ({ emitWithAck: scopedEmit })),
                 emit: vi.fn(),
@@ -540,10 +553,7 @@ describe('machineRpcWithServerScope', () => {
         machineRpcSpy.mockResolvedValueOnce({ ok: true });
         getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: SECRET_A });
 
-        const machineEncryption = {
-            encryptRaw: vi.fn(async () => 'encrypted-payload'),
-            decryptRaw: vi.fn(async () => ({ decoded: true })),
-        };
+        const machineEncryption = createMachineEncryption();
         createEncryptionSpy.mockResolvedValue({
             decryptEncryptionKey: vi.fn(async () => null),
             initializeMachines: vi.fn(async () => {}),
@@ -552,9 +562,9 @@ describe('machineRpcWithServerScope', () => {
 
         mockScopedMachineFetch({ id: 'machine-1', dataEncryptionKey: null });
 
-        const emitWithAck = vi.fn(async (_event: string, _payload: unknown, _opts?: { timeoutMs?: number }) => ({
+        const emitWithAck = vi.fn(async (_event: string, payload: { method: string; params: unknown }, _opts?: { timeoutMs?: number }) => ({
             ok: true,
-            result: 'encrypted-result',
+            result: await boundResponse(payload, { decoded: true }),
         }));
         const fakeSocket = {
             timeout: vi.fn(() => ({ emitWithAck })),
@@ -587,10 +597,7 @@ describe('machineRpcWithServerScope', () => {
         ]);
         getCredentialsSpy.mockResolvedValue({ token: TOKEN_B, secret: SECRET_B });
 
-        const machineEncryption = {
-            encryptRaw: vi.fn(async () => 'encrypted-payload'),
-            decryptRaw: vi.fn(async () => ({ decoded: true })),
-        };
+        const machineEncryption = createMachineEncryption();
         createEncryptionSpy.mockResolvedValue({
             decryptEncryptionKey: vi.fn(async () => null),
             initializeMachines: vi.fn(async () => {}),
@@ -599,7 +606,7 @@ describe('machineRpcWithServerScope', () => {
 
         mockScopedMachineFetch({ id: 'machine-1', dataEncryptionKey: null });
 
-        const emitWithAck = vi.fn(async () => ({ ok: true, result: 'encrypted-result' }));
+        const emitWithAck = vi.fn(async (_event: string, payload: { method: string; params: unknown }) => ({ ok: true, result: await boundResponse(payload, { decoded: true }) }));
         const fakeSocket = {
             timeout: vi.fn(() => ({ emitWithAck })),
             emit: vi.fn(),
@@ -642,15 +649,15 @@ describe('machineRpcWithServerScope', () => {
         const createEphemeralSocketParams = createEphemeralSocketCall[0];
         expect(createEphemeralSocketParams.timeoutMs).toBeGreaterThan(0);
         expect(createEphemeralSocketParams.timeoutMs).toBeLessThanOrEqual(5_000);
-        expect(machineEncryption.encryptRaw).toHaveBeenCalledWith({ value: 2 });
-        expect(machineEncryption.decryptRaw).toHaveBeenCalledWith('encrypted-result');
+        expect(machineEncryption.encryptRaw).toHaveBeenCalledWith(expect.objectContaining({ v: 2, k: 'req', c: expect.stringMatching(/^[0-9a-f]{32}$/), p: { value: 2 } }));
+        expect(machineEncryption.decryptRaw).toHaveBeenCalledWith(expect.any(String));
         expect(findTelemetryEvent('sync.encryption.machine.encryptRaw.scopedRpc.other')).toMatchObject({
             count: 1,
             fields: { items: 1 },
         });
         expect(emitWithAck).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.CALL, expect.objectContaining({
             method: 'machine-1:method-test',
-            params: 'encrypted-payload',
+            params: expect.any(String),
             timeoutMs: expect.any(Number),
             authorization: {
                 kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.SESSION_WRITE,
@@ -838,10 +845,7 @@ describe('machineRpcWithServerScope', () => {
         machineRpcSpy.mockRejectedValue(new Error('Machine encryption not found for machine-1'));
         getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: SECRET_A });
 
-        const machineEncryption = {
-            encryptRaw: vi.fn(async () => 'encrypted-payload'),
-            decryptRaw: vi.fn(async () => ({ decoded: true })),
-        };
+        const machineEncryption = createMachineEncryption();
         createEncryptionSpy.mockResolvedValue({
             decryptEncryptionKey: vi.fn(async () => null),
             initializeMachines: vi.fn(async () => {}),
@@ -850,7 +854,7 @@ describe('machineRpcWithServerScope', () => {
 
         mockScopedMachineFetch({ id: 'machine-1', dataEncryptionKey: null });
 
-        const emitWithAck = vi.fn(async () => ({ ok: true, result: 'encrypted-result' }));
+        const emitWithAck = vi.fn(async (_event: string, payload: { method: string; params: unknown }) => ({ ok: true, result: await boundResponse(payload, { decoded: true }) }));
         const fakeSocket = {
             timeout: vi.fn(() => ({ emitWithAck })),
             emit: vi.fn(),
@@ -874,8 +878,8 @@ describe('machineRpcWithServerScope', () => {
         }));
         expect((createEphemeralSocketSpy.mock.calls[0]?.[0] as { timeoutMs: number }).timeoutMs).toBeGreaterThan(0);
         expect((createEphemeralSocketSpy.mock.calls[0]?.[0] as { timeoutMs: number }).timeoutMs).toBeLessThanOrEqual(30_000);
-        expect(machineEncryption.encryptRaw).toHaveBeenCalledWith({ value: 3 });
-        expect(machineEncryption.decryptRaw).toHaveBeenCalledWith('encrypted-result');
+        expect(machineEncryption.encryptRaw).toHaveBeenCalledWith(expect.objectContaining({ v: 2, k: 'req', c: expect.stringMatching(/^[0-9a-f]{32}$/), p: { value: 3 } }));
+        expect(machineEncryption.decryptRaw).toHaveBeenCalledWith(expect.any(String));
         expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1);
     });
 
@@ -889,10 +893,7 @@ describe('machineRpcWithServerScope', () => {
         machineRpcSpy.mockRejectedValue(new Error("Cannot read properties of null (reading 'getMachineEncryption')"));
         getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: SECRET_A });
 
-        const machineEncryption = {
-            encryptRaw: vi.fn(async () => 'encrypted-payload'),
-            decryptRaw: vi.fn(async () => ({ decoded: true })),
-        };
+        const machineEncryption = createMachineEncryption();
         createEncryptionSpy.mockResolvedValue({
             decryptEncryptionKey: vi.fn(async () => null),
             initializeMachines: vi.fn(async () => {}),
@@ -901,7 +902,7 @@ describe('machineRpcWithServerScope', () => {
 
         mockScopedMachineFetch({ id: 'machine-1', dataEncryptionKey: null });
 
-        const emitWithAck = vi.fn(async () => ({ ok: true, result: 'encrypted-result' }));
+        const emitWithAck = vi.fn(async (_event: string, payload: { method: string; params: unknown }) => ({ ok: true, result: await boundResponse(payload, { decoded: true }) }));
         const fakeSocket = {
             timeout: vi.fn(() => ({ emitWithAck })),
             emit: vi.fn(),
@@ -923,8 +924,8 @@ describe('machineRpcWithServerScope', () => {
             token: TOKEN_A,
             timeoutMs: expect.any(Number),
         }));
-        expect(machineEncryption.encryptRaw).toHaveBeenCalledWith({ value: 5 });
-        expect(machineEncryption.decryptRaw).toHaveBeenCalledWith('encrypted-result');
+        expect(machineEncryption.encryptRaw).toHaveBeenCalledWith(expect.objectContaining({ v: 2, k: 'req', c: expect.stringMatching(/^[0-9a-f]{32}$/), p: { value: 5 } }));
+        expect(machineEncryption.decryptRaw).toHaveBeenCalledWith(expect.any(String));
         expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1);
     });
 
@@ -940,10 +941,7 @@ describe('machineRpcWithServerScope', () => {
         }));
         getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: SECRET_A });
 
-        const machineEncryption = {
-            encryptRaw: vi.fn(async () => 'encrypted-payload'),
-            decryptRaw: vi.fn(async () => ({ decoded: true })),
-        };
+        const machineEncryption = createMachineEncryption();
         createEncryptionSpy.mockResolvedValue({
             decryptEncryptionKey: vi.fn(async () => null),
             initializeMachines: vi.fn(async () => {}),
@@ -952,7 +950,7 @@ describe('machineRpcWithServerScope', () => {
 
         mockScopedMachineFetch({ id: 'machine-1', dataEncryptionKey: null });
 
-        const emitWithAck = vi.fn(async () => ({ ok: true, result: 'encrypted-result' }));
+        const emitWithAck = vi.fn(async (_event: string, payload: { method: string; params: unknown }) => ({ ok: true, result: await boundResponse(payload, { decoded: true }) }));
         const fakeSocket = {
             timeout: vi.fn(() => ({ emitWithAck })),
             emit: vi.fn(),
@@ -1003,8 +1001,8 @@ describe('machineRpcWithServerScope', () => {
             payload,
             expect.objectContaining({ timeoutMs: expect.any(Number) }),
         );
-        expect(machineEncryption.encryptRaw).toHaveBeenCalledWith(payload);
-        expect(machineEncryption.decryptRaw).toHaveBeenCalledWith('encrypted-result');
+        expect(machineEncryption.encryptRaw).toHaveBeenCalledWith(expect.objectContaining({ v: 2, k: 'req', c: expect.stringMatching(/^[0-9a-f]{32}$/), p: payload }));
+        expect(machineEncryption.decryptRaw).toHaveBeenCalledWith(expect.any(String));
         expect(findTelemetryEvent('sync.encryption.machine.encryptRaw.scopedRpc.sessionWrite')).toMatchObject({
             count: 1,
             fields: { items: 1 },
@@ -1026,10 +1024,7 @@ describe('machineRpcWithServerScope', () => {
         machineRpcSpy.mockImplementation(() => new Promise(() => {}));
         getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: SECRET_A });
 
-        const machineEncryption = {
-            encryptRaw: vi.fn(async () => 'encrypted-payload'),
-            decryptRaw: vi.fn(async () => ({ decoded: true })),
-        };
+        const machineEncryption = createMachineEncryption();
         createEncryptionSpy.mockResolvedValue({
             decryptEncryptionKey: vi.fn(async () => null),
             initializeMachines: vi.fn(async () => {}),
@@ -1038,7 +1033,7 @@ describe('machineRpcWithServerScope', () => {
 
         mockScopedMachineFetch({ id: 'machine-1', dataEncryptionKey: null });
 
-        const emitWithAck = vi.fn(async () => ({ ok: true, result: 'encrypted-result' }));
+        const emitWithAck = vi.fn(async (_event: string, payload: { method: string; params: unknown }) => ({ ok: true, result: await boundResponse(payload, { decoded: true }) }));
         const fakeSocket = {
             timeout: vi.fn(() => ({ emitWithAck })),
             emit: vi.fn(),
@@ -1064,11 +1059,11 @@ describe('machineRpcWithServerScope', () => {
             token: TOKEN_A,
             timeoutMs: 1_000,
         }));
-        expect(machineEncryption.encryptRaw).toHaveBeenCalledWith({ handoffId: 'handoff_1' });
-        expect(machineEncryption.decryptRaw).toHaveBeenCalledWith('encrypted-result');
+        expect(machineEncryption.encryptRaw).toHaveBeenCalledWith(expect.objectContaining({ v: 2, k: 'req', c: expect.stringMatching(/^[0-9a-f]{32}$/), p: { handoffId: 'handoff_1' } }));
+        expect(machineEncryption.decryptRaw).toHaveBeenCalledWith(expect.any(String));
         expect(emitWithAck).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.CALL, {
             method: 'machine-1:daemon.sessionHandoff.prepareTarget',
-            params: 'encrypted-payload',
+            params: expect.any(String),
             timeoutMs: 1_000,
         });
         expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1);
@@ -1115,10 +1110,7 @@ describe('machineRpcWithServerScope', () => {
         });
         getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: SECRET_A });
 
-        const machineEncryption = {
-            encryptRaw: vi.fn(async () => 'encrypted-payload'),
-            decryptRaw: vi.fn(async () => ({ decoded: true })),
-        };
+        const machineEncryption = createMachineEncryption();
         createEncryptionSpy.mockResolvedValue({
             decryptEncryptionKey: vi.fn(async () => null),
             initializeMachines: vi.fn(async () => {}),
@@ -1162,10 +1154,7 @@ describe('machineRpcWithServerScope', () => {
         });
         getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: SECRET_A });
 
-        const machineEncryption = {
-            encryptRaw: vi.fn(async () => 'encrypted-payload'),
-            decryptRaw: vi.fn(async () => ({ decoded: true })),
-        };
+        const machineEncryption = createMachineEncryption();
         createEncryptionSpy.mockResolvedValue({
             decryptEncryptionKey: vi.fn(async () => null),
             initializeMachines: vi.fn(async () => {}),
@@ -1217,10 +1206,7 @@ describe('machineRpcWithServerScope', () => {
         });
         getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: SECRET_A });
 
-        const machineEncryption = {
-            encryptRaw: vi.fn(async () => 'encrypted-payload'),
-            decryptRaw: vi.fn(async () => ({ decoded: true })),
-        };
+        const machineEncryption = createMachineEncryption();
         createEncryptionSpy.mockResolvedValue({
             decryptEncryptionKey: vi.fn(async () => null),
             initializeMachines: vi.fn(async () => {}),
@@ -1229,7 +1215,7 @@ describe('machineRpcWithServerScope', () => {
 
         mockScopedMachineFetch({ id: 'machine-1', dataEncryptionKey: null });
 
-        const emitWithAck = vi.fn(async () => ({ ok: true, result: 'encrypted-result' }));
+        const emitWithAck = vi.fn(async (_event: string, payload: { method: string; params: unknown }) => ({ ok: true, result: await boundResponse(payload, { decoded: true }) }));
         const fakeSocket = {
             timeout: vi.fn(() => ({ emitWithAck })),
             emit: vi.fn(),
@@ -1255,8 +1241,8 @@ describe('machineRpcWithServerScope', () => {
         }));
         expect((createEphemeralSocketSpy.mock.calls[0]?.[0] as { timeoutMs: number }).timeoutMs).toBeGreaterThan(0);
         expect((createEphemeralSocketSpy.mock.calls[0]?.[0] as { timeoutMs: number }).timeoutMs).toBeLessThanOrEqual(1_000);
-        expect(machineEncryption.encryptRaw).toHaveBeenCalledWith({ handoffId: 'handoff_1' });
-        expect(machineEncryption.decryptRaw).toHaveBeenCalledWith('encrypted-result');
+        expect(machineEncryption.encryptRaw).toHaveBeenCalledWith(expect.objectContaining({ v: 2, k: 'req', c: expect.stringMatching(/^[0-9a-f]{32}$/), p: { handoffId: 'handoff_1' } }));
+        expect(machineEncryption.decryptRaw).toHaveBeenCalledWith(expect.any(String));
         expect(fakeSocket.disconnect).toHaveBeenCalledTimes(1);
     });
 });

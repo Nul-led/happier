@@ -2,13 +2,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RPC_ERROR_CODES } from '@happier-dev/protocol/rpc';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import { resetScopedMachineTransportCacheForTests } from './serverScopedRpcPool';
+import { socketRpcCodec } from '@happier-dev/sync-client';
+import { MachineEncryption } from '@/sync/encryption/machineEncryption';
+import { SecretBoxEncryption } from '@/sync/encryption/encryptor';
+import { EncryptionCache } from '@/sync/encryption/encryptionCache';
+
+const TOKEN_A = `header.${btoa(JSON.stringify({ sub: 'account-a' }))}.signature`;
+const SECRET_A = btoa('a'.repeat(32));
+
+function createMachineEncryption() {
+  return new MachineEncryption('machine-1', new SecretBoxEncryption(new Uint8Array(32).fill(17)), new EncryptionCache());
+}
 
 const machineRpcSpy = vi.hoisted(() => vi.fn());
 const createEphemeralSocketSpy = vi.hoisted(() => vi.fn());
 const getCredentialsSpy = vi.hoisted(() => vi.fn());
 const createEncryptionSpy = vi.hoisted(() => vi.fn());
 const listServerProfilesSpy = vi.hoisted(() => vi.fn());
-const getActiveServerSnapshotSpy = vi.hoisted(() => vi.fn());
+const getActiveServerSnapshotSpy = vi.hoisted(() => vi.fn(() => ({
+  serverId: 'server-a', serverUrl: 'https://server-a.example.test', kind: 'custom', generation: 1,
+})));
 const runtimeFetchWithServerReachabilitySpy = vi.hoisted(() => vi.fn());
 
 vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
@@ -39,9 +52,9 @@ vi.mock('@/auth/encryption/createEncryptionFromAuthCredentials', () => ({
   createEncryptionFromAuthCredentials: (...args: unknown[]) => createEncryptionSpy(...args),
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', async () => {
-  const { createServerProfilesModuleMock } = await import('@/dev/testkit/mocks/serverProfiles');
-  return createServerProfilesModuleMock({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+  const { createPartialServerProfilesModuleMock } = await import('@/dev/testkit/mocks/serverProfiles');
+  return createPartialServerProfilesModuleMock(importOriginal, {
     listServerProfiles: (...args: unknown[]) => listServerProfilesSpy(...args),
   });
 });
@@ -61,9 +74,9 @@ describe('machineRpcWithServerScope (retry)', () => {
     listServerProfilesSpy.mockReset();
     getActiveServerSnapshotSpy.mockReset();
     runtimeFetchWithServerReachabilitySpy.mockReset();
-    runtimeFetchWithServerReachabilitySpy.mockResolvedValue(Response.json([
-      { id: 'machine-1', dataEncryptionKey: null },
-    ]));
+    runtimeFetchWithServerReachabilitySpy.mockImplementation(async () => Response.json({
+      machine: { id: 'machine-1', dataEncryptionKey: null },
+    }));
     getActiveServerSnapshotSpy.mockReturnValue({
       serverId: 'server-a',
       serverUrl: 'https://server-a.example.test',
@@ -79,12 +92,9 @@ describe('machineRpcWithServerScope (retry)', () => {
   });
 
   it('retries once when the scoped rpc method is not available', async () => {
-    getCredentialsSpy.mockResolvedValue({ token: 'token-a', secret: 'secret-a' });
+    getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: SECRET_A });
 
-    const machineEncryption = {
-      encryptRaw: vi.fn(async () => 'encrypted-payload'),
-      decryptRaw: vi.fn(async () => ({ ok: true })),
-    };
+    const machineEncryption = createMachineEncryption();
     createEncryptionSpy.mockResolvedValue({
       decryptEncryptionKey: vi.fn(async () => null),
       initializeMachines: vi.fn(async () => {}),
@@ -98,9 +108,10 @@ describe('machineRpcWithServerScope (retry)', () => {
         error: 'RPC method not available',
         errorCode: RPC_ERROR_CODES.METHOD_NOT_AVAILABLE,
       })
-      .mockResolvedValueOnce({
-        ok: true,
-        result: 'encrypted-result',
+      .mockImplementationOnce(async (_event: string, payload: { method: string; params: unknown }) => {
+        const content = { mode: 'e2ee' as const, cipher: machineEncryption };
+        const request = await socketRpcCodec.decodeRequestParams(content, payload.params, payload.method);
+        return { ok: true, result: await socketRpcCodec.encodeResponse(content, { ok: true }, request.callId) };
       });
 
     const fakeSocket = {
@@ -128,7 +139,7 @@ describe('machineRpcWithServerScope (retry)', () => {
     expect(emitWithAckSpy).toHaveBeenCalledTimes(2);
     expect(emitWithAckSpy).toHaveBeenNthCalledWith(1, SOCKET_RPC_EVENTS.CALL, expect.objectContaining({
       method: 'machine-1:method-test',
-      params: 'encrypted-payload',
+      params: expect.any(String),
       timeoutMs: expect.any(Number),
     }));
     expect((emitWithAckSpy.mock.calls[0]?.[1] as { timeoutMs: number }).timeoutMs).toBeGreaterThan(0);
@@ -136,11 +147,8 @@ describe('machineRpcWithServerScope (retry)', () => {
   });
 
   it('does not retry a scoped exact machine RPC after the real socket emit is issued', async () => {
-    getCredentialsSpy.mockResolvedValue({ token: 'token-a', secret: 'secret-a' });
-    const machineEncryption = {
-      encryptRaw: vi.fn(async () => 'encrypted-payload'),
-      decryptRaw: vi.fn(async () => ({ ok: true })),
-    };
+    getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: SECRET_A });
+    const machineEncryption = createMachineEncryption();
     createEncryptionSpy.mockResolvedValue({
       decryptEncryptionKey: vi.fn(async () => null),
       initializeMachines: vi.fn(async () => {}),

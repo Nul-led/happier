@@ -14,6 +14,10 @@ import { registerBrowserRuntimeControlAdapter } from '@/sync/domains/browser/act
 import { applyBrowserControlEvent, createBrowserControlState } from '@/sync/domains/browser/control';
 import { buildBrowserAdapterCapabilities } from '@/sync/domains/browser/adapters/capabilities';
 import { apiSocket } from './apiSocket';
+import { socketRpcCodec } from '@happier-dev/sync-client';
+import { MachineEncryption } from '@/sync/encryption/machineEncryption';
+import { SecretBoxEncryption } from '@/sync/encryption/encryptor';
+import { EncryptionCache } from '@/sync/encryption/encryptionCache';
 
 type SocketEventHandler = (...args: unknown[]) => void;
 type SocketStub = ReturnType<typeof createSocketIoBoundaryStub>['socket'];
@@ -38,34 +42,17 @@ vi.mock('@/sync/runtime/connectivity/serverReachabilitySupervisorPool', async (i
     };
 });
 
-/**
- * Reversible test "encryption": prefixes a JSON encoding so encrypt/decrypt round-trip is symmetric
- * exactly like the daemon<->UI machine envelope (daemon encrypt -> UI decryptRaw, UI encryptRaw ->
- * daemon decrypt). Lets the test drive the real apiSocket dispatch path without real crypto.
- */
-function createFakeMachineEncryption() {
-    return {
-        encryptRaw: vi.fn(async (data: unknown): Promise<string> => `enc:${JSON.stringify(data ?? null)}`),
-        decryptRaw: vi.fn(async (encrypted: string): Promise<unknown> => {
-            if (typeof encrypted !== 'string' || !encrypted.startsWith('enc:')) return null;
-            try {
-                return JSON.parse(encrypted.slice('enc:'.length));
-            } catch {
-                return null;
-            }
-        }),
-    };
+function createMachineEncryption() {
+    return new MachineEncryption('machine-1', new SecretBoxEncryption(new Uint8Array(32).fill(17)), new EncryptionCache());
 }
-
-function machineEncryptParams(data: unknown): string {
-    return `enc:${JSON.stringify(data ?? null)}`;
+const callId = '0123456789abcdef0123456789abcdef';
+const callerContent = { mode: 'e2ee' as const, cipher: createMachineEncryption() };
+async function invokeMachineRpc(handler: SocketEventHandler, method: string, data: unknown, requestId?: string) {
+    const params = await socketRpcCodec.encodeParams(callerContent, data, { method, callId });
+    return new Promise<unknown>(resolve => handler({ method, params, ...(requestId ? { requestId } : {}) }, resolve));
 }
-
-function machineDecryptAck(ack: unknown): unknown {
-    if (typeof ack !== 'string' || !ack.startsWith('enc:')) {
-        throw new Error(`Expected machine-encrypted ack, received: ${String(ack)}`);
-    }
-    return JSON.parse(ack.slice('enc:'.length));
+function machineDecryptAck(ack: unknown) {
+    return socketRpcCodec.decodeResult(callerContent, { ok: true, result: ack }, callId);
 }
 
 function createSocketStub() { return createSocketIoBoundaryStub(); }
@@ -108,9 +95,24 @@ afterEach(() => {
 });
 
 describe('apiSocket inbound machine-scoped reverse RPC (RU2 G1)', () => {
+    it('refuses redirected and unbound requests before invoking the reverse handler', async () => {
+        const { socket } = createSocketStub();
+        await bootApiSocket({ socket, getMachineEncryption: () => createMachineEncryption() });
+        let effects = 0;
+        apiSocket.registerMachineScopedRpcHandler('machine-1', 'ui.delete', async () => { effects += 1; return { deleted: true }; });
+        const receive = getRegisteredHandler(socket, SOCKET_RPC_EVENTS.REQUEST)!;
+        const params = await socketRpcCodec.encodeParams(callerContent, { path: 'keep' }, { method: 'machine-1:ui.stat', callId });
+        const redirected = await new Promise<unknown>(resolve => receive({ method: 'machine-1:ui.delete', params }, resolve));
+        await expect(machineDecryptAck(redirected)).rejects.toMatchObject({ rpcErrorCode: RPC_ERROR_CODES.UPDATE_REQUIRED });
+        const unbound = await callerContent.cipher.encryptRaw({ path: 'keep' });
+        const refused = await new Promise<unknown>(resolve => receive({ method: 'machine-1:ui.delete', params: unbound }, resolve));
+        await expect(machineDecryptAck(refused)).rejects.toMatchObject({ rpcErrorCode: RPC_ERROR_CODES.UPDATE_REQUIRED });
+        expect(effects).toBe(0);
+    });
+
     it.each(['cancel', 'disconnect', 'retire'] as const)('delivers reverse RPC %s to the deferred page owner', async (interruption) => {
         const { socket, trigger } = createSocketStub();
-        await bootApiSocket({ socket, getMachineEncryption: () => createFakeMachineEncryption() });
+        await bootApiSocket({ socket, getMachineEncryption: () => createMachineEncryption() });
         const view = { browserSessionId: 'socket-session', viewId: 'socket-view', sessionId: 'happier-session' };
         let began!: () => void;
         const started = new Promise<void>(resolve => { began = resolve; });
@@ -137,14 +139,13 @@ describe('apiSocket inbound machine-scoped reverse RPC (RU2 G1)', () => {
             control: { readState: () => state, applyDispatchResult: () => {} }, automation: { controlService: service } });
         const disposeHandler = apiSocket.installBrowserAutomationReverseDispatch('machine-1', view);
         const receive = getRegisteredHandler(socket, SOCKET_RPC_EVENTS.REQUEST)!;
-        const ack = new Promise<unknown>(resolve => receive({ requestId: 'effect-request',
-            method: `machine-1:${uiBrowserAutomationDispatchMethod(view)}`, params: machineEncryptParams({
+        const ack = invokeMachineRpc(receive, `machine-1:${uiBrowserAutomationDispatchMethod(view)}`, {
                 v: 1, sessionId: view.sessionId, actionId: 'browser.automation.click', authority: 'account_automation', input: {
                     v: 1, browserSessionId: view.browserSessionId, viewId: view.viewId, automationRequestId: 'socket-click',
                     actionKind: 'click', navigationGeneration: 0, requestedBy: 'agent', requesterRef: { kind: 'agent', id: 'agent' },
                     timeoutMs: 1000, payload: { selector: '#go' },
                 },
-            }) }, resolve));
+            }, 'effect-request');
         try {
             await started;
             if (interruption === 'cancel') trigger(SOCKET_RPC_EVENTS.CANCEL, { requestId: 'effect-request' });
@@ -153,7 +154,7 @@ describe('apiSocket inbound machine-scoped reverse RPC (RU2 G1)', () => {
             expect(effectSignal?.aborted).toBe(true);
         } finally {
             settle();
-            expect(machineDecryptAck(await ack)).toMatchObject({ status: 'interrupted', completion: 'unknown' });
+            expect(await machineDecryptAck(await ack)).toMatchObject({ status: 'interrupted', completion: 'unknown' });
             disposeHandler();
             disposeOwner();
         }
@@ -161,7 +162,7 @@ describe('apiSocket inbound machine-scoped reverse RPC (RU2 G1)', () => {
 
     it('dispatches encrypted automation to the existing mounted owner and retires its exact handler', async () => {
         const { socket } = createSocketStub();
-        const apiSocket = await bootApiSocket({ socket, getMachineEncryption: () => createFakeMachineEncryption() });
+        const apiSocket = await bootApiSocket({ socket, getMachineEncryption: () => createMachineEncryption() });
         const view = { browserSessionId: 'socket-session', viewId: 'socket-view', sessionId: 'happier-session' };
         const service = createBrowserAutomationControlService({ nowMs: Date.now });
         service.registerOwner({ ...view, ownerId: 'socket-engine', authority: 'uiLocal', navigationGeneration: 0,
@@ -180,19 +181,19 @@ describe('apiSocket inbound machine-scoped reverse RPC (RU2 G1)', () => {
         const disposeHandler = apiSocket.installBrowserAutomationReverseDispatch('machine-1', view);
         const method = `machine-1:${uiBrowserAutomationDispatchMethod(view)}`;
         const requestHandler = getRegisteredHandler(socket, SOCKET_RPC_EVENTS.REQUEST)!;
-        const call = () => new Promise<unknown>((resolve) => requestHandler({ method, params: machineEncryptParams({
+        const call = () => invokeMachineRpc(requestHandler, method, {
             v: 1, sessionId: view.sessionId, actionId: 'browser.automation.click', authority: 'account_automation', input: {
                 v: 1, browserSessionId: view.browserSessionId, viewId: view.viewId, automationRequestId: 'socket-click', actionKind: 'click', navigationGeneration: 0,
                 requestedBy: 'agent', requesterRef: { kind: 'agent', id: 'agent' }, timeoutMs: 1000, payload: { selector: '#go' },
             },
-        }) }, resolve));
+        });
         try {
-            const ack = machineDecryptAck(await call());
+            const ack = await machineDecryptAck(await call());
             expect(ack).toMatchObject({ status: 'succeeded', trustedInput: false, resultSummary: { clicked: true } });
             expect(JSON.stringify(ack)).not.toContain('private-cookie');
             disposeHandler();
             expect(emittedMethods(socket, SOCKET_RPC_EVENTS.UNREGISTER)).toContain(method);
-            expect(machineDecryptAck(await call())).toMatchObject({ errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND });
+            expect(await machineDecryptAck(await call())).toMatchObject({ errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND });
         } finally {
             disposeHandler();
             disposeOwner();
@@ -255,7 +256,7 @@ describe('apiSocket inbound machine-scoped reverse RPC (RU2 G1)', () => {
 
     it('registers a machine-scoped handler and round-trips request -> handler -> encrypted ack', async () => {
         const { socket } = createSocketStub();
-        const machineEnc = createFakeMachineEncryption();
+        const machineEnc = createMachineEncryption();
         const apiSocket = await bootApiSocket({
             socket,
             getMachineEncryption: (id) => (id === 'machine-1' ? machineEnc : null),
@@ -268,22 +269,17 @@ describe('apiSocket inbound machine-scoped reverse RPC (RU2 G1)', () => {
         expect(emittedMethods(socket, SOCKET_RPC_EVENTS.REGISTER)).toContain('machine-1:ui.demo.method');
 
         const requestHandler = getRegisteredHandler(socket, SOCKET_RPC_EVENTS.REQUEST)!;
-        const ack = await new Promise<unknown>((resolve) => {
-            void requestHandler(
-                { method: 'machine-1:ui.demo.method', params: machineEncryptParams({ hello: 'world' }) },
-                resolve,
-            );
-        });
+        const ack = await invokeMachineRpc(requestHandler, 'machine-1:ui.demo.method', { hello: 'world' });
 
         // Params were decrypted with the machine key before reaching the handler.
         expect(handler).toHaveBeenCalledWith({ hello: 'world' }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
         // The ack was re-encrypted with the machine key and carries the handler result.
-        expect(machineDecryptAck(ack)).toEqual({ echoed: { hello: 'world' } });
+        expect(await machineDecryptAck(ack)).toEqual({ echoed: { hello: 'world' } });
     });
 
     it('fails closed for an unknown method and for a machine with no encryption', async () => {
         const { socket } = createSocketStub();
-        const machineEnc = createFakeMachineEncryption();
+        const machineEnc = createMachineEncryption();
         await bootApiSocket({
             socket,
             getMachineEncryption: (id) => (id === 'machine-1' ? machineEnc : null),
@@ -291,30 +287,17 @@ describe('apiSocket inbound machine-scoped reverse RPC (RU2 G1)', () => {
         const requestHandler = getRegisteredHandler(socket, SOCKET_RPC_EVENTS.REQUEST)!;
 
         // Unknown method on a decryptable machine -> encrypted METHOD_NOT_FOUND (daemon treats as no UI).
-        const unknownAck = await new Promise<unknown>((resolve) => {
-            void requestHandler(
-                { method: 'machine-1:ui.unregistered', params: machineEncryptParams({}) },
-                resolve,
-            );
-        });
-        expect(machineDecryptAck(unknownAck)).toMatchObject({ errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND });
+        const unknownAck = await invokeMachineRpc(requestHandler, 'machine-1:ui.unregistered', {});
+        expect(await machineDecryptAck(unknownAck)).toMatchObject({ errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND });
 
         // No machine encryption -> fail closed without ever decrypting/encrypting (isolate this path).
-        machineEnc.encryptRaw.mockClear();
-        machineEnc.decryptRaw.mockClear();
-        const noKeyAck = await new Promise<unknown>((resolve) => {
-            void requestHandler(
-                { method: 'machine-unknown:ui.demo.method', params: machineEncryptParams({}) },
-                resolve,
-            );
-        });
+        const noKeyAck = await invokeMachineRpc(requestHandler, 'machine-unknown:ui.demo.method', {});
         expect(noKeyAck).toMatchObject({ errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND });
-        expect(machineEnc.encryptRaw).not.toHaveBeenCalled();
     });
 
     it('re-registers inbound rooms on reconnect and stops routing after dispose', async () => {
         const { socket } = createSocketStub();
-        const machineEnc = createFakeMachineEncryption();
+        const machineEnc = createMachineEncryption();
         const apiSocket = await bootApiSocket({
             socket,
             getMachineEncryption: (id) => (id === 'machine-1' ? machineEnc : null),
@@ -332,19 +315,14 @@ describe('apiSocket inbound machine-scoped reverse RPC (RU2 G1)', () => {
         expect(emittedMethods(socket, SOCKET_RPC_EVENTS.UNREGISTER)).toContain('machine-1:ui.demo.method');
 
         const requestHandler = getRegisteredHandler(socket, SOCKET_RPC_EVENTS.REQUEST)!;
-        const ack = await new Promise<unknown>((resolve) => {
-            void requestHandler(
-                { method: 'machine-1:ui.demo.method', params: machineEncryptParams({}) },
-                resolve,
-            );
-        });
+        const ack = await invokeMachineRpc(requestHandler, 'machine-1:ui.demo.method', {});
         // Method is no longer handled -> fail closed.
-        expect(machineDecryptAck(ack)).toMatchObject({ errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND });
+        expect(await machineDecryptAck(ack)).toMatchObject({ errorCode: RPC_ERROR_CODES.METHOD_NOT_FOUND });
     });
 
     it('installBrowserRecordingReverseCapture routes to the reverse-capture handler and returns a contract-valid ack', async () => {
         const { socket } = createSocketStub();
-        const machineEnc = createFakeMachineEncryption();
+        const machineEnc = createMachineEncryption();
         const apiSocket = await bootApiSocket({
             socket,
             getMachineEncryption: (id) => (id === 'machine-1' ? machineEnc : null),
@@ -364,14 +342,12 @@ describe('apiSocket inbound machine-scoped reverse RPC (RU2 G1)', () => {
             maxBytes: 16_000_000,
         };
         const requestHandler = getRegisteredHandler(socket, SOCKET_RPC_EVENTS.REQUEST)!;
-        const ack = await new Promise<unknown>((resolve) => {
-            void requestHandler({ method: prefixed, params: machineEncryptParams(request) }, resolve);
-        });
+        const ack = await invokeMachineRpc(requestHandler, prefixed, request);
 
         // The inbound request reached the real UI reverse-capture handler and produced a
         // contract-valid, machine-encrypted reference-only response. (Outside Tauri the native
         // capture is unavailable, so the handler fails closed inside a valid response envelope.)
-        const decoded = machineDecryptAck(ack);
+        const decoded = await machineDecryptAck(ack);
         const parsed = UiBrowserRecordingCaptureFrameResponseV1Schema.safeParse(decoded);
         expect(parsed.success).toBe(true);
         expect(parsed.success && parsed.data.result.ok).toBe(false);

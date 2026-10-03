@@ -4,6 +4,7 @@ import {
     markRpcRequestDisposition,
     readRpcRequestDisposition,
 } from '@happier-dev/sync-client';
+import { getRandomBytes } from '@/platform/cryptoRandom';
 import { RPC_ERROR_CODES, RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { readRpcErrorCode } from '@happier-dev/protocol/rpcErrors';
 
@@ -401,6 +402,7 @@ async function machineRpcWithServerTransport<R, A>(
                 async (timeoutMs) => {
                     try {
                         return await callSocketRpc<R>({
+                            randomBytes: getRandomBytes,
                             socket,
                             target: { kind: 'machine', id: context.machineId },
                             method: params.method,

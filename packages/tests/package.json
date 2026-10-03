@@ -130,6 +130,7 @@
     "@happier-dev/plugin-sdk": "0.0.0",
     "@happier-dev/release-runtime": "0.0.0",
     "@happier-dev/protocol": "0.0.0",
+    "@happier-dev/sync-client": "0.0.0",
     "@peculiar/x509": "^1.12.3",
     "bplist-parser": "^0.3.2",
     "fastify": "^5.6.2",

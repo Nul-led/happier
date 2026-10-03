@@ -1,4 +1,5 @@
-import { decryptLegacyBase64, encryptLegacyBase64 } from './messageCrypto';
+import { encryptLegacyBase64 } from './messageCrypto';
+import { createLegacyRpcClient, type RpcSocket } from './syntheticAgent/rpcClient';
 import { waitFor } from './timing';
 
 type RpcAck = { ok?: boolean; result?: string; error?: string; errorCode?: string };
@@ -59,7 +60,7 @@ function describeInvalidResponseShape(value: unknown): string {
 }
 
 export async function callEncryptedMachineRpc<TReq, TRes>(params: {
-  ui: { rpcCall: (method: string, encryptedParams: string) => Promise<unknown> };
+  ui: RpcSocket;
   machineId: string;
   method: string;
   req: TReq;
@@ -70,21 +71,20 @@ export async function callEncryptedMachineRpc<TReq, TRes>(params: {
   let out: TRes | null = null;
   let lastSchemaError: unknown = null;
   let lastInvalidResponseShape: string | null = null;
-  const encryptedParams = encryptLegacyBase64(params.req, params.secret);
+  const client = createLegacyRpcClient(params.ui, params.secret);
 
   try {
     await waitFor(
       async () => {
-        const res = normalizeRpcAck(await params.ui.rpcCall(`${params.machineId}:${params.method}`, encryptedParams));
-        if (res && (res.ok === false || typeof res.errorCode === 'string' || typeof res.error === 'string')) {
+        const res = await client.call(`${params.machineId}:${params.method}`, params.req);
+        if (res.ok === false) {
           throw new ExplicitMachineRpcError({
             method: params.method,
             errorCode: res.errorCode,
             error: res.error,
           });
         }
-        if (!res || res.ok !== true || typeof res.result !== 'string') return false;
-        const decrypted = decryptLegacyBase64(res.result, params.secret);
+        const decrypted = res.result;
         const parsed = params.schema.safeParse(decrypted);
         if (!parsed.success) {
           const handlerError = normalizeRpcAck(decrypted);

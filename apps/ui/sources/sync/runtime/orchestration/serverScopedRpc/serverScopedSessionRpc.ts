@@ -4,6 +4,7 @@ import {
   markRpcRequestDisposition,
   readRpcRequestDisposition,
 } from '@happier-dev/sync-client';
+import { getRandomBytes } from '@/platform/cryptoRandom';
 import {
   RPC_ERROR_CODES,
   resolveSocketRpcSessionAuthorization,
@@ -96,6 +97,7 @@ async function callScopedSessionRpc<R, A>(params: Readonly<{
     if (params.signal?.aborted) throw createSocketRpcAbortError();
     if (cryptoContext.encryptionMode === 'plain') {
       return await callSocketRpc<R>({
+        randomBytes: getRandomBytes,
         socket,
         target: { kind: 'session', id: params.sessionId },
         method: params.method,
@@ -136,6 +138,7 @@ async function callScopedSessionRpc<R, A>(params: Readonly<{
     }
 
     return await callSocketRpc<R>({
+      randomBytes: getRandomBytes,
       socket,
       target: { kind: 'session', id: params.sessionId },
       method: params.method,
