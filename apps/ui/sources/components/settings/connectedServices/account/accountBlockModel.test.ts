@@ -7,6 +7,7 @@ import {
     resolveAccountHealthVariant,
     resolveAccountHealthDotColor,
     resolveAccountUsageRows,
+    resolveAccountCapacityRings,
 } from './accountBlockModel';
 
 function meterRow(overrides: Partial<ConnectedServiceQuotaGaugeMeterRow>): ConnectedServiceQuotaGaugeMeterRow {
@@ -27,6 +28,11 @@ function meterRow(overrides: Partial<ConnectedServiceQuotaGaugeMeterRow>): Conne
 
 describe('accountBlockModel', () => {
     describe('resolveAccountUsageRows', () => {
+        it('preserves unknown percentages in details without inventing a capacity ring', () => {
+            const rows = resolveAccountUsageRows([meterRow({ remainingPct: null, usedPct: null })]);
+            expect(rows[0]?.remaining).toBeNull();
+            expect(resolveAccountCapacityRings(rows)).toEqual([]);
+        });
         it('maps gauge meter rows to MeterTone-driven usage rows with a single remaining-first fill', () => {
             const rows = resolveAccountUsageRows([
                 meterRow({ meterId: 'weekly', label: 'Weekly', remainingPct: 60, detailRightLabel: '60% left' }),

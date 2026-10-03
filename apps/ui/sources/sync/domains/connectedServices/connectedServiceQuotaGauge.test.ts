@@ -8,6 +8,7 @@ import type {
 import {
     type ConnectedServiceQuotaGaugeLabelFormatter,
     computeConnectedServiceQuotaGaugeViewModel,
+    buildConnectedServiceQuotaGaugeMeterRows,
     deriveConnectedServiceQuotaSnapshotFromRuntimeIssue,
     resolveConnectedServiceQuotaGaugeSource,
     selectConnectedServiceSessionProviderUsageGaugeSource,
@@ -58,6 +59,18 @@ const formatter: ConnectedServiceQuotaGaugeLabelFormatter = {
 };
 
 describe('computeConnectedServiceQuotaGaugeViewModel', () => {
+    it('keeps unmeasured reported windows in details even when no composer ring can be ranked', () => {
+        const unknown = meter({ meterId: 'reached', label: 'Reached', status: 'unavailable', resetsAt: 62_000, details: { limitCategory: 'usage_limit' } });
+        expect(buildConnectedServiceQuotaGaugeMeterRows([unknown], 2_000, formatter)).toMatchObject([
+            { meterId: 'reached', remainingPct: null, usedPct: null, resetLabel: '1m' },
+        ]);
+        const vm = computeConnectedServiceQuotaGaugeViewModel({
+            snapshot: snapshot([meter({ meterId: 'weekly', label: 'Weekly', used: 82, limit: 100 }), unknown]),
+            windowMode: 'most_constrained', nowMs: 2_000, formatter,
+        });
+        expect(vm?.allMeterRows.map((row) => row.meterId)).toEqual(['weekly', 'reached']);
+        expect(vm?.usageRings.map((ring) => ring.meterId)).toEqual(['weekly']);
+    });
     it('retains subscription lifecycle independently of fresh quota meters', () => {
         const subscription = {
             status: 'subscribed' as const,
@@ -88,7 +101,7 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
                 meter({ meterId: 'daily', label: 'Daily', used: 70, limit: 100 }),
                 meter({ meterId: 'weekly', label: 'Weekly', used: 88, limit: 100 }),
                 meter({ meterId: 'capacity', label: 'Capacity', used: 99, limit: 100, details: capacityDetails }),
-                meter({ meterId: 'auth', label: 'Auth', used: 99, limit: 100, status: 'unavailable' }),
+                meter({ meterId: 'auth', label: 'Auth', used: 99, limit: 100, status: 'unavailable', details: { limitCategory: 'auth_invalid' } }),
             ]),
             windowMode: 'most_constrained',
             nowMs: 2_000,

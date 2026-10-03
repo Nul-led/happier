@@ -291,7 +291,7 @@ export const AgentInputProviderUsageBadge = React.memo(function AgentInputProvid
                                         {row.detailRightLabel}
                                     </Text>
                                 </View>
-                                <MeterBar
+                                {row.remainingPct !== null ? <MeterBar
                                     testID={`agent-input-provider-usage-meter-bar:${row.meterId}`}
                                     tone={mapGaugeToneToMeterTone(row.tone)}
                                     // Remaining-first fill: the adjacent label says "% left" and the
@@ -299,7 +299,7 @@ export const AgentInputProviderUsageBadge = React.memo(function AgentInputProvid
                                     // (battery model; user decision 2026-07-10, reverting 5ad4d06be).
                                     fillFraction={row.remainingPct / 100}
                                     height={5}
-                                />
+                                /> : null}
                                 {row.usedLimitLabel ? (
                                     <Text style={styles.meterUsage}>
                                         {row.usedLimitLabel}

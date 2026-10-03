@@ -9,10 +9,10 @@ import type { ComposedGesture, GestureType } from 'react-native-gesture-handler'
 
 import { buildQuotaResetRows } from '@/sync/domains/connectedServices/buildQuotaResetRows';
 import {
+    buildConnectedServiceQuotaGaugeMeterRows,
     computeConnectedServiceQuotaGaugeViewModel,
     type ConnectedServiceQuotaGaugeLabelFormatter,
 } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
-import { deriveAccountCapacityPct } from '@/sync/domains/connectedServices/deriveAccountCapacityPct';
 import { type ResetCountdownDaysFormatter } from '@/sync/domains/connectedServices/formatResetCountdown';
 import { shouldHideQuotaForCredentialStatus } from '@/sync/domains/connectedServices/shouldHideQuotaForCredentialStatus';
 import { projectConnectedServiceQuotaSnapshotForLimitSelection } from '@/sync/domains/connectedServices/projectConnectedServiceQuotaSnapshotForLimitSelection';
@@ -145,8 +145,10 @@ function buildQuotaView(
         })
         : null;
 
-    const usageRows = resolveAccountUsageRows(gauge?.allMeterRows);
-    const capacityPct = gauge ? deriveAccountCapacityPct(gauge.allMeterRows) : null;
+    const usageRows = resolveAccountUsageRows(displaySnapshot
+        ? buildConnectedServiceQuotaGaugeMeterRows(displaySnapshot.meters, nowMs, GAUGE_LABEL_FORMATTER)
+        : []);
+    const capacityPct = gauge?.remainingPct ?? null;
     const resetRows = hook.canConsumeRecoveryCredit
         ? buildQuotaResetRows(snapshot?.recoveryCredits, nowMs, RESET_COUNTDOWN_DAYS_FORMATTER)
         : [];

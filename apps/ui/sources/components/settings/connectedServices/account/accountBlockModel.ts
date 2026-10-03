@@ -27,7 +27,7 @@ export type AccountUsageRow = Readonly<{
      * left). A consumption fill next to a "left" label reads inverted (user decision 2026-07-10,
      * reverting 5ad4d06be).
      */
-    remaining: number;
+    remaining: number | null;
     detailLabel: string;
 }>;
 
@@ -39,7 +39,7 @@ function clamp01(value: number): number {
 }
 
 /**
- * Map the gauge's comparable meter rows onto the AccountBlock USAGE rows. Tone is
+ * Map the gauge's reported meter rows onto the AccountBlock USAGE rows. Tone is
  * derived from the SAME `resolveQuotaTone` owner the meter bars and health dot
  * use; `remaining` feeds both the capacity indicators and the MeterBar fill so
  * the row can never disagree with its own "% left" label.
@@ -52,7 +52,7 @@ export function resolveAccountUsageRows(
         meterId: row.meterId,
         label: row.label,
         tone: resolveQuotaTone(row.remainingPct),
-        remaining: clamp01(row.remainingPct / 100),
+        remaining: row.remainingPct === null ? null : clamp01(row.remainingPct / 100),
         detailLabel: row.detailRightLabel,
     }));
 }
@@ -99,7 +99,7 @@ export function resolveAccountCapacityRings(
     usageRows: ReadonlyArray<AccountUsageRow>,
 ): CapacityRingDatum[] {
     return usageRows
-        .map((row) => ({ ratio: row.remaining, tone: row.tone }))
+        .flatMap((row) => row.remaining === null ? [] : [{ ratio: row.remaining, tone: row.tone }])
         .sort((a, b) => a.ratio - b.ratio)
         .slice(0, MAX_CAPACITY_RINGS);
 }

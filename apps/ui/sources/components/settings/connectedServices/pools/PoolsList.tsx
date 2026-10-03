@@ -14,7 +14,6 @@ import {
     computeConnectedServiceQuotaGaugeViewModel,
     type ConnectedServiceQuotaGaugeLabelFormatter,
 } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
-import { deriveAccountCapacityPct } from '@/sync/domains/connectedServices/deriveAccountCapacityPct';
 import { deriveAccountHealth, type AccountHealth } from '@/sync/domains/connectedServices/deriveAccountHealth';
 import { projectConnectedServiceQuotaSnapshotForLimitSelection } from '@/sync/domains/connectedServices/projectConnectedServiceQuotaSnapshotForLimitSelection';
 import type {
@@ -112,7 +111,7 @@ function deriveSnapshotGauge(
     });
     if (!viewModel) return { capacityPct: null, rings: [] };
     return {
-        capacityPct: deriveAccountCapacityPct(viewModel.allMeterRows),
+        capacityPct: viewModel.remainingPct,
         rings: resolveAccountCapacityRings(resolveAccountUsageRows(viewModel.allMeterRows)),
     };
 }

@@ -81,6 +81,21 @@ function viewModel(): ConnectedServiceQuotaGaugeViewModel {
 }
 
 describe('AgentInputProviderUsageBadge', () => {
+    it('keeps unmeasured usage details without drawing a fabricated empty percentage bar', async () => {
+        const vm = computeConnectedServiceQuotaGaugeViewModel({
+            snapshot: { v: 1, serviceId: 'openai-codex', profileId: 'work', fetchedAt: 1_000, staleAfterMs: 60_000,
+                planLabel: null, accountLabel: null, meters: [
+                    { meterId: 'weekly', label: 'Weekly', used: 82, limit: 100, unit: 'count', utilizationPct: null, resetsAt: null, status: 'ok', details: {} },
+                    { meterId: 'reached', label: 'Reached', used: null, limit: null, unit: 'count', utilizationPct: null, resetsAt: 9_000, status: 'unavailable', details: {} },
+                ] },
+            windowMode: 'most_constrained', nowMs: 2_000, formatter: fixtureFormatter,
+        });
+        if (!vm) throw new Error('Expected a measured quota gauge');
+        const screen = await renderScreen(<AgentInputProviderUsageBadge viewModel={vm} />);
+        act(() => { screen.findByTestId('agent-input-provider-usage-badge')?.props.onPress?.(); });
+        expect(screen.findByTestId('agent-input-provider-usage-meter:reached')).toBeTruthy();
+        expect(screen.findByTestId('agent-input-provider-usage-meter-bar:reached')).toBeNull();
+    });
     it('renders a pinned extra as its own remaining-first ring with its own accessible name', async () => {
         const vm = computeConnectedServiceQuotaGaugeViewModel({
             snapshot: {
