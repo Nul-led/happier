@@ -271,7 +271,10 @@ export async function dispatchActivityNotificationAsync(params: Readonly<{
           channel: buildCanonicalExpoPushChannel(expoDecision),
           event: params.event,
           sender: params.expoPushSender,
-          deliveryOptions: resolveExpoPushDeliveryOptions(expoDecision),
+          deliveryOptions: {
+            ...resolveExpoPushDeliveryOptions(expoDecision),
+            ...(expoDecision.suppressIfComputerFocused === true ? { suppressIfComputerFocused: true } : {}),
+          },
           previewBehavior: expoDecision.previewBehavior,
         });
         if (accepted) deliveredChannels += 1;

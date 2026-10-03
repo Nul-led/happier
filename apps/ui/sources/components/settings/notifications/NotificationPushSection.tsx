@@ -11,6 +11,8 @@ type NotificationPushSectionProps = Readonly<{
     homeName: string;
     pushEnabled: boolean;
     setPushEnabled: (enabled: boolean) => void;
+    mutePhoneWhenComputerFocused: boolean;
+    setMutePhoneWhenComputerFocused: (enabled: boolean) => void;
     openPushTroubleshooting: () => void;
 }>;
 
@@ -18,6 +20,8 @@ export function NotificationPushSection({
     homeName,
     pushEnabled,
     setPushEnabled,
+    mutePhoneWhenComputerFocused,
+    setMutePhoneWhenComputerFocused,
     openPushTroubleshooting,
 }: NotificationPushSectionProps): React.ReactElement {
 
@@ -43,6 +47,15 @@ export function NotificationPushSection({
                 icon={<Icon name="question" />}
                 setting={NOTIFICATIONS_SETTINGS.settings.troubleshoot}
                 onPress={openPushTroubleshooting}
+            />
+            <SettingRow
+                testID="settings-notifications-mute-phone-focused-computer"
+                setting={NOTIFICATIONS_SETTINGS.settings.mutePhoneWhenComputerFocused}
+                rightElement={(
+                    <Switch value={mutePhoneWhenComputerFocused}
+                        onValueChange={(value) => setMutePhoneWhenComputerFocused(Boolean(value))} />
+                )}
+                showChevron={false}
             />
         </ItemGroup>
     );

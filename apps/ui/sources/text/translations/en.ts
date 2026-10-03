@@ -4482,6 +4482,8 @@ export const en = {
     },
 
     settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Mute phone while a computer is focused",
+        mutePhoneWhenComputerFocusedSubtitle: "Mute Ready and request push alerts while any Happier computer window is focused. Alerts resume when no computer window is focused.",
         pageDescription: 'Choose what alerts you, where, and when it stays quiet.',
         remoteAlerts: {
             title: "Closed-app session alerts",

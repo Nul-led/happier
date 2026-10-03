@@ -3628,6 +3628,8 @@ class Sync {
                 serverId?: string;
                 includeTurnsProjection?: boolean;
                 hydrateMessages?: boolean;
+                /** Keep a wake reconciliation open until its queued messages have applied. */
+                awaitMessageHydration?: boolean;
                 authority?: ServerAccountRequestAuthority;
                 /** Exact captured Account-scope currentness for a qualified caller. */
                 scopeCurrentness?: () => boolean;
@@ -3707,12 +3709,22 @@ class Sync {
                 ? serverAccountScopeKeySuffix(options.authority.scope)
                 : '';
             const inFlightKey = `${buildSessionByIdHydrationInFlightKey(normalized, preferredServerId)}:${authorityScopeKey}`;
+            const finishMessageHydration = async (result: EnsureSessionVisibleForRouteResult) => {
+                if (result.kind === 'available' && !options?.authority && options?.hydrateMessages !== false) {
+                    this.replayDeferredMessagesFetch(normalized);
+                    const messages = this.getOrCreateMessagesSync(normalized);
+                    if (options?.awaitMessageHydration === true) await messages.invalidateAndAwait();
+                    else messages.invalidateCoalesced();
+                }
+                return result;
+            };
             const existing = this.sessionByIdHydrationInFlight.get(inFlightKey);
             if (existing) {
                 if (DEBUG_SESSION_HYDRATE) {
                     log.log(`[sessionHydrate] awaiting in-flight hydration for ${normalized}`);
                 }
-                return await existing.promise;
+                const result = await existing.promise;
+                return options?.awaitMessageHydration === true ? finishMessageHydration(result) : result;
             }
 
             let hydrationCurrent = true;
@@ -3833,11 +3845,7 @@ class Sync {
             });
 
             const result = await inFlight;
-            if (result.kind === 'available' && !options?.authority && options?.hydrateMessages !== false) {
-                this.replayDeferredMessagesFetch(normalized);
-                this.getOrCreateMessagesSync(normalized).invalidateCoalesced();
-            }
-            return result;
+            return finishMessageHydration(result);
         }
 
     private invalidateSessionByIdHydration = (sessionId: string): void => {

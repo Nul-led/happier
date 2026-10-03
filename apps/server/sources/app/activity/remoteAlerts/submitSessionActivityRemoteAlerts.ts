@@ -8,6 +8,7 @@ import {
     resolveExpoNotificationSoundName,
     resolvePushNotificationAndroidChannelId,
     resolveRemoteAlertPolicyDecision,
+    shouldMuteMobileAlertsForComputerFocus,
     type ActivityRemoteAlertCommittedMessageV2,
     type ActivityRemoteAlertEventV2,
     type SessionPersonalEventKindV1,
@@ -19,6 +20,7 @@ import type { CurrentSessionPublisherAuthority } from "@/app/presence/sessionPub
 import { hasExactCurrentPublisherAuthorityInTx } from "@/app/session/pending/hasExactCurrentPublisherAuthorityInTx";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import { db } from "@/storage/db";
+import { eventRouter } from '@/app/events/eventRouter';
 import { inTx } from "@/storage/inTx";
 import { log } from "@/utils/logging/log";
 
@@ -184,12 +186,22 @@ export async function submitSessionActivityRemoteAlerts(
     const deliveries: AccountPushDelivery[] = [];
     const alerted = new Set<string>();
     const alertedTokens = new Set<string>();
+    const mutedTokens = new Set<string>();
     for (const account of accounts) {
         // An absent or stale projection means the recipient's current policy is
         // unknown here, so this leg stays unavailable rather than guessing.
         const currentness = resolveAccountRemoteAlertPolicyCurrentness(account.remoteAlertPolicy, account.settingsVersion);
         if (currentness.status !== "current") continue;
+        const muteMobileAlerts = currentness.policy.mutePhoneWhenComputerFocused === true
+            && shouldMuteMobileAlertsForComputerFocus({
+                mutePhoneWhenComputerFocused: currentness.policy.mutePhoneWhenComputerFocused,
+                computerFocused: await eventRouter.hasFocusedComputerUi(account.id),
+            });
         for (const token of tokens.filter((row) => row.accountId === account.id)) {
+            if (muteMobileAlerts) {
+                mutedTokens.add(token.token);
+                continue;
+            }
             const decision = resolveRemoteAlertPolicyDecision({
                 accountPolicy: currentness.policy,
                 devicePolicy: token.remoteAlerts,
@@ -256,7 +268,7 @@ export async function submitSessionActivityRemoteAlerts(
                 // it as a plain data message. It is best effort by platform
                 // contract and never renders anything by itself.
                 _contentAvailable: true,
-                data: wakeData,
+                data: mutedTokens.has(token.token) ? { ...wakeData, alert: 'muted' } : wakeData,
             },
         });
     }

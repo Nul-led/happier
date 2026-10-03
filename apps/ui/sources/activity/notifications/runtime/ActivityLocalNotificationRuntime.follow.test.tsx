@@ -79,6 +79,32 @@ async function deliverMessage(seq: number, human: boolean, recovered = false, so
 }
 
 describe('live Follow socket notifications', () => {
+    it('reconciles a muted Home wake without posting a local alert, then delivers an ordinary wake', async () => {
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+        const { notifyActivityReady } = await import('./activityLocalNotificationBus');
+        const { applySessionChangedBackgroundWakePayload } = await import('../backgroundWake/defineSessionChangedBackgroundWakeTask');
+        screen = await renderScreen(<ActivityLocalNotificationRuntime />);
+        let reconciled = 0;
+        const reconcile = async () => {
+            reconciled++;
+            notifyActivityReady({ serverId: 'server-a', sessionId: 'session-1' }, []);
+            return true;
+        };
+        await act(async () => {
+            await applySessionChangedBackgroundWakePayload({
+                payload: { type: 'session_changed', serverId: 'server-a', sessionId: 'session-1', alert: 'muted' }, reconcile,
+            });
+        });
+        expect(reconciled).toBe(1);
+        expect(boundary.expo).not.toHaveBeenCalled();
+        await act(async () => {
+            await applySessionChangedBackgroundWakePayload({
+                payload: { type: 'session_changed', serverId: 'server-a', sessionId: 'session-1' }, reconcile,
+            });
+        });
+        expect(reconciled).toBe(2);
+        expect(boundary.expo).toHaveBeenCalled();
+    });
     let screen: Awaited<ReturnType<typeof renderScreen>> | undefined;
     beforeEach(() => {
         storage.setState(initialState, true);

@@ -1454,6 +1454,20 @@ answers the released shape and the client then registers no policy. `POST /v1/pu
 optional `remoteAlerts: { registrationId, policy }`, which updates only that exact existing row
 (`404 push_token_not_found` otherwise) and never creates or enrolls a registration.
 
+In v0.3 development, `attentionDeliveryPolicyV1.mutePhoneWhenComputerFocused` is
+opt-in and defaults off. Each authenticated Home sync socket publishes `ui-focus`
+with `{ computer, focused }`; focused means `document.hasFocus()` **and** visible.
+The shared notification-policy decision fails open when focus is unavailable.
+CLI/daemon senders request `GET /v1/push-tokens?suppressIfComputerFocused=1` only
+for opted-in mobile alert delivery; a focused computer of that Account yields no
+tokens. Home delivery reads the same preference from the existing version-bound
+Account policy projection, even when Home OS alerts are disabled.
+
+Muted Home tokens still receive the content-free `SessionChangedWakeV1` data wake
+with optional `alert: 'muted'`. The device reconciles that wake silently through
+`ActivityLocalNotificationRuntime`; ordinary wakes retain existing behavior.
+This qualifier is undeployed v0.3 wire behavior, not a released compatibility shim.
+
 ### Connect (OAuth providers + vendor tokens)
 - `GET /v1/auth/external/:provider/params`
 - `POST /v1/auth/external/:provider/finalize`

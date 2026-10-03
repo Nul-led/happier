@@ -4428,7 +4428,9 @@ export const zhHans = {
     visibilityModeAttentionOnly: '仅需要注意时',
   },
 
-  settingsNotifications: {
+    settingsNotifications: {
+    mutePhoneWhenComputerFocusedTitle: "电脑窗口获得焦点时静音手机通知",
+    mutePhoneWhenComputerFocusedSubtitle: "任一电脑上的 Happier 窗口获得焦点时，不发送就绪和请求推送通知。所有电脑窗口都失去焦点后恢复通知。",
         pageDescription: '选择哪些内容提醒你、在哪里提醒，以及何时保持安静。',
         remoteAlerts: {
             title: "应用关闭时的会话提醒",

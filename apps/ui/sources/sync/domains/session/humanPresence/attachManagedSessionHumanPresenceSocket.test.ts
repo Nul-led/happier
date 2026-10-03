@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import { SESSION_HUMAN_PRESENCE_SNAPSHOT_EVENT } from '@happier-dev/protocol/sessions';
 import { attachManagedSessionHumanPresenceSocket } from './attachManagedSessionHumanPresenceSocket';
 // Loaded eagerly so a runtime module-graph failure fails this test loudly instead of
@@ -33,10 +33,11 @@ function managedSocket() {
     const transport = {
         isConnected: () => socket.connected,
         onConnected: (listener: () => void) => { connectedListeners.add(listener); return () => connectedListeners.delete(listener); },
-        onDisconnected: () => () => {},
+        onDisconnected: (listener: () => void) => { connectedListeners.add(listener); return () => connectedListeners.delete(listener); },
     };
     return {
         emitted, socket, transport, handlers,
+        changeConnected: (connected: boolean) => { socket.connected = connected; connectedListeners.forEach((listener) => listener()); },
         snapshot: (payload: unknown) => handlers.get(SESSION_HUMAN_PRESENCE_SNAPSHOT_EVENT)?.(payload),
     };
 }
@@ -51,6 +52,48 @@ afterEach(() => { cleanup.splice(0).reverse().forEach((dispose) => dispose()); }
 async function settle() { for (let index = 0; index < 12; index += 1) await new Promise((resolve) => setTimeout(resolve, 0)); }
 
 describe('managed Home socket presence attachment', () => {
+    it('publishes physical computer focus on every Home, clears hidden focus, and republishes after reconnect', async () => {
+        const originalPlatform = Platform.OS;
+        Object.defineProperty(Platform, 'OS', { value: 'web', configurable: true });
+        const listeners = new Map<string, Set<() => void>>();
+        let focused = true;
+        const document = { visibilityState: 'visible', hasFocus: () => focused,
+            addEventListener: (event: string, listener: () => void) => {
+                const set = listeners.get(event) ?? new Set(); set.add(listener); listeners.set(event, set);
+            },
+            removeEventListener: (event: string, listener: () => void) => listeners.get(event)?.delete(listener) };
+        vi.stubGlobal('navigator', { userAgent: 'Windows NT', maxTouchPoints: 0 });
+        vi.stubGlobal('document', document);
+        vi.stubGlobal('window', { addEventListener: document.addEventListener, removeEventListener: document.removeEventListener });
+        const a = managedSocket(); const b = managedSocket();
+        const detachA = attachManagedSessionHumanPresenceSocket({ serverId: 'a', token: token('self'),
+            socket: a.socket as never, transport: a.transport as never });
+        const detachB = attachManagedSessionHumanPresenceSocket({ serverId: 'b', token: token('self'),
+            socket: b.socket as never, transport: b.transport as never });
+        try {
+            await settle();
+            const focusEvents = (home: typeof a) => home.emitted.filter(([event]) => event === 'ui-focus').map(([, value]) => value);
+            expect(focusEvents(a).at(-1)).toEqual({ computer: true, focused: true });
+            expect(focusEvents(b).at(-1)).toEqual({ computer: true, focused: true });
+            document.visibilityState = 'hidden'; listeners.get('visibilitychange')?.forEach((listener) => listener());
+            expect(focusEvents(a).at(-1)).toEqual({ computer: true, focused: false });
+            focused = false; listeners.get('blur')?.forEach((listener) => listener());
+            a.changeConnected(false);
+            document.visibilityState = 'visible'; focused = true;
+            listeners.get('focus')?.forEach((listener) => listener());
+            expect(focusEvents(a).at(-1)).toEqual({ computer: true, focused: false });
+            a.changeConnected(true);
+            await settle();
+            expect(focusEvents(a).at(-1)).toEqual({ computer: true, focused: true });
+        } finally {
+            // Restore the process-wide host observer through its real lifecycle boundary.
+            document.visibilityState = 'visible'; focused = true;
+            listeners.get('visibilitychange')?.forEach((listener) => listener());
+            detachA(); detachB();
+            vi.unstubAllGlobals();
+            Object.defineProperty(Platform, 'OS', { value: originalPlatform, configurable: true });
+        }
+    });
     it('declares only its own Home surfaces over the supplied carrier and excludes the token Account', async () => {
         // Two Homes with the same Session id: the concurrent/Iroh carrier for Home B must
         // never carry Home A's declaration, and neither may borrow the focused Home socket.

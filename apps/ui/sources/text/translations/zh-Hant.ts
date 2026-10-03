@@ -4172,7 +4172,9 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
 		        visibilityModeAttentionOnly: '僅需要注意時',
 		    },
 
-		    settingsNotifications: {
+    settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "電腦視窗取得焦點時靜音手機通知",
+        mutePhoneWhenComputerFocusedSubtitle: "任一電腦上的 Happier 視窗取得焦點時，不傳送就緒和請求推播通知。所有電腦視窗都失去焦點後恢復通知。",
         activitySurfaces: {
             liveActivities: {
                 maxConcurrentNeedsSessionSpecific: '在「按工作階段」策略下可用。',

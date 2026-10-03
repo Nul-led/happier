@@ -81,6 +81,10 @@ export const NOTIFICATIONS_SETTINGS = defineSettingsPage({
             titleKey: 'settingsNotifications.push.title',
             settings: {
                 pushEnabled: { titleKey: 'common.enabled' },
+                mutePhoneWhenComputerFocused: {
+                    titleKey: 'settingsNotifications.mutePhoneWhenComputerFocusedTitle',
+                    descriptionKey: 'settingsNotifications.mutePhoneWhenComputerFocusedSubtitle',
+                },
                 troubleshoot: { titleKey: 'settingsNotifications.push.troubleshootTitle', descriptionKey: 'settingsNotifications.push.troubleshootSubtitle' },
             },
         },

@@ -992,6 +992,18 @@ describe('NotificationsSettingsView', () => {
         }));
     });
 
+    it('defaults focus muting off and writes only the canonical policy without changing other choices', async () => {
+        const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
+        const screen = await renderSettingsView(<NotificationsSettingsView />);
+        const row = requireRow(screen, 'settings-notifications-mute-phone-focused-computer');
+        expect(row.props.rightElement.props.value).toBe(false);
+        await act(async () => row.props.rightElement.props.onValueChange(true));
+        expect(applySettingsMock).toHaveBeenCalledWith({ attentionDeliveryPolicyV1: {
+            ...settingsState.attentionDeliveryPolicyV1, mutePhoneWhenComputerFocused: true,
+        } });
+        expect(applyLocalSettingsMock).not.toHaveBeenCalled();
+    });
+
     it('writes remote push settings through the synced account settings writer', async () => {
         const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
 

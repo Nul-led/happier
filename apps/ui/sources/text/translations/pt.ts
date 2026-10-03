@@ -4643,7 +4643,9 @@ export const pt = {
     visibilityModeAttentionOnly: 'Somente atenção',
   },
 
-  settingsNotifications: {
+    settingsNotifications: {
+    mutePhoneWhenComputerFocusedTitle: "Silenciar o telefone ao usar o computador",
+    mutePhoneWhenComputerFocusedSubtitle: "Silencia as notificações de pronto e as solicitações enquanto alguma janela do Happier num computador estiver em foco. As notificações são retomadas quando nenhuma janela num computador estiver em foco.",
         pageDescription: 'Escolha o que o avisa, onde e quando fica em silêncio.',
         remoteAlerts: {
             title: "Alertas de sessão com o app fechado",

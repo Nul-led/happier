@@ -47,7 +47,7 @@ import {
 import { buildActivityLocalNotificationContent } from '../buildActivityLocalNotificationContent';
 import { sendExpoLocalNotification } from '../channels/sendExpoLocalNotification';
 import { sendTauriLocalNotification } from '../channels/sendTauriLocalNotification';
-import { subscribeActivityLocalNotifications, type ActivityLocalNotificationEvent } from './activityLocalNotificationBus';
+import { isActivityLocalNotificationMutedForWake, subscribeActivityLocalNotifications, type ActivityLocalNotificationEvent } from './activityLocalNotificationBus';
 
 function resolveLocalNotificationEventKind(event: ActivityLocalNotificationEvent): ActivityAttentionDeliveryEventKind {
     if (event.kind === 'ready') return 'ready';
@@ -137,6 +137,7 @@ export function ActivityLocalNotificationRuntime(): React.ReactElement | null {
 
     React.useEffect(() => {
         return subscribeActivityLocalNotifications((event) => {
+            if (isActivityLocalNotificationMutedForWake(event.address)) return;
             const state = storage.getState();
             const directSession = state.sessions[event.address.sessionId];
             const directServerId = typeof directSession?.serverId === 'string' ? directSession.serverId.trim() : '';

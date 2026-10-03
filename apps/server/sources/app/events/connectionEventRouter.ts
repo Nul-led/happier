@@ -100,6 +100,33 @@ class EventRouter {
         return this.userConnections.get(userId);
     }
 
+    async hasFocusedComputerUi(userId: string): Promise<boolean> {
+        const isFocused = (data: Record<string, unknown>) => {
+            const focus = data.uiFocus;
+            return data.clientType === 'user-scoped'
+                && data.clientPurpose === 'sync'
+                && typeof focus === 'object'
+                && focus !== null
+                && 'computer' in focus && focus.computer === true
+                && 'focused' in focus && focus.focused === true;
+        };
+        if (this.io?.in) {
+            try {
+                const sockets = await this.io.in(`user-scoped:${userId}`).fetchSockets();
+                return sockets.some((socket) => isFocused(socket.data));
+            } catch (error) {
+                // Unknown focus must preserve phone delivery rather than silently mute it.
+                log({ module: 'ui-focus', error }, 'Unable to query focused computer UI; preserving push delivery');
+                return false;
+            }
+        }
+        return [...(this.userConnections.get(userId) ?? [])].some((connection) => (
+            connection.connectionType === 'user-scoped'
+            && connection.socket.connected === true
+            && isFocused(connection.socket.data)
+        ));
+    }
+
     // === SOCKET.IO ADAPTER (ROOM-BASED FANOUT) ===
 
     setIo(io: SocketRoomEmitter): void {

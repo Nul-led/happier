@@ -989,6 +989,44 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         sync.disconnectServer();
     });
 
+    it('keeps a wake reconciliation open until its real message hydration completes', async () => {
+        const sessionId = 'await_muted_wake_messages';
+        const home = await upsertServerProfile({ serverUrl: 'https://wake.example', name: 'Wake Home' });
+        await setActiveServerId(home.id, { scope: 'device' });
+        await applySelectedHomeForSessionListTest();
+        const { sync } = await import('./sync');
+        const { Encryption } = await import('./encryption/encryption');
+        Reflect.set(sync, 'credentials', { token: tokenForSub('account-a') });
+        Reflect.set(sync, 'encryption', await Encryption.create(new Uint8Array(32).fill(7)));
+        Reflect.set(sync, 'messagesSync', new Map());
+        let releaseMessages!: (value: Response) => void;
+        const messages = new Promise<Response>((resolve) => { releaseMessages = resolve; });
+        let messageRequestStarted = false;
+        requestMock.mockImplementation(async (path: string) => {
+            if (path === `/v2/sessions/${sessionId}`) return new Response(JSON.stringify({ session: {
+                id: sessionId, createdAt: 1, updatedAt: 2, seq: 1, active: false, activeAt: 2,
+                encryptionMode: 'plain', dataEncryptionKey: null, metadataVersion: 0, metadata: 'null',
+                agentStateVersion: 0, agentState: null, share: null,
+            } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            messageRequestStarted = true;
+            return messages;
+        });
+        let settled = false;
+        const hydration = sync.ensureSessionVisibleForMessageRoute(sessionId, {
+            forceRefresh: true, hydrateMessages: true, awaitMessageHydration: true,
+        }).then((result) => { settled = true; return result; });
+        try {
+            await vi.waitFor(() => expect(messageRequestStarted).toBe(true));
+            expect(settled).toBe(false);
+        } finally {
+            releaseMessages(new Response(JSON.stringify({ messages: [], hasMore: false, nextBeforeSeq: null }),
+                { status: 200, headers: { 'Content-Type': 'application/json' } }));
+            await hydration;
+        }
+        expect(settled).toBe(true);
+        expect(storage.getState().sessionMessages[sessionId]?.isLoaded).toBe(true);
+    });
+
     it('clears server-scoped session-list row/index caches on disconnect', async () => {
         const { upsertAndActivateServer, getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
         upsertAndActivateServer({ serverUrl: 'https://server-a.example.test', scope: 'tab' });

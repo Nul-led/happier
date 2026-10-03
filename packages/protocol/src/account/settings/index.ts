@@ -12,7 +12,7 @@ export {
   type SessionReminderPresetRule,
   type SessionReminderPresetV1,
 } from './sessionReminderPresetsV1.js';
-export { resolveAttentionDeliveryPreviewBehavior } from './attentionDeliveryPolicyDecision.js';
+export { resolveAttentionDeliveryPreviewBehavior, shouldMuteMobileAlertsForComputerFocus } from './attentionDeliveryPolicyDecision.js';
 export { RolesV1Schema, type RolesV1 } from './rolesV1.js';
 export { readLegacyRolesV1, saveRolesV1WithLegacyMigration, type LegacyRoleArtifactV1 } from './rolesV1Migration.js';
 export {

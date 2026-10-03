@@ -8,6 +8,7 @@ import {
 } from "@happier-dev/protocol";
 import { createSessionPublisherPresence } from "@/app/presence/sessionPublisherPresence";
 import { db } from "@/storage/db";
+import { eventRouter } from "@/app/events/eventRouter";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
 const sendPushNotificationsAsyncSpy = vi.hoisted(() => vi.fn(async (messages: unknown[]) => messages.map(() => ({ status: "ok" }))));
@@ -95,7 +96,7 @@ describe("Home remote alert submission (SQLite)", () => {
         });
     }, 120_000);
     afterAll(async () => { await harness?.close(); });
-    afterEach(() => { sendPushNotificationsAsyncSpy.mockClear(); });
+    afterEach(() => { sendPushNotificationsAsyncSpy.mockClear(); eventRouter.clearIo(); });
 
     async function fixture() {
         const owner = await db.account.create({ data: { publicKey: randomUUID() } });
@@ -127,6 +128,59 @@ describe("Home remote alert submission (SQLite)", () => {
         } finally {
             process.env.HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED = "true";
         }
+    });
+
+    it("mutes opted-in Home alerts while a computer is focused but retains qualified sync wakes and fails open", async () => {
+        const { follower, session } = await fixture();
+        const token = await enrollRemoteAlerts(follower.id, accountSettingsWithRemoteAlerts({ mutePhoneWhenComputerFocused: true }));
+        let focus: boolean | 'unavailable' = true;
+        eventRouter.setIo({
+            to: () => ({ emit() {}, disconnectSockets() {} }),
+            in: () => ({ fetchSockets: async () => {
+                if (focus === 'unavailable') throw new Error('adapter unavailable');
+                return [{ id: 'focus-socket', data: { clientType: 'user-scoped', clientPurpose: 'sync', uiFocus: { computer: true, focused: focus } } }];
+            } }),
+        });
+        const submit = () => submitSessionActivityRemoteAlerts({
+            sessionId: session.id, event: 'ready', committedMessage: { domain: 'session_transcript', seq: 12 },
+        });
+        await submit();
+        expect(submittedPayloads()).toContainEqual(expect.objectContaining({
+            to: token, _contentAvailable: true,
+            data: { type: 'session_changed', serverId: 'srv_home_a', sessionId: session.id, alert: 'muted' },
+        }));
+        expect(submittedPayloads().filter((payload) => payload.to === token).every((payload) => !('title' in payload))).toBe(true);
+        for (const next of [false, 'unavailable'] as const) {
+            focus = next;
+            sendPushNotificationsAsyncSpy.mockClear();
+            await submit();
+            expect(submittedPayloads()).toContainEqual(expect.objectContaining({ to: token, title: 'Happier' }));
+        }
+        focus = true;
+        const defaultSettings = accountSettingsWithRemoteAlerts();
+        const defaultAccount = await db.account.update({ where: { id: follower.id }, data: {
+            settings: defaultSettings, settingsVersion: { increment: 1 },
+        } });
+        await db.account.update({ where: { id: follower.id }, data: { remoteAlertPolicy: {
+            settingsVersion: defaultAccount.settingsVersion, policy: deriveAccountRemoteAlertPolicyV1(JSON.parse(defaultSettings)),
+        } } });
+        sendPushNotificationsAsyncSpy.mockClear();
+        await submit();
+        expect(submittedPayloads()).toContainEqual(expect.objectContaining({ to: token, title: 'Happier' }));
+        const wakeOnlySettings = { sessionRemoteAlertsEnabled: false,
+            attentionDeliveryPolicyV1: { mutePhoneWhenComputerFocused: true } };
+        const wakeOnlyAccount = await db.account.update({ where: { id: follower.id }, data: {
+            settings: JSON.stringify(wakeOnlySettings), settingsVersion: { increment: 1 },
+        } });
+        await db.account.update({ where: { id: follower.id }, data: { remoteAlertPolicy: {
+            settingsVersion: wakeOnlyAccount.settingsVersion, policy: deriveAccountRemoteAlertPolicyV1(wakeOnlySettings),
+        } } });
+        sendPushNotificationsAsyncSpy.mockClear();
+        await submit();
+        expect(submittedPayloads().filter((payload) => payload.to === token)).toEqual([
+            expect.objectContaining({ _contentAvailable: true,
+                data: { type: 'session_changed', serverId: 'srv_home_a', sessionId: session.id, alert: 'muted' } }),
+        ]);
     });
 
     it("submits a content-free alert to an enrolled eligible recipient and to nobody else", async () => {

@@ -253,6 +253,7 @@ export const AttentionDeliveryPolicyV1Schema = z
     channels: ChannelMapSchema.default(ChannelMapSchema.parse({})),
     quietHours: QuietHoursSchema.default(QuietHoursSchema.parse({})),
     foregroundBehavior: z.enum(['full', 'silent', 'off']).default('full'),
+    mutePhoneWhenComputerFocused: z.boolean().optional().catch(undefined),
     privacy: PrivacySchema.default(PrivacySchema.parse({})),
     sounds: SoundsSchema.default(SoundsSchema.parse({})),
     liveActivityRemoteUpdates: LiveActivityRemoteUpdatesSchema.default(LiveActivityRemoteUpdatesSchema.parse({})),
@@ -278,6 +279,7 @@ export type AttentionDeliveryDecisionReason =
 
 export type AttentionDeliveryDecision = {
   delivery: 'deliver' | 'silent' | 'suppress';
+  suppressIfComputerFocused?: true;
   reason: AttentionDeliveryDecisionReason;
   sound: {
     kind: 'none' | 'system_default' | 'bundled' | 'custom';

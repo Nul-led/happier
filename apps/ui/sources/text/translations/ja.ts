@@ -4821,7 +4821,9 @@ localTailscale: {
     visibilityModeAttentionOnly: '注意時のみ',
   },
 
-  settingsNotifications: {
+    settingsNotifications: {
+    mutePhoneWhenComputerFocusedTitle: "コンピューター操作中はスマートフォンの通知をミュート",
+    mutePhoneWhenComputerFocusedSubtitle: "コンピューター上の Happier ウィンドウにフォーカスがある間、完了とリクエストのプッシュ通知をミュートします。Happier のコンピューターウィンドウがどれもフォーカスされていないと、通知を再開します。",
         pageDescription: '通知する内容、場所、静かにする時間を選びます。',
         remoteAlerts: {
             title: "アプリ終了中のセッション通知",
