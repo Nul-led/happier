@@ -3,6 +3,9 @@ import type { NativeStackHeaderProps } from '@react-navigation/native-stack';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { setPreferredLanguageFromSettings, t } from '@/text';
+
+import { createHeader } from './Header';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -48,7 +51,6 @@ vi.mock('@/components/navigation/desktopWindowChrome/DesktopWindowDragRegion', (
 describe('createHeader', () => {
     beforeEach(() => {
         responsiveState.isTablet = false;
-        vi.resetModules();
     });
 
     it('shows a translated accessible back button at tablet stack index one', async () => {
@@ -58,9 +60,8 @@ describe('createHeader', () => {
             getState: () => ({ index: 1 }),
         };
 
-        const { t, setPreferredLanguageFromSettings } = await import('@/text');
         setPreferredLanguageFromSettings('fr');
-        const { createHeader } = await import('./Header');
+        const backLabel = t('common.back');
         const header = createHeader({
             options: {
                 headerShown: true,
@@ -82,7 +83,7 @@ describe('createHeader', () => {
         expect(backButtons).toHaveLength(1);
         try {
             expect(backButtons[0]?.props.accessibilityRole).toBe('button');
-            expect(backButtons[0]?.props.accessibilityLabel).toBe(t('common.back'));
+            expect(backButtons[0]?.props.accessibilityLabel).toBe(backLabel);
             backButtons[0]?.props.onPress();
             expect(navigation.goBack).toHaveBeenCalledOnce();
         } finally {
@@ -91,7 +92,6 @@ describe('createHeader', () => {
     });
 
     it('marks the route header drag and content regions with stable test IDs', async () => {
-        const { createHeader } = await import('./Header');
         const header = createHeader({
             options: {
                 headerShown: true,
