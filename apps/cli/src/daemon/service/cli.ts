@@ -65,6 +65,7 @@ import {
   readInstalledDaemonServiceManagedBy,
   readInstalledDaemonServiceTargetMode,
 } from './discoverInstalledDaemonServiceEntries';
+import { createStepPrinter } from '@happier-dev/cli-common/output';
 import { resolveDaemonServiceDiscoveryTargets } from './resolveDaemonServiceDiscoveryTargets';
 import type { DaemonServiceInstallStrategy } from './daemonInstallConflict';
 import { assertDaemonServiceModeSupported } from './assertDaemonServiceModeSupported';
@@ -1356,6 +1357,9 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
   const paths = resolveDaemonServicePaths(runtime, { mode });
   const action = parsed.action;
   const commandPath = params.commandPath ?? `${resolveInvokerName() ?? 'happier'} service`;
+  // Lifecycle actions can wait many seconds for the service to take ownership; show that as a timed step.
+  // `--json` keeps stdout machine-readable.
+  const steps = createStepPrinter({ enabled: !flags.json });
 
   if (flags.help) {
       if (flags.json) {
@@ -1651,7 +1655,7 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
     }
 
     try {
-      await withManualRelayTakeoverRecovery({
+      await steps.run('Installing background service', () => withManualRelayTakeoverRecovery({
         shouldTakeOverManualOwner: takeoverDecision.kind === 'manual-owner-takeover',
         action: 'install',
         run: async () => {
@@ -1714,7 +1718,7 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
               : null,
           });
         },
-      });
+      }), () => 'Installed background service');
     } catch (error) {
       const conflict = error as Error & { code?: string; conflicts?: Array<{ label?: string }> };
       if (flags.json && conflict.code === 'daemon_service_conflict') {
@@ -1738,7 +1742,6 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
       });
       return;
     }
-    process.stdout.write('Background service installed.\n');
     if (takeoverNotice) {
       process.stdout.write(`${takeoverNotice.title}\n`);
       for (const line of takeoverNotice.lines) {
@@ -1803,38 +1806,39 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
         return;
       }
 
-      for (const entry of entries) {
-        const entryMode = entry.mode ?? mode;
-        const discoveryTarget = discoveryTargetByMode.get(entryMode) ?? {
-          mode: entryMode,
-          userHomeDir: runtime.userHomeDir,
-          happierHomeDir: runtime.happierHomeDir,
-        };
-        await stopCurrentWindowsServiceOwnerIfNeeded({
-          platform: runtime.platform,
-          ownership: await evaluateCurrentDaemonOwner(),
-          expectedServiceLabel: entry.label,
-          action: 'uninstall',
-        });
-        await uninstallDaemonService({
-          platform: runtime.platform,
-          uid: runtime.uid ?? undefined,
-          userHomeDir: discoveryTarget.userHomeDir,
-          happierHomeDir: discoveryTarget.happierHomeDir,
-          mode: entryMode,
-          channel: entry.releaseChannel,
-          targetMode: entry.targetMode,
-          instanceId: entry.serverId,
-          installedPath: entry.path,
-          runCommands: true,
-        });
-      }
+      const servicesLabel = `${entries.length} background service${entries.length === 1 ? '' : 's'}`;
+      await steps.run(`Uninstalling ${servicesLabel}`, async () => {
+        for (const entry of entries) {
+          const entryMode = entry.mode ?? mode;
+          const discoveryTarget = discoveryTargetByMode.get(entryMode) ?? {
+            mode: entryMode,
+            userHomeDir: runtime.userHomeDir,
+            happierHomeDir: runtime.happierHomeDir,
+          };
+          await stopCurrentWindowsServiceOwnerIfNeeded({
+            platform: runtime.platform,
+            ownership: await evaluateCurrentDaemonOwner(),
+            expectedServiceLabel: entry.label,
+            action: 'uninstall',
+          });
+          await uninstallDaemonService({
+            platform: runtime.platform,
+            uid: runtime.uid ?? undefined,
+            userHomeDir: discoveryTarget.userHomeDir,
+            happierHomeDir: discoveryTarget.happierHomeDir,
+            mode: entryMode,
+            channel: entry.releaseChannel,
+            targetMode: entry.targetMode,
+            instanceId: entry.serverId,
+            installedPath: entry.path,
+            runCommands: true,
+          });
+        }
+      }, () => `Uninstalled ${servicesLabel}`);
 
       if (flags.json) {
         printJson({ ok: true, platform: runtime.platform, removed: entries.length });
-        return;
       }
-      process.stdout.write(`Removed ${entries.length} background services.\n`);
       return;
     }
 
@@ -1859,29 +1863,30 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
       return;
     }
 
-    await stopCurrentWindowsServiceOwnerIfNeeded({
-      platform: runtime.platform,
-      ownership: await evaluateCurrentDaemonOwner(),
-      expectedServiceLabel: paths.label,
-      action: 'uninstall',
-    });
-    await uninstallDaemonService({
-      platform: runtime.platform,
-      uid: runtime.uid ?? undefined,
-      userHomeDir: runtime.userHomeDir,
-      happierHomeDir: runtime.happierHomeDir,
-      mode,
-      channel: runtime.channel,
-      targetMode: runtime.targetMode,
-      instanceId: runtime.instanceId,
-      runCommands: true,
-    });
+    await steps.run('Uninstalling background service', async () => {
+      await stopCurrentWindowsServiceOwnerIfNeeded({
+        platform: runtime.platform,
+        ownership: await evaluateCurrentDaemonOwner(),
+        expectedServiceLabel: paths.label,
+        action: 'uninstall',
+      });
+      await uninstallDaemonService({
+        platform: runtime.platform,
+        uid: runtime.uid ?? undefined,
+        userHomeDir: runtime.userHomeDir,
+        happierHomeDir: runtime.happierHomeDir,
+        mode,
+        channel: runtime.channel,
+        targetMode: runtime.targetMode,
+        instanceId: runtime.instanceId,
+        runCommands: true,
+      });
+    }, () => 'Uninstalled background service');
 
     if (flags.json) {
       printJson({ ok: true, platform: runtime.platform });
       return;
     }
-    process.stdout.write('Background service uninstalled.\n');
     return;
   }
 
@@ -2110,7 +2115,11 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
         return;
       }
 
-      await withManualRelayTakeoverRecovery({
+      // Past tense only once the ownership wait below has succeeded: the service IS the active daemon.
+      const [runningLabel, doneLabel] = action === 'start'
+        ? ['Starting background service', 'Started background service']
+        : ['Restarting background service', 'Restarted background service'];
+      await steps.run(runningLabel, () => withManualRelayTakeoverRecovery({
         shouldTakeOverManualOwner: takeoverDecision.kind === 'manual-owner-takeover',
         action,
         run: async () => {
@@ -2152,7 +2161,7 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
               : null,
           });
         },
-      });
+      }), () => doneLabel);
 
       if (flags.json) {
         printJson({
@@ -2162,12 +2171,6 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
         });
         return;
       }
-      // By this point the ownership wait has succeeded (see
-      // assertExpectedDaemonServiceOwnership above) — the service IS the
-      // active daemon. Use past-tense so users see the real outcome, not a
-      // vague "requested" that implies async completion.
-      const pastTense = action === 'start' ? 'started' : action === 'restart' ? 'restarted' : `${action}ed`;
-      process.stdout.write(`✓ Background service ${pastTense}.\n`);
       if (takeoverNotice) {
         process.stdout.write(`${takeoverNotice.title}\n`);
         for (const line of takeoverNotice.lines) {
@@ -2205,13 +2208,18 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
       return;
     }
 
-    await stopCurrentWindowsServiceOwnerIfNeeded({
-      platform: runtime.platform,
-      ownership,
-      expectedServiceLabel: paths.label,
-      action: 'stop',
-    });
-    runDaemonServiceCommands(plan.commands, { failureMode: 'strict' });
+    // `stop` runs bootout (which deregisters the service synchronously at
+    // launchctl-api level even though the process teardown is async). Past
+    // tense reflects what the user can observe via `launchctl list`.
+    await steps.run('Stopping background service', async () => {
+      await stopCurrentWindowsServiceOwnerIfNeeded({
+        platform: runtime.platform,
+        ownership,
+        expectedServiceLabel: paths.label,
+        action: 'stop',
+      });
+      runDaemonServiceCommands(plan.commands, { failureMode: 'strict' });
+    }, () => 'Stopped background service');
 
     if (flags.json) {
       printJson({
@@ -2223,11 +2231,6 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
       });
       return;
     }
-    // `stop` runs bootout (which deregisters the service synchronously at
-    // launchctl-api level even though the process teardown is async). Past
-    // tense reflects what the user can observe via `launchctl list`.
-    const pastTense = action === 'stop' ? 'stopped' : action === 'start' ? 'started' : action === 'restart' ? 'restarted' : `${action}ed`;
-    process.stdout.write(`✓ Background service ${pastTense}.\n`);
     if (stopOwnershipNote) {
       process.stdout.write(`${stopOwnershipNote.title}\n`);
       for (const line of stopOwnershipNote.lines) {

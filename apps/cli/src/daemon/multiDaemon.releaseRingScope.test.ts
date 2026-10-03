@@ -198,13 +198,15 @@ describe('multiDaemon release ring scoping', () => {
       'utf-8',
     );
 
+    const exited = spawnSleepyDetachedProcess();
+    await exited.kill();
     const serverDir = join(homeDir, 'servers', 'cloud');
     mkdirSync(serverDir, { recursive: true });
     writeFileSync(
       join(serverDir, 'daemon.state.json'),
       JSON.stringify(
         {
-          pid: Number.MAX_SAFE_INTEGER,
+          pid: exited.pid,
           httpPort: 7780,
           startedAt: Date.now(),
           startedWithCliVersion: '0.1.3',
@@ -348,8 +350,10 @@ describe('multiDaemon release ring scoping', () => {
 
       const staleServerDir = join(homeDir, 'servers', 'stale');
       const staleStatePath = join(staleServerDir, 'daemon.state.json');
+      const exited = spawnSleepyDetachedProcess();
+      await exited.kill();
       const staleStateRaw = JSON.stringify({
-        pid: Number.MAX_SAFE_INTEGER,
+        pid: exited.pid,
         httpPort: 7791,
         startedAt: Date.now(),
         startedWithCliVersion: '0.1.2',

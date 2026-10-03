@@ -17,7 +17,7 @@ import {
   runManagedCliUpdate,
 } from '@happier-dev/cli-common/firstPartyRuntime';
 import type { FirstPartyComponentId } from '@happier-dev/cli-common/firstPartyRuntime';
-import { createStepPrinter } from '@happier-dev/cli-common/output';
+import { cmd, createStepPrinter, fail } from '@happier-dev/cli-common/output';
 import {
   compareVersions,
   readCachedCliUpdateState,
@@ -56,9 +56,9 @@ function usage(): string {
     `  happier self-update [--check] [--preview|--dev|--channel=<preview|dev>] [--to <versionOrTag>]`,
     '',
     `${chalk.bold('Channels:')}`,
-    `  stable  → npm dist-tag ${chalk.cyan('latest')}`,
-    `  preview → npm dist-tag ${chalk.cyan('next')}`,
-    `  dev     → npm dist-tag ${chalk.cyan('next')} (${chalk.gray('dev rolling binaries')})`,
+    `  stable  → npm dist-tag ${cmd('latest')}`,
+    `  preview → npm dist-tag ${cmd('next')}`,
+    `  dev     → npm dist-tag ${cmd('next')} (${chalk.gray('dev rolling binaries')})`,
     '',
     `${chalk.bold('Environment:')}`,
     `  HAPPIER_CLI_UPDATE_CHECK=0                 Disable update notice + background check`,
@@ -256,7 +256,7 @@ async function cmdCheck(argv: string[], rawArgv: readonly string[] = process.arg
 function printCheckResult(params: Readonly<{ channel: SelfChannel; current: string | null; latest: string }>): void {
   if (params.current && compareVersions(params.latest, params.current) > 0) {
     console.log(chalk.yellow(`Update available: ${params.current} → ${params.latest}`));
-    console.log(chalk.gray('Run:'), chalk.cyan(`${resolveManagedCliToolNameForRing(params.channel)} self update`));
+    console.log(chalk.gray('Run:'), cmd(`${resolveManagedCliToolNameForRing(params.channel)} self update`));
     return;
   }
   console.log(chalk.green('Up to date.'));
@@ -278,7 +278,7 @@ async function cmdUpdate(argv: string[], rawArgv: readonly string[] = process.ar
     const pkgName = resolveUpdatePackageName();
     const upgrade = npmUpgradeCommand({ packageName: pkgName, channel, to: toArg });
     console.log(chalk.yellow('Detected npm-based install; in-place runtime update is disabled.'));
-    console.log(chalk.gray('Run instead:'), chalk.cyan(upgrade));
+    console.log(chalk.gray('Run instead:'), cmd(upgrade));
     reportUpdaterAdmission({ admitted: false, code: 'cli_not_managed', message: `This Happier CLI was installed with npm. Update it with: ${upgrade}` });
     return;
   }
@@ -289,7 +289,7 @@ async function cmdUpdate(argv: string[], rawArgv: readonly string[] = process.ar
   });
   if (origin?.kind === 'brew') {
     console.log(chalk.yellow('Detected a Homebrew install; Homebrew updates it.'));
-    console.log(chalk.gray('Run instead:'), chalk.cyan(origin.updateCommand));
+    console.log(chalk.gray('Run instead:'), cmd(origin.updateCommand));
     reportUpdaterAdmission({ admitted: false, code: 'cli_not_managed', message: `This Happier CLI was installed with Homebrew. Update it with: ${origin.updateCommand}` });
     return;
   }
@@ -516,7 +516,7 @@ export async function handleSelfCliCommand(context: CommandContext): Promise<voi
       await cmdInternalInstallPayload(argv.slice(1), context.rawArgv);
       return;
     }
-    console.error(chalk.red('Error:'), `Unknown self subcommand: ${sub}`);
+    console.error(fail(`Unknown self subcommand: ${sub}`));
     console.log(usage());
     process.exit(1);
   } catch (error) {
@@ -526,7 +526,7 @@ export async function handleSelfCliCommand(context: CommandContext): Promise<voi
       code: error instanceof FirstPartyPayloadMutationLockError ? 'cli_update_in_progress' : 'cli_update_failed',
       message: error instanceof Error ? error.message : 'Unknown error',
     });
-    console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
+    console.error(fail(error instanceof Error ? error.message : 'Unknown error'));
     if (process.env.DEBUG) {
       console.error(error);
     }

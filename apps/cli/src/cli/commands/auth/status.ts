@@ -1,4 +1,5 @@
 import chalk from 'chalk';
+import { cmd, definitionList, fail, neutral, ok, sectionTitle, warn } from '@happier-dev/cli-common/output';
 import os from 'node:os';
 
 import { formatAccountIdentity, formatRelayHost } from '@/auth/describeSignedInIdentity';
@@ -21,13 +22,13 @@ export async function handleAuthStatus(argv: string[] = []): Promise<void> {
   }
 
   if (!json) {
-    console.log(chalk.bold('\nAuthentication Status\n'));
+    console.log(sectionTitle('Authentication'));
     console.log(chalk.gray(`Server profile: ${configuration.activeServerId}`));
   }
 
   if (!credentials) {
-    console.log(chalk.red(`✗ Not authenticated on ${relayHost}`));
-    console.log(chalk.gray('  Run "happier auth login" to authenticate'));
+    console.log(fail(`Not authenticated on ${relayHost}`));
+    console.log(chalk.gray(`  Run ${cmd('happier auth login')} to sign in.`));
     return;
   }
 
@@ -37,9 +38,9 @@ export async function handleAuthStatus(argv: string[] = []): Promise<void> {
       return;
     }
 
-    console.log(chalk.red(`✗ Not authenticated on ${relayHost}`));
-    console.log(chalk.gray('  Stored credentials were rejected by the selected relay'));
-    console.log(chalk.gray('  Run "happier auth login --force" to authenticate again'));
+    console.log(fail(`Not authenticated on ${relayHost}`));
+    console.log(chalk.gray('  The selected relay rejected the stored credentials.'));
+    console.log(chalk.gray(`  Run ${cmd('happier auth login --force')} to sign in again.`));
     return;
   }
 
@@ -59,7 +60,7 @@ export async function handleAuthStatus(argv: string[] = []): Promise<void> {
       return;
     }
 
-    console.log(chalk.yellow(`⚠️  Authentication could not be verified because ${relayHost} did not answer`));
+    console.log(warn(`Authentication could not be verified because ${relayHost} did not answer`));
     console.log(chalk.gray('  Stored credentials were kept unchanged. Retry when the relay is available.'));
     return;
   }
@@ -95,22 +96,17 @@ export async function handleAuthStatus(argv: string[] = []): Promise<void> {
     return;
   }
 
-  console.log(chalk.green(accountIdentity ? `✓ Authenticated as ${accountIdentity} on ${relayHost}` : `✓ Authenticated on ${relayHost}`));
+  console.log(ok(accountIdentity ? `Authenticated as ${accountIdentity} on ${relayHost}` : `Authenticated on ${relayHost}`));
 
   if (machineRegistered) {
-    console.log(chalk.green('✓ Machine registered'));
-    console.log(chalk.gray(`  Machine ID: ${machineId}`));
-    console.log(chalk.gray(`  Host: ${os.hostname()}`));
+    console.log(ok('Machine registered'));
   } else {
-    console.log(chalk.yellow('⚠️  Machine not registered'));
-    console.log(chalk.gray('  Run "happier auth login --force" to fix this'));
+    console.log(warn('Machine not registered'));
+    console.log(chalk.gray(`  Run ${cmd('happier auth login --force')} to fix this.`));
   }
-
-  console.log(chalk.gray(`\n  Data directory: ${configuration.happyHomeDir}`));
-
-  if (daemonRunning) {
-    console.log(chalk.green('✓ Daemon running'));
-  } else {
-    console.log(chalk.gray('✗ Daemon not running'));
-  }
+  console.log(daemonRunning ? ok('Daemon running') : neutral('Daemon not running'));
+  console.log(definitionList([
+    ...(machineRegistered ? [{ label: 'Machine ID', value: String(machineId) }, { label: 'Host', value: os.hostname() }] : []),
+    { label: 'Data directory', value: configuration.happyHomeDir },
+  ], { indent: '  ' }));
 }

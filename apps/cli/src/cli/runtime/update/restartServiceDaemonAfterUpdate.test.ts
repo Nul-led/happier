@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
+import { reserveEphemeralPort, waitForHttpReady } from '@/testkit/http/portUtils';
+import { spawnStoppableHttpDaemon } from '@/daemon/testkit/fakeDaemonLifecycle.testkit';
 
 vi.mock('@/daemon/doctor', async (importOriginal) => {
   const [{ withCurrentProcessAsDaemonLifecycleOwner }, actual] = await Promise.all([
@@ -148,6 +150,30 @@ describe('service daemon restart after an update', { timeout: 240_000 }, () => {
     startedWithPublicReleaseChannel: 'stable' as const,
     startupSource: label ? 'background-service' as const : 'manual' as const,
     ...(label ? { serviceLabel: label } : {}),
+  });
+
+  it('refuses update planning when an installed service publication has unverified authenticated presence', async () => {
+    await withTempDir('happier-self-update-unverified-service-', async (homeDir) => {
+      patchHome(homeDir);
+      const { restart, writeDaemonState, installService } = await loadWithSpawnRecorder();
+      const label = installService({ targetMode: 'default-following' });
+      const port = await reserveEphemeralPort();
+      const child = spawnStoppableHttpDaemon(port, 500, { controlToken: 'owned-token', pingStatus: 500 });
+      const realKill = process.kill.bind(process);
+      try {
+        expect(await waitForHttpReady(port)).toBe(true);
+        writeDaemonState({ ...serviceState('1.0.0', label, child.pid), httpPort: port, controlToken: 'owned-token' });
+        vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+          if (pid === child.pid) throw Object.assign(new Error('PID hidden from caller'), { code: 'ESRCH' });
+          return realKill(pid, signal);
+        });
+        await expect(restart({ channel: 'stable', updatedToVersion: '1.1.0' })).rejects.toThrow(/unverified/);
+        expect(realKill(child.pid, 0)).toBe(true);
+      } finally {
+        vi.restoreAllMocks();
+        await child.kill();
+      }
+    });
   });
 
   it('restarts the channel service daemon through the updated binary so it runs the new version', async () => {
