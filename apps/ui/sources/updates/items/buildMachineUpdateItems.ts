@@ -163,8 +163,8 @@ export function buildRemoteCliUpdateItem(params: Readonly<{
     }
 
     const last = facts.lastUpdate;
-    if (params.online && !params.task.running && last && last.targetVersion !== currentVersion) {
-        if (last.outcome === 'pendingReconnect') {
+    if (params.online && !params.task.running && last) {
+        if (last.outcome === 'pendingReconnect' && last.targetVersion !== currentVersion) {
             // Installed and restarting there: waiting to reconnect is not failure.
             return { ...item, state: 'running', step: 'reconnecting' };
         }

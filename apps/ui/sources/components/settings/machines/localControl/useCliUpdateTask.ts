@@ -1,21 +1,31 @@
 import * as React from 'react';
+import type { SystemTaskSpec } from '@happier-dev/protocol';
 
 import { getSystemTasksRunner } from '@/components/systemTasks/systemTasksRuntime';
 import { useSystemTaskSnapshot } from '@/components/systemTasks/useSystemTaskSnapshot';
+import { awaitSystemTaskResult } from '@/components/systemTasks/awaitSystemTaskResult';
 import { isSystemTaskBridgeUnavailableError, readSystemTaskStartErrorMessage } from '@/components/systemTasks/systemTaskStartError';
 import type { SystemTaskRunState, SystemTaskRunner } from '@/components/systemTasks/types';
 import { desktopSetupCoordinator, resolveThisComputerServiceForActiveRelay } from '@/setup/desktopSetupCoordinator';
 import { cliAcquisitionFailureStatus } from '@/setup/setupStageModel';
 import { t } from '@/text';
 import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
+import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import { buildUpdateItemId } from '@/updates/items/updateItem';
 import { recordUpdateCompleted } from '@/updates/updateCompletions';
 
 import { buildLocalDaemonServiceSystemTaskSpec } from './buildLocalDaemonServiceSystemTaskSpec';
 
+/** A queued update retains the initiating account and task target before other items finish. */
+export type CliUpdateStartContext = Readonly<{
+    scope: ServerAccountScope;
+    spec: SystemTaskSpec;
+    machineId: string | null;
+}>;
+
 export type CliUpdateTask = Readonly<{
-    /** Starts `cli.update.v1`. A second press while one runs does nothing. */
-    start: () => Promise<void>;
+    /** Starts `cli.update.v1` and waits for its result. A second press while one runs does nothing. */
+    start: (context?: CliUpdateStartContext) => Promise<void>;
     /** The run, for the existing task progress presentation. */
     snapshot: SystemTaskRunState | null;
     running: boolean;
@@ -32,7 +42,7 @@ type CliUpdateActionState = Readonly<{
 type CliUpdateAction = Readonly<{
     getState: () => CliUpdateActionState;
     subscribe: (listener: () => void) => () => void;
-    start: () => Promise<void>;
+    start: (context?: CliUpdateStartContext) => Promise<void>;
 }>;
 
 /**
@@ -68,31 +78,29 @@ function createCliUpdateAction(runner: SystemTaskRunner): CliUpdateAction {
                 listeners.delete(listener);
             };
         },
-        start: async () => {
+        start: async (context) => {
             if (isRunInFlight(runner, state) || runner.mode === 'unavailable') {
                 return;
             }
             // The initiating account owns completion even if every observing surface unmounts.
-            const scope = getActiveServerAccountScope();
+            const scope = context?.scope ?? getActiveServerAccountScope();
             const inspection = desktopSetupCoordinator.readInspectionSnapshot();
-            const machineId = resolveThisComputerServiceForActiveRelay(inspection)?.facts.auth.machineId ?? null;
+            const machineId = context ? context.machineId : resolveThisComputerServiceForActiveRelay(inspection)?.facts.auth.machineId ?? null;
             set({ ...state, starting: true, startError: null });
             try {
-                const taskId = await runner.start(buildLocalDaemonServiceSystemTaskSpec('cli.update.v1'));
+                const taskId = await runner.start(context?.spec ?? buildLocalDaemonServiceSystemTaskSpec('cli.update.v1'));
                 set({ taskId, starting: false, startError: null });
-                // Success is re-read, never inferred from the exit code: every surface describing
-                // this computer sees the version the service now runs.
-                const unsubscribe = runner.subscribe(taskId, undefined, (result) => {
-                    queueMicrotask(() => unsubscribe());
-                    if (result.ok && scope) {
-                        recordUpdateCompleted(scope, buildUpdateItemId(machineId ?? 'this-computer', { kind: 'happier-cli' }));
-                    }
-                    // A finished update, or another one already running on this computer (K5
-                    // `cli_update_in_progress`): either way the answer is what the CLI now reports.
-                    if (result.ok || isUpdateInProgressElsewhere(result.error)) {
-                        void desktopSetupCoordinator.inspect({ fresh: true });
-                    }
-                });
+                // The shared result waiter survives every presentation subscription. Update-all
+                // awaits this promise, so admission cannot retire the batch while the CLI runs.
+                const result = await awaitSystemTaskResult(runner, taskId);
+                if (result.ok && scope) {
+                    recordUpdateCompleted(scope, buildUpdateItemId(machineId ?? 'this-computer', { kind: 'happier-cli' }));
+                }
+                // A finished update, or another one already running on this computer (K5
+                // `cli_update_in_progress`): either way the answer is what the CLI now reports.
+                if (result.ok || isUpdateInProgressElsewhere(result.error)) {
+                    void desktopSetupCoordinator.inspect({ fresh: true });
+                }
             } catch (error) {
                 set({
                     ...state,

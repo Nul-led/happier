@@ -144,7 +144,7 @@ const UpdatesGroupSection = React.memo(function UpdatesGroupSection(props: Reado
                         onRun={model.runItem}
                         onLongPress={skipVersion ?? undefined}
                         isThisComputer={group.kind === 'thisComputer'}
-                        sessionsRunning={group.kind === 'machine' && group.machineId != null && model.sessionsRunningOn.has(group.machineId)}
+                        sessionsRunning={item.machineId != null && model.sessionsRunningOn.has(item.machineId)}
                     />
                 ))
             )}

@@ -2,16 +2,16 @@ import { act } from 'react-test-renderer';
 import { afterEach, expect, it, vi } from 'vitest';
 import { SYSTEM_TASK_PROTOCOL_VERSION } from '@happier-dev/protocol';
 
-import { renderHook, flushHookEffects } from '@/dev/testkit';
-import { useCliUpdateTask } from '@/components/settings/machines/localControl/useCliUpdateTask';
+import { renderHook } from '@/dev/testkit';
 import { createSystemTaskRunner } from '@/components/systemTasks/createSystemTaskRunner';
-import type { SystemTaskRunner } from '@/components/systemTasks/types';
+import type { SystemTaskBridgeListenerSet, SystemTaskRunner } from '@/components/systemTasks/types';
 import { desktopSetupCoordinator } from '@/setup/desktopSetupCoordinator';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { storage } from '@/sync/domains/state/storageStore';
 import * as tauri from '@/utils/platform/tauri';
 
 import { readUnseenUpdateCompletions } from './updateCompletions';
+import { readUpdateBatch, runUpdateBatch, useUpdateBatch } from './machineUpdateRuns';
 import { useThisComputerCliUpdate } from './useThisComputerCliUpdate';
 
 // The app-wide system-task runner is the process boundary; a case that needs a specific answer
@@ -30,34 +30,74 @@ afterEach(() => {
     vi.unstubAllEnvs();
 });
 
-it('keeps a shared local update completion with its starting account when a new account mounts an observer', async () => {
+it('retains Update-all until the local CLI settles after its view closes and another account opens Updates', async () => {
     // The existing deterministic desktop bridge is the process boundary; task lifecycle,
     // inspection, storage and update observers remain real.
-    vi.stubEnv('EXPO_PUBLIC_SYSTEM_TASKS_RUNNER_MODE', 'dev');
     vi.spyOn(tauri, 'isTauriDesktop').mockReturnValue(true);
-    vi.useFakeTimers();
-    const serverId = getActiveServerSnapshot().serverId;
+    const { serverId, serverUrl } = getActiveServerSnapshot();
     const accountA = { serverId, accountId: 'local-update-a' };
     const accountB = { serverId, accountId: 'local-update-b' };
     storage.setState({ profileScope: accountA });
-    const inspection = desktopSetupCoordinator.inspect();
-    await vi.advanceTimersByTimeAsync(30);
-    await inspection;
+    let updateListener: SystemTaskBridgeListenerSet | undefined;
+    let updateStarts = 0;
+    runnerRef.current = createSystemTaskRunner({ bridge: {
+        async start(spec) {
+            if (spec.kind === 'cli.update.v1') { updateStarts++; return 'batch-local-update'; }
+            return 'batch-local-status';
+        },
+        async subscribe(taskId, listeners) {
+            if (taskId === 'batch-local-update') updateListener = listeners;
+            else queueMicrotask(() => listeners.onResult({
+                protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION, taskId, ok: true,
+                data: {
+                    acquisition: { command: '/managed/happier', provenance: 'managed', version: '0.2.12' },
+                    server: { serverUrl, publicServerUrl: serverUrl, localServerUrl: null, comparableKey: null },
+                    auth: { credentialState: 'valid', validatedAccountId: accountA.accountId, accountId: accountA.accountId, machineId: 'machine-local-1' },
+                    service: { installed: true, running: true, autostart: 'at-login', targetMode: 'default-following' },
+                    runtimeConvergence: { controlReachable: true, serviceOwnsRunningDaemon: true, machineIdMatches: true, cliVersionMatches: true },
+                    cli: { update: { currentVersion: '0.2.12', latestVersion: '0.2.14', updateAvailable: true, managed: true }, choice: null },
+                },
+            }));
+            return () => {};
+        },
+        async cancel() {},
+        async respond() {},
+    } });
+    await desktopSetupCoordinator.inspect({ fresh: true });
 
-    const starter = await renderHook(() => useCliUpdateTask());
     const firstObserver = await renderHook(() => useThisComputerCliUpdate());
-    await act(async () => { await starter.getCurrent().start(); });
-    expect(starter.getCurrent().running).toBe(true);
+    const queuedRun = firstObserver.getCurrent().run;
+    const item = firstObserver.getCurrent().item;
+    if (!item) throw new Error('The inspected local CLI must be available for this batch');
+    expect(item.state).toBe('available');
     await firstObserver.unmount();
     await act(async () => { storage.setState({ profileScope: accountB }); });
-    const laterObserver = await renderHook(() => useThisComputerCliUpdate());
-    await flushHookEffects({ advanceTimersMs: 210, cycles: 1 });
+    const laterObserver = await renderHook(() => ({
+        cli: useThisComputerCliUpdate(),
+        originalBatch: useUpdateBatch(accountA, [item], () => queuedRun()),
+    }));
+    let batchRun = Promise.resolve();
+    await act(async () => { batchRun = runUpdateBatch(accountA, [item], () => queuedRun()); });
+    expect(laterObserver.getCurrent().cli.item?.state).toBe('running');
+    expect(laterObserver.getCurrent().originalBatch.batch).toEqual({ done: 0, total: 1, stopping: false });
+    await laterObserver.unmount();
+    const reopened = await renderHook(() => useUpdateBatch(accountA, [item], () => queuedRun()));
+    expect(reopened.getCurrent().batch).toEqual({ done: 0, total: 1, stopping: false });
+    let duplicateExecutions = 0;
+    await act(async () => {
+        await runUpdateBatch(accountA, [item], async () => { duplicateExecutions++; await queuedRun(); });
+    });
+    expect(duplicateExecutions).toBe(0);
+    await act(async () => {
+        updateListener?.onResult({ protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION, taskId: 'batch-local-update', ok: true, data: {} });
+    });
+    await act(async () => { await batchRun; });
 
-    expect(starter.getCurrent().running).toBe(false);
+    expect(readUpdateBatch(accountA)).toBeNull();
+    expect(updateStarts).toBe(1);
     expect(readUnseenUpdateCompletions(accountB).size).toBe(0);
     expect(readUnseenUpdateCompletions(accountA).get('machine-local-1:happier-cli')).toBe('done');
-    await laterObserver.unmount();
-    await starter.unmount();
+    await reopened.unmount();
 });
 
 it('names the exact command that updates the command line the person kept (R12)', async () => {

@@ -12,6 +12,8 @@ import { flushHookEffects, renderHook } from '@/dev/testkit';
 import { desktopSetupCoordinator } from '@/setup/desktopSetupCoordinator';
 
 import { describeCliUpdateFailure, useCliUpdateTask } from './useCliUpdateTask';
+import { buildLocalDaemonServiceSystemTaskSpec } from './buildLocalDaemonServiceSystemTaskSpec';
+import { readUnseenUpdateCompletions } from '@/updates/updateCompletions';
 
 describe('describeCliUpdateFailure', () => {
     it('names why the update did not finish rather than one sentence for every failure (R17)', () => {
@@ -25,6 +27,47 @@ describe('describeCliUpdateFailure', () => {
 });
 
 describe('useCliUpdateTask (one CLI-update action for every surface, S-10)', () => {
+    it('settles an immediately failed task and keeps the named failure visible', async () => {
+        const runner = createSystemTaskRunner({ bridge: {
+            async start() { return 'immediate-cli-failure'; },
+            async subscribe(taskId, callbacks) {
+                callbacks.onResult({ protocolVersion: 1, taskId, ok: false,
+                    error: { code: 'cli_update_smoke_failed', message: 'The staged executable could not run.' },
+                });
+                return () => {};
+            },
+            async cancel() {},
+            async respond() {},
+        } });
+        const hook = await renderHook(() => useCliUpdateTask({ runner }));
+        await act(async () => { await hook.getCurrent().start(); });
+        expect(hook.getCurrent().running).toBe(false);
+        expect(hook.getCurrent().errorMessage).toBe('updates.row.smokeFailed');
+        await hook.unmount();
+    });
+    it('uses the initiating batch task target and attributes its completion to that account after navigation', async () => {
+        const scope = { serverId: 'local-batch-original-server', accountId: 'local-batch-original-account' };
+        const spec = buildLocalDaemonServiceSystemTaskSpec('cli.update.v1', { relayUrl: 'https://original.example.test' });
+        let started: unknown;
+        let listener: SystemTaskBridgeListenerSet | undefined;
+        const runner = createSystemTaskRunner({ bridge: {
+            async start(input) { started = input; return 'captured-cli-update'; },
+            async subscribe(_taskId, callbacks) { listener = callbacks; return () => {}; },
+            async cancel() {},
+            async respond() {},
+        } });
+        const initiating = await renderHook(() => useCliUpdateTask({ runner }));
+        const start = initiating.getCurrent().start;
+        await initiating.unmount();
+        let settled = Promise.resolve();
+        await act(async () => { settled = start({ scope, spec, machineId: 'original-machine' }); });
+        expect(started).toEqual(spec);
+        await act(async () => {
+            listener?.onResult({ protocolVersion: 1, taskId: 'captured-cli-update', ok: true, data: {} });
+            await settled;
+        });
+        expect(readUnseenUpdateCompletions(scope).get('original-machine:happier-cli')).toBe('done');
+    });
     it('Home and Settings observe the same run: one start, one re-read, both see it running and finished', async () => {
         const inspect = vi.spyOn(desktopSetupCoordinator, 'inspect').mockResolvedValue({ status: 'pending' } as never);
         const starts: string[] = [];
@@ -51,7 +94,8 @@ describe('useCliUpdateTask (one CLI-update action for every surface, S-10)', () 
         const home = await renderHook(() => useCliUpdateTask({ runner, onSucceeded: homeSucceeded }));
         const settings = await renderHook(() => useCliUpdateTask({ runner, onSucceeded: settingsSucceeded }));
 
-        await act(async () => { await home.getCurrent()?.start(); });
+        let settled = Promise.resolve();
+        await act(async () => { settled = home.getCurrent().start(); });
         await flushHookEffects();
         expect(settings.getCurrent()?.running).toBe(true);
 
@@ -61,6 +105,7 @@ describe('useCliUpdateTask (one CLI-update action for every surface, S-10)', () 
 
         await act(async () => {
             listenersByTask.get('task_1')?.onResult({ protocolVersion: 1, taskId: 'task_1', ok: true, data: {} });
+            await settled;
         });
         await flushHookEffects();
 
@@ -87,11 +132,13 @@ describe('useCliUpdateTask (one CLI-update action for every surface, S-10)', () 
             },
         });
         const hook = await renderHook(() => useCliUpdateTask({ runner }));
-        await act(async () => { await hook.getCurrent()?.start(); });
+        let settled = Promise.resolve();
+        await act(async () => { settled = hook.getCurrent().start(); });
         await act(async () => {
             listenersByTask.get('task_busy')?.onResult({
                 protocolVersion: 1, taskId: 'task_busy', ok: false, error: { code: 'cli_update_in_progress', message: 'busy' },
             });
+            await settled;
         });
         await flushHookEffects();
         expect(hook.getCurrent()?.errorMessage).toBeNull();

@@ -9,6 +9,8 @@ import { storage } from '@/sync/domains/state/storageStore';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { UpdatesPopoverButton } from './UpdatesPopoverButton';
 import { UpdateRow } from './UpdateRow';
+import { UpdatesContent } from './UpdatesContent';
+import type { UpdatesContentModel } from '@/updates/useUpdatesContentModel';
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -183,5 +185,26 @@ describe('UpdatesPopoverButton', () => {
         );
         const labels = screen.findAll((node) => typeof node.props?.accessibilityLabel === 'string').map((node) => String(node.props.accessibilityLabel));
         expect(labels.some((label) => label.includes('updates.row.restartsService'))).toBe(true);
+    });
+
+    it('shows session impact by item machine identity, including this computer', async () => {
+        const item = {
+            id: 'local:happier-cli', subject: { kind: 'happier-cli' }, machineId: 'local', title: 'Happier CLI',
+            currentVersion: '0.2.12', latestVersion: '0.2.13', state: 'available', progressPercent: null, step: null,
+            managedBy: 'happier', action: { kind: 'run', verb: 'update' }, failure: null, skipped: false,
+        } as const;
+        const model: UpdatesContentModel = {
+            summary: { ...TWO, actionableCount: 1 },
+            groups: [{ id: 'this-computer', kind: 'thisComputer', machineName: 'local', machineId: 'unrelated-group-id', online: true, items: [item] }],
+            checkedAt: null, uncheckedMachineCount: 0, sessionsRunningOn: new Set(['local']),
+            runItem: async () => {}, updateAll: async () => {}, stopAfterCurrent: () => {}, batch: null,
+            checkNow: () => {}, skipAppVersion: null, openWhatsNew: () => {}, whatsNewUnread: false,
+        };
+        const screen = await renderScreen(<UpdatesContent model={model} presentation="popover" />);
+        const hasNote = () => screen.findAll((node) => typeof node.props?.accessibilityLabel === 'string')
+            .some((node) => String(node.props.accessibilityLabel).includes('updates.row.restartsService'));
+        expect(hasNote()).toBe(true);
+        await screen.update(<UpdatesContent model={{ ...model, sessionsRunningOn: new Set(['unrelated-group-id']) }} presentation="popover" />);
+        expect(hasNote()).toBe(false);
     });
 });

@@ -139,6 +139,15 @@ describe('another machine — Happier CLI row (K5)', () => {
         });
         expect(landed.state).toBe('upToDate');
     });
+
+    it('keeps an explicit failed outcome authoritative when the target binary is answering', () => {
+        const item = buildRemoteCliUpdateItem({
+            machineId: 'm2', title: 'Happier CLI', online: true, platform: 'darwin', happyCliVersion: '0.2.11',
+            facts: { ...k5, currentVersion: '0.2.11', lastUpdate: { targetVersion: '0.2.11', outcome: 'failed', at: 2, message: 'Restoring the old daemon failed.' } },
+            remoteUpdateAdvertised: true, task: IDLE_TASK,
+        });
+        expect(item).toMatchObject({ state: 'failed', failure: { kind: 'message', message: 'Restoring the old daemon failed.' }, action: { kind: 'run', verb: 'retry' } });
+    });
 });
 
 describe('agent CLI rows (K6)', () => {
